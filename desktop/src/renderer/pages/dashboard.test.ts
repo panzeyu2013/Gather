@@ -26,6 +26,7 @@ const mockSessions: SessionData[] = [
 ]
 
 const mockDialog = jest.fn()
+const mockTypedConfirmDialog = jest.fn()
 const mockToast = jest.fn()
 const mockNavigate = jest.fn()
 const mockRegisterCleanup = jest.fn()
@@ -51,6 +52,7 @@ const mockApp = {
 
 jest.mock('../components/dialog', () => ({
   dialog: mockDialog,
+  typedConfirmDialog: mockTypedConfirmDialog,
 }))
 
 jest.mock('../components/toast', () => ({
@@ -117,12 +119,17 @@ describe('renderDashboard', () => {
   })
 
   it('shows error state when session loading fails', async () => {
-    mockEngine.session.list.mockRejectedValue(new Error('Network error'))
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockEngine.session.list.mockRejectedValue(new Error('Network error'))
 
-    const html = await renderDashboard()
-    expect(html).toContain('Failed to load sessions')
-    expect(html).toContain('Retry')
-    expect(html).not.toContain('session-list')
+      const html = await renderDashboard()
+      expect(html).toContain('Failed to load sessions')
+      expect(html).toContain('Retry')
+      expect(html).not.toContain('session-list')
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 
   it('shows session action buttons for each session', async () => {
@@ -156,6 +163,7 @@ describe('setupDashboard', () => {
     jest.clearAllMocks()
     mockEngine.session.list.mockResolvedValue(mockSessions)
     mockDialog.mockResolvedValue(true)
+    mockTypedConfirmDialog.mockResolvedValue(true)
     mockConsumeCaptureOneImportTrigger.mockReturnValue(false)
   })
 
@@ -222,5 +230,26 @@ describe('setupDashboard', () => {
 
     const delBtns = document.querySelectorAll('[data-act="del"]')
     expect(delBtns).toHaveLength(2)
+  })
+
+  it('requires typed confirmation before deleting all sessions', async () => {
+    mockEngine.session.list.mockResolvedValue(mockSessions)
+    mockEngine.session.delete.mockResolvedValue({ deleted: true })
+    const html = await renderDashboard()
+    document.getElementById('content')!.innerHTML = html
+
+    setupDashboard()
+
+    const clearAll = document.querySelector('#btnClearAll') as HTMLButtonElement
+    clearAll.click()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(mockTypedConfirmDialog).toHaveBeenCalledWith(
+      'Delete ALL sessions and all local Gather data? This cannot be undone.',
+      'DELETE ALL',
+      'Delete All'
+    )
+    expect(mockEngine.session.delete).toHaveBeenCalledTimes(2)
   })
 })

@@ -208,6 +208,25 @@ def test_cleanup_xmp_backed_up_files_restored(tmp_path):
 
     assert xmp_path.exists()
     assert xmp_path.read_text() == "<xmpmeta>pre-gather content</xmpmeta>"
+    assert not (tmp_path / "photo7.jpg.xmp.gatherbak.modified").exists()
+
+
+def test_cleanup_xmp_preserves_unmarked_current_xmp_before_restore(tmp_path):
+    photo = tmp_path / "photo7b.jpg"
+    photo.write_text("fake image")
+    xmp_path = tmp_path / "photo7b.jpg.xmp"
+    xmp_path.write_text("<xmpmeta>pre-gather content</xmpmeta>")
+
+    backup = backup_xmp(str(photo))
+    assert backup is not None
+
+    write_keywords([str(photo)], {str(photo): ["gather-tag"]})
+    xmp_path.write_text("<xmpmeta>external replacement</xmpmeta>")
+
+    result = cleanup_xmp([str(photo)])
+    assert result["restored"] == 1
+    assert xmp_path.read_text() == "<xmpmeta>pre-gather content</xmpmeta>"
+    assert (tmp_path / "photo7b.jpg.xmp.gatherbak.modified").read_text() == "<xmpmeta>external replacement</xmpmeta>"
 
 
 # ---------------------------------------------------------------------------

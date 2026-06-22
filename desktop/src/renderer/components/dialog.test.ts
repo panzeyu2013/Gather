@@ -1,4 +1,4 @@
-import { dialog } from './dialog'
+import { dialog, typedConfirmDialog } from './dialog'
 
 describe('dialog', () => {
   beforeEach(() => {
@@ -119,5 +119,25 @@ describe('dialog', () => {
     okBtn.click()
     await new Promise(r => setTimeout(r, 10))
     expect(onResolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires typed confirmation text before resolving true', async () => {
+    const promise = typedConfirmDialog('Delete all?', 'DELETE ALL', 'Delete All')
+    const input = document.querySelector('#dialogTypedInput') as HTMLInputElement
+    const okBtn = document.querySelector('#dialogOk') as HTMLButtonElement
+
+    expect(document.activeElement).toBe(input)
+    expect(okBtn.disabled).toBe(true)
+
+    input.value = 'DELETE'
+    input.dispatchEvent(new Event('input'))
+    expect(okBtn.disabled).toBe(true)
+
+    input.value = 'DELETE ALL'
+    input.dispatchEvent(new Event('input'))
+    expect(okBtn.disabled).toBe(false)
+
+    okBtn.click()
+    await expect(promise).resolves.toBe(true)
   })
 })

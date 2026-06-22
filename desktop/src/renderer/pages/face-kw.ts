@@ -209,9 +209,12 @@ export async function renderFaceKeywording(sid: string): Promise<string> {
   </div>
   <div class="fkw-guidance hidden" id="fkwGuide">
     <div class="fkw-guidance__title">Next: Reload Metadata in Capture One</div>
-    <div class="fkw-guidance__steps">1. Select images in C1<br>2. Image → Load Metadata<br>3. Verify keywords appear<br>4. Click <strong>Confirm Sync</strong></div>
+    <div class="fkw-guidance__steps">1. Select images in C1<br>2. Image → Load Metadata<br>3. Verify keywords appear<br>4. Click <strong>Confirm Sync</strong><br>5. Clean up Gather sidecars when you are ready</div>
   </div>
-  <div style="margin-top:1.5rem"><button class="btn btn--success btn--lg hidden" id="btnCleanup">Confirm Sync</button></div>
+  <div style="margin-top:1.5rem;display:flex;gap:0.75rem;flex-wrap:wrap">
+    <button class="btn btn--success btn--lg hidden" id="btnConfirmSync">Confirm Sync</button>
+    <button class="btn btn--secondary btn--lg hidden" id="btnCleanup">Clean Up XMP</button>
+  </div>
   <button class="btn btn--warning btn--lg hidden" id="btnWbRetry" style="margin-top:0.5rem">Retry failed items</button>
   <div class="fkw-nav"><button class="btn btn--secondary" id="btnToStep4From5">← Preview</button><div></div></div>
 </div>
@@ -420,10 +423,26 @@ export function setupFaceKeywording(): void {
     await doWriteback()
     this.disabled = false; this.textContent = 'Retry failed items'
   }))
-  cleanupFns.push(on(c, 'click', '#btnCleanup', async function (this: HTMLButtonElement) {
+  cleanupFns.push(on(c, 'click', '#btnConfirmSync', async function (this: HTMLButtonElement) {
     if (!await dialog('Confirm that Capture One has loaded the written metadata for this session.', 'Confirm Sync')) return
     this.disabled = true; this.textContent = 'Confirming…'
-    try { await engine.fkw.confirmCleanup(sessionId); toast('Sync confirmed.', 'success'); this.textContent = 'Done' } catch (err: unknown) { this.disabled = false; this.textContent = 'Confirm Sync'; showError(err, 'Confirmation failed. Please try again or restart the application.') }
+    try {
+      await engine.fkw.confirmSync(sessionId)
+      toast('Sync confirmed. You can clean up Gather XMP sidecars when ready.', 'success')
+      this.textContent = 'Synced'
+      $('#btnCleanup')?.classList.remove('hidden')
+    } catch (err: unknown) { this.disabled = false; this.textContent = 'Confirm Sync'; showError(err, 'Confirmation failed. Please try again or restart the application.') }
+  }))
+  cleanupFns.push(on(c, 'click', '#btnCleanup', async function (this: HTMLButtonElement) {
+    if (!await dialog('Clean up Gather-created XMP sidecars and restore original backups where available?', 'Clean Up')) return
+    this.disabled = true; this.textContent = 'Cleaning…'
+    try {
+      const result = await engine.fkw.cleanup(sessionId)
+      const errors = Array.isArray(result.errors) ? result.errors.length : 0
+      if (errors > 0) toast(`Cleanup completed with ${errors} errors.`, 'warning')
+      else toast('Cleanup complete.', 'success')
+      this.textContent = 'Cleaned'
+    } catch (err: unknown) { this.disabled = false; this.textContent = 'Clean Up XMP'; showError(err, 'Cleanup failed. Please check file permissions and try again.') }
   }))
 
   // Progress listener — primary completion notification (RAF-throttled DOM updates)
@@ -677,10 +696,10 @@ async function doWriteback(): Promise<void> {
     const hasFailures = (r.failed as number) > 0
     $('#fkwWbResults')?.classList.remove('hidden')
     if (hasFailures) {
-      $('#fkwGuide')?.classList.add('hidden'); $('#btnCleanup')?.classList.add('hidden')
+      $('#fkwGuide')?.classList.add('hidden'); $('#btnConfirmSync')?.classList.add('hidden'); $('#btnCleanup')?.classList.add('hidden')
       $('#btnWbRetry')?.classList.remove('hidden')
     } else {
-      $('#fkwGuide')?.classList.remove('hidden'); $('#btnCleanup')?.classList.remove('hidden')
+      $('#fkwGuide')?.classList.remove('hidden'); $('#btnConfirmSync')?.classList.remove('hidden'); $('#btnCleanup')?.classList.add('hidden')
       $('#btnWbRetry')?.classList.add('hidden')
     }
     const errors = r.errors as string[] | undefined; if (errors?.length) { const msg = errors.length > 3 ? `${errors.length} files failed. First 3: ${errors.slice(0, 3).join('; ')}` : errors.slice(0, 3).join('; '); toast('Errors: ' + msg, 'warning') }

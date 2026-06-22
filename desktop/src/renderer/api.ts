@@ -1,7 +1,7 @@
 // src/renderer/api.ts
 // Engine API 客户端 — 零 HTTP，contextBridge 直连 Python
 
-import type { SessionData, ProgressEvent, GroupData, WritebackOptions } from '@gather/shared'
+import type { SessionData, ProgressEvent, WritebackOptions } from '@gather/shared'
 import { isRecord } from '@gather/shared'
 import { toast } from './components/toast'
 
@@ -118,6 +118,8 @@ export const engine = {
     removeMember:  (id: string, cid: number, pid: string) => send('fkw.remove_member', { session_id: id, cluster_id: cid, photo_id: pid }),
     preview:       (id: string) => send<Record<string, unknown>>('fkw.preview', { session_id: id }),
     writeback:     (id: string) => send<Record<string, unknown>>('fkw.writeback', { session_id: id, confirmed: true }),
+    confirmSync:   (id: string) => send<Record<string, unknown>>('fkw.confirm_sync', { session_id: id }),
+    cleanup:       (id: string) => send<Record<string, unknown>>('fkw.cleanup', { session_id: id, confirmed: true }),
     confirmCleanup: (id: string) => send<Record<string, unknown>>('fkw.confirm_cleanup', { session_id: id, confirmed: true }),
   },
   sim: {
@@ -125,7 +127,8 @@ export const engine = {
     cancelAnalysis:(id: string) => send('sim.cancel_analysis', { session_id: id }),
     getResult:  (id: string) => send<Record<string, unknown>>('sim.result', { session_id: id }),
     recluster:  (id: string, threshold: number, minGroup: number) => send<Record<string, unknown>>('sim.recluster', { session_id: id, threshold, min_group_size: minGroup }),
-    writeback:  (id: string, groups: GroupData[], options: WritebackOptions) => send<Record<string, unknown>>('sim.writeback', { session_id: id, groups, options, confirmed: true }),
+    previewWriteback: (id: string, groupIds: Array<number | string>, options: WritebackOptions) => send<Record<string, unknown>>('sim.preview_writeback', { session_id: id, group_ids: groupIds, options }),
+    writeback:  (id: string, groupIds: Array<number | string>, options: WritebackOptions) => send<Record<string, unknown>>('sim.writeback', { session_id: id, group_ids: groupIds, options, confirmed: true }),
   },
   // TODO: validate response shape at runtime
   onProgress: (cb: (d: ProgressEvent['data']) => void): (() => void) =>

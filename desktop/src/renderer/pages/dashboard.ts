@@ -2,7 +2,7 @@
 
 import { engine, c1, app, showError } from '../api'
 import { clearSessionId, consumeCaptureOneImportTrigger } from '../app'
-import { dialog } from '../components/dialog'
+import { dialog, typedConfirmDialog } from '../components/dialog'
 import { $, $$, esc, on } from '../components/dom'
 import { toast } from '../components/toast'
 import { navigate, registerCleanup } from '../router'
@@ -138,7 +138,7 @@ export function setupDashboard(): void {
     } catch (err: unknown) { btn.disabled = false; showError(err, 'Delete failed. The session may have already been removed.') }
   }))
   cleanups.push(on(content, 'click', '#btnClearAll', async function (this: HTMLButtonElement) {
-    if (!await dialog('Delete ALL sessions? This cannot be undone.', 'Delete All')) return
+    if (!await typedConfirmDialog('Delete ALL sessions and all local Gather data? This cannot be undone.', 'DELETE ALL', 'Delete All')) return
     this.disabled = true
     document.querySelectorAll<HTMLButtonElement>('[data-act="del"]').forEach(b => b.disabled = true)
     try {

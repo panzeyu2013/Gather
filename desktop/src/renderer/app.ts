@@ -181,4 +181,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const unsubDisconnected = window.gather.onEvent('python:disconnected', () => {
     toast('The processing engine has stopped unexpectedly. The application will attempt to restart.', 'error', 30000)
   })
+  window.addEventListener('beforeunload', () => {
+    unsubImportTrigger()
+    unsubReady()
+    unsubDisconnected()
+  }, { once: true })
 })

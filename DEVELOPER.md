@@ -70,8 +70,9 @@ stdin/stdout, 二进制安全, 零 HTTP, 零端口, 零 CSRF。
 | `session.create` / `session.delete` / `session.list` / `session.add_photos` | 会话 CRUD |
 | `fkw.analyze` / `fkw.clusters` | 人脸分析 + 获取簇 |
 | `fkw.bind` / `fkw.unbind` / `fkw.merge` / `fkw.remove_member` | 角色绑定/合并/移除 |
-| `fkw.preview` / `fkw.writeback` / `fkw.confirm_cleanup` | 预览/写回/清理 |
-| `sim.analyze` / `sim.result` / `sim.recluster` / `sim.writeback` | 相似度分析/重聚类/写回 |
+| `fkw.preview` / `fkw.writeback` / `fkw.confirm_sync` / `fkw.cleanup` | 预览/写回/确认同步/清理 |
+| `fkw.confirm_cleanup` | 旧兼容命令：确认同步后立即清理，新 UI 不应直接调用 |
+| `sim.analyze` / `sim.result` / `sim.recluster` / `sim.preview_writeback` / `sim.writeback` | 相似度分析/重聚类/写回预览/执行写回 |
 | `shutdown` | 优雅退出 |
 
 ---

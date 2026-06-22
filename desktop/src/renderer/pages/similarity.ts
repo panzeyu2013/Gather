@@ -487,8 +487,6 @@ async function executeWb(): Promise<void> {
     toast('Select at least one group for writeback.', 'warning')
     return
   }
-  const totalPhotos = selectedGroups.reduce((sum, g) => sum + (g.count || g.images?.length || 0), 0)
-  if (!await dialog(`This will permanently modify XMP sidecar files for ${totalPhotos} photos across ${selectedGroups.length} groups. This action cannot be undone. Continue?`, 'Write Metadata')) return
   const btn = $('#btnExecWb') as HTMLButtonElement | null
   if (btn) btn.disabled = true
   try {
@@ -497,10 +495,16 @@ async function executeWb(): Promise<void> {
       const cb = document.querySelector(`.sim-global-opt[data-option="${opt}"]`) as HTMLInputElement | null
       options[opt] = cb?.checked ?? false
     })
-    const result = await engine.sim.writeback(sessionId,
-      selectedGroups.map(g => ({ id: g.id, images: g.images.map(img => ({ path: img.path })) })),
-      options
-    )
+    const groupIds = selectedGroups.map(g => g.id)
+    const preview = await engine.sim.previewWriteback(sessionId, groupIds, options)
+    const totalAffected = Number(preview.total_affected || 0)
+    const warnings = Array.isArray(preview.warnings) ? preview.warnings.length : 0
+    const action = options.writeIPTC
+      ? `write XMP keywords for ${totalAffected} photos`
+      : `generate a writeback report for ${totalAffected} photos without modifying XMP`
+    const warningText = warnings ? `\n\nWarnings: ${warnings} file(s) may be missing or unavailable.` : ''
+    if (!await dialog(`Preview complete: Gather will ${action} across ${selectedGroups.length} groups.${warningText}\n\nContinue?`, options.writeIPTC ? 'Write Metadata' : 'Generate Report')) return
+    const result = await engine.sim.writeback(sessionId, groupIds, options)
     const r = $('#simReport'); if (r) r.textContent = (result.report as string) || 'Done.'
     openSimModal()
     toast(`Writeback: ${result.total_affected} images affected`, 'success')

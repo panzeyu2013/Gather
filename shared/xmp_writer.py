@@ -29,6 +29,17 @@ from lxml import etree
 from .constants import PARTIAL_CHECKSUM_BYTES
 from .path_utils import file_checksum, validate_safe_path
 
+__all__ = [
+    "BACKUP_SUFFIX",
+    "GATHER_NS",
+    "NSMAP",
+    "backup_xmp",
+    "cleanup_xmp",
+    "file_checksum",
+    "restore_xmp",
+    "write_keywords",
+]
+
 logger = logging.getLogger("gather.xmp_writer")
 
 
@@ -96,9 +107,7 @@ def backup_xmp(photo_path: str) -> str | None:
 
     backup_path = xmp_path + BACKUP_SUFFIX
     if os.path.isfile(backup_path):
-        current_hash = file_checksum(xmp_path)
-        backup_hash = file_checksum(backup_path)
-        if current_hash is not None and backup_hash is not None and current_hash == backup_hash:
+        if _files_equal(xmp_path, backup_path):
             return backup_path
         backup_path = xmp_path + BACKUP_SUFFIX + "." + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     try:
@@ -182,20 +191,26 @@ def cleanup_xmp(photo_paths: list[str]) -> dict:
                     logger.error("Backup file is corrupted (empty or unparseable), skipping restore: %s", backup_path)
                     skipped += 1
                     continue
-                # Check if current XMP was modified externally since backup
-                if os.path.isfile(xmp_path):
-                    current_hash = file_checksum(xmp_path)
-                    backup_hash = file_checksum(backup_path)
-                    if current_hash is not None and backup_hash is not None and current_hash != backup_hash:
-                        modified_backup = backup_path + ".modified"
-                        if not os.path.isfile(modified_backup):
-                            shutil.copy2(xmp_path, modified_backup)
-                            logger.warning(
-                                "XMP was modified externally since Gather wrote to it: %s. "
-                                "Preserving current XMP as %s before restoring backup.",
-                                xmp_path,
-                                modified_backup,
-                            )
+                # Check if the current XMP appears to be a user/external
+                # replacement rather than the Gather-written file.
+                #
+                # The previous implementation compared current XMP bytes to the
+                # original backup. That always differs after a normal Gather
+                # write, so cleanup incorrectly treated ordinary Gather output
+                # as externally modified. Until the shared writeback audit model
+                # stores a post-write hash, the safest local signal is the
+                # Gather marker: marked files are restored directly; unmarked
+                # files are preserved as user-modified before restoring backup.
+                if os.path.isfile(xmp_path) and not _is_gather_xmp(xmp_path):
+                    modified_backup = backup_path + ".modified"
+                    if not os.path.isfile(modified_backup):
+                        shutil.copy2(xmp_path, modified_backup)
+                        logger.warning(
+                            "XMP no longer has Gather marker and may have been modified externally: %s. "
+                            "Preserving current XMP as %s before restoring backup.",
+                            xmp_path,
+                            modified_backup,
+                        )
                 shutil.move(backup_path, xmp_path)
                 restored += 1
             elif os.path.isfile(xmp_path):
@@ -294,11 +309,31 @@ def _verify_backup_integrity(photo_path: str) -> bool:
         return True  # no backup to compare against
     if not os.path.isfile(xmp_path):
         return True  # XMP was deleted (not modified)
-    current_hash = file_checksum(xmp_path)
-    backup_hash = file_checksum(backup_path)
-    if current_hash is None or backup_hash is None:
+    if _files_equal(xmp_path, backup_path):
+        return True
+    return _is_gather_xmp(xmp_path)
+
+
+def _files_equal(left_path: str, right_path: str) -> bool:
+    """Compare two files by bytes without following symlinks."""
+    try:
+        left_stat = os.stat(left_path, follow_symlinks=False)
+        right_stat = os.stat(right_path, follow_symlinks=False)
+        if left_stat.st_size != right_stat.st_size:
+            return False
+        with (
+            open(left_path, "rb", opener=lambda path, flags: os.open(path, flags | os.O_NOFOLLOW)) as left,
+            open(right_path, "rb", opener=lambda path, flags: os.open(path, flags | os.O_NOFOLLOW)) as right,
+        ):
+            while True:
+                left_chunk = left.read(PARTIAL_CHECKSUM_BYTES)
+                right_chunk = right.read(PARTIAL_CHECKSUM_BYTES)
+                if left_chunk != right_chunk:
+                    return False
+                if not left_chunk:
+                    return True
+    except OSError:
         return False
-    return current_hash == backup_hash
 
 
 def _write_single(photo_path: str, keywords: list[str]) -> None:

@@ -916,7 +916,10 @@ class FaceKeywordingService(BaseService):
             photo_paths = [p["filepath"] for p in self._manager.get_photo_filepaths(session_id)]
 
         result = cleanup_xmp(photo_paths)
-        self._manager.update_writeback_session_status(session_id, WritebackStatus.CLEANED)
+        if result.get("errors"):
+            self._manager.update_writeback_session_status(session_id, WritebackStatus.PARTIAL)
+        else:
+            self._manager.update_writeback_session_status(session_id, WritebackStatus.CLEANED)
 
         # Clear caches
         with self._state_lock:

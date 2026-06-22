@@ -326,6 +326,94 @@ class SimilarityService(BaseService):
             logger.debug("Failed to generate similarity thumbnail", exc_info=True)
             return {"thumbnail_base64": None}
 
+    def _resolve_writeback_groups(
+        self,
+        session_id: str,
+        group_ids: list[Any] | None = None,
+        fallback_groups: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Resolve requested group IDs against persisted analysis results.
+
+        The renderer should send only group IDs. For backwards-compatible unit
+        tests and internal callers, fallback_groups are accepted only when no
+        persisted result exists.
+        """
+        requested = {str(gid) for gid in (group_ids or [])}
+        cached = self._manager.get_similarity_cached_result(session_id)
+        source_groups = cached.get("groups", []) if cached else []
+
+        if source_groups:
+            available = {str(g.get("id")): g for g in source_groups}
+            missing = sorted(gid for gid in requested if gid not in available)
+            if missing:
+                raise ValueError(f"Unknown or stale similarity group id(s): {', '.join(missing)}")
+            selected = [available[str(gid)] for gid in (group_ids or [])] if requested else []
+        else:
+            selected = list(fallback_groups or [])
+            if requested:
+                available = {str(g.get("id")): g for g in selected}
+                missing = sorted(gid for gid in requested if gid not in available)
+                if missing:
+                    raise ValueError(f"Unknown similarity group id(s): {', '.join(missing)}")
+                selected = [available[str(gid)] for gid in (group_ids or [])]
+
+        if not selected:
+            raise ValueError("At least one similarity group is required for writeback")
+
+        session_paths = {p["filepath"] for p in self._manager.get_photo_filepaths(session_id)}
+        if session_paths:
+            for group in selected:
+                for image in group.get("images", []) or []:
+                    path = image.get("path", "")
+                    if path not in session_paths:
+                        raise ValueError(f"Image path is not part of this session: {path}")
+        return selected
+
+    def preview_writeback(
+        self,
+        session_id: str,
+        group_ids: list[Any],
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build a file-level Similarity writeback plan without touching disk."""
+        session = self._manager.get_session(session_id)
+        if session is None:
+            raise ValueError(f"Session not found: {session_id}")
+
+        options = options or {}
+        selected = self._resolve_writeback_groups(session_id, group_ids=group_ids)
+        will_write_xmp = bool(options.get("writeIPTC"))
+        plan_groups: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        total_affected = 0
+
+        for idx, group in enumerate(selected, 1):
+            gid_raw = group.get("id")
+            gid = str(gid_raw if gid_raw is not None else idx)
+            label = str(group.get("label", f"Group_{idx:02d}"))
+            files = []
+            for image in group.get("images", []) or []:
+                path = str(image.get("path", ""))
+                exists = os.path.isfile(path)
+                if not exists:
+                    warnings.append(f"Missing file: {path}")
+                files.append({
+                    "path": path,
+                    "filename": os.path.basename(path),
+                    "exists": exists,
+                    "keywords": [f"Gather:Similarity:{label}"] if will_write_xmp else [],
+                })
+            total_affected += len(files)
+            plan_groups.append({"id": gid, "label": label, "count": len(files), "files": files})
+
+        return {
+            "status": "preview",
+            "groups": plan_groups,
+            "total_affected": total_affected,
+            "will_write_xmp": will_write_xmp,
+            "warnings": warnings,
+        }
+
     def cancel_analysis(self, session_id: str) -> dict[str, Any]:
         """Cancel a running similarity analysis for the given session."""
         with self._state_lock:
@@ -445,8 +533,9 @@ class SimilarityService(BaseService):
     def execute_writeback(
         self,
         session_id: str,
-        groups: list[dict[str, Any]],
+        groups: list[dict[str, Any]] | None = None,
         options: dict[str, Any] | None = None,
+        group_ids: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Generate a writeback report and execute write operations."""
         from shared.xmp_writer import write_keywords as xmp_write_keywords
@@ -458,6 +547,7 @@ class SimilarityService(BaseService):
             raise RuntimeError("Writeback already in progress")
 
         options = options or {}
+        groups = self._resolve_writeback_groups(session_id, group_ids=group_ids, fallback_groups=groups)
         lines: list[str] = []
         lines.append("--- Similarity Writeback Report ---")
         lines.append(f"Session: {session_id}")
@@ -507,7 +597,9 @@ class SimilarityService(BaseService):
 
         report = "\n".join(lines)
 
-        if all_failed > 0:
+        if not options.get("writeIPTC"):
+            self._manager.update_writeback_session_status(session_id, WritebackStatus.IDLE)
+        elif all_failed > 0:
             self._manager.update_writeback_session_status(session_id, WritebackStatus.PARTIAL)
         else:
             self._manager.update_writeback_session_status(session_id, WritebackStatus.DONE)

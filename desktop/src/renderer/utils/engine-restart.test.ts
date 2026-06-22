@@ -5,12 +5,12 @@ const mockOnEngineReady = jest.fn()
 const dispatchEventSpy = jest.spyOn(window, 'dispatchEvent')
 
 jest.mock('../components/toast', () => ({
-  toast: mockToast,
+    toast: mockToast,
 }))
 
 jest.mock('../app', () => ({
   onEngineReady: (fn: () => void) => {
-    mockOnEngineReady.mockImplementation((cb: () => void) => {
+    mockOnEngineReady.mockImplementation(() => {
       fn()
       return jest.fn()
     })
@@ -22,7 +22,7 @@ jest.mock('@gather/shared', () => ({
   TOAST_DURATION_ERROR: 8000,
 }))
 
-import { createEngineRestartHandler, type EngineRestartHandler } from './engine-restart'
+import { createEngineRestartHandler } from './engine-restart'
 
 describe('createEngineRestartHandler', () => {
   beforeEach(() => {

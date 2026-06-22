@@ -130,6 +130,17 @@ export interface FkwConfirmCleanupCommand {
   confirmed?: boolean
 }
 
+export interface FkwConfirmSyncCommand {
+  type: 'fkw.confirm_sync'
+  session_id: string
+}
+
+export interface FkwCleanupCommand {
+  type: 'fkw.cleanup'
+  session_id: string
+  confirmed?: boolean
+}
+
 export interface SimAnalyzeCommand {
   type: 'sim.analyze'
   session_id: string
@@ -157,9 +168,17 @@ export interface SimReclusterCommand {
 export interface SimWritebackCommand {
   type: 'sim.writeback'
   session_id: string
-  groups: GroupData[]
+  group_ids?: Array<number | string>
+  groups?: GroupData[]
   options: WritebackOptions
   confirmed?: boolean
+}
+
+export interface SimPreviewWritebackCommand {
+  type: 'sim.preview_writeback'
+  session_id: string
+  group_ids: Array<number | string>
+  options: WritebackOptions
 }
 
 export interface ThumbnailGetCommand {
@@ -189,11 +208,14 @@ export type Command =
   | FkwRemoveMemberCommand
   | FkwPreviewCommand
   | FkwWritebackCommand
+  | FkwConfirmSyncCommand
+  | FkwCleanupCommand
   | FkwConfirmCleanupCommand
   | SimAnalyzeCommand
   | SimCancelAnalysisCommand
   | SimResultCommand
   | SimReclusterCommand
+  | SimPreviewWritebackCommand
   | SimWritebackCommand
   | ThumbnailGetCommand
   | ShutdownCommand
@@ -350,14 +372,14 @@ export interface ThumbnailResponse {
 export const ALLOWED_COMMANDS = new Set([
   'session.create', 'session.delete', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
-  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_cleanup',
-  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.writeback',
+  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
   'thumbnail.get', 'shutdown',
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([
   'session.delete',
-  'fkw.writeback', 'fkw.confirm_cleanup',
+  'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.writeback',
 ])
 

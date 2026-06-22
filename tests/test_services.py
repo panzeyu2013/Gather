@@ -506,6 +506,8 @@ def test_similarity_recluster_no_cache_raises(manager):
 
 
 def test_similarity_execute_writeback(manager):
+    from shared.models import WritebackStatus
+
     svc = SimilarityService(manager)
     session = manager.create_session()
     sid = session.id
@@ -537,6 +539,7 @@ def test_similarity_execute_writeback(manager):
     assert "Group_00: 2 images" in report["report"]
     assert "Group_01: 1 images" in report["report"]
 
-    # Second writeback should be blocked by try_start_writeback
-    with pytest.raises(RuntimeError, match="Writeback already in progress"):
-        svc.execute_writeback(sid, groups, {"addPrefix": True})
+    # Report-only writeback does not consume the XMP writeback lifecycle.
+    assert manager.get_session(sid).writeback_status == WritebackStatus.IDLE
+    second = svc.execute_writeback(sid, groups, {"addPrefix": True})
+    assert second["status"] == "completed"

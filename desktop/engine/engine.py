@@ -218,11 +218,14 @@ REQUIRE_SID = frozenset({
     "fkw.remove_member",
     "fkw.preview",
     "fkw.writeback",
+    "fkw.confirm_sync",
+    "fkw.cleanup",
     "fkw.confirm_cleanup",
     "sim.analyze",
     "sim.cancel_analysis",
     "sim.result",
     "sim.recluster",
+    "sim.preview_writeback",
     "sim.writeback",
 })
 
@@ -365,6 +368,18 @@ def _handle_fkw_confirm_cleanup(svc, fkw, sim, params):
     return {"status": sync_result["status"], "session_id": sync_result["session_id"], "cleanup": cleanup_result}
 
 
+def _handle_fkw_confirm_sync(svc, fkw, sim, params):
+    if fkw is None:
+        raise RuntimeError("FaceKeywordingService is not available")
+    return fkw.confirm_sync(params["session_id"])
+
+
+def _handle_fkw_cleanup(svc, fkw, sim, params):
+    if fkw is None:
+        raise RuntimeError("FaceKeywordingService is not available")
+    return fkw.cleanup(params["session_id"])
+
+
 def _handle_thumbnail_get(svc, fkw, sim, params):
     path = validate_safe_path(str(params.get("path", "")))
     source = str(params.get("source", "cluster"))
@@ -426,13 +441,31 @@ def _handle_sim_writeback(svc, fkw, sim, params):
     if sim is None:
         raise RuntimeError("SimilarityService is not available")
     sid = params["session_id"]
+    group_ids = params.get("group_ids")
+    if group_ids is not None and not isinstance(group_ids, list):
+        raise ValueError("group_ids must be a list")
     groups = params.get("groups", [])
+    if not isinstance(groups, list):
+        raise ValueError("groups must be a list")
     for g in groups:
+        if not isinstance(g, dict):
+            raise ValueError("groups must contain objects")
         for img in g.get("images", []):
+            if not isinstance(img, dict):
+                raise ValueError("group images must contain objects")
             path = img.get("path", "")
             if path:
                 img["path"] = validate_safe_path(path)
-    return sim.execute_writeback(sid, groups, params.get("options", {}))
+    return sim.execute_writeback(sid, groups, params.get("options", {}), group_ids=group_ids)
+
+
+def _handle_sim_preview_writeback(svc, fkw, sim, params):
+    if sim is None:
+        raise RuntimeError("SimilarityService is not available")
+    group_ids = params.get("group_ids")
+    if not isinstance(group_ids, list) or not group_ids:
+        raise ValueError("group_ids must be a non-empty list")
+    return sim.preview_writeback(params["session_id"], group_ids, params.get("options", {}))
 
 
 def _handle_shutdown(svc, fkw, sim, params):
@@ -455,12 +488,15 @@ COMMAND_HANDLERS: dict[str, Callable[..., Any]] = {
     "fkw.remove_member": _handle_fkw_remove_member,
     "fkw.preview": _handle_fkw_preview,
     "fkw.writeback": _handle_fkw_writeback,
+    "fkw.confirm_sync": _handle_fkw_confirm_sync,
+    "fkw.cleanup": _handle_fkw_cleanup,
     "fkw.confirm_cleanup": _handle_fkw_confirm_cleanup,
     "thumbnail.get": _handle_thumbnail_get,
     "sim.analyze": _handle_sim_analyze,
     "sim.cancel_analysis": _handle_sim_cancel_analysis,
     "sim.result": _handle_sim_result,
     "sim.recluster": _handle_sim_recluster,
+    "sim.preview_writeback": _handle_sim_preview_writeback,
     "sim.writeback": _handle_sim_writeback,
     "shutdown": _handle_shutdown,
 }
@@ -494,7 +530,7 @@ def _validate_params(cmd: str, params: dict) -> None:
         if not name:
             raise ValueError("name must be present and non-empty")
 
-    if cmd in ("session.delete", "fkw.writeback", "fkw.confirm_cleanup", "sim.writeback") and not params.get("confirmed"):
+    if cmd in ("session.delete", "fkw.writeback", "fkw.cleanup", "fkw.confirm_cleanup", "sim.writeback") and not params.get("confirmed"):
         raise ValueError(f"Destructive command {cmd} requires confirmed=true")
 
 

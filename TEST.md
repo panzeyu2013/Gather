@@ -124,9 +124,11 @@
 - [ ] 写回选项面板可见：createAlbums / addPrefix / markUngrouped / writeIPTC
 - [ ] "Select All" 勾选时 → **所有**选项被选中（不是只选 createAlbums）
 - [ ] 单独勾选/取消各选项 → 选框状态正确
-- [ ] 点击 "Execute Writeback" → 二次确认弹窗
-- [ ] 确认后 → 进度条推进 → 完成后显示 Written / Failed / Skipped 数量
-- [ ] **C1 验证**：选中处理后图片 → Image → Load Metadata → Keywords 字段出现 Gather 写入的内容
+- [ ] 点击 "Execute Writeback" → 先显示后端生成的 preview 摘要
+- [ ] 未勾选 writeIPTC 时 → 弹窗明确说明只生成报告、不修改 XMP
+- [ ] 勾选 writeIPTC 时 → 弹窗明确说明会写入 XMP keywords
+- [ ] 确认后 → 完成后显示 writeback report
+- [ ] **C1 验证**：勾选 writeIPTC 后，选中处理后图片 → Image → Load Metadata → Keywords 字段出现 Gather 写入的内容
 - [ ] 失败记录有错误信息（如有）
 
 ---
@@ -208,9 +210,10 @@
 - [ ] 部分失败时 → toast 提示具体错误（不隐藏结果卡片）
 
 **确认同步与清理**：
-- [ ] 点击 "Confirm Sync & Cleanup" → 按钮变为 "Confirming…"
-- [ ] 完成后 → 按钮变为 "Done"
-- [ ] toast 提示 "Cleanup complete"
+- [ ] 点击 "Confirm Sync" → 只确认 Capture One 已加载 metadata，不清理 XMP
+- [ ] 确认完成后 → "Clean Up XMP" 按钮出现
+- [ ] 点击 "Clean Up XMP" → 清理 Gather-created sidecars 或恢复备份
+- [ ] 清理有错误时 → toast 提示错误数量，session 不应误报为 cleaned
 
 ### 4.7 C1 交叉验证
 - [ ] 选中处理后照片 → Image → Load Metadata
