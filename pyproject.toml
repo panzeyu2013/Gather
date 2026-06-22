@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gather"
+version = "3.0.0"
+description = "Gather - Intelligent photo organization for Capture One"
+requires-python = ">=3.10,<3.14"
+license = { text = "MIT" }
+authors = [
+    { name = "Gather Contributors" },
+]
+readme = "README_CN.md"
+
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "scikit-learn>=1.3",
+    "Pillow>=10.0",
+    "imagehash>=4.3",
+    "mediapipe>=0.10",
+    "lxml>=5.0",
+    "msgpack>=1.0",
+]
+
+[project.optional-dependencies]
+face = [
+    "face-recognition>=1.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.11.0",
+    "mypy>=1.0",
+]
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-markers", "--tb=short"]
+filterwarnings = [
+    "ignore::DeprecationWarning:numpy",
+    "ignore::DeprecationWarning:sklearn",
+    "ignore::DeprecationWarning:PIL",
+    "ignore::DeprecationWarning:imagehash",
+    "ignore::DeprecationWarning:mediapipe",
+]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "heavy: marks tests that require optional heavyweight native dependencies",
+]
+
+[tool.setuptools.packages.find]
+include = ["shared*", "face_keywording*", "similarity*", "tests*"]
+exclude = ["desktop*", "packages*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [
+    "Capture One Plugin SDK (Mac) v1.0.1",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "N", "UP", "B", "SIM", "C4", "PERF", "FBT", "T20", "A"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["E402"]
+"desktop/engine/engine.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+warn_unused_ignores = true
+
+[tool.coverage.run]
+source = ["shared", "face_keywording", "similarity", "desktop/engine"]
+
+[tool.coverage.report]
+fail_under = 60
+exclude_also = [
+    'if TYPE_CHECKING:',
+    'raise NotImplementedError',
+    'def __repr__',
+    'class .*\\bProtocol\\):',
+    '@(abc\\.)?abstractmethod',
+]

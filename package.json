@@ -1,0 +1,8 @@
+{
+  "name": "gather-monorepo",
+  "private": true,
+  "workspaces": [
+    "desktop",
+    "packages/*"
+  ]
+}

@@ -1,0 +1,51 @@
+appId: com.gather.desktop
+productName: Gather
+directories:
+  output: release
+  buildResources: resources
+
+asar: true
+
+files:
+  - dist/**/*
+  - "!engine/.venv/**"
+  - "!dist/**/*.map"
+  - "!dist/**/*.tsbuildinfo"
+
+extraResources:
+  - from: ../shared/
+    to: engine/shared/
+    filter:
+      - "**/*.py"
+  - from: ../face_keywording/
+    to: engine/face_keywording/
+    filter:
+      - "**/*.py"
+  - from: ../similarity/
+    to: engine/similarity/
+    filter:
+      - "**/*.py"
+  - from: engine/
+    to: engine/
+    filter:
+      - "**/*.py"
+mac:
+  target:
+    - dmg
+  artifactName: Gather-${version}-${arch}.${ext}
+  category: public.app-category.photography
+  hardenedRuntime: true
+  entitlements: resources/entitlements.mac.plist
+  extraResources:
+    - from: engine/.venv/
+      to: engine/.venv/
+      filter:
+        - "**/*"
+win:
+  target:
+    - nsis
+  artifactName: Gather-${version}-setup.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

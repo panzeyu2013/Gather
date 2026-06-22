@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- NOTE: style-src 'unsafe-inline' is needed because dynamic DOM construction
+     (dom.ts el() helper, face-kw.ts strong() helper, etc.) applies inline styles
+     via setAttribute / element.style. A full refactor to use CSS classes and
+     nonce-based inline styles would be preferred but is currently too invasive. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'">
+<title>Gather</title>
+<link rel="stylesheet" href="./styles/style.css">
+</head>
+<body>
+<div id="app">
+  <!-- Loading screen: Python 引擎连接中 -->
+  <div id="loadingScreen" style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:1rem">
+    <div class="spinner"></div>
+    <div style="color:var(--text-muted);font-size:0.9rem">Starting Python engine...</div>
+    <div id="stillLoading" class="hidden" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:0.5rem">
+      <div class="spinner"></div>
+      <div style="color:var(--text-muted);font-size:0.9rem">Still loading...</div>
+    </div>
+    <div id="engineError" class="hidden" style="text-align:center">
+      <div style="color:var(--text-warning);font-size:1.1rem;margin-bottom:0.5rem">Python engine failed to start.</div>
+      <div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:1rem">Please check Python 3.10+ is installed.</div>
+      <button class="btn btn--primary" id="btnRetryEngine">Retry</button>
+    </div>
+  </div>
+
+  <div id="mainUi" class="hidden">
+  <div class="wizard">
+    <nav class="wizard__stepper" id="sidebar">
+      <div class="wizard__stepper-title">Gather</div>
+      <div class="stepper-step" role="button" tabindex="0" data-page="dashboard" aria-label="Step 1: Dashboard">
+        <div class="stepper-step__indicator" aria-hidden="true">📋</div>
+        <div class="stepper-step__body">
+          <div class="stepper-step__label">Dashboard</div>
+          <div class="stepper-step__desc">All sessions</div>
+        </div>
+      </div>
+      <div class="stepper-step" role="button" tabindex="0" data-page="similarity" aria-label="Step 2: Similarity">
+        <div class="stepper-step__indicator" aria-hidden="true">🔍</div>
+        <div class="stepper-step__body">
+          <div class="stepper-step__label">Similarity</div>
+          <div class="stepper-step__desc">Group by visuals</div>
+        </div>
+      </div>
+      <div class="stepper-step" role="button" tabindex="0" data-page="face-kw" aria-label="Step 3: Face Keywording">
+        <div class="stepper-step__indicator" aria-hidden="true">👤</div>
+        <div class="stepper-step__body">
+          <div class="stepper-step__label">Face Keywording</div>
+          <div class="stepper-step__desc">Detect & tag faces</div>
+        </div>
+      </div>
+    </nav>
+    <main class="wizard__panel" id="content">
+      <!-- 页面内容由 SPA 路由动态渲染 -->
+    </main>
+  </div>
+  </div>
+</div>
+</body>
+</html>

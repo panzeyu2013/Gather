@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.idea/
+.vscode/
+
+# Build
+*.app
+*.dmg
+release/
+
+# Node / Electron
+node_modules/
+
+# Desktop build output
+desktop/dist/
+desktop/release/
+desktop/out/
+
+# Capture One SDK (downloaded reference, not committed)
+Capture One Plugin SDK*/
+
+.env*
+*.log
+.coverage
+coverage/
+dist-electron/
+*.tsbuildinfo
+.mypy_cache/
