@@ -16,6 +16,9 @@ module.exports = (_env, argv) => {
     },
     resolve: {
       extensions: ['.ts', '.tsx', '.js', '.jsx'],
+      alias: {
+        '@gather/shared': path.resolve(__dirname, '../packages/shared/src/index.ts'),
+      },
     },
     module: {
       rules: [
