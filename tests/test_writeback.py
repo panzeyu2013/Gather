@@ -399,6 +399,40 @@ def test_backup_xmp_copy_failure_safety(tmp_path, monkeypatch):
     assert xmp_path.read_text() == "original xmp content"
 
 
+def test_backup_xmp_mkstemp_failure_does_not_mask_error(tmp_path, monkeypatch):
+    photo = tmp_path / "backup_mkstemp_fail.jpg"
+    photo.write_text("fake image")
+    xmp_path = tmp_path / "backup_mkstemp_fail.jpg.xmp"
+    xmp_path.write_text("<xmpmeta>original</xmpmeta>")
+
+    def fail_mkstemp(*args, **kwargs):
+        raise OSError("no temp space")
+
+    monkeypatch.setattr("shared.xmp_writer.tempfile.mkstemp", fail_mkstemp)
+
+    try:
+        backup_xmp(str(photo))
+    except OSError as exc:
+        assert "no temp space" in str(exc)
+    else:
+        raise AssertionError("backup_xmp should surface mkstemp failure")
+
+
+def test_write_keywords_mkstemp_failure_returns_failed_result(tmp_path, monkeypatch):
+    photo = tmp_path / "write_mkstemp_fail.jpg"
+    photo.write_text("fake image")
+
+    def fail_mkstemp(*args, **kwargs):
+        raise OSError("no temp space")
+
+    monkeypatch.setattr("shared.xmp_writer.tempfile.mkstemp", fail_mkstemp)
+
+    result = write_keywords([str(photo)], {str(photo): ["tag"]})
+    assert result["written"] == 0
+    assert result["failed"] == 1
+    assert "no temp space" in result["errors"][0]["error"]
+
+
 def test_cleanup_xmp_skips_corrupted_backup(tmp_path):
     photo = tmp_path / "skip_corrupt.jpg"
     photo.write_text("fake image")

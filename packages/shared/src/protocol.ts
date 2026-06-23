@@ -168,7 +168,7 @@ export interface SimReclusterCommand {
 export interface SimWritebackCommand {
   type: 'sim.writeback'
   session_id: string
-  group_ids?: Array<number | string>
+  group_ids: Array<number | string>
   groups?: GroupData[]
   options: WritebackOptions
   confirmed?: boolean

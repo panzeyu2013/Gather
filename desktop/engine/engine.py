@@ -442,11 +442,8 @@ def _handle_sim_writeback(svc, fkw, sim, params):
         raise RuntimeError("SimilarityService is not available")
     sid = params["session_id"]
     group_ids = params.get("group_ids")
-    if group_ids is not None:
-        if not isinstance(group_ids, list):
-            raise ValueError("group_ids must be a list")
-        if not group_ids:
-            raise ValueError("group_ids must be a non-empty list")
+    if not isinstance(group_ids, list) or not group_ids:
+        raise ValueError("group_ids must be a non-empty list")
     groups = params.get("groups", [])
     if not isinstance(groups, list):
         raise ValueError("groups must be a list")

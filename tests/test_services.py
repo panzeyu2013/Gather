@@ -543,3 +543,40 @@ def test_similarity_execute_writeback(manager):
     assert manager.get_session(sid).writeback_status == WritebackStatus.IDLE
     second = svc.execute_writeback(sid, groups, {"addPrefix": True})
     assert second["status"] == "completed"
+
+
+def test_similarity_writeback_stale_group_does_not_leave_running(manager):
+    from shared.models import WritebackStatus
+
+    svc = SimilarityService(manager)
+    session = manager.create_session()
+    sid = session.id
+    manager.add_photos(sid, ["/tmp/sim-a.jpg"])
+    manager.save_similarity_result(
+        sid,
+        '[{"id": 1, "label": "Group_01", "images": [{"path": "/tmp/sim-a.jpg"}]}]',
+        "{}",
+        threshold=12,
+        min_group_size=2,
+    )
+
+    with pytest.raises(ValueError, match="Unknown or stale"):
+        svc.execute_writeback(sid, [], {"writeIPTC": True}, group_ids=["stale"])
+
+    assert manager.get_session(sid).writeback_status == WritebackStatus.IDLE
+
+
+def test_similarity_writeback_requires_group_ids_for_persisted_results(manager):
+    svc = SimilarityService(manager)
+    session = manager.create_session()
+    sid = session.id
+    manager.add_photos(sid, ["/tmp/sim-b.jpg"])
+    groups_json = '[{"id": 1, "label": "Group_01", "images": [{"path": "/tmp/sim-b.jpg"}]}]'
+    manager.save_similarity_result(sid, groups_json, "{}", threshold=12, min_group_size=2)
+
+    with pytest.raises(ValueError, match="group_ids are required"):
+        svc.execute_writeback(
+            sid,
+            [{"id": 999, "label": "Injected", "images": [{"path": "/tmp/sim-b.jpg"}]}],
+            {"writeIPTC": True},
+        )

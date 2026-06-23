@@ -110,14 +110,16 @@ def backup_xmp(photo_path: str) -> str | None:
         if _files_equal(xmp_path, backup_path):
             return backup_path
         backup_path = xmp_path + BACKUP_SUFFIX + "." + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    fd = -1
+    tmp_path = ""
     try:
         fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(xmp_path), suffix=".tmp")
         with os.fdopen(fd, "wb", closefd=False) as f, open(xmp_path, "rb", opener=lambda path, flags: os.open(path, flags | os.O_NOFOLLOW)) as src:
-                while True:
-                    chunk = src.read(PARTIAL_CHECKSUM_BYTES)
-                    if not chunk:
-                        break
-                    f.write(chunk)
+            while True:
+                chunk = src.read(PARTIAL_CHECKSUM_BYTES)
+                if not chunk:
+                    break
+                f.write(chunk)
         os.close(fd)
         fd = -1
         os.replace(tmp_path, backup_path)
@@ -126,7 +128,7 @@ def backup_xmp(photo_path: str) -> str | None:
             os.close(fd)
         raise
     finally:
-        if os.path.isfile(tmp_path):
+        if tmp_path and os.path.isfile(tmp_path):
             with suppress(OSError):
                 os.remove(tmp_path)
     return backup_path
@@ -387,8 +389,10 @@ def _write_single(photo_path: str, keywords: list[str]) -> None:
         tree = etree.ElementTree(root)
 
     # Atomic write: write to temp file first, then rename
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(xmp_path), suffix=".tmp")
+    fd = -1
+    tmp_path = ""
     try:
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(xmp_path), suffix=".tmp")
         with os.fdopen(fd, "wb", closefd=False) as f:
             tree.write(
                 f,
@@ -404,7 +408,7 @@ def _write_single(photo_path: str, keywords: list[str]) -> None:
             os.close(fd)
         raise
     finally:
-        if os.path.isfile(tmp_path):
+        if tmp_path and os.path.isfile(tmp_path):
             with suppress(OSError):
                 os.remove(tmp_path)
 

@@ -36,6 +36,7 @@ let simModalPreviousFocus: HTMLElement | null = null
 let _delegatedCleanups: (() => void)[] = []
 
 const selectedGroupIds: Set<string> = new Set()
+let hasUserTouchedSelection = false
 let engineRestartUnsub: (() => void) | null = null
 let enginePollRef: EngineRestartHandler['pollRef'] = { current: null }
 
@@ -63,6 +64,7 @@ export async function renderSimilarity(sid: string): Promise<string> {
   sessionId = sid; groups = []; ungrouped = []; stats = {}; enginePollRef.current?.stop()
   analysisComplete = false; analysisInProgress = false
   selectedGroupIds.clear()
+  hasUserTouchedSelection = false
   try {
     const sessions = await engine.session.list()
     const s = sessions.find(s => s.id === sid)
@@ -219,15 +221,8 @@ export function setupSimilarity(): void {
       groups = (data.groups as SimilarityGroup[]) || []
       ungrouped = (data.ungrouped as { path: string }[]) || []
       stats = (data.stats as Record<string, number>) || {}
-      // NOTE: On re-render (e.g. recluster), selectedGroupIds is preserved from the
-      // previous render. If no existing selection matches the new groups, all groups
-      // are selected by default. The user's previous selection is NOT restored.
-      if (!groups.some(g => selectedGroupIds.has(String(g.id)))) {
-    const prevSelected = new Set(selectedGroupIds)
-    selectedGroupIds.clear()
-    groups.forEach(g => { if (prevSelected.has(String(g.id))) selectedGroupIds.add(String(g.id)) })
-    if (selectedGroupIds.size === 0) groups.forEach(g => selectedGroupIds.add(String(g.id)))
-      }
+      // Restore previous selection where possible; select all when none match.
+      restoreSelectionOrSelectAll(groups)
       analysisComplete = true
       renderResults()
       showStage('results')
@@ -254,6 +249,18 @@ function resetSimUI(): void {
   $('#simRunning')?.classList.add('hidden')
 }
 
+function restoreSelectionOrSelectAll(
+  nextGroups: SimilarityGroup[],
+  previousSelection: Set<string> = selectedGroupIds,
+  preserveEmptySelection = false
+): void {
+  const prevSelected = new Set(previousSelection)
+  selectedGroupIds.clear()
+  nextGroups.forEach(g => { if (prevSelected.has(String(g.id))) selectedGroupIds.add(String(g.id)) })
+  if (preserveEmptySelection && prevSelected.size === 0) return
+  if (selectedGroupIds.size === 0) nextGroups.forEach(g => selectedGroupIds.add(String(g.id)))
+}
+
 // ── Internal ──
 
 function showStage(name: 'progress' | 'results'): void {
@@ -271,7 +278,7 @@ async function loadSimResults(): Promise<void> {
       ungrouped = (d.ungrouped as { path: string }[]) || []
       stats = (d.stats as Record<string, number>) || {}
     }
-    groups.forEach(g => selectedGroupIds.add(String(g.id)))
+    restoreSelectionOrSelectAll(groups)
     renderResults()
     showStage('results')
     toast('Analysis complete!', 'success')
@@ -370,9 +377,7 @@ function recluster(): void {
             analysisInProgress = false
             // Restore previous selection for groups that still exist after recluster
             groups = (d.groups as SimilarityGroup[]) || []
-            selectedGroupIds.clear()
-            groups.forEach(g => { if (prevSelected.has(String(g.id))) selectedGroupIds.add(String(g.id)) })
-            if (selectedGroupIds.size === 0) groups.forEach(g => selectedGroupIds.add(String(g.id)))
+            restoreSelectionOrSelectAll(groups, prevSelected, hasUserTouchedSelection)
             renderResults(); showStage('results')
             return true
           }
@@ -461,6 +466,7 @@ function renderResults(): void {
     }}
   }))
   _delegatedCleanups.push(on(grid, 'change', '.sim-group-checkbox', (el) => {
+    hasUserTouchedSelection = true
     const cb = el as HTMLInputElement
     const gid = cb.dataset.groupId
     if (gid) {
@@ -474,6 +480,7 @@ function renderResults(): void {
 }
 
 function setAllOpts(v: boolean): void {
+  hasUserTouchedSelection = true
   document.querySelectorAll<HTMLInputElement>('.sim-global-opt').forEach(cb => { cb.checked = v })
   document.querySelectorAll<HTMLInputElement>('.sim-group-checkbox').forEach(cb => {
     cb.checked = v

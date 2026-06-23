@@ -344,10 +344,12 @@ class SimilarityService(BaseService):
 
         if source_groups:
             available = {str(g.get("id")): g for g in source_groups}
+            if not requested:
+                raise ValueError("group_ids are required when persisted similarity results exist")
             missing = sorted(gid for gid in requested if gid not in available)
             if missing:
                 raise ValueError(f"Unknown or stale similarity group id(s): {', '.join(missing)}")
-            selected = [available[str(gid)] for gid in (group_ids or [])] if requested else list(fallback_groups or [])
+            selected = [available[str(gid)] for gid in (group_ids or [])]
         else:
             selected = list(fallback_groups or [])
             if requested:
@@ -546,11 +548,11 @@ class SimilarityService(BaseService):
         session = self._manager.get_session(session_id)
         if session is None:
             raise ValueError(f"Session not found: {session_id}")
-        if not self._manager.try_start_writeback(session_id):
-            raise RuntimeError("Writeback already in progress")
 
         options = options or {}
         groups = self._resolve_writeback_groups(session_id, group_ids=group_ids, fallback_groups=groups)
+        if not self._manager.try_start_writeback(session_id):
+            raise RuntimeError("Writeback already in progress")
         lines: list[str] = []
         lines.append("--- Similarity Writeback Report ---")
         lines.append(f"Session: {session_id}")
@@ -582,10 +584,10 @@ class SimilarityService(BaseService):
                 prefix = f"{int(gid):04d}__" if options.get("addPrefix") else ""
                 lines.append(f"    {prefix}{fname}")
 
-            if options.get("writeIPTC") and images:
+            if options.get("writeIPTC") and valid_images:
                 keyword = f"Gather:Similarity:{g.get('label', f'Group_{int(gid):02d}')}"
                 kw_map = {}
-                for img in images:
+                for img in valid_images:
                     path = img.get("path", "")
                     if path:
                         kw_map[path] = [keyword]

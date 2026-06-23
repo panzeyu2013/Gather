@@ -706,7 +706,7 @@ async function doWriteback(): Promise<void> {
     const errors = r.errors as string[] | undefined; if (errors?.length) { const msg = errors.length > 3 ? `${errors.length} files failed. First 3: ${errors.slice(0, 3).join('; ')}` : errors.slice(0, 3).join('; '); toast('Errors: ' + msg, 'warning') }
     else if (hasFailures) toast(`${r.failed} failed.`, 'warning')
     else toast(`All ${r.written} written!`, 'success')
-  } catch (err: unknown) { if (fill) { fill.classList.remove('progress__fill--indeterminate'); fill.style.width = '0%' } if (text) text.textContent = 'Failed.'; $('#fkwWbResults')?.classList.add('hidden'); $('#fkwGuide')?.classList.add('hidden'); $('#btnConfirmSync')?.classList.add('hidden'); $('#btnCleanup')?.classList.add('hidden'); showError(err, 'Writeback failed. Check disk space and file permissions, then try again.'); const btn = $('#btnWb') as HTMLButtonElement | null; if (btn) btn.disabled = false }
+  } catch (err: unknown) { if (fill) { fill.classList.remove('progress__fill--indeterminate'); fill.style.width = '0%' } if (text) text.textContent = 'Failed.'; $('#fkwWbResults')?.classList.add('hidden'); $('#fkwGuide')?.classList.add('hidden'); $('#btnConfirmSync')?.classList.add('hidden'); $('#btnCleanup')?.classList.add('hidden'); $('#btnWbRetry')?.classList.remove('hidden'); showError(err, 'Writeback failed. Check disk space and file permissions, then try again.'); const btn = $('#btnWb') as HTMLButtonElement | null; if (btn) btn.disabled = false }
 }
 
 function strong(text: string, color = ''): HTMLElement { const e = document.createElement('strong'); e.textContent = text; if (color) e.style.color = color; return e }
