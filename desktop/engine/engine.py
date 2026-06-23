@@ -363,8 +363,8 @@ def _handle_fkw_writeback(svc, fkw, sim, params):
 def _handle_fkw_confirm_cleanup(svc, fkw, sim, params):
     if fkw is None:
         raise RuntimeError("FaceKeywordingService is not available")
-    sync_result = fkw.confirm_sync(params["session_id"])
     cleanup_result = fkw.cleanup(params["session_id"])
+    sync_result = fkw.confirm_sync(params["session_id"])
     return {"status": sync_result["status"], "session_id": sync_result["session_id"], "cleanup": cleanup_result}
 
 
@@ -442,8 +442,11 @@ def _handle_sim_writeback(svc, fkw, sim, params):
         raise RuntimeError("SimilarityService is not available")
     sid = params["session_id"]
     group_ids = params.get("group_ids")
-    if group_ids is not None and not isinstance(group_ids, list):
-        raise ValueError("group_ids must be a list")
+    if group_ids is not None:
+        if not isinstance(group_ids, list):
+            raise ValueError("group_ids must be a list")
+        if not group_ids:
+            raise ValueError("group_ids must be a non-empty list")
     groups = params.get("groups", [])
     if not isinstance(groups, list):
         raise ValueError("groups must be a list")

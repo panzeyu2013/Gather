@@ -223,7 +223,10 @@ export function setupSimilarity(): void {
       // previous render. If no existing selection matches the new groups, all groups
       // are selected by default. The user's previous selection is NOT restored.
       if (!groups.some(g => selectedGroupIds.has(String(g.id)))) {
-        groups.forEach(g => selectedGroupIds.add(String(g.id)))
+    const prevSelected = new Set(selectedGroupIds)
+    selectedGroupIds.clear()
+    groups.forEach(g => { if (prevSelected.has(String(g.id))) selectedGroupIds.add(String(g.id)) })
+    if (selectedGroupIds.size === 0) groups.forEach(g => selectedGroupIds.add(String(g.id)))
       }
       analysisComplete = true
       renderResults()
@@ -366,6 +369,7 @@ function recluster(): void {
             analysisComplete = true
             analysisInProgress = false
             // Restore previous selection for groups that still exist after recluster
+            groups = (d.groups as SimilarityGroup[]) || []
             selectedGroupIds.clear()
             groups.forEach(g => { if (prevSelected.has(String(g.id))) selectedGroupIds.add(String(g.id)) })
             if (selectedGroupIds.size === 0) groups.forEach(g => selectedGroupIds.add(String(g.id)))
@@ -503,12 +507,12 @@ async function executeWb(): Promise<void> {
       ? `write XMP keywords for ${totalAffected} photos`
       : `generate a writeback report for ${totalAffected} photos without modifying XMP`
     const warningText = warnings ? `\n\nWarnings: ${warnings} file(s) may be missing or unavailable.` : ''
-    if (!await dialog(`Preview complete: Gather will ${action} across ${selectedGroups.length} groups.${warningText}\n\nContinue?`, options.writeIPTC ? 'Write Metadata' : 'Generate Report')) return
+    if (!await dialog(`Preview complete: Gather will ${action} across ${selectedGroups.length} groups.${warningText}\n\nContinue?`, options.writeIPTC ? 'Write Metadata' : 'Generate Report')) { toast('Writeback cancelled.', 'info'); return }
     const result = await engine.sim.writeback(sessionId, groupIds, options)
     const r = $('#simReport'); if (r) r.textContent = (result.report as string) || 'Done.'
     openSimModal()
     toast(`Writeback: ${result.total_affected} images affected`, 'success')
-  } catch (err: unknown) { showError(err, 'Writeback failed. Check disk space and file permissions, then try again.') }
+  } catch (err: unknown) { showError(err, `Writeback failed: ${err instanceof Error ? err.message : 'unknown error'}`) }
   finally { if (btn) btn.disabled = false }
 }
 

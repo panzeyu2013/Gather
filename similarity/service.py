@@ -338,7 +338,7 @@ class SimilarityService(BaseService):
         tests and internal callers, fallback_groups are accepted only when no
         persisted result exists.
         """
-        requested = {str(gid) for gid in (group_ids or [])}
+        requested = {str(gid) for gid in (group_ids or []) if gid is not None}
         cached = self._manager.get_similarity_cached_result(session_id)
         source_groups = cached.get("groups", []) if cached else []
 
@@ -347,7 +347,7 @@ class SimilarityService(BaseService):
             missing = sorted(gid for gid in requested if gid not in available)
             if missing:
                 raise ValueError(f"Unknown or stale similarity group id(s): {', '.join(missing)}")
-            selected = [available[str(gid)] for gid in (group_ids or [])] if requested else []
+            selected = [available[str(gid)] for gid in (group_ids or [])] if requested else list(fallback_groups or [])
         else:
             selected = list(fallback_groups or [])
             if requested:
@@ -356,6 +356,9 @@ class SimilarityService(BaseService):
                 if missing:
                     raise ValueError(f"Unknown similarity group id(s): {', '.join(missing)}")
                 selected = [available[str(gid)] for gid in (group_ids or [])]
+
+        seen = set()
+        selected = [g for g in selected if not (str(g.get("id")) in seen or seen.add(str(g.get("id"))))]
 
         if not selected:
             raise ValueError("At least one similarity group is required for writeback")
@@ -569,10 +572,11 @@ class SimilarityService(BaseService):
             except (TypeError, ValueError):
                 gid = idx
             images = g.get("images", [])
-            count = len(images)
+            valid_images = [img for img in images if img.get("path", "")]
+            count = len(valid_images)
             all_affected += count
             lines.append(f"  Group_{int(gid):02d}: {count} images")
-            for img in images:
+            for img in valid_images:
                 path = img.get("path", "")
                 fname = os.path.basename(path)
                 prefix = f"{int(gid):04d}__" if options.get("addPrefix") else ""

@@ -94,17 +94,19 @@ export function typedConfirmDialog(message: string, requiredText: string, confir
 
     function handleKey(e: KeyboardEvent): void {
       if (e.key === 'Escape') { resolve(false); close() }
-      if (e.key === 'Enter' && document.activeElement === input && input.value === requiredText) {
+      if (e.key === 'Enter' && !e.isComposing && document.activeElement === input && !okBtn.disabled) {
         resolve(true); close()
       }
       if (e.key === 'Tab') {
         e.preventDefault()
-        let idx = focusables.indexOf(document.activeElement as HTMLElement)
+        const enabled = focusables.filter(el => !(el as HTMLButtonElement).disabled)
+        if (enabled.length === 0) return
+        let idx = enabled.indexOf(document.activeElement as HTMLElement)
         if (idx === -1) idx = 0
         const next = e.shiftKey
-          ? (idx - 1 + focusables.length) % focusables.length
-          : (idx + 1) % focusables.length
-        focusables[next].focus()
+          ? (idx - 1 + enabled.length) % enabled.length
+          : (idx + 1) % enabled.length
+        enabled[next].focus()
       }
     }
 

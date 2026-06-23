@@ -194,13 +194,11 @@ def cleanup_xmp(photo_paths: list[str]) -> dict:
                 # Check if the current XMP appears to be a user/external
                 # replacement rather than the Gather-written file.
                 #
-                # The previous implementation compared current XMP bytes to the
-                # original backup. That always differs after a normal Gather
-                # write, so cleanup incorrectly treated ordinary Gather output
-                # as externally modified. Until the shared writeback audit model
-                # stores a post-write hash, the safest local signal is the
-                # Gather marker: marked files are restored directly; unmarked
-                # files are preserved as user-modified before restoring backup.
+                # Uses the Gather XML marker as a signal: marked files are
+                # restored directly; unmarked files are preserved before
+                # restoring.  NOTE: if a user edits a Gather-written XMP
+                # but preserves the marker, this heuristic cannot detect it
+                # without a post-write hash stored alongside the backup.
                 if os.path.isfile(xmp_path) and not _is_gather_xmp(xmp_path):
                     modified_backup = backup_path + ".modified"
                     if not os.path.isfile(modified_backup):
@@ -297,6 +295,22 @@ def _is_gather_xmp(xmp_path: str) -> bool:
     return False
 
 
+def _has_gather_content(xmp_path: str) -> bool:
+    """Check if an XMP file contains Gather-written keywords even when the marker was removed.
+
+    Used to detect Gather-originated XMPs (created by _write_single with no pre-existing backup)
+    that were subsequently stripped of the Gather marker by an external tool.
+    """
+    try:
+        tree = _parse_xmp(xmp_path)
+        for elem in tree.iter():
+            if elem.text and (elem.text.startswith("Gather:") or elem.text.startswith("gather:")):
+                return True
+    except (etree.ParseError, OSError):
+        pass
+    return False
+
+
 def _verify_backup_integrity(photo_path: str) -> bool:
     """Check that the current XMP matches its Gather backup.
 
@@ -332,7 +346,8 @@ def _files_equal(left_path: str, right_path: str) -> bool:
                     return False
                 if not left_chunk:
                     return True
-    except OSError:
+    except OSError as exc:
+        logger.debug("Could not compare files %s and %s: %s", left_path, right_path, exc)
         return False
 
 
@@ -344,14 +359,24 @@ def _write_single(photo_path: str, keywords: list[str]) -> None:
     is_gather = existing and _is_gather_xmp(xmp_path)
 
     if existing and not is_gather:
-        # Verify existing backup integrity BEFORE creating a new backup
-        if not _verify_backup_integrity(photo_path):
-            raise RuntimeError(f"XMP was modified externally since backup. Aborting write for: {photo_path}")
-        backup_xmp(photo_path)
-        tree = _parse_xmp(xmp_path)
-        root = tree.getroot()
-        _add_gather_marker(root)
-        _merge_keywords(root, keywords)
+        backup_path = xmp_path + BACKUP_SUFFIX
+        if not os.path.isfile(backup_path) and _has_gather_content(xmp_path):
+            # XMP was originally created by Gather (has Gather keywords but
+            # marker was stripped).  Treat as a Gather XMP — merge keywords
+            # without creating a spurious backup of the Gather content.
+            tree = _parse_xmp(xmp_path)
+            root = tree.getroot()
+            _add_gather_marker(root)
+            _merge_keywords(root, keywords)
+        else:
+            # Verify existing backup integrity BEFORE creating a new backup
+            if not _verify_backup_integrity(photo_path):
+                raise RuntimeError(f"XMP was modified externally since backup. Aborting write for: {photo_path}")
+            backup_xmp(photo_path)
+            tree = _parse_xmp(xmp_path)
+            root = tree.getroot()
+            _add_gather_marker(root)
+            _merge_keywords(root, keywords)
     elif existing and is_gather:
         tree = _parse_xmp(xmp_path)
         root = tree.getroot()
