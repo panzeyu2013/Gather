@@ -112,12 +112,20 @@ function updateStepper(n: number): void {
 // ── Render ──
 export async function renderFaceKeywording(sid: string): Promise<string> {
   sessionId = sid; resetState()
+  let sessionSource = 'unknown'
   // 获取 session 名称
   try {
     const sessions = await engine.session.list()
     const s = sessions.find(s => s.id === sid)
-    if (s) sessionName = s.name || ''
+    if (s) {
+      sessionName = s.name || ''
+      sessionSource = s.import_source || 'unknown'
+    }
   } catch (err: unknown) { console.error('Failed to load session name', err); sessionName = '' }
+
+  const guidanceText = sessionSource === 'capture_one' 
+    ? '1. Select images in C1<br>2. Image → Load Metadata<br>3. Verify keywords appear'
+    : 'XMP sidecars were written next to the selected files. Import or refresh metadata in your photo manager.'
 
   return `<div>
 <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem">
@@ -209,7 +217,7 @@ export async function renderFaceKeywording(sid: string): Promise<string> {
   </div>
   <div class="fkw-guidance hidden" id="fkwGuide">
     <div class="fkw-guidance__title">Next: Reload Metadata in Capture One</div>
-    <div class="fkw-guidance__steps">1. Select images in C1<br>2. Image → Load Metadata<br>3. Verify keywords appear<br>4. Click <strong>Confirm Sync</strong><br>5. Clean up Gather sidecars when you are ready</div>
+    <div class="fkw-guidance__steps">${guidanceText}</div>
   </div>
   <div style="margin-top:1.5rem;display:flex;gap:0.75rem;flex-wrap:wrap">
     <button class="btn btn--success btn--lg hidden" id="btnConfirmSync">Confirm Sync</button>
@@ -297,14 +305,20 @@ export function setupFaceKeywording(): void {
     analysisInProgress = true
     try { await engine.fkw.analyze(sessionId); startPollProgress() } catch (err: unknown) { showError(err, 'Failed to start analysis.'); if (w) w.classList.add('hidden'); this.disabled = false; analysisInProgress = false; resetCancelUI() }
   }))
-  cleanupFns.push(on(c, 'click', '#btnFkwCancel', async function (this: HTMLButtonElement) {
-    this.disabled = true; this.textContent = 'Cancelling…'
+  cleanupFns.push(on(c, 'click', '#btnFkwCancel', async (el) => {
+    const btn = el as HTMLButtonElement
+    btn.disabled = true
+    btn.textContent = 'Cancelling…'
     try {
       await engine.fkw.cancelAnalysis(sessionId)
-      enginePollRef.current?.stop(); analysisDone = false; analysisInProgress = false
       toast('Analysis cancelled.', 'warning')
-    } catch (err: unknown) { showError(err, 'Failed to cancel analysis. The analysis may already be complete.') }
-    resetCancelUI()
+      resetCancelUI()
+    } catch (err: unknown) {
+      showError(err, 'Cancel failed. Please try again.')
+      btn.disabled = false
+      btn.textContent = 'Cancel Analysis'
+      resetCancelUI()
+    }
   }))
 
   // Cluster card event delegation
@@ -455,6 +469,13 @@ export function setupFaceKeywording(): void {
       data.message || 'Analyzing faces…'
     )
     if (analysisDone) return
+      if (data.status === AnalysisStatus.CANCELLED) {
+      enginePollRef.current?.stop()
+      analysisInProgress = false
+      resetCancelUI()
+      toast('Analysis cancelled.', 'warning')
+      return
+    }
     const statusComplete =
       data.status === AnalysisStatus.DONE ||
       (data.current >= data.total && data.total > 0)
@@ -522,13 +543,18 @@ function startPollProgress(): void {
     () => engine.fkw.getClusters(sessionId),
     (data) => {
       if (analysisDone) { return true }
+    if (data.status === AnalysisStatus.CANCELLED || data.status === 'cancelling') {
+        analysisDone = true; analysisInProgress = false; resetCancelUI()
+        toast('Analysis cancelled.', 'warning')
+        return true
+      }
       if (data.analysis_done) {
         analysisDone = true; analysisInProgress = false; resetCancelUI()
         hydrateClusterState((data.clusters as ClusterData[]) || []); noise = (data.noise as unknown[]) || []; updateStats();
         ($('#btnToStep2') as HTMLButtonElement).disabled = false; ($('#btnFkwStart') as HTMLButtonElement).disabled = false; toast('Analysis complete!', 'success')
         return true
       }
-      if (data.status === AnalysisStatus.FAILED) {
+      if (data.status === AnalysisStatus.FAILED || data.analysis_status === AnalysisStatus.FAILED) {
         analysisInProgress = false
         showError(data.error || 'Analysis failed.', 'Analysis encountered a problem. Please try again.')
         const startBtn = $('#btnFkwStart') as HTMLButtonElement

@@ -80,6 +80,7 @@ class Session:
     event_date: str = ""  # ISO date string for performance date
     analysis_status: AnalysisStatus = AnalysisStatus.IDLE
     writeback_status: WritebackStatus = WritebackStatus.IDLE
+    import_source: str = "unknown"
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -261,11 +262,14 @@ class WritebackItem:
     id: int = 0
     photo_id: str = ""
     session_id: str = ""
+    module: str = "face_kw"
     keywords: list[str] = field(default_factory=list)
     xmp_path: str = ""
     backup_path: str = ""
     xmp_status: str = "pending"  # pending | written | failed | restored
     error_message: str = ""
+    attempt_count: int = 1
+    last_attempt_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

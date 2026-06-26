@@ -143,7 +143,13 @@ class FaceKeywordingService(BaseService):
         if cancel_event.is_set():
             self._manager.update_analysis_status(session_id, AnalysisStatus.CANCELLED)
             with self._state_lock:
-                self._progress_cache.pop(session_id, None)
+                self._progress_cache[session_id] = {
+                    "current": 0,
+                    "total": 1,
+                    "message": "Cancelled",
+                    "status": "cancelled",
+                    "cancel_requested": True,
+                }
                 self._cancel_events.pop(session_id, None)
             return True
         return False
@@ -460,9 +466,18 @@ class FaceKeywordingService(BaseService):
         """Cancel a running face keywording analysis for the given session."""
         with self._state_lock:
             cancel_event = self._cancel_events.pop(session_id, None)
-            self._progress_cache.pop(session_id, None)
+            self._progress_cache[session_id] = {
+                "current": 0,
+                "total": 1,
+                "message": "Cancelling — finishing current file…",
+                "status": "cancelling",
+                "cancel_requested": True,
+            }
+            cb = self._progress_callbacks.get(session_id) or self._default_progress_callback
         if cancel_event is not None:
             cancel_event.set()
+            if cb:
+                cb(session_id, 0, 1, "Cancelling — finishing current file…", "cancelling")
             self._manager.update_analysis_status(session_id, AnalysisStatus.CANCELLED)
         return {"status": "cancelled", "session_id": session_id}
 
@@ -478,17 +493,21 @@ class FaceKeywordingService(BaseService):
             progress = self._progress_cache.get(session_id, {})
 
         if progress.get("status") == "failed":
+            cancel_requested = progress.get("cancel_requested", False)
             return {
                 "clusters": [],
                 "noise": [],
                 "analysis_done": False,
+                "analysis_status": "failed",
+                "cancel_requested": cancel_requested,
                 "error": progress.get("message", "Analysis failed"),
             }
 
         if not clusters:
             analysis_done = progress.get("status") == "done"
             status_val = progress.get("status", "idle")
-            return {"clusters": [], "noise": [], "analysis_done": analysis_done, "analysis_status": status_val}
+            cancel_requested = progress.get("cancel_requested", False)
+            return {"clusters": [], "noise": [], "analysis_done": analysis_done, "analysis_status": status_val, "cancel_requested": cancel_requested}
 
         clusters_out: list[dict] = []
         for cl in clusters:
@@ -506,12 +525,14 @@ class FaceKeywordingService(BaseService):
 
         analysis_done = progress.get("status") == "done"
         status_val = progress.get("status", "idle")
+        cancel_requested = progress.get("cancel_requested", False)
 
         return {
             "clusters": clusters_out,
             "noise": [],
             "analysis_done": analysis_done,
             "analysis_status": status_val,
+            "cancel_requested": cancel_requested,
         }
 
     def get_cluster_thumbnail_base64(self, clusters: dict) -> dict:
@@ -792,6 +813,7 @@ class FaceKeywordingService(BaseService):
                         "backup_path": xmp_path + ".gatherbak",
                         "xmp_status": "pending",
                         "error_message": "",
+                        "module": "face_kw",
                     }
                 )
                 writeback_paths.append(path)

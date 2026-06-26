@@ -9,7 +9,7 @@ interface SessionCreateResult {
   id: string
 }
 
-function assertRecordResponse(value: unknown, context: string): Record<string, unknown> {
+export function assertRecordResponse(value: unknown, context: string): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new Error(`${context} returned an invalid response.`)
   }
@@ -99,7 +99,9 @@ export const engine = {
       }
       return r.sessions as SessionData[]
     }),
-    addPhotos: (id: string, paths: string[]) => send('session.add_photos', { session_id: id, filepaths: paths }),
+    addPhotos: (id: string, paths: string[], source?: string) => send<Record<string, unknown>>('session.add_photos', { session_id: id, filepaths: paths, source: source || 'unknown' }).then(r => {
+      return assertRecordResponse(r, 'session.add_photos')
+    }),
     get: (id: string) => send<SessionData>('session.get', { session_id: id }).then(r => {
       if (!isSessionData(r)) {
         throw new Error('session.get returned malformed session data.')
@@ -129,6 +131,8 @@ export const engine = {
     recluster:  (id: string, threshold: number, minGroup: number) => send<Record<string, unknown>>('sim.recluster', { session_id: id, threshold, min_group_size: minGroup }),
     previewWriteback: (id: string, groupIds: Array<number | string>, options: WritebackOptions) => send<Record<string, unknown>>('sim.preview_writeback', { session_id: id, group_ids: groupIds, options }),
     writeback:  (id: string, groupIds: Array<number | string>, options: WritebackOptions) => send<Record<string, unknown>>('sim.writeback', { session_id: id, group_ids: groupIds, options, confirmed: true }),
+    writebackItems: (id: string) => send<Record<string, unknown>>('sim.writeback_items', { session_id: id }),
+    retryFailedWriteback: (id: string) => send<Record<string, unknown>>('sim.retry_failed_writeback', { session_id: id, confirmed: true }),
   },
   // TODO: validate response shape at runtime
   onProgress: (cb: (d: ProgressEvent['data']) => void): (() => void) =>

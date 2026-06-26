@@ -29,13 +29,15 @@ class SessionService:
     def list_sessions(self) -> list[dict[str, Any]]:
         sessions = self._manager.list_sessions()
         counts = self._manager.count_photos_by_sessions([s.id for s in sessions])
+        failed_counts = self._manager.get_failed_writeback_counts([s.id for s in sessions])
         result = [s.to_dict() for s in sessions]
         for d in result:
             d["photo_count"] = counts.get(d["id"], 0)
+            d["failed_writeback_count"] = failed_counts.get(d["id"], 0)
         return result
 
-    def add_photos(self, session_id: str, filepaths: list[str]) -> dict[str, Any]:
-        photos, failed_paths = self._manager.add_photos(session_id, filepaths)
+    def add_photos(self, session_id: str, filepaths: list[str], source: str = "unknown") -> dict[str, Any]:
+        photos, failed_paths = self._manager.add_photos(session_id, filepaths, source)
         total = self._manager.count_photos(session_id)
         if total > 0:
             self._manager.update_session_status(session_id, SessionStatus.PHOTOS_LOADED)
@@ -51,6 +53,7 @@ class SessionService:
             raise SessionNotFoundError(f"Session not found: {session_id}")
         result = session.to_dict()
         result["photo_count"] = self._manager.count_photos(session_id)
+        result["failed_writeback_count"] = self._manager.get_failed_writeback_count(session_id)
         return result
 
     def update_session(self, session_id: str, name: str) -> dict[str, Any]:

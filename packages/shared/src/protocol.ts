@@ -51,6 +51,7 @@ export interface SessionAddPhotosCommand {
   type: 'session.add_photos'
   session_id: string
   filepaths: string[]
+  source?: string
 }
 
 export interface SessionGetCommand {
@@ -174,6 +175,17 @@ export interface SimWritebackCommand {
   confirmed?: boolean
 }
 
+export interface SimWritebackItemsCommand {
+  type: 'sim.writeback_items'
+  session_id: string
+}
+
+export interface SimRetryFailedWritebackCommand {
+  type: 'sim.retry_failed_writeback'
+  session_id: string
+  confirmed?: boolean
+}
+
 export interface SimPreviewWritebackCommand {
   type: 'sim.preview_writeback'
   session_id: string
@@ -217,6 +229,8 @@ export type Command =
   | SimReclusterCommand
   | SimPreviewWritebackCommand
   | SimWritebackCommand
+  | SimWritebackItemsCommand
+  | SimRetryFailedWritebackCommand
   | ThumbnailGetCommand
   | ShutdownCommand
 
@@ -286,6 +300,8 @@ export interface SessionData {
   writeback_status: WritebackStatus
   created_at: string
   updated_at: string
+  import_source?: string
+  failed_writeback_count?: number
 }
 
 export interface PhotoData {
@@ -374,13 +390,14 @@ export const ALLOWED_COMMANDS = new Set([
   'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
+  'sim.retry_failed_writeback', 'sim.writeback_items',
   'thumbnail.get', 'shutdown',
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([
   'session.delete',
   'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
-  'sim.writeback',
+  'sim.writeback', 'sim.retry_failed_writeback',
 ])
 
 export const ALLOWED_EVENTS = new Set([

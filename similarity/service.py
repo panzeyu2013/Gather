@@ -281,6 +281,9 @@ class SimilarityService(BaseService):
         if session is None:
             return {"status": "idle"}
 
+        if session.analysis_status == AnalysisStatus.CANCELLED:
+            return {"status": "cancelled", "cancel_requested": True}
+
         db_result = self._manager.get_similarity_cached_result(session_id)
         if db_result is not None:
             with self._state_lock:
@@ -426,7 +429,10 @@ class SimilarityService(BaseService):
             if ev is not None:
                 ev.set()
             self._running_sessions.discard(session_id)
+            cb = self._progress_callbacks.get(session_id) or self._progress_callback
         if ev is not None:
+            if cb:
+                cb(session_id, 0, 1, "Cancelling — finishing current file…", "cancelling")
             self._manager.update_analysis_status(session_id, AnalysisStatus.CANCELLED)
         with self._state_lock:
             self._cancel_events.pop(session_id, None)
@@ -543,7 +549,7 @@ class SimilarityService(BaseService):
         group_ids: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Generate a writeback report and execute write operations."""
-        from shared.xmp_writer import write_keywords as xmp_write_keywords
+        from shared.xmp_writer import BACKUP_SUFFIX, write_keywords as xmp_write_keywords
 
         session = self._manager.get_session(session_id)
         if session is None:
@@ -566,6 +572,10 @@ class SimilarityService(BaseService):
         all_written = 0
         all_failed = 0
         all_errors: list = []
+        all_writeback_items: list[dict[str, Any]] = []
+
+        photo_filepaths = self._manager.get_photo_filepaths(session_id)
+        photo_id_map = {p["filepath"]: p["id"] for p in photo_filepaths}
 
         for idx, g in enumerate(groups, 1):
             gid_raw = g.get("id")
@@ -596,12 +606,32 @@ class SimilarityService(BaseService):
                 all_failed += result.get("failed", 0)
                 all_errors.extend(result.get("errors", []))
 
+                failed_paths = {e.get("path", ""): e.get("error", "") for e in result.get("errors", [])}
+                for img in valid_images:
+                    path = img.get("path", "")
+                    if not path:
+                        continue
+                    item_status = "failed" if path in failed_paths else "written"
+                    item_error = failed_paths.get(path, "")
+                    all_writeback_items.append({
+                        "photo_id": photo_id_map.get(path, ""),
+                        "keywords": [keyword],
+                        "xmp_path": path + ".xmp",
+                        "backup_path": path + ".xmp" + BACKUP_SUFFIX,
+                        "xmp_status": item_status,
+                        "error_message": item_error,
+                        "module": "similarity",
+                    })
+
         lines.append("")
         lines.append(f"Total images affected: {all_affected}")
         if options.get("writeIPTC"):
             lines.append(f"XMP written: {all_written}, failed: {all_failed}")
 
         report = "\n".join(lines)
+
+        if all_writeback_items:
+            self._manager.save_writeback_items(session_id, all_writeback_items)
 
         if not options.get("writeIPTC"):
             self._manager.update_writeback_session_status(session_id, WritebackStatus.IDLE)
@@ -618,3 +648,46 @@ class SimilarityService(BaseService):
             "failed": all_failed,
             "errors": all_errors,
         }
+
+    def get_writeback_items(self, session_id: str) -> dict[str, Any]:
+        items = self._manager.get_writeback_items(session_id, module="similarity")
+        return {"items": items, "count": len(items)}
+
+    def retry_failed_writeback(self, session_id: str) -> dict[str, Any]:
+        failed_items = self._manager.get_writeback_items(session_id, module="similarity", status="failed")
+        if not failed_items:
+            return {"status": "completed", "retried": 0, "message": "No failed items to retry"}
+
+        from shared.xmp_writer import write_keywords as xmp_write_keywords
+
+        retried = 0
+        still_failed = 0
+        for item in failed_items:
+            path = item.get("xmp_path", "")
+            if path.endswith(".xmp"):
+                path = path[:-4]
+            keywords = item.get("keywords", [])
+            if isinstance(keywords, str):
+                keywords = json.loads(keywords) if keywords else []
+            if not path or not os.path.isfile(path):
+                self._manager.update_writeback_item_status(item["id"], "failed", "File missing")
+                still_failed += 1
+                continue
+            try:
+                result = xmp_write_keywords([path], {path: keywords})
+                if result.get("failed", 0) > 0:
+                    self._manager.update_writeback_item_status(item["id"], "failed", result.get("errors", [{}])[0].get("error", "unknown"))
+                    still_failed += 1
+                else:
+                    self._manager.update_writeback_item_status(item["id"], "written", "")
+                    retried += 1
+            except Exception as e:
+                self._manager.update_writeback_item_status(item["id"], "failed", str(e))
+                still_failed += 1
+
+        if still_failed == 0:
+            self._manager.update_writeback_session_status(session_id, WritebackStatus.DONE)
+        else:
+            self._manager.update_writeback_session_status(session_id, WritebackStatus.PARTIAL)
+
+        return {"status": "completed", "retried": retried, "still_failed": still_failed}

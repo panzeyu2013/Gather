@@ -150,17 +150,25 @@ export function setupSimilarity(): void {
   }))
   cleanups.push(on(content, 'click', '#btnStartSim', () => startAnalysis()))
   cleanups.push(on(content, 'click', '#btnCancelSim', async (el) => {
-    const btn = el as HTMLButtonElement; btn.disabled = true; btn.textContent = 'Cancelling…'
-    enginePollRef.current?.stop()
-    try { await engine.sim.cancelAnalysis(sessionId); toast('Analysis cancelled.', 'warning') } catch (err: unknown) { showError(err, 'Cancel failed. Please try again.') }
-    analysisComplete = false
-    analysisInProgress = false
-    const startBtn = $('#btnStartSim') as HTMLButtonElement | null
-    if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start Analysis'; startBtn.classList.remove('hidden') }
-    const cancelBtn = $('#btnCancelSim') as HTMLElement | null
-    if (cancelBtn) { cancelBtn.classList.add('hidden'); (cancelBtn as HTMLButtonElement).disabled = false; cancelBtn.textContent = 'Cancel Analysis' }
-    const slider = $('#simThresh') as HTMLInputElement | null; if (slider) slider.disabled = false
-    const minInp = $('#simMin') as HTMLInputElement | null; if (minInp) minInp.disabled = false
+    const btn = el as HTMLButtonElement
+    const cancelBtn = el
+    btn.disabled = true
+    btn.textContent = 'Cancelling…'
+    const progText = $('#simFile')
+    if (progText) progText.textContent = 'Finishing current file, then stopping…'
+    try {
+      await engine.sim.cancelAnalysis(sessionId)
+      toast('Analysis cancelled.', 'warning')
+      cancelBtn.classList.add('hidden')
+      btn.disabled = false
+      btn.textContent = 'Cancel Analysis'
+      resetSimUI()
+    } catch (err: unknown) {
+      showError(err, 'Cancel failed. Please try again.')
+      btn.disabled = false
+      btn.textContent = 'Cancel Analysis'
+      resetSimUI()
+    }
   }))
   cleanups.push(on(content, 'click', '#btnExecWb', () => executeWb()))
   cleanups.push(on(content, 'click', '#btnCloseModal', () => closeSimModal()))
@@ -204,6 +212,13 @@ export function setupSimilarity(): void {
       if (m.includes('hash')) p.textContent = 'Computing hashes…'
       else if (m.includes('cluster')) p.textContent = 'Clustering…'
       else if (m.includes('complete')) p.textContent = 'Complete!'
+    }
+    if (data.status === AnalysisStatus.CANCELLED) {
+      enginePollRef.current?.stop()
+      analysisInProgress = false
+      resetSimUI()
+      toast('Analysis cancelled.', 'warning')
+      return
     }
     if (data.status === AnalysisStatus.DONE) {
       enginePollRef.current?.stop()
@@ -308,6 +323,13 @@ function startAnalysis(): void {
         () => engine.sim.getResult(sessionId),
         (data) => {
           if (analysisComplete) { return true }
+          if (data.status === AnalysisStatus.CANCELLED) {
+            analysisComplete = true
+            analysisInProgress = false
+            resetSimUI()
+            toast('Analysis cancelled.', 'warning')
+            return true
+          }
           if (data.status === AnalysisStatus.DONE) {
             analysisComplete = true
             analysisInProgress = false
@@ -372,6 +394,14 @@ function recluster(): void {
       enginePollRef.current = createPollLoop(
         () => engine.sim.getResult(sessionId),
         (d) => {
+          if (d.status === AnalysisStatus.CANCELLED) {
+            analysisComplete = true
+            analysisInProgress = false
+            showStage('results')
+            resetSimUI()
+            toast('Analysis cancelled.', 'warning')
+            return true
+          }
           if (d.status === AnalysisStatus.DONE) {
             analysisComplete = true
             analysisInProgress = false

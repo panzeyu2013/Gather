@@ -227,6 +227,8 @@ REQUIRE_SID = frozenset({
     "sim.recluster",
     "sim.preview_writeback",
     "sim.writeback",
+    "sim.retry_failed_writeback",
+    "sim.writeback_items",
 })
 
 
@@ -257,8 +259,12 @@ def _handle_session_list(svc, fkw, sim, params):
 
 def _handle_session_add_photos(svc, fkw, sim, params):
     filepaths = params.get("filepaths", [])
+    VALID_SOURCES = frozenset({"capture_one", "local_files", "mixed", "unknown"})
+    source = str(params.get("source", "unknown"))
+    if source not in VALID_SOURCES:
+        source = "unknown"
     validated = [validate_safe_path(fp) for fp in filepaths]
-    return svc.add_photos(params["session_id"], validated)
+    return svc.add_photos(params["session_id"], validated, source)
 
 
 def _handle_session_get(svc, fkw, sim, params):
@@ -468,6 +474,18 @@ def _handle_sim_preview_writeback(svc, fkw, sim, params):
     return sim.preview_writeback(params["session_id"], group_ids, params.get("options", {}))
 
 
+def _handle_sim_writeback_items(svc, fkw, sim, params):
+    if sim is None:
+        raise RuntimeError("SimilarityService is not available")
+    return sim.get_writeback_items(params["session_id"])
+
+
+def _handle_sim_retry_failed_writeback(svc, fkw, sim, params):
+    if sim is None:
+        raise RuntimeError("SimilarityService is not available")
+    return sim.retry_failed_writeback(params["session_id"])
+
+
 def _handle_shutdown(svc, fkw, sim, params):
     return SHUTDOWN
 
@@ -498,6 +516,8 @@ COMMAND_HANDLERS: dict[str, Callable[..., Any]] = {
     "sim.recluster": _handle_sim_recluster,
     "sim.preview_writeback": _handle_sim_preview_writeback,
     "sim.writeback": _handle_sim_writeback,
+    "sim.retry_failed_writeback": _handle_sim_retry_failed_writeback,
+    "sim.writeback_items": _handle_sim_writeback_items,
     "shutdown": _handle_shutdown,
 }
 
@@ -530,7 +550,7 @@ def _validate_params(cmd: str, params: dict) -> None:
         if not name:
             raise ValueError("name must be present and non-empty")
 
-    if cmd in ("session.delete", "fkw.writeback", "fkw.cleanup", "fkw.confirm_cleanup", "sim.writeback") and not params.get("confirmed"):
+    if cmd in ("session.delete", "fkw.writeback", "fkw.cleanup", "fkw.confirm_cleanup", "sim.writeback", "sim.retry_failed_writeback") and not params.get("confirmed"):
         raise ValueError(f"Destructive command {cmd} requires confirmed=true")
 
 

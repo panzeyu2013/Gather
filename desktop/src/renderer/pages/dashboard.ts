@@ -1,6 +1,6 @@
 // src/renderer/pages/dashboard.ts
 
-import { engine, c1, app, showError } from '../api'
+import { engine, c1, app, showError, assertRecordResponse } from '../api'
 import { clearSessionId, consumeCaptureOneImportTrigger } from '../app'
 import { dialog, typedConfirmDialog } from '../components/dialog'
 import { $, $$, esc, on } from '../components/dom'
@@ -11,13 +11,47 @@ import type { SessionData } from '@gather/shared'
 let gSessions: SessionData[] = []
 let loadError = false
 
+function statusBadge(s: SessionData): string {
+  const badges: string[] = []
+  
+  // Import source badge
+  const sourceLabel = s.import_source === 'capture_one' ? 'Capture One' : s.import_source === 'local_files' ? 'Local Files' : ''
+  if (sourceLabel) {
+    badges.push(`<span class="badge badge--source">${sourceLabel}</span>`)
+  }
+  
+  // Status badge
+  badges.push(`<span class="badge badge--${esc(s.status)}">${esc(s.status)}</span>`)
+  
+  // Analysis badge
+  if (s.analysis_status === 'done') {
+    badges.push('<span class="badge badge--analyzed">Analyzed</span>')
+  }
+  
+  // Writeback badges
+  if (s.writeback_status === 'done') {
+    badges.push('<span class="badge badge--writeback-done">Writeback done</span>')
+  } else if (s.writeback_status === 'partial') {
+    badges.push('<span class="badge badge--writeback-partial">Writeback partial</span>')
+  } else if (s.writeback_status === 'cleaned') {
+    badges.push('<span class="badge badge--cleaned">Cleaned</span>')
+  }
+  
+  // Failed count
+  if (s.failed_writeback_count && s.failed_writeback_count > 0) {
+    badges.push(`<span class="badge badge--failed">${s.failed_writeback_count} failed</span>`)
+  }
+  
+  return badges.join(' ')
+}
+
 function renderSessionRows(sessions: SessionData[]): string {
   return sessions.map(s => `
     <div class="session-row" data-sid="${esc(s.id)}">
       <div class="session-row__info">
         <div class="session-row__name">${esc(s.name || 'Untitled')}</div>
         <div class="session-row__meta">
-          <span class="badge badge--${esc(s.status)}">${esc(s.status)}</span>
+          ${statusBadge(s)}
           &middot; ${esc((s.created_at || '').slice(0, 16).replace('T', ' '))}
           ${s.photo_count ? ` &middot; ${s.photo_count} photos` : ''}
         </div>
@@ -53,6 +87,11 @@ export async function renderDashboard(): Promise<string> {
         <div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem">
           <button class="btn btn--danger btn--sm" id="btnClearAll">Delete All Sessions</button>
         </div>
+        <div class="dashboard-filters" style="display:flex;gap:0.5rem;margin-bottom:1rem">
+          <button class="btn btn--sm filter-btn active" data-filter="all">All</button>
+          <button class="btn btn--sm filter-btn" data-filter="needs-review">Needs Review</button>
+          <button class="btn btn--sm filter-btn" data-filter="completed">Completed</button>
+        </div>
         <div class="session-list">${rows}</div>
       ` : (loadError ? `
         <div class="empty-state">
@@ -76,7 +115,7 @@ export function setupDashboard(): void {
   if (!content) return
   const cleanups: (() => void)[] = []
 
-  const importPhotos = async (getPhotos: () => Promise<string[]>) => {
+  const importPhotos = async (getPhotos: () => Promise<string[]>, source: string) => {
     const btnC1 = $('#btnImportC1') as HTMLButtonElement | null
     const btnFiles = $('#btnImportFiles') as HTMLButtonElement | null
     if (btnC1) { btnC1.disabled = true; btnC1.textContent = 'Importing…' }
@@ -87,10 +126,11 @@ export function setupDashboard(): void {
       const dir = photos[0].replace(/\\/g, '/').split('/').slice(0, -1).join('/').split('/').pop() || 'Session'
       const name = `${dir} - ${new Date().toISOString().slice(0, 10)}`
       const created = await engine.session.create(name)
-      const result = await engine.session.addPhotos(created.id, photos) as { added: number; failed_paths: string[]; total: number }
-      const actualAdded = result.added ?? photos.length
-      if (result.failed_paths?.length) {
-        toast(`${result.failed_paths.length} files could not be imported`, 'warning')
+      const result = assertRecordResponse(await engine.session.addPhotos(created.id, photos, source), 'session.add_photos') as Record<string, unknown>
+      const actualAdded = typeof result.added === 'number' ? result.added : photos.length
+      const failedPaths = Array.isArray(result.failed_paths) ? result.failed_paths as string[] : []
+      if (failedPaths.length) {
+        toast(`${failedPaths.length} files could not be imported`, 'warning')
       }
       toast(`Created "${name}" with ${actualAdded} photos`, 'success')
       gSessions = await engine.session.list()
@@ -101,15 +141,15 @@ export function setupDashboard(): void {
       } else {
         const emptyState = $('.empty-state')
         if (emptyState) {
-          emptyState.outerHTML = `<div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem"><button class="btn btn--danger btn--sm" id="btnClearAll">Delete All Sessions</button></div><div class="session-list">${rows}</div>`
+          emptyState.outerHTML = `<div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem"><button class="btn btn--danger btn--sm" id="btnClearAll">Delete All Sessions</button></div><div class="dashboard-filters" style="display:flex;gap:0.5rem;margin-bottom:1rem"><button class="btn btn--sm filter-btn active" data-filter="all">All</button><button class="btn btn--sm filter-btn" data-filter="needs-review">Needs Review</button><button class="btn btn--sm filter-btn" data-filter="completed">Completed</button></div><div class="session-list">${rows}</div>`
         }
       }
     } catch (err: unknown) { showError(err, 'Import failed. Please check that Capture One is running and photos are selected, then try again.') }
     finally { if (btnC1) { btnC1.disabled = false; btnC1.textContent = 'Import from Capture One' } if (btnFiles) { btnFiles.disabled = false; btnFiles.textContent = 'Import Files…' } }
   }
 
-  cleanups.push(on(content, 'click', '#btnImportC1', () => { importPhotos(() => c1.getSelectedPhotos()) }))
-  cleanups.push(on(content, 'click', '#btnImportFiles', () => { importPhotos(() => app.selectFiles()) }))
+  cleanups.push(on(content, 'click', '#btnImportC1', () => { importPhotos(() => c1.getSelectedPhotos(), 'capture_one') }))
+  cleanups.push(on(content, 'click', '#btnImportFiles', () => { importPhotos(() => app.selectFiles(), 'local_files') }))
   cleanups.push(on(content, 'click', '#btnRetryLoad', async () => { navigate('dashboard') }))
   cleanups.push(on(content, 'click', '[data-act="sim"]', (el, e) => {
     e.preventDefault()
@@ -152,8 +192,27 @@ export function setupDashboard(): void {
   }))
 
   if (consumeCaptureOneImportTrigger()) {
-    void importPhotos(() => c1.getSelectedPhotos())
+    void importPhotos(() => c1.getSelectedPhotos(), 'capture_one')
   }
+
+  cleanups.push(on(content, 'click', '.filter-btn', (el) => {
+    $$('.filter-btn').forEach(b => b.classList.remove('active'))
+    el.classList.add('active')
+    const filter = el.dataset.filter || 'all'
+    const rows = $$('.session-row')
+    rows.forEach(row => {
+      const sid = (row as HTMLElement).dataset.sid || ''
+      const s = gSessions.find(s => s.id === sid)
+      if (!s) return
+      let show = true
+      if (filter === 'needs-review') {
+        show = s.writeback_status === 'partial' || s.failed_writeback_count && s.failed_writeback_count > 0 || (s.analysis_status === 'idle' && s.writeback_status === 'idle') || (s.analysis_status === 'done' && s.writeback_status === 'idle')
+      } else if (filter === 'completed') {
+        show = s.writeback_status === 'done' || s.writeback_status === 'cleaned'
+      }
+      (row as HTMLElement).style.display = show ? '' : 'none'
+    })
+  }))
 
   registerCleanup(() => cleanups.forEach(fn => fn()))
 }

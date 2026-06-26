@@ -115,6 +115,7 @@ class Database:
             (8, self._migrate_v8),
             (9, self._migrate_v9),
             (10, self._migrate_v10),
+            (11, self._migrate_v11),
         ]
 
         for ver, fn in migrations:
@@ -544,6 +545,23 @@ class Database:
             fk_violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if fk_violations:
                 logger.warning("Foreign key violations detected after v10 migration: %d rows", len(fk_violations))
+
+    # ------------------------------------------------------------------
+    # Version 11: add module, attempt tracking to writeback_items; import_source to sessions
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _migrate_v11(conn: sqlite3.Connection) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("ALTER TABLE writeback_items ADD COLUMN module TEXT NOT NULL DEFAULT 'face_kw' CHECK(module IN ('face_kw', 'similarity'))")
+            conn.execute("ALTER TABLE writeback_items ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1")
+            conn.execute("ALTER TABLE writeback_items ADD COLUMN last_attempt_at TEXT NOT NULL DEFAULT ''")
+            conn.execute("ALTER TABLE sessions ADD COLUMN import_source TEXT NOT NULL DEFAULT 'unknown' CHECK(import_source IN ('capture_one', 'local_files', 'mixed', 'unknown'))")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     # ------------------------------------------------------------------
     # Cleanup

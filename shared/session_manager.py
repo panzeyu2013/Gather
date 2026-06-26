@@ -114,7 +114,11 @@ class SessionManager:
     def list_sessions(self) -> list[Session]:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC").fetchall()
-        return [Session.from_dict(dict(r)) for r in rows]
+            sessions = []
+            for r in rows:
+                s = Session.from_dict(dict(r))
+                sessions.append(s)
+        return sessions
 
     def update_session_status(self, session_id: str, status: SessionStatus) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -187,7 +191,7 @@ class SessionManager:
     # Photo management
     # ------------------------------------------------------------------
 
-    def add_photos(self, session_id: str, filepaths: list[str]) -> tuple[list[Photo], list[str]]:
+    def add_photos(self, session_id: str, filepaths: list[str], source: str = "unknown") -> tuple[list[Photo], list[str]]:
         """Insert photos into a session.  Duplicate filepaths are skipped."""
         now = datetime.now(timezone.utc).isoformat()
         photos: list[Photo] = []
@@ -253,6 +257,21 @@ class SessionManager:
                         "checksum, status, metadata, result, created_at, updated_at) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         rows,
+                    )
+
+                # Update session import_source when photos are added
+                cur_source = self._conn.execute(
+                    "SELECT import_source FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if cur_source:
+                    existing_src = cur_source[0]
+                    if existing_src == "unknown" or existing_src == source:
+                        new_source = source
+                    else:
+                        new_source = "mixed"
+                    self._conn.execute(
+                        "UPDATE sessions SET import_source = ? WHERE id = ?",
+                        (new_source, session_id),
                     )
 
                 # bump session updated_at
@@ -751,8 +770,8 @@ class SessionManager:
             for item in items:
                 cur = self._conn.execute(
                     "INSERT INTO writeback_items "
-                    "(photo_id, session_id, keywords, xmp_path, backup_path, xmp_status, error_message) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "(photo_id, session_id, keywords, xmp_path, backup_path, xmp_status, error_message, module) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                     "RETURNING id",
                     (
                         item["photo_id"],
@@ -762,6 +781,7 @@ class SessionManager:
                         item.get("backup_path", ""),
                         item.get("xmp_status", "pending"),
                         item.get("error_message", ""),
+                        item.get("module", "face_kw"),
                     ),
                 )
                 row = cur.fetchone()
@@ -770,11 +790,20 @@ class SessionManager:
                 ids.append(row[0])
         return ids
 
-    def get_writeback_items(self, session_id: str) -> list[dict[str, Any]]:
+    def get_writeback_items(self, session_id: str, module: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
+            conditions = ["session_id = ?"]
+            params: list[Any] = [session_id]
+            if module is not None:
+                conditions.append("module = ?")
+                params.append(module)
+            if status is not None:
+                conditions.append("xmp_status = ?")
+                params.append(status)
+            where = " AND ".join(conditions)
             rows = self._conn.execute(
-                "SELECT * FROM writeback_items WHERE session_id = ? ORDER BY id",
-                (session_id,),
+                f"SELECT * FROM writeback_items WHERE {where} ORDER BY id",
+                tuple(params),
             ).fetchall()
         results: list[dict[str, Any]] = []
         for r in rows:
@@ -784,12 +813,32 @@ class SessionManager:
         return results
 
     def update_writeback_item_status(self, item_id: int, status: str, error_message: str = "") -> None:
+        now = datetime.now(timezone.utc).isoformat()
         with self._lock:
             self._conn.execute(
-                "UPDATE writeback_items SET xmp_status = ?, error_message = ? WHERE id = ?",
-                (status, error_message, item_id),
+                "UPDATE writeback_items SET xmp_status = ?, error_message = ?, attempt_count = attempt_count + 1, last_attempt_at = ? WHERE id = ?",
+                (status, error_message, now, item_id),
             )
             self._conn.commit()
+
+    def get_failed_writeback_count(self, session_id: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM writeback_items WHERE session_id = ? AND xmp_status = 'failed'",
+                (session_id,),
+            ).fetchone()
+            return row[0] if row else 0
+
+    def get_failed_writeback_counts(self, session_ids: list[str]) -> dict[str, int]:
+        if not session_ids:
+            return {}
+        placeholders = ",".join("?" * len(session_ids))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT session_id, COUNT(*) AS cnt FROM writeback_items WHERE session_id IN ({placeholders}) AND xmp_status = 'failed' GROUP BY session_id",
+                tuple(session_ids),
+            ).fetchall()
+        return {r["session_id"]: r["cnt"] for r in rows}
 
     def delete_writeback_items(self, session_id: str) -> None:
         with self._lock:
