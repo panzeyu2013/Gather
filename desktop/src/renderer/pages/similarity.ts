@@ -98,30 +98,42 @@ export async function renderSimilarity(sid: string): Promise<string> {
   </div>
 </div>
 <div class="sim-stage" id="simResults">
-  <div class="sim-stats">
-    <div class="sim-stat"><div class="sim-stat__value" id="sTotal">0</div><div class="sim-stat__label">Total</div></div>
-    <div class="sim-stat sim-stat--accent"><div class="sim-stat__value" id="sGrouped">0</div><div class="sim-stat__label">Grouped</div></div>
-    <div class="sim-stat sim-stat--warning"><div class="sim-stat__value" id="sUngrouped">0</div><div class="sim-stat__label">Ungrouped</div></div>
-    <div class="sim-stat sim-stat--success"><div class="sim-stat__value" id="sGroups">0</div><div class="sim-stat__label">Groups</div></div>
+  <div class="sim-toolbar">
+    <div class="sim-toolbar__stats">
+      <span class="sim-toolbar__stat"><strong id="sTotal">0</strong> photos</span>
+      <span class="sim-toolbar__stat"><strong id="sGrouped">0</strong> grouped</span>
+      <span class="sim-toolbar__stat"><strong id="sUngrouped">0</strong> ungrouped</span>
+      <span class="sim-toolbar__stat"><strong id="sGroups">0</strong> groups</span>
+    </div>
+    <div class="sim-toolbar__controls">
+      <div class="sim-control"><label>Threshold</label><input type="range" id="simThreshold" min="${THRESHOLD_MIN}" max="${THRESHOLD_MAX}" step="1" value="${lastThreshold ?? THRESHOLD_DEFAULT}"></div>
+      <div class="sim-control"><label>Min group</label><input type="number" id="simMinGroup" min="${MIN_GROUP_MIN}" max="${MIN_GROUP_MAX}" value="${lastMinGroup ?? MIN_GROUP_DEFAULT}"></div>
+    </div>
   </div>
-  <div class="sim-controls">
-    <div class="sim-control"><label for="simThresh">Threshold</label><input type="range" id="simThresh" min="${THRESHOLD_MIN}" max="${THRESHOLD_MAX}" value="${THRESHOLD_DEFAULT}" step="1"></div>
-    <div class="sim-control"><label for="simMin">Min Group</label><input type="number" id="simMin" min="${MIN_GROUP_MIN}" max="${MIN_GROUP_MAX}" value="${MIN_GROUP_DEFAULT}"></div>
-  </div>
-  <div class="sim-groups-grid" id="simGrid"></div>
+  <div aria-live="polite"><div class="sim-groups-grid" id="simGrid"></div></div>
   <div class="sim-ungrouped">
     <button class="sim-toggle" id="simUngToggle" aria-expanded="false" aria-controls="simUngList">Ungrouped (<span id="simUngCnt">0</span>)</button>
     <div class="sim-ungrouped-list" id="simUngList" role="region" aria-label="Ungrouped images"></div>
   </div>
-  <div class="sim-writeback-bar">
-    <button class="sim-toggle-all" id="btnSelAll">Select All</button> |
-    <button class="sim-toggle-all" id="btnDeselAll">Deselect All</button>
-    ${ALLOWED_OPTIONS.map(opt => `<label class="sim-group-card__option" title="${({createAlbums:'Create Capture One albums for each similarity group',addPrefix:'Add Gather_group_N_ prefix to filenames',markUngrouped:'Tag ungrouped images with color label in Capture One',writeIPTC:'Write similarity group labels as IPTC keywords to XMP sidecar files'})[opt] || ''}"><input type="checkbox" class="sim-global-opt" data-option="${opt}">${OPTION_LABELS[opt] || opt}</label>`).join('')}
-    <span style="flex:1"></span>
-    <button class="btn btn--success" id="btnExecWb">Execute Writeback</button>
+  <div class="sim-action-footer">
+    <div class="sim-action-footer__info">
+      <strong id="simSelCount">0</strong> of <strong id="simGroupTotal">0</strong> groups selected
+    </div>
+    <div class="sim-action-footer__actions">
+      <div class="sim-select-control">
+        <input type="checkbox" id="simSelectAll" aria-label="Select all groups">
+        <label for="simSelectAll">Select All</label>
+      </div>
+      <div class="sim-select-control">
+        <input type="checkbox" id="simDeselectAll" aria-label="Deselect all groups">
+        <label for="simDeselectAll">Deselect All</label>
+      </div>
+      ${ALLOWED_OPTIONS.map(opt => `<label class="sim-group-card__option" title="${({createAlbums:'Create Capture One albums for each similarity group',addPrefix:'Add Gather_group_N_ prefix to filenames',markUngrouped:'Tag ungrouped images with color label in Capture One',writeIPTC:'Write similarity group labels as IPTC keywords to XMP sidecar files'})[opt] || ''}"><input type="checkbox" class="sim-global-opt" data-option="${opt}">${OPTION_LABELS[opt] || opt}</label>`).join('')}
+      <button class="btn btn--primary" id="btnWb">Execute Writeback</button>
+    </div>
   </div>
 </div>
-  <div class="sim-modal" id="simModal" role="dialog" aria-modal="true" aria-labelledby="simModalTitle" aria-describedby="simReport">
+  <div class="sim-modal" id="simModal" role="dialog" aria-modal="true" aria-labelledby="simModalTitle">
   <div class="sim-modal__box" tabindex="-1"><h3 id="simModalTitle">Writeback Result</h3><pre id="simReport"></pre><div style="margin-top:1rem;text-align:right"><button class="btn btn--secondary" id="btnCloseModal">Close</button></div></div>
 </div>
 </div>`
@@ -170,7 +182,7 @@ export function setupSimilarity(): void {
       resetSimUI()
     }
   }))
-  cleanups.push(on(content, 'click', '#btnExecWb', () => executeWb()))
+  cleanups.push(on(content, 'click', '#btnWb', () => executeWb()))
   cleanups.push(on(content, 'click', '#btnCloseModal', () => closeSimModal()))
   cleanups.push(on(content, 'click', '#simModal', (el, e) => { if (e.target === el) closeSimModal() }))
   const handleSimModalEscape = (e: KeyboardEvent) => {
@@ -194,11 +206,11 @@ export function setupSimilarity(): void {
 
   let reclusterTimer: ReturnType<typeof setTimeout>
   const debouncedRecluster = () => { clearTimeout(reclusterTimer); reclusterTimer = setTimeout(recluster, SIM_DEBOUNCE_MS) }
-  cleanups.push(on(content, 'input', '#simThresh', (el) => { setText('preThresh', (el as HTMLInputElement).value); debouncedRecluster() }))
-  cleanups.push(on(content, 'input', '#simMin', (el) => { setText('preMin', (el as HTMLInputElement).value); debouncedRecluster() }))
-  cleanups.push(on(content, 'focusout', '#simMin', () => { getSimilarityParams({ syncInputs: true }) }))
-  cleanups.push(on(content, 'click', '#btnSelAll', () => setAllOpts(true)))
-  cleanups.push(on(content, 'click', '#btnDeselAll', () => setAllOpts(false)))
+  cleanups.push(on(content, 'input', '#simThreshold', (el) => { setText('preThresh', (el as HTMLInputElement).value); debouncedRecluster() }))
+  cleanups.push(on(content, 'input', '#simMinGroup', (el) => { setText('preMin', (el as HTMLInputElement).value); debouncedRecluster() }))
+  cleanups.push(on(content, 'focusout', '#simMinGroup', () => { getSimilarityParams({ syncInputs: true }) }))
+  cleanups.push(on(content, 'change', '#simSelectAll', (el) => { if ((el as HTMLInputElement).checked) { setAllOpts(true); (el as HTMLInputElement).checked = false } }))
+  cleanups.push(on(content, 'change', '#simDeselectAll', (el) => { if ((el as HTMLInputElement).checked) { setAllOpts(false); (el as HTMLInputElement).checked = false } }))
 
   const progress = createProgressRenderer('#simFill', '#simFile')
 
@@ -258,8 +270,8 @@ function resetSimUI(): void {
   if (btn) { btn.disabled = false; btn.textContent = 'Start Analysis'; btn.classList.remove('hidden') }
   const cancelBtn = $('#btnCancelSim') as HTMLElement | null
   if (cancelBtn) { cancelBtn.classList.add('hidden'); (cancelBtn as HTMLButtonElement).disabled = false; cancelBtn.textContent = 'Cancel Analysis' }
-  const slider = $('#simThresh') as HTMLInputElement | null; if (slider) slider.disabled = false
-  const minInp = $('#simMin') as HTMLInputElement | null; if (minInp) minInp.disabled = false
+  const slider = $('#simThreshold') as HTMLInputElement | null; if (slider) slider.disabled = false
+  const minInp = $('#simMinGroup') as HTMLInputElement | null; if (minInp) minInp.disabled = false
   $('#simBefore')?.classList.remove('hidden')
   $('#simRunning')?.classList.add('hidden')
 }
@@ -308,8 +320,8 @@ function startAnalysis(): void {
   const { threshold, minGroup } = getSimilarityParams({ syncInputs: true })
   analysisComplete = false
   analysisInProgress = true
-  const slider = $('#simThresh') as HTMLInputElement | null; if (slider) slider.disabled = true
-  const minInp = $('#simMin') as HTMLInputElement | null; if (minInp) minInp.disabled = true
+  const slider = $('#simThreshold') as HTMLInputElement | null; if (slider) slider.disabled = true
+  const minInp = $('#simMinGroup') as HTMLInputElement | null; if (minInp) minInp.disabled = true
   const btn = $('#btnStartSim') as HTMLButtonElement | null;
   if (btn) { btn.disabled = true; btn.textContent = 'Analyzing...'; btn.classList.add('hidden') }
   const cancelBtn = $('#btnCancelSim') as HTMLElement | null
@@ -448,38 +460,45 @@ function renderResults(): void {
   setText('sUngrouped', stats.ungrouped || 0); setText('sGroups', stats.num_groups || 0)
 
   const grid = $('#simGrid'); if (!grid) return; grid.innerHTML = ''
-  const fragment = document.createDocumentFragment()
-  groups.forEach(g => {
-    const card = document.createElement('div'); card.className = 'sim-group-card'; card.dataset.groupId = String(g.id); card.setAttribute('tabindex', '0'); card.setAttribute('role', 'button'); card.setAttribute('aria-expanded', 'false'); card.setAttribute('aria-label', `Similarity group: ${g.label || `Group_${g.id}`}, ${g.count} photos`)
-    const thumb = typeof g.thumbnail_base64 === 'string' && isValidBase64(g.thumbnail_base64) ? g.thumbnail_base64 : null
-    card.innerHTML = `
-        <div class="sim-group-card__header">
-          <input type="checkbox" class="sim-group-checkbox" data-group-id="${esc(String(g.id))}" ${selectedGroupIds.has(String(g.id)) ? 'checked' : ''} aria-label="Select ${esc(String(g.label || `Group_${g.id}`))} (${g.count} photos)">
-          <span class="sim-group-card__label">${esc(String(g.label || `Group_${g.id}`))}</span>
-          <span class="sim-group-card__count">${g.count} photos</span>
-        </div>
-      <div class="sim-group-card__thumbs">
-        ${thumb ? `<img class="sim-group-card__thumb-img" src="data:image/jpeg;base64,${thumb}" alt="">` : ''}
-        ${g.images.slice(thumb ? 1 : 0, 4).map(img => {
-          const f = (img.path || '').replace(/\\/g, '/').split('/').pop() || ''
-          return `<div class="sim-group-card__thumb${img.representative ? ' sim-group-card__thumb--rep' : ''}" title="${esc(f)}">${esc(f)}</div>`
-        }).join('')}
-        ${g.count > 4 ? `<div class="sim-group-card__thumb">+${g.count - 4} more</div>` : ''}
-      </div>
-      <div class="sim-group-card__paths">${g.images.map(img =>
-        `<div class="sim-group-card__path${img.representative ? ' sim-group-card__path--rep' : ''}">${img.representative ? '* ' : '  '}${esc(img.path)}</div>`
-      ).join('')}</div>`;
-    fragment.appendChild(card)
-  })
-  grid.appendChild(fragment)
 
   if (!groups.length) {
     grid.innerHTML = `<div class="empty-state"><div class="empty-state__icon">&#128269;</div><div class="empty-state__text">${stats.total === 0 ? 'Add photos to this session first.' : 'No similar images found in this session. Try lowering the threshold to find more matches.'}</div></div>`
+    _updateSelectionCount()
     _cleanupDelegated()
     const ung = $('#simUngList'); if (!ung) return; ung.innerHTML = ungrouped.map(u => `<div class="sim-ungrouped-item">${esc(u.path)}</div>`).join('')
     const cnt = $('#simUngCnt'); if (cnt) cnt.textContent = String(ungrouped.length)
     return
   }
+
+  _updateSelectionCount()
+
+  const fragment = document.createDocumentFragment()
+  groups.forEach(g => {
+    const isSelected = selectedGroupIds.has(String(g.id))
+    const card = document.createElement('div'); card.className = `sim-group-card${isSelected ? ' sim-group-card--selected' : ''}`; card.dataset.groupId = String(g.id); card.setAttribute('tabindex', '0'); card.setAttribute('role', 'button'); card.setAttribute('aria-expanded', 'false'); card.setAttribute('aria-label', `Similarity group: ${g.label || `Group_${g.id}`}, ${g.count} photos`)
+    const thumb = typeof g.thumbnail_base64 === 'string' && isValidBase64(g.thumbnail_base64) ? g.thumbnail_base64 : null
+    card.innerHTML = `
+      ${thumb ? `<img class="sim-group-card__preview" src="data:image/jpeg;base64,${thumb}" loading="lazy" alt="">` : ''}
+      <div class="sim-group-card__body">
+        <div class="sim-group-card__header">
+          <input type="checkbox" class="sim-group-checkbox" data-group-id="${esc(String(g.id))}" ${isSelected ? 'checked' : ''} aria-label="Select ${esc(String(g.label || `Group_${g.id}`))} (${g.count} photos)">
+          <span class="sim-group-card__label">${esc(String(g.label || `Group_${g.id}`))}</span>
+          <span class="sim-group-card__count">${g.count} photos</span>
+        </div>
+      <div class="sim-group-card__thumbs">
+        ${g.images.slice(0, 4).map(img => {
+          const f = (img.path || '').replace(/\\/g, '/').split('/').pop() || ''
+          return `<div style="width:36px;height:36px;background:var(--bg);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:0.6rem;color:var(--text-dim);font-family:monospace;overflow:hidden;border:${img.representative ? '1px solid var(--accent)' : '1px solid var(--border)'}" title="${esc(f)}">${esc(f.slice(0,2))}</div>`
+        }).join('')}
+        ${g.count > 4 ? `<div style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:0.65rem;color:var(--text-muted);background:var(--bg);border-radius:3px;border:1px solid var(--border)">+${g.count - 4}</div>` : ''}
+      </div>
+      <div class="sim-group-card__paths">${g.images.map(img =>
+        `<div class="sim-group-card__path${img.representative ? ' sim-group-card__path--rep' : ''}">${img.representative ? '* ' : '  '}${esc(img.path)}</div>`
+      ).join('')}</div>
+      </div>`;
+    fragment.appendChild(card)
+  })
+  grid.appendChild(fragment)
 
   _cleanupDelegated()
   _delegatedCleanups.push(on(grid, 'click', '.sim-group-card', (el, e) => {
@@ -503,23 +522,35 @@ function renderResults(): void {
       if (cb.checked) selectedGroupIds.add(gid)
       else selectedGroupIds.delete(gid)
     }
+    _updateSelectionCount()
+    // Toggle selected class on parent card
+    const card = cb.closest('.sim-group-card')
+    if (card) card.classList.toggle('sim-group-card--selected', cb.checked)
   }))
 
   const ung = $('#simUngList'); if (!ung) return; ung.innerHTML = ungrouped.map(u => `<div class="sim-ungrouped-item">${esc(u.path)}</div>`).join('')
   const cnt = $('#simUngCnt'); if (cnt) cnt.textContent = String(ungrouped.length)
 }
 
+function _updateSelectionCount(): void {
+  setText('simSelCount', selectedGroupIds.size)
+  setText('simGroupTotal', groups.length)
+}
+
 function setAllOpts(v: boolean): void {
   hasUserTouchedSelection = true
-  document.querySelectorAll<HTMLInputElement>('.sim-global-opt').forEach(cb => { cb.checked = v })
-  document.querySelectorAll<HTMLInputElement>('.sim-group-checkbox').forEach(cb => {
+  document.querySelectorAll<HTMLInputElement>('#simResults .sim-global-opt').forEach(cb => { cb.checked = v })
+  document.querySelectorAll<HTMLInputElement>('#simResults .sim-group-checkbox').forEach(cb => {
     cb.checked = v
     const gid = cb.dataset.groupId
     if (gid) {
       if (v) selectedGroupIds.add(gid)
       else selectedGroupIds.delete(gid)
     }
+    const card = cb.closest('.sim-group-card')
+    if (card) card.classList.toggle('sim-group-card--selected', v)
   })
+  _updateSelectionCount()
 }
 
 async function executeWb(): Promise<void> {
@@ -528,7 +559,7 @@ async function executeWb(): Promise<void> {
     toast('Select at least one group for writeback.', 'warning')
     return
   }
-  const btn = $('#btnExecWb') as HTMLButtonElement | null
+  const btn = $('#btnWb') as HTMLButtonElement | null
   if (btn) btn.disabled = true
   try {
     const options: Record<string, boolean> = {}
@@ -554,8 +585,8 @@ async function executeWb(): Promise<void> {
 }
 
 function getSimilarityParams({ syncInputs = false } = {}): { threshold: number; minGroup: number } {
-  const thresholdInput = $('#simThresh') as HTMLInputElement | null
-  const minGroupInput = $('#simMin') as HTMLInputElement | null
+  const thresholdInput = $('#simThreshold') as HTMLInputElement | null
+  const minGroupInput = $('#simMinGroup') as HTMLInputElement | null
   const threshold = clampInteger(thresholdInput?.value ?? THRESHOLD_DEFAULT, THRESHOLD_DEFAULT, THRESHOLD_MIN, THRESHOLD_MAX)
   const minGroup = clampInteger(minGroupInput?.value ?? MIN_GROUP_DEFAULT, MIN_GROUP_DEFAULT, MIN_GROUP_MIN, MIN_GROUP_MAX)
 
@@ -573,12 +604,15 @@ function openSimModal(): void {
   const modal = $('#simModal')
   if (!modal) return
   simModalPreviousFocus = document.activeElement as HTMLElement | null
+  document.body.appendChild(modal)
   modal.classList.add('active')
+  document.getElementById('app')?.setAttribute('inert', '')
   ;($('#btnCloseModal') as HTMLButtonElement | null)?.focus()
 }
 
 function closeSimModal(): void {
   $('#simModal')?.classList.remove('active')
+  document.getElementById('app')?.removeAttribute('inert')
   simModalPreviousFocus?.focus()
   simModalPreviousFocus = null
 }

@@ -149,11 +149,98 @@ describe('renderDashboard', () => {
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
 
-  it('shows hero section with import buttons', async () => {
+  it('shows workbench header with import buttons', async () => {
     mockEngine.session.list.mockResolvedValue(mockSessions)
     const html = await renderDashboard()
+    expect(html).toContain('Sessions')
     expect(html).toContain('Import from Capture One')
     expect(html).toContain('Import Files…')
+  })
+
+  it('renders source badge for Capture One sessions', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], import_source: 'capture_one' },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--source')
+    expect(html).toContain('Capture One')
+  })
+
+  it('renders analyzed badge when analysis is done', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], analysis_status: 'done' },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--analyzed')
+    expect(html).toContain('Analyzed')
+  })
+
+  it('renders writeback-done badge', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], writeback_status: 'done' },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--writeback-done')
+  })
+
+  it('renders writeback-partial badge', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], writeback_status: 'partial' },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--writeback-partial')
+  })
+
+  it('renders cleaned badge', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], writeback_status: 'cleaned' },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--cleaned')
+  })
+
+  it('renders failed badge when failed_writeback_count > 0', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], failed_writeback_count: 3 },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--failed')
+    expect(html).toContain('3 failed')
+  })
+
+  it('renders Local Files source badge', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], import_source: 'local_files' },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--source')
+    expect(html).toContain('Local Files')
+  })
+
+  it('does not render failed badge when failed_writeback_count is 0', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], failed_writeback_count: 0 },
+    ])
+    const html = await renderDashboard()
+    expect(html).not.toContain('badge--failed')
+  })
+
+  it('renders both writeback-done and failed badges together', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], writeback_status: 'done', failed_writeback_count: 5 },
+    ])
+    const html = await renderDashboard()
+    expect(html).toContain('badge--writeback-done')
+    expect(html).toContain('badge--failed')
+    expect(html).toContain('5 failed')
+  })
+
+  it('renders source badge for mixed import source', async () => {
+    mockEngine.session.list.mockResolvedValue([
+      { ...mockSessions[0], import_source: 'mixed' },
+    ])
+    const html = await renderDashboard()
+    expect(html).not.toContain('badge--source')
   })
 })
 

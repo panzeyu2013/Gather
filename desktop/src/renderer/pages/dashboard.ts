@@ -51,17 +51,33 @@ function renderSessionRows(sessions: SessionData[]): string {
       <div class="session-row__info">
         <div class="session-row__name">${esc(s.name || 'Untitled')}</div>
         <div class="session-row__meta">
-          ${statusBadge(s)}
-          &middot; ${esc((s.created_at || '').slice(0, 16).replace('T', ' '))}
+          ${esc((s.created_at || '').slice(0, 16).replace('T', ' '))}
           ${s.photo_count ? ` &middot; ${s.photo_count} photos` : ''}
         </div>
       </div>
+      <div class="session-row__status">
+        ${statusBadge(s)}
+      </div>
       <div class="session-row__actions">
-        <button class="btn btn--secondary btn--sm" data-act="sim" data-sid="${esc(s.id)}" aria-label="Open similarity groups for ${esc(s.name || 'Untitled')}">Similarity</button>
-        <button class="btn btn--secondary btn--sm" data-act="fkw" data-sid="${esc(s.id)}" aria-label="Open face keywording for ${esc(s.name || 'Untitled')}">Face KW</button>
-        <button class="btn btn--danger btn--sm" data-act="del" data-sid="${esc(s.id)}" aria-label="Delete session ${esc(s.name || 'Untitled')}">Delete</button>
+        <button class="btn btn--secondary btn--sm" data-act="sim" data-sid="${esc(s.id)}">Similarity</button>
+        <button class="btn btn--secondary btn--sm" data-act="fkw" data-sid="${esc(s.id)}">Face KW</button>
+        <button class="btn btn--sm" data-act="del" data-sid="${esc(s.id)}" style="color:var(--text-danger)" aria-label="Delete session">Delete</button>
       </div>
     </div>`).join('')
+}
+
+function renderSummary(sessions: SessionData[]): string {
+  const total = sessions.length
+  const needsReview = sessions.filter(s => s.writeback_status === 'partial' || (s.failed_writeback_count && s.failed_writeback_count > 0)).length
+  const completed = sessions.filter(s => s.writeback_status === 'done' || s.writeback_status === 'cleaned').length
+  const failed = sessions.filter(s => s.failed_writeback_count && s.failed_writeback_count > 0).length
+  return `
+    <div class="dashboard-summary">
+      <div class="dashboard-summary__item" aria-label="${total} total sessions"><span class="dashboard-summary__count">${total}</span> sessions</div>
+      ${needsReview ? `<div class="dashboard-summary__item dashboard-summary__item--warning" aria-label="${needsReview} sessions need review"><span class="dashboard-summary__count">${needsReview}</span> need review</div>` : ''}
+      ${failed ? `<div class="dashboard-summary__item dashboard-summary__item--danger" aria-label="${failed} sessions with writeback failures"><span class="dashboard-summary__count">${failed}</span> with failures</div>` : ''}
+      ${completed ? `<div class="dashboard-summary__item dashboard-summary__item--success" aria-label="${completed} completed sessions"><span class="dashboard-summary__count">${completed}</span> completed</div>` : ''}
+    </div>`
 }
 
 export async function renderDashboard(): Promise<string> {
@@ -75,36 +91,36 @@ export async function renderDashboard(): Promise<string> {
 
   return `
     <div class="dashboard">
-      <div class="dashboard__hero">
-        <h1>Gather</h1>
-        <p>Group photos by visual similarity or detect and keyword faces.</p>
-        <div style="margin-top:1.5rem;display:flex;gap:0.75rem;flex-wrap:wrap">
-          <button class="btn btn--primary btn--lg" id="btnImportC1">Import from Capture One</button>
+      <div class="dashboard-header">
+        <h1 class="dashboard-header__title">Sessions</h1>
+        <div class="dashboard-header__actions">
+          <button class="btn btn--primary" id="btnImportC1">Import from Capture One</button>
           <button class="btn btn--secondary" id="btnImportFiles">Import Files…</button>
         </div>
       </div>
       ${gSessions.length ? `
-        <div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem">
-          <button class="btn btn--danger btn--sm" id="btnClearAll">Delete All Sessions</button>
+        ${renderSummary(gSessions)}
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem">
+          <div class="segmented-control">
+            <button class="segmented-control__btn active" data-filter="all">All</button>
+            <button class="segmented-control__btn" data-filter="needs-review">Needs Review</button>
+            <button class="segmented-control__btn" data-filter="completed">Completed</button>
+          </div>
+          <button class="btn btn--sm" id="btnClearAll" style="color:var(--text-danger)">Delete All</button>
         </div>
-        <div class="dashboard-filters" style="display:flex;gap:0.5rem;margin-bottom:1rem">
-          <button class="btn btn--sm filter-btn active" data-filter="all">All</button>
-          <button class="btn btn--sm filter-btn" data-filter="needs-review">Needs Review</button>
-          <button class="btn btn--sm filter-btn" data-filter="completed">Completed</button>
-        </div>
-        <div class="session-list">${rows}</div>
+        <div aria-live="polite"><div class="session-list">${rows}</div></div>
       ` : (loadError ? `
-        <div class="empty-state">
-          <div class="empty-state__icon">&#9888;</div>
-          <h2>Failed to load sessions</h2>
-          <p>Could not connect to the server.</p>
+        <div class="state-panel" role="alert">
+          <div class="state-panel__icon">&#9888;</div>
+          <div class="state-panel__title">Failed to load sessions</div>
+          <div class="state-panel__body">Could not connect to the server.</div>
           <button class="btn btn--primary mt-2" id="btnRetryLoad">Retry</button>
         </div>
       ` : `
-        <div class="empty-state">
-          <div class="empty-state__icon">&#128247;</div>
-          <h2>No sessions yet</h2>
-          <p>Select images in Capture One, then click "Import from Capture One" to create your first session.</p>
+        <div class="state-panel" role="alert">
+          <div class="state-panel__icon">&#128247;</div>
+          <div class="state-panel__title">No sessions yet</div>
+          <div class="state-panel__body">Select images in Capture One, then click "Import from Capture One" to create your first session.</div>
         </div>
       `)}
     </div>`
@@ -139,9 +155,10 @@ export function setupDashboard(): void {
       if (existingList) {
         existingList.innerHTML = rows
       } else {
-        const emptyState = $('.empty-state')
+        const emptyState = $('.state-panel')
         if (emptyState) {
-          emptyState.outerHTML = `<div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem"><button class="btn btn--danger btn--sm" id="btnClearAll">Delete All Sessions</button></div><div class="dashboard-filters" style="display:flex;gap:0.5rem;margin-bottom:1rem"><button class="btn btn--sm filter-btn active" data-filter="all">All</button><button class="btn btn--sm filter-btn" data-filter="needs-review">Needs Review</button><button class="btn btn--sm filter-btn" data-filter="completed">Completed</button></div><div class="session-list">${rows}</div>`
+          const summaryHtml = renderSummary(gSessions)
+          emptyState.outerHTML = `${summaryHtml}<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem"><div class="segmented-control"><button class="segmented-control__btn active" data-filter="all">All</button><button class="segmented-control__btn" data-filter="needs-review">Needs Review</button><button class="segmented-control__btn" data-filter="completed">Completed</button></div><button class="btn btn--sm" id="btnClearAll" style="color:var(--text-danger)">Delete All</button></div><div aria-live="polite"><div class="session-list">${rows}</div></div>`
         }
       }
     } catch (err: unknown) { showError(err, 'Import failed. Please check that Capture One is running and photos are selected, then try again.') }
@@ -195,8 +212,8 @@ export function setupDashboard(): void {
     void importPhotos(() => c1.getSelectedPhotos(), 'capture_one')
   }
 
-  cleanups.push(on(content, 'click', '.filter-btn', (el) => {
-    $$('.filter-btn').forEach(b => b.classList.remove('active'))
+  cleanups.push(on(content, 'click', '.segmented-control__btn', (el) => {
+    $$('.segmented-control__btn').forEach(b => b.classList.remove('active'))
     el.classList.add('active')
     const filter = el.dataset.filter || 'all'
     const rows = $$('.session-row')
@@ -206,7 +223,7 @@ export function setupDashboard(): void {
       if (!s) return
       let show = true
       if (filter === 'needs-review') {
-        show = s.writeback_status === 'partial' || s.failed_writeback_count && s.failed_writeback_count > 0 || (s.analysis_status === 'idle' && s.writeback_status === 'idle') || (s.analysis_status === 'done' && s.writeback_status === 'idle')
+        show = s.writeback_status === 'partial' || s.failed_writeback_count && s.failed_writeback_count > 0 || (s.analysis_status === 'done' && s.writeback_status === 'idle')
       } else if (filter === 'completed') {
         show = s.writeback_status === 'done' || s.writeback_status === 'cleaned'
       }

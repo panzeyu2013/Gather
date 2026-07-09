@@ -6,6 +6,7 @@ import { esc } from './dom'
 export function dialog(message: string, confirmLabel?: string): Promise<boolean> {
   const okLabel = confirmLabel || 'OK'
   const previousFocus = document.activeElement as HTMLElement | null
+  document.getElementById('app')?.setAttribute('inert', '')
   return new Promise(resolve => {
     const overlay = document.createElement('div')
     overlay.className = 'dialog-overlay'
@@ -15,8 +16,8 @@ export function dialog(message: string, confirmLabel?: string): Promise<boolean>
         <div class="dialog-title" id="dialogTitle">Confirm</div>
         <div class="dialog-message" id="dialogMessage">${esc(message)}</div>
         <div class="dialog-actions">
-          <button class="dialog-btn dialog-btn--cancel" id="dialogCancel">Cancel</button>
-          <button class="dialog-btn dialog-btn--ok" id="dialogOk">${esc(okLabel)}</button>
+          <button class="btn btn--secondary" id="dialogCancel">Cancel</button>
+          <button class="btn btn--primary" id="dialogOk">${esc(okLabel)}</button>
         </div>
       </div>`
 
@@ -29,6 +30,7 @@ export function dialog(message: string, confirmLabel?: string): Promise<boolean>
     function close(): void {
       overlay.remove()
       document.removeEventListener('keydown', handleKey)
+      document.getElementById('app')?.removeAttribute('inert')
       if (previousFocus && typeof previousFocus.focus === 'function') {
         previousFocus.focus()
       }
@@ -61,6 +63,7 @@ export function dialog(message: string, confirmLabel?: string): Promise<boolean>
 export function typedConfirmDialog(message: string, requiredText: string, confirmLabel?: string): Promise<boolean> {
   const okLabel = confirmLabel || 'Confirm'
   const previousFocus = document.activeElement as HTMLElement | null
+  document.getElementById('app')?.setAttribute('inert', '')
   return new Promise(resolve => {
     const overlay = document.createElement('div')
     overlay.className = 'dialog-overlay'
@@ -69,11 +72,11 @@ export function typedConfirmDialog(message: string, requiredText: string, confir
       <div class="dialog-box" role="alertdialog" aria-modal="true" aria-labelledby="dialogTitle" aria-describedby="dialogMessage">
         <div class="dialog-title" id="dialogTitle">Confirm</div>
         <div class="dialog-message" id="dialogMessage">${esc(message)}</div>
-        <label class="dialog-message" for="dialogTypedInput" style="display:block;margin-top:0.75rem">Type <strong>${esc(requiredText)}</strong> to continue.</label>
-        <input id="dialogTypedInput" type="text" autocomplete="off" spellcheck="false" style="width:100%;margin-top:0.5rem;padding:0.65rem;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+        <label class="dialog-input-label" for="dialogTypedInput">Type <strong>${esc(requiredText)}</strong> to continue.</label>
+        <input id="dialogTypedInput" class="dialog-input" type="text" autocomplete="off" spellcheck="false">
         <div class="dialog-actions">
-          <button class="dialog-btn dialog-btn--cancel" id="dialogCancel">Cancel</button>
-          <button class="dialog-btn dialog-btn--ok" id="dialogOk" disabled>${esc(okLabel)}</button>
+          <button class="btn btn--secondary" id="dialogCancel">Cancel</button>
+          <button class="btn btn--primary" id="dialogOk" disabled>${esc(okLabel)}</button>
         </div>
       </div>`
 
@@ -87,6 +90,7 @@ export function typedConfirmDialog(message: string, requiredText: string, confir
     function close(): void {
       overlay.remove()
       document.removeEventListener('keydown', handleKey)
+      document.getElementById('app')?.removeAttribute('inert')
       if (previousFocus && typeof previousFocus.focus === 'function') {
         previousFocus.focus()
       }

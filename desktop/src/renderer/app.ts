@@ -41,16 +41,14 @@ function persistSession(): void {
 }
 
 function updateStepperAvailability(hasSession: boolean): void {
-  $$('#sidebar .stepper-step[data-page="similarity"], #sidebar .stepper-step[data-page="face-kw"]').forEach(el => {
-    el.classList.toggle('stepper-step--disabled', !hasSession)
+  $$('#sidebar .app-nav-item[data-page="similarity"], #sidebar .app-nav-item[data-page="face-kw"]').forEach(el => {
+    el.classList.toggle('app-nav-item--disabled', !hasSession)
     if (hasSession) {
       el.removeAttribute('aria-disabled')
       el.removeAttribute('title')
-      el.setAttribute('tabindex', '0')
+      ;(el as HTMLButtonElement).disabled = false
     } else {
-      el.setAttribute('aria-disabled', 'true')
-      el.setAttribute('title', 'Create a session on the Dashboard first')
-      el.setAttribute('tabindex', '-1')
+      ;(el as HTMLButtonElement).disabled = true
     }
   })
 }
@@ -60,12 +58,11 @@ async function navigateInternal(page: PageName, sid?: string): Promise<void> {
   runCleanup(); if (sid) { sessionId = sid; persistSession(); updateStepperAvailability(true) }
   location.hash = page; persistSession()
 
-  $$('#sidebar .stepper-step').forEach(el => {
+  $$('#sidebar .app-nav-item').forEach(el => {
     const p = (el as HTMLElement).dataset.page as PageName | undefined
     if (!p) return
     const isActive = p === page
-    el.classList.toggle('stepper-step--active', isActive)
-    el.classList.toggle('stepper-step--done', ORDER.indexOf(p as PageName) < ORDER.indexOf(page))
+    el.classList.toggle('app-nav-item--active', isActive)
     if (isActive) el.setAttribute('aria-current', 'page')
     else el.removeAttribute('aria-current')
   })
@@ -80,7 +77,7 @@ async function navigateInternal(page: PageName, sid?: string): Promise<void> {
     }
   } catch (err) {
     console.error(err)
-    contentEl.innerHTML = `<div class="empty-state"><div class="empty-state__icon">&#9888;</div><h2>Failed to load</h2><p>Please try again.</p><button class="btn btn--primary mt-2" id="btnRetryPage">Retry</button></div>`
+    contentEl.innerHTML = `<div class="state-panel" role="alert"><div class="state-panel__icon">&#9888;</div><div class="state-panel__title">Failed to load</div><div class="state-panel__body">Please try again.</div><button class="btn btn--primary mt-2" id="btnRetryPage">Retry</button></div>`
     $('#btnRetryPage')?.addEventListener('click', () => safeNav(page, sid).catch(console.error))
     contentEl.classList.remove('loading')
     return
@@ -95,12 +92,14 @@ async function navigateInternal(page: PageName, sid?: string): Promise<void> {
     await setupFns[page]()
   } catch (err) {
     console.error('setup failed:', err)
-    contentEl.innerHTML = `<div class="empty-state"><div class="empty-state__icon">&#9888;</div><h2>Failed to initialize</h2><p>Please try again.</p><button class="btn btn--primary mt-2" id="btnRetryPage">Retry</button></div>`
+    contentEl.innerHTML = `<div class="state-panel" role="alert"><div class="state-panel__icon">&#9888;</div><div class="state-panel__title">Failed to initialize</div><div class="state-panel__body">Please try again.</div><button class="btn btn--primary mt-2" id="btnRetryPage">Retry</button></div>`
     $('#btnRetryPage')?.addEventListener('click', () => safeNav(page, sid).catch(console.error))
     contentEl.classList.remove('loading')
     return
   }
   contentEl.classList.remove('loading')
+  const h1 = contentEl.querySelector('h1')
+  if (h1) { h1.setAttribute('tabindex', '-1'); (h1 as HTMLElement).focus() }
 }
 
 async function safeNav(page: PageName, sid?: string): Promise<void> {
@@ -109,7 +108,7 @@ async function safeNav(page: PageName, sid?: string): Promise<void> {
   if ((simRunning || fkwRunning) && !await dialog('Analysis is in progress. Stop and navigate away?')) return
 
   // Warn if navigating away from face-kw with possible unsaved work
-  if (page !== 'face-kw' && (document.querySelector('.fkw-panel[data-panel="3"].active') || document.querySelector('.fkw-panel[data-panel="4"].active'))) {
+  if (page !== 'face-kw' && document.querySelector('.fkw-panel[data-panel="2"].active')) {
     if (!await dialog('Unsaved changes may be lost. Navigate away?')) return
   }
   navigateInternal(page, sid).catch(console.error)
@@ -130,17 +129,12 @@ document.addEventListener('DOMContentLoaded', () => {
     return
   }
 
-  $$('#sidebar .stepper-step').forEach(el => {
+  $$('#sidebar .app-nav-item').forEach(el => {
     const page = (el as HTMLElement).dataset.page as PageName
     if (!page) return
     el.addEventListener('click', () => {
+      if (el.classList.contains('app-nav-item--disabled')) return
       safeNav(page, page !== 'dashboard' ? sessionId ?? undefined : undefined).catch(console.error)
-    })
-    el.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        safeNav(page, page !== 'dashboard' ? sessionId ?? undefined : undefined).catch(console.error)
-      }
     })
   })
   const unsubImportTrigger = window.gather.onEvent('c1:import-trigger', () => {
