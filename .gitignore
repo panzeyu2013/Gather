@@ -31,7 +31,7 @@ desktop/release/
 desktop/out/
 
 # Capture One SDK (downloaded reference, not committed)
-Capture One Plugin SDK*/
+Capture*One*Plugin*SDK*/
 
 .env*
 *.log
