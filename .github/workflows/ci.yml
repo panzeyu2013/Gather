@@ -11,6 +11,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      - run: npm run build --workspace=@gather/shared
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:vitest

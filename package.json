@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace=desktop",
-    "build": "npm run build --workspace=desktop",
+    "build": "npm run build --workspace=@gather/shared && npm run build --workspace=desktop",
     "typecheck": "npm run typecheck --workspace=desktop && npm run typecheck --workspace=packages/shared",
     "lint": "npm run lint --workspace=desktop",
     "test:vitest": "npm run test --workspace=desktop",
