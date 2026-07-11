@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { sessionApi } from '../../api/session'
@@ -23,6 +23,10 @@ export default function Dashboard() {
   const [newName, setNewName] = useState('')
   const [newSource, setNewSource] = useState('local')
   const [deleteTarget, setDeleteTarget] = useState<SessionData | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false)
+  const [selectMode, setSelectMode] = useState(false)
+  const selectAllRef = useRef<HTMLInputElement>(null)
 
   const { data: sessions, isLoading, error } = useQuery({
     queryKey: ['sessions'],
@@ -48,6 +52,15 @@ export default function Dashboard() {
     },
   })
 
+  const deleteManyMutation = useMutation({
+    mutationFn: (ids: string[]) => sessionApi.deleteMany(ids),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      setSelectedIds(new Set())
+      setShowBatchDeleteConfirm(false)
+    },
+  })
+
   const addPhotosMutation = useMutation({
     mutationFn: ({ sessionId, files }: { sessionId: string; files: string[] }) =>
       sessionApi.addPhotos(sessionId, files),
@@ -60,6 +73,26 @@ export default function Dashboard() {
       }
     },
   })
+
+  useEffect(() => {
+    const el = selectAllRef.current
+    if (el && sessions) {
+      el.indeterminate = selectedIds.size > 0 && selectedIds.size < sessions.length
+    }
+  }, [selectedIds, sessions])
+
+  const exitSelectMode = () => {
+    setSelectMode(false)
+    setSelectedIds(new Set())
+  }
+
+  const toggleSelectMode = () => {
+    if (selectMode) {
+      exitSelectMode()
+    } else {
+      setSelectMode(true)
+    }
+  }
 
   useEffect(() => {
     const unsub = window.gather.onPluginImport(async (files) => {
@@ -76,6 +109,31 @@ export default function Dashboard() {
     })
     return unsub
   }, [navigate, setSession])
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (!sessions) return
+    if (selectedIds.size === sessions.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(sessions.map((s) => s.id)))
+    }
+  }
+
+  const handleBatchDelete = () => {
+    deleteManyMutation.mutate(Array.from(selectedIds))
+  }
 
   const handleCreate = () => {
     if (!newName.trim()) return
@@ -133,31 +191,74 @@ export default function Dashboard() {
           </p>
         </div>
       ) : (
-        <div className={styles.list}>
-          {sessions.map((s) => (
-            <div key={s.id} className={styles.card}>
-              <div className={styles.cardInfo}>
-                <h3 className={styles.cardName}>{s.name}</h3>
-                <div className={styles.cardMeta}>
-                  <Badge status={s.status} />
-                  <span>{s.photoCount} 张照片</span>
-                  <span>{formatDate(s.createdAt)}</span>
-                </div>
-              </div>
-              <div className={styles.cardActions}>
-                <button className={styles.actionBtn} onClick={() => handleAnalyze(s)}>
-                  分析
+          <div>
+            <div className={styles.toolbar}>
+              {selectMode ? (
+                <>
+                  <label className={styles.selectAllLabel}>
+                    <input
+                      ref={selectAllRef}
+                      type="checkbox"
+                      className={styles.checkbox}
+                      checked={sessions.length > 0 && selectedIds.size === sessions.length}
+                      onChange={toggleSelectAll}
+                    />
+                    全选
+                  </label>
+                  {selectedIds.size > 0 && (
+                    <button
+                      className={styles.batchDeleteBtn}
+                      onClick={() => setShowBatchDeleteConfirm(true)}
+                    >
+                      删除 {selectedIds.size} 个工作区
+                    </button>
+                  )}
+                  <button className={styles.cancelSelectBtn} onClick={exitSelectMode}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button className={styles.multiSelectBtn} onClick={toggleSelectMode}>
+                  多选
                 </button>
-                <button className={styles.actionBtn} onClick={() => handleView(s)}>
-                  查看
-                </button>
-                <button className={styles.deleteBtn} onClick={() => setDeleteTarget(s)}>
-                  删除
-                </button>
-              </div>
+              )}
             </div>
-          ))}
-        </div>
+            <div className={styles.list}>
+              {sessions.map((s) => (
+                <div key={s.id} className={`${styles.card} ${selectedIds.has(s.id) ? styles.cardSelected : ''}`}>
+                  <div className={styles.cardInfo}>
+                    <h3 className={styles.cardName}>{s.name}</h3>
+                    <div className={styles.cardMeta}>
+                      <Badge status={s.status} />
+                      <span>{s.photoCount} 张照片</span>
+                      <span>{formatDate(s.createdAt)}</span>
+                    </div>
+                  </div>
+                  <div className={styles.cardActions}>
+                    <button className={styles.actionBtn} onClick={() => handleAnalyze(s)}>
+                      分析
+                    </button>
+                    <button className={styles.actionBtn} onClick={() => handleView(s)}>
+                      查看
+                    </button>
+                    <button className={styles.deleteBtn} onClick={() => setDeleteTarget(s)}>
+                      删除
+                    </button>
+                    {selectMode && (
+                      <span className={styles.cardCheckbox}>
+                        <input
+                          type="checkbox"
+                          className={styles.checkbox}
+                          checked={selectedIds.has(s.id)}
+                          onChange={() => toggleSelect(s.id)}
+                        />
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
       )}
 
       <Dialog open={showNewDialog} onClose={() => setShowNewDialog(false)} title="新建工作区">
@@ -206,6 +307,16 @@ export default function Dashboard() {
         title="删除工作区"
         message={`确定要删除 "${deleteTarget?.name ?? ''}" 吗？这将移除该工作区中的所有照片和结果。`}
         confirmLabel="删除"
+        destructive
+      />
+
+      <ConfirmDialog
+        open={showBatchDeleteConfirm}
+        onClose={() => setShowBatchDeleteConfirm(false)}
+        onConfirm={handleBatchDelete}
+        title="批量删除工作区"
+        message={`确定要删除选中的 ${selectedIds.size} 个工作区吗？这将移除这些工作区中的所有照片和结果，不可恢复。`}
+        confirmLabel="删除全部"
         destructive
       />
     </div>

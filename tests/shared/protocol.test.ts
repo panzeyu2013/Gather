@@ -1,5 +1,5 @@
 
-import { ALLOWED_EVENTS, isRecord } from './protocol'
+import { ALLOWED_EVENTS, isRecord } from '../../packages/shared/src/protocol'
 describe('shared protocol runtime guards', () => {
   it('accepts only plain command parameter objects', () => {
     expect(isRecord({ session_id: 's1' })).toBe(true)

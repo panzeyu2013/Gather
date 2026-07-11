@@ -201,3 +201,87 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ── Selection toolbar ── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+  min-height: 36px;
+}
+
+.selectAllLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+
+.multiSelectBtn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.multiSelectBtn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.cancelSelectBtn {
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.cancelSelectBtn:hover {
+  color: var(--color-text);
+}
+
+.batchDeleteBtn {
+  background: transparent;
+  border: 1px solid var(--color-error);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--color-error);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.batchDeleteBtn:hover {
+  background: var(--color-error);
+  color: #fff;
+}
+
+.cardSelected {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
+.cardCheckbox {
+  display: inline-flex;
+  align-items: center;
+  padding-left: 4px;
+}

@@ -43,6 +43,11 @@ export interface SessionDeleteParams {
   confirmed: boolean
 }
 
+export interface SessionDeleteManyParams {
+  sessionIds: string[]
+  confirmed: boolean
+}
+
 export interface SessionAddPhotosParams {
   sessionId: string
   filepaths: string[]
@@ -180,6 +185,7 @@ export type Command =
   | { type: 'session.create'; params: SessionCreateParams }
   | { type: 'session.list'; params: Record<string, never> }
   | { type: 'session.delete'; params: SessionDeleteParams }
+  | { type: 'session.delete_many'; params: SessionDeleteManyParams }
   | { type: 'session.add_photos'; params: SessionAddPhotosParams }
   | { type: 'session.get'; params: SessionGetParams }
   | { type: 'session.update'; params: SessionUpdateParams }
@@ -388,7 +394,7 @@ export interface AddPhotoResult {
 // ── 命令白名单（保留向后兼容）──
 
 export const ALLOWED_COMMANDS = new Set([
-  'session.create', 'session.delete', 'session.list', 'session.get', 'session.update', 'session.add_photos',
+  'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
@@ -397,7 +403,7 @@ export const ALLOWED_COMMANDS = new Set([
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([
-  'session.delete',
+  'session.delete', 'session.delete_many',
   'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.writeback', 'sim.retry_failed_writeback',
 ])

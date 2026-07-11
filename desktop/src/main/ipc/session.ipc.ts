@@ -90,6 +90,19 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
   )
 
   registry.register(
+    'session.delete_many',
+    wrapHandler(async (params) => {
+      const ids = validateStringArray(params.sessionIds, 'sessionIds')
+      if (ids.length === 0) {
+        return err('No session IDs provided')
+      }
+      const confirmed = Boolean(params.confirmed)
+      const count = getService().deleteSessions(ids, confirmed)
+      return ok({ deletedCount: count })
+    }),
+  )
+
+  registry.register(
     'session.add_photos',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')

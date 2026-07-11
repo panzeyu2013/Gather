@@ -37,6 +37,18 @@ export class SessionRepository {
     return result.changes > 0
   }
 
+  deleteMany(ids: string[]): number {
+    const db = getDatabase()
+    const deleteStmt = db.prepare('DELETE FROM sessions WHERE id = ?')
+    const deleteMany = db.transaction((sessionIds: string[]) => {
+      for (const sid of sessionIds) {
+        deleteStmt.run(sid)
+      }
+    })
+    deleteMany(ids)
+    return ids.length
+  }
+
   list(): SessionRow[] {
     const db = getDatabase()
     return db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as SessionRow[]

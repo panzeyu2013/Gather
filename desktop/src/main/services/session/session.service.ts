@@ -67,6 +67,16 @@ export class SessionService {
     }
   }
 
+  deleteSessions(sessionIds: string[], confirmed: boolean): number {
+    if (!confirmed) {
+      throw new Error('Deletion must be confirmed')
+    }
+    for (const id of sessionIds) {
+      this.photoRepo.deleteBySession(id)
+    }
+    return this.sessionRepo.deleteMany(sessionIds)
+  }
+
   addPhotos(sessionId: string, filepaths: string[], source: string): AddPhotoResult {
     const session = this.sessionRepo.get(sessionId)
     if (!session) {

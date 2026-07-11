@@ -8,6 +8,8 @@ export const sessionApi = {
     sendCommand<SessionData>('session.create', { name, source }),
   delete: (id: string) =>
     sendCommand<boolean>('session.delete', { sessionId: id, confirmed: true }),
+  deleteMany: (ids: string[]) =>
+    sendCommand<{ deletedCount: number }>('session.delete_many', { sessionIds: ids, confirmed: true }),
   addPhotos: (sessionId: string, paths: string[]) =>
     sendCommand<AddPhotoResult>('session.add_photos', { sessionId, filepaths: paths }),
   update: (sessionId: string, name: string) =>

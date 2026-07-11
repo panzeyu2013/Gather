@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { clusterEmbeddings } from './face-clusterer'
+import { clusterEmbeddings } from '../../../desktop/src/main/services/face-kw/face-clusterer'
 
 describe('clusterEmbeddings', () => {
   it('clusters identical embeddings', () => {
     const embedding = Array(128).fill(0.1)
-    // L2 normalize
     const norm = Math.sqrt(embedding.reduce((s, v) => s + v * v, 0))
     const normalized = embedding.map(v => v / norm)
 
@@ -30,7 +29,6 @@ describe('clusterEmbeddings', () => {
       { observationId: 2, embedding: embB, photoId: 'b' },
     ]
     const result = clusterEmbeddings(entries, 0.9, 2)
-    // dot product = 0, similary = 0, < 0.9 threshold
     expect(result.clusters).toHaveLength(0)
     expect(result.noise).toHaveLength(2)
   })

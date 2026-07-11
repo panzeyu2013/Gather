@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hammingDistance } from './hash-computer'
+import { hammingDistance } from '../../../desktop/src/main/services/similarity/hash-computer'
 
 describe('hammingDistance', () => {
   it('returns 0 for identical hashes', () => {
@@ -11,7 +11,6 @@ describe('hammingDistance', () => {
   })
 
   it('returns correct distance for known values', () => {
-    // 0xF = 1111, 0x0 = 0000 → 4 bits differ per hex digit
     expect(hammingDistance('ffffffffffffffff', 'f0f0f0f0f0f0f0f0')).toBe(32)
   })
 

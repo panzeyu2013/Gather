@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clusterByHash } from './cluster-engine'
+import { clusterByHash } from '../../../desktop/src/main/services/similarity/cluster-engine'
 
 describe('clusterByHash', () => {
   it('groups identical hashes together', () => {
@@ -9,7 +9,6 @@ describe('clusterByHash', () => {
       { photoId: 'c', hash: 'fffffffffffffffe' },
     ]
     const result = clusterByHash(entries, 4, 2)
-    // a and b are identical (distance 0), c is distance 1 from both (<= 4)
     expect(result.groups).toHaveLength(1)
     expect(result.groups[0]).toHaveLength(3)
   })
@@ -30,7 +29,6 @@ describe('clusterByHash', () => {
       { photoId: 'b', hash: 'fffffffffffffffe' },
     ]
     const result = clusterByHash(entries, 4, 3)
-    // only 2 entries, need 3 for a group
     expect(result.groups).toHaveLength(0)
   })
 

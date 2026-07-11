@@ -4,7 +4,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const ALLOWED_COMMANDS = new Set([
-  'session.create', 'session.delete', 'session.list', 'session.get', 'session.update', 'session.add_photos',
+  'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
@@ -13,7 +13,7 @@ const ALLOWED_COMMANDS = new Set([
 ])
 
 const DESTRUCTIVE_COMMANDS = new Set([
-  'session.delete',
+  'session.delete', 'session.delete_many',
   'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.writeback', 'sim.retry_failed_writeback',
 ])
