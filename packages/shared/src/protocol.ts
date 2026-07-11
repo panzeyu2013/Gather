@@ -237,13 +237,13 @@ export type Event =
 // ── 响应 ──
 
 export interface ResponseOk<T = unknown> {
-  id: number | string
+  id?: number | string
   ok: true
   data: T
 }
 
 export interface ResponseErr {
-  id: number | string
+  id?: number | string
   ok: false
   error: string | { type: string; message: string }
 }
