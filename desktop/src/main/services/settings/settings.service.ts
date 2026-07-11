@@ -78,6 +78,8 @@ export function getDefaults(): Record<string, string | number> {
 
     memory_cache_size: 200,
     disk_cache_dir: '',
+    disk_cache_max_size_mb: 1024,
+    disk_cache_eviction_policy: 'lru',
 
     db_cache_size_mb: 64,
     db_synchronous: 'normal',

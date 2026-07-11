@@ -6,6 +6,7 @@ import { SettingsService } from '../settings'
 import { DecoderRegistry } from './registry'
 import { SharpDecoder } from './decoders/sharp-decoder'
 import { SipsDecoder } from './decoders/sips-decoder'
+import { DiskCacheManager, EvictionPolicy } from './disk-cache'
 import type { DecodeResult } from './decoder'
 
 // ── Cache interface ──
@@ -46,6 +47,7 @@ export class MemoryThumbnailCache implements ThumbnailCache {
 
 export class DiskThumbnailCache implements ThumbnailCache {
   private dir: string
+  private manager: DiskCacheManager
 
   constructor(cacheDir?: string) {
     const diskDir = cacheDir ?? (SettingsService.getInstance().get('disk_cache_dir', '') || path.join(app.getPath('userData'), 'thumbnails'))
@@ -53,6 +55,11 @@ export class DiskThumbnailCache implements ThumbnailCache {
     if (!fs.existsSync(this.dir)) {
       fs.mkdirSync(this.dir, { recursive: true })
     }
+    const settings = SettingsService.getInstance()
+    const maxSizeMb = settings.getNumber('disk_cache_max_size_mb', 1024)
+    const policyStr = settings.get('disk_cache_eviction_policy', 'lru')
+    const policy = policyStr === 'fifo' ? EvictionPolicy.FIFO : policyStr === 'lfu' ? EvictionPolicy.LFU : EvictionPolicy.LRU
+    this.manager = new DiskCacheManager(this.dir, maxSizeMb * 1024 * 1024, policy)
   }
 
   async get(key: string): Promise<DecodeResult | null> {
@@ -64,6 +71,8 @@ export class DiskThumbnailCache implements ThumbnailCache {
 
     try {
       const buffer = fs.readFileSync(filePath)
+      const hash = this.hashKey(key)
+      this.manager.onAccess(hash)
       return { buffer, format: 'jpeg', width: 0, height: 0 }
     } catch {
       return null
@@ -71,16 +80,23 @@ export class DiskThumbnailCache implements ThumbnailCache {
   }
 
   async set(key: string, value: DecodeResult): Promise<void> {
+    const filePath = this.cachePath(key)
     try {
-      fs.writeFileSync(this.cachePath(key), value.buffer)
+      fs.writeFileSync(filePath, value.buffer)
+      const hash = this.hashKey(key)
+      this.manager.onSet(hash, value.buffer.length)
+      this.manager.evictIfNeeded()
     } catch {
       // disk write failed — silently skip
     }
   }
 
+  private hashKey(key: string): string {
+    return crypto.createHash('sha256').update(key).digest('hex').slice(0, 16)
+  }
+
   private cachePath(key: string): string {
-    const hash = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16)
-    return path.join(this.dir, `${hash}.jpg`)
+    return path.join(this.dir, `${this.hashKey(key)}.jpg`)
   }
 
   private isValid(cacheFile: string, sourceFile: string): boolean {

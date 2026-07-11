@@ -45,19 +45,27 @@
 
 .bottomNav {
   margin-top: auto;
-  padding: 8px 0;
-  border-top: 1px solid var(--color-border, #333);
+  padding: 8px 0 0;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
 }
 
 .settingsBtn {
-  display: block;
-  padding: 8px 16px;
-  color: var(--color-text-secondary, #999);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
   text-decoration: none;
   font-size: 18px;
-  text-align: center;
+  transition: background 0.15s, color 0.15s;
 }
 
 .settingsBtn:hover {
-  color: var(--color-text, #fff);
+  background: var(--color-hover);
+  color: var(--color-text);
 }
