@@ -5,8 +5,8 @@ import Loading from './components/Loading/Loading'
 import ToastContainer from './components/Toast/ToastContainer'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Similarity = lazy(() => import('./pages/Similarity'))
-const FaceKeywording = lazy(() => import('./pages/FaceKeywording'))
+const SessionDetail = lazy(() => import('./pages/SessionDetail'))
+const Settings = lazy(() => import('./pages/Settings'))
 
 export default function App() {
   return (
@@ -15,8 +15,8 @@ export default function App() {
         <Routes>
           <Route element={<PageShell />}>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/similarity/:sessionId" element={<Similarity />} />
-            <Route path="/face-kw/:sessionId" element={<FaceKeywording />} />
+            <Route path="/sessions/:sessionId/*" element={<SessionDetail />} />
+            <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>
       </Suspense>

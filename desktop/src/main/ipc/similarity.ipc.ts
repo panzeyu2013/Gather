@@ -3,6 +3,7 @@ import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr, WritebackOptions, WritebackItem, GroupData } from '@gather/shared'
 import { SimilarityService } from '../services/similarity/similarity.service'
 import { WritebackService } from '../services/writeback/writeback.service'
+import { SettingsService } from '../services/settings'
 import { SessionRepository } from '../db/repositories/session.repo'
 import { PhotoRepository } from '../db/repositories/photo.repo'
 import { WritebackRepository } from '../db/repositories/writeback.repo'
@@ -60,6 +61,7 @@ function getWritebackService(): WritebackService {
 }
 
 export function registerSimilarityHandlers(registry: CommandRegistry): void {
+  const settings = SettingsService.getInstance()
   registry.register(
     'sim.analyze',
     wrapHandler(async (params, event) => {
@@ -101,9 +103,9 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const threshold =
-        typeof params.threshold === 'number' ? params.threshold : 10
+        typeof params.threshold === 'number' ? params.threshold : settings.getNumber('default_threshold', 10)
       const minGroupSize =
-        typeof params.minGroupSize === 'number' ? params.minGroupSize : 2
+        typeof params.minGroupSize === 'number' ? params.minGroupSize : settings.getNumber('default_min_group_size', 2)
       const result = await getService().recluster(
         sessionId,
         threshold,

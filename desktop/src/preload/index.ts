@@ -9,7 +9,9 @@ const ALLOWED_COMMANDS = new Set([
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
   'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get',
+  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail',
+  'photo.list',
+  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
 ])
 
 const DESTRUCTIVE_COMMANDS = new Set([

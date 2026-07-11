@@ -3,16 +3,20 @@
 
 import { execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
+import { SettingsService } from './services/settings'
 
 const execFile = promisify(execFileCb)
 
-async function execAppleScript(script: string, retries = 3): Promise<string> {
-  for (let i = 0; i < retries; i++) {
+async function execAppleScript(script: string, retries?: number): Promise<string> {
+  const settings = SettingsService.getInstance()
+  const maxRetries = retries ?? settings.getNumber('c1_retries', 3)
+  const timeout = settings.getNumber('c1_timeout_ms', 15000)
+  for (let i = 0; i < maxRetries; i++) {
     try {
-      const { stdout } = await execFile('osascript', ['-e', script], { timeout: 15000 })
+      const { stdout } = await execFile('osascript', ['-e', script], { timeout })
       return stdout
     } catch (err) {
-      if (i === retries - 1) throw err
+      if (i === maxRetries - 1) throw err
       await new Promise(r => setTimeout(r, 500 * (i + 1)))
     }
   }
@@ -85,12 +89,7 @@ end tell
 `
   try {
     await execAppleScript(script)
-    // Allow Capture One time to finish reloading metadata.
-    // The 500ms delay is a pragmatic choice; there is no callback from C1.
-    // If C1 metadata reload takes longer, results may be stale on the next poll.
-    // NOTE: This hardcoded delay is a fragility point. It should be replaced with
-    // retry-based polling (e.g. poll for a metadata change signal) in the future.
-    await new Promise(r => setTimeout(r, 500))
+    await new Promise(r => setTimeout(r, SettingsService.getInstance().getNumber('c1_reload_delay_ms', 500)))
   } catch (err) {
     console.error('capture-one reloadMetadata failed:', err)
     throw new Error('Could not connect to Capture One to reload metadata. Please make sure Capture One is running with a document open.', { cause: err })

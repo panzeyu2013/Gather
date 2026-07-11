@@ -7,6 +7,7 @@ import { PhotoRepository } from '../db/repositories/photo.repo'
 import { FaceRepository } from '../db/repositories/face.repo'
 import { WritebackRepository } from '../db/repositories/writeback.repo'
 import { XmpWriter } from '../services/xmp/xmp-writer'
+import { SettingsService } from '../services/settings'
 
 function ok<T>(data: T): ResponseOk<T> {
   return { ok: true, data }
@@ -74,15 +75,16 @@ function getFaceRepo(): FaceRepository {
 }
 
 export function registerFaceKwHandlers(registry: CommandRegistry): void {
+  const settings = SettingsService.getInstance()
   registry.register(
     'fkw.analyze',
     wrapHandler(async (params, event) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const eps = typeof params.eps === 'number' ? params.eps : 0.6
-      const minSamples = typeof params.minSamples === 'number' ? params.minSamples : 3
+      const eps = typeof params.eps === 'number' ? params.eps : settings.getNumber('default_eps', 0.6)
+      const minSamples = typeof params.minSamples === 'number' ? params.minSamples : settings.getNumber('default_min_samples', 3)
 
-      const detectorPath = typeof params.detectorPath === 'string' ? params.detectorPath : 'models/face_detector.onnx'
-      const encoderPath = typeof params.encoderPath === 'string' ? params.encoderPath : 'models/face_encoder.onnx'
+      const detectorPath = typeof params.detectorPath === 'string' ? params.detectorPath : settings.get('detector_model_path', 'models/face_detector.onnx')
+      const encoderPath = typeof params.encoderPath === 'string' ? params.encoderPath : settings.get('encoder_model_path', 'models/face_encoder.onnx')
 
       const onProgress = (progress: { current: number; total: number; message: string }) => {
         event?.sender.send('gather:event', 'progress', {

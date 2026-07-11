@@ -69,7 +69,7 @@ export default function Dashboard() {
       const session = sessions?.find(s => s.id === variables.sessionId)
       if (session) {
         setSession(session.id)
-        navigate(`/similarity/${session.id}`)
+        navigate(`/sessions/${session.id}/gallery`)
       }
     },
   })
@@ -102,7 +102,7 @@ export default function Dashboard() {
         const session = await sessionApi.create(name, 'capture-one')
         await sessionApi.addPhotos(session.id, files)
         setSession(session.id)
-        navigate(`/similarity/${session.id}`)
+        navigate(`/sessions/${session.id}/gallery`)
       } catch (err) {
         console.error('Plugin import failed:', err)
       }
@@ -142,12 +142,7 @@ export default function Dashboard() {
 
   const handleAnalyze = (session: SessionData) => {
     setSession(session.id)
-    navigate(`/similarity/${session.id}`)
-  }
-
-  const handleView = (session: SessionData) => {
-    setSession(session.id)
-    navigate(`/face-kw/${session.id}`)
+    navigate(`/sessions/${session.id}/gallery`)
   }
 
   const formatDate = (iso: string) => {
@@ -236,10 +231,7 @@ export default function Dashboard() {
                   </div>
                   <div className={styles.cardActions}>
                     <button className={styles.actionBtn} onClick={() => handleAnalyze(s)}>
-                      分析
-                    </button>
-                    <button className={styles.actionBtn} onClick={() => handleView(s)}>
-                      查看
+                      进入
                     </button>
                     <button className={styles.deleteBtn} onClick={() => setDeleteTarget(s)}>
                       删除

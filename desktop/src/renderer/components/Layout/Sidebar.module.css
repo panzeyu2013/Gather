@@ -42,3 +42,22 @@
   background: var(--color-primary);
   color: var(--color-text-inverse);
 }
+
+.bottomNav {
+  margin-top: auto;
+  padding: 8px 0;
+  border-top: 1px solid var(--color-border, #333);
+}
+
+.settingsBtn {
+  display: block;
+  padding: 8px 16px;
+  color: var(--color-text-secondary, #999);
+  text-decoration: none;
+  font-size: 18px;
+  text-align: center;
+}
+
+.settingsBtn:hover {
+  color: var(--color-text, #fff);
+}

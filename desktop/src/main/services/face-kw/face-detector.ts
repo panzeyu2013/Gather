@@ -1,17 +1,23 @@
 import ort from 'onnxruntime-node'
 import sharp from 'sharp'
+import { SettingsService } from '../settings'
 
 export interface DetectedFace {
   bbox: [number, number, number, number]
   confidence: number
 }
 
-const INPUT_SIZE = 640
 let detectionSession: ort.InferenceSession | null = null
 
 export async function initDetector(modelPath: string): Promise<void> {
+  const provider = SettingsService.getInstance().get('onnx_provider', 'CoreMLExecutionProvider')
+  const executionProviders = provider === 'CPU'
+    ? ['CPUExecutionProvider']
+    : provider === 'CUDA'
+      ? ['CUDAExecutionProvider', 'CPUExecutionProvider']
+      : ['CoreMLExecutionProvider', 'CPUExecutionProvider']
   detectionSession = await ort.InferenceSession.create(modelPath, {
-    executionProviders: ['CoreMLExecutionProvider', 'CPUExecutionProvider'],
+    executionProviders,
   })
 }
 
@@ -21,6 +27,8 @@ export async function detectFaces(
   if (!detectionSession) {
     throw new Error('Face detector not initialized. Call initDetector first.')
   }
+
+  const INPUT_SIZE = SettingsService.getInstance().getNumber('detect_input_size', 640)
 
   const { data, info } = await sharp(imagePath)
     .resize(INPUT_SIZE, INPUT_SIZE, { fit: 'fill' })
@@ -73,7 +81,8 @@ export async function detectFaces(
   for (let i = 0; i < numDetections; i++) {
     const offset = i * stride
     const confidence = rawArr[offset + 4]
-    if (confidence < 0.5) continue
+    const confidenceThreshold = SettingsService.getInstance().getNumber('detect_confidence', 0.5)
+    if (confidence < confidenceThreshold) continue
 
     const x = rawArr[offset]
     const y = rawArr[offset + 1]

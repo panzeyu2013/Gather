@@ -1,6 +1,7 @@
-import sharp from 'sharp'
 import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr } from '@gather/shared'
+import { ImageService, TieredThumbnailCache } from '../services/image'
+import { SettingsService } from '../services/settings'
 
 function ok<T>(data: T): ResponseOk<T> {
   return { ok: true, data }
@@ -21,13 +22,24 @@ function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
   }
 }
 
+let imageService: ImageService | null = null
+
+function getImageService(): ImageService {
+  if (!imageService) {
+    imageService = new ImageService(new TieredThumbnailCache())
+  }
+  return imageService
+}
+
 export function registerSystemHandlers(registry: CommandRegistry): void {
+  const settings = SettingsService.getInstance()
+
   registry.register(
     'thumbnail.get',
     wrapHandler(async (params) => {
       const { path: imagePath } = params as { path: string }
-      const buffer = await sharp(imagePath).resize(200, 200, { fit: 'cover' }).jpeg({ quality: 80 }).toBuffer()
-      return ok(buffer.toString('base64'))
+      const result = await getImageService().getThumbnail(imagePath, settings.getNumber('thumbnail_size', 200))
+      return ok(result.buffer.toString('base64'))
     }),
   )
 }

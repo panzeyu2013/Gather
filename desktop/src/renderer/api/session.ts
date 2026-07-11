@@ -1,5 +1,5 @@
 import { sendCommand } from './client'
-import type { SessionData, AddPhotoResult } from '@gather/shared'
+import type { SessionData, AddPhotoResult, PhotoData } from '@gather/shared'
 
 export const sessionApi = {
   list: () => sendCommand<SessionData[]>('session.list'),
@@ -14,4 +14,6 @@ export const sessionApi = {
     sendCommand<AddPhotoResult>('session.add_photos', { sessionId, filepaths: paths }),
   update: (sessionId: string, name: string) =>
     sendCommand<SessionData>('session.update', { sessionId, name }),
+  getPhotos: (sessionId: string) =>
+    sendCommand<PhotoData[]>('photo.list', { sessionId }),
 }

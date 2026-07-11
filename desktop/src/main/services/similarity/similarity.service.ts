@@ -1,3 +1,4 @@
+import { SettingsService } from '../settings'
 import { getDatabase } from '../../db/database'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
@@ -16,11 +17,9 @@ export interface SimilarityResult {
   }
 }
 
-const DEFAULT_THRESHOLD = 10
-const DEFAULT_MIN_GROUP_SIZE = 2
-
 export class SimilarityService {
   private controllers = new Map<string, AbortController>()
+  private settings = SettingsService.getInstance()
 
   constructor(
     private photoRepo: PhotoRepository,
@@ -39,8 +38,8 @@ export class SimilarityService {
     this.controllers.set(sessionId, controller)
     const { signal } = controller
 
-    const threshold = options?.threshold ?? DEFAULT_THRESHOLD
-    const minGroupSize = options?.minGroupSize ?? DEFAULT_MIN_GROUP_SIZE
+    const threshold = options?.threshold ?? this.settings.getNumber('default_threshold', 10)
+    const minGroupSize = options?.minGroupSize ?? this.settings.getNumber('default_min_group_size', 2)
 
     try {
       this.sessionRepo.updateAnalysisStatus(sessionId, 'running')

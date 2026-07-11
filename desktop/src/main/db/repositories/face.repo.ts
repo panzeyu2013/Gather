@@ -39,6 +39,7 @@ export interface FaceClusterRow {
   label: string
   member_count: number
   status: string
+  thumbnail_base64: string
   members?: FaceClusterMemberRow[]
   binding?: { clusterId: string; roleName: string; keywords: string[] }
 }
@@ -88,10 +89,15 @@ export class FaceRepository {
     db.prepare('DELETE FROM face_observations WHERE session_id = ?').run(sessionId)
   }
 
+  updateClusterThumbnail(clusterId: number, base64: string): void {
+    const db = getDatabase()
+    db.prepare('UPDATE face_clusters SET thumbnail_base64 = ? WHERE id = ?').run(base64, clusterId)
+  }
+
   saveClusters(sessionId: string, clusters: FaceClusterInput[]): number[] {
     const db = getDatabase()
     const ids: number[] = []
-    const insertCluster = db.prepare("INSERT INTO face_clusters (session_id, label, member_count, status) VALUES (?, ?, ?, 'unbound')")
+    const insertCluster = db.prepare("INSERT INTO face_clusters (session_id, label, member_count, status, thumbnail_base64) VALUES (?, ?, ?, 'unbound', '')")
     const insertMember = db.prepare('INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, photo_path, bbox, confidence, observation_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
     const insertMany = db.transaction(() => {
       for (const cluster of clusters) {

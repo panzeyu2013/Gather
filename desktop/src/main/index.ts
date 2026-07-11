@@ -5,6 +5,7 @@ import { app, BrowserWindow, ipcMain, Menu, dialog, session } from 'electron'
 import { join, resolve } from 'path'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
 import { getDatabase } from './db/database'
+import { SettingsService } from './services/settings'
 import { runMigrations } from './db/migrations'
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
 import { registerSessionHandlers } from './ipc/session.ipc'
@@ -12,6 +13,9 @@ import { registerFaceKwHandlers } from './ipc/face-kw.ipc'
 import { registerSimilarityHandlers } from './ipc/similarity.ipc'
 import { registerWritebackHandlers } from './ipc/writeback.ipc'
 import { registerSystemHandlers } from './ipc/system.ipc'
+import { registerImageHandlers } from './ipc/image.ipc'
+import { registerPhotoHandlers } from './ipc/photo.ipc'
+import { registerSettingsHandlers } from './ipc/settings.ipc'
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const registry = new CommandRegistry()
@@ -166,6 +170,9 @@ function registerIpc(): void {
   registerSimilarityHandlers(registry)
   registerWritebackHandlers(registry)
   registerSystemHandlers(registry)
+  registerImageHandlers(registry)
+  registerPhotoHandlers(registry)
+  registerSettingsHandlers(registry)
 
   ipcMain.handle('c1:get-selected-photos', async (e) => {
     ensureMainWindowSender(e)
@@ -215,6 +222,11 @@ app.whenReady().then(() => {
   runMigrations(db)
 
   registerIpc()
+
+  const settings = SettingsService.getInstance()
+  db.pragma(`synchronous = ${settings.get('db_synchronous', 'normal').toUpperCase()}`)
+  db.pragma(`cache_size = ${-settings.getNumber('db_cache_size_mb', 64) * 1000}`)
+
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate))
   createWindow()
 

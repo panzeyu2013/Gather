@@ -1,4 +1,5 @@
 import sharp from 'sharp'
+import { SettingsService } from '../settings'
 
 export async function computeDHash(imagePath: string): Promise<string> {
   const { data } = await sharp(imagePath)
@@ -25,7 +26,7 @@ export async function computeDHash(imagePath: string): Promise<string> {
 
 export async function computeBatchDHash(imagePaths: string[]): Promise<Map<string, string>> {
   const results = new Map<string, string>()
-  const CHUNK_SIZE = 8
+  const CHUNK_SIZE = SettingsService.getInstance().getNumber('hash_chunk_size', 8)
 
   for (let i = 0; i < imagePaths.length; i += CHUNK_SIZE) {
     const chunk = imagePaths.slice(i, i + CHUNK_SIZE)

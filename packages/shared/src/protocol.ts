@@ -179,6 +179,23 @@ export interface ThumbnailGetParams {
   source?: string
 }
 
+export interface ImageGetPreviewParams {
+  path: string
+  maxDimension?: number
+}
+
+export interface ImageGetThumbnailParams {
+  path: string
+  size?: number
+}
+
+export interface ImagePreviewResult {
+  buffer: string
+  width: number
+  height: number
+  format: string
+}
+
 // ── 命令联合类型 ──
 
 export type Command =
@@ -210,6 +227,13 @@ export type Command =
   | { type: 'sim.writeback_items'; params: SimWritebackItemsParams }
   | { type: 'sim.retry_failed_writeback'; params: SimRetryFailedWritebackParams }
   | { type: 'thumbnail.get'; params: ThumbnailGetParams }
+  | { type: 'image.get_preview'; params: ImageGetPreviewParams }
+  | { type: 'image.get_thumbnail'; params: ImageGetThumbnailParams }
+  | { type: 'photo.list'; params: { sessionId: string } }
+  | { type: 'settings.get_all'; params: Record<string, never> }
+  | { type: 'settings.get'; params: { key: string } }
+  | { type: 'settings.set'; params: { key: string; value: string } }
+  | { type: 'settings.reset'; params: Record<string, never> }
 
 // ── 事件联合类型 ──
 
@@ -399,7 +423,9 @@ export const ALLOWED_COMMANDS = new Set([
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
   'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get',
+  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail',
+  'photo.list',
+  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([

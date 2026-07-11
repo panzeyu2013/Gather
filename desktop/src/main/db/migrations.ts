@@ -45,7 +45,8 @@ export function runMigrations(db: Database.Database): void {
       session_id TEXT NOT NULL REFERENCES sessions(id),
       label TEXT NOT NULL DEFAULT '',
       member_count INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'unbound'
+      status TEXT NOT NULL DEFAULT 'unbound',
+      thumbnail_base64 TEXT NOT NULL DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS face_cluster_members (
@@ -99,6 +100,11 @@ export function runMigrations(db: Database.Database): void {
       FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `)
 
   db.exec(`
@@ -115,4 +121,11 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_writeback_items_session ON writeback_items(session_id);
     CREATE INDEX IF NOT EXISTS idx_writeback_items_photo ON writeback_items(photo_id);
   `)
+
+  // Migration: ensure thumbnail_base64 column exists (for databases created before this column was added)
+  try {
+    db.exec(`ALTER TABLE face_clusters ADD COLUMN thumbnail_base64 TEXT NOT NULL DEFAULT ''`)
+  } catch {
+    // column already exists — ignore
+  }
 }

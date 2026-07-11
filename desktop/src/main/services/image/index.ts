@@ -1,0 +1,6 @@
+export { ImageService, MemoryThumbnailCache, DiskThumbnailCache, TieredThumbnailCache } from './image.service'
+export type { ThumbnailCache } from './image.service'
+export { DecoderRegistry } from './registry'
+export { SharpDecoder } from './decoders/sharp-decoder'
+export { SipsDecoder } from './decoders/sips-decoder'
+export type { ImageDecoder, DecodeResult } from './decoder'

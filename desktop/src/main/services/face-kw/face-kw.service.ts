@@ -4,6 +4,10 @@ import { FaceRepository, type FaceClusterInput } from '../../db/repositories/fac
 import { detectFaces, initDetector, releaseDetector } from './face-detector'
 import { encodeFace, initEncoder, releaseEncoder } from './face-encoder'
 import { clusterEmbeddings, type EmbeddingEntry } from './face-clusterer'
+import * as path from 'path'
+import sharp from 'sharp'
+import { ImageService, TieredThumbnailCache } from '../image'
+import { SettingsService } from '../settings'
 
 export interface FaceClusterData {
   id: number
@@ -11,6 +15,7 @@ export interface FaceClusterData {
   label: string
   size: number
   status: string
+  thumbnailBase64?: string
   binding?: { roleName: string; keywords: string[] } | null
   thumbnailPhotoId?: string
   members: {
@@ -26,6 +31,8 @@ export type ProgressCallback = (data: { current: number; total: number; message:
 
 export class FaceKwService {
   private abortController: AbortController | null = null
+  private imageService = new ImageService(new TieredThumbnailCache())
+  private settings = SettingsService.getInstance()
 
   constructor(
     private photoRepo: PhotoRepository,
@@ -37,8 +44,8 @@ export class FaceKwService {
     sessionId: string,
     detectorPath: string,
     encoderPath: string,
-    eps = 0.6,
-    minPts = 3,
+    eps = this.settings.getNumber('default_eps', 0.6),
+    minPts = this.settings.getNumber('default_min_samples', 3),
     onProgress?: ProgressCallback,
   ): Promise<void> {
     this.abortController = new AbortController()
@@ -75,7 +82,7 @@ export class FaceKwService {
               bboxY: f.bbox[1],
               bboxW: f.bbox[2],
               bboxH: f.bbox[3],
-              embedding: new Array(128).fill(0),
+              embedding: new Array(this.settings.getNumber('embedding_dim', 128)).fill(0),
               confidence: f.confidence,
             }))
             this.faceRepo.saveObservations(sessionId, observations)
@@ -140,7 +147,55 @@ export class FaceKwService {
       }))
 
       if (clusterInputs.length > 0) {
-        this.faceRepo.saveClusters(sessionId, clusterInputs)
+        const clusterIds = this.faceRepo.saveClusters(sessionId, clusterInputs)
+
+        for (let ci = 0; ci < clusterInputs.length; ci++) {
+          const cluster = clusterInputs[ci]
+          const firstMember = cluster.members[0]
+          const faceThumbSize = this.settings.getNumber('face_thumbnail_size', 80)
+          const faceThumbQuality = this.settings.getNumber('face_thumbnail_quality', 70)
+          if (firstMember) {
+            try {
+              const [bx, by, bw, bh] = firstMember.bbox
+              const ext = path.extname(firstMember.photoPath).toLowerCase()
+              let thumbnailBuffer: Buffer | null = null
+
+              if (['.jpg', '.jpeg', '.png', '.tif', '.tiff'].includes(ext)) {
+                const meta = await sharp(firstMember.photoPath).metadata()
+                const imgW = meta.width ?? 0
+                const imgH = meta.height ?? 0
+                thumbnailBuffer = await sharp(firstMember.photoPath)
+                  .extract({
+                    left: Math.round(bx * imgW),
+                    top: Math.round(by * imgH),
+                    width: Math.round(bw * imgW),
+                    height: Math.round(bh * imgH),
+                  })
+                  .resize(faceThumbSize, faceThumbSize, { fit: 'cover' })
+                  .jpeg({ quality: faceThumbQuality })
+                  .toBuffer()
+              } else {
+                const preview = await this.imageService.getPreview(firstMember.photoPath, 1920)
+                thumbnailBuffer = await sharp(preview.buffer)
+                  .extract({
+                    left: Math.round(bx * preview.width),
+                    top: Math.round(by * preview.height),
+                    width: Math.round(bw * preview.width),
+                    height: Math.round(bh * preview.height),
+                  })
+                  .resize(faceThumbSize, faceThumbSize, { fit: 'cover' })
+                  .jpeg({ quality: faceThumbQuality })
+                  .toBuffer()
+              }
+              if (thumbnailBuffer) {
+                const base64 = thumbnailBuffer.toString('base64')
+                this.faceRepo.updateClusterThumbnail(clusterIds[ci], base64)
+              }
+            } catch {
+              // Thumbnail generation failed, skip silently
+            }
+          }
+        }
       }
 
       onProgress?.({ current: 0, total: 0, message: 'Analysis complete' })
@@ -167,6 +222,7 @@ export class FaceKwService {
       label: c.label,
       size: c.member_count,
       status: c.status,
+      thumbnailBase64: c.thumbnail_base64 ?? '',
       binding: c.binding ? { roleName: c.binding.roleName, keywords: c.binding.keywords } : null,
       thumbnailPhotoId: c.members?.[0]?.photo_id,
       members: (c.members ?? []).map((m) => ({

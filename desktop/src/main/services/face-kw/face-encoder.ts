@@ -1,13 +1,18 @@
 import ort from 'onnxruntime-node'
 import sharp from 'sharp'
+import { SettingsService } from '../settings'
 
-const ENCODER_INPUT_SIZE = 112
-const EMBEDDING_DIM = 128
 let encodingSession: ort.InferenceSession | null = null
 
 export async function initEncoder(modelPath: string): Promise<void> {
+  const provider = SettingsService.getInstance().get('onnx_provider', 'CoreMLExecutionProvider')
+  const executionProviders = provider === 'CPU'
+    ? ['CPUExecutionProvider']
+    : provider === 'CUDA'
+      ? ['CUDAExecutionProvider', 'CPUExecutionProvider']
+      : ['CoreMLExecutionProvider', 'CPUExecutionProvider']
   encodingSession = await ort.InferenceSession.create(modelPath, {
-    executionProviders: ['CoreMLExecutionProvider', 'CPUExecutionProvider'],
+    executionProviders,
   })
 }
 
@@ -18,6 +23,9 @@ export async function encodeFace(
   if (!encodingSession) {
     throw new Error('Face encoder not initialized. Call initEncoder first.')
   }
+
+  const ENCODER_INPUT_SIZE = SettingsService.getInstance().getNumber('encoder_input_size', 112)
+  const EMBEDDING_DIM = SettingsService.getInstance().getNumber('embedding_dim', 128)
 
   const originalMeta = await sharp(imagePath).metadata()
   const imgWidth = originalMeta.width ?? 0
