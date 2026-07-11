@@ -2,7 +2,37 @@
 // contextBridge 安全 API — 渲染进程唯一入口
 
 import { contextBridge, ipcRenderer } from 'electron'
-import { ALLOWED_COMMANDS, ALLOWED_EVENTS, DESTRUCTIVE_COMMANDS, isRecord } from '@gather/shared'
+
+const ALLOWED_COMMANDS = new Set([
+  'session.create', 'session.delete', 'session.list', 'session.get', 'session.update', 'session.add_photos',
+  'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
+  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
+  'sim.retry_failed_writeback', 'sim.writeback_items',
+  'thumbnail.get',
+])
+
+const DESTRUCTIVE_COMMANDS = new Set([
+  'session.delete',
+  'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'sim.writeback', 'sim.retry_failed_writeback',
+])
+
+const ALLOWED_EVENTS = new Set([
+  'progress',
+  'engine:status',
+  'c1:import-trigger',
+  'c1:plugin-import',
+])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+  )
+}
 
 export interface GatherAPI {
   readonly sendCommand: (cmd: string, params?: Record<string, unknown>) => Promise<unknown>

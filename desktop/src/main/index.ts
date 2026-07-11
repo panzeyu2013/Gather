@@ -13,7 +13,7 @@ import { registerSimilarityHandlers } from './ipc/similarity.ipc'
 import { registerWritebackHandlers } from './ipc/writeback.ipc'
 import { registerSystemHandlers } from './ipc/system.ipc'
 
-const isDev = !app.isPackaged
+const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const registry = new CommandRegistry()
 let mainWindow: BrowserWindow | null = null
 
@@ -113,7 +113,7 @@ function createWindow(): void {
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(__dirname, '../../renderer/index.html'))
   }
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))

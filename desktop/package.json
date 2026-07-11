@@ -4,11 +4,12 @@
   "version": "3.0.0",
   "license": "MIT",
   "description": "Capture One photo organization — similarity grouping and face keywording",
-  "main": "dist/main/index.js",
+  "main": "dist/main/main/index.js",
   "scripts": {
+    "postinstall": "electron-rebuild",
     "dev": "vite",
     "build": "vite build && tsc -p tsconfig.main.json",
-    "electron": "electron .",
+    "electron": "NODE_ENV=production electron .",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "lint": "eslint src/",
     "test": "vitest run",
@@ -19,7 +20,7 @@
   "dependencies": {
     "@gather/shared": "*",
     "@tanstack/react-query": "^5.0.0",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.11.1",
     "fast-xml-parser": "^4.0.0",
     "onnxruntime-node": "^1.27.0",
     "react": "^18.3.0",
@@ -29,7 +30,7 @@
     "zustand": "^4.0.0"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
+    "@electron/rebuild": "^4.0.1",
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/react": "^14.0.0",
     "@types/better-sqlite3": "^7.6.0",
