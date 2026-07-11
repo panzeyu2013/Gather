@@ -95,3 +95,8 @@
   color: #999;
   font-size: 16px;
 }
+
+.error {
+  color: var(--color-error, #d4605f);
+  font-size: 16px;
+}

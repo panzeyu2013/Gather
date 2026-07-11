@@ -48,7 +48,7 @@ export class DiskThumbnailCache implements ThumbnailCache {
   private dir: string
 
   constructor(cacheDir?: string) {
-    const diskDir = cacheDir ?? SettingsService.getInstance().get('disk_cache_dir', '') || path.join(app.getPath('userData'), 'thumbnails')
+    const diskDir = cacheDir ?? (SettingsService.getInstance().get('disk_cache_dir', '') || path.join(app.getPath('userData'), 'thumbnails'))
     this.dir = diskDir
     if (!fs.existsSync(this.dir)) {
       fs.mkdirSync(this.dir, { recursive: true })

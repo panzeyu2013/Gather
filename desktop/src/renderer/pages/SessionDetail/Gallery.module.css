@@ -112,14 +112,41 @@
 .thumbPlaceholder {
   width: 100%;
   aspect-ratio: 1;
+  background: var(--color-bg-secondary, #ede6dc);
+}
+
+.thumbError {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--color-bg-secondary, #ede6dc);
+  color: var(--color-error, #d4605f);
+}
+
+.thumbErrorIcon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--color-error, #d4605f);
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-secondary, #666);
-  font-size: 11px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.thumbErrorPath {
+  font-size: 10px;
+  color: var(--color-text-secondary, #8c857d);
   text-align: center;
-  padding: 8px;
+  padding: 0 6px;
   word-break: break-all;
+  max-width: 100%;
 }
 
 .thumbName {

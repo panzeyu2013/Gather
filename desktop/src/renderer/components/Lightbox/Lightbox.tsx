@@ -16,6 +16,7 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
   const [dragging, setDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [src, setSrc] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const photo = photos[index]
@@ -37,12 +38,15 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
     let cancelled = false
     if (!photo) return
     setSrc(null)
+    setLoadError(false)
     setScale(1)
     setPosition({ x: 0, y: 0 })
     imageApi.getPreview(photo.filepath, 1920).then((r) => {
       if (cancelled) return
       setSrc(`data:image/jpeg;base64,${r.buffer}`)
-    }).catch(() => {})
+    }).catch(() => {
+      if (!cancelled) setLoadError(true)
+    })
     return () => { cancelled = true }
   }, [photo?.filepath])
 
@@ -112,6 +116,8 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
               transformOrigin: 'center center',
             }}
           />
+        ) : loadError ? (
+          <div className={styles.error}>图片加载失败</div>
         ) : (
           <div className={styles.loading}>加载中...</div>
         )}

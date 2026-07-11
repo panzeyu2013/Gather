@@ -107,6 +107,7 @@ function GalleryThumbnail({ photo, isSelected, onSelect, onClick }: {
   onClick: () => void
 }) {
   const [src, setSrc] = useState<string | null>(null)
+  const [hasError, setHasError] = useState(false)
   const loadedRef = useRef(false)
   const imgRef = useRef<HTMLDivElement>(null)
 
@@ -114,13 +115,17 @@ function GalleryThumbnail({ photo, isSelected, onSelect, onClick }: {
     const el = imgRef.current
     if (!el) return
     loadedRef.current = false
+    setHasError(false)
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && !loadedRef.current) {
           loadedRef.current = true
           imageApi.getThumbnail(photo.filepath, 320).then((r) => {
             setSrc(`data:image/jpeg;base64,${r.buffer}`)
-          }).catch(() => {})
+          }).catch((err) => {
+            console.error('[Gallery] thumbnail load failed:', photo.filepath, err)
+            setHasError(true)
+          })
         }
       },
       { rootMargin: '200px' },
@@ -143,8 +148,13 @@ function GalleryThumbnail({ photo, isSelected, onSelect, onClick }: {
     >
       {src ? (
         <img src={src} alt={photo.filename} className={styles.thumbImg} loading="lazy" />
+      ) : hasError ? (
+        <div className={styles.thumbError}>
+          <span className={styles.thumbErrorIcon}>!</span>
+          <span className={styles.thumbErrorPath}>{photo.filename}</span>
+        </div>
       ) : (
-        <div className={styles.thumbPlaceholder}>{photo.filename}</div>
+        <div className={styles.thumbPlaceholder} />
       )}
       <div className={styles.thumbName}>{photo.filename}</div>
       {isSelected && <div className={styles.thumbCheck}>✓</div>}

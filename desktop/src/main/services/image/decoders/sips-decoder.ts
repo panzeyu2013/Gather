@@ -1,19 +1,26 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as os from 'os'
 import sharp from 'sharp'
 import { SettingsService } from '../../settings'
 import type { ImageDecoder, DecodeResult } from '../decoder'
 
 const execFileAsync = promisify(execFile)
 
-// Helper for binary output (image data): encoding=buffer + increased maxBuffer for large previews
-function execFileBuffer(cmd: string, args: string[]): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { encoding: 'buffer', maxBuffer: 50 * 1024 * 1024 }, (err, stdout) => {
-      if (err) return reject(err)
-      resolve(stdout)
-    })
-  })
+function tempJpegPath(): string {
+  return path.join(os.tmpdir(), `gather-sips-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`)
+}
+
+async function sipsToBuffer(args: string[]): Promise<Buffer> {
+  const outPath = tempJpegPath()
+  try {
+    await execFileAsync('sips', [...args, '--out', outPath])
+    return fs.readFileSync(outPath)
+  } finally {
+    try { fs.unlinkSync(outPath) } catch {}
+  }
 }
 
 export class SipsDecoder implements ImageDecoder {
@@ -32,15 +39,14 @@ export class SipsDecoder implements ImageDecoder {
   }
 
   async getPreview(path: string, maxDimension = 1920): Promise<DecodeResult> {
-    const stdout = await execFileBuffer('sips', [
+    const buffer = await sipsToBuffer([
       '-Z', String(maxDimension),
       '-s', 'format', 'jpeg',
       path,
-      '--stdout',
     ])
-    const metadata = await sharp(stdout).metadata()
+    const metadata = await sharp(buffer).metadata()
     return {
-      buffer: stdout,
+      buffer,
       format: 'jpeg',
       width: metadata.width ?? maxDimension,
       height: metadata.height ?? maxDimension,
@@ -48,15 +54,14 @@ export class SipsDecoder implements ImageDecoder {
   }
 
   async getThumbnail(path: string, size: number): Promise<DecodeResult> {
-    const stdout = await execFileBuffer('sips', [
+    const buffer = await sipsToBuffer([
       '-Z', String(size),
       '-s', 'format', 'jpeg',
       path,
-      '--stdout',
     ])
-    const metadata = await sharp(stdout).metadata()
+    const metadata = await sharp(buffer).metadata()
     return {
-      buffer: stdout,
+      buffer,
       format: 'jpeg',
       width: metadata.width ?? size,
       height: metadata.height ?? size,
