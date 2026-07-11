@@ -224,10 +224,15 @@ export interface C1ImportData {
   photoCount: number
 }
 
+export interface C1PluginImportData {
+  files: string[]
+}
+
 export type Event =
   | { type: 'progress'; data: ProgressData }
   | { type: 'engine:status'; data: EngineStatusData }
   | { type: 'c1:import-trigger'; data: C1ImportData }
+  | { type: 'c1:plugin-import'; data: C1PluginImportData }
 
 // ── 响应 ──
 
@@ -399,6 +404,7 @@ export const ALLOWED_EVENTS = new Set([
   'progress',
   'engine:status',
   'c1:import-trigger',
+  'c1:plugin-import',
 ])
 
 // ── Guard 函数 ──

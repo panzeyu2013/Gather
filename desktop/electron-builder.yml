@@ -24,6 +24,10 @@ mac:
   category: public.app-category.photography
   hardenedRuntime: true
   entitlements: resources/entitlements.mac.plist
+  protocols:
+    - name: Gather
+      schemes:
+        - gather
 
 win:
   target:

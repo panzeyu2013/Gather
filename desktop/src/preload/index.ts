@@ -8,6 +8,7 @@ export interface GatherAPI {
   readonly sendCommand: (cmd: string, params?: Record<string, unknown>) => Promise<unknown>
   readonly onEvent: (event: string, callback: (data: unknown) => void) => () => void
   readonly onReady: (callback: () => void) => () => void
+  readonly onPluginImport: (callback: (files: string[]) => void) => () => void
   readonly getSelectedPhotos: () => Promise<string[]>
   readonly reloadMetadata: () => Promise<void>
   readonly selectDirectory: () => Promise<string | null>
@@ -53,6 +54,21 @@ const api: GatherAPI = {
       if (evt === 'engine:status' && (data as { status: string }).status === 'ready') {
         callback()
         ipcRenderer.removeListener('gather:event', handler)
+      }
+    }
+    ipcRenderer.on('gather:event', handler)
+    return () => {
+      ipcRenderer.removeListener('gather:event', handler)
+    }
+  },
+
+  onPluginImport: (callback) => {
+    if (typeof callback !== 'function') {
+      throw new Error('Plugin import callback must be a function')
+    }
+    const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
+      if (evt === 'c1:plugin-import') {
+        callback((data as { files: string[] }).files)
       }
     }
     ipcRenderer.on('gather:event', handler)

@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { sessionApi } from '../../api/session'
@@ -47,6 +47,35 @@ export default function Dashboard() {
       setDeleteTarget(null)
     },
   })
+
+  const addPhotosMutation = useMutation({
+    mutationFn: ({ sessionId, files }: { sessionId: string; files: string[] }) =>
+      sessionApi.addPhotos(sessionId, files),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      const session = sessions?.find(s => s.id === variables.sessionId)
+      if (session) {
+        setSession(session.id)
+        navigate(`/similarity/${session.id}`)
+      }
+    },
+  })
+
+  useEffect(() => {
+    const unsub = window.gather.onPluginImport(async (files) => {
+      const now = new Date()
+      const name = `C1 导入 ${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`
+      try {
+        const session = await sessionApi.create(name, 'capture-one')
+        await sessionApi.addPhotos(session.id, files)
+        setSession(session.id)
+        navigate(`/similarity/${session.id}`)
+      } catch (err) {
+        console.error('Plugin import failed:', err)
+      }
+    })
+    return unsub
+  }, [navigate, setSession])
 
   const handleCreate = () => {
     if (!newName.trim()) return

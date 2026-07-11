@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>GatherLink</string>
+	<key>CFBundleGetInfoString</key>
+	<string>Send selected photos from Capture One to Gather for analysis.</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.gather.capture-one-link</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Gather Link</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>COPluginAuthor</key>
+	<string>Gather</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (c) Gather</string>
+	<key>NSPrincipalClass</key>
+	<string>GatherLink</string>
+</dict>
+</plist>

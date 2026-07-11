@@ -17,6 +17,22 @@ const isDev = !app.isPackaged
 const registry = new CommandRegistry()
 let mainWindow: BrowserWindow | null = null
 
+function handleDeepLink(url: string): void {
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname !== 'import') return
+    const files = parsed.searchParams.getAll('file').map(f => decodeURIComponent(f)).filter(Boolean)
+    if (files.length === 0) return
+    mainWindow?.webContents.send('gather:event', 'c1:plugin-import', { files })
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  } catch {
+    console.error('Failed to parse deep link:', url)
+  }
+}
+
 const WINDOW_DEFAULT_WIDTH = 1200
 const WINDOW_DEFAULT_HEIGHT = 800
 const WINDOW_MIN_WIDTH = 480
@@ -202,6 +218,15 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate))
   createWindow()
 
+  if (!app.isDefaultProtocolClient('gather')) {
+    app.setAsDefaultProtocolClient('gather')
+  }
+
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    handleDeepLink(url)
+  })
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
@@ -219,7 +244,9 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    const url = argv.find(arg => arg.startsWith('gather://'))
+    if (url) handleDeepLink(url)
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
