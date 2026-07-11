@@ -4,5 +4,17 @@
   "workspaces": [
     "desktop",
     "packages/*"
-  ]
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=desktop",
+    "build": "npm run build --workspace=desktop",
+    "typecheck": "npm run typecheck --workspace=desktop && npm run typecheck --workspace=packages/shared",
+    "lint": "npm run lint --workspace=desktop",
+    "test:vitest": "npm run test --workspace=desktop",
+    "test:e2e": "npx playwright test --config=tests/e2e/playwright.config.ts",
+    "electron": "npm run build --workspace=desktop && npm run electron --workspace=desktop"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
 }

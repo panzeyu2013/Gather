@@ -8,27 +8,15 @@ asar: true
 
 files:
   - dist/**/*
-  - "!engine/.venv/**"
   - "!dist/**/*.map"
   - "!dist/**/*.tsbuildinfo"
 
 extraResources:
-  - from: ../shared/
-    to: engine/shared/
+  - from: resources/models/
+    to: models/
     filter:
-      - "**/*.py"
-  - from: ../face_keywording/
-    to: engine/face_keywording/
-    filter:
-      - "**/*.py"
-  - from: ../similarity/
-    to: engine/similarity/
-    filter:
-      - "**/*.py"
-  - from: engine/
-    to: engine/
-    filter:
-      - "**/*.py"
+      - "**/*"
+
 mac:
   target:
     - dmg
@@ -36,11 +24,7 @@ mac:
   category: public.app-category.photography
   hardenedRuntime: true
   entitlements: resources/entitlements.mac.plist
-  extraResources:
-    - from: engine/.venv/
-      to: engine/.venv/
-      filter:
-        - "**/*"
+
 win:
   target:
     - nsis

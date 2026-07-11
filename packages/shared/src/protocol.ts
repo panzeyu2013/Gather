@@ -1,16 +1,7 @@
 // packages/shared/src/protocol.ts
 // 主进程和渲染进程共享的类型定义 — 编译时类型检查
 
-// ── Status enums (mirror Python shared/models.py) ──
-
-export const AnalysisStatus = {
-  IDLE: 'idle',
-  RUNNING: 'running',
-  DONE: 'done',
-  FAILED: 'failed',
-  CANCELLED: 'cancelled',
-} as const
-export type AnalysisStatus = (typeof AnalysisStatus)[keyof typeof AnalysisStatus]
+// ── Status enums ──
 
 export const SessionStatus = {
   DRAFT: 'draft',
@@ -21,6 +12,15 @@ export const SessionStatus = {
 } as const
 export type SessionStatus = (typeof SessionStatus)[keyof typeof SessionStatus]
 
+export const AnalysisStatus = {
+  IDLE: 'idle',
+  RUNNING: 'running',
+  DONE: 'done',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
+} as const
+export type AnalysisStatus = (typeof AnalysisStatus)[keyof typeof AnalysisStatus]
+
 export const WritebackStatus = {
   IDLE: 'idle',
   RUNNING: 'running',
@@ -30,318 +30,283 @@ export const WritebackStatus = {
 } as const
 export type WritebackStatus = (typeof WritebackStatus)[keyof typeof WritebackStatus]
 
-// ── 请求命令（Renderer → Main → Python）──
+// ── 参数类型 ──
 
-export interface SessionCreateCommand {
-  type: 'session.create'
+export interface SessionCreateParams {
   name: string
+  filepaths?: string[]
+  source?: string
 }
 
-export interface SessionDeleteCommand {
-  type: 'session.delete'
-  session_id: string
-  confirmed?: boolean
+export interface SessionDeleteParams {
+  sessionId: string
+  confirmed: boolean
 }
 
-export interface SessionListCommand {
-  type: 'session.list'
-}
-
-export interface SessionAddPhotosCommand {
-  type: 'session.add_photos'
-  session_id: string
+export interface SessionAddPhotosParams {
+  sessionId: string
   filepaths: string[]
   source?: string
 }
 
-export interface SessionGetCommand {
-  type: 'session.get'
-  session_id: string
+export interface SessionGetParams {
+  sessionId: string
 }
 
-export interface SessionUpdateCommand {
-  type: 'session.update'
-  session_id: string
+export interface SessionUpdateParams {
+  sessionId: string
   name: string
 }
 
-export type SessionGetResponse = SessionData
-
-export type SessionUpdateResponse = SessionData
-
-export interface FkwAnalyzeCommand {
-  type: 'fkw.analyze'
-  session_id: string
+export interface FkwAnalyzeParams {
+  sessionId: string
   eps?: number
-  min_samples?: number
+  minSamples?: number
+  detectorPath?: string
+  encoderPath?: string
 }
 
-export interface FkwCancelAnalysisCommand {
-  type: 'fkw.cancel_analysis'
-  session_id: string
+export interface FkwCancelAnalysisParams {
+  sessionId: string
 }
 
-export interface FkwClustersCommand {
-  type: 'fkw.clusters'
-  session_id: string
+export interface FkwClustersParams {
+  sessionId: string
 }
 
-export interface FkwBindCommand {
-  type: 'fkw.bind'
-  session_id: string
-  cluster_id: number
-  role: string
+export interface FkwBindParams {
+  sessionId: string
+  clusterId: number
+  roleName: string
   keywords: string[]
 }
 
-export interface FkwUnbindCommand {
-  type: 'fkw.unbind'
-  session_id: string
-  cluster_id: number
+export interface FkwUnbindParams {
+  sessionId: string
+  clusterId: number
 }
 
-export interface FkwMergeCommand {
-  type: 'fkw.merge'
-  session_id: string
+export interface FkwMergeParams {
+  sessionId: string
   source: number
   target: number
 }
 
-export interface FkwRemoveMemberCommand {
-  type: 'fkw.remove_member'
-  session_id: string
-  cluster_id: number
-  photo_id: string
+export interface FkwRemoveMemberParams {
+  sessionId: string
+  clusterId: number
+  photoId: string
 }
 
-export interface FkwPreviewCommand {
-  type: 'fkw.preview'
-  session_id: string
+export interface FkwPreviewParams {
+  sessionId: string
+  options?: WritebackOptions
 }
 
-export interface FkwWritebackCommand {
-  type: 'fkw.writeback'
-  session_id: string
+export interface FkwWritebackParams {
+  sessionId: string
+  confirmed?: boolean
+  items?: WritebackItem[]
+}
+
+export interface FkwConfirmSyncParams {
+  sessionId: string
   confirmed?: boolean
 }
 
-export interface FkwConfirmCleanupCommand {
-  type: 'fkw.confirm_cleanup'
-  session_id: string
+export interface FkwConfirmCleanupParams {
+  sessionId: string
   confirmed?: boolean
 }
 
-export interface FkwConfirmSyncCommand {
-  type: 'fkw.confirm_sync'
-  session_id: string
-}
-
-export interface FkwCleanupCommand {
-  type: 'fkw.cleanup'
-  session_id: string
+export interface FkwCleanupParams {
+  sessionId: string
   confirmed?: boolean
 }
 
-export interface SimAnalyzeCommand {
-  type: 'sim.analyze'
-  session_id: string
+export interface SimAnalyzeParams {
+  sessionId: string
   threshold?: number
-  min_group_size?: number
+  minGroupSize?: number
 }
 
-export interface SimCancelAnalysisCommand {
-  type: 'sim.cancel_analysis'
-  session_id: string
+export interface SimCancelAnalysisParams {
+  sessionId: string
 }
 
-export interface SimResultCommand {
-  type: 'sim.result'
-  session_id: string
+export interface SimResultParams {
+  sessionId: string
 }
 
-export interface SimReclusterCommand {
-  type: 'sim.recluster'
-  session_id: string
+export interface SimReclusterParams {
+  sessionId: string
   threshold?: number
-  min_group_size?: number
+  minGroupSize?: number
 }
 
-export interface SimWritebackCommand {
-  type: 'sim.writeback'
-  session_id: string
-  group_ids: Array<number | string>
+export interface SimPreviewWritebackParams {
+  sessionId: string
+  groupIds: Array<number | string>
+  options: WritebackOptions
+}
+
+export interface SimWritebackParams {
+  sessionId: string
+  groupIds: Array<number | string>
   groups?: GroupData[]
   options: WritebackOptions
   confirmed?: boolean
+  items?: WritebackItem[]
 }
 
-export interface SimWritebackItemsCommand {
-  type: 'sim.writeback_items'
-  session_id: string
+export interface SimWritebackItemsParams {
+  sessionId: string
 }
 
-export interface SimRetryFailedWritebackCommand {
-  type: 'sim.retry_failed_writeback'
-  session_id: string
+export interface SimRetryFailedWritebackParams {
+  sessionId: string
   confirmed?: boolean
 }
 
-export interface SimPreviewWritebackCommand {
-  type: 'sim.preview_writeback'
-  session_id: string
-  group_ids: Array<number | string>
-  options: WritebackOptions
-}
-
-export interface ThumbnailGetCommand {
-  type: 'thumbnail.get'
+export interface ThumbnailGetParams {
   path: string
   bbox?: number[]
   source?: string
 }
 
-export interface ShutdownCommand {
-  type: 'shutdown'
-}
+// ── 命令联合类型 ──
 
 export type Command =
-  | SessionCreateCommand
-  | SessionDeleteCommand
-  | SessionListCommand
-  | SessionAddPhotosCommand
-  | SessionGetCommand
-  | SessionUpdateCommand
-  | FkwAnalyzeCommand
-  | FkwCancelAnalysisCommand
-  | FkwClustersCommand
-  | FkwBindCommand
-  | FkwUnbindCommand
-  | FkwMergeCommand
-  | FkwRemoveMemberCommand
-  | FkwPreviewCommand
-  | FkwWritebackCommand
-  | FkwConfirmSyncCommand
-  | FkwCleanupCommand
-  | FkwConfirmCleanupCommand
-  | SimAnalyzeCommand
-  | SimCancelAnalysisCommand
-  | SimResultCommand
-  | SimReclusterCommand
-  | SimPreviewWritebackCommand
-  | SimWritebackCommand
-  | SimWritebackItemsCommand
-  | SimRetryFailedWritebackCommand
-  | ThumbnailGetCommand
-  | ShutdownCommand
+  | { type: 'session.create'; params: SessionCreateParams }
+  | { type: 'session.list'; params: Record<string, never> }
+  | { type: 'session.delete'; params: SessionDeleteParams }
+  | { type: 'session.add_photos'; params: SessionAddPhotosParams }
+  | { type: 'session.get'; params: SessionGetParams }
+  | { type: 'session.update'; params: SessionUpdateParams }
+  | { type: 'fkw.analyze'; params: FkwAnalyzeParams }
+  | { type: 'fkw.cancel_analysis'; params: FkwCancelAnalysisParams }
+  | { type: 'fkw.clusters'; params: FkwClustersParams }
+  | { type: 'fkw.bind'; params: FkwBindParams }
+  | { type: 'fkw.unbind'; params: FkwUnbindParams }
+  | { type: 'fkw.merge'; params: FkwMergeParams }
+  | { type: 'fkw.remove_member'; params: FkwRemoveMemberParams }
+  | { type: 'fkw.preview'; params: FkwPreviewParams }
+  | { type: 'fkw.writeback'; params: FkwWritebackParams }
+  | { type: 'fkw.confirm_sync'; params: FkwConfirmSyncParams }
+  | { type: 'fkw.confirm_cleanup'; params: FkwConfirmCleanupParams }
+  | { type: 'fkw.cleanup'; params: FkwCleanupParams }
+  | { type: 'sim.analyze'; params: SimAnalyzeParams }
+  | { type: 'sim.cancel_analysis'; params: SimCancelAnalysisParams }
+  | { type: 'sim.result'; params: SimResultParams }
+  | { type: 'sim.recluster'; params: SimReclusterParams }
+  | { type: 'sim.preview_writeback'; params: SimPreviewWritebackParams }
+  | { type: 'sim.writeback'; params: SimWritebackParams }
+  | { type: 'sim.writeback_items'; params: SimWritebackItemsParams }
+  | { type: 'sim.retry_failed_writeback'; params: SimRetryFailedWritebackParams }
+  | { type: 'thumbnail.get'; params: ThumbnailGetParams }
+
+// ── 事件联合类型 ──
+
+export interface ProgressData {
+  sessionId: string
+  current: number
+  total: number
+  message: string
+  status?: AnalysisStatus
+}
+
+export interface EngineStatusData {
+  status: 'connecting' | 'ready' | 'disconnected'
+  version?: string
+}
+
+export interface C1ImportData {
+  photoCount: number
+}
+
+export type Event =
+  | { type: 'progress'; data: ProgressData }
+  | { type: 'engine:status'; data: EngineStatusData }
+  | { type: 'c1:import-trigger'; data: C1ImportData }
 
 // ── 响应 ──
 
 export interface ResponseOk<T = unknown> {
-  id: number | string
   ok: true
   data: T
 }
 
 export interface ResponseErr {
-  id: number | string
   ok: false
   error: string | { type: string; message: string }
 }
 
 export type Response<T = unknown> = ResponseOk<T> | ResponseErr
 
-// ── 事件（Python → Renderer，推送）──
-
-export interface ProgressEvent {
-  type: 'event'
-  event: 'progress'
-  data: {
-    session_id: string
-    current: number
-    total: number
-    message: string
-    status?: AnalysisStatus
-  }
-}
-
-export interface EngineReadyEvent {
-  type: 'event'
-  event: 'python:ready'
-  version: string
-}
-
-export interface C1ImportTriggerEvent {
-  type: 'event'
-  event: 'c1:import-trigger'
-}
-
-export interface EngineDisconnectedEvent {
-  type: 'event'
-  event: 'python:disconnected'
-  data: {
-    code?: number | null
-  }
-}
-
-export type EngineEvent = ProgressEvent | EngineReadyEvent | C1ImportTriggerEvent | EngineDisconnectedEvent
-
 // ── 数据类型 ──
-
-// NOTE: cluster_id is stored as int in the Python backend (SQLite auto-increment PK)
-// and transmitted as number via msgpack.
 
 export interface SessionData {
   id: string
   name: string
   status: SessionStatus
-  photo_count?: number
-  event_date: string
-  analysis_status: AnalysisStatus
-  writeback_status: WritebackStatus
-  created_at: string
-  updated_at: string
-  import_source?: string
-  failed_writeback_count?: number
+  photoCount: number
+  analysisStatus: AnalysisStatus
+  writebackStatus: WritebackStatus
+  importSource: string
+  failedWritebackCount: number
+  createdAt: string
+  updatedAt: string
 }
 
 export interface PhotoData {
   id: string
-  session_id: string
+  sessionId: string
   filepath: string
-  checksum?: string
-  status: string
-  has_existing_xmp: boolean
-  face_count: number
+  filename: string
+  checksum: string
+  hasExistingXmp: boolean
+  faceCount: number
   metadata: Record<string, unknown>
   result: Record<string, unknown>
-  created_at: string
-  updated_at: string
+  status: string
+  createdAt: string
+  updatedAt: string
 }
 
-export interface ClusterData {
-  cluster_id: number
+export interface FaceObservation {
+  id?: number
+  photoId: string
+  sessionId: string
+  bboxX: number
+  bboxY: number
+  bboxW: number
+  bboxH: number
+  embedding: number[]
+  confidence: number
+}
+
+export interface FaceCluster {
+  id: number
+  sessionId: string
   label: string
   size: number
   members: ClusterMember[]
   status: string
-  binding?: {
-    role_name: string
-    keywords: string[]
-  }
-  thumbnail_base64?: string
+  binding?: BindingData
+  thumbnailBase64?: string
 }
 
 export interface ClusterMember {
-  photo_id: string
-  photo_path: string
+  photoId: string
+  photoPath: string
   filename: string
   bbox: number[]
   confidence: number
 }
 
 export interface BindingData {
-  cluster_id: number
-  role_name: string
+  clusterId: number
+  roleName: string
   keywords: string[]
   notes?: string
 }
@@ -351,7 +316,7 @@ export interface SimilarityGroup {
   label: string
   count: number
   images: SimilarityImage[]
-  thumbnail_base64?: string
+  thumbnailBase64?: string
 }
 
 export interface SimilarityImage {
@@ -372,18 +337,48 @@ export interface WritebackOptions {
   writeIPTC?: boolean
 }
 
-export interface WritebackReport {
-  report: string
-  total_affected: number
-  written?: number
-  failed?: number
-  skipped?: number
-  errors?: string[]
+export interface WritebackPreview {
+  items: WritebackItem[]
+  totalCount: number
+  affectedPhotos: number
 }
 
-export interface ThumbnailResponse {
-  thumbnail_base64: string | null
+export interface WritebackItem {
+  id?: number
+  photoId: string
+  sessionId: string
+  module: string
+  keywords: string[]
+  xmpPath: string
+  backupPath: string
+  xmpStatus: string
+  errorMessage: string
+  attemptCount: number
+  lastAttemptAt: string
 }
+
+export interface WritebackResult {
+  totalAffected: number
+  written: number
+  failed: number
+  skipped: number
+  errors: string[]
+  failedItems: WritebackItem[]
+  report: string
+}
+
+export interface CleanupResult {
+  deletedCount: number
+  errors: string[]
+}
+
+export interface AddPhotoResult {
+  added: number
+  skipped: number
+  total: number
+}
+
+// ── 命令白名单（保留向后兼容）──
 
 export const ALLOWED_COMMANDS = new Set([
   'session.create', 'session.delete', 'session.list', 'session.get', 'session.update', 'session.add_photos',
@@ -391,7 +386,7 @@ export const ALLOWED_COMMANDS = new Set([
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
   'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get', 'shutdown',
+  'thumbnail.get',
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([
@@ -402,10 +397,11 @@ export const DESTRUCTIVE_COMMANDS = new Set([
 
 export const ALLOWED_EVENTS = new Set([
   'progress',
-  'python:ready',
+  'engine:status',
   'c1:import-trigger',
-  'python:disconnected',
 ])
+
+// ── Guard 函数 ──
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return (

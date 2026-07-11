@@ -1,0 +1,127 @@
+.container {
+  padding: 16px;
+  background: var(--color-surface);
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+}
+
+.summary {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 20px;
+  border-radius: 6px;
+  min-width: 80px;
+}
+
+.statValue {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.statLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+
+.written {
+  background: rgba(102, 187, 106, 0.15);
+  color: var(--color-success);
+}
+
+.failed {
+  background: rgba(239, 83, 80, 0.15);
+  color: var(--color-error);
+}
+
+.skipped {
+  background: rgba(138, 138, 160, 0.15);
+  color: var(--color-text-secondary);
+}
+
+.failedSection {
+  margin-bottom: 16px;
+}
+
+.failedTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-error);
+  margin-bottom: 8px;
+}
+
+.failedList {
+  list-style: none;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.failedItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: rgba(239, 83, 80, 0.08);
+  margin-bottom: 4px;
+}
+
+.failedPath {
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--color-text);
+  word-break: break-all;
+}
+
+.failedError {
+  font-size: 11px;
+  color: var(--color-error);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.retryButton,
+.confirmButton,
+.cleanupButton {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.retryButton:hover,
+.confirmButton:hover,
+.cleanupButton:hover {
+  opacity: 0.85;
+}
+
+.retryButton {
+  background: var(--color-error);
+  color: #fff;
+}
+
+.confirmButton {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.cleanupButton {
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}

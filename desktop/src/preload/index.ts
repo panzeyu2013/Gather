@@ -26,7 +26,7 @@ const api: GatherAPI = {
     if (DESTRUCTIVE_COMMANDS.has(cmd) && !params.confirmed) {
       throw new Error(`Destructive command '${cmd}' requires explicit confirmation`)
     }
-    return ipcRenderer.invoke('python:command', cmd, params)
+    return ipcRenderer.invoke('gather:command', cmd, params)
   },
 
   onEvent: (event, callback) => {
@@ -39,9 +39,9 @@ const api: GatherAPI = {
     const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
       if (evt === event) callback(data)
     }
-    ipcRenderer.on('python:event', handler)
+    ipcRenderer.on('gather:event', handler)
     return () => {
-      ipcRenderer.removeListener('python:event', handler)
+      ipcRenderer.removeListener('gather:event', handler)
     }
   },
 
@@ -49,10 +49,15 @@ const api: GatherAPI = {
     if (typeof callback !== 'function') {
       throw new Error('Ready callback must be a function')
     }
-    const handler = () => callback()
-    ipcRenderer.on('python:ready', handler)
+    const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
+      if (evt === 'engine:status' && (data as { status: string }).status === 'ready') {
+        callback()
+        ipcRenderer.removeListener('gather:event', handler)
+      }
+    }
+    ipcRenderer.on('gather:event', handler)
     return () => {
-      ipcRenderer.removeListener('python:ready', handler)
+      ipcRenderer.removeListener('gather:event', handler)
     }
   },
 

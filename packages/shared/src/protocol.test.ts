@@ -11,9 +11,8 @@ describe('shared protocol runtime guards', () => {
 
   it('keeps the preload event surface explicit', () => {
     expect(ALLOWED_EVENTS.has('progress')).toBe(true)
-    expect(ALLOWED_EVENTS.has('python:ready')).toBe(true)
+    expect(ALLOWED_EVENTS.has('engine:status')).toBe(true)
     expect(ALLOWED_EVENTS.has('c1:import-trigger')).toBe(true)
-    expect(ALLOWED_EVENTS.has('python:disconnected')).toBe(true)
     expect(ALLOWED_EVENTS.has('unknown:event')).toBe(false)
   })
 })

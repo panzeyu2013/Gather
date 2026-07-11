@@ -1,57 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- NOTE: style-src 'unsafe-inline' is needed because dynamic DOM construction
-     (face-kw.ts cluster card rendering, dom.ts helpers, etc.) applies inline styles
-     via element.style / setAttribute. Phased migration to class-based rendering is in progress. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'">
-<title>Gather</title>
-<link rel="stylesheet" href="./styles/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>Gather</title>
 </head>
 <body>
-<a class="skip-link" href="#content">Skip to main content</a>
-<div id="app">
-  <!-- Loading screen: Python engine connecting -->
-  <div id="loadingScreen" class="app-loading" aria-live="polite">
-    <div class="spinner"></div>
-    <div class="app-loading__text">Starting Python engine...</div>
-    <div id="stillLoading" class="hidden app-loading__stack">
-      <div class="spinner"></div>
-      <div class="app-loading__text">Still loading...</div>
-    </div>
-    <div id="engineError" class="hidden app-error" role="alert">
-      <div class="app-error__title">Python engine failed to start.</div>
-      <div class="app-error__detail">Please check Python 3.10+ is installed.</div>
-      <button class="btn btn--primary" id="btnRetryEngine">Retry</button>
-    </div>
-  </div>
-
-  <div id="mainUi" class="hidden">
-  <div class="app-shell">
-    <nav class="app-sidebar" id="sidebar">
-      <div class="app-sidebar__title">Gather</div>
-      <div class="app-nav">
-        <button class="app-nav-item" data-page="dashboard" aria-label="Dashboard">
-          <span class="app-nav-item__icon" aria-hidden="true">&#9632;</span>
-          Dashboard
-        </button>
-        <button class="app-nav-item app-nav-item--disabled" data-page="similarity" aria-label="Similarity" aria-disabled="true" title="Create a session on the Dashboard first">
-          <span class="app-nav-item__icon" aria-hidden="true">&#9632;</span>
-          Similarity
-        </button>
-        <button class="app-nav-item app-nav-item--disabled" data-page="face-kw" aria-label="Face Keywording" aria-disabled="true" title="Create a session on the Dashboard first">
-          <span class="app-nav-item__icon" aria-hidden="true">&#9632;</span>
-          Face Keywording
-        </button>
-      </div>
-    </nav>
-    <main class="app-main" id="content">
-      <!-- SPA routed content dynamically rendered -->
-    </main>
-  </div>
-  </div>
-</div>
+  <div id="root"></div>
+  <script type="module" src="./main.tsx"></script>
 </body>
 </html>
