@@ -2,12 +2,8 @@ import type { IpcMainInvokeEvent } from 'electron'
 import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr, WritebackOptions, WritebackItem, GroupData } from '@gather/shared'
 import { SimilarityService } from '../services/similarity/similarity.service'
-import { WritebackService } from '../services/writeback/writeback.service'
 import { SettingsService } from '../services/settings'
-import { SessionRepository } from '../db/repositories/session.repo'
-import { PhotoRepository } from '../db/repositories/photo.repo'
-import { WritebackRepository } from '../db/repositories/writeback.repo'
-import { XmpWriter } from '../services/xmp/xmp-writer'
+import { getServices } from '../bootstrap'
 
 function ok<T>(data: T): ResponseOk<T> {
   return { ok: true, data }
@@ -37,30 +33,8 @@ function wrapHandler(
   }
 }
 
-let service: SimilarityService | null = null
-
-function getService(): SimilarityService {
-  if (!service) {
-    service = new SimilarityService(new PhotoRepository(), new SessionRepository())
-  }
-  return service
-}
-
-let writebackService: WritebackService | null = null
-
-function getWritebackService(): WritebackService {
-  if (!writebackService) {
-    writebackService = new WritebackService(
-      new WritebackRepository(),
-      new XmpWriter(),
-      new PhotoRepository(),
-      new SessionRepository(),
-    )
-  }
-  return writebackService
-}
-
 export function registerSimilarityHandlers(registry: CommandRegistry): void {
+  const { similarityService, writebackService } = getServices()
   const settings = SettingsService.getInstance()
   registry.register(
     'sim.analyze',
@@ -75,7 +49,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
             event.sender.send('gather:event', 'progress', { sessionId, current, total, message })
           }
         : undefined
-      await getService().analyze(sessionId, { threshold, minGroupSize, onProgress })
+      await similarityService.analyze(sessionId, { threshold, minGroupSize, onProgress })
       return ok(true)
     }),
   )
@@ -84,7 +58,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
     'sim.cancel_analysis',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      await getService().cancel(sessionId)
+      await similarityService.cancel(sessionId)
       return ok(true)
     }),
   )
@@ -93,7 +67,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
     'sim.result',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const result = getService().getResult(sessionId)
+      const result = similarityService.getResult(sessionId)
       return ok(result)
     }),
   )
@@ -106,7 +80,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
         typeof params.threshold === 'number' ? params.threshold : settings.getNumber('default_threshold', 10)
       const minGroupSize =
         typeof params.minGroupSize === 'number' ? params.minGroupSize : settings.getNumber('default_min_group_size', 2)
-      const result = await getService().recluster(
+      const result = await similarityService.recluster(
         sessionId,
         threshold,
         minGroupSize,
@@ -121,9 +95,9 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const groupIds = (params.groupIds as Array<number | string>) ?? []
       const options = (params.options ?? {}) as WritebackOptions
-      const preview = await getWritebackService().preview(sessionId, 'similarity', options)
+      const preview = await writebackService.preview(sessionId, 'similarity', options)
       if (groupIds.length > 0) {
-        const result = getService().getResult(sessionId)
+        const result = similarityService.getResult(sessionId)
         if (result) {
           const groupIdSet = new Set(groupIds.map(id => typeof id === 'string' ? parseInt(id, 10) : id))
           const groupPaths = new Set<string>()
@@ -166,12 +140,12 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
             groupPaths.add(img.path)
           }
         }
-        const preview = await getWritebackService().preview(sessionId, 'similarity', options)
+        const preview = await writebackService.preview(sessionId, 'similarity', options)
         writebackItems = preview.items.filter(item => groupPaths.has(item.xmpPath.replace(/\.xmp$/, '')))
       } else if (Array.isArray(params.groupIds) && params.groupIds.length > 0) {
         const groupIds = params.groupIds as Array<number | string>
-        const preview = await getWritebackService().preview(sessionId, 'similarity', options)
-        const result = getService().getResult(sessionId)
+        const preview = await writebackService.preview(sessionId, 'similarity', options)
+        const result = similarityService.getResult(sessionId)
         if (result) {
           const groupIdSet = new Set(groupIds.map(id => typeof id === 'string' ? parseInt(id, 10) : id))
           const groupPaths = new Set<string>()
@@ -189,7 +163,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
       } else {
         throw new Error('Missing items, groups, or groupIds')
       }
-      return ok(await getWritebackService().execute(sessionId, 'similarity', writebackItems))
+      return ok(await writebackService.execute(sessionId, 'similarity', writebackItems))
     }),
   )
 
@@ -197,7 +171,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
     'sim.writeback_items',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      return ok(await getWritebackService().preview(sessionId, 'similarity', {} as WritebackOptions))
+      return ok(await writebackService.preview(sessionId, 'similarity', {} as WritebackOptions))
     }),
   )
 
@@ -208,7 +182,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
         throw new Error('Retry failed writeback requires explicit confirmation')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
-      return ok(await getWritebackService().retryFailed(sessionId, 'similarity'))
+      return ok(await writebackService.retryFailed(sessionId, 'similarity'))
     }),
   )
 }

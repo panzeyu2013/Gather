@@ -7,6 +7,8 @@ import ToastContainer from './components/Toast/ToastContainer'
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const SessionDetail = lazy(() => import('./pages/SessionDetail'))
 const Settings = lazy(() => import('./pages/Settings'))
+const Persons = lazy(() => import('./pages/Persons'))
+const PersonDetail = lazy(() => import('./pages/Persons/PersonDetail'))
 
 export default function App() {
   return (
@@ -16,6 +18,8 @@ export default function App() {
           <Route element={<PageShell />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/sessions/:sessionId/*" element={<SessionDetail />} />
+            <Route path="/persons" element={<Persons />} />
+            <Route path="/persons/:personId" element={<PersonDetail />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>

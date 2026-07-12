@@ -2,12 +2,8 @@ import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr, WritebackOptions } from '@gather/shared'
 import { FaceKwService } from '../services/face-kw/face-kw.service'
 import { WritebackService } from '../services/writeback/writeback.service'
-import { SessionRepository } from '../db/repositories/session.repo'
-import { PhotoRepository } from '../db/repositories/photo.repo'
-import { FaceRepository } from '../db/repositories/face.repo'
-import { WritebackRepository } from '../db/repositories/writeback.repo'
-import { XmpWriter } from '../services/xmp/xmp-writer'
 import { SettingsService } from '../services/settings'
+import { getServices } from '../bootstrap'
 
 function ok<T>(data: T): ResponseOk<T> {
   return { ok: true, data }
@@ -42,39 +38,8 @@ function wrapHandler(handler: (params: Record<string, unknown>, event?: Electron
   }
 }
 
-let service: FaceKwService | null = null
-
-function getService(): FaceKwService {
-  if (!service) {
-    service = new FaceKwService(new PhotoRepository(), new SessionRepository(), new FaceRepository())
-  }
-  return service
-}
-
-let writebackService: WritebackService | null = null
-
-function getWritebackService(): WritebackService {
-  if (!writebackService) {
-    writebackService = new WritebackService(
-      new WritebackRepository(),
-      new XmpWriter(),
-      new PhotoRepository(),
-      new SessionRepository(),
-    )
-  }
-  return writebackService
-}
-
-let faceRepo: FaceRepository | null = null
-
-function getFaceRepo(): FaceRepository {
-  if (!faceRepo) {
-    faceRepo = new FaceRepository()
-  }
-  return faceRepo
-}
-
 export function registerFaceKwHandlers(registry: CommandRegistry): void {
+  const { faceKwService, writebackService, faceRepo } = getServices()
   const settings = SettingsService.getInstance()
   registry.register(
     'fkw.analyze',
@@ -93,7 +58,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
         })
       }
 
-      await getService().analyze(sessionId, detectorPath, encoderPath, eps, minSamples, onProgress)
+      await faceKwService.analyze(sessionId, detectorPath, encoderPath, eps, minSamples, onProgress)
       return ok({ done: true })
     }),
   )
@@ -102,7 +67,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
     'fkw.cancel_analysis',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      await getService().cancel(sessionId)
+      await faceKwService.cancel(sessionId)
       return ok({ done: true })
     }),
   )
@@ -111,7 +76,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
     'fkw.clusters',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const data = await getService().getClusters(sessionId)
+      const data = await faceKwService.getClusters(sessionId)
       return ok(data)
     }),
   )
@@ -123,7 +88,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
       const clusterId = validateNumber(params.clusterId, 'clusterId')
       const roleName = validateString(params.roleName, 'roleName')
       const keywords = Array.isArray(params.keywords) ? (params.keywords as string[]) : []
-      await getService().bindCluster(sessionId, clusterId, roleName, keywords)
+      await faceKwService.bindCluster(sessionId, clusterId, roleName, keywords)
       return ok({ done: true })
     }),
   )
@@ -133,7 +98,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const clusterId = validateNumber(params.clusterId, 'clusterId')
-      await getService().unbindCluster(sessionId, clusterId)
+      await faceKwService.unbindCluster(sessionId, clusterId)
       return ok({ done: true })
     }),
   )
@@ -144,7 +109,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const source = validateNumber(params.source, 'source')
       const target = validateNumber(params.target, 'target')
-      await getService().mergeClusters(sessionId, source, target)
+      await faceKwService.mergeClusters(sessionId, source, target)
       return ok({ done: true })
     }),
   )
@@ -155,7 +120,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const clusterId = validateNumber(params.clusterId, 'clusterId')
       const photoId = validateString(params.photoId, 'photoId')
-      await getService().removeMember(sessionId, clusterId, photoId)
+      await faceKwService.removeMember(sessionId, clusterId, photoId)
       return ok({ done: true })
     }),
   )
@@ -165,7 +130,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const options = (params.options ?? {}) as WritebackOptions
-      return ok(await getWritebackService().preview(sessionId, 'face_kw', options))
+      return ok(await writebackService.preview(sessionId, 'face_kw', options))
     }),
   )
 
@@ -181,7 +146,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
         throw new Error('Invalid items: must be an array')
       }
 
-      const clusters = getFaceRepo().getClusters(sessionId, true)
+      const clusters = faceRepo.getClusters(sessionId, true)
       const photoKeywords = new Map<string, string[]>()
       for (const cluster of clusters) {
         if (cluster.binding?.keywords?.length) {
@@ -205,7 +170,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
         return item
       })
 
-      return ok(await getWritebackService().execute(sessionId, 'face_kw', enrichedItems))
+      return ok(await writebackService.execute(sessionId, 'face_kw', enrichedItems))
     }),
   )
 
@@ -213,7 +178,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
     'fkw.confirm_sync',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      await getWritebackService().confirmSync(sessionId)
+      await writebackService.confirmSync(sessionId)
       return ok(true)
     }),
   )
@@ -226,7 +191,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
       if (confirmed !== true) {
         throw new Error('Cleanup must be confirmed')
       }
-      return ok(await getWritebackService().cleanup(sessionId))
+      return ok(await writebackService.cleanup(sessionId))
     }),
   )
 
@@ -237,7 +202,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
         throw new Error('Cleanup requires explicit confirmation')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
-      return ok(await getWritebackService().cleanup(sessionId))
+      return ok(await writebackService.cleanup(sessionId))
     }),
   )
 }

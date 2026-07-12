@@ -1,0 +1,352 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-bg, #0d0d1a);
+  color: var(--color-text, #e0e0e0);
+  user-select: none;
+}
+
+.mainViewer {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  background: #000;
+}
+
+.mainImage {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.mainPlaceholder {
+  color: var(--color-text-secondary, #666);
+  font-size: 18px;
+}
+
+.navBtn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(0, 0, 0, 0.5);
+  border: none;
+  color: #fff;
+  font-size: 28px;
+  padding: 12px 16px;
+  cursor: pointer;
+  z-index: 10;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.navBtn:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.navPrev {
+  left: 16px;
+}
+
+.navNext {
+  right: 16px;
+}
+
+.decisionBadge {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 10;
+}
+
+.badgeKeep {
+  background: #2e7d32;
+  color: #fff;
+}
+
+.badgeReject {
+  background: #c62828;
+  color: #fff;
+}
+
+.badgePending {
+  background: #555;
+  color: #ccc;
+}
+
+.progressBar {
+  padding: 8px 16px;
+  background: var(--color-surface, #1a1a2e);
+  border-top: 1px solid var(--color-border, #333);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--color-text-secondary, #999);
+}
+
+.progressLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.progressRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progressBarFill {
+  flex: 1;
+  height: 4px;
+  background: var(--color-border, #333);
+  border-radius: 2px;
+  margin: 0 12px;
+  overflow: hidden;
+}
+
+.progressBarInner {
+  height: 100%;
+  background: var(--color-primary, #6c8cff);
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+.statKeep {
+  color: #4caf50;
+}
+
+.statReject {
+  color: #ef5350;
+}
+
+.statPending {
+  color: var(--color-text-secondary, #999);
+}
+
+.filmstrip {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px;
+  background: var(--color-surface, #1a1a2e);
+  border-top: 1px solid var(--color-border, #333);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.filmstripItem {
+  position: relative;
+  flex-shrink: 0;
+  width: 80px;
+  height: 60px;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.filmstripItem:hover {
+  border-color: var(--color-primary, #6c8cff);
+}
+
+.filmstripItemActive {
+  border-color: var(--color-primary, #6c8cff);
+}
+
+.filmstripImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.filmstripPlaceholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  background: #222;
+  color: #666;
+}
+
+.filmstripBadge {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  right: 2px;
+  height: 3px;
+  border-radius: 0;
+}
+
+.filmstripBadgeKeep {
+  background: #4caf50;
+}
+
+.filmstripBadgeReject {
+  background: #ef5350;
+}
+
+.filmstripBadgePending {
+  background: #555;
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--color-surface, #1a1a2e);
+  border-top: 1px solid var(--color-border, #333);
+  flex-shrink: 0;
+}
+
+.controlBtn {
+  padding: 6px 16px;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text, #e0e0e0);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.controlBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.btnKeep {
+  border-color: #2e7d32;
+  color: #4caf50;
+}
+
+.btnKeep:hover {
+  background: rgba(76, 175, 80, 0.15);
+}
+
+.btnReject {
+  border-color: #c62828;
+  color: #ef5350;
+}
+
+.btnReject:hover {
+  background: rgba(239, 83, 80, 0.15);
+}
+
+.btnWriteback {
+  border-color: var(--color-primary, #6c8cff);
+  color: var(--color-primary, #6c8cff);
+  margin-left: auto;
+}
+
+.shortcutHint {
+  font-size: 11px;
+  color: var(--color-text-secondary, #666);
+  padding: 4px 8px;
+}
+
+.emptyState {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--color-text-secondary, #999);
+  font-size: 16px;
+}
+
+.dialog {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.dialogContent {
+  background: var(--color-surface, #1a1a2e);
+  border: 1px solid var(--color-border, #333);
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 320px;
+  max-width: 480px;
+}
+
+.dialogTitle {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--color-text, #e0e0e0);
+}
+
+.dialogBody {
+  margin-bottom: 20px;
+}
+
+.dialogOption {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.dialogOption:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.dialogOptionSelected {
+  border-color: var(--color-primary, #6c8cff);
+  background: rgba(108, 140, 255, 0.1);
+}
+
+.dialogOptionLabel {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.dialogOptionDesc {
+  font-size: 12px;
+  color: var(--color-text-secondary, #999);
+  margin-top: 2px;
+}
+
+.dialogActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.dialogBtn {
+  padding: 8px 20px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border, #333);
+  background: transparent;
+  color: var(--color-text, #e0e0e0);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.dialogBtnPrimary {
+  background: var(--color-primary, #6c8cff);
+  border-color: var(--color-primary, #6c8cff);
+  color: #fff;
+}
+
+.dialogBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

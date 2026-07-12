@@ -35,7 +35,12 @@ export class WritebackService {
     const items: WritebackItemInput[] = photos.map((photo) => {
       const xmpPath = photo.filepath + '.xmp'
       const backupPath = xmpPath + '.bak'
-      const existingKeywords = this.xmpWriter.readKeywords(xmpPath)
+      let existingKeywords: string[] = []
+      try {
+        existingKeywords = this.xmpWriter.readKeywords(xmpPath)
+      } catch {
+        // corrupt or missing XMP, start empty
+      }
       return {
         photoId: photo.id,
         module,
