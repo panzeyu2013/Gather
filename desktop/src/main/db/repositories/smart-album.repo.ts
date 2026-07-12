@@ -1,6 +1,7 @@
 import { getDatabase } from '../database'
 import crypto from 'crypto'
 import type { FilterGroup } from '@gather/shared'
+import { ISmartAlbumRepository } from './interfaces'
 
 export interface SmartAlbumRow {
   id: string
@@ -32,7 +33,7 @@ export interface SmartAlbumUpdateData {
   icon?: string
 }
 
-export class SmartAlbumRepository {
+export class SmartAlbumRepository implements ISmartAlbumRepository {
   list(): SmartAlbumRow[] {
     const db = getDatabase()
     return db.prepare('SELECT * FROM smart_albums ORDER BY updated_at DESC').all() as SmartAlbumRow[]

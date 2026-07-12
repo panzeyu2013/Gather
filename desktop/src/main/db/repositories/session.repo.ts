@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { ISessionRepository } from './interfaces'
 
 export interface SessionRow {
   id: string
@@ -13,7 +14,7 @@ export interface SessionRow {
   updated_at: string
 }
 
-export class SessionRepository {
+export class SessionRepository implements ISessionRepository {
   get(id: string): SessionRow | null {
     const db = getDatabase()
     const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined

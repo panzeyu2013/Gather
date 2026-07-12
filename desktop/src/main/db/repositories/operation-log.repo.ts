@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { IOperationLogRepository } from './interfaces'
 
 export interface OperationLogRow {
   id: number
@@ -12,7 +13,7 @@ export interface OperationLogRow {
   created_at: string
 }
 
-export class OperationLogRepository {
+export class OperationLogRepository implements IOperationLogRepository {
   insert(
     sessionId: string,
     operationType: string,

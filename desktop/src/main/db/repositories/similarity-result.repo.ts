@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { ISimilarityResultRepository } from './interfaces'
 
 export interface SimilarityResultRow {
   id: number
@@ -10,7 +11,7 @@ export interface SimilarityResultRow {
   created_at: string
 }
 
-export class SimilarityResultRepository {
+export class SimilarityResultRepository implements ISimilarityResultRepository {
   getLatest(sessionId: string): SimilarityResultRow | undefined {
     const db = getDatabase()
     return db

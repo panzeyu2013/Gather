@@ -1,37 +1,11 @@
 import type { IpcMainInvokeEvent } from 'electron'
 import type { CommandRegistry } from './registry'
-import type { ResponseOk, ResponseErr, WritebackOptions, WritebackItem, GroupData } from '@gather/shared'
+import { ok, err, validateString, wrapHandler } from './helpers'
+import type { WritebackOptions, WritebackItem, GroupData } from '@gather/shared'
 import { SimilarityService } from '../services/similarity/similarity.service'
 import { SettingsService } from '../services/settings'
 import { getServices } from '../bootstrap'
 
-function ok<T>(data: T): ResponseOk<T> {
-  return { ok: true, data }
-}
-
-function err(error: string): ResponseErr {
-  return { ok: false, error }
-}
-
-function validateString(value: unknown, name: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`Invalid ${name}: must be a non-empty string`)
-  }
-  return value.trim()
-}
-
-function wrapHandler(
-  handler: (params: Record<string, unknown>, event?: IpcMainInvokeEvent) => unknown,
-) {
-  return async (params: unknown, event?: IpcMainInvokeEvent) => {
-    try {
-      return await handler((params ?? {}) as Record<string, unknown>, event)
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Unknown error'
-      return err(message)
-    }
-  }
-}
 
 export function registerSimilarityHandlers(registry: CommandRegistry): void {
   const { similarityService, writebackService } = getServices()

@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { IMetadataCacheRepository } from './interfaces'
 
 export interface MetadataCacheRow {
   id: number
@@ -41,7 +42,7 @@ export interface MetadataCacheInput {
   fileMtime?: string
 }
 
-export class MetadataCacheRepository {
+export class MetadataCacheRepository implements IMetadataCacheRepository {
   upsert(photoId: string, sessionId: string, data: MetadataCacheInput): void {
     const db = getDatabase()
     const now = new Date().toISOString()

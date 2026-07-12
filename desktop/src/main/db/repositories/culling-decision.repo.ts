@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { ICullingDecisionRepository } from './interfaces'
 
 export interface CullingDecisionRow {
   id: number
@@ -10,7 +11,7 @@ export interface CullingDecisionRow {
   created_at: string
 }
 
-export class CullingDecisionRepository {
+export class CullingDecisionRepository implements ICullingDecisionRepository {
   getDecisions(sessionId: string): { photo_id: string; decision: string }[] {
     const db = getDatabase()
     return db

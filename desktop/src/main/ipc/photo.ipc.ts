@@ -1,26 +1,9 @@
 import { getDatabase } from '../db/database'
 import { getServices } from '../bootstrap'
 import type { CommandRegistry } from './registry'
-import type { ResponseOk, ResponseErr, PhotoData } from '@gather/shared'
+import { ok, err, wrapHandler } from './helpers'
+import type { PhotoData } from '@gather/shared'
 
-function ok<T>(data: T): ResponseOk<T> {
-  return { ok: true, data }
-}
-
-function err(error: string): ResponseErr {
-  return { ok: false, error }
-}
-
-function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
-  return async (params: unknown) => {
-    try {
-      return await handler((params ?? {}) as Record<string, unknown>)
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Unknown error'
-      return err(message)
-    }
-  }
-}
 
 export function registerPhotoHandlers(registry: CommandRegistry): void {
   const { photoRepo } = getServices()

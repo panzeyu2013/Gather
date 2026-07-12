@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { IPhotoRepository } from './interfaces'
 
 export interface PhotoRow {
   id: string
@@ -15,7 +16,7 @@ export interface PhotoRow {
   updated_at: string
 }
 
-export class PhotoRepository {
+export class PhotoRepository implements IPhotoRepository {
   getBySession(sessionId: string): PhotoRow[] {
     const db = getDatabase()
     return db.prepare('SELECT * FROM photos WHERE session_id = ?').all(sessionId) as PhotoRow[]

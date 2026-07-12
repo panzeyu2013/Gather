@@ -13,7 +13,6 @@ import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
 import { registerSessionHandlers } from './ipc/session.ipc'
 import { registerFaceKwHandlers } from './ipc/face-kw.ipc'
 import { registerSimilarityHandlers } from './ipc/similarity.ipc'
-import { registerWritebackHandlers } from './ipc/writeback.ipc'
 import { registerSystemHandlers } from './ipc/system.ipc'
 import { registerImageHandlers } from './ipc/image.ipc'
 import { registerPhotoHandlers } from './ipc/photo.ipc'
@@ -201,7 +200,6 @@ function registerIpc(): void {
   registerSessionHandlers(registry)
   registerFaceKwHandlers(registry)
   registerSimilarityHandlers(registry)
-  registerWritebackHandlers(registry)
   registerSystemHandlers(registry)
   registerImageHandlers(registry)
   registerPhotoHandlers(registry)

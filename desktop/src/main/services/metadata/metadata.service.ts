@@ -85,18 +85,18 @@ export class MetadataService {
             const exifData = await exifr.parse(photo.filepath)
             if (exifData) {
               const tags: MetadataTags = {
-                make: exifData.Make,
-                model: exifData.Model,
-                lensModel: exifData.LensModel,
-                focalLength: exifData.FocalLength,
-                aperture: exifData.FNumber,
+                make: exifData.Make as string,
+                model: exifData.Model as string,
+                lensModel: exifData.LensModel as string,
+                focalLength: exifData.FocalLength as number,
+                aperture: exifData.FNumber as number,
                 shutterSpeed: exifData.ExposureTime ? String(exifData.ExposureTime) : undefined,
-                iso: exifData.ISO,
+                iso: exifData.ISO as number,
                 dateTaken: exifData.DateTimeOriginal ? String(exifData.DateTimeOriginal) : undefined,
-                latitude: exifData.latitude,
-                longitude: exifData.longitude,
-                width: exifData.ImageWidth ?? exifData.ExifImageWidth,
-                height: exifData.ImageHeight ?? exifData.ExifImageHeight,
+                latitude: exifData.latitude as number,
+                longitude: exifData.longitude as number,
+                width: (exifData.ImageWidth ?? exifData.ExifImageWidth) as number,
+                height: (exifData.ImageHeight ?? exifData.ExifImageHeight) as number,
               }
               result.set(photo.id, tags)
               this.metadataCacheRepo.upsert(photo.id, photo.session_id, tagsToCacheInput(tags))
@@ -104,8 +104,8 @@ export class MetadataService {
             }
           }
 
-          const sharp = sharpModule ?? (sharpModule = await import('sharp'))
-          const metadata = await sharp(photo.filepath).metadata()
+          sharpModule ??= (await import('sharp')) as unknown as typeof import('sharp')
+          const metadata = await sharpModule(photo.filepath).metadata()
           const tags: MetadataTags = {
             width: metadata.width,
             height: metadata.height,
@@ -174,7 +174,7 @@ export class MetadataService {
   }
 
   async populateCache(sessionId: string, photoIds: string[]): Promise<void> {
-    const sharp = await import('sharp')
+    const sharp = (await import('sharp')) as unknown as typeof import('sharp')
     for (const photoId of photoIds) {
       try {
         const photos = this.getPhotosByIds([photoId])

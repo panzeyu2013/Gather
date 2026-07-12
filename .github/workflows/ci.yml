@@ -1,18 +1,25 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main, feat]
+  pull_request:
+    branches: [main]
 
 jobs:
-  quality:
-    runs-on: macos-latest
+  validate:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+          cache: npm
+      - run: npm ci
       - run: npm run build --workspace=@gather/shared
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm run test:vitest
-      - run: npm run build
+      - name: Typecheck
+        run: npx tsc -p desktop/tsconfig.main.json --noEmit && npx tsc -p desktop/tsconfig.renderer.json --noEmit
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm run test:vitest

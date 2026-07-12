@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { IFaceRepository } from './interfaces'
 
 export interface FaceObservationInput {
   photoId: string
@@ -55,7 +56,7 @@ export interface FaceClusterMemberRow {
   observation_id: number | null
 }
 
-export class FaceRepository {
+export class FaceRepository implements IFaceRepository {
   saveObservations(sessionId: string, observations: FaceObservationInput[]): number[] {
     const db = getDatabase()
     const ids: number[] = []

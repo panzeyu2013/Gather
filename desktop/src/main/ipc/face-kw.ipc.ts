@@ -1,42 +1,10 @@
 import type { CommandRegistry } from './registry'
-import type { ResponseOk, ResponseErr, WritebackOptions } from '@gather/shared'
+import { ok, err, validateString, validateNumber, wrapHandler } from './helpers'
+import type { WritebackOptions } from '@gather/shared'
 import { FaceKwService } from '../services/face-kw/face-kw.service'
 import { WritebackService } from '../services/writeback/writeback.service'
 import { SettingsService } from '../services/settings'
 import { getServices } from '../bootstrap'
-
-function ok<T>(data: T): ResponseOk<T> {
-  return { ok: true, data }
-}
-
-function err(error: string): ResponseErr {
-  return { ok: false, error }
-}
-
-function validateString(value: unknown, name: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`Invalid ${name}: must be a non-empty string`)
-  }
-  return value.trim()
-}
-
-function validateNumber(value: unknown, name: string): number {
-  if (typeof value !== 'number' || isNaN(value)) {
-    throw new Error(`Invalid ${name}: must be a number`)
-  }
-  return value
-}
-
-function wrapHandler(handler: (params: Record<string, unknown>, event?: Electron.IpcMainInvokeEvent) => unknown) {
-  return async (params: unknown, event?: Electron.IpcMainInvokeEvent) => {
-    try {
-      return await handler((params ?? {}) as Record<string, unknown>, event)
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Unknown error'
-      return err(message)
-    }
-  }
-}
 
 export function registerFaceKwHandlers(registry: CommandRegistry): void {
   const { faceKwService, writebackService, faceRepo } = getServices()

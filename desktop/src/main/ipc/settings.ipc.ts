@@ -2,17 +2,8 @@ import { SettingsService } from '../services/settings'
 import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getModelResourcesDir, resolveModelPath } from '../services/face-kw/provider'
 import { existsSync } from 'fs'
 import type { CommandRegistry } from './registry'
-import type { ResponseOk, ResponseErr } from '@gather/shared'
+import { ok, err, wrapHandler } from './helpers'
 
-function ok<T>(data: T): ResponseOk<T> { return { ok: true, data } }
-function err(error: string): ResponseErr { return { ok: false, error } }
-
-function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
-  return async (params: unknown) => {
-    try { return await handler((params ?? {}) as Record<string, unknown>) }
-    catch (e) { return err(e instanceof Error ? e.message : 'Unknown error') }
-  }
-}
 
 export function registerSettingsHandlers(registry: CommandRegistry): void {
   const svc = SettingsService.getInstance()

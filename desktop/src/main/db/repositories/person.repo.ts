@@ -1,5 +1,6 @@
 import { getDatabase } from '../database'
 import crypto from 'crypto'
+import { IPersonRepository } from './interfaces'
 
 export interface PersonRow {
   id: string
@@ -51,7 +52,7 @@ export interface PersonUpdateFields {
   matchThreshold?: number
 }
 
-export class PersonRepository {
+export class PersonRepository implements IPersonRepository {
   list(): PersonRow[] {
     const db = getDatabase()
     return db.prepare('SELECT * FROM persons ORDER BY name').all() as PersonRow[]
@@ -218,7 +219,7 @@ export class PersonRepository {
     )
     const insertMany = db.transaction(() => {
       for (const emb of embeddings) {
-        const embBuffer = Buffer.from(emb.embedding.buffer, emb.embedding.byteOffset, emb.embedding.byteLength)
+        const embBuffer = Buffer.from(new Float32Array(emb.embedding).buffer)
         stmt.run(emb.personId, embBuffer, emb.photoId, emb.sessionId, emb.faceObservationId, JSON.stringify(emb.faceBbox), emb.quality, now)
       }
     })

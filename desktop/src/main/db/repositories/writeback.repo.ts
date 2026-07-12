@@ -1,4 +1,5 @@
 import { getDatabase } from '../database'
+import { IWritebackRepository } from './interfaces'
 
 export interface WritebackItemInput {
   photoId: string
@@ -22,7 +23,7 @@ export interface WritebackItemRow {
   last_attempt_at: string
 }
 
-export class WritebackRepository {
+export class WritebackRepository implements IWritebackRepository {
   saveItems(sessionId: string, items: WritebackItemInput[]): number[] {
     const db = getDatabase()
     const now = new Date().toISOString()
