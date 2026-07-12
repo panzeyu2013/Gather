@@ -2,7 +2,7 @@ import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { FaceRepository, type FaceClusterInput } from '../../db/repositories/face.repo'
 import { detectFaces, initDetector, releaseDetector } from './face-detector'
-import { encodeFace, initEncoder, releaseEncoder } from './face-encoder'
+import { encodeFace, initEncoder, releaseEncoder, EMBEDDING_DIM } from './face-encoder'
 import { clusterEmbeddings, type EmbeddingEntry } from './face-clusterer'
 import * as path from 'path'
 import sharp from 'sharp'
@@ -45,7 +45,7 @@ export class FaceKwService {
     detectorPath: string,
     encoderPath: string,
     eps = this.settings.getNumber('default_eps', 0.6),
-    minPts = this.settings.getNumber('default_min_samples', 3),
+    minPts = this.settings.getNumber('default_min_samples', 2),
     onProgress?: ProgressCallback,
   ): Promise<void> {
     this.abortController = new AbortController()
@@ -82,7 +82,7 @@ export class FaceKwService {
               bboxY: f.bbox[1],
               bboxW: f.bbox[2],
               bboxH: f.bbox[3],
-              embedding: new Array(this.settings.getNumber('embedding_dim', 128)).fill(0),
+              embedding: new Array(EMBEDDING_DIM).fill(0),
               confidence: f.confidence,
             }))
             this.faceRepo.saveObservations(sessionId, observations)

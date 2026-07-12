@@ -81,7 +81,7 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params, event) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const eps = typeof params.eps === 'number' ? params.eps : settings.getNumber('default_eps', 0.6)
-      const minSamples = typeof params.minSamples === 'number' ? params.minSamples : settings.getNumber('default_min_samples', 3)
+      const minSamples = typeof params.minSamples === 'number' ? params.minSamples : settings.getNumber('default_min_samples', 2)
 
       const detectorPath = typeof params.detectorPath === 'string' ? params.detectorPath : settings.get('detector_model_path', 'models/face_detector.onnx')
       const encoderPath = typeof params.encoderPath === 'string' ? params.encoderPath : settings.get('encoder_model_path', 'models/face_encoder.onnx')

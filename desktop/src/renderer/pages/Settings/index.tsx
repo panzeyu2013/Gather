@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import Loading from '../../components/Loading/Loading'
+import SliderInput from '../../components/SliderInput/SliderInput'
 import styles from './Settings.module.css'
 
 interface SettingDefinition {
@@ -34,32 +35,6 @@ const GROUPS: SettingGroup[] = [
       { key: 'thumbnail_quality', label: '缩略图质量', type: 'number', description: '缩略图的 JPEG 压缩质量 (0-100)' },
       { key: 'face_thumbnail_size', label: '人脸缩略图尺寸', type: 'number', description: '人脸缩略图的宽高像素值' },
       { key: 'face_thumbnail_quality', label: '人脸缩略图质量', type: 'number', description: '人脸缩略图的 JPEG 压缩质量 (0-100)' },
-    ],
-  },
-  {
-    title: 'ML 模型',
-    settings: [
-      { key: 'detector_model_path', label: '检测模型路径', type: 'text', description: '人脸检测 ONNX 模型文件路径' },
-      { key: 'encoder_model_path', label: '编码模型路径', type: 'text', description: '人脸编码 ONNX 模型文件路径' },
-      { key: 'onnx_provider', label: 'ONNX 运行后端', type: 'select', description: 'cpu=CPU, CoreMLExecutionProvider=CoreML, DmlExecutionProvider=DirectML' },
-      { key: 'detect_confidence', label: '检测置信度', type: 'number', description: '人脸检测的最低置信度 (0-1)' },
-      { key: 'detect_input_size', label: '检测输入尺寸', type: 'number', description: '检测模型的输入图像尺寸' },
-      { key: 'encoder_input_size', label: '编码输入尺寸', type: 'number', description: '编码模型的输入图像尺寸' },
-      { key: 'embedding_dim', label: '特征向量维度', type: 'number', description: '人脸特征向量的维度' },
-    ],
-  },
-  {
-    title: '人脸聚类',
-    settings: [
-      { key: 'default_eps', label: '聚类半径 (eps)', type: 'number', description: 'DBSCAN 聚类的最大邻域距离' },
-      { key: 'default_min_samples', label: '最小样本数', type: 'number', description: 'DBSCAN 聚类的最小样本数' },
-    ],
-  },
-  {
-    title: '相似度聚类',
-    settings: [
-      { key: 'default_threshold', label: '相似度阈值', type: 'number', description: '图像相似度分组的阈值' },
-      { key: 'default_min_group_size', label: '最小分组大小', type: 'number', description: '相似度分组的最小图像数量' },
     ],
   },
   {
@@ -104,26 +79,47 @@ function parseSelectOptions(description: string): { value: string; label: string
 export default function SettingsPage() {
   const settings = useSettingsStore((s) => s.settings)
   const loading = useSettingsStore((s) => s.loading)
+  const mlStatus = useSettingsStore((s) => s.mlStatus)
+  const mlStatusLoading = useSettingsStore((s) => s.mlStatusLoading)
   const load = useSettingsStore((s) => s.load)
+  const loadMlStatus = useSettingsStore((s) => s.loadMlStatus)
   const setSetting = useSettingsStore((s) => s.setSetting)
   const resetToDefaults = useSettingsStore((s) => s.resetToDefaults)
 
-  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(GROUPS.map((g) => g.title)))
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(GROUPS.map((g) => g.title).concat('人脸分析')))
+  const [openSubSections, setOpenSubSections] = useState<Set<string>>(new Set())
+  const backendManual = mlStatus ? !mlStatus.isAuto : false
 
   useEffect(() => {
     load()
-  }, [load])
+    loadMlStatus()
+  }, [load, loadMlStatus])
 
   const toggleSection = (title: string) => {
     setOpenSections((prev) => {
       const next = new Set(prev)
-      if (next.has(title)) {
-        next.delete(title)
-      } else {
-        next.add(title)
-      }
+      if (next.has(title)) next.delete(title)
+      else next.add(title)
       return next
     })
+  }
+
+  const toggleSubSection = (title: string) => {
+    setOpenSubSections((prev) => {
+      const next = new Set(prev)
+      if (next.has(title)) next.delete(title)
+      else next.add(title)
+      return next
+    })
+  }
+
+  const handleSliderChange = (key: string) => (value: number) => {
+    setSetting(key, String(value))
+  }
+
+  const getVal = (key: string, fallback: string) => {
+    const v = settings[key]
+    return v !== undefined && v !== '' ? v : fallback
   }
 
   if (loading) {
@@ -139,6 +135,227 @@ export default function SettingsPage() {
     )
   }
 
+  const faceSection = (
+    <div key="人脸分析" className={styles.section}>
+      <button className={styles.sectionHeader} onClick={() => toggleSection('人脸分析')}>
+        <span className={`${styles.chevron} ${openSections.has('人脸分析') ? styles.chevronOpen : ''}`}>
+          &#9654;
+        </span>
+        人脸分析
+      </button>
+
+      {openSections.has('人脸分析') && (
+        <div className={styles.sectionBody}>
+          <div className={styles.subSectionLabel}>常规参数</div>
+
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfo}>
+              <p className={styles.settingLabel}>检测敏感度</p>
+              <p className={styles.settingDesc}>低于此置信度的人脸将被忽略</p>
+            </div>
+            <div className={styles.sliderInput}>
+              <SliderInput
+                value={parseFloat(getVal('detect_confidence', '0.5'))}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={handleSliderChange('detect_confidence')}
+              />
+            </div>
+          </div>
+
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfo}>
+              <p className={styles.settingLabel}>聚类半径</p>
+              <p className={styles.settingDesc}>值越大，不同人脸越容易被归为同一人</p>
+            </div>
+            <div className={styles.sliderInput}>
+              <SliderInput
+                value={parseFloat(getVal('default_eps', '0.6'))}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={handleSliderChange('default_eps')}
+              />
+            </div>
+          </div>
+
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfo}>
+              <p className={styles.settingLabel}>最小样本数</p>
+              <p className={styles.settingDesc}>一个人至少出现 N 张照片才形成聚类</p>
+            </div>
+            <div className={styles.sliderInput}>
+              <SliderInput
+                value={parseInt(getVal('default_min_samples', '2'), 10)}
+                min={1}
+                max={20}
+                step={1}
+                onChange={handleSliderChange('default_min_samples')}
+              />
+            </div>
+          </div>
+
+          {/* 模型与运行 */}
+          <div className={styles.settingDivider} />
+          <button className={styles.subSectionHeader} onClick={() => toggleSubSection('模型与运行')}>
+            <span className={`${styles.subChevron} ${openSubSections.has('模型与运行') ? styles.subChevronOpen : ''}`}>
+              &#9654;
+            </span>
+            模型与运行
+            <span className={styles.subSectionHint}>
+              {mlStatusLoading ? '检测中…' : mlStatus ? (mlStatus.detectorModel.exists && mlStatus.encoderModel.exists ? '✓' : '⚠') : ''}
+            </span>
+          </button>
+
+          {openSubSections.has('模型与运行') && (
+            <div className={styles.subSectionBody}>
+              {mlStatusLoading ? (
+                <div className={styles.statusLoading}>正在检测模型状态…</div>
+              ) : mlStatus ? (
+                <>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingInfo}>
+                      <p className={styles.settingLabel}>检测模型</p>
+                    </div>
+                    <div className={styles.modelStatus}>
+                      <span className={mlStatus.detectorModel.exists ? styles.statusOk : styles.statusFail}>
+                        {mlStatus.detectorModel.exists ? '✓ 正常' : '✗ 未找到'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingInfo}>
+                      <p className={styles.settingLabel}>编码模型</p>
+                    </div>
+                    <div className={styles.modelStatus}>
+                      <span className={mlStatus.encoderModel.exists ? styles.statusOk : styles.statusFail}>
+                        {mlStatus.encoderModel.exists ? '✓ 正常' : '✗ 未找到'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingInfo}>
+                      <p className={styles.settingLabel}>模型信息</p>
+                    </div>
+                    <div className={styles.modelInfoText}>
+                      检测输入 {mlStatus.modelInfo.detectInputSize}×{mlStatus.modelInfo.detectInputSize}
+                      ，编码输入 {mlStatus.modelInfo.encoderInputSize}×{mlStatus.modelInfo.encoderInputSize}
+                      ，特征维度 {mlStatus.modelInfo.embeddingDim}
+                    </div>
+                  </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingInfo}>
+                      <p className={styles.settingLabel}>运行后端</p>
+                      <p className={styles.settingDesc}>
+                        {mlStatus.isAuto
+                          ? `自动适配（${mlStatus.autoBackendLabel}）`
+                          : `手动：${mlStatus.provider}`}
+                      </p>
+                    </div>
+                    <div className={styles.backendControl}>
+                      <span className={styles.backendLabel}>
+                        {mlStatus.isAuto ? mlStatus.autoBackendLabel : mlStatus.provider}
+                      </span>
+                      <button
+                        className={styles.linkBtn}
+                        onClick={async () => {
+                          if (backendManual) {
+                            await setSetting('onnx_provider', 'auto')
+                          } else {
+                            await setSetting('onnx_provider', mlStatus.autoBackend)
+                          }
+                          loadMlStatus()
+                        }}
+                      >
+                        {backendManual ? '恢复自动' : '手动切换'}
+                      </button>
+                      {backendManual && (
+                        <select
+                          className={styles.backendSelect}
+                          value={mlStatus.provider}
+                          onChange={async (e) => {
+                            await setSetting('onnx_provider', e.target.value)
+                            loadMlStatus()
+                          }}
+                        >
+                          <option value="CoreMLExecutionProvider">CoreML</option>
+                          <option value="DmlExecutionProvider">DirectML</option>
+                          <option value="CPU">CPU</option>
+                          <option value="CUDA">CUDA</option>
+                        </select>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className={styles.statusLoading}>无法获取模型状态</div>
+              )}
+            </div>
+          )}
+
+          {/* 高级参数 */}
+          <button className={styles.subSectionHeader} onClick={() => toggleSubSection('高级参数')}>
+            <span className={`${styles.subChevron} ${openSubSections.has('高级参数') ? styles.subChevronOpen : ''}`}>
+              &#9654;
+            </span>
+            高级参数
+          </button>
+
+          {openSubSections.has('高级参数') && (
+            <div className={styles.subSectionBody}>
+              <div className={styles.settingRow}>
+                <div className={styles.settingInfo}>
+                  <p className={styles.settingLabel}>NMS 阈值</p>
+                  <p className={styles.settingDesc}>重叠人脸的过滤阈值</p>
+                </div>
+                <div className={styles.sliderInput}>
+                  <SliderInput
+                    value={parseFloat(getVal('nms_threshold', '0.4'))}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={handleSliderChange('nms_threshold')}
+                  />
+                </div>
+              </div>
+              <div className={styles.settingRow}>
+                <div className={styles.settingInfo}>
+                  <p className={styles.settingLabel}>最大检测数</p>
+                  <p className={styles.settingDesc}>单张图片最多检测的人脸数</p>
+                </div>
+                <div className={styles.sliderInput}>
+                  <SliderInput
+                    value={parseInt(getVal('max_detections', '100'), 10)}
+                    min={1}
+                    max={500}
+                    step={1}
+                    onChange={handleSliderChange('max_detections')}
+                  />
+                </div>
+              </div>
+              <div className={styles.settingRow}>
+                <div className={styles.settingInfo}>
+                  <p className={styles.settingLabel}>ONNX 线程</p>
+                  <p className={styles.settingDesc}>推理并行线程数</p>
+                </div>
+                <div className={styles.sliderInput}>
+                  <SliderInput
+                    value={parseInt(getVal('onnx_threads', '4'), 10)}
+                    min={1}
+                    max={16}
+                    step={1}
+                    onChange={handleSliderChange('onnx_threads')}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+
   return (
     <div className={styles.page}>
       <div className={styles.header}>
@@ -147,6 +364,8 @@ export default function SettingsPage() {
           重置为默认值
         </button>
       </div>
+
+      {faceSection}
 
       {GROUPS.map((group) => (
         <div key={group.title} className={styles.section}>

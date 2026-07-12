@@ -1,11 +1,14 @@
 import { create } from 'zustand'
-import { settingsApi } from '../api/settings'
+import { settingsApi, type MLStatus } from '../api/settings'
 
 interface SettingsStore {
   settings: Record<string, string>
   loading: boolean
   dirty: boolean
+  mlStatus: MLStatus | null
+  mlStatusLoading: boolean
   load: () => Promise<void>
+  loadMlStatus: () => Promise<void>
   setSetting: (key: string, value: string) => Promise<void>
   resetToDefaults: () => Promise<void>
   reset: () => void
@@ -15,6 +18,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: {},
   loading: false,
   dirty: false,
+  mlStatus: null,
+  mlStatusLoading: false,
 
   load: async () => {
     set({ loading: true })
@@ -23,6 +28,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       set({ settings, loading: false, dirty: false })
     } catch {
       set({ loading: false, dirty: false })
+    }
+  },
+
+  loadMlStatus: async () => {
+    set({ mlStatusLoading: true })
+    try {
+      const mlStatus = await settingsApi.getMlStatus()
+      set({ mlStatus, mlStatusLoading: false })
+    } catch {
+      set({ mlStatusLoading: false })
     }
   },
 
@@ -39,5 +54,5 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ settings, dirty: false })
   },
 
-  reset: () => set({ settings: {}, loading: false, dirty: false }),
+  reset: () => set({ settings: {}, loading: false, dirty: false, mlStatus: null, mlStatusLoading: false }),
 }))

@@ -57,14 +57,15 @@ export function getDefaults(): Record<string, string | number> {
   return {
     detector_model_path: 'models/face_detector.onnx',
     encoder_model_path: 'models/face_encoder.onnx',
-    onnx_provider: 'CoreMLExecutionProvider',
+    onnx_provider: 'auto',
     detect_confidence: 0.5,
-    detect_input_size: 640,
-    encoder_input_size: 112,
-    embedding_dim: 128,
 
     default_eps: 0.6,
-    default_min_samples: 3,
+    default_min_samples: 2,
+
+    nms_threshold: 0.4,
+    max_detections: 100,
+    onnx_threads: 4,
 
     default_threshold: 10,
     default_min_group_size: 2,
