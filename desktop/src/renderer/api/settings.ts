@@ -6,8 +6,10 @@ export interface MLStatus {
   autoBackendLabel: string
   provider: string
   isAuto: boolean
-  detectorModel: { path: string; exists: boolean }
-  encoderModel: { path: string; exists: boolean }
+  availableBackends: Array<{ value: string; label: string }>
+  modelResourcesDir: string
+  detectorModel: { path: string; resolvedPath: string; exists: boolean }
+  encoderModel: { path: string; resolvedPath: string; exists: boolean }
   modelInfo: {
     detectInputSize: number
     encoderInputSize: number

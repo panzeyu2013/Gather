@@ -31,7 +31,7 @@ export function registerImageHandlers(registry: CommandRegistry): void {
     'image.get_preview',
     wrapHandler(async (params) => {
       const { path, maxDimension } = params as { path: string; maxDimension?: number }
-      const result = await ImageService.getInstance().getPreview(path, maxDimension ?? settings.getNumber('preview_max_dimension', 1920))
+      const result = await ImageService.getInstance().getPreview(path, maxDimension)
       return ok({
         buffer: result.buffer.toString('base64'),
         width: result.width,
@@ -81,15 +81,33 @@ export function registerImageHandlers(registry: CommandRegistry): void {
       const { paths } = params as { paths: string[] }
       if (!Array.isArray(paths)) throw new Error('Invalid paths: must be a string array')
       const result: Record<string, { width: number; height: number }> = {}
+      if (paths.length === 0) return ok(result)
       const svc = ImageService.getInstance()
-      for (const p of paths) {
-        try {
-          const dims = await svc.getDimensions(p)
-          result[p] = dims
-        } catch {
-          result[p] = { width: 0, height: 0 }
+      const concurrency = 10
+      let index = 0
+      await new Promise<void>((resolve, reject) => {
+        let running = 0
+        let done = 0
+        const total = paths.length
+        function next() {
+          while (running < concurrency && index < total) {
+            const i = index++
+            running++
+            svc.getDimensions(paths[i]).then((dims) => {
+              result[paths[i]] = dims
+            }).catch(() => {
+              result[paths[i]] = { width: 0, height: 0 }
+            }).finally(() => {
+              running--
+              done++
+              if (done === total) resolve()
+              else next()
+            })
+          }
+          if (running === 0 && done < total) reject(new Error('Unexpected stall'))
         }
-      }
+        next()
+      })
       return ok(result)
     }),
   )

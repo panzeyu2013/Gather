@@ -1,7 +1,5 @@
 import { SettingsService } from '../services/settings'
-import { getAutoBackend, getAutoBackendLabel } from '../services/face-kw/provider'
-import { INPUT_SIZE } from '../services/face-kw/face-detector'
-import { ENCODER_INPUT_SIZE, EMBEDDING_DIM } from '../services/face-kw/face-encoder'
+import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getModelResourcesDir, resolveModelPath } from '../services/face-kw/provider'
 import { existsSync } from 'fs'
 import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr } from '@gather/shared'
@@ -45,6 +43,8 @@ export function registerSettingsHandlers(registry: CommandRegistry): void {
     const encoderPath = svc.get('encoder_model_path', 'models/face_encoder.onnx')
     const provider = svc.get('onnx_provider', 'auto')
     const isAuto = provider === 'auto'
+    const resolvedDetector = resolveModelPath(detectorPath)
+    const resolvedEncoder = resolveModelPath(encoderPath)
 
     return ok({
       platform: process.platform,
@@ -52,18 +52,22 @@ export function registerSettingsHandlers(registry: CommandRegistry): void {
       autoBackendLabel: getAutoBackendLabel(),
       provider,
       isAuto,
+      availableBackends: getAvailableBackends(),
+      modelResourcesDir: getModelResourcesDir(),
       detectorModel: {
         path: detectorPath,
-        exists: existsSync(detectorPath),
+        resolvedPath: resolvedDetector,
+        exists: existsSync(resolvedDetector),
       },
       encoderModel: {
         path: encoderPath,
-        exists: existsSync(encoderPath),
+        resolvedPath: resolvedEncoder,
+        exists: existsSync(resolvedEncoder),
       },
       modelInfo: {
-        detectInputSize: INPUT_SIZE,
-        encoderInputSize: ENCODER_INPUT_SIZE,
-        embeddingDim: EMBEDDING_DIM,
+        detectInputSize: svc.getNumber('detect_input_size', 640),
+        encoderInputSize: svc.getNumber('encoder_input_size', 112),
+        embeddingDim: svc.getNumber('embedding_dim', 512),
       },
     })
   }))

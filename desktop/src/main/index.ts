@@ -1,7 +1,7 @@
 // src/main/index.ts
 // Electron 主进程入口 — 新架构
 
-import { app, BrowserWindow, ipcMain, Menu, dialog, session } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, dialog, session, shell } from 'electron'
 import { join, resolve } from 'path'
 import { readdirSync, statSync } from 'fs'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
@@ -248,6 +248,22 @@ function registerIpc(): void {
       throw new Error('Failed to read directory')
     }
     return files
+  })
+
+  ipcMain.handle('app:open-directory', async (e, dirPath: string) => {
+    ensureMainWindowSender(e)
+    if (typeof dirPath !== 'string' || dirPath.length === 0) throw new Error('Invalid directory path')
+    await shell.openPath(dirPath)
+  })
+
+  ipcMain.handle('models.download_default', async (e) => {
+    ensureMainWindowSender(e)
+    const settings = SettingsService.getInstance()
+    const getUrl = (key: string) => settings.get(key, '')
+    const { downloadDefaultModels } = await import('./services/face-kw/model-downloader')
+    await downloadDefaultModels(getUrl, (progress) => {
+      mainWindow?.webContents.send('gather:event', 'models:download-progress', progress)
+    })
   })
 }
 

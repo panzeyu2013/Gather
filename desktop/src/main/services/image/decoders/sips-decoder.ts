@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import sharp from 'sharp'
-import { SettingsService } from '../../settings'
+import { IMAGE_CONFIG } from '../image-config'
 import type { ImageDecoder, DecodeResult } from '../decoder'
 
 const execFileAsync = promisify(execFile)
@@ -25,23 +25,17 @@ async function sipsToBuffer(args: string[]): Promise<Buffer> {
 
 export class SipsDecoder implements ImageDecoder {
   readonly name = 'Sips (Apple RAW)'
-  private settings = SettingsService.getInstance()
 
-  private static RAW_EXTENSIONS = new Set([
-    '.cr2', '.cr3', '.nef', '.nrw', '.arw',
-    '.raf', '.dng', '.orf', '.rw2', '.pef',
-    '.srw', '.srf', '.x3f', '.3fr', '.fff',
-    '.mef', '.mos', '.iiq', '.eip', '.erf',
-    '.kdc', '.mrw',
-  ])
+  private static RAW_EXTENSIONS = new Set(IMAGE_CONFIG.sips.rawExtensions)
 
   supports(ext: string): boolean {
     return SipsDecoder.RAW_EXTENSIONS.has(ext)
   }
 
-  async getPreview(path: string, maxDimension = 1920): Promise<DecodeResult> {
+  async getPreview(path: string, _maxDimension?: number): Promise<DecodeResult> {
+    const maxDim = _maxDimension ?? 1920
     const buffer = await sipsToBuffer([
-      '-Z', String(maxDimension),
+      '-Z', String(maxDim),
       '-s', 'format', 'jpeg',
       path,
     ])
@@ -49,8 +43,8 @@ export class SipsDecoder implements ImageDecoder {
     return {
       buffer,
       format: 'jpeg',
-      width: metadata.width ?? maxDimension,
-      height: metadata.height ?? maxDimension,
+      width: metadata.width ?? 0,
+      height: metadata.height ?? 0,
     }
   }
 

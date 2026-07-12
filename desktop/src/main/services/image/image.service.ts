@@ -163,7 +163,7 @@ export class ImageService {
     )
   }
 
-  async getPreview(path: string, maxDimension = SettingsService.getInstance().getNumber('preview_max_dimension', 1920)): Promise<DecodeResult> {
+  async getPreview(path: string, maxDimension?: number): Promise<DecodeResult> {
     const decoder = this.registry.resolve(path)
     try {
       return await decoder.getPreview(path, maxDimension)

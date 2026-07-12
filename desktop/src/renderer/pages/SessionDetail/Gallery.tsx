@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { sessionApi } from '../../api/session'
 import { imageApi } from '../../api/image'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import Lightbox from '../../components/Lightbox/Lightbox'
 import type { PhotoData } from '@gather/shared'
 import styles from './Gallery.module.css'
@@ -37,6 +38,14 @@ export default function Gallery() {
   const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({})
   const [imgDims, setImgDims] = useState<Record<string, { width: number; height: number }>>({})
 
+  const settings = useSettingsStore((s) => s.settings)
+  const loadSettings = useSettingsStore((s) => s.load)
+  const thumbSize = parseInt(settings['thumbnail_size'] ?? '320', 10)
+
+  useEffect(() => {
+    if (Object.keys(settings).length === 0) loadSettings()
+  }, [loadSettings])
+
   const handleThumbLoad = useCallback((filepath: string, width: number, height: number) => {
     setImgDims((prev) => {
       if (prev[filepath]?.width === width && prev[filepath]?.height === height) return prev
@@ -57,13 +66,13 @@ export default function Gallery() {
   useEffect(() => {
     if (photos && photos.length > 0) {
       const filepaths = photos.map((p) => p.filepath)
-      imageApi.preloadThumbnails(filepaths, 320).catch(() => {})
+      imageApi.preloadThumbnails(filepaths, thumbSize).catch(() => {})
 
       imageApi.getDimensions(filepaths).then((result) => {
         setDims((prev) => ({ ...prev, ...result }))
       }).catch(() => {})
     }
-  }, [photos])
+  }, [photos, thumbSize])
 
   const enrichedPhotos = useMemo(() => {
     if (!photos) return []
@@ -90,9 +99,9 @@ export default function Gallery() {
   }
 
   const openLightbox = useCallback((index: number, photo: PhotoData) => {
-    imageApi.prioritizeThumbnail(photo.filepath)
+    imageApi.prioritizeThumbnail(photo.filepath, thumbSize)
     setLightboxIndex(index)
-  }, [])
+  }, [thumbSize])
 
   const closeLightbox = () => setLightboxIndex(null)
 
@@ -151,6 +160,7 @@ export default function Gallery() {
                 photo={photo}
                 isSelected={selected.has(photo.id)}
                 onLoad={handleThumbLoad}
+                thumbSize={thumbSize}
               />
             </div>
           )
@@ -167,17 +177,18 @@ export default function Gallery() {
   )
 }
 
-function GalleryThumbnail({ photo, isSelected, onLoad }: {
+function GalleryThumbnail({ photo, isSelected, onLoad, thumbSize }: {
   photo: PhotoData
   isSelected: boolean
   onLoad: (filepath: string, width: number, height: number) => void
+  thumbSize: number
 }) {
   const [src, setSrc] = useState<string | null>(null)
   const [hasError, setHasError] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    imageApi.getThumbnail(photo.filepath, 320)
+    imageApi.getThumbnail(photo.filepath, thumbSize)
       .then((r) => {
         if (!cancelled) setSrc(`data:image/jpeg;base64,${r.buffer}`)
       })
@@ -188,7 +199,7 @@ function GalleryThumbnail({ photo, isSelected, onLoad }: {
         }
       })
     return () => { cancelled = true }
-  }, [photo.filepath])
+  }, [photo.filepath, thumbSize])
 
   return (
     <div className={styles.thumb}>

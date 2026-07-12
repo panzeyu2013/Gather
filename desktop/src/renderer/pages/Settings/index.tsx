@@ -29,8 +29,6 @@ const GROUPS: SettingGroup[] = [
   {
     title: '图片处理',
     settings: [
-      { key: 'preview_max_dimension', label: '预览图最大尺寸', type: 'number', description: '预览图的最大宽/高像素值' },
-      { key: 'preview_quality', label: '预览图质量', type: 'number', description: '预览图的 JPEG 压缩质量 (0-100)' },
       { key: 'thumbnail_size', label: '缩略图尺寸', type: 'number', description: '缩略图的宽高像素值' },
       { key: 'thumbnail_quality', label: '缩略图质量', type: 'number', description: '缩略图的 JPEG 压缩质量 (0-100)' },
       { key: 'face_thumbnail_size', label: '人脸缩略图尺寸', type: 'number', description: '人脸缩略图的宽高像素值' },
@@ -88,12 +86,42 @@ export default function SettingsPage() {
 
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(GROUPS.map((g) => g.title).concat('人脸分析')))
   const [openSubSections, setOpenSubSections] = useState<Set<string>>(new Set())
+  const [downloadProgress, setDownloadProgress] = useState<{ filename: string; percent: number } | null>(null)
+  const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'done' | 'error'>('idle')
   const backendManual = mlStatus ? !mlStatus.isAuto : false
 
   useEffect(() => {
     load()
     loadMlStatus()
   }, [load, loadMlStatus])
+
+  useEffect(() => {
+    if (downloadState !== 'downloading') return
+    const unsub = window.gather.onModelDownloadProgress((data) => {
+      const p = data as { filename: string; percent: number }
+      setDownloadProgress(p)
+      if (p.percent >= 100) {
+        setDownloadState('done')
+        setTimeout(() => {
+          setDownloadState('idle')
+          setDownloadProgress(null)
+          loadMlStatus()
+        }, 2000)
+      }
+    })
+    return unsub
+  }, [downloadState, loadMlStatus])
+
+  const handleInstallModels = async () => {
+    setDownloadState('downloading')
+    setDownloadProgress(null)
+    try {
+      await window.gather.downloadDefaultModels()
+    } catch {
+      setDownloadState('error')
+      setTimeout(() => setDownloadState('idle'), 3000)
+    }
+  }
 
   const toggleSection = (title: string) => {
     setOpenSections((prev) => {
@@ -236,6 +264,71 @@ export default function SettingsPage() {
                   </div>
                   <div className={styles.settingRow}>
                     <div className={styles.settingInfo}>
+                      <p className={styles.settingLabel}>检测模型路径</p>
+                      <p className={styles.settingDesc}>{mlStatus.detectorModel.resolvedPath}</p>
+                    </div>
+                    <div className={styles.pathRow}>
+                      <input
+                        className={styles.pathInput}
+                        type="text"
+                        value={getVal('detector_model_path', 'models/face_detector.onnx')}
+                        onChange={(e) => setSetting('detector_model_path', e.target.value)}
+                        onBlur={() => loadMlStatus()}
+                      />
+                      <button
+                        className={styles.pathBtn}
+                        onClick={() => window.gather.openDirectory(mlStatus.detectorModel.resolvedPath.replace(/\/[^/]+$/, ''))}
+                      >
+                        打开
+                      </button>
+                    </div>
+                  </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingInfo}>
+                      <p className={styles.settingLabel}>编码模型路径</p>
+                      <p className={styles.settingDesc}>{mlStatus.encoderModel.resolvedPath}</p>
+                    </div>
+                    <div className={styles.pathRow}>
+                      <input
+                        className={styles.pathInput}
+                        type="text"
+                        value={getVal('encoder_model_path', 'models/face_encoder.onnx')}
+                        onChange={(e) => setSetting('encoder_model_path', e.target.value)}
+                        onBlur={() => loadMlStatus()}
+                      />
+                      <button
+                        className={styles.pathBtn}
+                        onClick={() => window.gather.openDirectory(mlStatus.encoderModel.resolvedPath.replace(/\/[^/]+$/, ''))}
+                      >
+                        打开
+                      </button>
+                    </div>
+                  </div>
+
+                  {(!mlStatus.detectorModel.exists || !mlStatus.encoderModel.exists) && (
+                    <div className={styles.installBanner}>
+                      <p>模型文件未找到。请将 ONNX 模型文件放入以下文件夹：<br />{mlStatus.modelResourcesDir}</p>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button className={styles.installBtn} onClick={() => window.gather.openDirectory(mlStatus.modelResourcesDir)}>
+                          打开模型文件夹
+                        </button>
+                        <button
+                          className={styles.installBtn}
+                          onClick={handleInstallModels}
+                          disabled={downloadState === 'downloading'}
+                        >
+                          {downloadState === 'downloading' ? '下载中…' : downloadState === 'error' ? '下载失败' : '自动下载模型'}
+                        </button>
+                      </div>
+                      {downloadProgress && (
+                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-text-secondary)' }}>
+                          {downloadProgress.filename}: {Math.round(downloadProgress.percent)}%
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingInfo}>
                       <p className={styles.settingLabel}>模型信息</p>
                     </div>
                     <div className={styles.modelInfoText}>
@@ -279,10 +372,9 @@ export default function SettingsPage() {
                             loadMlStatus()
                           }}
                         >
-                          <option value="CoreMLExecutionProvider">CoreML</option>
-                          <option value="DmlExecutionProvider">DirectML</option>
-                          <option value="CPU">CPU</option>
-                          <option value="CUDA">CUDA</option>
+                          {mlStatus.availableBackends.map((b) => (
+                            <option key={b.value} value={b.value}>{b.label}</option>
+                          ))}
                         </select>
                       )}
                     </div>

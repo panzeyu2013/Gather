@@ -1,4 +1,5 @@
 import { SettingsRepository } from '../../db/repositories/settings.repo'
+import { MODEL_CONFIG } from '../face-kw/model-config'
 
 export class SettingsService {
   private cache = new Map<string, string>()
@@ -32,7 +33,15 @@ export class SettingsService {
   }
 
   getAll(): Record<string, string> {
-    return Object.fromEntries(this.cache)
+    const defaults = getDefaults()
+    const result: Record<string, string> = {}
+    for (const [key, value] of Object.entries(defaults)) {
+      result[key] = String(value)
+    }
+    for (const [key, value] of this.cache) {
+      result[key] = value
+    }
+    return result
   }
 
   reset(): void {
@@ -59,6 +68,9 @@ export function getDefaults(): Record<string, string | number> {
     encoder_model_path: 'models/face_encoder.onnx',
     onnx_provider: 'auto',
     detect_confidence: 0.5,
+    detect_input_size: 640,
+    encoder_input_size: 112,
+    embedding_dim: 512,
 
     default_eps: 0.6,
     default_min_samples: 2,
@@ -70,10 +82,10 @@ export function getDefaults(): Record<string, string | number> {
     default_threshold: 10,
     default_min_group_size: 2,
 
-    preview_max_dimension: 1920,
+    model_download_url: '',
+
     thumbnail_size: 320,
     thumbnail_quality: 80,
-    preview_quality: 85,
     face_thumbnail_size: 80,
     face_thumbnail_quality: 70,
 
