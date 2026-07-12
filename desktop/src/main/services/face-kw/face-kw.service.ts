@@ -87,8 +87,8 @@ export class FaceKwService {
             }))
             this.faceRepo.saveObservations(sessionId, observations)
           }
-        } catch {
-          // skip failed detections
+        } catch (e) {
+          console.warn('Face detection failed for', photo.filepath, e)
         }
         onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
       }
@@ -106,8 +106,8 @@ export class FaceKwService {
             [obs.bbox_x, obs.bbox_y, obs.bbox_w, obs.bbox_h],
           )
           this.faceRepo.updateEmbedding(obs.id, embedding)
-        } catch {
-          // skip failed encodings
+        } catch (e) {
+          console.warn('Face encoding failed for observation', obs.id, e)
         }
         onProgress?.({ current: i + 1, total: totalFaces, message: 'Encoding faces...' })
       }
@@ -191,8 +191,8 @@ export class FaceKwService {
                 const base64 = thumbnailBuffer.toString('base64')
                 this.faceRepo.updateClusterThumbnail(clusterIds[ci], base64)
               }
-            } catch {
-              // Thumbnail generation failed, skip silently
+            } catch (e) {
+              console.warn('Thumbnail generation failed for cluster', clusterIds[ci], e)
             }
           }
         }
@@ -209,8 +209,8 @@ export class FaceKwService {
       throw e
     } finally {
       this.abortController = null
-      try { await releaseDetector() } catch { /* ignore */ }
-      try { await releaseEncoder() } catch { /* ignore */ }
+      try { await releaseDetector() } catch (e) { console.warn('Failed to release detector', e) }
+      try { await releaseEncoder() } catch (e) { console.warn('Failed to release encoder', e) }
     }
   }
 

@@ -49,6 +49,12 @@ export class SessionRepository {
     return ids.length
   }
 
+  deleteSimilarityDataBySession(sessionId: string): void {
+    const db = getDatabase()
+    db.prepare('DELETE FROM similarity_results WHERE session_id = ?').run(sessionId)
+    db.prepare('DELETE FROM similarity_hashes WHERE session_id = ?').run(sessionId)
+  }
+
   list(): SessionRow[] {
     const db = getDatabase()
     return db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as SessionRow[]

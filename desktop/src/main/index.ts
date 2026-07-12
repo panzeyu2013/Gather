@@ -5,7 +5,7 @@ import { app, BrowserWindow, ipcMain, Menu, dialog, session } from 'electron'
 import { join, resolve } from 'path'
 import { readdirSync, statSync } from 'fs'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
-import { getDatabase } from './db/database'
+import { getDatabase, closeDatabase } from './db/database'
 import { SettingsService } from './services/settings'
 import { runMigrations } from './db/migrations'
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
@@ -21,6 +21,7 @@ import { registerSettingsHandlers } from './ipc/settings.ipc'
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const registry = new CommandRegistry()
 let mainWindow: BrowserWindow | null = null
+let pendingDeepLink: string | null = null
 
 function handleDeepLink(url: string): void {
   try {
@@ -28,10 +29,12 @@ function handleDeepLink(url: string): void {
     if (parsed.hostname !== 'import') return
     const files = parsed.searchParams.getAll('file').map(f => decodeURIComponent(f)).filter(Boolean)
     if (files.length === 0) return
-    mainWindow?.webContents.send('gather:event', 'c1:plugin-import', { files })
     if (mainWindow) {
+      mainWindow.webContents.send('gather:event', 'c1:plugin-import', { files })
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
+    } else {
+      pendingDeepLink = url
     }
   } catch {
     console.error('Failed to parse deep link:', url)
@@ -149,6 +152,10 @@ function createWindow(): void {
 
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow?.webContents.send('gather:event', 'engine:status', { status: 'ready' })
+    if (pendingDeepLink) {
+      handleDeepLink(pendingDeepLink)
+      pendingDeepLink = null
+    }
   })
 
   mainWindow.on('closed', () => {
@@ -281,6 +288,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', () => {
+  closeDatabase()
 })
 
 const gotLock = app.requestSingleInstanceLock()

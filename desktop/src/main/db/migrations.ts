@@ -55,7 +55,7 @@ export function runMigrations(db: Database.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cluster_id INTEGER NOT NULL REFERENCES face_clusters(id),
       session_id TEXT NOT NULL REFERENCES sessions(id),
-      photo_id TEXT NOT NULL,
+      photo_id TEXT NOT NULL REFERENCES photos(id),
       photo_path TEXT NOT NULL,
       bbox TEXT NOT NULL,
       confidence REAL NOT NULL DEFAULT 0.0,
@@ -138,4 +138,28 @@ export function runMigrations(db: Database.Database): void {
   try {
     db.exec(`ALTER TABLE photos ADD COLUMN height INTEGER NOT NULL DEFAULT 0`)
   } catch { /* already exists */ }
+
+  // Migration: add missing FOREIGN KEY on face_cluster_members.photo_id
+  try {
+    db.exec(`DELETE FROM face_cluster_members WHERE photo_id NOT IN (SELECT id FROM photos)`)
+    db.exec(`ALTER TABLE face_cluster_members RENAME TO __face_cluster_members_old`)
+    db.exec(`
+      CREATE TABLE face_cluster_members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cluster_id INTEGER NOT NULL REFERENCES face_clusters(id),
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        photo_id TEXT NOT NULL REFERENCES photos(id),
+        photo_path TEXT NOT NULL,
+        bbox TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0.0,
+        observation_id INTEGER
+      )
+    `)
+    db.exec(`INSERT INTO face_cluster_members SELECT * FROM __face_cluster_members_old`)
+    db.exec(`DROP TABLE __face_cluster_members_old`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_face_cluster_members_cluster ON face_cluster_members(cluster_id)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_face_cluster_members_session ON face_cluster_members(session_id)`)
+  } catch {
+    // migration already applied — ignore
+  }
 }
