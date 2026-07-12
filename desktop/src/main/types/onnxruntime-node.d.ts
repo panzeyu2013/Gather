@@ -14,7 +14,7 @@ declare module 'onnxruntime-node' {
     }
 
     const InferenceSession: {
-      create(modelPath: string, options?: { executionProviders?: string[] }): Promise<InferenceSession>
+      create(modelPath: string, options?: { executionProviders?: string[]; intraOpNumThreads?: number; interOpNumThreads?: number }): Promise<InferenceSession>
     }
   }
   export = ort

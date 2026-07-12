@@ -144,3 +144,145 @@
   justify-content: center;
   min-height: 300px;
 }
+
+/* Sub-section styles */
+.subSectionLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 16px 0 4px;
+  margin-bottom: 4px;
+}
+
+.settingDivider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 8px 0;
+}
+
+.subSectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-align: left;
+  transition: color 0.15s;
+  margin-top: 4px;
+}
+
+.subSectionHeader:hover {
+  color: var(--color-text);
+}
+
+.subChevron {
+  font-size: 10px;
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.subChevronOpen {
+  transform: rotate(90deg);
+}
+
+.subSectionHint {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.subSectionBody {
+  padding-left: 18px;
+  border-left: 2px solid var(--color-border);
+  margin: 4px 0 8px;
+}
+
+/* Slider input area */
+.sliderInput {
+  flex-shrink: 0;
+  width: 280px;
+}
+
+/* Model status */
+.modelStatus {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  min-width: 80px;
+  justify-content: flex-end;
+}
+
+.statusOk {
+  color: var(--color-success, #22c55e);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.statusFail {
+  color: var(--color-error);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.modelInfoText {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-align: right;
+  max-width: 260px;
+}
+
+.statusLoading {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  padding: 8px 0;
+}
+
+/* Backend control */
+.backendControl {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.backendLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.linkBtn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--color-primary);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.linkBtn:hover {
+  color: var(--color-primary-hover, var(--color-primary));
+}
+
+.backendSelect {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 12px;
+  cursor: pointer;
+}

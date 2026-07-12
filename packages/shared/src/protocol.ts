@@ -234,6 +234,7 @@ export type Command =
   | { type: 'settings.get'; params: { key: string } }
   | { type: 'settings.set'; params: { key: string; value: string } }
   | { type: 'settings.reset'; params: Record<string, never> }
+  | { type: 'settings.get_ml_status'; params: Record<string, never> }
 
 // ── 事件联合类型 ──
 
@@ -426,6 +427,7 @@ export const ALLOWED_COMMANDS = new Set([
   'thumbnail.get', 'image.get_preview', 'image.get_thumbnail',
   'photo.list',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
+  'settings.get_ml_status',
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([
