@@ -3,6 +3,7 @@
 
 import { app, BrowserWindow, ipcMain, Menu, dialog, session } from 'electron'
 import { join, resolve } from 'path'
+import { readdirSync, statSync } from 'fs'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
 import { getDatabase } from './db/database'
 import { SettingsService } from './services/settings'
@@ -210,6 +211,36 @@ function registerIpc(): void {
       ],
     })
     return result.canceled ? [] : result.filePaths
+  })
+
+  ipcMain.handle('app:scan-directory', async (e, dirPath: string) => {
+    ensureMainWindowSender(e)
+    if (!mainWindow) throw new Error('No window')
+    if (typeof dirPath !== 'string' || dirPath.length === 0) {
+      throw new Error('Invalid directory path')
+    }
+    const extensions = new Set(['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.arw', '.cr2', '.cr3', '.nef', '.dng', '.raf'])
+    const files: string[] = []
+    try {
+      const entries = readdirSync(dirPath)
+      for (const entry of entries) {
+        const fullPath = join(dirPath, entry)
+        try {
+          const stat = statSync(fullPath)
+          if (stat.isFile()) {
+            const ext = '.' + entry.split('.').pop()?.toLowerCase()
+            if (extensions.has(ext)) {
+              files.push(fullPath)
+            }
+          }
+        } catch {
+          // skip unreadable entries
+        }
+      }
+    } catch {
+      throw new Error('Failed to read directory')
+    }
+    return files
   })
 }
 

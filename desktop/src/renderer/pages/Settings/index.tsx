@@ -21,7 +21,7 @@ const GROUPS: SettingGroup[] = [
     settings: [
       { key: 'memory_cache_size', label: '内存缓存条目数', type: 'number', description: '内存中缓存的缩略图最大数量' },
       { key: 'disk_cache_dir', label: '磁盘缓存目录', type: 'text', description: '磁盘缓存存储路径（留空使用默认）' },
-      { key: 'disk_cache_max_size_mb', label: '磁盘缓存上限 (MB)', type: 'number', description: '磁盘缓存占用硬盘的最大空间' },
+      { key: 'disk_cache_max_size_gb', label: '磁盘缓存上限 (GB)', type: 'number', description: '磁盘缓存占用硬盘的最大空间' },
       { key: 'disk_cache_eviction_policy', label: '淘汰策略', type: 'select', description: 'lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）' },
     ],
   },

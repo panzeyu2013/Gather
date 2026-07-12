@@ -303,6 +303,8 @@ export interface PhotoData {
   checksum: string
   hasExistingXmp: boolean
   faceCount: number
+  width: number
+  height: number
   metadata: Record<string, unknown>
   result: Record<string, unknown>
   status: string

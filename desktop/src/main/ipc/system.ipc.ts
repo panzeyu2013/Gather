@@ -22,23 +22,16 @@ function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
   }
 }
 
-let imageService: ImageService | null = null
-
-function getImageService(): ImageService {
-  if (!imageService) {
-    imageService = new ImageService(new TieredThumbnailCache())
-  }
-  return imageService
-}
-
 export function registerSystemHandlers(registry: CommandRegistry): void {
   const settings = SettingsService.getInstance()
+
+  ImageService.getInstance(new TieredThumbnailCache())
 
   registry.register(
     'thumbnail.get',
     wrapHandler(async (params) => {
       const { path: imagePath } = params as { path: string }
-      const result = await getImageService().getThumbnail(imagePath, settings.getNumber('thumbnail_size', 200))
+      const result = await ImageService.getInstance().getThumbnail(imagePath, settings.getNumber('thumbnail_size', 320))
       return ok(result.buffer.toString('base64'))
     }),
   )

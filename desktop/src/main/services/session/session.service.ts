@@ -1,5 +1,6 @@
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
+import { ImageService, TieredThumbnailCache } from '../image'
 import type {
   SessionData,
   AddPhotoResult,
@@ -77,12 +78,25 @@ export class SessionService {
     return this.sessionRepo.deleteMany(sessionIds)
   }
 
-  addPhotos(sessionId: string, filepaths: string[], source: string): AddPhotoResult {
+  async addPhotos(sessionId: string, filepaths: string[], source: string): Promise<AddPhotoResult> {
     const session = this.sessionRepo.get(sessionId)
     if (!session) {
       throw new Error('Session not found')
     }
-    const result = this.photoRepo.addPhotos(sessionId, filepaths, source)
+    const imgService = ImageService.getInstance(new TieredThumbnailCache())
+    const dimResults = await Promise.allSettled(
+      filepaths.map((fp) => imgService.getDimensions(fp)),
+    )
+    const entries: Array<{ filepath: string; width: number; height: number }> = filepaths.map(
+      (fp, idx) => {
+        const r = dimResults[idx]
+        if (r.status === 'fulfilled') {
+          return { filepath: fp, width: r.value.width, height: r.value.height }
+        }
+        return { filepath: fp, width: 0, height: 0 }
+      },
+    )
+    const result = this.photoRepo.addPhotos(sessionId, entries, source)
     const totalCount = this.photoRepo.countBySession(sessionId)
     this.sessionRepo.updatePhotoCount(sessionId, totalCount)
     if (totalCount > 0 && session.status === 'draft') {

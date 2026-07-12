@@ -51,6 +51,8 @@ export function registerPhotoHandlers(registry: CommandRegistry): void {
         checksum: row.checksum,
         hasExistingXmp: false,
         faceCount: faceCountMap.get(row.id) ?? 0,
+        width: row.width ?? 0,
+        height: row.height ?? 0,
         metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
         result: typeof row.result === 'string' ? JSON.parse(row.result) : row.result,
         status: row.status,

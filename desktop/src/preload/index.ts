@@ -9,7 +9,7 @@ const ALLOWED_COMMANDS = new Set([
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
   'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail',
+  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail', 'image.prioritize_thumbnail', 'image.preload_thumbnails', 'image.get_dimensions',
   'photo.list',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
 ])
@@ -45,6 +45,7 @@ export interface GatherAPI {
   readonly reloadMetadata: () => Promise<void>
   readonly selectDirectory: () => Promise<string | null>
   readonly selectFiles: () => Promise<string[]>
+  readonly scanDirectory: (dirPath: string) => Promise<string[]>
   readonly getVersion: () => Promise<string>
 }
 
@@ -120,6 +121,9 @@ const api: GatherAPI = {
 
   selectFiles: () =>
     ipcRenderer.invoke('app:select-files'),
+
+  scanDirectory: (dirPath) =>
+    ipcRenderer.invoke('app:scan-directory', dirPath),
 
   getVersion: () =>
     ipcRenderer.invoke('app:version'),

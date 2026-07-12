@@ -75,16 +75,20 @@
 }
 
 .grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
   flex: 1;
-  overflow-y: auto;
+  display: grid;
+  gap: 12px;
+  overflow: hidden auto;
+  min-height: 0;
+  scrollbar-gutter: stable;
+  padding-bottom: 12px;
   align-content: start;
 }
 
-.thumb {
+.cell {
   position: relative;
+  height: 0;
+  box-sizing: border-box;
   border-radius: 6px;
   overflow: hidden;
   background: var(--color-bg-secondary, #2a2a3e);
@@ -92,32 +96,44 @@
   transition: transform 0.15s, box-shadow 0.15s;
 }
 
-.thumb:hover {
+.cell:hover {
   transform: scale(1.03);
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
 
-.thumbSelected {
+.cellSelected {
   outline: 2px solid var(--color-primary, #6c8cff);
   outline-offset: -2px;
 }
 
+.thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--color-bg-secondary, #2a2a3e);
+}
+
 .thumbImg {
   width: 100%;
-  aspect-ratio: 1;
+  height: 100%;
   object-fit: cover;
   display: block;
+  background: var(--color-bg-secondary, #2a2a3e);
 }
 
 .thumbPlaceholder {
   width: 100%;
-  aspect-ratio: 1;
+  height: 100%;
   background: var(--color-bg-secondary, #ede6dc);
 }
 
 .thumbError {
   width: 100%;
-  aspect-ratio: 1;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;

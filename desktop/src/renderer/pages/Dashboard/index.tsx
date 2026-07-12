@@ -22,6 +22,7 @@ export default function Dashboard() {
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [newName, setNewName] = useState('')
   const [newSource, setNewSource] = useState('local')
+  const [newFolderPath, setNewFolderPath] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<SessionData | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false)
@@ -34,13 +35,20 @@ export default function Dashboard() {
   })
 
   const createMutation = useMutation({
-    mutationFn: ({ name, source }: { name: string; source: string }) =>
-      sessionApi.create(name, source),
-    onSuccess: () => {
+    mutationFn: async ({ name, source, folderPath }: { name: string; source: string; folderPath?: string }) => {
+      if (source === 'local' && folderPath) {
+        const files = await window.gather.scanDirectory(folderPath)
+        return sessionApi.create(name, source, files)
+      }
+      return sessionApi.create(name, source)
+    },
+    onSuccess: (session) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
       setShowNewDialog(false)
       setNewName('')
       setNewSource('local')
+      setNewFolderPath('')
+      navigate(`/sessions/${session.id}/gallery`)
     },
   })
 
@@ -137,7 +145,15 @@ export default function Dashboard() {
 
   const handleCreate = () => {
     if (!newName.trim()) return
-    createMutation.mutate({ name: newName.trim(), source: newSource })
+    if (newSource === 'local' && !newFolderPath) return
+    createMutation.mutate({ name: newName.trim(), source: newSource, folderPath: newFolderPath || undefined })
+  }
+
+  const handleSelectFolder = async () => {
+    const dir = await window.gather.selectDirectory()
+    if (dir) {
+      setNewFolderPath(dir)
+    }
   }
 
   const handleAnalyze = (session: SessionData) => {
@@ -278,6 +294,23 @@ export default function Dashboard() {
             ))}
           </select>
         </div>
+        {newSource === 'local' && (
+          <div className={styles.formGroup}>
+            <label className={styles.label}>文件夹位置</label>
+            <div className={styles.folderPicker}>
+              <input
+                className={styles.folderInput}
+                type="text"
+                value={newFolderPath}
+                placeholder="请选择包含照片的文件夹"
+                readOnly
+              />
+              <button className={styles.folderBtn} onClick={handleSelectFolder}>
+                选择文件夹
+              </button>
+            </div>
+          </div>
+        )}
         <div className={styles.formActions}>
           <button className={styles.cancelBtn} onClick={() => setShowNewDialog(false)}>
             取消
@@ -285,7 +318,7 @@ export default function Dashboard() {
           <button
             className={styles.submitBtn}
             onClick={handleCreate}
-            disabled={!newName.trim() || createMutation.isPending}
+            disabled={!newName.trim() || (newSource === 'local' && !newFolderPath) || createMutation.isPending}
           >
             {createMutation.isPending ? '创建中...' : '创建'}
           </button>

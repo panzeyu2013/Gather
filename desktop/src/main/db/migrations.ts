@@ -24,6 +24,8 @@ export function runMigrations(db: Database.Database): void {
       status TEXT NOT NULL DEFAULT 'pending',
       metadata TEXT NOT NULL DEFAULT '{}',
       result TEXT NOT NULL DEFAULT '{}',
+      width INTEGER NOT NULL DEFAULT 0,
+      height INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -128,4 +130,12 @@ export function runMigrations(db: Database.Database): void {
   } catch {
     // column already exists — ignore
   }
+
+  // Migration: ensure width/height columns exist on photos
+  try {
+    db.exec(`ALTER TABLE photos ADD COLUMN width INTEGER NOT NULL DEFAULT 0`)
+  } catch { /* already exists */ }
+  try {
+    db.exec(`ALTER TABLE photos ADD COLUMN height INTEGER NOT NULL DEFAULT 0`)
+  } catch { /* already exists */ }
 }

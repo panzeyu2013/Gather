@@ -1,4 +1,4 @@
-import { ImageService, TieredThumbnailCache } from '../services/image'
+import { ImageService, TieredThumbnailCache, ThumbnailQueue } from '../services/image'
 import { SettingsService } from '../services/settings'
 import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr } from '@gather/shared'
@@ -22,23 +22,16 @@ function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
   }
 }
 
-let imageService: ImageService | null = null
-
-function getImageService(): ImageService {
-  if (!imageService) {
-    imageService = new ImageService(new TieredThumbnailCache())
-  }
-  return imageService
-}
-
 export function registerImageHandlers(registry: CommandRegistry): void {
   const settings = SettingsService.getInstance()
+
+  ImageService.getInstance(new TieredThumbnailCache())
 
   registry.register(
     'image.get_preview',
     wrapHandler(async (params) => {
       const { path, maxDimension } = params as { path: string; maxDimension?: number }
-      const result = await getImageService().getPreview(path, maxDimension ?? settings.getNumber('preview_max_dimension', 1920))
+      const result = await ImageService.getInstance().getPreview(path, maxDimension ?? settings.getNumber('preview_max_dimension', 1920))
       return ok({
         buffer: result.buffer.toString('base64'),
         width: result.width,
@@ -52,13 +45,52 @@ export function registerImageHandlers(registry: CommandRegistry): void {
     'image.get_thumbnail',
     wrapHandler(async (params) => {
       const { path, size } = params as { path: string; size?: number }
-      const result = await getImageService().getThumbnail(path, size ?? settings.getNumber('thumbnail_size', 320))
+      const result = await ImageService.getInstance().getThumbnail(path, size ?? settings.getNumber('thumbnail_size', 320))
       return ok({
         buffer: result.buffer.toString('base64'),
         width: result.width,
         height: result.height,
         format: result.format,
       })
+    }),
+  )
+
+  registry.register(
+    'image.prioritize_thumbnail',
+    wrapHandler(async (params) => {
+      const { path, size } = params as { path: string; size?: number }
+      const sz = size ?? settings.getNumber('thumbnail_size', 320)
+      ThumbnailQueue.getInstance().enqueuePriority(path, sz)
+      return ok(null)
+    }),
+  )
+
+  registry.register(
+    'image.preload_thumbnails',
+    wrapHandler(async (params) => {
+      const { paths, size } = params as { paths: string[]; size?: number }
+      const sz = size ?? settings.getNumber('thumbnail_size', 320)
+      ThumbnailQueue.getInstance().enqueue(paths, sz)
+      return ok(null)
+    }),
+  )
+
+  registry.register(
+    'image.get_dimensions',
+    wrapHandler(async (params) => {
+      const { paths } = params as { paths: string[] }
+      if (!Array.isArray(paths)) throw new Error('Invalid paths: must be a string array')
+      const result: Record<string, { width: number; height: number }> = {}
+      const svc = ImageService.getInstance()
+      for (const p of paths) {
+        try {
+          const dims = await svc.getDimensions(p)
+          result[p] = dims
+        } catch {
+          result[p] = { width: 0, height: 0 }
+        }
+      }
+      return ok(result)
     }),
   )
 }

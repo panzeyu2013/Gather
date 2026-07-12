@@ -31,7 +31,8 @@ export class SipsDecoder implements ImageDecoder {
     '.cr2', '.cr3', '.nef', '.nrw', '.arw',
     '.raf', '.dng', '.orf', '.rw2', '.pef',
     '.srw', '.srf', '.x3f', '.3fr', '.fff',
-    '.mef', '.mos', '.iiq', '.eip',
+    '.mef', '.mos', '.iiq', '.eip', '.erf',
+    '.kdc', '.mrw',
   ])
 
   supports(ext: string): boolean {
@@ -70,11 +71,14 @@ export class SipsDecoder implements ImageDecoder {
 
   async getDimensions(path: string): Promise<{ width: number; height: number }> {
     const { stdout } = await execFileAsync('sips', [
-      '-g', 'pixelWidth', '-g', 'pixelHeight', path,
+      '-g', 'pixelWidth', '-g', 'pixelHeight', '-g', 'orientation', path,
     ])
-    return {
-      width: parseInt(stdout.match(/pixelWidth: (\d+)/)?.[1] ?? '0', 10),
-      height: parseInt(stdout.match(/pixelHeight: (\d+)/)?.[1] ?? '0', 10),
+    let w = parseInt(stdout.match(/pixelWidth: (\d+)/)?.[1] ?? '0', 10)
+    let h = parseInt(stdout.match(/pixelHeight: (\d+)/)?.[1] ?? '0', 10)
+    const orientation = parseInt(stdout.match(/orientation: (\d+)/)?.[1] ?? '1', 10)
+    if (orientation >= 5 && orientation <= 8) {
+      ;[w, h] = [h, w]
     }
+    return { width: w, height: h }
   }
 }

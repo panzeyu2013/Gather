@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { sessionApi } from '../../api/session'
@@ -14,6 +14,17 @@ const FILTER_OPTIONS = [
   { value: 'noFace', label: '无人脸' },
 ]
 
+const DENSITY_OPTIONS = [
+  { value: 160, label: '小图' },
+  { value: 220, label: '中图' },
+  { value: 300, label: '大图' },
+]
+
+function getAspectRatio(p: { width: number; height: number }): number {
+  if (p.width > 0 && p.height > 0) return p.width / p.height
+  return 1
+}
+
 export default function Gallery() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const setSession = useSessionStore((s) => s.setSession)
@@ -22,6 +33,16 @@ export default function Gallery() {
   const [filter, setFilter] = useState('all')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+  const [density, setDensity] = useState(220)
+  const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({})
+  const [imgDims, setImgDims] = useState<Record<string, { width: number; height: number }>>({})
+
+  const handleThumbLoad = useCallback((filepath: string, width: number, height: number) => {
+    setImgDims((prev) => {
+      if (prev[filepath]?.width === width && prev[filepath]?.height === height) return prev
+      return { ...prev, [filepath]: { width, height } }
+    })
+  }, [])
 
   const { data: photos, isLoading } = useQuery({
     queryKey: ['photos', sessionId],
@@ -33,12 +54,32 @@ export default function Gallery() {
     if (sessionId) setSession(sessionId)
   }, [sessionId, setSession])
 
-  const filtered = (photos ?? []).filter((p) => {
+  useEffect(() => {
+    if (photos && photos.length > 0) {
+      const filepaths = photos.map((p) => p.filepath)
+      imageApi.preloadThumbnails(filepaths, 320).catch(() => {})
+
+      imageApi.getDimensions(filepaths).then((result) => {
+        setDims((prev) => ({ ...prev, ...result }))
+      }).catch(() => {})
+    }
+  }, [photos])
+
+  const enrichedPhotos = useMemo(() => {
+    if (!photos) return []
+    return photos.map((p) => {
+      const d = dims[p.filepath]
+      if (d && d.width > 0 && d.height > 0) return { ...p, width: d.width, height: d.height }
+      return p
+    })
+  }, [photos, dims])
+
+  const filtered = useMemo(() => enrichedPhotos.filter((p) => {
     if (search && !p.filename.toLowerCase().includes(search.toLowerCase())) return false
     if (filter === 'hasFace' && p.faceCount === 0) return false
     if (filter === 'noFace' && p.faceCount > 0) return false
     return true
-  })
+  }), [enrichedPhotos, search, filter])
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -48,7 +89,11 @@ export default function Gallery() {
     })
   }
 
-  const openLightbox = (index: number) => setLightboxIndex(index)
+  const openLightbox = useCallback((index: number, photo: PhotoData) => {
+    imageApi.prioritizeThumbnail(photo.filepath)
+    setLightboxIndex(index)
+  }, [])
+
   const closeLightbox = () => setLightboxIndex(null)
 
   if (isLoading) return <div className={styles.container}><p>加载照片中...</p></div>
@@ -71,6 +116,11 @@ export default function Gallery() {
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
+        <select className={styles.filterSelect} value={density} onChange={(e) => setDensity(Number(e.target.value))}>
+          {DENSITY_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
       </div>
       {selected.size > 0 && (
         <div className={styles.selectionBar}>
@@ -78,16 +128,33 @@ export default function Gallery() {
           <button className={styles.clearBtn} onClick={() => setSelected(new Set())}>取消选择</button>
         </div>
       )}
-      <div className={styles.grid}>
-        {filtered.map((photo, idx) => (
-          <GalleryThumbnail
-            key={photo.id}
-            photo={photo}
-            isSelected={selected.has(photo.id)}
-            onSelect={() => toggleSelect(photo.id)}
-            onClick={() => openLightbox(idx)}
-          />
-        ))}
+      <div
+        className={styles.grid}
+        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${density}px, 1fr))` }}
+      >
+        {filtered.map((photo, index) => {
+          const ar = getAspectRatio(imgDims[photo.filepath] ?? photo)
+          return (
+            <div
+              key={photo.id}
+              className={`${styles.cell} ${selected.has(photo.id) ? styles.cellSelected : ''}`}
+              style={{ paddingBottom: `${100 / ar}%` }}
+              onClick={(e) => {
+                if (e.ctrlKey || e.metaKey) {
+                  toggleSelect(photo.id)
+                } else {
+                  openLightbox(index, photo)
+                }
+              }}
+            >
+              <GalleryThumbnail
+                photo={photo}
+                isSelected={selected.has(photo.id)}
+                onLoad={handleThumbLoad}
+              />
+            </div>
+          )
+        })}
       </div>
       {lightboxIndex !== null && filtered.length > 0 && (
         <Lightbox
@@ -100,54 +167,39 @@ export default function Gallery() {
   )
 }
 
-function GalleryThumbnail({ photo, isSelected, onSelect, onClick }: {
+function GalleryThumbnail({ photo, isSelected, onLoad }: {
   photo: PhotoData
   isSelected: boolean
-  onSelect: () => void
-  onClick: () => void
+  onLoad: (filepath: string, width: number, height: number) => void
 }) {
   const [src, setSrc] = useState<string | null>(null)
   const [hasError, setHasError] = useState(false)
-  const loadedRef = useRef(false)
-  const imgRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const el = imgRef.current
-    if (!el) return
-    loadedRef.current = false
-    setHasError(false)
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && !loadedRef.current) {
-          loadedRef.current = true
-          imageApi.getThumbnail(photo.filepath, 320).then((r) => {
-            setSrc(`data:image/jpeg;base64,${r.buffer}`)
-          }).catch((err) => {
-            console.error('[Gallery] thumbnail load failed:', photo.filepath, err)
-            setHasError(true)
-          })
+    let cancelled = false
+    imageApi.getThumbnail(photo.filepath, 320)
+      .then((r) => {
+        if (!cancelled) setSrc(`data:image/jpeg;base64,${r.buffer}`)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('[Gallery] thumbnail load failed:', photo.filepath, err)
+          setHasError(true)
         }
-      },
-      { rootMargin: '200px' },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
+      })
+    return () => { cancelled = true }
   }, [photo.filepath])
 
   return (
-    <div
-      ref={imgRef}
-      className={`${styles.thumb} ${isSelected ? styles.thumbSelected : ''}`}
-      onClick={(e) => {
-        if (e.ctrlKey || e.metaKey) {
-          onSelect()
-        } else {
-          onClick()
-        }
-      }}
-    >
+    <div className={styles.thumb}>
       {src ? (
-        <img src={src} alt={photo.filename} className={styles.thumbImg} loading="lazy" />
+        <img
+          src={src}
+          alt={photo.filename}
+          className={styles.thumbImg}
+          loading="lazy"
+          onLoad={(e) => onLoad(photo.filepath, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+        />
       ) : hasError ? (
         <div className={styles.thumbError}>
           <span className={styles.thumbErrorIcon}>!</span>

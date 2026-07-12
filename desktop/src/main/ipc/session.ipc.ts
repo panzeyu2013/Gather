@@ -55,7 +55,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
       const session = getService().createSession(name, source)
       if (Array.isArray(params.filepaths) && params.filepaths.length > 0) {
         const filepaths = validateStringArray(params.filepaths, 'filepaths')
-        getService().addPhotos(session.id, filepaths, source)
+        await getService().addPhotos(session.id, filepaths, source)
         return ok(getService().getSession(session.id))
       }
       return ok(session)
@@ -108,7 +108,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const filepaths = validateStringArray(params.filepaths, 'filepaths')
       const source = typeof params.source === 'string' ? params.source : 'manual'
-      return ok(getService().addPhotos(sessionId, filepaths, source))
+      return ok(await getService().addPhotos(sessionId, filepaths, source))
     }),
   )
 

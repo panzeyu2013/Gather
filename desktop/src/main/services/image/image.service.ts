@@ -1,6 +1,6 @@
 import * as crypto from 'crypto'
 import * as fs from 'fs'
-import * as path from 'path'
+import * as nodePath from 'path'
 import { app } from 'electron'
 import { SettingsService } from '../settings'
 import { DecoderRegistry } from './registry'
@@ -50,16 +50,16 @@ export class DiskThumbnailCache implements ThumbnailCache {
   private manager: DiskCacheManager
 
   constructor(cacheDir?: string) {
-    const diskDir = cacheDir ?? (SettingsService.getInstance().get('disk_cache_dir', '') || path.join(app.getPath('userData'), 'thumbnails'))
+    const diskDir = cacheDir ?? (SettingsService.getInstance().get('disk_cache_dir', '') || nodePath.join(app.getPath('userData'), 'thumbnails'))
     this.dir = diskDir
     if (!fs.existsSync(this.dir)) {
       fs.mkdirSync(this.dir, { recursive: true })
     }
     const settings = SettingsService.getInstance()
-    const maxSizeMb = settings.getNumber('disk_cache_max_size_mb', 1024)
+    const maxSizeGb = settings.getNumber('disk_cache_max_size_gb', 1)
     const policyStr = settings.get('disk_cache_eviction_policy', 'lru')
     const policy = policyStr === 'fifo' ? EvictionPolicy.FIFO : policyStr === 'lfu' ? EvictionPolicy.LFU : EvictionPolicy.LRU
-    this.manager = new DiskCacheManager(this.dir, maxSizeMb * 1024 * 1024, policy)
+    this.manager = new DiskCacheManager(this.dir, maxSizeGb * 1024 * 1024 * 1024, policy)
   }
 
   async get(key: string): Promise<DecodeResult | null> {
@@ -96,7 +96,7 @@ export class DiskThumbnailCache implements ThumbnailCache {
   }
 
   private cachePath(key: string): string {
-    return path.join(this.dir, `${this.hashKey(key)}.jpg`)
+    return nodePath.join(this.dir, `${this.hashKey(key)}.jpg`)
   }
 
   private isValid(cacheFile: string, sourceFile: string): boolean {
@@ -165,7 +165,17 @@ export class ImageService {
 
   async getPreview(path: string, maxDimension = SettingsService.getInstance().getNumber('preview_max_dimension', 1920)): Promise<DecodeResult> {
     const decoder = this.registry.resolve(path)
-    return decoder.getPreview(path, maxDimension)
+    try {
+      return await decoder.getPreview(path, maxDimension)
+    } catch (err) {
+      if (decoder instanceof SharpDecoder && process.platform === 'darwin') {
+        const sipsDecoder = new SipsDecoder()
+        if (sipsDecoder.supports(nodePath.extname(path).toLowerCase())) {
+          return sipsDecoder.getPreview(path, maxDimension)
+        }
+      }
+      throw err
+    }
   }
 
   async getThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 320)): Promise<DecodeResult> {
@@ -173,13 +183,52 @@ export class ImageService {
     const cached = await this.thumbnailCache.get(cacheKey)
     if (cached) return cached
     const decoder = this.registry.resolve(path)
+    try {
+      const result = await decoder.getThumbnail(path, size)
+      await this.thumbnailCache.set(cacheKey, result)
+      return result
+    } catch (err) {
+      if (decoder instanceof SharpDecoder && process.platform === 'darwin') {
+        const sipsDecoder = new SipsDecoder()
+        if (sipsDecoder.supports(nodePath.extname(path).toLowerCase())) {
+          const result = await sipsDecoder.getThumbnail(path, size)
+          await this.thumbnailCache.set(cacheKey, result)
+          return result
+        }
+      }
+      throw err
+    }
+  }
+
+  async prioritizeThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 320)): Promise<void> {
+    const cacheKey = buildCacheKey(path, size)
+    const cached = await this.thumbnailCache.get(cacheKey)
+    if (cached) return
+    const decoder = this.registry.resolve(path)
     const result = await decoder.getThumbnail(path, size)
     await this.thumbnailCache.set(cacheKey, result)
-    return result
   }
 
   async getDimensions(path: string): Promise<{ width: number; height: number }> {
     const decoder = this.registry.resolve(path)
-    return decoder.getDimensions(path)
+    try {
+      return await decoder.getDimensions(path)
+    } catch (err) {
+      if (decoder instanceof SharpDecoder && process.platform === 'darwin') {
+        const sipsDecoder = new SipsDecoder()
+        if (sipsDecoder.supports(nodePath.extname(path).toLowerCase())) {
+          return sipsDecoder.getDimensions(path)
+        }
+      }
+      throw err
+    }
+  }
+
+  private static instance: ImageService | null = null
+  static getInstance(cache?: ThumbnailCache): ImageService {
+    if (!ImageService.instance) {
+      ImageService.instance = new ImageService(cache)
+    }
+    return ImageService.instance
   }
 }

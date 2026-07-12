@@ -9,6 +9,8 @@ export interface PhotoRow {
   status: string
   metadata: string
   result: string
+  width: number
+  height: number
   created_at: string
   updated_at: string
 }
@@ -29,7 +31,7 @@ export class PhotoRepository {
 
   addPhotos(
     sessionId: string,
-    filepaths: string[],
+    filepaths: Array<{ filepath: string; width: number; height: number }>,
     _source: string,
   ): { added: number; skipped: number } {
     const db = getDatabase()
@@ -38,15 +40,15 @@ export class PhotoRepository {
     let skipped = 0
 
     const insertStmt = db.prepare(
-      `INSERT OR IGNORE INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, created_at, updated_at)
-       VALUES (?, ?, ?, ?, '', 'pending', '{}', '{}', ?, ?)`,
+      `INSERT OR IGNORE INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, width, height, created_at, updated_at)
+       VALUES (?, ?, ?, ?, '', 'pending', '{}', '{}', ?, ?, ?, ?)`,
     )
 
-    const insertMany = db.transaction((paths: string[]) => {
-      for (const filepath of paths) {
+    const insertMany = db.transaction((paths: Array<{ filepath: string; width: number; height: number }>) => {
+      for (const { filepath, width, height } of paths) {
         const filename = filepath.split(/[/\\]/).pop() ?? filepath
         const id = crypto.randomUUID()
-        const result = insertStmt.run(id, sessionId, filepath, filename, now, now)
+        const result = insertStmt.run(id, sessionId, filepath, filename, width, height, now, now)
         if (result.changes > 0) {
           added++
         } else {
