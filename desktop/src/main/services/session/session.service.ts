@@ -1,5 +1,7 @@
+import { getDatabase } from '../../db/database'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
+import { FaceRepository } from '../../db/repositories/face.repo'
 import type {
   SessionData,
   AddPhotoResult,
@@ -40,6 +42,7 @@ export class SessionService {
   constructor(
     private sessionRepo: SessionRepository,
     private photoRepo: PhotoRepository,
+    private faceRepo: FaceRepository,
   ) {}
 
   createSession(name: string, source: string): SessionData {
@@ -60,21 +63,35 @@ export class SessionService {
     if (!confirmed) {
       throw new Error('Deletion must be confirmed')
     }
-    this.photoRepo.deleteBySession(sessionId)
-    const deleted = this.sessionRepo.delete(sessionId)
-    if (!deleted) {
-      throw new Error('Session not found')
-    }
+    const db = getDatabase()
+    const del = db.transaction(() => {
+      this.faceRepo.deleteObservationsBySession(sessionId)
+      this.faceRepo.deleteClustersBySession(sessionId)
+      this.sessionRepo.deleteSimilarityDataBySession(sessionId)
+      this.photoRepo.deleteBySession(sessionId)
+      const deleted = this.sessionRepo.delete(sessionId)
+      if (!deleted) {
+        throw new Error('Session not found')
+      }
+    })
+    del()
   }
 
   deleteSessions(sessionIds: string[], confirmed: boolean): number {
     if (!confirmed) {
       throw new Error('Deletion must be confirmed')
     }
-    for (const id of sessionIds) {
-      this.photoRepo.deleteBySession(id)
-    }
-    return this.sessionRepo.deleteMany(sessionIds)
+    const db = getDatabase()
+    const del = db.transaction((ids: string[]) => {
+      for (const id of ids) {
+        this.faceRepo.deleteObservationsBySession(id)
+        this.faceRepo.deleteClustersBySession(id)
+        this.sessionRepo.deleteSimilarityDataBySession(id)
+        this.photoRepo.deleteBySession(id)
+      }
+      return this.sessionRepo.deleteMany(ids)
+    })
+    return del(sessionIds)
   }
 
   addPhotos(sessionId: string, filepaths: string[], source: string): AddPhotoResult {

@@ -123,8 +123,8 @@ export class DiskCacheManager {
       const data = JSON.stringify(this.meta)
       fs.writeFileSync(this.metaTmpPath, data, 'utf-8')
       fs.renameSync(this.metaTmpPath, this.metaPath)
-    } catch {
-      // metadata write failed — carry on
+    } catch (e) {
+      console.warn('DiskCache: metadata write failed', e)
     }
   }
 
@@ -163,12 +163,12 @@ export class DiskCacheManager {
             }
             this.totalSize += stat.size
           }
-        } catch {
-          // can't stat, skip
+      } catch (e) {
+        console.warn('DiskCache: failed to stat cached file', file, e)
         }
       }
-    } catch {
-      // can't read dir, skip
+    } catch (e) {
+      console.warn('DiskCache: failed to read cache directory', e)
     }
 
     for (const hash of Object.keys(this.meta.entries)) {

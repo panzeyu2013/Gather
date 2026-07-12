@@ -3,6 +3,7 @@ import type { ResponseOk, ResponseErr } from '@gather/shared'
 import { SessionService } from '../services/session/session.service'
 import { SessionRepository } from '../db/repositories/session.repo'
 import { PhotoRepository } from '../db/repositories/photo.repo'
+import { FaceRepository } from '../db/repositories/face.repo'
 
 function ok<T>(data: T): ResponseOk<T> {
   return { ok: true, data }
@@ -41,7 +42,7 @@ let service: SessionService | null = null
 
 function getService(): SessionService {
   if (!service) {
-    service = new SessionService(new SessionRepository(), new PhotoRepository())
+    service = new SessionService(new SessionRepository(), new PhotoRepository(), new FaceRepository())
   }
   return service
 }
