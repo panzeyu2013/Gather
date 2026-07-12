@@ -93,6 +93,42 @@ export class XmpWriter {
     writeFileSync(xmpPath, xml, 'utf-8')
   }
 
+  writeAttributes(xmpPath: string, tags: Record<string, unknown>): void {
+    try {
+      const doc = existsSync(xmpPath) ? (parseXmp(xmpPath) ?? createEmptyXmpDoc()) : createEmptyXmpDoc()
+      const rdf = doc['x:xmpmeta']?.['rdf:RDF'] as Record<string, unknown> | undefined
+      if (!rdf) throw new Error('Invalid XMP structure')
+      const desc = rdf['rdf:Description'] as Record<string, unknown>
+
+      if (tags.keywords !== undefined) {
+        const keywords = tags.keywords as string[]
+        if (keywords.length > 0) {
+          desc['dc:subject'] = { 'rdf:Bag': { 'rdf:li': keywords } }
+        } else {
+          delete desc['dc:subject']
+        }
+      }
+      if (tags.rating !== undefined) {
+        desc['@_xmlns:xmp'] = 'http://ns.adobe.com/xap/1.0/'
+        desc['xmp:Rating'] = String(tags.rating)
+      }
+      if (tags.dateTaken !== undefined) {
+        desc['@_xmlns:xmp'] = desc['@_xmlns:xmp'] || 'http://ns.adobe.com/xap/1.0/'
+        desc['xmp:CreateDate'] = String(tags.dateTaken)
+      }
+      if (tags.latitude !== undefined && tags.longitude !== undefined) {
+        desc['@_xmlns:exif'] = 'http://ns.adobe.com/exif/1.0/'
+        desc['exif:GPSLatitude'] = String(tags.latitude)
+        desc['exif:GPSLongitude'] = String(tags.longitude)
+      }
+
+      const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(doc)
+      writeFileSync(xmpPath, xml, 'utf-8')
+    } catch (e) {
+      console.warn('Failed to write XMP attributes to', xmpPath, e)
+    }
+  }
+
   backupXmp(xmpPath: string): string {
     const backupPath = xmpPath + '.bak'
     if (existsSync(xmpPath)) {

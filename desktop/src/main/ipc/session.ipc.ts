@@ -1,9 +1,6 @@
 import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr } from '@gather/shared'
-import { SessionService } from '../services/session/session.service'
-import { SessionRepository } from '../db/repositories/session.repo'
-import { PhotoRepository } from '../db/repositories/photo.repo'
-import { FaceRepository } from '../db/repositories/face.repo'
+import { getServices } from '../bootstrap'
 
 function ok<T>(data: T): ResponseOk<T> {
   return { ok: true, data }
@@ -38,26 +35,18 @@ function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
   }
 }
 
-let service: SessionService | null = null
-
-function getService(): SessionService {
-  if (!service) {
-    service = new SessionService(new SessionRepository(), new PhotoRepository(), new FaceRepository())
-  }
-  return service
-}
-
 export function registerSessionHandlers(registry: CommandRegistry): void {
+  const { sessionService } = getServices()
   registry.register(
     'session.create',
     wrapHandler(async (params) => {
       const name = validateString(params.name, 'name')
       const source = validateString(params.source ?? 'manual', 'source')
-      const session = getService().createSession(name, source)
+      const session = sessionService.createSession(name, source)
       if (Array.isArray(params.filepaths) && params.filepaths.length > 0) {
         const filepaths = validateStringArray(params.filepaths, 'filepaths')
-        await getService().addPhotos(session.id, filepaths, source)
-        return ok(getService().getSession(session.id))
+        sessionService.addPhotos(session.id, filepaths, source)
+        return ok(sessionService.getSession(session.id))
       }
       return ok(session)
     }),
@@ -66,7 +55,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
   registry.register(
     'session.list',
     wrapHandler(async () => {
-      return ok(getService().listSessions())
+      return ok(sessionService.listSessions())
     }),
   )
 
@@ -74,7 +63,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
     'session.get',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const data = getService().getSession(sessionId)
+      const data = sessionService.getSession(sessionId)
       if (!data) return err('Session not found')
       return ok(data)
     }),
@@ -85,7 +74,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const confirmed = Boolean(params.confirmed)
-      getService().deleteSession(sessionId, confirmed)
+      sessionService.deleteSession(sessionId, confirmed)
       return ok(true)
     }),
   )
@@ -98,7 +87,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
         return err('No session IDs provided')
       }
       const confirmed = Boolean(params.confirmed)
-      const count = getService().deleteSessions(ids, confirmed)
+      const count = sessionService.deleteSessions(ids, confirmed)
       return ok({ deletedCount: count })
     }),
   )
@@ -109,7 +98,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const filepaths = validateStringArray(params.filepaths, 'filepaths')
       const source = typeof params.source === 'string' ? params.source : 'manual'
-      return ok(await getService().addPhotos(sessionId, filepaths, source))
+      return ok(sessionService.addPhotos(sessionId, filepaths, source))
     }),
   )
 
@@ -118,7 +107,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const name = validateString(params.name, 'name')
-      return ok(getService().updateSession(sessionId, name))
+      return ok(sessionService.updateSession(sessionId, name))
     }),
   )
 }

@@ -6,7 +6,7 @@ import { encodeFace, initEncoder, releaseEncoder } from './face-encoder'
 import { clusterEmbeddings, type EmbeddingEntry } from './face-clusterer'
 import * as path from 'path'
 import sharp from 'sharp'
-import { ImageService, TieredThumbnailCache } from '../image'
+import { ImageService } from '../image'
 import { SettingsService } from '../settings'
 
 export interface FaceClusterData {
@@ -31,13 +31,13 @@ export type ProgressCallback = (data: { current: number; total: number; message:
 
 export class FaceKwService {
   private abortController: AbortController | null = null
-  private imageService = new ImageService(new TieredThumbnailCache())
   private settings = SettingsService.getInstance()
 
   constructor(
     private photoRepo: PhotoRepository,
     private sessionRepo: SessionRepository,
     private faceRepo: FaceRepository,
+    private imageService: ImageService,
   ) {}
 
   async analyze(
@@ -48,6 +48,9 @@ export class FaceKwService {
     minPts = this.settings.getNumber('default_min_samples', 2),
     onProgress?: ProgressCallback,
   ): Promise<void> {
+    if (this.abortController) {
+      throw new Error('Analysis already in progress')
+    }
     this.abortController = new AbortController()
     const signal = this.abortController.signal
 

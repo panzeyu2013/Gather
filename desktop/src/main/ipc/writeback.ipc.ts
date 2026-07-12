@@ -1,10 +1,7 @@
 import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr } from '@gather/shared'
 import { WritebackService } from '../services/writeback/writeback.service'
-import { WritebackRepository } from '../db/repositories/writeback.repo'
-import { XmpWriter } from '../services/xmp/xmp-writer'
-import { PhotoRepository } from '../db/repositories/photo.repo'
-import { SessionRepository } from '../db/repositories/session.repo'
+import { getServices } from '../bootstrap'
 
 function ok<T>(data: T): ResponseOk<T> {
   return { ok: true, data }
@@ -32,19 +29,6 @@ function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
   }
 }
 
-let service: WritebackService | null = null
-
-function getService(): WritebackService {
-  if (!service) {
-    service = new WritebackService(
-      new WritebackRepository(),
-      new XmpWriter(),
-      new PhotoRepository(),
-      new SessionRepository(),
-    )
-  }
-  return service
-}
-
 export function registerWritebackHandlers(registry: CommandRegistry): void {
+  const { writebackService } = getServices()
 }

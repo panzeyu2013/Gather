@@ -2,32 +2,7 @@
 // contextBridge 安全 API — 渲染进程唯一入口
 
 import { contextBridge, ipcRenderer } from 'electron'
-
-const ALLOWED_COMMANDS = new Set([
-  'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
-  'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
-  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
-  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
-  'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail', 'image.prioritize_thumbnail', 'image.preload_thumbnails', 'image.get_dimensions',
-  'photo.list',
-  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
-  'models.download_default',
-])
-
-const DESTRUCTIVE_COMMANDS = new Set([
-  'session.delete', 'session.delete_many',
-  'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
-  'sim.writeback', 'sim.retry_failed_writeback',
-])
-
-const ALLOWED_EVENTS = new Set([
-  'progress',
-  'engine:status',
-  'c1:import-trigger',
-  'c1:plugin-import',
-  'models:download-progress',
-])
+import { ALLOWED_COMMANDS, DESTRUCTIVE_COMMANDS, ALLOWED_EVENTS } from '@gather/shared'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return (
@@ -43,15 +18,11 @@ export interface GatherAPI {
   readonly onEvent: (event: string, callback: (data: unknown) => void) => () => void
   readonly onReady: (callback: () => void) => () => void
   readonly onPluginImport: (callback: (files: string[]) => void) => () => void
-  readonly downloadDefaultModels: () => Promise<void>
-  readonly onModelDownloadProgress: (callback: (data: unknown) => void) => () => void
   readonly getSelectedPhotos: () => Promise<string[]>
   readonly reloadMetadata: () => Promise<void>
   readonly selectDirectory: () => Promise<string | null>
   readonly selectFiles: () => Promise<string[]>
-  readonly scanDirectory: (dirPath: string) => Promise<string[]>
   readonly getVersion: () => Promise<string>
-  readonly openDirectory: (dirPath: string) => Promise<void>
 }
 
 const api: GatherAPI = {
@@ -127,30 +98,8 @@ const api: GatherAPI = {
   selectFiles: () =>
     ipcRenderer.invoke('app:select-files'),
 
-  scanDirectory: (dirPath) =>
-    ipcRenderer.invoke('app:scan-directory', dirPath),
-
   getVersion: () =>
     ipcRenderer.invoke('app:version'),
-
-  openDirectory: (dirPath) =>
-    ipcRenderer.invoke('app:open-directory', dirPath),
-
-  downloadDefaultModels: () =>
-    ipcRenderer.invoke('models.download_default'),
-
-  onModelDownloadProgress: (callback) => {
-    if (typeof callback !== 'function') {
-      throw new Error('Callback must be a function')
-    }
-    const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
-      if (evt === 'models:download-progress') callback(data)
-    }
-    ipcRenderer.on('gather:event', handler)
-    return () => {
-      ipcRenderer.removeListener('gather:event', handler)
-    }
-  },
 }
 
 contextBridge.exposeInMainWorld('gather', api)

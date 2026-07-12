@@ -8,6 +8,7 @@ import { getSelectedPhotos, reloadMetadata } from './capture-one'
 import { getDatabase, closeDatabase } from './db/database'
 import { SettingsService } from './services/settings'
 import { runMigrations } from './db/migrations'
+import { getServices } from './bootstrap'
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
 import { registerSessionHandlers } from './ipc/session.ipc'
 import { registerFaceKwHandlers } from './ipc/face-kw.ipc'
@@ -17,6 +18,14 @@ import { registerSystemHandlers } from './ipc/system.ipc'
 import { registerImageHandlers } from './ipc/image.ipc'
 import { registerPhotoHandlers } from './ipc/photo.ipc'
 import { registerSettingsHandlers } from './ipc/settings.ipc'
+import { registerFilterHandlers, registerAlbumHandlers } from './ipc/filter.ipc'
+import { registerDuplicateHandlers } from './ipc/duplicate.ipc'
+import { registerTemplateHandlers } from './ipc/template.ipc'
+import { registerPersonHandlers } from './ipc/person.ipc'
+import { registerMetadataHandlers } from './ipc/metadata.ipc'
+import { registerCullingHandlers } from './ipc/culling.ipc'
+import { registerExportHandlers } from './ipc/export.ipc'
+import { registerHistoryHandlers } from './ipc/history.ipc'
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const registry = new CommandRegistry()
@@ -27,10 +36,24 @@ function handleDeepLink(url: string): void {
   try {
     const parsed = new URL(url)
     if (parsed.hostname !== 'import') return
-    const files = parsed.searchParams.getAll('file').map(f => decodeURIComponent(f)).filter(Boolean)
-    if (files.length === 0) return
+    const encodedFiles = parsed.searchParams.getAll('file').filter(Boolean)
+    if (encodedFiles.length === 0) return
+    const validFiles: string[] = []
+    for (const f of encodedFiles) {
+      try {
+        const decoded = decodeURIComponent(f)
+        const resolved = resolve(decoded)
+        const stat = statSync(resolved)
+        if (stat.isFile()) {
+          validFiles.push(resolved)
+        }
+      } catch {
+        console.warn('Skipping invalid deep link file:', f)
+      }
+    }
+    if (validFiles.length === 0) return
     if (mainWindow) {
-      mainWindow.webContents.send('gather:event', 'c1:plugin-import', { files })
+      mainWindow.webContents.send('gather:event', 'c1:plugin-import', { files: validFiles })
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     } else {
@@ -166,6 +189,8 @@ function createWindow(): void {
 // ── IPC 处理 ──
 
 function registerIpc(): void {
+  getServices()
+
   const ensureMainWindowSender = (e: Electron.IpcMainInvokeEvent): void => {
     if (!mainWindow || e.sender !== mainWindow.webContents) {
       throw new Error('This action is only available from the main application window')
@@ -181,6 +206,15 @@ function registerIpc(): void {
   registerImageHandlers(registry)
   registerPhotoHandlers(registry)
   registerSettingsHandlers(registry)
+  registerFilterHandlers(registry)
+  registerAlbumHandlers(registry)
+  registerDuplicateHandlers(registry)
+  registerTemplateHandlers(registry)
+  registerPersonHandlers(registry)
+  registerMetadataHandlers(registry)
+  registerCullingHandlers(registry)
+  registerExportHandlers(registry)
+  registerHistoryHandlers(registry)
 
   ipcMain.handle('c1:get-selected-photos', async (e) => {
     ensureMainWindowSender(e)

@@ -1,5 +1,5 @@
-import { PhotoRepository } from '../db/repositories/photo.repo'
 import { getDatabase } from '../db/database'
+import { getServices } from '../bootstrap'
 import type { CommandRegistry } from './registry'
 import type { ResponseOk, ResponseErr, PhotoData } from '@gather/shared'
 
@@ -22,22 +22,14 @@ function wrapHandler(handler: (params: Record<string, unknown>) => unknown) {
   }
 }
 
-let photoRepo: PhotoRepository | null = null
-
-function getPhotoRepo(): PhotoRepository {
-  if (!photoRepo) {
-    photoRepo = new PhotoRepository()
-  }
-  return photoRepo
-}
-
 export function registerPhotoHandlers(registry: CommandRegistry): void {
+  const { photoRepo } = getServices()
   registry.register(
     'photo.list',
     wrapHandler(async (params) => {
       const sessionId = params.sessionId as string
       if (!sessionId || typeof sessionId !== 'string') throw new Error('Invalid sessionId')
-      const rows = getPhotoRepo().getBySession(sessionId)
+      const rows = photoRepo.getBySession(sessionId)
       const db = getDatabase()
       const faceCounts = db.prepare(
         'SELECT photo_id, COUNT(*) as cnt FROM face_observations WHERE session_id = ? GROUP BY photo_id',

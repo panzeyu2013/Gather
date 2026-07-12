@@ -97,5 +97,9 @@ export function clusterEmbeddings(
     clusters.push(cluster)
   }
 
-  return { clusters, noise }
+  const noisePoints = noise.filter((e) => {
+    const idx = entries.indexOf(e)
+    return idx >= 0 && !assigned[idx]
+  })
+  return { clusters, noise: noisePoints }
 }

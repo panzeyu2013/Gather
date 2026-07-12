@@ -98,14 +98,14 @@ export class FaceRepository {
     const db = getDatabase()
     const ids: number[] = []
     const insertCluster = db.prepare("INSERT INTO face_clusters (session_id, label, member_count, status, thumbnail_base64) VALUES (?, ?, ?, 'unbound', '')")
-    const insertMember = db.prepare('INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, photo_path, bbox, confidence, observation_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    const insertMember = db.prepare('INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence, observation_id) VALUES (?, ?, ?, ?, ?, ?)')
     const insertMany = db.transaction(() => {
       for (const cluster of clusters) {
         const result = insertCluster.run(sessionId, cluster.label, cluster.members.length)
         const clusterId = Number(result.lastInsertRowid)
         ids.push(clusterId)
         for (const member of cluster.members) {
-          insertMember.run(clusterId, sessionId, member.photoId, member.photoPath, JSON.stringify(member.bbox), member.confidence, member.observationId)
+          insertMember.run(clusterId, sessionId, member.photoId, JSON.stringify(member.bbox), member.confidence, member.observationId)
         }
       }
     })
@@ -118,7 +118,7 @@ export class FaceRepository {
     const clusters = db.prepare('SELECT * FROM face_clusters WHERE session_id = ? ORDER BY id').all(sessionId) as FaceClusterRow[]
     if (!includeMembers) return clusters
     for (const cluster of clusters) {
-      cluster.members = db.prepare('SELECT * FROM face_cluster_members WHERE cluster_id = ?').all(cluster.id) as FaceClusterMemberRow[]
+      cluster.members = db.prepare('SELECT fm.id, fm.cluster_id, fm.session_id, fm.photo_id, p.filepath as photo_path, fm.bbox, fm.confidence, fm.observation_id FROM face_cluster_members fm JOIN photos p ON fm.photo_id = p.id WHERE fm.cluster_id = ?').all(cluster.id) as FaceClusterMemberRow[]
       const binding = db.prepare('SELECT * FROM role_bindings WHERE cluster_id = ?').get(cluster.id) as { cluster_id: number; session_id: string; role_name: string; keywords: string } | undefined
       if (binding) {
         cluster.binding = { clusterId: String(binding.cluster_id), roleName: binding.role_name, keywords: JSON.parse(binding.keywords) }
