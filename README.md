@@ -110,16 +110,16 @@ npm test             # Vitest unit tests
 npm run dist:mac     # Build macOS .dmg
 ```
 
-See [DEVELOPER.md](DEVELOPER.md) for detailed architecture docs.
+See [docs/DEVELOPER.md](docs/DEVELOPER.md) for detailed architecture docs.
 
 ---
 
 ## Related Documents
 
-- [中文说明](README_CN.md)
-- [Development Guide](DEVELOPER.md)
-- [Testing Guide](TEST.md)
-- [Contributing](CONTRIBUTING.md)
+- [中文说明](docs/README_CN.md)
+- [Development Guide](docs/DEVELOPER.md)
+- [Testing Guide](docs/TEST.md)
+- [Contributing](docs/CONTRIBUTING.md)
 
 ---
 

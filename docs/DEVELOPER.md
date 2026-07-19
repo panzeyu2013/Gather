@@ -133,8 +133,8 @@ Gather/
 ├── tests/                       # Python 单元测试
 ├── pyproject.toml               # Python 依赖管理
 ├── install.sh                   # 一键构建脚本
-├── README_CN.md                 # 用户文档
-└── TEST.md                      # 测试清单
+├── docs/README_CN.md                 # 用户文档
+└── docs/TEST.md                      # 测试清单
 ```
 
 ---
