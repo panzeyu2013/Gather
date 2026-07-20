@@ -41,7 +41,7 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
     setLoadError(false)
     setScale(1)
     setPosition({ x: 0, y: 0 })
-    imageApi.getPreview(photo.filepath, 1920).then((r) => {
+    imageApi.getPreview(photo.filepath).then((r) => {
       if (cancelled) return
       setSrc(`data:image/jpeg;base64,${r.buffer}`)
     }).catch(() => {

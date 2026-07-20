@@ -178,7 +178,7 @@ export class ImageService {
     }
   }
 
-  async getThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 320)): Promise<DecodeResult> {
+  async getThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 2880)): Promise<DecodeResult> {
     const cacheKey = buildCacheKey(path, size)
     const cached = await this.thumbnailCache.get(cacheKey)
     if (cached) return cached
@@ -200,13 +200,18 @@ export class ImageService {
     }
   }
 
-  async prioritizeThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 320)): Promise<void> {
+  async prioritizeThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 2880)): Promise<void> {
     const cacheKey = buildCacheKey(path, size)
     const cached = await this.thumbnailCache.get(cacheKey)
     if (cached) return
     const decoder = this.registry.resolve(path)
     const result = await decoder.getThumbnail(path, size)
     await this.thumbnailCache.set(cacheKey, result)
+  }
+
+  preloadThumbnails(paths: string[], size = SettingsService.getInstance().getNumber('thumbnail_size', 2880)): void {
+    const { ThumbnailQueue } = require('./thumbnail-queue')
+    ThumbnailQueue.getInstance().enqueue(paths, size)
   }
 
   async getDimensions(path: string): Promise<{ width: number; height: number }> {

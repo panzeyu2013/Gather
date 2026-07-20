@@ -40,7 +40,7 @@ export default function Gallery() {
 
   const settings = useSettingsStore((s) => s.settings)
   const loadSettings = useSettingsStore((s) => s.load)
-  const thumbSize = parseInt(settings['thumbnail_size'] ?? '320', 10)
+  const thumbSize = parseInt(settings['thumbnail_size'] ?? '2880', 10)
 
   useEffect(() => {
     if (Object.keys(settings).length === 0) loadSettings()

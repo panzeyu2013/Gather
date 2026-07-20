@@ -33,12 +33,10 @@ export class SipsDecoder implements ImageDecoder {
   }
 
   async getPreview(path: string, _maxDimension?: number): Promise<DecodeResult> {
-    const maxDim = _maxDimension ?? 1920
-    const buffer = await sipsToBuffer([
-      '-Z', String(maxDim),
-      '-s', 'format', 'jpeg',
-      path,
-    ])
+    const args = _maxDimension
+      ? ['-Z', String(_maxDimension), '-s', 'format', 'jpeg', path]
+      : ['-s', 'format', 'jpeg', path]
+    const buffer = await sipsToBuffer(args)
     const metadata = await sharp(buffer).metadata()
     return {
       buffer,

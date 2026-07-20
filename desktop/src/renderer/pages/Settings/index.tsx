@@ -29,8 +29,9 @@ const GROUPS: SettingGroup[] = [
   {
     title: '图片处理',
     settings: [
-      { key: 'thumbnail_size', label: '缩略图尺寸', type: 'number', description: '缩略图的宽高像素值' },
+      { key: 'thumbnail_size', label: '缩略图尺寸', type: 'number', description: '缩略图的宽高像素值（320-5120）' },
       { key: 'thumbnail_quality', label: '缩略图质量', type: 'number', description: '缩略图的 JPEG 压缩质量 (0-100)' },
+      { key: 'thumbnail_concurrency', label: '缩略图生成并发数', type: 'number', description: '同时生成缩略图的线程数，0=自动（最大CPU核心数-1）' },
       { key: 'face_thumbnail_size', label: '人脸缩略图尺寸', type: 'number', description: '人脸缩略图的宽高像素值' },
       { key: 'face_thumbnail_quality', label: '人脸缩略图质量', type: 'number', description: '人脸缩略图的 JPEG 压缩质量 (0-100)' },
     ],
@@ -89,6 +90,8 @@ export default function SettingsPage() {
   const [downloadProgress, setDownloadProgress] = useState<{ filename: string; percent: number } | null>(null)
   const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'done' | 'error'>('idle')
   const backendManual = mlStatus ? !mlStatus.isAuto : false
+  const cpuCount = navigator.hardwareConcurrency || 4
+  const maxConcurrency = Math.max(1, cpuCount - 1)
 
   useEffect(() => {
     load()
@@ -511,6 +514,8 @@ export default function SettingsPage() {
                         className={styles.input}
                         type={setting.type === 'number' ? 'number' : 'text'}
                         value={currentValue}
+                        min={setting.key === 'thumbnail_size' ? 320 : setting.key === 'thumbnail_concurrency' ? 1 : undefined}
+                        max={setting.key === 'thumbnail_size' ? 5120 : setting.key === 'thumbnail_concurrency' ? maxConcurrency : undefined}
                         onChange={(e) => setSetting(setting.key, e.target.value)}
                       />
                     </div>

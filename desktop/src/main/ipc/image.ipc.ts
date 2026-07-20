@@ -12,7 +12,7 @@ export function registerImageHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const path = validateString(params.path, 'path')
       const maxDimension = typeof params.maxDimension === 'number' ? params.maxDimension : undefined
-      const result = await imageService.getPreview(path, maxDimension ?? settings.getNumber('preview_max_dimension', 1920))
+      const result = await imageService.getPreview(path, maxDimension)
       return ok({
         buffer: result.buffer.toString('base64'),
         width: result.width,
@@ -27,7 +27,7 @@ export function registerImageHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const path = validateString(params.path, 'path')
       const size = typeof params.size === 'number' ? params.size : undefined
-      const result = await imageService.getThumbnail(path, size ?? settings.getNumber('thumbnail_size', 320))
+      const result = await imageService.getThumbnail(path, size ?? settings.getNumber('thumbnail_size', 2880))
       return ok({
         buffer: result.buffer.toString('base64'),
         width: result.width,
@@ -42,7 +42,17 @@ export function registerImageHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const path = validateString(params.path, 'path')
       const size = typeof params.size === 'number' ? params.size : undefined
-      await imageService.prioritizeThumbnail(path, size ?? settings.getNumber('thumbnail_size', 320))
+      await imageService.prioritizeThumbnail(path, size ?? settings.getNumber('thumbnail_size', 2880))
+      return ok(null)
+    }),
+  )
+
+  registry.register(
+    'image.preload_thumbnails',
+    wrapHandler(async (params) => {
+      const paths: string[] = Array.isArray(params.paths) ? params.paths.map((p: unknown) => validateString(p, 'paths[]')) : []
+      const size = typeof params.size === 'number' ? params.size : settings.getNumber('thumbnail_size', 2880)
+      imageService.preloadThumbnails(paths, size)
       return ok(null)
     }),
   )

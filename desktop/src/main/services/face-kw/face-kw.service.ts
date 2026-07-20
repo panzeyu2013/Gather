@@ -178,7 +178,7 @@ export class FaceKwService {
                   .jpeg({ quality: faceThumbQuality })
                   .toBuffer()
               } else {
-                const preview = await this.imageService.getPreview(firstMember.photoPath, 1920)
+                const preview = await this.imageService.getPreview(firstMember.photoPath)
                 thumbnailBuffer = await sharp(preview.buffer)
                   .extract({
                     left: Math.round(bx * preview.width),

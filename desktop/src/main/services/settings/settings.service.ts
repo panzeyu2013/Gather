@@ -1,5 +1,6 @@
 import { SettingsRepository } from '../../db/repositories/settings.repo'
 import { MODEL_CONFIG } from '../face-kw/model-config'
+import * as os from 'os'
 
 export class SettingsService {
   private cache = new Map<string, string>()
@@ -84,7 +85,7 @@ export function getDefaults(): Record<string, string | number> {
 
     model_download_url: '',
 
-    thumbnail_size: 320,
+    thumbnail_size: 2880,
     thumbnail_quality: 80,
     face_thumbnail_size: 80,
     face_thumbnail_quality: 70,
@@ -93,7 +94,7 @@ export function getDefaults(): Record<string, string | number> {
     disk_cache_dir: '',
     disk_cache_max_size_gb: 1,
     disk_cache_eviction_policy: 'lru',
-    thumbnail_concurrency: 0,
+    thumbnail_concurrency: Math.max(1, os.cpus().length - 1),
 
     db_cache_size_mb: 64,
     db_synchronous: 'normal',

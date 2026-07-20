@@ -104,6 +104,11 @@ export interface ImageGetThumbnailParams {
   size?: number
 }
 
+export interface ImagePreloadThumbnailsParams {
+  paths: string[]
+  size?: number
+}
+
 export interface ImagePreviewResult {
   buffer: string
   width: number
@@ -207,6 +212,7 @@ export type Command =
   | { type: 'thumbnail.get'; params: ThumbnailGetParams }
   | { type: 'image.get_preview'; params: ImageGetPreviewParams }
   | { type: 'image.get_thumbnail'; params: ImageGetThumbnailParams }
+  | { type: 'image.preload_thumbnails'; params: ImagePreloadThumbnailsParams }
   | { type: 'photo.list'; params: { sessionId: string } }
   | { type: 'settings.get_all'; params: Record<string, never> }
   | { type: 'settings.get'; params: { key: string } }
@@ -275,7 +281,7 @@ export const ALLOWED_COMMANDS = new Set([
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
   'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail',
+  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail', 'image.preload_thumbnails',
   'photo.list',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
