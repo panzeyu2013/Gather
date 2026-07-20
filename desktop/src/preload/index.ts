@@ -66,6 +66,7 @@ export interface GatherAPI {
   readonly selectFiles: () => Promise<string[]>
   readonly getVersion: () => Promise<string>
   readonly openDirectory: (dirPath: string) => Promise<void>
+  readonly scanDirectory: (dirPath: string) => Promise<string[]> 
   readonly downloadDefaultModels: () => Promise<void>
   readonly onModelDownloadProgress: (callback: (data: unknown) => void) => () => void
 }
@@ -148,6 +149,9 @@ const api: GatherAPI = {
 
   openDirectory: (dirPath) =>
     ipcRenderer.invoke('app:open-directory', dirPath),
+
+  scanDirectory: (dirPath) =>
+    ipcRenderer.invoke('app:scan-directory', dirPath),
 
   downloadDefaultModels: () =>
     ipcRenderer.invoke('models.download_default'),
