@@ -2,7 +2,48 @@
 // contextBridge 安全 API — 渲染进程唯一入口
 
 import { contextBridge, ipcRenderer } from 'electron'
-import { ALLOWED_COMMANDS, DESTRUCTIVE_COMMANDS, ALLOWED_EVENTS } from '@gather/shared'
+
+const ALLOWED_COMMANDS = new Set([
+  'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
+  'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
+  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
+  'sim.retry_failed_writeback', 'sim.writeback_items',
+  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail',
+  'photo.list',
+  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
+  'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
+  'metadata.get', 'metadata.set', 'metadata.batch_set',
+  'dup.scan', 'dup.groups', 'dup.resolve', 'dup.resolve_member',
+  'filter.photos', 'filter.photos_global', 'filter.suggest',
+  'album.create', 'album.list', 'album.get', 'album.update', 'album.delete', 'album.get_photos',
+  'export.preview', 'export.execute', 'export.cancel', 'export.report',
+  'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
+  'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback', 'culling.reset',
+  'history.list', 'history.undo', 'history.redo', 'history.can_undo', 'history.can_redo',
+])
+
+const DESTRUCTIVE_COMMANDS = new Set([
+  'session.delete', 'session.delete_many',
+  'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'sim.writeback', 'sim.retry_failed_writeback',
+  'person.delete', 'person.merge', 'person.remove_photo',
+  'dup.resolve', 'dup.resolve_member',
+  'culling.writeback', 'culling.reset',
+  'metadata.set', 'metadata.batch_set',
+  'template.delete',
+  'history.undo',
+  'album.delete',
+  'export.execute', 'template.apply',
+])
+
+const ALLOWED_EVENTS = new Set([
+  'progress',
+  'engine:status',
+  'c1:import-trigger',
+  'c1:plugin-import',
+  'export:progress',
+])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return (
