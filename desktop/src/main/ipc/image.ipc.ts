@@ -36,4 +36,14 @@ export function registerImageHandlers(registry: CommandRegistry): void {
       })
     }),
   )
+
+  registry.register(
+    'image.prioritize_thumbnail',
+    wrapHandler(async (params) => {
+      const path = validateString(params.path, 'path')
+      const size = typeof params.size === 'number' ? params.size : undefined
+      await imageService.prioritizeThumbnail(path, size ?? settings.getNumber('thumbnail_size', 320))
+      return ok(null)
+    }),
+  )
 }
