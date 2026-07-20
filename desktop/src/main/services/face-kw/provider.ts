@@ -5,14 +5,18 @@ import { existsSync } from 'fs'
 export function resolveModelPath(modelPath: string): string {
   if (isAbsolute(modelPath)) return modelPath
   if (existsSync(modelPath)) return modelPath
-  const candidates = [
-    join(process.resourcesPath, modelPath),
-    join(app.getAppPath(), 'resources', modelPath),
-    join(app.getAppPath(), modelPath),
-    resolve(modelPath),
-  ]
-  for (const c of candidates) {
-    if (existsSync(c)) return c
+  try {
+    const candidates = [
+      join(process.resourcesPath, modelPath),
+      join(app.getAppPath(), 'resources', modelPath),
+      join(app.getAppPath(), modelPath),
+      resolve(modelPath),
+    ]
+    for (const c of candidates) {
+      if (existsSync(c)) return c
+    }
+  } catch {
+    // app.getAppPath() may throw if not ready; fall through
   }
   return modelPath
 }

@@ -11,7 +11,7 @@ const ALLOWED_COMMANDS = new Set([
   'sim.retry_failed_writeback', 'sim.writeback_items',
   'thumbnail.get', 'image.get_preview', 'image.get_thumbnail', 'image.prioritize_thumbnail',
   'photo.list',
-  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
+  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
   'metadata.get', 'metadata.set', 'metadata.batch_set',
   'dup.scan', 'dup.groups', 'dup.resolve', 'dup.resolve_member',
@@ -43,6 +43,7 @@ const ALLOWED_EVENTS = new Set([
   'c1:import-trigger',
   'c1:plugin-import',
   'export:progress',
+  'models:download-progress',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -64,6 +65,9 @@ export interface GatherAPI {
   readonly selectDirectory: () => Promise<string | null>
   readonly selectFiles: () => Promise<string[]>
   readonly getVersion: () => Promise<string>
+  readonly openDirectory: (dirPath: string) => Promise<void>
+  readonly downloadDefaultModels: () => Promise<void>
+  readonly onModelDownloadProgress: (callback: (data: unknown) => void) => () => void
 }
 
 const api: GatherAPI = {
@@ -141,6 +145,27 @@ const api: GatherAPI = {
 
   getVersion: () =>
     ipcRenderer.invoke('app:version'),
+
+  openDirectory: (dirPath) =>
+    ipcRenderer.invoke('app:open-directory', dirPath),
+
+  downloadDefaultModels: () =>
+    ipcRenderer.invoke('models.download_default'),
+
+  onModelDownloadProgress: (callback) => {
+    if (typeof callback !== 'function') {
+      throw new Error('Model download progress callback must be a function')
+    }
+    const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
+      if (evt === 'models:download-progress') {
+        callback(data)
+      }
+    }
+    ipcRenderer.on('gather:event', handler)
+    return () => {
+      ipcRenderer.removeListener('gather:event', handler)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('gather', api)

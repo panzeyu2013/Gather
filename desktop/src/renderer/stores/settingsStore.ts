@@ -26,7 +26,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const settings = await settingsApi.getAll()
       set({ settings, loading: false, dirty: false })
-    } catch {
+    } catch (e) {
+      console.error('Failed to load settings:', e)
       set({ loading: false, dirty: false })
     }
   },
@@ -36,7 +37,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const mlStatus = await settingsApi.getMlStatus()
       set({ mlStatus, mlStatusLoading: false })
-    } catch {
+    } catch (e) {
+      console.error('Failed to load ML status:', e)
       set({ mlStatusLoading: false })
     }
   },
