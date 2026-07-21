@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS writeback_items (
   session_id TEXT NOT NULL,
   module TEXT NOT NULL,
   keywords TEXT NOT NULL DEFAULT '[]',
+  photo_path TEXT NOT NULL DEFAULT '',
   xmp_path TEXT NOT NULL DEFAULT '',
   backup_path TEXT NOT NULL DEFAULT '',
   xmp_status TEXT NOT NULL DEFAULT 'pending',
@@ -158,6 +159,7 @@ CREATE TABLE IF NOT EXISTS photo_metadata_cache (
   height INTEGER,
   file_size INTEGER,
   file_mtime TEXT,
+  keywords TEXT NOT NULL DEFAULT '[]',
   cached_at TEXT NOT NULL
 );
 

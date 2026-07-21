@@ -1,17 +1,19 @@
 import { existsSync, unlinkSync } from 'fs'
 import { WritebackRepository, type WritebackItemInput, type WritebackItemRow } from '../../db/repositories/writeback.repo'
-import { XmpWriter } from '../xmp/xmp-writer'
+import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
+import { batchAsync, parseKeywords } from '../../utils/async'
 import type { WritebackPreview, WritebackResult, WritebackItem, CleanupResult, WritebackOptions } from '@gather/shared'
 
 function rowToItem(row: WritebackItemRow): WritebackItem {
   return {
     id: row.id,
     photoId: row.photo_id,
+    photoPath: row.photo_path,
     sessionId: row.session_id,
     module: row.module,
-    keywords: JSON.parse(row.keywords) as string[],
+    keywords: parseKeywords(row.keywords),
     xmpPath: row.xmp_path,
     backupPath: row.backup_path,
     xmpStatus: row.xmp_status,
@@ -24,7 +26,7 @@ function rowToItem(row: WritebackItemRow): WritebackItem {
 export class WritebackService {
   constructor(
     private writebackRepo: WritebackRepository,
-    private xmpWriter: XmpWriter,
+    private writerRouter: MetadataWriterRouter,
     private photoRepo: PhotoRepository,
     private sessionRepo: SessionRepository,
   ) {}
@@ -32,23 +34,23 @@ export class WritebackService {
   async preview(sessionId: string, module: string, _options: WritebackOptions): Promise<WritebackPreview> {
     const photos = this.photoRepo.getBySession(sessionId)
 
-    const items: WritebackItemInput[] = photos.map((photo) => {
-      const xmpPath = photo.filepath + '.xmp'
-      const backupPath = xmpPath + '.bak'
+    const items = await batchAsync(photos, async (photo) => {
+      const writer = this.writerRouter.select(photo.filepath)
       let existingKeywords: string[] = []
       try {
-        existingKeywords = this.xmpWriter.readKeywords(xmpPath)
+        existingKeywords = await writer.readKeywords(photo.filepath)
       } catch {
-        // corrupt or missing XMP, start empty
+        // corrupt or missing, start empty
       }
       return {
         photoId: photo.id,
+        photoPath: photo.filepath,
         module,
         keywords: existingKeywords,
-        xmpPath,
-        backupPath,
+        xmpPath: photo.filepath + '.xmp',
+        backupPath: writer.getBackupPath(photo.filepath),
       }
-    })
+    }, 10)
 
     const ids = this.writebackRepo.saveItems(sessionId, items)
     const savedRows = this.writebackRepo.getItems(sessionId, module)
@@ -69,21 +71,42 @@ export class WritebackService {
 
     for (const item of items) {
       const itemId = item.id
-      if (!itemId) {
+      if (itemId == null) {
         skipped++
         continue
       }
 
+      const photoPath = item.photoPath || (item.xmpPath ? item.xmpPath.replace(/\.xmp$/i, '') : '')
+      if (!photoPath) {
+        const message = 'Missing photo path for writeback item'
+        this.writebackRepo.updateStatus(itemId, 'failed', message)
+        errors.push(`${itemId}: ${message}`)
+        failedItems.push(item)
+        failed++
+        continue
+      }
+      const writer = this.writerRouter.select(photoPath)
+
+      let backupPath = ''
       try {
-        const backupPath = this.xmpWriter.backupXmp(item.xmpPath)
-        this.writebackRepo.updateBackupPath(itemId, backupPath)
-        this.xmpWriter.writeKeywords(item.xmpPath, item.keywords)
+        backupPath = await writer.backup(photoPath)
+        if (backupPath) {
+          this.writebackRepo.updateBackupPath(itemId, backupPath)
+        }
+        await writer.writeAttributes(photoPath, { keywords: item.keywords })
         this.writebackRepo.updateStatus(itemId, 'written')
         written++
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Unknown error'
         this.writebackRepo.updateStatus(itemId, 'failed', message)
-        errors.push(`${item.xmpPath}: ${message}`)
+        try {
+          if (backupPath) {
+            await writer.restore(photoPath, backupPath)
+          }
+        } catch (restoreErr) {
+          console.warn(`Failed to restore backup for ${photoPath}:`, restoreErr instanceof Error ? restoreErr.message : restoreErr)
+        }
+        errors.push(`${photoPath}: ${message}`)
         failedItems.push(item)
         failed++
       }

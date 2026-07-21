@@ -1,6 +1,7 @@
 import { MetadataCacheRepository, MetadataCacheInput, MetadataCacheRow } from '../../db/repositories/metadata-cache.repo'
-import { XmpWriter } from '../xmp/xmp-writer'
+import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
 import { getDatabase } from '../../db/database'
+import { batchAsync, parseKeywords } from '../../utils/async'
 import type { MetadataTags, BatchMetadataResult } from '@gather/shared'
 
 async function getExifr() {
@@ -12,6 +13,7 @@ async function getExifr() {
 }
 
 function cacheRowToTags(row: MetadataCacheRow): MetadataTags {
+  const keywords = parseKeywords(row.keywords)
   return {
     width: row.width ?? undefined,
     height: row.height ?? undefined,
@@ -27,6 +29,7 @@ function cacheRowToTags(row: MetadataCacheRow): MetadataTags {
     rating: row.rating ?? undefined,
     latitude: row.gps_latitude ?? undefined,
     longitude: row.gps_longitude ?? undefined,
+    keywords: keywords.length > 0 ? keywords : undefined,
   }
 }
 
@@ -46,13 +49,14 @@ function tagsToCacheInput(tags: Partial<MetadataTags>): MetadataCacheInput {
     width: tags.width,
     height: tags.height,
     fileSize: tags.fileSize,
+    keywords: tags.keywords,
   }
 }
 
 export class MetadataService {
   constructor(
     private metadataCacheRepo: MetadataCacheRepository,
-    private xmpWriter: XmpWriter,
+    private writerRouter: MetadataWriterRouter,
   ) {}
 
   private getPhotosByIds(photoIds: string[]): { id: string; filepath: string; session_id: string }[] {
@@ -79,12 +83,15 @@ export class MetadataService {
       const exifr = await getExifr()
       let sharpModule: typeof import('sharp') | null = null
 
-      for (const photo of photos) {
+      await batchAsync(photos, async (photo) => {
         try {
+          let tags: MetadataTags = {}
+          let cacheInput: MetadataCacheInput = {}
+
           if (exifr) {
             const exifData = await exifr.parse(photo.filepath)
             if (exifData) {
-              const tags: MetadataTags = {
+              tags = {
                 make: exifData.Make as string,
                 model: exifData.Model as string,
                 lensModel: exifData.LensModel as string,
@@ -98,60 +105,96 @@ export class MetadataService {
                 width: (exifData.ImageWidth ?? exifData.ExifImageWidth) as number,
                 height: (exifData.ImageHeight ?? exifData.ExifImageHeight) as number,
               }
+              cacheInput = tagsToCacheInput(tags)
+              // exifr parses embedded XMP: use Subject/Keywords if present, skip separate readKeywords
+              const exifrSubject = (exifData as Record<string, unknown>).Subject
+              const exifrKeywords = (exifData as Record<string, unknown>).Keywords
+              const fromExifr = (Array.isArray(exifrSubject) ? exifrSubject : Array.isArray(exifrKeywords) ? exifrKeywords : null) as string[] | null
+              if (fromExifr && fromExifr.length > 0) {
+                tags.keywords = fromExifr
+                cacheInput.keywords = fromExifr
+              } else {
+                const writer = this.writerRouter.select(photo.filepath)
+                const existingKeywords = await writer.readKeywords(photo.filepath)
+                if (existingKeywords.length > 0) {
+                  tags.keywords = existingKeywords
+                  cacheInput.keywords = existingKeywords
+                }
+              }
+
               result.set(photo.id, tags)
-              this.metadataCacheRepo.upsert(photo.id, photo.session_id, tagsToCacheInput(tags))
-              continue
+              this.metadataCacheRepo.upsert(photo.id, photo.session_id, cacheInput)
+              return
             }
           }
 
           sharpModule ??= (await import('sharp')) as unknown as typeof import('sharp')
           const metadata = await sharpModule(photo.filepath).metadata()
-          const tags: MetadataTags = {
+          tags = {
             width: metadata.width,
             height: metadata.height,
             fileSize: metadata.size,
             format: metadata.format,
           }
-          result.set(photo.id, tags)
-          this.metadataCacheRepo.upsert(photo.id, photo.session_id, {
+          cacheInput = {
             width: metadata.width,
             height: metadata.height,
             fileSize: metadata.size,
-          })
-        } catch {
+          }
+
+          const writer = this.writerRouter.select(photo.filepath)
+          const existingKeywords = await writer.readKeywords(photo.filepath)
+          if (existingKeywords.length > 0) {
+            tags.keywords = existingKeywords
+            cacheInput.keywords = existingKeywords
+          }
+
+          result.set(photo.id, tags)
+          this.metadataCacheRepo.upsert(photo.id, photo.session_id, cacheInput)
+        } catch (e) {
+          console.warn(`Failed to extract metadata for ${photo.filepath}:`, e instanceof Error ? e.message : e)
           result.set(photo.id, {})
         }
-      }
+      }, 10)
     }
 
     return result
   }
 
-  setMetadata(photoId: string, tags: Partial<MetadataTags>): MetadataTags {
-    const cacheInput = tagsToCacheInput(tags)
+  async setMetadata(photoId: string, tags: Partial<MetadataTags>): Promise<MetadataTags> {
+    const existing = this.metadataCacheRepo.get(photoId)
+    const baseTags = existing ? cacheRowToTags(existing) : ({} as MetadataTags)
+    const merged = { ...baseTags }
+    for (const key of Object.keys(tags) as (keyof MetadataTags)[]) {
+      if (tags[key] !== undefined) (merged as Record<string, unknown>)[key] = tags[key]
+    }
+
+    const cacheInput = tagsToCacheInput(merged)
     const photos = this.getPhotosByIds([photoId])
     const photo = photos.length > 0 ? photos[0] : null
-    let sessionId = ''
+    let sessionId = photo ? photo.session_id : existing?.session_id ?? ''
 
     if (photo) {
-      sessionId = photo.session_id
-      const xmpPath = photo.filepath + '.xmp'
-      const xmpTags: Record<string, unknown> = {}
-      if (tags.keywords !== undefined) xmpTags.keywords = tags.keywords
-      if (tags.rating !== undefined) xmpTags.rating = tags.rating
-      if (tags.dateTaken !== undefined) xmpTags.dateTaken = tags.dateTaken
-      if (tags.latitude !== undefined) xmpTags.latitude = tags.latitude
-      if (tags.longitude !== undefined) xmpTags.longitude = tags.longitude
-      if (Object.keys(xmpTags).length > 0) {
-        this.xmpWriter.writeAttributes(xmpPath, xmpTags)
+      const hasMetaFields =
+        tags.keywords !== undefined ||
+        tags.rating !== undefined ||
+        tags.dateTaken !== undefined ||
+        tags.latitude !== undefined ||
+        tags.longitude !== undefined
+      if (hasMetaFields) {
+        const writer = this.writerRouter.select(photo.filepath)
+        await writer.writeAttributes(photo.filepath, {
+          keywords: tags.keywords,
+          rating: tags.rating,
+          dateTaken: tags.dateTaken,
+          latitude: tags.latitude,
+          longitude: tags.longitude,
+        })
       }
     }
 
     this.metadataCacheRepo.upsert(photoId, sessionId, cacheInput)
-
-    const existing = this.metadataCacheRepo.get(photoId)
-    const base = existing ? cacheRowToTags(existing) : {}
-    return { ...base, ...tags }
+    return merged
   }
 
   async batchSet(updates: { photoId: string; tags: Partial<MetadataTags> }[]): Promise<BatchMetadataResult> {
@@ -187,8 +230,8 @@ export class MetadataService {
           fileSize: metadata.size,
         }
         this.metadataCacheRepo.upsert(photoId, sessionId, input)
-      } catch {
-        // skip files that cannot be read
+      } catch (e) {
+        console.warn(`Failed to populate cache for photo ${photoId}:`, e instanceof Error ? e.message : e)
       }
     }
   }

@@ -55,7 +55,7 @@ export const DI_TOKENS = {
   IMAGE_SERVICE: Symbol('ImageService'),
 
   // Utilities
-  XMP_WRITER: Symbol('XmpWriter'),
+  WRITER_ROUTER: Symbol('MetadataWriterRouter'),
   THUMBNAIL_CACHE: Symbol('ThumbnailCache'),
 }
 

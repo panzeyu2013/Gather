@@ -20,6 +20,7 @@ export interface MetadataCacheRow {
   height: number | null
   file_size: number | null
   file_mtime: string | null
+  keywords: string
   cached_at: string
 }
 
@@ -40,6 +41,7 @@ export interface MetadataCacheInput {
   height?: number
   fileSize?: number
   fileMtime?: string
+  keywords?: string[]
 }
 
 export class MetadataCacheRepository implements IMetadataCacheRepository {
@@ -47,11 +49,30 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
     const db = getDatabase()
     const now = new Date().toISOString()
     db.prepare(
-      `INSERT OR REPLACE INTO photo_metadata_cache
+      `INSERT INTO photo_metadata_cache
        (photo_id, session_id, date_taken, camera_make, camera_model, lens_model,
         focal_length, f_number, exposure_time, iso, rating,
-        gps_latitude, gps_longitude, width, height, file_size, file_mtime, cached_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        gps_latitude, gps_longitude, width, height, file_size, file_mtime, keywords, cached_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(photo_id) DO UPDATE SET
+        session_id = excluded.session_id,
+        date_taken = excluded.date_taken,
+        camera_make = excluded.camera_make,
+        camera_model = excluded.camera_model,
+        lens_model = excluded.lens_model,
+        focal_length = excluded.focal_length,
+        f_number = excluded.f_number,
+        exposure_time = excluded.exposure_time,
+        iso = excluded.iso,
+        rating = excluded.rating,
+        gps_latitude = excluded.gps_latitude,
+        gps_longitude = excluded.gps_longitude,
+        width = excluded.width,
+        height = excluded.height,
+        file_size = excluded.file_size,
+        file_mtime = excluded.file_mtime,
+        keywords = excluded.keywords,
+        cached_at = excluded.cached_at`,
     ).run(
       photoId,
       data.sessionId ?? sessionId,
@@ -70,6 +91,7 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
       data.height ?? null,
       data.fileSize ?? null,
       data.fileMtime ?? null,
+      JSON.stringify(data.keywords ?? []),
       now,
     )
   }

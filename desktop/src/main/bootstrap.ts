@@ -24,7 +24,7 @@ import { WritebackService } from './services/writeback/writeback.service'
 import { TemplateService } from './services/template/template.service'
 import { FilterEngine } from './services/filter/filter-engine'
 import { ImageService, TieredThumbnailCache } from './services/image'
-import { XmpWriter } from './services/xmp/xmp-writer'
+import { MetadataWriterRouter } from './services/xmp/metadata-writer-router'
 
 export function getServices() {
   if (container.has(DI_TOKENS.PHOTO_REPO)) {
@@ -67,7 +67,7 @@ export function getServices() {
   const personRepo = new PersonRepository()
   const smartAlbumRepo = new SmartAlbumRepository()
 
-  const xmpWriter = new XmpWriter()
+  const writerRouter = new MetadataWriterRouter()
   const thumbnailCache = new TieredThumbnailCache()
   const imageService = new ImageService(thumbnailCache)
 
@@ -81,7 +81,7 @@ export function getServices() {
   container.register(DI_TOKENS.METADATA_CACHE_REPO, () => metadataCacheRepo)
   container.register(DI_TOKENS.PERSON_REPO, () => personRepo)
   container.register(DI_TOKENS.SMART_ALBUM_REPO, () => smartAlbumRepo)
-  container.register(DI_TOKENS.XMP_WRITER, () => xmpWriter)
+  container.register(DI_TOKENS.WRITER_ROUTER, () => writerRouter)
   container.register(DI_TOKENS.THUMBNAIL_CACHE, () => thumbnailCache)
   container.register(DI_TOKENS.IMAGE_SERVICE, () => imageService)
   container.register(DI_TOKENS.CULLING_SERVICE, () => new CullingService(photoRepo, cullingDecisionRepo, similarityResultRepo))
@@ -92,8 +92,8 @@ export function getServices() {
   container.register(DI_TOKENS.SESSION_SERVICE, () => new SessionService(sessionRepo, photoRepo, faceRepo))
   container.register(DI_TOKENS.SIMILARITY_SERVICE, () => new SimilarityService(photoRepo, sessionRepo))
   container.register(DI_TOKENS.FACE_KW_SERVICE, () => new FaceKwService(photoRepo, sessionRepo, faceRepo, imageService))
-  container.register(DI_TOKENS.METADATA_SERVICE, () => new MetadataService(metadataCacheRepo, xmpWriter))
-  container.register(DI_TOKENS.WRITEBACK_SERVICE, () => new WritebackService(writebackRepo, xmpWriter, photoRepo, sessionRepo))
+  container.register(DI_TOKENS.METADATA_SERVICE, () => new MetadataService(metadataCacheRepo, writerRouter))
+  container.register(DI_TOKENS.WRITEBACK_SERVICE, () => new WritebackService(writebackRepo, writerRouter, photoRepo, sessionRepo))
   container.register(DI_TOKENS.TEMPLATE_SERVICE, () => new TemplateService())
   container.register(DI_TOKENS.FILTER_ENGINE, () => new FilterEngine())
 

@@ -66,6 +66,12 @@ const GROUPS: SettingGroup[] = [
       { key: 'hash_chunk_size', label: '分块大小', type: 'number', description: '图像哈希计算的分块大小' },
     ],
   },
+  {
+    title: '元数据',
+    settings: [
+      { key: 'metadata_write_mode', label: '写入方式', type: 'select', description: 'auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded' },
+    ],
+  },
 ]
 
 function parseSelectOptions(description: string): { value: string; label: string }[] {

@@ -54,6 +54,7 @@ export interface WritebackPreview {
 export interface WritebackItem {
   id?: number
   photoId: string
+  photoPath: string
   sessionId: string
   module: string
   keywords: string[]

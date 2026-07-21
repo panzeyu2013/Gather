@@ -3,6 +3,7 @@ import { IWritebackRepository } from './interfaces'
 
 export interface WritebackItemInput {
   photoId: string
+  photoPath: string
   module: string
   keywords: string[]
   xmpPath: string
@@ -12,6 +13,7 @@ export interface WritebackItemInput {
 export interface WritebackItemRow {
   id: number
   photo_id: string
+  photo_path: string
   session_id: string
   module: string
   keywords: string
@@ -30,14 +32,15 @@ export class WritebackRepository implements IWritebackRepository {
     const ids: number[] = []
 
     const insertStmt = db.prepare(
-      `INSERT INTO writeback_items (photo_id, session_id, module, keywords, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?)`,
+      `INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?)`,
     )
 
     const insertMany = db.transaction((inputItems: WritebackItemInput[]) => {
       for (const item of inputItems) {
         const result = insertStmt.run(
           item.photoId,
+          item.photoPath,
           sessionId,
           item.module,
           JSON.stringify(item.keywords),

@@ -25,9 +25,6 @@ function resolveField(rule: FilterRule): { prefix: string; col: string } {
   if (METADATA_FIELDS.has(rule.field)) {
     return { prefix: 'pmc', col: rule.field }
   }
-  if (rule.field === 'has_face' || rule.field === 'person') {
-    return { prefix: '', col: rule.field }
-  }
   throw new Error('Unknown filter field: ' + rule.field)
 }
 
@@ -142,6 +139,9 @@ export class FilterEngine {
     if (field === 'person') {
       return this.buildPersonCondition(operator, value)
     }
+    if (field === 'keywords') {
+      return this.buildKeywordsCondition(operator, value)
+    }
 
     const { prefix, col } = resolveField(rule)
     const fullCol = `${prefix}.${col}`
@@ -196,15 +196,53 @@ export class FilterEngine {
     }
   }
 
+  private buildKeywordsCondition(operator: string, value: unknown): { sql: string; params: unknown[] } {
+    const arr = (Array.isArray(value) ? value : [value]) as string[]
+    switch (operator) {
+      case 'contains_any': {
+        if (arr.length === 0) return { sql: '1=0', params: [] }
+        const placeholders = arr.map(() => '?').join(', ')
+        return {
+          sql: `EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (${placeholders}))`,
+          params: arr,
+        }
+      }
+      case 'contains_all': {
+        if (arr.length === 0) return { sql: '1=0', params: [] }
+        const unique = [...new Set(arr)]
+        const placeholders = unique.map(() => '?').join(', ')
+        return {
+          sql: `(SELECT COUNT(DISTINCT value) FROM json_each(pmc.keywords) WHERE value IN (${placeholders})) = ?`,
+          params: [...unique, unique.length],
+        }
+      }
+      case 'exists':
+        return { sql: `pmc.keywords IS NOT NULL AND pmc.keywords != '[]'`, params: [] }
+      case 'eq': {
+        const sorted = [...arr].sort()
+        return {
+          sql: `(
+            SELECT json_group_array(value ORDER BY value) FROM json_each(pmc.keywords)
+          ) = (
+            SELECT json_group_array(value ORDER BY value) FROM json_each(?)
+          )`,
+          params: [JSON.stringify(sorted)],
+        }
+      }
+      default:
+        return { sql: '1=1', params: [] }
+    }
+  }
+
   private buildHasFaceCondition(operator: string, value: unknown): { sql: string; params: unknown[] } {
     const existsSql =
       'EXISTS (SELECT 1 FROM face_observations fo WHERE fo.photo_id = p.id AND fo.session_id = p.session_id)'
 
     switch (operator) {
       case 'eq':
-        return value ? { sql: existsSql, params: [] } : { sql: `NOT ${existsSql}`, params: [] }
+        return value === true ? { sql: existsSql, params: [] } : { sql: `NOT ${existsSql}`, params: [] }
       case 'neq':
-        return value ? { sql: `NOT ${existsSql}`, params: [] } : { sql: existsSql, params: [] }
+        return value === true ? { sql: `NOT ${existsSql}`, params: [] } : { sql: existsSql, params: [] }
       case 'exists':
         return { sql: existsSql, params: [] }
       default:

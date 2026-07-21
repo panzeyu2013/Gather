@@ -44,8 +44,8 @@ export default function WritebackReport({
           <h3 className={styles.failedTitle}>失败项 ({failedItems.length})</h3>
           <ul className={styles.failedList}>
             {failedItems.map((item) => (
-              <li key={item.id ?? item.xmpPath} className={styles.failedItem}>
-                <span className={styles.failedPath}>{item.xmpPath}</span>
+              <li key={item.id ?? `${item.photoId}-${item.xmpPath}`} className={styles.failedItem}>
+                <span className={styles.failedPath}>{item.photoPath || item.xmpPath}</span>
                 {item.errorMessage && (
                   <span className={styles.failedError}>{item.errorMessage}</span>
                 )}

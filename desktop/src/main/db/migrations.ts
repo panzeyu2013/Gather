@@ -105,4 +105,12 @@ export function runMigrations(db: Database.Database): void {
       }
     }
   }
+
+  if (!columnExists('photo_metadata_cache', 'keywords')) {
+    db.exec(`ALTER TABLE photo_metadata_cache ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]'`)
+  }
+
+  if (!columnExists('writeback_items', 'photo_path')) {
+    db.exec(`ALTER TABLE writeback_items ADD COLUMN photo_path TEXT NOT NULL DEFAULT ''`)
+  }
 }

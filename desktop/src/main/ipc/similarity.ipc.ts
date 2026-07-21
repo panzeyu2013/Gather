@@ -6,6 +6,10 @@ import { SimilarityService } from '../services/similarity/similarity.service'
 import { SettingsService } from '../services/settings'
 import { getServices } from '../bootstrap'
 
+function getPhotoPath(item: WritebackItem): string {
+  return item.photoPath || (item.xmpPath ? item.xmpPath.replace(/\.xmp$/i, '') : '')
+}
+
 
 export function registerSimilarityHandlers(registry: CommandRegistry): void {
   const { similarityService, writebackService } = getServices()
@@ -82,7 +86,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
               }
             }
           }
-          preview.items = preview.items.filter(item => groupPaths.has(item.xmpPath.replace(/\.xmp$/, '')))
+          preview.items = preview.items.filter(item => groupPaths.has(getPhotoPath(item)))
           preview.totalCount = preview.items.length
           preview.affectedPhotos = new Set(preview.items.map(item => item.photoId)).size
         }
@@ -115,7 +119,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
           }
         }
         const preview = await writebackService.preview(sessionId, 'similarity', options)
-        writebackItems = preview.items.filter(item => groupPaths.has(item.xmpPath.replace(/\.xmp$/, '')))
+        writebackItems = preview.items.filter(item => groupPaths.has(getPhotoPath(item)))
       } else if (Array.isArray(params.groupIds) && params.groupIds.length > 0) {
         const groupIds = params.groupIds as Array<number | string>
         const preview = await writebackService.preview(sessionId, 'similarity', options)
@@ -130,7 +134,7 @@ export function registerSimilarityHandlers(registry: CommandRegistry): void {
               }
             }
           }
-          writebackItems = preview.items.filter(item => groupPaths.has(item.xmpPath.replace(/\.xmp$/, '')))
+          writebackItems = preview.items.filter(item => groupPaths.has(getPhotoPath(item)))
         } else {
           throw new Error('No similarity result found')
         }

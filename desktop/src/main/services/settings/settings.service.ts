@@ -110,5 +110,7 @@ export function getDefaults(): Record<string, string | number> {
     poll_max_retries_fkw: 240,
     poll_interval_sim_ms: 1000,
     poll_interval_fkw_ms: 3000,
+
+    metadata_write_mode: 'auto',
   }
 }
