@@ -67,6 +67,10 @@ export interface FkwCleanupParams {
   confirmed?: boolean
 }
 
+export interface FkwGetClusterThumbnailParams {
+  clusterId: number
+}
+
 export interface FaceObservation {
   id?: number
   photoId: string

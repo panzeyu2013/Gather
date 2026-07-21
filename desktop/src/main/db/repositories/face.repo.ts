@@ -96,17 +96,19 @@ export class FaceRepository implements IFaceRepository {
   }
 
   getFaceThumbDir(): string {
-    const customDir = SettingsService.getInstance().get('face_thumbnail_dir')
-    const dir = customDir || path.join(app.getPath('userData'), 'face-thumbnails')
+    const dir = this.resolveFaceThumbDir()
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
     return dir
   }
 
+  private resolveFaceThumbDir(): string {
+    const customDir = SettingsService.getInstance().get('face_thumbnail_dir')
+    return customDir || path.join(app.getPath('userData'), 'face-thumbnails')
+  }
+
   private deleteThumbnailFile(thumbnailPath: string): void {
     if (!thumbnailPath) return
-    const customDir = SettingsService.getInstance().get('face_thumbnail_dir')
-    const dir = customDir || path.join(app.getPath('userData'), 'face-thumbnails')
-    const fullPath = path.join(dir, thumbnailPath)
+    const fullPath = path.join(this.resolveFaceThumbDir(), thumbnailPath)
     try { fs.unlinkSync(fullPath) } catch { /* file may not exist */ }
   }
 
