@@ -1,5 +1,6 @@
 import { exiftool } from 'exiftool-vendored'
-import { existsSync, copyFileSync, unlinkSync } from 'fs'
+import { existsSync, unlinkSync } from 'fs'
+import { copyFile } from 'fs/promises'
 import type { MetadataWriter, MetadataWriteAttributes } from '../metadata/metadata-writer.interface'
 
 const READ_ONLY_FORMATS = new Set(['.3fr'])
@@ -33,7 +34,7 @@ export class EmbeddedWriter implements MetadataWriter {
   async backup(photoPath: string): Promise<string> {
     const backupPath = this.getBackupPath(photoPath)
     if (existsSync(photoPath)) {
-      copyFileSync(photoPath, backupPath)
+      await copyFile(photoPath, backupPath)
     }
     return backupPath
   }
@@ -44,7 +45,7 @@ export class EmbeddedWriter implements MetadataWriter {
 
   async restore(photoPath: string, backupPath: string): Promise<void> {
     if (existsSync(backupPath)) {
-      copyFileSync(backupPath, photoPath)
+      await copyFile(backupPath, photoPath)
       unlinkSync(backupPath)
     }
   }
