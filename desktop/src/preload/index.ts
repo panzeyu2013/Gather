@@ -6,7 +6,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 const ALLOWED_COMMANDS = new Set([
   'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
-  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'fkw.remove_member', 'fkw.get_cluster_thumbnail', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
   'sim.retry_failed_writeback', 'sim.writeback_items',
   'thumbnail.get', 'image.get_preview', 'image.get_thumbnail', 'image.prioritize_thumbnail',
