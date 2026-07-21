@@ -53,6 +53,7 @@ export function getServices() {
       metadataCacheRepo: container.resolve<MetadataCacheRepository>(DI_TOKENS.METADATA_CACHE_REPO),
       personRepo: container.resolve<PersonRepository>(DI_TOKENS.PERSON_REPO),
       smartAlbumRepo: container.resolve<SmartAlbumRepository>(DI_TOKENS.SMART_ALBUM_REPO),
+      writerRouter: container.resolve<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER),
     }
   }
 
@@ -122,5 +123,6 @@ export function getServices() {
     metadataCacheRepo,
     personRepo,
     smartAlbumRepo,
+    writerRouter,
   }
 }

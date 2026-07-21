@@ -59,4 +59,11 @@ export class MetadataWriterRouter {
         return this.xmpSidecar
     }
   }
+
+  async shutdown(): Promise<void> {
+    await Promise.all([
+      this.xmpSidecar.shutdown(),
+      this.embedded.shutdown(),
+    ])
+  }
 }

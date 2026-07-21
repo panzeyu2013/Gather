@@ -13,8 +13,6 @@ export interface MetadataWriter {
 
   /**
    * Creates a pre-write safety backup. Called in execute() just before writeAttributes().
-   * For XmpSidecarWriter: copies .xmp → .xmp.bak.
-   * For EmbeddedWriter: exiftool handles atomicity internally; returns '' (no-op).
    */
   backup(photoPath: string): Promise<string>
 
@@ -27,4 +25,7 @@ export interface MetadataWriter {
   getBackupPath(photoPath: string): string
 
   supportsFormat(fileExtension: string): boolean
+
+  /** Release any resources (e.g. child processes) held by this writer. */
+  shutdown(): Promise<void>
 }

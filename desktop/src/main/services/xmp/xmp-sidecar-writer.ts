@@ -40,4 +40,8 @@ export class XmpSidecarWriter implements MetadataWriter {
   supportsFormat(_ext: string): boolean {
     return true
   }
+
+  async shutdown(): Promise<void> {
+    // no resources to release
+  }
 }

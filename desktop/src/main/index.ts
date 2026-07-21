@@ -339,6 +339,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  const { writerRouter } = getServices()
+  void writerRouter.shutdown()
   closeDatabase()
 })
 

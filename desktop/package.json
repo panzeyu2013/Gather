@@ -5,6 +5,9 @@
   "license": "MIT",
   "description": "Capture One photo organization — similarity grouping and face keywording",
   "main": "dist/main/main/index.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "postinstall": "electron-rebuild",
     "dev": "vite",
