@@ -36,7 +36,7 @@ export interface IFaceRepository {
   getObservations(sessionId: string): FaceObservationRow[]
   updateEmbedding(observationId: number, embedding: number[]): void
   deleteObservationsBySession(sessionId: string): void
-  updateClusterThumbnail(clusterId: number, base64: string): void
+  updateClusterThumbnail(clusterId: number, thumbnailPath: string): void
   saveClusters(sessionId: string, clusters: FaceClusterInput[]): number[]
   getClusters(sessionId: string, includeMembers?: boolean): FaceClusterRow[]
   updateBinding(clusterId: number, roleName: string, keywords: string[]): void
@@ -44,6 +44,9 @@ export interface IFaceRepository {
   mergeClusters(sourceId: number, targetId: number): void
   deleteClustersBySession(sessionId: string): void
   removeMemberFromCluster(clusterId: number, photoId: string): void
+  getClusterThumbnailPath(clusterId: number): string
+  getThumbnailPathsBySession(sessionId: string): string[]
+  getFaceThumbDir(): string
 }
 
 export interface IPersonRepository {

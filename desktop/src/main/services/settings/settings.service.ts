@@ -87,8 +87,9 @@ export function getDefaults(): Record<string, string | number> {
 
     thumbnail_size: 2880,
     thumbnail_quality: 80,
-    face_thumbnail_size: 80,
+    face_thumbnail_size: 320,
     face_thumbnail_quality: 70,
+    face_thumbnail_dir: '',
 
     memory_cache_size: 200,
     disk_cache_dir: '',

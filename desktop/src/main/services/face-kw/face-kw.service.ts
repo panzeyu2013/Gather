@@ -5,6 +5,7 @@ import { detectFaces, initDetector, releaseDetector } from './face-detector'
 import { encodeFace, initEncoder, releaseEncoder } from './face-encoder'
 import { clusterEmbeddings, type EmbeddingEntry } from './face-clusterer'
 import * as path from 'path'
+import * as fs from 'fs'
 import sharp from 'sharp'
 import { ImageService } from '../image'
 import { SettingsService } from '../settings'
@@ -151,11 +152,12 @@ export class FaceKwService {
 
       if (clusterInputs.length > 0) {
         const clusterIds = this.faceRepo.saveClusters(sessionId, clusterInputs)
+        const thumbDir = this.faceRepo.getFaceThumbDir()
 
         for (let ci = 0; ci < clusterInputs.length; ci++) {
           const cluster = clusterInputs[ci]
           const firstMember = cluster.members[0]
-          const faceThumbSize = this.settings.getNumber('face_thumbnail_size', 80)
+          const faceThumbSize = this.settings.getNumber('face_thumbnail_size', 320)
           const faceThumbQuality = this.settings.getNumber('face_thumbnail_quality', 70)
           if (firstMember) {
             try {
@@ -191,8 +193,9 @@ export class FaceKwService {
                   .toBuffer()
               }
               if (thumbnailBuffer) {
-                const base64 = thumbnailBuffer.toString('base64')
-                this.faceRepo.updateClusterThumbnail(clusterIds[ci], base64)
+                const fileName = `${clusterIds[ci]}.jpg`
+                fs.writeFileSync(path.join(thumbDir, fileName), thumbnailBuffer)
+                this.faceRepo.updateClusterThumbnail(clusterIds[ci], fileName)
               }
             } catch (e) {
               console.warn('Thumbnail generation failed for cluster', clusterIds[ci], e)
@@ -225,7 +228,7 @@ export class FaceKwService {
       label: c.label,
       size: c.member_count,
       status: c.status,
-      thumbnailBase64: c.thumbnail_base64 ?? '',
+      thumbnailBase64: '',
       binding: c.binding ? { roleName: c.binding.roleName, keywords: c.binding.keywords } : null,
       thumbnailPhotoId: c.members?.[0]?.photo_id,
       members: (c.members ?? []).map((m) => ({
@@ -236,6 +239,19 @@ export class FaceKwService {
         confidence: m.confidence,
       })),
     }))
+  }
+
+  async getClusterThumbnail(clusterId: number): Promise<string> {
+    const thumbPath = this.faceRepo.getClusterThumbnailPath(clusterId)
+    if (!thumbPath) return ''
+    try {
+      const thumbDir = this.faceRepo.getFaceThumbDir()
+      const buffer = await fs.promises.readFile(path.join(thumbDir, thumbPath))
+      return buffer.toString('base64')
+    } catch (e) {
+      console.warn('Failed to read cluster thumbnail', clusterId, e)
+      return ''
+    }
   }
 
   async bindCluster(sessionId: string, clusterId: number, roleName: string, keywords: string[]): Promise<void> {

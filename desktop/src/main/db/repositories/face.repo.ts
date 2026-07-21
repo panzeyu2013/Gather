@@ -1,4 +1,8 @@
 import { getDatabase } from '../database'
+import * as path from 'path'
+import * as fs from 'fs'
+import { app } from 'electron'
+import { SettingsService } from '../../services/settings'
 import { IFaceRepository } from './interfaces'
 
 export interface FaceObservationInput {
@@ -41,6 +45,7 @@ export interface FaceClusterRow {
   member_count: number
   status: string
   thumbnail_base64: string
+  thumbnail_path: string
   members?: FaceClusterMemberRow[]
   binding?: { clusterId: string; roleName: string; keywords: string[] }
 }
@@ -90,15 +95,30 @@ export class FaceRepository implements IFaceRepository {
     db.prepare('DELETE FROM face_observations WHERE session_id = ?').run(sessionId)
   }
 
-  updateClusterThumbnail(clusterId: number, base64: string): void {
+  getFaceThumbDir(): string {
+    const customDir = SettingsService.getInstance().get('face_thumbnail_dir')
+    const dir = customDir || path.join(app.getPath('userData'), 'face-thumbnails')
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  private deleteThumbnailFile(thumbnailPath: string): void {
+    if (!thumbnailPath) return
+    const customDir = SettingsService.getInstance().get('face_thumbnail_dir')
+    const dir = customDir || path.join(app.getPath('userData'), 'face-thumbnails')
+    const fullPath = path.join(dir, thumbnailPath)
+    try { fs.unlinkSync(fullPath) } catch { /* file may not exist */ }
+  }
+
+  updateClusterThumbnail(clusterId: number, thumbnailPath: string): void {
     const db = getDatabase()
-    db.prepare('UPDATE face_clusters SET thumbnail_base64 = ? WHERE id = ?').run(base64, clusterId)
+    db.prepare('UPDATE face_clusters SET thumbnail_path = ? WHERE id = ?').run(thumbnailPath, clusterId)
   }
 
   saveClusters(sessionId: string, clusters: FaceClusterInput[]): number[] {
     const db = getDatabase()
     const ids: number[] = []
-    const insertCluster = db.prepare("INSERT INTO face_clusters (session_id, label, member_count, status, thumbnail_base64) VALUES (?, ?, ?, 'unbound', '')")
+    const insertCluster = db.prepare("INSERT INTO face_clusters (session_id, label, member_count, status, thumbnail_base64, thumbnail_path) VALUES (?, ?, ?, 'unbound', '', '')")
     const insertMember = db.prepare('INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence, observation_id) VALUES (?, ?, ?, ?, ?, ?)')
     const insertMany = db.transaction(() => {
       for (const cluster of clusters) {
@@ -128,6 +148,18 @@ export class FaceRepository implements IFaceRepository {
     return clusters
   }
 
+  getClusterThumbnailPath(clusterId: number): string {
+    const db = getDatabase()
+    const row = db.prepare('SELECT thumbnail_path FROM face_clusters WHERE id = ?').get(clusterId) as { thumbnail_path: string } | undefined
+    return row?.thumbnail_path ?? ''
+  }
+
+  getThumbnailPathsBySession(sessionId: string): string[] {
+    const db = getDatabase()
+    const rows = db.prepare("SELECT thumbnail_path FROM face_clusters WHERE session_id = ? AND thumbnail_path != ''").all(sessionId) as { thumbnail_path: string }[]
+    return rows.map(r => r.thumbnail_path)
+  }
+
   updateBinding(clusterId: number, roleName: string, keywords: string[]): void {
     const db = getDatabase()
     const existing = db.prepare('SELECT id FROM role_bindings WHERE cluster_id = ?').get(clusterId)
@@ -147,6 +179,7 @@ export class FaceRepository implements IFaceRepository {
   }
 
   mergeClusters(sourceId: number, targetId: number): void {
+    const sourcePath = this.getClusterThumbnailPath(sourceId)
     const db = getDatabase()
     const merge = db.transaction(() => {
       const sourceMembers = db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(sourceId) as { count: number }
@@ -156,9 +189,11 @@ export class FaceRepository implements IFaceRepository {
       db.prepare('DELETE FROM face_clusters WHERE id = ?').run(sourceId)
     })
     merge()
+    this.deleteThumbnailFile(sourcePath)
   }
 
   deleteClustersBySession(sessionId: string): void {
+    const paths = this.getThumbnailPathsBySession(sessionId)
     const db = getDatabase()
     const del = db.transaction(() => {
       db.prepare('DELETE FROM face_cluster_members WHERE session_id = ?').run(sessionId)
@@ -166,10 +201,18 @@ export class FaceRepository implements IFaceRepository {
       db.prepare('DELETE FROM face_clusters WHERE session_id = ?').run(sessionId)
     })
     del()
+    for (const p of paths) this.deleteThumbnailFile(p)
   }
 
   removeMemberFromCluster(clusterId: number, photoId: string): void {
     const db = getDatabase()
+    const memberCount = db.prepare(
+      'SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?'
+    ).get(clusterId) as { count: number }
+    const thumbnailPathToDelete = memberCount.count === 1
+      ? this.getClusterThumbnailPath(clusterId)
+      : ''
+
     const delMember = db.transaction(() => {
       db.prepare('DELETE FROM face_cluster_members WHERE cluster_id = ? AND photo_id = ?').run(clusterId, photoId)
       const remaining = db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(clusterId) as { count: number }
@@ -181,5 +224,6 @@ export class FaceRepository implements IFaceRepository {
       }
     })
     delMember()
+    this.deleteThumbnailFile(thumbnailPathToDelete)
   }
 }

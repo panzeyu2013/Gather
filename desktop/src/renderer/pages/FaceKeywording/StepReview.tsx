@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useRef, useState } from 'react'
 import { useFaceKwStore, type ClusterData } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
 
@@ -19,6 +19,20 @@ export default function StepReview() {
   const [roleName, setRoleName] = useState(selectedCluster?.binding?.roleName ?? '')
   const [keywords, setKeywords] = useState(selectedCluster?.binding?.keywords?.join(', ') ?? '')
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null)
+  const [thumbnails, setThumbnails] = useState<Record<number, string>>({})
+  const loadedRef = useRef<Set<number>>(new Set())
+
+  const loadThumbnail = useCallback(async (clusterId: number) => {
+    if (loadedRef.current.has(clusterId)) return
+    loadedRef.current.add(clusterId)
+    try {
+      const { base64 } = await faceKwApi.getClusterThumbnail(clusterId)
+      setThumbnails(prev => ({ ...prev, [clusterId]: base64 }))
+    } catch (e) {
+      console.warn('Failed to load thumbnail', clusterId, e)
+      setThumbnails(prev => ({ ...prev, [clusterId]: '' }))
+    }
+  }, [])
 
   const handleSelectCluster = useCallback(
     (cluster: ClusterData) => {
@@ -59,6 +73,12 @@ export default function StepReview() {
       mergeClustersStore(selectedCluster.id, mergeTargetId)
       selectCluster(mergeTargetId)
       setMergeTargetId(null)
+      loadedRef.current.delete(mergeTargetId)
+      setThumbnails(prev => {
+        const next = { ...prev }
+        delete next[mergeTargetId]
+        return next
+      })
     } catch (e) {
       console.error('Merge failed:', e)
     }
@@ -81,7 +101,10 @@ export default function StepReview() {
           {clusters.map((cluster) => (
             <div
               key={cluster.id}
-              onClick={() => handleSelectCluster(cluster)}
+              onClick={() => {
+                handleSelectCluster(cluster)
+                loadThumbnail(cluster.id)
+              }}
               style={{
                 background: selectedClusterId === cluster.id ? '#3a3a6e' : '#2a2a3e',
                 border: selectedClusterId === cluster.id ? '2px solid #8080ff' : '2px solid transparent',
@@ -99,14 +122,21 @@ export default function StepReview() {
                   background: '#1a1a2e',
                   borderRadius: '6px',
                   margin: '0 auto 8px',
+                  overflow: 'hidden',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#5050ff',
-                  fontSize: '24px',
                 }}
               >
-                {cluster.size}
+                {thumbnails[cluster.id] ? (
+                  <img
+                    src={`data:image/jpeg;base64,${thumbnails[cluster.id]}`}
+                    alt={cluster.label}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  <span style={{ color: '#5050ff', fontSize: '24px' }}>{cluster.size}</span>
+                )}
               </div>
               <div style={{ color: '#e0e0e0', fontSize: '12px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {cluster.label}

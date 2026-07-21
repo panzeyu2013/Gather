@@ -83,6 +83,15 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
   )
 
   registry.register(
+    'fkw.get_cluster_thumbnail',
+    wrapHandler(async (params) => {
+      const clusterId = validateNumber(params.clusterId, 'clusterId')
+      const base64 = await faceKwService.getClusterThumbnail(clusterId)
+      return ok({ base64 })
+    }),
+  )
+
+  registry.register(
     'fkw.remove_member',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')

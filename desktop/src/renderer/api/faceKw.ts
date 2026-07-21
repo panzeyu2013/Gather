@@ -20,6 +20,9 @@ export const faceKwApi = {
   merge: (sessionId: string, sourceId: number, targetId: number) =>
     sendCommand<{ done: boolean }>('fkw.merge', { sessionId, source: sourceId, target: targetId }),
 
+  getClusterThumbnail: (clusterId: number) =>
+    sendCommand<{ base64: string }>('fkw.get_cluster_thumbnail', { clusterId }),
+
   removeMember: (sessionId: string, clusterId: number, photoId: string) =>
     sendCommand<{ done: boolean }>('fkw.remove_member', { sessionId, clusterId, photoId }),
 

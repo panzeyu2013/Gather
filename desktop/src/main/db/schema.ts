@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS face_clusters (
   member_count INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'unbound',
   thumbnail_base64 TEXT NOT NULL DEFAULT '',
+  thumbnail_path TEXT NOT NULL DEFAULT '',
   matched_person_id TEXT REFERENCES persons(id)
 );
 
