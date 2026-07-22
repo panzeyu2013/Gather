@@ -338,10 +338,19 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', async () => {
+let quitting = false
+
+app.on('before-quit', (event) => {
+  if (quitting) return
+  event.preventDefault()
+  quitting = true
   const { writerRouter } = getServices()
-  await writerRouter.shutdown()
-  closeDatabase()
+  writerRouter.shutdown()
+    .finally(() => closeDatabase())
+    .finally(() => {
+      quitting = false
+      app.quit()
+    })
 })
 
 const gotLock = app.requestSingleInstanceLock()

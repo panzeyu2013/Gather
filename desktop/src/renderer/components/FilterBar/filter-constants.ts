@@ -45,3 +45,21 @@ export function getFilterOperators(field: string): { value: FilterRule['operator
   }
   return FILTER_OPERATORS
 }
+
+export function parseFilterValue(field: string, operator: FilterRule['operator'], raw: string): unknown {
+  if (field === 'has_face') {
+    return raw === 'true' || raw === '1'
+  }
+  if (operator === 'in' || operator === 'between') {
+    return raw.split(',').map((s) => s.trim())
+  }
+  if (operator === 'contains_any' || operator === 'contains_all') {
+    return raw.split(',').map((s) => s.trim())
+  }
+  const numFields = new Set(['focal_length', 'f_number', 'iso', 'rating', 'gps_latitude', 'gps_longitude', 'width', 'height', 'file_size'])
+  if (numFields.has(field)) {
+    const n = Number(raw)
+    return isNaN(n) ? raw : n
+  }
+  return raw
+}

@@ -22,6 +22,7 @@ export interface XmpDoc {
       '@_xmlns:rdf': string
       'rdf:Description': XmpDescription | XmpDescription[]
     }
+    [key: string]: unknown
   }
 }
 
@@ -102,7 +103,10 @@ export function writeXmpAttributes(
     const descriptions = getDescriptionArray(doc)
 
     if (tags.keywords !== undefined) {
-      const desc = findOrCreateDescription(descriptions, '@_xmlns:dc', DC_NS)
+      const desc = resolveTargetDescription(doc, descriptions, 'dc:subject', '@_xmlns:dc', DC_NS)
+      for (const d of descriptions) {
+        if (d !== desc) delete d['dc:subject']
+      }
       const keywords = tags.keywords
       if (keywords.length > 0) {
         desc['dc:subject'] = { 'rdf:Bag': { 'rdf:li': keywords } }
@@ -112,17 +116,17 @@ export function writeXmpAttributes(
     }
 
     if (tags.rating !== undefined) {
-      const desc = findOrCreateDescription(descriptions, '@_xmlns:xmp', XMP_NS)
+      const desc = resolveTargetDescription(doc, descriptions, 'xmp:Rating', '@_xmlns:xmp', XMP_NS)
       desc['xmp:Rating'] = String(tags.rating)
     }
 
     if (tags.dateTaken !== undefined) {
-      const desc = findOrCreateDescription(descriptions, '@_xmlns:xmp', XMP_NS)
+      const desc = resolveTargetDescription(doc, descriptions, 'xmp:CreateDate', '@_xmlns:xmp', XMP_NS)
       desc['xmp:CreateDate'] = String(tags.dateTaken)
     }
 
     if (tags.latitude !== undefined && tags.longitude !== undefined) {
-      const desc = findOrCreateDescription(descriptions, '@_xmlns:exif', EXIF_NS)
+      const desc = resolveTargetDescription(doc, descriptions, 'exif:GPSLatitude', '@_xmlns:exif', EXIF_NS)
       desc['exif:GPSLatitude'] = String(tags.latitude)
       desc['exif:GPSLongitude'] = String(tags.longitude)
     }
@@ -165,11 +169,22 @@ function getDescriptionArray(doc: XmpDoc): XmpDescription[] {
   return rdf['rdf:Description'] as XmpDescription[]
 }
 
-function findOrCreateDescription(descs: XmpDescription[], nsAttr: string, nsUri: string): XmpDescription {
-  let desc = descs.find(d => d[nsAttr] === nsUri)
-  if (!desc) {
-    desc = { '@_rdf:about': '', [nsAttr]: nsUri }
-    descs.push(desc)
+function resolveTargetDescription(doc: XmpDoc, descs: XmpDescription[], targetKey: string, nsAttr: string, nsUri: string): XmpDescription {
+  let desc = descs.find(d => targetKey in d)
+  if (desc) {
+    if (!desc[nsAttr]) desc[nsAttr] = nsUri
+    return desc
   }
+
+  desc = descs.find(d => d[nsAttr] === nsUri)
+  if (desc) return desc
+
+  const rootNs = (doc['x:xmpmeta'] as Record<string, unknown>)[nsAttr]
+  if (rootNs === nsUri && descs.length > 0) {
+    return descs[0]
+  }
+
+  desc = { '@_rdf:about': '', [nsAttr]: nsUri }
+  descs.push(desc)
   return desc
 }

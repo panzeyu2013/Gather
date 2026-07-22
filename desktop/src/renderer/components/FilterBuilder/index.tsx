@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react'
 import type { FilterGroup, FilterRule } from '@gather/shared'
 import { filterApi } from '../../api/filter'
-import { FILTER_FIELDS, getFilterOperators } from '../FilterBar/filter-constants'
+import { FILTER_FIELDS, getFilterOperators, parseFilterValue } from '../FilterBar/filter-constants'
 import styles from './FilterBuilder.module.css'
 
 interface FilterBuilderProps {
@@ -218,8 +218,8 @@ function ConditionRow({
         <input
           className={styles.input}
           type="text"
-          value={String(rule.value ?? '')}
-          onChange={(e) => onChange({ value: e.target.value })}
+          value={Array.isArray(rule.value) ? (rule.value as string[]).join(', ') : String(rule.value ?? '')}
+          onChange={(e) => onChange({ value: parseFilterValue(rule.field, rule.operator, e.target.value) })}
           placeholder="value"
         />
       )}

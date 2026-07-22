@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react'
 import type { FilterGroup, FilterRule } from '@gather/shared'
-import { FILTER_FIELDS, getFilterOperators } from './filter-constants'
+import { FILTER_FIELDS, getFilterOperators, parseFilterValue } from './filter-constants'
 import styles from './FilterBar.module.css'
 
 interface FilterBarProps {
@@ -34,7 +34,7 @@ export default function FilterBar({ sessionId: _sessionId, onFilterChange }: Fil
       const conditions: FilterRule[] = currentRules.map((r) => ({
         field: r.field,
         operator: r.operator,
-        value: parseValue(r.field, r.operator, r.value),
+        value: parseFilterValue(r.field, r.operator, r.value),
       }))
       onFilterChange({ logic: currentLogic, conditions })
     },
@@ -160,22 +160,4 @@ export default function FilterBar({ sessionId: _sessionId, onFilterChange }: Fil
       </div>
     </div>
   )
-}
-
-function parseValue(field: string, operator: FilterRule['operator'], raw: string): unknown {
-  if (field === 'has_face') {
-    return raw === 'true' || raw === '1'
-  }
-  if (operator === 'in' || operator === 'between') {
-    return raw.split(',').map((s) => s.trim())
-  }
-  if (operator === 'contains_any' || operator === 'contains_all') {
-    return raw.split(',').map((s) => s.trim())
-  }
-  const numFields = new Set(['focal_length', 'f_number', 'iso', 'rating', 'gps_latitude', 'gps_longitude', 'width', 'height', 'file_size'])
-  if (numFields.has(field)) {
-    const n = Number(raw)
-    return isNaN(n) ? raw : n
-  }
-  return raw
 }
