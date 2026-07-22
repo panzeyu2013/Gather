@@ -134,7 +134,12 @@ export function writeXmpAttributes(
     const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(doc)
     const tmpPath = xmpPath + '.tmp'
     writeFileSync(tmpPath, xml, 'utf-8')
-    renameSync(tmpPath, xmpPath)
+    try {
+      renameSync(tmpPath, xmpPath)
+    } catch (renameErr) {
+      try { unlinkSync(tmpPath) } catch { /* best effort */ }
+      throw renameErr
+    }
   } catch (e) {
     throw new Error(`Failed to write XMP attributes to ${xmpPath}: ${e instanceof Error ? e.message : String(e)}`)
   }

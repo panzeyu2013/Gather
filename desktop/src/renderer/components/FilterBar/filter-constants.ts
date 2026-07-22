@@ -53,7 +53,7 @@ export function parseFilterValue(field: string, operator: FilterRule['operator']
   if (operator === 'in' || operator === 'between') {
     return raw.split(',').map((s) => s.trim())
   }
-  if (operator === 'contains_any' || operator === 'contains_all') {
+  if (operator === 'contains_any' || operator === 'contains_all' || field === 'keywords') {
     return raw.split(',').map((s) => s.trim())
   }
   const numFields = new Set(['focal_length', 'f_number', 'iso', 'rating', 'gps_latitude', 'gps_longitude', 'width', 'height', 'file_size'])

@@ -26,10 +26,9 @@ export interface WritebackItemRow {
 }
 
 export class WritebackRepository implements IWritebackRepository {
-  saveItems(sessionId: string, module: string, items: WritebackItemInput[]): number[] {
+  saveItems(sessionId: string, module: string, items: WritebackItemInput[]): void {
     const db = getDatabase()
     const now = new Date().toISOString()
-    const ids: number[] = []
 
     const replaceAll = db.transaction(() => {
       db.prepare(
@@ -42,7 +41,7 @@ export class WritebackRepository implements IWritebackRepository {
       )
 
       for (const item of items) {
-        const result = insertStmt.run(
+        insertStmt.run(
           item.photoId,
           item.photoPath,
           sessionId,
@@ -52,12 +51,10 @@ export class WritebackRepository implements IWritebackRepository {
           item.backupPath,
           now,
         )
-        ids.push(Number(result.lastInsertRowid))
       }
     })
 
     replaceAll()
-    return ids
   }
 
   getItems(sessionId: string, module?: string, status?: string): WritebackItemRow[] {

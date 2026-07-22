@@ -340,16 +340,26 @@ app.on('window-all-closed', () => {
 
 let quitting = false
 
-app.on('before-quit', (event) => {
-  if (quitting) return
-  event.preventDefault()
-  quitting = true
+function shutdown(): void {
   const { writerRouter } = getServices()
-  writerRouter.shutdown()
+  Promise.race([
+    writerRouter.shutdown(),
+    new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+  ])
+    .catch((err) => {
+      console.error('Shutdown error:', err instanceof Error ? err.message : err)
+    })
     .finally(() => closeDatabase())
     .finally(() => {
       app.quit()
     })
+}
+
+app.on('before-quit', (event) => {
+  if (quitting) return
+  event.preventDefault()
+  quitting = true
+  shutdown()
 })
 
 const gotLock = app.requestSingleInstanceLock()

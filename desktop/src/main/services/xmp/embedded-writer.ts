@@ -32,10 +32,9 @@ export class EmbeddedWriter implements MetadataWriter {
   }
 
   async backup(photoPath: string): Promise<string> {
+    if (!existsSync(photoPath)) return ''
     const backupPath = this.getBackupPath(photoPath)
-    if (existsSync(photoPath)) {
-      await copyFile(photoPath, backupPath)
-    }
+    await copyFile(photoPath, backupPath)
     return backupPath
   }
 

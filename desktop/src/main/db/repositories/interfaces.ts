@@ -102,7 +102,7 @@ export interface IOperationLogRepository {
 }
 
 export interface IWritebackRepository {
-  saveItems(sessionId: string, module: string, items: WritebackItemInput[]): number[]
+  saveItems(sessionId: string, module: string, items: WritebackItemInput[]): void
   getItems(sessionId: string, module?: string, status?: string): WritebackItemRow[]
   updateStatus(itemId: number, status: string, error?: string): void
   getFailedCount(sessionId: string): number
