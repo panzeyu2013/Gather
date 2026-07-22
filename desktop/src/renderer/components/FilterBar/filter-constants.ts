@@ -13,6 +13,7 @@ export const FILTER_FIELDS: { value: string; label: string }[] = [
   { value: 'rating', label: 'Rating' },
   { value: 'has_face', label: 'Has Face' },
   { value: 'person', label: 'Person' },
+  { value: 'keywords', label: 'Keywords' },
 ]
 
 export const FILTER_OPERATORS: { value: FilterRule['operator']; label: string }[] = [
@@ -25,6 +26,8 @@ export const FILTER_OPERATORS: { value: FilterRule['operator']; label: string }[
   { value: 'gt', label: '>' },
   { value: 'lt', label: '<' },
   { value: 'in', label: 'in' },
+  { value: 'contains_any', label: 'contains any' },
+  { value: 'contains_all', label: 'contains all' },
   { value: 'between', label: 'between' },
   { value: 'regex', label: 'regex' },
   { value: 'exists', label: 'exists' },
@@ -33,6 +36,7 @@ export const FILTER_OPERATORS: { value: FilterRule['operator']; label: string }[
 export const OPERATORS_BY_FIELD: Record<string, FilterRule['operator'][]> = {
   has_face: ['eq', 'exists'],
   person: ['eq', 'contains', 'in', 'contains_any'],
+  keywords: ['contains_any', 'contains_all', 'exists'],
 }
 
 export function getFilterOperators(field: string): { value: FilterRule['operator']; label: string }[] {

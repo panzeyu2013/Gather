@@ -1,20 +1,26 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync, renameSync, unlinkSync } from 'fs'
 import { XMLParser, XMLBuilder } from 'fast-xml-parser'
 
+export interface XmpDescription {
+  '@_rdf:about'?: string
+  '@_xmlns:dc'?: string
+  '@_xmlns:xmp'?: string
+  '@_xmlns:exif'?: string
+  'dc:subject'?: {
+    'rdf:Bag': {
+      'rdf:li': string[]
+    }
+  }
+  [key: string]: unknown
+}
+
 export interface XmpDoc {
+  '?xml'?: { '@_version': string; '@_encoding': string }
   'x:xmpmeta': {
     '@_xmlns:x': string
     'rdf:RDF': {
       '@_xmlns:rdf': string
-      'rdf:Description': {
-        '@_rdf:about': string
-        '@_xmlns:dc': string
-        'dc:subject'?: {
-          'rdf:Bag': {
-            'rdf:li': string[]
-          }
-        }
-      }
+      'rdf:Description': XmpDescription | XmpDescription[]
     }
   }
 }
@@ -22,6 +28,8 @@ export interface XmpDoc {
 export const DC_NS = 'http://purl.org/dc/elements/1.1/'
 export const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
 export const XMPMETA_NS = 'adobe:ns:meta/'
+const XMP_NS = 'http://ns.adobe.com/xap/1.0/'
+const EXIF_NS = 'http://ns.adobe.com/exif/1.0/'
 
 export function createEmptyXmpDoc(): XmpDoc {
   return {
@@ -62,9 +70,14 @@ export function parseXmp(xmlPath: string): XmpDoc | null {
 
 export function extractKeywords(doc: XmpDoc): string[] {
   try {
-    const li = doc['x:xmpmeta']['rdf:RDF']['rdf:Description']['dc:subject']?.['rdf:Bag']?.['rdf:li']
-    if (!li) return []
-    return Array.isArray(li) ? li : [li]
+    const descriptions = getDescriptionArray(doc)
+    for (const desc of descriptions) {
+      const li = desc['dc:subject']?.['rdf:Bag']?.['rdf:li']
+      if (li) {
+        return Array.isArray(li) ? li : [li]
+      }
+    }
+    return []
   } catch {
     return []
   }
@@ -83,11 +96,13 @@ export function writeXmpAttributes(
     } else {
       doc = createEmptyXmpDoc()
     }
-    const rdf = doc['x:xmpmeta']?.['rdf:RDF'] as Record<string, unknown> | undefined
-    if (!rdf) throw new Error('Invalid XMP structure')
-    const desc = rdf['rdf:Description'] as Record<string, unknown>
+
+    delete doc['?xml']
+
+    const descriptions = getDescriptionArray(doc)
 
     if (tags.keywords !== undefined) {
+      const desc = findOrCreateDescription(descriptions, '@_xmlns:dc', DC_NS)
       const keywords = tags.keywords
       if (keywords.length > 0) {
         desc['dc:subject'] = { 'rdf:Bag': { 'rdf:li': keywords } }
@@ -95,16 +110,19 @@ export function writeXmpAttributes(
         delete desc['dc:subject']
       }
     }
+
     if (tags.rating !== undefined) {
-      desc['@_xmlns:xmp'] = desc['@_xmlns:xmp'] || 'http://ns.adobe.com/xap/1.0/'
+      const desc = findOrCreateDescription(descriptions, '@_xmlns:xmp', XMP_NS)
       desc['xmp:Rating'] = String(tags.rating)
     }
+
     if (tags.dateTaken !== undefined) {
-      desc['@_xmlns:xmp'] = desc['@_xmlns:xmp'] || 'http://ns.adobe.com/xap/1.0/'
+      const desc = findOrCreateDescription(descriptions, '@_xmlns:xmp', XMP_NS)
       desc['xmp:CreateDate'] = String(tags.dateTaken)
     }
+
     if (tags.latitude !== undefined && tags.longitude !== undefined) {
-      desc['@_xmlns:exif'] = 'http://ns.adobe.com/exif/1.0/'
+      const desc = findOrCreateDescription(descriptions, '@_xmlns:exif', EXIF_NS)
       desc['exif:GPSLatitude'] = String(tags.latitude)
       desc['exif:GPSLongitude'] = String(tags.longitude)
     }
@@ -131,4 +149,27 @@ export function restoreXmpFile(xmpPath: string, backupPath: string): void {
     copyFileSync(backupPath, xmpPath)
     unlinkSync(backupPath)
   }
+}
+
+function getDescriptionArray(doc: XmpDoc): XmpDescription[] {
+  const rdf = doc['x:xmpmeta']?.['rdf:RDF']
+  if (!rdf) return []
+  const desc = rdf['rdf:Description']
+  if (!desc) {
+    rdf['rdf:Description'] = []
+    return []
+  }
+  if (!Array.isArray(desc)) {
+    rdf['rdf:Description'] = [desc]
+  }
+  return rdf['rdf:Description'] as XmpDescription[]
+}
+
+function findOrCreateDescription(descs: XmpDescription[], nsAttr: string, nsUri: string): XmpDescription {
+  let desc = descs.find(d => d[nsAttr] === nsUri)
+  if (!desc) {
+    desc = { '@_rdf:about': '', [nsAttr]: nsUri }
+    descs.push(desc)
+  }
+  return desc
 }
