@@ -5,6 +5,7 @@ import sharp from 'sharp'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { execSync } from 'child_process'
 
 function escapeCsvField(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
@@ -36,12 +37,10 @@ function sanitizeFilenameComponent(name: string): string {
 function getFreeSpace(dir: string): number {
   try {
     if (process.platform === 'win32') {
-      const { execSync } = require('child_process')
       const result = execSync(`wmic logicaldisk where "DeviceID='${dir.charAt(0)}:'" get FreeSpace /value`, { timeout: 5000 }).toString()
       const match = result.match(/FreeSpace=(\d+)/)
       return match ? parseInt(match[1], 10) : 0
     } else {
-      const { execSync } = require('child_process')
       const result = execSync(`df -k "${dir}" | tail -1`, { timeout: 5000 }).toString()
       const parts = result.trim().split(/\s+/)
       if (parts.length >= 4) {

@@ -1,6 +1,7 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
 import { getServices } from '../bootstrap'
+import type { WorkflowTemplateConfig } from '@gather/shared'
 
 export function registerTemplateHandlers(registry: CommandRegistry): void {
   const { templateService } = getServices()
@@ -12,7 +13,7 @@ export function registerTemplateHandlers(registry: CommandRegistry): void {
       if (!params.config || typeof params.config !== 'object') {
         throw new Error('Invalid config: must be an object')
       }
-      const template = templateService.create(name, description, params.config as any)
+      const template = templateService.create(name, description, params.config as WorkflowTemplateConfig)
       return ok(template)
     }),
   )
@@ -38,14 +39,14 @@ export function registerTemplateHandlers(registry: CommandRegistry): void {
     'template.update',
     wrapHandler(async (params) => {
       const templateId = validateString(params.templateId, 'templateId')
-      const fields: Record<string, unknown> = {}
+      const fields: Partial<{ name: string; description: string; config: WorkflowTemplateConfig }> = {}
       if (params.name !== undefined) fields.name = validateString(params.name, 'name')
       if (params.description !== undefined) fields.description = String(params.description)
       if (params.config !== undefined) {
         if (typeof params.config !== 'object') throw new Error('Invalid config: must be an object')
-        fields.config = params.config
+        fields.config = params.config as WorkflowTemplateConfig
       }
-      return ok(templateService.update(templateId, fields as any))
+      return ok(templateService.update(templateId, fields))
     }),
   )
 

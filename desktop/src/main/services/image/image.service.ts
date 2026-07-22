@@ -210,6 +210,7 @@ export class ImageService {
   }
 
   preloadThumbnails(paths: string[], size = SettingsService.getInstance().getNumber('thumbnail_size', 2880)): void {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { ThumbnailQueue } = require('./thumbnail-queue')
     ThumbnailQueue.getInstance().enqueue(paths, size)
   }
