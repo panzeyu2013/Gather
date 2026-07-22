@@ -31,10 +31,11 @@ export class WritebackService {
     private sessionRepo: SessionRepository,
   ) {}
 
-  async preview(sessionId: string, module: string, _options: WritebackOptions): Promise<WritebackPreview> {
+  async preview(sessionId: string, module: string, _options: WritebackOptions, photoIds?: Set<string>): Promise<WritebackPreview> {
     const photos = this.photoRepo.getBySession(sessionId)
+    const filtered = photoIds ? photos.filter(p => photoIds.has(p.id)) : photos
 
-    const items = await batchAsync(photos, async (photo) => {
+    const items = await batchAsync(filtered, async (photo) => {
       const writer = this.writerRouter.select(photo.filepath)
       let existingKeywords: string[] = []
       try {
@@ -58,7 +59,7 @@ export class WritebackService {
     return {
       items: savedRows.map(rowToItem),
       totalCount: savedRows.length,
-      affectedPhotos: photos.length,
+      affectedPhotos: filtered.length,
     }
   }
 

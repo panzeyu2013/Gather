@@ -30,14 +30,21 @@ export class WritebackRepository implements IWritebackRepository {
     const db = getDatabase()
     const now = new Date().toISOString()
     const ids: number[] = []
+    const module = items.length > 0 ? items[0].module : ''
 
-    const insertStmt = db.prepare(
-      `INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?)`,
-    )
+    const replaceAll = db.transaction(() => {
+      if (module) {
+        db.prepare(
+          'DELETE FROM writeback_items WHERE session_id = ? AND module = ? AND xmp_status = ?',
+        ).run(sessionId, module, 'pending')
+      }
 
-    const insertMany = db.transaction((inputItems: WritebackItemInput[]) => {
-      for (const item of inputItems) {
+      const insertStmt = db.prepare(
+        `INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?)`,
+      )
+
+      for (const item of items) {
         const result = insertStmt.run(
           item.photoId,
           item.photoPath,
@@ -52,7 +59,7 @@ export class WritebackRepository implements IWritebackRepository {
       }
     })
 
-    insertMany(items)
+    replaceAll()
     return ids
   }
 
