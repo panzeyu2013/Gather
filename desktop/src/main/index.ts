@@ -6,7 +6,6 @@ import { join, resolve } from 'path'
 import { readdirSync, statSync } from 'fs'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
 import { getDatabase, closeDatabase } from './db/database'
-import { SettingsService } from './services/settings'
 import { runMigrations } from './db/migrations'
 import { getServices } from './bootstrap'
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
@@ -290,7 +289,7 @@ function registerIpc(): void {
 
   ipcMain.handle('models.download_default', async (e) => {
     ensureMainWindowSender(e)
-    const settings = SettingsService.getInstance()
+    const { settingsService: settings } = getServices()
     const getUrl = (key: string) => settings.get(key, '')
     const { downloadDefaultModels } = await import('./services/face-kw/model-downloader')
     await downloadDefaultModels(getUrl, (progress) => {
@@ -309,7 +308,7 @@ app.whenReady().then(() => {
 
   registerIpc()
 
-  const settings = SettingsService.getInstance()
+  const { settingsService: settings } = getServices()
   db.pragma(`synchronous = ${settings.get('db_synchronous', 'normal').toUpperCase()}`)
   db.pragma(`cache_size = ${-settings.getNumber('db_cache_size_mb', 64) * 1000}`)
 

@@ -1,8 +1,9 @@
 import { getDatabase } from '../../db/database'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
-import { ImageService, TieredThumbnailCache } from '../image'
 import { FaceRepository } from '../../db/repositories/face.repo'
+import type { ImageService } from '../image'
+import { SettingsService } from '../settings/settings.service'
 import type {
   SessionData,
   AddPhotoResult,
@@ -10,6 +11,7 @@ import type {
   AnalysisStatus,
   WritebackStatus,
 } from '@gather/shared'
+import { injectable } from '../../di/container'
 
 function toSessionData(
   row: {
@@ -39,11 +41,14 @@ function toSessionData(
   }
 }
 
+@injectable()
 export class SessionService {
   constructor(
     private sessionRepo: SessionRepository,
     private photoRepo: PhotoRepository,
     private faceRepo: FaceRepository,
+    private settings: SettingsService,
+    private imageService: ImageService,
   ) {}
 
   createSession(name: string, source: string): SessionData {
@@ -100,9 +105,8 @@ export class SessionService {
     if (!session) {
       throw new Error('Session not found')
     }
-    const imgService = ImageService.getInstance(new TieredThumbnailCache())
     const dimResults = await Promise.allSettled(
-      filepaths.map((fp) => imgService.getDimensions(fp)),
+      filepaths.map((fp) => this.imageService.getDimensions(fp)),
     )
     const entries: Array<{ filepath: string; width: number; height: number }> = filepaths.map(
       (fp, idx) => {

@@ -1,44 +1,35 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { container } from '../../../desktop/src/main/di/container'
 
-describe('Container', () => {
-  it('resolves a registered singleton', async () => {
-    const { Container } = await import('../../../desktop/src/main/di/container')
-    const c = new Container()
-    const TOKEN = Symbol('test')
-    const factory = () => ({ value: 42 })
-    c.register(TOKEN, factory)
-    expect(c.resolve(TOKEN)).toEqual({ value: 42 })
+describe('Container (tsyringe)', () => {
+  beforeEach(() => {
+    container.reset()
   })
 
-  it('returns the same instance on repeated resolve (singleton)', async () => {
-    const { Container } = await import('../../../desktop/src/main/di/container')
-    const c = new Container()
+  it('resolves a registered value', () => {
     const TOKEN = Symbol('test')
-    let count = 0
-    c.register(TOKEN, () => ({ count: ++count }))
-    const a = c.resolve(TOKEN)
-    const b = c.resolve(TOKEN)
+    container.register(TOKEN, { useValue: { value: 42 } })
+    expect(container.resolve(TOKEN)).toEqual({ value: 42 })
+  })
+
+  it('useValue returns same instance on repeated resolve', () => {
+    const TOKEN = Symbol('test')
+    const instance = { value: 42 }
+    container.register(TOKEN, { useValue: instance })
+    const a = container.resolve(TOKEN)
+    const b = container.resolve(TOKEN)
     expect(a).toBe(b)
-    expect(a.count).toBe(1)
+    expect(a.value).toBe(42)
   })
 
-  it('throws for unregistered token', async () => {
-    const { Container } = await import('../../../desktop/src/main/di/container')
-    const c = new Container()
-    expect(() => c.resolve(Symbol('missing'))).toThrow()
+  it('throws for unregistered token', () => {
+    expect(() => container.resolve(Symbol('missing'))).toThrow()
   })
 
-  it('reset clears cached instances', async () => {
-    const { Container } = await import('../../../desktop/src/main/di/container')
-    const c = new Container()
+  it('isRegistered checks token existence', () => {
     const TOKEN = Symbol('test')
-    let count = 0
-    c.register(TOKEN, () => ({ count: ++count }))
-    const a = c.resolve(TOKEN)
-    expect(a.count).toBe(1)
-    c.reset()
-    const b = c.resolve(TOKEN)
-    expect(b.count).toBe(2)
-    expect(a).not.toBe(b)
+    expect(container.isRegistered(TOKEN)).toBe(false)
+    container.register(TOKEN, { useValue: 1 })
+    expect(container.isRegistered(TOKEN)).toBe(true)
   })
 })

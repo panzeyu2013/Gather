@@ -40,7 +40,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
     'session.delete',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const confirmed = Boolean(params.confirmed)
+      const confirmed = params.confirmed === true
       sessionService.deleteSession(sessionId, confirmed)
       return ok(true)
     }),
@@ -53,7 +53,7 @@ export function registerSessionHandlers(registry: CommandRegistry): void {
       if (ids.length === 0) {
         return err('No session IDs provided')
       }
-      const confirmed = Boolean(params.confirmed)
+      const confirmed = params.confirmed === true
       const count = sessionService.deleteSessions(ids, confirmed)
       return ok({ deletedCount: count })
     }),

@@ -1,11 +1,9 @@
 import type { CommandRegistry } from './registry'
 import { ok, validateString, wrapHandler } from './helpers'
 import { getServices } from '../bootstrap'
-import { SettingsService } from '../services/settings'
 
 export function registerSystemHandlers(registry: CommandRegistry): void {
-  const { imageService } = getServices()
-  const settings = SettingsService.getInstance()
+  const { imageService, settingsService: settings } = getServices()
 
   registry.register(
     'thumbnail.get',

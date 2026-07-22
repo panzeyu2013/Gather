@@ -1,6 +1,7 @@
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import type { PhotoRow } from '../../db/repositories/photo.repo'
 import type { ExportOptions, ExportPreview, ExportResult, ExportProgressEvent, ReportData } from '@gather/shared'
+import { injectable } from '../../di/container'
 import sharp from 'sharp'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -53,9 +54,11 @@ function getFreeSpace(dir: string): number {
   return 0
 }
 
+@injectable()
 export class ExportService {
   private cancelFlags = new Map<string, boolean>()
-  private photoRepo = new PhotoRepository()
+
+  constructor(private photoRepo: PhotoRepository) {}
 
   cancel(sessionId: string): void {
     this.cancelFlags.set(sessionId, true)

@@ -1,7 +1,6 @@
 import ort from 'onnxruntime-node'
 import sharp from 'sharp'
 import { existsSync } from 'fs'
-import { SettingsService } from '../settings'
 import { resolveExecutionProviders, resolveModelPath } from './provider'
 import { MODEL_CONFIG } from './model-config'
 
@@ -12,8 +11,14 @@ export interface DetectedFace {
 
 let detectionSession: ort.InferenceSession | null = null
 
-function getInputSize(): number {
-  return SettingsService.getInstance().getNumber('detect_input_size', MODEL_CONFIG.detect.inputSize)
+export async function initDetector(modelPath: string, onnxProvider: string): Promise<void> {
+  const resolved = resolveModelPath(modelPath)
+  if (!existsSync(resolved)) {
+    throw new Error(`Face detector model not found: ${resolved}`)
+  }
+  detectionSession = await ort.InferenceSession.create(resolved, {
+    executionProviders: resolveExecutionProviders(onnxProvider),
+  })
 }
 
 function computeIoU(a: [number, number, number, number], b: [number, number, number, number]): number {
@@ -84,17 +89,6 @@ function generateAnchors(inputSize: number): { anchors: Anchor[]; stride: number
 
 // ── Detection ──
 
-export async function initDetector(modelPath: string): Promise<void> {
-  const resolved = resolveModelPath(modelPath)
-  if (!existsSync(resolved)) {
-    throw new Error(`Face detector model not found: ${resolved}`)
-  }
-  const provider = SettingsService.getInstance().get('onnx_provider', 'auto')
-  detectionSession = await ort.InferenceSession.create(resolved, {
-    executionProviders: resolveExecutionProviders(provider),
-  })
-}
-
 function isScrfdMultiScale(outputNames: readonly string[]): boolean {
   return outputNames.some((n) => /^score_\d+$/.test(n))
 }
@@ -103,12 +97,18 @@ function isScrfdBatch(outputNames: readonly string[]): boolean {
   return outputNames.some((n) => n === 'scores' || n === 'score' || n === 'output')
 }
 
-export async function detectFaces(imagePath: string): Promise<DetectedFace[]> {
+export async function detectFaces(
+  imagePath: string,
+  inputSize: number,
+  confidenceThreshold: number,
+  nmsThreshold: number,
+  maxDetections: number,
+): Promise<DetectedFace[]> {
   if (!detectionSession) {
     throw new Error('Face detector not initialized. Call initDetector first.')
   }
 
-  const size = getInputSize()
+  const size = inputSize
   const { data, info } = await sharp(imagePath)
     .resize(size, size, { fit: 'fill' })
     .removeAlpha()
@@ -136,10 +136,6 @@ export async function detectFaces(imagePath: string): Promise<DetectedFace[]> {
   feeds[detectionSession.inputNames[0]] = tensor
   const results = await detectionSession.run(feeds)
   const outputNames = detectionSession.outputNames
-  const settings = SettingsService.getInstance()
-  const confidenceThreshold = settings.getNumber('detect_confidence', 0.5)
-  const nmsThreshold = settings.getNumber('nms_threshold', 0.4)
-  const maxDetections = settings.getNumber('max_detections', 100)
 
   if (isScrfdMultiScale(outputNames)) {
     return detectScrfdMultiScale(results, outputNames, size, confidenceThreshold, nmsThreshold, maxDetections)

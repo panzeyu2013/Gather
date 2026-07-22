@@ -3,6 +3,7 @@ import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
 import { getDatabase } from '../../db/database'
 import { batchAsync, parseKeywords } from '../../utils/async'
 import type { MetadataTags, BatchMetadataResult } from '@gather/shared'
+import { injectable } from '../../di/container'
 
 async function getExifr() {
   try {
@@ -53,6 +54,7 @@ function tagsToCacheInput(tags: Partial<MetadataTags>): MetadataCacheInput {
   }
 }
 
+@injectable()
 export class MetadataService {
   constructor(
     private metadataCacheRepo: MetadataCacheRepository,

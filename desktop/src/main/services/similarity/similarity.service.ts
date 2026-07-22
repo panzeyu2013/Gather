@@ -1,10 +1,11 @@
-import { SettingsService } from '../settings'
+import { SettingsService } from '../settings/settings.service'
 import { getDatabase } from '../../db/database'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { computeBatchDHash } from './hash-computer'
 import { clusterByHash, type HashEntry } from './cluster-engine'
 import type { SimilarityGroup, SimilarityImage } from '@gather/shared'
+import { injectable } from '../../di/container'
 
 export interface SimilarityResult {
   groups: SimilarityGroup[]
@@ -17,13 +18,14 @@ export interface SimilarityResult {
   }
 }
 
+@injectable()
 export class SimilarityService {
   private controllers = new Map<string, AbortController>()
-  private settings = SettingsService.getInstance()
 
   constructor(
     private photoRepo: PhotoRepository,
     private sessionRepo: SessionRepository,
+    private settings: SettingsService,
   ) {}
 
   async analyze(
@@ -72,7 +74,7 @@ export class SimilarityService {
         if (signal.aborted) return
 
         onProgress?.(0, uncachedPaths.length, 'Computing perceptual hashes...')
-        const newHashes = await computeBatchDHash(uncachedPaths)
+        const newHashes = await computeBatchDHash(uncachedPaths, this.settings.getNumber('hash_chunk_size', 8))
 
         if (signal.aborted) return
 

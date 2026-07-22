@@ -41,7 +41,9 @@ export interface IFaceRepository {
   getClusters(sessionId: string, includeMembers?: boolean): FaceClusterRow[]
   updateBinding(clusterId: number, roleName: string, keywords: string[]): void
   deleteBinding(clusterId: number): void
+  restoreBinding(clusterId: number, sessionId: string, roleName: string, keywords: string[]): void
   mergeClusters(sourceId: number, targetId: number): void
+  restoreMerge(sourceId: number, targetId: number, sessionId: string, sourceMemberIds: number[], sourceMemberCount: number, sourceBinding: { clusterId: string; roleName: string; keywords: string[] } | undefined): void
   deleteClustersBySession(sessionId: string): void
   removeMemberFromCluster(clusterId: number, photoId: string): void
   getClusterThumbnailPath(clusterId: number): string
@@ -83,6 +85,7 @@ export interface ICullingDecisionRepository {
   getDecisionCounts(sessionId: string): { decision: string; cnt: number }[]
   deleteBySession(sessionId: string): void
   deleteBySessionAndGroup(sessionId: string, groupId: string): void
+  batchRestoreDecisions(decisions: Array<{ session_id: string; photo_id: string; decision: string }>): void
 }
 
 export interface ISimilarityResultRepository {

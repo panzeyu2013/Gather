@@ -1,5 +1,5 @@
 import * as path from 'path'
-import { SettingsService } from '../settings'
+import { SettingsService } from '../settings/settings.service'
 import type { MetadataWriter } from '../metadata/metadata-writer.interface'
 import { XmpSidecarWriter } from './xmp-sidecar-writer'
 import { EmbeddedWriter } from './embedded-writer'
@@ -32,9 +32,10 @@ export class MetadataWriterRouter {
   private xmpSidecar = new XmpSidecarWriter()
   private embedded = new EmbeddedWriter()
 
-  /** 根据用户配置和文件格式选择合适的 writer */
+  constructor(private settings: SettingsService) {}
+
   select(photoPath: string): MetadataWriter {
-    const mode = SettingsService.getInstance().get('metadata_write_mode', 'auto')
+    const mode = this.settings.get('metadata_write_mode', 'auto')
     const ext = path.extname(photoPath).toLowerCase()
 
     switch (mode) {

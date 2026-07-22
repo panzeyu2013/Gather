@@ -1,7 +1,9 @@
 import { SettingsRepository } from '../../db/repositories/settings.repo'
 import { MODEL_CONFIG } from '../face-kw/model-config'
 import * as os from 'os'
+import { injectable } from '../../di/container'
 
+@injectable()
 export class SettingsService {
   private cache = new Map<string, string>()
   private repo = new SettingsRepository()
@@ -52,14 +54,6 @@ export class SettingsService {
     for (const [key, value] of Object.entries(defaults)) {
       this.cache.set(key, String(value))
     }
-  }
-
-  private static instance: SettingsService | null = null
-  static getInstance(): SettingsService {
-    if (!SettingsService.instance) {
-      SettingsService.instance = new SettingsService()
-    }
-    return SettingsService.instance
   }
 }
 

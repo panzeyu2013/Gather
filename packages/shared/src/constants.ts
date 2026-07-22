@@ -14,3 +14,5 @@ export const TOAST_DURATION_LONG = 12000
 export const TOAST_DURATION_SHORT = 5000
 export const TOAST_DURATION_ERROR = 8000
 
+export const FACE_THUMB_DIR = 'face-thumbnails'
+

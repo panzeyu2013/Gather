@@ -3,12 +3,12 @@
 
 import { execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
-import { SettingsService } from './services/settings'
+import { getServices } from './bootstrap'
 
 const execFile = promisify(execFileCb)
 
 async function execAppleScript(script: string, retries?: number): Promise<string> {
-  const settings = SettingsService.getInstance()
+  const { settingsService: settings } = getServices()
   const maxRetries = retries ?? settings.getNumber('c1_retries', 3)
   const timeout = settings.getNumber('c1_timeout_ms', 15000)
   for (let i = 0; i < maxRetries; i++) {
@@ -89,7 +89,7 @@ end tell
 `
   try {
     await execAppleScript(script)
-    await new Promise(r => setTimeout(r, SettingsService.getInstance().getNumber('c1_reload_delay_ms', 500)))
+    await new Promise(r => setTimeout(r, getServices().settingsService.getNumber('c1_reload_delay_ms', 500)))
   } catch (err) {
     console.error('capture-one reloadMetadata failed:', err)
     throw new Error('Could not connect to Capture One to reload metadata. Please make sure Capture One is running with a document open.', { cause: err })

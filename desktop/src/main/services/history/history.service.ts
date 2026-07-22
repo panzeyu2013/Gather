@@ -2,6 +2,8 @@ import { getDatabase } from '../../db/database'
 import { OperationLogRepository, type OperationLogRow } from '../../db/repositories/operation-log.repo'
 import type { OperationLogEntry, UndoStatus, RedoStatus } from '@gather/shared'
 import type { UndoHandlerMap } from './undo-handlers'
+import { FaceRepository } from '../../db/repositories/face.repo'
+import { injectable } from '../../di/container'
 
 function rowToEntry(row: OperationLogRow): OperationLogEntry {
   return {
@@ -17,12 +19,14 @@ function rowToEntry(row: OperationLogRow): OperationLogEntry {
   }
 }
 
+@injectable()
 export class HistoryService {
   private MAX_SNAPSHOT_SIZE = 64 * 1024
   private undoHandlersPromise: Promise<{ undoHandlers: UndoHandlerMap }> | null = null
 
   constructor(
     private opLogRepo: OperationLogRepository,
+    private faceRepo: FaceRepository,
   ) {}
 
   record(
@@ -144,23 +148,17 @@ export class HistoryService {
   ): ((sessionId: string, params: Record<string, unknown>, snapshot: Record<string, unknown>) => Promise<void>) | null {
     const redoHandlers: Record<string, (sessionId: string, params: Record<string, unknown>, snapshot: Record<string, unknown>) => Promise<void>> = {
       face_bind: async (sid, _p, snap) => {
-        const db = getDatabase()
         const clusterId = snap.cluster_id as number
         const roleName = snap.role_name as string
         const keywords = snap.keywords as string[]
         if (clusterId && roleName && keywords) {
-          await db.prepare(
-            'INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)',
-          ).run(clusterId, sid, roleName, JSON.stringify(keywords))
-          db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(clusterId)
+          this.faceRepo.restoreBinding(clusterId, sid, roleName, keywords)
         }
       },
       face_unbind: async (_sid, _p, snap) => {
-        const db = getDatabase()
         const clusterId = snap.cluster_id as number
         if (clusterId) {
-          db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(clusterId)
-          db.prepare("UPDATE face_clusters SET status = 'unbound' WHERE id = ?").run(clusterId)
+          this.faceRepo.deleteBinding(clusterId)
         }
       },
     }

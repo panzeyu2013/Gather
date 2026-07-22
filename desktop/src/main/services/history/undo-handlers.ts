@@ -1,7 +1,9 @@
 import { getDatabase } from '../../db/database'
 import { FaceRepository } from '../../db/repositories/face.repo'
+import { CullingDecisionRepository } from '../../db/repositories/culling-decision.repo'
 
 const faceRepo = new FaceRepository()
+const cullingRepo = new CullingDecisionRepository()
 
 export type UndoHandlerMap = Record<string, (params: Record<string, unknown>, snapshotBefore: Record<string, unknown>) => void>
 
@@ -17,83 +19,35 @@ export const undoHandlers: UndoHandlerMap = {
     const clusterId = before.cluster_id as number
     const roleName = before.role_name as string
     const keywords = before.keywords as string[]
-    const db = getDatabase()
     if (clusterId && roleName && keywords) {
-      const unbindTransaction = db.transaction(() => {
-        db.prepare(
-          'INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)',
-        ).run(clusterId, before.session_id as string, roleName, JSON.stringify(keywords))
-        db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(clusterId)
-      })
-      unbindTransaction()
+      faceRepo.restoreBinding(clusterId, before.session_id as string, roleName, keywords)
     }
   },
 
   face_merge: (_params, before) => {
     const sourceClusterId = before.source_cluster_id as number
     const targetClusterId = before.target_cluster_id as number
+    const sourceMemberIds = (before.source_member_ids as number[]) ?? []
+    const sourceMemberCount = (before.source_member_count as number) ?? 0
+    const sourceBinding = before.source_binding as { clusterId: string; roleName: string; keywords: string[] } | undefined
 
-    if (!sourceClusterId || !targetClusterId) return
+    if (!sourceClusterId || !targetClusterId || sourceMemberIds.length === 0) return
 
-    const db = getDatabase()
-
-    const sourceMembers = db
-      .prepare('SELECT * FROM face_cluster_members WHERE cluster_id = ?')
-      .all(targetClusterId) as { id: number; photo_id: string }[]
-
-    const restoreTransaction = db.transaction(() => {
-      for (const member of sourceMembers) {
-        const isOriginalSourceMember = (before.source_member_ids as number[] | undefined)?.includes(member.id)
-        if (isOriginalSourceMember) {
-          db.prepare('UPDATE face_cluster_members SET cluster_id = ? WHERE id = ?').run(sourceClusterId, member.id)
-        }
-      }
-
-      const sourceCount = db
-        .prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?')
-        .get(sourceClusterId) as { count: number }
-
-      const targetCount = db
-        .prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?')
-        .get(targetClusterId) as { count: number }
-
-      const originalMemberCount = (before.source_member_count as number) ?? 0
-
-      db.prepare('UPDATE face_clusters SET member_count = ? WHERE id = ?').run(originalMemberCount, sourceClusterId)
-      db.prepare('UPDATE face_clusters SET member_count = ?, status = ? WHERE id = ?').run(
-        Math.max(0, targetCount.count - originalMemberCount),
-        targetCount.count - originalMemberCount > 0 ? 'unbound' : 'unbound',
-        targetClusterId,
-      )
-
-      const sourceBinding = before.source_binding as { clusterId: string; roleName: string; keywords: string[] } | undefined
-      if (sourceBinding) {
-        db.prepare('INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)').run(
-          sourceClusterId,
-          before.session_id as string,
-          sourceBinding.roleName,
-          JSON.stringify(sourceBinding.keywords),
-        )
-        db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(sourceClusterId)
-      }
-    })
-
-    restoreTransaction()
+    faceRepo.restoreMerge(
+      sourceClusterId,
+      targetClusterId,
+      before.session_id as string,
+      sourceMemberIds,
+      sourceMemberCount,
+      sourceBinding,
+    )
   },
 
   culling_batch: (_params, before) => {
     const decisions = before.decisions as Array<{ photo_id: string; session_id: string; decision: string }> | undefined
     if (!decisions || decisions.length === 0) return
 
-    const db = getDatabase()
-    const restoreTransaction = db.transaction(() => {
-      for (const d of decisions) {
-        db.prepare(
-          'UPDATE culling_decisions SET decision = ? WHERE session_id = ? AND photo_id = ?',
-        ).run(d.decision, d.session_id, d.photo_id)
-      }
-    })
-    restoreTransaction()
+    cullingRepo.batchRestoreDecisions(decisions)
   },
 
   dup_resolve: (_params, before) => {
@@ -116,15 +70,12 @@ export const undoHandlers: UndoHandlerMap = {
   template_apply: (_params, before) => {
     const sessionId = before.session_id as string
     const config = before.config as Record<string, unknown> | undefined
-    if (!sessionId) return
+    if (!sessionId || !config) return
 
     const db = getDatabase()
-
-    if (config) {
-      db.prepare('UPDATE sessions SET analysis_status = ? WHERE id = ?').run(
-        (config.analysis_status as string) ?? 'idle',
-        sessionId,
-      )
-    }
+    db.prepare('UPDATE sessions SET analysis_status = ? WHERE id = ?').run(
+      (config.analysis_status as string) ?? 'idle',
+      sessionId,
+    )
   },
 }

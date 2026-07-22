@@ -1,7 +1,7 @@
 import { getDatabase } from '../db/database'
 import { getServices } from '../bootstrap'
 import type { CommandRegistry } from './registry'
-import { ok, err, wrapHandler } from './helpers'
+import { ok, err, validateString, wrapHandler } from './helpers'
 import type { PhotoData } from '@gather/shared'
 
 
@@ -10,8 +10,7 @@ export function registerPhotoHandlers(registry: CommandRegistry): void {
   registry.register(
     'photo.list',
     wrapHandler(async (params) => {
-      const sessionId = params.sessionId as string
-      if (!sessionId || typeof sessionId !== 'string') throw new Error('Invalid sessionId')
+      const sessionId = validateString(params.sessionId, 'sessionId', 64)
       const rows = photoRepo.getBySession(sessionId)
       const db = getDatabase()
       const faceCounts = db.prepare(

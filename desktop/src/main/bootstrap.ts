@@ -11,6 +11,7 @@ import { MetadataCacheRepository } from './db/repositories/metadata-cache.repo'
 import { PersonRepository } from './db/repositories/person.repo'
 import { SmartAlbumRepository } from './db/repositories/smart-album.repo'
 
+import { SettingsService } from './services/settings/settings.service'
 import { CullingService } from './services/culling/culling.service'
 import { DuplicateService } from './services/duplicate/duplicate.service'
 import { ExportService } from './services/export/export.service'
@@ -27,8 +28,9 @@ import { ImageService, TieredThumbnailCache } from './services/image'
 import { MetadataWriterRouter } from './services/xmp/metadata-writer-router'
 
 export function getServices() {
-  if (container.has(DI_TOKENS.PHOTO_REPO)) {
+  if (container.isRegistered(DI_TOKENS.SETTINGS_SERVICE)) {
     return {
+      settingsService: container.resolve<SettingsService>(DI_TOKENS.SETTINGS_SERVICE),
       cullingService: container.resolve<CullingService>(DI_TOKENS.CULLING_SERVICE),
       duplicateService: container.resolve<DuplicateService>(DI_TOKENS.DUPLICATE_SERVICE),
       exportService: container.resolve<ExportService>(DI_TOKENS.EXPORT_SERVICE),
@@ -57,6 +59,7 @@ export function getServices() {
     }
   }
 
+  const settingsService = new SettingsService()
   const photoRepo = new PhotoRepository()
   const sessionRepo = new SessionRepository()
   const cullingDecisionRepo = new CullingDecisionRepository()
@@ -64,41 +67,44 @@ export function getServices() {
   const operationLogRepo = new OperationLogRepository()
   const writebackRepo = new WritebackRepository()
   const faceRepo = new FaceRepository()
+  faceRepo.setSettings(settingsService)
   const metadataCacheRepo = new MetadataCacheRepository()
   const personRepo = new PersonRepository()
   const smartAlbumRepo = new SmartAlbumRepository()
 
-  const writerRouter = new MetadataWriterRouter()
-  const thumbnailCache = new TieredThumbnailCache()
-  const imageService = new ImageService(thumbnailCache)
+  const writerRouter = new MetadataWriterRouter(settingsService)
+  const thumbnailCache = new TieredThumbnailCache(settingsService)
+  const imageService = new ImageService(thumbnailCache, settingsService)
 
-  container.register(DI_TOKENS.PHOTO_REPO, () => photoRepo)
-  container.register(DI_TOKENS.SESSION_REPO, () => sessionRepo)
-  container.register(DI_TOKENS.CULLING_DECISION_REPO, () => cullingDecisionRepo)
-  container.register(DI_TOKENS.SIMILARITY_RESULT_REPO, () => similarityResultRepo)
-  container.register(DI_TOKENS.OPERATION_LOG_REPO, () => operationLogRepo)
-  container.register(DI_TOKENS.WRITEBACK_REPO, () => writebackRepo)
-  container.register(DI_TOKENS.FACE_REPO, () => faceRepo)
-  container.register(DI_TOKENS.METADATA_CACHE_REPO, () => metadataCacheRepo)
-  container.register(DI_TOKENS.PERSON_REPO, () => personRepo)
-  container.register(DI_TOKENS.SMART_ALBUM_REPO, () => smartAlbumRepo)
-  container.register(DI_TOKENS.WRITER_ROUTER, () => writerRouter)
-  container.register(DI_TOKENS.THUMBNAIL_CACHE, () => thumbnailCache)
-  container.register(DI_TOKENS.IMAGE_SERVICE, () => imageService)
-  container.register(DI_TOKENS.CULLING_SERVICE, () => new CullingService(photoRepo, cullingDecisionRepo, similarityResultRepo))
-  container.register(DI_TOKENS.DUPLICATE_SERVICE, () => new DuplicateService())
-  container.register(DI_TOKENS.EXPORT_SERVICE, () => new ExportService())
-  container.register(DI_TOKENS.REPORT_SERVICE, () => new ReportService())
-  container.register(DI_TOKENS.HISTORY_SERVICE, () => new HistoryService(operationLogRepo))
-  container.register(DI_TOKENS.SESSION_SERVICE, () => new SessionService(sessionRepo, photoRepo, faceRepo))
-  container.register(DI_TOKENS.SIMILARITY_SERVICE, () => new SimilarityService(photoRepo, sessionRepo))
-  container.register(DI_TOKENS.FACE_KW_SERVICE, () => new FaceKwService(photoRepo, sessionRepo, faceRepo, imageService))
-  container.register(DI_TOKENS.METADATA_SERVICE, () => new MetadataService(metadataCacheRepo, writerRouter))
-  container.register(DI_TOKENS.WRITEBACK_SERVICE, () => new WritebackService(writebackRepo, writerRouter, photoRepo, sessionRepo))
-  container.register(DI_TOKENS.TEMPLATE_SERVICE, () => new TemplateService())
-  container.register(DI_TOKENS.FILTER_ENGINE, () => new FilterEngine())
+  container.register(DI_TOKENS.SETTINGS_SERVICE, { useFactory: () => settingsService })
+  container.register(DI_TOKENS.PHOTO_REPO, { useFactory: () => photoRepo })
+  container.register(DI_TOKENS.SESSION_REPO, { useFactory: () => sessionRepo })
+  container.register(DI_TOKENS.CULLING_DECISION_REPO, { useFactory: () => cullingDecisionRepo })
+  container.register(DI_TOKENS.SIMILARITY_RESULT_REPO, { useFactory: () => similarityResultRepo })
+  container.register(DI_TOKENS.OPERATION_LOG_REPO, { useFactory: () => operationLogRepo })
+  container.register(DI_TOKENS.WRITEBACK_REPO, { useFactory: () => writebackRepo })
+  container.register(DI_TOKENS.FACE_REPO, { useFactory: () => faceRepo })
+  container.register(DI_TOKENS.METADATA_CACHE_REPO, { useFactory: () => metadataCacheRepo })
+  container.register(DI_TOKENS.PERSON_REPO, { useFactory: () => personRepo })
+  container.register(DI_TOKENS.SMART_ALBUM_REPO, { useFactory: () => smartAlbumRepo })
+  container.register(DI_TOKENS.WRITER_ROUTER, { useFactory: () => writerRouter })
+  container.register(DI_TOKENS.THUMBNAIL_CACHE, { useFactory: () => thumbnailCache })
+  container.register(DI_TOKENS.IMAGE_SERVICE, { useFactory: () => imageService })
+  container.register(DI_TOKENS.CULLING_SERVICE, { useFactory: () => new CullingService(photoRepo, cullingDecisionRepo, similarityResultRepo) })
+  container.register(DI_TOKENS.DUPLICATE_SERVICE, { useFactory: () => new DuplicateService() })
+  container.register(DI_TOKENS.EXPORT_SERVICE, { useFactory: () => new ExportService(photoRepo) })
+  container.register(DI_TOKENS.REPORT_SERVICE, { useFactory: () => new ReportService() })
+  container.register(DI_TOKENS.HISTORY_SERVICE, { useFactory: () => new HistoryService(operationLogRepo, faceRepo) })
+  container.register(DI_TOKENS.SESSION_SERVICE, { useFactory: () => new SessionService(sessionRepo, photoRepo, faceRepo, settingsService, imageService) })
+  container.register(DI_TOKENS.SIMILARITY_SERVICE, { useFactory: () => new SimilarityService(photoRepo, sessionRepo, settingsService) })
+  container.register(DI_TOKENS.FACE_KW_SERVICE, { useFactory: () => new FaceKwService(photoRepo, sessionRepo, faceRepo, imageService, settingsService) })
+  container.register(DI_TOKENS.METADATA_SERVICE, { useFactory: () => new MetadataService(metadataCacheRepo, writerRouter) })
+  container.register(DI_TOKENS.WRITEBACK_SERVICE, { useFactory: () => new WritebackService(writebackRepo, writerRouter, photoRepo, sessionRepo) })
+  container.register(DI_TOKENS.TEMPLATE_SERVICE, { useFactory: () => new TemplateService() })
+  container.register(DI_TOKENS.FILTER_ENGINE, { useFactory: () => new FilterEngine() })
 
   return {
+    settingsService,
     cullingService: container.resolve<CullingService>(DI_TOKENS.CULLING_SERVICE),
     duplicateService: container.resolve<DuplicateService>(DI_TOKENS.DUPLICATE_SERVICE),
     exportService: container.resolve<ExportService>(DI_TOKENS.EXPORT_SERVICE),

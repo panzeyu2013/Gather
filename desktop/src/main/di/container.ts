@@ -1,30 +1,7 @@
-export class Container {
-  private factories = new Map<symbol, () => unknown>()
-  private instances = new Map<symbol, unknown>()
+import 'reflect-metadata'
+import { container as tsyringeContainer, injectable, inject } from 'tsyringe'
 
-  register<T>(token: symbol, factory: () => T): void {
-    this.factories.set(token, factory)
-  }
-
-  resolve<T>(token: symbol): T {
-    if (!this.instances.has(token)) {
-      const factory = this.factories.get(token)
-      if (!factory) {
-        throw new Error(`No factory registered for ${token.description ?? String(token)}`)
-      }
-      this.instances.set(token, factory())
-    }
-    return this.instances.get(token) as T
-  }
-
-  has(token: symbol): boolean {
-    return this.factories.has(token)
-  }
-
-  reset(): void {
-    this.instances.clear()
-  }
-}
+export { injectable, inject }
 
 export const DI_TOKENS = {
   // Repositories
@@ -40,6 +17,7 @@ export const DI_TOKENS = {
   SMART_ALBUM_REPO: Symbol('SmartAlbumRepository'),
 
   // Services
+  SETTINGS_SERVICE: Symbol('SettingsService'),
   CULLING_SERVICE: Symbol('CullingService'),
   DUPLICATE_SERVICE: Symbol('DuplicateService'),
   EXPORT_SERVICE: Symbol('ExportService'),
@@ -59,4 +37,4 @@ export const DI_TOKENS = {
   THUMBNAIL_CACHE: Symbol('ThumbnailCache'),
 }
 
-export const container = new Container()
+export const container = tsyringeContainer

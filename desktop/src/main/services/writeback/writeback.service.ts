@@ -5,6 +5,7 @@ import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { batchAsync, parseKeywords } from '../../utils/async'
 import type { WritebackPreview, WritebackResult, WritebackItem, CleanupResult, WritebackOptions } from '@gather/shared'
+import { injectable } from '../../di/container'
 
 function rowToItem(row: WritebackItemRow): WritebackItem {
   return {
@@ -23,6 +24,7 @@ function rowToItem(row: WritebackItemRow): WritebackItem {
   }
 }
 
+@injectable()
 export class WritebackService {
   constructor(
     private writebackRepo: WritebackRepository,

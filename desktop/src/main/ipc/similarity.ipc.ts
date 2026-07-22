@@ -3,7 +3,6 @@ import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
 import type { WritebackOptions, WritebackItem, GroupData } from '@gather/shared'
 import { SimilarityService } from '../services/similarity/similarity.service'
-import { SettingsService } from '../services/settings'
 import { getServices } from '../bootstrap'
 
 function getPhotoPath(item: WritebackItem): string {
@@ -12,8 +11,7 @@ function getPhotoPath(item: WritebackItem): string {
 
 
 export function registerSimilarityHandlers(registry: CommandRegistry): void {
-  const { similarityService, writebackService } = getServices()
-  const settings = SettingsService.getInstance()
+  const { similarityService, writebackService, settingsService: settings } = getServices()
   registry.register(
     'sim.analyze',
     wrapHandler(async (params, event) => {

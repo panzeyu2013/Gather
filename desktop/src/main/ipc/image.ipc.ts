@@ -1,11 +1,9 @@
 import { getServices } from '../bootstrap'
-import { SettingsService } from '../services/settings'
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
 
 export function registerImageHandlers(registry: CommandRegistry): void {
-  const { imageService } = getServices()
-  const settings = SettingsService.getInstance()
+  const { imageService, settingsService: settings } = getServices()
 
   registry.register(
     'image.get_preview',

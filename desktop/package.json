@@ -30,7 +30,9 @@
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "react-router-dom": "^6.0.0",
+    "reflect-metadata": "^0.2.2",
     "sharp": "^0.33.0",
+    "tsyringe": "^4.10.0",
     "zustand": "^4.0.0"
   },
   "devDependencies": {

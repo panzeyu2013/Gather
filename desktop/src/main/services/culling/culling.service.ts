@@ -3,7 +3,9 @@ import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { CullingDecisionRepository } from '../../db/repositories/culling-decision.repo'
 import { SimilarityResultRepository } from '../../db/repositories/similarity-result.repo'
 import type { CullingGroup, CullingImage, CullingSummary, SimilarityGroup, SimilarityImage } from '@gather/shared'
+import { injectable } from '../../di/container'
 
+@injectable()
 export class CullingService {
   constructor(
     private photoRepo: PhotoRepository,

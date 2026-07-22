@@ -2,13 +2,16 @@ import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { FaceRepository, type FaceClusterInput } from '../../db/repositories/face.repo'
 import { detectFaces, initDetector, releaseDetector } from './face-detector'
-import { encodeFace, initEncoder, releaseEncoder } from './face-encoder'
+import { encodeFace, initEncoder, releaseEncoder, setEncoderConfig } from './face-encoder'
 import { clusterEmbeddings, type EmbeddingEntry } from './face-clusterer'
 import * as path from 'path'
 import * as fs from 'fs'
 import sharp from 'sharp'
 import { ImageService } from '../image'
-import { SettingsService } from '../settings'
+import { SettingsService } from '../settings/settings.service'
+import { CancelledError, NotFoundError } from '@gather/shared'
+import { injectable } from '../../di/container'
+import { MODEL_CONFIG } from './model-config'
 
 export interface FaceClusterData {
   id: number
@@ -30,15 +33,16 @@ export interface FaceClusterData {
 
 export type ProgressCallback = (data: { current: number; total: number; message: string }) => void
 
+@injectable()
 export class FaceKwService {
   private abortController: AbortController | null = null
-  private settings = SettingsService.getInstance()
 
   constructor(
     private photoRepo: PhotoRepository,
     private sessionRepo: SessionRepository,
     private faceRepo: FaceRepository,
     private imageService: ImageService,
+    private settings: SettingsService,
   ) {}
 
   async analyze(
@@ -57,16 +61,22 @@ export class FaceKwService {
 
     try {
       const session = this.sessionRepo.get(sessionId)
-      if (!session) throw new Error('Session not found')
+      if (!session) throw new NotFoundError('Session not found')
 
       this.sessionRepo.updateAnalysisStatus(sessionId, 'running')
       onProgress?.({ current: 0, total: 0, message: 'Initializing face detector...' })
 
-      await initDetector(detectorPath)
-      await initEncoder(encoderPath)
+      const onnxProvider = this.settings.get('onnx_provider', 'auto')
+      const onnxThreads = this.settings.getNumber('onnx_threads', 4)
+      const encoderInputSize = this.settings.getNumber('encoder_input_size', MODEL_CONFIG.encode.inputSize)
+      const embeddingDim = this.settings.getNumber('embedding_dim', MODEL_CONFIG.encode.embeddingDim)
+      setEncoderConfig(encoderInputSize, embeddingDim)
+
+      await initDetector(detectorPath, onnxProvider)
+      await initEncoder(encoderPath, onnxProvider, onnxThreads)
 
       const photos = this.photoRepo.getBySession(sessionId)
-      if (signal.aborted) throw new Error('Analysis cancelled')
+      if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
       this.faceRepo.deleteObservationsBySession(sessionId)
       this.faceRepo.deleteClustersBySession(sessionId)
@@ -75,10 +85,16 @@ export class FaceKwService {
       onProgress?.({ current: 0, total: totalPhotos, message: 'Detecting faces...' })
 
       for (let i = 0; i < totalPhotos; i++) {
-        if (signal.aborted) throw new Error('Analysis cancelled')
+        if (signal.aborted) throw new CancelledError('Analysis cancelled')
         const photo = photos[i]
         try {
-          const faces = await detectFaces(photo.filepath)
+          const faces = await detectFaces(
+            photo.filepath,
+            this.settings.getNumber('detect_input_size', MODEL_CONFIG.detect.inputSize),
+            this.settings.getNumber('detect_confidence', 0.5),
+            this.settings.getNumber('nms_threshold', 0.4),
+            this.settings.getNumber('max_detections', 100),
+          )
           if (faces.length > 0) {
             const observations = faces.map((f) => ({
               photoId: photo.id,
@@ -86,7 +102,7 @@ export class FaceKwService {
               bboxY: f.bbox[1],
               bboxW: f.bbox[2],
               bboxH: f.bbox[3],
-              embedding: new Array(SettingsService.getInstance().getNumber('embedding_dim', 128)).fill(0),
+              embedding: new Array(this.settings.getNumber('embedding_dim', 128)).fill(0),
               confidence: f.confidence,
             }))
             this.faceRepo.saveObservations(sessionId, observations)
@@ -102,7 +118,7 @@ export class FaceKwService {
       onProgress?.({ current: 0, total: totalFaces, message: 'Encoding faces...' })
 
       for (let i = 0; i < totalFaces; i++) {
-        if (signal.aborted) throw new Error('Analysis cancelled')
+        if (signal.aborted) throw new CancelledError('Analysis cancelled')
         const obs = observations[i]
         try {
           const embedding = await encodeFace(
@@ -116,7 +132,7 @@ export class FaceKwService {
         onProgress?.({ current: i + 1, total: totalFaces, message: 'Encoding faces...' })
       }
 
-      if (signal.aborted) throw new Error('Analysis cancelled')
+      if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
       const updatedObs = this.faceRepo.getObservations(sessionId)
       const entries: EmbeddingEntry[] = []
@@ -207,7 +223,7 @@ export class FaceKwService {
       onProgress?.({ current: 0, total: 0, message: 'Analysis complete' })
       this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
     } catch (e) {
-      if ((e as Error).message === 'Analysis cancelled') {
+      if (e instanceof CancelledError) {
         this.sessionRepo.updateAnalysisStatus(sessionId, 'cancelled')
         return
       }

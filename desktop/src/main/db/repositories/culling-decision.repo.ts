@@ -68,4 +68,15 @@ export class CullingDecisionRepository implements ICullingDecisionRepository {
     const db = getDatabase()
     db.prepare('DELETE FROM culling_decisions WHERE session_id = ? AND group_id = ?').run(sessionId, groupId)
   }
+
+  batchRestoreDecisions(decisions: Array<{ session_id: string; photo_id: string; decision: string }>): void {
+    const db = getDatabase()
+    const restoreTransaction = db.transaction(() => {
+      for (const d of decisions) {
+        db.prepare('UPDATE culling_decisions SET decision = ? WHERE session_id = ? AND photo_id = ?')
+          .run(d.decision, d.session_id, d.photo_id)
+      }
+    })
+    restoreTransaction()
+  }
 }

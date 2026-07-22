@@ -268,12 +268,19 @@ export type Command =
 
 // ── 事件联合类型 ──
 
+export interface ModelDownloadProgressData {
+  progress: number
+  total: number
+  message: string
+}
+
 export type Event =
   | { type: 'progress'; data: ProgressData }
   | { type: 'engine:status'; data: EngineStatusData }
   | { type: 'c1:import-trigger'; data: C1ImportData }
   | { type: 'c1:plugin-import'; data: C1PluginImportData }
   | { type: 'export:progress'; data: ExportProgressData }
+  | { type: 'models:download-progress'; data: ModelDownloadProgressData }
 
 // ── 命令白名单 ──
 
@@ -317,6 +324,7 @@ export const ALLOWED_EVENTS = new Set([
   'c1:import-trigger',
   'c1:plugin-import',
   'export:progress',
+  'models:download-progress',
 ])
 
 // ── Guard 函数 ──

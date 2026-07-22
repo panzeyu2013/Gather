@@ -11,7 +11,9 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": false,
-    "sourceMap": true
+    "sourceMap": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
   },
   "include": ["src/main/**/*.ts", "src/preload/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]

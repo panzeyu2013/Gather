@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import * as fsp from 'fs/promises'
 import sharp from 'sharp'
-import { SettingsService } from '../../settings'
+import { SettingsService } from '../../settings/settings.service'
 import { readDimensions } from './fast-dimensions'
 import { IMAGE_CONFIG } from '../image-config'
 import type { ImageDecoder, DecodeResult } from '../decoder'
@@ -15,7 +15,11 @@ export class SharpDecoder implements ImageDecoder {
 
   private static RAW_EXTENSIONS = new Set(IMAGE_CONFIG.sharp.rawExtensions)
 
-  private settings = SettingsService.getInstance()
+  private settings: SettingsService
+
+  constructor(settings: SettingsService) {
+    this.settings = settings
+  }
 
   supports(ext: string): boolean {
     return SharpDecoder.SUPPORTED.has(ext)

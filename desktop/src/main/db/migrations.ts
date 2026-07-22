@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import * as path from 'path'
 import * as fs from 'fs'
 import { app } from 'electron'
-import { SettingsService } from '../services/settings'
+import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL } from './schema'
 
 export function runMigrations(db: Database.Database): void {
@@ -91,8 +91,7 @@ export function runMigrations(db: Database.Database): void {
   const pending = db.prepare("SELECT COUNT(*) as cnt FROM face_clusters WHERE thumbnail_base64 != '' AND thumbnail_path = ''").get() as { cnt: number }
   if (pending.cnt > 0) {
     const rows = db.prepare("SELECT id, thumbnail_base64 FROM face_clusters WHERE thumbnail_base64 != '' AND thumbnail_path = ''").all() as { id: number; thumbnail_base64: string }[]
-    const customDir = SettingsService.getInstance().get('face_thumbnail_dir')
-    const thumbDir = customDir || path.join(app.getPath('userData'), 'face-thumbnails')
+    const thumbDir = path.join(app.getPath('userData'), FACE_THUMB_DIR)
     fs.mkdirSync(thumbDir, { recursive: true })
     for (const row of rows) {
       try {

@@ -1,6 +1,6 @@
 import * as os from 'os'
-import { ImageService, TieredThumbnailCache } from './image.service'
-import { SettingsService } from '../settings'
+import type { ImageService } from './image.service'
+import { SettingsService } from '../settings/settings.service'
 
 interface QueueJob {
   path: string
@@ -13,12 +13,17 @@ export class ThumbnailQueue {
   private active = 0
   private processing = false
 
+  constructor(
+    private settings: SettingsService,
+    private imageService: ImageService,
+  ) {}
+
   private cacheKey(path: string, size: number): string {
     return `${path}::${size}`
   }
 
   private get maxConcurrency(): number {
-    const configured = SettingsService.getInstance().getNumber('thumbnail_concurrency', 0)
+    const configured = this.settings.getNumber('thumbnail_concurrency', 0)
     if (configured > 0) return configured
     return Math.max(2, os.cpus().length - 1)
   }
@@ -53,7 +58,7 @@ export class ThumbnailQueue {
       const key = this.cacheKey(job.path, job.size)
       this.inProgress.add(key)
       this.active++
-      ImageService.getInstance(new TieredThumbnailCache())
+      this.imageService
         .getThumbnail(job.path, job.size)
         .catch(() => {})
         .finally(() => {
@@ -68,9 +73,10 @@ export class ThumbnailQueue {
   }
 
   private static instance: ThumbnailQueue | null = null
+  static setInstance(q: ThumbnailQueue): void { ThumbnailQueue.instance = q }
   static getInstance(): ThumbnailQueue {
     if (!ThumbnailQueue.instance) {
-      ThumbnailQueue.instance = new ThumbnailQueue()
+      throw new Error('ThumbnailQueue not initialized')
     }
     return ThumbnailQueue.instance
   }

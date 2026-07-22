@@ -2,7 +2,7 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as nodePath from 'path'
 import { app } from 'electron'
-import { SettingsService } from '../settings'
+import { SettingsService } from '../settings/settings.service'
 import { DecoderRegistry } from './registry'
 import { SharpDecoder } from './decoders/sharp-decoder'
 import { SipsDecoder } from './decoders/sips-decoder'
@@ -20,8 +20,11 @@ export interface ThumbnailCache {
 
 export class MemoryThumbnailCache implements ThumbnailCache {
   private map = new Map<string, DecodeResult>()
+  private readonly maxSize: number
 
-  constructor(private maxSize = SettingsService.getInstance().getNumber('memory_cache_size', 200)) {}
+  constructor(settings: SettingsService) {
+    this.maxSize = settings.getNumber('memory_cache_size', 200)
+  }
 
   async get(key: string): Promise<DecodeResult | null> {
     const val = this.map.get(key)
@@ -49,13 +52,12 @@ export class DiskThumbnailCache implements ThumbnailCache {
   private dir: string
   private manager: DiskCacheManager
 
-  constructor(cacheDir?: string) {
-    const diskDir = cacheDir ?? (SettingsService.getInstance().get('disk_cache_dir', '') || nodePath.join(app.getPath('userData'), 'thumbnails'))
+  constructor(settings: SettingsService, cacheDir?: string) {
+    const diskDir = cacheDir ?? (settings.get('disk_cache_dir', '') || nodePath.join(app.getPath('userData'), 'thumbnails'))
     this.dir = diskDir
     if (!fs.existsSync(this.dir)) {
       fs.mkdirSync(this.dir, { recursive: true })
     }
-    const settings = SettingsService.getInstance()
     const maxSizeGb = settings.getNumber('disk_cache_max_size_gb', 1)
     const policyStr = settings.get('disk_cache_eviction_policy', 'lru')
     const policy = policyStr === 'fifo' ? EvictionPolicy.FIFO : policyStr === 'lfu' ? EvictionPolicy.LFU : EvictionPolicy.LRU
@@ -113,10 +115,13 @@ export class DiskThumbnailCache implements ThumbnailCache {
 // ── Two-tier cache (memory → disk → decode) ──
 
 export class TieredThumbnailCache implements ThumbnailCache {
-  constructor(
-    private l1: MemoryThumbnailCache = new MemoryThumbnailCache(50),
-    private l2: DiskThumbnailCache = new DiskThumbnailCache(),
-  ) {}
+  private l1: MemoryThumbnailCache
+  private l2: DiskThumbnailCache
+
+  constructor(settings: SettingsService) {
+    this.l1 = new MemoryThumbnailCache(settings)
+    this.l2 = new DiskThumbnailCache(settings)
+  }
 
   async get(key: string): Promise<DecodeResult | null> {
     const mem = await this.l1.get(key)
@@ -153,14 +158,18 @@ export class ImageService {
   private registry = new DecoderRegistry()
   private thumbnailCache: ThumbnailCache
 
-  constructor(cache?: ThumbnailCache) {
-    this.registry.register(new SharpDecoder())
+  constructor(
+    cache: ThumbnailCache,
+    private settings: SettingsService,
+  ) {
+    this.registry.register(new SharpDecoder(settings))
     if (process.platform === 'darwin') {
       this.registry.register(new SipsDecoder())
     }
-    this.thumbnailCache = cache ?? new MemoryThumbnailCache(
-      SettingsService.getInstance().getNumber('memory_cache_size', 200)
-    )
+    this.thumbnailCache = cache
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ThumbnailQueue } = require('./thumbnail-queue')
+    ThumbnailQueue.setInstance(new ThumbnailQueue(settings, this))
   }
 
   async getPreview(path: string, maxDimension?: number): Promise<DecodeResult> {
@@ -178,7 +187,7 @@ export class ImageService {
     }
   }
 
-  async getThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 2880)): Promise<DecodeResult> {
+  async getThumbnail(path: string, size = this.settings.getNumber('thumbnail_size', 2880)): Promise<DecodeResult> {
     const cacheKey = buildCacheKey(path, size)
     const cached = await this.thumbnailCache.get(cacheKey)
     if (cached) return cached
@@ -200,7 +209,7 @@ export class ImageService {
     }
   }
 
-  async prioritizeThumbnail(path: string, size = SettingsService.getInstance().getNumber('thumbnail_size', 2880)): Promise<void> {
+  async prioritizeThumbnail(path: string, size = this.settings.getNumber('thumbnail_size', 2880)): Promise<void> {
     const cacheKey = buildCacheKey(path, size)
     const cached = await this.thumbnailCache.get(cacheKey)
     if (cached) return
@@ -209,7 +218,7 @@ export class ImageService {
     await this.thumbnailCache.set(cacheKey, result)
   }
 
-  preloadThumbnails(paths: string[], size = SettingsService.getInstance().getNumber('thumbnail_size', 2880)): void {
+  preloadThumbnails(paths: string[], size = this.settings.getNumber('thumbnail_size', 2880)): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { ThumbnailQueue } = require('./thumbnail-queue')
     ThumbnailQueue.getInstance().enqueue(paths, size)
@@ -228,13 +237,5 @@ export class ImageService {
       }
       throw err
     }
-  }
-
-  private static instance: ImageService | null = null
-  static getInstance(cache?: ThumbnailCache): ImageService {
-    if (!ImageService.instance) {
-      ImageService.instance = new ImageService(cache)
-    }
-    return ImageService.instance
   }
 }

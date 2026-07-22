@@ -46,6 +46,9 @@ const ALLOWED_EVENTS = new Set([
   'models:download-progress',
 ])
 
+const LISTENER_COUNTS = new Map<string, number>()
+const MAX_LISTENERS_PER_EVENT = 10
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === 'object' &&
@@ -66,7 +69,7 @@ export interface GatherAPI {
   readonly selectFiles: () => Promise<string[]>
   readonly getVersion: () => Promise<string>
   readonly openDirectory: (dirPath: string) => Promise<void>
-  readonly scanDirectory: (dirPath: string) => Promise<string[]> 
+  readonly scanDirectory: (dirPath: string) => Promise<string[]>
   readonly downloadDefaultModels: () => Promise<void>
   readonly onModelDownloadProgress: (callback: (data: unknown) => void) => () => void
 }
@@ -79,7 +82,7 @@ const api: GatherAPI = {
     if (!isRecord(params)) {
       throw new Error('Command parameters must be an object')
     }
-    if (DESTRUCTIVE_COMMANDS.has(cmd) && !params.confirmed) {
+    if (DESTRUCTIVE_COMMANDS.has(cmd) && params.confirmed !== true) {
       throw new Error(`Destructive command '${cmd}' requires explicit confirmation`)
     }
     return ipcRenderer.invoke('gather:command', cmd, params)
@@ -92,16 +95,31 @@ const api: GatherAPI = {
     if (typeof callback !== 'function') {
       throw new Error('Event callback must be a function')
     }
+
+    const current = (LISTENER_COUNTS.get(event) ?? 0) + 1
+    LISTENER_COUNTS.set(event, current)
+
+    if (current >= MAX_LISTENERS_PER_EVENT) {
+      console.warn(
+        `[EventSystem] "${event}" has ${current} listeners, possible leak. ` +
+        `Active events: ${[...LISTENER_COUNTS.entries()].map(([k, v]) => `${k}:${v}`).join(', ')}`
+      )
+    }
+
     const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
       if (evt === event) callback(data)
     }
     ipcRenderer.on('gather:event', handler)
     return () => {
+      LISTENER_COUNTS.set(event, Math.max(0, (LISTENER_COUNTS.get(event) ?? 1) - 1))
       ipcRenderer.removeListener('gather:event', handler)
     }
   },
 
   onReady: (callback) => {
+    if (!ALLOWED_EVENTS.has('engine:status')) {
+      throw new Error('Event "engine:status" is not allowed')
+    }
     if (typeof callback !== 'function') {
       throw new Error('Ready callback must be a function')
     }
@@ -118,6 +136,9 @@ const api: GatherAPI = {
   },
 
   onPluginImport: (callback) => {
+    if (!ALLOWED_EVENTS.has('c1:plugin-import')) {
+      throw new Error('Event "c1:plugin-import" is not allowed')
+    }
     if (typeof callback !== 'function') {
       throw new Error('Plugin import callback must be a function')
     }
@@ -157,6 +178,9 @@ const api: GatherAPI = {
     ipcRenderer.invoke('models.download_default'),
 
   onModelDownloadProgress: (callback) => {
+    if (!ALLOWED_EVENTS.has('models:download-progress')) {
+      throw new Error('Event "models:download-progress" is not allowed')
+    }
     if (typeof callback !== 'function') {
       throw new Error('Model download progress callback must be a function')
     }
