@@ -139,13 +139,15 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
         }
       }
 
-      const enrichedItems = items.map((item) => {
-        const bindingKeywords = photoKeywords.get(item.photoId)
-        if (bindingKeywords?.length) {
-          return { ...item, keywords: [...new Set([...item.keywords, ...bindingKeywords])] }
-        }
-        return item
-      })
+      const enrichedItems = items
+        .map((item) => {
+          const bindingKeywords = photoKeywords.get(item.photoId)
+          if (bindingKeywords?.length) {
+            return { ...item, keywords: [...new Set([...item.keywords, ...bindingKeywords])] }
+          }
+          return null
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null)
 
       return ok(await writebackService.execute(sessionId, 'face_kw', enrichedItems))
     }),
