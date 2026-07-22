@@ -348,7 +348,6 @@ app.on('before-quit', (event) => {
   writerRouter.shutdown()
     .finally(() => closeDatabase())
     .finally(() => {
-      quitting = false
       app.quit()
     })
 })
