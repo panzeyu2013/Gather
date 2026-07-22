@@ -107,7 +107,25 @@ export function registerFaceKwHandlers(registry: CommandRegistry): void {
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const options = (params.options ?? {}) as WritebackOptions
-      return ok(await writebackService.preview(sessionId, 'face_kw', options))
+      const preview = await writebackService.preview(sessionId, 'face_kw', options)
+
+      const clusters = faceRepo.getClusters(sessionId, true)
+      const boundPhotoIds = new Set<string>()
+      for (const cluster of clusters) {
+        if (cluster.binding?.keywords?.length) {
+          for (const member of cluster.members ?? []) {
+            boundPhotoIds.add(member.photo_id)
+          }
+        }
+      }
+
+      const filteredItems = preview.items.filter((item) => boundPhotoIds.has(item.photoId))
+      return ok({
+        ...preview,
+        items: filteredItems,
+        totalCount: filteredItems.length,
+        affectedPhotos: filteredItems.length,
+      })
     }),
   )
 
