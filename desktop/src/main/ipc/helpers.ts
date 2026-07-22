@@ -9,14 +9,17 @@ export function err(error: string | { type: string; message: string }): Response
   return { ok: false, error }
 }
 
-export function validateString(value: unknown, name: string, maxLength = 4096): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new ValidationError(`Invalid ${name}: must be a non-empty string`)
+export function validateString(value: unknown, name: string, maxLength = 4096, allowEmpty = false): string {
+  if (typeof value !== 'string') {
+    throw new ValidationError(`Invalid ${name}: must be a string`)
   }
   if (value.length > maxLength) {
     throw new ValidationError(`Invalid ${name}: exceeds maximum length of ${maxLength}`)
   }
-  return value.trim()
+  if (!allowEmpty && value.trim().length === 0) {
+    throw new ValidationError(`Invalid ${name}: must be a non-empty string`)
+  }
+  return allowEmpty ? value : value.trim()
 }
 
 export function validateStringArray(value: unknown, name: string, maxLength = 4096): string[] {

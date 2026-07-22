@@ -17,7 +17,7 @@ export function registerSettingsHandlers(registry: CommandRegistry): void {
 
   registry.register('settings.set', wrapHandler(async (params) => {
     const key = validateString(params.key, 'key', 256)
-    const value = validateString(params.value, 'value', 4096)
+    const value = validateString(params.value, 'value', 4096, true)
     svc.set(key, value)
     return ok({ done: true })
   }))

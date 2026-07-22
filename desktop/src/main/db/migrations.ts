@@ -91,7 +91,9 @@ export function runMigrations(db: Database.Database): void {
   const pending = db.prepare("SELECT COUNT(*) as cnt FROM face_clusters WHERE thumbnail_base64 != '' AND thumbnail_path = ''").get() as { cnt: number }
   if (pending.cnt > 0) {
     const rows = db.prepare("SELECT id, thumbnail_base64 FROM face_clusters WHERE thumbnail_base64 != '' AND thumbnail_path = ''").all() as { id: number; thumbnail_base64: string }[]
-    const thumbDir = path.join(app.getPath('userData'), FACE_THUMB_DIR)
+    const customDirRow = db.prepare("SELECT value FROM app_settings WHERE key = 'face_thumbnail_dir'").get() as { value: string } | undefined
+    const customDir = customDirRow?.value || ''
+    const thumbDir = customDir || path.join(app.getPath('userData'), FACE_THUMB_DIR)
     fs.mkdirSync(thumbDir, { recursive: true })
     for (const row of rows) {
       try {
