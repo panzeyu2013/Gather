@@ -26,18 +26,15 @@ export interface WritebackItemRow {
 }
 
 export class WritebackRepository implements IWritebackRepository {
-  saveItems(sessionId: string, items: WritebackItemInput[]): number[] {
+  saveItems(sessionId: string, module: string, items: WritebackItemInput[]): number[] {
     const db = getDatabase()
     const now = new Date().toISOString()
     const ids: number[] = []
-    const module = items.length > 0 ? items[0].module : ''
 
     const replaceAll = db.transaction(() => {
-      if (module) {
-        db.prepare(
-          'DELETE FROM writeback_items WHERE session_id = ? AND module = ? AND xmp_status = ?',
-        ).run(sessionId, module, 'pending')
-      }
+      db.prepare(
+        'DELETE FROM writeback_items WHERE session_id = ? AND module = ? AND xmp_status = ?',
+      ).run(sessionId, module, 'pending')
 
       const insertStmt = db.prepare(
         `INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
@@ -49,7 +46,7 @@ export class WritebackRepository implements IWritebackRepository {
           item.photoId,
           item.photoPath,
           sessionId,
-          item.module,
+          module,
           JSON.stringify(item.keywords),
           item.xmpPath,
           item.backupPath,

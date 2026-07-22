@@ -53,8 +53,8 @@ export class WritebackService {
       }
     }, 10)
 
-    const ids = this.writebackRepo.saveItems(sessionId, items)
-    const savedRows = this.writebackRepo.getItems(sessionId, module)
+    const ids = this.writebackRepo.saveItems(sessionId, module, items)
+    const savedRows = this.writebackRepo.getItems(sessionId, module, 'pending')
 
     return {
       items: savedRows.map(rowToItem),
