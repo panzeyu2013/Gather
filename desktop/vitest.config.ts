@@ -10,7 +10,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@gather/shared': path.resolve(__dirname, '../../packages/shared/src'),
+      '@gather/shared': path.resolve(__dirname, '../packages/shared/src'),
     },
   },
 })
