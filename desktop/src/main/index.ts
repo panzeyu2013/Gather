@@ -207,8 +207,6 @@ function svc<T>(token: symbol): T {
 }
 
 function registerIpc(): void {
-  initContainer()
-
   const db = svc<Database>(DI_TOKENS.DB)
   const settingsService = svc<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
   const sessionService = svc<SessionService>(DI_TOKENS.SESSION_SERVICE)

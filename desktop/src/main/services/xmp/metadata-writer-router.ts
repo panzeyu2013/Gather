@@ -3,6 +3,8 @@ import { SettingsService } from '../settings/settings.service'
 import type { MetadataWriter } from '../metadata/metadata-writer.interface'
 import { XmpSidecarWriter } from './xmp-sidecar-writer'
 import { EmbeddedWriter } from './embedded-writer'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 /** RAW formats — preserve originals via sidecar (Capture One / Lightroom only read .xmp) */
 const RAW_EXTENSIONS = new Set([
@@ -28,11 +30,12 @@ const DELIVERABLE_EXTENSIONS = new Set([
   '.webp', '.heic', '.heif', '.avif', '.dng',
 ])
 
+@injectable()
 export class MetadataWriterRouter {
   private xmpSidecar = new XmpSidecarWriter()
   private embedded = new EmbeddedWriter()
 
-  constructor(private settings: SettingsService) {}
+  constructor(@inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService) {}
 
   select(photoPath: string): MetadataWriter {
     const mode = this.settings.get('metadata_write_mode', 'auto')

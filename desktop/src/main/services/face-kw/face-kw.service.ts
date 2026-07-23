@@ -10,7 +10,8 @@ import sharp from 'sharp'
 import { ImageService } from '../image'
 import { SettingsService } from '../settings/settings.service'
 import { CancelledError, NotFoundError } from '@gather/shared'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 import { MODEL_CONFIG } from './model-config'
 
 export interface FaceClusterData {
@@ -38,11 +39,11 @@ export class FaceKwService {
   private abortController: AbortController | null = null
 
   constructor(
-    private photoRepo: PhotoRepository,
-    private sessionRepo: SessionRepository,
-    private faceRepo: FaceRepository,
-    private imageService: ImageService,
-    private settings: SettingsService,
+    @inject(DI_TOKENS.PHOTO_REPO) private photoRepo: PhotoRepository,
+    @inject(DI_TOKENS.SESSION_REPO) private sessionRepo: SessionRepository,
+    @inject(DI_TOKENS.FACE_REPO) private faceRepo: FaceRepository,
+    @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
+    @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
   ) {}
 
   async analyze(

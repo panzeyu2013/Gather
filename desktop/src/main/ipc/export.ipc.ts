@@ -52,6 +52,13 @@ export function registerExportHandlers(registry: CommandRegistry, exportService:
       const sessionId = validateString(params.sessionId, 'sessionId')
       const reportType = typeof params.reportType === 'string' ? params.reportType : 'session_summary'
       const format = typeof params.format === 'string' ? params.format : undefined
+
+      if (reportType === 'person') {
+        return ok(reportService.generatePersonReport(sessionId))
+      }
+      if (reportType === 'keyword') {
+        return ok(reportService.generateKeywordReport(sessionId))
+      }
       return ok(exportService.generateReport(sessionId, reportType, format))
     }),
   )

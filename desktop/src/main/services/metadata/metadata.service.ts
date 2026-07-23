@@ -58,8 +58,8 @@ function tagsToCacheInput(tags: Partial<MetadataTags>): MetadataCacheInput {
 @injectable()
 export class MetadataService {
   constructor(
-    private metadataCacheRepo: MetadataCacheRepository,
-    private writerRouter: MetadataWriterRouter,
+    @inject(DI_TOKENS.METADATA_CACHE_REPO) private metadataCacheRepo: MetadataCacheRepository,
+    @inject(DI_TOKENS.WRITER_ROUTER) private writerRouter: MetadataWriterRouter,
     @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 

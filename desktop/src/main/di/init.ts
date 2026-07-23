@@ -42,7 +42,11 @@ import { FilterEngine } from '../services/filter/filter-engine'
 import { ImageService, TieredThumbnailCache } from '../services/image'
 import { MetadataWriterRouter } from '../services/xmp/metadata-writer-router'
 
+let initialized = false
+
 export function initContainer(): void {
+  if (initialized) return
+  initialized = true
   container.registerSingleton(DI_TOKENS.DB, Database)
 
   container.registerSingleton(DI_TOKENS.PHOTO_REPO, PhotoRepository)

@@ -45,11 +45,11 @@ function toSessionData(
 @injectable()
 export class SessionService {
   constructor(
-    private sessionRepo: SessionRepository,
-    private photoRepo: PhotoRepository,
-    private faceRepo: FaceRepository,
-    private settings: SettingsService,
-    private imageService: ImageService,
+    @inject(DI_TOKENS.SESSION_REPO) private sessionRepo: SessionRepository,
+    @inject(DI_TOKENS.PHOTO_REPO) private photoRepo: PhotoRepository,
+    @inject(DI_TOKENS.FACE_REPO) private faceRepo: FaceRepository,
+    @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
+    @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
     @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 

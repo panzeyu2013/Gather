@@ -26,8 +26,8 @@ export class HistoryService {
   private undoHandlersPromise: Promise<{ undoHandlers: UndoHandlerMap }> | null = null
 
   constructor(
-    private opLogRepo: OperationLogRepository,
-    private faceRepo: FaceRepository,
+    @inject(DI_TOKENS.OPERATION_LOG_REPO) private opLogRepo: OperationLogRepository,
+    @inject(DI_TOKENS.FACE_REPO) private faceRepo: FaceRepository,
     @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 

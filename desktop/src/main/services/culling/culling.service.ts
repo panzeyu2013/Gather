@@ -9,9 +9,9 @@ import { DI_TOKENS } from '../../di/container'
 @injectable()
 export class CullingService {
   constructor(
-    private photoRepo: PhotoRepository,
-    private cullingDecisionRepo: CullingDecisionRepository,
-    private similarityResultRepo: SimilarityResultRepository,
+    @inject(DI_TOKENS.PHOTO_REPO) private photoRepo: PhotoRepository,
+    @inject(DI_TOKENS.CULLING_DECISION_REPO) private cullingDecisionRepo: CullingDecisionRepository,
+    @inject(DI_TOKENS.SIMILARITY_RESULT_REPO) private similarityResultRepo: SimilarityResultRepository,
     @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 

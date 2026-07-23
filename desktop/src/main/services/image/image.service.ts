@@ -8,6 +8,8 @@ import { SharpDecoder } from './decoders/sharp-decoder'
 import { SipsDecoder } from './decoders/sips-decoder'
 import { DiskCacheManager, EvictionPolicy } from './disk-cache'
 import type { DecodeResult } from './decoder'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 // ── Cache interface ──
 
@@ -114,11 +116,12 @@ export class DiskThumbnailCache implements ThumbnailCache {
 
 // ── Two-tier cache (memory → disk → decode) ──
 
+@injectable()
 export class TieredThumbnailCache implements ThumbnailCache {
   private l1: MemoryThumbnailCache
   private l2: DiskThumbnailCache
 
-  constructor(settings: SettingsService) {
+  constructor(@inject(DI_TOKENS.SETTINGS_SERVICE) settings: SettingsService) {
     this.l1 = new MemoryThumbnailCache(settings)
     this.l2 = new DiskThumbnailCache(settings)
   }
@@ -154,13 +157,14 @@ function decodeSourcePath(key: string): string | null {
 
 // ── ImageService ──
 
+@injectable()
 export class ImageService {
   private registry = new DecoderRegistry()
   private thumbnailCache: ThumbnailCache
 
   constructor(
-    cache: ThumbnailCache,
-    private settings: SettingsService,
+    @inject(DI_TOKENS.THUMBNAIL_CACHE) cache: ThumbnailCache,
+    @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
   ) {
     this.registry.register(new SharpDecoder(settings))
     if (process.platform === 'darwin') {

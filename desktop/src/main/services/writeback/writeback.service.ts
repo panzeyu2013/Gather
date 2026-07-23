@@ -5,7 +5,8 @@ import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { batchAsync, parseKeywords } from '../../utils/async'
 import type { WritebackPreview, WritebackResult, WritebackItem, CleanupResult, WritebackOptions } from '@gather/shared'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 function rowToItem(row: WritebackItemRow): WritebackItem {
   return {
@@ -27,10 +28,10 @@ function rowToItem(row: WritebackItemRow): WritebackItem {
 @injectable()
 export class WritebackService {
   constructor(
-    private writebackRepo: WritebackRepository,
-    private writerRouter: MetadataWriterRouter,
-    private photoRepo: PhotoRepository,
-    private sessionRepo: SessionRepository,
+    @inject(DI_TOKENS.WRITEBACK_REPO) private writebackRepo: WritebackRepository,
+    @inject(DI_TOKENS.WRITER_ROUTER) private writerRouter: MetadataWriterRouter,
+    @inject(DI_TOKENS.PHOTO_REPO) private photoRepo: PhotoRepository,
+    @inject(DI_TOKENS.SESSION_REPO) private sessionRepo: SessionRepository,
   ) {}
 
   async preview(sessionId: string, module: string, _options: WritebackOptions, photoIds?: Set<string>): Promise<WritebackPreview> {
