@@ -1,10 +1,12 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
 import * as path from 'path'
 import * as fs from 'fs'
 import { app } from 'electron'
 import { FACE_THUMB_DIR } from '@gather/shared'
 import type { SettingsService } from '../../services/settings/settings.service'
 import { IFaceRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface FaceObservationInput {
   photoId: string
@@ -62,20 +64,19 @@ export interface FaceClusterMemberRow {
   observation_id: number | null
 }
 
+@injectable()
 export class FaceRepository implements IFaceRepository {
-  private _settings: SettingsService | null = null
-
-  setSettings(settings: SettingsService): void {
-    this._settings = settings
-  }
+  constructor(
+    @inject(DI_TOKENS.DB) private db: Database,
+    @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
+  ) {}
 
   saveObservations(sessionId: string, observations: FaceObservationInput[]): number[] {
-    const db = getDatabase()
     const ids: number[] = []
-    const stmt = db.prepare(
+    const stmt = this.db.prepare(
       'INSERT INTO face_observations (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    const insertMany = db.transaction(() => {
+    const insertMany = this.db.transaction(() => {
       for (const obs of observations) {
         const embBuffer = Buffer.from(new Float32Array(obs.embedding).buffer)
         const result = stmt.run(obs.photoId, sessionId, obs.bboxX, obs.bboxY, obs.bboxW, obs.bboxH, embBuffer, obs.confidence)
@@ -87,19 +88,16 @@ export class FaceRepository implements IFaceRepository {
   }
 
   getObservations(sessionId: string): FaceObservationRow[] {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM face_observations WHERE session_id = ? ORDER BY id').all(sessionId) as FaceObservationRow[]
+    return this.db.prepare('SELECT * FROM face_observations WHERE session_id = ? ORDER BY id').all(sessionId) as FaceObservationRow[]
   }
 
   updateEmbedding(observationId: number, embedding: number[]): void {
-    const db = getDatabase()
     const embBuffer = Buffer.from(new Float32Array(embedding).buffer)
-    db.prepare('UPDATE face_observations SET embedding = ? WHERE id = ?').run(embBuffer, observationId)
+    this.db.prepare('UPDATE face_observations SET embedding = ? WHERE id = ?').run(embBuffer, observationId)
   }
 
   deleteObservationsBySession(sessionId: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM face_observations WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM face_observations WHERE session_id = ?').run(sessionId)
   }
 
   getFaceThumbDir(): string {
@@ -109,7 +107,7 @@ export class FaceRepository implements IFaceRepository {
   }
 
   private resolveFaceThumbDir(): string {
-    const customDir = this._settings?.get('face_thumbnail_dir') ?? ''
+    const customDir = this.settings.get('face_thumbnail_dir') ?? ''
     return customDir || path.join(app.getPath('userData'), FACE_THUMB_DIR)
   }
 
@@ -120,16 +118,14 @@ export class FaceRepository implements IFaceRepository {
   }
 
   updateClusterThumbnail(clusterId: number, thumbnailPath: string): void {
-    const db = getDatabase()
-    db.prepare('UPDATE face_clusters SET thumbnail_path = ? WHERE id = ?').run(thumbnailPath, clusterId)
+    this.db.prepare('UPDATE face_clusters SET thumbnail_path = ? WHERE id = ?').run(thumbnailPath, clusterId)
   }
 
   saveClusters(sessionId: string, clusters: FaceClusterInput[]): number[] {
-    const db = getDatabase()
     const ids: number[] = []
-    const insertCluster = db.prepare("INSERT INTO face_clusters (session_id, label, member_count, status, thumbnail_base64, thumbnail_path) VALUES (?, ?, ?, 'unbound', '', '')")
-    const insertMember = db.prepare('INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence, observation_id) VALUES (?, ?, ?, ?, ?, ?)')
-    const insertMany = db.transaction(() => {
+    const insertCluster = this.db.prepare("INSERT INTO face_clusters (session_id, label, member_count, status, thumbnail_base64, thumbnail_path) VALUES (?, ?, ?, 'unbound', '', '')")
+    const insertMember = this.db.prepare('INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence, observation_id) VALUES (?, ?, ?, ?, ?, ?)')
+    const insertMany = this.db.transaction(() => {
       for (const cluster of clusters) {
         const result = insertCluster.run(sessionId, cluster.label, cluster.members.length)
         const clusterId = Number(result.lastInsertRowid)
@@ -144,12 +140,11 @@ export class FaceRepository implements IFaceRepository {
   }
 
   getClusters(sessionId: string, includeMembers = false): FaceClusterRow[] {
-    const db = getDatabase()
-    const clusters = db.prepare('SELECT * FROM face_clusters WHERE session_id = ? AND member_count > 0 ORDER BY id').all(sessionId) as FaceClusterRow[]
+    const clusters = this.db.prepare('SELECT * FROM face_clusters WHERE session_id = ? AND member_count > 0 ORDER BY id').all(sessionId) as FaceClusterRow[]
     if (!includeMembers) return clusters
     for (const cluster of clusters) {
-      cluster.members = db.prepare('SELECT fm.id, fm.cluster_id, fm.session_id, fm.photo_id, p.filepath as photo_path, fm.bbox, fm.confidence, fm.observation_id FROM face_cluster_members fm JOIN photos p ON fm.photo_id = p.id WHERE fm.cluster_id = ?').all(cluster.id) as FaceClusterMemberRow[]
-      const binding = db.prepare('SELECT * FROM role_bindings WHERE cluster_id = ?').get(cluster.id) as { cluster_id: number; session_id: string; role_name: string; keywords: string } | undefined
+      cluster.members = this.db.prepare('SELECT fm.id, fm.cluster_id, fm.session_id, fm.photo_id, p.filepath as photo_path, fm.bbox, fm.confidence, fm.observation_id FROM face_cluster_members fm JOIN photos p ON fm.photo_id = p.id WHERE fm.cluster_id = ?').all(cluster.id) as FaceClusterMemberRow[]
+      const binding = this.db.prepare('SELECT * FROM role_bindings WHERE cluster_id = ?').get(cluster.id) as { cluster_id: number; session_id: string; role_name: string; keywords: string } | undefined
       if (binding) {
         cluster.binding = { clusterId: String(binding.cluster_id), roleName: binding.role_name, keywords: JSON.parse(binding.keywords) }
       }
@@ -158,54 +153,48 @@ export class FaceRepository implements IFaceRepository {
   }
 
   getClusterThumbnailPath(clusterId: number): string {
-    const db = getDatabase()
-    const row = db.prepare('SELECT thumbnail_path FROM face_clusters WHERE id = ?').get(clusterId) as { thumbnail_path: string } | undefined
+    const row = this.db.prepare('SELECT thumbnail_path FROM face_clusters WHERE id = ?').get(clusterId) as { thumbnail_path: string } | undefined
     return row?.thumbnail_path ?? ''
   }
 
   getThumbnailPathsBySession(sessionId: string): string[] {
-    const db = getDatabase()
-    const rows = db.prepare("SELECT thumbnail_path FROM face_clusters WHERE session_id = ? AND thumbnail_path != '' AND member_count > 0").all(sessionId) as { thumbnail_path: string }[]
+    const rows = this.db.prepare("SELECT thumbnail_path FROM face_clusters WHERE session_id = ? AND thumbnail_path != '' AND member_count > 0").all(sessionId) as { thumbnail_path: string }[]
     return rows.map(r => r.thumbnail_path)
   }
 
   updateBinding(clusterId: number, roleName: string, keywords: string[]): void {
-    const db = getDatabase()
-    const existing = db.prepare('SELECT id FROM role_bindings WHERE cluster_id = ?').get(clusterId)
+    const existing = this.db.prepare('SELECT id FROM role_bindings WHERE cluster_id = ?').get(clusterId)
     if (existing) {
-      db.prepare('UPDATE role_bindings SET role_name = ?, keywords = ? WHERE cluster_id = ?').run(roleName, JSON.stringify(keywords), clusterId)
+      this.db.prepare('UPDATE role_bindings SET role_name = ?, keywords = ? WHERE cluster_id = ?').run(roleName, JSON.stringify(keywords), clusterId)
     } else {
-      const cluster = db.prepare('SELECT session_id FROM face_clusters WHERE id = ?').get(clusterId) as { session_id: string }
-      db.prepare('INSERT INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)').run(clusterId, cluster.session_id, roleName, JSON.stringify(keywords))
+      const cluster = this.db.prepare('SELECT session_id FROM face_clusters WHERE id = ?').get(clusterId) as { session_id: string }
+      this.db.prepare('INSERT INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)').run(clusterId, cluster.session_id, roleName, JSON.stringify(keywords))
     }
-    db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(clusterId)
+    this.db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(clusterId)
   }
 
   deleteBinding(clusterId: number): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(clusterId)
-    db.prepare("UPDATE face_clusters SET status = 'unbound' WHERE id = ?").run(clusterId)
+    this.db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(clusterId)
+    this.db.prepare("UPDATE face_clusters SET status = 'unbound' WHERE id = ?").run(clusterId)
   }
 
   restoreBinding(clusterId: number, sessionId: string, roleName: string, keywords: string[]): void {
-    const db = getDatabase()
-    const restoreTransaction = db.transaction(() => {
-      db.prepare('INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)')
+    const restoreTransaction = this.db.transaction(() => {
+      this.db.prepare('INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)')
         .run(clusterId, sessionId, roleName, JSON.stringify(keywords))
-      db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(clusterId)
+      this.db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(clusterId)
     })
     restoreTransaction()
   }
 
   mergeClusters(sourceId: number, targetId: number): void {
     const sourcePath = this.getClusterThumbnailPath(sourceId)
-    const db = getDatabase()
-    const merge = db.transaction(() => {
-      const sourceMembers = db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(sourceId) as { count: number }
-      db.prepare('UPDATE face_cluster_members SET cluster_id = ? WHERE cluster_id = ?').run(targetId, sourceId)
-      db.prepare('UPDATE face_clusters SET member_count = member_count + ? WHERE id = ?').run(sourceMembers.count, targetId)
-      db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(sourceId)
-      db.prepare('UPDATE face_clusters SET member_count = 0, status = ? WHERE id = ?').run('unbound', sourceId)
+    const merge = this.db.transaction(() => {
+      const sourceMembers = this.db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(sourceId) as { count: number }
+      this.db.prepare('UPDATE face_cluster_members SET cluster_id = ? WHERE cluster_id = ?').run(targetId, sourceId)
+      this.db.prepare('UPDATE face_clusters SET member_count = member_count + ? WHERE id = ?').run(sourceMembers.count, targetId)
+      this.db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(sourceId)
+      this.db.prepare('UPDATE face_clusters SET member_count = 0, status = ? WHERE id = ?').run('unbound', sourceId)
     })
     merge()
     this.deleteThumbnailFile(sourcePath)
@@ -219,30 +208,29 @@ export class FaceRepository implements IFaceRepository {
     sourceMemberCount: number,
     sourceBinding: { clusterId: string; roleName: string; keywords: string[] } | undefined,
   ): void {
-    const db = getDatabase()
-    const restoreTransaction = db.transaction(() => {
+    const restoreTransaction = this.db.transaction(() => {
       for (const memberId of sourceMemberIds) {
-        db.prepare('UPDATE face_cluster_members SET cluster_id = ? WHERE id = ?').run(sourceId, memberId)
+        this.db.prepare('UPDATE face_cluster_members SET cluster_id = ? WHERE id = ?').run(sourceId, memberId)
       }
 
-      const sourceCount = db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(sourceId) as { count: number }
-      const targetCount = db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(targetId) as { count: number }
+      const sourceCount = this.db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(sourceId) as { count: number }
+      const targetCount = this.db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(targetId) as { count: number }
 
-      db.prepare('UPDATE face_clusters SET member_count = ? WHERE id = ?').run(sourceMemberCount, sourceId)
-      db.prepare('UPDATE face_clusters SET member_count = ?, status = ? WHERE id = ?').run(
+      this.db.prepare('UPDATE face_clusters SET member_count = ? WHERE id = ?').run(sourceMemberCount, sourceId)
+      this.db.prepare('UPDATE face_clusters SET member_count = ?, status = ? WHERE id = ?').run(
         Math.max(0, targetCount.count),
         targetCount.count > 0 ? 'unbound' : 'unbound',
         targetId,
       )
 
       if (sourceBinding) {
-        db.prepare('INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)').run(
+        this.db.prepare('INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)').run(
           sourceId,
           sessionId,
           sourceBinding.roleName,
           JSON.stringify(sourceBinding.keywords),
         )
-        db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(sourceId)
+        this.db.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?").run(sourceId)
       }
     })
     restoreTransaction()
@@ -250,33 +238,31 @@ export class FaceRepository implements IFaceRepository {
 
   deleteClustersBySession(sessionId: string): void {
     const paths = this.getThumbnailPathsBySession(sessionId)
-    const db = getDatabase()
-    const del = db.transaction(() => {
-      db.prepare('DELETE FROM face_cluster_members WHERE session_id = ?').run(sessionId)
-      db.prepare('DELETE FROM role_bindings WHERE session_id = ?').run(sessionId)
-      db.prepare('DELETE FROM face_clusters WHERE session_id = ?').run(sessionId)
+    const del = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM face_cluster_members WHERE session_id = ?').run(sessionId)
+      this.db.prepare('DELETE FROM role_bindings WHERE session_id = ?').run(sessionId)
+      this.db.prepare('DELETE FROM face_clusters WHERE session_id = ?').run(sessionId)
     })
     del()
     for (const p of paths) this.deleteThumbnailFile(p)
   }
 
   removeMemberFromCluster(clusterId: number, photoId: string): void {
-    const db = getDatabase()
-    const memberCount = db.prepare(
+    const memberCount = this.db.prepare(
       'SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?'
     ).get(clusterId) as { count: number }
     const thumbnailPathToDelete = memberCount.count === 1
       ? this.getClusterThumbnailPath(clusterId)
       : ''
 
-    const delMember = db.transaction(() => {
-      db.prepare('DELETE FROM face_cluster_members WHERE cluster_id = ? AND photo_id = ?').run(clusterId, photoId)
-      const remaining = db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(clusterId) as { count: number }
+    const delMember = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM face_cluster_members WHERE cluster_id = ? AND photo_id = ?').run(clusterId, photoId)
+      const remaining = this.db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(clusterId) as { count: number }
       if (remaining.count === 0) {
-        db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(clusterId)
-        db.prepare('DELETE FROM face_clusters WHERE id = ?').run(clusterId)
+        this.db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(clusterId)
+        this.db.prepare('DELETE FROM face_clusters WHERE id = ?').run(clusterId)
       } else {
-        db.prepare('UPDATE face_clusters SET member_count = ? WHERE id = ?').run(remaining.count, clusterId)
+        this.db.prepare('UPDATE face_clusters SET member_count = ? WHERE id = ?').run(remaining.count, clusterId)
       }
     })
     delMember()

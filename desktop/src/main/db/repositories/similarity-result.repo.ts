@@ -1,5 +1,7 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
 import { ISimilarityResultRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface SimilarityResultRow {
   id: number
@@ -11,10 +13,12 @@ export interface SimilarityResultRow {
   created_at: string
 }
 
+@injectable()
 export class SimilarityResultRepository implements ISimilarityResultRepository {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   getLatest(sessionId: string): SimilarityResultRow | undefined {
-    const db = getDatabase()
-    return db
+    return this.db
       .prepare(
         'SELECT * FROM similarity_results WHERE session_id = ? ORDER BY id DESC LIMIT 1',
       )
@@ -28,8 +32,7 @@ export class SimilarityResultRepository implements ISimilarityResultRepository {
     threshold: number,
     minGroupSize: number,
   ): void {
-    const db = getDatabase()
-    db.prepare(
+    this.db.prepare(
       `INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(sessionId, groupsJson, statsJson, threshold, minGroupSize, new Date().toISOString())

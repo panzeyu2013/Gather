@@ -1,9 +1,10 @@
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { CullingDecisionRepository } from '../../db/repositories/culling-decision.repo'
 import { SimilarityResultRepository } from '../../db/repositories/similarity-result.repo'
 import type { CullingGroup, CullingImage, CullingSummary, SimilarityGroup, SimilarityImage } from '@gather/shared'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 @injectable()
 export class CullingService {
@@ -11,6 +12,7 @@ export class CullingService {
     private photoRepo: PhotoRepository,
     private cullingDecisionRepo: CullingDecisionRepository,
     private similarityResultRepo: SimilarityResultRepository,
+    @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
   getGroups(sessionId: string): CullingGroup[] {
@@ -96,10 +98,9 @@ export class CullingService {
   }
 
   batchDecide(sessionId: string, photoIds: string[], decision: string): void {
-    const db = getDatabase()
     const photos = this.photoRepo.getBySession(sessionId)
 
-    const batch = db.transaction(() => {
+    const batch = this.db.transaction(() => {
       for (const photoId of photoIds) {
         const groupId = this.findGroupId(photos, sessionId, photoId) ?? 'ungrouped'
         this.cullingDecisionRepo.upsert(sessionId, photoId, groupId, decision)

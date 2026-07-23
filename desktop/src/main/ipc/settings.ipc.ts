@@ -1,12 +1,10 @@
-import { getServices } from '../bootstrap'
-import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getModelResourcesDir, resolveModelPath } from '../services/face-kw/provider'
-import { existsSync } from 'fs'
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
+import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getModelResourcesDir, resolveModelPath } from '../services/face-kw/provider'
+import { existsSync } from 'fs'
+import type { SettingsService } from '../services/settings/settings.service'
 
-
-export function registerSettingsHandlers(registry: CommandRegistry): void {
-  const { settingsService: svc } = getServices()
+export function registerSettingsHandlers(registry: CommandRegistry, svc: SettingsService): void {
 
   registry.register('settings.get_all', wrapHandler(async () => ok(svc.getAll())))
 

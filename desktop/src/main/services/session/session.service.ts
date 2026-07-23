@@ -1,4 +1,4 @@
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { FaceRepository } from '../../db/repositories/face.repo'
@@ -11,7 +11,8 @@ import type {
   AnalysisStatus,
   WritebackStatus,
 } from '@gather/shared'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 function toSessionData(
   row: {
@@ -49,6 +50,7 @@ export class SessionService {
     private faceRepo: FaceRepository,
     private settings: SettingsService,
     private imageService: ImageService,
+    @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
   createSession(name: string, source: string): SessionData {
@@ -69,8 +71,7 @@ export class SessionService {
     if (!confirmed) {
       throw new Error('Deletion must be confirmed')
     }
-    const db = getDatabase()
-    const del = db.transaction(() => {
+    const del = this.db.transaction(() => {
       this.faceRepo.deleteObservationsBySession(sessionId)
       this.faceRepo.deleteClustersBySession(sessionId)
       this.sessionRepo.deleteSimilarityDataBySession(sessionId)
@@ -87,8 +88,7 @@ export class SessionService {
     if (!confirmed) {
       throw new Error('Deletion must be confirmed')
     }
-    const db = getDatabase()
-    const del = db.transaction((ids: string[]) => {
+    const del = this.db.transaction((ids: string[]) => {
       for (const id of ids) {
         this.faceRepo.deleteObservationsBySession(id)
         this.faceRepo.deleteClustersBySession(id)

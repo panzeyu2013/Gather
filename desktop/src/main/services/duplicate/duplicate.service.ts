@@ -1,8 +1,10 @@
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import type {
   DuplicateScanResult,
   DuplicateGroup,
 } from '@gather/shared'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 function hammingDistance(a: string, b: string): number {
   let dist = 0
@@ -61,13 +63,16 @@ function unionFind(ids: string[], edges: [string, string][]): string[][] {
   return Array.from(groups.values()).filter((g) => g.length >= 2)
 }
 
+@injectable()
 export class DuplicateService {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   scanDuplicates(
     sessionId: string,
     sessionIds?: string[],
     visualThreshold?: number,
   ): DuplicateScanResult {
-    const db = getDatabase()
+    const db = this.db
     const threshold = visualThreshold ?? 4
     const ids = sessionIds && sessionIds.length > 0 ? sessionIds : [sessionId]
     const placeholders = ids.map(() => '?').join(',')
@@ -152,7 +157,7 @@ export class DuplicateService {
   }
 
   getGroups(sessionId: string): DuplicateGroup[] {
-    const db = getDatabase()
+    const db = this.db
 
     const groupRows = db
       .prepare(
@@ -229,7 +234,7 @@ export class DuplicateService {
     groupId: number,
     resolution: 'keep_one' | 'keep_all',
   ): void {
-    const db = getDatabase()
+    const db = this.db
 
     const resolveTransaction = db.transaction(() => {
       db.prepare('UPDATE duplicate_groups SET resolution = ? WHERE id = ?').run(
@@ -276,7 +281,7 @@ export class DuplicateService {
   }
 
   resolveMember(memberId: number, isKept: boolean): void {
-    const db = getDatabase()
+    const db = this.db
     db.prepare(
       'UPDATE duplicate_group_members SET is_kept = ?, resolution = COALESCE(resolution, ?) WHERE id = ?',
     ).run(isKept ? 1 : 0, isKept ? 'keep_all' : 'keep_one', memberId)
@@ -286,7 +291,7 @@ export class DuplicateService {
     exactGroupIds: number[],
     visualGroupIds: number[],
   ): DuplicateScanResult {
-    const db = getDatabase()
+    const db = this.db
     const exactGroups: DuplicateGroup[] = []
     const visualGroups: DuplicateGroup[] = []
 

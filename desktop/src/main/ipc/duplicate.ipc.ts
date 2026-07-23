@@ -1,9 +1,8 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, validateNumber, wrapHandler } from './helpers'
-import { getServices } from '../bootstrap'
+import type { DuplicateService } from '../services/duplicate/duplicate.service'
 
-export function registerDuplicateHandlers(registry: CommandRegistry): void {
-  const { duplicateService } = getServices()
+export function registerDuplicateHandlers(registry: CommandRegistry, duplicateService: DuplicateService): void {
   registry.register(
     'dup.scan',
     wrapHandler(async (params) => {

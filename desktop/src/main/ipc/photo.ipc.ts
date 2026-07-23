@@ -1,18 +1,15 @@
-import { getDatabase } from '../db/database'
-import { getServices } from '../bootstrap'
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
 import type { PhotoData } from '@gather/shared'
+import type { PhotoRepository } from '../db/repositories/photo.repo'
+import type { Database } from '../db/database'
 
-
-export function registerPhotoHandlers(registry: CommandRegistry): void {
-  const { photoRepo } = getServices()
+export function registerPhotoHandlers(registry: CommandRegistry, photoRepo: PhotoRepository, db: Database): void {
   registry.register(
     'photo.list',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId', 64)
       const rows = photoRepo.getBySession(sessionId)
-      const db = getDatabase()
       const faceCounts = db.prepare(
         'SELECT photo_id, COUNT(*) as cnt FROM face_observations WHERE session_id = ? GROUP BY photo_id',
       ).all(sessionId) as { photo_id: string; cnt: number }[]

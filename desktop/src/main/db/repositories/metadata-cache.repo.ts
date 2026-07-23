@@ -1,5 +1,7 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
 import { IMetadataCacheRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface MetadataCacheRow {
   id: number
@@ -44,11 +46,13 @@ export interface MetadataCacheInput {
   keywords?: string[]
 }
 
+@injectable()
 export class MetadataCacheRepository implements IMetadataCacheRepository {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   upsert(photoId: string, sessionId: string, data: MetadataCacheInput): void {
-    const db = getDatabase()
     const now = new Date().toISOString()
-    db.prepare(
+    this.db.prepare(
       `INSERT INTO photo_metadata_cache
        (photo_id, session_id, date_taken, camera_make, camera_model, lens_model,
         focal_length, f_number, exposure_time, iso, rating,
@@ -97,8 +101,7 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
   }
 
   get(photoId: string): MetadataCacheRow | null {
-    const db = getDatabase()
-    const row = db
+    const row = this.db
       .prepare('SELECT * FROM photo_metadata_cache WHERE photo_id = ?')
       .get(photoId) as MetadataCacheRow | undefined
     return row ?? null
@@ -106,20 +109,17 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
 
   getBatch(photoIds: string[]): MetadataCacheRow[] {
     if (photoIds.length === 0) return []
-    const db = getDatabase()
     const placeholders = photoIds.map(() => '?').join(',')
-    return db
+    return this.db
       .prepare(`SELECT * FROM photo_metadata_cache WHERE photo_id IN (${placeholders})`)
       .all(...photoIds) as MetadataCacheRow[]
   }
 
   deleteBySession(sessionId: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM photo_metadata_cache WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM photo_metadata_cache WHERE session_id = ?').run(sessionId)
   }
 
   updateRating(photoId: string, rating: number): void {
-    const db = getDatabase()
-    db.prepare('UPDATE photo_metadata_cache SET rating = ? WHERE photo_id = ?').run(rating, photoId)
+    this.db.prepare('UPDATE photo_metadata_cache SET rating = ? WHERE photo_id = ?').run(rating, photoId)
   }
 }

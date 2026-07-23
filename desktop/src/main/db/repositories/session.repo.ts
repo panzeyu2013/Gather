@@ -1,5 +1,8 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
+import crypto from 'crypto'
 import { ISessionRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface SessionRow {
   id: string
@@ -14,18 +17,19 @@ export interface SessionRow {
   updated_at: string
 }
 
+@injectable()
 export class SessionRepository implements ISessionRepository {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   get(id: string): SessionRow | null {
-    const db = getDatabase()
-    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined
+    const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined
     return row ?? null
   }
 
   create(name: string, source: string): SessionRow {
-    const db = getDatabase()
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
-    db.prepare(
+    this.db.prepare(
       `INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, photo_count, failed_writeback_count, created_at, updated_at)
        VALUES (?, ?, 'draft', 'idle', 'idle', ?, 0, 0, ?, ?)`,
     ).run(id, name, source, now, now)
@@ -33,15 +37,13 @@ export class SessionRepository implements ISessionRepository {
   }
 
   delete(id: string): boolean {
-    const db = getDatabase()
-    const result = db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+    const result = this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
     return result.changes > 0
   }
 
   deleteMany(ids: string[]): number {
-    const db = getDatabase()
-    const deleteStmt = db.prepare('DELETE FROM sessions WHERE id = ?')
-    const deleteMany = db.transaction((sessionIds: string[]) => {
+    const deleteStmt = this.db.prepare('DELETE FROM sessions WHERE id = ?')
+    const deleteMany = this.db.transaction((sessionIds: string[]) => {
       for (const sid of sessionIds) {
         deleteStmt.run(sid)
       }
@@ -51,27 +53,23 @@ export class SessionRepository implements ISessionRepository {
   }
 
   deleteSimilarityDataBySession(sessionId: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM similarity_results WHERE session_id = ?').run(sessionId)
-    db.prepare('DELETE FROM similarity_hashes WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM similarity_results WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM similarity_hashes WHERE session_id = ?').run(sessionId)
   }
 
   list(): SessionRow[] {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as SessionRow[]
+    return this.db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as SessionRow[]
   }
 
   updateName(id: string, name: string): boolean {
-    const db = getDatabase()
-    const result = db
+    const result = this.db
       .prepare('UPDATE sessions SET name = ?, updated_at = ? WHERE id = ?')
       .run(name, new Date().toISOString(), id)
     return result.changes > 0
   }
 
   updateStatus(id: string, status: string): void {
-    const db = getDatabase()
-    db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(
+    this.db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(
       status,
       new Date().toISOString(),
       id,
@@ -79,8 +77,7 @@ export class SessionRepository implements ISessionRepository {
   }
 
   updatePhotoCount(id: string, count: number): void {
-    const db = getDatabase()
-    db.prepare('UPDATE sessions SET photo_count = ?, updated_at = ? WHERE id = ?').run(
+    this.db.prepare('UPDATE sessions SET photo_count = ?, updated_at = ? WHERE id = ?').run(
       count,
       new Date().toISOString(),
       id,
@@ -88,8 +85,7 @@ export class SessionRepository implements ISessionRepository {
   }
 
   updateAnalysisStatus(id: string, status: string): void {
-    const db = getDatabase()
-    db.prepare('UPDATE sessions SET analysis_status = ?, updated_at = ? WHERE id = ?').run(
+    this.db.prepare('UPDATE sessions SET analysis_status = ?, updated_at = ? WHERE id = ?').run(
       status,
       new Date().toISOString(),
       id,
@@ -97,8 +93,7 @@ export class SessionRepository implements ISessionRepository {
   }
 
   updateWritebackStatus(id: string, status: string): void {
-    const db = getDatabase()
-    db.prepare('UPDATE sessions SET writeback_status = ?, updated_at = ? WHERE id = ?').run(
+    this.db.prepare('UPDATE sessions SET writeback_status = ?, updated_at = ? WHERE id = ?').run(
       status,
       new Date().toISOString(),
       id,
@@ -106,8 +101,7 @@ export class SessionRepository implements ISessionRepository {
   }
 
   updateFailedWritebackCount(id: string, count: number): void {
-    const db = getDatabase()
-    db.prepare('UPDATE sessions SET failed_writeback_count = ?, updated_at = ? WHERE id = ?').run(
+    this.db.prepare('UPDATE sessions SET failed_writeback_count = ?, updated_at = ? WHERE id = ?').run(
       count,
       new Date().toISOString(),
       id,

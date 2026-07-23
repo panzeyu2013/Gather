@@ -1,9 +1,10 @@
 import { MetadataCacheRepository, MetadataCacheInput, MetadataCacheRow } from '../../db/repositories/metadata-cache.repo'
 import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import { batchAsync, parseKeywords } from '../../utils/async'
 import type { MetadataTags, BatchMetadataResult } from '@gather/shared'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 async function getExifr() {
   try {
@@ -59,13 +60,13 @@ export class MetadataService {
   constructor(
     private metadataCacheRepo: MetadataCacheRepository,
     private writerRouter: MetadataWriterRouter,
+    @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
   private getPhotosByIds(photoIds: string[]): { id: string; filepath: string; session_id: string }[] {
     if (photoIds.length === 0) return []
-    const db = getDatabase()
     const placeholders = photoIds.map(() => '?').join(',')
-    return db
+    return this.db
       .prepare(`SELECT id, filepath, session_id FROM photos WHERE id IN (${placeholders})`)
       .all(...photoIds) as { id: string; filepath: string; session_id: string }[]
   }

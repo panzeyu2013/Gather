@@ -1,4 +1,6 @@
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 interface CullingDecisionRow {
   photo_id: string
@@ -12,11 +14,12 @@ interface OperationLogRow {
   created_at: string
 }
 
+@injectable()
 export class ReportService {
-  generateSessionSummary(sessionId: string): string {
-    const db = getDatabase()
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
-    const photos = db
+  generateSessionSummary(sessionId: string): string {
+    const photos = this.db
       .prepare('SELECT filename, filepath, status FROM photos WHERE session_id = ?')
       .all(sessionId) as { filename: string; filepath: string; status: string }[]
 
@@ -32,9 +35,7 @@ export class ReportService {
   }
 
   generatePersonReport(sessionId: string): string {
-    const db = getDatabase()
-
-    const bindings = db
+    const bindings = this.db
       .prepare(
         `SELECT rb.role_name, rb.keywords, fc.label, fc.member_count
          FROM role_bindings rb
@@ -56,9 +57,7 @@ export class ReportService {
   }
 
   generateKeywordReport(sessionId: string): string {
-    const db = getDatabase()
-
-    const keywordRows = db
+    const keywordRows = this.db
       .prepare(
         `SELECT DISTINCT keywords
          FROM role_bindings
@@ -74,7 +73,7 @@ export class ReportService {
       } catch { /* ignore */ }
     }
 
-    const cullingRows = db
+    const cullingRows = this.db
       .prepare('SELECT decision FROM culling_decisions WHERE session_id = ? AND decision != ?')
       .all(sessionId, 'pending') as CullingDecisionRow[]
 
@@ -84,7 +83,7 @@ export class ReportService {
       else if (row.decision === 'reject') cullingKeywords.add('culling:reject')
     }
 
-    const historyRows = db
+    const historyRows = this.db
       .prepare('SELECT operation_type, created_at FROM operation_log WHERE session_id = ? ORDER BY created_at DESC LIMIT 50')
       .all(sessionId) as OperationLogRow[]
 

@@ -1,3 +1,3 @@
 export * from './protocol'
-export * from './constants'
+export { FACE_THUMB_DIR } from './constants'
 export * from './errors'

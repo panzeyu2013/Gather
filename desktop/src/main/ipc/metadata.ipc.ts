@@ -1,10 +1,8 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, validateStringArray, wrapHandler } from './helpers'
-import { MetadataService } from '../services/metadata/metadata.service'
-import { getServices } from '../bootstrap'
+import type { MetadataService } from '../services/metadata/metadata.service'
 
-export function registerMetadataHandlers(registry: CommandRegistry): void {
-  const { metadataService } = getServices()
+export function registerMetadataHandlers(registry: CommandRegistry, metadataService: MetadataService): void {
   registry.register(
     'metadata.get',
     wrapHandler(async (params) => {

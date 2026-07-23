@@ -1,9 +1,8 @@
 import type { CommandRegistry } from './registry'
 import { ok, validateString, wrapHandler } from './helpers'
-import { getServices } from '../bootstrap'
+import type { HistoryService } from '../services/history/history.service'
 
-export function registerHistoryHandlers(registry: CommandRegistry): void {
-  const { historyService } = getServices()
+export function registerHistoryHandlers(registry: CommandRegistry, historyService: HistoryService): void {
   registry.register(
     'history.list',
     wrapHandler(async (params) => {

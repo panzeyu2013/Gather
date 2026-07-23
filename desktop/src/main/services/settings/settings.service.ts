@@ -1,14 +1,14 @@
 import { SettingsRepository } from '../../db/repositories/settings.repo'
 import { MODEL_CONFIG } from '../face-kw/model-config'
 import * as os from 'os'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 @injectable()
 export class SettingsService {
   private cache = new Map<string, string>()
-  private repo = new SettingsRepository()
 
-  constructor() {
+  constructor(@inject(DI_TOKENS.SETTINGS_REPO) private repo: SettingsRepository) {
     this.loadCache()
   }
 

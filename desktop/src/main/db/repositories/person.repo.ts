@@ -1,6 +1,8 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
 import crypto from 'crypto'
 import { IPersonRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface PersonRow {
   id: string
@@ -52,15 +54,16 @@ export interface PersonUpdateFields {
   matchThreshold?: number
 }
 
+@injectable()
 export class PersonRepository implements IPersonRepository {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   list(): PersonRow[] {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM persons ORDER BY name').all() as PersonRow[]
+    return this.db.prepare('SELECT * FROM persons ORDER BY name').all() as PersonRow[]
   }
 
   listWithCounts(): (PersonRow & { photo_count: number; session_count: number })[] {
-    const db = getDatabase()
-    return db.prepare(`
+    return this.db.prepare(`
       SELECT p.*, 
         COALESCE(pp.photo_count, 0) as photo_count,
         COALESCE(pp.session_count, 0) as session_count
@@ -75,16 +78,14 @@ export class PersonRepository implements IPersonRepository {
   }
 
   get(id: string): PersonRow | undefined {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM persons WHERE id = ?').get(id) as PersonRow | undefined
+    return this.db.prepare('SELECT * FROM persons WHERE id = ?').get(id) as PersonRow | undefined
   }
 
   create(name: string, keywords?: string[]): string {
-    const db = getDatabase()
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     const keywordsJson = JSON.stringify(keywords ?? [])
-    db.prepare('INSERT INTO persons (id, name, keywords, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+    this.db.prepare('INSERT INTO persons (id, name, keywords, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
       id,
       name,
       keywordsJson,
@@ -95,7 +96,6 @@ export class PersonRepository implements IPersonRepository {
   }
 
   update(id: string, fields: PersonUpdateFields): void {
-    const db = getDatabase()
     const now = new Date().toISOString()
     const sets: string[] = []
     const values: unknown[] = []
@@ -123,37 +123,33 @@ export class PersonRepository implements IPersonRepository {
     values.push(now)
     values.push(id)
 
-    db.prepare(`UPDATE persons SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+    this.db.prepare(`UPDATE persons SET ${sets.join(', ')} WHERE id = ?`).run(...values)
   }
 
   updateThumbnail(id: string, base64: string): void {
-    const db = getDatabase()
-    db.prepare('UPDATE persons SET thumbnail_base64 = ? WHERE id = ?').run(base64, id)
+    this.db.prepare('UPDATE persons SET thumbnail_base64 = ? WHERE id = ?').run(base64, id)
   }
 
   delete(id: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM persons WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM persons WHERE id = ?').run(id)
   }
 
   merge(sourceId: string, targetId: string): void {
-    const db = getDatabase()
-    const mergeTransaction = db.transaction(() => {
-      db.prepare('UPDATE person_embeddings SET person_id = ? WHERE person_id = ?').run(targetId, sourceId)
-      db.prepare('UPDATE person_photos SET person_id = ? WHERE person_id = ?').run(targetId, sourceId)
+    const mergeTransaction = this.db.transaction(() => {
+      this.db.prepare('UPDATE person_embeddings SET person_id = ? WHERE person_id = ?').run(targetId, sourceId)
+      this.db.prepare('UPDATE person_photos SET person_id = ? WHERE person_id = ?').run(targetId, sourceId)
       const mergedKeywords = this.getMergedKeywords(sourceId, targetId)
       const now = new Date().toISOString()
-      db.prepare('UPDATE persons SET keywords = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(mergedKeywords), now, targetId)
+      this.db.prepare('UPDATE persons SET keywords = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(mergedKeywords), now, targetId)
 
-      db.prepare('DELETE FROM persons WHERE id = ?').run(sourceId)
+      this.db.prepare('DELETE FROM persons WHERE id = ?').run(sourceId)
     })
     mergeTransaction()
   }
 
   private getMergedKeywords(sourceId: string, targetId: string): string[] {
-    const db = getDatabase()
-    const source = db.prepare('SELECT keywords FROM persons WHERE id = ?').get(sourceId) as { keywords: string } | undefined
-    const target = db.prepare('SELECT keywords FROM persons WHERE id = ?').get(targetId) as { keywords: string } | undefined
+    const source = this.db.prepare('SELECT keywords FROM persons WHERE id = ?').get(sourceId) as { keywords: string } | undefined
+    const target = this.db.prepare('SELECT keywords FROM persons WHERE id = ?').get(targetId) as { keywords: string } | undefined
     const allKeywords = new Set<string>()
     if (source) {
       try { JSON.parse(source.keywords).forEach((k: string) => allKeywords.add(k)) } catch { /* ignore */ }
@@ -165,7 +161,6 @@ export class PersonRepository implements IPersonRepository {
   }
 
   getPhotos(personId: string, sessionIds?: string[], limit?: number, offset?: number): PersonPhotoRow[] {
-    const db = getDatabase()
     let sql = 'SELECT * FROM person_photos WHERE person_id = ?'
     const params: unknown[] = [personId]
     if (sessionIds && sessionIds.length > 0) {
@@ -181,27 +176,24 @@ export class PersonRepository implements IPersonRepository {
       sql += ' OFFSET ?'
       params.push(offset)
     }
-    return db.prepare(sql).all(...params) as PersonPhotoRow[]
+    return this.db.prepare(sql).all(...params) as PersonPhotoRow[]
   }
 
   removePhoto(personId: string, photoId: string): void {
-    const db = getDatabase()
-    const removeTransaction = db.transaction(() => {
-      db.prepare('DELETE FROM person_photos WHERE person_id = ? AND photo_id = ?').run(personId, photoId)
-      db.prepare('DELETE FROM person_embeddings WHERE person_id = ? AND photo_id = ?').run(personId, photoId)
+    const removeTransaction = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM person_photos WHERE person_id = ? AND photo_id = ?').run(personId, photoId)
+      this.db.prepare('DELETE FROM person_embeddings WHERE person_id = ? AND photo_id = ?').run(personId, photoId)
     })
     removeTransaction()
   }
 
   getPersonPhoto(personId: string, photoId: string): PersonPhotoRow | undefined {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM person_photos WHERE person_id = ? AND photo_id = ?').get(personId, photoId) as PersonPhotoRow | undefined
+    return this.db.prepare('SELECT * FROM person_photos WHERE person_id = ? AND photo_id = ?').get(personId, photoId) as PersonPhotoRow | undefined
   }
 
   addPhoto(personId: string, photoId: string, sessionId: string, faceBbox: number[], confidence: number): void {
-    const db = getDatabase()
     const now = new Date().toISOString()
-    db.prepare('INSERT INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    this.db.prepare('INSERT INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
       personId,
       photoId,
       sessionId,
@@ -212,12 +204,11 @@ export class PersonRepository implements IPersonRepository {
   }
 
   saveEmbeddings(embeddings: SaveEmbeddingInput[]): void {
-    const db = getDatabase()
     const now = new Date().toISOString()
-    const stmt = db.prepare(
+    const stmt = this.db.prepare(
       'INSERT OR REPLACE INTO person_embeddings (person_id, embedding, photo_id, session_id, face_observation_id, face_bbox, quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    const insertMany = db.transaction(() => {
+    const insertMany = this.db.transaction(() => {
       for (const emb of embeddings) {
         const embBuffer = Buffer.from(new Float32Array(emb.embedding).buffer)
         stmt.run(emb.personId, embBuffer, emb.photoId, emb.sessionId, emb.faceObservationId, JSON.stringify(emb.faceBbox), emb.quality, now)
@@ -228,47 +219,39 @@ export class PersonRepository implements IPersonRepository {
 
   deleteEmbeddingsByObservationIds(observationIds: number[]): void {
     if (observationIds.length === 0) return
-    const db = getDatabase()
     const placeholders = observationIds.map(() => '?').join(',')
-    db.prepare(`DELETE FROM person_embeddings WHERE face_observation_id IN (${placeholders})`).run(...observationIds)
+    this.db.prepare(`DELETE FROM person_embeddings WHERE face_observation_id IN (${placeholders})`).run(...observationIds)
   }
 
   getAllEmbeddings(): { person_id: string; embedding: Buffer; face_observation_id: number | null }[] {
-    const db = getDatabase()
-    return db.prepare('SELECT person_id, embedding, face_observation_id FROM person_embeddings').all() as { person_id: string; embedding: Buffer; face_observation_id: number | null }[]
+    return this.db.prepare('SELECT person_id, embedding, face_observation_id FROM person_embeddings').all() as { person_id: string; embedding: Buffer; face_observation_id: number | null }[]
   }
 
   getEmbeddingsByPerson(personId: string): PersonEmbeddingRow[] {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM person_embeddings WHERE person_id = ? ORDER BY id').all(personId) as PersonEmbeddingRow[]
+    return this.db.prepare('SELECT * FROM person_embeddings WHERE person_id = ? ORDER BY id').all(personId) as PersonEmbeddingRow[]
   }
 
   deleteEmbeddingsByPerson(personId: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM person_embeddings WHERE person_id = ?').run(personId)
+    this.db.prepare('DELETE FROM person_embeddings WHERE person_id = ?').run(personId)
   }
 
   countEmbeddings(personId: string): number {
-    const db = getDatabase()
-    const row = db.prepare('SELECT COUNT(*) as count FROM person_embeddings WHERE person_id = ?').get(personId) as { count: number }
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM person_embeddings WHERE person_id = ?').get(personId) as { count: number }
     return row.count
   }
 
   countPhotos(personId: string): number {
-    const db = getDatabase()
-    const row = db.prepare('SELECT COUNT(*) as count FROM person_photos WHERE person_id = ?').get(personId) as { count: number }
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM person_photos WHERE person_id = ?').get(personId) as { count: number }
     return row.count
   }
 
   getSessionCount(personId: string): number {
-    const db = getDatabase()
-    const row = db.prepare('SELECT COUNT(DISTINCT session_id) as count FROM person_photos WHERE person_id = ?').get(personId) as { count: number }
+    const row = this.db.prepare('SELECT COUNT(DISTINCT session_id) as count FROM person_photos WHERE person_id = ?').get(personId) as { count: number }
     return row.count
   }
 
   getThumbnailBase64(personId: string): string {
-    const db = getDatabase()
-    const row = db.prepare('SELECT thumbnail_base64 FROM persons WHERE id = ?').get(personId) as { thumbnail_base64: string } | undefined
+    const row = this.db.prepare('SELECT thumbnail_base64 FROM persons WHERE id = ?').get(personId) as { thumbnail_base64: string } | undefined
     return row?.thumbnail_base64 ?? ''
   }
 
@@ -278,7 +261,6 @@ export class PersonRepository implements IPersonRepository {
     limit?: number,
     offset?: number,
   ): { photos: (PersonPhotoRow & { sessionName: string; filename: string; filepath: string })[], total: number } {
-    const db = getDatabase()
     let whereClause = 'pp.person_id = ?'
     const params: unknown[] = [personId]
     if (sessionIds && sessionIds.length > 0) {
@@ -286,7 +268,7 @@ export class PersonRepository implements IPersonRepository {
       params.push(...sessionIds)
     }
 
-    const countRow = db.prepare(
+    const countRow = this.db.prepare(
       `SELECT COUNT(*) as count FROM person_photos pp WHERE ${whereClause}`,
     ).get(...params) as { count: number }
 
@@ -308,7 +290,7 @@ export class PersonRepository implements IPersonRepository {
       queryParams.push(offset)
     }
 
-    const photos = db.prepare(sql).all(...queryParams) as (PersonPhotoRow & { session_name: string; filename: string; filepath: string })[]
+    const photos = this.db.prepare(sql).all(...queryParams) as (PersonPhotoRow & { session_name: string; filename: string; filepath: string })[]
     return {
       photos: photos.map(p => ({ ...p, sessionName: p.session_name, filename: p.filename, filepath: p.filepath })),
       total: countRow.count,

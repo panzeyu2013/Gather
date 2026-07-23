@@ -1,5 +1,8 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
+import crypto from 'crypto'
 import { IPhotoRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface PhotoRow {
   id: string
@@ -16,15 +19,16 @@ export interface PhotoRow {
   updated_at: string
 }
 
+@injectable()
 export class PhotoRepository implements IPhotoRepository {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   getBySession(sessionId: string): PhotoRow[] {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM photos WHERE session_id = ?').all(sessionId) as PhotoRow[]
+    return this.db.prepare('SELECT * FROM photos WHERE session_id = ?').all(sessionId) as PhotoRow[]
   }
 
   countBySession(sessionId: string): number {
-    const db = getDatabase()
-    const row = db
+    const row = this.db
       .prepare('SELECT COUNT(*) as count FROM photos WHERE session_id = ?')
       .get(sessionId) as { count: number } | undefined
     return row?.count ?? 0
@@ -35,17 +39,16 @@ export class PhotoRepository implements IPhotoRepository {
     filepaths: Array<{ filepath: string; width: number; height: number }>,
     _source: string,
   ): { added: number; skipped: number } {
-    const db = getDatabase()
     const now = new Date().toISOString()
     let added = 0
     let skipped = 0
 
-    const insertStmt = db.prepare(
+    const insertStmt = this.db.prepare(
       `INSERT OR IGNORE INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, width, height, created_at, updated_at)
        VALUES (?, ?, ?, ?, '', 'pending', '{}', '{}', ?, ?, ?, ?)`,
     )
 
-    const insertMany = db.transaction((paths: Array<{ filepath: string; width: number; height: number }>) => {
+    const insertMany = this.db.transaction((paths: Array<{ filepath: string; width: number; height: number }>) => {
       for (const { filepath, width, height } of paths) {
         const filename = filepath.split(/[/\\]/).pop() ?? filepath
         const id = crypto.randomUUID()
@@ -63,7 +66,6 @@ export class PhotoRepository implements IPhotoRepository {
   }
 
   deleteBySession(sessionId: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM photos WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM photos WHERE session_id = ?').run(sessionId)
   }
 }

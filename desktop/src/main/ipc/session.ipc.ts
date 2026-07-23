@@ -1,9 +1,8 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, validateStringArray, wrapHandler } from './helpers'
-import { getServices } from '../bootstrap'
+import type { SessionService } from '../services/session/session.service'
 
-export function registerSessionHandlers(registry: CommandRegistry): void {
-  const { sessionService } = getServices()
+export function registerSessionHandlers(registry: CommandRegistry, sessionService: SessionService): void {
   registry.register(
     'session.create',
     wrapHandler(async (params) => {

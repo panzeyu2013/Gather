@@ -1,11 +1,12 @@
 import { SettingsService } from '../settings/settings.service'
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { computeBatchDHash } from './hash-computer'
 import { clusterByHash, type HashEntry } from './cluster-engine'
 import type { SimilarityGroup, SimilarityImage } from '@gather/shared'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface SimilarityResult {
   groups: SimilarityGroup[]
@@ -26,6 +27,7 @@ export class SimilarityService {
     private photoRepo: PhotoRepository,
     private sessionRepo: SessionRepository,
     private settings: SettingsService,
+    @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
   async analyze(
@@ -55,7 +57,7 @@ export class SimilarityService {
 
       if (signal.aborted) return
 
-      const db = getDatabase()
+      const db = this.db
       const existingHashes = db
         .prepare(
           'SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?',
@@ -166,7 +168,7 @@ export class SimilarityService {
   }
 
   getResult(sessionId: string): SimilarityResult | null {
-    const db = getDatabase()
+    const db = this.db
     const row = db
       .prepare(
         'SELECT groups_json, stats_json FROM similarity_results WHERE session_id = ? ORDER BY id DESC LIMIT 1',
@@ -196,7 +198,7 @@ export class SimilarityService {
     threshold: number,
     minGroupSize: number,
   ): Promise<SimilarityResult> {
-    const db = getDatabase()
+    const db = this.db
 
     const existing = db
       .prepare(

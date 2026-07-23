@@ -1,5 +1,7 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
 import { IWritebackRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface WritebackItemInput {
   photoId: string
@@ -25,17 +27,19 @@ export interface WritebackItemRow {
   last_attempt_at: string
 }
 
+@injectable()
 export class WritebackRepository implements IWritebackRepository {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   saveItems(sessionId: string, module: string, items: WritebackItemInput[]): void {
-    const db = getDatabase()
     const now = new Date().toISOString()
 
-    const replaceAll = db.transaction(() => {
-      db.prepare(
+    const replaceAll = this.db.transaction(() => {
+      this.db.prepare(
         'DELETE FROM writeback_items WHERE session_id = ? AND module = ? AND xmp_status = ?',
       ).run(sessionId, module, 'pending')
 
-      const insertStmt = db.prepare(
+      const insertStmt = this.db.prepare(
         `INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?)`,
       )
@@ -58,7 +62,6 @@ export class WritebackRepository implements IWritebackRepository {
   }
 
   getItems(sessionId: string, module?: string, status?: string): WritebackItemRow[] {
-    const db = getDatabase()
     let sql = 'SELECT * FROM writeback_items WHERE session_id = ?'
     const params: unknown[] = [sessionId]
 
@@ -72,32 +75,28 @@ export class WritebackRepository implements IWritebackRepository {
     }
 
     sql += ' ORDER BY id ASC'
-    return db.prepare(sql).all(...params) as WritebackItemRow[]
+    return this.db.prepare(sql).all(...params) as WritebackItemRow[]
   }
 
   updateStatus(itemId: number, status: string, error?: string): void {
-    const db = getDatabase()
     const now = new Date().toISOString()
-    db.prepare(
+    this.db.prepare(
       `UPDATE writeback_items SET xmp_status = ?, error_message = ?, attempt_count = attempt_count + 1, last_attempt_at = ? WHERE id = ?`,
     ).run(status, error ?? '', now, itemId)
   }
 
   getFailedCount(sessionId: string): number {
-    const db = getDatabase()
-    const row = db
+    const row = this.db
       .prepare('SELECT COUNT(*) as count FROM writeback_items WHERE session_id = ? AND xmp_status = ?')
       .get(sessionId, 'failed') as { count: number } | undefined
     return row?.count ?? 0
   }
 
   deleteItems(sessionId: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM writeback_items WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM writeback_items WHERE session_id = ?').run(sessionId)
   }
 
   updateBackupPath(itemId: number, path: string): void {
-    const db = getDatabase()
-    db.prepare('UPDATE writeback_items SET backup_path = ? WHERE id = ?').run(path, itemId)
+    this.db.prepare('UPDATE writeback_items SET backup_path = ? WHERE id = ?').run(path, itemId)
   }
 }

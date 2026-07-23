@@ -1,10 +1,9 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
-import { getServices } from '../bootstrap'
 import type { WorkflowTemplateConfig } from '@gather/shared'
+import type { TemplateService } from '../services/template/template.service'
 
-export function registerTemplateHandlers(registry: CommandRegistry): void {
-  const { templateService } = getServices()
+export function registerTemplateHandlers(registry: CommandRegistry, templateService: TemplateService): void {
   registry.register(
     'template.create',
     wrapHandler(async (params) => {

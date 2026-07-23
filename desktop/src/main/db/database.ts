@@ -1,26 +1,46 @@
-import Database from 'better-sqlite3'
+import BetterSqlite3 from 'better-sqlite3'
 import path from 'path'
 import { app } from 'electron'
+import { injectable } from '../di/container'
 
-let db: Database.Database | null = null
+@injectable()
+export class Database {
+  private db: BetterSqlite3.Database | null = null
 
-export function getDatabase(): Database.Database {
-  if (db) return db
+  private getDb(): BetterSqlite3.Database {
+    if (this.db) return this.db
 
-  const dbPath = path.join(app.getPath('userData'), 'gather.db')
-  db = new Database(dbPath)
+    const dbPath = path.join(app.getPath('userData'), 'gather.db')
+    this.db = new BetterSqlite3(dbPath)
 
-  db.pragma('journal_mode = WAL')
-  db.pragma('synchronous = NORMAL')
-  db.pragma('cache_size = -64000')
-  db.pragma('foreign_keys = ON')
+    this.db.pragma('journal_mode = WAL')
+    this.db.pragma('synchronous = NORMAL')
+    this.db.pragma('cache_size = -64000')
+    this.db.pragma('foreign_keys = ON')
 
-  return db
-}
+    return this.db
+  }
 
-export function closeDatabase(): void {
-  if (db) {
-    db.close()
-    db = null
+  prepare(sql: string): BetterSqlite3.Statement {
+    return this.getDb().prepare(sql)
+  }
+
+  transaction<TArgs extends unknown[], TResult>(fn: (...args: TArgs) => TResult): (...args: TArgs) => TResult {
+    return this.getDb().transaction(fn) as (...args: TArgs) => TResult
+  }
+
+  pragma(sql: string): void {
+    this.getDb().pragma(sql)
+  }
+
+  close(): void {
+    if (this.db) {
+      this.db.close()
+      this.db = null
+    }
+  }
+
+  get rawDb(): BetterSqlite3.Database {
+    return this.getDb()
   }
 }

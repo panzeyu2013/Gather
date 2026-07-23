@@ -128,3 +128,10 @@ export interface ISmartAlbumRepository {
   update(id: string, data: SmartAlbumUpdateData): void
   delete(id: string): void
 }
+
+export interface ISettingsRepository {
+  getAll(): { key: string; value: string }[]
+  get(key: string): { key: string; value: string } | undefined
+  upsert(key: string, value: string): void
+  batchUpsert(entries: { key: string; value: string }[]): void
+}

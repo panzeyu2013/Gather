@@ -1,13 +1,31 @@
-// src/main/index.ts
-// Electron 主进程入口 — 新架构
-
 import { app, BrowserWindow, ipcMain, Menu, dialog, session, shell } from 'electron'
 import { join, resolve } from 'path'
 import { readdirSync, statSync } from 'fs'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
-import { getDatabase, closeDatabase } from './db/database'
+import { Database } from './db/database'
 import { runMigrations } from './db/migrations'
-import { getServices } from './bootstrap'
+import { initContainer, getService } from './di/init'
+import { DI_TOKENS } from './di/container'
+import { SettingsService } from './services/settings/settings.service'
+import { SessionService } from './services/session/session.service'
+import { FaceKwService } from './services/face-kw/face-kw.service'
+import { FaceRepository } from './db/repositories/face.repo'
+import { WritebackService } from './services/writeback/writeback.service'
+import { SimilarityService } from './services/similarity/similarity.service'
+import { ImageService } from './services/image'
+import { PhotoRepository } from './db/repositories/photo.repo'
+import { FilterEngine } from './services/filter/filter-engine'
+import { SmartAlbumRepository } from './db/repositories/smart-album.repo'
+import { DuplicateService } from './services/duplicate/duplicate.service'
+import { TemplateService } from './services/template/template.service'
+import { PersonRepository } from './db/repositories/person.repo'
+import { MetadataService } from './services/metadata/metadata.service'
+import { CullingService } from './services/culling/culling.service'
+import { ExportService } from './services/export/export.service'
+import { ReportService } from './services/export/report.service'
+import { HistoryService } from './services/history/history.service'
+import { MetadataWriterRouter } from './services/xmp/metadata-writer-router'
+
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
 import { registerSessionHandlers } from './ipc/session.ipc'
 import { registerFaceKwHandlers } from './ipc/face-kw.ipc'
@@ -184,10 +202,33 @@ function createWindow(): void {
   })
 }
 
-// ── IPC 处理 ──
+function svc<T>(token: symbol): T {
+  return getService<T>(token)
+}
 
 function registerIpc(): void {
-  getServices()
+  initContainer()
+
+  const db = svc<Database>(DI_TOKENS.DB)
+  const settingsService = svc<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
+  const sessionService = svc<SessionService>(DI_TOKENS.SESSION_SERVICE)
+  const faceKwService = svc<FaceKwService>(DI_TOKENS.FACE_KW_SERVICE)
+  const faceRepo = svc<FaceRepository>(DI_TOKENS.FACE_REPO)
+  const writebackService = svc<WritebackService>(DI_TOKENS.WRITEBACK_SERVICE)
+  const similarityService = svc<SimilarityService>(DI_TOKENS.SIMILARITY_SERVICE)
+  const imageService = svc<ImageService>(DI_TOKENS.IMAGE_SERVICE)
+  const photoRepo = svc<PhotoRepository>(DI_TOKENS.PHOTO_REPO)
+  const filterEngine = svc<FilterEngine>(DI_TOKENS.FILTER_ENGINE)
+  const smartAlbumRepo = svc<SmartAlbumRepository>(DI_TOKENS.SMART_ALBUM_REPO)
+  const duplicateService = svc<DuplicateService>(DI_TOKENS.DUPLICATE_SERVICE)
+  const templateService = svc<TemplateService>(DI_TOKENS.TEMPLATE_SERVICE)
+  const personRepo = svc<PersonRepository>(DI_TOKENS.PERSON_REPO)
+  const metadataService = svc<MetadataService>(DI_TOKENS.METADATA_SERVICE)
+  const cullingService = svc<CullingService>(DI_TOKENS.CULLING_SERVICE)
+  const exportService = svc<ExportService>(DI_TOKENS.EXPORT_SERVICE)
+  const reportService = svc<ReportService>(DI_TOKENS.REPORT_SERVICE)
+  const historyService = svc<HistoryService>(DI_TOKENS.HISTORY_SERVICE)
+  const writerRouter = svc<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER)
 
   const ensureMainWindowSender = (e: Electron.IpcMainInvokeEvent): void => {
     if (!mainWindow || e.sender !== mainWindow.webContents) {
@@ -196,22 +237,22 @@ function registerIpc(): void {
   }
 
   registerAllIpcHandlers(registry)
-  registerSessionHandlers(registry)
-  registerFaceKwHandlers(registry)
-  registerSimilarityHandlers(registry)
-  registerSystemHandlers(registry)
-  registerImageHandlers(registry)
-  registerPhotoHandlers(registry)
-  registerSettingsHandlers(registry)
-  registerFilterHandlers(registry)
-  registerAlbumHandlers(registry)
-  registerDuplicateHandlers(registry)
-  registerTemplateHandlers(registry)
-  registerPersonHandlers(registry)
-  registerMetadataHandlers(registry)
-  registerCullingHandlers(registry)
-  registerExportHandlers(registry)
-  registerHistoryHandlers(registry)
+  registerSessionHandlers(registry, sessionService)
+  registerFaceKwHandlers(registry, faceKwService, writebackService, faceRepo, settingsService)
+  registerSimilarityHandlers(registry, similarityService, writebackService, settingsService)
+  registerSystemHandlers(registry, imageService, settingsService)
+  registerImageHandlers(registry, imageService, settingsService)
+  registerPhotoHandlers(registry, photoRepo, db)
+  registerSettingsHandlers(registry, settingsService)
+  registerFilterHandlers(registry, filterEngine)
+  registerAlbumHandlers(registry, filterEngine, smartAlbumRepo)
+  registerDuplicateHandlers(registry, duplicateService)
+  registerTemplateHandlers(registry, templateService)
+  registerPersonHandlers(registry, personRepo)
+  registerMetadataHandlers(registry, metadataService)
+  registerCullingHandlers(registry, cullingService, writebackService)
+  registerExportHandlers(registry, exportService, reportService)
+  registerHistoryHandlers(registry, historyService)
 
   ipcMain.handle('c1:get-selected-photos', async (e) => {
     ensureMainWindowSender(e)
@@ -272,7 +313,6 @@ function registerIpc(): void {
             }
           }
         } catch {
-          // skip unreadable entries
         }
       }
     } catch {
@@ -289,7 +329,7 @@ function registerIpc(): void {
 
   ipcMain.handle('models.download_default', async (e) => {
     ensureMainWindowSender(e)
-    const { settingsService: settings } = getServices()
+    const settings = svc<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
     const getUrl = (key: string) => settings.get(key, '')
     const { downloadDefaultModels } = await import('./services/face-kw/model-downloader')
     await downloadDefaultModels(getUrl, (progress) => {
@@ -298,17 +338,17 @@ function registerIpc(): void {
   })
 }
 
-// ── 生命周期 ──
-
 app.enableSandbox()
 
 app.whenReady().then(() => {
-  const db = getDatabase()
+  initContainer()
+
+  const db = svc<Database>(DI_TOKENS.DB)
   runMigrations(db)
 
   registerIpc()
 
-  const { settingsService: settings } = getServices()
+  const settings = svc<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
   db.pragma(`synchronous = ${settings.get('db_synchronous', 'normal').toUpperCase()}`)
   db.pragma(`cache_size = ${-settings.getNumber('db_cache_size_mb', 64) * 1000}`)
 
@@ -340,7 +380,7 @@ app.on('window-all-closed', () => {
 let quitting = false
 
 function shutdown(): void {
-  const { writerRouter } = getServices()
+  const writerRouter = svc<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER)
   Promise.race([
     writerRouter.shutdown(),
     new Promise<void>((resolve) => setTimeout(resolve, 5000)),
@@ -348,7 +388,10 @@ function shutdown(): void {
     .catch((err) => {
       console.error('Shutdown error:', err instanceof Error ? err.message : err)
     })
-    .finally(() => closeDatabase())
+    .finally(() => {
+      const db = svc<Database>(DI_TOKENS.DB)
+      db.close()
+    })
     .finally(() => {
       app.quit()
     })

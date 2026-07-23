@@ -1,9 +1,20 @@
-import { getDatabase } from '../../db/database'
-import { FaceRepository } from '../../db/repositories/face.repo'
-import { CullingDecisionRepository } from '../../db/repositories/culling-decision.repo'
+import { getService } from '../../di/init'
+import { DI_TOKENS } from '../../di/container'
+import type { FaceRepository } from '../../db/repositories/face.repo'
+import type { CullingDecisionRepository } from '../../db/repositories/culling-decision.repo'
+import type { Database } from '../../db/database'
 
-const faceRepo = new FaceRepository()
-const cullingRepo = new CullingDecisionRepository()
+function faceRepo(): FaceRepository {
+  return getService<FaceRepository>(DI_TOKENS.FACE_REPO)
+}
+
+function cullingRepo(): CullingDecisionRepository {
+  return getService<CullingDecisionRepository>(DI_TOKENS.CULLING_DECISION_REPO)
+}
+
+function db(): Database {
+  return getService<Database>(DI_TOKENS.DB)
+}
 
 export type UndoHandlerMap = Record<string, (params: Record<string, unknown>, snapshotBefore: Record<string, unknown>) => void>
 
@@ -11,7 +22,7 @@ export const undoHandlers: UndoHandlerMap = {
   face_bind: (_params, before) => {
     const clusterId = before.cluster_id as number
     if (clusterId) {
-      faceRepo.deleteBinding(clusterId)
+      faceRepo().deleteBinding(clusterId)
     }
   },
 
@@ -20,7 +31,7 @@ export const undoHandlers: UndoHandlerMap = {
     const roleName = before.role_name as string
     const keywords = before.keywords as string[]
     if (clusterId && roleName && keywords) {
-      faceRepo.restoreBinding(clusterId, before.session_id as string, roleName, keywords)
+      faceRepo().restoreBinding(clusterId, before.session_id as string, roleName, keywords)
     }
   },
 
@@ -33,7 +44,7 @@ export const undoHandlers: UndoHandlerMap = {
 
     if (!sourceClusterId || !targetClusterId || sourceMemberIds.length === 0) return
 
-    faceRepo.restoreMerge(
+    faceRepo().restoreMerge(
       sourceClusterId,
       targetClusterId,
       before.session_id as string,
@@ -46,22 +57,21 @@ export const undoHandlers: UndoHandlerMap = {
   culling_batch: (_params, before) => {
     const decisions = before.decisions as Array<{ photo_id: string; session_id: string; decision: string }> | undefined
     if (!decisions || decisions.length === 0) return
-
-    cullingRepo.batchRestoreDecisions(decisions)
+    cullingRepo().batchRestoreDecisions(decisions)
   },
 
   dup_resolve: (_params, before) => {
     const members = before.members as Array<{ id: number; is_kept: number }> | undefined
     if (!members || members.length === 0) return
 
-    const db = getDatabase()
+    const d = db()
     const groupId = before.group_id as number
-    const restoreTransaction = db.transaction(() => {
+    const restoreTransaction = d.transaction(() => {
       for (const m of members) {
-        db.prepare('UPDATE duplicate_group_members SET is_kept = ? WHERE id = ?').run(m.is_kept, m.id)
+        d.prepare('UPDATE duplicate_group_members SET is_kept = ? WHERE id = ?').run(m.is_kept, m.id)
       }
       if (groupId) {
-        db.prepare('UPDATE duplicate_groups SET resolution = NULL WHERE id = ?').run(groupId)
+        d.prepare('UPDATE duplicate_groups SET resolution = NULL WHERE id = ?').run(groupId)
       }
     })
     restoreTransaction()
@@ -72,8 +82,8 @@ export const undoHandlers: UndoHandlerMap = {
     const config = before.config as Record<string, unknown> | undefined
     if (!sessionId || !config) return
 
-    const db = getDatabase()
-    db.prepare('UPDATE sessions SET analysis_status = ? WHERE id = ?').run(
+    const d = db()
+    d.prepare('UPDATE sessions SET analysis_status = ? WHERE id = ?').run(
       (config.analysis_status as string) ?? 'idle',
       sessionId,
     )

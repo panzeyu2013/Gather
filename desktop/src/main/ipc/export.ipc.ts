@@ -1,21 +1,19 @@
 import type { CommandRegistry } from './registry'
 import type { ExportProgressEvent } from '@gather/shared'
 import { ok, err, validateString, wrapHandler } from './helpers'
-import { ExportService } from '../services/export/export.service'
-import { ReportService } from '../services/export/report.service'
-import { getServices } from '../bootstrap'
+import type { ExportService } from '../services/export/export.service'
+import type { ReportService } from '../services/export/report.service'
 
-export function registerExportHandlers(registry: CommandRegistry): void {
-  const { exportService, reportService } = getServices()
+export function registerExportHandlers(registry: CommandRegistry, exportService: ExportService, reportService: ReportService): void {
   registry.register(
     'export.preview',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const options = params.options as Record<string, unknown>
       if (!options || typeof options !== 'object') {
-        throw new Error('Invalid options: must be an object')
+        return err('Invalid export options')
       }
-      const preview = await exportService.preview(sessionId, options as unknown as Parameters<ExportService['preview']>[1])
+      const preview = exportService.preview(sessionId, options as unknown as Parameters<typeof exportService.preview>[1])
       return ok(preview)
     }),
   )
@@ -29,18 +27,12 @@ export function registerExportHandlers(registry: CommandRegistry): void {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const options = params.options as Record<string, unknown>
       if (!options || typeof options !== 'object') {
-        throw new Error('Invalid options: must be an object')
+        return err('Invalid export options')
       }
-      const result = await exportService.execute(
-        sessionId,
-        options as unknown as Parameters<ExportService['execute']>[1],
-        (e: ExportProgressEvent) => {
-          event?.sender.send('gather:event', 'export:progress', {
-            ...e,
-            sessionId,
-          })
-        },
-      )
+      const onProgress = (e: ExportProgressEvent) => {
+        event?.sender.send('gather:event', 'export:progress', e)
+      }
+      const result = await exportService.execute(sessionId, options as unknown as Parameters<typeof exportService.execute>[1], onProgress)
       return ok(result)
     }),
   )
@@ -58,18 +50,9 @@ export function registerExportHandlers(registry: CommandRegistry): void {
     'export.report',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const reportType = validateString(params.reportType, 'reportType')
+      const reportType = typeof params.reportType === 'string' ? params.reportType : 'session_summary'
       const format = typeof params.format === 'string' ? params.format : undefined
-
-      if (['person', 'keyword'].includes(reportType)) {
-        const content = reportType === 'person'
-          ? reportService.generatePersonReport(sessionId)
-          : reportService.generateKeywordReport(sessionId)
-        const reportFormat = (format === 'csv' ? 'csv' : 'md') as 'csv' | 'md'
-        return ok({ path: '', content, format: reportFormat })
-      }
-      const report = await exportService.generateReport(sessionId, reportType, format)
-      return ok(report)
+      return ok(exportService.generateReport(sessionId, reportType, format))
     }),
   )
 }

@@ -1,32 +1,32 @@
 import type { CommandRegistry } from './registry'
 import { ok, validateString, wrapHandler } from './helpers'
 import type { PersonData, PersonDetailData, PersonPhotoItem } from '@gather/shared'
-import { PersonRepository } from '../db/repositories/person.repo'
-import { getServices } from '../bootstrap'
+import type { PersonRepository } from '../db/repositories/person.repo'
 
-function toPersonData(row: ReturnType<PersonRepository['get']>): PersonData | null {
-  if (!row) return null
-  let keywords: string[] = []
-  try {
-    keywords = JSON.parse(row.keywords)
-  } catch { /* ignore */ }
-  const { personRepo: repo } = getServices()
-  return {
-    id: row.id,
-    name: row.name,
-    keywords,
-    thumbnailBase64: row.thumbnail_base64,
-    notes: row.notes,
-    matchThreshold: row.match_threshold,
-    photoCount: repo.countPhotos(row.id),
-    sessionCount: repo.getSessionCount(row.id),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+function makeToPersonData(personRepo: PersonRepository): (row: ReturnType<PersonRepository['get']>) => PersonData | null {
+  return (row) => {
+    if (!row) return null
+    let keywords: string[] = []
+    try {
+      keywords = JSON.parse(row.keywords)
+    } catch { /* ignore */ }
+    return {
+      id: row.id,
+      name: row.name,
+      keywords,
+      thumbnailBase64: row.thumbnail_base64,
+      notes: row.notes,
+      matchThreshold: row.match_threshold,
+      photoCount: personRepo.countPhotos(row.id),
+      sessionCount: personRepo.getSessionCount(row.id),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
   }
 }
 
-export function registerPersonHandlers(registry: CommandRegistry): void {
-  const { personRepo } = getServices()
+export function registerPersonHandlers(registry: CommandRegistry, personRepo: PersonRepository): void {
+  const toPersonData = makeToPersonData(personRepo)
   registry.register(
     'person.list',
     wrapHandler(async () => {

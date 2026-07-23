@@ -1,6 +1,8 @@
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import crypto from 'crypto'
 import type { TemplateData, WorkflowTemplateConfig } from '@gather/shared'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 interface TemplateRow {
   id: string
@@ -22,24 +24,24 @@ function rowToData(row: TemplateRow): TemplateData {
   }
 }
 
+@injectable()
 export class TemplateService {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   list(): TemplateData[] {
-    const db = getDatabase()
-    const rows = db.prepare('SELECT * FROM workflow_templates ORDER BY updated_at DESC').all() as TemplateRow[]
+    const rows = this.db.prepare('SELECT * FROM workflow_templates ORDER BY updated_at DESC').all() as TemplateRow[]
     return rows.map(rowToData)
   }
 
   get(id: string): TemplateData | null {
-    const db = getDatabase()
-    const row = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(id) as TemplateRow | undefined
+    const row = this.db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(id) as TemplateRow | undefined
     return row ? rowToData(row) : null
   }
 
   create(name: string, description: string, config: WorkflowTemplateConfig): TemplateData {
-    const db = getDatabase()
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
-    db.prepare(
+    this.db.prepare(
       'INSERT INTO workflow_templates (id, name, description, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
     ).run(id, name, description, JSON.stringify(config), now, now)
     return this.get(id)!
@@ -49,7 +51,6 @@ export class TemplateService {
     id: string,
     fields: Partial<{ name: string; description: string; config: WorkflowTemplateConfig }>,
   ): TemplateData {
-    const db = getDatabase()
     const existing = this.get(id)
     if (!existing) throw new Error('Template not found')
 
@@ -76,21 +77,19 @@ export class TemplateService {
     values.push(now)
     values.push(id)
 
-    db.prepare(`UPDATE workflow_templates SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+    this.db.prepare(`UPDATE workflow_templates SET ${sets.join(', ')} WHERE id = ?`).run(...values)
     return this.get(id)!
   }
 
   delete(id: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM workflow_templates WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM workflow_templates WHERE id = ?').run(id)
   }
 
   apply(templateId: string, sessionId: string): void {
     const template = this.get(templateId)
     if (!template) throw new Error('Template not found')
 
-    const db = getDatabase()
-    const session = db.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined
+    const session = this.db.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined
     if (!session) throw new Error('Session not found')
 
     const allowed = ['draft', 'photos_loaded']
@@ -100,19 +99,17 @@ export class TemplateService {
 
     const config = template.config
 
-    db.transaction(() => {
-      // similarity settings
-      db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
         .run('default_threshold', String(config.similarity.threshold))
-      db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
         .run('default_min_group_size', String(config.similarity.minGroupSize))
 
-      // face settings
-      db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
         .run('default_eps', String(config.face.eps))
-      db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
         .run('default_min_samples', String(config.face.minSamples))
-      db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
         .run('detect_confidence', String(config.face.detectorConfidence))
     })()
   }

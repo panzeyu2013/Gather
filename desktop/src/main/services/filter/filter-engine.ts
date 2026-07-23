@@ -1,6 +1,8 @@
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import type { FilterGroup, FilterRule, PhotoData, GlobalPhotoResult, FilterSuggestion } from '@gather/shared'
 import type { PhotoRow } from '../../db/repositories/photo.repo'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 interface WhereClauseResult {
   sql: string
@@ -28,9 +30,12 @@ function resolveField(rule: FilterRule): { prefix: string; col: string } {
   throw new Error('Unknown filter field: ' + rule.field)
 }
 
+@injectable()
 export class FilterEngine {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   filterPhotos(sessionId: string, criteria: FilterGroup, sortBy?: string, sortOrder?: string, limit?: number, offset?: number): PhotoData[] {
-    const db = getDatabase()
+    const db = this.db
     const { sql: whereSql, params: whereParams } = this.buildWhereClause(criteria)
 
     const sessionFilter = sessionId === '__global__' ? '1=1' : 'p.session_id = ?'
@@ -63,7 +68,7 @@ export class FilterEngine {
   }
 
   filterGlobally(criteria: FilterGroup): GlobalPhotoResult[] {
-    const db = getDatabase()
+    const db = this.db
     const { sql: whereSql, params: whereParams } = this.buildWhereClause(criteria)
 
     const sql = [
@@ -91,7 +96,7 @@ export class FilterEngine {
 
   suggest(_sessionId: string, keyword: string): FilterSuggestion[] {
     if (!keyword || keyword.trim().length < 2) return []
-    const db = getDatabase()
+    const db = this.db
     const pattern = `%${keyword}%`
     const cameraRows = db.prepare(
       'SELECT DISTINCT camera_make FROM photo_metadata_cache WHERE camera_make LIKE ? LIMIT 5'

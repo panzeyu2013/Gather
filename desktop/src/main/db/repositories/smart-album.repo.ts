@@ -1,7 +1,9 @@
-import { getDatabase } from '../database'
+import { Database } from '../database'
 import crypto from 'crypto'
 import type { FilterGroup } from '@gather/shared'
 import { ISmartAlbumRepository } from './interfaces'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 export interface SmartAlbumRow {
   id: string
@@ -33,22 +35,22 @@ export interface SmartAlbumUpdateData {
   icon?: string
 }
 
+@injectable()
 export class SmartAlbumRepository implements ISmartAlbumRepository {
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+
   list(): SmartAlbumRow[] {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM smart_albums ORDER BY updated_at DESC').all() as SmartAlbumRow[]
+    return this.db.prepare('SELECT * FROM smart_albums ORDER BY updated_at DESC').all() as SmartAlbumRow[]
   }
 
   get(id: string): SmartAlbumRow | undefined {
-    const db = getDatabase()
-    return db.prepare('SELECT * FROM smart_albums WHERE id = ?').get(id) as SmartAlbumRow | undefined
+    return this.db.prepare('SELECT * FROM smart_albums WHERE id = ?').get(id) as SmartAlbumRow | undefined
   }
 
   create(data: SmartAlbumCreateData): SmartAlbumRow {
-    const db = getDatabase()
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
-    db.prepare(
+    this.db.prepare(
       'INSERT INTO smart_albums (id, name, description, filter_criteria, sort_by, sort_order, icon, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
@@ -65,7 +67,6 @@ export class SmartAlbumRepository implements ISmartAlbumRepository {
   }
 
   update(id: string, data: SmartAlbumUpdateData): void {
-    const db = getDatabase()
     const now = new Date().toISOString()
     const sets: string[] = []
     const values: unknown[] = []
@@ -101,11 +102,10 @@ export class SmartAlbumRepository implements ISmartAlbumRepository {
     values.push(now)
     values.push(id)
 
-    db.prepare(`UPDATE smart_albums SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+    this.db.prepare(`UPDATE smart_albums SET ${sets.join(', ')} WHERE id = ?`).run(...values)
   }
 
   delete(id: string): void {
-    const db = getDatabase()
-    db.prepare('DELETE FROM smart_albums WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM smart_albums WHERE id = ?').run(id)
   }
 }

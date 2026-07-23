@@ -1,11 +1,10 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
 import type { FilterGroup, SmartAlbumData, SmartAlbumDetailData, PhotoData, GlobalPhotoResult, FilterSuggestion } from '@gather/shared'
-import { FilterEngine } from '../services/filter/filter-engine'
-import { getServices } from '../bootstrap'
+import type { FilterEngine } from '../services/filter/filter-engine'
+import type { SmartAlbumRepository } from '../db/repositories/smart-album.repo'
 
-export function registerFilterHandlers(registry: CommandRegistry): void {
-  const { filterEngine } = getServices()
+export function registerFilterHandlers(registry: CommandRegistry, filterEngine: FilterEngine): void {
   registry.register(
     'filter.photos',
     wrapHandler((params) => {
@@ -40,8 +39,7 @@ export function registerFilterHandlers(registry: CommandRegistry): void {
   )
 }
 
-export function registerAlbumHandlers(registry: CommandRegistry): void {
-  const { filterEngine, smartAlbumRepo } = getServices()
+export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: FilterEngine, smartAlbumRepo: SmartAlbumRepository): void {
 
   const repo = smartAlbumRepo
   const engine = filterEngine

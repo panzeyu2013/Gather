@@ -1,12 +1,18 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, validateNumber, wrapHandler } from './helpers'
 import type { WritebackOptions } from '@gather/shared'
-import { FaceKwService } from '../services/face-kw/face-kw.service'
-import { WritebackService } from '../services/writeback/writeback.service'
-import { getServices } from '../bootstrap'
+import type { FaceKwService } from '../services/face-kw/face-kw.service'
+import type { WritebackService } from '../services/writeback/writeback.service'
+import type { FaceRepository } from '../db/repositories/face.repo'
+import type { SettingsService } from '../services/settings/settings.service'
 
-export function registerFaceKwHandlers(registry: CommandRegistry): void {
-  const { faceKwService, writebackService, faceRepo, settingsService: settings } = getServices()
+export function registerFaceKwHandlers(
+  registry: CommandRegistry,
+  faceKwService: FaceKwService,
+  writebackService: WritebackService,
+  faceRepo: FaceRepository,
+  settings: SettingsService,
+): void {
   registry.register(
     'fkw.analyze',
     wrapHandler(async (params, event) => {

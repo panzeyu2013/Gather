@@ -1,8 +1,7 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, validateStringArray, wrapHandler } from './helpers'
-import { CullingService } from '../services/culling/culling.service'
-import { WritebackService } from '../services/writeback/writeback.service'
-import { getServices } from '../bootstrap'
+import type { CullingService } from '../services/culling/culling.service'
+import type { WritebackService } from '../services/writeback/writeback.service'
 
 function buildKeywords(target: string, decision: string): string[] {
   if (target === 'keyword') {
@@ -15,8 +14,7 @@ function buildKeywords(target: string, decision: string): string[] {
   return []
 }
 
-export function registerCullingHandlers(registry: CommandRegistry): void {
-  const { cullingService, writebackService } = getServices()
+export function registerCullingHandlers(registry: CommandRegistry, cullingService: CullingService, writebackService: WritebackService): void {
   registry.register(
     'culling.groups',
     wrapHandler(async (params) => {
@@ -85,18 +83,26 @@ export function registerCullingHandlers(registry: CommandRegistry): void {
       const decisionMap = new Map(decisions.map((d) => [d.photo_id, d.decision]))
       const decidedPhotoIds = new Set(decisions.map((d) => d.photo_id))
 
-      const preview = await writebackService.preview(sessionId, 'culling', {} as Parameters<WritebackService['preview']>[2])
+      const photos = decisions.map((d) => d.photo_id)
+      const preview = await writebackService.preview(sessionId, 'culling', {})
 
-      const items = preview.items.filter((item) => decidedPhotoIds.has(item.photoId))
+      const matchingItems = preview.items.filter((item) => decidedPhotoIds.has(item.photoId))
 
-      for (const item of items) {
+      for (const item of matchingItems) {
         const decision = decisionMap.get(item.photoId)
         if (decision) {
-          item.keywords = buildKeywords(target, decision)
+          const kw = buildKeywords(target, decision)
+          const existing = new Set(item.keywords)
+          for (const k of kw) {
+            if (!existing.has(k)) {
+              item.keywords.push(k)
+              existing.add(k)
+            }
+          }
         }
       }
 
-      return ok(await writebackService.execute(sessionId, 'culling', items))
+      return ok(await writebackService.execute(sessionId, 'culling', matchingItems))
     }),
   )
 

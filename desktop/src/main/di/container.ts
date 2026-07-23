@@ -3,20 +3,23 @@ import { container as tsyringeContainer, injectable, inject } from 'tsyringe'
 
 export { injectable, inject }
 
-export const DI_TOKENS = {
-  // Repositories
-  PHOTO_REPO: Symbol('PhotoRepository'),
-  SESSION_REPO: Symbol('SessionRepository'),
-  FACE_REPO: Symbol('FaceRepository'),
-  PERSON_REPO: Symbol('PersonRepository'),
-  CULLING_DECISION_REPO: Symbol('CullingDecisionRepository'),
-  SIMILARITY_RESULT_REPO: Symbol('SimilarityResultRepository'),
-  OPERATION_LOG_REPO: Symbol('OperationLogRepository'),
-  WRITEBACK_REPO: Symbol('WritebackRepository'),
-  METADATA_CACHE_REPO: Symbol('MetadataCacheRepository'),
-  SMART_ALBUM_REPO: Symbol('SmartAlbumRepository'),
+export const container = tsyringeContainer
 
-  // Services
+export const DI_TOKENS = {
+  DB: Symbol('Database'),
+
+  PHOTO_REPO: Symbol('IPhotoRepository'),
+  SESSION_REPO: Symbol('ISessionRepository'),
+  FACE_REPO: Symbol('IFaceRepository'),
+  PERSON_REPO: Symbol('IPersonRepository'),
+  CULLING_DECISION_REPO: Symbol('ICullingDecisionRepository'),
+  SIMILARITY_RESULT_REPO: Symbol('ISimilarityResultRepository'),
+  OPERATION_LOG_REPO: Symbol('IOperationLogRepository'),
+  WRITEBACK_REPO: Symbol('IWritebackRepository'),
+  METADATA_CACHE_REPO: Symbol('IMetadataCacheRepository'),
+  SMART_ALBUM_REPO: Symbol('ISmartAlbumRepository'),
+  SETTINGS_REPO: Symbol('ISettingsRepository'),
+
   SETTINGS_SERVICE: Symbol('SettingsService'),
   CULLING_SERVICE: Symbol('CullingService'),
   DUPLICATE_SERVICE: Symbol('DuplicateService'),
@@ -32,9 +35,6 @@ export const DI_TOKENS = {
   FILTER_ENGINE: Symbol('FilterEngine'),
   IMAGE_SERVICE: Symbol('ImageService'),
 
-  // Utilities
   WRITER_ROUTER: Symbol('MetadataWriterRouter'),
-  THUMBNAIL_CACHE: Symbol('ThumbnailCache'),
+  THUMBNAIL_CACHE: Symbol('TieredThumbnailCache'),
 }
-
-export const container = tsyringeContainer

@@ -1,11 +1,13 @@
-import type Database from 'better-sqlite3'
+import { Database } from './database'
 import * as path from 'path'
 import * as fs from 'fs'
 import { app } from 'electron'
 import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL } from './schema'
+import type BetterSqlite3 from 'better-sqlite3'
 
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(database: Database): void {
+  const db: BetterSqlite3.Database = database.rawDb
   db.exec(SCHEMA_SQL)
   db.exec(INDEX_SQL)
 

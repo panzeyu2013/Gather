@@ -2,16 +2,20 @@ import type { IpcMainInvokeEvent } from 'electron'
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, wrapHandler } from './helpers'
 import type { WritebackOptions, WritebackItem, GroupData } from '@gather/shared'
-import { SimilarityService } from '../services/similarity/similarity.service'
-import { getServices } from '../bootstrap'
+import type { SimilarityService } from '../services/similarity/similarity.service'
+import type { WritebackService } from '../services/writeback/writeback.service'
+import type { SettingsService } from '../services/settings/settings.service'
 
 function getPhotoPath(item: WritebackItem): string {
   return item.photoPath || (item.xmpPath ? item.xmpPath.replace(/\.xmp$/i, '') : '')
 }
 
-
-export function registerSimilarityHandlers(registry: CommandRegistry): void {
-  const { similarityService, writebackService, settingsService: settings } = getServices()
+export function registerSimilarityHandlers(
+  registry: CommandRegistry,
+  similarityService: SimilarityService,
+  writebackService: WritebackService,
+  settings: SettingsService,
+): void {
   registry.register(
     'sim.analyze',
     wrapHandler(async (params, event) => {

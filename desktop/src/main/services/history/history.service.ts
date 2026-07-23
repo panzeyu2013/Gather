@@ -1,9 +1,10 @@
-import { getDatabase } from '../../db/database'
+import { Database } from '../../db/database'
 import { OperationLogRepository, type OperationLogRow } from '../../db/repositories/operation-log.repo'
 import type { OperationLogEntry, UndoStatus, RedoStatus } from '@gather/shared'
 import type { UndoHandlerMap } from './undo-handlers'
 import { FaceRepository } from '../../db/repositories/face.repo'
-import { injectable } from '../../di/container'
+import { injectable, inject } from '../../di/container'
+import { DI_TOKENS } from '../../di/container'
 
 function rowToEntry(row: OperationLogRow): OperationLogEntry {
   return {
@@ -27,6 +28,7 @@ export class HistoryService {
   constructor(
     private opLogRepo: OperationLogRepository,
     private faceRepo: FaceRepository,
+    @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
   record(
@@ -87,7 +89,6 @@ export class HistoryService {
   }
 
   async undo(sessionId: string, operationId?: number): Promise<void> {
-    const db = getDatabase()
     if (!this.undoHandlersPromise) {
       this.undoHandlersPromise = import('./undo-handlers') as Promise<{ undoHandlers: UndoHandlerMap }>
     }
@@ -108,7 +109,7 @@ export class HistoryService {
     const handler = undoHandlers[opRow.operation_type]
     if (!handler) throw new Error(`No undo handler for operation type: ${opRow.operation_type}`)
 
-    const undoTransaction = db.transaction(() => {
+    const undoTransaction = this.db.transaction(() => {
       const current = this.opLogRepo.getIsUndoStatus(opRow!.id)
       if (!current || current.is_undo !== 0) {
         throw new Error('Operation already undone')
@@ -120,7 +121,6 @@ export class HistoryService {
   }
 
   async redo(sessionId: string): Promise<void> {
-    const db = getDatabase()
 
     const opRow = this.opLogRepo.getLatestUndo(sessionId)
 
@@ -130,7 +130,7 @@ export class HistoryService {
     const snapshotAfter = opRow.snapshot_after ? JSON.parse(opRow.snapshot_after) as Record<string, unknown> : {}
 
     const redoMethod = this.getRedoMethod(opRow.operation_type)
-    const redoTransaction = db.transaction(() => {
+    const redoTransaction = this.db.transaction(() => {
       const current = this.opLogRepo.getIsUndoStatus(opRow!.id)
       if (!current || current.is_undo !== 1) {
         throw new Error('Operation already redone or state changed')
