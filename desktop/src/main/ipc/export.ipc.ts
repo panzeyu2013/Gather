@@ -54,10 +54,12 @@ export function registerExportHandlers(registry: CommandRegistry, exportService:
       const format = typeof params.format === 'string' ? params.format : undefined
 
       if (reportType === 'person') {
-        return ok(reportService.generatePersonReport(sessionId))
+        const content = reportService.generatePersonReport(sessionId)
+        return ok({ path: '', content, format: 'md' as const })
       }
       if (reportType === 'keyword') {
-        return ok(reportService.generateKeywordReport(sessionId))
+        const content = reportService.generateKeywordReport(sessionId)
+        return ok({ path: '', content, format: 'md' as const })
       }
       return ok(exportService.generateReport(sessionId, reportType, format))
     }),
