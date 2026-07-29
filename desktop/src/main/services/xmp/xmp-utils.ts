@@ -8,6 +8,7 @@ export interface XmpDescription {
   '@_xmlns:dc'?: string
   '@_xmlns:xmp'?: string
   '@_xmlns:exif'?: string
+  '@_xmlns:photoshop'?: string
   'dc:subject'?: {
     'rdf:Bag': {
       'rdf:li': string[]
@@ -33,6 +34,23 @@ export const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
 export const XMPMETA_NS = 'adobe:ns:meta/'
 const XMP_NS = 'http://ns.adobe.com/xap/1.0/'
 const EXIF_NS = 'http://ns.adobe.com/exif/1.0/'
+const PHOTOSHOP_NS = 'http://ns.adobe.com/photoshop/1.0/'
+
+const CAPTURE_ONE_LABEL_URGENCY: Readonly<Record<string, number>> = {
+  Red: 1,
+  Green: 2,
+  Blue: 3,
+  Pink: 4,
+  Purple: 5,
+  Orange: 6,
+  Yellow: 7,
+}
+
+const CAPTURE_ONE_URGENCY_LABEL = new Map(
+  Object.entries(CAPTURE_ONE_LABEL_URGENCY).map(([label, urgency]) => [urgency, label]),
+)
+
+const INVALID_XML_TEXT = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/
 
 export function createEmptyXmpDoc(): XmpDoc {
   return {
@@ -52,6 +70,9 @@ export function createEmptyXmpDoc(): XmpDoc {
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
+  // XMP scalar values are lexical XML text. Automatic coercion would turn
+  // legitimate keywords such as "00123" or "true" into numbers/booleans.
+  parseTagValue: false,
   isArray: (name) => name === 'rdf:li',
 })
 
@@ -99,21 +120,57 @@ export function extractXmpAttributes(doc: XmpDoc): {
   keywords: string[]
   rating?: number
   label?: string
+  dateTaken?: string
+  latitude?: number
+  longitude?: number
 } {
   const result: {
     keywords: string[]
     rating?: number
     label?: string
+    dateTaken?: string
+    latitude?: number
+    longitude?: number
   } = { keywords: extractKeywords(doc) }
   for (const description of getDescriptionArray(doc)) {
-    const rating = description['xmp:Rating']
+    const rating = getSimpleProperty(description, 'xmp:Rating')
     if (result.rating === undefined && (typeof rating === 'string' || typeof rating === 'number')) {
       const parsed = Number(rating)
       if (Number.isFinite(parsed)) result.rating = parsed
     }
-    const label = description['xmp:Label']
-    if (result.label === undefined && typeof label === 'string') {
-      result.label = label
+    const label = getSimpleProperty(description, 'xmp:Label')
+    if (result.label === undefined && typeof label === 'string' && label.trim()) {
+      result.label = label.trim()
+    }
+    const dateTaken =
+      getSimpleProperty(description, 'exif:DateTimeOriginal') ??
+      getSimpleProperty(description, 'xmp:CreateDate')
+    if (result.dateTaken === undefined && typeof dateTaken === 'string') {
+      result.dateTaken = dateTaken
+    }
+    const latitude = parseGpsCoordinate(
+      getSimpleProperty(description, 'exif:GPSLatitude'),
+      'latitude',
+    )
+    if (result.latitude === undefined && latitude !== undefined) {
+      result.latitude = latitude
+    }
+    const longitude = parseGpsCoordinate(
+      getSimpleProperty(description, 'exif:GPSLongitude'),
+      'longitude',
+    )
+    if (result.longitude === undefined && longitude !== undefined) {
+      result.longitude = longitude
+    }
+  }
+  if (result.label === undefined) {
+    for (const description of getDescriptionArray(doc)) {
+      const urgency = Number(getSimpleProperty(description, 'photoshop:Urgency'))
+      const label = CAPTURE_ONE_URGENCY_LABEL.get(urgency)
+      if (label) {
+        result.label = label
+        break
+      }
     }
   }
   return result
@@ -157,6 +214,7 @@ type XmpAttributeInput = {
 }
 
 function buildXmpAttributesXml(doc: XmpDoc, tags: XmpAttributeInput): string {
+  tags = normalizeXmpAttributeInput(tags)
   delete doc['?xml']
   const descriptions = getDescriptionArray(doc)
 
@@ -172,21 +230,67 @@ function buildXmpAttributesXml(doc: XmpDoc, tags: XmpAttributeInput): string {
     }
   }
   if (tags.rating !== undefined) {
-    const desc = resolveTargetDescription(doc, descriptions, 'xmp:Rating', '@_xmlns:xmp', XMP_NS)
-    desc['xmp:Rating'] = String(tags.rating)
+    setSimpleProperty(
+      doc,
+      descriptions,
+      'xmp:Rating',
+      '@_xmlns:xmp',
+      XMP_NS,
+      String(tags.rating),
+    )
   }
   if (tags.label !== undefined) {
-    const desc = resolveTargetDescription(doc, descriptions, 'xmp:Label', '@_xmlns:xmp', XMP_NS)
-    desc['xmp:Label'] = tags.label
+    removeSimpleProperty(descriptions, 'xmp:Label')
+    removeSimpleProperty(descriptions, 'photoshop:Urgency')
+    if (tags.label) {
+      setSimpleProperty(
+        doc,
+        descriptions,
+        'xmp:Label',
+        '@_xmlns:xmp',
+        XMP_NS,
+        tags.label,
+      )
+      const urgency = CAPTURE_ONE_LABEL_URGENCY[tags.label]
+      if (urgency !== undefined) {
+        setSimpleProperty(
+          doc,
+          descriptions,
+          'photoshop:Urgency',
+          '@_xmlns:photoshop',
+          PHOTOSHOP_NS,
+          String(urgency),
+        )
+      }
+    }
   }
   if (tags.dateTaken !== undefined) {
-    const desc = resolveTargetDescription(doc, descriptions, 'xmp:CreateDate', '@_xmlns:xmp', XMP_NS)
-    desc['xmp:CreateDate'] = String(tags.dateTaken)
+    setSimpleProperty(
+      doc,
+      descriptions,
+      'exif:DateTimeOriginal',
+      '@_xmlns:exif',
+      EXIF_NS,
+      tags.dateTaken,
+    )
   }
   if (tags.latitude !== undefined && tags.longitude !== undefined) {
-    const desc = resolveTargetDescription(doc, descriptions, 'exif:GPSLatitude', '@_xmlns:exif', EXIF_NS)
-    desc['exif:GPSLatitude'] = String(tags.latitude)
-    desc['exif:GPSLongitude'] = String(tags.longitude)
+    setSimpleProperty(
+      doc,
+      descriptions,
+      'exif:GPSLatitude',
+      '@_xmlns:exif',
+      EXIF_NS,
+      formatGpsCoordinate(tags.latitude, 'latitude'),
+    )
+    setSimpleProperty(
+      doc,
+      descriptions,
+      'exif:GPSLongitude',
+      '@_xmlns:exif',
+      EXIF_NS,
+      formatGpsCoordinate(tags.longitude, 'longitude'),
+    )
   }
   return '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(doc)
 }
@@ -262,8 +366,9 @@ function getDescriptionArray(doc: XmpDoc): XmpDescription[] {
   if (!rdf) return []
   const desc = rdf['rdf:Description']
   if (!desc) {
-    rdf['rdf:Description'] = []
-    return []
+    const descriptions: XmpDescription[] = []
+    rdf['rdf:Description'] = descriptions
+    return descriptions
   }
   if (!Array.isArray(desc)) {
     rdf['rdf:Description'] = [desc]
@@ -272,7 +377,7 @@ function getDescriptionArray(doc: XmpDoc): XmpDescription[] {
 }
 
 function resolveTargetDescription(doc: XmpDoc, descs: XmpDescription[], targetKey: string, nsAttr: string, nsUri: string): XmpDescription {
-  let desc = descs.find(d => targetKey in d)
+  let desc = descs.find(d => targetKey in d || `@_${targetKey}` in d)
   if (desc) {
     if (!desc[nsAttr]) desc[nsAttr] = nsUri
     return desc
@@ -289,4 +394,189 @@ function resolveTargetDescription(doc: XmpDoc, descs: XmpDescription[], targetKe
   desc = { '@_rdf:about': '', [nsAttr]: nsUri }
   descs.push(desc)
   return desc
+}
+
+function getSimpleProperty(description: XmpDescription, property: string): unknown {
+  return description[property] ?? description[`@_${property}`]
+}
+
+function removeSimpleProperty(descriptions: XmpDescription[], property: string): void {
+  for (const description of descriptions) {
+    delete description[property]
+    delete description[`@_${property}`]
+  }
+}
+
+function setSimpleProperty(
+  doc: XmpDoc,
+  descriptions: XmpDescription[],
+  property: string,
+  namespaceAttribute: string,
+  namespaceUri: string,
+  value: string,
+): void {
+  const target = resolveTargetDescription(
+    doc,
+    descriptions,
+    property,
+    namespaceAttribute,
+    namespaceUri,
+  )
+  removeSimpleProperty(descriptions, property)
+  if (!target[namespaceAttribute]) target[namespaceAttribute] = namespaceUri
+  target[property] = value
+}
+
+function normalizeXmpAttributeInput(tags: XmpAttributeInput): XmpAttributeInput {
+  const normalized: XmpAttributeInput = {}
+
+  if (tags.keywords !== undefined) {
+    if (!Array.isArray(tags.keywords) || !tags.keywords.every(keyword => typeof keyword === 'string')) {
+      throw new Error('keywords must be an array of strings')
+    }
+    normalized.keywords = [...new Set(
+      tags.keywords
+        .map(keyword => keyword.trim())
+        .filter(Boolean),
+    )]
+    for (const keyword of normalized.keywords) {
+      assertValidXmlText(keyword, 'keyword')
+    }
+  }
+
+  if (tags.rating !== undefined) {
+    if (
+      typeof tags.rating !== 'number' ||
+      !Number.isInteger(tags.rating) ||
+      (tags.rating !== -1 && (tags.rating < 0 || tags.rating > 5))
+    ) {
+      throw new Error('rating must be -1 or an integer from 0 to 5')
+    }
+    normalized.rating = tags.rating
+  }
+
+  if (tags.label !== undefined) {
+    if (typeof tags.label !== 'string') throw new Error('label must be a string')
+    normalized.label = tags.label.trim()
+    assertValidXmlText(normalized.label, 'label')
+  }
+
+  if (tags.dateTaken !== undefined) {
+    if (typeof tags.dateTaken !== 'string' || !isValidXmpDate(tags.dateTaken.trim())) {
+      throw new Error('dateTaken must be a valid ISO 8601/XMP date')
+    }
+    normalized.dateTaken = tags.dateTaken.trim()
+  }
+
+  const hasLatitude = tags.latitude !== undefined
+  const hasLongitude = tags.longitude !== undefined
+  if (hasLatitude !== hasLongitude) {
+    throw new Error('latitude and longitude must be written together')
+  }
+  if (hasLatitude && hasLongitude) {
+    if (
+      typeof tags.latitude !== 'number' ||
+      !Number.isFinite(tags.latitude) ||
+      tags.latitude < -90 ||
+      tags.latitude > 90
+    ) {
+      throw new Error('latitude must be a finite number from -90 to 90')
+    }
+    if (
+      typeof tags.longitude !== 'number' ||
+      !Number.isFinite(tags.longitude) ||
+      tags.longitude < -180 ||
+      tags.longitude > 180
+    ) {
+      throw new Error('longitude must be a finite number from -180 to 180')
+    }
+    normalized.latitude = tags.latitude
+    normalized.longitude = tags.longitude
+  }
+
+  return normalized
+}
+
+function assertValidXmlText(value: string, field: string): void {
+  if (INVALID_XML_TEXT.test(value)) {
+    throw new Error(`${field} contains characters that are not valid in XML 1.0`)
+  }
+}
+
+function isValidXmpDate(value: string): boolean {
+  const match = value.match(
+    /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2})?)?)?)?$/,
+  )
+  if (!match) return false
+  const year = Number(match[1])
+  const month = match[2] === undefined ? undefined : Number(match[2])
+  const day = match[3] === undefined ? undefined : Number(match[3])
+  const hour = match[4] === undefined ? undefined : Number(match[4])
+  const minute = match[5] === undefined ? undefined : Number(match[5])
+  const second = match[6] === undefined ? undefined : Number(match[6])
+
+  if (year < 1) return false
+  if (month !== undefined && (month < 1 || month > 12)) return false
+  if (day !== undefined) {
+    if (month === undefined) return false
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
+    if (day < 1 || day > daysInMonth) return false
+  }
+  if (hour !== undefined && (hour < 0 || hour > 23)) return false
+  if (minute !== undefined && (minute < 0 || minute > 59)) return false
+  if (second !== undefined && (second < 0 || second > 59)) return false
+
+  const timezone = match[8]
+  if (timezone && timezone !== 'Z') {
+    const [timezoneHour, timezoneMinute] = timezone.slice(1).split(':').map(Number)
+    if (timezoneHour > 23 || timezoneMinute > 59) return false
+  }
+  return true
+}
+
+function formatGpsCoordinate(
+  value: number,
+  axis: 'latitude' | 'longitude',
+): string {
+  const absolute = Math.abs(value)
+  let degrees = Math.floor(absolute)
+  let minutes = Number(((absolute - degrees) * 60).toFixed(8))
+  if (minutes >= 60) {
+    degrees++
+    minutes = 0
+  }
+  const direction = axis === 'latitude'
+    ? value < 0 ? 'S' : 'N'
+    : value < 0 ? 'W' : 'E'
+  return `${degrees},${minutes}${direction}`
+}
+
+function parseGpsCoordinate(
+  value: unknown,
+  axis: 'latitude' | 'longitude',
+): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  const direction = text.match(/[NSEW]$/i)?.[0].toUpperCase()
+  const numericText = direction ? text.slice(0, -1).trim() : text
+  const parts = numericText
+    .split(/[,\s°'"]+/)
+    .filter(Boolean)
+    .map(Number)
+  if (parts.length < 1 || parts.length > 3 || parts.some(part => !Number.isFinite(part))) {
+    return undefined
+  }
+  const signFromNumber = parts[0] < 0 ? -1 : 1
+  const absolute =
+    Math.abs(parts[0]) +
+    (parts[1] ?? 0) / 60 +
+    (parts[2] ?? 0) / 3600
+  const signFromDirection =
+    direction === 'S' || direction === 'W' ? -1 :
+      direction === 'N' || direction === 'E' ? 1 :
+        signFromNumber
+  const coordinate = absolute * signFromDirection
+  const limit = axis === 'latitude' ? 90 : 180
+  return coordinate >= -limit && coordinate <= limit ? coordinate : undefined
 }

@@ -242,13 +242,14 @@ export class MetadataService {
         tags.longitude !== undefined
       if (hasMetaFields) {
         const writer = this.writerRouter.select(photo.filepath)
+        const updatesGps = tags.latitude !== undefined || tags.longitude !== undefined
         await writer.writeAttributes(photo.filepath, {
           keywords: tags.keywords,
           rating: tags.rating,
           label: tags.label,
           dateTaken: tags.dateTaken,
-          latitude: tags.latitude,
-          longitude: tags.longitude,
+          latitude: updatesGps ? merged.latitude : undefined,
+          longitude: updatesGps ? merged.longitude : undefined,
         })
       }
     }

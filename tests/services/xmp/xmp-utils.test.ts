@@ -159,7 +159,14 @@ describe('xmp-utils', () => {
     expect(result).toEqual(keywords)
   })
 
-  it('scenario 9: writeXmpAttributes with keywords+rating+dateTaken+GPS → all namespaces present', () => {
+  it('preserves numeric and boolean-looking keywords as lexical text', () => {
+    const xp = xmpPath(dir)
+    writeFile(xp, validMinimalXmp(['00123', 'true', '1e3']))
+
+    expect(extractKeywords(parseXmp(xp)!)).toEqual(['00123', 'true', '1e3'])
+  })
+
+  it('scenario 9: writes standard keywords, rating, original date and GPS fields', () => {
     const xp = xmpPath(dir)
     writeFile(xp, validMinimalXmp([]))
 
@@ -174,9 +181,20 @@ describe('xmp-utils', () => {
     const content = readFile(xp)
     expect(content).toContain('dc:subject')
     expect(content).toContain('xmp:Rating')
-    expect(content).toContain('xmp:CreateDate')
+    expect(content).toContain('exif:DateTimeOriginal')
+    expect(content).not.toContain('xmp:CreateDate')
     expect(content).toContain('exif:GPSLatitude')
     expect(content).toContain('exif:GPSLongitude')
+    expect(content).toContain('35,41.37N')
+    expect(content).toContain('139,41.502E')
+
+    expect(extractXmpAttributes(parseXmp(xp)!)).toEqual({
+      keywords: ['test'],
+      rating: 5,
+      dateTaken: '2024-01-15T10:30:00',
+      latitude: 35.6895,
+      longitude: 139.6917,
+    })
   })
 
   it('round-trips rating and color label from a sidecar', () => {
@@ -193,6 +211,92 @@ describe('xmp-utils', () => {
       rating: 5,
       label: 'Green',
     })
+    const content = readFile(xp)
+    expect(content).toContain('photoshop:Urgency')
+    expect(content).toContain('>2</photoshop:Urgency>')
+  })
+
+  it('reads and replaces compact RDF attributes without duplicate properties', () => {
+    const xp = xmpPath(dir)
+    writeFile(xp, `<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+      xmp:Rating="3"
+      xmp:Label="Yellow" />
+  </rdf:RDF>
+</x:xmpmeta>`)
+
+    expect(extractXmpAttributes(parseXmp(xp)!)).toEqual({
+      keywords: [],
+      rating: 3,
+      label: 'Yellow',
+    })
+
+    writeXmpAttributes(xp, { rating: 5, label: 'Green' })
+
+    const content = readFile(xp)
+    expect(content).not.toContain('xmp:Rating="3"')
+    expect(content).not.toContain('xmp:Label="Yellow"')
+    expect(content.match(/xmp:Rating/g)).toHaveLength(2)
+    expect(content.match(/xmp:Label/g)).toHaveLength(2)
+    expect(extractXmpAttributes(parseXmp(xp)!)).toEqual({
+      keywords: [],
+      rating: 5,
+      label: 'Green',
+    })
+  })
+
+  it('creates a description when an existing RDF container is empty', () => {
+    const xp = xmpPath(dir)
+    writeFile(xp, `<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"></rdf:RDF>
+</x:xmpmeta>`)
+
+    writeXmpAttributes(xp, { keywords: ['created'], rating: 4 })
+
+    expect(extractXmpAttributes(parseXmp(xp)!)).toEqual({
+      keywords: ['created'],
+      rating: 4,
+    })
+  })
+
+  it('falls back to Capture One urgency when xmp:Label is absent', () => {
+    const xp = xmpPath(dir)
+    writeFile(xp, `<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+      photoshop:Urgency="1" />
+  </rdf:RDF>
+</x:xmpmeta>`)
+
+    expect(extractXmpAttributes(parseXmp(xp)!)).toEqual({
+      keywords: [],
+      label: 'Red',
+    })
+  })
+
+  it('rejects values outside the interoperable XMP contracts', () => {
+    const xp = xmpPath(dir)
+
+    expect(() => writeXmpAttributes(xp, { rating: 6 })).toThrow(/rating/)
+    expect(() => writeXmpAttributes(xp, {
+      latitude: 91,
+      longitude: 120,
+    })).toThrow(/latitude/)
+    expect(() => writeXmpAttributes(xp, {
+      latitude: 20,
+    })).toThrow(/written together/)
+    expect(() => writeXmpAttributes(xp, {
+      dateTaken: '2024-02-30T10:30:00',
+    })).toThrow(/dateTaken/)
+    expect(() => writeXmpAttributes(xp, {
+      keywords: ['valid', 'bad\u0000keyword'],
+    })).toThrow(/XML 1.0/)
   })
 
   it('scenario 10: write rating then write keywords → rating preserved', () => {
