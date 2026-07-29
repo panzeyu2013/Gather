@@ -37,6 +37,7 @@ Capture*One*Plugin*SDK*/
 *.log
 .coverage
 coverage/
+test-results/
 dist-electron/
 *.tsbuildinfo
 .mypy_cache/
