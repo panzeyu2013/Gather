@@ -32,6 +32,12 @@ export type WritebackStatus = (typeof WritebackStatus)[keyof typeof WritebackSta
 
 // ── 共享的 writeback / cleanup 类型 ──
 
+export interface WritebackAttributes {
+  keywords?: string[]
+  rating?: number
+  label?: string
+}
+
 export interface GroupData {
   id: number | string
   images: { path: string }[]
@@ -58,6 +64,7 @@ export interface WritebackItem {
   sessionId: string
   module: string
   keywords: string[]
+  attributes?: WritebackAttributes
   xmpPath: string
   backupPath: string
   xmpStatus: string
@@ -85,6 +92,7 @@ export interface AddPhotoResult {
   added: number
   skipped: number
   total: number
+  failedFiles: string[]
 }
 
 // ── 缩略图 / 图片相关参数类型 ──
@@ -140,14 +148,30 @@ export interface C1PluginImportData {
   files: string[]
 }
 
+export const ExportStatus = {
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  DONE: 'done',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
+  ERROR: 'error',
+  SKIPPED: 'skipped',
+} as const
+export type ExportStatus = (typeof ExportStatus)[keyof typeof ExportStatus]
+
 export interface ExportProgressData {
   sessionId: string
   current: number
   total: number
   fileName: string
   bytesWritten: number
-  status: string
+  status: ExportStatus
   errorMessage?: string
+}
+
+export interface NotificationData {
+  type: 'info' | 'warning' | 'error'
+  message: string
 }
 
 // ── 响应 ──
@@ -170,15 +194,14 @@ export type Response<T = unknown> = ResponseOk<T> | ResponseErr
 
 import type { SessionCreateParams, SessionDeleteParams, SessionDeleteManyParams, SessionAddPhotosParams, SessionGetParams, SessionUpdateParams } from './session'
 import type { FkwAnalyzeParams, FkwCancelAnalysisParams, FkwClustersParams, FkwBindParams, FkwUnbindParams, FkwMergeParams, FkwRemoveMemberParams, FkwPreviewParams, FkwWritebackParams, FkwConfirmSyncParams, FkwConfirmCleanupParams, FkwCleanupParams, FkwGetClusterThumbnailParams } from './face'
-import type { SimAnalyzeParams, SimCancelAnalysisParams, SimResultParams, SimReclusterParams, SimPreviewWritebackParams, SimWritebackParams, SimWritebackItemsParams, SimRetryFailedWritebackParams } from './similarity'
+import type { SimAnalyzeParams, SimCancelAnalysisParams, SimResultParams, SimReclusterParams, SimPreviewWritebackParams, SimWritebackParams, SimWritebackItemsParams, SimRetryFailedWritebackParams, SimConfirmSyncParams, SimCleanupParams } from './similarity'
 import type { PersonListParams, PersonGetParams, PersonCreateParams, PersonUpdateParams, PersonDeleteParams, PersonMergeParams, PersonRemovePhotoParams, PersonSearchPhotosParams } from './person'
 import type { MetadataGetParams, MetadataSetParams, MetadataBatchSetParams } from './metadata'
 import type { DupScanParams, DupGroupsParams, DupResolveParams, DupResolveMemberParams } from './duplicate'
 import type { FilterPhotosParams, FilterPhotosGlobalParams, FilterSuggestParams, AlbumCreateParams, AlbumListParams, AlbumGetParams, AlbumUpdateParams, AlbumDeleteParams, AlbumGetPhotosParams } from './filter'
 import type { ExportPreviewParams, ExportExecuteParams, ExportCancelParams, ExportReportParams } from './export'
 import type { TemplateCreateParams, TemplateListParams, TemplateGetParams, TemplateUpdateParams, TemplateDeleteParams, TemplateApplyParams } from './template'
-import type { CullingGroupsParams, CullingDecideParams, CullingBatchDecideParams, CullingSummaryParams, CullingWritebackParams, CullingResetParams } from './culling'
-import type { HistoryListParams, HistoryUndoParams, HistoryRedoParams, HistoryCanUndoParams, HistoryCanRedoParams } from './history'
+import type { CullingGroupsParams, CullingDecideParams, CullingBatchDecideParams, CullingSummaryParams, CullingWritebackParams, CullingRetryWritebackParams, CullingConfirmSyncParams, CullingCleanupParams, CullingResetParams } from './culling'
 
 // ── 命令联合类型 ──
 
@@ -191,6 +214,7 @@ export type Command =
   | { type: 'session.get'; params: SessionGetParams }
   | { type: 'session.update'; params: SessionUpdateParams }
   | { type: 'fkw.analyze'; params: FkwAnalyzeParams }
+  | { type: 'fkw.recluster'; params: FkwAnalyzeParams }
   | { type: 'fkw.cancel_analysis'; params: FkwCancelAnalysisParams }
   | { type: 'fkw.clusters'; params: FkwClustersParams }
   | { type: 'fkw.bind'; params: FkwBindParams }
@@ -211,15 +235,18 @@ export type Command =
   | { type: 'sim.writeback'; params: SimWritebackParams }
   | { type: 'sim.writeback_items'; params: SimWritebackItemsParams }
   | { type: 'sim.retry_failed_writeback'; params: SimRetryFailedWritebackParams }
-  | { type: 'thumbnail.get'; params: ThumbnailGetParams }
-  | { type: 'image.get_preview'; params: ImageGetPreviewParams }
-  | { type: 'image.get_thumbnail'; params: ImageGetThumbnailParams }
+  | { type: 'sim.confirm_sync'; params: SimConfirmSyncParams }
+  | { type: 'sim.cleanup'; params: SimCleanupParams }
   | { type: 'image.preload_thumbnails'; params: ImagePreloadThumbnailsParams }
+  | { type: 'image.preload_previews'; params: { paths: string[]; maxDimension?: number } }
+  | { type: 'image.get_dimensions'; params: { paths: string[] } }
+  | { type: 'image.prioritize_thumbnail'; params: { path: string; size?: number } }
   | { type: 'photo.list'; params: { sessionId: string } }
   | { type: 'settings.get_all'; params: Record<string, never> }
   | { type: 'settings.get'; params: { key: string } }
   | { type: 'settings.set'; params: { key: string; value: string } }
   | { type: 'settings.reset'; params: Record<string, never> }
+  | { type: 'settings.get_ml_status'; params: Record<string, never> }
   | { type: 'person.list'; params: PersonListParams }
   | { type: 'person.get'; params: PersonGetParams }
   | { type: 'person.create'; params: PersonCreateParams }
@@ -259,12 +286,10 @@ export type Command =
   | { type: 'culling.batch_decide'; params: CullingBatchDecideParams }
   | { type: 'culling.summary'; params: CullingSummaryParams }
   | { type: 'culling.writeback'; params: CullingWritebackParams }
+  | { type: 'culling.retry_failed_writeback'; params: CullingRetryWritebackParams }
+  | { type: 'culling.confirm_sync'; params: CullingConfirmSyncParams }
+  | { type: 'culling.cleanup'; params: CullingCleanupParams }
   | { type: 'culling.reset'; params: CullingResetParams }
-  | { type: 'history.list'; params: HistoryListParams }
-  | { type: 'history.undo'; params: HistoryUndoParams }
-  | { type: 'history.redo'; params: HistoryRedoParams }
-  | { type: 'history.can_undo'; params: HistoryCanUndoParams }
-  | { type: 'history.can_redo'; params: HistoryCanRedoParams }
 
 // ── 事件联合类型 ──
 
@@ -281,18 +306,20 @@ export type Event =
   | { type: 'c1:plugin-import'; data: C1PluginImportData }
   | { type: 'export:progress'; data: ExportProgressData }
   | { type: 'models:download-progress'; data: ModelDownloadProgressData }
+  | { type: 'gather:notification'; data: NotificationData }
 
 // ── 命令白名单 ──
 
 export const ALLOWED_COMMANDS = new Set([
   'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
-  'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
+  'fkw.analyze', 'fkw.recluster', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
   'fkw.remove_member', 'fkw.get_cluster_thumbnail', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
-  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
-  'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail', 'image.preload_thumbnails',
+  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster',
+  'sim.preview_writeback', 'sim.writeback', 'sim.writeback_items', 'sim.retry_failed_writeback',
+  'sim.confirm_sync', 'sim.cleanup',
+  'image.preload_thumbnails', 'image.preload_previews', 'image.get_dimensions', 'image.prioritize_thumbnail',
   'photo.list',
-  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset',
+  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
   'metadata.get', 'metadata.set', 'metadata.batch_set',
   'dup.scan', 'dup.groups', 'dup.resolve', 'dup.resolve_member',
@@ -300,20 +327,19 @@ export const ALLOWED_COMMANDS = new Set([
   'album.create', 'album.list', 'album.get', 'album.update', 'album.delete', 'album.get_photos',
   'export.preview', 'export.execute', 'export.cancel', 'export.report',
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
-  'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback', 'culling.reset',
-  'history.list', 'history.undo', 'history.redo', 'history.can_undo', 'history.can_redo',
+  'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
+  'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset',
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([
   'session.delete', 'session.delete_many',
   'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
-  'sim.writeback', 'sim.retry_failed_writeback',
+  'sim.writeback', 'sim.retry_failed_writeback', 'sim.cleanup',
   'person.delete', 'person.merge', 'person.remove_photo',
   'dup.resolve', 'dup.resolve_member',
-  'culling.writeback', 'culling.reset',
+  'culling.writeback', 'culling.retry_failed_writeback', 'culling.cleanup', 'culling.reset',
   'metadata.set', 'metadata.batch_set',
   'template.delete',
-  'history.undo',
   'album.delete',
   'export.execute', 'template.apply',
 ])
@@ -325,6 +351,7 @@ export const ALLOWED_EVENTS = new Set([
   'c1:plugin-import',
   'export:progress',
   'models:download-progress',
+  'gather:notification',
 ])
 
 // ── Guard 函数 ──

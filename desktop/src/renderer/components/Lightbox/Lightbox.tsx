@@ -35,20 +35,22 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
   }, [])
 
   useEffect(() => {
-    let cancelled = false
     if (!photo) return
-    setSrc(null)
     setLoadError(false)
     setScale(1)
     setPosition({ x: 0, y: 0 })
-    imageApi.getPreview(photo.filepath).then((r) => {
-      if (cancelled) return
-      setSrc(`data:image/jpeg;base64,${r.buffer}`)
-    }).catch(() => {
-      if (!cancelled) setLoadError(true)
+    const viewportDimension = Math.max(window.innerWidth, window.innerHeight)
+    const maxDimension = Math.max(
+      2048,
+      Math.min(5120, Math.ceil(viewportDimension * window.devicePixelRatio)),
+    )
+    setSrc(imageApi.previewUrl(photo.filepath, maxDimension))
+    const adjacentPaths = [photos[index - 1]?.filepath, photos[index + 1]?.filepath]
+      .filter((path): path is string => Boolean(path))
+    void imageApi.preloadPreviews(adjacentPaths, maxDimension).catch(() => {
+      // Prefetch is best-effort; the foreground request still reports errors.
     })
-    return () => { cancelled = true }
-  }, [photo?.filepath])
+  }, [index, photo?.filepath, photos])
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -107,10 +109,14 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
       >
         {src ? (
           <img
-            src={src}
+          src={src}
             alt={photo.filename}
             className={styles.image}
-            draggable={false}
+          draggable={false}
+          onError={() => {
+            setSrc(null)
+            setLoadError(true)
+          }}
             style={{
               transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
               transformOrigin: 'center center',

@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import * as fs from 'fs'
+import * as fsp from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import sharp from 'sharp'
@@ -17,9 +17,9 @@ async function sipsToBuffer(args: string[]): Promise<Buffer> {
   const outPath = tempJpegPath()
   try {
     await execFileAsync('sips', [...args, '--out', outPath])
-    return fs.readFileSync(outPath)
+    return await fsp.readFile(outPath)
   } finally {
-    try { fs.unlinkSync(outPath) } catch {}
+    try { await fsp.unlink(outPath) } catch {}
   }
 }
 

@@ -4,7 +4,6 @@ import * as fs from 'fs'
 import { app } from 'electron'
 import { FACE_THUMB_DIR } from '@gather/shared'
 import type { SettingsService } from '../../services/settings/settings.service'
-import { IFaceRepository } from './interfaces'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 
@@ -16,6 +15,9 @@ export interface FaceObservationInput {
   bboxH: number
   embedding: number[]
   confidence: number
+  sourceFileSize?: number
+  sourceFileMtimeMs?: number
+  analysisSignature?: string
 }
 
 export interface FaceObservationRow {
@@ -28,6 +30,9 @@ export interface FaceObservationRow {
   bbox_h: number
   embedding: Buffer
   confidence: number
+  source_file_size: number
+  source_file_mtime_ms: number
+  analysis_signature: string
 }
 
 export interface FaceClusterInput {
@@ -65,7 +70,7 @@ export interface FaceClusterMemberRow {
 }
 
 @injectable()
-export class FaceRepository implements IFaceRepository {
+export class FaceRepository {
   constructor(
     @inject(DI_TOKENS.DB) private db: Database,
     @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
@@ -74,12 +79,27 @@ export class FaceRepository implements IFaceRepository {
   saveObservations(sessionId: string, observations: FaceObservationInput[]): number[] {
     const ids: number[] = []
     const stmt = this.db.prepare(
-      'INSERT INTO face_observations (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      `INSERT INTO face_observations
+       (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
+        source_file_size, source_file_mtime_ms, analysis_signature)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     const insertMany = this.db.transaction(() => {
       for (const obs of observations) {
         const embBuffer = Buffer.from(new Float32Array(obs.embedding).buffer)
-        const result = stmt.run(obs.photoId, sessionId, obs.bboxX, obs.bboxY, obs.bboxW, obs.bboxH, embBuffer, obs.confidence)
+        const result = stmt.run(
+          obs.photoId,
+          sessionId,
+          obs.bboxX,
+          obs.bboxY,
+          obs.bboxW,
+          obs.bboxH,
+          embBuffer,
+          obs.confidence,
+          obs.sourceFileSize ?? 0,
+          obs.sourceFileMtimeMs ?? 0,
+          obs.analysisSignature ?? '',
+        )
         ids.push(Number(result.lastInsertRowid))
       }
     })
@@ -91,13 +111,88 @@ export class FaceRepository implements IFaceRepository {
     return this.db.prepare('SELECT * FROM face_observations WHERE session_id = ? ORDER BY id').all(sessionId) as FaceObservationRow[]
   }
 
+  getAnalysisStates(sessionId: string): Map<string, {
+    sourceFileSize: number
+    sourceFileMtimeMs: number
+    analysisSignature: string
+  }> {
+    const rows = this.db.prepare(
+      `SELECT photo_id, source_file_size, source_file_mtime_ms, analysis_signature
+       FROM face_analysis_state WHERE session_id = ?`,
+    ).all(sessionId) as Array<{
+      photo_id: string
+      source_file_size: number
+      source_file_mtime_ms: number
+      analysis_signature: string
+    }>
+    return new Map(rows.map(row => [row.photo_id, {
+      sourceFileSize: row.source_file_size,
+      sourceFileMtimeMs: row.source_file_mtime_ms,
+      analysisSignature: row.analysis_signature,
+    }]))
+  }
+
+  upsertAnalysisState(
+    sessionId: string,
+    photoId: string,
+    sourceFileSize: number,
+    sourceFileMtimeMs: number,
+    analysisSignature: string,
+  ): void {
+    this.db.prepare(
+      `INSERT INTO face_analysis_state
+       (photo_id, session_id, source_file_size, source_file_mtime_ms, analysis_signature, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(photo_id) DO UPDATE SET
+         session_id = excluded.session_id,
+         source_file_size = excluded.source_file_size,
+         source_file_mtime_ms = excluded.source_file_mtime_ms,
+         analysis_signature = excluded.analysis_signature,
+         updated_at = excluded.updated_at`,
+    ).run(
+      photoId,
+      sessionId,
+      sourceFileSize,
+      sourceFileMtimeMs,
+      analysisSignature,
+      new Date().toISOString(),
+    )
+  }
+
+  getClusterSignature(sessionId: string): string | null {
+    const row = this.db.prepare(
+      'SELECT cluster_signature FROM face_cluster_state WHERE session_id = ?',
+    ).get(sessionId) as { cluster_signature: string } | undefined
+    return row?.cluster_signature ?? null
+  }
+
+  upsertClusterSignature(sessionId: string, signature: string): void {
+    this.db.prepare(`
+      INSERT INTO face_cluster_state (session_id, cluster_signature, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        cluster_signature = excluded.cluster_signature,
+        updated_at = excluded.updated_at
+    `).run(sessionId, signature, new Date().toISOString())
+  }
+
   updateEmbedding(observationId: number, embedding: number[]): void {
     const embBuffer = Buffer.from(new Float32Array(embedding).buffer)
     this.db.prepare('UPDATE face_observations SET embedding = ? WHERE id = ?').run(embBuffer, observationId)
   }
 
   deleteObservationsBySession(sessionId: string): void {
-    this.db.prepare('DELETE FROM face_observations WHERE session_id = ?').run(sessionId)
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM face_observations WHERE session_id = ?').run(sessionId)
+      this.db.prepare('DELETE FROM face_analysis_state WHERE session_id = ?').run(sessionId)
+      this.db.prepare('DELETE FROM face_cluster_state WHERE session_id = ?').run(sessionId)
+    })()
+  }
+
+  deleteObservationsByPhoto(sessionId: string, photoId: string): void {
+    this.db.prepare(
+      'DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?',
+    ).run(sessionId, photoId)
   }
 
   getFaceThumbDir(): string {
@@ -157,6 +252,11 @@ export class FaceRepository implements IFaceRepository {
     return row?.thumbnail_path ?? ''
   }
 
+  getClusterSessionId(clusterId: number): string | null {
+    const row = this.db.prepare('SELECT session_id FROM face_clusters WHERE id = ?').get(clusterId) as { session_id: string } | undefined
+    return row?.session_id ?? null
+  }
+
   getThumbnailPathsBySession(sessionId: string): string[] {
     const rows = this.db.prepare("SELECT thumbnail_path FROM face_clusters WHERE session_id = ? AND thumbnail_path != '' AND member_count > 0").all(sessionId) as { thumbnail_path: string }[]
     return rows.map(r => r.thumbnail_path)
@@ -213,13 +313,12 @@ export class FaceRepository implements IFaceRepository {
         this.db.prepare('UPDATE face_cluster_members SET cluster_id = ? WHERE id = ?').run(sourceId, memberId)
       }
 
-      const sourceCount = this.db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(sourceId) as { count: number }
       const targetCount = this.db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(targetId) as { count: number }
 
       this.db.prepare('UPDATE face_clusters SET member_count = ? WHERE id = ?').run(sourceMemberCount, sourceId)
       this.db.prepare('UPDATE face_clusters SET member_count = ?, status = ? WHERE id = ?').run(
         Math.max(0, targetCount.count),
-        targetCount.count > 0 ? 'unbound' : 'unbound',
+        'unbound',
         targetId,
       )
 
@@ -247,7 +346,7 @@ export class FaceRepository implements IFaceRepository {
     for (const p of paths) this.deleteThumbnailFile(p)
   }
 
-  removeMemberFromCluster(clusterId: number, photoId: string): void {
+  removeMemberFromCluster(clusterId: number, memberId: number): boolean {
     const memberCount = this.db.prepare(
       'SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?'
     ).get(clusterId) as { count: number }
@@ -256,7 +355,10 @@ export class FaceRepository implements IFaceRepository {
       : ''
 
     const delMember = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM face_cluster_members WHERE cluster_id = ? AND photo_id = ?').run(clusterId, photoId)
+      const deleted = this.db.prepare(
+        'DELETE FROM face_cluster_members WHERE cluster_id = ? AND id = ?',
+      ).run(clusterId, memberId)
+      if (deleted.changes === 0) return false
       const remaining = this.db.prepare('SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?').get(clusterId) as { count: number }
       if (remaining.count === 0) {
         this.db.prepare('DELETE FROM role_bindings WHERE cluster_id = ?').run(clusterId)
@@ -264,8 +366,10 @@ export class FaceRepository implements IFaceRepository {
       } else {
         this.db.prepare('UPDATE face_clusters SET member_count = ? WHERE id = ?').run(remaining.count, clusterId)
       }
+      return true
     })
-    delMember()
-    this.deleteThumbnailFile(thumbnailPathToDelete)
+    const deleted = delMember()
+    if (deleted) this.deleteThumbnailFile(thumbnailPathToDelete)
+    return deleted
   }
 }

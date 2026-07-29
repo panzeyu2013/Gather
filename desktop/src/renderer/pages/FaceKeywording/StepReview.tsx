@@ -1,18 +1,26 @@
 import React, { useCallback, useRef, useState } from 'react'
 import { useFaceKwStore, type ClusterData } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 export default function StepReview() {
   const {
     sessionId,
-    clusters,
     selectedClusterId,
     selectCluster,
-    updateClusterBinding,
-    removeCluster,
-    mergeClusters: mergeClustersStore,
-    setStep,
   } = useFaceKwStore()
+  const queryClient = useQueryClient()
+  const { data: clusters = [] } = useQuery({
+    queryKey: ['face-clusters', sessionId],
+    queryFn: async () => (await faceKwApi.getClusters(sessionId!)).map(cluster => ({
+      ...cluster,
+      binding: cluster.binding ?? null,
+    })),
+    enabled: Boolean(sessionId),
+  })
+  const refreshClusters = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['face-clusters', sessionId] })
+  }, [queryClient, sessionId])
 
   const selectedCluster = clusters.find((c) => c.id === selectedClusterId) ?? null
 
@@ -20,6 +28,7 @@ export default function StepReview() {
   const [keywords, setKeywords] = useState(selectedCluster?.binding?.keywords?.join(', ') ?? '')
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null)
   const [thumbnails, setThumbnails] = useState<Record<number, string>>({})
+  const [actionError, setActionError] = useState<string | null>(null)
   const loadedRef = useRef<Set<number>>(new Set())
 
   const loadThumbnail = useCallback(async (clusterId: number) => {
@@ -36,42 +45,60 @@ export default function StepReview() {
 
   const handleSelectCluster = useCallback(
     (cluster: ClusterData) => {
-      selectCluster(cluster.id)
+      if (!sessionId) return
+      selectCluster(sessionId, cluster.id)
       setRoleName(cluster.binding?.roleName ?? '')
       setKeywords(cluster.binding?.keywords?.join(', ') ?? '')
     },
-    [selectCluster],
+    [sessionId, selectCluster],
   )
 
   const handleBind = useCallback(async () => {
     if (!sessionId || !selectedCluster) return
+    const normalizedRoleName = roleName.trim()
+    if (!normalizedRoleName) {
+      setActionError('角色名称不能为空；它会作为 Capture One 关键词写入。')
+      return
+    }
     const kwList = keywords.split(',').map((k) => k.trim()).filter(Boolean)
     try {
-      await faceKwApi.bind(sessionId, selectedCluster.id, roleName.trim() || 'Unnamed', kwList)
-      updateClusterBinding(selectedCluster.id, { roleName: roleName.trim() || 'Unnamed', keywords: kwList })
+      setActionError(null)
+      await faceKwApi.bind(sessionId, selectedCluster.id, normalizedRoleName, kwList)
+      await refreshClusters()
     } catch (e) {
-      console.error('Bind failed:', e)
+      setActionError(`绑定失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
-  }, [sessionId, selectedCluster, roleName, keywords, updateClusterBinding])
+  }, [sessionId, selectedCluster, roleName, keywords, refreshClusters])
+
+  const handleRemoveMember = useCallback(async (memberId: number) => {
+    if (!sessionId || !selectedCluster) return
+    try {
+      setActionError(null)
+      await faceKwApi.removeMember(sessionId, selectedCluster.id, memberId)
+      await refreshClusters()
+    } catch (e) {
+      setActionError(`移除成员失败：${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }, [sessionId, selectedCluster, refreshClusters])
 
   const handleUnbind = useCallback(async () => {
     if (!sessionId || !selectedCluster) return
     try {
       await faceKwApi.unbind(sessionId, selectedCluster.id)
-      updateClusterBinding(selectedCluster.id, null)
+      await refreshClusters()
       setRoleName('')
       setKeywords('')
     } catch (e) {
       console.error('Unbind failed:', e)
     }
-  }, [sessionId, selectedCluster, updateClusterBinding])
+  }, [sessionId, selectedCluster, refreshClusters])
 
   const handleMerge = useCallback(async () => {
     if (!sessionId || !selectedCluster || !mergeTargetId) return
     try {
       await faceKwApi.merge(sessionId, selectedCluster.id, mergeTargetId)
-      mergeClustersStore(selectedCluster.id, mergeTargetId)
-      selectCluster(mergeTargetId)
+      await refreshClusters()
+      selectCluster(sessionId, mergeTargetId)
       setMergeTargetId(null)
       loadedRef.current.delete(mergeTargetId)
       setThumbnails(prev => {
@@ -82,7 +109,7 @@ export default function StepReview() {
     } catch (e) {
       console.error('Merge failed:', e)
     }
-  }, [sessionId, selectedCluster, mergeTargetId, mergeClustersStore, selectCluster])
+  }, [sessionId, selectedCluster, mergeTargetId, refreshClusters, selectCluster])
 
   return (
     <div style={{ display: 'flex', height: '100%', gap: '16px', padding: '16px' }}>
@@ -196,9 +223,29 @@ export default function StepReview() {
                   <span style={{ color: '#808080', fontSize: '11px' }}>
                     {(m.confidence * 100).toFixed(0)}%
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleRemoveMember(m.memberId)}
+                    title="从该人脸聚类中移除"
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#ff8080',
+                      cursor: 'pointer',
+                      padding: '2px 4px',
+                    }}
+                  >
+                    移除
+                  </button>
                 </div>
               ))}
             </div>
+
+            {actionError && (
+              <p style={{ color: '#ff8080', fontSize: '12px', marginBottom: '12px' }}>
+                {actionError}
+              </p>
+            )}
 
             {/* Tag Editor */}
             <div style={{ background: '#2a2a3e', borderRadius: '8px', padding: '12px', marginBottom: '12px' }}>

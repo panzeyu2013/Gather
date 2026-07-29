@@ -1,13 +1,14 @@
 import { Database } from '../database'
-import { IWritebackRepository } from './interfaces'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import type { WritebackAttributes } from '@gather/shared'
 
 export interface WritebackItemInput {
   photoId: string
   photoPath: string
   module: string
   keywords: string[]
+  attributes?: WritebackAttributes
   xmpPath: string
   backupPath: string
 }
@@ -19,6 +20,7 @@ export interface WritebackItemRow {
   session_id: string
   module: string
   keywords: string
+  attributes_json: string
   xmp_path: string
   backup_path: string
   xmp_status: string
@@ -28,7 +30,7 @@ export interface WritebackItemRow {
 }
 
 @injectable()
-export class WritebackRepository implements IWritebackRepository {
+export class WritebackRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   saveItems(sessionId: string, module: string, items: WritebackItemInput[]): void {
@@ -36,12 +38,13 @@ export class WritebackRepository implements IWritebackRepository {
 
     const replaceAll = this.db.transaction(() => {
       this.db.prepare(
-        'DELETE FROM writeback_items WHERE session_id = ? AND module = ? AND xmp_status = ?',
-      ).run(sessionId, module, 'pending')
+        `DELETE FROM writeback_items
+         WHERE session_id = ? AND module = ? AND xmp_status IN ('pending', 'failed')`,
+      ).run(sessionId, module)
 
       const insertStmt = this.db.prepare(
-        `INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?)`,
+        `INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, attributes_json, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?)`,
       )
 
       for (const item of items) {
@@ -51,6 +54,7 @@ export class WritebackRepository implements IWritebackRepository {
           sessionId,
           module,
           JSON.stringify(item.keywords),
+          JSON.stringify(item.attributes ?? {}),
           item.xmpPath,
           item.backupPath,
           now,
@@ -78,6 +82,10 @@ export class WritebackRepository implements IWritebackRepository {
     return this.db.prepare(sql).all(...params) as WritebackItemRow[]
   }
 
+  getItem(itemId: number): WritebackItemRow | undefined {
+    return this.db.prepare('SELECT * FROM writeback_items WHERE id = ?').get(itemId) as WritebackItemRow | undefined
+  }
+
   updateStatus(itemId: number, status: string, error?: string): void {
     const now = new Date().toISOString()
     this.db.prepare(
@@ -85,18 +93,82 @@ export class WritebackRepository implements IWritebackRepository {
     ).run(status, error ?? '', now, itemId)
   }
 
-  getFailedCount(sessionId: string): number {
+  getFailedCount(sessionId: string, module?: string): number {
+    let sql = 'SELECT COUNT(*) as count FROM writeback_items WHERE session_id = ? AND xmp_status = ?'
+    const params: unknown[] = [sessionId, 'failed']
+    if (module) {
+      sql += ' AND module = ?'
+      params.push(module)
+    }
     const row = this.db
-      .prepare('SELECT COUNT(*) as count FROM writeback_items WHERE session_id = ? AND xmp_status = ?')
-      .get(sessionId, 'failed') as { count: number } | undefined
+      .prepare(sql)
+      .get(...params) as { count: number } | undefined
     return row?.count ?? 0
   }
 
-  deleteItems(sessionId: string): void {
+  deleteItems(sessionId: string, module?: string): void {
+    if (module) {
+      this.db.prepare('DELETE FROM writeback_items WHERE session_id = ? AND module = ?')
+        .run(sessionId, module)
+      return
+    }
     this.db.prepare('DELETE FROM writeback_items WHERE session_id = ?').run(sessionId)
   }
 
   updateBackupPath(itemId: number, path: string): void {
     this.db.prepare('UPDATE writeback_items SET backup_path = ? WHERE id = ?').run(path, itemId)
+  }
+
+  updateAttributes(itemId: number, attributes: Record<string, unknown>): void {
+    this.db.prepare('UPDATE writeback_items SET attributes_json = ? WHERE id = ?')
+      .run(JSON.stringify(attributes), itemId)
+  }
+
+  updateKeywords(itemId: number, keywords: string[]): void {
+    this.db.prepare('UPDATE writeback_items SET keywords = ? WHERE id = ?')
+      .run(JSON.stringify(keywords), itemId)
+  }
+
+  updateAttributesMany(items: Array<{ id: number; attributes: Record<string, unknown> }>): void {
+    const statement = this.db.prepare(
+      'UPDATE writeback_items SET attributes_json = ? WHERE id = ?',
+    )
+    this.db.transaction(() => {
+      for (const item of items) {
+        statement.run(JSON.stringify(item.attributes), item.id)
+      }
+    })()
+  }
+
+  updateKeywordsMany(items: Array<{ id: number; keywords: string[] }>): void {
+    const statement = this.db.prepare(
+      'UPDATE writeback_items SET keywords = ? WHERE id = ?',
+    )
+    this.db.transaction(() => {
+      for (const item of items) {
+        statement.run(JSON.stringify(item.keywords), item.id)
+      }
+    })()
+  }
+
+  markWrittenAsSynced(sessionId: string, module: string): void {
+    this.db.prepare(
+      `UPDATE writeback_items
+       SET xmp_status = 'synced'
+       WHERE session_id = ? AND module = ? AND xmp_status = 'written'`,
+    ).run(sessionId, module)
+  }
+
+  updateStatusByXmpPath(
+    sessionId: string,
+    module: string,
+    xmpPath: string,
+    status: string,
+  ): void {
+    this.db.prepare(
+      `UPDATE writeback_items
+       SET xmp_status = ?, error_message = ''
+       WHERE session_id = ? AND module = ? AND xmp_path = ?`,
+    ).run(status, sessionId, module, xmpPath)
   }
 }

@@ -2,14 +2,21 @@
 // contextBridge 安全 API — 渲染进程唯一入口
 
 import { contextBridge, ipcRenderer } from 'electron'
+import type { Command, Event } from '@gather/shared'
 
-const ALLOWED_COMMANDS = new Set([
+type CommandType = Command['type']
+type EventType = Event['type']
+
+// Sandboxed Electron preloads cannot require workspace packages at runtime.
+// Keep these values inline and verify parity with the shared protocol in tests.
+const ALLOWED_COMMANDS = new Set<CommandType>([
   'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
-  'fkw.analyze', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
+  'fkw.analyze', 'fkw.recluster', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
   'fkw.remove_member', 'fkw.get_cluster_thumbnail', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
-  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster', 'sim.preview_writeback', 'sim.writeback',
-  'sim.retry_failed_writeback', 'sim.writeback_items',
-  'thumbnail.get', 'image.get_preview', 'image.get_thumbnail', 'image.prioritize_thumbnail',
+  'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster',
+  'sim.preview_writeback', 'sim.writeback', 'sim.writeback_items', 'sim.retry_failed_writeback',
+  'sim.confirm_sync', 'sim.cleanup',
+  'image.prioritize_thumbnail', 'image.preload_thumbnails', 'image.preload_previews', 'image.get_dimensions',
   'photo.list',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
@@ -19,31 +26,29 @@ const ALLOWED_COMMANDS = new Set([
   'album.create', 'album.list', 'album.get', 'album.update', 'album.delete', 'album.get_photos',
   'export.preview', 'export.execute', 'export.cancel', 'export.report',
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
-  'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback', 'culling.reset',
-  'history.list', 'history.undo', 'history.redo', 'history.can_undo', 'history.can_redo',
+  'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
+  'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset',
 ])
 
-const DESTRUCTIVE_COMMANDS = new Set([
+const DESTRUCTIVE_COMMANDS = new Set<CommandType>([
   'session.delete', 'session.delete_many',
   'fkw.writeback', 'fkw.cleanup', 'fkw.confirm_cleanup',
-  'sim.writeback', 'sim.retry_failed_writeback',
+  'sim.writeback', 'sim.retry_failed_writeback', 'sim.cleanup',
   'person.delete', 'person.merge', 'person.remove_photo',
   'dup.resolve', 'dup.resolve_member',
-  'culling.writeback', 'culling.reset',
+  'culling.writeback', 'culling.retry_failed_writeback', 'culling.cleanup', 'culling.reset',
   'metadata.set', 'metadata.batch_set',
-  'template.delete',
-  'history.undo',
-  'album.delete',
-  'export.execute', 'template.apply',
+  'template.delete', 'album.delete', 'export.execute', 'template.apply',
 ])
 
-const ALLOWED_EVENTS = new Set([
+const ALLOWED_EVENTS = new Set<EventType>([
   'progress',
   'engine:status',
   'c1:import-trigger',
   'c1:plugin-import',
   'export:progress',
   'models:download-progress',
+  'gather:notification',
 ])
 
 const LISTENER_COUNTS = new Map<string, number>()
@@ -59,8 +64,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export interface GatherAPI {
-  readonly sendCommand: (cmd: string, params?: Record<string, unknown>) => Promise<unknown>
-  readonly onEvent: (event: string, callback: (data: unknown) => void) => () => void
+  readonly sendCommand: (cmd: CommandType, params?: Record<string, unknown>) => Promise<unknown>
+  readonly onEvent: (event: EventType, callback: (data: unknown) => void) => () => void
   readonly onReady: (callback: () => void) => () => void
   readonly onPluginImport: (callback: (files: string[]) => void) => () => void
   readonly getSelectedPhotos: () => Promise<string[]>

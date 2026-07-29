@@ -5,11 +5,14 @@ import {
   createEmptyXmpDoc,
   parseXmp,
   extractKeywords,
+  extractXmpAttributes,
   writeXmpAttributes,
+  writeXmpAttributesAsync,
+  parseXmpAsync,
   backupXmpFile,
   restoreXmpFile,
 } from '../../../desktop/src/main/services/xmp/xmp-utils'
-import { XmpSidecarWriter } from '../../../desktop/src/main/services/xmp/xmp-sidecar-writer'
+import { XmpSidecarWriter, getXmpSidecarPath } from '../../../desktop/src/main/services/xmp/xmp-sidecar-writer'
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'xmp-test-'))
@@ -176,6 +179,22 @@ describe('xmp-utils', () => {
     expect(content).toContain('exif:GPSLongitude')
   })
 
+  it('round-trips rating and color label from a sidecar', () => {
+    const xp = xmpPath(dir)
+    writeXmpAttributes(xp, {
+      keywords: ['selected'],
+      rating: 5,
+      label: 'Green',
+    })
+
+    const doc = parseXmp(xp)
+    expect(extractXmpAttributes(doc!)).toEqual({
+      keywords: ['selected'],
+      rating: 5,
+      label: 'Green',
+    })
+  })
+
   it('scenario 10: write rating then write keywords → rating preserved', () => {
     const xp = xmpPath(dir)
     writeFile(xp, validMinimalXmp([]))
@@ -205,6 +224,19 @@ describe('xmp-utils', () => {
     expect(fs.existsSync(backup)).toBe(false)
   })
 
+  it('creates isolated backups across repeated writeback transactions', () => {
+    const xp = xmpPath(dir)
+    writeXmpAttributes(xp, { keywords: ['original'] })
+    const backup = backupXmpFile(xp)
+    writeXmpAttributes(xp, { keywords: ['first-write'] })
+    const secondBackup = backupXmpFile(xp)
+    expect(secondBackup).not.toBe(backup)
+    expect(extractKeywords(parseXmp(secondBackup)!)).toEqual(['first-write'])
+    restoreXmpFile(xp, backup)
+
+    expect(extractKeywords(parseXmp(xp)!)).toEqual(['original'])
+  })
+
   it('scenario 13: long keywords string (5000 chars) survives round-trip', () => {
     const xp = xmpPath(dir)
     writeFile(xp, validMinimalXmp([]))
@@ -215,6 +247,23 @@ describe('xmp-utils', () => {
     const doc = parseXmp(xp)
     const result = extractKeywords(doc!)
     expect(result).toEqual([longKeyword])
+  })
+
+  it('writes sidecars asynchronously with atomic replacement', async () => {
+    const xp = xmpPath(dir)
+    await writeXmpAttributesAsync(xp, {
+      keywords: ['async'],
+      rating: 5,
+      label: 'Green',
+    })
+
+    const doc = await parseXmpAsync(xp)
+    expect(extractXmpAttributes(doc!)).toEqual({
+      keywords: ['async'],
+      rating: 5,
+      label: 'Green',
+    })
+    expect(fs.readdirSync(dir).filter(file => file.includes('.tmp-'))).toEqual([])
   })
 })
 
@@ -238,7 +287,12 @@ describe('XmpSidecarWriter', () => {
     const keywords = await writer.readKeywords(pp)
     expect(keywords).toEqual(['sidecar-test', 'tag2'])
 
-    const xp = pp + '.xmp'
+    const xp = getXmpSidecarPath(pp)
     expect(fs.existsSync(xp)).toBe(true)
+  })
+
+  it('uses the Capture One basename sidecar convention', () => {
+    expect(getXmpSidecarPath(path.join(dir, 'IMG_0001.NEF')))
+      .toBe(path.join(dir, 'IMG_0001.xmp'))
   })
 })

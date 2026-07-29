@@ -22,6 +22,7 @@ export type {
   C1PluginImportData,
   ExportProgressData,
   GroupData,
+  WritebackAttributes,
   WritebackOptions,
   WritebackPreview,
   WritebackItem,
@@ -73,6 +74,9 @@ export type {
   SimWritebackParams,
   SimWritebackItemsParams,
   SimRetryFailedWritebackParams,
+  SimConfirmSyncParams,
+  SimCleanupParams,
+  SimilarityKeywordAssignment,
   SimilarityGroup,
   SimilarityImage,
 } from './protocol/similarity'
@@ -136,7 +140,6 @@ export type {
   ExportOptions,
   ExportPreview,
   ExportResult,
-  ExportProgressEvent,
   ReportData,
 } from './protocol/export'
 
@@ -157,19 +160,11 @@ export type {
   CullingBatchDecideParams,
   CullingSummaryParams,
   CullingWritebackParams,
+  CullingRetryWritebackParams,
+  CullingConfirmSyncParams,
+  CullingCleanupParams,
   CullingResetParams,
   CullingGroup,
   CullingImage,
   CullingSummary,
 } from './protocol/culling'
-
-export type {
-  HistoryListParams,
-  HistoryUndoParams,
-  HistoryRedoParams,
-  HistoryCanUndoParams,
-  HistoryCanRedoParams,
-  OperationLogEntry,
-  UndoStatus,
-  RedoStatus,
-} from './protocol/history'

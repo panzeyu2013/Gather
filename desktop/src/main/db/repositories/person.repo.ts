@@ -1,6 +1,5 @@
 import { Database } from '../database'
 import crypto from 'crypto'
-import { IPersonRepository } from './interfaces'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 
@@ -55,7 +54,7 @@ export interface PersonUpdateFields {
 }
 
 @injectable()
-export class PersonRepository implements IPersonRepository {
+export class PersonRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   list(): PersonRow[] {

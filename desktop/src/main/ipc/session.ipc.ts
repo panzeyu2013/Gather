@@ -8,13 +8,15 @@ export function registerSessionHandlers(registry: CommandRegistry, sessionServic
     wrapHandler(async (params) => {
       const name = validateString(params.name, 'name')
       const source = validateString(params.source ?? 'manual', 'source')
-      const session = sessionService.createSession(name, source)
+      const sourcePath = validateString(params.sourcePath ?? '', 'sourcePath', 4096, true)
+      const session = sessionService.createSession(name, source, sourcePath)
       if (Array.isArray(params.filepaths) && params.filepaths.length > 0) {
         const filepaths = validateStringArray(params.filepaths, 'filepaths')
-        sessionService.addPhotos(session.id, filepaths, source)
-        return ok(sessionService.getSession(session.id))
+        const result = await sessionService.addPhotos(session.id, filepaths, source)
+        const sessionData = sessionService.getSession(session.id)
+        return ok({ ...sessionData, failedFiles: result.failedFiles, added: result.added, skipped: result.skipped })
       }
-      return ok(session)
+      return ok({ ...session, failedFiles: [], added: 0, skipped: 0 })
     }),
   )
 
@@ -64,7 +66,7 @@ export function registerSessionHandlers(registry: CommandRegistry, sessionServic
       const sessionId = validateString(params.sessionId, 'sessionId')
       const filepaths = validateStringArray(params.filepaths, 'filepaths')
       const source = typeof params.source === 'string' ? params.source : 'manual'
-      return ok(sessionService.addPhotos(sessionId, filepaths, source))
+      return ok(await sessionService.addPhotos(sessionId, filepaths, source))
     }),
   )
 

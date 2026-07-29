@@ -1,11 +1,13 @@
 import { sendCommand } from './client'
 import type { SessionData, AddPhotoResult, PhotoData } from '@gather/shared'
 
+type SessionCreateResult = SessionData & Pick<AddPhotoResult, 'added' | 'skipped' | 'failedFiles'>
+
 export const sessionApi = {
   list: () => sendCommand<SessionData[]>('session.list'),
   get: (id: string) => sendCommand<SessionData>('session.get', { sessionId: id }),
-  create: (name: string, source: string, filepaths?: string[]) =>
-    sendCommand<SessionData>('session.create', { name, source, filepaths }),
+  create: (name: string, source: string, filepaths?: string[], sourcePath?: string) =>
+    sendCommand<SessionCreateResult>('session.create', { name, source, filepaths, sourcePath }),
   delete: (id: string) =>
     sendCommand<boolean>('session.delete', { sessionId: id, confirmed: true }),
   deleteMany: (ids: string[]) =>

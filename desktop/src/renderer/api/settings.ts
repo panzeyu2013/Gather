@@ -12,6 +12,8 @@ export interface MLStatus {
   encoderModel: { path: string; resolvedPath: string; exists: boolean }
   modelInfo: {
     detectInputSize: number
+    secondaryDetectInputSize: number
+    previewMaxDimension: number
     encoderInputSize: number
     embeddingDim: number
   }

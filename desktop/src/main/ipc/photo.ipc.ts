@@ -1,5 +1,5 @@
 import type { CommandRegistry } from './registry'
-import { ok, err, validateString, wrapHandler } from './helpers'
+import { ok, validateString, wrapHandler } from './helpers'
 import type { PhotoData } from '@gather/shared'
 import type { PhotoRepository } from '../db/repositories/photo.repo'
 import type { Database } from '../db/database'

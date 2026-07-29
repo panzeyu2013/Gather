@@ -6,10 +6,12 @@ import { SettingsService } from '../settings/settings.service'
 import { DecoderRegistry } from './registry'
 import { SharpDecoder } from './decoders/sharp-decoder'
 import { SipsDecoder } from './decoders/sips-decoder'
+import { readDimensions } from './decoders/fast-dimensions'
 import { DiskCacheManager, EvictionPolicy } from './disk-cache'
-import type { DecodeResult } from './decoder'
+import type { DecodeResult, ImageDecoder } from './decoder'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import { heavyTaskScheduler } from '../../utils/heavy-task-scheduler'
 
 // ── Cache interface ──
 
@@ -23,9 +25,15 @@ export interface ThumbnailCache {
 export class MemoryThumbnailCache implements ThumbnailCache {
   private map = new Map<string, DecodeResult>()
   private readonly maxSize: number
+  private readonly maxBytes: number
+  private totalBytes = 0
 
   constructor(settings: SettingsService) {
     this.maxSize = settings.getNumber('memory_cache_size', 200)
+    this.maxBytes = Math.max(
+      32,
+      settings.getNumber('memory_cache_max_size_mb', 192),
+    ) * 1024 * 1024
   }
 
   async get(key: string): Promise<DecodeResult | null> {
@@ -38,13 +46,19 @@ export class MemoryThumbnailCache implements ThumbnailCache {
   }
 
   async set(key: string, value: DecodeResult): Promise<void> {
+    if (value.buffer.length > this.maxBytes) return
     if (this.map.has(key)) {
+      this.totalBytes -= this.map.get(key)?.buffer.length ?? 0
       this.map.delete(key)
-    } else if (this.map.size >= this.maxSize) {
+    }
+    while (this.map.size >= this.maxSize || this.totalBytes + value.buffer.length > this.maxBytes) {
       const first = this.map.keys().next().value
-      if (first !== undefined) this.map.delete(first)
+      if (first === undefined) break
+      this.totalBytes -= this.map.get(first)?.buffer.length ?? 0
+      this.map.delete(first)
     }
     this.map.set(key, value)
+    this.totalBytes += value.buffer.length
   }
 }
 
@@ -67,29 +81,33 @@ export class DiskThumbnailCache implements ThumbnailCache {
   }
 
   async get(key: string): Promise<DecodeResult | null> {
+    await this.manager.waitUntilReady()
     const filePath = this.cachePath(key)
-    if (!fs.existsSync(filePath)) return null
-
-    const sourcePath = decodeSourcePath(key)
-    if (sourcePath && !this.isValid(filePath, sourcePath)) return null
 
     try {
-      const buffer = fs.readFileSync(filePath)
+      const buffer = await fs.promises.readFile(filePath)
       const hash = this.hashKey(key)
       this.manager.onAccess(hash)
-      return { buffer, format: 'jpeg', width: 0, height: 0 }
+      const dimensions = readDimensions(buffer, '.jpg')
+      return {
+        buffer,
+        format: 'jpeg',
+        width: dimensions?.width ?? 0,
+        height: dimensions?.height ?? 0,
+      }
     } catch {
       return null
     }
   }
 
   async set(key: string, value: DecodeResult): Promise<void> {
+    await this.manager.waitUntilReady()
     const filePath = this.cachePath(key)
     try {
-      fs.writeFileSync(filePath, value.buffer)
+      await fs.promises.writeFile(filePath, value.buffer)
       const hash = this.hashKey(key)
       this.manager.onSet(hash, value.buffer.length)
-      this.manager.evictIfNeeded()
+      await this.manager.evictIfNeeded()
     } catch {
       // disk write failed — silently skip
     }
@@ -103,15 +121,6 @@ export class DiskThumbnailCache implements ThumbnailCache {
     return nodePath.join(this.dir, `${this.hashKey(key)}.jpg`)
   }
 
-  private isValid(cacheFile: string, sourceFile: string): boolean {
-    try {
-      const cacheStat = fs.statSync(cacheFile)
-      const sourceStat = fs.statSync(sourceFile)
-      return sourceStat.mtimeMs <= cacheStat.mtimeMs
-    } catch {
-      return false
-    }
-  }
 }
 
 // ── Two-tier cache (memory → disk → decode) ──
@@ -145,14 +154,43 @@ export class TieredThumbnailCache implements ThumbnailCache {
 
 // ── Cache key helpers ──
 
-function buildCacheKey(filePath: string, size: number): string {
-  return `${filePath}::${size}`
+async function buildCacheKey(filePath: string, variant: string): Promise<string> {
+  try {
+    const stat = await fs.promises.stat(filePath)
+    return `${filePath}::${variant}@${stat.size}@${Math.round(stat.mtimeMs)}`
+  } catch {
+    return `${filePath}::${variant}@missing`
+  }
 }
 
-function decodeSourcePath(key: string): string | null {
-  const idx = key.lastIndexOf('::')
-  if (idx === -1) return null
-  return key.slice(0, idx)
+function canonicalImageSize(requested: number): number {
+  if (requested <= 320) return 256
+  if (requested <= 1280) return 1024
+  return 2048
+}
+
+class DecodeLimiter {
+  private active = 0
+  private pending: Array<{ priority: number; resolve: () => void }> = []
+
+  constructor(private readonly getLimit: () => number) {}
+
+  async run<T>(task: () => Promise<T>, priority = 1): Promise<T> {
+    if (this.active >= this.getLimit()) {
+      await new Promise<void>((resolve) => {
+        this.pending.push({ priority, resolve })
+        this.pending.sort((a, b) => a.priority - b.priority)
+      })
+    }
+
+    this.active++
+    try {
+      return await task()
+    } finally {
+      this.active--
+      this.pending.shift()?.resolve()
+    }
+  }
 }
 
 // ── ImageService ──
@@ -161,6 +199,10 @@ function decodeSourcePath(key: string): string | null {
 export class ImageService {
   private registry = new DecoderRegistry()
   private thumbnailCache: ThumbnailCache
+  private thumbnailInFlight = new Map<string, Promise<DecodeResult>>()
+  private previewInFlight = new Map<string, Promise<DecodeResult>>()
+  private dimensionsInFlight = new Map<string, Promise<{ width: number; height: number }>>()
+  private decodeLimiter: DecodeLimiter
 
   constructor(
     @inject(DI_TOKENS.THUMBNAIL_CACHE) cache: ThumbnailCache,
@@ -171,75 +213,154 @@ export class ImageService {
       this.registry.register(new SipsDecoder())
     }
     this.thumbnailCache = cache
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { ThumbnailQueue } = require('./thumbnail-queue')
-    ThumbnailQueue.setInstance(new ThumbnailQueue(settings, this))
+    this.decodeLimiter = new DecodeLimiter(() => {
+      const configured = Math.floor(this.settings.getNumber('thumbnail_concurrency', 4))
+      return Math.max(1, Math.min(8, configured))
+    })
   }
 
-  async getPreview(path: string, maxDimension?: number): Promise<DecodeResult> {
-    const decoder = this.registry.resolve(path)
+  async getPreview(path: string, maxDimension?: number, priority = 0): Promise<DecodeResult> {
+    const resolvedDimension = maxDimension ? canonicalImageSize(maxDimension) : 2048
+    const key = await buildCacheKey(path, `p${resolvedDimension}`)
+    const existing = this.previewInFlight.get(key)
+    if (existing) return existing
+
+    const pending = this.thumbnailCache.get(key)
+      .then(async (diskCached) => {
+        if (diskCached) return diskCached
+        const result = await this.decodeLimiter.run(
+          () => heavyTaskScheduler.run(() => this.decodeWithFallback(
+            path,
+            'preview',
+            (decoder) => decoder.getPreview(path, resolvedDimension),
+          ), priority),
+          priority,
+        )
+        await this.thumbnailCache.set(key, result)
+        return result
+      })
+    this.previewInFlight.set(key, pending)
     try {
-      return await decoder.getPreview(path, maxDimension)
-    } catch (err) {
-      if (decoder instanceof SharpDecoder && process.platform === 'darwin') {
-        const sipsDecoder = new SipsDecoder()
-        if (sipsDecoder.supports(nodePath.extname(path).toLowerCase())) {
-          return sipsDecoder.getPreview(path, maxDimension)
-        }
+      return await pending
+    } finally {
+      if (this.previewInFlight.get(key) === pending) {
+        this.previewInFlight.delete(key)
       }
-      throw err
     }
   }
 
-  async getThumbnail(path: string, size = this.settings.getNumber('thumbnail_size', 2880)): Promise<DecodeResult> {
-    const cacheKey = buildCacheKey(path, size)
-    const cached = await this.thumbnailCache.get(cacheKey)
-    if (cached) return cached
-    const decoder = this.registry.resolve(path)
+  async getThumbnail(
+    path: string,
+    size = this.settings.getNumber('thumbnail_size', 1024),
+    priority = 1,
+  ): Promise<DecodeResult> {
+    const resolvedSize = canonicalImageSize(size)
+    const cacheKey = await buildCacheKey(path, `t${resolvedSize}`)
+    const existing = this.thumbnailInFlight.get(cacheKey)
+    if (existing) return existing
+
+    const pending = this.loadOrCreateThumbnail(path, resolvedSize, cacheKey, priority)
+    this.thumbnailInFlight.set(cacheKey, pending)
     try {
-      const result = await decoder.getThumbnail(path, size)
-      await this.thumbnailCache.set(cacheKey, result)
-      return result
-    } catch (err) {
-      if (decoder instanceof SharpDecoder && process.platform === 'darwin') {
-        const sipsDecoder = new SipsDecoder()
-        if (sipsDecoder.supports(nodePath.extname(path).toLowerCase())) {
-          const result = await sipsDecoder.getThumbnail(path, size)
-          await this.thumbnailCache.set(cacheKey, result)
-          return result
-        }
+      return await pending
+    } finally {
+      if (this.thumbnailInFlight.get(cacheKey) === pending) {
+        this.thumbnailInFlight.delete(cacheKey)
       }
-      throw err
     }
   }
 
-  async prioritizeThumbnail(path: string, size = this.settings.getNumber('thumbnail_size', 2880)): Promise<void> {
-    const cacheKey = buildCacheKey(path, size)
-    const cached = await this.thumbnailCache.get(cacheKey)
-    if (cached) return
-    const decoder = this.registry.resolve(path)
-    const result = await decoder.getThumbnail(path, size)
-    await this.thumbnailCache.set(cacheKey, result)
+  async prioritizeThumbnail(path: string, size = this.settings.getNumber('thumbnail_size', 1024)): Promise<void> {
+    // Reuse the normal path so priority requests share in-flight work, cache
+    // writes, concurrency limits, and the same Sharp -> sips fallback.
+    await this.getThumbnail(path, size, 0)
   }
 
-  preloadThumbnails(paths: string[], size = this.settings.getNumber('thumbnail_size', 2880)): void {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { ThumbnailQueue } = require('./thumbnail-queue')
-    ThumbnailQueue.getInstance().enqueue(paths, size)
+  preloadThumbnails(paths: string[], size = this.settings.getNumber('thumbnail_size', 1024)): void {
+    void Promise.allSettled(
+      paths.map(path => this.getThumbnail(path, size, 2)),
+    )
+  }
+
+  preloadPreviews(paths: string[], maxDimension = 2048): void {
+    void Promise.allSettled(
+      paths.map(path => this.getPreview(path, maxDimension, 1)),
+    )
   }
 
   async getDimensions(path: string): Promise<{ width: number; height: number }> {
+    const existing = this.dimensionsInFlight.get(path)
+    if (existing) return existing
+
+    const pending = this.decodeLimiter.run(
+      () => heavyTaskScheduler.run(() => this.decodeWithFallback(
+        path,
+        'dimensions',
+        (decoder) => decoder.getDimensions(path),
+      ), 1),
+      1,
+    )
+    this.dimensionsInFlight.set(path, pending)
+    try {
+      return await pending
+    } finally {
+      if (this.dimensionsInFlight.get(path) === pending) {
+        this.dimensionsInFlight.delete(path)
+      }
+    }
+  }
+
+  private async loadOrCreateThumbnail(
+    path: string,
+    size: number,
+    cacheKey: string,
+    priority: number,
+  ): Promise<DecodeResult> {
+    const cached = await this.thumbnailCache.get(cacheKey)
+    if (cached) return cached
+
+    const result = await this.decodeLimiter.run(
+      () => heavyTaskScheduler.run(() => this.decodeWithFallback(
+        path,
+        'thumbnail',
+        (decoder) => decoder.getThumbnail(path, size),
+      ), priority),
+      priority,
+    )
+    await this.thumbnailCache.set(cacheKey, result)
+    return result
+  }
+
+  private async decodeWithFallback<T>(
+    path: string,
+    operation: string,
+    decode: (decoder: ImageDecoder) => Promise<T>,
+  ): Promise<T> {
     const decoder = this.registry.resolve(path)
     try {
-      return await decoder.getDimensions(path)
-    } catch (err) {
-      if (decoder instanceof SharpDecoder && process.platform === 'darwin') {
-        const sipsDecoder = new SipsDecoder()
-        if (sipsDecoder.supports(nodePath.extname(path).toLowerCase())) {
-          return sipsDecoder.getDimensions(path)
-        }
+      return await decode(decoder)
+    } catch (primaryError) {
+      if (!(decoder instanceof SharpDecoder) || process.platform !== 'darwin') {
+        throw primaryError
       }
-      throw err
+
+      const fallback = new SipsDecoder()
+      if (!fallback.supports(nodePath.extname(path).toLowerCase())) {
+        throw primaryError
+      }
+
+      console.warn(
+        `[ImageService] ${decoder.name} failed for ${operation}: ${path}; falling back to ${fallback.name}`,
+        primaryError,
+      )
+      try {
+        return await decode(fallback)
+      } catch (fallbackError) {
+        throw new AggregateError(
+          [primaryError, fallbackError],
+          `Unable to decode ${path} for ${operation} with ${decoder.name} or ${fallback.name}`,
+        )
+      }
     }
   }
 }

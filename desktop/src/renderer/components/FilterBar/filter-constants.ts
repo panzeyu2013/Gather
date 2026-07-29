@@ -29,7 +29,6 @@ export const FILTER_OPERATORS: { value: FilterRule['operator']; label: string }[
   { value: 'contains_any', label: 'contains any' },
   { value: 'contains_all', label: 'contains all' },
   { value: 'between', label: 'between' },
-  { value: 'regex', label: 'regex' },
   { value: 'exists', label: 'exists' },
 ]
 

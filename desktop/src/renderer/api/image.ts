@@ -1,21 +1,19 @@
 import { sendCommand } from './client'
 
-export interface ImagePreviewResult {
-  buffer: string
-  width: number
-  height: number
-  format: string
+function imageUrl(kind: 'thumbnail' | 'preview', path: string, size: number): string {
+  const params = new URLSearchParams({ path, size: String(size) })
+  return `gather-image://${kind}?${params.toString()}`
 }
 
 export const imageApi = {
-  getThumbnail: (path: string, size = 2880) =>
-    sendCommand<ImagePreviewResult>('image.get_thumbnail', { path, size }),
-  getPreview: (path: string, maxDimension?: number) =>
-    sendCommand<ImagePreviewResult>('image.get_preview', { path, maxDimension }),
-  prioritizeThumbnail: (path: string, size = 2880) =>
+  thumbnailUrl: (path: string, size = 1024) => imageUrl('thumbnail', path, size),
+  previewUrl: (path: string, maxDimension = 2048) => imageUrl('preview', path, maxDimension),
+  prioritizeThumbnail: (path: string, size = 1024) =>
     sendCommand<void>('image.prioritize_thumbnail', { path, size }),
-  preloadThumbnails: (paths: string[], size = 2880) =>
+  preloadThumbnails: (paths: string[], size = 1024) =>
     sendCommand<void>('image.preload_thumbnails', { paths, size }),
+  preloadPreviews: (paths: string[], maxDimension = 2048) =>
+    sendCommand<void>('image.preload_previews', { paths, maxDimension }),
   getDimensions: (paths: string[]) =>
     sendCommand<Record<string, { width: number; height: number }>>('image.get_dimensions', { paths }),
 }

@@ -12,11 +12,9 @@ function l2Norm(vec: number[]): number[] {
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
-  const normA = l2Norm(a)
-  const normB = l2Norm(b)
   let dot = 0
-  for (let i = 0; i < normA.length; i++) {
-    dot += normA[i] * normB[i]
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i]
   }
   return dot
 }
@@ -48,26 +46,34 @@ export function clusterEmbeddings(
     return { clusters: [], noise: [] }
   }
 
-  const visited = new Array(entries.length).fill(false)
-  const assigned = new Array(entries.length).fill(false)
+  // Normalize once. The encoder already returns unit vectors, but imported or
+  // migrated observations may not; normalizing per comparison made DBSCAN
+  // allocate two 512-value arrays for every O(n²) pair.
+  const normalizedEntries = entries.map(entry => ({
+    ...entry,
+    embedding: l2Norm(entry.embedding),
+  }))
+  const visited = new Array(normalizedEntries.length).fill(false)
+  const assigned = new Array(normalizedEntries.length).fill(false)
   const clusters: EmbeddingEntry[][] = []
-  const noise: EmbeddingEntry[] = []
+  const noiseIndices: number[] = []
 
-  for (let i = 0; i < entries.length; i++) {
+  for (let i = 0; i < normalizedEntries.length; i++) {
     if (visited[i]) continue
     visited[i] = true
 
-    const neighbors = regionQuery(entries, i, eps)
+    const neighbors = regionQuery(normalizedEntries, i, eps)
 
     if (neighbors.length < minPts - 1) {
-      noise.push(entries[i])
+      noiseIndices.push(i)
       continue
     }
 
-    const cluster: EmbeddingEntry[] = [entries[i]]
+    const cluster: EmbeddingEntry[] = [normalizedEntries[i]]
     assigned[i] = true
 
     const seeds = [...neighbors]
+    const queued = new Set(neighbors)
     let seedIdx = 0
 
     while (seedIdx < seeds.length) {
@@ -78,10 +84,11 @@ export function clusterEmbeddings(
 
       if (!visited[currentIdx]) {
         visited[currentIdx] = true
-        const currentNeighbors = regionQuery(entries, currentIdx, eps)
+        const currentNeighbors = regionQuery(normalizedEntries, currentIdx, eps)
         if (currentNeighbors.length >= minPts - 1) {
           for (const n of currentNeighbors) {
-            if (!visited[n]) {
+            if (!visited[n] && !queued.has(n)) {
+              queued.add(n)
               seeds.push(n)
             }
           }
@@ -90,16 +97,15 @@ export function clusterEmbeddings(
 
       if (!assigned[currentIdx]) {
         assigned[currentIdx] = true
-        cluster.push(entries[currentIdx])
+        cluster.push(normalizedEntries[currentIdx])
       }
     }
 
     clusters.push(cluster)
   }
 
-  const noisePoints = noise.filter((e) => {
-    const idx = entries.indexOf(e)
-    return idx >= 0 && !assigned[idx]
-  })
+  const noisePoints = noiseIndices
+    .filter(index => !assigned[index])
+    .map(index => normalizedEntries[index])
   return { clusters, noise: noisePoints }
 }

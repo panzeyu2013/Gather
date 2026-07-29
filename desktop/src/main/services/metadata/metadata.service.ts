@@ -5,6 +5,8 @@ import { batchAsync, parseKeywords } from '../../utils/async'
 import type { MetadataTags, BatchMetadataResult } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
+import { stat } from 'fs/promises'
 
 async function getExifr() {
   try {
@@ -29,6 +31,7 @@ function cacheRowToTags(row: MetadataCacheRow): MetadataTags {
     iso: row.iso ?? undefined,
     dateTaken: row.date_taken ?? undefined,
     rating: row.rating ?? undefined,
+    label: row.label ?? undefined,
     latitude: row.gps_latitude ?? undefined,
     longitude: row.gps_longitude ?? undefined,
     keywords: keywords.length > 0 ? keywords : undefined,
@@ -46,6 +49,7 @@ function tagsToCacheInput(tags: Partial<MetadataTags>): MetadataCacheInput {
     exposureTime: tags.shutterSpeed,
     iso: tags.iso,
     rating: tags.rating,
+    label: tags.label,
     gpsLatitude: tags.latitude,
     gpsLongitude: tags.longitude,
     width: tags.width,
@@ -73,8 +77,36 @@ export class MetadataService {
 
   async getMetadata(photoIds: string[]): Promise<Map<string, MetadataTags>> {
     const result = new Map<string, MetadataTags>()
+    const allPhotos = this.getPhotosByIds(photoIds)
+    const photoById = new Map(allPhotos.map(photo => [photo.id, photo]))
+    const fingerprints = new Map<string, { size: number; value: string }>()
+    await batchAsync(allPhotos, async (photo) => {
+      try {
+        const sourceStat = await stat(photo.filepath)
+        let xmpMtime = 0
+        try {
+          xmpMtime = (await stat(getXmpSidecarPath(photo.filepath))).mtimeMs
+        } catch {
+          // Missing sidecar is represented by zero.
+        }
+        fingerprints.set(photo.id, {
+          size: sourceStat.size,
+          value: `${Math.round(sourceStat.mtimeMs)}:${Math.round(xmpMtime)}`,
+        })
+      } catch {
+        // Unreadable files will be handled by extraction.
+      }
+    }, 16)
     const cached = this.metadataCacheRepo.getBatch(photoIds)
-    const cachedIds = new Set(cached.map((r) => r.photo_id))
+      .filter(row => {
+        const fingerprint = fingerprints.get(row.photo_id)
+        return Boolean(
+          fingerprint &&
+          row.file_size === fingerprint.size &&
+          row.file_mtime === fingerprint.value,
+        )
+      })
+    const cachedIds = new Set(cached.map(row => row.photo_id))
     const missingIds = photoIds.filter((id) => !cachedIds.has(id))
 
     for (const row of cached) {
@@ -82,7 +114,10 @@ export class MetadataService {
     }
 
     if (missingIds.length > 0) {
-      const photos = this.getPhotosByIds(missingIds)
+      const photos = missingIds.flatMap(id => {
+        const photo = photoById.get(id)
+        return photo ? [photo] : []
+      })
       const exifr = await getExifr()
       let sharpModule: typeof import('sharp') | null = null
 
@@ -90,6 +125,7 @@ export class MetadataService {
         try {
           let tags: MetadataTags = {}
           let cacheInput: MetadataCacheInput = {}
+          const fingerprint = fingerprints.get(photo.id)
 
           if (exifr) {
             const exifData = await exifr.parse(photo.filepath)
@@ -107,22 +143,40 @@ export class MetadataService {
                 longitude: exifData.longitude as number,
                 width: (exifData.ImageWidth ?? exifData.ExifImageWidth) as number,
                 height: (exifData.ImageHeight ?? exifData.ExifImageHeight) as number,
+                rating: typeof exifData.Rating === 'number'
+                  ? exifData.Rating
+                  : undefined,
+                label: typeof exifData.Label === 'string'
+                  ? exifData.Label
+                  : undefined,
               }
               cacheInput = tagsToCacheInput(tags)
-              // exifr parses embedded XMP: use Subject/Keywords if present, skip separate readKeywords
+              cacheInput.fileSize = fingerprint?.size
+              cacheInput.fileMtime = fingerprint?.value
+              // exifr parses embedded XMP when present; the selected writer also
+              // covers RAW sidecars that are not part of the source file.
               const exifrSubject = (exifData as Record<string, unknown>).Subject
               const exifrKeywords = (exifData as Record<string, unknown>).Keywords
               const fromExifr = (Array.isArray(exifrSubject) ? exifrSubject : Array.isArray(exifrKeywords) ? exifrKeywords : null) as string[] | null
               if (fromExifr && fromExifr.length > 0) {
                 tags.keywords = fromExifr
                 cacheInput.keywords = fromExifr
-              } else {
-                const writer = this.writerRouter.select(photo.filepath)
-                const existingKeywords = await writer.readKeywords(photo.filepath)
-                if (existingKeywords.length > 0) {
-                  tags.keywords = existingKeywords
-                  cacheInput.keywords = existingKeywords
-                }
+              }
+
+              const writerAttributes = await this.writerRouter
+                .select(photo.filepath)
+                .readAttributes(photo.filepath)
+              if (writerAttributes.keywords?.length) {
+                tags.keywords = writerAttributes.keywords
+                cacheInput.keywords = writerAttributes.keywords
+              }
+              if (writerAttributes.rating !== undefined) {
+                tags.rating = writerAttributes.rating
+                cacheInput.rating = writerAttributes.rating
+              }
+              if (writerAttributes.label !== undefined) {
+                tags.label = writerAttributes.label
+                cacheInput.label = writerAttributes.label
               }
 
               result.set(photo.id, tags)
@@ -142,15 +196,16 @@ export class MetadataService {
           cacheInput = {
             width: metadata.width,
             height: metadata.height,
-            fileSize: metadata.size,
+            fileSize: fingerprint?.size ?? metadata.size,
+            fileMtime: fingerprint?.value,
           }
 
           const writer = this.writerRouter.select(photo.filepath)
-          const existingKeywords = await writer.readKeywords(photo.filepath)
-          if (existingKeywords.length > 0) {
-            tags.keywords = existingKeywords
-            cacheInput.keywords = existingKeywords
-          }
+          const existingAttributes = await writer.readAttributes(photo.filepath)
+          Object.assign(tags, existingAttributes)
+          if (existingAttributes.keywords?.length) cacheInput.keywords = existingAttributes.keywords
+          if (existingAttributes.rating !== undefined) cacheInput.rating = existingAttributes.rating
+          if (existingAttributes.label !== undefined) cacheInput.label = existingAttributes.label
 
           result.set(photo.id, tags)
           this.metadataCacheRepo.upsert(photo.id, photo.session_id, cacheInput)
@@ -181,6 +236,7 @@ export class MetadataService {
       const hasMetaFields =
         tags.keywords !== undefined ||
         tags.rating !== undefined ||
+        tags.label !== undefined ||
         tags.dateTaken !== undefined ||
         tags.latitude !== undefined ||
         tags.longitude !== undefined
@@ -189,6 +245,7 @@ export class MetadataService {
         await writer.writeAttributes(photo.filepath, {
           keywords: tags.keywords,
           rating: tags.rating,
+          label: tags.label,
           dateTaken: tags.dateTaken,
           latitude: tags.latitude,
           longitude: tags.longitude,

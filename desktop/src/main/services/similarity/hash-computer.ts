@@ -1,11 +1,15 @@
 import sharp from 'sharp'
+import { heavyTaskScheduler } from '../../utils/heavy-task-scheduler'
 
-export async function computeDHash(imagePath: string): Promise<string> {
-  const { data } = await sharp(imagePath)
-    .resize(9, 8, { fit: 'fill' })
-    .grayscale()
-    .raw()
-    .toBuffer({ resolveWithObject: true })
+export async function computeDHash(imageBuffer: Buffer): Promise<string> {
+  const { data } = await heavyTaskScheduler.run(
+    () => sharp(imageBuffer)
+      .resize(9, 8, { fit: 'fill' })
+      .grayscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true }),
+    2,
+  )
 
   const pixels = new Uint8Array(data)
   let hash = 0n
@@ -23,14 +27,17 @@ export async function computeDHash(imagePath: string): Promise<string> {
   return hash.toString(16).padStart(16, '0')
 }
 
-export async function computeBatchDHash(imagePaths: string[], chunkSize = 8): Promise<Map<string, string>> {
-  const results = new Map<string, string>()
+export async function computeBatchDHash(imageBuffers: Buffer[], chunkSize = 8): Promise<Map<number, string>> {
+  const results = new Map<number, string>()
 
-  for (let i = 0; i < imagePaths.length; i += chunkSize) {
-    const chunk = imagePaths.slice(i, i + chunkSize)
-    const hashes = await Promise.all(chunk.map(async (p) => ({ path: p, hash: await computeDHash(p) })))
-    for (const { path, hash } of hashes) {
-      results.set(path, hash)
+  for (let i = 0; i < imageBuffers.length; i += chunkSize) {
+    const chunk = imageBuffers.slice(i, i + chunkSize)
+    const hashes = await Promise.all(chunk.map(async (buf, idx) => {
+      const hash = await computeDHash(buf)
+      return { index: i + idx, hash }
+    }))
+    for (const { index, hash } of hashes) {
+      results.set(index, hash)
     }
   }
 

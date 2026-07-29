@@ -5,83 +5,223 @@ import type {
 } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import { createReadStream } from 'fs'
+import { stat } from 'fs/promises'
+import { createHash } from 'crypto'
+import { batchAsync } from '../../utils/async'
+import { computeDHash } from '../similarity/hash-computer'
+import type { ImageService } from '../image'
+import { clusterByHash } from '../similarity/cluster-engine'
 
-function hammingDistance(a: string, b: string): number {
-  let dist = 0
-  for (let i = 0; i < a.length; i++) {
-    const xor = parseInt(a[i], 16) ^ parseInt(b[i], 16)
-    dist += [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4][xor]
-  }
-  return dist
+export function excludeExactDuplicateHashes<T extends { photo_id: string }>(
+  rows: T[],
+  exactPhotoIds: ReadonlySet<string>,
+): T[] {
+  return rows.filter((row) => !exactPhotoIds.has(row.photo_id))
 }
 
-function unionFind(ids: string[], edges: [string, string][]): string[][] {
-  const parent = new Map<string, string>()
-  const rank = new Map<string, number>()
-
-  for (const id of ids) {
-    parent.set(id, id)
-    rank.set(id, 0)
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk as Buffer)
   }
+  return hash.digest('hex')
+}
 
-  function find(x: string): string {
-    const p = parent.get(x)
-    if (p !== x) {
-      parent.set(x, find(p!))
+export async function computeVisualHashes(
+  photos: Array<{ id: string; filepath: string }>,
+  imageService: Pick<ImageService, 'getThumbnail'>,
+): Promise<Map<string, string>> {
+  const hashes = new Map<string, string>()
+  await batchAsync(photos, async (photo) => {
+    try {
+      const preview = await imageService.getThumbnail(photo.filepath, 256)
+      hashes.set(photo.id, await computeDHash(preview.buffer))
+    } catch {
+      // A corrupt image should not prevent exact duplicate detection.
     }
-    return parent.get(x)!
-  }
-
-  function union(x: string, y: string): void {
-    const rx = find(x)
-    const ry = find(y)
-    if (rx === ry) return
-    const rankX = rank.get(rx) ?? 0
-    const rankY = rank.get(ry) ?? 0
-    if (rankX < rankY) {
-      parent.set(rx, ry)
-    } else if (rankX > rankY) {
-      parent.set(ry, rx)
-    } else {
-      parent.set(ry, rx)
-      rank.set(rx, rankX + 1)
-    }
-  }
-
-  for (const [a, b] of edges) {
-    union(a, b)
-  }
-
-  const groups = new Map<string, string[]>()
-  for (const id of ids) {
-    const root = find(id)
-    const list = groups.get(root) ?? []
-    list.push(id)
-    groups.set(root, list)
-  }
-
-  return Array.from(groups.values()).filter((g) => g.length >= 2)
+  }, 2)
+  return hashes
 }
 
 @injectable()
 export class DuplicateService {
-  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+  private scanPromise: Promise<DuplicateScanResult> | null = null
+  private scanSessionId: string | null = null
+  private scanThreshold: number | undefined = undefined
 
-  scanDuplicates(
+  constructor(
+    @inject(DI_TOKENS.DB) private db: Database,
+    @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
+  ) {}
+
+  async scanDuplicates(
     sessionId: string,
-    sessionIds?: string[],
     visualThreshold?: number,
-  ): DuplicateScanResult {
+  ): Promise<DuplicateScanResult> {
+    if (this.scanPromise) {
+      if (this.scanSessionId === sessionId && this.scanThreshold === visualThreshold) return this.scanPromise
+      throw new Error('A scan is already in progress with different parameters')
+    }
+
+    this.scanSessionId = sessionId
+    this.scanThreshold = visualThreshold
+    this.scanPromise = this._scanDuplicates(sessionId, visualThreshold)
+    try {
+      return await this.scanPromise
+    } finally {
+      this.scanPromise = null
+      this.scanSessionId = null
+      this.scanThreshold = undefined
+    }
+  }
+
+  private async _scanDuplicates(
+    sessionId: string,
+    visualThreshold: number | undefined,
+  ): Promise<DuplicateScanResult> {
     const db = this.db
     const threshold = visualThreshold ?? 4
-    const ids = sessionIds && sessionIds.length > 0 ? sessionIds : [sessionId]
+    const ids = [sessionId]
     const placeholders = ids.map(() => '?').join(',')
     const now = new Date().toISOString()
 
     const exactGroupIds: number[] = []
     const visualGroupIds: number[] = []
 
+    const allPhotos = db
+      .prepare(
+        `SELECT id, filepath, checksum, checksum_file_size, checksum_file_mtime_ms
+         FROM photos WHERE session_id IN (${placeholders})`,
+      )
+      .all(...ids) as Array<{
+        id: string
+        filepath: string
+        checksum: string
+        checksum_file_size: number
+        checksum_file_mtime_ms: number
+      }>
+
+    const photoById = new Map(allPhotos.map((p) => [p.id, p]))
+    const photoMeta = new Map<string, { size: number; mtime: string; mtimeMs: number }>()
+    const sizeGroups = new Map<number, string[]>()
+
+    await batchAsync(allPhotos, async (p) => {
+      try {
+        const sourceStat = await stat(p.filepath)
+        photoMeta.set(p.id, {
+          size: sourceStat.size,
+          mtime: sourceStat.mtime.toISOString(),
+          mtimeMs: sourceStat.mtimeMs,
+        })
+        const group = sizeGroups.get(sourceStat.size) ?? []
+        group.push(p.id)
+        sizeGroups.set(sourceStat.size, group)
+      } catch {
+        // skip unreadable files
+      }
+    }, 32)
+
+    const resolvedChecksums = new Map<string, string>()
+    for (const photo of allPhotos) {
+      const meta = photoMeta.get(photo.id)
+      if (
+        meta &&
+        photo.checksum &&
+        photo.checksum_file_size === meta.size &&
+        Math.abs(photo.checksum_file_mtime_ms - meta.mtimeMs) < 1
+      ) {
+        resolvedChecksums.set(photo.id, photo.checksum)
+      }
+    }
+    const candidatePhotos: { id: string; filepath: string }[] = []
+    for (const [, photoIds] of sizeGroups) {
+      if (photoIds.length < 2) continue
+      for (const photoId of photoIds) {
+        const p = photoById.get(photoId)!
+        if (!resolvedChecksums.has(photoId)) {
+          candidatePhotos.push(p)
+        }
+      }
+    }
+
+    await batchAsync(candidatePhotos, async (photo) => {
+      try {
+        const checksum = await sha256File(photo.filepath)
+        resolvedChecksums.set(photo.id, checksum)
+      } catch {
+        // skip unreadable files
+      }
+    }, 2)
+
+    const existingVisualRows = db.prepare(
+      `SELECT photo_id, hash_hex, file_size, file_mtime_ms
+       FROM similarity_hashes WHERE session_id IN (${placeholders})`,
+    ).all(...ids) as Array<{
+      photo_id: string
+      hash_hex: string
+      file_size: number
+      file_mtime_ms: number
+    }>
+    const resolvedVisualHashes = new Map<string, string>()
+    for (const row of existingVisualRows) {
+      const meta = photoMeta.get(row.photo_id)
+      if (
+        meta &&
+        meta.size === row.file_size &&
+        Math.abs(meta.mtimeMs - row.file_mtime_ms) < 1
+      ) {
+        resolvedVisualHashes.set(row.photo_id, row.hash_hex)
+      }
+    }
+    const visualMisses = allPhotos.filter(photo => !resolvedVisualHashes.has(photo.id))
+    const computedVisualHashes = await computeVisualHashes(visualMisses, this.imageService)
+    for (const [photoId, hash] of computedVisualHashes) {
+      resolvedVisualHashes.set(photoId, hash)
+    }
+
+    const persistAnalysisData = db.transaction(() => {
+      const update = db.prepare(
+        `UPDATE photos
+         SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?
+         WHERE id = ?`,
+      )
+      for (const photo of allPhotos) {
+        const meta = photoMeta.get(photo.id)
+        update.run(
+          resolvedChecksums.get(photo.id) ?? '',
+          meta?.size ?? 0,
+          meta?.mtimeMs ?? 0,
+          photo.id,
+        )
+      }
+      const insertHash = db.prepare(
+        `INSERT INTO similarity_hashes
+           (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(session_id, photo_id) DO UPDATE SET
+           hash_hex = excluded.hash_hex,
+           file_size = excluded.file_size,
+           file_mtime_ms = excluded.file_mtime_ms`,
+      )
+      for (const [photoId, hash] of resolvedVisualHashes) {
+        const meta = photoMeta.get(photoId)
+        insertHash.run(sessionId, photoId, hash, meta?.size ?? 0, meta?.mtimeMs ?? 0)
+      }
+    })
+    persistAnalysisData()
+
     const scanTransaction = db.transaction(() => {
+      db.prepare(`
+        UPDATE photos
+        SET status = 'ready'
+        WHERE id IN (
+          SELECT photo_id
+          FROM duplicate_group_members
+          WHERE session_id IN (${placeholders})
+        )
+        AND status = 'removed'
+      `).run(...ids)
       db.prepare('DELETE FROM duplicate_group_members WHERE session_id IN (' + placeholders + ')').run(...ids)
       db.prepare('DELETE FROM duplicate_groups WHERE session_id IN (' + placeholders + ')').run(...ids)
 
@@ -101,20 +241,24 @@ export class DuplicateService {
         'INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)',
       )
       const insertMember = db.prepare(
-        'INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime) VALUES (?, ?, ?, 1, NULL, NULL)',
+        'INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime) VALUES (?, ?, ?, 1, ?, ?)',
       )
 
+      const exactPhotoIds = new Set<string>()
       for (const row of exactRows) {
         const photoIds = row.photo_ids.split(',')
         const result = insertGroup.run(sessionId, 'exact', row.checksum, null, photoIds.length, now)
         const groupId = result.lastInsertRowid as number
         exactGroupIds.push(groupId)
         for (const photoId of photoIds) {
-          insertMember.run(groupId, photoId, sessionId)
+          exactPhotoIds.add(photoId)
+          const meta = photoMeta.get(photoId)
+          insertMember.run(groupId, photoId, sessionId, meta?.size ?? null, meta?.mtime ?? null)
         }
       }
 
-      const hashRows = db
+      const hashRows = excludeExactDuplicateHashes(
+        db
         .prepare(
           `SELECT sh.photo_id, sh.hash_hex
            FROM similarity_hashes sh
@@ -122,30 +266,28 @@ export class DuplicateService {
            WHERE p.session_id IN (${placeholders})
            ORDER BY sh.photo_id`,
         )
-        .all(...ids) as { photo_id: string; hash_hex: string }[]
+        .all(...ids) as { photo_id: string; hash_hex: string }[],
+        exactPhotoIds,
+      )
 
       if (hashRows.length >= 2) {
-        const edges: [string, string][] = []
-        for (let i = 0; i < hashRows.length; i++) {
-          for (let j = i + 1; j < hashRows.length; j++) {
-            if (hammingDistance(hashRows[i].hash_hex, hashRows[j].hash_hex) <= threshold) {
-              edges.push([hashRows[i].photo_id, hashRows[j].photo_id])
-            }
-          }
-        }
-
-        const components = unionFind(
-          hashRows.map((r) => r.photo_id),
-          edges,
+        const hashByPhotoId = new Map(
+          hashRows.map(row => [row.photo_id, row.hash_hex]),
         )
+        const components = clusterByHash(
+          hashRows.map(row => ({ photoId: row.photo_id, hash: row.hash_hex })),
+          threshold,
+          2,
+        ).groups
 
         for (const memberIds of components) {
-          const firstHash = hashRows.find((r) => r.photo_id === memberIds[0])!.hash_hex
+          const firstHash = hashByPhotoId.get(memberIds[0])!
           const result = insertGroup.run(sessionId, 'visual', null, firstHash, memberIds.length, now)
           const groupId = result.lastInsertRowid as number
           visualGroupIds.push(groupId)
           for (const photoId of memberIds) {
-            insertMember.run(groupId, photoId, sessionId)
+            const meta = photoMeta.get(photoId)
+            insertMember.run(groupId, photoId, sessionId, meta?.size ?? null, meta?.mtime ?? null)
           }
         }
       }
@@ -250,12 +392,16 @@ export class DuplicateService {
         file_size: number | null
         file_mtime: string | null
       }[]
+      if (members.length === 0) {
+        throw new Error(`Duplicate group ${groupId} was not found or has no members`)
+      }
 
       if (resolution === 'keep_all') {
+        const updateMember = db.prepare(
+          'UPDATE duplicate_group_members SET is_kept = 1, resolution = ? WHERE id = ?',
+        )
         for (const m of members) {
-          db.prepare(
-            'UPDATE duplicate_group_members SET is_kept = 1, resolution = ? WHERE id = ?',
-          ).run(resolution, m.id)
+          updateMember.run(resolution, m.id)
         }
       } else {
         let bestId = members[0].id
@@ -269,12 +415,15 @@ export class DuplicateService {
           }
         }
 
+        const updateMember = db.prepare(
+          'UPDATE duplicate_group_members SET is_kept = ?, resolution = ? WHERE id = ?',
+        )
         for (const m of members) {
-          db.prepare(
-            'UPDATE duplicate_group_members SET is_kept = ?, resolution = ? WHERE id = ?',
-          ).run(m.id === bestId ? 1 : 0, resolution, m.id)
+          const isKept = m.id === bestId ? 1 : 0
+          updateMember.run(isKept, resolution, m.id)
         }
       }
+      this.recomputePhotoStatuses(members.map((member) => member.photo_id))
     })
 
     resolveTransaction()
@@ -282,9 +431,37 @@ export class DuplicateService {
 
   resolveMember(memberId: number, isKept: boolean): void {
     const db = this.db
-    db.prepare(
-      'UPDATE duplicate_group_members SET is_kept = ?, resolution = COALESCE(resolution, ?) WHERE id = ?',
-    ).run(isKept ? 1 : 0, isKept ? 'keep_all' : 'keep_one', memberId)
+    const resolveTransaction = db.transaction(() => {
+      db.prepare(
+        'UPDATE duplicate_group_members SET is_kept = ?, resolution = COALESCE(resolution, ?) WHERE id = ?',
+      ).run(isKept ? 1 : 0, isKept ? 'keep_all' : 'keep_one', memberId)
+
+      const member = db.prepare('SELECT photo_id FROM duplicate_group_members WHERE id = ?').get(memberId) as { photo_id: string } | undefined
+      if (!member) {
+        throw new Error(`Duplicate member ${memberId} was not found`)
+      }
+      this.recomputePhotoStatuses([member.photo_id])
+    })
+    resolveTransaction()
+  }
+
+  private recomputePhotoStatuses(photoIds: string[]): void {
+    if (photoIds.length === 0) return
+    const uniqueIds = [...new Set(photoIds)]
+    const placeholders = uniqueIds.map(() => '?').join(',')
+    this.db.prepare(`
+      UPDATE photos
+      SET status = CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM duplicate_group_members dgm
+          WHERE dgm.photo_id = photos.id
+            AND dgm.is_kept = 0
+        ) THEN 'removed'
+        ELSE 'ready'
+      END
+      WHERE id IN (${placeholders})
+    `).run(...uniqueIds)
   }
 
   private buildResult(

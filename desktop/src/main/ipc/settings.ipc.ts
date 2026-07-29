@@ -1,5 +1,5 @@
 import type { CommandRegistry } from './registry'
-import { ok, err, validateString, wrapHandler } from './helpers'
+import { ok, validateString, wrapHandler } from './helpers'
 import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getModelResourcesDir, resolveModelPath } from '../services/face-kw/provider'
 import { existsSync } from 'fs'
 import type { SettingsService } from '../services/settings/settings.service'
@@ -53,6 +53,8 @@ export function registerSettingsHandlers(registry: CommandRegistry, svc: Setting
       },
       modelInfo: {
         detectInputSize: svc.getNumber('detect_input_size', 640),
+        secondaryDetectInputSize: svc.getNumber('detect_secondary_input_size', 128),
+        previewMaxDimension: svc.getNumber('face_preview_max_dimension', 2048),
         encoderInputSize: svc.getNumber('encoder_input_size', 112),
         embeddingDim: svc.getNumber('embedding_dim', 512),
       },

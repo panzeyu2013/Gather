@@ -14,7 +14,7 @@ interface SettingsStore {
   reset: () => void
 }
 
-export const useSettingsStore = create<SettingsStore>((set, get) => ({
+export const useSettingsStore = create<SettingsStore>((set) => ({
   settings: {},
   loading: false,
   dirty: false,

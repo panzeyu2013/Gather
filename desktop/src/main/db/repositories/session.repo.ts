@@ -1,6 +1,5 @@
 import { Database } from '../database'
 import crypto from 'crypto'
-import { ISessionRepository } from './interfaces'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 
@@ -11,6 +10,7 @@ export interface SessionRow {
   analysis_status: string
   writeback_status: string
   import_source: string
+  source_path: string
   photo_count: number
   failed_writeback_count: number
   created_at: string
@@ -18,7 +18,7 @@ export interface SessionRow {
 }
 
 @injectable()
-export class SessionRepository implements ISessionRepository {
+export class SessionRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   get(id: string): SessionRow | null {
@@ -26,13 +26,13 @@ export class SessionRepository implements ISessionRepository {
     return row ?? null
   }
 
-  create(name: string, source: string): SessionRow {
+  create(name: string, source: string, sourcePath = ''): SessionRow {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     this.db.prepare(
-      `INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, photo_count, failed_writeback_count, created_at, updated_at)
-       VALUES (?, ?, 'draft', 'idle', 'idle', ?, 0, 0, ?, ?)`,
-    ).run(id, name, source, now, now)
+      `INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, source_path, photo_count, failed_writeback_count, created_at, updated_at)
+       VALUES (?, ?, 'draft', 'idle', 'idle', ?, ?, 0, 0, ?, ?)`,
+    ).run(id, name, source, sourcePath, now, now)
     return this.get(id)!
   }
 
@@ -65,6 +65,13 @@ export class SessionRepository implements ISessionRepository {
     const result = this.db
       .prepare('UPDATE sessions SET name = ?, updated_at = ? WHERE id = ?')
       .run(name, new Date().toISOString(), id)
+    return result.changes > 0
+  }
+
+  updateSourcePath(id: string, sourcePath: string): boolean {
+    const result = this.db
+      .prepare('UPDATE sessions SET source_path = ?, updated_at = ? WHERE id = ?')
+      .run(sourcePath, new Date().toISOString(), id)
     return result.changes > 0
   }
 

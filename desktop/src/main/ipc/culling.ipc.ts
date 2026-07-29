@@ -1,18 +1,8 @@
 import type { CommandRegistry } from './registry'
-import { ok, err, validateString, validateStringArray, wrapHandler } from './helpers'
+import { ok, validateString, validateStringArray, wrapHandler } from './helpers'
 import type { CullingService } from '../services/culling/culling.service'
 import type { WritebackService } from '../services/writeback/writeback.service'
-
-function buildKeywords(target: string, decision: string): string[] {
-  if (target === 'keyword') {
-    return [`culling:${decision}`]
-  } else if (target === 'rating') {
-    return decision === 'keep' ? ['rating:5'] : ['rating:1']
-  } else if (target === 'color_label') {
-    return decision === 'keep' ? ['label:green'] : ['label:red']
-  }
-  return []
-}
+import { buildCullingWritebackPlan } from '../services/writeback/writeback-planners'
 
 export function registerCullingHandlers(registry: CommandRegistry, cullingService: CullingService, writebackService: WritebackService): void {
   registry.register(
@@ -73,34 +63,29 @@ export function registerCullingHandlers(registry: CommandRegistry, cullingServic
         throw new Error('Invalid target: must be rating, color_label, or keyword')
       }
 
-      const decisions = cullingService.getDecisions(sessionId)
-        .filter((d) => d.decision !== 'pending')
-
-      if (decisions.length === 0) {
+      const plan = buildCullingWritebackPlan(
+        cullingService.getDecisions(sessionId),
+        target as 'rating' | 'color_label' | 'keyword',
+      )
+      if (plan.size === 0) {
         throw new Error('No culling decisions to write back')
       }
 
-      const decisionMap = new Map(decisions.map((d) => [d.photo_id, d.decision]))
-      const decidedPhotoIds = new Set(decisions.map((d) => d.photo_id))
+      const decidedPhotoIds = new Set(plan.keys())
 
-      const photos = decisions.map((d) => d.photo_id)
-      const preview = await writebackService.preview(sessionId, 'culling', {})
+      const preview = await writebackService.preview(sessionId, 'culling', {}, decidedPhotoIds)
 
       const matchingItems = preview.items.filter((item) => decidedPhotoIds.has(item.photoId))
 
       for (const item of matchingItems) {
-        const decision = decisionMap.get(item.photoId)
-        if (decision) {
-          const kw = buildKeywords(target, decision)
-          const existing = new Set(item.keywords)
-          for (const k of kw) {
-            if (!existing.has(k)) {
-              item.keywords.push(k)
-              existing.add(k)
-            }
-          }
-        }
+        const attributes = plan.get(item.photoId)
+        if (!attributes || item.id == null) continue
+        item.attributes = attributes.keywords
+          ? { keywords: [...new Set([...item.keywords, ...attributes.keywords])] }
+          : attributes
       }
+
+      await writebackService.persistAttributes(matchingItems)
 
       return ok(await writebackService.execute(sessionId, 'culling', matchingItems))
     }),
@@ -116,6 +101,37 @@ export function registerCullingHandlers(registry: CommandRegistry, cullingServic
       const groupId = typeof params.groupId === 'string' ? params.groupId : undefined
       await cullingService.reset(sessionId, groupId)
       return ok(true)
+    }),
+  )
+
+  registry.register(
+    'culling.retry_failed_writeback',
+    wrapHandler(async (params) => {
+      if (params.confirmed !== true) {
+        throw new Error('Retry failed writeback requires explicit confirmation')
+      }
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      return ok(await writebackService.retryFailed(sessionId, 'culling'))
+    }),
+  )
+
+  registry.register(
+    'culling.confirm_sync',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      await writebackService.confirmSync(sessionId, 'culling')
+      return ok(true)
+    }),
+  )
+
+  registry.register(
+    'culling.cleanup',
+    wrapHandler(async (params) => {
+      if (params.confirmed !== true) {
+        throw new Error('Cleanup requires explicit confirmation')
+      }
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      return ok(await writebackService.cleanup(sessionId, 'culling'))
     }),
   )
 }

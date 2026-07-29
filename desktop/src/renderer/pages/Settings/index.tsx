@@ -21,6 +21,7 @@ const GROUPS: SettingGroup[] = [
     title: '缓存',
     settings: [
       { key: 'memory_cache_size', label: '内存缓存条目数', type: 'number', description: '内存中缓存的缩略图最大数量' },
+      { key: 'memory_cache_max_size_mb', label: '内存缓存上限 (MB)', type: 'number', description: '缩略图和预览内存缓存的最大空间，防止高分辨率图片占满内存' },
       { key: 'disk_cache_dir', label: '磁盘缓存目录', type: 'text', description: '磁盘缓存存储路径（留空使用默认）' },
       { key: 'disk_cache_max_size_gb', label: '磁盘缓存上限 (GB)', type: 'number', description: '磁盘缓存占用硬盘的最大空间' },
       { key: 'disk_cache_eviction_policy', label: '淘汰策略', type: 'select', description: 'lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）' },
@@ -29,9 +30,9 @@ const GROUPS: SettingGroup[] = [
   {
     title: '图片处理',
     settings: [
-      { key: 'thumbnail_size', label: '缩略图尺寸', type: 'number', description: '缩略图的宽高像素值（320-5120）' },
+      { key: 'thumbnail_size', label: '缩略图尺寸', type: 'number', description: '画廊缓存分辨率（建议 1024；内部按 256/1024/2048 三级复用）' },
       { key: 'thumbnail_quality', label: '缩略图质量', type: 'number', description: '缩略图的 JPEG 压缩质量 (0-100)' },
-      { key: 'thumbnail_concurrency', label: '缩略图生成并发数', type: 'number', description: '同时生成缩略图的线程数，0=自动（最大CPU核心数-1）' },
+      { key: 'thumbnail_concurrency', label: '缩略图生成并发数', type: 'number', description: '同时生成缩略图的任务数（RAW 建议 2-4，最大 8）' },
       { key: 'face_thumbnail_size', label: '人脸缩略图尺寸', type: 'number', description: '人脸缩略图的宽高像素值' },
       { key: 'face_thumbnail_quality', label: '人脸缩略图质量', type: 'number', description: '人脸缩略图的 JPEG 压缩质量 (0-100)' },
     ],
@@ -49,21 +50,6 @@ const GROUPS: SettingGroup[] = [
       { key: 'c1_timeout_ms', label: '超时时间 (ms)', type: 'number', description: '与 Capture One 通信的超时毫秒数' },
       { key: 'c1_retries', label: '重试次数', type: 'number', description: '与 Capture One 通信的最大重试次数' },
       { key: 'c1_reload_delay_ms', label: '重载延迟 (ms)', type: 'number', description: '重载元数据后的等待延迟毫秒数' },
-    ],
-  },
-  {
-    title: '轮询',
-    settings: [
-      { key: 'poll_max_retries_sim', label: '相似度最大重试', type: 'number', description: '相似度分析轮询的最大重试次数' },
-      { key: 'poll_max_retries_fkw', label: '人脸最大重试', type: 'number', description: '人脸分析轮询的最大重试次数' },
-      { key: 'poll_interval_sim_ms', label: '相似度轮询间隔 (ms)', type: 'number', description: '相似度分析轮询的间隔毫秒数' },
-      { key: 'poll_interval_fkw_ms', label: '人脸轮询间隔 (ms)', type: 'number', description: '人脸分析轮询的间隔毫秒数' },
-    ],
-  },
-  {
-    title: '哈希',
-    settings: [
-      { key: 'hash_chunk_size', label: '分块大小', type: 'number', description: '图像哈希计算的分块大小' },
     ],
   },
   {
@@ -97,7 +83,7 @@ export default function SettingsPage() {
   const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'done' | 'error'>('idle')
   const backendManual = mlStatus ? !mlStatus.isAuto : false
   const cpuCount = navigator.hardwareConcurrency || 4
-  const maxConcurrency = Math.max(1, cpuCount - 1)
+  const maxConcurrency = Math.max(1, Math.min(8, cpuCount - 1))
 
   useEffect(() => {
     load()
@@ -341,7 +327,9 @@ export default function SettingsPage() {
                       <p className={styles.settingLabel}>模型信息</p>
                     </div>
                     <div className={styles.modelInfoText}>
-                      检测输入 {mlStatus.modelInfo.detectInputSize}×{mlStatus.modelInfo.detectInputSize}
+                      双尺度检测 {mlStatus.modelInfo.secondaryDetectInputSize}×{mlStatus.modelInfo.secondaryDetectInputSize}
+                      {' + '}{mlStatus.modelInfo.detectInputSize}×{mlStatus.modelInfo.detectInputSize}
+                      ，分析预览最长边 {mlStatus.modelInfo.previewMaxDimension}px
                       ，编码输入 {mlStatus.modelInfo.encoderInputSize}×{mlStatus.modelInfo.encoderInputSize}
                       ，特征维度 {mlStatus.modelInfo.embeddingDim}
                     </div>
@@ -520,8 +508,8 @@ export default function SettingsPage() {
                         className={styles.input}
                         type={setting.type === 'number' ? 'number' : 'text'}
                         value={currentValue}
-                        min={setting.key === 'thumbnail_size' ? 320 : setting.key === 'thumbnail_concurrency' ? 1 : undefined}
-                        max={setting.key === 'thumbnail_size' ? 5120 : setting.key === 'thumbnail_concurrency' ? maxConcurrency : undefined}
+                        min={setting.key === 'thumbnail_size' ? 256 : setting.key === 'thumbnail_concurrency' ? 1 : setting.key === 'memory_cache_max_size_mb' ? 32 : undefined}
+                        max={setting.key === 'thumbnail_size' ? 2048 : setting.key === 'thumbnail_concurrency' ? maxConcurrency : setting.key === 'memory_cache_max_size_mb' ? 2048 : undefined}
                         onChange={(e) => setSetting(setting.key, e.target.value)}
                       />
                     </div>

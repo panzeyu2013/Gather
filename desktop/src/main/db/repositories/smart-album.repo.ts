@@ -1,7 +1,6 @@
 import { Database } from '../database'
 import crypto from 'crypto'
 import type { FilterGroup } from '@gather/shared'
-import { ISmartAlbumRepository } from './interfaces'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 
@@ -36,7 +35,7 @@ export interface SmartAlbumUpdateData {
 }
 
 @injectable()
-export class SmartAlbumRepository implements ISmartAlbumRepository {
+export class SmartAlbumRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   list(): SmartAlbumRow[] {

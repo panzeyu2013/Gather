@@ -1,4 +1,3 @@
-import { Database } from '../../db/database'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { CullingDecisionRepository } from '../../db/repositories/culling-decision.repo'
 import { SimilarityResultRepository } from '../../db/repositories/similarity-result.repo'
@@ -12,7 +11,6 @@ export class CullingService {
     @inject(DI_TOKENS.PHOTO_REPO) private photoRepo: PhotoRepository,
     @inject(DI_TOKENS.CULLING_DECISION_REPO) private cullingDecisionRepo: CullingDecisionRepository,
     @inject(DI_TOKENS.SIMILARITY_RESULT_REPO) private similarityResultRepo: SimilarityResultRepository,
-    @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
   getGroups(sessionId: string): CullingGroup[] {
@@ -70,48 +68,54 @@ export class CullingService {
     })
   }
 
-  private findGroupId(photos: { id: string; filepath: string }[], sessionId: string, photoId: string): string | null {
+  private buildPhotoGroupIndex(
+    photos: { id: string; filepath: string }[],
+    sessionId: string,
+  ): Map<string, string> {
     const resultRow = this.similarityResultRepo.getLatest(sessionId)
+    if (!resultRow) return new Map()
+    const persisted = this.similarityResultRepo.getPhotoGroupMap(sessionId, resultRow.id)
+    if (persisted.size > 0) return persisted
 
-    if (!resultRow) return null
-
+    // Compatibility fallback for results produced before schema version 10.
     const parsed = JSON.parse(resultRow.groups_json) as { groups: SimilarityGroup[] }
     const groups = parsed.groups ?? []
-
-    const photo = photos.find((p) => p.id === photoId)
-    if (!photo) return null
-
+    const photoIdByPath = new Map(photos.map(photo => [photo.filepath, photo.id]))
+    const groupByPhotoId = new Map<string, string>()
     for (let i = 0; i < groups.length; i++) {
-      const found = groups[i].images.some((img) => img.path === photo.filepath)
-      if (found) {
-        return `${resultRow.id}:${i}`
+      const groupId = `${resultRow.id}:${i}`
+      for (const image of groups[i].images) {
+        const photoId = photoIdByPath.get(image.path)
+        if (photoId) groupByPhotoId.set(photoId, groupId)
       }
     }
-
-    return null
+    return groupByPhotoId
   }
 
   decide(sessionId: string, photoId: string, decision: string): void {
     const photos = this.photoRepo.getBySession(sessionId)
-    const groupId = this.findGroupId(photos, sessionId, photoId) ?? 'ungrouped'
+    const groupId = this.buildPhotoGroupIndex(photos, sessionId).get(photoId) ?? 'ungrouped'
     this.cullingDecisionRepo.upsert(sessionId, photoId, groupId, decision)
   }
 
   batchDecide(sessionId: string, photoIds: string[], decision: string): void {
     const photos = this.photoRepo.getBySession(sessionId)
+    const groupByPhotoId = this.buildPhotoGroupIndex(photos, sessionId)
 
-    const batch = this.db.transaction(() => {
-      for (const photoId of photoIds) {
-        const groupId = this.findGroupId(photos, sessionId, photoId) ?? 'ungrouped'
-        this.cullingDecisionRepo.upsert(sessionId, photoId, groupId, decision)
-      }
-    })
-
-    batch()
+    this.cullingDecisionRepo.upsertMany(
+      sessionId,
+      photoIds.map(photoId => ({
+        photoId,
+        groupId: groupByPhotoId.get(photoId) ?? 'ungrouped',
+        decision,
+      })),
+    )
   }
 
   getDecisions(sessionId: string): { photo_id: string; decision: string }[] {
-    return this.cullingDecisionRepo.getDecisions(sessionId)
+    const resultRow = this.similarityResultRepo.getLatest(sessionId)
+    if (!resultRow) return []
+    return this.cullingDecisionRepo.getByResultPrefix(sessionId, resultRow.id)
   }
 
   getSummary(sessionId: string): CullingSummary {
@@ -123,13 +127,14 @@ export class CullingService {
 
     const totalPhotos = groups.reduce((sum, g) => sum + g.images.length, 0)
 
-    const counts = this.cullingDecisionRepo.getDecisionCounts(sessionId)
-
     let kept = 0
     let rejected = 0
-    for (const row of counts) {
-      if (row.decision === 'keep') kept = row.cnt
-      else if (row.decision === 'reject') rejected = row.cnt
+    if (resultRow) {
+      const counts = this.cullingDecisionRepo.getCountsByResultPrefix(sessionId, resultRow.id)
+      for (const row of counts) {
+        if (row.decision === 'keep') kept = row.cnt
+        else if (row.decision === 'reject') rejected = row.cnt
+      }
     }
     const pending = totalPhotos - kept - rejected
 

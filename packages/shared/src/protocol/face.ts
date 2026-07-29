@@ -38,7 +38,7 @@ export interface FkwMergeParams {
 export interface FkwRemoveMemberParams {
   sessionId: string
   clusterId: number
-  photoId: string
+  memberId: number
 }
 
 export interface FkwPreviewParams {
@@ -98,6 +98,7 @@ export interface FaceCluster {
 }
 
 export interface ClusterMember {
+  memberId: number
   photoId: string
   photoPath: string
   filename: string

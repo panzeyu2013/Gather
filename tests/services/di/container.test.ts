@@ -41,7 +41,6 @@ describe('Container (tsyringe)', () => {
     expect(DI_TOKENS.PERSON_REPO).toBeDefined()
     expect(DI_TOKENS.CULLING_DECISION_REPO).toBeDefined()
     expect(DI_TOKENS.SIMILARITY_RESULT_REPO).toBeDefined()
-    expect(DI_TOKENS.OPERATION_LOG_REPO).toBeDefined()
     expect(DI_TOKENS.WRITEBACK_REPO).toBeDefined()
     expect(DI_TOKENS.METADATA_CACHE_REPO).toBeDefined()
     expect(DI_TOKENS.SMART_ALBUM_REPO).toBeDefined()

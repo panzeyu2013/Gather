@@ -1,24 +1,40 @@
 import { existsSync } from 'fs'
-import { parseXmp, extractKeywords, writeXmpAttributes, backupXmpFile, restoreXmpFile } from './xmp-utils'
+import * as path from 'path'
+import {
+  parseXmpAsync,
+  extractKeywords,
+  extractXmpAttributes,
+  writeXmpAttributesAsync,
+  backupXmpFileAsync,
+  restoreXmpFileAsync,
+} from './xmp-utils'
 import type { MetadataWriter, MetadataWriteAttributes } from '../metadata/metadata-writer.interface'
 
 export class XmpSidecarWriter implements MetadataWriter {
   private xmpPath(photoPath: string): string {
-    return photoPath + '.xmp'
+    return getXmpSidecarPath(photoPath)
   }
 
   async readKeywords(photoPath: string): Promise<string[]> {
     const xp = this.xmpPath(photoPath)
     if (!existsSync(xp)) return []
-    const doc = parseXmp(xp)
+    const doc = await parseXmpAsync(xp)
     if (!doc) return []
     return extractKeywords(doc)
   }
 
+  async readAttributes(photoPath: string): Promise<MetadataWriteAttributes> {
+    const xp = this.xmpPath(photoPath)
+    if (!existsSync(xp)) return {}
+    const doc = await parseXmpAsync(xp)
+    return doc ? extractXmpAttributes(doc) : {}
+  }
+
   async writeAttributes(photoPath: string, tags: MetadataWriteAttributes): Promise<void> {
-    writeXmpAttributes(this.xmpPath(photoPath), {
+    await writeXmpAttributesAsync(this.xmpPath(photoPath), {
       keywords: tags.keywords,
       rating: tags.rating,
+      label: tags.label,
       dateTaken: tags.dateTaken,
       latitude: tags.latitude,
       longitude: tags.longitude,
@@ -26,15 +42,17 @@ export class XmpSidecarWriter implements MetadataWriter {
   }
 
   async backup(photoPath: string): Promise<string> {
-    return backupXmpFile(this.xmpPath(photoPath))
+    const xmpPath = this.xmpPath(photoPath)
+    return existsSync(xmpPath) ? backupXmpFileAsync(xmpPath) : ''
   }
 
   getBackupPath(photoPath: string): string {
-    return this.xmpPath(photoPath) + '.bak'
+    // backup() returns a unique path for each writeback transaction.
+    return this.xmpPath(photoPath) + '.gather-backup'
   }
 
   async restore(photoPath: string, backupPath: string): Promise<void> {
-    restoreXmpFile(this.xmpPath(photoPath), backupPath)
+    await restoreXmpFileAsync(this.xmpPath(photoPath), backupPath)
   }
 
   supportsFormat(_ext: string): boolean {
@@ -44,4 +62,13 @@ export class XmpSidecarWriter implements MetadataWriter {
   async shutdown(): Promise<void> {
     // no resources to release
   }
+}
+
+/**
+ * Capture One associates files by basename: IMG_0001.NEF and IMG_0001.jpg
+ * both use IMG_0001.xmp.
+ */
+export function getXmpSidecarPath(photoPath: string): string {
+  const parsed = path.parse(photoPath)
+  return path.join(parsed.dir, `${parsed.name}.xmp`)
 }

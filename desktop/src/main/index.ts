@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, Menu, dialog, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, dialog, protocol, session, shell } from 'electron'
 import { join, resolve } from 'path'
-import { readdirSync, statSync } from 'fs'
+import { statSync } from 'fs'
+import { readdir, stat } from 'fs/promises'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
 import { Database } from './db/database'
 import { runMigrations } from './db/migrations'
@@ -23,14 +24,13 @@ import { MetadataService } from './services/metadata/metadata.service'
 import { CullingService } from './services/culling/culling.service'
 import { ExportService } from './services/export/export.service'
 import { ReportService } from './services/export/report.service'
-import { HistoryService } from './services/history/history.service'
 import { MetadataWriterRouter } from './services/xmp/metadata-writer-router'
+import { IMAGE_CONFIG } from './services/image/image-config'
 
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
 import { registerSessionHandlers } from './ipc/session.ipc'
 import { registerFaceKwHandlers } from './ipc/face-kw.ipc'
 import { registerSimilarityHandlers } from './ipc/similarity.ipc'
-import { registerSystemHandlers } from './ipc/system.ipc'
 import { registerImageHandlers } from './ipc/image.ipc'
 import { registerPhotoHandlers } from './ipc/photo.ipc'
 import { registerSettingsHandlers } from './ipc/settings.ipc'
@@ -41,12 +41,25 @@ import { registerPersonHandlers } from './ipc/person.ipc'
 import { registerMetadataHandlers } from './ipc/metadata.ipc'
 import { registerCullingHandlers } from './ipc/culling.ipc'
 import { registerExportHandlers } from './ipc/export.ipc'
-import { registerHistoryHandlers } from './ipc/history.ipc'
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const registry = new CommandRegistry()
 let mainWindow: BrowserWindow | null = null
 let pendingDeepLink: string | null = null
+const supportedImageExtensions = [...new Set(IMAGE_CONFIG.sharp.supportedExtensions)]
+const supportedImageExtensionSet = new Set(supportedImageExtensions)
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'gather-image',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+    },
+  },
+])
 
 function handleDeepLink(url: string): void {
   try {
@@ -100,7 +113,27 @@ const appMenuTemplate: Electron.MenuItemConstructorOptions[] = [
       {
         label: 'Import from Capture One',
         accelerator: 'CmdOrCtrl+Shift+I',
-        click: () => mainWindow?.webContents.send('gather:event', 'c1:import-trigger', { photoCount: 0 }),
+        click: async () => {
+          try {
+            const files = await getSelectedPhotos()
+            if (files.length > 0) {
+              mainWindow?.webContents.send('gather:event', 'c1:plugin-import', { files })
+            } else {
+              mainWindow?.webContents.send('gather:event', 'gather:notification', {
+                type: 'warning',
+                message: 'No photos selected in Capture One.',
+              })
+            }
+          } catch (err) {
+            console.error('Capture One import failed:', err)
+            mainWindow?.webContents.send('gather:event', 'gather:notification', {
+              type: 'error',
+              message: err instanceof Error
+                ? `Capture One import failed: ${err.message}`
+                : 'Capture One import failed. Is Capture One running?',
+            })
+          }
+        },
       },
       { type: 'separator' },
       { role: 'close' },
@@ -178,8 +211,8 @@ function createWindow(): void {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           isDev
-            ? "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
-            : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+            ? "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: gather-image:; connect-src 'self' gather-image: ws:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+            : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: gather-image:; connect-src 'self' gather-image:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
         ]
       }
     });
@@ -225,20 +258,16 @@ function registerIpc(): void {
   const cullingService = svc<CullingService>(DI_TOKENS.CULLING_SERVICE)
   const exportService = svc<ExportService>(DI_TOKENS.EXPORT_SERVICE)
   const reportService = svc<ReportService>(DI_TOKENS.REPORT_SERVICE)
-  const historyService = svc<HistoryService>(DI_TOKENS.HISTORY_SERVICE)
-  const writerRouter = svc<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER)
-
   const ensureMainWindowSender = (e: Electron.IpcMainInvokeEvent): void => {
     if (!mainWindow || e.sender !== mainWindow.webContents) {
       throw new Error('This action is only available from the main application window')
     }
   }
 
-  registerAllIpcHandlers(registry)
+  registerAllIpcHandlers(registry, ensureMainWindowSender)
   registerSessionHandlers(registry, sessionService)
   registerFaceKwHandlers(registry, faceKwService, writebackService, faceRepo, settingsService)
   registerSimilarityHandlers(registry, similarityService, writebackService, settingsService)
-  registerSystemHandlers(registry, imageService, settingsService)
   registerImageHandlers(registry, imageService, settingsService)
   registerPhotoHandlers(registry, photoRepo, db)
   registerSettingsHandlers(registry, settingsService)
@@ -250,7 +279,6 @@ function registerIpc(): void {
   registerMetadataHandlers(registry, metadataService)
   registerCullingHandlers(registry, cullingService, writebackService)
   registerExportHandlers(registry, exportService, reportService)
-  registerHistoryHandlers(registry, historyService)
 
   ipcMain.handle('c1:get-selected-photos', async (e) => {
     ensureMainWindowSender(e)
@@ -284,7 +312,7 @@ function registerIpc(): void {
       properties: ['openFile', 'multiSelections'],
       title: 'Select photos',
       filters: [
-        { name: 'Photos', extensions: ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'arw', 'cr2', 'cr3', 'nef', 'dng', 'raf'] },
+        { name: 'Photos', extensions: supportedImageExtensions.map((extension) => extension.slice(1)) },
       ],
     })
     return result.canceled ? [] : result.filePaths
@@ -296,17 +324,16 @@ function registerIpc(): void {
     if (typeof dirPath !== 'string' || dirPath.length === 0) {
       throw new Error('Invalid directory path')
     }
-    const extensions = new Set(['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.arw', '.cr2', '.cr3', '.nef', '.dng', '.raf'])
     const files: string[] = []
     try {
-      const entries = readdirSync(dirPath)
+      const entries = await readdir(dirPath, { withFileTypes: true })
       for (const entry of entries) {
-        const fullPath = join(dirPath, entry)
+        const fullPath = join(dirPath, entry.name)
         try {
-          const stat = statSync(fullPath)
-          if (stat.isFile()) {
-            const ext = '.' + entry.split('.').pop()?.toLowerCase()
-            if (extensions.has(ext)) {
+          const isFile = entry.isFile() || (!entry.isDirectory() && (await stat(fullPath)).isFile())
+          if (isFile) {
+            const ext = '.' + entry.name.split('.').pop()?.toLowerCase()
+            if (supportedImageExtensionSet.has(ext)) {
               files.push(fullPath)
             }
           }
@@ -336,6 +363,37 @@ function registerIpc(): void {
   })
 }
 
+function registerImageProtocol(): void {
+  const imageService = svc<ImageService>(DI_TOKENS.IMAGE_SERVICE)
+  const photoRepo = svc<PhotoRepository>(DI_TOKENS.PHOTO_REPO)
+  protocol.handle('gather-image', async (request) => {
+    try {
+      const url = new URL(request.url)
+      const filePath = url.searchParams.get('path') ?? ''
+      if (!filePath || !photoRepo.containsFilepath(filePath)) {
+        return new Response('Not found', { status: 404 })
+      }
+      const requestedSize = Number(url.searchParams.get('size'))
+      const size = Number.isFinite(requestedSize) && requestedSize > 0
+        ? Math.min(5120, Math.round(requestedSize))
+        : 1024
+      const result = url.hostname === 'preview'
+        ? await imageService.getPreview(filePath, size)
+        : await imageService.getThumbnail(filePath, size)
+      return new Response(new Uint8Array(result.buffer), {
+        status: 200,
+        headers: {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'private, max-age=3600',
+        },
+      })
+    } catch (error) {
+      console.warn('Image protocol request failed', error)
+      return new Response('Image decode failed', { status: 500 })
+    }
+  })
+}
+
 app.enableSandbox()
 
 app.whenReady().then(() => {
@@ -344,6 +402,7 @@ app.whenReady().then(() => {
   const db = svc<Database>(DI_TOKENS.DB)
   runMigrations(db)
 
+  registerImageProtocol()
   registerIpc()
 
   const settings = svc<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)

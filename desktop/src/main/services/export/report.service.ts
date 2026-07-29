@@ -7,13 +7,6 @@ interface CullingDecisionRow {
   decision: string
 }
 
-interface OperationLogRow {
-  id: number
-  operation_type: string
-  params: string
-  created_at: string
-}
-
 @injectable()
 export class ReportService {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
@@ -23,9 +16,9 @@ export class ReportService {
       .prepare('SELECT filename, filepath, status FROM photos WHERE session_id = ?')
       .all(sessionId) as { filename: string; filepath: string; status: string }[]
 
-    let md = '# Session Summary\n\n'
-    md += `**Total Photos:** ${photos.length}\n\n`
-    md += '| # | Filename | Filepath | Status |\n'
+    let md = '# 工作区摘要\n\n'
+    md += `**照片总数：** ${photos.length}\n\n`
+    md += '| # | 文件名 | 文件路径 | 状态 |\n'
     md += '|---|----------|----------|--------|\n'
     photos.forEach((p, i) => {
       md += `| ${i + 1} | ${p.filename.replace(/\|/g, '\\|')} | ${p.filepath.replace(/\|/g, '\\|')} | ${p.status.replace(/\|/g, '\\|')} |\n`
@@ -44,9 +37,9 @@ export class ReportService {
       )
       .all(sessionId) as { role_name: string; keywords: string; label: string; member_count: number }[]
 
-    let md = '# Person Report\n\n'
-    md += `**Bindings:** ${bindings.length}\n\n`
-    md += '| Role | Keywords | Cluster | Faces |\n'
+    let md = '# 人物报告\n\n'
+    md += `**绑定数量：** ${bindings.length}\n\n`
+    md += '| 角色 | 关键词 | 人脸组 | 人脸数量 |\n'
     md += '|------|----------|---------|-------|\n'
     for (const b of bindings) {
       const keywords = JSON.parse(b.keywords) as string[]
@@ -83,37 +76,22 @@ export class ReportService {
       else if (row.decision === 'reject') cullingKeywords.add('culling:reject')
     }
 
-    const historyRows = this.db
-      .prepare('SELECT operation_type, created_at FROM operation_log WHERE session_id = ? ORDER BY created_at DESC LIMIT 50')
-      .all(sessionId) as OperationLogRow[]
-
-    let md = '# Keyword Report\n\n'
-    md += '## Face Keywords\n\n'
+    let md = '# 关键词报告\n\n'
+    md += '## 人脸关键词\n\n'
     if (keywordSet.size === 0) {
-      md += '*(none)*\n'
+      md += '*(无)*\n'
     } else {
       for (const k of Array.from(keywordSet).sort()) {
         md += `- ${k}\n`
       }
     }
 
-    md += '\n## Culling Keywords\n\n'
+    md += '\n## 筛选关键词\n\n'
     if (cullingKeywords.size === 0) {
-      md += '*(none)*\n'
+      md += '*(无)*\n'
     } else {
       for (const k of Array.from(cullingKeywords).sort()) {
         md += `- ${k}\n`
-      }
-    }
-
-    md += '\n## Recent Operations\n\n'
-    if (historyRows.length === 0) {
-      md += '*(none)*\n'
-    } else {
-      md += '| Type | Time |\n'
-      md += '|------|------|\n'
-      for (const row of historyRows) {
-        md += `| ${row.operation_type} | ${row.created_at} |\n`
       }
     }
 

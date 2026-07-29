@@ -3,11 +3,21 @@ import { useFaceKwStore } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
 import WritebackReport from '../../components/WritebackReport/WritebackReport'
 import type { WritebackResult, WritebackItem } from '@gather/shared'
+import { useQuery } from '@tanstack/react-query'
 
 export default function StepWriteback() {
-  const { clusters, selectedClusterId, setWritebackReport, writebackReport, writebackRunning, setWritebackRunning, sessionId } = useFaceKwStore()
+  const { setWritebackReport, writebackReport, writebackRunning, setWritebackRunning, sessionId } = useFaceKwStore()
+  const { data: clusters = [] } = useQuery({
+    queryKey: ['face-clusters', sessionId],
+    queryFn: async () => (await faceKwApi.getClusters(sessionId!)).map(cluster => ({
+      ...cluster,
+      binding: cluster.binding ?? null,
+    })),
+    enabled: Boolean(sessionId),
+  })
   const [writebackResult, setWritebackResult] = useState<WritebackResult | null>(null)
   const [failedItems, setFailedItems] = useState<WritebackItem[]>([])
+  const [syncConfirmed, setSyncConfirmed] = useState(false)
 
   const boundClusters = useMemo(() => clusters.filter((c) => c.binding), [clusters])
   const unboundClusters = useMemo(() => clusters.filter((c) => !c.binding), [clusters])
@@ -21,41 +31,42 @@ export default function StepWriteback() {
     if (!sessionId) return
     try {
       const preview = await faceKwApi.previewWriteback(sessionId)
-      setWritebackReport(`预览: ${preview.totalCount} 项, ${preview.affectedPhotos} 张照片受影响`)
+      setWritebackReport(sessionId, `预览: ${preview.totalCount} 项, ${preview.affectedPhotos} 张照片受影响`)
     } catch (e) {
-      setWritebackReport(`预览失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, `预览失败: ${(e as Error).message}`)
     }
   }
 
   const handleExecute = async () => {
     if (!sessionId) return
-    setWritebackRunning(true)
+    setWritebackRunning(sessionId, true)
     try {
       const preview = await faceKwApi.previewWriteback(sessionId)
       const result = await faceKwApi.writeback(sessionId, preview.items)
       setWritebackResult(result)
       setFailedItems(result.failedItems)
-      setWritebackReport(`写回完成: ${result.written} 已写入, ${result.failed} 失败, ${result.skipped} 已跳过`)
+      setSyncConfirmed(false)
+      setWritebackReport(sessionId, `写回完成: ${result.written} 已写入, ${result.failed} 失败, ${result.skipped} 已跳过`)
     } catch (e) {
-      setWritebackReport(`写回失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, `写回失败: ${(e as Error).message}`)
     } finally {
-      setWritebackRunning(false)
+      setWritebackRunning(sessionId, false)
     }
   }
 
   const handleRetryFailed = async () => {
     if (!sessionId) return
-    setWritebackRunning(true)
+    setWritebackRunning(sessionId, true)
     try {
-      setWritebackReport('正在重试失败项...')
+      setWritebackReport(sessionId, '正在重试失败项...')
       const failedOnly = failedItems
       const result = await faceKwApi.writeback(sessionId, failedOnly)
       setWritebackResult(result)
       if (result.failed === 0) setFailedItems([])
     } catch (e) {
-      setWritebackReport(`重试失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, `重试失败: ${(e as Error).message}`)
     } finally {
-      setWritebackRunning(false)
+      setWritebackRunning(sessionId, false)
     }
   }
 
@@ -63,9 +74,10 @@ export default function StepWriteback() {
     if (!sessionId) return
     try {
       await faceKwApi.confirmSync(sessionId)
-      setWritebackReport('同步已确认。')
+      setSyncConfirmed(true)
+      setWritebackReport(sessionId, '同步已确认。')
     } catch (e) {
-      setWritebackReport(`确认失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, `确认失败: ${(e as Error).message}`)
     }
   }
 
@@ -73,9 +85,9 @@ export default function StepWriteback() {
     if (!sessionId) return
     try {
       const result = await faceKwApi.cleanup(sessionId)
-      setWritebackReport(`清理完成: ${result.deletedCount} 个文件已删除`)
+      setWritebackReport(sessionId, `清理完成: ${result.deletedCount} 个文件已删除`)
     } catch (e) {
-      setWritebackReport(`清理失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, `清理失败: ${(e as Error).message}`)
     }
   }
 
@@ -192,7 +204,7 @@ export default function StepWriteback() {
         failedItems={failedItems}
         onRetryFailed={handleRetryFailed}
         onConfirmSync={handleConfirmSync}
-        onCleanup={handleCleanup}
+        onCleanup={syncConfirmed ? handleCleanup : undefined}
       />}
     </div>
   )

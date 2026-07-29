@@ -6,6 +6,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import Dialog from '../../components/Dialog/Dialog'
 import ConfirmDialog from '../../components/Dialog/ConfirmDialog'
 import Badge from '../../components/Badge/Badge'
+import { useToastStore } from '../../components/Toast/ToastStore'
 import type { SessionData } from '@gather/shared'
 import styles from './Dashboard.module.css'
 
@@ -14,13 +15,53 @@ const SOURCE_OPTIONS = [
   { value: 'capture-one', label: 'Capture One' },
 ]
 
+export function getPathBasename(filepath: string): string {
+  return filepath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
+}
+
+export function getCommonParentPath(filepaths: string[]): string {
+  if (filepaths.length === 0) return ''
+  const getParent = (filepath: string) => {
+    const normalized = filepath.replace(/[\\/]+$/, '')
+    const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+    return separatorIndex > 0 ? normalized.slice(0, separatorIndex) : ''
+  }
+  const directories = filepaths.map(getParent)
+  let candidate = directories[0]
+  while (candidate) {
+    const prefix = `${candidate}${candidate.includes('\\') ? '\\' : '/'}`
+    if (directories.every((directory) => directory === candidate || directory.startsWith(prefix))) {
+      return candidate
+    }
+    candidate = getParent(candidate)
+  }
+  return directories[0]
+}
+
+function importFailureMessage(
+  added: number,
+  failedFiles: string[],
+  sourceLabel = '文件',
+): string {
+  const examples = failedFiles
+    .slice(0, 3)
+    .map((filepath) => filepath.split(/[/\\]/).pop() ?? filepath)
+    .join('、')
+  const remaining = failedFiles.length > 3
+    ? ` 等 ${failedFiles.length} 个`
+    : ''
+  return `${added} 张照片已导入；${sourceLabel}读取失败：${examples}${remaining}`
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const setSession = useSessionStore((s) => s.setSession)
+  const addToast = useToastStore((s) => s.addToast)
 
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [newName, setNewName] = useState('')
+  const [newNameEdited, setNewNameEdited] = useState(false)
   const [newSource, setNewSource] = useState('local')
   const [newFolderPath, setNewFolderPath] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<SessionData | null>(null)
@@ -38,17 +79,36 @@ export default function Dashboard() {
     mutationFn: async ({ name, source, folderPath }: { name: string; source: string; folderPath?: string }) => {
       if (source === 'local' && folderPath) {
         const files = await window.gather.scanDirectory(folderPath)
-        return sessionApi.create(name, source, files)
+        return sessionApi.create(name, source, files, folderPath)
       }
-      return sessionApi.create(name, source)
+      if (source === 'capture-one') {
+        const files = await window.gather.getSelectedPhotos()
+        if (files.length === 0) {
+          throw new Error('请先在 Capture One 中选择至少一张照片')
+        }
+        const sourcePath = getCommonParentPath(files)
+        const sessionName = name.trim() || getPathBasename(sourcePath) || 'Capture One 导入'
+        return sessionApi.create(sessionName, source, files, sourcePath)
+      }
+      throw new Error('不支持的导入来源')
     },
     onSuccess: (session) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
       setShowNewDialog(false)
       setNewName('')
+      setNewNameEdited(false)
       setNewSource('local')
       setNewFolderPath('')
+      if (session.failedFiles.length > 0) {
+        addToast(
+          'warning',
+          importFailureMessage(session.added, session.failedFiles),
+        )
+      }
       navigate(`/sessions/${session.id}/gallery`)
+    },
+    onError: (error) => {
+      addToast('error', error instanceof Error ? error.message : '创建工作区失败')
     },
   })
 
@@ -72,8 +132,14 @@ export default function Dashboard() {
   const addPhotosMutation = useMutation({
     mutationFn: ({ sessionId, files }: { sessionId: string; files: string[] }) =>
       sessionApi.addPhotos(sessionId, files),
-    onSuccess: (_data, variables) => {
+    onSuccess: (result, variables) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      if (result.failedFiles.length > 0) {
+        addToast(
+          'warning',
+          importFailureMessage(result.added, result.failedFiles),
+        )
+      }
       const session = sessions?.find(s => s.id === variables.sessionId)
       if (session) {
         setSession(session.id)
@@ -105,18 +171,33 @@ export default function Dashboard() {
   useEffect(() => {
     const unsub = window.gather.onPluginImport(async (files) => {
       const now = new Date()
-      const name = `C1 导入 ${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`
+      const sourcePath = getCommonParentPath(files)
+      const name = getPathBasename(sourcePath) ||
+        `C1 导入 ${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`
       try {
-        const session = await sessionApi.create(name, 'capture-one')
-        await sessionApi.addPhotos(session.id, files)
+        const session = await sessionApi.create(name, 'capture-one', files, sourcePath)
+        if (session.failedFiles.length > 0) {
+          addToast(
+            'warning',
+            importFailureMessage(
+              session.added,
+              session.failedFiles,
+              'Capture One 文件',
+            ),
+          )
+        }
         setSession(session.id)
         navigate(`/sessions/${session.id}/gallery`)
       } catch (err) {
         console.error('Plugin import failed:', err)
+        addToast(
+          'error',
+          err instanceof Error ? err.message : 'Capture One 照片导入失败',
+        )
       }
     })
     return unsub
-  }, [navigate, setSession])
+  }, [navigate, setSession, addToast])
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -144,7 +225,7 @@ export default function Dashboard() {
   }
 
   const handleCreate = () => {
-    if (!newName.trim()) return
+    if (newSource === 'local' && !newName.trim()) return
     if (newSource === 'local' && !newFolderPath) return
     createMutation.mutate({ name: newName.trim(), source: newSource, folderPath: newFolderPath || undefined })
   }
@@ -153,7 +234,18 @@ export default function Dashboard() {
     const dir = await window.gather.selectDirectory()
     if (dir) {
       setNewFolderPath(dir)
+      if (!newNameEdited) {
+        setNewName(getPathBasename(dir))
+      }
     }
+  }
+
+  const openNewDialog = () => {
+    setNewName('')
+    setNewNameEdited(false)
+    setNewSource('local')
+    setNewFolderPath('')
+    setShowNewDialog(true)
   }
 
   const handleAnalyze = (session: SessionData) => {
@@ -188,7 +280,7 @@ export default function Dashboard() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h1 className={styles.title}>Gather</h1>
-        <button className={styles.newBtn} onClick={() => setShowNewDialog(true)}>
+        <button className={styles.newBtn} onClick={openNewDialog}>
           + 新建工作区
         </button>
       </div>
@@ -276,8 +368,11 @@ export default function Dashboard() {
             className={styles.input}
             type="text"
             value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="我的照片工作区"
+            onChange={(e) => {
+              setNewName(e.target.value)
+              setNewNameEdited(true)
+            }}
+            placeholder={newSource === 'local' ? '选择文件夹后自动生成' : '留空则使用照片所在文件夹名称'}
             autoFocus
             onKeyDown={(e) => { if (e.key === 'Enter') handleCreate() }}
           />
@@ -287,7 +382,10 @@ export default function Dashboard() {
           <select
             className={styles.select}
             value={newSource}
-            onChange={(e) => setNewSource(e.target.value)}
+            onChange={(e) => {
+              setNewSource(e.target.value)
+              if (!newNameEdited) setNewName('')
+            }}
           >
             {SOURCE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -318,7 +416,7 @@ export default function Dashboard() {
           <button
             className={styles.submitBtn}
             onClick={handleCreate}
-            disabled={!newName.trim() || (newSource === 'local' && !newFolderPath) || createMutation.isPending}
+            disabled={(newSource === 'local' && (!newName.trim() || !newFolderPath)) || createMutation.isPending}
           >
             {createMutation.isPending ? '创建中...' : '创建'}
           </button>

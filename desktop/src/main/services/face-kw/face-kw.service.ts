@@ -1,18 +1,20 @@
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { FaceRepository, type FaceClusterInput } from '../../db/repositories/face.repo'
-import { detectFaces, initDetector, releaseDetector } from './face-detector'
-import { encodeFace, initEncoder, releaseEncoder, setEncoderConfig } from './face-encoder'
-import { clusterEmbeddings, type EmbeddingEntry } from './face-clusterer'
+import type { EmbeddingEntry } from './face-clusterer'
+import { clusterFacesInWorker } from '../../utils/analysis-worker-client'
+import { FaceInferenceWorker } from './face-inference-worker-client'
 import * as path from 'path'
 import * as fs from 'fs'
 import sharp from 'sharp'
 import { ImageService } from '../image'
 import { SettingsService } from '../settings/settings.service'
-import { CancelledError, NotFoundError } from '@gather/shared'
+import { CancelledError, NotFoundError, ValidationError } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { MODEL_CONFIG } from './model-config'
+import { resolveModelPath } from './provider'
+import { batchAsync } from '../../utils/async'
 
 export interface FaceClusterData {
   id: number
@@ -24,6 +26,7 @@ export interface FaceClusterData {
   binding?: { roleName: string; keywords: string[] } | null
   thumbnailPhotoId?: string
   members: {
+    memberId: number
     photoId: string
     photoPath: string
     filename: string
@@ -34,9 +37,15 @@ export interface FaceClusterData {
 
 export type ProgressCallback = (data: { current: number; total: number; message: string }) => void
 
+export interface FaceAnalysisResult {
+  status: 'done' | 'failed' | 'cancelled'
+  detectionFailures: number
+  encodingFailures: number
+}
+
 @injectable()
 export class FaceKwService {
-  private abortController: AbortController | null = null
+  private controllers = new Map<string, AbortController>()
 
   constructor(
     @inject(DI_TOKENS.PHOTO_REPO) private photoRepo: PhotoRepository,
@@ -53,12 +62,17 @@ export class FaceKwService {
     eps = this.settings.getNumber('default_eps', 0.6),
     minPts = this.settings.getNumber('default_min_samples', 2),
     onProgress?: ProgressCallback,
-  ): Promise<void> {
-    if (this.abortController) {
-      throw new Error('Analysis already in progress')
+  ): Promise<FaceAnalysisResult> {
+    if (this.controllers.has(sessionId)) {
+      throw new Error('Analysis is already in progress for this session')
     }
-    this.abortController = new AbortController()
-    const signal = this.abortController.signal
+    const controller = new AbortController()
+    this.controllers.set(sessionId, controller)
+    const signal = controller.signal
+
+    let detectionFailures = 0
+    let encodingFailures = 0
+    let inferenceWorker: FaceInferenceWorker | null = null
 
     try {
       const session = this.sessionRepo.get(sessionId)
@@ -71,170 +85,291 @@ export class FaceKwService {
       const onnxThreads = this.settings.getNumber('onnx_threads', 4)
       const encoderInputSize = this.settings.getNumber('encoder_input_size', MODEL_CONFIG.encode.inputSize)
       const embeddingDim = this.settings.getNumber('embedding_dim', MODEL_CONFIG.encode.embeddingDim)
-      setEncoderConfig(encoderInputSize, embeddingDim)
-
-      await initDetector(detectorPath, onnxProvider)
-      await initEncoder(encoderPath, onnxProvider, onnxThreads)
-
       const photos = this.photoRepo.getBySession(sessionId)
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
-      this.faceRepo.deleteObservationsBySession(sessionId)
-      this.faceRepo.deleteClustersBySession(sessionId)
+      const primaryDetectionSize = this.settings.getNumber(
+        'detect_input_size',
+        MODEL_CONFIG.detect.inputSize,
+      )
+      const secondaryDetectionSize = this.settings.getNumber(
+        'detect_secondary_input_size',
+        MODEL_CONFIG.detect.secondaryInputSize,
+      )
+      const confidenceThreshold = this.settings.getNumber('detect_confidence', 0.5)
+      const previewMaxDimension = Math.max(
+        MODEL_CONFIG.detect.inputSize,
+        this.settings.getNumber('face_preview_max_dimension', 2048),
+      )
+      const modelFingerprint = async (modelPath: string) => {
+        const resolved = resolveModelPath(modelPath)
+        try {
+          const modelStat = await fs.promises.stat(resolved)
+          return `${resolved}:${modelStat.size}:${Math.round(modelStat.mtimeMs)}`
+        } catch {
+          return resolved
+        }
+      }
+      const analysisSignature = JSON.stringify({
+        detector: await modelFingerprint(detectorPath),
+        encoder: await modelFingerprint(encoderPath),
+        primaryDetectionSize,
+        secondaryDetectionSize,
+        confidenceThreshold,
+        encoderInputSize,
+        embeddingDim,
+        previewMaxDimension,
+        preprocessingVersion: 2,
+      })
+      const cachedByPhoto = new Map<string, ReturnType<FaceRepository['getObservations']>>()
+      for (const observation of this.faceRepo.getObservations(sessionId)) {
+        const values = cachedByPhoto.get(observation.photo_id) ?? []
+        values.push(observation)
+        cachedByPhoto.set(observation.photo_id, values)
+      }
+      const analysisStates = this.faceRepo.getAnalysisStates(sessionId)
 
       const totalPhotos = photos.length
+      const sourceStats = new Map<string, { size: number; mtimeMs: number }>()
+      await batchAsync(photos, async (photo) => {
+        try {
+          const sourceStat = await fs.promises.stat(photo.filepath)
+          sourceStats.set(photo.id, {
+            size: sourceStat.size,
+            mtimeMs: sourceStat.mtimeMs,
+          })
+        } catch {
+          // The normal per-photo error path below records unreadable inputs.
+        }
+      }, 32)
+      const photosNeedingAnalysis = photos.filter((photo) => {
+        const sourceStat = sourceStats.get(photo.id)
+        if (!sourceStat) return false
+        const analysisState = analysisStates.get(photo.id)
+        return !analysisState ||
+          analysisState.sourceFileSize !== sourceStat.size ||
+          Math.abs(analysisState.sourceFileMtimeMs - sourceStat.mtimeMs) >= 1 ||
+          analysisState.analysisSignature !== analysisSignature
+      })
+      const clusterSignature = `${eps}:${minPts}`
+      if (
+        photosNeedingAnalysis.length === 0 &&
+        this.faceRepo.getClusterSignature(sessionId) === clusterSignature &&
+        this.faceRepo.getClusters(sessionId).length > 0
+      ) {
+        onProgress?.({ current: totalPhotos, total: totalPhotos, message: 'Reusing cached face clusters...' })
+        this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+        return { status: 'done', detectionFailures, encodingFailures }
+      }
+      this.faceRepo.deleteClustersBySession(sessionId)
+      if (photosNeedingAnalysis.length > 0) {
+        inferenceWorker = new FaceInferenceWorker()
+        await inferenceWorker.init({
+          detectorPath: resolveModelPath(detectorPath),
+          encoderPath: resolveModelPath(encoderPath),
+          provider: onnxProvider,
+          threads: onnxThreads,
+          encoderInputSize,
+          embeddingDim,
+        }, signal)
+      }
+
       onProgress?.({ current: 0, total: totalPhotos, message: 'Detecting faces...' })
 
+      let totalFaces = 0
       for (let i = 0; i < totalPhotos; i++) {
         if (signal.aborted) throw new CancelledError('Analysis cancelled')
         const photo = photos[i]
         try {
-          const faces = await detectFaces(
+          const sourceStat = sourceStats.get(photo.id)
+          if (!sourceStat) throw new Error(`Photo is not readable: ${photo.filepath}`)
+          const cached = cachedByPhoto.get(photo.id) ?? []
+          const analysisState = analysisStates.get(photo.id)
+          if (
+            analysisState &&
+            analysisState.sourceFileSize === sourceStat.size &&
+            Math.abs(analysisState.sourceFileMtimeMs - sourceStat.mtimeMs) < 1 &&
+            analysisState.analysisSignature === analysisSignature
+          ) {
+            totalFaces += cached.length
+            onProgress?.({ current: i + 1, total: totalPhotos, message: 'Reusing cached faces...' })
+            continue
+          }
+          this.faceRepo.deleteObservationsByPhoto(sessionId, photo.id)
+          const preview = await this.imageService.getPreview(
             photo.filepath,
-            this.settings.getNumber('detect_input_size', MODEL_CONFIG.detect.inputSize),
-            this.settings.getNumber('detect_confidence', 0.5),
-            this.settings.getNumber('nms_threshold', 0.4),
-            this.settings.getNumber('max_detections', 100),
+            previewMaxDimension,
           )
+          if (!inferenceWorker) throw new Error('Face inference worker is not initialized')
+          const inference = await inferenceWorker.analyze(
+            preview.buffer,
+            {
+              inputSizes: [secondaryDetectionSize, primaryDetectionSize],
+              confidenceThreshold,
+              nmsThreshold: this.settings.getNumber('nms_threshold', 0.4),
+              maxDetections: this.settings.getNumber('max_detections', 100),
+              embeddingDim,
+            },
+            signal,
+          )
+          const faces = inference.observations
+          encodingFailures += inference.encodingFailures
           if (faces.length > 0) {
-            const observations = faces.map((f) => ({
-              photoId: photo.id,
-              bboxX: f.bbox[0],
-              bboxY: f.bbox[1],
-              bboxW: f.bbox[2],
-              bboxH: f.bbox[3],
-              embedding: new Array(this.settings.getNumber('embedding_dim', 128)).fill(0),
-              confidence: f.confidence,
-            }))
+            totalFaces += faces.length
+            const observations = faces.map(face => ({
+                photoId: photo.id,
+                bboxX: face.bbox[0],
+                bboxY: face.bbox[1],
+                bboxW: face.bbox[2],
+                bboxH: face.bbox[3],
+                embedding: face.embedding,
+                confidence: face.confidence,
+                sourceFileSize: sourceStat.size,
+                sourceFileMtimeMs: sourceStat.mtimeMs,
+                analysisSignature,
+              }))
             this.faceRepo.saveObservations(sessionId, observations)
           }
+          this.faceRepo.upsertAnalysisState(
+            sessionId,
+            photo.id,
+            sourceStat.size,
+            sourceStat.mtimeMs,
+            analysisSignature,
+          )
         } catch (e) {
+          detectionFailures++
           console.warn('Face detection failed for', photo.filepath, e)
         }
         onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
       }
 
-      const observations = this.faceRepo.getObservations(sessionId)
-      const totalFaces = observations.length
-      onProgress?.({ current: 0, total: totalFaces, message: 'Encoding faces...' })
-
-      for (let i = 0; i < totalFaces; i++) {
-        if (signal.aborted) throw new CancelledError('Analysis cancelled')
-        const obs = observations[i]
-        try {
-          const embedding = await encodeFace(
-            photos.find((p) => p.id === obs.photo_id)?.filepath ?? '',
-            [obs.bbox_x, obs.bbox_y, obs.bbox_w, obs.bbox_h],
-          )
-          this.faceRepo.updateEmbedding(obs.id, embedding)
-        } catch (e) {
-          console.warn('Face encoding failed for observation', obs.id, e)
-        }
-        onProgress?.({ current: i + 1, total: totalFaces, message: 'Encoding faces...' })
-      }
-
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
-      const updatedObs = this.faceRepo.getObservations(sessionId)
-      const entries: EmbeddingEntry[] = []
-      const buffToArr = (buf: Buffer): number[] => {
-        const bytes = new Uint8Array(buf)
-        return Array.from(new Float32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4))
-      }
-      for (const obs of updatedObs) {
-        const emb = buffToArr(obs.embedding)
-        const hasNonZero = emb.some((v) => v !== 0)
-        if (!hasNonZero) continue
-        entries.push({ observationId: obs.id, embedding: emb, photoId: obs.photo_id })
-      }
-
       onProgress?.({ current: 0, total: 0, message: 'Clustering faces...' })
+      await this.clusterStoredObservations(sessionId, photos, eps, minPts, signal)
+      this.faceRepo.upsertClusterSignature(sessionId, clusterSignature)
 
-      const { clusters, noise } = clusterEmbeddings(entries, eps, minPts)
-
-      const clusterInputs: FaceClusterInput[] = clusters.map((cluster, idx) => ({
-        label: `Person ${idx + 1}`,
-        members: cluster.map((entry) => {
-          const obs = updatedObs.find((o) => o.id === entry.observationId)
-          const photo = photos.find((p) => p.id === entry.photoId)
-          return {
-            photoId: entry.photoId,
-            photoPath: photo?.filepath ?? '',
-            bbox: [obs?.bbox_x ?? 0, obs?.bbox_y ?? 0, obs?.bbox_w ?? 0, obs?.bbox_h ?? 0],
-            confidence: obs?.confidence ?? 0,
-            observationId: entry.observationId,
-          }
-        }),
-      }))
-
-      if (clusterInputs.length > 0) {
-        const clusterIds = this.faceRepo.saveClusters(sessionId, clusterInputs)
-        const thumbDir = this.faceRepo.getFaceThumbDir()
-
-        for (let ci = 0; ci < clusterInputs.length; ci++) {
-          const cluster = clusterInputs[ci]
-          const firstMember = cluster.members[0]
-          const faceThumbSize = this.settings.getNumber('face_thumbnail_size', 320)
-          const faceThumbQuality = this.settings.getNumber('face_thumbnail_quality', 70)
-          if (firstMember) {
-            try {
-              const [bx, by, bw, bh] = firstMember.bbox
-              const ext = path.extname(firstMember.photoPath).toLowerCase()
-              let thumbnailBuffer: Buffer | null = null
-
-              if (['.jpg', '.jpeg', '.png', '.tif', '.tiff'].includes(ext)) {
-                const meta = await sharp(firstMember.photoPath).metadata()
-                const imgW = meta.width ?? 0
-                const imgH = meta.height ?? 0
-                thumbnailBuffer = await sharp(firstMember.photoPath)
-                  .extract({
-                    left: Math.round(bx * imgW),
-                    top: Math.round(by * imgH),
-                    width: Math.round(bw * imgW),
-                    height: Math.round(bh * imgH),
-                  })
-                  .resize(faceThumbSize, faceThumbSize, { fit: 'cover' })
-                  .jpeg({ quality: faceThumbQuality })
-                  .toBuffer()
-              } else {
-                const preview = await this.imageService.getPreview(firstMember.photoPath)
-                thumbnailBuffer = await sharp(preview.buffer)
-                  .extract({
-                    left: Math.round(bx * preview.width),
-                    top: Math.round(by * preview.height),
-                    width: Math.round(bw * preview.width),
-                    height: Math.round(bh * preview.height),
-                  })
-                  .resize(faceThumbSize, faceThumbSize, { fit: 'cover' })
-                  .jpeg({ quality: faceThumbQuality })
-                  .toBuffer()
-              }
-              if (thumbnailBuffer) {
-                const fileName = `${clusterIds[ci]}.jpg`
-                fs.writeFileSync(path.join(thumbDir, fileName), thumbnailBuffer)
-                this.faceRepo.updateClusterThumbnail(clusterIds[ci], fileName)
-              }
-            } catch (e) {
-              console.warn('Thumbnail generation failed for cluster', clusterIds[ci], e)
-            }
-          }
-        }
+      const allDetectionsFailed = detectionFailures === totalPhotos && totalPhotos > 0
+      const allEncodingsFailed =
+        encodingFailures === totalFaces && totalFaces > 0
+      if (allDetectionsFailed || allEncodingsFailed) {
+        this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
+        return { status: 'failed', detectionFailures, encodingFailures }
       }
-
       onProgress?.({ current: 0, total: 0, message: 'Analysis complete' })
       this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+      return { status: 'done', detectionFailures, encodingFailures }
     } catch (e) {
       if (e instanceof CancelledError) {
         this.sessionRepo.updateAnalysisStatus(sessionId, 'cancelled')
-        return
+        return { status: 'cancelled', detectionFailures, encodingFailures }
       }
       this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
       throw e
     } finally {
-      this.abortController = null
-      try { await releaseDetector() } catch (e) { console.warn('Failed to release detector', e) }
-      try { await releaseEncoder() } catch (e) { console.warn('Failed to release encoder', e) }
+      this.controllers.delete(sessionId)
+      if (inferenceWorker) {
+        try { await inferenceWorker.shutdown() } catch (e) { console.warn('Failed to stop inference worker', e) }
+      }
     }
+  }
+
+  async recluster(sessionId: string, eps: number, minPts: number): Promise<void> {
+    const session = this.sessionRepo.get(sessionId)
+    if (!session) throw new NotFoundError('Session not found')
+    const observations = this.faceRepo.getObservations(sessionId)
+    if (observations.length === 0) {
+      throw new ValidationError('No cached face observations found. Run analysis first.')
+    }
+    const photos = this.photoRepo.getBySession(sessionId)
+    this.faceRepo.deleteClustersBySession(sessionId)
+    await this.clusterStoredObservations(sessionId, photos, eps, minPts)
+    this.faceRepo.upsertClusterSignature(sessionId, `${eps}:${minPts}`)
+  }
+
+  private async clusterStoredObservations(
+    sessionId: string,
+    photos: ReturnType<PhotoRepository['getBySession']>,
+    eps: number,
+    minPts: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const observations = this.faceRepo.getObservations(sessionId)
+    const observationById = new Map(observations.map(observation => [observation.id, observation]))
+    const photoById = new Map(photos.map(photo => [photo.id, photo]))
+    const entries: EmbeddingEntry[] = []
+    for (const observation of observations) {
+      const bytes = new Uint8Array(observation.embedding)
+      const embedding = Array.from(
+        new Float32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4),
+      )
+      if (embedding.some(value => value !== 0)) {
+        entries.push({
+          observationId: observation.id,
+          embedding,
+          photoId: observation.photo_id,
+        })
+      }
+    }
+
+    const { clusters } = await clusterFacesInWorker(
+      entries,
+      eps,
+      minPts,
+      signal,
+    )
+    const clusterInputs: FaceClusterInput[] = clusters.map((cluster, index) => ({
+      label: `Person ${index + 1}`,
+      members: cluster.map((entry) => {
+        const observation = observationById.get(entry.observationId)
+        return {
+          photoId: entry.photoId,
+          photoPath: photoById.get(entry.photoId)?.filepath ?? '',
+          bbox: [
+            observation?.bbox_x ?? 0,
+            observation?.bbox_y ?? 0,
+            observation?.bbox_w ?? 0,
+            observation?.bbox_h ?? 0,
+          ],
+          confidence: observation?.confidence ?? 0,
+          observationId: entry.observationId,
+        }
+      }),
+    }))
+    if (clusterInputs.length === 0) return
+
+    const clusterIds = this.faceRepo.saveClusters(sessionId, clusterInputs)
+    const thumbDir = this.faceRepo.getFaceThumbDir()
+    await batchAsync(clusterInputs.map((_, index) => index), async (index) => {
+      const firstMember = clusterInputs[index].members[0]
+      if (!firstMember) return
+      try {
+        const [bx, by, bw, bh] = firstMember.bbox
+        const faceThumbSize = this.settings.getNumber('face_thumbnail_size', 320)
+        const preview = await this.imageService.getPreview(
+          firstMember.photoPath,
+          this.settings.getNumber('face_preview_max_dimension', 2048),
+        )
+        const left = Math.min(preview.width - 1, Math.max(0, Math.round(bx * preview.width)))
+        const top = Math.min(preview.height - 1, Math.max(0, Math.round(by * preview.height)))
+        const thumbnailBuffer = await sharp(preview.buffer)
+          .extract({
+            left,
+            top,
+            width: Math.max(1, Math.min(preview.width - left, Math.round(bw * preview.width))),
+            height: Math.max(1, Math.min(preview.height - top, Math.round(bh * preview.height))),
+          })
+          .resize(faceThumbSize, faceThumbSize, { fit: 'cover' })
+          .jpeg({ quality: this.settings.getNumber('face_thumbnail_quality', 70) })
+          .toBuffer()
+        const fileName = `${clusterIds[index]}.jpg`
+        await fs.promises.writeFile(path.join(thumbDir, fileName), thumbnailBuffer)
+        this.faceRepo.updateClusterThumbnail(clusterIds[index], fileName)
+      } catch (error) {
+        console.warn('Thumbnail generation failed for cluster', clusterIds[index], error)
+      }
+    }, 2)
   }
 
   async getClusters(sessionId: string): Promise<FaceClusterData[]> {
@@ -249,6 +384,7 @@ export class FaceKwService {
       binding: c.binding ? { roleName: c.binding.roleName, keywords: c.binding.keywords } : null,
       thumbnailPhotoId: c.members?.[0]?.photo_id,
       members: (c.members ?? []).map((m) => ({
+        memberId: m.id,
         photoId: m.photo_id,
         photoPath: m.photo_path,
         filename: m.photo_path.split(/[/\\]/).pop() ?? '',
@@ -272,24 +408,37 @@ export class FaceKwService {
   }
 
   async bindCluster(sessionId: string, clusterId: number, roleName: string, keywords: string[]): Promise<void> {
+    const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
+    if (!clusterSessionId) throw new NotFoundError('Cluster not found')
+    if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
     this.faceRepo.updateBinding(clusterId, roleName, keywords)
   }
 
-  async unbindCluster(_sessionId: string, clusterId: number): Promise<void> {
+  async unbindCluster(sessionId: string, clusterId: number): Promise<void> {
+    const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
+    if (!clusterSessionId) throw new NotFoundError('Cluster not found')
+    if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
     this.faceRepo.deleteBinding(clusterId)
   }
 
-  async mergeClusters(_sessionId: string, sourceId: number, targetId: number): Promise<void> {
+  async mergeClusters(sessionId: string, sourceId: number, targetId: number): Promise<void> {
+    const sourceSessionId = this.faceRepo.getClusterSessionId(sourceId)
+    const targetSessionId = this.faceRepo.getClusterSessionId(targetId)
+    if (!sourceSessionId || !targetSessionId) throw new NotFoundError('Cluster not found')
+    if (sourceSessionId !== sessionId || targetSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
     this.faceRepo.mergeClusters(sourceId, targetId)
   }
 
-  async removeMember(_sessionId: string, clusterId: number, photoId: string): Promise<void> {
-    this.faceRepo.removeMemberFromCluster(clusterId, photoId)
+  async removeMember(sessionId: string, clusterId: number, memberId: number): Promise<void> {
+    const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
+    if (!clusterSessionId) throw new NotFoundError('Cluster not found')
+    if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
+    if (!this.faceRepo.removeMemberFromCluster(clusterId, memberId)) {
+      throw new NotFoundError('Cluster member not found')
+    }
   }
 
-  async cancel(_sessionId: string): Promise<void> {
-    if (this.abortController) {
-      this.abortController.abort()
-    }
+  async cancel(sessionId: string): Promise<void> {
+    this.controllers.get(sessionId)?.abort()
   }
 }

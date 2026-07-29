@@ -25,7 +25,6 @@ export interface ExportOptions {
   }
   includeXmp: boolean
   destination: string
-  skipRemoved: boolean
 }
 
 export interface ExportPreview {
@@ -41,15 +40,6 @@ export interface ExportResult {
   failed: number
   skipped: number
   errors: string[]
-}
-
-export interface ExportProgressEvent {
-  current: number
-  total: number
-  fileName: string
-  bytesWritten: number
-  status: 'pending' | 'processing' | 'done' | 'skipped' | 'error'
-  errorMessage?: string
 }
 
 export interface ReportData {

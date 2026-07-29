@@ -5,6 +5,7 @@ export interface SessionCreateParams {
   name: string
   filepaths?: string[]
   source?: string
+  sourcePath?: string
 }
 
 export interface SessionDeleteParams {
@@ -40,6 +41,7 @@ export interface SessionData {
   analysisStatus: AnalysisStatus
   writebackStatus: WritebackStatus
   importSource: string
+  sourcePath: string
   failedWritebackCount: number
   createdAt: string
   updatedAt: string
@@ -53,6 +55,8 @@ export interface PhotoData {
   checksum: string
   hasExistingXmp: boolean
   faceCount: number
+  width: number
+  height: number
   metadata: Record<string, unknown>
   result: Record<string, unknown>
   status: string

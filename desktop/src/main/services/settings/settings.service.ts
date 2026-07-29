@@ -1,5 +1,4 @@
 import { SettingsRepository } from '../../db/repositories/settings.repo'
-import { MODEL_CONFIG } from '../face-kw/model-config'
 import * as os from 'os'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
@@ -64,6 +63,8 @@ export function getDefaults(): Record<string, string | number> {
     onnx_provider: 'auto',
     detect_confidence: 0.5,
     detect_input_size: 640,
+    detect_secondary_input_size: 128,
+    face_preview_max_dimension: 2048,
     encoder_input_size: 112,
     embedding_dim: 512,
 
@@ -79,32 +80,26 @@ export function getDefaults(): Record<string, string | number> {
 
     model_download_url: '',
 
-    thumbnail_size: 2880,
+    thumbnail_size: 1024,
     thumbnail_quality: 80,
     face_thumbnail_size: 320,
     face_thumbnail_quality: 70,
     face_thumbnail_dir: '',
 
     memory_cache_size: 200,
+    memory_cache_max_size_mb: 192,
     disk_cache_dir: '',
     disk_cache_max_size_gb: 1,
     disk_cache_eviction_policy: 'lru',
-    thumbnail_concurrency: Math.max(1, os.cpus().length - 1),
+    thumbnail_concurrency: Math.max(1, Math.min(4, os.cpus().length - 1)),
 
     db_cache_size_mb: 64,
     db_synchronous: 'normal',
-
-    hash_chunk_size: 8,
 
     c1_timeout_ms: 15000,
     c1_retries: 3,
     c1_reload_delay_ms: 500,
 
-    poll_max_retries_sim: 300,
-    poll_max_retries_fkw: 240,
-    poll_interval_sim_ms: 1000,
-    poll_interval_fkw_ms: 3000,
-
-    metadata_write_mode: 'auto',
+    metadata_write_mode: 'sidecar',
   }
 }

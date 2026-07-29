@@ -12,7 +12,7 @@ export interface AlbumGetPhotosParams { albumId: string; limit?: number; offset?
 
 export interface FilterRule {
   field: string
-  operator: 'eq' | 'neq' | 'gte' | 'lte' | 'gt' | 'lt' | 'between' | 'in' | 'contains' | 'contains_any' | 'contains_all' | 'starts_with' | 'regex' | 'exists'
+  operator: 'eq' | 'neq' | 'gte' | 'lte' | 'gt' | 'lt' | 'between' | 'in' | 'contains' | 'contains_any' | 'contains_all' | 'starts_with' | 'exists'
   value: unknown
 }
 

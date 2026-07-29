@@ -180,8 +180,6 @@ export class FilterEngine {
         return { sql: `${fullCol} LIKE '%' || ? || '%'`, params: [String(value)] }
       case 'starts_with':
         return { sql: `${fullCol} LIKE ? || '%'`, params: [String(value)] }
-      case 'regex':
-        return { sql: `${fullCol} REGEXP ?`, params: [String(value)] }
       case 'contains_any': {
         const arr = (Array.isArray(value) ? value : [value]) as string[]
         if (arr.length === 0) return { sql: '1=0', params: [] }
@@ -197,7 +195,7 @@ export class FilterEngine {
       case 'exists':
         return { sql: `${fullCol} IS NOT NULL`, params: [] }
       default:
-        return { sql: `${fullCol} = ?`, params: [value] }
+        throw new Error(`Unsupported filter operator: ${String(operator)}`)
     }
   }
 
@@ -313,6 +311,8 @@ export class FilterEngine {
       checksum: row.checksum,
       hasExistingXmp: false,
       faceCount: row.face_count,
+      width: row.width ?? 0,
+      height: row.height ?? 0,
       metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
       result: typeof row.result === 'string' ? JSON.parse(row.result) : row.result,
       status: row.status,

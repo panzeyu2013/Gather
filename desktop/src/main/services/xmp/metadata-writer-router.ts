@@ -64,6 +64,11 @@ export class MetadataWriterRouter {
     }
   }
 
+  /** Workflow writeback is intentionally sidecar-only so source images stay untouched. */
+  selectSidecar(): MetadataWriter {
+    return this.xmpSidecar
+  }
+
   async shutdown(): Promise<void> {
     await Promise.all([
       this.xmpSidecar.shutdown(),

@@ -1,5 +1,4 @@
 // packages/shared/src/protocol/similarity.ts
-import type { WritebackOptions, WritebackItem } from './core'
 
 export interface SimAnalyzeParams {
   sessionId: string
@@ -21,19 +20,20 @@ export interface SimReclusterParams {
   minGroupSize?: number
 }
 
+export interface SimilarityKeywordAssignment {
+  groupId: number
+  keywords: string[]
+}
+
 export interface SimPreviewWritebackParams {
   sessionId: string
-  groupIds: Array<number | string>
-  options: WritebackOptions
+  assignments: SimilarityKeywordAssignment[]
 }
 
 export interface SimWritebackParams {
   sessionId: string
-  groupIds: Array<number | string>
-  groups?: import('./core').GroupData[]
-  options: WritebackOptions
-  confirmed?: boolean
-  items?: WritebackItem[]
+  itemIds: number[]
+  confirmed: boolean
 }
 
 export interface SimWritebackItemsParams {
@@ -42,7 +42,16 @@ export interface SimWritebackItemsParams {
 
 export interface SimRetryFailedWritebackParams {
   sessionId: string
-  confirmed?: boolean
+  confirmed: boolean
+}
+
+export interface SimConfirmSyncParams {
+  sessionId: string
+}
+
+export interface SimCleanupParams {
+  sessionId: string
+  confirmed: boolean
 }
 
 export interface SimilarityGroup {

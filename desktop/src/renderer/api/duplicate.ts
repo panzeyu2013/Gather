@@ -2,10 +2,9 @@ import { sendCommand } from './client'
 import type { DuplicateScanResult, DuplicateGroup } from '@gather/shared'
 
 export const duplicateApi = {
-  scan: (sessionId: string, sessionIds?: string[], visualThreshold?: number) =>
+  scan: (sessionId: string, visualThreshold?: number) =>
     sendCommand<DuplicateScanResult>('dup.scan', {
       sessionId,
-      ...(sessionIds ? { sessionIds } : {}),
       ...(visualThreshold !== undefined ? { visualThreshold } : {}),
     }),
 
@@ -17,7 +16,4 @@ export const duplicateApi = {
 
   resolveMember: (memberId: number, isKept: boolean) =>
     sendCommand<boolean>('dup.resolve_member', { memberId, isKept, confirmed: true }),
-
-  getThumbnail: (path: string) =>
-    sendCommand<string>('thumbnail.get', { path }),
 }

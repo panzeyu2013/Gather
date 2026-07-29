@@ -1,5 +1,5 @@
 import type { CommandRegistry } from './registry'
-import { ok, err, validateString, validateNumber, wrapHandler } from './helpers'
+import { ok, validateString, validateNumber, wrapHandler } from './helpers'
 import type { DuplicateService } from '../services/duplicate/duplicate.service'
 
 export function registerDuplicateHandlers(registry: CommandRegistry, duplicateService: DuplicateService): void {
@@ -7,15 +7,10 @@ export function registerDuplicateHandlers(registry: CommandRegistry, duplicateSe
     'dup.scan',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const sessionIds = Array.isArray(params.sessionIds)
-        ? (params.sessionIds as string[]).filter(
-            (s): s is string => typeof s === 'string' && s.trim().length > 0,
-          )
-        : undefined
       const visualThreshold = typeof params.visualThreshold === 'number'
         ? params.visualThreshold
         : undefined
-      const result = await duplicateService.scanDuplicates(sessionId, sessionIds, visualThreshold)
+      const result = await duplicateService.scanDuplicates(sessionId, visualThreshold)
       return ok(result)
     }),
   )

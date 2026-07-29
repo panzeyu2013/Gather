@@ -1,6 +1,9 @@
-import * as fs from 'fs'
 import * as fsp from 'fs/promises'
+import * as crypto from 'crypto'
+import * as nodePath from 'path'
+import { app } from 'electron'
 import sharp from 'sharp'
+import { exiftool } from 'exiftool-vendored'
 import { SettingsService } from '../../settings/settings.service'
 import { readDimensions } from './fast-dimensions'
 import { IMAGE_CONFIG } from '../image-config'
@@ -16,9 +19,13 @@ export class SharpDecoder implements ImageDecoder {
   private static RAW_EXTENSIONS = new Set(IMAGE_CONFIG.sharp.rawExtensions)
 
   private settings: SettingsService
+  private rawIndexDir: string
 
   constructor(settings: SettingsService) {
     this.settings = settings
+    const cacheRoot = settings.get('disk_cache_dir', '') ||
+      nodePath.join(app.getPath('userData'), 'thumbnails')
+    this.rawIndexDir = nodePath.join(cacheRoot, 'raw-index')
   }
 
   supports(ext: string): boolean {
@@ -58,18 +65,29 @@ export class SharpDecoder implements ImageDecoder {
 
   async getDimensions(path: string): Promise<{ width: number; height: number }> {
     const ext = path.slice(path.lastIndexOf('.')).toLowerCase()
+    const isRaw = SharpDecoder.RAW_EXTENSIONS.has(ext)
 
     const header = await readFileHeader(path, HEADER_READ_SIZE)
     if (header) {
       const dims = readDimensions(header, ext)
-      if (dims) return dims
+      if (dims) {
+        let { width, height } = dims
+        if (isRaw) {
+          const orientation = readTiffOrientation(header)
+          if (orientation >= 5 && orientation <= 8) {
+            ;[width, height] = [height, width]
+          }
+        }
+        return { width, height }
+      }
     }
 
     const raw = await this.extractFromRaw(path)
     const meta = raw ? await sharp(raw.jpeg).metadata() : await sharp(path).metadata()
     let w = meta.width ?? 0
     let h = meta.height ?? 0
-    if (meta.orientation && meta.orientation >= 5 && meta.orientation <= 8) {
+    const orientation = raw?.orientation ?? meta.orientation ?? 1
+    if (orientation >= 5 && orientation <= 8) {
       ;[w, h] = [h, w]
     }
     return { width: w, height: h }
@@ -81,17 +99,84 @@ export class SharpDecoder implements ImageDecoder {
     const ext = filepath.slice(filepath.lastIndexOf('.')).toLowerCase()
     if (!SharpDecoder.RAW_EXTENSIONS.has(ext)) return null
 
+    const cached = await this.readRawIndex(filepath)
+    if (cached) {
+      const selected = selectBestSegment(cached.segments, targetSize)
+      if (selected) {
+        const jpeg = await readFileRange(filepath, selected.offset, selected.size)
+        if (jpeg) return { jpeg, orientation: cached.orientation }
+      }
+    }
+
     let buf: Buffer
     try {
-      buf = fs.readFileSync(filepath)
+      buf = await fsp.readFile(filepath)
     } catch {
       return null
     }
 
     const orientation = readTiffOrientation(buf)
-    const jpeg = targetSize ? await findBestFitJpeg(buf, targetSize) : findLargestJpeg(buf)
-    if (!jpeg) return null
-    return { jpeg, orientation }
+    const segments = await findJpegSegmentsWithDimensions(buf)
+    const selected = selectBestSegment(segments, targetSize)
+    if (selected) {
+      await this.writeRawIndex(filepath, orientation, segments)
+      return {
+        jpeg: buf.subarray(selected.offset, selected.offset + selected.size),
+        orientation,
+      }
+    }
+
+    // Some RAW containers (notably CR3/IIQ) do not expose their preview as a
+    // simple TIFF JPEG segment. ExifTool reads the container offsets directly,
+    // so keep this as the final embedded-preview attempt before ImageService
+    // falls back to rendering the RAW through sips.
+    const extracted = await extractEmbeddedPreview(filepath)
+    return extracted ? { jpeg: extracted, orientation } : null
+  }
+
+  private indexPath(filepath: string): string {
+    const hash = crypto.createHash('sha256').update(filepath).digest('hex')
+    return nodePath.join(this.rawIndexDir, `${hash}.json`)
+  }
+
+  private async readRawIndex(filepath: string): Promise<RawPreviewIndex | null> {
+    try {
+      const [sourceStat, raw] = await Promise.all([
+        fsp.stat(filepath),
+        fsp.readFile(this.indexPath(filepath), 'utf8'),
+      ])
+      const parsed = JSON.parse(raw) as RawPreviewIndex
+      if (
+        parsed.fileSize !== sourceStat.size ||
+        Math.abs(parsed.fileMtimeMs - sourceStat.mtimeMs) >= 1 ||
+        !Array.isArray(parsed.segments)
+      ) {
+        return null
+      }
+      return parsed
+    } catch {
+      return null
+    }
+  }
+
+  private async writeRawIndex(
+    filepath: string,
+    orientation: number,
+    segments: ScoredJpegSegment[],
+  ): Promise<void> {
+    try {
+      const stat = await fsp.stat(filepath)
+      await fsp.mkdir(this.rawIndexDir, { recursive: true })
+      const index: RawPreviewIndex = {
+        fileSize: stat.size,
+        fileMtimeMs: stat.mtimeMs,
+        orientation,
+        segments,
+      }
+      await fsp.writeFile(this.indexPath(filepath), JSON.stringify(index), 'utf8')
+    } catch {
+      // Indexing is an optimization; decoding must still succeed without it.
+    }
   }
 }
 
@@ -100,6 +185,18 @@ export class SharpDecoder implements ImageDecoder {
 interface JpegSegment {
   offset: number
   size: number
+}
+
+interface ScoredJpegSegment extends JpegSegment {
+  width: number
+  height: number
+}
+
+interface RawPreviewIndex {
+  fileSize: number
+  fileMtimeMs: number
+  orientation: number
+  segments: ScoredJpegSegment[]
 }
 
 function readTiffOrientation(buf: Buffer): number {
@@ -114,7 +211,10 @@ function readTiffOrientation(buf: Buffer): number {
   const n = r16(firstIFD)
   for (let i = 0; i < n && firstIFD + 2 + (i + 1) * 12 <= buf.length; i++) {
     const eo = firstIFD + 2 + i * 12
-    if (r16(eo) === 0x0112) return r32(eo + 8)
+    if (r16(eo) === 0x0112) {
+      const type = r16(eo + 2)
+      return type === 3 ? r16(eo + 8) : r32(eo + 8)
+    }
   }
   return 1
 }
@@ -140,46 +240,84 @@ function findJpegSegments(buf: Buffer): JpegSegment[] {
   return segments
 }
 
-function findLargestJpeg(buf: Buffer): Buffer | null {
-  let best: JpegSegment | null = null
-  for (const seg of findJpegSegments(buf)) {
-    if (!best || seg.size > best.size) best = seg
-  }
-  if (!best) return null
-  return buf.subarray(best.offset, best.offset + best.size)
-}
-
-async function findBestFitJpeg(buf: Buffer, targetSize: number): Promise<Buffer | null> {
+async function findJpegSegmentsWithDimensions(buf: Buffer): Promise<ScoredJpegSegment[]> {
   const segments = findJpegSegments(buf)
-  if (segments.length === 0) return null
-
-  type Scored = JpegSegment & { width: number }
-  const valid: Scored[] = []
+  const valid: ScoredJpegSegment[] = []
 
   for (const seg of segments) {
     try {
       const sub = buf.subarray(seg.offset, seg.offset + seg.size)
       const meta = await sharp(sub).metadata()
-      if (meta.width) {
-        valid.push({ offset: seg.offset, size: seg.size, width: meta.width })
+      if (meta.width && meta.height) {
+        valid.push({
+          offset: seg.offset,
+          size: seg.size,
+          width: meta.width,
+          height: meta.height,
+        })
       }
     } catch {
       // not a valid JPEG, skip
     }
   }
+  return valid
+}
 
+function selectBestSegment(
+  valid: ScoredJpegSegment[],
+  targetSize?: number,
+): ScoredJpegSegment | null {
   if (valid.length === 0) return null
-
-  valid.sort((a, b) => a.width - b.width)
-  for (const v of valid) {
-    if (v.width >= targetSize) {
-      return buf.subarray(v.offset, v.offset + v.size)
+  if (targetSize) {
+    const ascending = [...valid].sort(
+      (a, b) => Math.max(a.width, a.height) - Math.max(b.width, b.height),
+    )
+    for (const v of ascending) {
+      if (Math.max(v.width, v.height) >= targetSize) {
+        return v
+      }
     }
   }
 
-  // fallback: largest by byte size
-  valid.sort((a, b) => b.size - a.size)
-  return buf.subarray(valid[0].offset, valid[0].offset + valid[0].size)
+  // For full previews, and when no candidate reaches targetSize, prefer the
+  // candidate with the greatest pixel area. Byte size alone can select an
+  // unrelated or unusually-compressed JPEG segment inside a RAW container.
+  return [...valid].sort(
+    (a, b) => (b.width * b.height) - (a.width * a.height) || b.size - a.size,
+  )[0]
+}
+
+async function readFileRange(
+  filepath: string,
+  offset: number,
+  size: number,
+): Promise<Buffer | null> {
+  try {
+    const handle = await fsp.open(filepath, 'r')
+    try {
+      const buffer = Buffer.allocUnsafe(size)
+      const { bytesRead } = await handle.read(buffer, 0, size, offset)
+      return bytesRead === size ? buffer : null
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return null
+  }
+}
+
+async function extractEmbeddedPreview(filepath: string): Promise<Buffer | null> {
+  const tags = ['JpgFromRaw', 'PreviewImage', 'ThumbnailImage'] as const
+  for (const tag of tags) {
+    try {
+      const buffer = await exiftool.extractBinaryTagToBuffer(tag, filepath)
+      const metadata = await sharp(buffer).metadata()
+      if (metadata.width && metadata.height) return buffer
+    } catch {
+      // This RAW does not expose the requested embedded-preview tag.
+    }
+  }
+  return null
 }
 
 async function readFileHeader(filepath: string, size: number): Promise<Buffer | null> {

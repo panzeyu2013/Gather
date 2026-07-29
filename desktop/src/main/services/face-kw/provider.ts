@@ -1,56 +1,77 @@
 import { app } from 'electron'
 import { join, isAbsolute, resolve } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
+
+function getModelFilename(modelPath: string): string {
+  return modelPath.replace(/^models[/\\]/, '')
+}
 
 export function resolveModelPath(modelPath: string): string {
   if (isAbsolute(modelPath)) return modelPath
-  if (existsSync(modelPath)) return modelPath
+  if (existsSync(modelPath)) return resolve(modelPath)
+
   try {
+    const filename = getModelFilename(modelPath)
     const candidates = [
-      join(process.resourcesPath, modelPath),
-      join(app.getAppPath(), 'resources', modelPath),
-      join(app.getAppPath(), modelPath),
+      join(app.getPath('userData'), 'models', filename),
+      join(process.resourcesPath, 'models', filename),
       resolve(modelPath),
     ]
-    for (const c of candidates) {
-      if (existsSync(c)) return c
-    }
+
+    return candidates.find((c) => existsSync(c)) ?? candidates[0]
   } catch {
-    // app.getAppPath() may throw if not ready; fall through
+    return resolve(modelPath)
   }
-  return modelPath
+}
+
+function normalizeProviderName(raw: string): string {
+  const lower = raw.toLowerCase()
+  if (lower === 'coreml' || lower === 'coremlexecutionprovider') return 'coreml'
+  if (lower === 'cpu' || lower === 'cpuexecutionprovider') return 'cpu'
+  if (lower === 'cuda' || lower === 'cudaexecutionprovider') return 'cuda'
+  if (lower === 'dml' || lower === 'dmlexecutionprovider') return 'dml'
+  return lower
 }
 
 export function resolveExecutionProviders(provider: string): string[] {
   if (provider !== 'auto') {
-    if (provider === 'CPU') return ['CPUExecutionProvider']
-    if (provider === 'CUDA') return ['CUDAExecutionProvider', 'CPUExecutionProvider']
-    if (provider === 'CoreMLExecutionProvider') return ['CoreMLExecutionProvider', 'CPUExecutionProvider']
-    if (provider === 'DmlExecutionProvider') return ['DmlExecutionProvider', 'CPUExecutionProvider']
-    return [provider, 'CPUExecutionProvider']
+    const primary = normalizeProviderName(provider)
+    return primary === 'cpu' ? ['cpu'] : [primary, 'cpu']
   }
 
   switch (process.platform) {
     case 'darwin':
-      return ['CoreMLExecutionProvider', 'CPUExecutionProvider']
+      return ['coreml', 'cpu']
     case 'win32':
-      return ['DmlExecutionProvider', 'CPUExecutionProvider']
+      return ['dml', 'cpu']
     default:
-      return ['CPUExecutionProvider']
+      return ['cpu']
   }
+}
+
+/**
+ * SCRFD's dynamic spatial outputs currently fail in ONNX Runtime's CoreML EP
+ * when the same model is evaluated at both 128 and 640. Keep automatic face
+ * detection on CPU on macOS; the fixed-shape ArcFace encoder can still use
+ * CoreML. An explicit CoreML choice is honored and protected by runtime
+ * fallback in the detector.
+ */
+export function resolveDetectorExecutionProviders(provider: string): string[] {
+  if (provider === 'auto' && process.platform === 'darwin') return ['cpu']
+  return resolveExecutionProviders(provider)
 }
 
 export function getAutoBackend(): string {
   switch (process.platform) {
-    case 'darwin': return 'CoreMLExecutionProvider'
-    case 'win32': return 'DmlExecutionProvider'
-    default: return 'CPUExecutionProvider'
+    case 'darwin': return 'coreml'
+    case 'win32': return 'dml'
+    default: return 'cpu'
   }
 }
 
 export function getAutoBackendLabel(): string {
   switch (process.platform) {
-    case 'darwin': return 'CoreML'
+    case 'darwin': return 'CPU 检测 + CoreML 识别'
     case 'win32': return 'DirectML'
     default: return 'CPU'
   }
@@ -65,26 +86,25 @@ export function getAvailableBackends(): BackendOption[] {
   switch (process.platform) {
     case 'darwin':
       return [
-        { value: 'CoreMLExecutionProvider', label: 'CoreML' },
-        { value: 'CPU', label: 'CPU' },
+        { value: 'coreml', label: 'CoreML' },
+        { value: 'cpu', label: 'CPU' },
       ]
     case 'win32':
       return [
-        { value: 'DmlExecutionProvider', label: 'DirectML' },
-        { value: 'CPU', label: 'CPU' },
+        { value: 'dml', label: 'DirectML' },
+        { value: 'cpu', label: 'CPU' },
       ]
     default:
       return [
-        { value: 'CPU', label: 'CPU' },
+        { value: 'cpu', label: 'CPU' },
       ]
   }
 }
 
 export function getModelResourcesDir(): string {
-  const fromResources = join(process.resourcesPath, 'models')
-  if (existsSync(fromResources)) return fromResources
-  const fromApp = join(app.getAppPath(), 'resources', 'models')
-  if (existsSync(fromApp)) return fromApp
-  if (existsSync('resources/models')) return join(process.cwd(), 'resources', 'models')
-  return fromApp
+  const fromUserData = join(app.getPath('userData'), 'models')
+  if (!existsSync(fromUserData)) {
+    try { mkdirSync(fromUserData, { recursive: true }) } catch { /* best effort */ }
+  }
+  return fromUserData
 }

@@ -1,4 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync, renameSync, unlinkSync } from 'fs'
+import { access, copyFile, readFile, rename, unlink, writeFile } from 'fs/promises'
+import { randomUUID } from 'crypto'
 import { XMLParser, XMLBuilder } from 'fast-xml-parser'
 
 export interface XmpDescription {
@@ -62,11 +64,20 @@ const builder = new XMLBuilder({
 
 export function parseXmp(xmlPath: string): XmpDoc | null {
   const xml = readFileSync(xmlPath, 'utf-8')
+  return parseXmpText(xml)
+}
+
+function parseXmpText(xml: string): XmpDoc | null {
   try {
     return parser.parse(xml) as XmpDoc
   } catch {
     return null
   }
+}
+
+export async function parseXmpAsync(xmlPath: string): Promise<XmpDoc | null> {
+  const xml = await readFile(xmlPath, 'utf-8')
+  return parseXmpText(xml)
 }
 
 export function extractKeywords(doc: XmpDoc): string[] {
@@ -84,9 +95,33 @@ export function extractKeywords(doc: XmpDoc): string[] {
   }
 }
 
+export function extractXmpAttributes(doc: XmpDoc): {
+  keywords: string[]
+  rating?: number
+  label?: string
+} {
+  const result: {
+    keywords: string[]
+    rating?: number
+    label?: string
+  } = { keywords: extractKeywords(doc) }
+  for (const description of getDescriptionArray(doc)) {
+    const rating = description['xmp:Rating']
+    if (result.rating === undefined && (typeof rating === 'string' || typeof rating === 'number')) {
+      const parsed = Number(rating)
+      if (Number.isFinite(parsed)) result.rating = parsed
+    }
+    const label = description['xmp:Label']
+    if (result.label === undefined && typeof label === 'string') {
+      result.label = label
+    }
+  }
+  return result
+}
+
 export function writeXmpAttributes(
   xmpPath: string,
-  tags: { keywords?: string[]; rating?: number; dateTaken?: string; latitude?: number; longitude?: number },
+  tags: { keywords?: string[]; rating?: number; label?: string; dateTaken?: string; latitude?: number; longitude?: number },
 ): void {
   try {
     let doc: XmpDoc
@@ -98,40 +133,7 @@ export function writeXmpAttributes(
       doc = createEmptyXmpDoc()
     }
 
-    delete doc['?xml']
-
-    const descriptions = getDescriptionArray(doc)
-
-    if (tags.keywords !== undefined) {
-      const desc = resolveTargetDescription(doc, descriptions, 'dc:subject', '@_xmlns:dc', DC_NS)
-      for (const d of descriptions) {
-        if (d !== desc) delete d['dc:subject']
-      }
-      const keywords = tags.keywords
-      if (keywords.length > 0) {
-        desc['dc:subject'] = { 'rdf:Bag': { 'rdf:li': keywords } }
-      } else {
-        delete desc['dc:subject']
-      }
-    }
-
-    if (tags.rating !== undefined) {
-      const desc = resolveTargetDescription(doc, descriptions, 'xmp:Rating', '@_xmlns:xmp', XMP_NS)
-      desc['xmp:Rating'] = String(tags.rating)
-    }
-
-    if (tags.dateTaken !== undefined) {
-      const desc = resolveTargetDescription(doc, descriptions, 'xmp:CreateDate', '@_xmlns:xmp', XMP_NS)
-      desc['xmp:CreateDate'] = String(tags.dateTaken)
-    }
-
-    if (tags.latitude !== undefined && tags.longitude !== undefined) {
-      const desc = resolveTargetDescription(doc, descriptions, 'exif:GPSLatitude', '@_xmlns:exif', EXIF_NS)
-      desc['exif:GPSLatitude'] = String(tags.latitude)
-      desc['exif:GPSLongitude'] = String(tags.longitude)
-    }
-
-    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(doc)
+    const xml = buildXmpAttributesXml(doc, tags)
     const tmpPath = xmpPath + '.tmp'
     writeFileSync(tmpPath, xml, 'utf-8')
     try {
@@ -145,8 +147,80 @@ export function writeXmpAttributes(
   }
 }
 
+type XmpAttributeInput = {
+  keywords?: string[]
+  rating?: number
+  label?: string
+  dateTaken?: string
+  latitude?: number
+  longitude?: number
+}
+
+function buildXmpAttributesXml(doc: XmpDoc, tags: XmpAttributeInput): string {
+  delete doc['?xml']
+  const descriptions = getDescriptionArray(doc)
+
+  if (tags.keywords !== undefined) {
+    const desc = resolveTargetDescription(doc, descriptions, 'dc:subject', '@_xmlns:dc', DC_NS)
+    for (const d of descriptions) {
+      if (d !== desc) delete d['dc:subject']
+    }
+    if (tags.keywords.length > 0) {
+      desc['dc:subject'] = { 'rdf:Bag': { 'rdf:li': tags.keywords } }
+    } else {
+      delete desc['dc:subject']
+    }
+  }
+  if (tags.rating !== undefined) {
+    const desc = resolveTargetDescription(doc, descriptions, 'xmp:Rating', '@_xmlns:xmp', XMP_NS)
+    desc['xmp:Rating'] = String(tags.rating)
+  }
+  if (tags.label !== undefined) {
+    const desc = resolveTargetDescription(doc, descriptions, 'xmp:Label', '@_xmlns:xmp', XMP_NS)
+    desc['xmp:Label'] = tags.label
+  }
+  if (tags.dateTaken !== undefined) {
+    const desc = resolveTargetDescription(doc, descriptions, 'xmp:CreateDate', '@_xmlns:xmp', XMP_NS)
+    desc['xmp:CreateDate'] = String(tags.dateTaken)
+  }
+  if (tags.latitude !== undefined && tags.longitude !== undefined) {
+    const desc = resolveTargetDescription(doc, descriptions, 'exif:GPSLatitude', '@_xmlns:exif', EXIF_NS)
+    desc['exif:GPSLatitude'] = String(tags.latitude)
+    desc['exif:GPSLongitude'] = String(tags.longitude)
+  }
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(doc)
+}
+
+export async function writeXmpAttributesAsync(
+  xmpPath: string,
+  tags: XmpAttributeInput,
+): Promise<void> {
+  try {
+    let doc: XmpDoc
+    try {
+      const parsed = await parseXmpAsync(xmpPath)
+      if (!parsed) throw new Error(`Corrupt XMP file: ${xmpPath}`)
+      doc = parsed
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      doc = createEmptyXmpDoc()
+    }
+    const xml = buildXmpAttributesXml(doc, tags)
+    const tmpPath = `${xmpPath}.tmp-${process.pid}-${randomUUID()}`
+    await writeFile(tmpPath, xml, 'utf-8')
+    try {
+      await rename(tmpPath, xmpPath)
+    } catch (renameError) {
+      await unlink(tmpPath).catch(() => undefined)
+      throw renameError
+    }
+  } catch (error) {
+    throw new Error(`Failed to write XMP attributes to ${xmpPath}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 export function backupXmpFile(xmpPath: string): string {
-  const backupPath = xmpPath + '.bak'
+  const backupPath = `${xmpPath}.gather-backup-${randomUUID()}`
   if (existsSync(xmpPath)) {
     copyFileSync(xmpPath, backupPath)
   }
@@ -158,6 +232,29 @@ export function restoreXmpFile(xmpPath: string, backupPath: string): void {
     copyFileSync(backupPath, xmpPath)
     unlinkSync(backupPath)
   }
+}
+
+export async function backupXmpFileAsync(xmpPath: string): Promise<string> {
+  const backupPath = `${xmpPath}.gather-backup-${randomUUID()}`
+  try {
+    await access(xmpPath)
+    await copyFile(xmpPath, backupPath)
+    return backupPath
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
+    throw error
+  }
+}
+
+export async function restoreXmpFileAsync(xmpPath: string, backupPath: string): Promise<void> {
+  try {
+    await access(backupPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  await copyFile(backupPath, xmpPath)
+  await unlink(backupPath)
 }
 
 function getDescriptionArray(doc: XmpDoc): XmpDescription[] {

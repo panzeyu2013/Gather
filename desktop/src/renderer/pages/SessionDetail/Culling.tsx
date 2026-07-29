@@ -4,44 +4,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { cullingApi } from '../../api/culling'
 import { imageApi } from '../../api/image'
 import type { CullingGroup } from '@gather/shared'
+import type { WritebackResult } from '@gather/shared'
 import styles from './Culling.module.css'
 
 function ViewerImage({ path, className }: { path: string; className?: string }) {
-  const [src, setSrc] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    imageApi.getPreview(path, 1920).then((r) => {
-      if (!cancelled) setSrc(`data:image/jpeg;base64,${r.buffer}`)
-    }).catch(() => {
-      if (!cancelled) setSrc(null)
-    })
-    return () => { cancelled = true }
-  }, [path])
-
-  if (!src) {
-    return <div className={className ?? styles.mainPlaceholder}>Loading...</div>
-  }
-  return <img src={src} alt={path} className={className} />
+  return <img src={imageApi.previewUrl(path, 1920)} alt={path} className={className} />
 }
 
 function ThumbnailImg({ path, className }: { path: string; className?: string }) {
-  const [src, setSrc] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    imageApi.getThumbnail(path, 160).then((r) => {
-      if (!cancelled) setSrc(`data:image/jpeg;base64,${r.buffer}`)
-    }).catch(() => {
-      if (!cancelled) setSrc(null)
-    })
-    return () => { cancelled = true }
-  }, [path])
-
-  if (!src) {
-    return <div className={className ?? styles.filmstripPlaceholder} />
-  }
-  return <img src={src} alt={path} className={className} />
+  return <img src={imageApi.thumbnailUrl(path, 160)} alt={path} className={className} />
 }
 
 function WritebackDialog({
@@ -52,22 +23,53 @@ function WritebackDialog({
   sessionId: string
 }) {
   const [selected, setSelected] = useState<'rating' | 'color_label' | 'keyword'>('keyword')
+  const [syncConfirmed, setSyncConfirmed] = useState(false)
+  const [followupMessage, setFollowupMessage] = useState<string | null>(null)
+  const [writebackResult, setWritebackResult] = useState<WritebackResult | null>(null)
 
   const writebackMutation = useMutation({
     mutationFn: () => cullingApi.writeback(sessionId, selected),
-    onSuccess: () => onClose(),
+    onSuccess: (result) => {
+      setWritebackResult(result)
+      setSyncConfirmed(false)
+      setFollowupMessage(null)
+    },
   })
 
+  const retryMutation = useMutation({
+    mutationFn: () => cullingApi.retryFailedWriteback(sessionId),
+    onSuccess: (result) => setWritebackResult(result),
+  })
+
+  const handleConfirmSync = async () => {
+    try {
+      await cullingApi.confirmSync(sessionId)
+      setSyncConfirmed(true)
+      setFollowupMessage('已确认 Capture One 完成“加载元数据”，现在可以清理。')
+    } catch (error) {
+      setFollowupMessage(`确认失败：${error instanceof Error ? error.message : '未知错误'}`)
+    }
+  }
+
+  const handleCleanup = async () => {
+    try {
+      const result = await cullingApi.cleanup(sessionId)
+      setFollowupMessage(`清理完成：已恢复或移除 ${result.deletedCount} 个 sidecar 文件。`)
+    } catch (error) {
+      setFollowupMessage(`清理失败：${error instanceof Error ? error.message : '未知错误'}`)
+    }
+  }
+
   const options: { value: 'rating' | 'color_label' | 'keyword'; label: string; desc: string }[] = [
-    { value: 'rating', label: 'Rating', desc: 'Keep → 5 stars, Reject → 1 star' },
-    { value: 'color_label', label: 'Color Label', desc: 'Keep → Green, Reject → Red' },
-    { value: 'keyword', label: 'Keyword', desc: 'Add culling:keep or culling:reject keywords' },
+    { value: 'rating', label: '星级', desc: '保留写入 5 星，淘汰写入 1 星' },
+    { value: 'color_label', label: '颜色标签', desc: '保留写入绿色，淘汰写入红色' },
+    { value: 'keyword', label: '关键词', desc: '写入 culling:keep 或 culling:reject 关键词' },
   ]
 
   return (
     <div className={styles.dialog} onClick={onClose}>
       <div className={styles.dialogContent} onClick={(e) => e.stopPropagation()}>
-        <div className={styles.dialogTitle}>Select Writeback Target</div>
+        <div className={styles.dialogTitle}>选择写回内容</div>
         <div className={styles.dialogBody}>
           {options.map((opt) => (
             <div
@@ -83,22 +85,64 @@ function WritebackDialog({
           ))}
         </div>
         <div className={styles.dialogActions}>
-          <button className={styles.dialogBtn} onClick={onClose}>Cancel</button>
+          <button className={styles.dialogBtn} onClick={onClose}>
+            {writebackResult ? '完成' : '取消'}
+          </button>
           <button
             className={`${styles.dialogBtn} ${styles.dialogBtnPrimary}`}
             onClick={() => writebackMutation.mutate()}
-            disabled={writebackMutation.isPending}
+            disabled={writebackMutation.isPending || writebackResult !== null}
           >
-            {writebackMutation.isPending ? 'Writing...' : 'Writeback'}
+            {writebackMutation.isPending ? '正在写回...' : '开始写回'}
           </button>
         </div>
         {writebackMutation.isError && (
           <p style={{ color: '#ef5350', marginTop: 12, fontSize: 13 }}>
-            {writebackMutation.error instanceof Error ? writebackMutation.error.message : 'Writeback failed'}
+            {writebackMutation.error instanceof Error ? writebackMutation.error.message : '写回失败'}
           </p>
         )}
-        {writebackMutation.isSuccess && (
-          <p style={{ color: '#4caf50', marginTop: 12, fontSize: 13 }}>Writeback complete!</p>
+        {writebackResult && (
+          <div style={{ color: '#4caf50', marginTop: 12, fontSize: 13 }}>
+            <p style={{ margin: 0 }}>
+              XMP 写入完成：成功 {writebackResult.written}，失败 {writebackResult.failed}，跳过 {writebackResult.skipped}。
+            </p>
+            {writebackResult.errors.length > 0 && (
+              <ul style={{ color: '#ef5350', paddingLeft: 18 }}>
+                {writebackResult.errors.map((error, index) => (
+                  <li key={`${index}-${error}`}>{error}</li>
+                ))}
+              </ul>
+            )}
+            <p style={{ color: '#a0a0a0', marginBottom: 0 }}>
+              请在 Capture One 中选择照片并执行“图像 → 加载元数据”。
+            </p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              {writebackResult.failed > 0 && (
+                <button
+                  className={styles.dialogBtn}
+                  onClick={() => retryMutation.mutate()}
+                  disabled={retryMutation.isPending}
+                >
+                  {retryMutation.isPending ? '重试中...' : '重试失败项'}
+                </button>
+              )}
+              <button
+                className={styles.dialogBtn}
+                onClick={() => void handleConfirmSync()}
+                disabled={writebackResult.failed > 0}
+              >
+                确认同步
+              </button>
+              {syncConfirmed && (
+                <button className={styles.dialogBtn} onClick={() => void handleCleanup()}>
+                  清理
+                </button>
+              )}
+            </div>
+            {followupMessage && (
+              <p style={{ color: '#a0a0a0', marginBottom: 0 }}>{followupMessage}</p>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -242,18 +286,18 @@ export default function Culling() {
   }, [showWriteback])
 
   if (!sessionId) {
-    return <div className={styles.page}><div className={styles.emptyState}>No session selected</div></div>
+    return <div className={styles.page}><div className={styles.emptyState}>未选择工作区</div></div>
   }
 
   if (isLoading) {
-    return <div className={styles.page}><div className={styles.emptyState}>Loading...</div></div>
+    return <div className={styles.page}><div className={styles.emptyState}>正在加载...</div></div>
   }
 
   if (!groups || groups.length === 0) {
     return (
       <div className={styles.page}>
         <div className={styles.emptyState}>
-          No similarity groups found. Run similarity analysis first.
+          暂无相似照片组，请先运行相似度分析。
         </div>
       </div>
     )
@@ -273,10 +317,10 @@ export default function Culling() {
 
   const decisionLabel = currentPhoto
     ? currentPhoto.decision === 'keep'
-      ? 'KEEP'
+      ? '保留'
       : currentPhoto.decision === 'reject'
-        ? 'REJECT'
-        : ''
+        ? '淘汰'
+        : '待处理'
     : ''
 
   return (
@@ -300,14 +344,14 @@ export default function Culling() {
             )}
           </>
         ) : (
-          <div className={styles.mainPlaceholder}>No photo</div>
+          <div className={styles.mainPlaceholder}>暂无照片</div>
         )}
       </div>
 
       {currentGroup && (
         <div className={styles.progressBar}>
           <div className={styles.progressLeft}>
-            <span>Group {currentGroupIndex + 1} of {groups!.length}</span>
+            <span>第 {currentGroupIndex + 1} 组，共 {groups!.length} 组</span>
             <div className={styles.progressBarFill}>
               <div
                 className={styles.progressBarInner}
@@ -316,10 +360,10 @@ export default function Culling() {
             </div>
           </div>
           <div className={styles.progressRight}>
-            <span className={styles.statKeep}>{currentGroup.keepCount} kept</span>
-            <span className={styles.statReject}>{currentGroup.rejectCount} rejected</span>
-            <span className={styles.statPending}>{currentGroup.pendingCount} pending</span>
-            <span className={styles.shortcutHint}>Y/N/Space</span>
+            <span className={styles.statKeep}>保留 {currentGroup.keepCount}</span>
+            <span className={styles.statReject}>淘汰 {currentGroup.rejectCount}</span>
+            <span className={styles.statPending}>待定 {currentGroup.pendingCount}</span>
+            <span className={styles.shortcutHint}>快捷键 Y / N / 空格</span>
           </div>
         </div>
       )}
@@ -349,23 +393,23 @@ export default function Culling() {
 
       <div className={styles.controls}>
         <button className={`${styles.controlBtn} ${styles.btnKeep}`} onClick={() => handleDecide('keep')}>
-          Keep (Y)
+          保留（Y）
         </button>
         <button className={`${styles.controlBtn} ${styles.btnReject}`} onClick={() => handleDecide('reject')}>
-          Reject (N)
+          淘汰（N）
         </button>
         <button className={styles.controlBtn} onClick={() => handleDecide('pending')}>
-          Skip (Space)
+          待定（空格）
         </button>
         <button className={styles.controlBtn} onClick={prevGroup} disabled={currentGroupIndex === 0}>
-          Prev Group
+          上一组
         </button>
         <button className={styles.controlBtn} onClick={nextGroup} disabled={currentGroupIndex >= groups!.length - 1}>
-          Next Group (Tab)
+          下一组（Tab）
         </button>
         {hasDecisions && (
           <button className={`${styles.controlBtn} ${styles.btnWriteback}`} onClick={() => setShowWriteback(true)}>
-            Writeback
+            写回 XMP
           </button>
         )}
       </div>

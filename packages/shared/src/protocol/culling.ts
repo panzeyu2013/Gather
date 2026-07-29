@@ -5,6 +5,9 @@ export interface CullingDecideParams { sessionId: string; photoId: string; decis
 export interface CullingBatchDecideParams { sessionId: string; photoIds: string[]; decision: 'keep' | 'reject' | 'pending' }
 export interface CullingSummaryParams { sessionId: string }
 export interface CullingWritebackParams { sessionId: string; confirmed: boolean; target: 'rating' | 'color_label' | 'keyword' }
+export interface CullingRetryWritebackParams { sessionId: string; confirmed: boolean }
+export interface CullingConfirmSyncParams { sessionId: string }
+export interface CullingCleanupParams { sessionId: string; confirmed: boolean }
 export interface CullingResetParams { sessionId: string; groupId?: string; confirmed: boolean }
 
 export interface CullingGroup {

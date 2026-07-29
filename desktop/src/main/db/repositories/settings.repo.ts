@@ -1,5 +1,4 @@
 import { Database } from '../database'
-import { ISettingsRepository } from './interfaces'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 
@@ -9,7 +8,7 @@ export interface SettingsRow {
 }
 
 @injectable()
-export class SettingsRepository implements ISettingsRepository {
+export class SettingsRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   getAll(): SettingsRow[] {

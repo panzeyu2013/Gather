@@ -1,6 +1,6 @@
 // packages/shared/src/protocol/duplicate.ts
 
-export interface DupScanParams { sessionId: string; sessionIds?: string[]; visualThreshold?: number }
+export interface DupScanParams { sessionId: string; visualThreshold?: number }
 export interface DupGroupsParams { sessionId: string }
 export interface DupResolveParams { groupId: number; resolution: 'keep_one' | 'keep_all'; confirmed: boolean }
 export interface DupResolveMemberParams { memberId: number; isKept: boolean; confirmed: boolean }

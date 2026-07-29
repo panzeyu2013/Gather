@@ -1,5 +1,4 @@
 import { Database } from '../database'
-import { IMetadataCacheRepository } from './interfaces'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 
@@ -16,6 +15,7 @@ export interface MetadataCacheRow {
   exposure_time: string | null
   iso: number | null
   rating: number
+  label: string | null
   gps_latitude: number | null
   gps_longitude: number | null
   width: number | null
@@ -37,6 +37,7 @@ export interface MetadataCacheInput {
   exposureTime?: string
   iso?: number
   rating?: number
+  label?: string
   gpsLatitude?: number
   gpsLongitude?: number
   width?: number
@@ -47,7 +48,7 @@ export interface MetadataCacheInput {
 }
 
 @injectable()
-export class MetadataCacheRepository implements IMetadataCacheRepository {
+export class MetadataCacheRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   upsert(photoId: string, sessionId: string, data: MetadataCacheInput): void {
@@ -55,9 +56,9 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
     this.db.prepare(
       `INSERT INTO photo_metadata_cache
        (photo_id, session_id, date_taken, camera_make, camera_model, lens_model,
-        focal_length, f_number, exposure_time, iso, rating,
+        focal_length, f_number, exposure_time, iso, rating, label,
         gps_latitude, gps_longitude, width, height, file_size, file_mtime, keywords, cached_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(photo_id) DO UPDATE SET
         session_id = excluded.session_id,
         date_taken = excluded.date_taken,
@@ -69,6 +70,7 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
         exposure_time = excluded.exposure_time,
         iso = excluded.iso,
         rating = excluded.rating,
+        label = excluded.label,
         gps_latitude = excluded.gps_latitude,
         gps_longitude = excluded.gps_longitude,
         width = excluded.width,
@@ -89,6 +91,7 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
       data.exposureTime ?? null,
       data.iso ?? null,
       data.rating ?? 0,
+      data.label ?? null,
       data.gpsLatitude ?? null,
       data.gpsLongitude ?? null,
       data.width ?? null,
@@ -119,7 +122,49 @@ export class MetadataCacheRepository implements IMetadataCacheRepository {
     this.db.prepare('DELETE FROM photo_metadata_cache WHERE session_id = ?').run(sessionId)
   }
 
+  deleteByPhotoId(photoId: string): void {
+    this.db.prepare('DELETE FROM photo_metadata_cache WHERE photo_id = ?').run(photoId)
+  }
+
   updateRating(photoId: string, rating: number): void {
-    this.db.prepare('UPDATE photo_metadata_cache SET rating = ? WHERE photo_id = ?').run(rating, photoId)
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO photo_metadata_cache
+        (photo_id, session_id, rating, keywords, cached_at)
+      SELECT id, session_id, ?, '[]', ?
+      FROM photos
+      WHERE id = ?
+      ON CONFLICT(photo_id) DO UPDATE SET
+        rating = excluded.rating,
+        cached_at = excluded.cached_at
+    `).run(rating, now, photoId)
+  }
+
+  updateLabel(photoId: string, label: string): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO photo_metadata_cache
+        (photo_id, session_id, rating, label, keywords, cached_at)
+      SELECT id, session_id, 0, ?, '[]', ?
+      FROM photos
+      WHERE id = ?
+      ON CONFLICT(photo_id) DO UPDATE SET
+        label = excluded.label,
+        cached_at = excluded.cached_at
+    `).run(label, now, photoId)
+  }
+
+  updateKeywords(photoId: string, keywords: string[]): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO photo_metadata_cache
+        (photo_id, session_id, rating, keywords, cached_at)
+      SELECT id, session_id, 0, ?, ?
+      FROM photos
+      WHERE id = ?
+      ON CONFLICT(photo_id) DO UPDATE SET
+        keywords = excluded.keywords,
+        cached_at = excluded.cached_at
+    `).run(JSON.stringify(keywords), now, photoId)
   }
 }

@@ -1,6 +1,8 @@
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { createWriteStream } from 'fs'
+import { access, copyFile, mkdir, rm } from 'fs/promises'
 import { join } from 'path'
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { tmpdir } from 'os'
 import { getModelResourcesDir } from './provider'
 import { MODEL_CONFIG } from './model-config'
@@ -13,6 +15,16 @@ export interface DownloadProgress {
 }
 
 const { packageUrl, fileMap: EXTRACT_MAP } = MODEL_CONFIG.download
+const execFileAsync = promisify(execFile)
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
 
 async function downloadFile(url: string, dest: string, onProgress: (p: DownloadProgress) => void): Promise<void> {
   const response = await fetch(url)
@@ -42,14 +54,14 @@ async function downloadFile(url: string, dest: string, onProgress: (p: DownloadP
   }
 }
 
-function unzipFile(zipPath: string, destDir: string): void {
+async function unzipFile(zipPath: string, destDir: string): Promise<void> {
   try {
-    execFileSync('tar', ['-xf', zipPath, '-C', destDir])
+    await execFileAsync('tar', ['-xf', zipPath, '-C', destDir])
   } catch {
     try {
-      execFileSync('unzip', ['-o', zipPath, '-d', destDir])
+      await execFileAsync('unzip', ['-o', zipPath, '-d', destDir])
     } catch {
-      throw new Error('无法解压模型文件，请确保系统安装了 unzip 或 tar 命令')
+      throw new Error('Failed to extract model files. Please ensure "unzip" or "tar" is available on your system.')
     }
   }
 }
@@ -59,10 +71,10 @@ export async function downloadDefaultModels(
   onProgress: (progress: DownloadProgress) => void,
 ): Promise<void> {
   const targetDir = getModelResourcesDir()
-  if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
+  await mkdir(targetDir, { recursive: true })
 
-  const needsDetector = !existsSync(join(targetDir, 'face_detector.onnx'))
-  const needsEncoder = !existsSync(join(targetDir, 'face_encoder.onnx'))
+  const needsDetector = !(await pathExists(join(targetDir, 'face_detector.onnx')))
+  const needsEncoder = !(await pathExists(join(targetDir, 'face_encoder.onnx')))
   if (!needsDetector && !needsEncoder) return
 
   const url = getUrl('model_download_url') || packageUrl
@@ -77,26 +89,33 @@ export async function downloadDefaultModels(
 
     // Extract to temp dir
     const tmpExtract = join(tmpdir(), `gather-models-extract-${Date.now()}`)
-    mkdirSync(tmpExtract, { recursive: true })
-    unzipFile(tmpZip, tmpExtract)
+    await mkdir(tmpExtract, { recursive: true })
+    await unzipFile(tmpZip, tmpExtract)
 
     // Copy required ONNX files to target
     for (const [srcName, destName] of Object.entries(EXTRACT_MAP)) {
       const src = join(tmpExtract, srcName)
-      if (existsSync(src)) {
+      if (await pathExists(src)) {
         const dest = join(targetDir, destName)
-        writeFileSync(dest, readFileSync(src))
+        await copyFile(src, dest)
       }
+    }
+
+    if (!(await pathExists(join(targetDir, 'face_detector.onnx')))) {
+      throw new Error('Downloaded package does not contain face_detector.onnx')
+    }
+    if (!(await pathExists(join(targetDir, 'face_encoder.onnx')))) {
+      throw new Error('Downloaded package does not contain face_encoder.onnx')
     }
 
     // Cleanup
     try {
-      rmSync(tmpZip, { force: true })
-      rmSync(tmpExtract, { force: true, recursive: true })
+      await rm(tmpZip, { force: true })
+      await rm(tmpExtract, { force: true, recursive: true })
     } catch { /* ignore cleanup errors */ }
   } catch (err) {
     try {
-      rmSync(tmpZip, { force: true })
+      await rm(tmpZip, { force: true })
     } catch { /* ignore */ }
     throw err
   }

@@ -1,0 +1,67 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.step,
+.stepActive,
+.stepPast {
+  min-height: 34px;
+  padding: 6px 16px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.step:not(:disabled),
+.stepActive,
+.stepPast {
+  cursor: pointer;
+}
+
+.step:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.stepActive {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface));
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.stepPast {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+.separator {
+  color: var(--color-border);
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.loading {
+  padding: 32px;
+  color: var(--color-text-secondary);
+}

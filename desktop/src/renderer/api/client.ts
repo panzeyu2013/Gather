@@ -1,7 +1,10 @@
-import type { Response } from '@gather/shared'
+import type { Command, Response } from '@gather/shared'
 import { CancelledError } from '@gather/shared'
 
-export async function sendCommand<T = unknown>(cmd: string, params?: Record<string, unknown>): Promise<T> {
+export async function sendCommand<T = unknown>(
+  cmd: Command['type'],
+  params?: Record<string, unknown>,
+): Promise<T> {
   const result = (await window.gather.sendCommand(cmd, params ?? {})) as Response<T>
   if (!result.ok) {
     if (typeof result.error === 'object' && result.error.type === 'CancelledError') {
@@ -16,5 +19,4 @@ export async function sendCommand<T = unknown>(cmd: string, params?: Record<stri
 export function onProgress(callback: (data: unknown) => void): () => void {
   return window.gather.onEvent('progress', callback)
 }
-
 

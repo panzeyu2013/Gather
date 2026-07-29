@@ -2,6 +2,7 @@ export const MODEL_CONFIG = {
   // ── Face Detection (SCRFD) ──
   detect: {
     inputSize: 640,
+    secondaryInputSize: 128,
     strides: [8, 16, 32] as number[],
     anchorScales: [1.0, 2.0] as number[],
   },

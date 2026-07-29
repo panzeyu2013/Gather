@@ -1,5 +1,13 @@
 import { sendCommand } from './client'
-import type { SimilarityGroup, SimilarityImage, WritebackPreview, WritebackResult, WritebackOptions } from '@gather/shared'
+import type {
+  CleanupResult,
+  SimilarityGroup,
+  SimilarityImage,
+  SimilarityKeywordAssignment,
+  WritebackItem,
+  WritebackPreview,
+  WritebackResult,
+} from '@gather/shared'
 
 export interface SimilarityResult {
   groups: SimilarityGroup[]
@@ -33,18 +41,22 @@ export const similarityApi = {
       minGroupSize,
     }),
 
-  previewWriteback: (sessionId: string, groupIds: Array<number | string>, options: WritebackOptions) =>
-    sendCommand<WritebackPreview>('sim.preview_writeback', { sessionId, groupIds, options }),
+  previewWriteback: (sessionId: string, assignments: SimilarityKeywordAssignment[]) =>
+    sendCommand<WritebackPreview>('sim.preview_writeback', { sessionId, assignments }),
 
-  writeback: (sessionId: string, groupIds: Array<number | string>, options: WritebackOptions) =>
-    sendCommand<WritebackResult>('sim.writeback', { sessionId, groupIds, options, confirmed: true }),
-
-  getWritebackItems: (sessionId: string) =>
-    sendCommand<WritebackPreview>('sim.writeback_items', { sessionId }),
+  writeback: (sessionId: string, items: WritebackItem[]) =>
+    sendCommand<WritebackResult>('sim.writeback', {
+      sessionId,
+      itemIds: items.flatMap(item => item.id == null ? [] : [item.id]),
+      confirmed: true,
+    }),
 
   retryFailedWriteback: (sessionId: string) =>
     sendCommand<WritebackResult>('sim.retry_failed_writeback', { sessionId, confirmed: true }),
 
-  getThumbnail: (path: string) =>
-    sendCommand<string>('thumbnail.get', { path }),
+  confirmSync: (sessionId: string) =>
+    sendCommand<boolean>('sim.confirm_sync', { sessionId }),
+
+  cleanup: (sessionId: string) =>
+    sendCommand<CleanupResult>('sim.cleanup', { sessionId, confirmed: true }),
 }

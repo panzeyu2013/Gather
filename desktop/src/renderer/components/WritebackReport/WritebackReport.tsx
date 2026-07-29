@@ -7,7 +7,7 @@ interface WritebackReportProps {
   failedItems: WritebackItem[]
   onRetryFailed: () => void
   onConfirmSync: () => void
-  onCleanup: () => void
+  onCleanup?: () => void
 }
 
 export default function WritebackReport({
@@ -64,9 +64,11 @@ export default function WritebackReport({
         <button className={styles.confirmButton} onClick={onConfirmSync}>
           确认同步
         </button>
-        <button className={styles.cleanupButton} onClick={onCleanup}>
-          清理
-        </button>
+        {onCleanup && (
+          <button className={styles.cleanupButton} onClick={onCleanup}>
+            清理
+          </button>
+        )}
       </div>
     </div>
   )

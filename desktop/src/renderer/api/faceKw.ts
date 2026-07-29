@@ -1,9 +1,18 @@
 import { sendCommand } from './client'
 import type { FaceCluster, WritebackPreview, WritebackResult, CleanupResult } from '@gather/shared'
 
+export interface FaceAnalysisResult {
+  status: 'done' | 'failed' | 'cancelled'
+  detectionFailures: number
+  encodingFailures: number
+}
+
 export const faceKwApi = {
   analyze: (sessionId: string, opts?: { eps?: number; minSamples?: number; detectorPath?: string; encoderPath?: string }) =>
-    sendCommand<{ done: boolean }>('fkw.analyze', { sessionId, ...opts }),
+    sendCommand<FaceAnalysisResult>('fkw.analyze', { sessionId, ...opts }),
+
+  recluster: (sessionId: string, eps: number, minSamples: number) =>
+    sendCommand<{ done: boolean }>('fkw.recluster', { sessionId, eps, minSamples }),
 
   cancel: (sessionId: string) =>
     sendCommand<{ done: boolean }>('fkw.cancel_analysis', { sessionId }),
@@ -23,8 +32,8 @@ export const faceKwApi = {
   getClusterThumbnail: (clusterId: number) =>
     sendCommand<{ base64: string }>('fkw.get_cluster_thumbnail', { clusterId }),
 
-  removeMember: (sessionId: string, clusterId: number, photoId: string) =>
-    sendCommand<{ done: boolean }>('fkw.remove_member', { sessionId, clusterId, photoId }),
+  removeMember: (sessionId: string, clusterId: number, memberId: number) =>
+    sendCommand<{ done: boolean }>('fkw.remove_member', { sessionId, clusterId, memberId }),
 
   previewWriteback: (sessionId: string) =>
     sendCommand<WritebackPreview>('fkw.preview', { sessionId }),

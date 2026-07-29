@@ -1,6 +1,7 @@
 export interface MetadataWriteAttributes {
   keywords?: string[]
   rating?: number
+  label?: string
   dateTaken?: string
   latitude?: number
   longitude?: number
@@ -8,6 +9,8 @@ export interface MetadataWriteAttributes {
 
 export interface MetadataWriter {
   readKeywords(photoPath: string): Promise<string[]>
+
+  readAttributes(photoPath: string): Promise<MetadataWriteAttributes>
 
   writeAttributes(photoPath: string, tags: MetadataWriteAttributes): Promise<void>
 

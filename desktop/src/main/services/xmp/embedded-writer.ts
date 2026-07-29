@@ -1,6 +1,6 @@
 import { exiftool } from 'exiftool-vendored'
-import { existsSync, unlinkSync } from 'fs'
-import { copyFile } from 'fs/promises'
+import { existsSync } from 'fs'
+import { copyFile, unlink } from 'fs/promises'
 import type { MetadataWriter, MetadataWriteAttributes } from '../metadata/metadata-writer.interface'
 
 const READ_ONLY_FORMATS = new Set(['.3fr'])
@@ -17,10 +17,29 @@ export class EmbeddedWriter implements MetadataWriter {
     return Array.isArray(kw) ? kw : [kw]
   }
 
+  async readAttributes(photoPath: string): Promise<MetadataWriteAttributes> {
+    const tags = await exiftool.read(photoPath, ['Keywords', 'Rating', 'Label'])
+    const keywords = tags.Keywords
+      ? Array.isArray(tags.Keywords) ? tags.Keywords : [tags.Keywords]
+      : undefined
+    const rawRating = tags.Rating
+    const rating = typeof rawRating === 'number'
+      ? rawRating
+      : typeof rawRating === 'string' && Number.isFinite(Number(rawRating))
+        ? Number(rawRating)
+        : undefined
+    return {
+      keywords,
+      rating,
+      label: typeof tags.Label === 'string' ? tags.Label : undefined,
+    }
+  }
+
   async writeAttributes(photoPath: string, tags: MetadataWriteAttributes): Promise<void> {
     const writeTags: Record<string, unknown> = {}
     if (tags.keywords !== undefined) writeTags.Keywords = tags.keywords
     if (tags.rating !== undefined) writeTags.Rating = tags.rating
+    if (tags.label !== undefined) writeTags.Label = tags.label
     if (tags.dateTaken !== undefined) writeTags.DateTimeOriginal = tags.dateTaken
     if (tags.latitude !== undefined && tags.longitude !== undefined) {
       writeTags.GPSLatitude = tags.latitude
@@ -45,7 +64,7 @@ export class EmbeddedWriter implements MetadataWriter {
   async restore(photoPath: string, backupPath: string): Promise<void> {
     if (existsSync(backupPath)) {
       await copyFile(backupPath, photoPath)
-      unlinkSync(backupPath)
+      await unlink(backupPath)
     }
   }
 

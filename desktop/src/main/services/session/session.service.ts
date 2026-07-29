@@ -13,6 +13,23 @@ import type {
 } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import path from 'path'
+
+export function commonParentDirectory(filepaths: string[]): string {
+  if (filepaths.length === 0) return ''
+  const directories = filepaths.map((filepath) => path.dirname(path.resolve(filepath)))
+  let candidate = directories[0]
+  for (const directory of directories.slice(1)) {
+    while (candidate !== path.dirname(candidate)) {
+      const relative = path.relative(candidate, directory)
+      if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+        break
+      }
+      candidate = path.dirname(candidate)
+    }
+  }
+  return candidate
+}
 
 function toSessionData(
   row: {
@@ -22,6 +39,7 @@ function toSessionData(
     analysis_status: string
     writeback_status: string
     import_source: string
+    source_path: string
     photo_count: number
     failed_writeback_count: number
     created_at: string
@@ -36,6 +54,7 @@ function toSessionData(
     analysisStatus: row.analysis_status as AnalysisStatus,
     writebackStatus: row.writeback_status as WritebackStatus,
     importSource: row.import_source,
+    sourcePath: row.source_path,
     failedWritebackCount: row.failed_writeback_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -53,8 +72,8 @@ export class SessionService {
     @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
-  createSession(name: string, source: string): SessionData {
-    const row = this.sessionRepo.create(name, source)
+  createSession(name: string, source: string, sourcePath = ''): SessionData {
+    const row = this.sessionRepo.create(name, source, sourcePath)
     return toSessionData(row)
   }
 
@@ -64,7 +83,15 @@ export class SessionService {
 
   getSession(sessionId: string): SessionData | null {
     const row = this.sessionRepo.get(sessionId)
-    return row ? toSessionData(row) : null
+    if (!row) return null
+    if (!row.source_path) {
+      const firstPhoto = this.photoRepo.getBySession(sessionId)[0]
+      if (firstPhoto) {
+        row.source_path = path.dirname(firstPhoto.filepath)
+        this.sessionRepo.updateSourcePath(sessionId, row.source_path)
+      }
+    }
+    return toSessionData(row)
   }
 
   deleteSession(sessionId: string, confirmed: boolean): void {
@@ -105,25 +132,38 @@ export class SessionService {
     if (!session) {
       throw new Error('Session not found')
     }
-    const dimResults = await Promise.allSettled(
-      filepaths.map((fp) => this.imageService.getDimensions(fp)),
-    )
-    const entries: Array<{ filepath: string; width: number; height: number }> = filepaths.map(
-      (fp, idx) => {
+    if (!session.source_path && filepaths.length > 0) {
+      const sourcePath = commonParentDirectory(filepaths)
+      if (sourcePath) {
+        this.sessionRepo.updateSourcePath(sessionId, sourcePath)
+      }
+    }
+    const failedFiles: string[] = []
+    const entries: Array<{ filepath: string; width: number; height: number }> = []
+
+    const batchSize = this.settings.getNumber('import_concurrency', 8)
+    for (let i = 0; i < filepaths.length; i += batchSize) {
+      const batch = filepaths.slice(i, i + batchSize)
+      const dimResults = await Promise.allSettled(
+        batch.map((fp) => this.imageService.getDimensions(fp)),
+      )
+      batch.forEach((fp, idx) => {
         const r = dimResults[idx]
         if (r.status === 'fulfilled') {
-          return { filepath: fp, width: r.value.width, height: r.value.height }
+          entries.push({ filepath: fp, width: r.value.width, height: r.value.height })
+        } else {
+          failedFiles.push(fp)
         }
-        return { filepath: fp, width: 0, height: 0 }
-      },
-    )
+      })
+    }
+
     const result = this.photoRepo.addPhotos(sessionId, entries, source)
     const totalCount = this.photoRepo.countBySession(sessionId)
     this.sessionRepo.updatePhotoCount(sessionId, totalCount)
     if (totalCount > 0 && session.status === 'draft') {
       this.sessionRepo.updateStatus(sessionId, 'photos_loaded')
     }
-    return { ...result, total: totalCount }
+    return { ...result, total: totalCount, failedFiles }
   }
 
   updateSession(sessionId: string, name: string): SessionData {

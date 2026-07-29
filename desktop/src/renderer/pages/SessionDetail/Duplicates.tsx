@@ -1,35 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { duplicateApi } from '../../api/duplicate'
+import { imageApi } from '../../api/image'
 import type { DuplicateScanResult, DuplicateGroup, DuplicateGroupMember } from '@gather/shared'
 import styles from './Duplicates.module.css'
 
 function ThumbnailImage({ path, className }: { path: string; className?: string }) {
-  const [src, setSrc] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    duplicateApi.getThumbnail(path).then((base64) => {
-      if (!cancelled) {
-        setSrc(`data:image/jpeg;base64,${base64}`)
-      }
-    }).catch(() => {
-      if (!cancelled) setSrc(null)
-    })
-    return () => { cancelled = true }
-  }, [path])
-
   const filename = path.split(/[/\\]/).pop() ?? path
-
-  if (!src) {
-    return (
-      <div className={className ?? styles.thumbPlaceholder}>
-        <span>{filename}</span>
-      </div>
-    )
-  }
-
-  return <img src={src} alt={filename} className={className} />
+  return <img src={imageApi.thumbnailUrl(path, 256)} alt={filename} className={className} />
 }
 
 function MemberCard({
@@ -145,7 +123,7 @@ export default function Duplicates() {
       const data = await duplicateApi.getGroups(sessionId)
       setGroups(data)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load groups')
+      setError(e instanceof Error ? e.message : '加载重复照片组失败')
     } finally {
       setLoading(false)
     }
@@ -160,11 +138,11 @@ export default function Duplicates() {
     setScanning(true)
     setError(null)
     try {
-      const result = await duplicateApi.scan(sessionId, undefined, visualThreshold)
+      const result = await duplicateApi.scan(sessionId, visualThreshold)
       setScanResult(result)
       await loadGroups()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Scan failed')
+      setError(e instanceof Error ? e.message : '扫描失败')
     } finally {
       setScanning(false)
     }
@@ -175,7 +153,7 @@ export default function Duplicates() {
       await duplicateApi.resolveGroup(groupId, resolution)
       await loadGroups()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Resolve failed')
+      setError(e instanceof Error ? e.message : '处理照片组失败')
     }
   }
 
@@ -184,7 +162,7 @@ export default function Duplicates() {
       await duplicateApi.resolveMember(memberId, isKept)
       await loadGroups()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Toggle failed')
+      setError(e instanceof Error ? e.message : '更新照片状态失败')
     }
   }
 
