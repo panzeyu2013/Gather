@@ -1,13 +1,14 @@
 .page {
-  max-width: 960px;
+  max-width: 1040px;
   margin: 0 auto;
+  padding: 32px clamp(20px, 4vw, 48px) 56px;
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 32px;
+  margin-bottom: 26px;
 }
 
 .title {
@@ -15,6 +16,17 @@
   font-weight: 700;
   color: var(--color-text);
   margin: 0;
+}
+
+.subtitle {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .newBtn {
@@ -44,16 +56,19 @@
 .card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 20px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  transition: border-color 0.15s;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
 }
 
 .card:hover {
   border-color: var(--color-primary);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
 .cardInfo {
@@ -244,7 +259,6 @@
   align-items: center;
   gap: 12px;
   justify-content: flex-end;
-  margin-bottom: 12px;
   min-height: 36px;
 }
 
@@ -319,4 +333,27 @@
   display: inline-flex;
   align-items: center;
   padding-left: 4px;
+}
+
+@media (max-width: 680px) {
+  .header {
+    align-items: flex-start;
+    gap: 18px;
+  }
+
+  .headerActions {
+    flex-direction: column-reverse;
+    align-items: flex-end;
+  }
+
+  .card {
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .cardMeta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
 }

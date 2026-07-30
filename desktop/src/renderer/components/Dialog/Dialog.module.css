@@ -1,7 +1,9 @@
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  padding: 24px;
+  background: rgba(38, 31, 26, 0.42);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -10,8 +12,9 @@
 
 .dialog {
   background: var(--color-surface);
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, white);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 54px rgba(55, 42, 33, 0.24);
   max-width: 480px;
   width: 90%;
   max-height: 80vh;
@@ -30,7 +33,7 @@
 .title {
   margin: 0;
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .close {
@@ -39,12 +42,18 @@
   font-size: 22px;
   cursor: pointer;
   color: var(--color-text-secondary);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
   padding: 0;
+  border-radius: var(--radius-sm);
   line-height: 1;
 }
 
 .close:hover {
   color: var(--color-text);
+  background: var(--color-hover);
 }
 
 .body {

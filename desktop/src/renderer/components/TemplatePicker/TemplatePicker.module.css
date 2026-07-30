@@ -38,7 +38,8 @@
 
 .cardSelected {
   border-color: var(--color-primary);
-  background: rgba(99, 102, 241, 0.08);
+  background: var(--color-primary-soft);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
 .cardIcon {

@@ -106,7 +106,7 @@
   box-sizing: border-box;
   border-radius: 5px;
   overflow: hidden;
-  background: var(--color-bg-secondary, #2a2a3e);
+  background: var(--color-bg-secondary, #ede6dc);
   cursor: pointer;
   transition: box-shadow 0.15s ease, filter 0.15s ease;
 }
@@ -129,7 +129,7 @@
   height: 100%;
   border-radius: 5px;
   overflow: hidden;
-  background: var(--color-bg-secondary, #2a2a3e);
+  background: var(--color-bg-secondary, #ede6dc);
 }
 
 .thumbImg {
@@ -137,7 +137,7 @@
   height: 100%;
   object-fit: contain;
   display: block;
-  background: var(--color-bg-secondary, #2a2a3e);
+  background: var(--color-bg-secondary, #ede6dc);
 }
 
 .thumbPlaceholder {

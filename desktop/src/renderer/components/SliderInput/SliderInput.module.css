@@ -9,7 +9,7 @@
   appearance: none;
   flex: 1;
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-pill);
   outline: none;
   cursor: pointer;
   min-width: 0;
@@ -46,7 +46,7 @@
   width: 72px;
   padding: 6px 10px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--color-bg);
   color: var(--color-text);
   font-size: 13px;

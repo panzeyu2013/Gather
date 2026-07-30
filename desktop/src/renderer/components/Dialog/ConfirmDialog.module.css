@@ -13,25 +13,41 @@
 
 .cancel,
 .confirm {
+  min-height: 36px;
   padding: 8px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
+  font-weight: 620;
   cursor: pointer;
   border: 1px solid var(--color-border);
+  transition: background 0.15s, transform 0.15s;
 }
 
 .cancel {
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text);
 }
 
 .confirm {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-text-inverse);
   border-color: var(--color-primary);
 }
 
 .destructive {
   background: var(--color-error);
   border-color: var(--color-error);
+}
+
+.cancel:hover {
+  background: var(--color-hover);
+}
+
+.confirm:hover {
+  filter: brightness(0.96);
+}
+
+.cancel:active,
+.confirm:active {
+  transform: translateY(1px);
 }

@@ -1,13 +1,10 @@
-# FaceKeywording 内联样式迁移计划
+# FaceKeywording 样式约定
 
-当前问题：StepAnalyze.tsx, StepReview.tsx, StepWriteback.tsx 含 ~89 处内联 style={}。
+人脸分析、聚类审核和关键词写回均已迁移到独立的 CSS Module，并使用全局设计令牌。
 
-迁移步骤：
-1. 为每个 Step 文件创建对应的 .module.css
-2. 颜色值替换为 CSS 变量：var(--color-primary), var(--color-surface) 等
-3. 像素值提取为 CSS class
-4. 删除组件中的 style={} 属性
+后续修改应遵循：
 
-CSS 变量参考（见 global.css）：
---color-primary, --color-bg, --color-surface, --color-text, 
---color-text-secondary, --color-border, --color-success, --color-danger
+- 结构、颜色、间距和控件状态放在对应的 `.module.css` 中。
+- 使用 `global.css` 中的 `--color-*`、`--radius-*` 和 `--shadow-*` 令牌。
+- 仅允许进度、位置和尺寸等运行时计算值保留为内联样式。
+- 新增按钮和表单控件时保留清晰的 hover、disabled 与 focus-visible 状态。

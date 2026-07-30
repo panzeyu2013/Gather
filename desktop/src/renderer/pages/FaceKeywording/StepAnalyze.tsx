@@ -110,6 +110,9 @@ export default function StepAnalyze() {
           onChange={(e) => setEps(parseFloat(e.target.value))}
           disabled={isRunning}
           className={styles.slider}
+          style={{
+            background: `linear-gradient(to right, var(--color-primary) 0%, var(--color-primary) ${((eps - 0.3) / 0.65) * 100}%, var(--color-border) ${((eps - 0.3) / 0.65) * 100}%, var(--color-border) 100%)`,
+          }}
         />
         <span className={styles.value}>{eps.toFixed(2)}</span>
       </div>

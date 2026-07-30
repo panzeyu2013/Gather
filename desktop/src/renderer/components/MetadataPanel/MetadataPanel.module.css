@@ -5,11 +5,11 @@
   padding: 16px;
   overflow-y: auto;
   height: 100%;
-  background: var(--color-bg-primary, #1a1a2e);
+  background: var(--color-surface);
 }
 
 .loading {
-  color: var(--color-text-secondary, #999);
+  color: var(--color-text-secondary);
   font-size: 14px;
   text-align: center;
   padding: 32px 0;
@@ -26,9 +26,9 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--color-text-secondary, #888);
+  color: var(--color-text-secondary);
   padding: 8px 0 4px;
-  border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.06));
+  border-bottom: 1px solid var(--color-border);
   margin-bottom: 4px;
 }
 
@@ -42,7 +42,7 @@
 
 .fieldLabel {
   font-size: 12px;
-  color: var(--color-text-secondary, #888);
+  color: var(--color-text-secondary);
   flex-shrink: 0;
   margin-right: 12px;
   min-width: 80px;
@@ -50,7 +50,7 @@
 
 .fieldValue {
   font-size: 12px;
-  color: var(--color-text, #ccc);
+  color: var(--color-text);
   text-align: right;
   word-break: break-word;
   flex: 1;
@@ -58,16 +58,16 @@
 
 .fieldInput {
   font-size: 12px;
-  color: var(--color-text, #ccc);
-  background: var(--color-bg-secondary, rgba(255, 255, 255, 0.06));
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
-  border-radius: 4px;
-  padding: 4px 8px;
+  color: var(--color-text);
+  background: #fffdfa;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
   text-align: right;
   flex: 1;
   outline: none;
 }
 
 .fieldInput:focus {
-  border-color: var(--color-accent, #4a90d9);
+  border-color: var(--color-primary);
 }

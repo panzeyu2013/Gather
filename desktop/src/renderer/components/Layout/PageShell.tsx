@@ -1,14 +1,17 @@
 import React from 'react'
-import { Outlet } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import ErrorBoundary from '../ErrorBoundary/ErrorBoundary'
 import styles from './PageShell.module.css'
 
 export default function PageShell() {
+  const location = useLocation()
+  const isSession = location.pathname.startsWith('/sessions/')
+
   return (
     <div className={styles.shell}>
       <Sidebar />
-      <main className={styles.main}>
+      <main className={`${styles.main} ${isSession ? styles.sessionMain : ''}`}>
         <ErrorBoundary>
           <Outlet />
         </ErrorBoundary>

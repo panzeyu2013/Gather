@@ -279,22 +279,12 @@ export default function Dashboard() {
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className={styles.title}>Gather</h1>
-        <button className={styles.newBtn} onClick={openNewDialog}>
-          + 新建工作区
-        </button>
-      </div>
-
-      {!sessions || sessions.length === 0 ? (
-        <div className={styles.empty}>
-          <div className={styles.emptyIcon}>&#128247;</div>
-          <p className={styles.emptyText}>暂无工作区</p>
-          <p className={styles.emptyHint}>
-            创建新的工作区以开始整理照片
-          </p>
+        <div>
+          <h1 className={styles.title}>Gather</h1>
+          <p className={styles.subtitle}>整理、挑选并同步你的摄影工作区</p>
         </div>
-      ) : (
-          <div>
+        <div className={styles.headerActions}>
+          {sessions && sessions.length > 0 && (
             <div className={styles.toolbar}>
               {selectMode ? (
                 <>
@@ -303,7 +293,7 @@ export default function Dashboard() {
                       ref={selectAllRef}
                       type="checkbox"
                       className={styles.checkbox}
-                      checked={sessions.length > 0 && selectedIds.size === sessions.length}
+                      checked={selectedIds.size === sessions.length}
                       onChange={toggleSelectAll}
                     />
                     全选
@@ -313,7 +303,7 @@ export default function Dashboard() {
                       className={styles.batchDeleteBtn}
                       onClick={() => setShowBatchDeleteConfirm(true)}
                     >
-                      删除 {selectedIds.size} 个工作区
+                      删除 {selectedIds.size} 个
                     </button>
                   )}
                   <button className={styles.cancelSelectBtn} onClick={exitSelectMode}>
@@ -326,6 +316,23 @@ export default function Dashboard() {
                 </button>
               )}
             </div>
+          )}
+          <button className={styles.newBtn} onClick={openNewDialog}>
+            + 新建工作区
+          </button>
+        </div>
+      </div>
+
+      {!sessions || sessions.length === 0 ? (
+        <div className={styles.empty}>
+          <div className={styles.emptyIcon}>&#128247;</div>
+          <p className={styles.emptyText}>暂无工作区</p>
+          <p className={styles.emptyHint}>
+            创建新的工作区以开始整理照片
+          </p>
+        </div>
+      ) : (
+          <div>
             <div className={styles.list}>
               {sessions.map((s) => (
                 <div key={s.id} className={`${styles.card} ${selectedIds.has(s.id) ? styles.cardSelected : ''}`}>

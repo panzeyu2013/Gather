@@ -17,7 +17,7 @@
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: 999px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   font-size: 12px;
@@ -56,8 +56,9 @@
 }
 
 .logicToggle {
-  padding: 2px 6px;
-  border-radius: 4px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: 999px;
   border: 1px solid var(--color-primary);
   background: var(--color-surface);
   color: var(--color-primary);
@@ -85,8 +86,9 @@
 }
 
 .select {
-  padding: 4px 8px;
-  border-radius: 4px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text);
@@ -94,8 +96,9 @@
 }
 
 .input {
-  padding: 4px 8px;
-  border-radius: 4px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text);
@@ -104,10 +107,11 @@
 }
 
 .addBtn {
-  padding: 4px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--color-success);
-  background: var(--color-success);
+  min-height: 32px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary);
   color: var(--color-text-inverse);
   font-size: 12px;
   cursor: pointer;
@@ -118,8 +122,9 @@
 }
 
 .cancelBtn {
-  padding: 4px 12px;
-  border-radius: 4px;
+  min-height: 32px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text-secondary);
@@ -128,8 +133,9 @@
 }
 
 .addRuleBtn {
-  padding: 4px 12px;
-  border-radius: 4px;
+  min-height: 32px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
   border: 1px dashed var(--color-border);
   background: transparent;
   color: var(--color-text-secondary);
@@ -143,8 +149,9 @@
 }
 
 .clearBtn {
-  padding: 4px 12px;
-  border-radius: 4px;
+  min-height: 32px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-border);
   background: transparent;
   color: var(--color-text-secondary);

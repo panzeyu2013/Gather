@@ -1,0 +1,288 @@
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  height: 100%;
+  min-height: 0;
+  padding: 20px 0 4px;
+}
+
+.clusterPane {
+  min-width: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.paneHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.paneTitle,
+.detailTitle {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.paneCount,
+.detailMeta {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.clusterGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+}
+
+.clusterCard,
+.clusterCardSelected {
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  text-align: left;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.clusterCard:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
+  transform: translateY(-1px);
+}
+
+.clusterCardSelected {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.clusterThumb {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  margin-bottom: 9px;
+  overflow: hidden;
+  border-radius: 9px;
+  color: var(--color-primary);
+  font-size: 22px;
+  font-weight: 650;
+  background: var(--color-bg-secondary);
+}
+
+.clusterThumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.clusterLabel {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clusterMeta {
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.bindingBadge {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 2px 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--color-success) 70%, #315532);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+}
+
+.detailPane {
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.detailHeader {
+  margin-bottom: 14px;
+}
+
+.memberList {
+  max-height: 210px;
+  margin-bottom: 16px;
+  overflow: auto;
+  border-block: 1px solid var(--color-border);
+}
+
+.member {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.member:last-child {
+  border-bottom: 0;
+}
+
+.memberIndex {
+  color: var(--color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.memberName {
+  overflow: hidden;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confidence {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.removeButton {
+  padding: 3px 5px;
+  border: 0;
+  color: var(--color-error);
+  background: transparent;
+  cursor: pointer;
+}
+
+.error {
+  margin-bottom: 12px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--color-error);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--color-error) 9%, transparent);
+}
+
+.editor,
+.mergePanel {
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg) 65%, var(--color-surface));
+}
+
+.editor {
+  margin-bottom: 10px;
+}
+
+.fieldLabel {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.input,
+.select {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background: #fffdfa;
+}
+
+.input + .fieldLabel {
+  margin-top: 10px;
+}
+
+.buttonRow,
+.mergeRow {
+  display: flex;
+  gap: 8px;
+}
+
+.buttonRow {
+  margin-bottom: 10px;
+}
+
+.primaryButton,
+.secondaryButton,
+.dangerButton {
+  min-height: 34px;
+  padding: 7px 13px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 620;
+  cursor: pointer;
+}
+
+.primaryButton {
+  flex: 1;
+  border: 1px solid var(--color-primary);
+  color: var(--color-text-inverse);
+  background: var(--color-primary);
+}
+
+.secondaryButton {
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.dangerButton {
+  border: 1px solid color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+  color: var(--color-error);
+  background: transparent;
+}
+
+.select {
+  min-width: 0;
+  flex: 1;
+}
+
+.secondaryButton:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.emptyDetail {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .detailPane {
+    max-height: none;
+  }
+}

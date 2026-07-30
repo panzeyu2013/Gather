@@ -2,6 +2,7 @@ import React, { useCallback, useRef, useState } from 'react'
 import { useFaceKwStore, type ClusterData } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import styles from './StepReview.module.css'
 
 export default function StepReview() {
   const {
@@ -112,128 +113,65 @@ export default function StepReview() {
   }, [sessionId, selectedCluster, mergeTargetId, refreshClusters, selectCluster])
 
   return (
-    <div style={{ display: 'flex', height: '100%', gap: '16px', padding: '16px' }}>
-      {/* Cluster Grid */}
-      <div style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
-        <h3 style={{ color: '#e0e0e0', fontSize: '16px', marginBottom: '12px' }}>
-          人脸聚类 ({clusters.length})
-        </h3>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
-            gap: '10px',
-          }}
-        >
+    <div className={styles.layout}>
+      <section className={styles.clusterPane}>
+        <header className={styles.paneHeader}>
+          <h3 className={styles.paneTitle}>人脸聚类</h3>
+          <span className={styles.paneCount}>{clusters.length} 组</span>
+        </header>
+        <div className={styles.clusterGrid}>
           {clusters.map((cluster) => (
-            <div
+            <button
+              type="button"
               key={cluster.id}
               onClick={() => {
                 handleSelectCluster(cluster)
                 loadThumbnail(cluster.id)
               }}
-              style={{
-                background: selectedClusterId === cluster.id ? '#3a3a6e' : '#2a2a3e',
-                border: selectedClusterId === cluster.id ? '2px solid #8080ff' : '2px solid transparent',
-                borderRadius: '8px',
-                padding: '10px',
-                cursor: 'pointer',
-                textAlign: 'center',
-                transition: 'all 0.15s',
-              }}
+              className={selectedClusterId === cluster.id ? styles.clusterCardSelected : styles.clusterCard}
             >
-              <div
-                style={{
-                  width: '80px',
-                  height: '80px',
-                  background: '#1a1a2e',
-                  borderRadius: '6px',
-                  margin: '0 auto 8px',
-                  overflow: 'hidden',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
+              <div className={styles.clusterThumb}>
                 {thumbnails[cluster.id] ? (
                   <img
                     src={`data:image/jpeg;base64,${thumbnails[cluster.id]}`}
                     alt={cluster.label}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />
                 ) : (
-                  <span style={{ color: '#5050ff', fontSize: '24px' }}>{cluster.size}</span>
+                  <span>{cluster.size}</span>
                 )}
               </div>
-              <div style={{ color: '#e0e0e0', fontSize: '12px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {cluster.label}
-              </div>
-              <div style={{ color: '#a0a0a0', fontSize: '11px', marginTop: '2px' }}>
-                {cluster.size} 张人脸
-              </div>
+              <div className={styles.clusterLabel}>{cluster.label}</div>
+              <div className={styles.clusterMeta}>{cluster.size} 张人脸</div>
               {cluster.binding && (
-                <div
-                  style={{
-                    background: '#2a4a2a',
-                    color: '#80ff80',
-                    fontSize: '10px',
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    marginTop: '4px',
-                  }}
-                >
-                  {cluster.binding.roleName}
-                </div>
+                <div className={styles.bindingBadge}>{cluster.binding.roleName}</div>
               )}
-            </div>
+            </button>
           ))}
         </div>
-      </div>
+      </section>
 
-      {/* Cluster Detail + Tag Editor */}
-      <div style={{ width: '380px', background: '#1a1a2e', borderRadius: '10px', padding: '16px', overflow: 'auto', flexShrink: 0 }}>
+      <aside className={styles.detailPane}>
         {selectedCluster ? (
           <>
-            <h3 style={{ color: '#e0e0e0', fontSize: '16px', marginBottom: '4px' }}>
-              {selectedCluster.label}
-            </h3>
-            <p style={{ color: '#a0a0a0', fontSize: '13px', marginBottom: '16px' }}>
-              {selectedCluster.size} 个成员
-            </p>
+            <header className={styles.detailHeader}>
+              <h3 className={styles.detailTitle}>{selectedCluster.label}</h3>
+              <span className={styles.detailMeta}>{selectedCluster.size} 个成员</span>
+            </header>
 
-            {/* Member list */}
-            <div style={{ marginBottom: '16px', maxHeight: '200px', overflow: 'auto' }}>
+            <div className={styles.memberList}>
               {selectedCluster.members.map((m, idx) => (
                 <div
                   key={`${m.photoId}-${idx}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '6px 0',
-                    borderBottom: '1px solid #2a2a3e',
-                    fontSize: '12px',
-                    color: '#c0c0c0',
-                  }}
+                  className={styles.member}
                 >
-                  <span style={{ color: '#5050ff' }}>#{idx + 1}</span>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {m.filename}
-                  </span>
-                  <span style={{ color: '#808080', fontSize: '11px' }}>
-                    {(m.confidence * 100).toFixed(0)}%
-                  </span>
+                  <span className={styles.memberIndex}>#{idx + 1}</span>
+                  <span className={styles.memberName}>{m.filename}</span>
+                  <span className={styles.confidence}>{(m.confidence * 100).toFixed(0)}%</span>
                   <button
                     type="button"
                     onClick={() => void handleRemoveMember(m.memberId)}
                     title="从该人脸聚类中移除"
-                    style={{
-                      border: 'none',
-                      background: 'transparent',
-                      color: '#ff8080',
-                      cursor: 'pointer',
-                      padding: '2px 4px',
-                    }}
+                    className={styles.removeButton}
                   >
                     移除
                   </button>
@@ -242,106 +180,55 @@ export default function StepReview() {
             </div>
 
             {actionError && (
-              <p style={{ color: '#ff8080', fontSize: '12px', marginBottom: '12px' }}>
-                {actionError}
-              </p>
+              <p className={styles.error}>{actionError}</p>
             )}
 
-            {/* Tag Editor */}
-            <div style={{ background: '#2a2a3e', borderRadius: '8px', padding: '12px', marginBottom: '12px' }}>
-              <label style={{ color: '#a0a0a0', fontSize: '12px', display: 'block', marginBottom: '4px' }}>
-                角色名称
-              </label>
+            <div className={styles.editor}>
+              <label className={styles.fieldLabel} htmlFor="face-role-name">角色名称</label>
               <input
+                id="face-role-name"
                 value={roleName}
                 onChange={(e) => setRoleName(e.target.value)}
                 placeholder="例如: 张三"
-                style={{
-                  width: '100%',
-                  padding: '8px 10px',
-                  background: '#1a1a2e',
-                  border: '1px solid #3a3a5e',
-                  borderRadius: '6px',
-                  color: '#e0e0e0',
-                  fontSize: '13px',
-                  boxSizing: 'border-box',
-                  marginBottom: '10px',
-                }}
+                className={styles.input}
               />
-              <label style={{ color: '#a0a0a0', fontSize: '12px', display: 'block', marginBottom: '4px' }}>
-                关键词 (逗号分隔)
-              </label>
+              <label className={styles.fieldLabel} htmlFor="face-keywords">关键词（逗号分隔）</label>
               <input
+                id="face-keywords"
                 value={keywords}
                 onChange={(e) => setKeywords(e.target.value)}
                 placeholder="例如: 人像, 户外, 微笑"
-                style={{
-                  width: '100%',
-                  padding: '8px 10px',
-                  background: '#1a1a2e',
-                  border: '1px solid #3a3a5e',
-                  borderRadius: '6px',
-                  color: '#e0e0e0',
-                  fontSize: '13px',
-                  boxSizing: 'border-box',
-                }}
+                className={styles.input}
               />
             </div>
 
-            {/* Bind/Unbind buttons */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+            <div className={styles.buttonRow}>
               <button
-                onClick={handleBind}
-                style={{
-                  flex: 1,
-                  padding: '8px',
-                  background: 'linear-gradient(135deg, #5050ff, #8080ff)',
-                  border: 'none',
-                  borderRadius: '6px',
-                  color: '#fff',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
+                type="button"
+                onClick={() => void handleBind()}
+                className={styles.primaryButton}
               >
                 {selectedCluster.binding ? '更新绑定' : '绑定'}
               </button>
               {selectedCluster.binding && (
                 <button
-                  onClick={handleUnbind}
-                  style={{
-                    padding: '8px 16px',
-                    background: '#3a1a1a',
-                    border: '1px solid #5a2a2a',
-                    borderRadius: '6px',
-                    color: '#ff8080',
-                    fontSize: '13px',
-                    cursor: 'pointer',
-                  }}
+                  type="button"
+                  onClick={() => void handleUnbind()}
+                  className={styles.dangerButton}
                 >
                   解绑
                 </button>
               )}
             </div>
 
-            {/* Merge */}
-            <div style={{ background: '#2a2a3e', borderRadius: '8px', padding: '12px' }}>
-              <label style={{ color: '#a0a0a0', fontSize: '12px', display: 'block', marginBottom: '6px' }}>
-                合并到聚类
-              </label>
-              <div style={{ display: 'flex', gap: '6px' }}>
+            <div className={styles.mergePanel}>
+              <label className={styles.fieldLabel} htmlFor="face-merge-target">合并到聚类</label>
+              <div className={styles.mergeRow}>
                 <select
+                  id="face-merge-target"
                   value={mergeTargetId ?? ''}
                   onChange={(e) => setMergeTargetId(e.target.value ? Number(e.target.value) : null)}
-                  style={{
-                    flex: 1,
-                    padding: '6px 8px',
-                    background: '#1a1a2e',
-                    border: '1px solid #3a3a5e',
-                    borderRadius: '6px',
-                    color: '#e0e0e0',
-                    fontSize: '12px',
-                  }}
+                  className={styles.select}
                 >
                   <option value="">选择目标...</option>
                   {clusters
@@ -353,17 +240,10 @@ export default function StepReview() {
                     ))}
                 </select>
                 <button
-                  onClick={handleMerge}
+                  type="button"
+                  onClick={() => void handleMerge()}
                   disabled={!mergeTargetId}
-                  style={{
-                    padding: '6px 12px',
-                    background: mergeTargetId ? '#2a4a2a' : '#2a2a3e',
-                    border: '1px solid #3a5a3a',
-                    borderRadius: '6px',
-                    color: mergeTargetId ? '#80ff80' : '#606060',
-                    fontSize: '12px',
-                    cursor: mergeTargetId ? 'pointer' : 'not-allowed',
-                  }}
+                  className={styles.secondaryButton}
                 >
                   合并
                 </button>
@@ -371,11 +251,9 @@ export default function StepReview() {
             </div>
           </>
         ) : (
-          <div style={{ color: '#606060', fontSize: '14px', textAlign: 'center', paddingTop: '40px' }}>
-            选择一个聚类以查看详情
-          </div>
+          <div className={styles.emptyDetail}>选择一个聚类以查看详情</div>
         )}
-      </div>
+      </aside>
     </div>
   )
 }
