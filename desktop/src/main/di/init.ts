@@ -12,6 +12,7 @@ import { WritebackRepository } from '../db/repositories/writeback.repo'
 import { MetadataCacheRepository } from '../db/repositories/metadata-cache.repo'
 import { SmartAlbumRepository } from '../db/repositories/smart-album.repo'
 import { SettingsRepository } from '../db/repositories/settings.repo'
+import { MetadataOutboxRepository } from '../db/repositories/metadata-outbox.repo'
 
 import { SettingsService } from '../services/settings/settings.service'
 import { CullingService } from '../services/culling/culling.service'
@@ -27,6 +28,7 @@ import { TemplateService } from '../services/template/template.service'
 import { FilterEngine } from '../services/filter/filter-engine'
 import { ImageService, TieredThumbnailCache } from '../services/image'
 import { MetadataWriterRouter } from '../services/xmp/metadata-writer-router'
+import { MetadataSyncCoordinator } from '../services/metadata/metadata-sync-coordinator'
 
 let initialized = false
 
@@ -42,6 +44,7 @@ export function initContainer(): void {
   container.registerSingleton(DI_TOKENS.CULLING_DECISION_REPO, CullingDecisionRepository)
   container.registerSingleton(DI_TOKENS.SIMILARITY_RESULT_REPO, SimilarityResultRepository)
   container.registerSingleton(DI_TOKENS.WRITEBACK_REPO, WritebackRepository)
+  container.registerSingleton(DI_TOKENS.METADATA_OUTBOX_REPO, MetadataOutboxRepository)
   container.registerSingleton(DI_TOKENS.METADATA_CACHE_REPO, MetadataCacheRepository)
   container.registerSingleton(DI_TOKENS.SMART_ALBUM_REPO, SmartAlbumRepository)
   container.registerSingleton(DI_TOKENS.SETTINGS_REPO, SettingsRepository)
@@ -50,6 +53,7 @@ export function initContainer(): void {
   container.registerSingleton(DI_TOKENS.CULLING_SERVICE, CullingService)
   container.registerSingleton(DI_TOKENS.DUPLICATE_SERVICE, DuplicateService)
   container.registerSingleton(DI_TOKENS.IMAGE_SERVICE, ImageService)
+  container.registerSingleton(DI_TOKENS.METADATA_SYNC_COORDINATOR, MetadataSyncCoordinator)
   container.registerSingleton(DI_TOKENS.EXPORT_SERVICE, ExportService)
   container.registerSingleton(DI_TOKENS.REPORT_SERVICE, ReportService)
   container.registerSingleton(DI_TOKENS.SESSION_SERVICE, SessionService)

@@ -50,4 +50,31 @@ describe('clusterByHash', () => {
     expect(result.groups).toHaveLength(0)
     expect(result.ungrouped).toHaveLength(0)
   })
+
+  it('supports sequential groups without merging matching photos across a break', () => {
+    const entries = [
+      { photoId: 'burst-a1', hash: 'ffffffffffffffff' },
+      { photoId: 'burst-a2', hash: 'fffffffffffffffe' },
+      { photoId: 'break', hash: '0000000000000000' },
+      { photoId: 'burst-a3', hash: 'ffffffffffffffff' },
+      { photoId: 'burst-a4', hash: 'fffffffffffffffe' },
+    ]
+
+    const sequential = clusterByHash(entries, 2, 2, 'sequential')
+    expect(sequential.groups).toEqual([
+      ['burst-a1', 'burst-a2'],
+      ['burst-a3', 'burst-a4'],
+    ])
+    expect(sequential.ungrouped).toEqual(['break'])
+
+    const global = clusterByHash(entries, 2, 2, 'global')
+    expect(global.groups).toHaveLength(1)
+    expect(global.groups[0]).toEqual(expect.arrayContaining([
+      'burst-a1',
+      'burst-a2',
+      'burst-a3',
+      'burst-a4',
+    ]))
+    expect(global.ungrouped).toEqual(['break'])
+  })
 })

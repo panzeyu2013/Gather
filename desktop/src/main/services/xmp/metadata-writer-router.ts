@@ -32,10 +32,14 @@ const DELIVERABLE_EXTENSIONS = new Set([
 
 @injectable()
 export class MetadataWriterRouter {
-  private xmpSidecar = new XmpSidecarWriter()
+  private xmpSidecar: XmpSidecarWriter
   private embedded = new EmbeddedWriter()
 
-  constructor(@inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService) {}
+  constructor(@inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService) {
+    this.xmpSidecar = new XmpSidecarWriter(
+      () => this.settings.get('capture_one_color_compatibility', 'label_and_urgency'),
+    )
+  }
 
   select(photoPath: string): MetadataWriter {
     const mode = this.settings.get('metadata_write_mode', 'auto')

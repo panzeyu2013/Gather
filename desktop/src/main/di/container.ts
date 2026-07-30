@@ -15,6 +15,7 @@ export const DI_TOKENS = {
   CULLING_DECISION_REPO: Symbol('CullingDecisionRepository'),
   SIMILARITY_RESULT_REPO: Symbol('SimilarityResultRepository'),
   WRITEBACK_REPO: Symbol('WritebackRepository'),
+  METADATA_OUTBOX_REPO: Symbol('MetadataOutboxRepository'),
   METADATA_CACHE_REPO: Symbol('MetadataCacheRepository'),
   SMART_ALBUM_REPO: Symbol('SmartAlbumRepository'),
   SETTINGS_REPO: Symbol('SettingsRepository'),
@@ -32,6 +33,7 @@ export const DI_TOKENS = {
   TEMPLATE_SERVICE: Symbol('TemplateService'),
   FILTER_ENGINE: Symbol('FilterEngine'),
   IMAGE_SERVICE: Symbol('ImageService'),
+  METADATA_SYNC_COORDINATOR: Symbol('MetadataSyncCoordinator'),
 
   WRITER_ROUTER: Symbol('MetadataWriterRouter'),
   THUMBNAIL_CACHE: Symbol('TieredThumbnailCache'),

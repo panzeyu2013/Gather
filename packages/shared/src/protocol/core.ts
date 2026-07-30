@@ -201,7 +201,26 @@ import type { DupScanParams, DupGroupsParams, DupResolveParams, DupResolveMember
 import type { FilterPhotosParams, FilterPhotosGlobalParams, FilterSuggestParams, AlbumCreateParams, AlbumListParams, AlbumGetParams, AlbumUpdateParams, AlbumDeleteParams, AlbumGetPhotosParams } from './filter'
 import type { ExportPreviewParams, ExportExecuteParams, ExportCancelParams, ExportReportParams } from './export'
 import type { TemplateCreateParams, TemplateListParams, TemplateGetParams, TemplateUpdateParams, TemplateDeleteParams, TemplateApplyParams } from './template'
-import type { CullingGroupsParams, CullingDecideParams, CullingBatchDecideParams, CullingSummaryParams, CullingWritebackParams, CullingRetryWritebackParams, CullingConfirmSyncParams, CullingCleanupParams, CullingResetParams } from './culling'
+import type {
+  CullingGroupsParams,
+  CullingDecideParams,
+  CullingBatchDecideParams,
+  CullingSummaryParams,
+  CullingWritebackParams,
+  CullingRetryWritebackParams,
+  CullingConfirmSyncParams,
+  CullingCleanupParams,
+  CullingResetParams,
+  CullingListParams,
+  CullingUpdateParams,
+  CullingBatchUpdateParams,
+  CullingDecideGroupParams,
+  CullingSyncStatusParams,
+  CullingFlushParams,
+  CullingRetrySyncParams,
+  CullingFinalizeSyncParams,
+  MetadataSyncSummary,
+} from './culling'
 
 // ── 命令联合类型 ──
 
@@ -282,6 +301,14 @@ export type Command =
   | { type: 'template.delete'; params: TemplateDeleteParams }
   | { type: 'template.apply'; params: TemplateApplyParams }
   | { type: 'culling.groups'; params: CullingGroupsParams }
+  | { type: 'culling.list'; params: CullingListParams }
+  | { type: 'culling.update'; params: CullingUpdateParams }
+  | { type: 'culling.batch_update'; params: CullingBatchUpdateParams }
+  | { type: 'culling.decide_group'; params: CullingDecideGroupParams }
+  | { type: 'culling.sync_status'; params: CullingSyncStatusParams }
+  | { type: 'culling.flush'; params: CullingFlushParams }
+  | { type: 'culling.retry_sync'; params: CullingRetrySyncParams }
+  | { type: 'culling.finalize_sync'; params: CullingFinalizeSyncParams }
   | { type: 'culling.decide'; params: CullingDecideParams }
   | { type: 'culling.batch_decide'; params: CullingBatchDecideParams }
   | { type: 'culling.summary'; params: CullingSummaryParams }
@@ -307,6 +334,7 @@ export type Event =
   | { type: 'export:progress'; data: ExportProgressData }
   | { type: 'models:download-progress'; data: ModelDownloadProgressData }
   | { type: 'gather:notification'; data: NotificationData }
+  | { type: 'culling:sync-status'; data: MetadataSyncSummary }
 
 // ── 命令白名单 ──
 
@@ -328,6 +356,7 @@ export const ALLOWED_COMMANDS = new Set([
   'export.preview', 'export.execute', 'export.cancel', 'export.report',
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
   'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
+  'culling.list', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
   'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset',
 ])
 
@@ -338,6 +367,7 @@ export const DESTRUCTIVE_COMMANDS = new Set([
   'person.delete', 'person.merge', 'person.remove_photo',
   'dup.resolve', 'dup.resolve_member',
   'culling.writeback', 'culling.retry_failed_writeback', 'culling.cleanup', 'culling.reset',
+  'culling.finalize_sync',
   'metadata.set', 'metadata.batch_set',
   'template.delete',
   'album.delete',
@@ -352,6 +382,7 @@ export const ALLOWED_EVENTS = new Set([
   'export:progress',
   'models:download-progress',
   'gather:notification',
+  'culling:sync-status',
 ])
 
 // ── Guard 函数 ──

@@ -6,6 +6,13 @@ Visually group similar photos and annotate faces with keywords, helping photogra
 
 ## Features
 
+### Culling Workbench
+- Cull every workspace photo without running similarity analysis first
+- Independent Pick / Reject, 0–5 star rating, and Capture One color labels
+- Auto advance, filtered and similarity scopes, batch actions, and undo / redo
+- Single, dual, and quad comparison with synchronized zoom and face alignment
+- Durable background XMP sidecar queue with retry, conflict detection, and restart recovery
+
 ### Similarity Grouping
 - dHash perceptual hashing + hierarchical clustering to find visually similar images
 - Adjustable threshold (4–20) and minimum group size, real-time result updates
@@ -36,16 +43,30 @@ Pre-built `.dmg` releases are available on the [Releases](https://github.com/pan
 ### Build from Source
 
 ```bash
-cd desktop
 npm install
-npm run dist:mac
+npm run build
+npm run electron
 ```
 
-The built `.dmg` will be in `desktop/release/`.
+For a packaged macOS build, run `npm run dist:mac --workspace=desktop`; the
+result is written to `desktop/release/`.
 
 ---
 
 ## Usage
+
+### Culling
+1. Import a folder or Capture One selection into a workspace.
+2. Open **Culling**. Similarity analysis is optional.
+3. Use `P` for Pick, `X` for Reject, `0`–`5` for rating, arrow keys to navigate,
+   and `Cmd/Ctrl+Z` to undo. Enable auto advance for keyboard-first review.
+4. Use dual/quad mode for comparison; face alignment reuses existing face
+   detections and does not run a new model.
+5. Ratings and colors are merged into XMP sidecars in the background. Resolve
+   failed/conflict items, or click **Write XMP now** for an immediate flush.
+6. In Capture One, run **Image → Load Metadata** (or use one-way Auto Sync =
+   Load). Return to Gather, confirm that Capture One loaded the metadata, and
+   only then restore/remove temporary sidecars if desired.
 
 ### Similarity Grouping
 1. Select photos in Capture One
@@ -101,13 +122,14 @@ Plugin: GatherLink.coplugin (COOpenWithPlugin, Swift)
 ## Development
 
 ```bash
-cd desktop
-npm install          # Install dependencies
-npm run dev          # Start dev mode (hot reload)
-npm run typecheck    # TypeScript type checking
-npm run lint         # ESLint
-npm test             # Vitest unit tests
-npm run dist:mac     # Build macOS .dmg
+npm install
+npm run dev           # Start Vite/Electron development mode
+npm run build         # Build shared contracts and desktop app
+npm run typecheck     # TypeScript type checking
+npm run lint          # ESLint
+npm run test:vitest   # Vitest unit tests
+npm run test:e2e      # Production Electron smoke workflow
+npm run electron      # Build and launch the local production app
 ```
 
 See [docs/DEVELOPER.md](docs/DEVELOPER.md) for detailed architecture docs.

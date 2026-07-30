@@ -2,6 +2,7 @@ import { sendCommand } from './client'
 import type {
   CleanupResult,
   SimilarityGroup,
+  SimilarityGroupingMode,
   SimilarityImage,
   SimilarityKeywordAssignment,
   WritebackItem,
@@ -17,15 +18,22 @@ export interface SimilarityResult {
     totalUngrouped: number
     threshold: number
     minGroupSize: number
+    groupingMode: SimilarityGroupingMode
   }
 }
 
 export const similarityApi = {
-  analyze: (sessionId: string, threshold?: number, minGroupSize?: number) =>
+  analyze: (
+    sessionId: string,
+    threshold?: number,
+    minGroupSize?: number,
+    groupingMode: SimilarityGroupingMode = 'global',
+  ) =>
     sendCommand<boolean>('sim.analyze', {
       sessionId,
       ...(threshold !== undefined ? { threshold } : {}),
       ...(minGroupSize !== undefined ? { minGroupSize } : {}),
+      groupingMode,
     }),
 
   cancel: (sessionId: string) =>
@@ -34,11 +42,17 @@ export const similarityApi = {
   getResult: (sessionId: string) =>
     sendCommand<SimilarityResult | null>('sim.result', { sessionId }),
 
-  recluster: (sessionId: string, threshold: number, minGroupSize: number) =>
+  recluster: (
+    sessionId: string,
+    threshold: number,
+    minGroupSize: number,
+    groupingMode: SimilarityGroupingMode = 'global',
+  ) =>
     sendCommand<SimilarityResult>('sim.recluster', {
       sessionId,
       threshold,
       minGroupSize,
+      groupingMode,
     }),
 
   previewWriteback: (sessionId: string, assignments: SimilarityKeywordAssignment[]) =>

@@ -101,5 +101,7 @@ export function getDefaults(): Record<string, string | number> {
     c1_reload_delay_ms: 500,
 
     metadata_write_mode: 'sidecar',
+    metadata_write_debounce_ms: 500,
+    capture_one_color_compatibility: 'label_and_urgency',
   }
 }

@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync, renameSync, unlinkSync } from 'fs'
-import { access, copyFile, readFile, rename, unlink, writeFile } from 'fs/promises'
+import { access, copyFile, open, readFile, readdir, rename, unlink } from 'fs/promises'
 import { randomUUID } from 'crypto'
 import { XMLParser, XMLBuilder } from 'fast-xml-parser'
+import * as path from 'path'
 
 export interface XmpDescription {
   '@_rdf:about'?: string
@@ -51,6 +52,27 @@ const CAPTURE_ONE_URGENCY_LABEL = new Map(
 )
 
 const INVALID_XML_TEXT = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/
+const TEMP_DIRECTORY_CLEANUPS = new Map<string, Promise<void>>()
+
+async function cleanupStaleGatherTemps(directoryPath: string): Promise<void> {
+  const existing = TEMP_DIRECTORY_CLEANUPS.get(directoryPath)
+  if (existing) return existing
+  const cleanup = (async () => {
+    try {
+      const names = await readdir(directoryPath)
+      await Promise.all(names
+        .filter(name =>
+          name.includes('.xmp.tmp-') ||
+          name.includes('.xmp.restore-'),
+        )
+        .map(name => unlink(path.join(directoryPath, name)).catch(() => undefined)))
+    } catch {
+      // The following write reports a precise error if the directory is unusable.
+    }
+  })()
+  TEMP_DIRECTORY_CLEANUPS.set(directoryPath, cleanup)
+  await cleanup
+}
 
 export function createEmptyXmpDoc(): XmpDoc {
   return {
@@ -178,7 +200,7 @@ export function extractXmpAttributes(doc: XmpDoc): {
 
 export function writeXmpAttributes(
   xmpPath: string,
-  tags: { keywords?: string[]; rating?: number; label?: string; dateTaken?: string; latitude?: number; longitude?: number },
+  tags: { keywords?: string[]; rating?: number; label?: string; dateTaken?: string; latitude?: number; longitude?: number; writeUrgency?: boolean },
 ): void {
   try {
     let doc: XmpDoc
@@ -211,6 +233,7 @@ type XmpAttributeInput = {
   dateTaken?: string
   latitude?: number
   longitude?: number
+  writeUrgency?: boolean
 }
 
 function buildXmpAttributesXml(doc: XmpDoc, tags: XmpAttributeInput): string {
@@ -252,7 +275,7 @@ function buildXmpAttributesXml(doc: XmpDoc, tags: XmpAttributeInput): string {
         tags.label,
       )
       const urgency = CAPTURE_ONE_LABEL_URGENCY[tags.label]
-      if (urgency !== undefined) {
+      if (tags.writeUrgency !== false && urgency !== undefined) {
         setSimpleProperty(
           doc,
           descriptions,
@@ -300,6 +323,7 @@ export async function writeXmpAttributesAsync(
   tags: XmpAttributeInput,
 ): Promise<void> {
   try {
+    await cleanupStaleGatherTemps(path.dirname(xmpPath))
     let doc: XmpDoc
     try {
       const parsed = await parseXmpAsync(xmpPath)
@@ -311,12 +335,30 @@ export async function writeXmpAttributesAsync(
     }
     const xml = buildXmpAttributesXml(doc, tags)
     const tmpPath = `${xmpPath}.tmp-${process.pid}-${randomUUID()}`
-    await writeFile(tmpPath, xml, 'utf-8')
     try {
+      const handle = await open(tmpPath, 'wx')
+      try {
+        await handle.writeFile(xml, 'utf-8')
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
       await rename(tmpPath, xmpPath)
-    } catch (renameError) {
+      // Persist the directory entry where supported. Some filesystems reject
+      // opening directories; the file itself has already been fsynced.
+      try {
+        const directory = await open(path.dirname(xmpPath), 'r')
+        try {
+          await directory.sync()
+        } finally {
+          await directory.close()
+        }
+      } catch {
+        // Best effort across filesystems and platforms.
+      }
+    } catch (writeError) {
       await unlink(tmpPath).catch(() => undefined)
-      throw renameError
+      throw writeError
     }
   } catch (error) {
     throw new Error(`Failed to write XMP attributes to ${xmpPath}: ${error instanceof Error ? error.message : String(error)}`)
@@ -343,6 +385,13 @@ export async function backupXmpFileAsync(xmpPath: string): Promise<string> {
   try {
     await access(xmpPath)
     await copyFile(xmpPath, backupPath)
+    const handle = await open(backupPath, 'r')
+    try {
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await syncDirectory(path.dirname(backupPath))
     return backupPath
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
@@ -357,8 +406,36 @@ export async function restoreXmpFileAsync(xmpPath: string, backupPath: string): 
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
     throw error
   }
-  await copyFile(backupPath, xmpPath)
-  await unlink(backupPath)
+  await cleanupStaleGatherTemps(path.dirname(xmpPath))
+  const tempPath = `${xmpPath}.restore-${process.pid}-${randomUUID()}`
+  try {
+    await copyFile(backupPath, tempPath)
+    const handle = await open(tempPath, 'r')
+    try {
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await rename(tempPath, xmpPath)
+    await syncDirectory(path.dirname(xmpPath))
+    await unlink(backupPath)
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined)
+    throw error
+  }
+}
+
+async function syncDirectory(directoryPath: string): Promise<void> {
+  try {
+    const directory = await open(directoryPath, 'r')
+    try {
+      await directory.sync()
+    } finally {
+      await directory.close()
+    }
+  } catch {
+    // Directory handles are not available on every supported filesystem.
+  }
 }
 
 function getDescriptionArray(doc: XmpDoc): XmpDescription[] {
@@ -429,6 +506,7 @@ function setSimpleProperty(
 
 function normalizeXmpAttributeInput(tags: XmpAttributeInput): XmpAttributeInput {
   const normalized: XmpAttributeInput = {}
+  normalized.writeUrgency = tags.writeUrgency !== false
 
   if (tags.keywords !== undefined) {
     if (!Array.isArray(tags.keywords) || !tags.keywords.every(keyword => typeof keyword === 'string')) {

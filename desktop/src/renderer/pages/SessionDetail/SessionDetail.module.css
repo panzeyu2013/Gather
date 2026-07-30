@@ -2,37 +2,175 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
   padding: 0;
+}
+
+.sessionHeader {
+  position: relative;
+  z-index: 10;
+  flex-shrink: 0;
+  padding: 14px 20px 0;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  box-shadow: 0 5px 18px rgba(61, 56, 51, 0.035);
+}
+
+.sessionIdentity {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 0 2px 10px;
+}
+
+.backLink {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  color: var(--color-text-secondary);
+  font-size: 18px;
+  background: var(--color-surface);
+  transition: color 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.backLink:hover {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
+  transform: translateX(-1px);
+}
+
+.sessionTitleGroup {
+  min-width: 0;
+}
+
+.sessionUtilityLink {
+  margin-left: auto;
+  padding: 5px 9px;
+  border-radius: 7px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.sessionUtilityLink:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.workbenchHeader {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 46px;
+  padding: 6px 14px;
+  color: var(--color-text);
+  border-bottom-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 96%, transparent);
+  box-shadow: 0 4px 14px rgba(61, 56, 51, 0.04);
+}
+
+.workbenchHeader .sessionIdentity {
+  gap: 9px;
+  padding: 0;
+}
+
+.workbenchHeader .backLink {
+  width: 29px;
+  height: 29px;
+  border-radius: var(--radius-control);
+  font-size: 16px;
+  background: var(--color-surface);
+}
+
+.workbenchHeader .eyebrow {
+  display: none;
+}
+
+.workbenchHeader .sessionTitle {
+  max-width: 330px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workbenchHeader .sessionUtilityLink {
+  margin-left: 6px;
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+.workbenchHeader .tabs {
+  gap: 2px;
+  padding: 0;
+}
+
+.workbenchHeader .tab,
+.workbenchHeader .tabActive {
+  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  font-size: 12px;
+}
+
+.workbenchHeader .tabActive {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 1px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.sessionTitle {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text);
+  font-size: 17px;
+  font-weight: 680;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tabs {
   display: flex;
-  gap: 0;
-  border-bottom: 1px solid var(--color-border, #333);
-  padding: 0 16px;
-  flex-shrink: 0;
+  gap: 4px;
+  padding: 0 0 8px;
   overflow-x: auto;
   scrollbar-width: none;
-  background: var(--color-surface);
 }
 
 .tab,
 .tabActive {
-  padding: 10px 20px;
+  position: relative;
+  padding: 7px 13px;
+  border-radius: 8px;
   text-decoration: none;
-  color: var(--color-text-secondary, #999);
-  font-size: 14px;
-  border-bottom: 2px solid transparent;
-  transition: color 0.2s, border-color 0.2s;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 560;
+  transition: color 0.15s, background 0.15s;
 }
 
 .tab:hover {
-  color: var(--color-text, #fff);
+  color: var(--color-text);
+  background: var(--color-hover);
 }
 
 .tabActive {
-  color: var(--color-primary, #6c8cff);
-  border-bottom-color: var(--color-primary, #6c8cff);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 11%, transparent);
 }
 
 .tab,
@@ -42,9 +180,14 @@
 
 .content {
   flex: 1;
-  padding: 16px;
+  padding: 20px;
   min-height: 0;
   overflow: auto;
+}
+
+.cullingContent {
+  padding: 0;
+  overflow: hidden;
 }
 
 .placeholder {
@@ -54,4 +197,44 @@
   height: 200px;
   color: var(--color-text-secondary, #999);
   font-size: 16px;
+}
+
+@media (max-width: 720px) {
+  .sessionHeader {
+    padding: 10px 12px 0;
+  }
+
+  .sessionIdentity {
+    padding-bottom: 7px;
+  }
+
+  .eyebrow {
+    display: none;
+  }
+
+  .sessionTitle {
+    font-size: 15px;
+  }
+
+  .tabs {
+    gap: 2px;
+  }
+
+  .tab,
+  .tabActive {
+    padding: 6px 11px;
+    font-size: 12px;
+  }
+
+  .workbenchHeader {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    padding: 6px 10px;
+  }
+
+  .workbenchHeader .tabs {
+    overflow-x: auto;
+  }
 }

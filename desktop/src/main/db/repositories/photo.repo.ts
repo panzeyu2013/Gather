@@ -25,7 +25,9 @@ export class PhotoRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   getBySession(sessionId: string): PhotoRow[] {
-    return this.db.prepare('SELECT * FROM photos WHERE session_id = ?').all(sessionId) as PhotoRow[]
+    return this.db
+      .prepare('SELECT * FROM photos WHERE session_id = ? ORDER BY rowid')
+      .all(sessionId) as PhotoRow[]
   }
 
   countBySession(sessionId: string): number {

@@ -3,8 +3,174 @@ import { ok, validateString, validateStringArray, wrapHandler } from './helpers'
 import type { CullingService } from '../services/culling/culling.service'
 import type { WritebackService } from '../services/writeback/writeback.service'
 import { buildCullingWritebackPlan } from '../services/writeback/writeback-planners'
+import type { MetadataSyncCoordinator } from '../services/metadata/metadata-sync-coordinator'
+import type {
+  CaptureOneColorLabel,
+  CullingFilters,
+  CullingScope,
+  CullingUpdatePatch,
+  PickState,
+} from '@gather/shared'
 
-export function registerCullingHandlers(registry: CommandRegistry, cullingService: CullingService, writebackService: WritebackService): void {
+const PICK_STATES = new Set(['unreviewed', 'picked', 'rejected'])
+const COLOR_LABELS = new Set([
+  'None', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple',
+])
+
+function parseFilters(value: unknown): CullingFilters | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('filters must be an object')
+  }
+  const input = value as Record<string, unknown>
+  const filters: CullingFilters = {}
+  if (input.unreviewedOnly !== undefined) {
+    if (typeof input.unreviewedOnly !== 'boolean') {
+      throw new Error('unreviewedOnly must be a boolean')
+    }
+    filters.unreviewedOnly = input.unreviewedOnly
+  }
+  if (input.ratings !== undefined) {
+    if (
+      !Array.isArray(input.ratings) ||
+      input.ratings.some(rating => !Number.isInteger(rating) || rating < 0 || rating > 5)
+    ) {
+      throw new Error('ratings must contain integers from 0 to 5')
+    }
+    filters.ratings = input.ratings as number[]
+  }
+  if (input.pickStates !== undefined) {
+    if (
+      !Array.isArray(input.pickStates) ||
+      input.pickStates.some(state => typeof state !== 'string' || !PICK_STATES.has(state))
+    ) {
+      throw new Error('pickStates contains an invalid state')
+    }
+    filters.pickStates = input.pickStates as PickState[]
+  }
+  if (input.colorLabels !== undefined) {
+    if (
+      !Array.isArray(input.colorLabels) ||
+      input.colorLabels.some(label => typeof label !== 'string' || !COLOR_LABELS.has(label))
+    ) {
+      throw new Error('colorLabels contains an invalid label')
+    }
+    filters.colorLabels = input.colorLabels as CaptureOneColorLabel[]
+  }
+  return filters
+}
+
+export function registerCullingHandlers(
+  registry: CommandRegistry,
+  cullingService: CullingService,
+  writebackService: WritebackService,
+  metadataSync: MetadataSyncCoordinator,
+): void {
+  registry.register(
+    'culling.list',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      const scope = validateString(params.scope, 'scope') as CullingScope
+      if (!['all', 'filtered', 'similarity_group'].includes(scope)) {
+        throw new Error('Invalid culling scope')
+      }
+      const filters = parseFilters(params.filters)
+      const groupId = typeof params.groupId === 'string' ? params.groupId : undefined
+      return ok(cullingService.list(sessionId, scope, filters, groupId))
+    }),
+  )
+
+  registry.register(
+    'culling.update',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      const photoId = validateString(params.photoId, 'photoId')
+      if (!Number.isInteger(params.expectedRevision) || Number(params.expectedRevision) < 0) {
+        throw new Error('expectedRevision must be a non-negative integer')
+      }
+      if (!params.patch || typeof params.patch !== 'object') {
+        throw new Error('patch must be an object')
+      }
+      return ok(cullingService.updateState(
+        sessionId,
+        photoId,
+        Number(params.expectedRevision),
+        params.patch as CullingUpdatePatch,
+      ))
+    }),
+  )
+
+  registry.register(
+    'culling.batch_update',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      const photoIds = validateStringArray(params.photoIds, 'photoIds')
+      if (photoIds.length > 10_000) throw new Error('Too many photoIds in one batch')
+      if (!params.patch || typeof params.patch !== 'object') {
+        throw new Error('patch must be an object')
+      }
+      return ok(cullingService.batchUpdate(
+        sessionId,
+        photoIds,
+        params.patch as {
+          pickState?: PickState
+          rating?: number
+          colorLabel?: CaptureOneColorLabel
+        },
+      ))
+    }),
+  )
+
+  registry.register(
+    'culling.decide_group',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      const groupId = validateString(params.groupId, 'groupId')
+      const keepPhotoIds = validateStringArray(params.keepPhotoIds, 'keepPhotoIds')
+      if (keepPhotoIds.length > 10_000) throw new Error('Too many keepPhotoIds')
+      return ok(cullingService.decideSimilarityGroup(
+        sessionId,
+        groupId,
+        keepPhotoIds,
+      ))
+    }),
+  )
+
+  registry.register(
+    'culling.sync_status',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      return ok(metadataSync.getSummary(sessionId))
+    }),
+  )
+
+  registry.register(
+    'culling.flush',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      return ok(await metadataSync.flushSession(sessionId))
+    }),
+  )
+
+  registry.register(
+    'culling.retry_sync',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      return ok(await metadataSync.retrySession(sessionId))
+    }),
+  )
+
+  registry.register(
+    'culling.finalize_sync',
+    wrapHandler(async (params) => {
+      if (params.confirmed !== true) {
+        throw new Error('Finalizing XMP sync requires explicit confirmation')
+      }
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      return ok(await metadataSync.finalizeSession(sessionId))
+    }),
+  )
+
   registry.register(
     'culling.groups',
     wrapHandler(async (params) => {
@@ -119,7 +285,10 @@ export function registerCullingHandlers(registry: CommandRegistry, cullingServic
     'culling.confirm_sync',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      await writebackService.confirmSync(sessionId, 'culling')
+      metadataSync.confirmSync(sessionId)
+      if (writebackService.getItems(sessionId, 'culling').length > 0) {
+        await writebackService.confirmSync(sessionId, 'culling')
+      }
       return ok(true)
     }),
   )
@@ -131,7 +300,12 @@ export function registerCullingHandlers(registry: CommandRegistry, cullingServic
         throw new Error('Cleanup requires explicit confirmation')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
-      return ok(await writebackService.cleanup(sessionId, 'culling'))
+      const backgroundResult = await metadataSync.cleanup(sessionId)
+      const explicitResult = await writebackService.cleanup(sessionId, 'culling')
+      return ok({
+        deletedCount: backgroundResult.deletedCount + explicitResult.deletedCount,
+        errors: [...backgroundResult.errors, ...explicitResult.errors],
+      })
     }),
   )
 }

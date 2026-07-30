@@ -1,6 +1,6 @@
 import { Worker } from 'worker_threads'
 import * as path from 'path'
-import type { HashEntry } from '../services/similarity/cluster-engine'
+import type { HashEntry, HashGroupingMode } from '../services/similarity/cluster-engine'
 import type { EmbeddingEntry } from '../services/face-kw/face-clusterer'
 import { CancelledError } from '@gather/shared'
 
@@ -41,9 +41,10 @@ export function clusterHashesInWorker(
   entries: HashEntry[],
   threshold: number,
   minGroupSize: number,
+  mode: HashGroupingMode = 'global',
   signal?: AbortSignal,
 ): Promise<{ groups: string[][]; ungrouped: string[] }> {
-  return runWorker({ kind: 'hash', entries, threshold, minGroupSize }, signal)
+  return runWorker({ kind: 'hash', entries, threshold, minGroupSize, mode }, signal)
 }
 
 export function clusterFacesInWorker(

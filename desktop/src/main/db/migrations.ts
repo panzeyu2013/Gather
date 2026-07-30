@@ -6,7 +6,7 @@ import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL, UNIQUE_PHOTO_PATH_INDEX_SQL } from './schema'
 import type BetterSqlite3 from 'better-sqlite3'
 
-const CURRENT_SCHEMA_VERSION = 12
+const CURRENT_SCHEMA_VERSION = 14
 
 const CREATE_FACE_CLUSTER_MEMBERS_SQL = `
   CREATE TABLE face_cluster_members (
@@ -481,6 +481,90 @@ export function runMigrations(database: Database): void {
       setSchemaVersion(db, 12)
     })()
     currentVersion = 12
+  }
+
+  // ── Version 13: durable culling state and sidecar metadata outbox ──
+  if (currentVersion < 13) {
+    db.transaction(() => {
+      addColumn(
+        db,
+        'culling_decisions',
+        'rating',
+        'INTEGER NOT NULL DEFAULT 0 CHECK (rating BETWEEN 0 AND 5)',
+      )
+      addColumn(
+        db,
+        'culling_decisions',
+        'color_label',
+        "TEXT NOT NULL DEFAULT 'None' CHECK (color_label IN ('None', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple'))",
+      )
+      addColumn(db, 'culling_decisions', 'revision', 'INTEGER NOT NULL DEFAULT 0')
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS metadata_outbox (
+          xmp_path TEXT PRIMARY KEY,
+          owner_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          photo_path TEXT NOT NULL,
+          patch_json TEXT NOT NULL DEFAULT '{}',
+          dirty_fields TEXT NOT NULL DEFAULT '[]',
+          revision INTEGER NOT NULL DEFAULT 0,
+          persisted_revision INTEGER NOT NULL DEFAULT 0,
+          base_fingerprint TEXT NOT NULL DEFAULT '',
+          base_values_json TEXT NOT NULL DEFAULT '{}',
+          backup_path TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (
+            status IN ('clean', 'pending', 'writing', 'written', 'failed', 'conflict', 'synced', 'cleaned')
+          ),
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_metadata_outbox_session_status
+          ON metadata_outbox(owner_session_id, status);
+      `)
+      assertColumns(db, 'culling_decisions', ['rating', 'color_label', 'revision'])
+      assertColumns(db, 'metadata_outbox', [
+        'xmp_path',
+        'owner_session_id',
+        'patch_json',
+        'revision',
+        'persisted_revision',
+        'status',
+      ])
+      setSchemaVersion(db, 13)
+    })()
+    currentVersion = 13
+  }
+
+  // ── Version 14: preserve imported rating/label for legacy pick decisions ──
+  if (currentVersion < 14) {
+    db.transaction(() => {
+      db.exec(`
+        UPDATE culling_decisions
+        SET rating = CASE
+              WHEN (SELECT rating
+                    FROM photo_metadata_cache
+                    WHERE photo_id = culling_decisions.photo_id)
+                   BETWEEN 0 AND 5
+              THEN (SELECT rating
+                    FROM photo_metadata_cache
+                    WHERE photo_id = culling_decisions.photo_id)
+              ELSE rating
+            END,
+            color_label = CASE
+              WHEN (SELECT label
+                    FROM photo_metadata_cache
+                    WHERE photo_id = culling_decisions.photo_id)
+                   IN ('None', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple')
+              THEN (SELECT label
+                    FROM photo_metadata_cache
+                    WHERE photo_id = culling_decisions.photo_id)
+              ELSE color_label
+            END
+        WHERE revision = 0;
+      `)
+      setSchemaVersion(db, 14)
+    })()
+    currentVersion = 14
   }
 
   if (currentVersion !== CURRENT_SCHEMA_VERSION) {

@@ -1,9 +1,12 @@
 // packages/shared/src/protocol/similarity.ts
 
+export type SimilarityGroupingMode = 'sequential' | 'global'
+
 export interface SimAnalyzeParams {
   sessionId: string
   threshold?: number
   minGroupSize?: number
+  groupingMode?: SimilarityGroupingMode
 }
 
 export interface SimCancelAnalysisParams {
@@ -18,6 +21,7 @@ export interface SimReclusterParams {
   sessionId: string
   threshold?: number
   minGroupSize?: number
+  groupingMode?: SimilarityGroupingMode
 }
 
 export interface SimilarityKeywordAssignment {

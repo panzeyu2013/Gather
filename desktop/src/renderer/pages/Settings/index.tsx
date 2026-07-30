@@ -56,6 +56,8 @@ const GROUPS: SettingGroup[] = [
     title: '元数据',
     settings: [
       { key: 'metadata_write_mode', label: '写入方式', type: 'select', description: 'auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded' },
+      { key: 'metadata_write_debounce_ms', label: '后台写入防抖 (ms)', type: 'number', description: '连续评级或改色后等待多久合并写入，建议 300-800' },
+      { key: 'capture_one_color_compatibility', label: 'Capture One 颜色兼容', type: 'select', description: 'label_and_urgency=Label + Urgency（推荐，兼容更多版本）, label_only=仅标准 xmp:Label' },
     ],
   },
 ]

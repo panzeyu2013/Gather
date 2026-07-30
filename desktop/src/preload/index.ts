@@ -27,6 +27,7 @@ const ALLOWED_COMMANDS = new Set<CommandType>([
   'export.preview', 'export.execute', 'export.cancel', 'export.report',
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
   'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
+  'culling.list', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
   'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset',
 ])
 
@@ -37,6 +38,7 @@ const DESTRUCTIVE_COMMANDS = new Set<CommandType>([
   'person.delete', 'person.merge', 'person.remove_photo',
   'dup.resolve', 'dup.resolve_member',
   'culling.writeback', 'culling.retry_failed_writeback', 'culling.cleanup', 'culling.reset',
+  'culling.finalize_sync',
   'metadata.set', 'metadata.batch_set',
   'template.delete', 'album.delete', 'export.execute', 'template.apply',
 ])
@@ -49,6 +51,7 @@ const ALLOWED_EVENTS = new Set<EventType>([
   'export:progress',
   'models:download-progress',
   'gather:notification',
+  'culling:sync-status',
 ])
 
 const LISTENER_COUNTS = new Map<string, number>()

@@ -1,150 +1,116 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type {
+  AssetCullingState,
+  CaptureOneColorLabel,
+  CullingAsset,
+  CullingFilters,
+  CullingScope,
+  CullingUpdatePatch,
+  CullingUpdateResult,
+  MetadataSyncSummary,
+} from '@gather/shared'
 import { cullingApi } from '../../api/culling'
 import { imageApi } from '../../api/image'
-import type { CullingGroup } from '@gather/shared'
-import type { WritebackResult } from '@gather/shared'
 import styles from './Culling.module.css'
 
-function ViewerImage({ path, className }: { path: string; className?: string }) {
-  return <img src={imageApi.previewUrl(path, 1920)} alt={path} className={className} />
+const COLOR_LABELS: Array<{
+  value: CaptureOneColorLabel
+  label: string
+  color: string
+}> = [
+  { value: 'None', label: '无', color: '#777' },
+  { value: 'Red', label: '红', color: '#ef5350' },
+  { value: 'Orange', label: '橙', color: '#ff9800' },
+  { value: 'Yellow', label: '黄', color: '#fdd835' },
+  { value: 'Green', label: '绿', color: '#4caf50' },
+  { value: 'Blue', label: '蓝', color: '#42a5f5' },
+  { value: 'Pink', label: '粉', color: '#ec407a' },
+  { value: 'Purple', label: '紫', color: '#ab47bc' },
+]
+
+interface HistoryEntry {
+  photoId: string
+  before: Pick<AssetCullingState, 'pickState' | 'rating' | 'colorLabel'>
+  after: Pick<AssetCullingState, 'pickState' | 'rating' | 'colorLabel'>
+  expectedRevision: number
+  fields: Array<keyof CullingUpdatePatch>
 }
 
-function ThumbnailImg({ path, className }: { path: string; className?: string }) {
-  return <img src={imageApi.thumbnailUrl(path, 160)} alt={path} className={className} />
+interface ViewTransform {
+  scale: number
+  x: number
+  y: number
 }
 
-function WritebackDialog({
-  onClose,
-  sessionId,
+function syncLabel(summary?: MetadataSyncSummary): string {
+  if (!summary || summary.items.length === 0) return 'XMP 已同步'
+  if (summary.conflict > 0) return `${summary.conflict} 个 XMP 冲突`
+  if (summary.failed > 0) return `${summary.failed} 个 XMP 写入失败`
+  if (summary.pending + summary.writing > 0) {
+    return `${summary.pending + summary.writing} 个 XMP 等待写入`
+  }
+  if (summary.written > 0) return `${summary.written} 个 XMP 已写入，等待 Capture One 加载`
+  if (summary.synced > 0) return `${summary.synced} 个 XMP 已确认加载`
+  return 'XMP 已同步'
+}
+
+function statePatch(
+  state: HistoryEntry['before'],
+  fields: Array<keyof CullingUpdatePatch>,
+): CullingUpdatePatch {
+  const patch: CullingUpdatePatch = {}
+  if (fields.includes('pickState')) patch.pickState = state.pickState
+  if (fields.includes('rating')) patch.rating = state.rating
+  if (fields.includes('colorLabel')) patch.colorLabel = state.colorLabel
+  return patch
+}
+
+function CullingImage({
+  asset,
+  transform,
+  faceAlign,
 }: {
-  onClose: () => void
-  sessionId: string
+  asset: CullingAsset
+  transform: ViewTransform
+  faceAlign: boolean
 }) {
-  const [selected, setSelected] = useState<'rating' | 'color_label' | 'keyword'>('keyword')
-  const [syncConfirmed, setSyncConfirmed] = useState(false)
-  const [followupMessage, setFollowupMessage] = useState<string | null>(null)
-  const [writebackResult, setWritebackResult] = useState<WritebackResult | null>(null)
-
-  const writebackMutation = useMutation({
-    mutationFn: () => cullingApi.writeback(sessionId, selected),
-    onSuccess: (result) => {
-      setWritebackResult(result)
-      setSyncConfirmed(false)
-      setFollowupMessage(null)
-    },
-  })
-
-  const retryMutation = useMutation({
-    mutationFn: () => cullingApi.retryFailedWriteback(sessionId),
-    onSuccess: (result) => setWritebackResult(result),
-  })
-
-  const handleConfirmSync = async () => {
-    try {
-      await cullingApi.confirmSync(sessionId)
-      setSyncConfirmed(true)
-      setFollowupMessage('已确认 Capture One 完成“加载元数据”，现在可以清理。')
-    } catch (error) {
-      setFollowupMessage(`确认失败：${error instanceof Error ? error.message : '未知错误'}`)
-    }
-  }
-
-  const handleCleanup = async () => {
-    try {
-      const result = await cullingApi.cleanup(sessionId)
-      setFollowupMessage(`清理完成：已恢复或移除 ${result.deletedCount} 个 sidecar 文件。`)
-    } catch (error) {
-      setFollowupMessage(`清理失败：${error instanceof Error ? error.message : '未知错误'}`)
-    }
-  }
-
-  const options: { value: 'rating' | 'color_label' | 'keyword'; label: string; desc: string }[] = [
-    { value: 'rating', label: '星级', desc: '保留写入 5 星，淘汰写入 1 星' },
-    { value: 'color_label', label: '颜色标签', desc: '保留写入绿色，淘汰写入红色' },
-    { value: 'keyword', label: '关键词', desc: '写入 culling:keep 或 culling:reject 关键词' },
-  ]
-
+  const face = asset.faceBboxes[0]
+  const faceX = face ? Math.max(0, Math.min(1, face[0] + face[2] / 2)) : 0.5
+  const faceY = face ? Math.max(0, Math.min(1, face[1] + face[3] / 2)) : 0.5
+  const alignX = faceAlign && face ? (0.5 - faceX) * 100 : 0
+  const alignY = faceAlign && face ? (0.5 - faceY) * 100 : 0
+  const scale = faceAlign && face ? Math.max(2, transform.scale) : transform.scale
   return (
-    <div className={styles.dialog} onClick={onClose}>
-      <div className={styles.dialogContent} onClick={(e) => e.stopPropagation()}>
-        <div className={styles.dialogTitle}>选择写回内容</div>
-        <div className={styles.dialogBody}>
-          {options.map((opt) => (
-            <div
-              key={opt.value}
-              className={`${styles.dialogOption} ${selected === opt.value ? styles.dialogOptionSelected : ''}`}
-              onClick={() => setSelected(opt.value)}
-            >
-              <div>
-                <div className={styles.dialogOptionLabel}>{opt.label}</div>
-                <div className={styles.dialogOptionDesc}>{opt.desc}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className={styles.dialogActions}>
-          <button className={styles.dialogBtn} onClick={onClose}>
-            {writebackResult ? '完成' : '取消'}
-          </button>
-          <button
-            className={`${styles.dialogBtn} ${styles.dialogBtnPrimary}`}
-            onClick={() => writebackMutation.mutate()}
-            disabled={writebackMutation.isPending || writebackResult !== null}
-          >
-            {writebackMutation.isPending ? '正在写回...' : '开始写回'}
-          </button>
-        </div>
-        {writebackMutation.isError && (
-          <p style={{ color: '#ef5350', marginTop: 12, fontSize: 13 }}>
-            {writebackMutation.error instanceof Error ? writebackMutation.error.message : '写回失败'}
-          </p>
-        )}
-        {writebackResult && (
-          <div style={{ color: '#4caf50', marginTop: 12, fontSize: 13 }}>
-            <p style={{ margin: 0 }}>
-              XMP 写入完成：成功 {writebackResult.written}，失败 {writebackResult.failed}，跳过 {writebackResult.skipped}。
-            </p>
-            {writebackResult.errors.length > 0 && (
-              <ul style={{ color: '#ef5350', paddingLeft: 18 }}>
-                {writebackResult.errors.map((error, index) => (
-                  <li key={`${index}-${error}`}>{error}</li>
-                ))}
-              </ul>
-            )}
-            <p style={{ color: '#a0a0a0', marginBottom: 0 }}>
-              请在 Capture One 中选择照片并执行“图像 → 加载元数据”。
-            </p>
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              {writebackResult.failed > 0 && (
-                <button
-                  className={styles.dialogBtn}
-                  onClick={() => retryMutation.mutate()}
-                  disabled={retryMutation.isPending}
-                >
-                  {retryMutation.isPending ? '重试中...' : '重试失败项'}
-                </button>
-              )}
-              <button
-                className={styles.dialogBtn}
-                onClick={() => void handleConfirmSync()}
-                disabled={writebackResult.failed > 0}
-              >
-                确认同步
-              </button>
-              {syncConfirmed && (
-                <button className={styles.dialogBtn} onClick={() => void handleCleanup()}>
-                  清理
-                </button>
-              )}
-            </div>
-            {followupMessage && (
-              <p style={{ color: '#a0a0a0', marginBottom: 0 }}>{followupMessage}</p>
-            )}
-          </div>
-        )}
+    <div className={styles.compareCell}>
+      <img
+        src={imageApi.previewUrl(asset.photo.filepath, 2560)}
+        alt={asset.photo.filename}
+        className={styles.viewerImage}
+        draggable={false}
+        style={{
+          transform: `translate(calc(${transform.x}px + ${alignX}%), calc(${transform.y}px + ${alignY}%)) scale(${scale})`,
+        }}
+      />
+      <div className={styles.imageCaption}>
+        <span>{asset.photo.filename}</span>
+        <span>{asset.state.rating > 0 ? `${asset.state.rating}★` : '未评级'}</span>
       </div>
+      {asset.state.pickState !== 'unreviewed' && (
+        <span className={`${styles.pickBadge} ${
+          asset.state.pickState === 'picked' ? styles.picked : styles.rejected
+        }`}>
+          {asset.state.pickState === 'picked' ? '保留' : '淘汰'}
+        </span>
+      )}
+      {faceAlign && !face && <span className={styles.noFaceBadge}>未检测到人脸</span>}
     </div>
   )
 }
@@ -152,274 +118,1016 @@ function WritebackDialog({
 export default function Culling() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const queryClient = useQueryClient()
+  const [scope, setScope] = useState<CullingScope>('all')
+  const [filters, setFilters] = useState<CullingFilters>({})
+  const [assets, setAssets] = useState<CullingAsset[]>([])
+  const [currentIndex, setCurrentIndex] = useState(0)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [autoAdvance, setAutoAdvance] = useState(true)
+  const [compareCount, setCompareCount] = useState<1 | 2 | 4>(1)
+  const [faceAlign, setFaceAlign] = useState(false)
+  const [transform, setTransform] = useState<ViewTransform>({ scale: 1, x: 0, y: 0 })
+  const [undoStack, setUndoStack] = useState<HistoryEntry[][]>([])
+  const [redoStack, setRedoStack] = useState<HistoryEntry[][]>([])
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const dragRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null)
+  const filmstripRef = useRef<HTMLDivElement>(null)
 
-  const [currentGroupIndex, setCurrentGroupIndex] = useState(0)
-  const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0)
-  const [showWriteback, setShowWriteback] = useState(false)
-
-  const { data: groups, isLoading } = useQuery({
-    queryKey: ['culling', 'groups', sessionId],
-    queryFn: () => cullingApi.getGroups(sessionId!),
-    enabled: !!sessionId,
+  const assetQueryKey = useMemo(
+    () => ['culling', 'assets', sessionId, scope, filters] as const,
+    [filters, scope, sessionId],
+  )
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: assetQueryKey,
+    queryFn: () => cullingApi.list(sessionId!, scope, filters),
+    enabled: Boolean(sessionId),
   })
-
   const { data: summary } = useQuery({
     queryKey: ['culling', 'summary', sessionId],
     queryFn: () => cullingApi.getSummary(sessionId!),
-    enabled: !!sessionId,
+    enabled: Boolean(sessionId),
   })
+  const { data: initialSync } = useQuery({
+    queryKey: ['culling', 'sync', sessionId],
+    queryFn: () => cullingApi.syncStatus(sessionId!),
+    enabled: Boolean(sessionId),
+    refetchInterval: 5_000,
+  })
+  const [syncSummary, setSyncSummary] = useState<MetadataSyncSummary>()
 
   useEffect(() => {
-    setCurrentPhotoIndex(0)
-  }, [currentGroupIndex])
+    if (data) setAssets(data)
+  }, [data])
+  useEffect(() => {
+    if (initialSync) setSyncSummary(initialSync)
+  }, [initialSync])
+  useEffect(() => {
+    if (!sessionId) return
+    return window.gather.onEvent('culling:sync-status', (payload) => {
+      const next = payload as MetadataSyncSummary
+      if (next.sessionId === sessionId) {
+        setSyncSummary(next)
+        setAssets(current => current.map(asset => {
+          const item = next.items.find(candidate => candidate.xmpPath === asset.xmpPath)
+          return item ? { ...asset, syncStatus: item.status } : asset
+        }))
+      }
+    })
+  }, [sessionId])
+  useEffect(() => {
+    setCurrentIndex(index => Math.min(index, Math.max(0, assets.length - 1)))
+  }, [assets.length])
+  useEffect(() => {
+    filmstripRef.current
+      ?.querySelector<HTMLElement>('[data-current="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [currentIndex])
+  useEffect(() => {
+    setCurrentIndex(0)
+    setSelectedIds(new Set())
+    setUndoStack([])
+    setRedoStack([])
+  }, [sessionId])
 
-  const goToGroup = useCallback((index: number) => {
-    if (groups && index >= 0 && index < groups.length) {
-      setCurrentGroupIndex(index)
-    }
-  }, [groups])
+  const current = assets[currentIndex]
+  const assetById = useMemo(
+    () => new Map(assets.map(asset => [asset.photo.id, asset])),
+    [assets],
+  )
+  const currentGroupAssets = useMemo(() => {
+    if (!current?.similarityGroupId) return current ? [current] : []
+    return assets.filter(asset => asset.similarityGroupId === current.similarityGroupId)
+  }, [assets, current])
+  const comparisonAssets = useMemo(() => {
+    if (!current) return []
+    const pool = current.similarityGroupId ? currentGroupAssets : assets
+    const others = pool.filter(asset => asset.photo.id !== current.photo.id)
+    return [current, ...others].slice(0, compareCount)
+  }, [assets, compareCount, current, currentGroupAssets])
+  const stripStart = Math.max(0, currentIndex - 50)
+  const stripAssets = assets.slice(stripStart, stripStart + 101)
+  const effectiveTargetIds = selectedIds.size > 0
+    ? [...selectedIds]
+    : current ? [current.photo.id] : []
 
-  const nextGroup = useCallback(() => {
-    setCurrentGroupIndex((i) => (groups && i < groups.length - 1) ? i + 1 : i)
-  }, [groups])
+  useEffect(() => {
+    if (!current) return
+    const preload = assets
+      .slice(currentIndex, currentIndex + 8)
+      .map(asset => asset.photo.filepath)
+    void imageApi.preloadPreviews(preload, 2560).catch(() => undefined)
+  }, [assets, current, currentIndex])
 
-  const prevGroup = useCallback(() => {
-    setCurrentGroupIndex((i) => i > 0 ? i - 1 : i)
+  const applyResult = useCallback((result: CullingUpdateResult) => {
+    const states = new Map(result.states.map(state => [state.photoId, state]))
+    setAssets(currentAssets => currentAssets.map(asset => {
+      const nextState = states.get(asset.photo.id)
+      if (nextState) {
+        return {
+          ...asset,
+          state: nextState,
+          syncStatus: asset.xmpPath === result.xmpPath
+            ? result.syncStatus
+            : asset.syncStatus,
+        }
+      }
+      return asset.xmpPath === result.xmpPath
+        ? { ...asset, syncStatus: result.syncStatus }
+        : asset
+    }))
   }, [])
 
-  const decideMutation = useMutation({
-    mutationFn: ({ photoId, decision }: { photoId: string; decision: 'keep' | 'reject' | 'pending' }) =>
-      cullingApi.decide(sessionId!, photoId, decision),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['culling'] })
-    },
-  })
-
-  const currentGroup = groups?.[currentGroupIndex] ?? null
-  const currentPhoto = currentGroup?.images[currentPhotoIndex] ?? null
-
-  const handleDecide = useCallback(
-    (decision: 'keep' | 'reject' | 'pending') => {
-      if (!currentPhoto?.photoId || !sessionId) return
-      decideMutation.mutate({ photoId: currentPhoto.photoId, decision })
-    },
-    [currentPhoto, sessionId, decideMutation],
-  )
-
-  const goToPhoto = useCallback(
-    (index: number) => {
-      if (currentGroup && index >= 0 && index < currentGroup.images.length) {
-        setCurrentPhotoIndex(index)
+  const refreshFiltered = useCallback(async (preferredPhotoId?: string) => {
+    if (scope !== 'filtered') return
+    const refreshed = await refetch()
+    const nextAssets = refreshed.data ?? []
+    setAssets(nextAssets)
+    setCurrentIndex(currentValue => {
+      if (preferredPhotoId) {
+        const preferredIndex = nextAssets.findIndex(
+          asset => asset.photo.id === preferredPhotoId,
+        )
+        if (preferredIndex >= 0) return preferredIndex
       }
-    },
-    [currentGroup],
-  )
+      return Math.min(currentValue, Math.max(0, nextAssets.length - 1))
+    })
+  }, [refetch, scope])
 
-  const goToNextPhoto = useCallback(() => {
-    if (currentGroup && currentPhotoIndex < currentGroup.images.length - 1) {
-      setCurrentPhotoIndex((i) => i + 1)
+  const advance = useCallback(() => {
+    setCurrentIndex(index => Math.min(index + 1, Math.max(0, assets.length - 1)))
+    setTransform({ scale: 1, x: 0, y: 0 })
+  }, [assets.length])
+
+  const commitOne = useCallback(async (
+    photoId: string,
+    patch: CullingUpdatePatch,
+    recordHistory = true,
+    shouldAdvance = false,
+  ) => {
+    if (!sessionId) return
+    const beforeAsset = assetById.get(photoId)
+    if (!beforeAsset) return
+    const stableNextId = assets[currentIndex + 1]?.photo.id
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = await cullingApi.update(
+        sessionId,
+        photoId,
+        beforeAsset.state.revision,
+        patch,
+      )
+      applyResult(result)
+      if (result.syncStatus !== 'clean') {
+        void cullingApi.syncStatus(sessionId).then(setSyncSummary)
+      }
+      const targetState = result.states.find(state => state.photoId === photoId)
+      if (recordHistory) {
+        if (targetState) {
+          setUndoStack(stack => [...stack.slice(-99), [{
+            photoId,
+            before: {
+              pickState: beforeAsset.state.pickState,
+              rating: beforeAsset.state.rating,
+              colorLabel: beforeAsset.state.colorLabel,
+            },
+            after: {
+              pickState: targetState.pickState,
+              rating: targetState.rating,
+              colorLabel: targetState.colorLabel,
+            },
+            expectedRevision: targetState.revision,
+            fields: Object.keys(patch) as Array<keyof CullingUpdatePatch>,
+          }]])
+        }
+        setRedoStack([])
+      }
+      void queryClient.invalidateQueries({ queryKey: ['culling', 'summary', sessionId] })
+      if (scope === 'filtered') {
+        await refreshFiltered(shouldAdvance && autoAdvance ? stableNextId : photoId)
+      } else if (shouldAdvance && autoAdvance) {
+        advance()
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '更新失败')
+      await refetch()
+    } finally {
+      setBusy(false)
     }
-  }, [currentGroup, currentPhotoIndex])
+  }, [
+    advance,
+    applyResult,
+    assets,
+    assetById,
+    autoAdvance,
+    currentIndex,
+    queryClient,
+    refetch,
+    refreshFiltered,
+    scope,
+    sessionId,
+  ])
 
-  const goToPrevPhoto = useCallback(() => {
-    if (currentPhotoIndex > 0) {
-      setCurrentPhotoIndex((i) => i - 1)
+  const commitTargets = useCallback(async (
+    patch: CullingUpdatePatch,
+    shouldAdvance = true,
+  ) => {
+    if (!sessionId || effectiveTargetIds.length === 0) return
+    if (effectiveTargetIds.length === 1) {
+      await commitOne(effectiveTargetIds[0], patch, true, shouldAdvance)
+      return
     }
-  }, [currentPhotoIndex])
+    setBusy(true)
+    const stableNextId = assets[currentIndex + 1]?.photo.id
+    try {
+      const results = await cullingApi.batchUpdate(sessionId, effectiveTargetIds, patch)
+      results.forEach(applyResult)
+      if (results.some(result => result.syncStatus !== 'clean')) {
+        void cullingApi.syncStatus(sessionId).then(setSyncSummary)
+      }
+      const operationTargetIds = patch.pickState === undefined
+        ? [...new Map(effectiveTargetIds.flatMap(photoId => {
+          const asset = assetById.get(photoId)
+          return asset ? [[asset.xmpPath, photoId] as const] : []
+        })).values()]
+        : effectiveTargetIds
+      const historyCommand = results.flatMap((result, index) => {
+        const targetId = operationTargetIds[index]
+        const beforeAsset = targetId ? assetById.get(targetId) : undefined
+        const targetState = result.states.find(state => state.photoId === targetId)
+        if (!beforeAsset || !targetState) return []
+        return [{
+          photoId: targetId,
+          before: {
+            pickState: beforeAsset.state.pickState,
+            rating: beforeAsset.state.rating,
+            colorLabel: beforeAsset.state.colorLabel,
+          },
+          after: {
+            pickState: targetState.pickState,
+            rating: targetState.rating,
+            colorLabel: targetState.colorLabel,
+          },
+          expectedRevision: targetState.revision,
+          fields: Object.keys(patch) as Array<keyof CullingUpdatePatch>,
+        }]
+      })
+      if (historyCommand.length > 0) {
+        setUndoStack(stack => [...stack.slice(-99), historyCommand])
+        setRedoStack([])
+      }
+      setSelectedIds(new Set())
+      void queryClient.invalidateQueries({ queryKey: ['culling', 'summary', sessionId] })
+      if (scope === 'filtered') {
+        await refreshFiltered(shouldAdvance && autoAdvance ? stableNextId : undefined)
+      } else if (shouldAdvance && autoAdvance) {
+        advance()
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '批量更新失败')
+      await refetch()
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    advance,
+    applyResult,
+    assets,
+    assetById,
+    autoAdvance,
+    effectiveTargetIds,
+    commitOne,
+    currentIndex,
+    queryClient,
+    refetch,
+    refreshFiltered,
+    sessionId,
+    scope,
+  ])
 
-  const handleDecideRef = useRef(handleDecide)
-  const goToPrevPhotoRef = useRef(goToPrevPhoto)
-  const goToNextPhotoRef = useRef(goToNextPhoto)
-  const prevGroupRef = useRef(prevGroup)
-  const nextGroupRef = useRef(nextGroup)
+  const undo = useCallback(async () => {
+    const command = undoStack[undoStack.length - 1]
+    if (!command || !sessionId) return
+    setBusy(true)
+    setUndoStack(stack => stack.slice(0, -1))
+    try {
+      const redoCommand: HistoryEntry[] = []
+      for (const entry of command) {
+        const result = await cullingApi.update(
+          sessionId,
+          entry.photoId,
+          entry.expectedRevision,
+          statePatch(entry.before, entry.fields),
+        )
+        applyResult(result)
+        if (result.syncStatus !== 'clean') {
+          void cullingApi.syncStatus(sessionId).then(setSyncSummary)
+        }
+        const targetState = result.states.find(state => state.photoId === entry.photoId)
+        redoCommand.push({
+          ...entry,
+          expectedRevision: targetState?.revision ?? entry.expectedRevision + 1,
+        })
+      }
+      setRedoStack(stack => [...stack, redoCommand])
+      await refreshFiltered(command[0]?.photoId)
+    } catch (error) {
+      setUndoStack([])
+      setRedoStack([])
+      setMessage(error instanceof Error
+        ? `撤销未完整执行，历史记录已重置：${error.message}`
+        : '撤销未完整执行，历史记录已重置')
+      await refetch()
+    } finally {
+      setBusy(false)
+    }
+  }, [applyResult, refetch, refreshFiltered, sessionId, undoStack])
+
+  const redo = useCallback(async () => {
+    const command = redoStack[redoStack.length - 1]
+    if (!command || !sessionId) return
+    setBusy(true)
+    setRedoStack(stack => stack.slice(0, -1))
+    try {
+      const undoCommand: HistoryEntry[] = []
+      for (const entry of command) {
+        const result = await cullingApi.update(
+          sessionId,
+          entry.photoId,
+          entry.expectedRevision,
+          statePatch(entry.after, entry.fields),
+        )
+        applyResult(result)
+        if (result.syncStatus !== 'clean') {
+          void cullingApi.syncStatus(sessionId).then(setSyncSummary)
+        }
+        const targetState = result.states.find(state => state.photoId === entry.photoId)
+        undoCommand.push({
+          ...entry,
+          expectedRevision: targetState?.revision ?? entry.expectedRevision + 1,
+        })
+      }
+      setUndoStack(stack => [...stack, undoCommand])
+      await refreshFiltered(command[0]?.photoId)
+    } catch (error) {
+      setUndoStack([])
+      setRedoStack([])
+      setMessage(error instanceof Error
+        ? `重做未完整执行，历史记录已重置：${error.message}`
+        : '重做未完整执行，历史记录已重置')
+      await refetch()
+    } finally {
+      setBusy(false)
+    }
+  }, [applyResult, redoStack, refetch, refreshFiltered, sessionId])
+
+  const keepInGroupRejectRest = useCallback(async (keepPhotoIds: string[]) => {
+    if (
+      !sessionId ||
+      !current?.similarityGroupId ||
+      keepPhotoIds.length < 1
+    ) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const allAssets = await cullingApi.list(sessionId, 'all', {})
+      const fullGroup = allAssets.filter(
+        asset => asset.similarityGroupId === current.similarityGroupId,
+      )
+      const groupIds = new Set(fullGroup.map(asset => asset.photo.id))
+      if (
+        fullGroup.length < 2 ||
+        keepPhotoIds.some(photoId => !groupIds.has(photoId))
+      ) {
+        throw new Error('相似组已变化，请刷新后重试')
+      }
+
+      const results = await cullingApi.decideGroup(
+        sessionId,
+        current.similarityGroupId,
+        keepPhotoIds,
+      )
+      results.forEach(applyResult)
+
+      const historyCommand = fullGroup.flatMap((asset) => {
+        const targetState = results
+          .flatMap(result => result.states)
+          .find(state => state.photoId === asset.photo.id)
+        if (!targetState || targetState.pickState === asset.state.pickState) return []
+        return [{
+          photoId: asset.photo.id,
+          before: {
+            pickState: asset.state.pickState,
+            rating: asset.state.rating,
+            colorLabel: asset.state.colorLabel,
+          },
+          after: {
+            pickState: targetState.pickState,
+            rating: targetState.rating,
+            colorLabel: targetState.colorLabel,
+          },
+          expectedRevision: targetState.revision,
+          fields: ['pickState'] as Array<keyof CullingUpdatePatch>,
+        }]
+      })
+      if (historyCommand.length > 0) {
+        setUndoStack(stack => [...stack.slice(-99), historyCommand])
+        setRedoStack([])
+      }
+      if (results.some(result => result.syncStatus !== 'clean')) {
+        void cullingApi.syncStatus(sessionId).then(setSyncSummary)
+      }
+      setSelectedIds(new Set())
+      void queryClient.invalidateQueries({ queryKey: ['culling', 'summary', sessionId] })
+      await refetch()
+      if (autoAdvance) {
+        const nextIndex = assets.findIndex(
+          (asset, index) =>
+            index > currentIndex &&
+            asset.similarityGroupId !== current.similarityGroupId,
+        )
+        if (nextIndex >= 0) {
+          setCurrentIndex(nextIndex)
+          setTransform({ scale: 1, x: 0, y: 0 })
+        }
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '组内批量操作失败')
+      await refetch()
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    applyResult,
+    assets,
+    autoAdvance,
+    current,
+    currentIndex,
+    queryClient,
+    refetch,
+    sessionId,
+  ])
+
+  const flush = useCallback(async () => {
+    if (!sessionId) return
+    setBusy(true)
+    try {
+      setSyncSummary(await cullingApi.flush(sessionId))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'XMP 写入失败')
+    } finally {
+      setBusy(false)
+    }
+  }, [sessionId])
 
   useEffect(() => {
-    handleDecideRef.current = handleDecide
-    goToPrevPhotoRef.current = goToPrevPhoto
-    goToNextPhotoRef.current = goToNextPhoto
-    prevGroupRef.current = prevGroup
-    nextGroupRef.current = nextGroup
-  })
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (showWriteback) return
-
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-
-      switch (e.key) {
-        case 'y':
-        case 'Y':
-          e.preventDefault()
-          handleDecideRef.current('keep')
-          break
-        case 'n':
-        case 'N':
-          e.preventDefault()
-          handleDecideRef.current('reject')
-          break
-        case ' ':
-          e.preventDefault()
-          handleDecideRef.current('pending')
-          break
-        case 'ArrowLeft':
-          e.preventDefault()
-          goToPrevPhotoRef.current()
-          break
-        case 'ArrowRight':
-          e.preventDefault()
-          goToNextPhotoRef.current()
-          break
-        case 'Tab':
-          e.preventDefault()
-          if (e.shiftKey) {
-            prevGroupRef.current()
-          } else {
-            nextGroupRef.current()
-          }
-          break
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+      ) return
+      const mod = event.metaKey || event.ctrlKey
+      if (mod && event.key.toLowerCase() === 'z') {
+        event.preventDefault()
+        void (event.shiftKey ? redo() : undo())
+        return
+      }
+      if (busy) return
+      if (/^[0-5]$/.test(event.key)) {
+        event.preventDefault()
+        void commitTargets({ rating: Number(event.key) })
+      } else if (event.key.toLowerCase() === 'p' || event.key === ' ') {
+        event.preventDefault()
+        void commitTargets({ pickState: 'picked' })
+      } else if (event.key.toLowerCase() === 'x') {
+        event.preventDefault()
+        void commitTargets({ pickState: 'rejected' })
+      } else if (event.key.toLowerCase() === 'u') {
+        event.preventDefault()
+        void commitTargets({ pickState: 'unreviewed' }, false)
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        setCurrentIndex(index => Math.max(0, index - 1))
+        setTransform({ scale: 1, x: 0, y: 0 })
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        advance()
       }
     }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [showWriteback])
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [advance, busy, commitTargets, redo, undo])
 
   if (!sessionId) {
-    return <div className={styles.page}><div className={styles.emptyState}>未选择工作区</div></div>
+    return <div className={styles.emptyState}>未选择工作区</div>
   }
-
   if (isLoading) {
-    return <div className={styles.page}><div className={styles.emptyState}>正在加载...</div></div>
+    return <div className={styles.emptyState}>正在载入挑片工作台…</div>
   }
-
-  if (!groups || groups.length === 0) {
+  if (!assets.length) {
     return (
       <div className={styles.page}>
+        <div className={styles.toolbar}>
+          <div className={styles.toolbarSection}>
+            <ScopeControls scope={scope} setScope={setScope} />
+          </div>
+          <div className={styles.filterSection}>
+            <FilterControls filters={filters} setFilters={setFilters} />
+          </div>
+        </div>
         <div className={styles.emptyState}>
-          暂无相似照片组，请先运行相似度分析。
+          当前范围没有照片。切换到“全部照片”或清除筛选条件。
         </div>
       </div>
     )
   }
 
-  const hasDecisions = currentGroup
-    ? currentGroup.keepCount + currentGroup.rejectCount > 0
-    : false
-
-  const decisionBadgeClass = currentPhoto
-    ? currentPhoto.decision === 'keep'
-      ? styles.badgeKeep
-      : currentPhoto.decision === 'reject'
-        ? styles.badgeReject
-        : styles.badgePending
-    : ''
-
-  const decisionLabel = currentPhoto
-    ? currentPhoto.decision === 'keep'
-      ? '保留'
-      : currentPhoto.decision === 'reject'
-        ? '淘汰'
-        : '待处理'
-    : ''
-
   return (
     <div className={styles.page}>
-      <div className={styles.mainViewer}>
-        {currentPhoto ? (
-          <>
-            {currentPhotoIndex > 0 && (
-              <button className={`${styles.navBtn} ${styles.navPrev}`} onClick={goToPrevPhoto}>
-                ‹
+      <div className={styles.toolbar}>
+        <div className={styles.toolbarSection}>
+          <ScopeControls scope={scope} setScope={setScope} />
+        </div>
+        <div className={styles.filterSection}>
+          <FilterControls filters={filters} setFilters={setFilters} />
+        </div>
+        <div className={styles.viewSection}>
+          <label className={styles.toggle}>
+            <input
+              type="checkbox"
+              checked={autoAdvance}
+              onChange={event => setAutoAdvance(event.target.checked)}
+            />
+            自动前进
+          </label>
+          <div className={styles.segmented}>
+            {([1, 2, 4] as const).map(count => (
+              <button
+                key={count}
+                className={compareCount === count ? styles.active : ''}
+                onClick={() => {
+                  setCompareCount(count)
+                  setTransform({ scale: 1, x: 0, y: 0 })
+                }}
+              >
+                {count === 1 ? '单图' : `${count} 图`}
               </button>
-            )}
-            {currentPhoto.decision !== 'pending' && (
-              <div className={`${styles.decisionBadge} ${decisionBadgeClass}`}>{decisionLabel}</div>
-            )}
-            <ViewerImage path={currentPhoto.filepath} className={styles.mainImage} />
-            {currentPhotoIndex < currentGroup!.images.length - 1 && (
-              <button className={`${styles.navBtn} ${styles.navNext}`} onClick={goToNextPhoto}>
-                ›
-              </button>
-            )}
-          </>
-        ) : (
-          <div className={styles.mainPlaceholder}>暂无照片</div>
-        )}
+            ))}
+          </div>
+          <label className={styles.toggle}>
+            <input
+              type="checkbox"
+              checked={faceAlign}
+              onChange={event => {
+                setFaceAlign(event.target.checked)
+                setTransform({ scale: 1, x: 0, y: 0 })
+              }}
+            />
+            人脸对齐
+          </label>
+          <div className={styles.historyActions}>
+            <button
+              className={styles.iconButton}
+              onClick={() => void undo()}
+              disabled={!undoStack.length || busy}
+              title="撤销（⌘Z）"
+              aria-label="撤销"
+            >
+              ↶
+            </button>
+            <button
+              className={styles.iconButton}
+              onClick={() => void redo()}
+              disabled={!redoStack.length || busy}
+              title="重做（⇧⌘Z）"
+              aria-label="重做"
+            >
+              ↷
+            </button>
+          </div>
+        </div>
       </div>
 
-      {currentGroup && (
-        <div className={styles.progressBar}>
-          <div className={styles.progressLeft}>
-            <span>第 {currentGroupIndex + 1} 组，共 {groups!.length} 组</span>
-            <div className={styles.progressBarFill}>
-              <div
-                className={styles.progressBarInner}
-                style={{ width: `${((currentGroupIndex + 1) / groups!.length) * 100}%` }}
-              />
-            </div>
-          </div>
-          <div className={styles.progressRight}>
-            <span className={styles.statKeep}>保留 {currentGroup.keepCount}</span>
-            <span className={styles.statReject}>淘汰 {currentGroup.rejectCount}</span>
-            <span className={styles.statPending}>待定 {currentGroup.pendingCount}</span>
-            <span className={styles.shortcutHint}>快捷键 Y / N / 空格</span>
-          </div>
+      <div
+        className={`${styles.viewer} ${compareCount > 1 ? styles.comparing : ''}`}
+        onWheel={event => {
+          event.preventDefault()
+          setTransform(value => ({
+            ...value,
+            scale: Math.max(1, Math.min(8, value.scale * (event.deltaY < 0 ? 1.15 : 0.87))),
+          }))
+        }}
+        onPointerDown={event => {
+          event.currentTarget.setPointerCapture(event.pointerId)
+          dragRef.current = {
+            x: event.clientX,
+            y: event.clientY,
+            originX: transform.x,
+            originY: transform.y,
+          }
+        }}
+        onPointerMove={event => {
+          if (!dragRef.current) return
+          setTransform(value => ({
+            ...value,
+            x: dragRef.current!.originX + event.clientX - dragRef.current!.x,
+            y: dragRef.current!.originY + event.clientY - dragRef.current!.y,
+          }))
+        }}
+        onPointerUp={() => { dragRef.current = null }}
+        onDoubleClick={() => setTransform({ scale: 1, x: 0, y: 0 })}
+      >
+        {comparisonAssets.map(asset => (
+          <CullingImage
+            key={asset.photo.id}
+            asset={asset}
+            transform={transform}
+            faceAlign={faceAlign}
+          />
+        ))}
+        <button
+          className={`${styles.navButton} ${styles.previous}`}
+          onClick={() => {
+            setCurrentIndex(index => Math.max(0, index - 1))
+            setTransform({ scale: 1, x: 0, y: 0 })
+          }}
+          disabled={currentIndex === 0}
+          aria-label="上一张照片"
+        >
+          ‹
+        </button>
+        <button
+          className={`${styles.navButton} ${styles.next}`}
+          onClick={advance}
+          disabled={currentIndex === assets.length - 1}
+          aria-label="下一张照片"
+        >
+          ›
+        </button>
+        <div className={styles.zoomHint}>
+          {Math.round((faceAlign ? Math.max(2, transform.scale) : transform.scale) * 100)}%
+          · 滚轮缩放 · 拖动平移 · 双击复位
         </div>
-      )}
+      </div>
 
-      {currentGroup && (
-        <div className={styles.filmstrip}>
-          {currentGroup.images.map((img, idx) => (
-            <div
-              key={img.photoId || idx}
-              className={`${styles.filmstripItem} ${idx === currentPhotoIndex ? styles.filmstripItemActive : ''}`}
-              onClick={() => goToPhoto(idx)}
-            >
-              <ThumbnailImg path={img.filepath} className={styles.filmstripImg} />
-              <div
-                className={`${styles.filmstripBadge} ${
-                  img.decision === 'keep'
-                    ? styles.filmstripBadgeKeep
-                    : img.decision === 'reject'
-                      ? styles.filmstripBadgeReject
-                      : styles.filmstripBadgePending
-                }`}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className={styles.controls}>
-        <button className={`${styles.controlBtn} ${styles.btnKeep}`} onClick={() => handleDecide('keep')}>
-          保留（Y）
-        </button>
-        <button className={`${styles.controlBtn} ${styles.btnReject}`} onClick={() => handleDecide('reject')}>
-          淘汰（N）
-        </button>
-        <button className={styles.controlBtn} onClick={() => handleDecide('pending')}>
-          待定（空格）
-        </button>
-        <button className={styles.controlBtn} onClick={prevGroup} disabled={currentGroupIndex === 0}>
-          上一组
-        </button>
-        <button className={styles.controlBtn} onClick={nextGroup} disabled={currentGroupIndex >= groups!.length - 1}>
-          下一组（Tab）
-        </button>
-        {hasDecisions && (
-          <button className={`${styles.controlBtn} ${styles.btnWriteback}`} onClick={() => setShowWriteback(true)}>
-            写回 XMP
+      <div className={styles.infoBar}>
+        <span className={styles.positionCount}>{currentIndex + 1} / {assets.length}</span>
+        <span className={styles.keptStat}>保留 {summary?.kept ?? 0}</span>
+        <span className={styles.rejectedStat}>淘汰 {summary?.rejected ?? 0}</span>
+        <span>未处理 {summary?.pending ?? assets.length}</span>
+        {current?.linkedVariantCount && current.linkedVariantCount > 1 && (
+          <span className={styles.linkedNotice}>
+            同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 {current.linkedVariantCount} 个条目
+          </span>
+        )}
+        <span className={`${styles.syncState} ${
+          (syncSummary?.failed ?? 0) + (syncSummary?.conflict ?? 0) > 0
+            ? styles.syncError
+            : ''
+        }`}>
+          {syncLabel(syncSummary)}
+        </span>
+        <button onClick={() => void flush()} disabled={busy}>立即写入 XMP</button>
+        {(syncSummary?.failed ?? 0) > 0 && (
+          <button
+            onClick={() => {
+              if (!sessionId) return
+              setBusy(true)
+              void cullingApi.retrySync(sessionId)
+                .then(setSyncSummary)
+                .catch(error => setMessage(error instanceof Error ? error.message : '重试失败'))
+                .finally(() => setBusy(false))
+            }}
+          >
+            重试失败项
           </button>
         )}
+        {(syncSummary?.written ?? 0) > 0 && (
+          <button
+            onClick={() => {
+              if (!sessionId) return
+              setBusy(true)
+              void cullingApi.confirmSync(sessionId)
+                .then(() => cullingApi.syncStatus(sessionId))
+                .then(setSyncSummary)
+                .catch(error => setMessage(error instanceof Error ? error.message : '确认失败'))
+                .finally(() => setBusy(false))
+            }}
+          >
+            已在 Capture One 加载
+          </button>
+        )}
+        {(syncSummary?.synced ?? 0) > 0 && (
+          <>
+            <button
+              onClick={() => {
+                if (!sessionId) return
+                setBusy(true)
+                void cullingApi.finalizeSync(sessionId)
+                  .then(summary => {
+                    setMessage('已保留当前 XMP，并结束本次同步')
+                    setSyncSummary(summary)
+                  })
+                  .catch(error => setMessage(error instanceof Error ? error.message : '结束同步失败'))
+                  .finally(() => setBusy(false))
+              }}
+            >
+              保留 XMP 并结束
+            </button>
+            <button
+              onClick={() => {
+                if (!sessionId) return
+                setBusy(true)
+                void cullingApi.cleanup(sessionId)
+                  .then(result => {
+                    setMessage(result.errors.length > 0
+                      ? `有 ${result.errors.length} 个 XMP 未清理：${result.errors[0]}`
+                      : `已清理 ${result.deletedCount} 个临时 XMP`)
+                    return cullingApi.syncStatus(sessionId)
+                  })
+                  .then(setSyncSummary)
+                  .catch(error => setMessage(error instanceof Error ? error.message : '清理失败'))
+                  .finally(() => setBusy(false))
+              }}
+            >
+              恢复原 XMP
+            </button>
+          </>
+        )}
       </div>
 
-      {showWriteback && (
-        <WritebackDialog
-          sessionId={sessionId}
-          onClose={() => setShowWriteback(false)}
+      <div className={styles.filmstrip} ref={filmstripRef}>
+        <div className={styles.stripHeader}>
+          <span>胶片</span>
+          <span>{assets.length}</span>
+        </div>
+        <div className={styles.stripSpacer} style={{ width: stripStart * 86 }} />
+        {stripAssets.map((asset, offset) => {
+          const index = stripStart + offset
+          return (
+            <button
+              key={asset.photo.id}
+              className={`${styles.thumbnail} ${
+                index === currentIndex ? styles.currentThumbnail : ''
+              } ${selectedIds.has(asset.photo.id) ? styles.selectedThumbnail : ''}`}
+              data-current={index === currentIndex}
+              onClick={event => {
+                if (event.metaKey || event.ctrlKey || event.shiftKey) {
+                  setSelectedIds(previous => {
+                    const next = new Set(previous)
+                    next.has(asset.photo.id)
+                      ? next.delete(asset.photo.id)
+                      : next.add(asset.photo.id)
+                    return next
+                  })
+                } else {
+                  setCurrentIndex(index)
+                  setTransform({ scale: 1, x: 0, y: 0 })
+                }
+              }}
+              title={asset.photo.filename}
+            >
+              <img
+                src={imageApi.thumbnailUrl(asset.photo.filepath, 256)}
+                alt={asset.photo.filename}
+                loading="lazy"
+              />
+              <span
+                className={styles.colorLine}
+                style={{
+                  background: COLOR_LABELS.find(
+                    label => label.value === asset.state.colorLabel,
+                  )?.color,
+                }}
+              />
+              <span className={styles.thumbRating}>
+                {asset.state.rating ? `${asset.state.rating}★` : ''}
+              </span>
+              <span className={`${styles.thumbDecision} ${
+                asset.state.pickState === 'picked'
+                  ? styles.picked
+                  : asset.state.pickState === 'rejected'
+                    ? styles.rejected
+                    : ''
+              }`} />
+              <span className={styles.thumbFilename}>{asset.photo.filename}</span>
+            </button>
+          )
+        })}
+        <div
+          className={styles.stripSpacer}
+          style={{ width: Math.max(0, assets.length - stripStart - stripAssets.length) * 86 }}
         />
-      )}
+      </div>
+
+      <div className={styles.controls}>
+        <div className={styles.panelTitle}>挑片工具</div>
+        <div className={styles.controlGroup}>
+          <span className={styles.controlLabel}>
+            {selectedIds.size > 0 ? `批量 ${selectedIds.size} 张` : '当前照片'}
+          </span>
+          <div className={styles.decisionBar}>
+            <button
+              className={`${styles.decisionButton} ${styles.pickButton}`}
+              onClick={() => void commitTargets({ pickState: 'picked' })}
+              disabled={busy}
+              aria-label="保留 P"
+            >
+              <span className={styles.decisionIcon}>✓</span>
+              <span>保留</span>
+              <span className={styles.shortcut}>P</span>
+            </button>
+            <button
+              className={`${styles.decisionButton} ${styles.rejectButton}`}
+              onClick={() => void commitTargets({ pickState: 'rejected' })}
+              disabled={busy}
+              aria-label="淘汰 X"
+            >
+              <span className={styles.decisionIcon}>×</span>
+              <span>淘汰</span>
+              <span className={styles.shortcut}>X</span>
+            </button>
+            <button
+              className={`${styles.decisionButton} ${styles.clearButton}`}
+              onClick={() => void commitTargets({ pickState: 'unreviewed' }, false)}
+              disabled={busy}
+              aria-label="清除 U"
+            >
+              <span className={styles.decisionIcon}>○</span>
+              <span>清除</span>
+              <span className={styles.shortcut}>U</span>
+            </button>
+          </div>
+        </div>
+        <div className={styles.controlGroup}>
+          <span className={styles.controlLabel}>星级</span>
+          {[0, 1, 2, 3, 4, 5].map(rating => (
+            <button
+              key={rating}
+              className={`${styles.ratingButton} ${
+                current?.state.rating === rating ? styles.selectedControl : ''
+              }`}
+              onClick={() => void commitTargets({ rating })}
+              disabled={busy}
+            >
+              {rating === 0 ? '0' : `${rating}★`}
+            </button>
+          ))}
+        </div>
+        <div className={styles.controlGroup}>
+          <span className={styles.controlLabel}>颜色</span>
+          {COLOR_LABELS.map(label => (
+            <button
+              key={label.value}
+              className={`${styles.colorButton} ${
+                current?.state.colorLabel === label.value ? styles.selectedControl : ''
+              }`}
+              style={{ '--label-color': label.color } as React.CSSProperties}
+              title={label.label}
+              aria-label={`颜色：${label.label}`}
+              onClick={() => void commitTargets({ colorLabel: label.value })}
+              disabled={busy}
+            >
+              {label.value === 'None' ? '×' : ''}
+            </button>
+          ))}
+        </div>
+        {currentGroupAssets.length > 1 && (
+          <div className={styles.groupDecision}>
+            <span className={styles.controlLabel}>
+              相似组 · {currentGroupAssets.length} 张
+            </span>
+            <button
+              className={styles.groupAction}
+              onClick={() => void keepInGroupRejectRest([current.photo.id])}
+              disabled={busy}
+            >
+              保留当前 1 张
+            </button>
+            <button
+              className={styles.groupActionSecondary}
+              onClick={() => void keepInGroupRejectRest([...selectedIds])}
+              disabled={
+                busy ||
+                selectedIds.size < 1 ||
+                selectedIds.size >= currentGroupAssets.length ||
+                [...selectedIds].some(
+                  photoId => !currentGroupAssets.some(asset => asset.photo.id === photoId),
+                )
+              }
+              title="按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"
+            >
+              保留已选 {selectedIds.size || 'K'} 张
+            </button>
+            <span className={styles.groupHint}>其余照片自动淘汰</span>
+          </div>
+        )}
+        {selectedIds.size > 0 && (
+          <button onClick={() => setSelectedIds(new Set())}>取消选择</button>
+        )}
+      </div>
+      {message && <div className={styles.feedbackMessage} role="status">{message}</div>}
     </div>
+  )
+}
+
+function ScopeControls({
+  scope,
+  setScope,
+}: {
+  scope: CullingScope
+  setScope: (scope: CullingScope) => void
+}) {
+  return (
+    <div className={styles.segmented}>
+      {([
+        ['all', '全部照片'],
+        ['filtered', '筛选'],
+        ['similarity_group', '相似组'],
+      ] as Array<[CullingScope, string]>).map(([value, label]) => (
+        <button
+          key={value}
+          className={scope === value ? styles.active : ''}
+          onClick={() => setScope(value)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function FilterControls({
+  filters,
+  setFilters,
+}: {
+  filters: CullingFilters
+  setFilters: React.Dispatch<React.SetStateAction<CullingFilters>>
+}) {
+  return (
+    <>
+      <label className={styles.toggle}>
+        <input
+          type="checkbox"
+          checked={Boolean(filters.unreviewedOnly)}
+          onChange={event => setFilters(value => ({
+            ...value,
+            unreviewedOnly: event.target.checked,
+          }))}
+        />
+        仅未处理
+      </label>
+      <select
+        className={styles.select}
+        value={filters.pickStates?.[0] ?? ''}
+        onChange={event => setFilters(value => ({
+          ...value,
+          pickStates: event.target.value
+            ? [event.target.value as NonNullable<CullingFilters['pickStates']>[number]]
+            : undefined,
+        }))}
+      >
+        <option value="">全部状态</option>
+        <option value="picked">保留</option>
+        <option value="rejected">淘汰</option>
+        <option value="unreviewed">未处理</option>
+      </select>
+      <select
+        className={styles.select}
+        value={filters.ratings?.[0] ?? ''}
+        onChange={event => setFilters(value => ({
+          ...value,
+          ratings: event.target.value === ''
+            ? undefined
+            : [Number(event.target.value)],
+        }))}
+      >
+        <option value="">全部星级</option>
+        {[0, 1, 2, 3, 4, 5].map(rating => (
+          <option key={rating} value={rating}>
+            {rating === 0 ? '未评级' : `${rating} 星`}
+          </option>
+        ))}
+      </select>
+      <select
+        className={styles.select}
+        value={filters.colorLabels?.[0] ?? ''}
+        onChange={event => setFilters(value => ({
+          ...value,
+          colorLabels: event.target.value
+            ? [event.target.value as CaptureOneColorLabel]
+            : undefined,
+        }))}
+      >
+        <option value="">全部颜色</option>
+        {COLOR_LABELS.map(label => (
+          <option key={label.value} value={label.value}>{label.label}</option>
+        ))}
+      </select>
+      <button onClick={() => setFilters({})}>重置</button>
+    </>
   )
 }

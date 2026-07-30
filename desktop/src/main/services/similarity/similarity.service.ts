@@ -7,7 +7,11 @@ import { ImageService } from '../image'
 import { computeBatchDHash } from './hash-computer'
 import type { HashEntry } from './cluster-engine'
 import { clusterHashesInWorker } from '../../utils/analysis-worker-client'
-import type { SimilarityGroup, SimilarityImage } from '@gather/shared'
+import type {
+  SimilarityGroup,
+  SimilarityGroupingMode,
+  SimilarityImage,
+} from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { stat } from 'fs/promises'
@@ -21,6 +25,7 @@ export interface SimilarityResult {
     totalUngrouped: number
     threshold: number
     minGroupSize: number
+    groupingMode: SimilarityGroupingMode
   }
 }
 
@@ -42,6 +47,7 @@ export class SimilarityService {
     options?: {
       threshold?: number
       minGroupSize?: number
+      groupingMode?: SimilarityGroupingMode
       onProgress?: (current: number, total: number, message: string) => void
     },
   ): Promise<void> {
@@ -54,6 +60,7 @@ export class SimilarityService {
 
     const threshold = options?.threshold ?? this.settings.getNumber('default_threshold', 10)
     const minGroupSize = options?.minGroupSize ?? this.settings.getNumber('default_min_group_size', 2)
+    const groupingMode = options?.groupingMode ?? 'global'
 
     try {
       this.sessionRepo.updateAnalysisStatus(sessionId, 'running')
@@ -226,6 +233,7 @@ export class SimilarityService {
         entries,
         threshold,
         minGroupSize,
+        groupingMode,
         signal,
       )
 
@@ -253,6 +261,7 @@ export class SimilarityService {
         totalUngrouped: ungrouped.length,
         threshold,
         minGroupSize,
+        groupingMode,
       })
 
       this.similarityResultRepo.replace(
@@ -285,10 +294,21 @@ export class SimilarityService {
 
     if (!row) return null
 
+    const storedGroups = JSON.parse(row.groups_json) as {
+      groups: SimilarityGroup[]
+      ungrouped?: SimilarityImage[]
+    }
+    const storedStats = JSON.parse(row.stats_json) as Omit<
+      SimilarityResult['stats'],
+      'groupingMode'
+    > & { groupingMode?: SimilarityGroupingMode }
     return {
-      groups: JSON.parse(row.groups_json).groups,
-      ungrouped: JSON.parse(row.groups_json).ungrouped ?? [],
-      stats: JSON.parse(row.stats_json),
+      groups: storedGroups.groups,
+      ungrouped: storedGroups.ungrouped ?? [],
+      stats: {
+        ...storedStats,
+        groupingMode: storedStats.groupingMode ?? 'global',
+      },
     }
   }
 
@@ -305,6 +325,7 @@ export class SimilarityService {
     sessionId: string,
     threshold: number,
     minGroupSize: number,
+    groupingMode: SimilarityGroupingMode = 'global',
   ): Promise<SimilarityResult> {
     const db = this.db
 
@@ -318,12 +339,7 @@ export class SimilarityService {
       throw new Error('No existing similarity results found. Run analysis first.')
     }
 
-    const prevResult = JSON.parse(existing.groups_json) as { groups: SimilarityGroup[]; ungrouped: SimilarityImage[] }
-    const allImages = [...prevResult.groups.flatMap((g) => g.images), ...(prevResult.ungrouped ?? [])]
-    const allPaths = allImages.map((img) => img.path)
-
     const photos = this.photoRepo.getBySession(sessionId)
-    const pathToPhoto = new Map(photos.map((p) => [p.filepath, p]))
     const hashRows = db
       .prepare(
         'SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?',
@@ -331,13 +347,10 @@ export class SimilarityService {
       .all(sessionId) as { photo_id: string; hash_hex: string }[]
     const hashMap = new Map(hashRows.map((r) => [r.photo_id, r.hash_hex]))
 
-    const entries: HashEntry[] = []
-    for (const path of allPaths) {
-      const photo = pathToPhoto.get(path)
-      if (photo && hashMap.has(photo.id)) {
-        entries.push({ photoId: photo.id, hash: hashMap.get(photo.id)! })
-      }
-    }
+    const entries: HashEntry[] = photos.flatMap(photo => {
+      const hash = hashMap.get(photo.id)
+      return hash ? [{ photoId: photo.id, hash }] : []
+    })
 
     if (entries.length === 0) {
       throw new Error('No hash data available for reclustering')
@@ -347,6 +360,7 @@ export class SimilarityService {
       entries,
       threshold,
       minGroupSize,
+      groupingMode,
     )
 
     const pathMap = new Map(photos.map((p) => [p.id, p.filepath]))
@@ -371,6 +385,7 @@ export class SimilarityService {
       totalUngrouped: ungrouped.length,
       threshold,
       minGroupSize,
+      groupingMode,
     })
 
     this.similarityResultRepo.replace(
@@ -394,6 +409,7 @@ export class SimilarityService {
         totalUngrouped: ungrouped.length,
         threshold,
         minGroupSize,
+        groupingMode,
       },
     }
   }

@@ -39,4 +39,13 @@ describe('database schema migration boundaries', () => {
     expect(INDEX_SQL).toContain('idx_similarity_members_session_photo')
     expect(INDEX_SQL).toContain('idx_culling_session_photo_unique')
   })
+
+  it('persists independent culling state and a recoverable metadata outbox', () => {
+    expect(SCHEMA_SQL).toMatch(/rating INTEGER NOT NULL DEFAULT 0/)
+    expect(SCHEMA_SQL).toMatch(/color_label TEXT NOT NULL DEFAULT 'None'/)
+    expect(SCHEMA_SQL).toMatch(/revision INTEGER NOT NULL DEFAULT 0/)
+    expect(SCHEMA_SQL).toContain('CREATE TABLE IF NOT EXISTS metadata_outbox')
+    expect(SCHEMA_SQL).toContain('persisted_revision INTEGER NOT NULL DEFAULT 0')
+    expect(INDEX_SQL).toContain('idx_metadata_outbox_session_status')
+  })
 })

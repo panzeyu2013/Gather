@@ -8,6 +8,9 @@ export interface CullingDecisionRow {
   photo_id: string
   group_id: string
   decision: string
+  rating: number
+  color_label: string
+  revision: number
   updated_at: string
   created_at: string
 }
@@ -49,6 +52,55 @@ export class CullingDecisionRepository {
         decision = excluded.decision,
         updated_at = excluded.updated_at
     `).run(sessionId, photoId, groupId, decision, now, now)
+  }
+
+  getByPhotoIds(sessionId: string, photoIds: string[]): CullingDecisionRow[] {
+    if (photoIds.length === 0) return []
+    const placeholders = photoIds.map(() => '?').join(',')
+    return this.db.prepare(`
+      SELECT *
+      FROM culling_decisions
+      WHERE session_id = ? AND photo_id IN (${placeholders})
+    `).all(sessionId, ...photoIds) as CullingDecisionRow[]
+  }
+
+  upsertState(
+    sessionId: string,
+    photoId: string,
+    groupId: string,
+    state: {
+      decision: string
+      rating: number
+      colorLabel: string
+      revision: number
+    },
+  ): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO culling_decisions
+        (
+          session_id, photo_id, group_id, decision, rating, color_label,
+          revision, updated_at, created_at
+        )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, photo_id) DO UPDATE SET
+        group_id = excluded.group_id,
+        decision = excluded.decision,
+        rating = excluded.rating,
+        color_label = excluded.color_label,
+        revision = excluded.revision,
+        updated_at = excluded.updated_at
+    `).run(
+      sessionId,
+      photoId,
+      groupId,
+      state.decision,
+      state.rating,
+      state.colorLabel,
+      state.revision,
+      now,
+      now,
+    )
   }
 
   upsertMany(

@@ -369,6 +369,21 @@ describe('xmp-utils', () => {
     })
     expect(fs.readdirSync(dir).filter(file => file.includes('.tmp-'))).toEqual([])
   })
+
+  it('supports standards-only color labels without Capture One urgency', async () => {
+    const xp = xmpPath(dir)
+    await writeXmpAttributesAsync(xp, {
+      label: 'Green',
+      writeUrgency: false,
+    })
+
+    const content = readFile(xp)
+    expect(content).toContain('xmp:Label')
+    expect(content).not.toContain('photoshop:Urgency')
+    expect(extractXmpAttributes((await parseXmpAsync(xp))!)).toMatchObject({
+      label: 'Green',
+    })
+  })
 })
 
 describe('XmpSidecarWriter', () => {

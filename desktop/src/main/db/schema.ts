@@ -252,9 +252,33 @@ CREATE TABLE IF NOT EXISTS culling_decisions (
   photo_id TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
   group_id TEXT NOT NULL,
   decision TEXT NOT NULL DEFAULT 'pending',
+  rating INTEGER NOT NULL DEFAULT 0 CHECK (rating BETWEEN 0 AND 5),
+  color_label TEXT NOT NULL DEFAULT 'None' CHECK (
+    color_label IN ('None', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple')
+  ),
+  revision INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL,
   UNIQUE(session_id, photo_id)
+);
+
+CREATE TABLE IF NOT EXISTS metadata_outbox (
+  xmp_path TEXT PRIMARY KEY,
+  owner_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  photo_path TEXT NOT NULL,
+  patch_json TEXT NOT NULL DEFAULT '{}',
+  dirty_fields TEXT NOT NULL DEFAULT '[]',
+  revision INTEGER NOT NULL DEFAULT 0,
+  persisted_revision INTEGER NOT NULL DEFAULT 0,
+  base_fingerprint TEXT NOT NULL DEFAULT '',
+  base_values_json TEXT NOT NULL DEFAULT '{}',
+  backup_path TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (
+    status IN ('clean', 'pending', 'writing', 'written', 'failed', 'conflict', 'synced', 'cleaned')
+  ),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -297,6 +321,7 @@ CREATE INDEX IF NOT EXISTS idx_duplicate_members_photo ON duplicate_group_member
 CREATE INDEX IF NOT EXISTS idx_culling_photo_session ON culling_decisions(session_id, photo_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_culling_session_photo_unique ON culling_decisions(session_id, photo_id);
 CREATE INDEX IF NOT EXISTS idx_culling_group ON culling_decisions(session_id, group_id);
+CREATE INDEX IF NOT EXISTS idx_metadata_outbox_session_status ON metadata_outbox(owner_session_id, status);
 CREATE INDEX IF NOT EXISTS idx_face_clusters_matched_person ON face_clusters(matched_person_id);
 `
 

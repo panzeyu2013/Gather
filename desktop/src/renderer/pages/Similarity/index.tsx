@@ -16,11 +16,28 @@ function ThumbnailImage({ path, className }: { path: string; className?: string 
 
 function AnalysisPanel({ sessionId, result }: { sessionId: string; result: SimilarityResult | null }) {
   const queryClient = useQueryClient()
-  const { threshold, minGroupSize, isAnalyzing, setThreshold, setMinGroupSize, setIsAnalyzing, progressCurrent, progressTotal, progressMessage } =
+  const {
+    threshold,
+    minGroupSize,
+    groupingMode,
+    isAnalyzing,
+    setThreshold,
+    setMinGroupSize,
+    setGroupingMode,
+    setIsAnalyzing,
+    progressCurrent,
+    progressTotal,
+    progressMessage,
+  } =
     useSimilarityStore()
 
   const analyzeMutation = useMutation({
-    mutationFn: () => similarityApi.analyze(sessionId, threshold, minGroupSize),
+    mutationFn: () => similarityApi.analyze(
+      sessionId,
+      threshold,
+      minGroupSize,
+      groupingMode,
+    ),
     onSuccess: () => {
       setIsAnalyzing(false)
       queryClient.invalidateQueries({ queryKey: ['similarity', sessionId] })
@@ -31,7 +48,12 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
   })
 
   const reclusterMutation = useMutation({
-    mutationFn: () => similarityApi.recluster(sessionId, threshold, minGroupSize),
+    mutationFn: () => similarityApi.recluster(
+      sessionId,
+      threshold,
+      minGroupSize,
+      groupingMode,
+    ),
     onSuccess: (data) => {
       queryClient.setQueryData(['similarity', sessionId], data)
     },
@@ -42,9 +64,35 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
     analyzeMutation.mutate()
   }
 
+  useEffect(() => {
+    if (result?.stats.groupingMode) {
+      setGroupingMode(result.stats.groupingMode)
+    }
+  }, [result?.stats.groupingMode, setGroupingMode])
+
   return (
     <div className={styles.panel}>
       <h2 className={styles.panelTitle}>分析控制</h2>
+
+      <div className={styles.controlRow}>
+        <span className={styles.controlLabel}>分组范围</span>
+        <div className={styles.modeSelector}>
+          <button
+            className={groupingMode === 'sequential' ? styles.modeActive : styles.modeButton}
+            onClick={() => setGroupingMode('sequential')}
+          >
+            <strong>顺序分组</strong>
+            <span>只合并导入顺序中连续相似的照片，适合连拍挑片</span>
+          </button>
+          <button
+            className={groupingMode === 'global' ? styles.modeActive : styles.modeButton}
+            onClick={() => setGroupingMode('global')}
+          >
+            <strong>全局分组</strong>
+            <span>在整个工作区查找相似照片，允许跨拍摄顺序聚合</span>
+          </button>
+        </div>
+      </div>
 
       <div className={styles.controlRow}>
         <label className={styles.controlLabel}>
@@ -112,6 +160,9 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
           <span>{result.stats.totalGroups} 个分组</span>
           <span>{result.stats.totalUngrouped} 未分组</span>
           <span>阈值 {result.stats.threshold}</span>
+          <span>
+            {result.stats.groupingMode === 'sequential' ? '顺序分组' : '全局分组'}
+          </span>
         </div>
       )}
     </div>

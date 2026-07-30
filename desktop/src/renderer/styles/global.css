@@ -9,10 +9,18 @@
   --color-text-inverse: #fff;
   --color-primary: #c9754f;
   --color-primary-hover: #b8653f;
+  --color-primary-soft: #f3dfd4;
   --color-info: #5b9bd5;
   --color-success: #7fb779;
   --color-error: #d4605f;
   --color-warning: #d4944f;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-control: 10px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(61, 56, 51, 0.04), 0 6px 20px rgba(61, 56, 51, 0.04);
+  --shadow-md: 0 12px 32px rgba(61, 56, 51, 0.09);
 }
 
 *,
@@ -50,6 +58,24 @@ a:hover {
 button {
   font-family: inherit;
   font-size: inherit;
+}
+
+button,
+a,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'] {
+  accent-color: var(--color-primary);
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, white);
+  outline-offset: 2px;
 }
 
 h1 {

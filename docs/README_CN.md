@@ -6,6 +6,13 @@
 
 ## 功能
 
+### 挑片工作台
+- 无需先运行相似度分析，即可挑选工作区内全部照片
+- Pick / Reject、0～5 星和 Capture One 英文颜色标签彼此独立
+- 支持自动前进、筛选/相似组范围、批量操作和撤销/重做
+- 支持单图、双图、四图对比，同步缩放和平移，并可按已有检测结果对齐人脸
+- 星级和颜色先可靠保存到 SQLite，再由可恢复队列合并写入 XMP；失败可重试，同字段外部修改会停止覆盖
+
 ### 相似度分组
 - dHash 感知哈希 + 层次聚类，发现视觉相似的图片
 - 可调阈值（4–20）+ 最少成组数量，实时更新分组结果
@@ -28,23 +35,33 @@
 
 ### 下载安装
 
-当前仓库支持将 Python 解释器和依赖一并打包进应用包（通过 `bundle-python.sh`）。
-如果你直接使用源码或自行构建，请先准备本地 Python 环境并执行 `uv sync`。
+当前版本的人脸分析使用 Electron 主进程内的 ONNX Runtime，不需要单独的
+Python 运行时。
 
 ### 从源码构建
 
 ```bash
-uv sync
-cd desktop
 npm install
-npm run dist:mac
+npm run build
+npm run electron
 ```
 
-构建产物在 `desktop/release/` 目录。打包产物内嵌 Python venv，用户无需手动安装 Python 依赖。
+如需打包 macOS 安装包，执行
+`npm run dist:mac --workspace=desktop`，产物位于 `desktop/release/`。
 
 ---
 
 ## 使用
+
+### 挑片
+1. 从文件夹或 Capture One 选中项创建工作区。
+2. 打开“挑片”；相似度分析不是前置条件。
+3. 使用 `P` 保留、`X` 淘汰、`0`～`5` 设置星级、方向键前后切换，
+   `Cmd/Ctrl+Z` 撤销；需要连续挑片时开启“自动前进”。
+4. 使用双图/四图检查连拍照片；“人脸对齐”直接复用已有的人脸检测框，不会重新运行模型。
+5. 星级和颜色会在后台合并写入 sidecar；如需立即完成，点击“立即写入 XMP”，并先处理失败或冲突项。
+6. 在 Capture One 中执行“图像 → 加载元数据”（或设置单向 Auto Sync =
+   Load）。确认 Capture One 已读取后，再回到 Gather 确认同步并按需恢复/移除临时 XMP。
 
 ### 相似度分组
 1. 在 Capture One 中选中照片
@@ -68,19 +85,12 @@ npm run dist:mac
 
 ```
 Electron Desktop App
-  ├── Main Process (Node.js)
-  │   ├── Python Bridge (子进程 stdin/stdout, MessagePack)
-  │   └── Capture One Bridge (osascript)
+  ├── Main Process (SQLite / ONNX Runtime / XMP / Image Pipeline)
   ├── Preload (contextBridge, 安全隔离)
-  └── Renderer (Chromium SPA, 直载本地 HTML)
-
-Python Engine (子进程)
-  ├── FaceKeywordingService  (MediaPipe / DBSCAN / lxml XMP)
-  ├── SimilarityService      (dHash / 层次聚类)
-  └── SessionManager         (SQLite WAL)
+  └── Renderer (React 18 + Vite)
 ```
 
-- 通信：长度前缀 MessagePack over stdin/stdout（零 HTTP、零端口、零 CSRF）
+- 通信：类型化 `gather:command` IPC（零 HTTP、零端口）
 - 安全：`contextIsolation: true`，`sandbox: true`，`nodeIntegration: false`
 - 打包：electron-builder → `.dmg`（macOS）
 
@@ -89,12 +99,14 @@ Python Engine (子进程)
 ## 开发
 
 ```bash
-uv sync             # 在仓库根目录安装 Python 依赖
-cd desktop
-npm install         # 安装 Node 依赖
-npm run dev         # 启动开发模式（热重载）
-npm run typecheck   # TypeScript 类型检查
-npm run dist:mac    # 构建 macOS .dmg
+npm install
+npm run dev          # 启动开发模式
+npm run build        # 构建共享契约与桌面应用
+npm run typecheck    # TypeScript 类型检查
+npm run lint         # ESLint
+npm run test:vitest  # 单元测试
+npm run test:e2e     # 正式构建 Electron 冒烟流程
+npm run electron     # 构建并启动本地正式应用
 ```
 
 相关文档：[DEVELOPER.md](DEVELOPER.md) | [TEST.md](TEST.md)

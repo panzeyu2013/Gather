@@ -171,4 +171,15 @@ export class WritebackRepository {
        WHERE session_id = ? AND module = ? AND xmp_path = ?`,
     ).run(status, sessionId, module, xmpPath)
   }
+
+  hasActiveForXmpPath(xmpPath: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1
+      FROM writeback_items
+      WHERE xmp_path = ?
+        AND xmp_status IN ('pending', 'writing', 'written', 'synced')
+      LIMIT 1
+    `).get(xmpPath)
+    return row !== undefined
+  }
 }

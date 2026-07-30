@@ -1,6 +1,7 @@
 import type { CommandRegistry } from './registry'
 import { ok, validateString, wrapHandler } from './helpers'
 import type { SimilarityKeywordAssignment } from '@gather/shared'
+import type { SimilarityGroupingMode } from '@gather/shared'
 import type { SimilarityService } from '../services/similarity/similarity.service'
 import type { WritebackService } from '../services/writeback/writeback.service'
 import type { SettingsService } from '../services/settings/settings.service'
@@ -32,6 +33,12 @@ function validateAssignments(value: unknown): SimilarityKeywordAssignment[] {
     }
     return { groupId, keywords }
   })
+}
+
+function validateGroupingMode(value: unknown): SimilarityGroupingMode {
+  if (value === undefined || value === 'global') return 'global'
+  if (value === 'sequential') return 'sequential'
+  throw new Error('Invalid similarity grouping mode')
 }
 
 async function buildKeywordPreview(
@@ -80,12 +87,18 @@ export function registerSimilarityHandlers(
         typeof params.threshold === 'number' ? params.threshold : undefined
       const minGroupSize =
         typeof params.minGroupSize === 'number' ? params.minGroupSize : undefined
+      const groupingMode = validateGroupingMode(params.groupingMode)
       const onProgress = event
         ? (current: number, total: number, message: string) => {
             event.sender.send('gather:event', 'progress', { sessionId, current, total, message })
           }
         : undefined
-      await similarityService.analyze(sessionId, { threshold, minGroupSize, onProgress })
+      await similarityService.analyze(sessionId, {
+        threshold,
+        minGroupSize,
+        groupingMode,
+        onProgress,
+      })
       return ok(true)
     }),
   )
@@ -116,10 +129,12 @@ export function registerSimilarityHandlers(
         typeof params.threshold === 'number' ? params.threshold : settings.getNumber('default_threshold', 10)
       const minGroupSize =
         typeof params.minGroupSize === 'number' ? params.minGroupSize : settings.getNumber('default_min_group_size', 2)
+      const groupingMode = validateGroupingMode(params.groupingMode)
       const result = await similarityService.recluster(
         sessionId,
         threshold,
         minGroupSize,
+        groupingMode,
       )
       return ok(result)
     }),

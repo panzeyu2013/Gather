@@ -10,6 +10,7 @@ import type { WritebackPreview, WritebackResult, WritebackItem, CleanupResult, W
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
+import type { MetadataSyncCoordinator } from '../metadata/metadata-sync-coordinator'
 
 function rowToItem(row: WritebackItemRow): WritebackItem {
   let attributes: Record<string, unknown> = {}
@@ -42,6 +43,10 @@ export class WritebackService {
     @inject(DI_TOKENS.PHOTO_REPO) private photoRepo: PhotoRepository,
     @inject(DI_TOKENS.SESSION_REPO) private sessionRepo: SessionRepository,
     @inject(DI_TOKENS.METADATA_CACHE_REPO) private metadataCacheRepo: MetadataCacheRepository,
+    @inject(DI_TOKENS.METADATA_SYNC_COORDINATOR)
+    private metadataSync: Pick<MetadataSyncCoordinator, 'waitForIdle'> = {
+      waitForIdle: async () => undefined,
+    },
   ) {}
 
   private assertNoActiveOtherModule(sessionId: string, module: string): void {
@@ -164,6 +169,7 @@ export class WritebackService {
 
       let backupPath = ''
       try {
+        await this.metadataSync.waitForIdle(dbRow.xmp_path)
         const priorBackupPath = activeBackupByXmpPath.get(dbRow.xmp_path)
         backupPath = priorBackupPath !== undefined
           ? priorBackupPath

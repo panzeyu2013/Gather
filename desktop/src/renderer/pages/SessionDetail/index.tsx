@@ -1,6 +1,9 @@
-import React, { Suspense, lazy } from 'react'
-import { Routes, Route, NavLink, useParams, Navigate } from 'react-router-dom'
+import React, { Suspense, lazy, useEffect } from 'react'
+import { Routes, Route, NavLink, useParams, Navigate, Link, useLocation } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import Loading from '../../components/Loading/Loading'
+import { sessionApi } from '../../api/session'
+import { useSessionStore } from '../../stores/sessionStore'
 import styles from './SessionDetail.module.css'
 
 const Gallery = lazy(() => import('./Gallery'))
@@ -12,30 +15,55 @@ const Export = lazy(() => import('./Export'))
 
 export default function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>()
+  const location = useLocation()
+  const setSession = useSessionStore((state) => state.setSession)
+  const { data: session } = useQuery({
+    queryKey: ['session', sessionId],
+    queryFn: () => sessionApi.get(sessionId!),
+    enabled: Boolean(sessionId),
+  })
+
+  useEffect(() => {
+    if (sessionId) setSession(sessionId)
+  }, [sessionId, setSession])
+
+  const isCulling = location.pathname.endsWith('/culling')
 
   return (
     <div className={styles.container}>
-      <nav className={styles.tabs}>
-        <NavLink to={`/sessions/${sessionId}/gallery`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
-          浏览
-        </NavLink>
-        <NavLink to={`/sessions/${sessionId}/similarity`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
-          相似度
-        </NavLink>
-        <NavLink to={`/sessions/${sessionId}/face-kw`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
-          人脸
-        </NavLink>
-        <NavLink to={`/sessions/${sessionId}/duplicates`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
-          重复
-        </NavLink>
-        <NavLink to={`/sessions/${sessionId}/culling`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
-          筛选
-        </NavLink>
-        <NavLink to={`/sessions/${sessionId}/export`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
-          导出
-        </NavLink>
-      </nav>
-      <main className={styles.content}>
+      <header className={`${styles.sessionHeader} ${isCulling ? styles.workbenchHeader : ''}`}>
+        <div className={styles.sessionIdentity}>
+          <Link to="/" className={styles.backLink} aria-label="返回工作台" title="返回工作台">←</Link>
+          <div className={styles.sessionTitleGroup}>
+            <span className={styles.eyebrow}>当前工作区</span>
+            <h1 className={styles.sessionTitle}>{session?.name ?? '加载中…'}</h1>
+          </div>
+          <Link to="/settings" className={styles.sessionUtilityLink}>设置</Link>
+        </div>
+        <nav className={styles.tabs} aria-label="工作区功能">
+          <NavLink to={`/sessions/${sessionId}/gallery`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+            浏览
+          </NavLink>
+          <NavLink to={`/sessions/${sessionId}/similarity`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+            相似度
+          </NavLink>
+          <NavLink to={`/sessions/${sessionId}/face-kw`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+            人脸
+          </NavLink>
+          <NavLink to={`/sessions/${sessionId}/duplicates`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+            重复
+          </NavLink>
+          <NavLink to={`/sessions/${sessionId}/culling`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+            挑片
+          </NavLink>
+          <NavLink to={`/sessions/${sessionId}/export`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+            导出
+          </NavLink>
+        </nav>
+      </header>
+      <main className={`${styles.content} ${
+        isCulling ? styles.cullingContent : ''
+      }`}>
         <Suspense fallback={<Loading />}>
           <Routes>
             <Route path="gallery" element={<Gallery />} />

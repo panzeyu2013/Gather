@@ -25,6 +25,7 @@ import { CullingService } from './services/culling/culling.service'
 import { ExportService } from './services/export/export.service'
 import { ReportService } from './services/export/report.service'
 import { MetadataWriterRouter } from './services/xmp/metadata-writer-router'
+import { MetadataSyncCoordinator } from './services/metadata/metadata-sync-coordinator'
 import { IMAGE_CONFIG } from './services/image/image-config'
 
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
@@ -258,6 +259,7 @@ function registerIpc(): void {
   const cullingService = svc<CullingService>(DI_TOKENS.CULLING_SERVICE)
   const exportService = svc<ExportService>(DI_TOKENS.EXPORT_SERVICE)
   const reportService = svc<ReportService>(DI_TOKENS.REPORT_SERVICE)
+  const metadataSync = svc<MetadataSyncCoordinator>(DI_TOKENS.METADATA_SYNC_COORDINATOR)
   const ensureMainWindowSender = (e: Electron.IpcMainInvokeEvent): void => {
     if (!mainWindow || e.sender !== mainWindow.webContents) {
       throw new Error('This action is only available from the main application window')
@@ -277,7 +279,7 @@ function registerIpc(): void {
   registerTemplateHandlers(registry, templateService)
   registerPersonHandlers(registry, personRepo)
   registerMetadataHandlers(registry, metadataService)
-  registerCullingHandlers(registry, cullingService, writebackService)
+  registerCullingHandlers(registry, cullingService, writebackService, metadataSync)
   registerExportHandlers(registry, exportService, reportService)
 
   ipcMain.handle('c1:get-selected-photos', async (e) => {
@@ -411,6 +413,13 @@ app.whenReady().then(() => {
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate))
   createWindow()
+  svc<MetadataSyncCoordinator>(DI_TOKENS.METADATA_SYNC_COORDINATOR).start(
+    (summary) => mainWindow?.webContents.send(
+      'gather:event',
+      'culling:sync-status',
+      summary,
+    ),
+  )
 
   if (!app.isDefaultProtocolClient('gather')) {
     app.setAsDefaultProtocolClient('gather')
@@ -438,8 +447,12 @@ let quitting = false
 
 function shutdown(): void {
   const writerRouter = svc<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER)
+  const metadataSync = svc<MetadataSyncCoordinator>(DI_TOKENS.METADATA_SYNC_COORDINATOR)
   Promise.race([
-    writerRouter.shutdown(),
+    Promise.all([
+      metadataSync.shutdown(),
+      writerRouter.shutdown(),
+    ]).then(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, 5000)),
   ])
     .catch((err) => {

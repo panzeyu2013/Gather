@@ -114,6 +114,7 @@ describe('WritebackService sidecar workflow', () => {
       updateWritebackStatus: vi.fn(),
       updateFailedWritebackCount: vi.fn(),
     }
+    const metadataSync = { waitForIdle: vi.fn(async () => undefined) }
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
       { selectSidecar: () => writer } as unknown as MetadataWriterRouter,
@@ -131,6 +132,7 @@ describe('WritebackService sidecar workflow', () => {
         updateRating: vi.fn(),
         updateLabel: vi.fn(),
       } as unknown as MetadataCacheRepository,
+      metadataSync,
     )
 
     const preview = await service.preview(
@@ -158,6 +160,8 @@ describe('WritebackService sidecar workflow', () => {
       new Map([['photo-1', ['second-write']]]),
     )
     await service.execute('session-1', 'similarity', repeatedPreview.items)
+    expect(metadataSync.waitForIdle).toHaveBeenCalledTimes(2)
+    expect(metadataSync.waitForIdle).toHaveBeenCalledWith(xmpPath)
     expect(await writer.readKeywords(photoPath)).toEqual(['existing', 'portrait', 'second-write'])
 
     await service.confirmSync('session-1', 'similarity')

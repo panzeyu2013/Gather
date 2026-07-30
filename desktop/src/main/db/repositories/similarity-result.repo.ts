@@ -34,7 +34,6 @@ export class SimilarityResultRepository {
   ): number {
     let resultId = 0
     const replaceResult = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM culling_decisions WHERE session_id = ?').run(sessionId)
       this.db.prepare('DELETE FROM similarity_results WHERE session_id = ?').run(sessionId)
       const inserted = this.db.prepare(
         `INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)

@@ -112,10 +112,17 @@ export class MetadataCacheRepository {
 
   getBatch(photoIds: string[]): MetadataCacheRow[] {
     if (photoIds.length === 0) return []
-    const placeholders = photoIds.map(() => '?').join(',')
-    return this.db
-      .prepare(`SELECT * FROM photo_metadata_cache WHERE photo_id IN (${placeholders})`)
-      .all(...photoIds) as MetadataCacheRow[]
+    const rows: MetadataCacheRow[] = []
+    // Stay below SQLite's commonly configured parameter limit while allowing
+    // large sessions to open in one workbench query.
+    for (let index = 0; index < photoIds.length; index += 800) {
+      const chunk = photoIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(',')
+      rows.push(...this.db
+        .prepare(`SELECT * FROM photo_metadata_cache WHERE photo_id IN (${placeholders})`)
+        .all(...chunk) as MetadataCacheRow[])
+    }
+    return rows
   }
 
   deleteBySession(sessionId: string): void {

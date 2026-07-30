@@ -3,6 +3,8 @@ export interface HashEntry {
   hash: string
 }
 
+export type HashGroupingMode = 'sequential' | 'global'
+
 interface PreparedHashEntry extends HashEntry {
   value: bigint
 }
@@ -64,11 +66,15 @@ export function clusterByHash(
   entries: HashEntry[],
   threshold: number,
   minGroupSize: number,
+  mode: HashGroupingMode = 'global',
 ): { groups: string[][]; ungrouped: string[] } {
   const prepared: PreparedHashEntry[] = entries.map(entry => ({
     ...entry,
     value: BigInt(`0x${entry.hash}`),
   }))
+  if (mode === 'sequential') {
+    return clusterSequentially(prepared, threshold, minGroupSize)
+  }
   const metricIndex = new HashMetricIndex()
   for (const entry of prepared) metricIndex.add(entry)
   const visited = new Set<string>()
@@ -126,6 +132,36 @@ export function clusterByHash(
     .filter((e) => !clustered.has(e.photoId))
     .map((e) => e.photoId)
 
+  return { groups, ungrouped }
+}
+
+function clusterSequentially(
+  entries: PreparedHashEntry[],
+  threshold: number,
+  minGroupSize: number,
+): { groups: string[][]; ungrouped: string[] } {
+  if (entries.length === 0) return { groups: [], ungrouped: [] }
+  const groups: string[][] = []
+  const ungrouped: string[] = []
+  let run: PreparedHashEntry[] = [entries[0]]
+
+  const flush = (): void => {
+    const ids = run.map(entry => entry.photoId)
+    if (run.length >= minGroupSize) groups.push(ids)
+    else ungrouped.push(...ids)
+  }
+
+  for (let index = 1; index < entries.length; index++) {
+    const previous = entries[index - 1]
+    const current = entries[index]
+    if (hammingDistanceValue(previous.value, current.value) <= threshold) {
+      run.push(current)
+    } else {
+      flush()
+      run = [current]
+    }
+  }
+  flush()
   return { groups, ungrouped }
 }
 

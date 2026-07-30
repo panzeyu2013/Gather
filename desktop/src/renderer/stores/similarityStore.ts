@@ -1,14 +1,17 @@
 import { create } from 'zustand'
+import type { SimilarityGroupingMode } from '@gather/shared'
 
 interface SimilarityState {
   threshold: number
   minGroupSize: number
+  groupingMode: SimilarityGroupingMode
   isAnalyzing: boolean
   progressCurrent: number
   progressTotal: number
   progressMessage: string
   setThreshold: (v: number) => void
   setMinGroupSize: (v: number) => void
+  setGroupingMode: (v: SimilarityGroupingMode) => void
   setIsAnalyzing: (v: boolean) => void
   setProgress: (current: number, total: number, message: string) => void
   reset: () => void
@@ -17,13 +20,23 @@ interface SimilarityState {
 export const useSimilarityStore = create<SimilarityState>((set) => ({
   threshold: 10,
   minGroupSize: 2,
+  groupingMode: 'global',
   isAnalyzing: false,
   progressCurrent: 0,
   progressTotal: 0,
   progressMessage: '',
   setThreshold: (threshold) => set({ threshold }),
   setMinGroupSize: (minGroupSize) => set({ minGroupSize }),
+  setGroupingMode: (groupingMode) => set({ groupingMode }),
   setIsAnalyzing: (isAnalyzing) => set({ isAnalyzing }),
   setProgress: (current, total, message) => set({ progressCurrent: current, progressTotal: total, progressMessage: message }),
-  reset: () => set({ threshold: 10, minGroupSize: 2, isAnalyzing: false, progressCurrent: 0, progressTotal: 0, progressMessage: '' }),
+  reset: () => set({
+    threshold: 10,
+    minGroupSize: 2,
+    groupingMode: 'global',
+    isAnalyzing: false,
+    progressCurrent: 0,
+    progressTotal: 0,
+    progressMessage: '',
+  }),
 }))

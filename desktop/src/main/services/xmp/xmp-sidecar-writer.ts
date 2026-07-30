@@ -11,6 +11,10 @@ import {
 import type { MetadataWriter, MetadataWriteAttributes } from '../metadata/metadata-writer.interface'
 
 export class XmpSidecarWriter implements MetadataWriter {
+  constructor(
+    private getColorCompatibility: () => string = () => 'label_and_urgency',
+  ) {}
+
   private xmpPath(photoPath: string): string {
     return getXmpSidecarPath(photoPath)
   }
@@ -38,6 +42,7 @@ export class XmpSidecarWriter implements MetadataWriter {
       dateTaken: tags.dateTaken,
       latitude: tags.latitude,
       longitude: tags.longitude,
+      writeUrgency: this.getColorCompatibility() !== 'label_only',
     })
   }
 
