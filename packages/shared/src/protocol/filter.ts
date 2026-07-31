@@ -1,7 +1,12 @@
 // packages/shared/src/protocol/filter.ts
 
 export interface FilterPhotosParams { sessionId: string; criteria: FilterGroup; sortBy?: string; sortOrder?: string }
-export interface FilterPhotosGlobalParams { criteria: FilterGroup }
+export interface FilterPhotosGlobalParams {
+  criteria: FilterGroup
+  sessionId?: string
+  limit?: number
+  offset?: number
+}
 export interface FilterSuggestParams { sessionId: string; keyword: string }
 export interface AlbumCreateParams { name: string; criteria: FilterGroup; sortBy?: string; sortOrder?: string; description?: string; icon?: string }
 export interface AlbumListParams { }
@@ -28,13 +33,22 @@ export interface FilterSuggestion {
 
 export interface GlobalPhotoResult {
   photoId: string
+  assetId: string
   sessionId: string
   sessionName: string
+  sessionIds: string[]
+  sessionNames: string[]
   filename: string
+  filepath: string
+  status: string
+  rating: number
+  label: string
+  keywords: string[]
 }
 
 export interface SmartAlbumData {
   id: string
+  schemaVersion: number
   name: string
   description: string
   filterCriteria: FilterGroup
@@ -43,6 +57,7 @@ export interface SmartAlbumData {
   icon: string
   createdAt: string
   updatedAt: string
+  validationError?: string
 }
 
 export interface SmartAlbumDetailData extends SmartAlbumData {

@@ -19,6 +19,7 @@ export default function StepWriteback() {
   const [writebackResult, setWritebackResult] = useState<WritebackResult | null>(null)
   const [failedItems, setFailedItems] = useState<WritebackItem[]>([])
   const [syncConfirmed, setSyncConfirmed] = useState(false)
+  const [previewItems, setPreviewItems] = useState<WritebackItem[]>([])
 
   const boundClusters = useMemo(() => clusters.filter((c) => c.binding), [clusters])
   const unboundClusters = useMemo(() => clusters.filter((c) => !c.binding), [clusters])
@@ -32,6 +33,7 @@ export default function StepWriteback() {
     if (!sessionId) return
     try {
       const preview = await faceKwApi.previewWriteback(sessionId)
+      setPreviewItems(preview.items)
       setWritebackReport(sessionId, `预览: ${preview.totalCount} 项, ${preview.affectedPhotos} 张照片受影响`)
     } catch (e) {
       setWritebackReport(sessionId, `预览失败: ${(e as Error).message}`)
@@ -43,6 +45,7 @@ export default function StepWriteback() {
     setWritebackRunning(sessionId, true)
     try {
       const preview = await faceKwApi.previewWriteback(sessionId)
+      setPreviewItems(preview.items)
       const result = await faceKwApi.writeback(sessionId, preview.items)
       setWritebackResult(result)
       setFailedItems(result.failedItems)
@@ -134,6 +137,29 @@ export default function StepWriteback() {
           </div>
         )}
       </div>
+
+      {previewItems.length > 0 && (
+        <div className={styles.xmpPreview} aria-label="XMP 写回预览">
+          {previewItems.slice(0, 50).map(item => (
+            <div className={styles.xmpPreviewRow} key={item.xmpPath}>
+              <strong title={item.xmpPath}>{item.xmpPath.split(/[/\\]/).pop()}</strong>
+              <span>
+                {(item.preview?.before.keywords ?? []).join('、') || '无关键词'}
+                {' → '}
+                {(item.preview?.after.keywords ?? item.keywords).join('、') || '无关键词'}
+              </span>
+              <small>
+                {item.preview?.willCreate ? '新建 XMP' : '更新 XMP'}
+                {(item.preview?.sharedPhotoCount ?? 1) > 1
+                  ? ` · ${item.preview?.sharedPhotoCount} 张共享`
+                  : ''}
+                {item.preview?.externalChanged ? ' · 检测到外部冲突' : ''}
+                {' · 来源：人脸关键词'}
+              </small>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className={styles.actions}>
         <button

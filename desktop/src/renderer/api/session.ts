@@ -16,6 +16,6 @@ export const sessionApi = {
     sendCommand<AddPhotoResult>('session.add_photos', { sessionId, filepaths: paths }),
   update: (sessionId: string, name: string) =>
     sendCommand<SessionData>('session.update', { sessionId, name }),
-  getPhotos: (sessionId: string) =>
-    sendCommand<PhotoData[]>('photo.list', { sessionId }),
+  getPhotos: (sessionId: string, expandVariants = false) =>
+    sendCommand<PhotoData[]>('photo.list', { sessionId, expandVariants }),
 }

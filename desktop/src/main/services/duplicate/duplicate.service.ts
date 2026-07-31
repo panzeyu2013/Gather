@@ -58,6 +58,8 @@ export class DuplicateService {
   async scanDuplicates(
     sessionId: string,
     visualThreshold?: number,
+    signal?: AbortSignal,
+    onProgress?: (current: number, total: number, message: string) => void,
   ): Promise<DuplicateScanResult> {
     if (this.scanPromise) {
       if (this.scanSessionId === sessionId && this.scanThreshold === visualThreshold) return this.scanPromise
@@ -66,7 +68,7 @@ export class DuplicateService {
 
     this.scanSessionId = sessionId
     this.scanThreshold = visualThreshold
-    this.scanPromise = this._scanDuplicates(sessionId, visualThreshold)
+    this.scanPromise = this._scanDuplicates(sessionId, visualThreshold, signal, onProgress)
     try {
       return await this.scanPromise
     } finally {
@@ -79,7 +81,10 @@ export class DuplicateService {
   private async _scanDuplicates(
     sessionId: string,
     visualThreshold: number | undefined,
+    signal?: AbortSignal,
+    onProgress?: (current: number, total: number, message: string) => void,
   ): Promise<DuplicateScanResult> {
+    if (signal?.aborted) throw new Error('Duplicate scan cancelled')
     const db = this.db
     const threshold = visualThreshold ?? 4
     const ids = [sessionId]
@@ -107,6 +112,7 @@ export class DuplicateService {
     const sizeGroups = new Map<number, string[]>()
 
     await batchAsync(allPhotos, async (p) => {
+      if (signal?.aborted) throw new Error('Duplicate scan cancelled')
       try {
         const sourceStat = await stat(p.filepath)
         photoMeta.set(p.id, {
@@ -121,6 +127,7 @@ export class DuplicateService {
         // skip unreadable files
       }
     }, 32)
+    onProgress?.(allPhotos.length, allPhotos.length * 3, '正在读取文件信息')
 
     const resolvedChecksums = new Map<string, string>()
     for (const photo of allPhotos) {
@@ -146,6 +153,7 @@ export class DuplicateService {
     }
 
     await batchAsync(candidatePhotos, async (photo) => {
+      if (signal?.aborted) throw new Error('Duplicate scan cancelled')
       try {
         const checksum = await sha256File(photo.filepath)
         resolvedChecksums.set(photo.id, checksum)
@@ -153,6 +161,11 @@ export class DuplicateService {
         // skip unreadable files
       }
     }, 2)
+    onProgress?.(
+      allPhotos.length + candidatePhotos.length,
+      allPhotos.length * 3,
+      '正在计算内容校验和',
+    )
 
     const existingVisualRows = db.prepare(
       `SELECT photo_id, hash_hex, file_size, file_mtime_ms
@@ -175,10 +188,12 @@ export class DuplicateService {
       }
     }
     const visualMisses = allPhotos.filter(photo => !resolvedVisualHashes.has(photo.id))
+    if (signal?.aborted) throw new Error('Duplicate scan cancelled')
     const computedVisualHashes = await computeVisualHashes(visualMisses, this.imageService)
     for (const [photoId, hash] of computedVisualHashes) {
       resolvedVisualHashes.set(photoId, hash)
     }
+    onProgress?.(allPhotos.length * 3, allPhotos.length * 3, '重复扫描完成')
 
     const persistAnalysisData = db.transaction(() => {
       const update = db.prepare(

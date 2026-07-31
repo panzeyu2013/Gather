@@ -7,6 +7,7 @@ export interface ExportReportParams { sessionId: string; reportType: string; for
 
 export interface ExportOptions {
   scope: 'selected' | 'filtered' | 'session'
+  variantPolicy?: 'preferred' | 'raw' | 'jpeg' | 'all'
   format: 'original' | 'jpeg' | 'tiff'
   quality?: number
   maxDimension?: number

@@ -1,8 +1,28 @@
 import type { CommandRegistry } from './registry'
 import { ok, validateString, validateNumber, wrapHandler } from './helpers'
 import type { DuplicateService } from '../services/duplicate/duplicate.service'
+import type { JobService } from '../services/jobs/job.service'
 
-export function registerDuplicateHandlers(registry: CommandRegistry, duplicateService: DuplicateService): void {
+export function registerDuplicateHandlers(
+  registry: CommandRegistry,
+  duplicateService: DuplicateService,
+  jobs: JobService,
+): void {
+  jobs.registerExecutor('duplicate.scan', (job, context) => {
+    return duplicateService.scanDuplicates(
+      job.scopeId,
+      typeof job.checkpoint.visualThreshold === 'number'
+        ? job.checkpoint.visualThreshold
+        : undefined,
+      context.signal,
+      (current, total, message) => context.updateProgress({
+        current,
+        total,
+        message,
+        checkpoint: job.checkpoint,
+      }),
+    )
+  })
   registry.register(
     'dup.scan',
     wrapHandler(async (params) => {
@@ -10,7 +30,14 @@ export function registerDuplicateHandlers(registry: CommandRegistry, duplicateSe
       const visualThreshold = typeof params.visualThreshold === 'number'
         ? params.visualThreshold
         : undefined
-      const result = await duplicateService.scanDuplicates(sessionId, visualThreshold)
+      const job = jobs.create({
+        type: 'duplicate.scan',
+        scopeType: 'session',
+        scopeId: sessionId,
+        dedupeKey: `duplicate.scan:${sessionId}:${visualThreshold ?? 'default'}`,
+        checkpoint: { visualThreshold },
+      })
+      const result = await jobs.waitForResult(job.id)
       return ok(result)
     }),
   )

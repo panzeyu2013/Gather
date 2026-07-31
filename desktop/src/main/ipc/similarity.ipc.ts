@@ -2,10 +2,14 @@ import type { CommandRegistry } from './registry'
 import { ok, validateString, wrapHandler } from './helpers'
 import type { SimilarityKeywordAssignment } from '@gather/shared'
 import type { SimilarityGroupingMode } from '@gather/shared'
-import type { SimilarityService } from '../services/similarity/similarity.service'
+import {
+  type SimilarityService,
+  validateSimilarityParameters,
+} from '../services/similarity/similarity.service'
 import type { WritebackService } from '../services/writeback/writeback.service'
 import type { SettingsService } from '../services/settings/settings.service'
 import { buildSimilarityKeywordPlan } from '../services/writeback/writeback-planners'
+import type { JobService } from '../services/jobs/job.service'
 
 function normalizeKeywords(value: unknown): string[] {
   if (!Array.isArray(value)) return []
@@ -78,7 +82,26 @@ export function registerSimilarityHandlers(
   similarityService: SimilarityService,
   writebackService: WritebackService,
   settings: SettingsService,
+  jobs: JobService,
 ): void {
+  jobs.registerExecutor('similarity.analyze', async (job, context) => {
+    const checkpoint = job.checkpoint
+    context.signal.addEventListener('abort', () => {
+      void similarityService.cancel(job.scopeId)
+    }, { once: true })
+    await similarityService.analyze(job.scopeId, {
+      threshold: typeof checkpoint.threshold === 'number' ? checkpoint.threshold : undefined,
+      minGroupSize: typeof checkpoint.minGroupSize === 'number' ? checkpoint.minGroupSize : undefined,
+      groupingMode: checkpoint.groupingMode === 'sequential' ? 'sequential' : 'global',
+      onProgress: (current, total, message) => context.updateProgress({
+        current,
+        total,
+        message,
+        checkpoint,
+      }),
+    })
+    return true
+  })
   registry.register(
     'sim.analyze',
     wrapHandler(async (params, event) => {
@@ -88,16 +111,23 @@ export function registerSimilarityHandlers(
       const minGroupSize =
         typeof params.minGroupSize === 'number' ? params.minGroupSize : undefined
       const groupingMode = validateGroupingMode(params.groupingMode)
-      const onProgress = event
-        ? (current: number, total: number, message: string) => {
-            event.sender.send('gather:event', 'progress', { sessionId, current, total, message })
-          }
-        : undefined
-      await similarityService.analyze(sessionId, {
-        threshold,
-        minGroupSize,
-        groupingMode,
-        onProgress,
+      validateSimilarityParameters(
+        threshold ?? settings.getNumber('default_threshold', 10),
+        minGroupSize ?? settings.getNumber('default_min_group_size', 2),
+      )
+      const job = jobs.create({
+        type: 'similarity.analyze',
+        scopeType: 'session',
+        scopeId: sessionId,
+        dedupeKey: `similarity.analyze:${sessionId}:${threshold ?? 'default'}:${minGroupSize ?? 'default'}:${groupingMode}`,
+        checkpoint: { threshold, minGroupSize, groupingMode },
+      })
+      await jobs.waitForResult(job.id)
+      event?.sender.send('gather:event', 'progress', {
+        sessionId,
+        current: 1,
+        total: 1,
+        message: 'Similarity analysis complete',
       })
       return ok(true)
     }),
@@ -107,6 +137,7 @@ export function registerSimilarityHandlers(
     'sim.cancel_analysis',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
+      jobs.cancelScope('similarity.analyze', sessionId)
       await similarityService.cancel(sessionId)
       return ok(true)
     }),
@@ -130,6 +161,7 @@ export function registerSimilarityHandlers(
       const minGroupSize =
         typeof params.minGroupSize === 'number' ? params.minGroupSize : settings.getNumber('default_min_group_size', 2)
       const groupingMode = validateGroupingMode(params.groupingMode)
+      validateSimilarityParameters(threshold, minGroupSize)
       const result = await similarityService.recluster(
         sessionId,
         threshold,

@@ -7,6 +7,7 @@ import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
 import { stat } from 'fs/promises'
+import { MetadataMutationService } from './metadata-mutation.service'
 
 async function getExifr() {
   try {
@@ -65,7 +66,18 @@ export class MetadataService {
     @inject(DI_TOKENS.METADATA_CACHE_REPO) private metadataCacheRepo: MetadataCacheRepository,
     @inject(DI_TOKENS.WRITER_ROUTER) private writerRouter: MetadataWriterRouter,
     @inject(DI_TOKENS.DB) private db: Database,
+    @inject(DI_TOKENS.METADATA_MUTATION_SERVICE)
+    private metadataMutations: MetadataMutationService,
   ) {}
+
+  private async readEffectiveAttributes(photoPath: string) {
+    const selected = this.writerRouter.select(photoPath)
+    const sidecar = this.writerRouter.selectSidecar()
+    const selectedAttributes = await selected.readAttributes(photoPath)
+    if (selected === sidecar) return selectedAttributes
+    const sidecarAttributes = await sidecar.readAttributes(photoPath)
+    return { ...selectedAttributes, ...sidecarAttributes }
+  }
 
   private getPhotosByIds(photoIds: string[]): { id: string; filepath: string; session_id: string }[] {
     if (photoIds.length === 0) return []
@@ -163,10 +175,8 @@ export class MetadataService {
                 cacheInput.keywords = fromExifr
               }
 
-              const writerAttributes = await this.writerRouter
-                .select(photo.filepath)
-                .readAttributes(photo.filepath)
-              if (writerAttributes.keywords?.length) {
+              const writerAttributes = await this.readEffectiveAttributes(photo.filepath)
+              if (writerAttributes.keywords !== undefined) {
                 tags.keywords = writerAttributes.keywords
                 cacheInput.keywords = writerAttributes.keywords
               }
@@ -200,10 +210,9 @@ export class MetadataService {
             fileMtime: fingerprint?.value,
           }
 
-          const writer = this.writerRouter.select(photo.filepath)
-          const existingAttributes = await writer.readAttributes(photo.filepath)
+          const existingAttributes = await this.readEffectiveAttributes(photo.filepath)
           Object.assign(tags, existingAttributes)
-          if (existingAttributes.keywords?.length) cacheInput.keywords = existingAttributes.keywords
+          if (existingAttributes.keywords !== undefined) cacheInput.keywords = existingAttributes.keywords
           if (existingAttributes.rating !== undefined) cacheInput.rating = existingAttributes.rating
           if (existingAttributes.label !== undefined) cacheInput.label = existingAttributes.label
 
@@ -220,6 +229,11 @@ export class MetadataService {
   }
 
   async setMetadata(photoId: string, tags: Partial<MetadataTags>): Promise<MetadataTags> {
+    const supportedMutationFields = new Set(['rating', 'label', 'keywords'])
+    const unsupported = Object.keys(tags).filter(key => !supportedMutationFields.has(key))
+    if (unsupported.length > 0) {
+      throw new Error(`Metadata writeback does not support these fields: ${unsupported.join(', ')}`)
+    }
     const existing = this.metadataCacheRepo.get(photoId)
     const baseTags = existing ? cacheRowToTags(existing) : ({} as MetadataTags)
     const merged = { ...baseTags }
@@ -232,26 +246,17 @@ export class MetadataService {
     const photo = photos.length > 0 ? photos[0] : null
     let sessionId = photo ? photo.session_id : existing?.session_id ?? ''
 
-    if (photo) {
-      const hasMetaFields =
-        tags.keywords !== undefined ||
-        tags.rating !== undefined ||
-        tags.label !== undefined ||
-        tags.dateTaken !== undefined ||
-        tags.latitude !== undefined ||
-        tags.longitude !== undefined
-      if (hasMetaFields) {
-        const writer = this.writerRouter.select(photo.filepath)
-        const updatesGps = tags.latitude !== undefined || tags.longitude !== undefined
-        await writer.writeAttributes(photo.filepath, {
-          keywords: tags.keywords,
-          rating: tags.rating,
-          label: tags.label,
-          dateTaken: tags.dateTaken,
-          latitude: updatesGps ? merged.latitude : undefined,
-          longitude: updatesGps ? merged.longitude : undefined,
-        })
-      }
+    if (photo && (tags.keywords !== undefined || tags.rating !== undefined || tags.label !== undefined)) {
+      await this.metadataMutations.queueMutation(
+        sessionId,
+        photoId,
+        {
+          ...(tags.rating !== undefined ? { rating: { op: 'set' as const, value: tags.rating } } : {}),
+          ...(tags.label !== undefined ? { label: { op: 'set' as const, value: tags.label } } : {}),
+          ...(tags.keywords !== undefined ? { keywords: { op: 'replace' as const, values: tags.keywords } } : {}),
+        },
+        'manual',
+      )
     }
 
     this.metadataCacheRepo.upsert(photoId, sessionId, cacheInput)

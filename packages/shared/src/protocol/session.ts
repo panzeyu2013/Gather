@@ -60,6 +60,14 @@ export interface PhotoData {
   metadata: Record<string, unknown>
   result: Record<string, unknown>
   status: string
+  assetId?: string
+  variantCount?: number
+  variants?: Array<{
+    photoId: string
+    filepath: string
+    filename: string
+    role: string
+  }>
   createdAt: string
   updatedAt: string
 }

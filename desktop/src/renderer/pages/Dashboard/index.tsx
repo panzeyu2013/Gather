@@ -35,7 +35,10 @@ export function getCommonParentPath(filepaths: string[]): string {
     }
     candidate = getParent(candidate)
   }
-  return directories[0]
+  // Files selected from unrelated directories have no safe common source
+  // directory. The main process will use a bounded per-session fallback rather
+  // than treating the filesystem root as an index root.
+  return ''
 }
 
 function importFailureMessage(

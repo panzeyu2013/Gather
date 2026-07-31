@@ -4,13 +4,36 @@ import type { FilterGroup, SmartAlbumData, SmartAlbumDetailData, PhotoData, Glob
 import type { FilterEngine } from '../services/filter/filter-engine'
 import type { SmartAlbumRepository } from '../db/repositories/smart-album.repo'
 
+function parseFilterCriteria(serialized: string, schemaVersion = 1): FilterGroup {
+  if (schemaVersion !== 1) {
+    throw new Error(`Unsupported filter schema version: ${schemaVersion}`)
+  }
+  const parsed = JSON.parse(serialized) as FilterGroup
+  const validateGroup = (group: FilterGroup): void => {
+    if (!group || !['and', 'or'].includes(group.logic) || !Array.isArray(group.conditions)) {
+      throw new Error('Filter criteria is invalid')
+    }
+    for (const condition of group.conditions) {
+      if (!condition || typeof condition !== 'object') throw new Error('Filter condition is invalid')
+      if ('field' in condition) {
+        if (typeof condition.field !== 'string' || typeof condition.operator !== 'string') {
+          throw new Error('Filter rule is invalid')
+        }
+      } else {
+        validateGroup(condition)
+      }
+    }
+  }
+  validateGroup(parsed)
+  return parsed
+}
+
 export function registerFilterHandlers(registry: CommandRegistry, filterEngine: FilterEngine): void {
   registry.register(
     'filter.photos',
     wrapHandler((params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const criteria = params.criteria as FilterGroup
-      if (!criteria || !criteria.conditions) throw new Error('Invalid filter criteria')
+      const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
       const sortBy = typeof params.sortBy === 'string' ? params.sortBy : undefined
       const sortOrder = typeof params.sortOrder === 'string' ? params.sortOrder : undefined
       const photos: PhotoData[] = filterEngine.filterPhotos(sessionId, criteria, sortBy, sortOrder)
@@ -21,10 +44,25 @@ export function registerFilterHandlers(registry: CommandRegistry, filterEngine: 
   registry.register(
     'filter.photos_global',
     wrapHandler(async (params) => {
-      const criteria = params.criteria as FilterGroup
-      if (!criteria || !criteria.conditions) throw new Error('Invalid filter criteria')
-      const results: GlobalPhotoResult[] = await filterEngine.filterGlobally(criteria)
-      return ok(results)
+      const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
+      const sessionId = params.sessionId === undefined
+        ? undefined
+        : validateString(params.sessionId, 'sessionId')
+      const limit = typeof params.limit === 'number'
+        ? Math.max(1, Math.min(500, Math.floor(params.limit)))
+        : 100
+      const offset = typeof params.offset === 'number'
+        ? Math.max(0, Math.floor(params.offset))
+        : 0
+      const results: GlobalPhotoResult[] = filterEngine.filterGlobally(
+        criteria,
+        undefined,
+        undefined,
+        limit,
+        offset,
+        sessionId,
+      )
+      return ok({ photos: results, total: filterEngine.countGlobally(criteria, sessionId) })
     }),
   )
 
@@ -43,17 +81,16 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
 
   const repo = smartAlbumRepo
   const engine = filterEngine
-
   registry.register(
     'album.create',
     wrapHandler((params) => {
       const name = validateString(params.name, 'name')
-      const criteria = params.criteria as FilterGroup
-      if (!criteria || !criteria.conditions) throw new Error('Invalid filter criteria')
+      const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
       const sortBy = typeof params.sortBy === 'string' ? params.sortBy : undefined
       const sortOrder = typeof params.sortOrder === 'string' ? params.sortOrder : undefined
       const description = typeof params.description === 'string' ? params.description : undefined
       const icon = typeof params.icon === 'string' ? params.icon : undefined
+      engine.buildWhereClause(criteria)
 
       const row = repo.create({
         name,
@@ -64,18 +101,18 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
         icon,
       })
 
-      const photos = engine.filterPhotos('__global__', criteria, sortBy, sortOrder)
       const data: SmartAlbumDetailData = {
         id: row.id,
+        schemaVersion: row.schema_version,
         name: row.name,
         description: row.description,
-        filterCriteria: JSON.parse(row.filter_criteria),
+        filterCriteria: parseFilterCriteria(row.filter_criteria, row.schema_version),
         sortBy: row.sort_by,
         sortOrder: row.sort_order,
         icon: row.icon,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        photoCount: photos.length,
+        photoCount: engine.countGlobally(criteria),
       }
       return ok(data)
     }),
@@ -85,17 +122,38 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
     'album.list',
     wrapHandler(() => {
       const rows = repo.list()
-      const albums: SmartAlbumData[] = rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        filterCriteria: JSON.parse(row.filter_criteria),
-        sortBy: row.sort_by,
-        sortOrder: row.sort_order,
-        icon: row.icon,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      }))
+      const albums: SmartAlbumData[] = rows.flatMap((row) => {
+        try {
+          const filterCriteria = parseFilterCriteria(row.filter_criteria, row.schema_version)
+          engine.buildWhereClause(filterCriteria)
+          return [{
+            id: row.id,
+            schemaVersion: row.schema_version,
+            name: row.name,
+            description: row.description,
+            filterCriteria,
+            sortBy: row.sort_by,
+            sortOrder: row.sort_order,
+            icon: row.icon,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+          }]
+        } catch (error) {
+          return [{
+            id: row.id,
+            schemaVersion: row.schema_version,
+            name: row.name,
+            description: row.description,
+            filterCriteria: { logic: 'and', conditions: [] },
+            sortBy: row.sort_by,
+            sortOrder: row.sort_order,
+            icon: row.icon,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            validationError: error instanceof Error ? error.message : String(error),
+          }]
+        }
+      })
       return ok(albums)
     }),
   )
@@ -106,10 +164,10 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
       const albumId = validateString(params.albumId, 'albumId')
       const row = repo.get(albumId)
       if (!row) return err('Album not found')
-      const criteria: FilterGroup = JSON.parse(row.filter_criteria)
-      const photos = engine.filterPhotos('__global__', criteria, row.sort_by, row.sort_order)
+      const criteria = parseFilterCriteria(row.filter_criteria, row.schema_version)
       const data: SmartAlbumDetailData = {
         id: row.id,
+        schemaVersion: row.schema_version,
         name: row.name,
         description: row.description,
         filterCriteria: criteria,
@@ -118,7 +176,7 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
         icon: row.icon,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        photoCount: photos.length,
+        photoCount: engine.countGlobally(criteria),
       }
       return ok(data)
     }),
@@ -131,7 +189,11 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
       const updateData: Record<string, unknown> = {}
       if (typeof params.name === 'string') updateData.name = params.name
       if (typeof params.description === 'string') updateData.description = params.description
-      if (params.criteria) updateData.filterCriteria = params.criteria as FilterGroup
+      if (params.criteria) {
+        const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
+        engine.buildWhereClause(criteria)
+        updateData.filterCriteria = criteria
+      }
       if (typeof params.sortBy === 'string') updateData.sortBy = params.sortBy
       if (typeof params.sortOrder === 'string') updateData.sortOrder = params.sortOrder
       if (typeof params.icon === 'string') updateData.icon = params.icon
@@ -159,16 +221,20 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
       const row = repo.get(albumId)
       if (!row) return err('Album not found')
 
-      const criteria: FilterGroup = JSON.parse(row.filter_criteria)
-      const sortBy = row.sort_by
-      const sortOrder = row.sort_order
-
+      const criteria = parseFilterCriteria(row.filter_criteria, row.schema_version)
       const limit = typeof params.limit === 'number' ? params.limit : undefined
       const offset = typeof params.offset === 'number' ? params.offset : undefined
 
-      const photos = engine.filterPhotos('__global__', criteria, sortBy, sortOrder, limit, offset)
-
-      return ok({ photos, total: photos.length })
+      const resolvedLimit = Math.max(1, Math.min(500, Math.floor(limit ?? 100)))
+      const resolvedOffset = Math.max(0, Math.floor(offset ?? 0))
+      const photos = engine.filterGlobally(
+        criteria,
+        row.sort_by,
+        row.sort_order,
+        resolvedLimit,
+        resolvedOffset,
+      )
+      return ok({ photos, total: engine.countGlobally(criteria) })
     }),
   )
 }

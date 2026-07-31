@@ -189,6 +189,24 @@ describe('ImageService preview pipeline', () => {
     }
   })
 
+  it('treats a corrupt persistent thumbnail as a cache miss', async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-thumbnail-cache-'))
+    try {
+      const key = 'corrupt-cache-entry'
+      const hash = (await import('node:crypto'))
+        .createHash('sha256')
+        .update(key)
+        .digest('hex')
+        .slice(0, 16)
+      fs.writeFileSync(path.join(cacheDir, `${hash}.jpg`), 'not-a-jpeg')
+      const cache = new DiskThumbnailCache(createSettings(), cacheDir)
+
+      expect(await cache.get(key)).toBeNull()
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true })
+    }
+  })
+
   it('limits decode work even when callers bypass the preload queue', async () => {
     const service = new ImageService(createCache(), createSettings(2))
     let active = 0

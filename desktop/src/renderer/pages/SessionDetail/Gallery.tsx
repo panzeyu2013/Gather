@@ -31,6 +31,7 @@ export default function Gallery() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
   const [density, setDensity] = useState(220)
+  const [expandVariants, setExpandVariants] = useState(false)
   const [galleryWidth, setGalleryWidth] = useState(0)
   const [galleryHeight, setGalleryHeight] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
@@ -51,8 +52,8 @@ export default function Gallery() {
   }, [loadSettings])
 
   const { data: photos, isLoading } = useQuery({
-    queryKey: ['photos', sessionId],
-    queryFn: () => sessionApi.getPhotos(sessionId!),
+    queryKey: ['photos', sessionId, expandVariants],
+    queryFn: () => sessionApi.getPhotos(sessionId!, expandVariants),
     enabled: !!sessionId,
   })
 
@@ -174,6 +175,13 @@ export default function Gallery() {
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
+        <button
+          className={styles.variantToggle}
+          aria-pressed={expandVariants}
+          onClick={() => setExpandVariants(value => !value)}
+        >
+          {expandVariants ? '折叠 RAW/JPEG' : '展开所有变体'}
+        </button>
       </div>
       {selected.size > 0 && (
         <div className={styles.selectionBar}>
@@ -290,6 +298,9 @@ function GalleryThumbnail({ photo, isSelected, thumbSize }: {
         <div className={styles.thumbPlaceholder} />
       )}
       <div className={styles.thumbName}>{photo.filename}</div>
+      {(photo.variantCount ?? 1) > 1 && (
+        <div className={styles.variantBadge}>RAW+JPEG · {photo.variantCount}</div>
+      )}
       {isSelected && <div className={styles.thumbCheck}>✓</div>}
     </div>
   )

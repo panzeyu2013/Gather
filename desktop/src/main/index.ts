@@ -1,6 +1,5 @@
 import { app, BrowserWindow, ipcMain, Menu, dialog, protocol, session, shell } from 'electron'
 import { join, resolve } from 'path'
-import { statSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
 import { Database } from './db/database'
@@ -15,6 +14,7 @@ import { WritebackService } from './services/writeback/writeback.service'
 import { SimilarityService } from './services/similarity/similarity.service'
 import { ImageService } from './services/image'
 import { PhotoRepository } from './db/repositories/photo.repo'
+import { AssetRepository } from './db/repositories/asset.repo'
 import { FilterEngine } from './services/filter/filter-engine'
 import { SmartAlbumRepository } from './db/repositories/smart-album.repo'
 import { DuplicateService } from './services/duplicate/duplicate.service'
@@ -25,6 +25,10 @@ import { CullingService } from './services/culling/culling.service'
 import { ExportService } from './services/export/export.service'
 import { ReportService } from './services/export/report.service'
 import { MetadataWriterRouter } from './services/xmp/metadata-writer-router'
+import {
+  shutdownRuntime,
+  type RuntimeLifecycle,
+} from './services/runtime/runtime-lifecycle'
 import { MetadataSyncCoordinator } from './services/metadata/metadata-sync-coordinator'
 import { IMAGE_CONFIG } from './services/image/image-config'
 
@@ -42,11 +46,23 @@ import { registerPersonHandlers } from './ipc/person.ipc'
 import { registerMetadataHandlers } from './ipc/metadata.ipc'
 import { registerCullingHandlers } from './ipc/culling.ipc'
 import { registerExportHandlers } from './ipc/export.ipc'
+import { registerJobHandlers } from './ipc/jobs.ipc'
+import { JobService } from './services/jobs/job.service'
+import { IndexService } from './services/indexer/index.service'
+import { registerIndexerHandlers } from './ipc/indexer.ipc'
+import { registerQualityHandlers } from './ipc/quality.ipc'
+import { registerNavigationHandlers } from './ipc/navigation.ipc'
+import { registerAssetHandlers } from './ipc/assets.ipc'
+import { QualityService } from './services/quality/quality.service'
+import { NavigationService } from './services/navigation/navigation.service'
+import { parseImportDeepLink } from './deep-link'
+import { normalizeDatabaseRuntimeSettings } from './runtime-settings'
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const registry = new CommandRegistry()
 let mainWindow: BrowserWindow | null = null
-let pendingDeepLink: string | null = null
+let rendererReady = false
+const pendingDeepLinks: string[] = []
 const supportedImageExtensions = [...new Set(IMAGE_CONFIG.sharp.supportedExtensions)]
 const supportedImageExtensionSet = new Set(supportedImageExtensions)
 
@@ -64,35 +80,26 @@ protocol.registerSchemesAsPrivileged([
 
 function handleDeepLink(url: string): void {
   try {
-    const parsed = new URL(url)
-    if (parsed.hostname !== 'import') return
-    const encodedFiles = parsed.searchParams.getAll('file').filter(Boolean)
-    if (encodedFiles.length === 0) return
-    const validFiles: string[] = []
-    for (const f of encodedFiles) {
-      try {
-        const decoded = decodeURIComponent(f)
-        const resolved = resolve(decoded)
-        const stat = statSync(resolved)
-        if (stat.isFile()) {
-          validFiles.push(resolved)
-        }
-      } catch {
-        console.warn('Skipping invalid deep link file:', f)
-      }
-    }
+    const validFiles = parseImportDeepLink(url, supportedImageExtensionSet)
     if (validFiles.length === 0) return
-    if (mainWindow) {
+    if (mainWindow && rendererReady) {
       mainWindow.webContents.send('gather:event', 'c1:plugin-import', { files: validFiles })
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     } else {
-      pendingDeepLink = url
+      pendingDeepLinks.push(url)
     }
   } catch {
     console.error('Failed to parse deep link:', url)
   }
 }
+
+// macOS may deliver open-url before app.whenReady(). Register this listener
+// during module initialization and defer delivery until the renderer exists.
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleDeepLink(url)
+})
 
 const WINDOW_DEFAULT_WIDTH = 1200
 const WINDOW_DEFAULT_HEIGHT = 800
@@ -175,6 +182,7 @@ const appMenuTemplate: Electron.MenuItemConstructorOptions[] = [
 ]
 
 function createWindow(): void {
+  rendererReady = false
   mainWindow = new BrowserWindow({
     width: WINDOW_DEFAULT_WIDTH,
     height: WINDOW_DEFAULT_HEIGHT,
@@ -224,14 +232,15 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.on('did-finish-load', () => {
+    rendererReady = true
     mainWindow?.webContents.send('gather:event', 'engine:status', { status: 'ready' })
-    if (pendingDeepLink) {
-      handleDeepLink(pendingDeepLink)
-      pendingDeepLink = null
+    for (const deepLink of pendingDeepLinks.splice(0)) {
+      handleDeepLink(deepLink)
     }
   })
 
   mainWindow.on('closed', () => {
+    rendererReady = false
     mainWindow = null
   })
 }
@@ -250,6 +259,7 @@ function registerIpc(): void {
   const similarityService = svc<SimilarityService>(DI_TOKENS.SIMILARITY_SERVICE)
   const imageService = svc<ImageService>(DI_TOKENS.IMAGE_SERVICE)
   const photoRepo = svc<PhotoRepository>(DI_TOKENS.PHOTO_REPO)
+  const assetRepo = svc<AssetRepository>(DI_TOKENS.ASSET_REPO)
   const filterEngine = svc<FilterEngine>(DI_TOKENS.FILTER_ENGINE)
   const smartAlbumRepo = svc<SmartAlbumRepository>(DI_TOKENS.SMART_ALBUM_REPO)
   const duplicateService = svc<DuplicateService>(DI_TOKENS.DUPLICATE_SERVICE)
@@ -260,6 +270,7 @@ function registerIpc(): void {
   const exportService = svc<ExportService>(DI_TOKENS.EXPORT_SERVICE)
   const reportService = svc<ReportService>(DI_TOKENS.REPORT_SERVICE)
   const metadataSync = svc<MetadataSyncCoordinator>(DI_TOKENS.METADATA_SYNC_COORDINATOR)
+  assetRepo.setMetadataRelocationSink(xmpPath => metadataSync.schedule(xmpPath, 0))
   const ensureMainWindowSender = (e: Electron.IpcMainInvokeEvent): void => {
     if (!mainWindow || e.sender !== mainWindow.webContents) {
       throw new Error('This action is only available from the main application window')
@@ -268,19 +279,58 @@ function registerIpc(): void {
 
   registerAllIpcHandlers(registry, ensureMainWindowSender)
   registerSessionHandlers(registry, sessionService)
-  registerFaceKwHandlers(registry, faceKwService, writebackService, faceRepo, settingsService)
-  registerSimilarityHandlers(registry, similarityService, writebackService, settingsService)
-  registerImageHandlers(registry, imageService, settingsService)
+  registerFaceKwHandlers(
+    registry,
+    faceKwService,
+    writebackService,
+    faceRepo,
+    settingsService,
+    svc<JobService>(DI_TOKENS.JOB_SERVICE),
+  )
+  registerSimilarityHandlers(
+    registry,
+    similarityService,
+    writebackService,
+    settingsService,
+    svc<JobService>(DI_TOKENS.JOB_SERVICE),
+  )
+  registerImageHandlers(
+    registry,
+    imageService,
+    settingsService,
+    svc<JobService>(DI_TOKENS.JOB_SERVICE),
+  )
   registerPhotoHandlers(registry, photoRepo, db)
+  registerAssetHandlers(registry, assetRepo)
   registerSettingsHandlers(registry, settingsService)
   registerFilterHandlers(registry, filterEngine)
   registerAlbumHandlers(registry, filterEngine, smartAlbumRepo)
-  registerDuplicateHandlers(registry, duplicateService)
+  registerDuplicateHandlers(
+    registry,
+    duplicateService,
+    svc<JobService>(DI_TOKENS.JOB_SERVICE),
+  )
   registerTemplateHandlers(registry, templateService)
   registerPersonHandlers(registry, personRepo)
-  registerMetadataHandlers(registry, metadataService)
+  registerMetadataHandlers(registry, metadataService, metadataSync)
   registerCullingHandlers(registry, cullingService, writebackService, metadataSync)
-  registerExportHandlers(registry, exportService, reportService)
+  registerExportHandlers(
+    registry,
+    exportService,
+    reportService,
+    svc<JobService>(DI_TOKENS.JOB_SERVICE),
+  )
+  registerJobHandlers(registry, svc<JobService>(DI_TOKENS.JOB_SERVICE))
+  registerIndexerHandlers(
+    registry,
+    svc<IndexService>(DI_TOKENS.INDEX_SERVICE),
+    svc<JobService>(DI_TOKENS.JOB_SERVICE),
+    metadataService,
+    photoRepo,
+    assetRepo,
+  )
+  registerQualityHandlers(registry, svc<QualityService>(DI_TOKENS.QUALITY_SERVICE), svc<JobService>(DI_TOKENS.JOB_SERVICE))
+  registerNavigationHandlers(registry, svc<NavigationService>(DI_TOKENS.NAVIGATION_SERVICE))
 
   ipcMain.handle('c1:get-selected-photos', async (e) => {
     ensureMainWindowSender(e)
@@ -327,21 +377,30 @@ function registerIpc(): void {
       throw new Error('Invalid directory path')
     }
     const files: string[] = []
-    try {
-      const entries = await readdir(dirPath, { withFileTypes: true })
+    const scan = async (directory: string): Promise<void> => {
+      const entries = await readdir(directory, { withFileTypes: true })
       for (const entry of entries) {
-        const fullPath = join(dirPath, entry.name)
+        // Do not follow symlinks: a link may escape the selected directory or
+        // introduce a directory cycle.
+        if (entry.isSymbolicLink()) continue
+        const fullPath = join(directory, entry.name)
         try {
-          const isFile = entry.isFile() || (!entry.isDirectory() && (await stat(fullPath)).isFile())
-          if (isFile) {
+          if (entry.isDirectory()) {
+            await scan(fullPath)
+          } else if (entry.isFile()) {
             const ext = '.' + entry.name.split('.').pop()?.toLowerCase()
-            if (supportedImageExtensionSet.has(ext)) {
-              files.push(fullPath)
-            }
+            if (supportedImageExtensionSet.has(ext)) files.push(fullPath)
           }
         } catch {
+          // One unreadable child must not discard the rest of the selected
+          // directory. A failure at the root is still reported below.
         }
       }
+    }
+    try {
+      const root = await stat(dirPath)
+      if (!root.isDirectory()) throw new Error('Not a directory')
+      await scan(dirPath)
     } catch {
       throw new Error('Failed to read directory')
     }
@@ -398,22 +457,38 @@ function registerImageProtocol(): void {
 
 app.enableSandbox()
 
-app.whenReady().then(() => {
+const runtime: RuntimeLifecycle = {}
+
+app.whenReady().then(async () => {
   initContainer()
 
   const db = svc<Database>(DI_TOKENS.DB)
-  runMigrations(db)
+  runtime.database = db
+  await runMigrations(db)
 
   registerImageProtocol()
   registerIpc()
 
   const settings = svc<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
-  db.pragma(`synchronous = ${settings.get('db_synchronous', 'normal').toUpperCase()}`)
-  db.pragma(`cache_size = ${-settings.getNumber('db_cache_size_mb', 64) * 1000}`)
+  const databaseRuntime = normalizeDatabaseRuntimeSettings(
+    settings.get('db_synchronous', 'normal'),
+    settings.getNumber('db_cache_size_mb', 64),
+  )
+  db.pragma(`synchronous = ${databaseRuntime.synchronous}`)
+  db.pragma(`cache_size = ${-databaseRuntime.cacheSizeMb * 1000}`)
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate))
   createWindow()
-  svc<MetadataSyncCoordinator>(DI_TOKENS.METADATA_SYNC_COORDINATOR).start(
+  const jobs = svc<JobService>(DI_TOKENS.JOB_SERVICE)
+  const indexer = svc<IndexService>(DI_TOKENS.INDEX_SERVICE)
+  const metadataSync = svc<MetadataSyncCoordinator>(DI_TOKENS.METADATA_SYNC_COORDINATOR)
+  runtime.jobs = jobs
+  runtime.indexer = indexer
+  runtime.metadataSync = metadataSync
+  runtime.writerRouter = svc<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER)
+  jobs.start()
+  indexer.startWatchers()
+  metadataSync.start(
     (summary) => mainWindow?.webContents.send(
       'gather:event',
       'culling:sync-status',
@@ -425,16 +500,21 @@ app.whenReady().then(() => {
     app.setAsDefaultProtocolClient('gather')
   }
 
-  app.on('open-url', (event, url) => {
-    event.preventDefault()
-    handleDeepLink(url)
-  })
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
     }
   })
+}).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error('Application startup failed:', message)
+  if (process.env.GATHER_TEST_FAIL_MIGRATION !== 'after-migrate') {
+    dialog.showErrorBox(
+      'Gather 无法启动',
+      `数据库迁移或应用初始化失败。原数据库已保留，请查看日志。\n\n${message}`,
+    )
+  }
+  app.quit()
 })
 
 app.on('window-all-closed', () => {
@@ -446,21 +526,9 @@ app.on('window-all-closed', () => {
 let quitting = false
 
 function shutdown(): void {
-  const writerRouter = svc<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER)
-  const metadataSync = svc<MetadataSyncCoordinator>(DI_TOKENS.METADATA_SYNC_COORDINATOR)
-  Promise.race([
-    Promise.all([
-      metadataSync.shutdown(),
-      writerRouter.shutdown(),
-    ]).then(() => undefined),
-    new Promise<void>((resolve) => setTimeout(resolve, 5000)),
-  ])
+  shutdownRuntime(runtime)
     .catch((err) => {
       console.error('Shutdown error:', err instanceof Error ? err.message : err)
-    })
-    .finally(() => {
-      const db = svc<Database>(DI_TOKENS.DB)
-      db.close()
     })
     .finally(() => {
       app.quit()

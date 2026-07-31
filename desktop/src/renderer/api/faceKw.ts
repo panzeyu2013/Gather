@@ -24,13 +24,17 @@ export const faceKwApi = {
     sendCommand<{ done: boolean }>('fkw.bind', { sessionId, clusterId, roleName, keywords }),
 
   unbind: (sessionId: string, clusterId: number) =>
-    sendCommand<{ done: boolean }>('fkw.unbind', { sessionId, clusterId }),
+    sendCommand<{ done: boolean; removedKeywords: number }>('fkw.unbind', {
+      sessionId,
+      clusterId,
+      confirmed: true,
+    }),
 
   merge: (sessionId: string, sourceId: number, targetId: number) =>
     sendCommand<{ done: boolean }>('fkw.merge', { sessionId, source: sourceId, target: targetId }),
 
-  getClusterThumbnail: (clusterId: number) =>
-    sendCommand<{ base64: string }>('fkw.get_cluster_thumbnail', { clusterId }),
+  getClusterThumbnail: (sessionId: string, clusterId: number) =>
+    sendCommand<{ base64: string }>('fkw.get_cluster_thumbnail', { sessionId, clusterId }),
 
   removeMember: (sessionId: string, clusterId: number, memberId: number) =>
     sendCommand<{ done: boolean }>('fkw.remove_member', { sessionId, clusterId, memberId }),

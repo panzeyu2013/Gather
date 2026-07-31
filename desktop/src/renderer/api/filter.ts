@@ -5,8 +5,14 @@ export const filterApi = {
   photos: (sessionId: string, criteria: FilterGroup, sortBy?: string, sortOrder?: string) =>
     sendCommand<PhotoData[]>('filter.photos', { sessionId, criteria, sortBy, sortOrder }),
 
-  photosGlobal: (criteria: FilterGroup) =>
-    sendCommand<GlobalPhotoResult[]>('filter.photos_global', { criteria }),
+  photosGlobal: (
+    criteria: FilterGroup,
+    options: { sessionId?: string; limit?: number; offset?: number } = {},
+  ) =>
+    sendCommand<{ photos: GlobalPhotoResult[]; total: number }>(
+      'filter.photos_global',
+      { criteria, ...options },
+    ),
 
   suggest: (sessionId: string, keyword: string) =>
     sendCommand<FilterSuggestion[]>('filter.suggest', { sessionId, keyword }),
@@ -29,5 +35,5 @@ export const albumApi = {
     sendCommand<{ done: boolean }>('album.delete', { albumId, confirmed: true }),
 
   getPhotos: (albumId: string, limit?: number, offset?: number) =>
-    sendCommand<{ photos: PhotoData[]; total: number }>('album.get_photos', { albumId, limit, offset }),
+    sendCommand<{ photos: GlobalPhotoResult[]; total: number }>('album.get_photos', { albumId, limit, offset }),
 }

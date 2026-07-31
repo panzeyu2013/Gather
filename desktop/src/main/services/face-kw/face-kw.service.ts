@@ -15,6 +15,7 @@ import { DI_TOKENS } from '../../di/container'
 import { MODEL_CONFIG } from './model-config'
 import { resolveModelPath } from './provider'
 import { batchAsync } from '../../utils/async'
+import { collapsePhotoAssets } from '../assets/logical-photo-assets'
 
 export interface FaceClusterData {
   id: number
@@ -43,6 +44,15 @@ export interface FaceAnalysisResult {
   encodingFailures: number
 }
 
+export function validateFaceClusteringParameters(eps: number, minPts: number): void {
+  if (!Number.isFinite(eps) || eps < 0 || eps > 1) {
+    throw new ValidationError('人脸聚类相似度必须是 0 到 1 之间的数字')
+  }
+  if (!Number.isInteger(minPts) || minPts < 1) {
+    throw new ValidationError('人脸聚类最小样本数必须是大于等于 1 的整数')
+  }
+}
+
 @injectable()
 export class FaceKwService {
   private controllers = new Map<string, AbortController>()
@@ -63,6 +73,7 @@ export class FaceKwService {
     minPts = this.settings.getNumber('default_min_samples', 2),
     onProgress?: ProgressCallback,
   ): Promise<FaceAnalysisResult> {
+    validateFaceClusteringParameters(eps, minPts)
     if (this.controllers.has(sessionId)) {
       throw new Error('Analysis is already in progress for this session')
     }
@@ -85,7 +96,8 @@ export class FaceKwService {
       const onnxThreads = this.settings.getNumber('onnx_threads', 4)
       const encoderInputSize = this.settings.getNumber('encoder_input_size', MODEL_CONFIG.encode.inputSize)
       const embeddingDim = this.settings.getNumber('embedding_dim', MODEL_CONFIG.encode.embeddingDim)
-      const photos = this.photoRepo.getBySession(sessionId)
+      const photos = collapsePhotoAssets(this.photoRepo.getBySession(sessionId))
+      if (photos.length === 0) throw new ValidationError('当前工作区没有可分析的照片')
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
       const primaryDetectionSize = this.settings.getNumber(
@@ -142,6 +154,42 @@ export class FaceKwService {
           // The normal per-photo error path below records unreadable inputs.
         }
       }, 32)
+      let reusedAcrossSessions = false
+      for (const photo of photos) {
+        const sourceStat = sourceStats.get(photo.id)
+        if (!sourceStat) continue
+        const analysisState = analysisStates.get(photo.id)
+        const cacheIsValid = Boolean(
+          analysisState &&
+          analysisState.sourceFileSize === sourceStat.size &&
+          Math.abs(analysisState.sourceFileMtimeMs - sourceStat.mtimeMs) < 1 &&
+          analysisState.analysisSignature === analysisSignature,
+        )
+        if (cacheIsValid) continue
+        const reused = this.faceRepo.reuseObservationsForAssetFile(
+          sessionId,
+          photo.id,
+          sourceStat.size,
+          sourceStat.mtimeMs,
+          analysisSignature,
+        )
+        if (reused.reused) {
+          reusedAcrossSessions = true
+          analysisStates.set(photo.id, {
+            sourceFileSize: sourceStat.size,
+            sourceFileMtimeMs: sourceStat.mtimeMs,
+            analysisSignature,
+          })
+        }
+      }
+      if (reusedAcrossSessions) {
+        cachedByPhoto.clear()
+        for (const observation of this.faceRepo.getObservations(sessionId)) {
+          const values = cachedByPhoto.get(observation.photo_id) ?? []
+          values.push(observation)
+          cachedByPhoto.set(observation.photo_id, values)
+        }
+      }
       const photosNeedingAnalysis = photos.filter((photo) => {
         const sourceStat = sourceStats.get(photo.id)
         if (!sourceStat) return false
@@ -276,6 +324,7 @@ export class FaceKwService {
   }
 
   async recluster(sessionId: string, eps: number, minPts: number): Promise<void> {
+    validateFaceClusteringParameters(eps, minPts)
     const session = this.sessionRepo.get(sessionId)
     if (!session) throw new NotFoundError('Session not found')
     const observations = this.faceRepo.getObservations(sessionId)
@@ -394,7 +443,10 @@ export class FaceKwService {
     }))
   }
 
-  async getClusterThumbnail(clusterId: number): Promise<string> {
+  async getClusterThumbnail(sessionId: string, clusterId: number): Promise<string> {
+    if (this.faceRepo.getClusterSessionId(clusterId) !== sessionId) {
+      throw new NotFoundError('Cluster not found')
+    }
     const thumbPath = this.faceRepo.getClusterThumbnailPath(clusterId)
     if (!thumbPath) return ''
     try {
@@ -411,7 +463,16 @@ export class FaceKwService {
     const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
     if (!clusterSessionId) throw new NotFoundError('Cluster not found')
     if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
-    this.faceRepo.updateBinding(clusterId, roleName, keywords)
+    const normalizedRoleName = roleName.trim()
+    if (!normalizedRoleName) throw new ValidationError('Role name cannot be empty')
+    if (!Array.isArray(keywords) || keywords.some(keyword => typeof keyword !== 'string')) {
+      throw new ValidationError('Keywords must be an array of strings')
+    }
+    this.faceRepo.updateBinding(
+      clusterId,
+      normalizedRoleName,
+      [...new Set(keywords.map(keyword => keyword.trim()).filter(Boolean))],
+    )
   }
 
   async unbindCluster(sessionId: string, clusterId: number): Promise<void> {
@@ -422,6 +483,9 @@ export class FaceKwService {
   }
 
   async mergeClusters(sessionId: string, sourceId: number, targetId: number): Promise<void> {
+    if (sourceId === targetId) {
+      throw new ValidationError('不能将人脸组与自身合并')
+    }
     const sourceSessionId = this.faceRepo.getClusterSessionId(sourceId)
     const targetSessionId = this.faceRepo.getClusterSessionId(targetId)
     if (!sourceSessionId || !targetSessionId) throw new NotFoundError('Cluster not found')

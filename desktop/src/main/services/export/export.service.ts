@@ -7,6 +7,7 @@ import { DI_TOKENS } from '../../di/container'
 import sharp from 'sharp'
 import * as fs from 'fs'
 import * as path from 'path'
+import { randomUUID } from 'node:crypto'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
 import { batchAsync } from '../../utils/async'
 import { heavyTaskScheduler } from '../../utils/heavy-task-scheduler'
@@ -36,11 +37,63 @@ function validateExportOptions(options: ExportOptions): void {
   if (!['original', 'jpeg', 'tiff'].includes(options.format)) {
     throw new Error('导出格式无效')
   }
+  if (
+    options.variantPolicy !== undefined &&
+    !['preferred', 'raw', 'jpeg', 'all'].includes(options.variantPolicy)
+  ) {
+    throw new Error('导出变体策略无效')
+  }
   if (options.format === 'original' && (options.maxDimension || options.watermark)) {
     throw new Error('保持原格式仅复制文件，不能同时调整尺寸或添加水印')
   }
   if (!options.naming?.pattern?.trim()) {
     throw new Error('文件命名规则不能为空')
+  }
+  if (
+    options.naming.pattern.includes('/') ||
+    options.naming.pattern.includes('\\') ||
+    options.naming.pattern.includes('\0')
+  ) {
+    throw new Error('文件命名规则不能包含路径分隔符或空字符')
+  }
+  if (
+    options.quality !== undefined &&
+    (!Number.isInteger(options.quality) || options.quality < 1 || options.quality > 100)
+  ) {
+    throw new Error('JPEG 质量必须是 1 到 100 之间的整数')
+  }
+  if (
+    options.maxDimension !== undefined &&
+    (!Number.isInteger(options.maxDimension) || options.maxDimension < 1)
+  ) {
+    throw new Error('最长边必须是大于等于 1 的整数')
+  }
+  if (
+    options.naming.counterStart !== undefined &&
+    (!Number.isInteger(options.naming.counterStart) || options.naming.counterStart < 0)
+  ) {
+    throw new Error('起始序号必须是大于等于 0 的整数')
+  }
+  if (options.watermark) {
+    if (options.watermark.type !== 'text') {
+      throw new Error('当前版本仅支持文字水印')
+    }
+    if (!options.watermark.content.trim()) throw new Error('水印文字不能为空')
+    if (
+      !Number.isFinite(options.watermark.opacity) ||
+      options.watermark.opacity < 0 ||
+      options.watermark.opacity > 1
+    ) {
+      throw new Error('水印不透明度必须在 0 到 1 之间')
+    }
+    if (
+      options.watermark.fontSize !== undefined &&
+      (!Number.isFinite(options.watermark.fontSize) ||
+        options.watermark.fontSize < 1 ||
+        options.watermark.fontSize > 1000)
+    ) {
+      throw new Error('水印字号必须在 1 到 1000 之间')
+    }
   }
 }
 
@@ -67,7 +120,7 @@ async function getFreeSpace(dir: string): Promise<number> {
   } catch {
     /* fall through */
   }
-  return 0
+  return -1
 }
 
 @injectable()
@@ -81,6 +134,26 @@ export class ExportService {
 
   cancel(sessionId: string): void {
     this.cancelFlags.set(sessionId, true)
+  }
+
+  private async copyExclusive(source: string, destination: string): Promise<void> {
+    await fs.promises.copyFile(source, destination, fs.constants.COPYFILE_EXCL)
+  }
+
+  private async copyXmpSafely(source: string, destination: string): Promise<void> {
+    try {
+      await this.copyExclusive(source, destination)
+      return
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    const [sourceBytes, destinationBytes] = await Promise.all([
+      fs.promises.readFile(source),
+      fs.promises.readFile(destination),
+    ])
+    if (!sourceBytes.equals(destinationBytes)) {
+      throw new Error(`目标 XMP 已存在且内容不同：${destination}`)
+    }
   }
 
   async preview(sessionId: string, options: ExportOptions): Promise<ExportPreview> {
@@ -111,8 +184,17 @@ export class ExportService {
     sessionId: string,
     options: ExportOptions,
     onProgress?: (e: ExportProgressData) => void,
+    resume?: {
+      destinations?: Record<string, string>
+      completedPhotoIds?: ReadonlySet<string>
+      signal?: AbortSignal
+      onPlanned?: (photoId: string, destinationName: string) => void
+      onPlanReady?: () => void
+      onCompleted?: (photoId: string) => void
+    },
   ): Promise<ExportResult> {
     this.cancelFlags.set(sessionId, false)
+    if (resume?.signal?.aborted) this.cancelFlags.set(sessionId, true)
     validateExportOptions(options)
     const photos = this.photoRepo.getBySession(sessionId)
     const sessionName = this.sessionRepo.get(sessionId)?.name ?? sessionId
@@ -130,23 +212,35 @@ export class ExportService {
     }
 
     const plans = filtered.map((photo, index) => {
-      let destName = this.resolveNaming(
-        photo,
-        options,
-        (options.naming.counterStart ?? 1) + index,
-        sessionName,
+      let destName = resume?.destinations?.[photo.id]
+      const completedDestination = Boolean(
+        destName &&
+        resume?.completedPhotoIds?.has(photo.id) &&
+        fs.existsSync(path.join(destination, destName)),
       )
-      const ext = path.extname(destName)
-      const base = destName.slice(0, -ext.length)
-      let dedupeIdx = 2
-      while (
-        usedNames.has(destName) ||
-        fs.existsSync(path.join(destination, destName))
+      if (
+        !destName ||
+        (!completedDestination && fs.existsSync(path.join(destination, destName)))
       ) {
-        destName = `${base}_${dedupeIdx}${ext}`
-        dedupeIdx++
+        destName = this.resolveNaming(
+          photo,
+          options,
+          (options.naming.counterStart ?? 1) + index,
+          sessionName,
+        )
+        const ext = path.extname(destName)
+        const base = destName.slice(0, -ext.length)
+        let dedupeIdx = 2
+        while (
+          usedNames.has(destName.toLocaleLowerCase()) ||
+          fs.existsSync(path.join(destination, destName))
+        ) {
+          destName = `${base}_${dedupeIdx}${ext}`
+          dedupeIdx++
+        }
+        resume?.onPlanned?.(photo.id, destName)
       }
-      usedNames.add(destName)
+      usedNames.add(destName.toLocaleLowerCase())
       return {
         index,
         photo,
@@ -154,13 +248,28 @@ export class ExportService {
         destPath: path.join(destination, destName),
       }
     })
+    resume?.onPlanReady?.()
     let completed = 0
     const concurrency = options.format === 'original' ? 4 : 2
     await batchAsync(plans, async ({ photo, destName, destPath }) => {
-      if (this.cancelFlags.get(sessionId)) {
+      if (resume?.completedPhotoIds?.has(photo.id) && fs.existsSync(destPath)) {
+        exported++
+        completed++
+        onProgress?.({
+          sessionId,
+          current: completed,
+          total,
+          fileName: destName,
+          bytesWritten: 0,
+          status: 'done',
+        })
+        return
+      }
+      if (resume?.signal?.aborted || this.cancelFlags.get(sessionId)) {
         skipped++
         return
       }
+      let destinationCreated = false
       try {
         const resolvedDest = path.resolve(destPath)
         if (!resolvedDest.startsWith(destination + path.sep) && resolvedDest !== destination) {
@@ -168,24 +277,31 @@ export class ExportService {
         }
 
         if (options.format === 'original') {
-          if (options.includeXmp) {
-            await fs.promises.cp(photo.filepath, destPath)
-            const xmpPath = getXmpSidecarPath(photo.filepath)
-            if (fs.existsSync(xmpPath)) {
-              await fs.promises.cp(xmpPath, getXmpSidecarPath(destPath))
-            }
-          } else {
-            await fs.promises.cp(photo.filepath, destPath)
+          await this.copyExclusive(photo.filepath, destPath)
+          destinationCreated = true
+          const xmpPath = getXmpSidecarPath(photo.filepath)
+          if (options.includeXmp && fs.existsSync(xmpPath)) {
+            await this.copyXmpSafely(xmpPath, getXmpSidecarPath(destPath))
           }
         } else {
-          await heavyTaskScheduler.run(
-            () => this.convertAndExport(photo.filepath, destPath, options),
-            1,
+          const temporaryPath = path.join(
+            destination,
+            `.${destName}.gather-export-${process.pid}-${randomUUID()}`,
           )
+          try {
+            await heavyTaskScheduler.run(
+              () => this.convertAndExport(photo.filepath, temporaryPath, options),
+              1,
+            )
+            await this.copyExclusive(temporaryPath, destPath)
+            destinationCreated = true
+          } finally {
+            await fs.promises.unlink(temporaryPath).catch(() => undefined)
+          }
           if (options.includeXmp) {
             const xmpPath = getXmpSidecarPath(photo.filepath)
             if (fs.existsSync(xmpPath)) {
-              await fs.promises.cp(xmpPath, getXmpSidecarPath(destPath))
+              await this.copyXmpSafely(xmpPath, getXmpSidecarPath(destPath))
             }
           }
         }
@@ -193,6 +309,7 @@ export class ExportService {
         const destinationStat = await fs.promises.stat(destPath)
         exported++
         completed++
+        resume?.onCompleted?.(photo.id)
 
         onProgress?.({
           sessionId,
@@ -203,6 +320,9 @@ export class ExportService {
           status: 'done',
         })
       } catch (e: unknown) {
+        if (destinationCreated) {
+          await fs.promises.unlink(destPath).catch(() => undefined)
+        }
         const message = e instanceof Error ? e.message : '未知错误'
         errors.push(`${photo.filename}: ${message}`)
         failed++
@@ -255,13 +375,36 @@ export class ExportService {
   }
 
   private filterPhotos(photos: PhotoRow[], options: ExportOptions): PhotoRow[] {
+    let scoped: PhotoRow[]
     if (options.scope === 'session') {
-      return photos.filter((p) => p.status !== 'removed')
-    }
-    if (options.scope === 'selected' || options.scope === 'filtered') {
+      scoped = photos.filter((p) => p.status !== 'removed')
+    } else if (options.scope === 'selected' || options.scope === 'filtered') {
       throw new Error(`暂不支持导出范围“${options.scope}”，请导出当前工作区的全部照片。`)
+    } else {
+      throw new Error(`未知导出范围：${options.scope}`)
     }
-    throw new Error(`未知导出范围：${options.scope}`)
+    const policy = options.variantPolicy ?? 'preferred'
+    if (policy === 'all') return scoped
+    const groups = new Map<string, PhotoRow[]>()
+    for (const photo of scoped) {
+      const key = photo.asset_id ?? photo.id
+      const variants = groups.get(key) ?? []
+      variants.push(photo)
+      groups.set(key, variants)
+    }
+    const rawExtensions = new Set([
+      '.3fr', '.arw', '.cr2', '.cr3', '.dng', '.fff', '.gpr', '.iiq',
+      '.mos', '.nef', '.nrw', '.orf', '.pef', '.raf', '.raw', '.rw2',
+      '.rwl', '.sr2', '.srf', '.srw', '.x3f',
+    ])
+    const jpegExtensions = new Set(['.jpg', '.jpeg'])
+    const isRaw = (photo: PhotoRow) => rawExtensions.has(path.extname(photo.filename).toLowerCase())
+    const isJpeg = (photo: PhotoRow) => jpegExtensions.has(path.extname(photo.filename).toLowerCase())
+    return [...groups.values()].flatMap(variants => {
+      if (policy === 'raw') return variants.find(isRaw) ?? []
+      if (policy === 'jpeg') return variants.find(isJpeg) ?? []
+      return variants.find(isRaw) ?? variants.find(isJpeg) ?? variants[0]
+    })
   }
 
   private resolveNaming(photo: PhotoRow, options: ExportOptions, counter: number, sessionName: string): string {

@@ -27,6 +27,7 @@ export interface FkwBindParams {
 export interface FkwUnbindParams {
   sessionId: string
   clusterId: number
+  confirmed: boolean
 }
 
 export interface FkwMergeParams {

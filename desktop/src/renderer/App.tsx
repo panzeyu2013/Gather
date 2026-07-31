@@ -8,6 +8,8 @@ import { useToastStore, type ToastType } from './components/Toast/ToastStore'
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const SessionDetail = lazy(() => import('./pages/SessionDetail'))
 const Settings = lazy(() => import('./pages/Settings'))
+const Library = lazy(() => import('./pages/Library'))
+const Jobs = lazy(() => import('./pages/Jobs'))
 
 export default function App() {
   const addToast = useToastStore((state) => state.addToast)
@@ -30,6 +32,8 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/sessions/:sessionId/*" element={<SessionDetail />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/library" element={<Library />} />
+            <Route path="/jobs" element={<Jobs />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

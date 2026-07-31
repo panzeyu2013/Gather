@@ -11,6 +11,104 @@ import type { PhotoRepository } from '../../../desktop/src/main/db/repositories/
 import type { SessionRepository } from '../../../desktop/src/main/db/repositories/session.repo'
 import type { MetadataCacheRepository } from '../../../desktop/src/main/db/repositories/metadata-cache.repo'
 
+type TestPhoto = { id: string; filepath: string }
+
+function makeMetadataPipeline(
+  router: Pick<MetadataWriterRouter, 'selectSidecar'>,
+  photos: TestPhoto[],
+) {
+  const byId = new Map(photos.map(photo => [photo.id, photo]))
+  const queued = new Map<string, { photoPath: string; values: Record<string, unknown> }>()
+  const transactions = new Map<string, {
+    photoPath: string
+    backupPath: string
+    status: 'written' | 'synced' | 'cleaned'
+  }>()
+
+  const waitForIdle = vi.fn(async () => undefined)
+  const flushSession = vi.fn(async (sessionId: string) => {
+    const items = []
+    for (const [xmpPath, item] of queued) {
+      const writer = router.selectSidecar()
+      const existing = transactions.get(xmpPath)
+      const backupPath = existing?.backupPath ?? await writer.backup(item.photoPath)
+      await writer.writeAttributes(item.photoPath, item.values)
+      transactions.set(xmpPath, { photoPath: item.photoPath, backupPath, status: 'written' })
+      items.push({
+        xmpPath,
+        revision: 1,
+        persistedRevision: 1,
+        status: 'written' as const,
+        attemptCount: 1,
+        errorMessage: '',
+        updatedAt: new Date().toISOString(),
+      })
+    }
+    queued.clear()
+    return {
+      sessionId,
+      pending: 0,
+      writing: 0,
+      written: items.length,
+      failed: 0,
+      conflict: 0,
+      synced: 0,
+      items,
+    }
+  })
+  const confirmSync = vi.fn(() => {
+    for (const transaction of transactions.values()) {
+      if (transaction.status === 'written') transaction.status = 'synced'
+    }
+    return {
+      sessionId: '',
+      pending: 0,
+      writing: 0,
+      written: 0,
+      failed: 0,
+      conflict: 0,
+      synced: transactions.size,
+      items: [],
+    }
+  })
+  const cleanup = vi.fn(async () => {
+    let deletedCount = 0
+    const errors: string[] = []
+    for (const [xmpPath, transaction] of transactions) {
+      if (transaction.status !== 'synced') continue
+      try {
+        const writer = router.selectSidecar()
+        if (transaction.backupPath) {
+          await writer.restore(transaction.photoPath, transaction.backupPath)
+        } else if (fs.existsSync(xmpPath)) {
+          fs.unlinkSync(xmpPath)
+        }
+        transaction.status = 'cleaned'
+        deletedCount++
+      } catch (error) {
+        errors.push(`${xmpPath}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return { deletedCount, errors }
+  })
+
+  return {
+    sync: { waitForIdle, flushSession, confirmSync, cleanup },
+    mutations: {
+      queuePhotoValues: vi.fn((
+        _sessionId: string,
+        photoId: string,
+        values: Record<string, unknown>,
+      ) => {
+        const photo = byId.get(photoId)
+        if (!photo) throw new Error(`Unknown test photo: ${photoId}`)
+        const xmpPath = getXmpSidecarPath(photo.filepath)
+        queued.set(xmpPath, { photoPath: photo.filepath, values })
+      }),
+    },
+  }
+}
+
 function makeRepo() {
   let rows: WritebackItemRow[] = []
   let nextId = 1
@@ -114,10 +212,11 @@ describe('WritebackService sidecar workflow', () => {
       updateWritebackStatus: vi.fn(),
       updateFailedWritebackCount: vi.fn(),
     }
-    const metadataSync = { waitForIdle: vi.fn(async () => undefined) }
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [{ id: 'photo-1', filepath: photoPath }])
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
-      { selectSidecar: () => writer } as unknown as MetadataWriterRouter,
+      router as unknown as MetadataWriterRouter,
       {
         getBySession: () => [{
           id: 'photo-1',
@@ -132,7 +231,8 @@ describe('WritebackService sidecar workflow', () => {
         updateRating: vi.fn(),
         updateLabel: vi.fn(),
       } as unknown as MetadataCacheRepository,
-      metadataSync,
+      pipeline.sync,
+      pipeline.mutations as never,
     )
 
     const preview = await service.preview(
@@ -160,8 +260,8 @@ describe('WritebackService sidecar workflow', () => {
       new Map([['photo-1', ['second-write']]]),
     )
     await service.execute('session-1', 'similarity', repeatedPreview.items)
-    expect(metadataSync.waitForIdle).toHaveBeenCalledTimes(2)
-    expect(metadataSync.waitForIdle).toHaveBeenCalledWith(xmpPath)
+    expect(pipeline.sync.waitForIdle).toHaveBeenCalledTimes(2)
+    expect(pipeline.sync.waitForIdle).toHaveBeenCalledWith(xmpPath)
     expect(await writer.readKeywords(photoPath)).toEqual(['existing', 'portrait', 'second-write'])
 
     await service.confirmSync('session-1', 'similarity')
@@ -175,9 +275,11 @@ describe('WritebackService sidecar workflow', () => {
     const photoPath = path.join(dir, 'IMG_0002.JPG')
     const repo = makeRepo()
     const writer = new XmpSidecarWriter()
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [{ id: 'photo-2', filepath: photoPath }])
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
-      { selectSidecar: () => writer } as unknown as MetadataWriterRouter,
+      router as unknown as MetadataWriterRouter,
       {
         getBySession: () => [{
           id: 'photo-2',
@@ -195,6 +297,8 @@ describe('WritebackService sidecar workflow', () => {
         updateRating: vi.fn(),
         updateLabel: vi.fn(),
       } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
     )
 
     const preview = await service.preview(
@@ -224,9 +328,11 @@ describe('WritebackService sidecar workflow', () => {
     const photoPath = path.join(dir, 'IMG_FAILED.NEF')
     const repo = makeRepo()
     const writer = new XmpSidecarWriter()
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [{ id: 'photo-failed', filepath: photoPath }])
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
-      { selectSidecar: () => writer } as unknown as MetadataWriterRouter,
+      router as unknown as MetadataWriterRouter,
       {
         getBySession: () => [{
           id: 'photo-failed',
@@ -244,6 +350,8 @@ describe('WritebackService sidecar workflow', () => {
         updateRating: vi.fn(),
         updateLabel: vi.fn(),
       } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
     )
 
     const first = await service.preview(
@@ -272,9 +380,14 @@ describe('WritebackService sidecar workflow', () => {
     const jpegPath = path.join(dir, 'IMG_0003.JPG')
     const repo = makeRepo()
     const writer = new XmpSidecarWriter()
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [
+      { id: 'raw', filepath: rawPath },
+      { id: 'jpeg', filepath: jpegPath },
+    ])
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
-      { selectSidecar: () => writer } as unknown as MetadataWriterRouter,
+      router as unknown as MetadataWriterRouter,
       {
         getBySession: () => [
           { id: 'raw', session_id: 'session-3', filepath: rawPath, filename: path.basename(rawPath) },
@@ -290,6 +403,8 @@ describe('WritebackService sidecar workflow', () => {
         updateRating: vi.fn(),
         updateLabel: vi.fn(),
       } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
     )
 
     const preview = await service.preview(
@@ -313,9 +428,11 @@ describe('WritebackService sidecar workflow', () => {
       updateWritebackStatus: vi.fn(),
       updateFailedWritebackCount: vi.fn(),
     }
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [{ id: 'photo-4', filepath: photoPath }])
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
-      { selectSidecar: () => writer } as unknown as MetadataWriterRouter,
+      router as unknown as MetadataWriterRouter,
       {
         getBySession: () => [{
           id: 'photo-4',
@@ -330,6 +447,8 @@ describe('WritebackService sidecar workflow', () => {
         updateRating: vi.fn(),
         updateLabel: vi.fn(),
       } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
     )
 
     const similarityPreview = await service.preview(
@@ -385,6 +504,10 @@ describe('WritebackService sidecar workflow', () => {
         shutdown: () => Promise.resolve(),
       }),
     }
+    const pipeline = makeMetadataPipeline(router as unknown as MetadataWriterRouter, [
+      { id: 'photo-5', filepath: firstPhotoPath },
+      { id: 'photo-6', filepath: secondPhotoPath },
+    ])
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
       router as unknown as MetadataWriterRouter,
@@ -403,6 +526,8 @@ describe('WritebackService sidecar workflow', () => {
         updateRating: vi.fn(),
         updateLabel: vi.fn(),
       } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
     )
 
     const preview = await service.preview(
@@ -418,7 +543,6 @@ describe('WritebackService sidecar workflow', () => {
     const firstCleanup = await service.cleanup('session-5', 'similarity')
     expect(firstCleanup.errors).toHaveLength(1)
     expect(await writer.readKeywords(firstPhotoPath)).toEqual(['first-original'])
-    expect(repo.getItems('session-5', 'similarity', 'cleaned')).toHaveLength(1)
 
     failSecondRestore = false
     const secondCleanup = await service.cleanup('session-5', 'similarity')

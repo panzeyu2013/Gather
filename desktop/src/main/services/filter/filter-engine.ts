@@ -9,11 +9,11 @@ interface WhereClauseResult {
   params: unknown[]
 }
 
-const SIMPLE_FIELDS = new Set(['filename', 'filepath', 'checksum', 'status'])
+const SIMPLE_FIELDS = new Set(['filename', 'filepath', 'checksum', 'status', 'created_at'])
 const METADATA_FIELDS = new Set([
   'date_taken', 'camera_make', 'camera_model', 'lens_model',
   'focal_length', 'f_number', 'exposure_time', 'iso', 'rating',
-  'gps_latitude', 'gps_longitude', 'width', 'height', 'file_size', 'file_mtime',
+  'gps_latitude', 'gps_longitude', 'width', 'height', 'file_size', 'file_mtime', 'label',
 ])
 
 function isFilterRule(condition: FilterRule | FilterGroup): condition is FilterRule {
@@ -67,31 +67,131 @@ export class FilterEngine {
     return rows.map((row) => this.rowToPhotoData(row))
   }
 
-  filterGlobally(criteria: FilterGroup): GlobalPhotoResult[] {
+  filterGlobally(
+    criteria: FilterGroup,
+    sortBy?: string,
+    sortOrder?: string,
+    limit?: number,
+    offset?: number,
+    sessionId?: string,
+  ): GlobalPhotoResult[] {
     const db = this.db
     const { sql: whereSql, params: whereParams } = this.buildWhereClause(criteria)
 
+    const membershipFilter = sessionId
+      ? `AND EXISTS (
+          SELECT 1 FROM photos member
+          WHERE COALESCE(NULLIF(member.asset_id, ''), member.id) =
+            COALESCE(NULLIF(p.asset_id, ''), p.id)
+            AND member.session_id = ?
+        )`
+      : ''
     const sql = [
-      'SELECT DISTINCT p.id as photo_id, p.session_id, s.name as session_name, p.filename',
-      'FROM photos p',
+      'WITH matching AS (',
+      'SELECT p.rowid AS photo_rowid, COALESCE(NULLIF(p.asset_id, \'\'), p.id) AS asset_key',
+      'FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id',
+      `WHERE (${whereSql || '1=1'}) ${membershipFilter}`,
+      '), representatives AS (',
+      'SELECT asset_key, MIN(photo_rowid) AS photo_rowid FROM matching GROUP BY asset_key',
+      ')',
+      'SELECT p.id AS photo_id, COALESCE(NULLIF(p.asset_id, \'\'), p.id) AS asset_id,',
+      'p.session_id, s.name AS session_name, p.filename, p.filepath, p.status,',
+      'COALESCE(pmc.rating, 0) AS rating, COALESCE(pmc.label, \'\') AS label,',
+      'COALESCE(pmc.keywords, \'[]\') AS keywords,',
+      '(SELECT GROUP_CONCAT(DISTINCT member.session_id) FROM photos member',
+      ' WHERE COALESCE(NULLIF(member.asset_id, \'\'), member.id) = representatives.asset_key) AS session_ids,',
+      '(SELECT GROUP_CONCAT(DISTINCT member_session.name) FROM photos member',
+      ' JOIN sessions member_session ON member_session.id = member.session_id',
+      ' WHERE COALESCE(NULLIF(member.asset_id, \'\'), member.id) = representatives.asset_key) AS session_names',
+      'FROM representatives JOIN photos p ON p.rowid = representatives.photo_rowid',
       'LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id',
       'JOIN sessions s ON p.session_id = s.id',
-      `WHERE ${whereSql || '1=1'}`,
+      sortBy
+        ? `ORDER BY ${this.resolveSortColumn(sortBy)} ${sortOrder === 'asc' ? 'ASC' : 'DESC'}`
+        : 'ORDER BY p.rowid',
     ].join(' ')
 
-    const rows = db.prepare(sql).all(...whereParams) as {
+    const params = [...whereParams, ...(sessionId ? [sessionId] : [])]
+    let paginatedSql = sql
+    if (typeof limit === 'number') {
+      paginatedSql += ' LIMIT ?'
+      params.push(Math.max(1, Math.min(500, Math.floor(limit))))
+      if (typeof offset === 'number') {
+        paginatedSql += ' OFFSET ?'
+        params.push(Math.max(0, Math.floor(offset)))
+      }
+    }
+    const rows = db.prepare(paginatedSql).all(...params) as {
       photo_id: string
+      asset_id: string
       session_id: string
       session_name: string
       filename: string
+      filepath: string
+      status: string
+      rating: number
+      label: string
+      keywords: string
+      session_ids: string
+      session_names: string
     }[]
 
     return rows.map((r) => ({
       photoId: r.photo_id,
+      assetId: r.asset_id,
       sessionId: r.session_id,
       sessionName: r.session_name,
+      sessionIds: r.session_ids ? r.session_ids.split(',') : [r.session_id],
+      sessionNames: r.session_names ? r.session_names.split(',') : [r.session_name],
       filename: r.filename,
+      filepath: r.filepath,
+      status: r.status,
+      rating: r.rating,
+      label: r.label,
+      keywords: (() => {
+        try {
+          const parsed = JSON.parse(r.keywords) as unknown
+          return Array.isArray(parsed)
+            ? parsed.filter((value): value is string => typeof value === 'string')
+            : []
+        } catch {
+          return []
+        }
+      })(),
     }))
+  }
+
+  countGlobally(criteria: FilterGroup, sessionId?: string): number {
+    const { sql: whereSql, params } = this.buildWhereClause(criteria)
+    const membershipFilter = sessionId
+      ? `AND EXISTS (
+          SELECT 1 FROM photos member
+          WHERE COALESCE(NULLIF(member.asset_id, ''), member.id) =
+            COALESCE(NULLIF(p.asset_id, ''), p.id)
+            AND member.session_id = ?
+        )`
+      : ''
+    const row = this.db.prepare(`
+      SELECT COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id)) AS count
+      FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id
+      WHERE (${whereSql || '1=1'}) ${membershipFilter}
+    `).get(...params, ...(sessionId ? [sessionId] : [])) as { count: number }
+    return row.count
+  }
+
+  countPhotos(sessionId: string, criteria: FilterGroup): number {
+    const { sql: whereSql, params } = this.buildWhereClause(criteria)
+    const sessionFilter = sessionId === '__global__' ? '1=1' : 'p.session_id = ?'
+    const allParams: unknown[] = sessionId === '__global__' ? params : [sessionId, ...params]
+    const countExpression = sessionId === '__global__'
+      ? "COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id))"
+      : 'COUNT(DISTINCT p.id)'
+    const row = this.db.prepare(`
+      SELECT ${countExpression} AS count
+      FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id
+      WHERE ${sessionFilter} AND (${whereSql || '1=1'})
+    `).get(...allParams) as { count: number }
+    return row.count
   }
 
   suggest(_sessionId: string, keyword: string): FilterSuggestion[] {
@@ -146,6 +246,30 @@ export class FilterEngine {
     }
     if (field === 'keywords') {
       return this.buildKeywordsCondition(operator, value)
+    }
+    if (field === 'directory') {
+      return operator === 'eq' || operator === 'starts_with'
+        ? { sql: 'p.filepath LIKE ? || \'%\'', params: [String(value)] }
+        : { sql: '1=1', params: [] }
+    }
+    if (field === 'volume') {
+      return {
+        sql: `EXISTS (
+          SELECT 1 FROM asset_files af
+          WHERE af.id = p.asset_file_id AND af.volume_id = ?
+        )`,
+        params: [String(value)],
+      }
+    }
+    if (field === 'has_duplicates') {
+      const existsSql = `EXISTS (
+        SELECT 1 FROM duplicate_group_members dgm
+        JOIN duplicate_groups dg ON dg.id = dgm.group_id
+        WHERE dgm.photo_id = p.id AND dg.member_count > 1
+      )`
+      return value === false
+        ? { sql: `NOT ${existsSql}`, params: [] }
+        : { sql: existsSql, params: [] }
     }
 
     const { prefix, col } = resolveField(rule)

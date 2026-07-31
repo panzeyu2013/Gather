@@ -4,9 +4,9 @@ import * as fs from 'fs'
 import { app } from 'electron'
 import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL, UNIQUE_PHOTO_PATH_INDEX_SQL } from './schema'
-import type BetterSqlite3 from 'better-sqlite3'
+import BetterSqlite3 from 'better-sqlite3'
 
-const CURRENT_SCHEMA_VERSION = 14
+const CURRENT_SCHEMA_VERSION = 25
 
 const CREATE_FACE_CLUSTER_MEMBERS_SQL = `
   CREATE TABLE face_cluster_members (
@@ -270,7 +270,106 @@ function migratePendingFaceThumbnails(db: BetterSqlite3.Database): void {
   }
 }
 
-export function runMigrations(database: Database): void {
+async function createMigrationBackup(database: Database, currentVersion: number): Promise<string | null> {
+  const dbPath = path.join(app.getPath('userData'), 'gather.db')
+  if (currentVersion >= CURRENT_SCHEMA_VERSION || !fs.existsSync(dbPath)) return null
+  const walPath = `${dbPath}-wal`
+  const shmPath = `${dbPath}-shm`
+  const sourceSize = [dbPath, walPath, shmPath]
+    .filter(filePath => fs.existsSync(filePath))
+    .reduce((total, filePath) => total + fs.statSync(filePath).size, 0)
+  const fileSystem = fs.statfsSync(app.getPath('userData'))
+  const freeBytes = Number(fileSystem.bavail) * Number(fileSystem.bsize)
+  const requiredBytes = Math.max(64 * 1024 * 1024, sourceSize * 2)
+  if (freeBytes < requiredBytes) {
+    throw new Error(`Insufficient disk space for database migration backup: need ${requiredBytes} bytes, have ${freeBytes}`)
+  }
+  dbCheckpoint(database)
+  const backupPath = `${dbPath}.pre-v${CURRENT_SCHEMA_VERSION}-${Date.now()}.bak`
+  await database.rawDb.backup(backupPath)
+  // better-sqlite3 may materialize the backup lazily on some Electron/SQLite
+  // combinations. The WAL has already been checkpointed, so keep a durable
+  // file-level fallback before allowing migrations to mutate the database.
+  if (!fs.existsSync(backupPath)) fs.copyFileSync(dbPath, backupPath)
+  const backup = new BetterSqlite3(backupPath, { readonly: true })
+  try {
+    const integrity = backup.pragma('integrity_check') as Array<{ integrity_check: string }>
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') {
+      throw new Error('Pre-migration database backup failed integrity_check')
+    }
+  } finally {
+    backup.close()
+  }
+  return backupPath
+}
+
+function dbCheckpoint(database: Database): void {
+  database.pragma('wal_checkpoint(TRUNCATE)')
+}
+
+export async function runMigrations(database: Database): Promise<void> {
+  const previousVersion = getSchemaVersion(database.rawDb)
+  const backupPath = await createMigrationBackup(database, previousVersion)
+  try {
+    runMigrationsUnsafe(database)
+    if (
+      process.env.NODE_ENV === 'test' &&
+      process.env.GATHER_TEST_FAIL_MIGRATION === 'after-migrate'
+    ) {
+      throw new Error('Injected migration failure')
+    }
+    assertMigrationInvariants(database.rawDb)
+    try {
+      pruneMigrationBackups()
+    } catch (error) {
+      console.warn('Unable to prune old migration backups', error)
+    }
+  } catch (error) {
+    if (backupPath) {
+      const dbPath = path.join(app.getPath('userData'), 'gather.db')
+      database.close()
+      fs.copyFileSync(backupPath, dbPath)
+      for (const suffix of ['-wal', '-shm']) {
+        try { fs.rmSync(`${dbPath}${suffix}`, { force: true }) } catch { /* best effort */ }
+      }
+    }
+    throw error
+  }
+}
+
+function pruneMigrationBackups(keep = 3): void {
+  const directory = app.getPath('userData')
+  const backups = fs.readdirSync(directory)
+    .filter(name => /^gather\.db\.pre-v\d+-\d+\.bak$/.test(name))
+    .map(name => ({
+      path: path.join(directory, name),
+      mtimeMs: fs.statSync(path.join(directory, name)).mtimeMs,
+    }))
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)
+  for (const backup of backups.slice(keep)) {
+    fs.rmSync(backup.path, { force: true })
+  }
+}
+
+function assertMigrationInvariants(db: BetterSqlite3.Database): void {
+  if (getSchemaVersion(db) !== CURRENT_SCHEMA_VERSION) {
+    throw new Error(`Migration ended at an unexpected schema version: ${getSchemaVersion(db)}`)
+  }
+  const foreignKeyErrors = db.pragma('foreign_key_check') as unknown[]
+  if (foreignKeyErrors.length > 0) throw new Error(`Migration created ${foreignKeyErrors.length} foreign key violations`)
+  for (const [table, columns] of [
+    ['metadata_outbox', ['xmp_path', 'created_by_session_id', 'status']],
+    ['metadata_outbox_sessions', ['xmp_path', 'session_id', 'confirmed_at']],
+    ['analysis_jobs', ['id', 'status', 'dedupe_key']],
+    ['culling_decisions', ['session_id', 'revision', 'decision_source']],
+    ['culling_history', ['session_id', 'operation_json']],
+    ['asset_backfill_state', ['session_id', 'last_photo_rowid', 'status']],
+  ] as Array<[string, string[]]>) {
+    assertColumns(db, table, columns)
+  }
+}
+
+function runMigrationsUnsafe(database: Database): void {
   const db: BetterSqlite3.Database = database.rawDb
   db.exec(SCHEMA_SQL)
 
@@ -565,6 +664,382 @@ export function runMigrations(database: Database): void {
       setSchemaVersion(db, 14)
     })()
     currentVersion = 14
+  }
+
+  // ── Version 15: expand the database for global Assets without switching reads ──
+  if (currentVersion < 15) {
+    db.transaction(() => {
+      addColumn(db, 'photos', 'asset_id', 'TEXT REFERENCES assets(id)')
+      addColumn(db, 'photos', 'asset_file_id', 'TEXT REFERENCES asset_files(id)')
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS assets (
+          id TEXT PRIMARY KEY,
+          capture_fingerprint TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS asset_files (
+          id TEXT PRIMARY KEY,
+          volume_id TEXT NOT NULL DEFAULT '',
+          normalized_path TEXT NOT NULL,
+          filename TEXT NOT NULL,
+          extension TEXT NOT NULL DEFAULT '',
+          media_type TEXT NOT NULL DEFAULT 'unknown',
+          file_size INTEGER NOT NULL DEFAULT 0,
+          file_mtime_ms REAL NOT NULL DEFAULT 0,
+          checksum TEXT NOT NULL DEFAULT '',
+          online_status TEXT NOT NULL DEFAULT 'online',
+          last_seen_at TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS asset_members (
+          asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+          file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
+          member_role TEXT NOT NULL,
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          confidence REAL NOT NULL DEFAULT 1.0,
+          binding_source TEXT NOT NULL DEFAULT 'import',
+          PRIMARY KEY (asset_id, file_id),
+          UNIQUE (file_id)
+        );
+        CREATE TABLE IF NOT EXISTS asset_link_candidates (
+          id TEXT PRIMARY KEY,
+          left_file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
+          right_file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
+          relation_type TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS session_assets (
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+          display_file_id TEXT REFERENCES asset_files(id),
+          import_order INTEGER NOT NULL DEFAULT 0,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, asset_id)
+        );
+        CREATE TABLE IF NOT EXISTS sidecar_bindings (
+          id TEXT PRIMARY KEY,
+          xmp_path TEXT NOT NULL,
+          normalized_xmp_path TEXT NOT NULL UNIQUE,
+          binding_rule TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sidecar_binding_files (
+          sidecar_binding_id TEXT NOT NULL REFERENCES sidecar_bindings(id) ON DELETE CASCADE,
+          file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
+          PRIMARY KEY (sidecar_binding_id, file_id)
+        );
+        CREATE TABLE IF NOT EXISTS asset_file_metadata (
+          file_id TEXT PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE,
+          date_taken TEXT,
+          camera_make TEXT,
+          camera_model TEXT,
+          lens_model TEXT,
+          focal_length REAL,
+          f_number REAL,
+          exposure_time TEXT,
+          iso INTEGER,
+          gps_latitude REAL,
+          gps_longitude REAL,
+          width INTEGER,
+          height INTEGER,
+          cached_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sidecar_metadata_state (
+          sidecar_binding_id TEXT PRIMARY KEY REFERENCES sidecar_bindings(id) ON DELETE CASCADE,
+          rating INTEGER CHECK (rating BETWEEN 0 AND 5),
+          label TEXT,
+          keywords TEXT NOT NULL DEFAULT '[]',
+          fingerprint TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_photos_asset ON photos(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_photos_asset_file ON photos(asset_file_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_files_volume_path ON asset_files(volume_id, normalized_path);
+        CREATE INDEX IF NOT EXISTS idx_asset_files_checksum ON asset_files(checksum);
+        CREATE INDEX IF NOT EXISTS idx_asset_members_asset ON asset_members(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_candidates_status ON asset_link_candidates(status);
+        CREATE INDEX IF NOT EXISTS idx_session_assets_asset ON session_assets(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_sidecar_binding_files_file ON sidecar_binding_files(file_id);
+      `)
+      assertColumns(db, 'photos', ['asset_id', 'asset_file_id'])
+      setSchemaVersion(db, 15)
+    })()
+    currentVersion = 15
+  }
+
+  // ── Version 16: persist long-running analysis jobs ──
+  if (currentVersion < 16) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS analysis_jobs (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          scope_type TEXT NOT NULL,
+          scope_id TEXT NOT NULL,
+          dedupe_key TEXT NOT NULL,
+          status TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 0,
+          progress_current INTEGER NOT NULL DEFAULT 0,
+          progress_total INTEGER NOT NULL DEFAULT 0,
+          progress_message TEXT NOT NULL DEFAULT '',
+          input_fingerprint TEXT NOT NULL DEFAULT '',
+          model_id TEXT NOT NULL DEFAULT '',
+          model_version TEXT NOT NULL DEFAULT '',
+          checkpoint_json TEXT NOT NULL DEFAULT '{}',
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          lease_owner TEXT NOT NULL DEFAULT '',
+          heartbeat_at TEXT NOT NULL DEFAULT '',
+          cancel_requested_at TEXT NOT NULL DEFAULT '',
+          error_code TEXT NOT NULL DEFAULT '',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          started_at TEXT NOT NULL DEFAULT '',
+          finished_at TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status_priority
+          ON analysis_jobs(status, priority, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_analysis_jobs_scope
+          ON analysis_jobs(scope_type, scope_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_jobs_active_dedupe
+          ON analysis_jobs(dedupe_key)
+          WHERE status IN ('queued', 'running', 'cancelling');
+      `)
+      setSchemaVersion(db, 16)
+    })()
+    currentVersion = 16
+  }
+
+  // ── Version 17: versioned explainable technical quality results ──
+  if (currentVersion < 17) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS asset_analysis (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          photo_id TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+          asset_file_id TEXT REFERENCES asset_files(id) ON DELETE CASCADE,
+          analysis_type TEXT NOT NULL,
+          result_json TEXT NOT NULL DEFAULT '{}',
+          warnings_json TEXT NOT NULL DEFAULT '[]',
+          model_id TEXT NOT NULL DEFAULT '',
+          model_version TEXT NOT NULL DEFAULT '',
+          input_fingerprint TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(photo_id, analysis_type, model_id, model_version, input_fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_analysis_photo_type
+          ON asset_analysis(photo_id, analysis_type);
+      `)
+      setSchemaVersion(db, 17)
+    })()
+    currentVersion = 17
+  }
+
+  // ── Version 18: metadata outbox survives session deletion ──
+  if (currentVersion < 18) {
+    db.transaction(() => {
+      db.exec(`
+        DROP TABLE IF EXISTS metadata_outbox_sessions;
+        ALTER TABLE metadata_outbox RENAME TO metadata_outbox_v17;
+        CREATE TABLE metadata_outbox (
+          xmp_path TEXT PRIMARY KEY,
+          owner_session_id TEXT,
+          created_by_session_id TEXT,
+          photo_path TEXT NOT NULL,
+          patch_json TEXT NOT NULL DEFAULT '{}',
+          dirty_fields TEXT NOT NULL DEFAULT '[]',
+          revision INTEGER NOT NULL DEFAULT 0,
+          persisted_revision INTEGER NOT NULL DEFAULT 0,
+          base_fingerprint TEXT NOT NULL DEFAULT '',
+          base_values_json TEXT NOT NULL DEFAULT '{}',
+          backup_path TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('clean', 'pending', 'writing', 'written', 'failed', 'conflict', 'synced', 'cleaned')),
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO metadata_outbox (xmp_path, owner_session_id, created_by_session_id, photo_path, patch_json, dirty_fields, revision, persisted_revision, base_fingerprint, base_values_json, backup_path, status, attempt_count, error_message, updated_at)
+          SELECT xmp_path, owner_session_id, owner_session_id, photo_path, patch_json, dirty_fields, revision, persisted_revision, base_fingerprint, base_values_json, backup_path, status, attempt_count, error_message, updated_at FROM metadata_outbox_v17;
+        DROP TABLE metadata_outbox_v17;
+        CREATE INDEX IF NOT EXISTS idx_metadata_outbox_session_status ON metadata_outbox(owner_session_id, status);
+      `)
+      setSchemaVersion(db, 18)
+    })()
+    currentVersion = 18
+  }
+
+  // ── Version 19: persistent culling operation history ──
+  if (currentVersion < 19) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS culling_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          operation_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_culling_history_session ON culling_history(session_id, id);
+      `)
+      setSchemaVersion(db, 19)
+    })()
+    currentVersion = 19
+  }
+
+  // ── Version 20: version smart album filter definitions ──
+  if (currentVersion < 20) {
+    db.transaction(() => {
+      addColumn(db, 'smart_albums', 'schema_version', 'INTEGER NOT NULL DEFAULT 1')
+      setSchemaVersion(db, 20)
+    })()
+    currentVersion = 20
+  }
+
+  // ── Version 21: one global XMP queue can be observed by multiple sessions ──
+  if (currentVersion < 21) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS metadata_outbox_sessions (
+          xmp_path TEXT NOT NULL REFERENCES metadata_outbox(xmp_path) ON DELETE CASCADE,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          confirmed_at TEXT NOT NULL DEFAULT '',
+          linked_at TEXT NOT NULL,
+          PRIMARY KEY (xmp_path, session_id)
+        );
+        INSERT OR IGNORE INTO metadata_outbox_sessions
+          (xmp_path, session_id, confirmed_at, linked_at)
+        SELECT xmp_path, owner_session_id, '', updated_at
+        FROM metadata_outbox
+        WHERE owner_session_id IS NOT NULL
+          AND owner_session_id IN (SELECT id FROM sessions);
+        CREATE INDEX IF NOT EXISTS idx_metadata_outbox_sessions_session
+          ON metadata_outbox_sessions(session_id, xmp_path);
+      `)
+      setSchemaVersion(db, 21)
+    })()
+    currentVersion = 21
+  }
+
+  // ── Version 22: reusable analysis belongs to the physical asset file ──
+  if (currentVersion < 22) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE asset_analysis RENAME TO asset_analysis_v21;
+        CREATE TABLE asset_analysis (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          photo_id TEXT REFERENCES photos(id) ON DELETE SET NULL,
+          asset_file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
+          analysis_type TEXT NOT NULL,
+          result_json TEXT NOT NULL DEFAULT '{}',
+          warnings_json TEXT NOT NULL DEFAULT '[]',
+          model_id TEXT NOT NULL DEFAULT '',
+          model_version TEXT NOT NULL DEFAULT '',
+          input_fingerprint TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(asset_file_id, analysis_type, model_id, model_version, input_fingerprint)
+        );
+        INSERT OR IGNORE INTO asset_analysis (
+          id, photo_id, asset_file_id, analysis_type, result_json, warnings_json,
+          model_id, model_version, input_fingerprint, created_at, updated_at
+        )
+        SELECT id, photo_id, asset_file_id, analysis_type, result_json, warnings_json,
+          model_id, model_version, input_fingerprint, created_at, updated_at
+        FROM asset_analysis_v21
+        WHERE asset_file_id IS NOT NULL
+          AND asset_file_id IN (SELECT id FROM asset_files);
+        DROP TABLE asset_analysis_v21;
+        CREATE INDEX idx_asset_analysis_photo_type
+          ON asset_analysis(photo_id, analysis_type);
+        CREATE INDEX idx_asset_analysis_file_type
+          ON asset_analysis(asset_file_id, analysis_type);
+      `)
+      setSchemaVersion(db, 22)
+    })()
+    currentVersion = 22
+  }
+
+  // ── Version 23: persistent Burst/Scene navigation groups ──
+  if (currentVersion < 23) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS navigation_groups (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          group_type TEXT NOT NULL CHECK (group_type IN ('burst', 'scene')),
+          photo_ids_json TEXT NOT NULL DEFAULT '[]',
+          lead_photo_id TEXT REFERENCES photos(id) ON DELETE SET NULL,
+          explanation TEXT NOT NULL DEFAULT '',
+          input_fingerprint TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT 'automatic',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_navigation_groups_session_type
+          ON navigation_groups(session_id, group_type, updated_at);
+      `)
+      setSchemaVersion(db, 23)
+    })()
+    currentVersion = 23
+  }
+
+  // ── Version 24: resumable Asset backfill cursor and diagnostics ──
+  if (currentVersion < 24) {
+    db.transaction(() => {
+      addColumn(db, 'asset_files', 'file_identity', "TEXT NOT NULL DEFAULT ''")
+      addColumn(db, 'culling_decisions', 'decision_source', "TEXT NOT NULL DEFAULT 'manual'")
+      addColumn(db, 'culling_history', 'undone', 'INTEGER NOT NULL DEFAULT 0')
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS asset_backfill_state (
+          session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+          last_photo_rowid INTEGER NOT NULL DEFAULT 0,
+          total_photos INTEGER NOT NULL DEFAULT 0,
+          migrated_photos INTEGER NOT NULL DEFAULT 0,
+          offline_files INTEGER NOT NULL DEFAULT 0,
+          path_conflicts INTEGER NOT NULL DEFAULT 0,
+          sidecar_conflicts INTEGER NOT NULL DEFAULT 0,
+          candidate_links INTEGER NOT NULL DEFAULT 0,
+          automatic_merges INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'running',
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_backfill_status
+          ON asset_backfill_state(status, updated_at);
+      `)
+      setSchemaVersion(db, 24)
+    })()
+    currentVersion = 24
+  }
+
+  // ── Version 25: source ownership for safely reversible keyword writes ──
+  if (currentVersion < 25) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS metadata_keyword_origins (
+          xmp_path TEXT NOT NULL,
+          source TEXT NOT NULL,
+          keyword TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (xmp_path, source, keyword)
+        );
+        CREATE INDEX IF NOT EXISTS idx_metadata_keyword_origins_source_active
+          ON metadata_keyword_origins(source, active, updated_at);
+      `)
+      setSchemaVersion(db, 25)
+    })()
+    currentVersion = 25
   }
 
   if (currentVersion !== CURRENT_SCHEMA_VERSION) {

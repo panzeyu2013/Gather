@@ -80,6 +80,26 @@ class FakeOutbox {
   getRecoverable(): MetadataOutboxRow[] { return [] }
   markSessionSynced(): void {}
   delete(path: string): void { this.rows.delete(path) }
+  resolveConflict(
+    path: string,
+    patch: Record<string, unknown>,
+    dirtyFields: string[],
+    baselineFingerprint: string,
+    baselineValues: Record<string, unknown>,
+    acceptRemote: boolean,
+  ): void {
+    if (acceptRemote) {
+      this.rows.delete(path)
+      return
+    }
+    const current = this.rows.get(path)!
+    current.patch_json = JSON.stringify(patch)
+    current.dirty_fields = JSON.stringify(dirtyFields)
+    current.base_fingerprint = baselineFingerprint
+    current.base_values_json = JSON.stringify(baselineValues)
+    current.status = 'pending'
+    current.revision++
+  }
 }
 
 function row(
@@ -119,7 +139,10 @@ function createCoordinator(
   }
   return new MetadataSyncCoordinator(
     repo as never,
-    { hasActiveForXmpPath: vi.fn(() => false) } as never,
+    {
+      hasActiveForXmpPath: vi.fn(() => false),
+      discardPendingByXmpPath: vi.fn(() => 0),
+    } as never,
     { selectSidecar: vi.fn(() => writer) } as never,
     { getNumber: vi.fn((_key: string, fallback: number) => fallback) } as never,
   )
@@ -273,5 +296,37 @@ describe('metadata outbox coordinator', () => {
     expect(summary.items).toHaveLength(0)
     expect(fs.readFileSync(xmpPath, 'utf8')).toBe('written metadata')
     expect(fs.existsSync(backupPath)).toBe(false)
+  })
+
+  it('never deletes an external XMP after accepting all remote conflict values', async () => {
+    const repo = new FakeOutbox()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-outbox-'))
+    tempDirs.push(dir)
+    const photoPath = path.join(dir, 'A011.NEF')
+    const xmpPath = path.join(dir, 'A011.xmp')
+    fs.writeFileSync(photoPath, 'raw')
+    fs.writeFileSync(xmpPath, JSON.stringify({ rating: 3 }))
+    repo.rows.set(xmpPath, row(xmpPath, photoPath, {
+      status: 'conflict',
+      base_values_json: JSON.stringify({ rating: 2 }),
+      patch_json: JSON.stringify({ rating: 5 }),
+      dirty_fields: JSON.stringify(['rating']),
+    }))
+    const coordinator = createCoordinator(
+      repo,
+      async () => {},
+      async () => ({ rating: 3 }),
+    )
+
+    const summary = await coordinator.resolveConflict(
+      'session',
+      xmpPath,
+      { rating: 'use_remote' },
+    )
+    const cleanup = await coordinator.cleanup('session')
+
+    expect(summary.items).toEqual([])
+    expect(cleanup.deletedCount).toBe(0)
+    expect(JSON.parse(fs.readFileSync(xmpPath, 'utf8'))).toEqual({ rating: 3 })
   })
 })

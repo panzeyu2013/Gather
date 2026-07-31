@@ -1,9 +1,11 @@
 // packages/shared/src/protocol/culling.ts
 
 import type { PhotoData } from './session'
+import type { MetadataMutationSource } from './metadata'
 
 export type PickState = 'unreviewed' | 'picked' | 'rejected'
 export type LegacyCullingDecision = 'keep' | 'reject' | 'pending'
+export type CullingDecisionSource = 'manual' | 'ai' | 'template' | 'imported'
 export type CaptureOneColorLabel =
   | 'None'
   | 'Red'
@@ -29,6 +31,8 @@ export interface CullingFilters {
   pickStates?: PickState[]
   colorLabels?: CaptureOneColorLabel[]
   unreviewedOnly?: boolean
+  qualityStatus?: 'analysed' | 'unanalysed' | 'failed'
+  metadataConflictOnly?: boolean
 }
 
 export interface AssetCullingState {
@@ -36,6 +40,7 @@ export interface AssetCullingState {
   pickState: PickState
   rating: number
   colorLabel: CaptureOneColorLabel
+  source: CullingDecisionSource
   revision: number
   updatedAt: string
 }
@@ -50,6 +55,20 @@ export interface CullingAsset {
   similarityGroupId?: string
   linkedVariantCount: number
   faceBboxes: number[][]
+  quality?: {
+    status: 'succeeded' | 'failed'
+    score: number
+    sharpness: number
+    exposure: number
+    subjectSharpness?: number
+    closedEyeRisk?: number
+    closedEyeProbability?: number
+    confidence?: number
+    relativeRank?: number
+    errorMessage?: string
+    warnings: string[]
+  }
+  metadataSource?: MetadataMutationSource
 }
 
 export interface CullingListParams {
@@ -76,6 +95,36 @@ export interface CullingUpdateResult {
   states: AssetCullingState[]
   xmpPath: string
   syncStatus: MetadataSyncStatus
+  historyOperationId?: number
+}
+
+export interface CullingHistoryEntry {
+  photoId: string
+  before: Pick<AssetCullingState, 'pickState' | 'rating' | 'colorLabel'>
+  after: Pick<AssetCullingState, 'pickState' | 'rating' | 'colorLabel'>
+  expectedRevision: number
+  fields: Array<keyof CullingUpdatePatch>
+}
+
+export interface CullingHistoryOperation {
+  id: number
+  sessionId: string
+  entries: CullingHistoryEntry[]
+  undone: boolean
+  createdAt: string
+}
+
+export interface CullingHistoryParams { sessionId: string; limit?: number }
+export interface CullingHistoryApplyEntry {
+  photoId: string
+  expectedRevision: number
+  patch: CullingUpdatePatch
+}
+export interface CullingHistoryApplyParams {
+  sessionId: string
+  entries: CullingHistoryApplyEntry[]
+  historyOperationId: number
+  direction: 'undo' | 'redo'
 }
 
 export interface CullingBatchUpdateParams {

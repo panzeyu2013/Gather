@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, useParams, Navigate, Link, useLocation } from '
 import { useQuery } from '@tanstack/react-query'
 import Loading from '../../components/Loading/Loading'
 import { sessionApi } from '../../api/session'
+import { indexerApi } from '../../api/indexer'
 import { useSessionStore } from '../../stores/sessionStore'
 import styles from './SessionDetail.module.css'
 
@@ -27,6 +28,13 @@ export default function SessionDetail() {
     if (sessionId) setSession(sessionId)
   }, [sessionId, setSession])
 
+  useEffect(() => {
+    if (!sessionId || !session?.sourcePath) return
+    void indexerApi.scan(sessionId).catch(error => {
+      console.warn('Unable to schedule workspace index scan', error)
+    })
+  }, [session?.sourcePath, sessionId])
+
   const isCulling = location.pathname.endsWith('/culling')
 
   return (
@@ -41,22 +49,22 @@ export default function SessionDetail() {
           <Link to="/settings" className={styles.sessionUtilityLink}>设置</Link>
         </div>
         <nav className={styles.tabs} aria-label="工作区功能">
-          <NavLink to={`/sessions/${sessionId}/gallery`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+          <NavLink end to={`/sessions/${sessionId}/gallery`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
             浏览
           </NavLink>
-          <NavLink to={`/sessions/${sessionId}/similarity`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+          <NavLink end to={`/sessions/${sessionId}/similarity`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
             相似度
           </NavLink>
-          <NavLink to={`/sessions/${sessionId}/face-kw`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+          <NavLink end to={`/sessions/${sessionId}/face-kw`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
             人脸
           </NavLink>
-          <NavLink to={`/sessions/${sessionId}/duplicates`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+          <NavLink end to={`/sessions/${sessionId}/duplicates`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
             重复
           </NavLink>
-          <NavLink to={`/sessions/${sessionId}/culling`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+          <NavLink end to={`/sessions/${sessionId}/culling`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
             挑片
           </NavLink>
-          <NavLink to={`/sessions/${sessionId}/export`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
+          <NavLink end to={`/sessions/${sessionId}/export`} className={({ isActive }) => isActive ? styles.tabActive : styles.tab}>
             导出
           </NavLink>
         </nav>

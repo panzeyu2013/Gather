@@ -20,7 +20,7 @@ const ALLOWED_COMMANDS = new Set<CommandType>([
   'photo.list',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
-  'metadata.get', 'metadata.set', 'metadata.batch_set',
+  'metadata.get', 'metadata.set', 'metadata.batch_set', 'metadata.conflicts', 'metadata.resolve_conflict', 'metadata.orphans', 'metadata.resolve_orphan',
   'dup.scan', 'dup.groups', 'dup.resolve', 'dup.resolve_member',
   'filter.photos', 'filter.photos_global', 'filter.suggest',
   'album.create', 'album.list', 'album.get', 'album.update', 'album.delete', 'album.get_photos',
@@ -28,7 +28,11 @@ const ALLOWED_COMMANDS = new Set<CommandType>([
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
   'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
   'culling.list', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
-  'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset',
+  'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset', 'culling.history', 'culling.apply_history',
+  'jobs.list', 'jobs.cancel', 'jobs.retry', 'jobs.clear_completed',
+  'assets.candidates', 'assets.accept_candidate', 'assets.reject_candidate', 'assets.volumes', 'assets.relink_root',
+  'index.scan',
+  'quality.analyze', 'quality.get', 'navigation.analyze', 'navigation.list', 'navigation.split', 'navigation.merge',
 ])
 
 const DESTRUCTIVE_COMMANDS = new Set<CommandType>([
@@ -39,7 +43,8 @@ const DESTRUCTIVE_COMMANDS = new Set<CommandType>([
   'dup.resolve', 'dup.resolve_member',
   'culling.writeback', 'culling.retry_failed_writeback', 'culling.cleanup', 'culling.reset',
   'culling.finalize_sync',
-  'metadata.set', 'metadata.batch_set',
+  'metadata.set', 'metadata.batch_set', 'metadata.resolve_conflict', 'metadata.resolve_orphan',
+  'jobs.clear_completed', 'assets.accept_candidate', 'assets.reject_candidate', 'assets.relink_root',
   'template.delete', 'album.delete', 'export.execute', 'template.apply',
 ])
 

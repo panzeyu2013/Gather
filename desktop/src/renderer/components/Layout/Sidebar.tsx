@@ -29,6 +29,24 @@ function SettingsIcon() {
   )
 }
 
+function LibraryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18M8 4v16" />
+    </svg>
+  )
+}
+
+function JobsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  )
+}
+
 export default function Sidebar() {
   const location = useLocation()
   const sessionId = useSessionStore((s) => s.currentSessionId)
@@ -55,6 +73,18 @@ export default function Sidebar() {
             </NavLink>
           </li>
         )}
+        <li className={styles.navItem}>
+          <NavLink to="/library" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
+            <LibraryIcon />
+            <span>全局图库</span>
+          </NavLink>
+        </li>
+        <li className={styles.navItem}>
+          <NavLink to="/jobs" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
+            <JobsIcon />
+            <span>任务中心</span>
+          </NavLink>
+        </li>
       </ul>
       <div className={styles.bottomNav}>
         <NavLink to="/settings" className={({ isActive }) => isActive ? styles.active : styles.navLink}>

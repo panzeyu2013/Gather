@@ -1,5 +1,3 @@
-import { existsSync } from 'fs'
-import { unlink } from 'fs/promises'
 import { WritebackRepository, type WritebackItemRow } from '../../db/repositories/writeback.repo'
 import { MetadataCacheRepository } from '../../db/repositories/metadata-cache.repo'
 import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
@@ -11,6 +9,11 @@ import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
 import type { MetadataSyncCoordinator } from '../metadata/metadata-sync-coordinator'
+import type { MetadataMutationService } from '../metadata/metadata-mutation.service'
+import type { MetadataMutationSource } from '@gather/shared'
+import { existsSync } from 'node:fs'
+import type { MetadataOutboxRepository } from '../../db/repositories/metadata-outbox.repo'
+import type { MetadataKeywordOriginRepository } from '../../db/repositories/metadata-keyword-origin.repo'
 
 function rowToItem(row: WritebackItemRow): WritebackItem {
   let attributes: Record<string, unknown> = {}
@@ -35,6 +38,14 @@ function rowToItem(row: WritebackItemRow): WritebackItem {
   }
 }
 
+function mutationSource(module: string): MetadataMutationSource {
+  if (module === 'face_kw') return 'face-keyword'
+  if (module === 'similarity') return 'similarity'
+  if (module === 'template') return 'template'
+  if (module === 'culling') return 'culling'
+  return 'manual'
+}
+
 @injectable()
 export class WritebackService {
   constructor(
@@ -44,9 +55,16 @@ export class WritebackService {
     @inject(DI_TOKENS.SESSION_REPO) private sessionRepo: SessionRepository,
     @inject(DI_TOKENS.METADATA_CACHE_REPO) private metadataCacheRepo: MetadataCacheRepository,
     @inject(DI_TOKENS.METADATA_SYNC_COORDINATOR)
-    private metadataSync: Pick<MetadataSyncCoordinator, 'waitForIdle'> = {
-      waitForIdle: async () => undefined,
-    },
+    private metadataSync: Pick<
+      MetadataSyncCoordinator,
+      'waitForIdle' | 'flushSession' | 'confirmSync' | 'cleanup'
+    >,
+    @inject(DI_TOKENS.METADATA_MUTATION_SERVICE)
+    private metadataMutations: MetadataMutationService,
+    @inject(DI_TOKENS.METADATA_OUTBOX_REPO)
+    private metadataOutboxRepo?: MetadataOutboxRepository,
+    @inject(DI_TOKENS.METADATA_KEYWORD_ORIGIN_REPO)
+    private keywordOrigins?: MetadataKeywordOriginRepository,
   ) {}
 
   private assertNoActiveOtherModule(sessionId: string, module: string): void {
@@ -75,10 +93,12 @@ export class WritebackService {
     const photos = this.photoRepo.getBySession(sessionId)
     const filtered = photoIds ? photos.filter(p => photoIds.has(p.id)) : photos
     const additionsBySidecar = new Map<string, string[]>()
+    const sharedCounts = new Map<string, number>()
     const uniquePhotos = new Map<string, (typeof filtered)[number]>()
     for (const photo of filtered) {
       const sidecarPath = getXmpSidecarPath(photo.filepath)
       if (!uniquePhotos.has(sidecarPath)) uniquePhotos.set(sidecarPath, photo)
+      sharedCounts.set(sidecarPath, (sharedCounts.get(sidecarPath) ?? 0) + 1)
       additionsBySidecar.set(sidecarPath, [
         ...new Set([
           ...(additionsBySidecar.get(sidecarPath) ?? []),
@@ -107,6 +127,20 @@ export class WritebackService {
         xmpPath: sidecarPath,
         // Filled during execute only when an original sidecar really existed.
         backupPath: '',
+        preview: {
+          dirtyFields: ['keywords' as const],
+          before: { keywords: existingKeywords },
+          after: {
+            keywords: [...new Set([
+              ...existingKeywords,
+              ...(additionsBySidecar.get(sidecarPath) ?? []),
+            ])],
+          },
+          source: module,
+          sharedPhotoCount: sharedCounts.get(sidecarPath) ?? 1,
+          externalChanged: this.metadataOutboxRepo?.get(sidecarPath)?.status === 'conflict',
+          willCreate: !existsSync(sidecarPath),
+        },
       }
     }, 10)
 
@@ -116,8 +150,12 @@ export class WritebackService {
     this.sessionRepo.updateWritebackStatus(sessionId, failedCount > 0 ? 'partial' : 'idle')
     const savedRows = this.writebackRepo.getItems(sessionId, module, 'pending')
 
+    const previewByPath = new Map(items.map(item => [item.xmpPath, item.preview]))
     return {
-      items: savedRows.map(rowToItem),
+      items: savedRows.map(row => {
+        const item = rowToItem(row)
+        return { ...item, preview: previewByPath.get(item.xmpPath) }
+      }),
       totalCount: savedRows.length,
       affectedPhotos: filtered.length,
     }
@@ -132,12 +170,6 @@ export class WritebackService {
     const failedItems: WritebackItem[] = []
     const persistedRows = this.writebackRepo.getItems(sessionId, _module)
     const rowById = new Map(persistedRows.map(row => [row.id, row]))
-    const activeBackupByXmpPath = new Map(
-      persistedRows
-        .filter(row => row.xmp_status === 'written' || row.xmp_status === 'synced')
-        .map(row => [row.xmp_path, row.backup_path]),
-    )
-
     for (const item of items) {
       const itemId = item.id
       if (itemId == null) {
@@ -164,25 +196,28 @@ export class WritebackService {
         failed++
         continue
       }
-      const writer = this.writerRouter.selectSidecar()
       const persistedItem = rowToItem(dbRow)
 
-      let backupPath = ''
       try {
         await this.metadataSync.waitForIdle(dbRow.xmp_path)
-        const priorBackupPath = activeBackupByXmpPath.get(dbRow.xmp_path)
-        backupPath = priorBackupPath !== undefined
-          ? priorBackupPath
-          : await writer.backup(photoPath)
-        if (backupPath) {
-          this.writebackRepo.updateBackupPath(itemId, backupPath)
-        }
+        const keywordsBeforeWrite = await this.writerRouter
+          .selectSidecar()
+          .readKeywords(photoPath)
         const writeAttrs = persistedItem.attributes
           ? { keywords: persistedItem.keywords, ...persistedItem.attributes }
           : { keywords: persistedItem.keywords }
-        await writer.writeAttributes(photoPath, writeAttrs as Record<string, unknown> as Parameters<typeof writer.writeAttributes>[1])
+        this.metadataMutations.queuePhotoValues(
+          sessionId,
+          dbRow.photo_id,
+          writeAttrs as Record<string, unknown>,
+          mutationSource(_module),
+        )
+        const summary = await this.metadataSync.flushSession(sessionId)
+        const syncItem = summary.items.find(candidate => candidate.xmpPath === dbRow.xmp_path)
+        if (!syncItem || !['written', 'synced'].includes(syncItem.status)) {
+          throw new Error(syncItem?.errorMessage || `XMP write ended in ${syncItem?.status ?? 'unknown'} state`)
+        }
         this.writebackRepo.updateStatus(itemId, 'written')
-        activeBackupByXmpPath.set(dbRow.xmp_path, backupPath)
         const attrs = writeAttrs as Record<string, unknown>
         if (typeof attrs.rating === 'number') {
           try { this.metadataCacheRepo.updateRating(dbRow.photo_id, attrs.rating as number) } catch { /* best effort */ }
@@ -192,18 +227,19 @@ export class WritebackService {
         }
         if (Array.isArray(attrs.keywords)) {
           try { this.metadataCacheRepo.updateKeywords(dbRow.photo_id, attrs.keywords as string[]) } catch { /* best effort */ }
+          if (_module === 'face_kw') {
+            const existing = new Set(keywordsBeforeWrite)
+            this.keywordOrigins?.markIntroduced(
+              dbRow.xmp_path,
+              'face-keyword',
+              (attrs.keywords as string[]).filter(keyword => !existing.has(keyword)),
+            )
+          }
         }
         written++
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Unknown error'
         this.writebackRepo.updateStatus(itemId, 'failed', message)
-        try {
-          if (backupPath) {
-            await writer.restore(photoPath, backupPath)
-          }
-        } catch (restoreErr) {
-          console.warn(`Failed to restore backup for ${photoPath}:`, restoreErr instanceof Error ? restoreErr.message : restoreErr)
-        }
         errors.push(`${photoPath}: ${message}`)
         failedItems.push(persistedItem)
         failed++
@@ -223,6 +259,53 @@ export class WritebackService {
       failedItems,
       report: `Written: ${written}, Failed: ${failed}, Skipped: ${skipped}`,
     }
+  }
+
+  async removeOwnedFaceKeywords(
+    sessionId: string,
+    entries: Array<{ photoId: string; xmpPath: string; keywords: string[] }>,
+  ): Promise<number> {
+    if (!this.keywordOrigins) return 0
+    const byPath = new Map<string, { photoId: string; keywords: Set<string> }>()
+    for (const entry of entries) {
+      const current = byPath.get(entry.xmpPath) ?? {
+        photoId: entry.photoId,
+        keywords: new Set<string>(),
+      }
+      entry.keywords.forEach(keyword => current.keywords.add(keyword))
+      byPath.set(entry.xmpPath, current)
+    }
+    const queued: Array<{ xmpPath: string; keywords: string[] }> = []
+    for (const [xmpPath, entry] of byPath) {
+      const owned = this.keywordOrigins.getActiveIntroduced(
+        xmpPath,
+        'face-keyword',
+        [...entry.keywords],
+      )
+      if (owned.length === 0) continue
+      await this.metadataMutations.queueMutation(
+        sessionId,
+        entry.photoId,
+        { keywords: { op: 'remove', values: owned } },
+        'face-keyword',
+      )
+      queued.push({ xmpPath, keywords: owned })
+    }
+    if (queued.length === 0) return 0
+    const summary = await this.metadataSync.flushSession(sessionId)
+    let removed = 0
+    for (const item of queued) {
+      const result = summary.items.find(candidate => candidate.xmpPath === item.xmpPath)
+      if (!result || !['written', 'synced'].includes(result.status)) {
+        throw new Error(
+          result?.errorMessage ||
+          `撤销人脸关键词失败：${item.xmpPath} 处于 ${result?.status ?? 'unknown'} 状态`,
+        )
+      }
+      this.keywordOrigins.deactivate(item.xmpPath, 'face-keyword', item.keywords)
+      removed += item.keywords.length
+    }
+    return removed
   }
 
   async retryFailed(sessionId: string, module: string): Promise<WritebackResult> {
@@ -248,6 +331,7 @@ export class WritebackService {
     if (this.writebackRepo.getFailedCount(sessionId, module) > 0) {
       throw new Error('仍有 XMP 写入失败项，请先重试或处理失败项')
     }
+    this.metadataSync.confirmSync(sessionId)
     this.writebackRepo.markWrittenAsSynced(sessionId, module)
     this.sessionRepo.updateWritebackStatus(
       sessionId,
@@ -282,47 +366,16 @@ export class WritebackService {
       throw new Error('请先在 Capture One 中加载元数据并确认同步，再执行清理')
     }
 
-    let deletedCount = 0
-    const errors: string[] = []
-
-    const uniqueItems = new Map(items.map(item => [item.xmp_path, item]))
-    for (const item of uniqueItems.values()) {
-      try {
-        if (item.backup_path) {
-          if (!existsSync(item.backup_path)) {
-            throw new Error(`原始 XMP 备份不存在，已停止清理以避免误删：${item.backup_path}`)
-          }
-          await this.writerRouter.selectSidecar().restore(item.photo_path, item.backup_path)
-          deletedCount++
-        } else if (item.xmp_path && existsSync(item.xmp_path)) {
-          await unlink(item.xmp_path)
-          deletedCount++
-        }
-        this.writebackRepo.updateStatusByXmpPath(
-          sessionId,
-          module,
-          item.xmp_path,
-          'cleaned',
-        )
-      } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : 'Unknown error'
-        errors.push(`${item.backup_path}: ${message}`)
-      }
-    }
-
-    if (errors.length === 0) {
-      this.writebackRepo.deleteItems(sessionId, module)
-      const remainingItems = this.writebackRepo.getItems(sessionId)
-      this.sessionRepo.updateWritebackStatus(
-        sessionId,
-        remainingItems.length === 0
-          ? 'cleaned'
-          : this.writebackRepo.getFailedCount(sessionId) > 0 ? 'partial' : 'done',
-      )
-    } else {
-      this.sessionRepo.updateWritebackStatus(sessionId, 'partial')
-    }
-
-    return { deletedCount, errors }
+    const result = await this.metadataSync.cleanup(sessionId)
+    if (result.errors.length > 0) return result
+    this.writebackRepo.deleteItems(sessionId, module)
+    const remainingItems = this.writebackRepo.getItems(sessionId)
+    this.sessionRepo.updateWritebackStatus(
+      sessionId,
+      remainingItems.length === 0
+        ? 'cleaned'
+        : this.writebackRepo.getFailedCount(sessionId) > 0 ? 'partial' : 'done',
+    )
+    return result
   }
 }

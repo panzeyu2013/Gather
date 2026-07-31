@@ -266,6 +266,39 @@
   color: var(--color-text);
 }
 
+.writebackPreview {
+  max-height: 260px;
+  margin: 10px 0 14px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.writebackPreviewRow {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.writebackPreviewRow:last-child {
+  border-bottom: 0;
+}
+
+.writebackPreviewRow strong,
+.writebackPreviewRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.writebackPreviewRow small {
+  color: var(--color-text-secondary);
+}
+
 .groupHeader:hover {
   background: var(--color-hover);
 }

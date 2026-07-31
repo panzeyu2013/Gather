@@ -14,6 +14,8 @@ export interface PhotoRow {
   status: string
   metadata: string
   result: string
+  asset_id: string | null
+  asset_file_id: string | null
   width: number
   height: number
   created_at: string
@@ -83,5 +85,55 @@ export class PhotoRepository {
 
   deleteBySession(sessionId: string): void {
     this.db.prepare('DELETE FROM photos WHERE session_id = ?').run(sessionId)
+  }
+
+  updateIndexedFile(
+    photoId: string,
+    width: number,
+    height: number,
+    changed: boolean,
+  ): void {
+    this.db.prepare(`
+      UPDATE photos
+      SET width = ?, height = ?, status = 'pending',
+          checksum = CASE WHEN ? THEN '' ELSE checksum END,
+          checksum_file_size = CASE WHEN ? THEN 0 ELSE checksum_file_size END,
+          checksum_file_mtime_ms = CASE WHEN ? THEN 0 ELSE checksum_file_mtime_ms END,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      width,
+      height,
+      changed ? 1 : 0,
+      changed ? 1 : 0,
+      changed ? 1 : 0,
+      new Date().toISOString(),
+      photoId,
+    )
+  }
+
+  updateChecksum(
+    photoId: string,
+    checksum: string,
+    fileSize: number,
+    fileMtimeMs: number,
+  ): void {
+    this.db.prepare(`
+      UPDATE photos
+      SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(checksum, fileSize, fileMtimeMs, new Date().toISOString(), photoId)
+  }
+
+  markMissing(photoIds: string[]): void {
+    const statement = this.db.prepare(
+      "UPDATE photos SET status = 'missing', updated_at = ? WHERE id = ?",
+    )
+    const updateMany = this.db.transaction((ids: string[]) => {
+      const now = new Date().toISOString()
+      for (const id of ids) statement.run(now, id)
+    })
+    updateMany(photoIds)
   }
 }

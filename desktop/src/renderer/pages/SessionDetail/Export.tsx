@@ -9,6 +9,8 @@ import styles from './Export.module.css'
 export default function Export() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const [format, setFormat] = useState<ExportOptions['format']>('original')
+  const [variantPolicy, setVariantPolicy] =
+    useState<NonNullable<ExportOptions['variantPolicy']>>('preferred')
   const [quality, setQuality] = useState(85)
   const [maxDimension, setMaxDimension] = useState('')
   const [tiffCompression, setTiffCompression] = useState<ExportOptions['tiffCompression']>('lzw')
@@ -38,6 +40,7 @@ export default function Export() {
   const options = useMemo((): ExportOptions => {
     const opts: ExportOptions = {
       scope: 'session',
+      variantPolicy,
       format,
       quality: format === 'jpeg' ? quality : undefined,
       maxDimension: format === 'original' || !maxDimension
@@ -64,7 +67,7 @@ export default function Export() {
     }
 
     return opts
-  }, [format, quality, maxDimension, tiffCompression, namingPattern, includeXmp, destination, watermarkEnabled, watermarkText, watermarkPosition, watermarkOpacity, watermarkFontSize])
+  }, [format, variantPolicy, quality, maxDimension, tiffCompression, namingPattern, includeXmp, destination, watermarkEnabled, watermarkText, watermarkPosition, watermarkOpacity, watermarkFontSize])
 
   const previewQuery = useQuery({
     queryKey: ['export-preview', sessionId, options],
@@ -158,6 +161,22 @@ export default function Export() {
           <option value="original">保持原格式（复制）</option>
           <option value="jpeg">JPEG</option>
           <option value="tiff">TIFF</option>
+        </select>
+      </div>
+
+      <div className={styles.section}>
+        <label className={styles.label}>RAW / JPEG 变体</label>
+        <select
+          className={styles.select}
+          value={variantPolicy}
+          onChange={(event) => setVariantPolicy(
+            event.target.value as NonNullable<ExportOptions['variantPolicy']>,
+          )}
+        >
+          <option value="preferred">首选文件（优先 RAW）</option>
+          <option value="raw">仅 RAW</option>
+          <option value="jpeg">仅 JPEG</option>
+          <option value="all">全部物理变体</option>
         </select>
       </div>
 

@@ -68,4 +68,83 @@ describe('ExportService option contracts', () => {
     expect(fs.readFileSync(path.join(destination, 'Wedding_source.NEF'), 'utf8'))
       .toBe('raw bytes')
   })
+
+  it('does not overwrite an occupied incomplete destination when resuming', async () => {
+    const service = makeService()
+    const destinations: Record<string, string> = {}
+    await service.execute('session-1', options(), undefined, {
+      destinations,
+      onPlanned: (photoId, destinationName) => {
+        destinations[photoId] = destinationName
+      },
+    })
+    expect(destinations).toEqual({ 'photo-1': 'Wedding_source.NEF' })
+
+    fs.writeFileSync(source, 'resumed raw bytes')
+    const resumed = await service.execute('session-1', options(), undefined, {
+      destinations,
+      completedPhotoIds: new Set(),
+      onPlanned: (photoId, destinationName) => {
+        destinations[photoId] = destinationName
+      },
+    })
+    expect(resumed).toMatchObject({ exported: 1, failed: 0 })
+    expect(fs.readFileSync(path.join(destination, 'Wedding_source.NEF'), 'utf8'))
+      .toBe('raw bytes')
+    expect(fs.readFileSync(path.join(destination, 'Wedding_source_2.NEF'), 'utf8'))
+      .toBe('resumed raw bytes')
+    expect(destinations).toEqual({ 'photo-1': 'Wedding_source_2.NEF' })
+  })
+
+  it('rejects unsafe names and invalid numeric options before writing', async () => {
+    await expect(makeService().preview(
+      'session-1',
+      options({ naming: { pattern: '../outside' } }),
+    )).rejects.toThrow('路径分隔符')
+    await expect(makeService().preview(
+      'session-1',
+      options({ format: 'jpeg', quality: Number.NaN }),
+    )).rejects.toThrow('JPEG 质量')
+  })
+
+  it('selects RAW, JPEG, preferred, or all members of a logical Asset', async () => {
+    const jpeg = path.join(dir, 'source.JPG')
+    fs.writeFileSync(jpeg, 'jpeg bytes')
+    const service = new ExportService(
+      {
+        getBySession: () => [
+          {
+            id: 'raw',
+            asset_id: 'asset',
+            session_id: 'session-1',
+            filepath: source,
+            filename: 'source.NEF',
+            status: 'ready',
+          },
+          {
+            id: 'jpeg',
+            asset_id: 'asset',
+            session_id: 'session-1',
+            filepath: jpeg,
+            filename: 'source.JPG',
+            status: 'ready',
+          },
+        ],
+      } as never,
+      { get: () => ({ name: 'Wedding' }) } as never,
+    )
+
+    expect((await service.preview(
+      'session-1',
+      options({ variantPolicy: 'preferred' }),
+    )).files.map(file => file.photoId)).toEqual(['raw'])
+    expect((await service.preview(
+      'session-1',
+      options({ variantPolicy: 'jpeg' }),
+    )).files.map(file => file.photoId)).toEqual(['jpeg'])
+    expect((await service.preview(
+      'session-1',
+      options({ variantPolicy: 'all' }),
+    )).files.map(file => file.photoId)).toEqual(['raw', 'jpeg'])
+  })
 })

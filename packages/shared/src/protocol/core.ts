@@ -71,6 +71,15 @@ export interface WritebackItem {
   errorMessage: string
   attemptCount: number
   lastAttemptAt: string
+  preview?: {
+    dirtyFields: Array<'rating' | 'label' | 'keywords'>
+    before: WritebackAttributes
+    after: WritebackAttributes
+    source: string
+    sharedPhotoCount: number
+    externalChanged: boolean
+    willCreate: boolean
+  }
 }
 
 export interface WritebackResult {
@@ -196,7 +205,14 @@ import type { SessionCreateParams, SessionDeleteParams, SessionDeleteManyParams,
 import type { FkwAnalyzeParams, FkwCancelAnalysisParams, FkwClustersParams, FkwBindParams, FkwUnbindParams, FkwMergeParams, FkwRemoveMemberParams, FkwPreviewParams, FkwWritebackParams, FkwConfirmSyncParams, FkwConfirmCleanupParams, FkwCleanupParams, FkwGetClusterThumbnailParams } from './face'
 import type { SimAnalyzeParams, SimCancelAnalysisParams, SimResultParams, SimReclusterParams, SimPreviewWritebackParams, SimWritebackParams, SimWritebackItemsParams, SimRetryFailedWritebackParams, SimConfirmSyncParams, SimCleanupParams } from './similarity'
 import type { PersonListParams, PersonGetParams, PersonCreateParams, PersonUpdateParams, PersonDeleteParams, PersonMergeParams, PersonRemovePhotoParams, PersonSearchPhotosParams } from './person'
-import type { MetadataGetParams, MetadataSetParams, MetadataBatchSetParams } from './metadata'
+import type {
+  MetadataGetParams,
+  MetadataSetParams,
+  MetadataBatchSetParams,
+  MetadataConflictListParams,
+  MetadataConflictResolveParams,
+  MetadataOrphanResolveParams,
+} from './metadata'
 import type { DupScanParams, DupGroupsParams, DupResolveParams, DupResolveMemberParams } from './duplicate'
 import type { FilterPhotosParams, FilterPhotosGlobalParams, FilterSuggestParams, AlbumCreateParams, AlbumListParams, AlbumGetParams, AlbumUpdateParams, AlbumDeleteParams, AlbumGetPhotosParams } from './filter'
 import type { ExportPreviewParams, ExportExecuteParams, ExportCancelParams, ExportReportParams } from './export'
@@ -211,6 +227,8 @@ import type {
   CullingConfirmSyncParams,
   CullingCleanupParams,
   CullingResetParams,
+  CullingHistoryParams,
+  CullingHistoryApplyParams,
   CullingListParams,
   CullingUpdateParams,
   CullingBatchUpdateParams,
@@ -221,6 +239,20 @@ import type {
   CullingFinalizeSyncParams,
   MetadataSyncSummary,
 } from './culling'
+import type { JobListParams, JobCancelParams, JobRetryParams, JobClearCompletedParams } from './jobs'
+import type { IndexScanParams } from './indexer'
+import type { QualityAnalyzeParams, QualityGetParams } from './quality'
+import type {
+  NavigationAnalyzeParams,
+  NavigationListParams,
+  NavigationSplitParams,
+  NavigationMergeParams,
+} from './navigation'
+import type {
+  AssetCandidateListParams,
+  AssetCandidateMutationParams,
+  AssetRelinkRootParams,
+} from './assets'
 
 // ── 命令联合类型 ──
 
@@ -260,7 +292,7 @@ export type Command =
   | { type: 'image.preload_previews'; params: { paths: string[]; maxDimension?: number } }
   | { type: 'image.get_dimensions'; params: { paths: string[] } }
   | { type: 'image.prioritize_thumbnail'; params: { path: string; size?: number } }
-  | { type: 'photo.list'; params: { sessionId: string } }
+  | { type: 'photo.list'; params: { sessionId: string; expandVariants?: boolean } }
   | { type: 'settings.get_all'; params: Record<string, never> }
   | { type: 'settings.get'; params: { key: string } }
   | { type: 'settings.set'; params: { key: string; value: string } }
@@ -277,6 +309,10 @@ export type Command =
   | { type: 'metadata.get'; params: MetadataGetParams }
   | { type: 'metadata.set'; params: MetadataSetParams }
   | { type: 'metadata.batch_set'; params: MetadataBatchSetParams }
+  | { type: 'metadata.conflicts'; params: MetadataConflictListParams }
+  | { type: 'metadata.resolve_conflict'; params: MetadataConflictResolveParams }
+  | { type: 'metadata.orphans'; params: Record<string, never> }
+  | { type: 'metadata.resolve_orphan'; params: MetadataOrphanResolveParams }
   | { type: 'dup.scan'; params: DupScanParams }
   | { type: 'dup.groups'; params: DupGroupsParams }
   | { type: 'dup.resolve'; params: DupResolveParams }
@@ -317,6 +353,24 @@ export type Command =
   | { type: 'culling.confirm_sync'; params: CullingConfirmSyncParams }
   | { type: 'culling.cleanup'; params: CullingCleanupParams }
   | { type: 'culling.reset'; params: CullingResetParams }
+  | { type: 'culling.history'; params: CullingHistoryParams }
+  | { type: 'culling.apply_history'; params: CullingHistoryApplyParams }
+  | { type: 'jobs.list'; params: JobListParams }
+  | { type: 'jobs.cancel'; params: JobCancelParams }
+  | { type: 'jobs.retry'; params: JobRetryParams }
+  | { type: 'jobs.clear_completed'; params: JobClearCompletedParams }
+  | { type: 'assets.candidates'; params: AssetCandidateListParams }
+  | { type: 'assets.accept_candidate'; params: AssetCandidateMutationParams }
+  | { type: 'assets.reject_candidate'; params: AssetCandidateMutationParams }
+  | { type: 'assets.volumes'; params: Record<string, never> }
+  | { type: 'assets.relink_root'; params: AssetRelinkRootParams }
+  | { type: 'index.scan'; params: IndexScanParams }
+  | { type: 'quality.analyze'; params: QualityAnalyzeParams }
+  | { type: 'quality.get'; params: QualityGetParams }
+  | { type: 'navigation.analyze'; params: NavigationAnalyzeParams }
+  | { type: 'navigation.list'; params: NavigationListParams }
+  | { type: 'navigation.split'; params: NavigationSplitParams }
+  | { type: 'navigation.merge'; params: NavigationMergeParams }
 
 // ── 事件联合类型 ──
 
@@ -349,7 +403,7 @@ export const ALLOWED_COMMANDS = new Set([
   'photo.list',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
-  'metadata.get', 'metadata.set', 'metadata.batch_set',
+  'metadata.get', 'metadata.set', 'metadata.batch_set', 'metadata.conflicts', 'metadata.resolve_conflict', 'metadata.orphans', 'metadata.resolve_orphan',
   'dup.scan', 'dup.groups', 'dup.resolve', 'dup.resolve_member',
   'filter.photos', 'filter.photos_global', 'filter.suggest',
   'album.create', 'album.list', 'album.get', 'album.update', 'album.delete', 'album.get_photos',
@@ -357,7 +411,11 @@ export const ALLOWED_COMMANDS = new Set([
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
   'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
   'culling.list', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
-  'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset',
+  'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset', 'culling.history', 'culling.apply_history',
+  'jobs.list', 'jobs.cancel', 'jobs.retry', 'jobs.clear_completed',
+  'assets.candidates', 'assets.accept_candidate', 'assets.reject_candidate', 'assets.volumes', 'assets.relink_root',
+  'index.scan',
+  'quality.analyze', 'quality.get', 'navigation.analyze', 'navigation.list', 'navigation.split', 'navigation.merge',
 ])
 
 export const DESTRUCTIVE_COMMANDS = new Set([
@@ -368,7 +426,9 @@ export const DESTRUCTIVE_COMMANDS = new Set([
   'dup.resolve', 'dup.resolve_member',
   'culling.writeback', 'culling.retry_failed_writeback', 'culling.cleanup', 'culling.reset',
   'culling.finalize_sync',
-  'metadata.set', 'metadata.batch_set',
+  'metadata.set', 'metadata.batch_set', 'metadata.resolve_conflict', 'metadata.resolve_orphan',
+  'jobs.clear_completed',
+  'assets.accept_candidate', 'assets.reject_candidate', 'assets.relink_root',
   'template.delete',
   'album.delete',
   'export.execute', 'template.apply',

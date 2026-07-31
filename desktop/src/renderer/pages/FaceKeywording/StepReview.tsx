@@ -33,16 +33,17 @@ export default function StepReview() {
   const loadedRef = useRef<Set<number>>(new Set())
 
   const loadThumbnail = useCallback(async (clusterId: number) => {
+    if (!sessionId) return
     if (loadedRef.current.has(clusterId)) return
     loadedRef.current.add(clusterId)
     try {
-      const { base64 } = await faceKwApi.getClusterThumbnail(clusterId)
+      const { base64 } = await faceKwApi.getClusterThumbnail(sessionId, clusterId)
       setThumbnails(prev => ({ ...prev, [clusterId]: base64 }))
     } catch (e) {
       console.warn('Failed to load thumbnail', clusterId, e)
       setThumbnails(prev => ({ ...prev, [clusterId]: '' }))
     }
-  }, [])
+  }, [sessionId])
 
   const handleSelectCluster = useCallback(
     (cluster: ClusterData) => {
@@ -84,6 +85,7 @@ export default function StepReview() {
 
   const handleUnbind = useCallback(async () => {
     if (!sessionId || !selectedCluster) return
+    if (!window.confirm('解绑后将撤销 Gather 人脸模块写入且未被其他绑定使用的关键词。继续吗？')) return
     try {
       await faceKwApi.unbind(sessionId, selectedCluster.id)
       await refreshClusters()

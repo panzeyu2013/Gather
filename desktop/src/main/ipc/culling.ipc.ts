@@ -57,6 +57,18 @@ function parseFilters(value: unknown): CullingFilters | undefined {
     }
     filters.colorLabels = input.colorLabels as CaptureOneColorLabel[]
   }
+  if (input.qualityStatus !== undefined) {
+    if (!['analysed', 'unanalysed', 'failed'].includes(String(input.qualityStatus))) {
+      throw new Error('qualityStatus is invalid')
+    }
+    filters.qualityStatus = input.qualityStatus as CullingFilters['qualityStatus']
+  }
+  if (input.metadataConflictOnly !== undefined) {
+    if (typeof input.metadataConflictOnly !== 'boolean') {
+      throw new Error('metadataConflictOnly must be a boolean')
+    }
+    filters.metadataConflictOnly = input.metadataConflictOnly
+  }
   return filters
 }
 
@@ -79,6 +91,51 @@ export function registerCullingHandlers(
       return ok(cullingService.list(sessionId, scope, filters, groupId))
     }),
   )
+
+  registry.register('culling.history', wrapHandler(async (params) => {
+    const sessionId = validateString(params.sessionId, 'sessionId')
+    const limit = params.limit === undefined ? undefined : Number(params.limit)
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 500)) {
+      throw new Error('limit must be an integer between 1 and 500')
+    }
+    return ok(cullingService.getHistory(sessionId, limit))
+  }))
+
+  registry.register('culling.apply_history', wrapHandler(async params => {
+    const sessionId = validateString(params.sessionId, 'sessionId')
+    if (!Array.isArray(params.entries) || params.entries.length === 0 || params.entries.length > 10_000) {
+      throw new Error('entries must be a non-empty array with at most 10000 items')
+    }
+    const entries = params.entries.map((entry, index) => {
+      if (!entry || typeof entry !== 'object') throw new Error(`entries[${index}] is invalid`)
+      if (!Number.isInteger(entry.expectedRevision) || entry.expectedRevision < 0) {
+        throw new Error(`entries[${index}].expectedRevision is invalid`)
+      }
+      if (!entry.patch || typeof entry.patch !== 'object') {
+        throw new Error(`entries[${index}].patch is invalid`)
+      }
+      return {
+        photoId: validateString(entry.photoId, `entries[${index}].photoId`),
+        expectedRevision: entry.expectedRevision,
+        patch: entry.patch as CullingUpdatePatch,
+      }
+    })
+    const historyOperationId = typeof params.historyOperationId === 'number'
+      ? params.historyOperationId
+      : Number.NaN
+    if (!Number.isInteger(historyOperationId) || historyOperationId <= 0) {
+      throw new Error('historyOperationId must be a positive integer')
+    }
+    if (params.direction !== 'undo' && params.direction !== 'redo') {
+      throw new Error('direction must be undo or redo')
+    }
+    return ok(cullingService.applyHistory(
+      sessionId,
+      entries,
+      historyOperationId,
+      params.direction,
+    ))
+  }))
 
   registry.register(
     'culling.update',

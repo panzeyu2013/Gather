@@ -2,6 +2,7 @@ import { Database } from '../../db/database'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { FaceRepository } from '../../db/repositories/face.repo'
+import { AssetRepository } from '../../db/repositories/asset.repo'
 import type { ImageService } from '../image'
 import { SettingsService } from '../settings/settings.service'
 import type {
@@ -28,7 +29,20 @@ export function commonParentDirectory(filepaths: string[]): string {
       candidate = path.dirname(candidate)
     }
   }
+  // A filesystem root is not a meaningful photo source. Persisting "/" here
+  // would make the indexer recursively watch and scan the entire volume when
+  // a plugin imports files from unrelated directories.
+  if (candidate === path.parse(candidate).root) return ''
   return candidate
+}
+
+export function normalizeImportFilepaths(filepaths: string[]): string[] {
+  return [...new Set(
+    filepaths
+      .map(filepath => filepath.trim())
+      .filter(Boolean)
+      .map(filepath => path.resolve(filepath)),
+  )]
 }
 
 function toSessionData(
@@ -70,6 +84,7 @@ export class SessionService {
     @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
     @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
     @inject(DI_TOKENS.DB) private db: Database,
+    @inject(DI_TOKENS.ASSET_REPO) private assetRepo?: AssetRepository,
   ) {}
 
   createSession(name: string, source: string, sourcePath = ''): SessionData {
@@ -107,6 +122,13 @@ export class SessionService {
       if (!deleted) {
         throw new Error('Session not found')
       }
+      this.db.prepare(`
+        UPDATE assets SET status = 'orphan', updated_at = ?
+        WHERE status != 'orphan'
+          AND NOT EXISTS (
+            SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
+          )
+      `).run(new Date().toISOString())
     })
     del()
   }
@@ -122,7 +144,15 @@ export class SessionService {
         this.sessionRepo.deleteSimilarityDataBySession(id)
         this.photoRepo.deleteBySession(id)
       }
-      return this.sessionRepo.deleteMany(ids)
+      const deleted = this.sessionRepo.deleteMany(ids)
+      this.db.prepare(`
+        UPDATE assets SET status = 'orphan', updated_at = ?
+        WHERE status != 'orphan'
+          AND NOT EXISTS (
+            SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
+          )
+      `).run(new Date().toISOString())
+      return deleted
     })
     return del(sessionIds)
   }
@@ -132,8 +162,9 @@ export class SessionService {
     if (!session) {
       throw new Error('Session not found')
     }
-    if (!session.source_path && filepaths.length > 0) {
-      const sourcePath = commonParentDirectory(filepaths)
+    const normalizedFilepaths = normalizeImportFilepaths(filepaths)
+    if (!session.source_path && normalizedFilepaths.length > 0) {
+      const sourcePath = commonParentDirectory(normalizedFilepaths)
       if (sourcePath) {
         this.sessionRepo.updateSourcePath(sessionId, sourcePath)
       }
@@ -141,9 +172,10 @@ export class SessionService {
     const failedFiles: string[] = []
     const entries: Array<{ filepath: string; width: number; height: number }> = []
 
-    const batchSize = this.settings.getNumber('import_concurrency', 8)
-    for (let i = 0; i < filepaths.length; i += batchSize) {
-      const batch = filepaths.slice(i, i + batchSize)
+    const configuredBatchSize = this.settings.getNumber('import_concurrency', 8)
+    const batchSize = Math.max(1, Math.min(32, Math.floor(configuredBatchSize)))
+    for (let i = 0; i < normalizedFilepaths.length; i += batchSize) {
+      const batch = normalizedFilepaths.slice(i, i + batchSize)
       const dimResults = await Promise.allSettled(
         batch.map((fp) => this.imageService.getDimensions(fp)),
       )
@@ -158,6 +190,7 @@ export class SessionService {
     }
 
     const result = this.photoRepo.addPhotos(sessionId, entries, source)
+    this.assetRepo?.backfillSession(sessionId)
     const totalCount = this.photoRepo.countBySession(sessionId)
     this.sessionRepo.updatePhotoCount(sessionId, totalCount)
     if (totalCount > 0 && session.status === 'draft') {

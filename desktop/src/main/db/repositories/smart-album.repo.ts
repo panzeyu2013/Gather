@@ -6,6 +6,7 @@ import { DI_TOKENS } from '../../di/container'
 
 export interface SmartAlbumRow {
   id: string
+  schema_version: number
   name: string
   description: string
   filter_criteria: string
@@ -50,7 +51,7 @@ export class SmartAlbumRepository {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     this.db.prepare(
-      'INSERT INTO smart_albums (id, name, description, filter_criteria, sort_by, sort_order, icon, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO smart_albums (id, schema_version, name, description, filter_criteria, sort_by, sort_order, icon, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
       data.name,

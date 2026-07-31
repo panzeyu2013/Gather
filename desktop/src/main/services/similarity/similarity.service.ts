@@ -16,6 +16,9 @@ import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { stat } from 'fs/promises'
 import { batchAsync } from '../../utils/async'
+import { collapsePhotoAssets } from '../assets/logical-photo-assets'
+
+export const collapseSimilarityAssets = collapsePhotoAssets
 
 export interface SimilarityResult {
   groups: SimilarityGroup[]
@@ -27,6 +30,78 @@ export interface SimilarityResult {
     minGroupSize: number
     groupingMode: SimilarityGroupingMode
   }
+}
+
+export function validateSimilarityParameters(
+  threshold: number,
+  minGroupSize: number,
+): void {
+  if (!Number.isInteger(threshold) || threshold < 0 || threshold > 64) {
+    throw new Error('相似度阈值必须是 0 到 64 之间的整数')
+  }
+  if (!Number.isInteger(minGroupSize) || minGroupSize < 2) {
+    throw new Error('相似组最小照片数必须是大于等于 2 的整数')
+  }
+}
+
+export function reuseSimilarityHashes(
+  db: Database,
+  sessionId: string,
+  photos: Array<{ id: string }>,
+  sourceStats: Map<string, { size: number; mtimeMs: number }>,
+  existingHashMap: Map<string, string>,
+): number {
+  const reusableHash = db.prepare(`
+    SELECT source_hash.hash_hex
+    FROM photos target
+    JOIN photos source_photo
+      ON source_photo.asset_file_id = target.asset_file_id
+     AND source_photo.id <> target.id
+    JOIN similarity_hashes source_hash
+      ON source_hash.photo_id = source_photo.id
+     AND source_hash.session_id = source_photo.session_id
+    WHERE target.id = ?
+      AND target.session_id = ?
+      AND target.asset_file_id IS NOT NULL
+      AND source_hash.file_size = ?
+      AND ABS(source_hash.file_mtime_ms - ?) < 1
+    ORDER BY source_hash.id DESC
+    LIMIT 1
+  `)
+  const saveReusableHash = db.prepare(`
+    INSERT INTO similarity_hashes
+      (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(session_id, photo_id) DO UPDATE SET
+      hash_hex = excluded.hash_hex,
+      file_size = excluded.file_size,
+      file_mtime_ms = excluded.file_mtime_ms
+  `)
+  let reused = 0
+  db.transaction(() => {
+    for (const photo of photos) {
+      if (existingHashMap.has(photo.id)) continue
+      const sourceStat = sourceStats.get(photo.id)
+      if (!sourceStat) continue
+      const source = reusableHash.get(
+        photo.id,
+        sessionId,
+        sourceStat.size,
+        sourceStat.mtimeMs,
+      ) as { hash_hex: string } | undefined
+      if (!source) continue
+      saveReusableHash.run(
+        sessionId,
+        photo.id,
+        source.hash_hex,
+        sourceStat.size,
+        sourceStat.mtimeMs,
+      )
+      existingHashMap.set(photo.id, source.hash_hex)
+      reused++
+    }
+  })()
+  return reused
 }
 
 @injectable()
@@ -61,11 +136,12 @@ export class SimilarityService {
     const threshold = options?.threshold ?? this.settings.getNumber('default_threshold', 10)
     const minGroupSize = options?.minGroupSize ?? this.settings.getNumber('default_min_group_size', 2)
     const groupingMode = options?.groupingMode ?? 'global'
+    validateSimilarityParameters(threshold, minGroupSize)
 
     try {
       this.sessionRepo.updateAnalysisStatus(sessionId, 'running')
 
-      const photos = this.photoRepo.getBySession(sessionId)
+      const photos = collapseSimilarityAssets(this.photoRepo.getBySession(sessionId))
       if (photos.length === 0) {
         throw new Error('No photos in session')
       }
@@ -110,6 +186,7 @@ export class SimilarityService {
           })
           .map((row) => [row.photo_id, row.hash_hex]),
       )
+      reuseSimilarityHashes(db, sessionId, photos, sourceStats, existingHashMap)
 
       const uncachedPhotos = photos.filter(
         (p) => !existingHashMap.has(p.id),
@@ -147,13 +224,17 @@ export class SimilarityService {
           },
         )
 
-        const decodeBatchSize = Math.max(
-          1,
-          this.settings.getNumber('similarity_decode_concurrency', 4),
+        const decodeBatchSize = Math.min(
+          32,
+          Math.max(1, Math.floor(
+            this.settings.getNumber('similarity_decode_concurrency', 4),
+          )),
         )
-        const previewMaxDimension = Math.max(
-          64,
-          this.settings.getNumber('similarity_preview_max_dimension', 256),
+        const previewMaxDimension = Math.min(
+          2048,
+          Math.max(64, Math.floor(
+            this.settings.getNumber('similarity_preview_max_dimension', 256),
+          )),
         )
 
         for (let offset = 0; offset < uncachedPhotos.length; offset += decodeBatchSize) {
@@ -277,7 +358,10 @@ export class SimilarityService {
 
       this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
     } catch (e: unknown) {
-      this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
+      this.sessionRepo.updateAnalysisStatus(
+        sessionId,
+        signal.aborted ? 'cancelled' : 'failed',
+      )
       throw e
     } finally {
       this.controllers.delete(sessionId)
@@ -327,6 +411,7 @@ export class SimilarityService {
     minGroupSize: number,
     groupingMode: SimilarityGroupingMode = 'global',
   ): Promise<SimilarityResult> {
+    validateSimilarityParameters(threshold, minGroupSize)
     const db = this.db
 
     const existing = db
@@ -339,7 +424,7 @@ export class SimilarityService {
       throw new Error('No existing similarity results found. Run analysis first.')
     }
 
-    const photos = this.photoRepo.getBySession(sessionId)
+    const photos = collapseSimilarityAssets(this.photoRepo.getBySession(sessionId))
     const hashRows = db
       .prepare(
         'SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?',

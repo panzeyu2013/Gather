@@ -15,10 +15,19 @@ import type {
   CullingScope,
   CullingUpdatePatch,
   CullingUpdateResult,
+  CullingHistoryOperation,
+  NavigationGroup,
+  MetadataConflict,
+  MetadataConflictChoice,
+  MetadataField,
   MetadataSyncSummary,
 } from '@gather/shared'
 import { cullingApi } from '../../api/culling'
 import { imageApi } from '../../api/image'
+import { navigationApi } from '../../api/navigation'
+import { metadataApi } from '../../api/metadata'
+import { qualityApi } from '../../api/quality'
+import { jobsApi } from '../../api/jobs'
 import styles from './Culling.module.css'
 
 const COLOR_LABELS: Array<{
@@ -37,6 +46,7 @@ const COLOR_LABELS: Array<{
 ]
 
 interface HistoryEntry {
+  operationId: number
   photoId: string
   before: Pick<AssetCullingState, 'pickState' | 'rating' | 'colorLabel'>
   after: Pick<AssetCullingState, 'pickState' | 'rating' | 'colorLabel'>
@@ -60,6 +70,81 @@ function syncLabel(summary?: MetadataSyncSummary): string {
   if (summary.written > 0) return `${summary.written} 个 XMP 已写入，等待 Capture One 加载`
   if (summary.synced > 0) return `${summary.synced} 个 XMP 已确认加载`
   return 'XMP 已同步'
+}
+
+function valueLabel(value: unknown): string {
+  if (Array.isArray(value)) return value.join('、') || '空'
+  if (value === '' || value === undefined || value === null) return '空'
+  return String(value)
+}
+
+function sourceLabel(asset: CullingAsset): string {
+  if (asset.metadataSource === 'template') return '模板元数据'
+  if (asset.metadataSource === 'face-keyword') return '人脸关键词'
+  if (asset.metadataSource === 'similarity') return '相似组关键词'
+  if (asset.quality?.status === 'succeeded') return 'AI 技术分析'
+  if (asset.state.source === 'imported') return '导入元数据'
+  return '人工调整'
+}
+
+function ConflictPanel({
+  sessionId,
+  conflicts,
+  onResolved,
+}: {
+  sessionId: string
+  conflicts: MetadataConflict[]
+  onResolved: (summary: MetadataSyncSummary) => void
+}) {
+  const [choices, setChoices] = useState<Record<string, MetadataConflictChoice>>({})
+  const [resolving, setResolving] = useState(false)
+  const conflict = conflicts[0]
+  useEffect(() => {
+    if (!conflict) return
+    setChoices(Object.fromEntries(conflict.fields.map(field => [field.field, 'keep_local'])))
+  }, [conflict])
+  if (!conflict) return null
+  return (
+    <section className={styles.conflictPanel}>
+      <header>
+        <strong>XMP 字段冲突</strong>
+        <span title={conflict.xmpPath}>{conflict.xmpPath.split(/[/\\]/).pop()}</span>
+      </header>
+      {conflict.fields.map(field => (
+        <div className={styles.conflictField} key={field.field}>
+          <strong>{field.field === 'rating' ? '星级' : field.field === 'label' ? '颜色' : '关键词'}</strong>
+          <span title={valueLabel(field.local)}>Gather：{valueLabel(field.local)}</span>
+          <span title={valueLabel(field.remote)}>外部：{valueLabel(field.remote)}</span>
+          <select
+            value={choices[field.field] ?? 'keep_local'}
+            onChange={event => setChoices(current => ({
+              ...current,
+              [field.field]: event.target.value as MetadataConflictChoice,
+            }))}
+          >
+            <option value="keep_local">保留 Gather</option>
+            <option value="use_remote">采用外部值</option>
+          </select>
+        </div>
+      ))}
+      <footer>
+        <span>{conflicts.length > 1 ? `还有 ${conflicts.length - 1} 个冲突` : '这是最后一个冲突'}</span>
+        <button
+          disabled={resolving}
+          onClick={() => {
+            setResolving(true)
+            void metadataApi.resolveConflict(
+              sessionId,
+              conflict.xmpPath,
+              choices as Partial<Record<MetadataField, MetadataConflictChoice>>,
+            ).then(onResolved).finally(() => setResolving(false))
+          }}
+        >
+          {resolving ? '处理中…' : '应用并继续写入'}
+        </button>
+      </footer>
+    </section>
+  )
 }
 
 function statePatch(
@@ -101,6 +186,7 @@ function CullingImage({
       />
       <div className={styles.imageCaption}>
         <span>{asset.photo.filename}</span>
+        <span className={styles.sourceLabel}>{sourceLabel(asset)}</span>
         <span>{asset.state.rating > 0 ? `${asset.state.rating}★` : '未评级'}</span>
       </div>
       {asset.state.pickState !== 'unreviewed' && (
@@ -111,6 +197,16 @@ function CullingImage({
         </span>
       )}
       {faceAlign && !face && <span className={styles.noFaceBadge}>未检测到人脸</span>}
+      {asset.quality && (
+        <span className={styles.qualityBadge} title={
+          asset.quality.status === 'failed'
+            ? asset.quality.errorMessage ?? '质量分析失败'
+            : `AI 技术分析：清晰度 ${Math.round((asset.quality.subjectSharpness ?? asset.quality.sharpness) * 100)}%，曝光 ${Math.round(asset.quality.exposure * 100)}%`
+        }>
+          {asset.quality.status === 'failed' ? '分析失败' : `质量 ${Math.round(asset.quality.score * 100)}`}
+          {asset.quality.warnings.length > 0 ? ' ⚠' : ''}
+        </span>
+      )}
     </div>
   )
 }
@@ -129,6 +225,10 @@ export default function Culling() {
   const [transform, setTransform] = useState<ViewTransform>({ scale: 1, x: 0, y: 0 })
   const [undoStack, setUndoStack] = useState<HistoryEntry[][]>([])
   const [redoStack, setRedoStack] = useState<HistoryEntry[][]>([])
+  const [navigationGroups, setNavigationGroups] = useState<NavigationGroup[]>([])
+  const [selectedNavigationGroupId, setSelectedNavigationGroupId] = useState('')
+  const [navigationBusy, setNavigationBusy] = useState(false)
+  const [qualityJobId, setQualityJobId] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const dragRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null)
@@ -154,7 +254,46 @@ export default function Culling() {
     enabled: Boolean(sessionId),
     refetchInterval: 5_000,
   })
+  const { data: persistedHistory } = useQuery<CullingHistoryOperation[]>({
+    queryKey: ['culling', 'history', sessionId],
+    queryFn: () => cullingApi.history(sessionId!, 100),
+    enabled: Boolean(sessionId),
+  })
+  const { data: runningJobs = [] } = useQuery({
+    queryKey: ['jobs', 'culling-quality', qualityJobId],
+    queryFn: () => jobsApi.list(),
+    enabled: Boolean(qualityJobId),
+    refetchInterval: 1_000,
+  })
   const [syncSummary, setSyncSummary] = useState<MetadataSyncSummary>()
+  const { data: conflicts = [], refetch: refetchConflicts } = useQuery({
+    queryKey: ['metadata', 'conflicts', sessionId],
+    queryFn: () => metadataApi.conflicts(sessionId!),
+    enabled: Boolean(sessionId) && (syncSummary?.conflict ?? initialSync?.conflict ?? 0) > 0,
+    refetchInterval: 5_000,
+  })
+
+  const analyzeNavigation = useCallback(async (dryRun = false) => {
+    if (!sessionId) return
+    setNavigationBusy(true)
+    try {
+      setNavigationGroups(await navigationApi.analyze(sessionId, undefined, undefined, dryRun))
+      setMessage(dryRun ? '分组预览已生成；确认后可保存' : 'Burst/Scene 分组已保存')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Burst/Scene 分析失败')
+    } finally {
+      setNavigationBusy(false)
+    }
+  }, [sessionId])
+
+  const jumpToNavigationGroup = useCallback((group: NavigationGroup) => {
+    const first = group.photoIds[0]
+    const index = assets.findIndex(asset => asset.photo.id === first)
+    if (index >= 0) {
+      setCurrentIndex(index)
+      setTransform({ scale: 1, x: 0, y: 0 })
+    }
+  }, [assets])
 
   useEffect(() => {
     if (data) setAssets(data)
@@ -162,6 +301,29 @@ export default function Culling() {
   useEffect(() => {
     if (initialSync) setSyncSummary(initialSync)
   }, [initialSync])
+  useEffect(() => {
+    if (!persistedHistory) return
+    const command = (operation: CullingHistoryOperation): HistoryEntry[] =>
+      operation.entries.map(entry => ({ ...entry, operationId: operation.id }))
+    setUndoStack(
+      persistedHistory.filter(operation => !operation.undone).reverse().map(command),
+    )
+    setRedoStack(
+      persistedHistory.filter(operation => operation.undone).map(command),
+    )
+  }, [persistedHistory])
+  useEffect(() => {
+    if (!qualityJobId) return
+    const job = runningJobs.find(candidate => candidate.id === qualityJobId)
+    if (!job || ['queued', 'running', 'cancelling'].includes(job.status)) return
+    if (job.status === 'succeeded') {
+      setMessage('质量分析完成')
+      void refetch()
+    } else {
+      setMessage(job.errorMessage || '质量分析未完成')
+    }
+    setQualityJobId(undefined)
+  }, [qualityJobId, refetch, runningJobs])
   useEffect(() => {
     if (!sessionId) return
     return window.gather.onEvent('culling:sync-status', (payload) => {
@@ -284,8 +446,9 @@ export default function Culling() {
       }
       const targetState = result.states.find(state => state.photoId === photoId)
       if (recordHistory) {
-        if (targetState) {
+        if (targetState && result.historyOperationId !== undefined) {
           setUndoStack(stack => [...stack.slice(-99), [{
+            operationId: result.historyOperationId!,
             photoId,
             before: {
               pickState: beforeAsset.state.pickState,
@@ -352,12 +515,15 @@ export default function Culling() {
           return asset ? [[asset.xmpPath, photoId] as const] : []
         })).values()]
         : effectiveTargetIds
+      const operationId = results.find(result => result.historyOperationId !== undefined)
+        ?.historyOperationId
       const historyCommand = results.flatMap((result, index) => {
         const targetId = operationTargetIds[index]
         const beforeAsset = targetId ? assetById.get(targetId) : undefined
         const targetState = result.states.find(state => state.photoId === targetId)
-        if (!beforeAsset || !targetState) return []
+        if (!beforeAsset || !targetState || operationId === undefined) return []
         return [{
+          operationId,
           photoId: targetId,
           before: {
             pickState: beforeAsset.state.pickState,
@@ -412,23 +578,24 @@ export default function Culling() {
     setBusy(true)
     setUndoStack(stack => stack.slice(0, -1))
     try {
-      const redoCommand: HistoryEntry[] = []
-      for (const entry of command) {
-        const result = await cullingApi.update(
-          sessionId,
-          entry.photoId,
-          entry.expectedRevision,
-          statePatch(entry.before, entry.fields),
-        )
-        applyResult(result)
-        if (result.syncStatus !== 'clean') {
-          void cullingApi.syncStatus(sessionId).then(setSyncSummary)
-        }
-        const targetState = result.states.find(state => state.photoId === entry.photoId)
-        redoCommand.push({
-          ...entry,
-          expectedRevision: targetState?.revision ?? entry.expectedRevision + 1,
-        })
+      const results = await cullingApi.applyHistory(
+        sessionId,
+        command.map(entry => ({
+          photoId: entry.photoId,
+          expectedRevision: entry.expectedRevision,
+          patch: statePatch(entry.before, entry.fields),
+        })),
+        command[0].operationId,
+        'undo',
+      )
+      results.forEach(applyResult)
+      const states = new Map(results.flatMap(result => result.states).map(state => [state.photoId, state]))
+      const redoCommand = command.map(entry => ({
+        ...entry,
+        expectedRevision: states.get(entry.photoId)?.revision ?? entry.expectedRevision + 1,
+      }))
+      if (results.some(result => result.syncStatus !== 'clean')) {
+        void cullingApi.syncStatus(sessionId).then(setSyncSummary)
       }
       setRedoStack(stack => [...stack, redoCommand])
       await refreshFiltered(command[0]?.photoId)
@@ -450,23 +617,24 @@ export default function Culling() {
     setBusy(true)
     setRedoStack(stack => stack.slice(0, -1))
     try {
-      const undoCommand: HistoryEntry[] = []
-      for (const entry of command) {
-        const result = await cullingApi.update(
-          sessionId,
-          entry.photoId,
-          entry.expectedRevision,
-          statePatch(entry.after, entry.fields),
-        )
-        applyResult(result)
-        if (result.syncStatus !== 'clean') {
-          void cullingApi.syncStatus(sessionId).then(setSyncSummary)
-        }
-        const targetState = result.states.find(state => state.photoId === entry.photoId)
-        undoCommand.push({
-          ...entry,
-          expectedRevision: targetState?.revision ?? entry.expectedRevision + 1,
-        })
+      const results = await cullingApi.applyHistory(
+        sessionId,
+        command.map(entry => ({
+          photoId: entry.photoId,
+          expectedRevision: entry.expectedRevision,
+          patch: statePatch(entry.after, entry.fields),
+        })),
+        command[0].operationId,
+        'redo',
+      )
+      results.forEach(applyResult)
+      const states = new Map(results.flatMap(result => result.states).map(state => [state.photoId, state]))
+      const undoCommand = command.map(entry => ({
+        ...entry,
+        expectedRevision: states.get(entry.photoId)?.revision ?? entry.expectedRevision + 1,
+      }))
+      if (results.some(result => result.syncStatus !== 'clean')) {
+        void cullingApi.syncStatus(sessionId).then(setSyncSummary)
       }
       setUndoStack(stack => [...stack, undoCommand])
       await refreshFiltered(command[0]?.photoId)
@@ -509,13 +677,20 @@ export default function Culling() {
         keepPhotoIds,
       )
       results.forEach(applyResult)
+      const operationId = results.find(result => result.historyOperationId !== undefined)
+        ?.historyOperationId
 
       const historyCommand = fullGroup.flatMap((asset) => {
         const targetState = results
           .flatMap(result => result.states)
           .find(state => state.photoId === asset.photo.id)
-        if (!targetState || targetState.pickState === asset.state.pickState) return []
+        if (
+          !targetState ||
+          targetState.pickState === asset.state.pickState ||
+          operationId === undefined
+        ) return []
         return [{
+          operationId,
           photoId: asset.photo.id,
           before: {
             pickState: asset.state.pickState,
@@ -655,6 +830,76 @@ export default function Culling() {
           <FilterControls filters={filters} setFilters={setFilters} />
         </div>
         <div className={styles.viewSection}>
+          <button onClick={() => void analyzeNavigation()} disabled={navigationBusy}>
+            {navigationBusy ? '分析中…' : '保存 Burst/Scene 分组'}
+          </button>
+          <button onClick={() => void analyzeNavigation(true)} disabled={navigationBusy}>
+            预览分组
+          </button>
+          <button
+            disabled={Boolean(qualityJobId)}
+            onClick={() => {
+              void qualityApi.analyze(sessionId).then(job => {
+                setQualityJobId(job.id)
+                setMessage('质量分析已加入任务队列')
+              }).catch(error => {
+                setMessage(error instanceof Error ? error.message : '无法启动质量分析')
+              })
+            }}
+          >
+            {qualityJobId ? '质量分析中…' : '分析技术质量'}
+          </button>
+          {navigationGroups.length > 0 && (
+            <select className={styles.select} defaultValue="" onChange={event => {
+              setSelectedNavigationGroupId(event.target.value)
+              const group = navigationGroups.find(item => item.id === event.target.value)
+              if (group) jumpToNavigationGroup(group)
+            }}>
+              <option value="">导航组 ({navigationGroups.length})</option>
+              {navigationGroups.map(group => (
+                <option key={group.id} value={group.id}>
+                  {group.type === 'burst' ? 'Burst' : 'Scene'} · {group.photoIds.length} 张
+                  {group.leadPhotoId ? ` · 推荐 ${group.photoIds.indexOf(group.leadPhotoId) + 1}` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+          {selectedNavigationGroupId && (
+            <>
+              <button
+                title={navigationGroups.find(group => group.id === selectedNavigationGroupId)?.explanation}
+                onClick={() => {
+                  const group = navigationGroups.find(item => item.id === selectedNavigationGroupId)
+                  if (!group || !current || group.photoIds.indexOf(current.photo.id) <= 0) {
+                    setMessage('请先定位到组内非首张照片')
+                    return
+                  }
+                  void navigationApi.split(sessionId, group.id, current.photo.id)
+                    .then(setNavigationGroups)
+                    .catch(error => setMessage(error instanceof Error ? error.message : '拆分失败'))
+                }}
+              >
+                从当前照片拆分
+              </button>
+              <button
+                onClick={() => {
+                  const index = navigationGroups.findIndex(group => group.id === selectedNavigationGroupId)
+                  const selected = navigationGroups[index]
+                  const previous = navigationGroups.slice(0, index).reverse()
+                    .find(group => group.type === selected?.type)
+                  if (!selected || !previous) {
+                    setMessage('没有可合并的前一个同类组')
+                    return
+                  }
+                  void navigationApi.merge(sessionId, [previous.id, selected.id])
+                    .then(setNavigationGroups)
+                    .catch(error => setMessage(error instanceof Error ? error.message : '合并失败'))
+                }}
+              >
+                与前组合并
+              </button>
+            </>
+          )}
           <label className={styles.toggle}>
             <input
               type="checkbox"
@@ -772,6 +1017,17 @@ export default function Culling() {
           · 滚轮缩放 · 拖动平移 · 双击复位
         </div>
       </div>
+
+      {sessionId && conflicts.length > 0 && (
+        <ConflictPanel
+          sessionId={sessionId}
+          conflicts={conflicts}
+          onResolved={(next) => {
+            setSyncSummary(next)
+            void refetchConflicts()
+          }}
+        />
+      )}
 
       <div className={styles.infoBar}>
         <span className={styles.positionCount}>{currentIndex + 1} / {assets.length}</span>
@@ -1127,6 +1383,32 @@ function FilterControls({
           <option key={label.value} value={label.value}>{label.label}</option>
         ))}
       </select>
+      <select
+        className={styles.select}
+        value={filters.qualityStatus ?? ''}
+        onChange={event => setFilters(value => ({
+          ...value,
+          qualityStatus: event.target.value
+            ? event.target.value as CullingFilters['qualityStatus']
+            : undefined,
+        }))}
+      >
+        <option value="">全部分析状态</option>
+        <option value="analysed">已分析</option>
+        <option value="unanalysed">未分析</option>
+        <option value="failed">分析失败</option>
+      </select>
+      <label className={styles.toggle}>
+        <input
+          type="checkbox"
+          checked={Boolean(filters.metadataConflictOnly)}
+          onChange={event => setFilters(value => ({
+            ...value,
+            metadataConflictOnly: event.target.checked,
+          }))}
+        />
+        仅 XMP 冲突
+      </label>
       <button onClick={() => setFilters({})}>重置</button>
     </>
   )

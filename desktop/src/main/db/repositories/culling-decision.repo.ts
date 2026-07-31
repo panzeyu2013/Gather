@@ -10,6 +10,7 @@ export interface CullingDecisionRow {
   decision: string
   rating: number
   color_label: string
+  decision_source: string
   revision: number
   updated_at: string
   created_at: string
@@ -50,6 +51,7 @@ export class CullingDecisionRepository {
       ON CONFLICT(session_id, photo_id) DO UPDATE SET
         group_id = excluded.group_id,
         decision = excluded.decision,
+        decision_source = 'manual',
         updated_at = excluded.updated_at
     `).run(sessionId, photoId, groupId, decision, now, now)
   }
@@ -73,6 +75,7 @@ export class CullingDecisionRepository {
       rating: number
       colorLabel: string
       revision: number
+      source?: string
     },
   ): void {
     const now = new Date().toISOString()
@@ -80,14 +83,15 @@ export class CullingDecisionRepository {
       INSERT INTO culling_decisions
         (
           session_id, photo_id, group_id, decision, rating, color_label,
-          revision, updated_at, created_at
+          decision_source, revision, updated_at, created_at
         )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, photo_id) DO UPDATE SET
         group_id = excluded.group_id,
         decision = excluded.decision,
         rating = excluded.rating,
         color_label = excluded.color_label,
+        decision_source = excluded.decision_source,
         revision = excluded.revision,
         updated_at = excluded.updated_at
     `).run(
@@ -97,6 +101,7 @@ export class CullingDecisionRepository {
       state.decision,
       state.rating,
       state.colorLabel,
+      state.source ?? 'manual',
       state.revision,
       now,
       now,
@@ -114,6 +119,7 @@ export class CullingDecisionRepository {
       ON CONFLICT(session_id, photo_id) DO UPDATE SET
         group_id = excluded.group_id,
         decision = excluded.decision,
+        decision_source = 'manual',
         updated_at = excluded.updated_at
     `)
     const write = this.db.transaction(() => {

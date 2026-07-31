@@ -386,6 +386,29 @@ function KeywordWritebackPanel({
         写入后在 Capture One 中选择这些照片，执行“图像 → 加载元数据”；确认关键词已进入目录后，再点击“确认同步”和“清理”。
       </p>
       {message && <p className={styles.statusMessage}>{message}</p>}
+      {preview && (
+        <div className={styles.writebackPreview} aria-label="XMP 写回预览">
+          {preview.items.slice(0, 50).map(item => (
+            <div className={styles.writebackPreviewRow} key={item.xmpPath}>
+              <strong title={item.xmpPath}>{item.xmpPath.split(/[/\\]/).pop()}</strong>
+              <span>
+                {(item.preview?.before.keywords ?? []).join('、') || '无关键词'}
+                {' → '}
+                {(item.preview?.after.keywords ?? item.keywords).join('、') || '无关键词'}
+              </span>
+              <small>
+                {item.preview?.willCreate ? '新建 XMP' : '更新 XMP'}
+                {(item.preview?.sharedPhotoCount ?? 1) > 1
+                  ? ` · ${item.preview?.sharedPhotoCount} 张共享`
+                  : ''}
+                {item.preview?.externalChanged ? ' · 检测到外部冲突' : ''}
+                {' · 来源：相似组'}
+              </small>
+            </div>
+          ))}
+          {preview.items.length > 50 && <small>另有 {preview.items.length - 50} 项未展开</small>}
+        </div>
+      )}
       {writebackResult && (
         <WritebackReport
           result={writebackResult}

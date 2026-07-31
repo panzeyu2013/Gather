@@ -71,6 +71,9 @@ export class SipsDecoder implements ImageDecoder {
     if (orientation >= 5 && orientation <= 8) {
       ;[w, h] = [h, w]
     }
+    if (w <= 0 || h <= 0) {
+      throw new Error(`Unable to determine image dimensions: ${path}`)
+    }
     return { width: w, height: h }
   }
 }

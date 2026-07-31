@@ -3,6 +3,10 @@ import { existsSync } from 'fs'
 import { readFile, stat, unlink } from 'fs/promises'
 import type {
   CleanupResult,
+  MetadataConflict,
+  MetadataConflictChoice,
+  MetadataField,
+  MetadataOrphan,
   MetadataSyncItem,
   MetadataSyncSummary,
 } from '@gather/shared'
@@ -115,6 +119,142 @@ export class MetadataSyncCoordinator {
       synced: items.filter(item => item.status === 'synced').length,
       items,
     }
+  }
+
+  async getConflicts(sessionId: string): Promise<MetadataConflict[]> {
+    const rows = this.outboxRepo.getBySession(sessionId)
+      .filter(row => row.status === 'conflict')
+    return Promise.all(rows.map(async row => {
+      const current = await this.writerRouter.selectSidecar().readAttributes(row.photo_path)
+      const base = safeObject(row.base_values_json)
+      const local = safeObject(row.patch_json)
+      let dirtyFields: MetadataField[] = []
+      try {
+        const parsed = JSON.parse(row.dirty_fields) as unknown
+        if (Array.isArray(parsed)) {
+          dirtyFields = parsed.filter(
+            (field): field is MetadataField =>
+              field === 'rating' || field === 'label' || field === 'keywords',
+          )
+        }
+      } catch {
+        dirtyFields = []
+      }
+      const fields = dirtyFields.flatMap(field => {
+        const baseline = field === 'keywords' ? base.keywords ?? [] : base[field]
+        const remote = field === 'keywords'
+          ? current.keywords ?? []
+          : field === 'label' ? current.label ?? '' : current.rating
+        if (JSON.stringify(baseline) === JSON.stringify(remote)) return []
+        return [{
+          field,
+          baseline,
+          local: field === 'keywords' ? local.keywords ?? [] : local[field],
+          remote,
+        }]
+      })
+      return {
+        xmpPath: row.xmp_path,
+        photoPath: row.photo_path,
+        revision: row.revision,
+        fields,
+      }
+    }))
+  }
+
+  async resolveConflict(
+    sessionId: string,
+    xmpPath: string,
+    choices: Partial<Record<MetadataField, MetadataConflictChoice>>,
+  ): Promise<MetadataSyncSummary> {
+    const row = this.outboxRepo.getBySession(sessionId)
+      .find(candidate => candidate.xmp_path === xmpPath)
+    if (!row || row.status !== 'conflict') throw new Error('Metadata conflict not found')
+    const conflict = (await this.getConflicts(sessionId))
+      .find(candidate => candidate.xmpPath === xmpPath)
+    if (!conflict || conflict.fields.length === 0) {
+      throw new Error('Metadata conflict details are unavailable')
+    }
+    for (const field of conflict.fields) {
+      if (!choices[field.field]) {
+        throw new Error(`Missing conflict choice for ${field.field}`)
+      }
+    }
+    const current = await this.writerRouter.selectSidecar().readAttributes(row.photo_path)
+    const patch = safeObject(row.patch_json)
+    let dirtyFields: MetadataField[] = []
+    try {
+      const parsed = JSON.parse(row.dirty_fields) as unknown
+      if (Array.isArray(parsed)) {
+        dirtyFields = parsed.filter(
+          (field): field is MetadataField =>
+            field === 'rating' || field === 'label' || field === 'keywords',
+        )
+      }
+    } catch {
+      throw new Error('Metadata conflict has invalid dirty fields')
+    }
+    for (const [field, choice] of Object.entries(choices) as Array<[MetadataField, MetadataConflictChoice]>) {
+      if (choice === 'use_remote') {
+        delete patch[field]
+        dirtyFields = dirtyFields.filter(candidate => candidate !== field)
+      }
+    }
+    const acceptRemote = dirtyFields.length === 0
+    if (acceptRemote) {
+      this.writebackRepo.discardPendingByXmpPath(xmpPath)
+    }
+    this.outboxRepo.resolveConflict(
+      xmpPath,
+      patch,
+      dirtyFields,
+      await fingerprint(xmpPath) || '__missing__',
+      { ...current },
+      acceptRemote,
+    )
+    if (!acceptRemote) this.schedule(xmpPath, 0)
+    return this.emitSummary(sessionId)
+  }
+
+  listOrphans(): MetadataOrphan[] {
+    return this.outboxRepo.getOrphans().map(row => ({
+      xmpPath: row.xmp_path,
+      photoPath: row.photo_path,
+      status: row.status,
+      revision: row.revision,
+      errorMessage: row.error_message,
+      updatedAt: row.updated_at,
+    }))
+  }
+
+  async resolveOrphan(
+    xmpPath: string,
+    action: 'keep' | 'restore' | 'retry',
+  ): Promise<MetadataOrphan[]> {
+    const row = this.outboxRepo.getOrphans().find(candidate => candidate.xmp_path === xmpPath)
+    if (!row) throw new Error('Orphan metadata operation not found')
+    if (action === 'retry') {
+      if (row.status === 'conflict') {
+        throw new Error('冲突项目必须选择保留当前 XMP 或恢复写入前状态')
+      }
+      if (row.status === 'failed') this.outboxRepo.resetForRetry(xmpPath)
+      else if (row.status !== 'pending') throw new Error('Only pending or failed operations can be retried')
+      this.schedule(xmpPath, 0)
+      return this.listOrphans()
+    }
+    await this.waitForIdle(xmpPath)
+    if (action === 'restore') {
+      if (row.backup_path) {
+        if (!existsSync(row.backup_path)) throw new Error(`XMP backup is missing: ${row.backup_path}`)
+        await this.writerRouter.selectSidecar().restore(row.photo_path, row.backup_path)
+      } else if (existsSync(row.xmp_path)) {
+        await unlink(row.xmp_path)
+      }
+    } else if (row.backup_path && existsSync(row.backup_path)) {
+      await unlink(row.backup_path)
+    }
+    this.outboxRepo.delete(xmpPath)
+    return this.listOrphans()
   }
 
   async flushSession(sessionId: string): Promise<MetadataSyncSummary> {
@@ -289,15 +429,6 @@ export class MetadataSyncCoordinator {
   }
 
   private async processRow(row: MetadataOutboxRow): Promise<boolean> {
-    if (this.writebackRepo.hasActiveForXmpPath(row.xmp_path)) {
-      this.outboxRepo.markStatus(
-        row.xmp_path,
-        'pending',
-        '等待显式写回事务释放该 XMP 文件',
-      )
-      this.schedule(row.xmp_path, 5_000)
-      return false
-    }
     if (!this.outboxRepo.claim(row.xmp_path, row.revision)) return false
 
     try {
@@ -313,7 +444,7 @@ export class MetadataSyncCoordinator {
           'conflict',
           'XMP 已被其他软件修改，且与 Gather 待写字段冲突',
         )
-        this.emitSummary(row.owner_session_id)
+        this.emitPathSummaries(row.xmp_path)
         return false
       }
 
@@ -338,7 +469,7 @@ export class MetadataSyncCoordinator {
         { ...persistedValues },
         backupPath,
       )
-      this.emitSummary(row.owner_session_id)
+      this.emitPathSummaries(row.xmp_path)
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -351,7 +482,7 @@ export class MetadataSyncCoordinator {
         )
         this.schedule(row.xmp_path, RETRY_DELAYS_MS[Math.max(0, retryIndex)])
       }
-      this.emitSummary(row.owner_session_id)
+      this.emitPathSummaries(row.xmp_path)
       return false
     }
   }
@@ -413,5 +544,16 @@ export class MetadataSyncCoordinator {
     const summary = this.getSummary(sessionId)
     this.eventSink?.(summary)
     return summary
+  }
+
+  private emitPathSummaries(xmpPath: string): void {
+    const sessionIds = typeof this.outboxRepo.getSessionIds === 'function'
+      ? this.outboxRepo.getSessionIds(xmpPath)
+      : [this.outboxRepo.get(xmpPath)?.owner_session_id].filter(
+        (value): value is string => typeof value === 'string',
+      )
+    for (const sessionId of sessionIds) {
+      this.emitSummary(sessionId)
+    }
   }
 }

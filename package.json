@@ -12,6 +12,8 @@
     "lint": "npm run lint --workspace=desktop",
     "test:vitest": "npm run test --workspace=desktop",
     "test:e2e": "npx playwright test --config=tests/e2e/playwright.config.ts",
+    "benchmark:reliability": "node scripts/reliability-benchmark.mjs",
+    "benchmark:application": "node scripts/application-scale-benchmark.mjs",
     "electron": "npm run build --workspace=desktop && npm run electron --workspace=desktop"
   },
   "devDependencies": {

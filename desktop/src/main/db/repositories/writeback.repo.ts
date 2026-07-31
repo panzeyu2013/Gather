@@ -182,4 +182,11 @@ export class WritebackRepository {
     `).get(xmpPath)
     return row !== undefined
   }
+
+  discardPendingByXmpPath(xmpPath: string): number {
+    return this.db.prepare(`
+      DELETE FROM writeback_items
+      WHERE xmp_path = ? AND xmp_status IN ('pending', 'failed')
+    `).run(xmpPath).changes
+  }
 }

@@ -3,16 +3,19 @@ import { container, DI_TOKENS } from './container'
 import { Database } from '../db/database'
 
 import { PhotoRepository } from '../db/repositories/photo.repo'
+import { AssetRepository } from '../db/repositories/asset.repo'
 import { SessionRepository } from '../db/repositories/session.repo'
 import { FaceRepository } from '../db/repositories/face.repo'
 import { PersonRepository } from '../db/repositories/person.repo'
 import { CullingDecisionRepository } from '../db/repositories/culling-decision.repo'
+import { CullingHistoryRepository } from '../db/repositories/culling-history.repo'
 import { SimilarityResultRepository } from '../db/repositories/similarity-result.repo'
 import { WritebackRepository } from '../db/repositories/writeback.repo'
 import { MetadataCacheRepository } from '../db/repositories/metadata-cache.repo'
 import { SmartAlbumRepository } from '../db/repositories/smart-album.repo'
 import { SettingsRepository } from '../db/repositories/settings.repo'
 import { MetadataOutboxRepository } from '../db/repositories/metadata-outbox.repo'
+import { MetadataKeywordOriginRepository } from '../db/repositories/metadata-keyword-origin.repo'
 
 import { SettingsService } from '../services/settings/settings.service'
 import { CullingService } from '../services/culling/culling.service'
@@ -29,6 +32,13 @@ import { FilterEngine } from '../services/filter/filter-engine'
 import { ImageService, TieredThumbnailCache } from '../services/image'
 import { MetadataWriterRouter } from '../services/xmp/metadata-writer-router'
 import { MetadataSyncCoordinator } from '../services/metadata/metadata-sync-coordinator'
+import { MetadataMutationService } from '../services/metadata/metadata-mutation.service'
+import { AnalysisJobRepository } from '../db/repositories/analysis-job.repo'
+import { JobService } from '../services/jobs/job.service'
+import { IndexService } from '../services/indexer/index.service'
+import { QualityService } from '../services/quality/quality.service'
+import { NavigationService } from '../services/navigation/navigation.service'
+import { PhotoAssetResolver } from '../services/assets/photo-asset-resolver'
 
 let initialized = false
 
@@ -38,14 +48,17 @@ export function initContainer(): void {
   container.registerSingleton(DI_TOKENS.DB, Database)
 
   container.registerSingleton(DI_TOKENS.PHOTO_REPO, PhotoRepository)
+  container.registerSingleton(DI_TOKENS.ASSET_REPO, AssetRepository)
   container.registerSingleton(DI_TOKENS.SESSION_REPO, SessionRepository)
   container.registerSingleton(DI_TOKENS.FACE_REPO, FaceRepository)
   container.registerSingleton(DI_TOKENS.PERSON_REPO, PersonRepository)
   container.registerSingleton(DI_TOKENS.CULLING_DECISION_REPO, CullingDecisionRepository)
+  container.registerSingleton(DI_TOKENS.CULLING_HISTORY_REPO, CullingHistoryRepository)
   container.registerSingleton(DI_TOKENS.SIMILARITY_RESULT_REPO, SimilarityResultRepository)
   container.registerSingleton(DI_TOKENS.WRITEBACK_REPO, WritebackRepository)
   container.registerSingleton(DI_TOKENS.METADATA_OUTBOX_REPO, MetadataOutboxRepository)
   container.registerSingleton(DI_TOKENS.METADATA_CACHE_REPO, MetadataCacheRepository)
+  container.registerSingleton(DI_TOKENS.METADATA_KEYWORD_ORIGIN_REPO, MetadataKeywordOriginRepository)
   container.registerSingleton(DI_TOKENS.SMART_ALBUM_REPO, SmartAlbumRepository)
   container.registerSingleton(DI_TOKENS.SETTINGS_REPO, SettingsRepository)
 
@@ -54,6 +67,13 @@ export function initContainer(): void {
   container.registerSingleton(DI_TOKENS.DUPLICATE_SERVICE, DuplicateService)
   container.registerSingleton(DI_TOKENS.IMAGE_SERVICE, ImageService)
   container.registerSingleton(DI_TOKENS.METADATA_SYNC_COORDINATOR, MetadataSyncCoordinator)
+  container.registerSingleton(DI_TOKENS.METADATA_MUTATION_SERVICE, MetadataMutationService)
+  container.registerSingleton(DI_TOKENS.ANALYSIS_JOB_REPO, AnalysisJobRepository)
+  container.registerSingleton(DI_TOKENS.JOB_SERVICE, JobService)
+  container.registerSingleton(DI_TOKENS.INDEX_SERVICE, IndexService)
+  container.registerSingleton(DI_TOKENS.QUALITY_SERVICE, QualityService)
+  container.registerSingleton(DI_TOKENS.NAVIGATION_SERVICE, NavigationService)
+  container.registerSingleton(DI_TOKENS.PHOTO_ASSET_RESOLVER, PhotoAssetResolver)
   container.registerSingleton(DI_TOKENS.EXPORT_SERVICE, ExportService)
   container.registerSingleton(DI_TOKENS.REPORT_SERVICE, ReportService)
   container.registerSingleton(DI_TOKENS.SESSION_SERVICE, SessionService)

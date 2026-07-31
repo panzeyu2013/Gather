@@ -1,0 +1,21 @@
+.page { height: 100%; overflow: auto; padding: 32px 40px; color: var(--color-text); background: var(--color-bg); }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.header button { min-height: 38px; padding: 7px 14px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); color: inherit; cursor: pointer; }
+.header button:disabled { opacity: .45; cursor: default; }
+.identity { min-width: 0; display: grid; gap: 3px; }
+.identity span, .identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.error { color: var(--color-error); }
+.eyebrow { margin: 0; color: var(--color-primary); font-size: 11px; letter-spacing: .14em; }
+h1 { margin: 4px 0 8px; }
+.muted { color: var(--color-text-secondary); }
+.list { margin-top: 28px; border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; background: var(--color-surface); }
+.row { display: grid; grid-template-columns: 220px 90px minmax(180px, 1fr) 80px; align-items: center; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--color-border); }
+.row:last-child { border-bottom: 0; }
+.row strong, .row span { display: block; }
+.row span { margin-top: 4px; color: var(--color-text-secondary); font-size: 12px; }
+.status { font-size: 13px; }
+.progress { position: relative; height: 24px; border-radius: 6px; background: var(--color-bg-secondary); overflow: hidden; }
+.progress div { height: 100%; background: color-mix(in srgb, var(--color-primary) 70%, transparent); }
+.progress span { position: absolute; inset: 4px 8px; margin: 0; color: var(--color-text); }
+.actions button { border: 1px solid var(--color-border); border-radius: 6px; padding: 5px 8px; background: transparent; color: inherit; cursor: pointer; }
+@media (max-width: 800px) { .page { padding: 20px; } .row { grid-template-columns: 1fr 80px; } .progress { grid-column: 1 / -1; } }

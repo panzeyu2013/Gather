@@ -29,7 +29,10 @@ export class MemoryThumbnailCache implements ThumbnailCache {
   private totalBytes = 0
 
   constructor(settings: SettingsService) {
-    this.maxSize = settings.getNumber('memory_cache_size', 200)
+    this.maxSize = Math.max(
+      1,
+      Math.min(10_000, Math.floor(settings.getNumber('memory_cache_size', 200))),
+    )
     this.maxBytes = Math.max(
       32,
       settings.getNumber('memory_cache_max_size_mb', 192),
@@ -87,13 +90,14 @@ export class DiskThumbnailCache implements ThumbnailCache {
     try {
       const buffer = await fs.promises.readFile(filePath)
       const hash = this.hashKey(key)
-      this.manager.onAccess(hash)
       const dimensions = readDimensions(buffer, '.jpg')
+      if (!dimensions) return null
+      this.manager.onAccess(hash)
       return {
         buffer,
         format: 'jpeg',
-        width: dimensions?.width ?? 0,
-        height: dimensions?.height ?? 0,
+        width: dimensions.width,
+        height: dimensions.height,
       }
     } catch {
       return null
@@ -103,13 +107,17 @@ export class DiskThumbnailCache implements ThumbnailCache {
   async set(key: string, value: DecodeResult): Promise<void> {
     await this.manager.waitUntilReady()
     const filePath = this.cachePath(key)
+    const tempPath = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`
     try {
-      await fs.promises.writeFile(filePath, value.buffer)
+      await fs.promises.writeFile(tempPath, value.buffer, { flag: 'wx' })
+      await fs.promises.rename(tempPath, filePath)
       const hash = this.hashKey(key)
       this.manager.onSet(hash, value.buffer.length)
       await this.manager.evictIfNeeded()
     } catch {
       // disk write failed — silently skip
+    } finally {
+      try { await fs.promises.unlink(tempPath) } catch { /* already renamed or never created */ }
     }
   }
 
@@ -280,6 +288,28 @@ export class ImageService {
     void Promise.allSettled(
       paths.map(path => this.getThumbnail(path, size, 2)),
     )
+  }
+
+  async buildThumbnails(
+    paths: string[],
+    size: number,
+    signal?: AbortSignal,
+    onProgress?: (current: number, total: number) => void,
+  ): Promise<void> {
+    const concurrency = Math.max(
+      1,
+      Math.min(8, Math.floor(this.settings.getNumber('thumbnail_concurrency', 4))),
+    )
+    let completed = 0
+    for (let index = 0; index < paths.length; index += concurrency) {
+      if (signal?.aborted) throw new Error('Thumbnail build cancelled')
+      await Promise.allSettled(
+        paths.slice(index, index + concurrency)
+          .map(path => this.getThumbnail(path, size, 2)),
+      )
+      completed = Math.min(paths.length, index + concurrency)
+      onProgress?.(completed, paths.length)
+    }
   }
 
   preloadPreviews(paths: string[], maxDimension = 2048): void {

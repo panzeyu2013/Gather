@@ -132,6 +132,73 @@ export class FaceRepository {
     }]))
   }
 
+  reuseObservationsForAssetFile(
+    sessionId: string,
+    photoId: string,
+    sourceFileSize: number,
+    sourceFileMtimeMs: number,
+    analysisSignature: string,
+  ): { reused: boolean; faceCount: number } {
+    const source = this.db.prepare(`
+      SELECT source_state.photo_id
+      FROM photos target
+      JOIN photos source_photo
+        ON source_photo.asset_file_id = target.asset_file_id
+       AND source_photo.id <> target.id
+      JOIN face_analysis_state source_state
+        ON source_state.photo_id = source_photo.id
+       AND source_state.session_id = source_photo.session_id
+      WHERE target.id = ?
+        AND target.session_id = ?
+        AND target.asset_file_id IS NOT NULL
+        AND source_state.source_file_size = ?
+        AND ABS(source_state.source_file_mtime_ms - ?) < 1
+        AND source_state.analysis_signature = ?
+      ORDER BY source_state.updated_at DESC
+      LIMIT 1
+    `).get(
+      photoId,
+      sessionId,
+      sourceFileSize,
+      sourceFileMtimeMs,
+      analysisSignature,
+    ) as { photo_id: string } | undefined
+    if (!source) return { reused: false, faceCount: 0 }
+
+    let faceCount = 0
+    this.db.transaction(() => {
+      this.db.prepare(
+        'DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?',
+      ).run(sessionId, photoId)
+      const copied = this.db.prepare(`
+        INSERT INTO face_observations (
+          photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
+          source_file_size, source_file_mtime_ms, analysis_signature, created_at
+        )
+        SELECT ?, ?, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
+               source_file_size, source_file_mtime_ms, analysis_signature, ?
+        FROM face_observations
+        WHERE photo_id = ?
+          AND session_id = (SELECT session_id FROM photos WHERE id = ?)
+      `).run(
+        photoId,
+        sessionId,
+        new Date().toISOString(),
+        source.photo_id,
+        source.photo_id,
+      )
+      faceCount = copied.changes
+      this.upsertAnalysisState(
+        sessionId,
+        photoId,
+        sourceFileSize,
+        sourceFileMtimeMs,
+        analysisSignature,
+      )
+    })()
+    return { reused: true, faceCount }
+  }
+
   upsertAnalysisState(
     sessionId: string,
     photoId: string,

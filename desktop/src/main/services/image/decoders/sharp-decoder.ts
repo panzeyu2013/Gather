@@ -20,6 +20,10 @@ export class SharpDecoder implements ImageDecoder {
 
   private settings: SettingsService
   private rawIndexDir: string
+  private rawExtractionInFlight = new Map<
+    string,
+    Promise<{ jpeg: Buffer; orientation: number } | null>
+  >()
 
   constructor(settings: SettingsService) {
     this.settings = settings
@@ -35,9 +39,7 @@ export class SharpDecoder implements ImageDecoder {
   async getPreview(path: string, _maxDimension?: number): Promise<DecodeResult> {
     const raw = await this.extractFromRaw(path)
     if (raw) {
-      const angle = rotateAngle(raw.orientation)
-      let pipeline = sharp(raw.jpeg)
-      if (angle !== 0) pipeline = pipeline.rotate(angle)
+      let pipeline = applyOrientation(sharp(raw.jpeg), raw.orientation)
       if (_maxDimension) pipeline = pipeline.resize(_maxDimension, _maxDimension, { fit: 'inside', withoutEnlargement: true })
       const { data, info } = await pipeline.keepExif().jpeg({ quality: 100 }).toBuffer({ resolveWithObject: true })
       return { buffer: data, format: 'jpeg', width: info.width, height: info.height }
@@ -51,9 +53,7 @@ export class SharpDecoder implements ImageDecoder {
   async getThumbnail(path: string, size: number): Promise<DecodeResult> {
     const raw = await this.extractFromRaw(path, size)
     if (raw) {
-      let pipeline = sharp(raw.jpeg)
-      const angle = rotateAngle(raw.orientation)
-      if (angle !== 0) pipeline = pipeline.rotate(angle)
+      let pipeline = applyOrientation(sharp(raw.jpeg), raw.orientation)
       pipeline = pipeline.keepExif().resize(size, size, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: this.settings.getNumber('thumbnail_quality', 80) })
       const { data, info } = await pipeline.toBuffer({ resolveWithObject: true })
       return { buffer: data, format: 'jpeg', width: info.width, height: info.height }
@@ -90,6 +90,9 @@ export class SharpDecoder implements ImageDecoder {
     if (orientation >= 5 && orientation <= 8) {
       ;[w, h] = [h, w]
     }
+    if (w <= 0 || h <= 0) {
+      throw new Error(`Unable to determine image dimensions: ${path}`)
+    }
     return { width: w, height: h }
   }
 
@@ -98,7 +101,23 @@ export class SharpDecoder implements ImageDecoder {
   private async extractFromRaw(filepath: string, targetSize?: number): Promise<{ jpeg: Buffer; orientation: number } | null> {
     const ext = filepath.slice(filepath.lastIndexOf('.')).toLowerCase()
     if (!SharpDecoder.RAW_EXTENSIONS.has(ext)) return null
+    const existing = this.rawExtractionInFlight.get(filepath)
+    if (existing) return existing
+    const pending = this.extractFromRawUncoalesced(filepath, targetSize)
+    this.rawExtractionInFlight.set(filepath, pending)
+    try {
+      return await pending
+    } finally {
+      if (this.rawExtractionInFlight.get(filepath) === pending) {
+        this.rawExtractionInFlight.delete(filepath)
+      }
+    }
+  }
 
+  private async extractFromRawUncoalesced(
+    filepath: string,
+    targetSize?: number,
+  ): Promise<{ jpeg: Buffer; orientation: number } | null> {
     const cached = await this.readRawIndex(filepath)
     if (cached) {
       const selected = selectBestSegment(cached.segments, targetSize)
@@ -106,8 +125,19 @@ export class SharpDecoder implements ImageDecoder {
         const jpeg = await readFileRange(filepath, selected.offset, selected.size)
         if (jpeg) return { jpeg, orientation: cached.orientation }
       }
+      if (cached.segments.length === 0) return null
     }
 
+    // Prefer container-aware extraction. For common camera RAW formats this
+    // reads the embedded JPEG directly without loading and scanning the full
+    // RAW file or invoking the much more expensive sips renderer.
+    const extracted = await extractEmbeddedPreview(filepath)
+    if (extracted) {
+      return extracted
+    }
+
+    // Compatibility fallback for synthetic, unusual, or partially supported
+    // TIFF-based RAW containers whose JPEG segment ExifTool does not expose.
     let buf: Buffer
     try {
       buf = await fsp.readFile(filepath)
@@ -118,20 +148,18 @@ export class SharpDecoder implements ImageDecoder {
     const orientation = readTiffOrientation(buf)
     const segments = await findJpegSegmentsWithDimensions(buf)
     const selected = selectBestSegment(segments, targetSize)
+    // Persist empty results as well. Without a negative index, each thumbnail,
+    // dimension and preview request would repeat three ExifTool probes and a
+    // full RAW read before falling back to sips.
+    await this.writeRawIndex(filepath, orientation, segments)
     if (selected) {
-      await this.writeRawIndex(filepath, orientation, segments)
       return {
         jpeg: buf.subarray(selected.offset, selected.offset + selected.size),
         orientation,
       }
     }
 
-    // Some RAW containers (notably CR3/IIQ) do not expose their preview as a
-    // simple TIFF JPEG segment. ExifTool reads the container offsets directly,
-    // so keep this as the final embedded-preview attempt before ImageService
-    // falls back to rendering the RAW through sips.
-    const extracted = await extractEmbeddedPreview(filepath)
-    return extracted ? { jpeg: extracted, orientation } : null
+    return null
   }
 
   private indexPath(filepath: string): string {
@@ -306,13 +334,17 @@ async function readFileRange(
   }
 }
 
-async function extractEmbeddedPreview(filepath: string): Promise<Buffer | null> {
+async function extractEmbeddedPreview(
+  filepath: string,
+): Promise<{ jpeg: Buffer; orientation: number } | null> {
   const tags = ['JpgFromRaw', 'PreviewImage', 'ThumbnailImage'] as const
   for (const tag of tags) {
     try {
       const buffer = await exiftool.extractBinaryTagToBuffer(tag, filepath)
       const metadata = await sharp(buffer).metadata()
-      if (metadata.width && metadata.height) return buffer
+      if (metadata.width && metadata.height) {
+        return { jpeg: buffer, orientation: metadata.orientation ?? 1 }
+      }
     } catch {
       // This RAW does not expose the requested embedded-preview tag.
     }
@@ -335,11 +367,18 @@ async function readFileHeader(filepath: string, size: number): Promise<Buffer | 
   }
 }
 
-function rotateAngle(orientation: number): number {
+function applyOrientation(
+  pipeline: sharp.Sharp,
+  orientation: number,
+): sharp.Sharp {
   switch (orientation) {
-    case 3: return 180
-    case 6: return 90
-    case 8: return 270
-    default: return 0
+    case 2: return pipeline.flop()
+    case 3: return pipeline.rotate(180)
+    case 4: return pipeline.flip()
+    case 5: return pipeline.rotate(90).flop()
+    case 6: return pipeline.rotate(90)
+    case 7: return pipeline.rotate(90).flip()
+    case 8: return pipeline.rotate(270)
+    default: return pipeline
   }
 }

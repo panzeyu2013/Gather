@@ -8,6 +8,7 @@ import type {
   CullingSummary,
   CullingUpdatePatch,
   CullingUpdateResult,
+  CullingHistoryOperation,
   MetadataSyncSummary,
   WritebackResult,
 } from '@gather/shared'
@@ -45,6 +46,21 @@ export const cullingApi = {
     sessionId,
     photoIds,
     patch,
+  }),
+
+  history: (sessionId: string, limit?: number) =>
+    sendCommand<CullingHistoryOperation[]>('culling.history', { sessionId, limit }),
+
+  applyHistory: (
+    sessionId: string,
+    entries: Array<{ photoId: string; expectedRevision: number; patch: CullingUpdatePatch }>,
+    historyOperationId: number,
+    direction: 'undo' | 'redo',
+  ) => sendCommand<CullingUpdateResult[]>('culling.apply_history', {
+    sessionId,
+    entries,
+    historyOperationId,
+    direction,
   }),
 
   decideGroup: (

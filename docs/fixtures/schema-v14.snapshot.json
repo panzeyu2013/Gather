@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 14,
+  "tables": [
+    "sessions",
+    "photos",
+    "face_observations",
+    "face_analysis_state",
+    "face_cluster_state",
+    "face_clusters",
+    "face_cluster_members",
+    "role_bindings",
+    "similarity_hashes",
+    "similarity_results",
+    "similarity_result_members",
+    "writeback_items",
+    "app_settings",
+    "persons",
+    "person_embeddings",
+    "person_photos",
+    "photo_metadata_cache",
+    "duplicate_groups",
+    "duplicate_group_members",
+    "smart_albums",
+    "workflow_templates",
+    "culling_decisions",
+    "metadata_outbox",
+    "schema_version"
+  ]
+}

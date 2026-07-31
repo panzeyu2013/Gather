@@ -15,6 +15,79 @@
   color: var(--cull-text);
   background: var(--cull-bg);
   user-select: none;
+  position: relative;
+}
+
+.conflictPanel {
+  position: absolute;
+  z-index: 8;
+  right: 14px;
+  bottom: 52px;
+  width: min(560px, calc(100% - 28px));
+  max-height: 46%;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, #c7614f 55%, var(--cull-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--cull-surface-raised) 96%, #fff);
+  box-shadow: 0 16px 42px rgba(62, 36, 28, .2);
+  user-select: text;
+}
+
+.conflictPanel header,
+.conflictPanel footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.conflictPanel header span,
+.conflictPanel footer span {
+  overflow: hidden;
+  color: var(--cull-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conflictField {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1fr) 124px;
+  gap: 8px;
+  align-items: center;
+  margin: 9px 0;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--cull-bg);
+  font-size: 12px;
+}
+
+.conflictField span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conflictField select,
+.conflictPanel button {
+  min-height: 32px;
+  border: 1px solid var(--cull-border);
+  border-radius: 10px;
+  padding: 5px 9px;
+  background: var(--cull-surface-raised);
+  color: inherit;
+}
+
+.qualityBadge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.68);
+  color: #fff;
+  font-size: 11px;
 }
 
 .toolbar,
@@ -180,6 +253,13 @@
   color: #ddd;
   font-size: 11px;
   background: rgba(25, 25, 25, 0.9);
+}
+
+.sourceLabel {
+  color: #aeb4bc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pickBadge,

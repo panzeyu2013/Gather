@@ -100,10 +100,51 @@ export type {
   MetadataGetParams,
   MetadataSetParams,
   MetadataBatchSetParams,
+  MetadataField,
+  MetadataMutationSource,
+  MetadataPatch,
+  MetadataMutationRequest,
+  MetadataMutationResult,
+  MetadataConflictField,
+  MetadataConflict,
+  MetadataConflictChoice,
+  MetadataConflictListParams,
+  MetadataConflictResolveParams,
+  MetadataOrphan,
+  MetadataOrphanResolveParams,
   MetadataTags,
   BatchMetadataResult,
 } from './protocol/metadata'
 
+export type {
+  AnalysisJobType,
+  AnalysisJobStatus,
+  AnalysisJobData,
+  JobCreateParams,
+  JobListParams,
+  JobCancelParams,
+  JobRetryParams,
+  JobClearCompletedParams,
+  JobProgressUpdate,
+} from './protocol/jobs'
+
+export type { IndexScanParams, IndexScanResult } from './protocol/indexer'
+export type {
+  AssetCandidateListParams,
+  AssetCandidateMutationParams,
+  AssetLinkCandidateData,
+  AssetVolumeData,
+  AssetRelinkRootParams,
+} from './protocol/assets'
+export type { QualityAnalyzeParams, QualityGetParams, QualityResult } from './protocol/quality'
+export type {
+  NavigationAnalyzeParams,
+  NavigationListParams,
+  NavigationSplitParams,
+  NavigationMergeParams,
+  NavigationGroup,
+  NavigationGroupType,
+} from './protocol/navigation'
 export type {
   DupScanParams,
   DupGroupsParams,
@@ -185,6 +226,11 @@ export type {
   CullingConfirmSyncParams,
   CullingCleanupParams,
   CullingResetParams,
+  CullingHistoryEntry,
+  CullingHistoryOperation,
+  CullingHistoryParams,
+  CullingHistoryApplyEntry,
+  CullingHistoryApplyParams,
   CullingGroup,
   CullingImage,
   CullingSummary,
