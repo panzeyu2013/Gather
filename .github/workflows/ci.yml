@@ -1,10 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [main, feat]
-  pull_request:
-    branches: [main]
+  # Temporarily disabled while CI native-module ABI handling is fixed.
+  # Run this workflow manually from GitHub Actions when needed.
+  workflow_dispatch:
 
 jobs:
   validate:
