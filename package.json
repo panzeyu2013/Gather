@@ -17,6 +17,7 @@
     "electron": "npm run build --workspace=desktop && npm run electron --workspace=desktop"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1"
+    "@playwright/test": "^1.61.1",
+    "better-sqlite3-system": "npm:better-sqlite3@^12.11.1"
   }
 }

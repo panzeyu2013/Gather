@@ -72,6 +72,7 @@ function parseSelectOptions(description: string): { value: string; label: string
 export default function SettingsPage() {
   const settings = useSettingsStore((s) => s.settings)
   const loading = useSettingsStore((s) => s.loading)
+  const dirty = useSettingsStore((s) => s.dirty)
   const mlStatus = useSettingsStore((s) => s.mlStatus)
   const mlStatusLoading = useSettingsStore((s) => s.mlStatusLoading)
   const load = useSettingsStore((s) => s.load)
@@ -451,7 +452,12 @@ export default function SettingsPage() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h1 className={styles.title}>设置</h1>
-        <button className={styles.resetBtn} onClick={resetToDefaults}>
+        {dirty && <span className={styles.dirtyHint}>有未保存的更改（修改已立即生效）</span>}
+        <button className={styles.resetBtn} onClick={() => {
+          if (window.confirm('确定要将所有设置恢复为默认值吗？此操作不可撤销。')) {
+            resetToDefaults()
+          }
+        }}>
           重置为默认值
         </button>
       </div>

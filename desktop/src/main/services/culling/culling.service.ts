@@ -130,19 +130,28 @@ export class CullingService {
       this.metadataOutboxRepo.getBySession(sessionId).map(row => [row.xmp_path, row]),
     )
     const similarityMap = this.getLatestSimilarityMap(sessionId)
-    const qualityRows = this.db.prepare(`
-      SELECT p.id AS requested_photo_id, aa.result_json
-      FROM photos p
-      JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
-      WHERE aa.analysis_type = 'technical_quality'
-        AND p.id IN (${photos.map(() => '?').join(',') || "''"})
-      ORDER BY aa.updated_at DESC
-    `).all(...photos.map(photo => photo.id)) as Array<{
-      requested_photo_id: string
-      result_json: string
-    }>
     const qualityByPhoto = new Map<string, CullingAsset['quality']>()
-    for (const row of qualityRows) {
+    if (photos.length > 0) {
+      // Stay below SQLite's parameter limit for very large sessions.
+      const qualityRows: Array<{
+        requested_photo_id: string
+        result_json: string
+      }> = []
+      for (let index = 0; index < photos.length; index += 800) {
+        const chunk = photos.slice(index, index + 800)
+        qualityRows.push(...this.db.prepare(`
+          SELECT p.id AS requested_photo_id, aa.result_json
+          FROM photos p
+          JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
+          WHERE aa.analysis_type = 'technical_quality'
+            AND p.id IN (${chunk.map(() => '?').join(',')})
+          ORDER BY aa.updated_at DESC
+        `).all(...chunk.map(photo => photo.id)) as Array<{
+          requested_photo_id: string
+          result_json: string
+        }>)
+      }
+      for (const row of qualityRows) {
       try {
         const parsed = JSON.parse(row.result_json) as {
           photoId?: string
@@ -174,6 +183,7 @@ export class CullingService {
           })
         }
       } catch { /* Ignore malformed historical analysis rows. */ }
+      }
     }
     const qualityGroups = new Map<string, Array<NonNullable<CullingAsset['quality']>>>()
     for (const [photoId, quality] of qualityByPhoto) {

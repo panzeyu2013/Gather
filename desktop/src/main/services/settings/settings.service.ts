@@ -30,6 +30,9 @@ export class SettingsService {
   }
 
   set(key: string, value: string): void {
+    if (!KNOWN_SETTING_KEYS.has(key)) {
+      throw new Error(`Unknown setting key: ${key}`)
+    }
     this.repo.upsert(key, value)
     this.cache.set(key, value)
   }
@@ -94,7 +97,7 @@ export function getDefaults(): Record<string, string | number> {
     thumbnail_concurrency: Math.max(1, Math.min(4, os.cpus().length - 1)),
 
     db_cache_size_mb: 64,
-    db_synchronous: 'normal',
+    db_synchronous: 'full',
 
     c1_timeout_ms: 15000,
     c1_retries: 3,
@@ -105,3 +108,5 @@ export function getDefaults(): Record<string, string | number> {
     capture_one_color_compatibility: 'label_and_urgency',
   }
 }
+
+const KNOWN_SETTING_KEYS = new Set(Object.keys(getDefaults()))

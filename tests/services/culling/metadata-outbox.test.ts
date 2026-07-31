@@ -2,6 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import BetterSqlite3 from 'better-sqlite3'
 import type {
   MetadataOutboxRow,
   MetadataOutboxStatus,
@@ -130,6 +131,10 @@ function createCoordinator(
   repo: FakeOutbox,
   writeAttributes: (photoPath: string, tags: Record<string, unknown>) => Promise<void>,
   readAttributes: (photoPath: string) => Promise<Record<string, unknown>>,
+  db: unknown = {
+    prepare: () => ({ all: () => [] }),
+    transaction: (fn: () => void) => fn,
+  },
 ): MetadataSyncCoordinator {
   const writer = {
     backup: vi.fn(async () => ''),
@@ -145,7 +150,37 @@ function createCoordinator(
     } as never,
     { selectSidecar: vi.fn(() => writer) } as never,
     { getNumber: vi.fn((_key: string, fallback: number) => fallback) } as never,
+    db as never,
   )
+}
+
+function createRealDb(
+  photos: Array<{ id: string; session_id: string; filepath: string }>,
+): BetterSqlite3.Database {
+  const db = new BetterSqlite3(':memory:')
+  db.exec(`
+    CREATE TABLE photos (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, filepath TEXT NOT NULL);
+    CREATE TABLE photo_metadata_cache (
+      photo_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+      keywords TEXT NOT NULL DEFAULT '[]', rating INTEGER NOT NULL DEFAULT 0,
+      label TEXT NOT NULL DEFAULT '', cached_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE culling_decisions (
+      session_id TEXT NOT NULL, photo_id TEXT NOT NULL,
+      group_id TEXT NOT NULL DEFAULT '', decision TEXT NOT NULL DEFAULT 'pending',
+      rating INTEGER NOT NULL DEFAULT 0 CHECK (rating BETWEEN 0 AND 5),
+      color_label TEXT NOT NULL DEFAULT 'None' CHECK (
+        color_label IN ('None', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple')
+      ),
+      revision INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '',
+      UNIQUE(session_id, photo_id)
+    );
+  `)
+  const insertPhoto = db.prepare(
+    'INSERT INTO photos (id, session_id, filepath) VALUES (?, ?, ?)',
+  )
+  for (const photo of photos) insertPhoto.run(photo.id, photo.session_id, photo.filepath)
+  return db
 }
 
 describe('metadata outbox coordinator', () => {
@@ -328,5 +363,153 @@ describe('metadata outbox coordinator', () => {
     expect(summary.items).toEqual([])
     expect(cleanup.deletedCount).toBe(0)
     expect(JSON.parse(fs.readFileSync(xmpPath, 'utf8'))).toEqual({ rating: 3 })
+  })
+
+  it('syncs cache and decisions when accepting remote values with no label', async () => {
+    const repo = new FakeOutbox()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-outbox-'))
+    tempDirs.push(dir)
+    const photoPath = path.join(dir, 'A012.NEF')
+    const xmpPath = path.join(dir, 'A012.xmp')
+    fs.writeFileSync(photoPath, 'raw')
+    fs.writeFileSync(xmpPath, JSON.stringify({ rating: 3 }))
+    repo.rows.set(xmpPath, row(xmpPath, photoPath, {
+      status: 'conflict',
+      base_values_json: JSON.stringify({ rating: 2 }),
+      patch_json: JSON.stringify({ rating: 5 }),
+      dirty_fields: JSON.stringify(['rating']),
+    }))
+    const db = createRealDb([{ id: 'photo-1', session_id: 'session', filepath: photoPath }])
+    db.prepare(
+      'INSERT INTO culling_decisions (session_id, photo_id, rating, color_label) VALUES (?, ?, ?, ?)',
+    ).run('session', 'photo-1', 5, 'Green')
+
+    const coordinator = createCoordinator(
+      repo,
+      async () => {},
+      async () => ({ rating: 3 }),
+      db,
+    )
+    await coordinator.resolveConflict('session', xmpPath, { rating: 'use_remote' })
+
+    const decision = db.prepare(
+      'SELECT rating, color_label FROM culling_decisions WHERE photo_id = ?',
+    ).get('photo-1')
+    expect(decision).toEqual({ rating: 3, color_label: 'None' })
+    const cache = db.prepare(
+      'SELECT rating, label FROM photo_metadata_cache WHERE photo_id = ?',
+    ).get('photo-1')
+    expect(cache).toEqual({ rating: 3, label: 'None' })
+  })
+
+  it('sanitizes non-standard external labels instead of rolling back', async () => {
+    const repo = new FakeOutbox()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-outbox-'))
+    tempDirs.push(dir)
+    const photoPath = path.join(dir, 'A013.NEF')
+    const xmpPath = path.join(dir, 'A013.xmp')
+    fs.writeFileSync(photoPath, 'raw')
+    fs.writeFileSync(xmpPath, JSON.stringify({ rating: 5, label: 'VIP' }))
+    repo.rows.set(xmpPath, row(xmpPath, photoPath, {
+      status: 'conflict',
+      base_values_json: JSON.stringify({ rating: 2, label: 'Green' }),
+      patch_json: JSON.stringify({ rating: 4, label: 'Green' }),
+      dirty_fields: JSON.stringify(['rating', 'label']),
+    }))
+    const db = createRealDb([{ id: 'photo-1', session_id: 'session', filepath: photoPath }])
+    db.prepare(
+      'INSERT INTO culling_decisions (session_id, photo_id, rating, color_label) VALUES (?, ?, ?, ?)',
+    ).run('session', 'photo-1', 4, 'Green')
+
+    const coordinator = createCoordinator(
+      repo,
+      async () => {},
+      async () => ({ rating: 5, label: 'VIP' }),
+      db,
+    )
+    await coordinator.resolveConflict('session', xmpPath, { rating: 'use_remote', label: 'use_remote' })
+
+    const decision = db.prepare(
+      'SELECT rating, color_label FROM culling_decisions WHERE photo_id = ?',
+    ).get('photo-1')
+    expect(decision).toEqual({ rating: 5, color_label: 'None' })
+    const cache = db.prepare(
+      'SELECT rating, label FROM photo_metadata_cache WHERE photo_id = ?',
+    ).get('photo-1')
+    expect(cache).toEqual({ rating: 5, label: 'None' })
+  })
+
+  it('does not clear cached values when the remote sidecar is corrupt', async () => {
+    const repo = new FakeOutbox()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-outbox-'))
+    tempDirs.push(dir)
+    const photoPath = path.join(dir, 'A014.NEF')
+    const xmpPath = path.join(dir, 'A014.xmp')
+    fs.writeFileSync(photoPath, 'raw')
+    fs.writeFileSync(xmpPath, 'not-valid-xml {{{')
+    repo.rows.set(xmpPath, row(xmpPath, photoPath, {
+      status: 'conflict',
+      base_values_json: JSON.stringify({ rating: 2 }),
+      patch_json: JSON.stringify({ rating: 5 }),
+      dirty_fields: JSON.stringify(['rating']),
+    }))
+    const db = createRealDb([{ id: 'photo-1', session_id: 'session', filepath: photoPath }])
+    db.prepare(
+      'INSERT INTO culling_decisions (session_id, photo_id, rating, color_label) VALUES (?, ?, ?, ?)',
+    ).run('session', 'photo-1', 5, 'Green')
+    db.prepare(
+      'INSERT INTO photo_metadata_cache (photo_id, session_id, keywords, rating, label) VALUES (?, ?, ?, ?, ?)',
+    ).run('photo-1', 'session', '["keep"]', 5, 'Green')
+
+    const coordinator = createCoordinator(
+      repo,
+      async () => {},
+      async () => ({}),
+      db,
+    )
+    await coordinator.resolveConflict('session', xmpPath, { rating: 'use_remote' })
+
+    const decision = db.prepare(
+      'SELECT rating, color_label FROM culling_decisions WHERE photo_id = ?',
+    ).get('photo-1')
+    expect(decision).toEqual({ rating: 5, color_label: 'Green' })
+    const cache = db.prepare(
+      'SELECT keywords, rating, label FROM photo_metadata_cache WHERE photo_id = ?',
+    ).get('photo-1')
+    expect(cache).toEqual({ keywords: '["keep"]', rating: 5, label: 'Green' })
+  })
+
+  it('completes an interrupted write instead of reporting a false conflict', async () => {
+    const repo = new FakeOutbox()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-outbox-'))
+    tempDirs.push(dir)
+    const photoPath = path.join(dir, 'A015.NEF')
+    const xmpPath = path.join(dir, 'A015.xmp')
+    fs.writeFileSync(photoPath, 'raw')
+    // The file already contains exactly what the interrupted write intended.
+    fs.writeFileSync(xmpPath, JSON.stringify({ rating: 5 }))
+    repo.rows.set(xmpPath, row(xmpPath, photoPath, {
+      base_fingerprint: 'stale-pre-write-fingerprint',
+      base_values_json: JSON.stringify({ rating: 1 }),
+      patch_json: JSON.stringify({ rating: 5 }),
+      dirty_fields: JSON.stringify(['rating']),
+      backup_path: path.join(dir, 'A015.xmp.gather-backup'),
+    }))
+
+    const write = vi.fn(async () => {})
+    const coordinator = createCoordinator(
+      repo,
+      write,
+      async () => JSON.parse(fs.readFileSync(xmpPath, 'utf8')) as Record<string, unknown>,
+    )
+    const summary = await coordinator.flushSession('session')
+
+    expect(summary.conflict).toBe(0)
+    expect(write).not.toHaveBeenCalled()
+    expect(repo.get(xmpPath)).toMatchObject({
+      status: 'written',
+      persisted_revision: 2,
+      base_fingerprint: expect.stringMatching(/^\d+:\d+:/),
+    })
   })
 })

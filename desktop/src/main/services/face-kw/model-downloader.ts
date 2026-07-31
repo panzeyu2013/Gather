@@ -27,31 +27,67 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 async function downloadFile(url: string, dest: string, onProgress: (p: DownloadProgress) => void): Promise<void> {
-  const response = await fetch(url)
-  if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}): ${url}`)
+  // fetch follows redirects by default and permits https -> http downgrades,
+  // which would let a MITM replace the model package. Follow redirects
+  // manually and reject any hop that leaves HTTPS.
+  let currentUrl = url
+  for (let hop = 0; hop < 8; hop++) {
+    const response = await fetch(currentUrl, { redirect: 'manual' })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location) throw new Error(`Model download redirect without Location: ${currentUrl}`)
+      const next = new URL(location, currentUrl)
+      if (next.protocol !== 'https:') {
+        throw new Error(`Model download must stay on HTTPS, refused: ${next.protocol}//${next.host}`)
+      }
+      currentUrl = next.toString()
+      continue
+    }
+    if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}): ${url}`)
+    await writeResponseToFile(response, dest, onProgress)
+    return
+  }
+  throw new Error(`Model download exceeded redirect limit: ${url}`)
+}
 
+async function writeResponseToFile(
+  response: Response,
+  dest: string,
+  onProgress: (p: DownloadProgress) => void,
+): Promise<void> {
   const total = parseInt(response.headers.get('content-length') || '0', 10)
   let downloaded = 0
-  const reader = response.body.getReader()
-
+  const reader = response.body!.getReader()
   const writeStream = createWriteStream(dest)
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      writeStream.write(Buffer.from(value))
-      downloaded += value.length
-      const filename = dest.split('/').pop() || ''
-      onProgress({ filename, percent: total > 0 ? (downloaded / total) * 100 : 0, downloaded, total })
-    }
-  } finally {
-    writeStream.end()
-    await new Promise<void>((resolve, reject) => {
-      writeStream.on('finish', resolve)
-      writeStream.on('error', reject)
-    })
-  }
+  await new Promise<void>((resolve, reject) => {
+    // Attach the error listener immediately: an unhandled 'error' event on the
+    // stream (disk full, permission denied, interrupted write) would otherwise
+    // crash the main process.
+    writeStream.once('error', reject)
+    writeStream.once('finish', resolve)
+    void (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (!writeStream.write(Buffer.from(value))) {
+            await new Promise<void>((ack, fail) => {
+              writeStream.once('drain', ack)
+              writeStream.once('error', fail)
+            })
+          }
+          downloaded += value.length
+          const filename = dest.split('/').pop() || ''
+          onProgress({ filename, percent: total > 0 ? (downloaded / total) * 100 : 0, downloaded, total })
+        }
+        writeStream.end()
+      } catch (error) {
+        await reader.cancel().catch(() => undefined)
+        writeStream.destroy(error instanceof Error ? error : new Error(String(error)))
+      }
+    })()
+  })
 }
 
 async function unzipFile(zipPath: string, destDir: string): Promise<void> {

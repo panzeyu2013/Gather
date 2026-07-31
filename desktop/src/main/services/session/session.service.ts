@@ -45,6 +45,21 @@ export function normalizeImportFilepaths(filepaths: string[]): string[] {
   )]
 }
 
+/**
+ * Rejects a caller-supplied sourcePath unless it is the non-root common
+ * parent directory of at least two imported photos. This prevents a single
+ * deep-linked file (or an arbitrary path from a compromised renderer) from
+ * making the indexer recursively watch an unrelated directory.
+ */
+export function sanitizeSessionSourcePath(sourcePath: string, filepaths: string[]): string {
+  const resolved = path.resolve(sourcePath || '')
+  if (resolved === path.parse(resolved).root) return ''
+  const normalized = normalizeImportFilepaths(filepaths)
+  if (normalized.length < 2) return ''
+  const parent = commonParentDirectory(normalized)
+  return parent && resolved === parent ? resolved : ''
+}
+
 function toSessionData(
   row: {
     id: string
@@ -100,10 +115,16 @@ export class SessionService {
     const row = this.sessionRepo.get(sessionId)
     if (!row) return null
     if (!row.source_path) {
-      const firstPhoto = this.photoRepo.getBySession(sessionId)[0]
-      if (firstPhoto) {
-        row.source_path = path.dirname(firstPhoto.filepath)
-        this.sessionRepo.updateSourcePath(sessionId, row.source_path)
+      const photos = this.photoRepo.getBySession(sessionId)
+      // Deriving the parent directory of a single photo would make the
+      // indexer recursively watch that entire folder, so only recover a
+      // source path for real multi-photo selections.
+      if (photos.length > 1) {
+        const firstPhoto = photos[0]
+        if (firstPhoto) {
+          row.source_path = path.dirname(firstPhoto.filepath)
+          this.sessionRepo.updateSourcePath(sessionId, row.source_path)
+        }
       }
     }
     return toSessionData(row)
@@ -114,10 +135,7 @@ export class SessionService {
       throw new Error('Deletion must be confirmed')
     }
     const del = this.db.transaction(() => {
-      this.faceRepo.deleteObservationsBySession(sessionId)
-      this.faceRepo.deleteClustersBySession(sessionId)
-      this.sessionRepo.deleteSimilarityDataBySession(sessionId)
-      this.photoRepo.deleteBySession(sessionId)
+      this.deleteSessionDependencies(sessionId)
       const deleted = this.sessionRepo.delete(sessionId)
       if (!deleted) {
         throw new Error('Session not found')
@@ -139,10 +157,7 @@ export class SessionService {
     }
     const del = this.db.transaction((ids: string[]) => {
       for (const id of ids) {
-        this.faceRepo.deleteObservationsBySession(id)
-        this.faceRepo.deleteClustersBySession(id)
-        this.sessionRepo.deleteSimilarityDataBySession(id)
-        this.photoRepo.deleteBySession(id)
+        this.deleteSessionDependencies(id)
       }
       const deleted = this.sessionRepo.deleteMany(ids)
       this.db.prepare(`
@@ -157,13 +172,33 @@ export class SessionService {
     return del(sessionIds)
   }
 
+  /**
+   * Removes every row that references photos(id) or face_observations(id)
+   * without an ON DELETE action, in dependency order. With foreign_keys = ON,
+   * DELETE FROM photos fails while these rows still reference the photos, so
+   * they must be removed before photoRepo.deleteBySession.
+   */
+  private deleteSessionDependencies(sessionId: string): void {
+    // face_cluster_members reference face_observations, so clusters must be
+    // deleted before observations.
+    this.faceRepo.deleteClustersBySession(sessionId)
+    this.faceRepo.deleteObservationsBySession(sessionId)
+    // similarity_hashes reference photos without cascade.
+    this.sessionRepo.deleteSimilarityDataBySession(sessionId)
+    this.db.prepare('DELETE FROM person_embeddings WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM person_photos WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM photo_metadata_cache WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM writeback_items WHERE session_id = ?').run(sessionId)
+    this.photoRepo.deleteBySession(sessionId)
+  }
+
   async addPhotos(sessionId: string, filepaths: string[], source: string): Promise<AddPhotoResult> {
     const session = this.sessionRepo.get(sessionId)
     if (!session) {
       throw new Error('Session not found')
     }
     const normalizedFilepaths = normalizeImportFilepaths(filepaths)
-    if (!session.source_path && normalizedFilepaths.length > 0) {
+    if (!session.source_path && normalizedFilepaths.length >= 2) {
       const sourcePath = commonParentDirectory(normalizedFilepaths)
       if (sourcePath) {
         this.sessionRepo.updateSourcePath(sessionId, sourcePath)

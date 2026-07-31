@@ -133,6 +133,10 @@ export class SharpDecoder implements ImageDecoder {
     // RAW file or invoking the much more expensive sips renderer.
     const extracted = await extractEmbeddedPreview(filepath)
     if (extracted) {
+      // Persist the located segment so later thumbnail/preview/dimension
+      // requests skip the repeated ExifTool probes. Failing to index means
+      // every request re-runs three subprocess extractions.
+      await this.persistIndexFromExtractedPreview(filepath, extracted)
       return extracted
     }
 
@@ -184,6 +188,33 @@ export class SharpDecoder implements ImageDecoder {
       return parsed
     } catch {
       return null
+    }
+  }
+
+  private async persistIndexFromExtractedPreview(
+    filepath: string,
+    extracted: { jpeg: Buffer; orientation: number },
+  ): Promise<void> {
+    try {
+      const buf = await fsp.readFile(filepath)
+      const segments = await findJpegSegmentsWithDimensions(buf)
+      const match = segments.find(segment => {
+        const sub = buf.subarray(segment.offset, segment.offset + segment.size)
+        if (sub.equals(extracted.jpeg)) return true
+        // The embedded preview may carry trailing padding inside the tag.
+        if (
+          extracted.jpeg.length <= sub.length &&
+          extracted.jpeg.equals(sub.subarray(0, extracted.jpeg.length))
+        ) {
+          return true
+        }
+        return false
+      })
+      if (match) {
+        await this.writeRawIndex(filepath, extracted.orientation, [match])
+      }
+    } catch {
+      // Indexing is an optimization; decoding must still succeed without it.
     }
   }
 
@@ -340,7 +371,10 @@ async function extractEmbeddedPreview(
   const tags = ['JpgFromRaw', 'PreviewImage', 'ThumbnailImage'] as const
   for (const tag of tags) {
     try {
-      const buffer = await exiftool.extractBinaryTagToBuffer(tag, filepath)
+      const buffer = await withTimeout(
+        exiftool.extractBinaryTagToBuffer(tag, filepath),
+        EXIFTOOL_EXTRACT_TIMEOUT_MS,
+      )
       const metadata = await sharp(buffer).metadata()
       if (metadata.width && metadata.height) {
         return { jpeg: buffer, orientation: metadata.orientation ?? 1 }
@@ -350,6 +384,40 @@ async function extractEmbeddedPreview(
     }
   }
   return null
+}
+
+const EXIFTOOL_EXTRACT_TIMEOUT_MS = 120_000
+
+let exiftoolResetInFlight: Promise<void> | null = null
+
+function resetExiftoolPool(): void {
+  if (exiftoolResetInFlight) return
+  exiftoolResetInFlight = exiftool.end()
+    .catch(error => console.warn('Failed to reset exiftool pool', error))
+    .finally(() => { exiftoolResetInFlight = null })
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Timed out')), timeoutMs)
+      }),
+    ])
+  } catch (error) {
+    // Promise.race alone would abandon the hung exiftool task, permanently
+    // occupying one of the shared exiftool pool slots (two of which stalls
+    // every exiftool operation, including embedded writes). Reset the pool so
+    // a fresh process is spawned on the next call.
+    if (error instanceof Error && error.message === 'Timed out') {
+      resetExiftoolPool()
+    }
+    throw error
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 async function readFileHeader(filepath: string, size: number): Promise<Buffer | null> {

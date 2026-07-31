@@ -10,6 +10,8 @@ const SessionDetail = lazy(() => import('./pages/SessionDetail'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Library = lazy(() => import('./pages/Library'))
 const Jobs = lazy(() => import('./pages/Jobs'))
+const Persons = lazy(() => import('./pages/Persons'))
+const PersonDetail = lazy(() => import('./pages/Persons/PersonDetail'))
 
 export default function App() {
   const addToast = useToastStore((state) => state.addToast)
@@ -34,6 +36,8 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/library" element={<Library />} />
             <Route path="/jobs" element={<Jobs />} />
+            <Route path="/persons" element={<Persons />} />
+            <Route path="/persons/:personId" element={<PersonDetail />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

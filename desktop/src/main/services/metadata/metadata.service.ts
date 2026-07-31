@@ -6,7 +6,9 @@ import type { MetadataTags, BatchMetadataResult } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
+import type { MetadataWriteAttributes } from './metadata-writer.interface'
 import { stat } from 'fs/promises'
+import { existsSync } from 'fs'
 import { MetadataMutationService } from './metadata-mutation.service'
 
 async function getExifr() {
@@ -83,8 +85,35 @@ export class MetadataService {
     if (photoIds.length === 0) return []
     const placeholders = photoIds.map(() => '?').join(',')
     return this.db
-      .prepare(`SELECT id, filepath, session_id FROM photos WHERE id IN (${placeholders})`)
+      .prepare(`SELECT id, session_id, filepath FROM photos WHERE id IN (${placeholders})`)
       .all(...photoIds) as { id: string; filepath: string; session_id: string }[]
+  }
+
+  /**
+   * A corrupt sidecar makes readAttributes() return an empty object even
+   * though the file exists. Without this guard the cache would be overwritten
+   * with empty keywords/rating/label, erasing previously valid values until
+   * the file changes again.
+   */
+  private preserveValuesOnCorruptSidecar(
+    photoId: string,
+    filepath: string,
+    writerAttributes: MetadataWriteAttributes,
+  ): void {
+    if (Object.keys(writerAttributes).length > 0) return
+    if (!existsSync(getXmpSidecarPath(filepath))) return
+    const previous = this.metadataCacheRepo.get(photoId)
+    if (!previous) return
+    const previousKeywords = parseKeywords(previous.keywords)
+    if (previousKeywords.length > 0) {
+      writerAttributes.keywords = previousKeywords
+    }
+    if (previous.rating != null) {
+      writerAttributes.rating = previous.rating
+    }
+    if (previous.label != null) {
+      writerAttributes.label = previous.label
+    }
   }
 
   async getMetadata(photoIds: string[]): Promise<Map<string, MetadataTags>> {
@@ -176,6 +205,7 @@ export class MetadataService {
               }
 
               const writerAttributes = await this.readEffectiveAttributes(photo.filepath)
+              this.preserveValuesOnCorruptSidecar(photo.id, photo.filepath, writerAttributes)
               if (writerAttributes.keywords !== undefined) {
                 tags.keywords = writerAttributes.keywords
                 cacheInput.keywords = writerAttributes.keywords
@@ -211,6 +241,7 @@ export class MetadataService {
           }
 
           const existingAttributes = await this.readEffectiveAttributes(photo.filepath)
+          this.preserveValuesOnCorruptSidecar(photo.id, photo.filepath, existingAttributes)
           Object.assign(tags, existingAttributes)
           if (existingAttributes.keywords !== undefined) cacheInput.keywords = existingAttributes.keywords
           if (existingAttributes.rating !== undefined) cacheInput.rating = existingAttributes.rating

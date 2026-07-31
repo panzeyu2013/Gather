@@ -6,7 +6,7 @@ import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL, UNIQUE_PHOTO_PATH_INDEX_SQL } from './schema'
 import BetterSqlite3 from 'better-sqlite3'
 
-const CURRENT_SCHEMA_VERSION = 25
+const CURRENT_SCHEMA_VERSION = 26
 
 const CREATE_FACE_CLUSTER_MEMBERS_SQL = `
   CREATE TABLE face_cluster_members (
@@ -1040,6 +1040,17 @@ function runMigrationsUnsafe(database: Database): void {
       setSchemaVersion(db, 25)
     })()
     currentVersion = 25
+  }
+
+  // ── Version 26: drop the redundant culling index covered by the unique one ──
+  if (currentVersion < 26) {
+    db.transaction(() => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_culling_photo_session;
+      `)
+      setSchemaVersion(db, 26)
+    })()
+    currentVersion = 26
   }
 
   if (currentVersion !== CURRENT_SCHEMA_VERSION) {

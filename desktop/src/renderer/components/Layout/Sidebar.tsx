@@ -47,6 +47,17 @@ function JobsIcon() {
   )
 }
 
+function PersonsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" />
+      <circle cx="17" cy="9" r="2.5" />
+      <path d="M15.5 14.2c2.6.4 4.5 2.6 4.5 5.3" />
+    </svg>
+  )
+}
+
 export default function Sidebar() {
   const location = useLocation()
   const sessionId = useSessionStore((s) => s.currentSessionId)
@@ -77,6 +88,12 @@ export default function Sidebar() {
           <NavLink to="/library" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
             <LibraryIcon />
             <span>全局图库</span>
+          </NavLink>
+        </li>
+        <li className={styles.navItem}>
+          <NavLink to="/persons" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
+            <PersonsIcon />
+            <span>人脸库</span>
           </NavLink>
         </li>
         <li className={styles.navItem}>

@@ -156,6 +156,29 @@ export class ExportService {
     }
   }
 
+  /**
+   * Copies the sidecar when present. An XMP failure must not delete the image
+   * that was just exported successfully, so it is recorded as a non-fatal
+   * error instead of propagating to the catch block that unlinks destPath.
+   */
+  private async copyXmpBestEffort(
+    photoPath: string,
+    destPath: string,
+    errors: string[],
+    filename: string,
+    includeXmp: boolean,
+  ): Promise<void> {
+    if (!includeXmp) return
+    const xmpPath = getXmpSidecarPath(photoPath)
+    if (!fs.existsSync(xmpPath)) return
+    try {
+      await this.copyXmpSafely(xmpPath, getXmpSidecarPath(destPath))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误'
+      errors.push(`${filename}: ${message}（图像已导出，仅 XMP 未复制）`)
+    }
+  }
+
   async preview(sessionId: string, options: ExportOptions): Promise<ExportPreview> {
     validateExportOptions(options)
     const photos = this.photoRepo.getBySession(sessionId)
@@ -279,10 +302,7 @@ export class ExportService {
         if (options.format === 'original') {
           await this.copyExclusive(photo.filepath, destPath)
           destinationCreated = true
-          const xmpPath = getXmpSidecarPath(photo.filepath)
-          if (options.includeXmp && fs.existsSync(xmpPath)) {
-            await this.copyXmpSafely(xmpPath, getXmpSidecarPath(destPath))
-          }
+          await this.copyXmpBestEffort(photo.filepath, destPath, errors, photo.filename, options.includeXmp)
         } else {
           const temporaryPath = path.join(
             destination,
@@ -299,10 +319,7 @@ export class ExportService {
             await fs.promises.unlink(temporaryPath).catch(() => undefined)
           }
           if (options.includeXmp) {
-            const xmpPath = getXmpSidecarPath(photo.filepath)
-            if (fs.existsSync(xmpPath)) {
-              await this.copyXmpSafely(xmpPath, getXmpSidecarPath(destPath))
-            }
+            await this.copyXmpBestEffort(photo.filepath, destPath, errors, photo.filename, options.includeXmp)
           }
         }
 

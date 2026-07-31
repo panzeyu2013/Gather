@@ -20,6 +20,11 @@ function isFilterRule(condition: FilterRule | FilterGroup): condition is FilterR
   return 'field' in condition
 }
 
+function escapeLike(value: string): string {
+  // Escape LIKE wildcards so directory paths containing % or _ match literally.
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`)
+}
+
 function resolveField(rule: FilterRule): { prefix: string; col: string } {
   if (SIMPLE_FIELDS.has(rule.field)) {
     return { prefix: 'p', col: rule.field }
@@ -248,9 +253,15 @@ export class FilterEngine {
       return this.buildKeywordsCondition(operator, value)
     }
     if (field === 'directory') {
-      return operator === 'eq' || operator === 'starts_with'
-        ? { sql: 'p.filepath LIKE ? || \'%\'', params: [String(value)] }
-        : { sql: '1=1', params: [] }
+      if (operator !== 'eq' && operator !== 'starts_with') {
+        // Previously this silently matched everything, producing misleading
+        // "all photos match" results for unsupported operators.
+        throw new Error(`Unsupported operator for directory field: ${operator}`)
+      }
+      return {
+        sql: `p.filepath LIKE ? || '%' ESCAPE '\\'`,
+        params: [escapeLike(String(value))],
+      }
     }
     if (field === 'volume') {
       return {

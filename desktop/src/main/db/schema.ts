@@ -538,7 +538,6 @@ CREATE INDEX IF NOT EXISTS idx_metadata_cache_camera_make ON photo_metadata_cach
 CREATE INDEX IF NOT EXISTS idx_duplicate_groups_session ON duplicate_groups(session_id);
 CREATE INDEX IF NOT EXISTS idx_duplicate_members_group ON duplicate_group_members(group_id);
 CREATE INDEX IF NOT EXISTS idx_duplicate_members_photo ON duplicate_group_members(photo_id);
-CREATE INDEX IF NOT EXISTS idx_culling_photo_session ON culling_decisions(session_id, photo_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_culling_session_photo_unique ON culling_decisions(session_id, photo_id);
 CREATE INDEX IF NOT EXISTS idx_culling_group ON culling_decisions(session_id, group_id);
 CREATE INDEX IF NOT EXISTS idx_culling_history_session ON culling_history(session_id, id);

@@ -12,12 +12,15 @@ import type {
 } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import { Database } from '../../db/database'
 import {
   MetadataOutboxRepository,
   type MetadataOutboxRow,
 } from '../../db/repositories/metadata-outbox.repo'
 import { WritebackRepository } from '../../db/repositories/writeback.repo'
 import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
+import type { MetadataWriteAttributes } from './metadata-writer.interface'
+import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
 import { SettingsService } from '../settings/settings.service'
 
 const MAX_CONCURRENCY = 2
@@ -48,6 +51,41 @@ async function fingerprint(path: string): Promise<string> {
   }
 }
 
+function attributesMatchPatch(
+  current: MetadataWriteAttributes,
+  patch: Record<string, unknown>,
+): boolean {
+  if (patch.rating !== undefined && current.rating !== patch.rating) return false
+  if (patch.label !== undefined && (current.label ?? '') !== patch.label) return false
+  if (
+    Array.isArray(patch.keywords) &&
+    JSON.stringify(current.keywords ?? []) !== JSON.stringify(patch.keywords)
+  ) {
+    return false
+  }
+  return true
+}
+
+const CULLING_COLOR_LABELS = new Set([
+  'None',
+  'Red',
+  'Orange',
+  'Yellow',
+  'Green',
+  'Blue',
+  'Pink',
+  'Purple',
+])
+
+function sanitizeCullingLabel(value: unknown): string {
+  return typeof value === 'string' && CULLING_COLOR_LABELS.has(value) ? value : 'None'
+}
+
+function clampRating(value: unknown): number {
+  const num = typeof value === 'number' ? value : 0
+  return Math.min(5, Math.max(0, Math.round(num)))
+}
+
 @injectable()
 export class MetadataSyncCoordinator {
   private timers = new Map<string, NodeJS.Timeout>()
@@ -68,6 +106,8 @@ export class MetadataSyncCoordinator {
     private writerRouter: MetadataWriterRouter,
     @inject(DI_TOKENS.SETTINGS_SERVICE)
     private settings: SettingsService,
+    @inject(DI_TOKENS.DB)
+    private db: Database,
   ) {}
 
   start(eventSink?: EventSink): void {
@@ -203,6 +243,10 @@ export class MetadataSyncCoordinator {
     const acceptRemote = dirtyFields.length === 0
     if (acceptRemote) {
       this.writebackRepo.discardPendingByXmpPath(xmpPath)
+      // Keep the metadata cache and culling decisions in sync with the values
+      // the user chose to keep, otherwise the UI keeps showing the local
+      // rating/label/keywords indefinitely.
+      this.syncAcceptedRemoteValues(row.photo_path, current)
     }
     this.outboxRepo.resolveConflict(
       xmpPath,
@@ -225,6 +269,59 @@ export class MetadataSyncCoordinator {
       errorMessage: row.error_message,
       updatedAt: row.updated_at,
     }))
+  }
+
+  private syncAcceptedRemoteValues(
+    photoPath: string,
+    remote: MetadataWriteAttributes,
+  ): void {
+    try {
+      // A corrupt sidecar makes readAttributes() return an empty object.
+      // Mirror the metadata.service guard: don't let the empty read clear
+      // previously valid cached values.
+      if (
+        Object.keys(remote).length === 0 &&
+        existsSync(getXmpSidecarPath(photoPath))
+      ) {
+        return
+      }
+      const photos = this.db.prepare(
+        'SELECT id, session_id FROM photos WHERE filepath = ?',
+      ).all(photoPath) as Array<{ id: string; session_id: string }>
+      const now = new Date().toISOString()
+      const keywords = Array.isArray(remote.keywords) ? remote.keywords : []
+      // Clamp to the culling_decisions CHECK constraints so a non-standard
+      // external label/rating does not roll back the whole transaction.
+      const rating = clampRating(remote.rating)
+      const label = sanitizeCullingLabel(remote.label)
+      const write = this.db.transaction(() => {
+        for (const photo of photos) {
+          try {
+            this.db.prepare(`
+              INSERT INTO photo_metadata_cache
+                (photo_id, session_id, keywords, rating, label, cached_at)
+              VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(photo_id) DO UPDATE SET
+                keywords = excluded.keywords,
+                rating = excluded.rating,
+                label = excluded.label,
+                cached_at = excluded.cached_at
+            `).run(photo.id, photo.session_id, JSON.stringify(keywords), rating, label, now)
+            this.db.prepare(`
+              UPDATE culling_decisions
+              SET rating = ?, color_label = ?, updated_at = ?
+              WHERE photo_id = ? AND session_id = ?
+            `).run(rating, label, now, photo.id, photo.session_id)
+          } catch (error) {
+            // A single photo must not block the rest of the batch.
+            console.warn('Failed to sync accepted remote values for photo', photo.id, error)
+          }
+        }
+      })
+      write()
+    } catch (error) {
+      console.warn('Failed to sync accepted remote metadata values', error)
+    }
   }
 
   async resolveOrphan(
@@ -303,10 +400,17 @@ export class MetadataSyncCoordinator {
     const errors: string[] = []
     for (const row of eligible) {
       try {
+        // A new mutation may have been queued after the snapshot was taken.
+        // Wait for any in-flight write and re-verify the row is still synced
+        // before restoring/deleting the file, so a concurrent edit is not
+        // silently reverted.
+        await this.waitForIdle(row.xmp_path)
+        const latest = this.outboxRepo.get(row.xmp_path)
+        if (!latest || latest.status !== 'synced') continue
         const currentFingerprint = await fingerprint(row.xmp_path)
         if (
-          row.base_fingerprint &&
-          currentFingerprint !== row.base_fingerprint
+          latest.base_fingerprint &&
+          currentFingerprint !== latest.base_fingerprint
         ) {
           this.outboxRepo.markStatus(
             row.xmp_path,
@@ -315,18 +419,18 @@ export class MetadataSyncCoordinator {
           )
           throw new Error('XMP 已被其他软件修改，不能自动恢复或删除')
         }
-        if (row.backup_path) {
-          if (!existsSync(row.backup_path)) {
-            throw new Error(`原始 XMP 备份不存在：${row.backup_path}`)
+        if (latest.backup_path) {
+          if (!existsSync(latest.backup_path)) {
+            throw new Error(`原始 XMP 备份不存在：${latest.backup_path}`)
           }
           await this.writerRouter
             .selectSidecar()
-            .restore(row.photo_path, row.backup_path)
-        } else if (existsSync(row.xmp_path)) {
-          await unlink(row.xmp_path)
+            .restore(latest.photo_path, latest.backup_path)
+        } else if (existsSync(latest.xmp_path)) {
+          await unlink(latest.xmp_path)
         }
-        this.outboxRepo.markStatus(row.xmp_path, 'cleaned')
-        this.outboxRepo.delete(row.xmp_path)
+        this.outboxRepo.markStatus(latest.xmp_path, 'cleaned')
+        this.outboxRepo.delete(latest.xmp_path)
         deletedCount++
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -434,6 +538,28 @@ export class MetadataSyncCoordinator {
     try {
       const currentFingerprint = await fingerprint(row.xmp_path)
       const currentFingerprintToken = currentFingerprint || '__missing__'
+      // A crash between the atomic rename and markWritten leaves the file
+      // containing our own write while the baseline still describes the
+      // original content. Detect that case and complete the transaction
+      // instead of reporting a fake external conflict.
+      if (
+        row.backup_path &&
+        row.base_fingerprint &&
+        currentFingerprintToken !== row.base_fingerprint
+      ) {
+        const current = await this.writerRouter.selectSidecar().readAttributes(row.photo_path)
+        if (attributesMatchPatch(current, safeObject(row.patch_json))) {
+          this.outboxRepo.markWritten(
+            row.xmp_path,
+            row.revision,
+            currentFingerprintToken,
+            { ...current },
+            row.backup_path,
+          )
+          this.emitPathSummaries(row.xmp_path)
+          return true
+        }
+      }
       if (
         row.base_fingerprint &&
         currentFingerprintToken !== row.base_fingerprint &&

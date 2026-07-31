@@ -153,6 +153,29 @@
 
 .progressSection {
   margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cancelBtn {
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cancelBtn:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.cancelBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .error {

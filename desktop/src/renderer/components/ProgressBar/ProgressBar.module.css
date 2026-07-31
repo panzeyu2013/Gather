@@ -25,6 +25,23 @@
   transition: width 0.3s ease;
 }
 
+.fillIndeterminate {
+  height: 100%;
+  width: 40%;
+  border-radius: 4px;
+  background: var(--color-primary);
+  animation: gather-progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes gather-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
 .pct {
   font-size: 12px;
   color: var(--color-text-secondary);

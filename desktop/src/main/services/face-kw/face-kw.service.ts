@@ -209,7 +209,9 @@ export class FaceKwService {
         this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
         return { status: 'done', detectionFailures, encodingFailures }
       }
-      this.faceRepo.deleteClustersBySession(sessionId)
+      // Old clusters and role bindings are deliberately kept until new results
+      // are ready. Deleting them first would destroy user-bound clusters and
+      // role names whenever model initialization or inference fails.
       if (photosNeedingAnalysis.length > 0) {
         inferenceWorker = new FaceInferenceWorker()
         await inferenceWorker.init({
@@ -294,14 +296,25 @@ export class FaceKwService {
 
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
-      onProgress?.({ current: 0, total: 0, message: 'Clustering faces...' })
-      await this.clusterStoredObservations(sessionId, photos, eps, minPts, signal)
-      this.faceRepo.upsertClusterSignature(sessionId, clusterSignature)
-
+      // Determine failure before re-clustering so that an all-failed run does
+      // not clear the previously bound clusters and role names.
       const allDetectionsFailed = detectionFailures === totalPhotos && totalPhotos > 0
       const allEncodingsFailed =
         encodingFailures === totalFaces && totalFaces > 0
-      if (allDetectionsFailed || allEncodingsFailed) {
+      const analysisFailed = allDetectionsFailed || allEncodingsFailed
+
+      onProgress?.({ current: 0, total: 0, message: 'Clustering faces...' })
+      await this.clusterStoredObservations(
+        sessionId,
+        photos,
+        eps,
+        minPts,
+        signal,
+        !analysisFailed,
+      )
+      this.faceRepo.upsertClusterSignature(sessionId, clusterSignature)
+
+      if (analysisFailed) {
         this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
         return { status: 'failed', detectionFailures, encodingFailures }
       }
@@ -332,7 +345,6 @@ export class FaceKwService {
       throw new ValidationError('No cached face observations found. Run analysis first.')
     }
     const photos = this.photoRepo.getBySession(sessionId)
-    this.faceRepo.deleteClustersBySession(sessionId)
     await this.clusterStoredObservations(sessionId, photos, eps, minPts)
     this.faceRepo.upsertClusterSignature(sessionId, `${eps}:${minPts}`)
   }
@@ -343,6 +355,7 @@ export class FaceKwService {
     eps: number,
     minPts: number,
     signal?: AbortSignal,
+    clearOnEmpty = true,
   ): Promise<void> {
     const observations = this.faceRepo.getObservations(sessionId)
     const observationById = new Map(observations.map(observation => [observation.id, observation]))
@@ -386,8 +399,19 @@ export class FaceKwService {
         }
       }),
     }))
-    if (clusterInputs.length === 0) return
+    if (clusterInputs.length === 0) {
+      // A completed analysis with no faces should not leave stale clusters
+      // behind, so clear the previous results — but only when the run is a
+      // real success. On an all-failed run keep the existing clusters and
+      // role bindings intact.
+      if (clearOnEmpty) this.faceRepo.deleteClustersBySession(sessionId)
+      return
+    }
 
+    // Replace previous clusters only when new ones are ready to persist. This
+    // keeps existing clusters and role bindings intact if a re-analysis or
+    // re-cluster fails partway through.
+    this.faceRepo.deleteClustersBySession(sessionId)
     const clusterIds = this.faceRepo.saveClusters(sessionId, clusterInputs)
     const thumbDir = this.faceRepo.getFaceThumbDir()
     await batchAsync(clusterInputs.map((_, index) => index), async (index) => {

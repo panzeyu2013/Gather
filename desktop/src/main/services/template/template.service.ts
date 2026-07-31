@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import type { TemplateData, WorkflowTemplateConfig } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import { SettingsService } from '../settings/settings.service'
 
 interface TemplateRow {
   id: string
@@ -26,7 +27,10 @@ function rowToData(row: TemplateRow): TemplateData {
 
 @injectable()
 export class TemplateService {
-  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+  constructor(
+    @inject(DI_TOKENS.DB) private db: Database,
+    @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
+  ) {}
 
   list(): TemplateData[] {
     const rows = this.db.prepare('SELECT * FROM workflow_templates ORDER BY updated_at DESC').all() as TemplateRow[]
@@ -99,18 +103,13 @@ export class TemplateService {
 
     const config = template.config
 
-    this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-        .run('default_threshold', String(config.similarity.threshold))
-      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-        .run('default_min_group_size', String(config.similarity.minGroupSize))
-
-      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-        .run('default_eps', String(config.face.eps))
-      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-        .run('default_min_samples', String(config.face.minSamples))
-      this.db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-        .run('detect_confidence', String(config.face.detectorConfidence))
-    })()
+    // Go through SettingsService so the in-memory cache stays in sync (a raw
+    // INSERT previously made the applied values take effect only after a
+    // restart). SettingsService also enforces the known-keys whitelist.
+    this.settings.set('default_threshold', String(config.similarity.threshold))
+    this.settings.set('default_min_group_size', String(config.similarity.minGroupSize))
+    this.settings.set('default_eps', String(config.face.eps))
+    this.settings.set('default_min_samples', String(config.face.minSamples))
+    this.settings.set('detect_confidence', String(config.face.detectorConfidence))
   }
 }

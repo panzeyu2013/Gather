@@ -91,7 +91,7 @@ export default function Library() {
     queryKey: ['sessions'],
     queryFn: sessionApi.list,
   })
-  const { data: photoResult, isLoading } = useQuery({
+  const { data: photoResult, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['library', 'photos', selectedAlbum, criteriaKey, sessionFilter, page],
     queryFn: () => selectedAlbum
       ? albumApi.getPhotos(selectedAlbum, PAGE_SIZE, page * PAGE_SIZE)
@@ -346,7 +346,13 @@ export default function Library() {
                 {photo.keywords.length > 0 && <small>{photo.keywords.slice(0, 4).join(' · ')}</small>}
               </article>
             ))}
-            {!isLoading && photos.length === 0 && <p className={styles.muted}>没有符合条件的照片</p>}
+            {isError && (
+              <p className={styles.muted}>
+                查询失败：{error instanceof Error ? error.message : '未知错误'}
+                <button className={styles.retryBtn} onClick={() => refetch()}>重试</button>
+              </p>
+            )}
+            {!isLoading && !isError && photos.length === 0 && <p className={styles.muted}>没有符合条件的照片</p>}
           </div>
           <footer className={styles.pagination}>
             <button disabled={page === 0} onClick={() => setPage(value => Math.max(0, value - 1))}>上一页</button>

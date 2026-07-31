@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { similarityApi, type SimilarityResult } from '../../api/similarity'
 import { imageApi } from '../../api/image'
+import { jobsApi } from '../../api/jobs'
 import { useSimilarityStore } from '../../stores/similarityStore'
 import ProgressBar from '../../components/ProgressBar/ProgressBar'
 import WritebackReport from '../../components/WritebackReport/WritebackReport'
@@ -25,11 +26,18 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
     setMinGroupSize,
     setGroupingMode,
     setIsAnalyzing,
+    setProgress,
     progressCurrent,
     progressTotal,
     progressMessage,
   } =
     useSimilarityStore()
+
+  const cancelMutation = useMutation({
+    mutationFn: () => similarityApi.cancel(sessionId),
+    onSuccess: () => setIsAnalyzing(false),
+    onError: () => setIsAnalyzing(false),
+  })
 
   const analyzeMutation = useMutation({
     mutationFn: () => similarityApi.analyze(
@@ -46,6 +54,37 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
       setIsAnalyzing(false)
     },
   })
+
+  // Poll the background job for real progress; the similarity IPC handler
+  // itself only emits a single completion event, which would otherwise leave
+  // the progress bar at 0/0.
+  useEffect(() => {
+    if (!isAnalyzing && !analyzeMutation.isPending) return
+    let disposed = false
+    let timer: ReturnType<typeof setInterval> | undefined
+    const poll = async () => {
+      try {
+        const jobs = await jobsApi.list()
+        const job = jobs.find(
+          (candidate) =>
+            candidate.type === 'similarity.analyze' &&
+            candidate.scopeType === 'session' &&
+            candidate.scopeId === sessionId,
+        )
+        if (job && !disposed) {
+          setProgress(job.progressCurrent, job.progressTotal, job.progressMessage || '正在计算哈希并聚类...')
+        }
+      } catch {
+        // Polling is best-effort; the indeterminate bar still communicates activity.
+      }
+    }
+    void poll()
+    timer = setInterval(poll, 1000)
+    return () => {
+      disposed = true
+      if (timer) clearInterval(timer)
+    }
+  }, [isAnalyzing, analyzeMutation.isPending, sessionId, setProgress])
 
   const reclusterMutation = useMutation({
     mutationFn: () => similarityApi.recluster(
@@ -146,6 +185,13 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
       {(isAnalyzing || analyzeMutation.isPending) && (
         <div className={styles.progressSection}>
           <ProgressBar value={progressCurrent} max={progressTotal} label={progressMessage || '正在计算哈希并聚类...'} />
+          <button
+            className={styles.cancelBtn}
+            onClick={() => cancelMutation.mutate()}
+            disabled={cancelMutation.isPending}
+          >
+            取消分析
+          </button>
         </div>
       )}
 

@@ -9,6 +9,11 @@ import type { ImageDecoder, DecodeResult } from '../decoder'
 
 const execFileAsync = promisify(execFile)
 
+// A corrupt or unusually large RAW can make sips hang. Without a timeout the
+// decode slot is occupied forever, stalling every other thumbnail/preview.
+const SIPS_RENDER_TIMEOUT_MS = 120_000
+const SIPS_DIMENSIONS_TIMEOUT_MS = 30_000
+
 function tempJpegPath(): string {
   return path.join(os.tmpdir(), `gather-sips-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`)
 }
@@ -16,7 +21,7 @@ function tempJpegPath(): string {
 async function sipsToBuffer(args: string[]): Promise<Buffer> {
   const outPath = tempJpegPath()
   try {
-    await execFileAsync('sips', [...args, '--out', outPath])
+    await execFileAsync('sips', [...args, '--out', outPath], { timeout: SIPS_RENDER_TIMEOUT_MS })
     return await fsp.readFile(outPath)
   } finally {
     try { await fsp.unlink(outPath) } catch {}
@@ -64,7 +69,7 @@ export class SipsDecoder implements ImageDecoder {
   async getDimensions(path: string): Promise<{ width: number; height: number }> {
     const { stdout } = await execFileAsync('sips', [
       '-g', 'pixelWidth', '-g', 'pixelHeight', '-g', 'orientation', path,
-    ])
+    ], { timeout: SIPS_DIMENSIONS_TIMEOUT_MS })
     let w = parseInt(stdout.match(/pixelWidth: (\d+)/)?.[1] ?? '0', 10)
     let h = parseInt(stdout.match(/pixelHeight: (\d+)/)?.[1] ?? '0', 10)
     const orientation = parseInt(stdout.match(/orientation: (\d+)/)?.[1] ?? '1', 10)

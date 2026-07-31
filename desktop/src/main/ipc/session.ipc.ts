@@ -1,6 +1,6 @@
 import type { CommandRegistry } from './registry'
 import { ok, err, validateString, validateStringArray, wrapHandler } from './helpers'
-import type { SessionService } from '../services/session/session.service'
+import { SessionService, sanitizeSessionSourcePath } from '../services/session/session.service'
 
 export function registerSessionHandlers(registry: CommandRegistry, sessionService: SessionService): void {
   registry.register(
@@ -8,10 +8,15 @@ export function registerSessionHandlers(registry: CommandRegistry, sessionServic
     wrapHandler(async (params) => {
       const name = validateString(params.name, 'name')
       const source = validateString(params.source ?? 'manual', 'source')
-      const sourcePath = validateString(params.sourcePath ?? '', 'sourcePath', 4096, true)
+      const filepaths = Array.isArray(params.filepaths)
+        ? validateStringArray(params.filepaths, 'filepaths')
+        : []
+      const sourcePath = sanitizeSessionSourcePath(
+        validateString(params.sourcePath ?? '', 'sourcePath', 4096, true),
+        filepaths,
+      )
       const session = sessionService.createSession(name, source, sourcePath)
-      if (Array.isArray(params.filepaths) && params.filepaths.length > 0) {
-        const filepaths = validateStringArray(params.filepaths, 'filepaths')
+      if (filepaths.length > 0) {
         const result = await sessionService.addPhotos(session.id, filepaths, source)
         const sessionData = sessionService.getSession(session.id)
         return ok({ ...sessionData, failedFiles: result.failedFiles, added: result.added, skipped: result.skipped })

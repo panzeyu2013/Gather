@@ -203,9 +203,26 @@ export class WritebackService {
         const keywordsBeforeWrite = await this.writerRouter
           .selectSidecar()
           .readKeywords(photoPath)
-        const writeAttrs = persistedItem.attributes
-          ? { keywords: persistedItem.keywords, ...persistedItem.attributes }
-          : { keywords: persistedItem.keywords }
+        // Re-merge against the current file state instead of trusting the
+        // preview-time snapshot. External software may have added keywords
+        // between preview and execute; writing the stale list would silently
+        // discard those changes.
+        const writeKeywords = [...new Set([
+          ...keywordsBeforeWrite,
+          ...persistedItem.keywords,
+        ])]
+        // attributes.keywords (e.g. the culling writeback plan) must be merged
+        // too, otherwise the spread below would override the merged list and
+        // bypass this protection.
+        const mergedKeywords = [...new Set([
+          ...writeKeywords,
+          ...(Array.isArray(persistedItem.attributes?.keywords)
+            ? persistedItem.attributes.keywords
+            : []),
+        ])]
+        const writeAttrs: Record<string, unknown> = persistedItem.attributes
+          ? { ...persistedItem.attributes, keywords: mergedKeywords }
+          : { keywords: writeKeywords }
         this.metadataMutations.queuePhotoValues(
           sessionId,
           dbRow.photo_id,

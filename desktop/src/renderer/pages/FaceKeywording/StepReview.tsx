@@ -92,9 +92,9 @@ export default function StepReview() {
       setRoleName('')
       setKeywords('')
     } catch (e) {
-      console.error('Unbind failed:', e)
+      setActionError(`解绑失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
-  }, [sessionId, selectedCluster, refreshClusters])
+  }, [sessionId, selectedCluster, refreshClusters, setRoleName, setKeywords])
 
   const handleMerge = useCallback(async () => {
     if (!sessionId || !selectedCluster || !mergeTargetId) return
@@ -110,7 +110,7 @@ export default function StepReview() {
         return next
       })
     } catch (e) {
-      console.error('Merge failed:', e)
+      setActionError(`合并失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
   }, [sessionId, selectedCluster, mergeTargetId, refreshClusters, selectCluster])
 

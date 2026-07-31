@@ -158,6 +158,21 @@ function statePatch(
   return patch
 }
 
+function FilmThumb({ filepath, filename }: { filepath: string; filename: string }) {
+  const [broken, setBroken] = useState(false)
+  if (broken) {
+    return <span className={styles.thumbBroken}>离线</span>
+  }
+  return (
+    <img
+      src={imageApi.thumbnailUrl(filepath, 256)}
+      alt={filename}
+      loading="lazy"
+      onError={() => setBroken(true)}
+    />
+  )
+}
+
 function CullingImage({
   asset,
   transform,
@@ -167,6 +182,7 @@ function CullingImage({
   transform: ViewTransform
   faceAlign: boolean
 }) {
+  const [broken, setBroken] = useState(false)
   const face = asset.faceBboxes[0]
   const faceX = face ? Math.max(0, Math.min(1, face[0] + face[2] / 2)) : 0.5
   const faceY = face ? Math.max(0, Math.min(1, face[1] + face[3] / 2)) : 0.5
@@ -175,15 +191,23 @@ function CullingImage({
   const scale = faceAlign && face ? Math.max(2, transform.scale) : transform.scale
   return (
     <div className={styles.compareCell}>
-      <img
-        src={imageApi.previewUrl(asset.photo.filepath, 2560)}
-        alt={asset.photo.filename}
-        className={styles.viewerImage}
-        draggable={false}
-        style={{
-          transform: `translate(calc(${transform.x}px + ${alignX}%), calc(${transform.y}px + ${alignY}%)) scale(${scale})`,
-        }}
-      />
+      {broken ? (
+        <div className={styles.viewerBroken}>
+          <p>文件离线或无法解码</p>
+          <p className={styles.viewerBrokenHint}>可在全局图库中为离线存储卷重新定位</p>
+        </div>
+      ) : (
+        <img
+          src={imageApi.previewUrl(asset.photo.filepath, 2560)}
+          alt={asset.photo.filename}
+          className={styles.viewerImage}
+          draggable={false}
+          onError={() => setBroken(true)}
+          style={{
+            transform: `translate(calc(${transform.x}px + ${alignX}%), calc(${transform.y}px + ${alignY}%)) scale(${scale})`,
+          }}
+        />
+      )}
       <div className={styles.imageCaption}>
         <span>{asset.photo.filename}</span>
         <span className={styles.sourceLabel}>{sourceLabel(asset)}</span>
@@ -1146,11 +1170,7 @@ export default function Culling() {
               }}
               title={asset.photo.filename}
             >
-              <img
-                src={imageApi.thumbnailUrl(asset.photo.filepath, 256)}
-                alt={asset.photo.filename}
-                loading="lazy"
-              />
+              <FilmThumb filepath={asset.photo.filepath} filename={asset.photo.filename} />
               <span
                 className={styles.colorLine}
                 style={{
