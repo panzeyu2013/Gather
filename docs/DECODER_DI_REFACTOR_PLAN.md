@@ -25,7 +25,7 @@ FAIL tests/unit/services/image/image-service.test.ts > uses the same
 
 服务核心 `desktop/src/main/services/image/image.service.ts` 中存在**两处**平台耦合：
 
-**耦合点 1 — 构造器硬编码解码器组合**（image.service.ts:219-222）：
+**耦合点 1 — 构造器硬编码解码器组合**（image.service.ts:219-221）：
 
 ```ts
 this.registry.register(new SharpDecoder(settings))
@@ -83,7 +83,7 @@ catch (primaryError) {
 |---|---|---|
 | `container.ts:49` | `THUMBNAIL_CACHE: Symbol(...)` | 已有注入 cache/settings，但无解码器 token |
 | `init.ts:88` | `registerSingleton(THUMBNAIL_CACHE, TieredThumbnailCache)` | 组合根未参与解码器组合 |
-| `image.service.ts:219-222` | 构造器按平台注册解码器 | 平台分支进入服务核心 |
+| `image.service.ts:219-221` | 构造器按平台注册解码器 | 平台分支进入服务核心 |
 | `image.service.ts:364-395` | sharp→sips 特例回退 | 硬编码 + 平台判断 + `instanceof` |
 | `registry.ts:4-17` | `register()` / `resolve()` 按扩展名返回首个匹配 | 缺少"依次尝试所有匹配解码器"能力 |
 | `tests/unit/services/image/image-service.test.ts` | 6 处 `new ImageService(cache, settings)` 依赖构造器自动注册 | 与平台绑定；1 处需 skipIf |
@@ -237,9 +237,12 @@ function createService(
 
 1. `npm run typecheck`、`npm run lint` 通过。
 2. `npm run test:vitest` 全绿，且**回退用例在 Linux 上实际执行**（`it.skipIf` 已删除，
-   测试数从 173 增为 174）。
+   测试数从 173 增为 176：含新增的 preview/dimensions 回退链用例）。
 3. `scripts/application-scale-benchmark.mjs`（macOS）跑通，确认缩略图/预览解码
    行为与 `f384bce` 一致。
+   > 注：本环境（无头/非固定机）下 benchmark 在画廊图像解码处超时，且 `f384bce`
+   > 基线同样超时——属环境问题，非本次改动引入。生产解码行为改由 CI e2e
+   > （macOS runner，真实解码）与单元测试（回退链全平台确定性执行）验证。
 4. CI `unit` job（ubuntu）全绿；e2e job（macOS）全绿。
 5. `git diff --check` 无空白错误。
 
@@ -252,7 +255,7 @@ function createService(
 | `resolveAll` 改变"首个支持即返回"语义 | 低 | 现有注册顺序唯一（sharp 在前）；e2e 在 mac 回归 |
 | AggregateError 包装改变调用方错误识别 | 低 | 主进程 `gather-image` 协议只按非 200 处理；单测覆盖 |
 | DI `useFactory` 在测试环境解析失败 | 低 | 单测不经过容器，直接构造；仅生产经 DI |
-| 回退链对同一文件重复 warn | 无 | 每次失败均 warn，与现有行为一致 |
+| 回退链对同一文件重复 warn | 低 | 仅整链失败时 warn 一次（解码语义不变，日志行为收紧） |
 
 回滚：还原 `image.service.ts`、`registry.ts`、`init.ts`、`container.ts` 四处改动，
 并恢复测试的 `skipIf` 即可（单一提交，无迁移）。
@@ -265,7 +268,7 @@ function createService(
 2. `container.ts` / `init.ts`：新增 `IMAGE_DECODERS` token 与组合根注册。
 3. `image.service.ts`：构造器注入 + `decodeWithFallback` 泛化；删除平台分支与特例。
 4. 测试：6 处构造改造 + 回退用例去 `skipIf` + 新增多解码器失败断言。
-5. 本地全量验证（typecheck / lint / test:vitest / benchmark）。
+5. 本地全量验证（typecheck / lint / test:vitest；benchmark 见 §6 注释）。
 6. 提交并推送，观察 CI（unit ubuntu + e2e mac）全绿。
 
 > 建议单次提交完成（改动彼此耦合，拆分会产生中间不可测状态）。

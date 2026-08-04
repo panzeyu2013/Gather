@@ -278,7 +278,7 @@ export class ImageService {
 
   async prioritizeThumbnail(path: string, size = this.settings.getNumber('thumbnail_size', 1024)): Promise<void> {
     // Reuse the normal path so priority requests share in-flight work, cache
-    // writes, concurrency limits, and the same Sharp -> sips fallback.
+    // writes, concurrency limits, and the registered-decoder fallback chain.
     await this.getThumbnail(path, size, 0)
   }
 
@@ -374,12 +374,18 @@ export class ImageService {
         return await decode(decoder)
       } catch (error) {
         errors.push(error)
-        console.warn(
-          `[ImageService] ${decoder.name} failed for ${operation}: ${path}`,
-          error,
-        )
       }
     }
+    // Only log once, when the whole chain failed: per-attempt warnings would
+    // spam for repeatedly requested corrupt files even when a later decoder
+    // succeeds.
+    console.warn(
+      `[ImageService] all ${candidates.length} decoder(s) failed for ${operation}: ${path}`,
+      new AggregateError(
+        errors,
+        `Unable to decode ${path} for ${operation} with any of: ${candidates.map(d => d.name).join(', ')}`,
+      ),
+    )
     throw new AggregateError(
       errors,
       `Unable to decode ${path} for ${operation} with any of: ${candidates.map(d => d.name).join(', ')}`,

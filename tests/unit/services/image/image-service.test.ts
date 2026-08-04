@@ -136,6 +136,9 @@ describe('ImageService preview pipeline', () => {
     expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
     expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
     expect(cache.values.size).toBe(1)
+    // A successful fallback must stay quiet: per-attempt warnings would spam
+    // for files that are repeatedly requested while a later decoder succeeds.
+    expect(warning).not.toHaveBeenCalled()
     warning.mockRestore()
   })
 
@@ -147,12 +150,38 @@ describe('ImageService preview pipeline', () => {
     decoderMocks.sipsThumbnail.mockRejectedValueOnce(new Error('sips failed'))
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await expect(service.prioritizeThumbnail('/photos/a.nef', 2880))
-      .rejects.toThrow(AggregateError)
+    const failure = await service.prioritizeThumbnail('/photos/a.nef', 2880)
+      .catch((error: unknown) => error)
 
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).errors).toHaveLength(2)
     expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
     expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
+    // Only the final aggregate failure is logged, exactly once.
+    expect(warning).toHaveBeenCalledTimes(1)
     warning.mockRestore()
+  })
+
+  it('applies the same fallback chain to previews', async () => {
+    const settings = createSettings()
+    const service = new ImageService(createCache(), settings, sharpThenSips(settings))
+    decoderMocks.sharpPreview.mockRejectedValueOnce(new Error('preview failed'))
+
+    await service.getPreview('/photos/a.nef', 4096)
+
+    expect(decoderMocks.sharpPreview).toHaveBeenCalledTimes(1)
+    expect(decoderMocks.sipsPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('applies the same fallback chain to dimensions', async () => {
+    const settings = createSettings()
+    const service = new ImageService(createCache(), settings, sharpThenSips(settings))
+    decoderMocks.sharpDimensions.mockRejectedValueOnce(new Error('dimensions failed'))
+
+    await service.getDimensions('/photos/a.nef')
+
+    expect(decoderMocks.sharpDimensions).toHaveBeenCalledTimes(1)
+    expect(decoderMocks.sipsDimensions).toHaveBeenCalledTimes(1)
   })
 
   it('coalesces preview and dimensions requests independently', async () => {
