@@ -21,6 +21,8 @@ export type {
   C1ImportData,
   C1PluginImportData,
   ExportProgressData,
+  ModelDownloadProgressData,
+  JobProgressData,
   GroupData,
   WritebackAttributes,
   WritebackOptions,

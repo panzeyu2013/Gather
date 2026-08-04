@@ -1,6 +1,46 @@
 # Gather — Developer Guide
 
-## 架构
+> 注意：本文其余章节描述的是早期 Python 引擎架构，已废弃。当前实现为纯 TypeScript
+> Electron 应用（见仓库根目录 README.md 的 Architecture 一节）。以下「渲染层数据流约定」
+> 是对当前代码的规范说明。
+
+---
+
+## 测试布局（当前有效）
+
+```
+tests/
+├── unit/            # 所有 vitest 单元测试（vitest.config.ts 的 include 根）
+│   ├── services/    # 主进程服务（按领域子目录分组）
+│   ├── renderer/    # 渲染层 hook / api / store
+│   └── shared/      # 跨进程协议与架构不变量
+├── e2e/             # Playwright + Electron 端到端（*.spec.ts）
+└── fixtures/        # 单测共享素材
+```
+
+- 新增单元测试一律放 `tests/unit/` 对应子目录；相对导入按 `tests/unit/` 的层级计算。
+- 架构不变量测试（`tests/unit/shared/architecture-invariants.test.ts`）禁止改动测试路径约定。
+
+---
+
+## 渲染层数据流约定（当前有效）
+
+**服务端（主进程）状态 → React Query；瞬时 UI 状态 → Zustand；禁止把服务端状态镜像进 zustand 或组件 local state。**
+
+1. **React Query 拥有所有经 IPC 读取的服务端数据**：sessions、photos、culling assets/summary/history、
+   similarity result、face clusters、library、jobs、persons。变更用 `useMutation` + `invalidateQueries`（按前缀失效）。
+2. **Zustand 只放纯 UI/草稿状态**：当前 session id、分析参数草稿、wizard 步骤、toast。不得存服务端返回的列表/对象。
+3. **查询缓存是 undo/redo 等派生状态的唯一事实源**：不要在 query 数据之外再维护一份可漂移的本地副本；
+   若必须维护，变更后必须 `invalidateQueries` 对应 key（例如 culling undo/redo 后失效 `['culling','history', sessionId]`）。
+4. **参数类草稿与结果的关系**：结果对象记录其实际计算参数（如 similarity result stats），
+   草稿只在「新的结果对象到达」时按结果校准，避免陈旧结果覆盖用户正在编辑的草稿。
+5. **推送优先**：主进程能推送的事件（`jobs:progress`、`culling:sync-status`）一律用 `useEvent` 订阅消费，
+   不要用 `refetchInterval` 轮询去拉同一个状态。轮询只用于低频、无推送通道的数据。
+6. **事件订阅必须用 `useEvent`**（组件卸载自动清理），禁止在 effect 里裸调 `window.gather.onEvent`。
+
+---
+
+## 架构（旧·Python 引擎，仅供历史参考）
 
 ```
 Electron (desktop/src/)

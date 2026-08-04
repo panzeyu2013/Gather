@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/unit/**/*.test.ts'],
     root: path.resolve(__dirname, '..'),
   },
   resolve: {

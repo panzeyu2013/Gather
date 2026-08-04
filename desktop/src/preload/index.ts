@@ -55,6 +55,7 @@ const ALLOWED_EVENTS = new Set<EventType>([
   'c1:plugin-import',
   'export:progress',
   'models:download-progress',
+  'jobs:progress',
   'gather:notification',
   'culling:sync-status',
 ])

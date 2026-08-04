@@ -450,6 +450,7 @@ CREATE TABLE IF NOT EXISTS metadata_outbox (
   photo_path TEXT NOT NULL,
   patch_json TEXT NOT NULL DEFAULT '{}',
   dirty_fields TEXT NOT NULL DEFAULT '[]',
+  source_module TEXT NOT NULL DEFAULT '',
   revision INTEGER NOT NULL DEFAULT 0,
   persisted_revision INTEGER NOT NULL DEFAULT 0,
   base_fingerprint TEXT NOT NULL DEFAULT '',
@@ -544,6 +545,7 @@ CREATE INDEX IF NOT EXISTS idx_culling_history_session ON culling_history(sessio
 CREATE INDEX IF NOT EXISTS idx_navigation_groups_session_type
   ON navigation_groups(session_id, group_type, updated_at);
 CREATE INDEX IF NOT EXISTS idx_metadata_outbox_session_status ON metadata_outbox(owner_session_id, status);
+CREATE INDEX IF NOT EXISTS idx_metadata_outbox_owner_module ON metadata_outbox(owner_session_id, source_module, status);
 CREATE INDEX IF NOT EXISTS idx_metadata_outbox_sessions_session
   ON metadata_outbox_sessions(session_id, xmp_path);
 CREATE INDEX IF NOT EXISTS idx_metadata_keyword_origins_source_active

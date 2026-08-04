@@ -487,6 +487,18 @@ app.whenReady().then(async () => {
   runtime.metadataSync = metadataSync
   runtime.writerRouter = svc<MetadataWriterRouter>(DI_TOKENS.WRITER_ROUTER)
   jobs.start()
+  jobs.setProgressSink((job, update) => {
+    if (!mainWindow) return
+    mainWindow.webContents.send('gather:event', 'jobs:progress', {
+      jobId: job.id,
+      jobType: job.type,
+      scopeType: job.scopeType,
+      scopeId: job.scopeId,
+      current: update.current ?? 0,
+      total: update.total ?? 0,
+      message: update.message ?? '',
+    })
+  })
   indexer.startWatchers()
   metadataSync.start(
     (summary) => mainWindow?.webContents.send(

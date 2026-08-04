@@ -11,6 +11,7 @@ export interface JobRunContext {
 }
 
 type JobExecutor = (job: AnalysisJobData, context: JobRunContext) => Promise<unknown>
+type JobProgressSink = (job: AnalysisJobData, update: JobProgressUpdate) => void
 const MAX_CONCURRENT_JOBS = 2
 const PROGRESS_WRITE_INTERVAL_MS = 250
 
@@ -39,8 +40,14 @@ export class JobService {
   private watchdog: ReturnType<typeof setInterval> | null = null
   private drainScheduled = false
   private stopped = true
+  private progressSink: JobProgressSink | null = null
 
   constructor(@inject(DI_TOKENS.ANALYSIS_JOB_REPO) private repo: AnalysisJobRepository) {}
+
+  /** Registers a callback invoked with throttled progress for running jobs. */
+  setProgressSink(sink: JobProgressSink | null): void {
+    this.progressSink = sink
+  }
 
   start(): void {
     this.stopped = false
@@ -182,6 +189,7 @@ export class JobService {
       pendingProgress = null
       lastProgressWriteAt = Date.now()
       if (!this.updateProgress(job.id, leaseOwner, update)) controller.abort()
+      this.progressSink?.(job, update)
     }
     const context: JobRunContext = {
       signal: controller.signal,

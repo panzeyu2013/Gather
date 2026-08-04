@@ -18,6 +18,7 @@ export interface MetadataOutboxRow {
   photo_path: string
   patch_json: string
   dirty_fields: string
+  source_module: string
   revision: number
   persisted_revision: number
   base_fingerprint: string
@@ -54,6 +55,30 @@ export class MetadataOutboxRepository {
       SELECT session_id FROM metadata_outbox_sessions
       WHERE xmp_path = ? ORDER BY linked_at, session_id
     `).all(xmpPath) as Array<{ session_id: string }>).map(row => row.session_id)
+  }
+
+  /**
+   * Whether the session still holds outbox work from a batch writeback workflow
+   * other than the given module that is written or synced — i.e. it must be
+   * confirmed in Capture One and cleaned up before another module starts.
+   *
+   * Only batch workflows (face-keyword/similarity/template) participate in the
+   * gate: they rewrite whole keyword sets and depend on the confirm→cleanup
+   * cycle. Interactive culling rating/label sync and 'manual' edits are
+   * continuous and must never block a writeback, so they are excluded.
+   */
+  hasActiveOtherModule(sessionId: string, module: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1
+      FROM metadata_outbox o
+      JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
+      WHERE os.session_id = ?
+        AND o.source_module IN ('face-keyword', 'similarity', 'template')
+        AND o.source_module != ?
+        AND o.status IN ('written', 'synced')
+      LIMIT 1
+    `).get(sessionId, module)
+    return row !== undefined
   }
 
   getRecoverable(): MetadataOutboxRow[] {
@@ -101,6 +126,8 @@ export class MetadataOutboxRepository {
     }
     const mergedPatch = { ...existingPatch, ...patch }
     const mergedDirty = [...new Set([...existingDirty, ...dirtyFields])]
+    const sourceModule =
+      typeof patch.source === 'string' && patch.source !== '' ? patch.source : 'manual'
     const revision = (existing?.revision ?? 0) + 1
     const now = new Date().toISOString()
 
@@ -108,14 +135,15 @@ export class MetadataOutboxRepository {
       this.db.prepare(`
         INSERT INTO metadata_outbox (
         xmp_path, owner_session_id, created_by_session_id, photo_path, patch_json, dirty_fields,
-        revision, persisted_revision, base_fingerprint, base_values_json,
+        source_module, revision, persisted_revision, base_fingerprint, base_values_json,
         backup_path, status, attempt_count, error_message, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '{}', '', 'pending', 0, '', ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', '{}', '', 'pending', 0, '', ?)
       ON CONFLICT(xmp_path) DO UPDATE SET
         photo_path = excluded.photo_path,
         patch_json = excluded.patch_json,
         dirty_fields = excluded.dirty_fields,
+        source_module = excluded.source_module,
         revision = excluded.revision,
         status = 'pending',
         attempt_count = 0,
@@ -128,6 +156,7 @@ export class MetadataOutboxRepository {
         photoPath,
         JSON.stringify(mergedPatch),
         JSON.stringify(mergedDirty),
+        sourceModule,
         revision,
         now,
       )
@@ -243,12 +272,6 @@ export class MetadataOutboxRepository {
       SET status = 'pending', updated_at = ?
       WHERE status = 'writing'
     `).run(new Date().toISOString())
-  }
-
-  purgeOrphans(): void {
-    // Orphans are intentionally retained. They represent recoverable XMP work
-    // whose creating Session was deleted and are exposed through the global
-    // recovery UI.
   }
 
   resolveConflict(

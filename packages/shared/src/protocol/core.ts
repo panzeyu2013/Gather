@@ -380,6 +380,16 @@ export interface ModelDownloadProgressData {
   message: string
 }
 
+export interface JobProgressData {
+  jobId: string
+  jobType: string
+  scopeType: string
+  scopeId: string
+  current: number
+  total: number
+  message: string
+}
+
 export type Event =
   | { type: 'progress'; data: ProgressData }
   | { type: 'engine:status'; data: EngineStatusData }
@@ -387,6 +397,7 @@ export type Event =
   | { type: 'c1:plugin-import'; data: C1PluginImportData }
   | { type: 'export:progress'; data: ExportProgressData }
   | { type: 'models:download-progress'; data: ModelDownloadProgressData }
+  | { type: 'jobs:progress'; data: JobProgressData }
   | { type: 'gather:notification'; data: NotificationData }
   | { type: 'culling:sync-status'; data: MetadataSyncSummary }
 
@@ -441,6 +452,7 @@ export const ALLOWED_EVENTS = new Set([
   'c1:plugin-import',
   'export:progress',
   'models:download-progress',
+  'jobs:progress',
   'gather:notification',
   'culling:sync-status',
 ])

@@ -1,6 +1,6 @@
 import * as path from 'path'
 import { SettingsService } from '../settings/settings.service'
-import type { MetadataWriter } from '../metadata/metadata-writer.interface'
+import type { MetadataReader, MetadataWriter } from '../metadata/metadata-writer.interface'
 import { XmpSidecarWriter } from './xmp-sidecar-writer'
 import { EmbeddedWriter } from './embedded-writer'
 import { injectable, inject } from '../../di/container'
@@ -24,12 +24,20 @@ const RAW_EXTENSIONS = new Set([
   '.gpr',
 ])
 
-/** Deliverable formats — embedded write has broad software compatibility */
+/** Deliverable formats — embedded XMP is read when no sidecar is present */
 const DELIVERABLE_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.tif', '.tiff', '.png',
   '.webp', '.heic', '.heif', '.avif', '.dng',
 ])
 
+/**
+ * Resolves the metadata reader/writer for a photo.
+ *
+ * Writes are always routed to sidecars (`selectSidecar`) so source images stay
+ * untouched; this is the documented contract of the reliability pipeline.
+ * `selectForRead` picks the embedded-vs-sidecar source based on format and the
+ * (deprecated, read-only) `metadata_write_mode` preference.
+ */
 @injectable()
 export class MetadataWriterRouter {
   private xmpSidecar: XmpSidecarWriter
@@ -41,7 +49,7 @@ export class MetadataWriterRouter {
     )
   }
 
-  select(photoPath: string): MetadataWriter {
+  selectForRead(photoPath: string): MetadataReader {
     const mode = this.settings.get('metadata_write_mode', 'auto')
     const ext = path.extname(photoPath).toLowerCase()
 
@@ -50,7 +58,7 @@ export class MetadataWriterRouter {
         if (this.embedded.supportsFormat(ext)) {
           return this.embedded
         }
-        console.warn(`Embedded mode not supported for ${ext}, falling back to sidecar`)
+        console.warn(`Embedded read not supported for ${ext}, falling back to sidecar`)
         return this.xmpSidecar
 
       case 'sidecar':
@@ -68,7 +76,7 @@ export class MetadataWriterRouter {
     }
   }
 
-  /** Workflow writeback is intentionally sidecar-only so source images stay untouched. */
+  /** Workflow writeback is sidecar-only so source images stay untouched. */
   selectSidecar(): MetadataWriter {
     return this.xmpSidecar
   }

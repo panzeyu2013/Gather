@@ -38,7 +38,7 @@ test('upgrades a legacy schema marker with a pre-migration backup', async () => 
   await app.firstWindow()
   await app.close()
   const version = execFileSync('sqlite3', [dbPath, 'SELECT MAX(version) FROM schema_version;']).toString().trim()
-  expect(version).toBe('26')
+  expect(version).toBe('27')
   expect(existsSync(dbPath)).toBe(true)
   expect(readFileSync(dbPath).length).toBeGreaterThan(0)
   expect(execFileSync('sqlite3', [dbPath, 'PRAGMA integrity_check;']).toString().trim()).toBe('ok')
@@ -46,7 +46,7 @@ test('upgrades a legacy schema marker with a pre-migration backup', async () => 
   expect(execFileSync('sqlite3', [dbPath, "SELECT name FROM sessions WHERE id = 'legacy';"]).toString().trim()).toBe('Legacy')
   expect(execFileSync('sqlite3', [dbPath, "SELECT session_id FROM metadata_outbox_sessions WHERE xmp_path = '/tmp/legacy.xmp';"]).toString().trim()).toBe('legacy')
   const backupName = readdirSync(userDataDir)
-    .find(file => file.startsWith('gather.db.pre-v26-') && file.endsWith('.bak'))
+    .find(file => file.startsWith('gather.db.pre-v27-') && file.endsWith('.bak'))
   expect(backupName).toBeTruthy()
   expect(execFileSync('sqlite3', [path.join(userDataDir, backupName!), 'PRAGMA integrity_check;']).toString().trim()).toBe('ok')
   rmSync(userDataDir, { recursive: true, force: true })
@@ -100,7 +100,7 @@ test('restores the pre-migration database when a migration fails after writing',
   ).toBe('ok')
   expect(
     readdirSync(userDataDir).some(
-      file => file.startsWith('gather.db.pre-v26-') && file.endsWith('.bak'),
+      file => file.startsWith('gather.db.pre-v27-') && file.endsWith('.bak'),
     ),
   ).toBe(true)
   rmSync(userDataDir, { recursive: true, force: true })

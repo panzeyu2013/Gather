@@ -1,12 +1,13 @@
 name: CI
 
 on:
-  # Temporarily disabled while CI native-module ABI handling is fixed.
-  # Run this workflow manually from GitHub Actions when needed.
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  validate:
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,5 +21,39 @@ jobs:
         run: npx tsc -p desktop/tsconfig.main.json --noEmit && npx tsc -p desktop/tsconfig.renderer.json --noEmit
       - name: Lint
         run: npm run lint
-      - name: Test
+      - name: Unit tests
         run: npm run test:vitest
+
+  e2e:
+    # Electron native modules (better-sqlite3, onnxruntime) are rebuilt for the
+    # Electron ABI; run e2e on macOS where the app is packaged and launched.
+    runs-on: macos-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Playwright e2e smoke workflow
+        run: npx playwright test --config=tests/e2e/playwright.config.ts
+
+  benchmark:
+    # Manual / nightly reliability + application-scale benchmarks. Results are
+    # kept as artifacts so regressions can be compared against previous baselines.
+    runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Reliability benchmark
+        run: node scripts/reliability-benchmark.mjs
+      - name: Application-scale benchmark
+        run: node scripts/application-scale-benchmark.mjs

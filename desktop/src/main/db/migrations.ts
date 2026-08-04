@@ -6,7 +6,7 @@ import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL, UNIQUE_PHOTO_PATH_INDEX_SQL } from './schema'
 import BetterSqlite3 from 'better-sqlite3'
 
-const CURRENT_SCHEMA_VERSION = 26
+const CURRENT_SCHEMA_VERSION = 27
 
 const CREATE_FACE_CLUSTER_MEMBERS_SQL = `
   CREATE TABLE face_cluster_members (
@@ -358,7 +358,7 @@ function assertMigrationInvariants(db: BetterSqlite3.Database): void {
   const foreignKeyErrors = db.pragma('foreign_key_check') as unknown[]
   if (foreignKeyErrors.length > 0) throw new Error(`Migration created ${foreignKeyErrors.length} foreign key violations`)
   for (const [table, columns] of [
-    ['metadata_outbox', ['xmp_path', 'created_by_session_id', 'status']],
+    ['metadata_outbox', ['xmp_path', 'created_by_session_id', 'status', 'source_module']],
     ['metadata_outbox_sessions', ['xmp_path', 'session_id', 'confirmed_at']],
     ['analysis_jobs', ['id', 'status', 'dedupe_key']],
     ['culling_decisions', ['session_id', 'revision', 'decision_source']],
@@ -519,8 +519,6 @@ function runMigrationsUnsafe(database: Database): void {
           FROM culling_decisions
           GROUP BY session_id, photo_id
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_culling_session_photo_unique
-          ON culling_decisions(session_id, photo_id);
       `)
       setSchemaVersion(db, 9)
     })()
@@ -538,10 +536,6 @@ function runMigrationsUnsafe(database: Database): void {
           photo_id TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
           PRIMARY KEY (result_id, photo_id)
         );
-        CREATE INDEX IF NOT EXISTS idx_similarity_members_session_photo
-          ON similarity_result_members(session_id, photo_id);
-        CREATE INDEX IF NOT EXISTS idx_similarity_members_result_group
-          ON similarity_result_members(result_id, group_index);
       `)
       setSchemaVersion(db, 10)
     })()
@@ -617,8 +611,6 @@ function runMigrationsUnsafe(database: Database): void {
           error_message TEXT NOT NULL DEFAULT '',
           updated_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_metadata_outbox_session_status
-          ON metadata_outbox(owner_session_id, status);
       `)
       assertColumns(db, 'culling_decisions', ['rating', 'color_label', 'revision'])
       assertColumns(db, 'metadata_outbox', [
@@ -762,14 +754,6 @@ function runMigrationsUnsafe(database: Database): void {
           fingerprint TEXT NOT NULL DEFAULT '',
           updated_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_photos_asset ON photos(asset_id);
-        CREATE INDEX IF NOT EXISTS idx_photos_asset_file ON photos(asset_file_id);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_files_volume_path ON asset_files(volume_id, normalized_path);
-        CREATE INDEX IF NOT EXISTS idx_asset_files_checksum ON asset_files(checksum);
-        CREATE INDEX IF NOT EXISTS idx_asset_members_asset ON asset_members(asset_id);
-        CREATE INDEX IF NOT EXISTS idx_asset_candidates_status ON asset_link_candidates(status);
-        CREATE INDEX IF NOT EXISTS idx_session_assets_asset ON session_assets(asset_id);
-        CREATE INDEX IF NOT EXISTS idx_sidecar_binding_files_file ON sidecar_binding_files(file_id);
       `)
       assertColumns(db, 'photos', ['asset_id', 'asset_file_id'])
       setSchemaVersion(db, 15)
@@ -807,13 +791,6 @@ function runMigrationsUnsafe(database: Database): void {
           finished_at TEXT NOT NULL DEFAULT '',
           updated_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status_priority
-          ON analysis_jobs(status, priority, updated_at);
-        CREATE INDEX IF NOT EXISTS idx_analysis_jobs_scope
-          ON analysis_jobs(scope_type, scope_id);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_jobs_active_dedupe
-          ON analysis_jobs(dedupe_key)
-          WHERE status IN ('queued', 'running', 'cancelling');
       `)
       setSchemaVersion(db, 16)
     })()
@@ -838,8 +815,6 @@ function runMigrationsUnsafe(database: Database): void {
           updated_at TEXT NOT NULL,
           UNIQUE(photo_id, analysis_type, model_id, model_version, input_fingerprint)
         );
-        CREATE INDEX IF NOT EXISTS idx_asset_analysis_photo_type
-          ON asset_analysis(photo_id, analysis_type);
       `)
       setSchemaVersion(db, 17)
     })()
@@ -872,7 +847,6 @@ function runMigrationsUnsafe(database: Database): void {
         INSERT INTO metadata_outbox (xmp_path, owner_session_id, created_by_session_id, photo_path, patch_json, dirty_fields, revision, persisted_revision, base_fingerprint, base_values_json, backup_path, status, attempt_count, error_message, updated_at)
           SELECT xmp_path, owner_session_id, owner_session_id, photo_path, patch_json, dirty_fields, revision, persisted_revision, base_fingerprint, base_values_json, backup_path, status, attempt_count, error_message, updated_at FROM metadata_outbox_v17;
         DROP TABLE metadata_outbox_v17;
-        CREATE INDEX IF NOT EXISTS idx_metadata_outbox_session_status ON metadata_outbox(owner_session_id, status);
       `)
       setSchemaVersion(db, 18)
     })()
@@ -889,7 +863,6 @@ function runMigrationsUnsafe(database: Database): void {
           operation_json TEXT NOT NULL DEFAULT '[]',
           created_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_culling_history_session ON culling_history(session_id, id);
       `)
       setSchemaVersion(db, 19)
     })()
@@ -922,8 +895,6 @@ function runMigrationsUnsafe(database: Database): void {
         FROM metadata_outbox
         WHERE owner_session_id IS NOT NULL
           AND owner_session_id IN (SELECT id FROM sessions);
-        CREATE INDEX IF NOT EXISTS idx_metadata_outbox_sessions_session
-          ON metadata_outbox_sessions(session_id, xmp_path);
       `)
       setSchemaVersion(db, 21)
     })()
@@ -959,10 +930,6 @@ function runMigrationsUnsafe(database: Database): void {
         WHERE asset_file_id IS NOT NULL
           AND asset_file_id IN (SELECT id FROM asset_files);
         DROP TABLE asset_analysis_v21;
-        CREATE INDEX idx_asset_analysis_photo_type
-          ON asset_analysis(photo_id, analysis_type);
-        CREATE INDEX idx_asset_analysis_file_type
-          ON asset_analysis(asset_file_id, analysis_type);
       `)
       setSchemaVersion(db, 22)
     })()
@@ -985,8 +952,6 @@ function runMigrationsUnsafe(database: Database): void {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_navigation_groups_session_type
-          ON navigation_groups(session_id, group_type, updated_at);
       `)
       setSchemaVersion(db, 23)
     })()
@@ -1013,8 +978,6 @@ function runMigrationsUnsafe(database: Database): void {
           status TEXT NOT NULL DEFAULT 'running',
           updated_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_asset_backfill_status
-          ON asset_backfill_state(status, updated_at);
       `)
       setSchemaVersion(db, 24)
     })()
@@ -1034,8 +997,6 @@ function runMigrationsUnsafe(database: Database): void {
           updated_at TEXT NOT NULL,
           PRIMARY KEY (xmp_path, source, keyword)
         );
-        CREATE INDEX IF NOT EXISTS idx_metadata_keyword_origins_source_active
-          ON metadata_keyword_origins(source, active, updated_at);
       `)
       setSchemaVersion(db, 25)
     })()
@@ -1051,6 +1012,30 @@ function runMigrationsUnsafe(database: Database): void {
       setSchemaVersion(db, 26)
     })()
     currentVersion = 26
+  }
+
+  // ── Version 27: module provenance on the metadata outbox ──
+  // The outbox is the single writeback state machine; writeback_items only
+  // projects it for the workflow UI. `source_module` lets module isolation
+  // (e.g. culling vs face-kw) be enforced from the outbox itself.
+  if (currentVersion < 27) {
+    db.transaction(() => {
+      addColumn(db, 'metadata_outbox', 'source_module', "TEXT NOT NULL DEFAULT ''")
+      // json_valid guards the CASE branches: a malformed legacy patch_json must
+      // not abort startup, it just falls back to 'manual'.
+      db.exec(`
+        UPDATE metadata_outbox
+        SET source_module = CASE
+          WHEN json_valid(patch_json)
+            AND json_extract(patch_json, '$.source') IN ('face-keyword', 'similarity', 'culling', 'template')
+          THEN json_extract(patch_json, '$.source')
+          ELSE 'manual'
+        END
+        WHERE source_module = ''
+      `)
+      setSchemaVersion(db, 27)
+    })()
+    currentVersion = 27
   }
 
   if (currentVersion !== CURRENT_SCHEMA_VERSION) {

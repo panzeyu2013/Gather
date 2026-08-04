@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { exportApi } from '../../api/export'
 import { sessionApi } from '../../api/session'
+import { useEvent } from '../../hooks/useEvent'
 import type { ExportOptions, ExportPreview, ExportProgressData } from '@gather/shared'
 import styles from './Export.module.css'
 
@@ -116,18 +117,14 @@ export default function Export() {
     if (directory) setDestination(directory)
   }
 
-  useEffect(() => {
-    if (!window.gather?.onEvent) return
-    const unsub = window.gather.onEvent('export:progress', (data) => {
-      const evt = data as ExportProgressData
-      if (evt.sessionId !== sessionId) return
-      setProgress(evt)
-      if (evt.total > 0) {
-        setProgressPercent(Math.round((evt.current / evt.total) * 100))
-      }
-    })
-    return unsub
-  }, [sessionId])
+  useEvent('export:progress', (data) => {
+    const evt = data as ExportProgressData
+    if (evt.sessionId !== sessionId) return
+    setProgress(evt)
+    if (evt.total > 0) {
+      setProgressPercent(Math.round((evt.current / evt.total) * 100))
+    }
+  }, Boolean(sessionId))
 
   const namingPreview = namingPattern
     .replace(/\{date\}/g, new Date().toISOString().slice(0, 10))

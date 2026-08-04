@@ -7,11 +7,23 @@ export interface MetadataWriteAttributes {
   longitude?: number
 }
 
-export interface MetadataWriter {
+/**
+ * Read-only access to photo metadata. Used both for the embedded XMP inside
+ * deliverable formats and for sidecar files.
+ */
+export interface MetadataReader {
   readKeywords(photoPath: string): Promise<string[]>
 
   readAttributes(photoPath: string): Promise<MetadataWriteAttributes>
 
+  supportsFormat(fileExtension: string): boolean
+}
+
+/**
+ * Durable metadata writer. All persistence paths write XMP sidecars so source
+ * images stay untouched; the backup/restore machinery is owned by the writer.
+ */
+export interface MetadataWriter extends MetadataReader {
   writeAttributes(photoPath: string, tags: MetadataWriteAttributes): Promise<void>
 
   /**
@@ -26,8 +38,6 @@ export interface MetadataWriter {
    * Used during preview() to record the backup location.
    */
   getBackupPath(photoPath: string): string
-
-  supportsFormat(fileExtension: string): boolean
 
   /** Release any resources (e.g. child processes) held by this writer. */
   shutdown(): Promise<void>

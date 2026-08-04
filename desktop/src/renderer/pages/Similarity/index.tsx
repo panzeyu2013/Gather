@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { similarityApi, type SimilarityResult } from '../../api/similarity'
 import { imageApi } from '../../api/image'
 import { jobsApi } from '../../api/jobs'
 import { useSimilarityStore } from '../../stores/similarityStore'
+import { useEvent } from '../../hooks/useEvent'
+import type { JobProgressData } from '@gather/shared'
 import ProgressBar from '../../components/ProgressBar/ProgressBar'
 import WritebackReport from '../../components/WritebackReport/WritebackReport'
 import type { SimilarityGroup, SimilarityImage, WritebackItem, WritebackPreview, WritebackResult } from '@gather/shared'
@@ -55,36 +57,47 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
     },
   })
 
-  // Poll the background job for real progress; the similarity IPC handler
-  // itself only emits a single completion event, which would otherwise leave
-  // the progress bar at 0/0.
+  // On mount, detect an in-flight similarity analysis (e.g. after a renderer
+  // reload) so the analyzing state and progress bar are restored.
   useEffect(() => {
-    if (!isAnalyzing && !analyzeMutation.isPending) return
     let disposed = false
-    let timer: ReturnType<typeof setInterval> | undefined
-    const poll = async () => {
+    void (async () => {
       try {
         const jobs = await jobsApi.list()
+        if (disposed) return
         const job = jobs.find(
           (candidate) =>
             candidate.type === 'similarity.analyze' &&
             candidate.scopeType === 'session' &&
-            candidate.scopeId === sessionId,
+            candidate.scopeId === sessionId &&
+            ['queued', 'running', 'cancelling'].includes(candidate.status),
         )
-        if (job && !disposed) {
+        if (job) {
+          setIsAnalyzing(true)
           setProgress(job.progressCurrent, job.progressTotal, job.progressMessage || '正在计算哈希并聚类...')
         }
       } catch {
-        // Polling is best-effort; the indeterminate bar still communicates activity.
+        // Best-effort; push events will carry subsequent progress.
       }
-    }
-    void poll()
-    timer = setInterval(poll, 1000)
+    })()
     return () => {
       disposed = true
-      if (timer) clearInterval(timer)
     }
-  }, [isAnalyzing, analyzeMutation.isPending, sessionId, setProgress])
+  }, [sessionId, setProgress, setIsAnalyzing])
+
+  // Push-based progress from the JobService (jobs:progress). The subscription
+  // stays active for the whole session so a reload mid-analysis keeps receiving
+  // progress; filtering happens in the callback.
+  useEvent('jobs:progress', (payload) => {
+    const data = payload as JobProgressData
+    if (
+      data.jobType === 'similarity.analyze' &&
+      data.scopeType === 'session' &&
+      data.scopeId === sessionId
+    ) {
+      setProgress(data.current, data.total, data.message || '正在计算哈希并聚类...')
+    }
+  }, Boolean(sessionId))
 
   const reclusterMutation = useMutation({
     mutationFn: () => similarityApi.recluster(
@@ -103,11 +116,23 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
     analyzeMutation.mutate()
   }
 
+  // The result records the parameters it was actually computed with (validation
+  // may clamp or default them). Sync the store only when a NEW result object
+  // arrives, so draft slider edits are never overwritten by a stale result.
+  const lastSyncedResult = useRef<SimilarityResult | null>(null)
   useEffect(() => {
-    if (result?.stats.groupingMode) {
+    if (!result || result === lastSyncedResult.current) return
+    lastSyncedResult.current = result
+    if (result.stats.threshold != null) {
+      setThreshold(result.stats.threshold)
+    }
+    if (result.stats.minGroupSize != null) {
+      setMinGroupSize(result.stats.minGroupSize)
+    }
+    if (result.stats.groupingMode) {
       setGroupingMode(result.stats.groupingMode)
     }
-  }, [result?.stats.groupingMode, setGroupingMode])
+  }, [result, setThreshold, setMinGroupSize, setGroupingMode])
 
   return (
     <div className={styles.panel}>

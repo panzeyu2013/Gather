@@ -12,7 +12,7 @@ Baseline source commit: `1e214a8`
 | `npm run lint` | Passed |
 | `npm run test:vitest` | 32 files / 126 tests passed |
 | `npm run build` | Passed |
-| Database schema | Version 25 snapshot stored in `docs/fixtures/schema-v25.snapshot.json` |
+| Database schema | Version 27 snapshot stored in `docs/fixtures/schema-v27.snapshot.json` |
 | Production E2E | 10 passed / 1 optional RAW-ONNX fixture test skipped |
 | `git diff --check` | Passed |
 

@@ -1,9 +1,10 @@
-import React, { Suspense, lazy, useEffect } from 'react'
+import React, { Suspense, lazy } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import PageShell from './components/Layout/PageShell'
 import Loading from './components/Loading/Loading'
 import ToastContainer from './components/Toast/ToastContainer'
 import { useToastStore, type ToastType } from './components/Toast/ToastStore'
+import { useEvent } from './hooks/useEvent'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const SessionDetail = lazy(() => import('./pages/SessionDetail'))
@@ -16,7 +17,7 @@ const PersonDetail = lazy(() => import('./pages/Persons/PersonDetail'))
 export default function App() {
   const addToast = useToastStore((state) => state.addToast)
 
-  useEffect(() => window.gather.onEvent('gather:notification', (data) => {
+  useEvent('gather:notification', (data) => {
     const notification = data as { type?: unknown; message?: unknown }
     if (typeof notification.message !== 'string') return
     const allowedTypes: ToastType[] = ['info', 'success', 'warning', 'error']
@@ -24,7 +25,7 @@ export default function App() {
       ? notification.type as ToastType
       : 'info'
     addToast(type, notification.message)
-  }), [addToast])
+  })
 
   return (
     <HashRouter>

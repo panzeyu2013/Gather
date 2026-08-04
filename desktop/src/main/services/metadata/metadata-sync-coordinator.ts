@@ -1,6 +1,5 @@
-import { createHash } from 'crypto'
 import { existsSync } from 'fs'
-import { readFile, stat, unlink } from 'fs/promises'
+import { unlink } from 'fs/promises'
 import type {
   CleanupResult,
   MetadataConflict,
@@ -22,6 +21,15 @@ import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
 import type { MetadataWriteAttributes } from './metadata-writer.interface'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
 import { SettingsService } from '../settings/settings.service'
+import {
+  contentFingerprint,
+} from './metadata-fingerprint'
+import {
+  fieldConflicts,
+  hasFieldConflict,
+  parseDirtyFields,
+  tryParseDirtyFields,
+} from './metadata-conflict-fields'
 
 const MAX_CONCURRENCY = 2
 const MAX_AUTOMATIC_ATTEMPTS = 5
@@ -37,17 +45,6 @@ function safeObject(value: string): Record<string, unknown> {
       : {}
   } catch {
     return {}
-  }
-}
-
-async function fingerprint(path: string): Promise<string> {
-  try {
-    const info = await stat(path)
-    const content = await readFile(path)
-    return `${info.size}:${Math.round(info.mtimeMs)}:${createHash('sha256').update(content).digest('hex')}`
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
-    throw error
   }
 }
 
@@ -113,7 +110,9 @@ export class MetadataSyncCoordinator {
   start(eventSink?: EventSink): void {
     this.stopped = false
     this.eventSink = eventSink ?? null
-    this.outboxRepo.purgeOrphans()
+    // Orphans (rows whose creating Session was deleted) are intentionally
+    // retained: they are recoverable XMP work exposed through the global
+    // recovery UI, not garbage to purge.
     this.outboxRepo.recoverInterrupted()
     for (const row of this.outboxRepo.getRecoverable()) {
       this.schedule(row.xmp_path, 0)
@@ -168,31 +167,8 @@ export class MetadataSyncCoordinator {
       const current = await this.writerRouter.selectSidecar().readAttributes(row.photo_path)
       const base = safeObject(row.base_values_json)
       const local = safeObject(row.patch_json)
-      let dirtyFields: MetadataField[] = []
-      try {
-        const parsed = JSON.parse(row.dirty_fields) as unknown
-        if (Array.isArray(parsed)) {
-          dirtyFields = parsed.filter(
-            (field): field is MetadataField =>
-              field === 'rating' || field === 'label' || field === 'keywords',
-          )
-        }
-      } catch {
-        dirtyFields = []
-      }
-      const fields = dirtyFields.flatMap(field => {
-        const baseline = field === 'keywords' ? base.keywords ?? [] : base[field]
-        const remote = field === 'keywords'
-          ? current.keywords ?? []
-          : field === 'label' ? current.label ?? '' : current.rating
-        if (JSON.stringify(baseline) === JSON.stringify(remote)) return []
-        return [{
-          field,
-          baseline,
-          local: field === 'keywords' ? local.keywords ?? [] : local[field],
-          remote,
-        }]
-      })
+      const dirtyFields = parseDirtyFields(row.dirty_fields)
+      const fields = fieldConflicts(base, local, current, dirtyFields)
       return {
         xmpPath: row.xmp_path,
         photoPath: row.photo_path,
@@ -222,16 +198,8 @@ export class MetadataSyncCoordinator {
     }
     const current = await this.writerRouter.selectSidecar().readAttributes(row.photo_path)
     const patch = safeObject(row.patch_json)
-    let dirtyFields: MetadataField[] = []
-    try {
-      const parsed = JSON.parse(row.dirty_fields) as unknown
-      if (Array.isArray(parsed)) {
-        dirtyFields = parsed.filter(
-          (field): field is MetadataField =>
-            field === 'rating' || field === 'label' || field === 'keywords',
-        )
-      }
-    } catch {
+    let dirtyFields = tryParseDirtyFields(row.dirty_fields)
+    if (!dirtyFields) {
       throw new Error('Metadata conflict has invalid dirty fields')
     }
     for (const [field, choice] of Object.entries(choices) as Array<[MetadataField, MetadataConflictChoice]>) {
@@ -252,7 +220,7 @@ export class MetadataSyncCoordinator {
       xmpPath,
       patch,
       dirtyFields,
-      await fingerprint(xmpPath) || '__missing__',
+      await contentFingerprint(xmpPath) || '__missing__',
       { ...current },
       acceptRemote,
     )
@@ -407,7 +375,7 @@ export class MetadataSyncCoordinator {
         await this.waitForIdle(row.xmp_path)
         const latest = this.outboxRepo.get(row.xmp_path)
         if (!latest || latest.status !== 'synced') continue
-        const currentFingerprint = await fingerprint(row.xmp_path)
+        const currentFingerprint = await contentFingerprint(row.xmp_path)
         if (
           latest.base_fingerprint &&
           currentFingerprint !== latest.base_fingerprint
@@ -536,7 +504,7 @@ export class MetadataSyncCoordinator {
     if (!this.outboxRepo.claim(row.xmp_path, row.revision)) return false
 
     try {
-      const currentFingerprint = await fingerprint(row.xmp_path)
+      const currentFingerprint = await contentFingerprint(row.xmp_path)
       const currentFingerprintToken = currentFingerprint || '__missing__'
       // A crash between the atomic rename and markWritten leaves the file
       // containing our own write while the baseline still describes the
@@ -591,7 +559,7 @@ export class MetadataSyncCoordinator {
       this.outboxRepo.markWritten(
         row.xmp_path,
         row.revision,
-        await fingerprint(row.xmp_path),
+        await contentFingerprint(row.xmp_path),
         { ...persistedValues },
         backupPath,
       )
@@ -618,23 +586,11 @@ export class MetadataSyncCoordinator {
       .selectSidecar()
       .readAttributes(row.photo_path)
     const base = safeObject(row.base_values_json)
-    let dirtyFields: string[] = []
-    try {
-      const parsed = JSON.parse(row.dirty_fields)
-      dirtyFields = Array.isArray(parsed)
-        ? parsed.filter((value): value is string => typeof value === 'string')
-        : []
-    } catch {
-      return true
-    }
-    return dirtyFields.some(field => {
-      if (field === 'rating') return current.rating !== base.rating
-      if (field === 'label') return (current.label ?? '') !== (base.label ?? '')
-      if (field === 'keywords') {
-        return JSON.stringify(current.keywords ?? []) !== JSON.stringify(base.keywords ?? [])
-      }
-      return true
-    })
+    const dirtyFields = tryParseDirtyFields(row.dirty_fields)
+    // Corrupt stored dirty-fields are treated conservatively as a conflict;
+    // a legitimately empty list means there is nothing in conflict.
+    if (!dirtyFields) return true
+    return hasFieldConflict(base, current, dirtyFields)
   }
 
   private ensureBaseline(xmpPath: string): Promise<void> {
@@ -643,7 +599,7 @@ export class MetadataSyncCoordinator {
     const task = (async () => {
       const row = this.outboxRepo.get(xmpPath)
       if (!row || row.base_fingerprint) return
-      const baselineFingerprint = await fingerprint(row.xmp_path)
+      const baselineFingerprint = await contentFingerprint(row.xmp_path)
       let baselineValues: Record<string, unknown> = {}
       try {
         baselineValues = {

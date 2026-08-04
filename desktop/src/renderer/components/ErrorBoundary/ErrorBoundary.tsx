@@ -1,4 +1,5 @@
 import React, { Component, type ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 import styles from './ErrorBoundary.module.css'
 
 interface Props {
@@ -11,11 +12,22 @@ interface State {
   error: Error | null
 }
 
-export default class ErrorBoundary extends Component<Props, State> {
+function RouteAwareErrorBoundary(props: Props) {
+  const location = useLocation()
+  return <ErrorBoundary resetKey={location.pathname} {...props} />
+}
+
+export default class ErrorBoundary extends Component<Props & { resetKey?: string }, State> {
   state: State = { hasError: false, error: null }
 
   static getDerivedStateFromError(error: Error): State {
     return { hasError: true, error }
+  }
+
+  componentDidUpdate(prevProps: Props & { resetKey?: string }) {
+    if (this.state.hasError && this.props.resetKey !== prevProps.resetKey) {
+      this.handleRetry()
+    }
   }
 
   handleRetry = () => {
@@ -45,3 +57,5 @@ export default class ErrorBoundary extends Component<Props, State> {
     return this.props.children
   }
 }
+
+export { RouteAwareErrorBoundary }

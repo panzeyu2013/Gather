@@ -68,6 +68,19 @@ export class WritebackService {
   ) {}
 
   private assertNoActiveOtherModule(sessionId: string, module: string): void {
+    // The outbox is the single writeback state machine. Written/synced work from
+    // another module must be confirmed in Capture One and cleaned up first.
+    // Outbox rows store the mutation-source name (e.g. 'face-keyword' for the
+    // face_kw module), so compare using the same mapping used to write them.
+    if (
+      this.metadataOutboxRepo?.hasActiveOtherModule(
+        sessionId,
+        mutationSource(module),
+      )
+    ) {
+      throw new Error('请先完成其他模块的 Capture One 同步和清理，再开始新的写回')
+    }
+    // Legacy fallback for callers constructed without the outbox repository.
     const activeOtherModule = this.writebackRepo
       .getItems(sessionId)
       .find(item =>

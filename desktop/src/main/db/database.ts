@@ -17,6 +17,7 @@ export class Database {
     this.db.pragma('synchronous = FULL')
     this.db.pragma('cache_size = -64000')
     this.db.pragma('foreign_keys = ON')
+    this.db.pragma('busy_timeout = 5000')
 
     return this.db
   }

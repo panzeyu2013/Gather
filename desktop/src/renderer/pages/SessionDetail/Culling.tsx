@@ -28,6 +28,7 @@ import { navigationApi } from '../../api/navigation'
 import { metadataApi } from '../../api/metadata'
 import { qualityApi } from '../../api/quality'
 import { jobsApi } from '../../api/jobs'
+import { useEvent } from '../../hooks/useEvent'
 import styles from './Culling.module.css'
 
 const COLOR_LABELS: Array<{
@@ -276,7 +277,6 @@ export default function Culling() {
     queryKey: ['culling', 'sync', sessionId],
     queryFn: () => cullingApi.syncStatus(sessionId!),
     enabled: Boolean(sessionId),
-    refetchInterval: 5_000,
   })
   const { data: persistedHistory } = useQuery<CullingHistoryOperation[]>({
     queryKey: ['culling', 'history', sessionId],
@@ -294,7 +294,6 @@ export default function Culling() {
     queryKey: ['metadata', 'conflicts', sessionId],
     queryFn: () => metadataApi.conflicts(sessionId!),
     enabled: Boolean(sessionId) && (syncSummary?.conflict ?? initialSync?.conflict ?? 0) > 0,
-    refetchInterval: 5_000,
   })
 
   const analyzeNavigation = useCallback(async (dryRun = false) => {
@@ -348,19 +347,23 @@ export default function Culling() {
     }
     setQualityJobId(undefined)
   }, [qualityJobId, refetch, runningJobs])
-  useEffect(() => {
-    if (!sessionId) return
-    return window.gather.onEvent('culling:sync-status', (payload) => {
-      const next = payload as MetadataSyncSummary
-      if (next.sessionId === sessionId) {
-        setSyncSummary(next)
-        setAssets(current => current.map(asset => {
-          const item = next.items.find(candidate => candidate.xmpPath === asset.xmpPath)
-          return item ? { ...asset, syncStatus: item.status } : asset
-        }))
-      }
-    })
-  }, [sessionId])
+  const conflictCountRef = useRef<number>(0)
+  conflictCountRef.current = syncSummary?.conflict ?? initialSync?.conflict ?? 0
+  useEvent('culling:sync-status', (payload) => {
+    const next = payload as MetadataSyncSummary
+    if (next.sessionId !== sessionId) return
+    const previousConflicts = conflictCountRef.current
+    setSyncSummary(next)
+    setAssets(current => current.map(asset => {
+      const item = next.items.find(candidate => candidate.xmpPath === asset.xmpPath)
+      return item ? { ...asset, syncStatus: item.status } : asset
+    }))
+    // Path summaries are emitted per xmp_path, so one flush can raise the
+    // conflict count 1..N across several events; refetch on any change.
+    if (next.conflict > 0 && next.conflict !== previousConflicts) {
+      void refetchConflicts()
+    }
+  }, Boolean(sessionId))
   useEffect(() => {
     setCurrentIndex(index => Math.min(index, Math.max(0, assets.length - 1)))
   }, [assets.length])
@@ -623,6 +626,9 @@ export default function Culling() {
       }
       setRedoStack(stack => [...stack, redoCommand])
       await refreshFiltered(command[0]?.photoId)
+      // The persisted `undone` flags changed server-side; drop the stale cache
+      // so a remount re-seeds undo/redo stacks from fresh history.
+      void queryClient.invalidateQueries({ queryKey: ['culling', 'history', sessionId] })
     } catch (error) {
       setUndoStack([])
       setRedoStack([])
@@ -633,7 +639,7 @@ export default function Culling() {
     } finally {
       setBusy(false)
     }
-  }, [applyResult, refetch, refreshFiltered, sessionId, undoStack])
+  }, [applyResult, queryClient, refetch, refreshFiltered, sessionId, undoStack])
 
   const redo = useCallback(async () => {
     const command = redoStack[redoStack.length - 1]
@@ -662,6 +668,8 @@ export default function Culling() {
       }
       setUndoStack(stack => [...stack, undoCommand])
       await refreshFiltered(command[0]?.photoId)
+      // Keep the query cache consistent with the persisted `undone` flags.
+      void queryClient.invalidateQueries({ queryKey: ['culling', 'history', sessionId] })
     } catch (error) {
       setUndoStack([])
       setRedoStack([])
@@ -672,7 +680,7 @@ export default function Culling() {
     } finally {
       setBusy(false)
     }
-  }, [applyResult, redoStack, refetch, refreshFiltered, sessionId])
+  }, [applyResult, queryClient, redoStack, refetch, refreshFiltered, sessionId])
 
   const keepInGroupRejectRest = useCallback(async (keepPhotoIds: string[]) => {
     if (

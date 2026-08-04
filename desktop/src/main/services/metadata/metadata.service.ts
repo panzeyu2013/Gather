@@ -7,7 +7,7 @@ import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
 import type { MetadataWriteAttributes } from './metadata-writer.interface'
-import { stat } from 'fs/promises'
+import { cacheStalenessKey } from './metadata-fingerprint'
 import { existsSync } from 'fs'
 import { MetadataMutationService } from './metadata-mutation.service'
 
@@ -73,7 +73,7 @@ export class MetadataService {
   ) {}
 
   private async readEffectiveAttributes(photoPath: string) {
-    const selected = this.writerRouter.select(photoPath)
+    const selected = this.writerRouter.selectForRead(photoPath)
     const sidecar = this.writerRouter.selectSidecar()
     const selectedAttributes = await selected.readAttributes(photoPath)
     if (selected === sidecar) return selectedAttributes
@@ -123,17 +123,10 @@ export class MetadataService {
     const fingerprints = new Map<string, { size: number; value: string }>()
     await batchAsync(allPhotos, async (photo) => {
       try {
-        const sourceStat = await stat(photo.filepath)
-        let xmpMtime = 0
-        try {
-          xmpMtime = (await stat(getXmpSidecarPath(photo.filepath))).mtimeMs
-        } catch {
-          // Missing sidecar is represented by zero.
+        const fingerprint = await cacheStalenessKey(photo.filepath)
+        if (fingerprint) {
+          fingerprints.set(photo.id, fingerprint)
         }
-        fingerprints.set(photo.id, {
-          size: sourceStat.size,
-          value: `${Math.round(sourceStat.mtimeMs)}:${Math.round(xmpMtime)}`,
-        })
       } catch {
         // Unreadable files will be handled by extraction.
       }
