@@ -113,19 +113,24 @@ describe('ImageService preview pipeline', () => {
     expect(cache.set).toHaveBeenCalledTimes(1)
   })
 
-  it('uses the same Sharp-to-sips fallback for priority requests', async () => {
-    const cache = createCache()
-    const service = new ImageService(cache, createSettings())
-    decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('unsupported image'))
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  // sips is a macOS system tool: the ImageService only registers the SipsDecoder
+  // on darwin, so the sharp-to-sips fallback path only exists on macOS.
+  it.skipIf(process.platform !== 'darwin')(
+    'uses the same Sharp-to-sips fallback for priority requests',
+    async () => {
+      const cache = createCache()
+      const service = new ImageService(cache, createSettings())
+      decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('unsupported image'))
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await service.prioritizeThumbnail('/photos/a.nef', 2880)
+      await service.prioritizeThumbnail('/photos/a.nef', 2880)
 
-    expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
-    expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
-    expect(cache.values.size).toBe(1)
-    warning.mockRestore()
-  })
+      expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
+      expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
+      expect(cache.values.size).toBe(1)
+      warning.mockRestore()
+    },
+  )
 
   it('coalesces preview and dimensions requests independently', async () => {
     const service = new ImageService(createCache(), createSettings())
