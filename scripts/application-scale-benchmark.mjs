@@ -4,16 +4,19 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
+import sharp from 'sharp'
 
 const defaultSizes = [500, 5_000, 10_000]
 const sizes = process.env.GATHER_BENCHMARK_SIZES
   ? process.env.GATHER_BENCHMARK_SIZES.split(',').map(Number).filter(Number.isFinite)
   : defaultSizes
 const appPath = path.resolve(process.cwd(), 'desktop')
-const jpeg = Buffer.from(
-  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=',
-  'base64',
-)
+// A decodable placeholder photo: the decoders (sharp/sips) reject many tiny
+// hand-crafted 1x1 JPEGs ("Invalid SOS parameters"), which made every
+// thumbnail protocol request fail. Generate a real solid-color JPEG instead.
+const jpeg = await sharp({
+  create: { width: 160, height: 90, channels: 3, background: '#406080' },
+}).jpeg().toBuffer()
 
 async function createPhotos(root, count) {
   await mkdir(root, { recursive: true })
