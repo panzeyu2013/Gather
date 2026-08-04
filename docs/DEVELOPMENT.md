@@ -3,8 +3,7 @@
 > 本文合并了原 `docs/CONTRIBUTING.md` 与 `docs/DEVELOPER.md`，按当前仓库
 > （纯 TypeScript Electron 应用）现状重写。历史 Python 引擎架构章节已删除。
 > 相关规范文档：`docs/ADR.md`（架构决策）、`docs/IPC_CONTRACT.md`（IPC 契约）、
-> `docs/TEST.md`（测试清单）、`docs/RELIABILITY_AND_FEATURE_DESIGN_AND_EXECUTION.md`
-> （下一步工程计划）。
+> `docs/TEST.md`（测试清单）。
 
 ---
 
@@ -354,6 +353,5 @@ macOS 首次调用 Capture One 桥接时会请求自动化权限；在
 - [架构决策记录](docs/ADR.md)
 - [IPC 契约基线](docs/IPC_CONTRACT.md)
 - [测试清单](docs/TEST.md)
-- [可靠性 Bug 与功能补全 — 设计与执行](docs/RELIABILITY_AND_FEATURE_DESIGN_AND_EXECUTION.md)
 - [人脸 e2e 本地素材规范](../tests/fixtures/local-fixtures.md)
 - [中文用户说明](docs/README_CN.md)
