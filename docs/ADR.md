@@ -43,9 +43,9 @@
 
 已实现于 `desktop/src/main/db/migrations.ts`：
 
-- 迁移前：`wal_checkpoint(TRUNCATE)` → 用 **SQLite backup API**（非直接复制活动 db）
-  创建带 schema version 与时间戳的备份 → 校验备份可打开（`integrity_check`）→
-  检查可用磁盘空间。
+- 迁移前：检查可用磁盘空间（`max(64 MB, 源大小×2)`）→ `wal_checkpoint(TRUNCATE)` →
+  用 **SQLite backup API**（非直接复制活动 db）创建带 schema version 与时间戳的备份 →
+  校验备份可打开（`integrity_check`）。
 - 迁移失败：不写 down-migration；关闭数据库、保留失败副本、从迁移前备份恢复；
   不删除任何用户照片或 XMP。
 - 迁移后：`foreign_key_check` + 关键表列不变量断言 + `CURRENT_SCHEMA_VERSION` 校验。

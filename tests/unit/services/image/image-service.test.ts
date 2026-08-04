@@ -131,15 +131,18 @@ describe('ImageService preview pipeline', () => {
     decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('unsupported image'))
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await service.prioritizeThumbnail('/photos/a.nef', 2880)
+    try {
+      await service.prioritizeThumbnail('/photos/a.nef', 2880)
 
-    expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
-    expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
-    expect(cache.values.size).toBe(1)
-    // A successful fallback must stay quiet: per-attempt warnings would spam
-    // for files that are repeatedly requested while a later decoder succeeds.
-    expect(warning).not.toHaveBeenCalled()
-    warning.mockRestore()
+      expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
+      expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
+      expect(cache.values.size).toBe(1)
+      // A successful fallback must stay quiet: per-attempt warnings would spam
+      // for files that are repeatedly requested while a later decoder succeeds.
+      expect(warning).not.toHaveBeenCalled()
+    } finally {
+      warning.mockRestore()
+    }
   })
 
   it('tries every registered decoder before giving up', async () => {
@@ -150,16 +153,19 @@ describe('ImageService preview pipeline', () => {
     decoderMocks.sipsThumbnail.mockRejectedValueOnce(new Error('sips failed'))
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    const failure = await service.prioritizeThumbnail('/photos/a.nef', 2880)
-      .catch((error: unknown) => error)
+    try {
+      const failure = await service.prioritizeThumbnail('/photos/a.nef', 2880)
+        .catch((error: unknown) => error)
 
-    expect(failure).toBeInstanceOf(AggregateError)
-    expect((failure as AggregateError).errors).toHaveLength(2)
-    expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
-    expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
-    // Only the final aggregate failure is logged, exactly once.
-    expect(warning).toHaveBeenCalledTimes(1)
-    warning.mockRestore()
+      expect(failure).toBeInstanceOf(AggregateError)
+      expect((failure as AggregateError).errors).toHaveLength(2)
+      expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
+      expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
+      // Only the final aggregate failure is logged, exactly once.
+      expect(warning).toHaveBeenCalledTimes(1)
+    } finally {
+      warning.mockRestore()
+    }
   })
 
   it('applies the same fallback chain to previews', async () => {
