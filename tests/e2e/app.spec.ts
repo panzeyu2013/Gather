@@ -270,6 +270,12 @@ test('rates and labels without a similarity group, then writes a Capture One XMP
   await expect(window.getByText('自动前进')).toBeVisible()
   await expect(window.getByRole('button', { name: '2 图' })).toBeVisible()
   await expect(window.getByRole('button', { name: '保留 P' })).toBeVisible()
+  // FEAT-02: after a writeback, the one-click Load Metadata entry must exist
+  // and be clickable (Capture One is not running in CI, so we only assert
+  // presence/state, never trigger the osascript bridge).
+  const reloadMetadata = window.getByRole('button', { name: '在 Capture One 中加载元数据' })
+  await expect(reloadMetadata).toBeVisible()
+  await expect(reloadMetadata).toBeEnabled()
   expect((await window.locator('nav a').allTextContents()).slice(-6)).toEqual([
     '浏览',
     '相似度',

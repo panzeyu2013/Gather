@@ -27,6 +27,26 @@
 | T2.5 FEAT-05 文档与产品对齐 | ✅ 完成 | README / README_CN / TEST 已按 3 步人脸流程与关键词写回对齐 |
 | T2.6 FEAT-02 一键 Load Metadata | ✅ 完成 | Culling / Similarity / StepWriteback 三处按钮 |
 
+### v2.3（2026-08-04）T2.1~T2.6 复核修复与验收补全
+
+对 T2.1~T2.6 的实现做四视角复核后修复缺陷并补齐验收（typecheck / lint /
+203 单测 / 12 e2e 通过）：
+
+- Person 库：`person_photos` 新增 `(person_id, photo_id)` 唯一索引（迁移 v28），
+  修复重复绑定/合并导致照片数虚增；解绑、合并簇、移除成员后按当前角色绑定
+  对账 person↔照片；`upsertByName` 重新绑定时合并关键词而非丢弃。
+- 模型状态：`face.models_status` 与 `settings.get_ml_status` 共用
+  `getFaceModelPresence`，消除 presence 逻辑漂移。
+- 清理死代码：移除已被簇网格整图缩略图取代的人脸裁剪缩略图管线
+  （`fkw.get_cluster_thumbnail` 命令、渲染 API、协议与生成逻辑）。
+- 渲染层：StepWriteback 渲染写回结果消息并拆分 reload 忙碌态；Culling 的
+  Load Metadata 按钮仅在 `written>0` 时显示；审核网格去掉每卡片独立
+  IntersectionObserver；WritebackReport 支持 disabled。
+- 打包：`afterPack.cjs` 构建失败软降级、目标架构跟随应用、`make clean` 防
+  陈旧产物；`docs/DEVELOPMENT.md` 打包章节同步为已实现状态。
+- 验收补全：新增 PersonRepository 真库单测、`getFaceModelPresence` 单测、
+  无模型引导卡 e2e、Culling Load Metadata 按钮 e2e；迁移 e2e 修正到 v28。
+
 ### v2.0（2026-08-04）Phase 1 可靠性 Bug 已修复并移出本文档
 
 原 v1.0 的 Phase 1 可靠性 Bug（BUG-01 ~ BUG-08）已经二次 Review 验证并修复，
@@ -268,7 +288,9 @@ handler 单测；真实 C1 行为保留为人工验证项（TEST.md）。
 
 ## 7. 验收清单（汇总）
 
-- [ ] FEAT-01/02/03/06/07 的自动化与手工项完成
-- [ ] FEAT-05 文档与 UI 一致
+- [x] FEAT-01/02/03/06/07 的自动化项完成（typecheck / lint / 203 单测 / 12 e2e）
+- [ ] FEAT-01/02/03/06/07 的手工项完成（真实 C1 交叉验证、本地素材 e2e、性能与
+      回归，见 `docs/TEST.md`）
+- [x] FEAT-05 文档与 UI 一致
+- [x] 工作区无未提交密钥/生成物（已提交；`*.coplugin` 已在 `.gitignore`）
 - [ ] 发布门禁复核：ADR 发布门禁 #2 人工矩阵项已安排
-- [ ] 工作区无未提交密钥/生成物

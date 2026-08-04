@@ -315,9 +315,10 @@ Electron Desktop App
 - macOS：`npm run dist:mac --workspace=desktop` → `desktop/release/*.dmg`
   （`hardenedRuntime`，entitlements 已注册）。
 - Windows：NSIS 安装包（**待验证**）。
-- Capture One 原生插件 `GatherLink.coplugin` 目前需在
-  `desktop/coplugin/` 手动 `make all && make install`；随发布自动打包列为
-  路线图（见 `docs/RELIABILITY_AND_FEATURE_DESIGN_AND_EXECUTION.md` FEAT-03）。
+- Capture One 原生插件 `GatherLink.coplugin` 在 macOS 打包时由 electron-builder
+  `afterPack` 钩子自动编译并随包分发（`desktop/scripts/afterPack.cjs`，目标架构
+  跟随应用构建）；宿主机缺失 Capture One SDK 时跳过并打印警告，不阻断发布。
+  手动构建/安装可执行 `cd desktop/coplugin && make all && make install`。
 
 ---
 
