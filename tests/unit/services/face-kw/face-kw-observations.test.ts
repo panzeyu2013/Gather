@@ -122,7 +122,17 @@ function buildService(deps: {
     getNumber: (_key: string, fallback: number) => fallback,
   } as unknown as SettingsService
 
-  const service = new FaceKwService(photoRepo, sessionRepo, faceRepo, imageService, settings)
+  const service = new FaceKwService(
+    photoRepo,
+    sessionRepo,
+    faceRepo,
+    imageService,
+    settings,
+    {
+      upsertByName: vi.fn(() => 'person-1'),
+      addPhotos: vi.fn(),
+    } as never,
+  )
   return { service, faceRepo, sessionRepo, photoRepo }
 }
 
@@ -186,5 +196,123 @@ describe('FaceKwService.analyze observation retention', () => {
     )
     expect(deleteObs).not.toHaveBeenCalled()
     expect(upsertState).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('FaceKwService.bindCluster person-library bridging', () => {
+  it('links a bound cluster into the person library (best-effort)', async () => {
+    const personRepo = {
+      upsertByName: vi.fn(() => 'person-1'),
+      addPhotos: vi.fn(),
+      reconcileSession: vi.fn(),
+    }
+    const faceRepo = {
+      getClusterSessionId: vi.fn(() => sessionId),
+      updateBinding: vi.fn(),
+      getClusterMembers: vi.fn(() => [
+        { photoId: 'photo-1', bbox: [1, 2, 3, 4], confidence: 0.9 },
+        { photoId: 'photo-2', bbox: [5, 6, 7, 8], confidence: 0.8 },
+      ]),
+    } as never
+
+    const service = new FaceKwService(
+      { getBySession: vi.fn() } as never,
+      { get: vi.fn() } as never,
+      faceRepo,
+      { getPreview: vi.fn() } as never,
+      { get: vi.fn(), getNumber: vi.fn() } as never,
+      personRepo,
+    )
+
+    await service.bindCluster(sessionId, 7, ' Alice ', ['kw1', 'kw1', ''])
+
+    expect(faceRepo.updateBinding).toHaveBeenCalledWith(7, 'Alice', ['kw1'])
+    expect(personRepo.upsertByName).toHaveBeenCalledWith('Alice', ['kw1'])
+    expect(personRepo.addPhotos).toHaveBeenCalledWith('person-1', sessionId, [
+      { photoId: 'photo-1', faceBbox: [1, 2, 3, 4], confidence: 0.9 },
+      { photoId: 'photo-2', faceBbox: [5, 6, 7, 8], confidence: 0.8 },
+    ])
+  })
+
+  it('keeps the binding when the person-library linkage fails', async () => {
+    const personRepo = {
+      upsertByName: vi.fn(() => {
+        throw new Error('library unavailable')
+      }),
+      addPhotos: vi.fn(),
+      reconcileSession: vi.fn(),
+    }
+    const faceRepo = {
+      getClusterSessionId: vi.fn(() => sessionId),
+      updateBinding: vi.fn(),
+      getClusterMembers: vi.fn(() => []),
+    } as never
+
+    const service = new FaceKwService(
+      { getBySession: vi.fn() } as never,
+      { get: vi.fn() } as never,
+      faceRepo,
+      { getPreview: vi.fn() } as never,
+      { get: vi.fn(), getNumber: vi.fn() } as never,
+      personRepo,
+    )
+
+    await expect(service.bindCluster(sessionId, 7, 'Alice', ['kw1'])).resolves.toBeUndefined()
+
+    expect(faceRepo.updateBinding).toHaveBeenCalledWith(7, 'Alice', ['kw1'])
+    expect(personRepo.addPhotos).not.toHaveBeenCalled()
+  })
+
+  it('reconciles the person library after unbind', async () => {
+    const personRepo = {
+      upsertByName: vi.fn(() => 'person-1'),
+      addPhotos: vi.fn(),
+      reconcileSession: vi.fn(),
+    }
+    const faceRepo = {
+      getClusterSessionId: vi.fn(() => sessionId),
+      deleteBinding: vi.fn(),
+    } as never
+
+    const service = new FaceKwService(
+      { getBySession: vi.fn() } as never,
+      { get: vi.fn() } as never,
+      faceRepo,
+      { getPreview: vi.fn() } as never,
+      { get: vi.fn(), getNumber: vi.fn() } as never,
+      personRepo,
+    )
+
+    await service.unbindCluster(sessionId, 7)
+
+    expect(faceRepo.deleteBinding).toHaveBeenCalledWith(7)
+    expect(personRepo.reconcileSession).toHaveBeenCalledWith(sessionId)
+  })
+
+  it('keeps the unbind when reconciliation fails (best-effort)', async () => {
+    const personRepo = {
+      upsertByName: vi.fn(() => 'person-1'),
+      addPhotos: vi.fn(),
+      reconcileSession: vi.fn(() => {
+        throw new Error('library unavailable')
+      }),
+    }
+    const faceRepo = {
+      getClusterSessionId: vi.fn(() => sessionId),
+      deleteBinding: vi.fn(),
+    } as never
+
+    const service = new FaceKwService(
+      { getBySession: vi.fn() } as never,
+      { get: vi.fn() } as never,
+      faceRepo,
+      { getPreview: vi.fn() } as never,
+      { get: vi.fn(), getNumber: vi.fn() } as never,
+      personRepo,
+    )
+
+    await expect(service.unbindCluster(sessionId, 7)).resolves.toBeUndefined()
+
+    expect(faceRepo.deleteBinding).toHaveBeenCalledWith(7)
   })
 })

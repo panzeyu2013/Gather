@@ -1,5 +1,5 @@
 import { sendCommand } from './client'
-import type { FaceCluster, WritebackPreview, WritebackResult, CleanupResult } from '@gather/shared'
+import type { FaceCluster, FaceModelsStatusData, WritebackPreview, WritebackResult, CleanupResult } from '@gather/shared'
 
 export interface FaceAnalysisResult {
   status: 'done' | 'failed' | 'cancelled'
@@ -8,6 +8,9 @@ export interface FaceAnalysisResult {
 }
 
 export const faceKwApi = {
+  modelsStatus: () =>
+    sendCommand<FaceModelsStatusData>('face.models_status', {}),
+
   analyze: (sessionId: string, opts?: { eps?: number; minSamples?: number; detectorPath?: string; encoderPath?: string }) =>
     sendCommand<FaceAnalysisResult>('fkw.analyze', { sessionId, ...opts }),
 
@@ -32,9 +35,6 @@ export const faceKwApi = {
 
   merge: (sessionId: string, sourceId: number, targetId: number) =>
     sendCommand<{ done: boolean }>('fkw.merge', { sessionId, source: sourceId, target: targetId }),
-
-  getClusterThumbnail: (sessionId: string, clusterId: number) =>
-    sendCommand<{ base64: string }>('fkw.get_cluster_thumbnail', { sessionId, clusterId }),
 
   removeMember: (sessionId: string, clusterId: number, memberId: number) =>
     sendCommand<{ done: boolean }>('fkw.remove_member', { sessionId, clusterId, memberId }),

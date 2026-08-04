@@ -108,3 +108,30 @@ export function getModelResourcesDir(): string {
   }
   return fromUserData
 }
+
+export interface FaceModelPresence {
+  detectorPath: string
+  encoderPath: string
+  detectorPresent: boolean
+  encoderPresent: boolean
+}
+
+/**
+ * Resolve the configured face model paths and report whether each model file
+ * is present on disk. Shared by `settings.get_ml_status` and the face module's
+ * model-status commands so the presence logic cannot drift apart.
+ */
+export function getFaceModelPresence(
+  settings: { get: (key: string, fallback?: string) => string },
+): FaceModelPresence {
+  const detectorPath = settings.get('detector_model_path', 'models/face_detector.onnx')
+  const encoderPath = settings.get('encoder_model_path', 'models/face_encoder.onnx')
+  const detectorResolved = resolveModelPath(detectorPath)
+  const encoderResolved = resolveModelPath(encoderPath)
+  return {
+    detectorPath: detectorResolved,
+    encoderPath: encoderResolved,
+    detectorPresent: existsSync(detectorResolved),
+    encoderPresent: existsSync(encoderResolved),
+  }
+}

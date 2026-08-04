@@ -60,21 +60,21 @@
 
 ### 2.1 页面渲染
 - [ ] 页面标题显示 "Gather"
-- [ ] "Import from Capture One" 与 "Import Files…" 按钮可见
+- [ ] "+ 新建工作区" 按钮可见，点击后弹出导入对话框（导入来源：本地文件夹 / Capture One）
 - [ ] 顶部步骤导航（Dashboard → Similarity → Face KW）正常显示
 
 ### 2.2 Session 管理
-- [ ] **创建（Capture One）**：C1 选中 ≥5 张图片 → 点击 "Import from Capture One" → session 卡片出现在列表中
-- [ ] **创建（文件选择）**：点击 "Import Files…" → 选择多张图片 → session 卡片出现在列表中
+- [ ] **创建（Capture One）**：C1 选中 ≥5 张图片 → 按 `Cmd+Shift+I`（或 File 菜单 "Import from Capture One"）→ session 卡片出现在列表中
+- [ ] **创建（文件选择）**：点击 "+ 新建工作区" → 导入来源选 "本地文件夹" → 选择文件夹 → session 卡片出现在列表中
 - [ ] **删除**：点击卡片 Delete 按钮 → 确认弹窗 → 卡片消失
 - [ ] **取消删除**：点击卡片 Delete 按钮 → 弹窗选 Cancel → 卡片保留
 
 ### 2.3 Capture One 导入
-- [ ] C1 选中 ≥5 张图片 → Gather 点击 "Import from Capture One" → session 卡片显示正确照片数
-- [ ] C1 不选任何图片 → 点击 Import → Toast 提示"未选中图片"
-- [ ] 本地文件选择 ≥5 张图片 → Gather 点击 "Import Files…" → session 卡片显示正确照片数
+- [ ] C1 选中 ≥5 张图片 → 按 `Cmd+Shift+I` → session 卡片显示正确照片数
+- [ ] C1 不选任何图片 → 按 `Cmd+Shift+I` → Toast 提示 "No photos selected in Capture One."
+- [ ] 对话框导入来源选 "本地文件夹" → 选择包含 ≥5 张图片的文件夹 → session 卡片显示正确照片数
 - [ ] Import 过程中点击其他按钮 → 不会触发冲突
-- [ ] 快捷键 `Cmd+Shift+I` 触发导入 → 功能等同于点击 "Import from Capture One"
+- [ ] 快捷键 `Cmd+Shift+I` 触发导入 → 功能等同于 File 菜单 "Import from Capture One"
 - [ ] 导入完成后，session 卡片照片数实时更新
 
 ### 2.4 Session 列表
@@ -121,14 +121,10 @@
 - [ ] 切换到 Dashboard 再切回 → 结果正确保留或重新加载
 
 ### 3.6 写回
-- [ ] 写回选项面板可见：createAlbums / addPrefix / markUngrouped / writeIPTC
-- [ ] "Select All" 勾选时 → **所有**选项被选中（不是只选 createAlbums）
-- [ ] 单独勾选/取消各选项 → 选框状态正确
-- [ ] 点击 "Execute Writeback" → 先显示后端生成的 preview 摘要
-- [ ] 未勾选 writeIPTC 时 → 弹窗明确说明只生成报告、不修改 XMP
-- [ ] 勾选 writeIPTC 时 → 弹窗明确说明会写入 XMP keywords
+- [ ] 写回面板可见关键词输入（写入 `dc:subject` XMP keywords）
+- [ ] 为已确认分组输入关键词 → 点击 "Execute Writeback" → 先显示后端生成的 preview 摘要
 - [ ] 确认后 → 完成后显示 writeback report
-- [ ] **C1 验证**：勾选 writeIPTC 后，选中处理后图片 → Image → Load Metadata → Keywords 字段出现 Gather 写入的内容
+- [ ] **C1 验证**：选中处理后图片 → Image → Load Metadata → Keywords 字段出现 Gather 写入的内容
 - [ ] 失败记录有错误信息（如有）
 
 ---
@@ -146,42 +142,32 @@
 > Capture One Catalog 的交叉验证。
 
 ### 4.1 页面导航与渲染
-- [ ] Dashboard 点击 Face Keywording → 进入 5 步向导
-- [ ] 顶部 5 步 stepper 完整显示：① Import ② Clusters ③ Bind ④ Preview ⑤ Writeback
+- [ ] Dashboard 点击 Face Keywording → 进入 3 步流程
+- [ ] 顶部 3 步 stepper 完整显示：① 分析 ② 审核 ③ 写回
 - [ ] 页面标题显示 session 名称
 - [ ] "← Dashboard" 返回链接正常跳转
 - [ ] "Delete Session" 按钮 → 确认后删除并跳回 Dashboard
 
-### 4.2 Step 1 — 导入分析
+### 4.2 分析（Analyze）
 - [ ] 显示照片数 / 人脸数 / 聚类数统计（初始为 "-"）
 - [ ] 点击 "Start Face Analysis" → 按钮禁用 → 进度条出现
 - [ ] 进度条推进 → 进度文字描述阶段（"Detecting faces" → "Clustering" → ...）
-- [ ] 完成后 → Step 1 stepper 标记为 ✅ done → "Next: Clusters" 按钮可用
+- [ ] 完成后 → "分析" stepper 标记为 ✅ done → "审核" 步骤可点击
 - [ ] 统计数据更新为实际值
 
-### 4.3 Step 2 — 簇浏览
+### 4.3 审核（Review）— 簇浏览
 - [ ] 人脸簇网格渲染，每人一个卡片（人脸缩略图 + 成员数 + 聚类 ID）
 - [ ] 簇按成员数降序排列
 - [ ] 提示文字 "Click to select & bind" 显示
 
-**筛选**：
-- [ ] All → 显示所有簇
-- [ ] Unbound → 仅显示未绑定的簇
-- [ ] Bound → 仅显示已绑定角色名的簇
-- [ ] Skipped → 仅显示跳过的簇
-
 **选中**：
 - [ ] 点击人脸卡片 → 卡片添加 selected 样式（高亮边框/背景色变化）
-- [ ] "Next: Bind" 按钮变为可用
+- [ ] 右侧出现该簇的绑定面板，可编辑角色名与关键词
 
 **Merge**：
-- [ ] 点击 "Merge Mode" → 按钮高亮，提示 "Merge: Select Source"
-- [ ] 点击第一个卡片（source）→ 卡片显示选中标记 → "Merge" 按钮出现
-- [ ] 点击第二个卡片（target）→ 确认 target 选中
-- [ ] 点击 "Merge" → 两个簇合并 → 网格刷新 → toast 提示成功
-- [ ] 再次点击 "Merge Mode" 退出合并模式
+- [ ] 选中簇后 → 合并面板选择目标簇 → 点击 "合并" → 两个簇合并 → 网格刷新 → toast 提示成功
 
-### 4.4 Step 3 — 角色绑定
+### 4.4 审核（Review）— 角色绑定
 - [ ] 选中的簇信息显示：人脸预览图 + 成员数
 - [ ] 成员列表列出所有成员文件名
 - [ ] 成员旁有 "Remove" 按钮
@@ -191,30 +177,25 @@
 - [ ] Keywords：输入框输入关键词 + Enter → 标签出现
 - [ ] 逗号（`,`）分隔关键词也生效
 - [ ] 点击标签 × → 标签移除
-- [ ] "Save & Next" → 绑定成功 toast → 自动跳下一个未绑定簇
-- [ ] 空角色名 → 点击 Save → toast 提示 "Enter a role name"
+- [ ] 点击 "绑定" → 绑定成功 toast → 簇显示角色名徽标
+- [ ] 空角色名 → 点击绑定 → 提示"角色名称不能为空"
 
 **跳过**：
-- [ ] 点击 "Skip" → 当前簇标记为 Skipped → 自动跳下一个
-- [ ] Skipped 簇在 Step 2 筛选 "Skipped" 中可见
+- [ ] 未绑定的簇在写回时保持未绑定状态，写回步骤统计为"未绑定并跳过"
+- [ ] 已绑定簇再次进入 → 可编辑更新绑定或"解绑"
 
 **移除成员**：
 - [ ] 点击成员旁 "Remove" → 确认弹窗 → 成员从列表中消失
 - [ ] 簇成员数更新
 
-**导航**：
-- [ ] "← Clusters" 按钮回到 Step 2
-- [ ] "Preview →" 按钮进入 Step 4
+### 4.5 写回（Writeback）— 预览与执行
+- [ ] 顶部 stats 显示：已绑定簇数 / 未绑定并跳过数
+- [ ] 已绑定簇列表每项显示：簇标签 | 关键词
+- [ ] 点击 "预览" → 显示 XMP 写回预览（before/after 关键词）
+- [ ] "执行写回" 按钮大号突出显示
 
-### 4.5 Step 4 — 预览
-- [ ] 顶部 stats 显示总照片数 / 有关键词数 / 无关键词数
-- [ ] 表格每行：文件名 | 关键词标签 | 来源角色
-- [ ] 同一照片被多个角色关联时 → 行显示多个来源角色标签
-- [ ] "← Bind" 回到 Step 3
-- [ ] "Write XMP Metadata" 按钮大号突出显示
-
-### 4.6 Step 5 — 写回
-- [ ] 点击 "Write XMP Metadata" → 进度条推进 → 完成
+### 4.6 写回（Writeback）— 确认同步与清理
+- [ ] 点击 "执行写回" → 进度条推进 → 完成
 - [ ] 结果卡片显示：Written / Failed / Skipped 数量
 - [ ] 引导提示出现：如何在 C1 中 Load Metadata
 - [ ] 部分失败时 → toast 提示具体错误（不隐藏结果卡片）
@@ -286,7 +267,7 @@
 
 | Issue | 修复描述 | 验证项 |
 |-------|----------|--------|
-| #– | 写回选项修复 | B7：Select All 行为正确 |
+| #– | 相似度关键词写回修复 | B7：关键词正确写入 XMP |
 | #– | 成员数计数修复 | C10：Remove 后成员数正确 |
 | #– | 轮询竞态修复 | B4、C3：重复分析不重叠 |
 | #– | RGBA 缩略图修复 | 含透明通道图片缩略图正常 |

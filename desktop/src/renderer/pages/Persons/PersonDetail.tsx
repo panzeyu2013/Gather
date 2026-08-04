@@ -112,6 +112,18 @@ export default function PersonDetail() {
           </div>
         </div>
         <div className={styles.headerActions}>
+          <button
+            className={styles.reviewBtn}
+            onClick={() => {
+              const sessionId = person.photos[0]?.sessionId
+              if (!sessionId) return
+              navigate(`/sessions/${sessionId}/face-kw?role=${encodeURIComponent(person.name)}`)
+            }}
+            disabled={person.photos.length === 0}
+            title={person.photos.length === 0 ? '该人物暂无关联照片，无法跳转审核' : '跳转到对应工作区的人脸审核并按角色筛选'}
+          >
+            前往人脸审核
+          </button>
           <button className={styles.editBtn} onClick={handleEdit}>
             编辑
           </button>

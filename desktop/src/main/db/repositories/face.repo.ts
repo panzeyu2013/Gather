@@ -69,6 +69,15 @@ export interface FaceClusterMemberRow {
   observation_id: number | null
 }
 
+function parseBbox(raw: string): number[] {
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed as number[] : []
+  } catch {
+    return []
+  }
+}
+
 @injectable()
 export class FaceRepository {
   constructor(
@@ -366,6 +375,17 @@ export class FaceRepository {
   getClusterSessionId(clusterId: number): string | null {
     const row = this.db.prepare('SELECT session_id FROM face_clusters WHERE id = ?').get(clusterId) as { session_id: string } | undefined
     return row?.session_id ?? null
+  }
+
+  getClusterMembers(clusterId: number): Array<{ photoId: string; bbox: number[]; confidence: number }> {
+    const rows = this.db.prepare(
+      'SELECT photo_id, bbox, confidence FROM face_cluster_members WHERE cluster_id = ?',
+    ).all(clusterId) as Array<{ photo_id: string; bbox: string; confidence: number }>
+    return rows.map(row => ({
+      photoId: row.photo_id,
+      bbox: parseBbox(row.bbox),
+      confidence: row.confidence,
+    }))
   }
 
   getThumbnailPathsBySession(sessionId: string): string[] {

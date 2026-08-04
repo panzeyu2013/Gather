@@ -2,12 +2,14 @@ import React, { useState, useMemo } from 'react'
 import { useFaceKwStore } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
 import WritebackReport from '../../components/WritebackReport/WritebackReport'
+import { useToastStore } from '../../components/Toast/ToastStore'
 import type { WritebackResult, WritebackItem } from '@gather/shared'
 import { useQuery } from '@tanstack/react-query'
 import styles from './StepWriteback.module.css'
 
 export default function StepWriteback() {
   const { setWritebackReport, writebackReport, writebackRunning, setWritebackRunning, sessionId } = useFaceKwStore()
+  const addToast = useToastStore((s) => s.addToast)
   const { data: clusters = [] } = useQuery({
     queryKey: ['face-clusters', sessionId],
     queryFn: async () => (await faceKwApi.getClusters(sessionId!)).map(cluster => ({
@@ -20,6 +22,7 @@ export default function StepWriteback() {
   const [failedItems, setFailedItems] = useState<WritebackItem[]>([])
   const [syncConfirmed, setSyncConfirmed] = useState(false)
   const [previewItems, setPreviewItems] = useState<WritebackItem[]>([])
+  const [reloadBusy, setReloadBusy] = useState(false)
 
   const boundClusters = useMemo(() => clusters.filter((c) => c.binding), [clusters])
   const unboundClusters = useMemo(() => clusters.filter((c) => !c.binding), [clusters])
@@ -92,6 +95,19 @@ export default function StepWriteback() {
       setWritebackReport(sessionId, `清理完成: ${result.deletedCount} 个文件已删除`)
     } catch (e) {
       setWritebackReport(sessionId, `清理失败: ${(e as Error).message}`)
+    }
+  }
+
+  const handleReloadMetadata = async () => {
+    if (!sessionId) return
+    setReloadBusy(true)
+    try {
+      await window.gather.reloadMetadata()
+      setWritebackReport(sessionId, '已在 Capture One 中加载元数据，返回后请确认同步')
+    } catch (e) {
+      addToast('error', (e as Error).message || '加载元数据失败')
+    } finally {
+      setReloadBusy(false)
     }
   }
 
@@ -179,13 +195,28 @@ export default function StepWriteback() {
         </button>
       </div>
 
-      {writebackReport && <WritebackReport
-        result={writebackResult}
-        failedItems={failedItems}
-        onRetryFailed={handleRetryFailed}
-        onConfirmSync={handleConfirmSync}
-        onCleanup={syncConfirmed ? handleCleanup : undefined}
-      />}
+      {writebackReport && <>
+        <p className={styles.reportMessage}>{writebackReport}</p>
+        <WritebackReport
+          result={writebackResult}
+          failedItems={failedItems}
+          onRetryFailed={handleRetryFailed}
+          onConfirmSync={handleConfirmSync}
+          onCleanup={syncConfirmed ? handleCleanup : undefined}
+          disabled={writebackRunning || reloadBusy}
+        />
+        <div className={styles.reloadRow}>
+          <button
+            type="button"
+            onClick={() => void handleReloadMetadata()}
+            disabled={writebackRunning || reloadBusy}
+            className={styles.secondaryButton}
+          >
+            {reloadBusy ? '正在加载元数据...' : '在 Capture One 中加载元数据'}
+          </button>
+          <span className={styles.reloadHint}>先在 Capture One 中 Load Metadata，再返回 Gather 确认同步</span>
+        </div>
+      </>}
     </div>
   )
 }

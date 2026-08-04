@@ -2,7 +2,7 @@
 // contextBridge 安全 API — 渲染进程唯一入口
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Command, Event } from '@gather/shared'
+import type { Command, Event, FaceModelsStatusData } from '@gather/shared'
 
 type CommandType = Command['type']
 type EventType = Event['type']
@@ -12,7 +12,8 @@ type EventType = Event['type']
 const ALLOWED_COMMANDS = new Set<CommandType>([
   'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.recluster', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
-  'fkw.remove_member', 'fkw.get_cluster_thumbnail', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'face.models_status',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster',
   'sim.preview_writeback', 'sim.writeback', 'sim.writeback_items', 'sim.retry_failed_writeback',
   'sim.confirm_sync', 'sim.cleanup',
@@ -86,6 +87,7 @@ export interface GatherAPI {
   readonly scanDirectory: (dirPath: string) => Promise<string[]>
   readonly downloadDefaultModels: () => Promise<void>
   readonly onModelDownloadProgress: (callback: (data: unknown) => void) => () => void
+  readonly modelsStatus: () => Promise<FaceModelsStatusData>
 }
 
 const api: GatherAPI = {
@@ -208,6 +210,9 @@ const api: GatherAPI = {
       ipcRenderer.removeListener('gather:event', handler)
     }
   },
+
+  modelsStatus: () =>
+    api.sendCommand('face.models_status', {}) as Promise<FaceModelsStatusData>,
 }
 
 contextBridge.exposeInMainWorld('gather', api)

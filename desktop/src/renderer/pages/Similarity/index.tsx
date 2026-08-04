@@ -9,6 +9,7 @@ import { useEvent } from '../../hooks/useEvent'
 import type { JobProgressData } from '@gather/shared'
 import ProgressBar from '../../components/ProgressBar/ProgressBar'
 import WritebackReport from '../../components/WritebackReport/WritebackReport'
+import { useToastStore } from '../../components/Toast/ToastStore'
 import type { SimilarityGroup, SimilarityImage, WritebackItem, WritebackPreview, WritebackResult } from '@gather/shared'
 import styles from './Similarity.module.css'
 
@@ -336,6 +337,7 @@ function KeywordWritebackPanel({
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [syncConfirmed, setSyncConfirmed] = useState(false)
+  const addToast = useToastStore((s) => s.addToast)
 
   const keywords = keywordInput
     .split(/[,，]/)
@@ -421,6 +423,18 @@ function KeywordWritebackPanel({
     }
   }
 
+  const handleReloadMetadata = async () => {
+    setBusy(true)
+    try {
+      await window.gather.reloadMetadata()
+      setMessage('已在 Capture One 中加载元数据，返回后请确认同步')
+    } catch (error) {
+      addToast('error', error instanceof Error ? error.message : '加载元数据失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className={styles.writebackPanel}>
       <div className={styles.writebackHeader}>
@@ -481,13 +495,22 @@ function KeywordWritebackPanel({
         </div>
       )}
       {writebackResult && (
-        <WritebackReport
-          result={writebackResult}
-          failedItems={failedItems}
-          onRetryFailed={() => void handleRetry()}
-          onConfirmSync={() => void handleConfirmSync()}
-          onCleanup={syncConfirmed ? () => void handleCleanup() : undefined}
-        />
+        <>
+          <WritebackReport
+            result={writebackResult}
+            failedItems={failedItems}
+            onRetryFailed={() => void handleRetry()}
+            onConfirmSync={() => void handleConfirmSync()}
+            onCleanup={syncConfirmed ? () => void handleCleanup() : undefined}
+            disabled={busy}
+          />
+          <div className={styles.reloadRow}>
+            <button className={styles.reclusterBtn} onClick={() => void handleReloadMetadata()} disabled={busy}>
+              在 Capture One 中加载元数据
+            </button>
+            <span className={styles.reloadHint}>先在 Capture One 中 Load Metadata，再返回 Gather 确认同步</span>
+          </div>
+        </>
       )}
     </div>
   )

@@ -202,7 +202,7 @@ export type Response<T = unknown> = ResponseOk<T> | ResponseErr
 // ── 导入子模块类型（仅类型，用于 Command 联合）──
 
 import type { SessionCreateParams, SessionDeleteParams, SessionDeleteManyParams, SessionAddPhotosParams, SessionGetParams, SessionUpdateParams } from './session'
-import type { FkwAnalyzeParams, FkwCancelAnalysisParams, FkwClustersParams, FkwBindParams, FkwUnbindParams, FkwMergeParams, FkwRemoveMemberParams, FkwPreviewParams, FkwWritebackParams, FkwConfirmSyncParams, FkwConfirmCleanupParams, FkwCleanupParams, FkwGetClusterThumbnailParams } from './face'
+import type { FkwAnalyzeParams, FkwCancelAnalysisParams, FkwClustersParams, FkwBindParams, FkwUnbindParams, FkwMergeParams, FkwRemoveMemberParams, FkwPreviewParams, FkwWritebackParams, FkwConfirmSyncParams, FkwConfirmCleanupParams, FkwCleanupParams, FaceModelsStatusData } from './face'
 import type { SimAnalyzeParams, SimCancelAnalysisParams, SimResultParams, SimReclusterParams, SimPreviewWritebackParams, SimWritebackParams, SimWritebackItemsParams, SimRetryFailedWritebackParams, SimConfirmSyncParams, SimCleanupParams } from './similarity'
 import type { PersonListParams, PersonGetParams, PersonCreateParams, PersonUpdateParams, PersonDeleteParams, PersonMergeParams, PersonRemovePhotoParams, PersonSearchPhotosParams } from './person'
 import type {
@@ -277,7 +277,7 @@ export type Command =
   | { type: 'fkw.confirm_sync'; params: FkwConfirmSyncParams }
   | { type: 'fkw.confirm_cleanup'; params: FkwConfirmCleanupParams }
   | { type: 'fkw.cleanup'; params: FkwCleanupParams }
-  | { type: 'fkw.get_cluster_thumbnail'; params: FkwGetClusterThumbnailParams }
+  | { type: 'face.models_status'; params: Record<string, never> }
   | { type: 'sim.analyze'; params: SimAnalyzeParams }
   | { type: 'sim.cancel_analysis'; params: SimCancelAnalysisParams }
   | { type: 'sim.result'; params: SimResultParams }
@@ -406,7 +406,8 @@ export type Event =
 export const ALLOWED_COMMANDS = new Set([
   'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.recluster', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
-  'fkw.remove_member', 'fkw.get_cluster_thumbnail', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
+  'face.models_status',
   'sim.analyze', 'sim.cancel_analysis', 'sim.result', 'sim.recluster',
   'sim.preview_writeback', 'sim.writeback', 'sim.writeback_items', 'sim.retry_failed_writeback',
   'sim.confirm_sync', 'sim.cleanup',

@@ -5,6 +5,7 @@ import {
   type FaceKwService,
   validateFaceClusteringParameters,
 } from '../services/face-kw/face-kw.service'
+import { getFaceModelPresence } from '../services/face-kw/provider'
 import type { WritebackService } from '../services/writeback/writeback.service'
 import type { FaceRepository } from '../db/repositories/face.repo'
 import type { SettingsService } from '../services/settings/settings.service'
@@ -63,6 +64,14 @@ export function registerFaceKwHandlers(
         message: 'Face analysis complete',
       })
       return ok(result)
+    }),
+  )
+
+  registry.register(
+    'face.models_status',
+    wrapHandler(async () => {
+      const presence = getFaceModelPresence(settings)
+      return ok(presence)
     }),
   )
 
@@ -173,16 +182,6 @@ export function registerFaceKwHandlers(
       const target = validateNumber(params.target, 'target')
       await faceKwService.mergeClusters(sessionId, source, target)
       return ok({ done: true })
-    }),
-  )
-
-  registry.register(
-    'fkw.get_cluster_thumbnail',
-    wrapHandler(async (params) => {
-      const sessionId = validateString(params.sessionId, 'sessionId')
-      const clusterId = validateNumber(params.clusterId, 'clusterId')
-      const base64 = await faceKwService.getClusterThumbnail(sessionId, clusterId)
-      return ok({ base64 })
     }),
   )
 

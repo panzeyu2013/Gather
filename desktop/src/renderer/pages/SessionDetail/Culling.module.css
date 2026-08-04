@@ -395,6 +395,11 @@
   color: var(--color-error);
 }
 
+.syncHint {
+  color: var(--cull-muted);
+  opacity: 0.8;
+}
+
 .filmstrip {
   grid-row: 2 / 4;
   grid-column: 3;

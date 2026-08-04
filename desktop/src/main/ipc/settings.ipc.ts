@@ -1,7 +1,6 @@
 import type { CommandRegistry } from './registry'
 import { ok, validateString, wrapHandler } from './helpers'
-import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getModelResourcesDir, resolveModelPath } from '../services/face-kw/provider'
-import { existsSync } from 'fs'
+import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getFaceModelPresence, getModelResourcesDir } from '../services/face-kw/provider'
 import type { SettingsService } from '../services/settings/settings.service'
 
 export function registerSettingsHandlers(registry: CommandRegistry, svc: SettingsService): void {
@@ -26,12 +25,9 @@ export function registerSettingsHandlers(registry: CommandRegistry, svc: Setting
   }))
 
   registry.register('settings.get_ml_status', wrapHandler(async () => {
-    const detectorPath = svc.get('detector_model_path', 'models/face_detector.onnx')
-    const encoderPath = svc.get('encoder_model_path', 'models/face_encoder.onnx')
     const provider = svc.get('onnx_provider', 'auto')
     const isAuto = provider === 'auto'
-    const resolvedDetector = resolveModelPath(detectorPath)
-    const resolvedEncoder = resolveModelPath(encoderPath)
+    const presence = getFaceModelPresence(svc)
 
     return ok({
       platform: process.platform,
@@ -42,14 +38,14 @@ export function registerSettingsHandlers(registry: CommandRegistry, svc: Setting
       availableBackends: getAvailableBackends(),
       modelResourcesDir: getModelResourcesDir(),
       detectorModel: {
-        path: detectorPath,
-        resolvedPath: resolvedDetector,
-        exists: existsSync(resolvedDetector),
+        path: svc.get('detector_model_path', 'models/face_detector.onnx'),
+        resolvedPath: presence.detectorPath,
+        exists: presence.detectorPresent,
       },
       encoderModel: {
-        path: encoderPath,
-        resolvedPath: resolvedEncoder,
-        exists: existsSync(resolvedEncoder),
+        path: svc.get('encoder_model_path', 'models/face_encoder.onnx'),
+        resolvedPath: presence.encoderPath,
+        exists: presence.encoderPresent,
       },
       modelInfo: {
         detectInputSize: svc.getNumber('detect_input_size', 640),

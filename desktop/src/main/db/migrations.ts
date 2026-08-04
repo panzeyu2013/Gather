@@ -6,7 +6,7 @@ import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL, UNIQUE_PHOTO_PATH_INDEX_SQL } from './schema'
 import BetterSqlite3 from 'better-sqlite3'
 
-const CURRENT_SCHEMA_VERSION = 27
+const CURRENT_SCHEMA_VERSION = 28
 
 const CREATE_FACE_CLUSTER_MEMBERS_SQL = `
   CREATE TABLE face_cluster_members (
@@ -1036,6 +1036,26 @@ function runMigrationsUnsafe(database: Database): void {
       setSchemaVersion(db, 27)
     })()
     currentVersion = 27
+  }
+
+  if (currentVersion < 28) {
+    db.transaction(() => {
+      // person_photos previously had no uniqueness constraint, so re-binding a
+      // cluster (or binding two clusters of the same photos to one role) could
+      // insert duplicate rows and inflate photo counts. Deduplicate existing
+      // rows here; the unique index itself is created by INDEX_SQL afterwards,
+      // which now fails cleanly only if duplicates were somehow reintroduced.
+      db.exec(`
+        DELETE FROM person_photos
+        WHERE id NOT IN (
+          SELECT MIN(id)
+          FROM person_photos
+          GROUP BY person_id, photo_id
+        );
+      `)
+      setSchemaVersion(db, 28)
+    })()
+    currentVersion = 28
   }
 
   if (currentVersion !== CURRENT_SCHEMA_VERSION) {

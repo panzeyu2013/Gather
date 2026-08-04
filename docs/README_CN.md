@@ -16,11 +16,11 @@
 ### 相似度分组
 - dHash 感知哈希 + 层次聚类，发现视觉相似的图片
 - 可调阈值（4–20）+ 最少成组数量，实时更新分组结果
-- 按组执行 XMP 写回（关键词、文件名前缀、相册标记）
+- 按组执行关键词写回：将 `dc:subject` 关键词写入 XMP sidecar
 
 ### 人脸关键词标注
 - MediaPipe 人脸检测 → 特征编码 → DBSCAN 聚类
-- 5 步向导：导入分析 → 簇浏览 → 角色绑定 → 预览 → 写回
+- 3 步流程：分析 → 审核（绑定/合并/跳过）→ 写回 + 确认同步
 - 支持人脸簇合并、成员移除、角色绑定/跳过
 - 写回 `dc:subject` XMP 关键词，完成后可确认同步 + 清理
 
@@ -65,19 +65,17 @@ npm run electron
 
 ### 相似度分组
 1. 在 Capture One 中选中照片
-2. 打开 Gather，点击 **Import from Capture One** 或 `Cmd+Shift+I`
+2. 打开 Gather，通过 Dashboard 导入对话框创建工作区（导入来源：本地文件夹或 Capture One），或在 Capture One 选中照片后按 `Cmd+Shift+I`
 3. 进入 **Similarity** 页面，点击 **Start Similarity Analysis**
 4. 调整阈值和最少成组数量，确认分组
-5. 勾选写回选项，点击 **Execute Writeback**
+5. 为确认的分组填写关键词，点击 **Execute Writeback**（将 `dc:subject` 关键词写入 XMP sidecar）
 
 ### 人脸关键词标注
 1. 导入照片（同上）
-2. 进入 **Face KW**，点击 **Start Face Analysis**
-3. 在人脸簇网格中浏览、筛选（All / Unbound / Bound / Skipped）
-4. 选中簇 → 绑定角色名和关键词（Enter/逗号添加）
-5. 预览所有照片的关键词分配
-6. 执行写回，按提示在 Capture One 中 **Load Metadata**
-7. 返回 Gather，点击 **Confirm Sync**
+2. **分析**：进入 **Face KW**，点击 **Start Face Analysis**
+3. **审核**：在人脸簇网格中浏览、筛选（All / Unbound / Bound / Skipped），选中簇绑定角色名和关键词（Enter/逗号添加），可合并簇或跳过
+4. **写回**：预览关键词分配 → 执行写回 → 按提示在 Capture One 中 **Load Metadata**
+5. 返回 Gather，点击 **Confirm Sync**
 
 ---
 

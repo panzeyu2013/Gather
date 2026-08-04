@@ -6,6 +6,8 @@ directories:
 
 asar: true
 
+afterPack: scripts/afterPack.cjs
+
 files:
   - dist/**/*
   - "!dist/**/*.map"

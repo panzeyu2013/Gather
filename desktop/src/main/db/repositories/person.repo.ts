@@ -94,6 +94,115 @@ export class PersonRepository {
     return id
   }
 
+  private parseKeywords(raw: string): string[] {
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === 'string') : []
+    } catch {
+      return []
+    }
+  }
+
+  /** Find a person by exact name, creating one if absent (used when binding a face role). */
+  upsertByName(name: string, keywords?: string[]): string {
+    const existing = this.db.prepare('SELECT id, keywords FROM persons WHERE name = ?').get(name) as { id: string; keywords: string } | undefined
+    if (existing) {
+      if (keywords && keywords.length > 0) {
+        const merged = [...new Set([...this.parseKeywords(existing.keywords), ...keywords])]
+        if (merged.length !== this.parseKeywords(existing.keywords).length) {
+          this.update(existing.id, { keywords: merged })
+        }
+      }
+      return existing.id
+    }
+    return this.create(name, keywords)
+  }
+
+  /** Bulk-add photos to a person, ignoring duplicates (safe for re-binding). */
+  addPhotos(
+    personId: string,
+    sessionId: string,
+    photos: Array<{ photoId: string; faceBbox: number[]; confidence: number }>,
+  ): void {
+    if (photos.length === 0) return
+    const now = new Date().toISOString()
+    const stmt = this.db.prepare(
+      'INSERT OR IGNORE INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    const insertMany = this.db.transaction(() => {
+      for (const photo of photos) {
+        stmt.run(personId, photo.photoId, sessionId, JSON.stringify(photo.faceBbox), photo.confidence, now)
+      }
+    })
+    insertMany()
+  }
+
+  /**
+   * Reconcile the person ↔ photo bridge for a session against the live role
+   * bindings. A photo stays linked to the person while at least one cluster
+   * bound to that role still contains it. Prunes links dropped by unbind /
+   * merge / member removal and adds links for photos that moved to a new role.
+   * Links from other sessions and photos attached through other flows are
+   * left untouched (only the current session's rows are reconciled).
+   */
+  reconcileSession(sessionId: string): void {
+    const bindings = this.db.prepare(`
+      SELECT rb.role_name, fcm.photo_id, fcm.bbox, fcm.confidence
+      FROM role_bindings rb
+      JOIN face_cluster_members fcm ON fcm.cluster_id = rb.cluster_id
+      WHERE rb.session_id = ?
+    `).all(sessionId) as Array<{ role_name: string; photo_id: string; bbox: string; confidence: number }>
+
+    const desiredByRole = new Map<string, Map<string, { bbox: number[]; confidence: number }>>()
+    for (const row of bindings) {
+      let byPhoto = desiredByRole.get(row.role_name)
+      if (!byPhoto) {
+        byPhoto = new Map()
+        desiredByRole.set(row.role_name, byPhoto)
+      }
+      let bbox: number[]
+      try { bbox = JSON.parse(row.bbox) } catch { bbox = [] }
+      byPhoto.set(row.photo_id, { bbox, confidence: row.confidence })
+    }
+
+    const affected = new Set<string>()
+    for (const roleName of desiredByRole.keys()) {
+      affected.add(this.upsertByName(roleName))
+    }
+    const linked = this.db.prepare('SELECT DISTINCT person_id FROM person_photos WHERE session_id = ?').all(sessionId) as { person_id: string }[]
+    for (const row of linked) affected.add(row.person_id)
+    if (affected.size === 0) return
+
+    const now = new Date().toISOString()
+    const insertStmt = this.db.prepare(
+      'INSERT OR IGNORE INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    const reconcile = this.db.transaction(() => {
+      for (const personId of affected) {
+        const roleName = this.get(personId)?.name ?? ''
+        const desired = desiredByRole.get(roleName)
+        if (!desired || desired.size === 0) {
+          this.db.prepare('DELETE FROM person_photos WHERE person_id = ? AND session_id = ?').run(personId, sessionId)
+          continue
+        }
+        const existing = this.db.prepare(
+          'SELECT photo_id FROM person_photos WHERE person_id = ? AND session_id = ?',
+        ).all(personId, sessionId) as { photo_id: string }[]
+        for (const row of existing) {
+          if (!desired.has(row.photo_id)) {
+            this.db.prepare(
+              'DELETE FROM person_photos WHERE person_id = ? AND session_id = ? AND photo_id = ?',
+            ).run(personId, sessionId, row.photo_id)
+          }
+        }
+        for (const [photoId, info] of desired) {
+          insertStmt.run(personId, photoId, sessionId, JSON.stringify(info.bbox), info.confidence, now)
+        }
+      }
+    })
+    reconcile()
+  }
+
   update(id: string, fields: PersonUpdateFields): void {
     const now = new Date().toISOString()
     const sets: string[] = []

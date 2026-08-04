@@ -29,6 +29,7 @@ import { metadataApi } from '../../api/metadata'
 import { qualityApi } from '../../api/quality'
 import { jobsApi } from '../../api/jobs'
 import { useEvent } from '../../hooks/useEvent'
+import { useToastStore } from '../../components/Toast/ToastStore'
 import styles from './Culling.module.css'
 
 const COLOR_LABELS: Array<{
@@ -239,6 +240,7 @@ function CullingImage({
 export default function Culling() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const queryClient = useQueryClient()
+  const addToast = useToastStore(state => state.addToast)
   const [scope, setScope] = useState<CullingScope>('all')
   const [filters, setFilters] = useState<CullingFilters>({})
   const [assets, setAssets] = useState<CullingAsset[]>([])
@@ -1079,6 +1081,23 @@ export default function Culling() {
           {syncLabel(syncSummary)}
         </span>
         <button onClick={() => void flush()} disabled={busy}>立即写入 XMP</button>
+        {(syncSummary?.written ?? 0) > 0 && (
+          <button
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              void window.gather.reloadMetadata()
+                .then(() => setMessage('已在 Capture One 中加载元数据，返回后请确认同步'))
+                .catch(error => addToast('error', error instanceof Error ? error.message : '加载元数据失败'))
+                .finally(() => setBusy(false))
+            }}
+          >
+            在 Capture One 中加载元数据
+          </button>
+        )}
+        {(syncSummary?.written ?? 0) > 0 && (
+          <span className={styles.syncHint}>先在 Capture One 中 Load Metadata，再返回 Gather 确认同步</span>
+        )}
         {(syncSummary?.failed ?? 0) > 0 && (
           <button
             onClick={() => {

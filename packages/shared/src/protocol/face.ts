@@ -68,8 +68,11 @@ export interface FkwCleanupParams {
   confirmed?: boolean
 }
 
-export interface FkwGetClusterThumbnailParams {
-  clusterId: number
+export interface FaceModelsStatusData {
+  detectorPresent: boolean
+  encoderPresent: boolean
+  detectorPath: string
+  encoderPath: string
 }
 
 export interface FaceObservation {

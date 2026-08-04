@@ -8,6 +8,7 @@ interface WritebackReportProps {
   onRetryFailed: () => void
   onConfirmSync: () => void
   onCleanup?: () => void
+  disabled?: boolean
 }
 
 export default function WritebackReport({
@@ -16,6 +17,7 @@ export default function WritebackReport({
   onRetryFailed,
   onConfirmSync,
   onCleanup,
+  disabled = false,
 }: WritebackReportProps) {
   const hasFailed = failedItems.length > 0
   const hasResult = result !== null
@@ -57,15 +59,15 @@ export default function WritebackReport({
 
       <div className={styles.actions}>
         {hasFailed && (
-          <button className={styles.retryButton} onClick={onRetryFailed}>
+          <button className={styles.retryButton} onClick={onRetryFailed} disabled={disabled}>
             重试失败项
           </button>
         )}
-        <button className={styles.confirmButton} onClick={onConfirmSync}>
+        <button className={styles.confirmButton} onClick={onConfirmSync} disabled={disabled}>
           确认同步
         </button>
         {onCleanup && (
-          <button className={styles.cleanupButton} onClick={onCleanup}>
+          <button className={styles.cleanupButton} onClick={onCleanup} disabled={disabled}>
             清理
           </button>
         )}

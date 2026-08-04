@@ -1,9 +1,9 @@
 # Gather 功能补全 — 设计与执行
 
-> 状态：计划待评审
-> 文档版本：v2.0
+> 状态：Phase 2 第一优先级（T2.1~T2.6）已完成；第二优先级（测试盲区）与第三优先级（架构债务）待排期
+> 文档版本：v2.2
 > 日期：2026-08-04
-> 代码基线：`main`（含 Phase 1 可靠性 Bug 修复）
+> 代码基线：`main`（含 Phase 1 可靠性 Bug 修复 + Phase 2 第一优先级功能）
 > 来源：架构 / 代码 / 用户 / 测试四视角 Review（2026-08-04）
 > 原则：所有改动遵守 docs/DEVELOPMENT.md 既定约定（平台逻辑只在组合根、
 > React Query 持有服务端状态、推送优先、迁移不变量）。每阶段保持应用可启动、
@@ -12,6 +12,20 @@
 ---
 
 ## 0. 变更记录
+
+### v2.2（2026-08-04）Phase 2 第一优先级全部完成
+
+第一优先级的 6 项功能（T2.1~T2.6）已全部实现并通过验证（typecheck / lint /
+203 单测 / 12 e2e / benchmark）。完成情况：
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| T2.1 FEAT-01 人脸模型首启引导 | ✅ 完成 | 新增 `face.models_status` 命令 + StepAnalyze 引导卡片 + 跳转设置 |
+| T2.2 FEAT-03 插件随发布打包 | ✅ 完成 | `afterPack` 钩子打包 `GatherLink.coplugin`（无 SDK 降级）；顺带修复 Makefile 括号路径缺陷 |
+| T2.3 FEAT-06 人脸簇审核视觉网格 | ✅ 完成 | StepReview 批量预取成员缩略图 |
+| T2.4 FEAT-07 Person 库打通 | ✅ 完成 | `fkw.bind` 自动 upsert person + 关联照片；解绑/合并/移除成员自动对账；Persons 页可跳转对应工作区审核并按角色筛选 |
+| T2.5 FEAT-05 文档与产品对齐 | ✅ 完成 | README / README_CN / TEST 已按 3 步人脸流程与关键词写回对齐 |
+| T2.6 FEAT-02 一键 Load Metadata | ✅ 完成 | Culling / Similarity / StepWriteback 三处按钮 |
 
 ### v2.0（2026-08-04）Phase 1 可靠性 Bug 已修复并移出本文档
 
@@ -86,7 +100,7 @@ settings 默认路径，`resolveModelPath` 找不到即抛错），`StepAnalyze.
 `desktop/src/renderer/pages/FaceKeywording/StepAnalyze.tsx`、
 `desktop/src/renderer/pages/Settings/index.tsx`
 
-**测试**：`face.models_status` handler 单测；无模型场景 e2e 断言引导卡片
+**测试**：`getFaceModelPresence` 单测（共享 presence 逻辑）；无模型场景 e2e 断言引导卡片
 出现、跳转可用；模型存在时不显示。
 
 **验收**：e2e/单测通过；手工核验下载进度条。
@@ -110,7 +124,7 @@ settings 默认路径，`resolveModelPath` 找不到即抛错），`StepAnalyze.
 3. 插件签名/公证不在本期范围（记录为已知限制）。
 
 **关键改动文件**：`desktop/electron-builder.yml`（afterPack 钩子）、
-`desktop/scripts/build-coplugin.mjs`（新建，mac 专用）
+`desktop/scripts/afterPack.cjs`（新建，mac 专用）
 
 **测试**：本机 `npm run build` + 检查产物 bundle 结构正确；无 SDK 环境验证
 打包不失败。
@@ -158,8 +172,8 @@ Person 库与"人脸库"脱节（`Persons/index.tsx` 无数据来源）。
 **关键改动文件**：`desktop/src/main/ipc/person.ipc.ts`、`person.repo.ts`、
 `desktop/src/renderer/pages/Persons/index.tsx`
 
-**测试**：`person.repo` 单测（upsert/关联）；有素材 e2e 断言绑定后 Persons
-页出现对应条目。
+**测试**：`person.repo` 真库单测（upsert 关键词合并、去重、解绑/合并/移除成员对账）；
+有素材 e2e 断言绑定后 Persons 页出现对应条目（待 fixture）。
 
 **验收**：单测 + e2e 通过。
 
@@ -190,8 +204,8 @@ markUngrouped / writeIPTC`、Dashboard "Import from Capture One" 按钮；
 
 ### T2.6 / FEAT-02 写回后一键 "Load Metadata" 到 Capture One
 
-**现状**：`reloadMetadata` 已实现并暴露在 preload（`preload/index.ts:173`、
-`index.ts:340-343`），但渲染层**零调用**；用户写回后必须手动切到 C1 执行
+**现状**：`reloadMetadata` 已实现并暴露在 preload（`preload/index.ts:175`、
+`index.ts:340-342`），但渲染层**零调用**；用户写回后必须手动切到 C1 执行
 Image → Load Metadata。
 
 **设计**：

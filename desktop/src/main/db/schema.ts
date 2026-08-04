@@ -531,6 +531,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_person_embeddings_obs ON person_embeddings
 CREATE INDEX IF NOT EXISTS idx_person_photos_person ON person_photos(person_id);
 CREATE INDEX IF NOT EXISTS idx_person_photos_photo ON person_photos(photo_id);
 CREATE INDEX IF NOT EXISTS idx_person_photos_session ON person_photos(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_person_photos_person_photo ON person_photos(person_id, photo_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_cache_session ON photo_metadata_cache(session_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_cache_session_date ON photo_metadata_cache(session_id, date_taken);
 CREATE INDEX IF NOT EXISTS idx_metadata_cache_session_rating ON photo_metadata_cache(session_id, rating);

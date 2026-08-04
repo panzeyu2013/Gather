@@ -1,12 +1,11 @@
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { FaceRepository, type FaceClusterInput } from '../../db/repositories/face.repo'
+import { PersonRepository } from '../../db/repositories/person.repo'
 import type { EmbeddingEntry } from './face-clusterer'
 import { clusterFacesInWorker } from '../../utils/analysis-worker-client'
 import { FaceInferenceWorker } from './face-inference-worker-client'
-import * as path from 'path'
 import * as fs from 'fs'
-import sharp from 'sharp'
 import { ImageService } from '../image'
 import { SettingsService } from '../settings/settings.service'
 import { CancelledError, NotFoundError, ValidationError } from '@gather/shared'
@@ -63,6 +62,7 @@ export class FaceKwService {
     @inject(DI_TOKENS.FACE_REPO) private faceRepo: FaceRepository,
     @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
     @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
+    @inject(DI_TOKENS.PERSON_REPO) private personRepo: PersonRepository,
   ) {}
 
   async analyze(
@@ -413,37 +413,7 @@ export class FaceKwService {
     // keeps existing clusters and role bindings intact if a re-analysis or
     // re-cluster fails partway through.
     this.faceRepo.deleteClustersBySession(sessionId)
-    const clusterIds = this.faceRepo.saveClusters(sessionId, clusterInputs)
-    const thumbDir = this.faceRepo.getFaceThumbDir()
-    await batchAsync(clusterInputs.map((_, index) => index), async (index) => {
-      const firstMember = clusterInputs[index].members[0]
-      if (!firstMember) return
-      try {
-        const [bx, by, bw, bh] = firstMember.bbox
-        const faceThumbSize = this.settings.getNumber('face_thumbnail_size', 320)
-        const preview = await this.imageService.getPreview(
-          firstMember.photoPath,
-          this.settings.getNumber('face_preview_max_dimension', 2048),
-        )
-        const left = Math.min(preview.width - 1, Math.max(0, Math.round(bx * preview.width)))
-        const top = Math.min(preview.height - 1, Math.max(0, Math.round(by * preview.height)))
-        const thumbnailBuffer = await sharp(preview.buffer)
-          .extract({
-            left,
-            top,
-            width: Math.max(1, Math.min(preview.width - left, Math.round(bw * preview.width))),
-            height: Math.max(1, Math.min(preview.height - top, Math.round(bh * preview.height))),
-          })
-          .resize(faceThumbSize, faceThumbSize, { fit: 'cover' })
-          .jpeg({ quality: this.settings.getNumber('face_thumbnail_quality', 70) })
-          .toBuffer()
-        const fileName = `${clusterIds[index]}.jpg`
-        await fs.promises.writeFile(path.join(thumbDir, fileName), thumbnailBuffer)
-        this.faceRepo.updateClusterThumbnail(clusterIds[index], fileName)
-      } catch (error) {
-        console.warn('Thumbnail generation failed for cluster', clusterIds[index], error)
-      }
-    }, 2)
+    this.faceRepo.saveClusters(sessionId, clusterInputs)
   }
 
   async getClusters(sessionId: string): Promise<FaceClusterData[]> {
@@ -468,22 +438,6 @@ export class FaceKwService {
     }))
   }
 
-  async getClusterThumbnail(sessionId: string, clusterId: number): Promise<string> {
-    if (this.faceRepo.getClusterSessionId(clusterId) !== sessionId) {
-      throw new NotFoundError('Cluster not found')
-    }
-    const thumbPath = this.faceRepo.getClusterThumbnailPath(clusterId)
-    if (!thumbPath) return ''
-    try {
-      const thumbDir = this.faceRepo.getFaceThumbDir()
-      const buffer = await fs.promises.readFile(path.join(thumbDir, thumbPath))
-      return buffer.toString('base64')
-    } catch (e) {
-      console.warn('Failed to read cluster thumbnail', clusterId, e)
-      return ''
-    }
-  }
-
   async bindCluster(sessionId: string, clusterId: number, roleName: string, keywords: string[]): Promise<void> {
     const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
     if (!clusterSessionId) throw new NotFoundError('Cluster not found')
@@ -493,11 +447,30 @@ export class FaceKwService {
     if (!Array.isArray(keywords) || keywords.some(keyword => typeof keyword !== 'string')) {
       throw new ValidationError('Keywords must be an array of strings')
     }
+    const dedupedKeywords = [...new Set(keywords.map(keyword => keyword.trim()).filter(Boolean))]
     this.faceRepo.updateBinding(
       clusterId,
       normalizedRoleName,
-      [...new Set(keywords.map(keyword => keyword.trim()).filter(Boolean))],
+      dedupedKeywords,
     )
+    // Bridge bound roles into the person library so the "人脸库" page is not
+    // an orphan: upsert a person per role name and attach the cluster's photos.
+    // Best-effort — a linkage failure must not fail the binding itself.
+    try {
+      const members = this.faceRepo.getClusterMembers(clusterId)
+      const personId = this.personRepo.upsertByName(normalizedRoleName, dedupedKeywords)
+      this.personRepo.addPhotos(
+        personId,
+        sessionId,
+        members.map(member => ({
+          photoId: member.photoId,
+          faceBbox: member.bbox,
+          confidence: member.confidence,
+        })),
+      )
+    } catch (error) {
+      console.warn('Failed to link bound role into person library', error)
+    }
   }
 
   async unbindCluster(sessionId: string, clusterId: number): Promise<void> {
@@ -505,6 +478,13 @@ export class FaceKwService {
     if (!clusterSessionId) throw new NotFoundError('Cluster not found')
     if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
     this.faceRepo.deleteBinding(clusterId)
+    // Drop person-library links for photos no longer covered by a role binding.
+    // Best-effort — a linkage failure must not fail the unbinding itself.
+    try {
+      this.personRepo.reconcileSession(sessionId)
+    } catch (error) {
+      console.warn('Failed to reconcile person library after unbind', error)
+    }
   }
 
   async mergeClusters(sessionId: string, sourceId: number, targetId: number): Promise<void> {
@@ -516,6 +496,13 @@ export class FaceKwService {
     if (!sourceSessionId || !targetSessionId) throw new NotFoundError('Cluster not found')
     if (sourceSessionId !== sessionId || targetSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
     this.faceRepo.mergeClusters(sourceId, targetId)
+    // Photos that moved to the target cluster now belong to the target role in
+    // the person library; the source role loses them. Best-effort.
+    try {
+      this.personRepo.reconcileSession(sessionId)
+    } catch (error) {
+      console.warn('Failed to reconcile person library after merge', error)
+    }
   }
 
   async removeMember(sessionId: string, clusterId: number, memberId: number): Promise<void> {
@@ -524,6 +511,14 @@ export class FaceKwService {
     if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
     if (!this.faceRepo.removeMemberFromCluster(clusterId, memberId)) {
       throw new NotFoundError('Cluster member not found')
+    }
+    // The removed member's photo is no longer covered by this cluster's role
+    // binding; drop it from the person library if nothing else covers it.
+    // Best-effort.
+    try {
+      this.personRepo.reconcileSession(sessionId)
+    } catch (error) {
+      console.warn('Failed to reconcile person library after member removal', error)
     }
   }
 

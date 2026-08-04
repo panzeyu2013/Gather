@@ -1,14 +1,17 @@
 import React, { useState, useCallback, useEffect } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useFaceKwStore } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
 import { onProgress } from '../../api/client'
-import type { ProgressData } from '@gather/shared'
+import type { FaceModelsStatusData, ProgressData } from '@gather/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import styles from './StepAnalyze.module.css'
 
+const MODELS_GUIDANCE = '人脸模型未安装 → 打开设置自动下载（约 182 MB）'
+
 export default function StepAnalyze() {
   const { sessionId } = useParams<{ sessionId: string }>()
+  const navigate = useNavigate()
   const {
     finishAnalysis,
     analysisStatus,
@@ -23,6 +26,28 @@ export default function StepAnalyze() {
   const [eps, setEps] = useState(0.6)
   const [minPts, setMinPts] = useState(3)
   const [error, setError] = useState<string | null>(null)
+  const [modelsStatus, setModelsStatus] = useState<FaceModelsStatusData | null>(null)
+
+  const modelsMissing = Boolean(
+    modelsStatus && (!modelsStatus.detectorPresent || !modelsStatus.encoderPresent),
+  )
+
+  useEffect(() => {
+    let mounted = true
+    faceKwApi.modelsStatus()
+      .then((status) => {
+        if (mounted) setModelsStatus(status)
+      })
+      .catch((error) => {
+        console.warn('Failed to query face model status', error)
+        if (mounted) setModelsStatus(null)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const guidanceSuffix = modelsMissing ? `\n${MODELS_GUIDANCE}` : ''
 
   useEffect(() => {
     return onProgress((data) => {
@@ -50,7 +75,7 @@ export default function StepAnalyze() {
       }
       if (result.status === 'failed') {
         setError(
-          `分析失败：检测失败 ${result.detectionFailures} 张，编码失败 ${result.encodingFailures} 个人脸`,
+          `分析失败：检测失败 ${result.detectionFailures} 张，编码失败 ${result.encodingFailures} 个人脸${guidanceSuffix}`,
         )
         setAnalysisStatus(sessionId, 'failed')
         return
@@ -61,11 +86,12 @@ export default function StepAnalyze() {
       if ((e as Error).message?.includes('cancelled')) {
         setAnalysisStatus(sessionId, 'cancelled')
       } else {
-        setError((e as Error).message)
+        const message = (e as Error).message
+        setError(`${message}${guidanceSuffix}`)
         setAnalysisStatus(sessionId, 'failed')
       }
     }
-  }, [sessionId, eps, minPts, setAnalysisStatus, finishAnalysis, queryClient])
+  }, [sessionId, eps, minPts, setAnalysisStatus, finishAnalysis, queryClient, modelsMissing, guidanceSuffix])
 
   const handleCancel = useCallback(async () => {
     if (!sessionId) return
@@ -85,16 +111,28 @@ export default function StepAnalyze() {
       await queryClient.invalidateQueries({ queryKey: ['face-clusters', sessionId] })
       finishAnalysis(sessionId)
     } catch (error) {
-      setError(error instanceof Error ? error.message : '重新聚类失败')
+      setError(`${error instanceof Error ? error.message : '重新聚类失败'}${guidanceSuffix}`)
       setAnalysisStatus(sessionId, 'failed')
     }
-  }, [eps, minPts, sessionId, setAnalysisStatus, finishAnalysis, queryClient])
+  }, [eps, minPts, sessionId, setAnalysisStatus, finishAnalysis, queryClient, guidanceSuffix])
 
   const isRunning = analysisStatus === 'running'
 
   return (
     <div className={styles.page}>
       <h2 className={styles.title}>人脸检测与聚类</h2>
+
+      {modelsMissing && (
+        <div className={styles.guidance}>
+          <span className={styles.guidanceText}>{MODELS_GUIDANCE}</span>
+          <button
+            className={styles.guidanceButton}
+            onClick={() => navigate('/settings')}
+          >
+            打开设置
+          </button>
+        </div>
+      )}
 
       <div className={styles.panel}>
       <div className={styles.field}>

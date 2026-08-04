@@ -140,6 +140,27 @@
   margin-bottom: 18px;
 }
 
+.reloadRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.reportMessage {
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.reloadHint {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
 .primaryButton,
 .secondaryButton {
   min-height: 36px;

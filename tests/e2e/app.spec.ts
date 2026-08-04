@@ -112,6 +112,17 @@ test('renders the supporting workflow pages without visual runtime errors', asyn
   expect(rendererErrors).toEqual([])
 })
 
+test('shows the model-install guidance card on the face analyze step without models', async () => {
+  const window = await app.firstWindow()
+  await window.evaluate(id => {
+    window.location.hash = `#/sessions/${id}/face-kw`
+  }, sessionId)
+  await expect(window.getByText(/人脸模型未安装/)).toBeVisible()
+  await expect(window.getByRole('button', { name: '打开设置' })).toBeVisible()
+  await expect(window.getByText(/开始分析/)).toBeVisible()
+  expect(rendererErrors).toEqual([])
+})
+
 test('supports sequential and global similarity grouping modes', async () => {
   const window = await app.firstWindow()
   await window.evaluate(async (id) => {

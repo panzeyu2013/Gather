@@ -1,8 +1,13 @@
-import React, { useCallback, useRef, useState } from 'react'
-import { useFaceKwStore, type ClusterData } from './faceKwStore'
+import React, { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { useFaceKwStore, type ClusterData, type ClusterMemberData } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
+import { imageApi } from '../../api/image'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import styles from './StepReview.module.css'
+
+const MAX_PREVIEW_MEMBERS = 4
 
 export default function StepReview() {
   const {
@@ -11,6 +16,15 @@ export default function StepReview() {
     selectCluster,
   } = useFaceKwStore()
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const settings = useSettingsStore((s) => s.settings)
+  const loadSettings = useSettingsStore((s) => s.load)
+  const configuredThumbSize = parseInt(settings['thumbnail_size'] ?? '1024', 10)
+  const thumbSize = configuredThumbSize <= 320 ? 128 : 256
+
+  useEffect(() => {
+    if (Object.keys(settings).length === 0) loadSettings()
+  }, [loadSettings])
   const { data: clusters = [] } = useQuery({
     queryKey: ['face-clusters', sessionId],
     queryFn: async () => (await faceKwApi.getClusters(sessionId!)).map(cluster => ({
@@ -23,27 +37,20 @@ export default function StepReview() {
     await queryClient.invalidateQueries({ queryKey: ['face-clusters', sessionId] })
   }, [queryClient, sessionId])
 
+  const roleFilter = searchParams.get('role')
+  const visibleClusters = roleFilter
+    ? clusters.filter((c) => c.binding?.roleName === roleFilter)
+    : clusters
+  const clearRoleFilter = useCallback(() => {
+    setSearchParams({}, { replace: true })
+  }, [setSearchParams])
+
   const selectedCluster = clusters.find((c) => c.id === selectedClusterId) ?? null
 
   const [roleName, setRoleName] = useState(selectedCluster?.binding?.roleName ?? '')
   const [keywords, setKeywords] = useState(selectedCluster?.binding?.keywords?.join(', ') ?? '')
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null)
-  const [thumbnails, setThumbnails] = useState<Record<number, string>>({})
   const [actionError, setActionError] = useState<string | null>(null)
-  const loadedRef = useRef<Set<number>>(new Set())
-
-  const loadThumbnail = useCallback(async (clusterId: number) => {
-    if (!sessionId) return
-    if (loadedRef.current.has(clusterId)) return
-    loadedRef.current.add(clusterId)
-    try {
-      const { base64 } = await faceKwApi.getClusterThumbnail(sessionId, clusterId)
-      setThumbnails(prev => ({ ...prev, [clusterId]: base64 }))
-    } catch (e) {
-      console.warn('Failed to load thumbnail', clusterId, e)
-      setThumbnails(prev => ({ ...prev, [clusterId]: '' }))
-    }
-  }, [sessionId])
 
   const handleSelectCluster = useCallback(
     (cluster: ClusterData) => {
@@ -103,12 +110,6 @@ export default function StepReview() {
       await refreshClusters()
       selectCluster(sessionId, mergeTargetId)
       setMergeTargetId(null)
-      loadedRef.current.delete(mergeTargetId)
-      setThumbnails(prev => {
-        const next = { ...prev }
-        delete next[mergeTargetId]
-        return next
-      })
     } catch (e) {
       setActionError(`合并失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
@@ -119,29 +120,29 @@ export default function StepReview() {
       <section className={styles.clusterPane}>
         <header className={styles.paneHeader}>
           <h3 className={styles.paneTitle}>人脸聚类</h3>
-          <span className={styles.paneCount}>{clusters.length} 组</span>
+          <span className={styles.paneCount}>{visibleClusters.length} 组</span>
         </header>
+        {roleFilter && (
+          <div className={styles.roleFilterBar}>
+            <span>已按角色「{roleFilter}」筛选</span>
+            <button
+              type="button"
+              className={styles.roleFilterClear}
+              onClick={clearRoleFilter}
+            >
+              清除筛选
+            </button>
+          </div>
+        )}
         <div className={styles.clusterGrid}>
-          {clusters.map((cluster) => (
+          {visibleClusters.map((cluster) => (
             <button
               type="button"
               key={cluster.id}
-              onClick={() => {
-                handleSelectCluster(cluster)
-                loadThumbnail(cluster.id)
-              }}
+              onClick={() => handleSelectCluster(cluster)}
               className={selectedClusterId === cluster.id ? styles.clusterCardSelected : styles.clusterCard}
             >
-              <div className={styles.clusterThumb}>
-                {thumbnails[cluster.id] ? (
-                  <img
-                    src={`data:image/jpeg;base64,${thumbnails[cluster.id]}`}
-                    alt={cluster.label}
-                  />
-                ) : (
-                  <span>{cluster.size}</span>
-                )}
-              </div>
+              <ClusterThumb members={cluster.members} size={cluster.size} thumbSize={thumbSize} />
               <div className={styles.clusterLabel}>{cluster.label}</div>
               <div className={styles.clusterMeta}>{cluster.size} 张人脸</div>
               {cluster.binding && (
@@ -256,6 +257,49 @@ export default function StepReview() {
           <div className={styles.emptyDetail}>选择一个聚类以查看详情</div>
         )}
       </aside>
+    </div>
+  )
+}
+
+function ClusterThumb({ members, size, thumbSize }: {
+  members: ClusterMemberData[]
+  size: number
+  thumbSize: number
+}) {
+  const [failed, setFailed] = useState<Set<string>>(() => new Set())
+
+  const previewMembers = members.slice(0, MAX_PREVIEW_MEMBERS)
+
+  if (previewMembers.length === 0) {
+    return (
+      <div className={styles.clusterThumb}>
+        <span>{size}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className={styles.clusterThumb}>
+      <div className={styles.faceGrid}>
+        {previewMembers.map((m) => {
+          const key = `${m.memberId}-${m.photoPath}`
+          const src = !failed.has(key) ? imageApi.thumbnailUrl(m.photoPath, thumbSize) : null
+          return (
+            <div key={key} className={styles.faceCell}>
+              {src ? (
+                <img
+                  src={src}
+                  alt={m.filename}
+                  loading="lazy"
+                  onError={() => setFailed((prev) => new Set(prev).add(key))}
+                />
+              ) : (
+                <div className={styles.facePlaceholder} />
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

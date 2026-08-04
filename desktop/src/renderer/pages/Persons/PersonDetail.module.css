@@ -90,6 +90,22 @@
   cursor: pointer;
 }
 
+.reviewBtn {
+  background: transparent;
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reviewBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .deleteBtn {
   background: transparent;
   border: 1px solid var(--color-error);

@@ -289,6 +289,18 @@
   color: var(--color-text);
 }
 
+.reloadRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.reloadHint {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
 .writebackPreview {
   max-height: 260px;
   margin: 10px 0 14px;

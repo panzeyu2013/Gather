@@ -61,6 +61,7 @@ export type {
   FkwConfirmSyncParams,
   FkwConfirmCleanupParams,
   FkwCleanupParams,
+  FaceModelsStatusData,
   FaceObservation,
   FaceCluster,
   ClusterMember,
