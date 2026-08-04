@@ -10,6 +10,7 @@ import { IMAGE_CONFIG } from '../image-config'
 import type { ImageDecoder, DecodeResult } from '../decoder'
 
 const HEADER_READ_SIZE = 65536
+const MAX_FALLBACK_FULL_READ_BYTES = 192 * 1024 * 1024
 
 export class SharpDecoder implements ImageDecoder {
   readonly name = 'Sharp (JPEG/PNG/TIFF/WebP + RAW embedded preview)'
@@ -142,8 +143,13 @@ export class SharpDecoder implements ImageDecoder {
 
     // Compatibility fallback for synthetic, unusual, or partially supported
     // TIFF-based RAW containers whose JPEG segment ExifTool does not expose.
+    // Bound the full read so a large or corrupt RAW cannot pull hundreds of
+    // MB into the main process heap; returning null just falls through to the
+    // next decoder (sharp path / sips on macOS).
     let buf: Buffer
     try {
+      const fileStat = await fsp.stat(filepath)
+      if (fileStat.size > MAX_FALLBACK_FULL_READ_BYTES) return null
       buf = await fsp.readFile(filepath)
     } catch {
       return null
@@ -278,24 +284,31 @@ function readTiffOrientation(buf: Buffer): number {
   return 1
 }
 
-function findJpegSegments(buf: Buffer): JpegSegment[] {
+function findEoi(buf: Buffer, start: number, end: number): number {
+  for (let j = start; j < end - 1; j++) {
+    if (buf[j] === 0xFF && buf[j + 1] === 0xD9) return j + 2
+  }
+  return -1
+}
+
+// Single-pass segment scan. A SOI without any EOI ahead of it means there is
+// no complete JPEG segment anywhere later in the buffer, so scanning stops
+// there; this keeps the worst case linear instead of O(n²).
+export function findJpegSegments(buf: Buffer): JpegSegment[] {
   const segments: JpegSegment[] = []
   const len = buf.length
-
-  for (let i = 0; i < len - 1; i++) {
-    if (buf[i] !== 0xFF || buf[i + 1] !== 0xD8) continue
-
-    let end = -1
-    for (let j = i + 2; j < len - 1; j++) {
-      if (buf[j] === 0xFF && buf[j + 1] === 0xD9) { end = j + 2; break }
+  let i = 0
+  while (i < len - 1) {
+    if (buf[i] !== 0xFF || buf[i + 1] !== 0xD8) {
+      i++
+      continue
     }
-    if (end < 0) { i++; continue }
-
+    const end = findEoi(buf, i + 2, len)
+    if (end < 0) break
     const size = end - i
     if (size >= 10000) segments.push({ offset: i, size })
     i = end
   }
-
   return segments
 }
 

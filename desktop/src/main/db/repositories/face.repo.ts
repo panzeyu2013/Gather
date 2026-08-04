@@ -262,6 +262,50 @@ export class FaceRepository {
     ).run(sessionId, photoId)
   }
 
+  /**
+   * Atomically replace a photo's face observations. Old observations are only
+   * removed once the new ones are committed, so a failed run never destroys
+   * previously valid detections for a photo.
+   */
+  replaceObservationsByPhoto(
+    sessionId: string,
+    photoId: string,
+    observations: FaceObservationInput[],
+  ): number[] {
+    const ids: number[] = []
+    const deleteStmt = this.db.prepare(
+      'DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?',
+    )
+    const insertStmt = this.db.prepare(
+      `INSERT INTO face_observations
+       (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
+        source_file_size, source_file_mtime_ms, analysis_signature)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    const replace = this.db.transaction(() => {
+      deleteStmt.run(sessionId, photoId)
+      for (const obs of observations) {
+        const embBuffer = Buffer.from(new Float32Array(obs.embedding).buffer)
+        const result = insertStmt.run(
+          obs.photoId,
+          sessionId,
+          obs.bboxX,
+          obs.bboxY,
+          obs.bboxW,
+          obs.bboxH,
+          embBuffer,
+          obs.confidence,
+          obs.sourceFileSize ?? 0,
+          obs.sourceFileMtimeMs ?? 0,
+          obs.analysisSignature ?? '',
+        )
+        ids.push(Number(result.lastInsertRowid))
+      }
+    })
+    replace()
+    return ids
+  }
+
   getFaceThumbDir(): string {
     const dir = this.resolveFaceThumbDir()
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })

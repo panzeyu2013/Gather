@@ -124,6 +124,11 @@ export class IndexService {
     @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
     @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
   ) {}
+  /**
+   * Test seam: the fs stat used by the incremental scan, overridable to
+   * simulate files disappearing between the directory listing and stat().
+   */
+  public stat: typeof stat = stat
 
   private invalidatePathDependentAnalysis(photoIds: readonly string[]): void {
     if (photoIds.length === 0) return
@@ -309,16 +314,24 @@ export class IndexService {
       // severe disk thrashing. Keep this bounded independently of batch size.
       const results = await mapConcurrent(filepaths, 4, async filepath => {
         const normalized = path.normalize(path.resolve(filepath))
+        // Confirm the file exists before counting it as discovered. A file
+        // deleted between the directory listing and this stat() must not
+        // enter discoveredSet, or the final pass would never mark it missing
+        // (ghost photos).
+        let source: Awaited<ReturnType<typeof stat>>
+        try {
+          source = await this.stat(filepath)
+        } catch {
+          return { kind: 'missing' as const, filepath }
+        }
         discoveredSet.add(normalized)
         const photo = existingByPath.get(normalized)
         try {
           if (!photo) {
             const dimensions = await this.imageService.getDimensions(filepath)
-            const source = await stat(filepath)
             const checksum = await sha256File(filepath)
             return { kind: 'new' as const, filepath, dimensions, source, checksum }
           }
-          const source = await stat(filepath)
           const indexed = photo.asset_file_id ? fileStats.get(photo.asset_file_id) : undefined
           const contentChanged = !indexed ||
             indexed.file_size !== source.size ||
@@ -473,6 +486,8 @@ export class IndexService {
           }
         } else if (result.kind === 'failed') {
           failed.push(result.filepath)
+        } else if (result.kind === 'missing') {
+          // Not added to discoveredSet: reconciled as missing by the final pass.
         } else {
           skipped++
         }
@@ -505,7 +520,7 @@ export class IndexService {
       for (const filepath of new Set(requestedPaths.map(candidate => path.resolve(candidate)))) {
         if (excludedRoots.some(excluded => isWithin(filepath, excluded))) continue
         try {
-          const source = await stat(filepath)
+          const source = await this.stat(filepath)
           if (source.isFile() && SUPPORTED.has(path.extname(filepath).toLowerCase())) {
             candidates.push(filepath)
             discovered++

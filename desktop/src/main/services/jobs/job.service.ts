@@ -14,6 +14,11 @@ type JobExecutor = (job: AnalysisJobData, context: JobRunContext) => Promise<unk
 type JobProgressSink = (job: AnalysisJobData, update: JobProgressUpdate) => void
 const MAX_CONCURRENT_JOBS = 2
 const PROGRESS_WRITE_INTERVAL_MS = 250
+// Large face/similarity analyses routinely exceed ten minutes, so a shorter
+// default would surface spurious timeouts while the background job is still
+// legitimately running. The timeout only guards against permanently-stuck
+// jobs; callers may pass a smaller timeoutMs explicitly.
+const WAIT_FOR_RESULT_TIMEOUT_MS = 60 * 60_000
 
 export class JobCancelledError extends Error {
   constructor() {
@@ -123,7 +128,7 @@ export class JobService {
     return retried
   }
   clearCompleted(): number { return this.repo.clearCompleted() }
-  waitForResult<T>(jobId: string): Promise<T> {
+  waitForResult<T>(jobId: string, options: { timeoutMs?: number } = {}): Promise<T> {
     const completed = this.completedResults.get(jobId)
     if (completed) {
       if (completed.error !== undefined) return Promise.reject(completed.error)
@@ -139,11 +144,34 @@ export class JobService {
       )
     }
     return new Promise<T>((resolve, reject) => {
+      const timeoutMs = options.timeoutMs ?? WAIT_FOR_RESULT_TIMEOUT_MS
+      let settled = false
+      let entry: { resolve: (value: unknown) => void; reject: (error: unknown) => void }
+      const timer = setTimeout(() => {
+        settled = true
+        const waiters = this.resultWaiters.get(jobId) ?? []
+        const index = waiters.indexOf(entry)
+        if (index >= 0) waiters.splice(index, 1)
+        if (waiters.length === 0) this.resultWaiters.delete(jobId)
+        reject(new Error(`Timed out waiting for analysis job ${jobId}`))
+      }, timeoutMs)
+      if (typeof timer.unref === 'function') timer.unref()
+      entry = {
+        resolve: (value: unknown) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(value as T)
+        },
+        reject: (error: unknown) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          reject(error)
+        },
+      }
       const waiters = this.resultWaiters.get(jobId) ?? []
-      waiters.push({
-        resolve: value => resolve(value as T),
-        reject,
-      })
+      waiters.push(entry)
       this.resultWaiters.set(jobId, waiters)
     })
   }

@@ -217,6 +217,45 @@ describe('core reliability services', () => {
     expect(repo.get(job.id)?.attemptCount).toBe(2)
   })
 
+  it('rejects waitForResult after a timeout when a job never finishes', async () => {
+    const repo = new FakeJobRepository()
+    const jobs = new JobService(repo as never)
+    services.push(jobs)
+    jobs.registerExecutor('hang', async (_job, context) => {
+      await new Promise<void>((resolve) => {
+        context.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+    })
+    jobs.start()
+
+    const job = jobs.create({
+      type: 'hang',
+      scopeType: 'session',
+      scopeId: 'session',
+      dedupeKey: 'hang:session',
+    })
+    await waitFor(() => repo.get(job.id)?.status === 'running')
+    await expect(jobs.waitForResult(job.id, { timeoutMs: 50 }))
+      .rejects.toThrow(/Timed out waiting for analysis job/)
+  })
+
+  it('rejects waitForResult immediately for a job that already failed', async () => {
+    const repo = new FakeJobRepository()
+    const jobs = new JobService(repo as never)
+    services.push(jobs)
+    jobs.registerExecutor('boom', async () => { throw new Error('boom') })
+    jobs.start()
+
+    const job = jobs.create({
+      type: 'boom',
+      scopeType: 'session',
+      scopeId: 'session',
+      dedupeKey: 'boom:session',
+    })
+    await waitFor(() => repo.get(job.id)?.status === 'failed')
+    await expect(jobs.waitForResult(job.id)).rejects.toThrow('boom')
+  })
+
   it('reindexes changed files and marks disappeared files without SQL variable limits', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-index-test-'))
     temporaryDirectories.push(root)

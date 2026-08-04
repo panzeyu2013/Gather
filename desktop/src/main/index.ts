@@ -377,9 +377,13 @@ function registerIpc(): void {
       throw new Error('Invalid directory path')
     }
     const files: string[] = []
+    // Bound the walk so scanning a huge tree cannot exhaust the main-process
+    // memory with an unbounded file list returned over IPC.
+    const MAX_SCANNED_FILES = 50_000
     const scan = async (directory: string): Promise<void> => {
       const entries = await readdir(directory, { withFileTypes: true })
       for (const entry of entries) {
+        if (files.length >= MAX_SCANNED_FILES) return
         // Do not follow symlinks: a link may escape the selected directory or
         // introduce a directory cycle.
         if (entry.isSymbolicLink()) continue

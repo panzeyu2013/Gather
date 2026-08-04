@@ -245,7 +245,6 @@ export class FaceKwService {
             onProgress?.({ current: i + 1, total: totalPhotos, message: 'Reusing cached faces...' })
             continue
           }
-          this.faceRepo.deleteObservationsByPhoto(sessionId, photo.id)
           const preview = await this.imageService.getPreview(
             photo.filepath,
             previewMaxDimension,
@@ -264,21 +263,23 @@ export class FaceKwService {
           )
           const faces = inference.observations
           encodingFailures += inference.encodingFailures
+          const observations = faces.map(face => ({
+              photoId: photo.id,
+              bboxX: face.bbox[0],
+              bboxY: face.bbox[1],
+              bboxW: face.bbox[2],
+              bboxH: face.bbox[3],
+              embedding: face.embedding,
+              confidence: face.confidence,
+              sourceFileSize: sourceStat.size,
+              sourceFileMtimeMs: sourceStat.mtimeMs,
+              analysisSignature,
+            }))
+          // Replace old observations only after inference succeeded: a failed
+          // run must not destroy previously valid detections for this photo.
+          this.faceRepo.replaceObservationsByPhoto(sessionId, photo.id, observations)
           if (faces.length > 0) {
             totalFaces += faces.length
-            const observations = faces.map(face => ({
-                photoId: photo.id,
-                bboxX: face.bbox[0],
-                bboxY: face.bbox[1],
-                bboxW: face.bbox[2],
-                bboxH: face.bbox[3],
-                embedding: face.embedding,
-                confidence: face.confidence,
-                sourceFileSize: sourceStat.size,
-                sourceFileMtimeMs: sourceStat.mtimeMs,
-                analysisSignature,
-              }))
-            this.faceRepo.saveObservations(sessionId, observations)
           }
           this.faceRepo.upsertAnalysisState(
             sessionId,

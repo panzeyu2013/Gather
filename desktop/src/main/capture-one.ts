@@ -9,6 +9,16 @@ import type { SettingsService } from './services/settings/settings.service'
 
 const execFile = promisify(execFileCb)
 
+// Allow legitimate Capture One install names such as "Capture One Pro",
+// "Capture One Express" or "Capture One 16 Pro" while keeping the name safe
+// to embed into an osascript `tell application "…"` string. The source is the
+// local process list, so this only guards against stray/hostile process names.
+export function sanitizeCaptureOneAppName(name: string): string | null {
+  const trimmed = name.trim()
+  if (!/^Capture One( [A-Za-z0-9 ._+()$-]*)?$/i.test(trimmed)) return null
+  return trimmed
+}
+
 function getSettings(): SettingsService {
   return getService<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
 }
@@ -41,12 +51,11 @@ async function getCaptureOneAppName(): Promise<string | null> {
   }
   const appName = names.length > 0 ? names[0] : null
   if (!appName) return null
-  // NOTE: Regex only allows exact matches like "Capture One" or "Capture One 16".
-  // If Capture One releases a version with a suffix or non-numeric tag, this will reject it.
-  if (!/^Capture One( \d+)?$/.test(appName.trim())) {
+  const sanitized = sanitizeCaptureOneAppName(appName)
+  if (!sanitized) {
     throw new Error(`Potentially unsafe process name rejected: ${appName}`)
   }
-  return appName
+  return sanitized
 }
 
 /** 获取 Capture One 当前选中的照片路径列表 */

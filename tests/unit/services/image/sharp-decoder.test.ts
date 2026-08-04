@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { SharpDecoder } from '../../../../desktop/src/main/services/image/decoders/sharp-decoder'
+import { SharpDecoder, findJpegSegments } from '../../../../desktop/src/main/services/image/decoders/sharp-decoder'
 import type { SettingsService } from '../../../../desktop/src/main/services/settings/settings.service'
 
 const tempDirs: string[] = []
@@ -60,5 +60,30 @@ describe('SharpDecoder RAW preview index', () => {
 
     const second = await new SharpDecoder(settings).getThumbnail(sourcePath, 256)
     expect(second.buffer.length).toBeGreaterThan(0)
+  })
+
+  it('scans JPEG segments in linear time for pathological SOI-only input', () => {
+    // A buffer full of SOI markers (0xFF 0xD8) with no EOI is the worst case
+    // for a quadratic scan. The single-pass implementation must finish
+    // immediately and find no segments.
+    const pathological = Buffer.alloc(4_000_000)
+    for (let i = 0; i < pathological.length; i += 2) {
+      pathological[i] = 0xFF
+      pathological[i + 1] = 0xD8
+    }
+    const started = Date.now()
+    expect(findJpegSegments(pathological)).toEqual([])
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
+  it('finds embedded JPEG segments after arbitrary prefix bytes', () => {
+    const prefix = Buffer.from('garbage-that-is-not-a-jpeg'.repeat(400))
+    const body = Buffer.alloc(20_000, 0xAA)
+    body[0] = 0xFF
+    body[1] = 0xD8
+    body[body.length - 2] = 0xFF
+    body[body.length - 1] = 0xD9
+    const segments = findJpegSegments(Buffer.concat([prefix, body]))
+    expect(segments).toEqual([{ offset: prefix.length, size: body.length }])
   })
 })
