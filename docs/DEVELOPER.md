@@ -7,7 +7,6 @@
 ---
 
 ## 测试布局（当前有效）
-
 ```
 tests/
 ├── unit/            # 所有 vitest 单元测试（vitest.config.ts 的 include 根）
@@ -20,6 +19,18 @@ tests/
 
 - 新增单元测试一律放 `tests/unit/` 对应子目录；相对导入按 `tests/unit/` 的层级计算。
 - 架构不变量测试（`tests/unit/shared/architecture-invariants.test.ts`）禁止改动测试路径约定。
+
+---
+
+## 主进程依赖注入约定（当前有效）
+
+- **平台相关的组合只允许出现在 DI 组装根（`desktop/src/main/di/init.ts`）**，服务核心不得出现
+  `process.platform` / `process.platform === 'darwin'` 分支。
+- 典型：解码器集合通过 `DI_TOKENS.IMAGE_DECODERS` 注入，由组合根按平台组装
+  （darwin 注册 `[SharpDecoder, SipsDecoder]`，其余仅 `SharpDecoder`）；
+  `ImageService` 核心只消费注入的列表，回退逻辑是"按注册顺序依次尝试"的通用链，
+  因此可在任意平台被确定性测试。
+- 新增平台相关能力时，照此模式：组合根决定"有哪些"，服务核心决定"怎么用"。
 
 ---
 

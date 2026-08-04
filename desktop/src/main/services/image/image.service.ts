@@ -4,8 +4,6 @@ import * as nodePath from 'path'
 import { app } from 'electron'
 import { SettingsService } from '../settings/settings.service'
 import { DecoderRegistry } from './registry'
-import { SharpDecoder } from './decoders/sharp-decoder'
-import { SipsDecoder } from './decoders/sips-decoder'
 import { readDimensions } from './decoders/fast-dimensions'
 import { DiskCacheManager, EvictionPolicy } from './disk-cache'
 import type { DecodeResult, ImageDecoder } from './decoder'
@@ -215,10 +213,10 @@ export class ImageService {
   constructor(
     @inject(DI_TOKENS.THUMBNAIL_CACHE) cache: ThumbnailCache,
     @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
+    @inject(DI_TOKENS.IMAGE_DECODERS) decoders: ImageDecoder[],
   ) {
-    this.registry.register(new SharpDecoder(settings))
-    if (process.platform === 'darwin') {
-      this.registry.register(new SipsDecoder())
+    for (const decoder of decoders) {
+      this.registry.register(decoder)
     }
     this.thumbnailCache = cache
     this.decodeLimiter = new DecodeLimiter(() => {
@@ -366,31 +364,25 @@ export class ImageService {
     operation: string,
     decode: (decoder: ImageDecoder) => Promise<T>,
   ): Promise<T> {
-    const decoder = this.registry.resolve(path)
-    try {
-      return await decode(decoder)
-    } catch (primaryError) {
-      if (!(decoder instanceof SharpDecoder) || process.platform !== 'darwin') {
-        throw primaryError
-      }
-
-      const fallback = new SipsDecoder()
-      if (!fallback.supports(nodePath.extname(path).toLowerCase())) {
-        throw primaryError
-      }
-
-      console.warn(
-        `[ImageService] ${decoder.name} failed for ${operation}: ${path}; falling back to ${fallback.name}`,
-        primaryError,
-      )
+    // Try every registered decoder that claims the extension, in registration
+    // order. The composition root decides which decoders exist per platform,
+    // so this core never branches on process.platform.
+    const candidates = this.registry.resolveAll(path)
+    const errors: unknown[] = []
+    for (const decoder of candidates) {
       try {
-        return await decode(fallback)
-      } catch (fallbackError) {
-        throw new AggregateError(
-          [primaryError, fallbackError],
-          `Unable to decode ${path} for ${operation} with ${decoder.name} or ${fallback.name}`,
+        return await decode(decoder)
+      } catch (error) {
+        errors.push(error)
+        console.warn(
+          `[ImageService] ${decoder.name} failed for ${operation}: ${path}`,
+          error,
         )
       }
     }
+    throw new AggregateError(
+      errors,
+      `Unable to decode ${path} for ${operation} with any of: ${candidates.map(d => d.name).join(', ')}`,
+    )
   }
 }

@@ -8,11 +8,13 @@ export class DecoderRegistry {
     this.decoders.push(decoder)
   }
 
-  resolve(filePath: string): ImageDecoder {
+  /** All decoders that claim the file extension, in registration order. */
+  resolveAll(filePath: string): ImageDecoder[] {
     const ext = path.extname(filePath).toLowerCase()
-    for (const d of this.decoders) {
-      if (d.supports(ext)) return d
+    const matches = this.decoders.filter(d => d.supports(ext))
+    if (matches.length === 0) {
+      throw new Error(`Unsupported file extension: ${ext}`)
     }
-    throw new Error(`Unsupported file extension: ${ext}`)
+    return matches
   }
 }

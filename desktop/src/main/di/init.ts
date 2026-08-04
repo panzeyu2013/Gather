@@ -30,6 +30,9 @@ import { WritebackService } from '../services/writeback/writeback.service'
 import { TemplateService } from '../services/template/template.service'
 import { FilterEngine } from '../services/filter/filter-engine'
 import { ImageService, TieredThumbnailCache } from '../services/image'
+import { SharpDecoder } from '../services/image/decoders/sharp-decoder'
+import { SipsDecoder } from '../services/image/decoders/sips-decoder'
+import type { ImageDecoder } from '../services/image/decoder'
 import { MetadataWriterRouter } from '../services/xmp/metadata-writer-router'
 import { MetadataSyncCoordinator } from '../services/metadata/metadata-sync-coordinator'
 import { MetadataMutationService } from '../services/metadata/metadata-mutation.service'
@@ -86,6 +89,20 @@ export function initContainer(): void {
 
   container.registerSingleton(DI_TOKENS.WRITER_ROUTER, MetadataWriterRouter)
   container.registerSingleton(DI_TOKENS.THUMBNAIL_CACHE, TieredThumbnailCache)
+
+  // Decoder composition lives at the composition root: sips is a macOS system
+  // tool, so it is only available on darwin. The ImageService core stays
+  // platform-agnostic and receives the finished list.
+  container.register(DI_TOKENS.IMAGE_DECODERS, {
+    useFactory: (c) => {
+      const settings = c.resolve<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
+      const decoders: ImageDecoder[] = [new SharpDecoder(settings)]
+      if (process.platform === 'darwin') {
+        decoders.push(new SipsDecoder())
+      }
+      return decoders
+    },
+  })
 }
 
 export function getService<T>(token: symbol): T {

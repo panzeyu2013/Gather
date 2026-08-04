@@ -47,4 +47,5 @@ export const DI_TOKENS = {
 
   WRITER_ROUTER: Symbol('MetadataWriterRouter'),
   THUMBNAIL_CACHE: Symbol('TieredThumbnailCache'),
+  IMAGE_DECODERS: Symbol('ImageDecoders'),
 }

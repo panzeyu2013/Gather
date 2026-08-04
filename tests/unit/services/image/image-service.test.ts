@@ -56,7 +56,9 @@ import {
   ImageService,
   type ThumbnailCache,
 } from '../../../../desktop/src/main/services/image/image.service'
-import type { DecodeResult } from '../../../../desktop/src/main/services/image/decoder'
+import type { DecodeResult, ImageDecoder } from '../../../../desktop/src/main/services/image/decoder'
+import { SharpDecoder } from '../../../../desktop/src/main/services/image/decoders/sharp-decoder'
+import { SipsDecoder } from '../../../../desktop/src/main/services/image/decoders/sips-decoder'
 import { IMAGE_CONFIG } from '../../../../desktop/src/main/services/image/image-config'
 import type { SettingsService } from '../../../../desktop/src/main/services/settings/settings.service'
 
@@ -65,6 +67,14 @@ const decoded: DecodeResult = {
   format: 'jpeg',
   width: 1200,
   height: 800,
+}
+
+function sharpOnly(settings: SettingsService): ImageDecoder[] {
+  return [new SharpDecoder(settings)]
+}
+
+function sharpThenSips(settings: SettingsService): ImageDecoder[] {
+  return [new SharpDecoder(settings), new SipsDecoder()]
 }
 
 function createCache(): ThumbnailCache & { values: Map<string, DecodeResult> } {
@@ -101,7 +111,8 @@ describe('ImageService preview pipeline', () => {
 
   it('coalesces concurrent thumbnail requests for the same RAW file', async () => {
     const cache = createCache()
-    const service = new ImageService(cache, createSettings())
+    const settings = createSettings()
+    const service = new ImageService(cache, settings, sharpOnly(settings))
 
     const results = await Promise.all(
       Array.from({ length: 10 }, () => service.getThumbnail('/photos/a.nef', 2880)),
@@ -113,27 +124,40 @@ describe('ImageService preview pipeline', () => {
     expect(cache.set).toHaveBeenCalledTimes(1)
   })
 
-  // sips is a macOS system tool: the ImageService only registers the SipsDecoder
-  // on darwin, so the sharp-to-sips fallback path only exists on macOS.
-  it.skipIf(process.platform !== 'darwin')(
-    'uses the same Sharp-to-sips fallback for priority requests',
-    async () => {
-      const cache = createCache()
-      const service = new ImageService(cache, createSettings())
-      decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('unsupported image'))
-      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('falls back to the next registered decoder for priority requests', async () => {
+    const cache = createCache()
+    const settings = createSettings()
+    const service = new ImageService(cache, settings, sharpThenSips(settings))
+    decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('unsupported image'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-      await service.prioritizeThumbnail('/photos/a.nef', 2880)
+    await service.prioritizeThumbnail('/photos/a.nef', 2880)
 
-      expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
-      expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
-      expect(cache.values.size).toBe(1)
-      warning.mockRestore()
-    },
-  )
+    expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
+    expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
+    expect(cache.values.size).toBe(1)
+    warning.mockRestore()
+  })
+
+  it('tries every registered decoder before giving up', async () => {
+    const cache = createCache()
+    const settings = createSettings()
+    const service = new ImageService(cache, settings, sharpThenSips(settings))
+    decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('sharp failed'))
+    decoderMocks.sipsThumbnail.mockRejectedValueOnce(new Error('sips failed'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(service.prioritizeThumbnail('/photos/a.nef', 2880))
+      .rejects.toThrow(AggregateError)
+
+    expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
+    expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
+    warning.mockRestore()
+  })
 
   it('coalesces preview and dimensions requests independently', async () => {
-    const service = new ImageService(createCache(), createSettings())
+    const settings = createSettings()
+    const service = new ImageService(createCache(), settings, sharpOnly(settings))
 
     await Promise.all([
       service.getPreview('/photos/a.nef', 4096),
@@ -149,8 +173,10 @@ describe('ImageService preview pipeline', () => {
 
   it('reuses a persistent preview cache across service instances', async () => {
     const cache = createCache()
-    await new ImageService(cache, createSettings()).getPreview('/photos/a.nef', 4096)
-    await new ImageService(cache, createSettings()).getPreview('/photos/a.nef', 4096)
+    const settings = createSettings()
+    const decoders = sharpOnly(settings)
+    await new ImageService(cache, settings, decoders).getPreview('/photos/a.nef', 4096)
+    await new ImageService(cache, settings, decoders).getPreview('/photos/a.nef', 4096)
 
     expect(decoderMocks.sharpPreview).toHaveBeenCalledTimes(1)
     expect(decoderMocks.sharpPreview).toHaveBeenCalledWith('/photos/a.nef', 2048)
@@ -213,7 +239,8 @@ describe('ImageService preview pipeline', () => {
   })
 
   it('limits decode work even when callers bypass the preload queue', async () => {
-    const service = new ImageService(createCache(), createSettings(2))
+    const settings = createSettings(2)
+    const service = new ImageService(createCache(), settings, sharpOnly(settings))
     let active = 0
     let maxActive = 0
     decoderMocks.sharpThumbnail.mockImplementation(async () => {
