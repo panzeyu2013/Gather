@@ -65,5 +65,6 @@
 1. **Asset 主读 Cutover**：必须在 dual-read/shadow-read 经历**至少一个完整稳定版本且
    不一致率为 0** 后执行；当前保留兼容桥符合 ADR-001~004 的迁移策略。
 2. **Capture One 人工 Load-Metadata 矩阵**：自动测试已通过 ExifTool 验证 Rating、
-   Label、Urgency、Subject 与未知字段保留；但真实用户 Catalog 的人工 Load Metadata
-   矩阵仍须在正式发布前由测试人员执行。
+   Label、Urgency、Subject 与未知字段保留；`tests/e2e/face-workflow.spec.ts` 现可本地
+   自动跑通 RAW 人脸全流程并校验 XMP 写回内容（素材见 `tests/fixtures/local-fixtures.md`）。
+   但真实用户 Catalog 的人工 Load Metadata 矩阵仍须在正式发布前由测试人员执行。

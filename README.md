@@ -132,6 +132,12 @@ npm run test:e2e      # Production Electron smoke workflow
 npm run electron      # Build and launch the local production app
 ```
 
+The face-keyword end-to-end test needs ONNX models and RAW photos with faces,
+which cannot be committed. Run `node scripts/setup-local-face-fixtures.mjs`
+and drop 2+ RAW photos (or symlink a folder) into `tests/fixtures/local/raw/`;
+the test then runs automatically, otherwise it is skipped.
+See [tests/fixtures/local-fixtures.md](tests/fixtures/local-fixtures.md).
+
 See [docs/DEVELOPER.md](docs/DEVELOPER.md) for detailed architecture docs.
 
 ---

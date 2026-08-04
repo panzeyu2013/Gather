@@ -135,6 +135,16 @@
 
 ## 四、人脸标注（Face KW）
 
+> 自动化覆盖：`tests/e2e/face-workflow.spec.ts` 已实现全链路端到端测试（导入 RAW →
+> 预览解码 → ONNX 检测/编码 → DBSCAN 聚类 → 绑定 → 预览 → XMP 写回 → 确认同步 →
+> 清理）。素材（ONNX 模型 + 含人脸的 RAW）不可入库，使用 git-ignored 的
+> `tests/fixtures/local/` 目录本地提供：先运行
+> `node scripts/setup-local-face-fixtures.mjs` 软链接模型，再向
+> `tests/fixtures/local/raw/` 放入（或软链接）2+ 张含人脸的 RAW，最后
+> `npm run test:e2e`；素材缺失时该测试自动跳过。详情见
+> `tests/fixtures/local-fixtures.md`。以下人工项重点覆盖 UI 交互与真实
+> Capture One Catalog 的交叉验证。
+
 ### 4.1 页面导航与渲染
 - [ ] Dashboard 点击 Face Keywording → 进入 5 步向导
 - [ ] 顶部 5 步 stepper 完整显示：① Import ② Clusters ③ Bind ④ Preview ⑤ Writeback
@@ -289,14 +299,14 @@
 ### 调试命令
 
 ```bash
-# 查看 Python 进程
-ps aux | grep engine.py
+# 准备人脸 e2e 本地素材（软链接 ONNX 模型，创建 raw/ 目录）
+node scripts/setup-local-face-fixtures.mjs
+
+# 仅运行人脸 e2e（素材存在时）
+npx playwright test --config=tests/e2e/playwright.config.ts face-workflow
 
 # 查看 Electron 日志
 npm run dev 2>&1 | tee ~/Desktop/gather-debug.log
-
-# 仅运行 Python 后端测试
-cd /path/to/Gather && uv run pytest tests/ -v
 
 # 类型检查
 cd desktop && npm run typecheck

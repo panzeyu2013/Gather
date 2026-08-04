@@ -41,3 +41,7 @@ test-results/
 dist-electron/
 *.tsbuildinfo
 .mypy_cache/
+
+# Local-only e2e fixtures (ONNX models + RAW photos with faces).
+# See scripts/setup-local-face-fixtures.mjs
+tests/fixtures/local/

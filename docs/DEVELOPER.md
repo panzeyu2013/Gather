@@ -15,10 +15,31 @@ tests/
 │   └── shared/      # 跨进程协议与架构不变量
 ├── e2e/             # Playwright + Electron 端到端（*.spec.ts）
 └── fixtures/        # 单测共享素材
+    └── local/       # 本地面向 e2e 的素材（git-ignored，见下）
 ```
 
 - 新增单元测试一律放 `tests/unit/` 对应子目录；相对导入按 `tests/unit/` 的层级计算。
 - 架构不变量测试（`tests/unit/shared/architecture-invariants.test.ts`）禁止改动测试路径约定。
+
+### 人脸 e2e 本地素材（git-ignored）
+
+`tests/e2e/face-workflow.spec.ts` 需要两类无法入库的素材（体积、第三方许可、肖像权）：
+
+- ONNX 模型：`face_detector.onnx`（SCRFD）+ `face_encoder.onnx`（ArcFace）；
+- 含真实人脸的 RAW 照片（`.arw/.cr2/.cr3/.dng/.nef/.orf/.raf/.rw2`）。
+
+这两类素材放在 git-ignored 目录 `tests/fixtures/local/` 下，规范见
+`tests/fixtures/local-fixtures.md`。一键准备：
+
+```bash
+node scripts/setup-local-face-fixtures.mjs   # 软链接 ONNX 模型 + 创建 raw/
+# 再向 tests/fixtures/local/raw/ 放入 2+ 张含人脸的 RAW（或用软链接指向自己的照片目录）
+npm run test:e2e                             # 素材存在则自动运行，否则跳过
+```
+
+也可通过环境变量 `GATHER_FACE_E2E_SOURCE_DIR` / `GATHER_FACE_E2E_DETECTOR` /
+`GATHER_FACE_E2E_ENCODER` 指定素材路径。测试只读取照片副本（复制到临时目录），
+不会修改原始文件。
 
 ---
 

@@ -1,12 +1,23 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 
-const sourceDir = process.env.GATHER_FACE_E2E_SOURCE_DIR
-const detectorPath = process.env.GATHER_FACE_E2E_DETECTOR
-const encoderPath = process.env.GATHER_FACE_E2E_ENCODER
 const rawExtensions = new Set(['.arw', '.cr2', '.cr3', '.dng', '.nef', '.orf', '.raf', '.rw2'])
+
+// Fixtures can be supplied per-run via env vars, or placed in the git-ignored
+// local directory tests/fixtures/local/ (see tests/fixtures/local-fixtures.md
+// and scripts/setup-local-face-fixtures.mjs).
+const localDir = path.resolve(process.cwd(), 'tests', 'fixtures', 'local')
+const sourceDir = process.env.GATHER_FACE_E2E_SOURCE_DIR
+  || path.join(localDir, 'raw')
+const detectorPath = process.env.GATHER_FACE_E2E_DETECTOR
+  || path.join(localDir, 'models', 'face_detector.onnx')
+const encoderPath = process.env.GATHER_FACE_E2E_ENCODER
+  || path.join(localDir, 'models', 'face_encoder.onnx')
+
+const hasRawSamples = existsSync(sourceDir)
+  && readdirSync(sourceDir).some(name => rawExtensions.has(path.extname(name).toLowerCase()))
 
 let app: ElectronApplication
 let page: Page
@@ -28,8 +39,10 @@ async function command<T>(cmd: string, params: Record<string, unknown>): Promise
 
 test.describe('isolated RAW face keyword workflow', () => {
   test.skip(
-    !sourceDir || !detectorPath || !encoderPath,
-    'Set GATHER_FACE_E2E_SOURCE_DIR, GATHER_FACE_E2E_DETECTOR and GATHER_FACE_E2E_ENCODER',
+    !hasRawSamples || !existsSync(detectorPath) || !existsSync(encoderPath),
+    'Face fixtures missing: put RAW photos with faces in tests/fixtures/local/raw/ ' +
+    'and run `node scripts/setup-local-face-fixtures.mjs` for the ONNX models, ' +
+    'or set GATHER_FACE_E2E_SOURCE_DIR / GATHER_FACE_E2E_DETECTOR / GATHER_FACE_E2E_ENCODER',
   )
   test.setTimeout(10 * 60_000)
 

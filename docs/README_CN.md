@@ -109,6 +109,12 @@ npm run test:e2e     # 正式构建 Electron 冒烟流程
 npm run electron     # 构建并启动本地正式应用
 ```
 
+人脸标注端到端测试需要 ONNX 模型与含人脸的 RAW 照片（两者不可入库）。
+先运行 `node scripts/setup-local-face-fixtures.mjs` 软链接模型，再向
+`tests/fixtures/local/raw/` 放入（或软链接）2+ 张含人脸的 RAW，之后
+`npm run test:e2e` 会自动执行该测试，否则自动跳过。
+详见 [tests/fixtures/local-fixtures.md](../tests/fixtures/local-fixtures.md)。
+
 相关文档：[DEVELOPER.md](DEVELOPER.md) | [TEST.md](TEST.md)
 
 ---
