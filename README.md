@@ -138,16 +138,15 @@ and drop 2+ RAW photos (or symlink a folder) into `tests/fixtures/local/raw/`;
 the test then runs automatically, otherwise it is skipped.
 See [tests/fixtures/local-fixtures.md](tests/fixtures/local-fixtures.md).
 
-See [docs/DEVELOPER.md](docs/DEVELOPER.md) for detailed architecture docs.
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the developer and contributing guide.
 
 ---
 
 ## Related Documents
 
 - [中文说明](docs/README_CN.md)
-- [Development Guide](docs/DEVELOPER.md)
+- [Development & Contributing Guide](docs/DEVELOPMENT.md)
 - [Testing Guide](docs/TEST.md)
-- [Contributing](docs/CONTRIBUTING.md)
 
 ---
 

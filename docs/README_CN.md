@@ -115,7 +115,7 @@ npm run electron     # 构建并启动本地正式应用
 `npm run test:e2e` 会自动执行该测试，否则自动跳过。
 详见 [tests/fixtures/local-fixtures.md](../tests/fixtures/local-fixtures.md)。
 
-相关文档：[DEVELOPER.md](DEVELOPER.md) | [TEST.md](TEST.md)
+相关文档：[DEVELOPMENT.md](DEVELOPMENT.md) | [TEST.md](TEST.md)
 
 ---
 
