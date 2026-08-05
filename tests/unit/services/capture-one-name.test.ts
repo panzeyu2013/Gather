@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeCaptureOneAppName } from '../../../desktop/src/main/capture-one'
+import {
+  buildReloadMetadataScript,
+  sanitizeCaptureOneAppName,
+} from '../../../desktop/src/main/capture-one'
 
 describe('sanitizeCaptureOneAppName', () => {
   it('accepts exact and edition-suffixed Capture One install names', () => {
@@ -20,5 +23,11 @@ describe('sanitizeCaptureOneAppName', () => {
     expect(sanitizeCaptureOneAppName('Photoshop')).toBeNull()
     expect(sanitizeCaptureOneAppName('')).toBeNull()
     expect(sanitizeCaptureOneAppName('Finder')).toBeNull()
+  })
+
+  it('lets reload metadata AppleScript failures propagate to the caller', () => {
+    const script = buildReloadMetadataScript('Capture One Pro')
+    expect(script).toContain('reload metadata of current document')
+    expect(script).not.toMatch(/\btry\b|\bon error\b/)
   })
 })

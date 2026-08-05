@@ -80,6 +80,7 @@ export interface GatherAPI {
   readonly onPluginImport: (callback: (files: string[]) => void) => () => void
   readonly getSelectedPhotos: () => Promise<string[]>
   readonly reloadMetadata: () => Promise<void>
+  readonly rendererReady: () => Promise<void>
   readonly selectDirectory: () => Promise<string | null>
   readonly selectFiles: () => Promise<string[]>
   readonly getVersion: () => Promise<string>
@@ -174,6 +175,9 @@ const api: GatherAPI = {
 
   reloadMetadata: () =>
     ipcRenderer.invoke('c1:reload-metadata'),
+
+  rendererReady: () =>
+    ipcRenderer.invoke('app:renderer-ready'),
 
   selectDirectory: () =>
     ipcRenderer.invoke('app:select-directory'),

@@ -117,13 +117,15 @@ export class SessionService {
     if (!row.source_path) {
       const photos = this.photoRepo.getBySession(sessionId)
       // Deriving the parent directory of a single photo would make the
-      // indexer recursively watch that entire folder, so only recover a
-      // source path for real multi-photo selections.
+      // indexer recursively watch that entire folder. For multi-directory
+      // selections, commonParentDirectory also rejects the filesystem root;
+      // never substitute the first photo's directory because that would import
+      // files the user did not select.
       if (photos.length > 1) {
-        const firstPhoto = photos[0]
-        if (firstPhoto) {
-          row.source_path = path.dirname(firstPhoto.filepath)
-          this.sessionRepo.updateSourcePath(sessionId, row.source_path)
+        const sourcePath = commonParentDirectory(photos.map(photo => photo.filepath))
+        if (sourcePath) {
+          row.source_path = sourcePath
+          this.sessionRepo.updateSourcePath(sessionId, sourcePath)
         }
       }
     }

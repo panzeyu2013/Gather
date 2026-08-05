@@ -112,6 +112,26 @@ test('renders the supporting workflow pages without visual runtime errors', asyn
   expect(rendererErrors).toEqual([])
 })
 
+test('accepts Capture One plugin imports from outside the dashboard', async () => {
+  const window = await app.firstWindow()
+  await window.evaluate(() => {
+    window.location.hash = '#/settings'
+  })
+  await expect(window.getByRole('heading', { name: '设置', exact: true }).first()).toBeVisible()
+
+  await app.evaluate(({ BrowserWindow }, files) => {
+    BrowserWindow.getAllWindows()[0]?.webContents.send(
+      'gather:event',
+      'c1:plugin-import',
+      { files },
+    )
+  }, [photoPath])
+
+  await expect.poll(() => window.evaluate(() => window.location.hash))
+    .toMatch(/^#\/sessions\/[^/]+\/gallery$/)
+  await expect(window.locator('img').first()).toBeVisible()
+})
+
 test('shows the model-install guidance card on the face analyze step without models', async () => {
   const window = await app.firstWindow()
   await window.evaluate(id => {

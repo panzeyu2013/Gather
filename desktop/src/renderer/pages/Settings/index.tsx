@@ -98,14 +98,6 @@ export default function SettingsPage() {
     const unsub = window.gather.onModelDownloadProgress((data) => {
       const p = data as { filename: string; percent: number }
       setDownloadProgress(p)
-      if (p.percent >= 100) {
-        setDownloadState('done')
-        setTimeout(() => {
-          setDownloadState('idle')
-          setDownloadProgress(null)
-          loadMlStatus()
-        }, 2000)
-      }
     })
     return unsub
   }, [downloadState, loadMlStatus])
@@ -115,6 +107,12 @@ export default function SettingsPage() {
     setDownloadProgress(null)
     try {
       await window.gather.downloadDefaultModels()
+      setDownloadState('done')
+      await loadMlStatus()
+      setTimeout(() => {
+        setDownloadState('idle')
+        setDownloadProgress(null)
+      }, 2000)
     } catch {
       setDownloadState('error')
       setTimeout(() => setDownloadState('idle'), 3000)

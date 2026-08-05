@@ -364,7 +364,9 @@ export class SimilarityService {
       )
       throw e
     } finally {
-      this.controllers.delete(sessionId)
+      if (this.controllers.get(sessionId) === controller) {
+        this.controllers.delete(sessionId)
+      }
     }
   }
 
@@ -400,7 +402,6 @@ export class SimilarityService {
     const controller = this.controllers.get(sessionId)
     if (controller) {
       controller.abort()
-      this.controllers.delete(sessionId)
     }
     this.sessionRepo.updateAnalysisStatus(sessionId, 'cancelled')
   }

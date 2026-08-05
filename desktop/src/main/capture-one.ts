@@ -19,6 +19,14 @@ export function sanitizeCaptureOneAppName(name: string): string | null {
   return trimmed
 }
 
+export function buildReloadMetadataScript(appName: string): string {
+  return `
+tell application "${appName}"
+  reload metadata of current document
+end tell
+`
+}
+
 function getSettings(): SettingsService {
   return getService<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
 }
@@ -95,13 +103,10 @@ export async function reloadMetadata(): Promise<void> {
     throw new Error('Could not connect to Capture One to reload metadata. Please make sure Capture One is running with a document open.')
   }
 
-  const script = `
-tell application "${appName}"
-  try
-    reload metadata of current document
-  end try
-end tell
-`
+  // Do not swallow AppleScript errors here. The renderer only offers the
+  // confirm/cleanup steps after this promise resolves, so a false success can
+  // cause Gather to restore XMP that Capture One never loaded.
+  const script = buildReloadMetadataScript(appName)
   try {
     await execAppleScript(script)
     await new Promise(r => setTimeout(r, getSettings().getNumber('c1_reload_delay_ms', 500)))

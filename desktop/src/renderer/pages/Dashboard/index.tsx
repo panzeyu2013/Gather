@@ -8,53 +8,19 @@ import ConfirmDialog from '../../components/Dialog/ConfirmDialog'
 import Badge from '../../components/Badge/Badge'
 import { useToastStore } from '../../components/Toast/ToastStore'
 import type { SessionData } from '@gather/shared'
+import {
+  getCommonParentPath,
+  getPathBasename,
+  importFailureMessage,
+} from '../../utils/session-paths'
 import styles from './Dashboard.module.css'
+
+export { getCommonParentPath, getPathBasename } from '../../utils/session-paths'
 
 const SOURCE_OPTIONS = [
   { value: 'local', label: '本地文件夹' },
   { value: 'capture-one', label: 'Capture One' },
 ]
-
-export function getPathBasename(filepath: string): string {
-  return filepath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
-}
-
-export function getCommonParentPath(filepaths: string[]): string {
-  if (filepaths.length === 0) return ''
-  const getParent = (filepath: string) => {
-    const normalized = filepath.replace(/[\\/]+$/, '')
-    const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
-    return separatorIndex > 0 ? normalized.slice(0, separatorIndex) : ''
-  }
-  const directories = filepaths.map(getParent)
-  let candidate = directories[0]
-  while (candidate) {
-    const prefix = `${candidate}${candidate.includes('\\') ? '\\' : '/'}`
-    if (directories.every((directory) => directory === candidate || directory.startsWith(prefix))) {
-      return candidate
-    }
-    candidate = getParent(candidate)
-  }
-  // Files selected from unrelated directories have no safe common source
-  // directory. The main process will use a bounded per-session fallback rather
-  // than treating the filesystem root as an index root.
-  return ''
-}
-
-function importFailureMessage(
-  added: number,
-  failedFiles: string[],
-  sourceLabel = '文件',
-): string {
-  const examples = failedFiles
-    .slice(0, 3)
-    .map((filepath) => filepath.split(/[/\\]/).pop() ?? filepath)
-    .join('、')
-  const remaining = failedFiles.length > 3
-    ? ` 等 ${failedFiles.length} 个`
-    : ''
-  return `${added} 张照片已导入；${sourceLabel}读取失败：${examples}${remaining}`
-}
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -170,37 +136,6 @@ export default function Dashboard() {
       setSelectMode(true)
     }
   }
-
-  useEffect(() => {
-    const unsub = window.gather.onPluginImport(async (files) => {
-      const now = new Date()
-      const sourcePath = getCommonParentPath(files)
-      const name = getPathBasename(sourcePath) ||
-        `C1 导入 ${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`
-      try {
-        const session = await sessionApi.create(name, 'capture-one', files, sourcePath)
-        if (session.failedFiles.length > 0) {
-          addToast(
-            'warning',
-            importFailureMessage(
-              session.added,
-              session.failedFiles,
-              'Capture One 文件',
-            ),
-          )
-        }
-        setSession(session.id)
-        navigate(`/sessions/${session.id}/gallery`)
-      } catch (err) {
-        console.error('Plugin import failed:', err)
-        addToast(
-          'error',
-          err instanceof Error ? err.message : 'Capture One 照片导入失败',
-        )
-      }
-    })
-    return unsub
-  }, [navigate, setSession, addToast])
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {

@@ -232,11 +232,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.on('did-finish-load', () => {
-    rendererReady = true
-    mainWindow?.webContents.send('gather:event', 'engine:status', { status: 'ready' })
-    for (const deepLink of pendingDeepLinks.splice(0)) {
-      handleDeepLink(deepLink)
-    }
+    rendererReady = false
   })
 
   mainWindow.on('closed', () => {
@@ -340,6 +336,15 @@ function registerIpc(): void {
   ipcMain.handle('c1:reload-metadata', async (e) => {
     ensureMainWindowSender(e)
     return reloadMetadata()
+  })
+
+  ipcMain.handle('app:renderer-ready', (e) => {
+    ensureMainWindowSender(e)
+    rendererReady = true
+    mainWindow?.webContents.send('gather:event', 'engine:status', { status: 'ready' })
+    for (const deepLink of pendingDeepLinks.splice(0)) {
+      handleDeepLink(deepLink)
+    }
   })
 
   ipcMain.handle('app:version', (e) => {
