@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { join, isAbsolute, resolve } from 'path'
 import { existsSync, mkdirSync } from 'fs'
+import { isValidOnnxModel } from './onnx-validator'
 
 function getModelFilename(modelPath: string): string {
   return modelPath.replace(/^models[/\\]/, '')
@@ -117,21 +118,34 @@ export interface FaceModelPresence {
 }
 
 /**
+ * A model is only "present" when it is a structurally valid, non-empty ONNX
+ * file. Zero-byte files, 1-byte garbage, and files truncated mid-download are
+ * not usable and must not be reported as installed.
+ */
+async function modelIsUsable(modelPath: string): Promise<boolean> {
+  return isValidOnnxModel(modelPath)
+}
+
+/**
  * Resolve the configured face model paths and report whether each model file
  * is present on disk. Shared by `settings.get_ml_status` and the face module's
  * model-status commands so the presence logic cannot drift apart.
  */
-export function getFaceModelPresence(
+export async function getFaceModelPresence(
   settings: { get: (key: string, fallback?: string) => string },
-): FaceModelPresence {
+): Promise<FaceModelPresence> {
   const detectorPath = settings.get('detector_model_path', 'models/face_detector.onnx')
   const encoderPath = settings.get('encoder_model_path', 'models/face_encoder.onnx')
   const detectorResolved = resolveModelPath(detectorPath)
   const encoderResolved = resolveModelPath(encoderPath)
+  const [detectorPresent, encoderPresent] = await Promise.all([
+    modelIsUsable(detectorResolved),
+    modelIsUsable(encoderResolved),
+  ])
   return {
     detectorPath: detectorResolved,
     encoderPath: encoderResolved,
-    detectorPresent: existsSync(detectorResolved),
-    encoderPresent: existsSync(encoderResolved),
+    detectorPresent,
+    encoderPresent,
   }
 }

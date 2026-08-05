@@ -1,11 +1,12 @@
 import { createWriteStream } from 'fs'
-import { access, copyFile, mkdir, rm } from 'fs/promises'
+import { access, copyFile, mkdir, rename, rm } from 'fs/promises'
 import { join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { tmpdir } from 'os'
 import { getModelResourcesDir } from './provider'
 import { MODEL_CONFIG } from './model-config'
+import { isValidOnnxModel } from './onnx-validator'
 
 export interface DownloadProgress {
   filename: string
@@ -24,6 +25,16 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * A model file counts as installed only when it is a structurally valid, non-
+ * empty ONNX file. A zero-byte, truncated, or otherwise corrupt leftover from
+ * an interrupted download must never satisfy the presence check, or the
+ * installer would skip re-downloading forever.
+ */
+async function validModelFile(filePath: string): Promise<boolean> {
+  return isValidOnnxModel(filePath)
 }
 
 async function downloadFile(url: string, dest: string, onProgress: (p: DownloadProgress) => void): Promise<void> {
@@ -109,50 +120,56 @@ export async function downloadDefaultModels(
   const targetDir = getModelResourcesDir()
   await mkdir(targetDir, { recursive: true })
 
-  const needsDetector = !(await pathExists(join(targetDir, 'face_detector.onnx')))
-  const needsEncoder = !(await pathExists(join(targetDir, 'face_encoder.onnx')))
+  const needsDetector = !(await validModelFile(join(targetDir, 'face_detector.onnx')))
+  const needsEncoder = !(await validModelFile(join(targetDir, 'face_encoder.onnx')))
   if (!needsDetector && !needsEncoder) return
 
   const url = getUrl('model_download_url') || packageUrl
 
   // Download ZIP to temp
-  const tmpZip = join(tmpdir(), `gather-models-${Date.now()}.zip`)
+  const nonce = `${process.pid}-${Date.now()}`
+  const tmpZip = join(tmpdir(), `gather-models-${nonce}.zip`)
+  const tmpExtract = join(tmpdir(), `gather-models-extract-${nonce}`)
   try {
     onProgress({ filename: 'buffalo_l.zip', percent: 0, downloaded: 0, total: 0 })
     await downloadFile(url, tmpZip, onProgress)
 
-    onProgress({ filename: 'buffalo_l.zip', percent: 100, downloaded: 0, total: 0 })
-
     // Extract to temp dir
-    const tmpExtract = join(tmpdir(), `gather-models-extract-${Date.now()}`)
     await mkdir(tmpExtract, { recursive: true })
     await unzipFile(tmpZip, tmpExtract)
 
-    // Copy required ONNX files to target
+    // Copy required ONNX files to target. Each missing file is written to a
+    // temporary sibling and atomically renamed into place, so an interrupted
+    // copy never leaves a truncated file at the final model path.
     for (const [srcName, destName] of Object.entries(EXTRACT_MAP)) {
       const src = join(tmpExtract, srcName)
-      if (await pathExists(src)) {
-        const dest = join(targetDir, destName)
-        await copyFile(src, dest)
+      const dest = join(targetDir, destName)
+      if (!(await pathExists(src)) || await validModelFile(dest)) continue
+      const tmpDest = join(targetDir, `.${destName}.tmp-${nonce}`)
+      try {
+        await copyFile(src, tmpDest)
+        await rename(tmpDest, dest)
+      } catch (error) {
+        await rm(tmpDest, { force: true })
+        throw error
       }
     }
 
-    if (!(await pathExists(join(targetDir, 'face_detector.onnx')))) {
-      throw new Error('Downloaded package does not contain face_detector.onnx')
+    if (!(await validModelFile(join(targetDir, 'face_detector.onnx')))) {
+      throw new Error('face_detector.onnx 缺失或已损坏，请重新下载')
     }
-    if (!(await pathExists(join(targetDir, 'face_encoder.onnx')))) {
-      throw new Error('Downloaded package does not contain face_encoder.onnx')
+    if (!(await validModelFile(join(targetDir, 'face_encoder.onnx')))) {
+      throw new Error('face_encoder.onnx 缺失或已损坏，请重新下载')
     }
 
-    // Cleanup
-    try {
-      await rm(tmpZip, { force: true })
-      await rm(tmpExtract, { force: true, recursive: true })
-    } catch { /* ignore cleanup errors */ }
+    // A final 100% event means the models are installed, not merely downloaded.
+    onProgress({ filename: '人脸模型已安装', percent: 100, downloaded: 0, total: 0 })
   } catch (err) {
-    try {
-      await rm(tmpZip, { force: true })
-    } catch { /* ignore */ }
     throw err
+  } finally {
+    await Promise.allSettled([
+      rm(tmpZip, { force: true }),
+      rm(tmpExtract, { force: true, recursive: true }),
+    ])
   }
 }

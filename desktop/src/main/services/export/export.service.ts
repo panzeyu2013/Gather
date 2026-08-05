@@ -101,6 +101,35 @@ function sanitizeFilenameComponent(name: string): string {
   return path.basename(name.replace(/[<>:"/\\|?*]/g, '_'))
 }
 
+function isWithinDirectory(candidate: string, directory: string): boolean {
+  if (!directory) return false
+  const resolvedCandidate = canonicalPath(candidate)
+  const resolvedDirectory = canonicalPath(directory)
+  const relative = path.relative(resolvedDirectory, resolvedCandidate)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+/**
+ * Resolve a path with symlinks followed, falling back to a lexical resolution
+ * (with macOS /var and /tmp -> /private aliasing) when the path does not exist.
+ * Mirrors the indexer's canonicalization so a destination reached through a
+ * symlink (e.g. /tmp on macOS) cannot bypass the source-directory guard.
+ */
+function canonicalPath(value: string): string {
+  try {
+    return fs.realpathSync.native(value)
+  } catch {
+    const resolved = path.resolve(value)
+    if (process.platform === 'darwin' && (resolved === '/var' || resolved.startsWith('/var/'))) {
+      return `/private${resolved}`
+    }
+    if (process.platform === 'darwin' && (resolved === '/tmp' || resolved.startsWith('/tmp/'))) {
+      return `/private${resolved}`
+    }
+    return resolved
+  }
+}
+
 async function getFreeSpace(dir: string): Promise<number> {
   try {
     let existingDir = path.resolve(dir)
@@ -134,6 +163,19 @@ export class ExportService {
 
   cancel(sessionId: string): void {
     this.cancelFlags.set(sessionId, true)
+  }
+
+  /**
+   * Exporting into the session's watched source directory (or a subdirectory
+   * of it) would produce new copies that the index watcher immediately
+   * re-imports as duplicates. Reject it server-side, not just in the UI.
+   */
+  private assertDestinationOutsideSource(sessionId: string, destination: string): void {
+    const session = this.sessionRepo.get(sessionId)
+    if (!session?.source_path) return
+    if (isWithinDirectory(destination, session.source_path)) {
+      throw new Error('不能导出到工作区导入目录或其子目录，导出的文件会被重新导入当前工作区')
+    }
   }
 
   private async copyExclusive(source: string, destination: string): Promise<void> {
@@ -181,6 +223,7 @@ export class ExportService {
 
   async preview(sessionId: string, options: ExportOptions): Promise<ExportPreview> {
     validateExportOptions(options)
+    this.assertDestinationOutsideSource(sessionId, options.destination)
     const photos = this.photoRepo.getBySession(sessionId)
     const filtered = this.filterPhotos(photos, options)
     const files = await batchAsync(filtered, async (photo) => {
@@ -219,6 +262,7 @@ export class ExportService {
     this.cancelFlags.set(sessionId, false)
     if (resume?.signal?.aborted) this.cancelFlags.set(sessionId, true)
     validateExportOptions(options)
+    this.assertDestinationOutsideSource(sessionId, options.destination)
     const photos = this.photoRepo.getBySession(sessionId)
     const sessionName = this.sessionRepo.get(sessionId)?.name ?? sessionId
     const filtered = this.filterPhotos(photos, options)

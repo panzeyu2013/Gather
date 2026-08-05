@@ -70,7 +70,7 @@ export function registerFaceKwHandlers(
   registry.register(
     'face.models_status',
     wrapHandler(async () => {
-      const presence = getFaceModelPresence(settings)
+      const presence = await getFaceModelPresence(settings)
       return ok(presence)
     }),
   )

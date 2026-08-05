@@ -190,6 +190,10 @@ export class DuplicateService {
     const visualMisses = allPhotos.filter(photo => !resolvedVisualHashes.has(photo.id))
     if (signal?.aborted) throw new Error('Duplicate scan cancelled')
     const computedVisualHashes = await computeVisualHashes(visualMisses, this.imageService)
+    // computeVisualHashes does not observe the abort signal, so re-check before
+    // persisting: a cancellation that arrived mid-computation must not still
+    // write hashes and rebuild duplicate groups into the database.
+    if (signal?.aborted) throw new Error('Duplicate scan cancelled')
     for (const [photoId, hash] of computedVisualHashes) {
       resolvedVisualHashes.set(photoId, hash)
     }

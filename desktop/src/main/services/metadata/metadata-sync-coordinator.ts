@@ -416,10 +416,20 @@ export class MetadataSyncCoordinator {
       throw new Error('请先在 Capture One 中加载元数据并确认同步')
     }
     for (const row of eligible) {
-      if (row.backup_path && existsSync(row.backup_path)) {
-        await unlink(row.backup_path)
+      // A new mutation may have been queued after the snapshot was taken.
+      // Wait for any in-flight write, then remove the outbox row BEFORE the
+      // async unlink: get() -> delete() are synchronous with no await between
+      // them, so a concurrent edit cannot interleave and be silently deleted.
+      // A mutation that lands while the backup is being removed inserts a fresh
+      // row (backup_path = '') instead of overwriting the one we deleted, so
+      // its pending transaction and a newly created backup are both preserved.
+      await this.waitForIdle(row.xmp_path)
+      const latest = this.outboxRepo.get(row.xmp_path)
+      if (!latest || latest.status !== 'synced') continue
+      this.outboxRepo.delete(latest.xmp_path)
+      if (latest.backup_path && existsSync(latest.backup_path)) {
+        await unlink(latest.backup_path)
       }
-      this.outboxRepo.delete(row.xmp_path)
     }
     return this.emitSummary(sessionId)
   }

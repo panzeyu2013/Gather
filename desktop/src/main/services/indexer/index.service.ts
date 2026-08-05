@@ -304,6 +304,7 @@ export class IndexService {
     }>
     const fileStats = new Map(fileRows.map(row => [row.id, row]))
     const discoveredSet = new Set<string>()
+    const relinkedPhotoIds = new Set<string>()
     const failed: string[] = []
     let discovered = 0
     let added = 0
@@ -376,6 +377,7 @@ export class IndexService {
           if (relocated && relocated.photoIds.length > 0) {
             this.invalidatePathDependentAnalysis(relocated.photoIds)
             for (const photoId of relocated.photoIds) {
+              relinkedPhotoIds.add(photoId)
               this.photoRepo.updateIndexedFile(
                 photoId,
                 result.dimensions.width,
@@ -556,8 +558,11 @@ export class IndexService {
       : null
     const missing = existing.filter(photo => {
       const normalized = path.normalize(path.resolve(photo.filepath))
+      // Photos relinked to a new path during this scan are re-associated, not
+      // missing: their pre-scan path snapshot never appears in discoveredSet.
       return (!requestedNormalized || requestedNormalized.has(normalized)) &&
-        !discoveredSet.has(normalized)
+        !discoveredSet.has(normalized) &&
+        !relinkedPhotoIds.has(photo.id)
     })
     this.photoRepo.markMissing(missing.map(photo => photo.id))
     this.assetRepo.backfillSession(sessionId)

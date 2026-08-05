@@ -27,7 +27,7 @@ export function registerSettingsHandlers(registry: CommandRegistry, svc: Setting
   registry.register('settings.get_ml_status', wrapHandler(async () => {
     const provider = svc.get('onnx_provider', 'auto')
     const isAuto = provider === 'auto'
-    const presence = getFaceModelPresence(svc)
+    const presence = await getFaceModelPresence(svc)
 
     return ok({
       platform: process.platform,

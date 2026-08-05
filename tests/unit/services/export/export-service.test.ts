@@ -147,4 +147,62 @@ describe('ExportService option contracts', () => {
       options({ variantPolicy: 'all' }),
     )).files.map(file => file.photoId)).toEqual(['raw', 'jpeg'])
   })
+
+  it('rejects exporting into the session source directory or its subdirectories', async () => {
+    const sourceDir = path.join(dir, 'workspace')
+    fs.mkdirSync(sourceDir, { recursive: true })
+    const subDir = path.join(sourceDir, 'nested')
+    fs.mkdirSync(subDir, { recursive: true })
+    const service = new ExportService(
+      {
+        getBySession: () => [{
+          id: 'photo-1',
+          session_id: 'session-1',
+          filepath: path.join(sourceDir, 'source.NEF'),
+          filename: 'source.NEF',
+          status: 'ready',
+        }],
+      } as never,
+      { get: () => ({ name: 'Wedding', source_path: sourceDir }) } as never,
+    )
+
+    await expect(service.preview('session-1', options({ destination: sourceDir })))
+      .rejects.toThrow('重新导入')
+    await expect(service.preview('session-1', options({ destination: subDir })))
+      .rejects.toThrow('重新导入')
+    await expect(service.execute('session-1', options({ destination: sourceDir })))
+      .rejects.toThrow('重新导入')
+    await expect(service.execute('session-1', options({ destination: subDir })))
+      .rejects.toThrow('重新导入')
+  })
+
+  it('rejects a destination reached through a symlink into the source directory', async () => {
+    const sourceDir = path.join(dir, 'workspace')
+    fs.mkdirSync(sourceDir, { recursive: true })
+    const link = path.join(dir, 'source-link')
+    try {
+      fs.symlinkSync(sourceDir, link, 'dir')
+    } catch {
+      // Symlinks are unavailable on this platform (e.g. Windows without admin):
+      // skip the test rather than fail.
+      return
+    }
+    const service = new ExportService(
+      {
+        getBySession: () => [{
+          id: 'photo-1',
+          session_id: 'session-1',
+          filepath: path.join(sourceDir, 'source.NEF'),
+          filename: 'source.NEF',
+          status: 'ready',
+        }],
+      } as never,
+      { get: () => ({ name: 'Wedding', source_path: sourceDir }) } as never,
+    )
+
+    await expect(service.preview('session-1', options({ destination: link })))
+      .rejects.toThrow('重新导入')
+    await expect(service.execute('session-1', options({ destination: link })))
+      .rejects.toThrow('重新导入')
+  })
 })

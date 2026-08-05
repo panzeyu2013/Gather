@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { exportApi } from '../../api/export'
@@ -33,10 +33,6 @@ export default function Export() {
     queryFn: () => sessionApi.get(sessionId!),
     enabled: Boolean(sessionId),
   })
-
-  useEffect(() => {
-    setDestination(sessionQuery.data?.sourcePath ?? '')
-  }, [sessionId, sessionQuery.data?.sourcePath])
 
   const options = useMemo((): ExportOptions => {
     const opts: ExportOptions = {
@@ -249,7 +245,7 @@ export default function Export() {
           <button type="button" className={styles.btn} onClick={handleSelectDestination}>选择文件夹</button>
         </div>
         <div className={styles.hint}>
-          默认与工作区导入目录一致；需要保留原文件时，可改为其他文件夹。
+          请选择导出文件夹。不要选择工作区导入目录，否则导出的文件会被重新导入当前工作区。
         </div>
       </div>
 
