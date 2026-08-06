@@ -4,7 +4,7 @@ import { FaceRepository, type FaceClusterInput } from '../../db/repositories/fac
 import { PersonRepository } from '../../db/repositories/person.repo'
 import type { EmbeddingEntry } from './face-clusterer'
 import { clusterFacesInWorker } from '../../utils/analysis-worker-client'
-import { FaceInferenceWorker } from './face-inference-worker-client'
+import { FaceInferenceWorker, type FaceInferenceBatchItem } from './face-inference-worker-client'
 import * as fs from 'fs'
 import { ImageService } from '../image'
 import type { DecodeResult } from '../image'
@@ -146,6 +146,11 @@ export class FaceKwService {
 
       const totalPhotos = photos.length
       const sourceStats = new Map<string, { size: number; mtimeMs: number }>()
+      // Photos whose files are confirmed gone (ENOENT) must not keep stale
+      // face observations: they would otherwise keep clustering into results
+      // forever. Other stat failures (permissions, transient I/O) are left
+      // alone so nothing is destroyed on a temporary error.
+      const missingPhotoIds = new Set<string>()
       await batchAsync(photos, async (photo) => {
         try {
           const sourceStat = await fs.promises.stat(photo.filepath)
@@ -153,10 +158,23 @@ export class FaceKwService {
             size: sourceStat.size,
             mtimeMs: sourceStat.mtimeMs,
           })
-        } catch {
-          // The normal per-photo error path below records unreadable inputs.
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            missingPhotoIds.add(photo.id)
+          }
         }
       }, 32)
+      if (missingPhotoIds.size > 0) {
+        for (const photoId of missingPhotoIds) {
+          this.faceRepo.deleteObservationsByPhoto(sessionId, photoId)
+          this.faceRepo.deleteAnalysisStateByPhoto(sessionId, photoId)
+          analysisStates.delete(photoId)
+          cachedByPhoto.delete(photoId)
+        }
+        console.warn(
+          `Face analysis: cleaned up ${missingPhotoIds.size} photo(s) whose files no longer exist`,
+        )
+      }
       let reusedAcrossSessions = false
       for (const photo of photos) {
         const sourceStat = sourceStats.get(photo.id)
@@ -204,6 +222,7 @@ export class FaceKwService {
       })
       const clusterSignature = `${eps}:${minPts}`
       if (
+        missingPhotoIds.size === 0 &&
         photosNeedingAnalysis.length === 0 &&
         this.faceRepo.getClusterSignature(sessionId) === clusterSignature &&
         this.faceRepo.getClusters(sessionId).length > 0
@@ -224,6 +243,7 @@ export class FaceKwService {
           threads: onnxThreads,
           encoderInputSize,
           embeddingDim,
+          inputSizes: [primaryDetectionSize, secondaryDetectionSize],
         }, signal)
       }
 
@@ -263,35 +283,35 @@ export class FaceKwService {
           decodePromises[index] = pending
         }
       }
-      for (let i = 0; i < totalPhotos; i++) {
-        if (signal.aborted) throw new CancelledError('Analysis cancelled')
-        prefetchDecodes(i)
-        const photo = photos[i]
+
+      const inferenceConfig = {
+        inputSizes: [secondaryDetectionSize, primaryDetectionSize],
+        confidenceThreshold,
+        nmsThreshold: this.settings.getNumber('nms_threshold', 0.4),
+        maxDetections: this.settings.getNumber('max_detections', 100),
+        embeddingDim,
+      }
+
+      // Profiling counters: decode wait (the time awaiting an already
+      // prefetched decode) and per-batch inference time reveal which stage is
+      // the pipeline bottleneck on real libraries.
+      let decodeWaitMs = 0
+      let inferMs = 0
+      let inferredPhotoCount = 0
+      const pipelineStart = performance.now()
+
+      const applyInferenceResult = (index: number, item: FaceInferenceBatchItem): void => {
+        const photo = photos[index]
+        const sourceStat = sourceStats.get(photo.id)
+        if (!sourceStat) return
+        if (item.error) {
+          detectionFailures++
+          console.warn('Face detection failed for', photo.filepath, item.error)
+          return
+        }
         try {
-          const sourceStat = sourceStats.get(photo.id)
-          if (!sourceStat) throw new Error(`Photo is not readable: ${photo.filepath}`)
-          const cached = cachedByPhoto.get(photo.id) ?? []
-          if (isCacheValid(photo.id, sourceStat)) {
-            totalFaces += cached.length
-            onProgress?.({ current: i + 1, total: totalPhotos, message: 'Reusing cached faces...' })
-            continue
-          }
-          const preview = await (decodePromises[i] ??
-            this.imageService.getPreview(photo.filepath, previewMaxDimension))
-          if (!inferenceWorker) throw new Error('Face inference worker is not initialized')
-          const inference = await inferenceWorker.analyze(
-            preview.buffer,
-            {
-              inputSizes: [secondaryDetectionSize, primaryDetectionSize],
-              confidenceThreshold,
-              nmsThreshold: this.settings.getNumber('nms_threshold', 0.4),
-              maxDetections: this.settings.getNumber('max_detections', 100),
-              embeddingDim,
-            },
-            signal,
-          )
-          const faces = inference.observations
-          encodingFailures += inference.encodingFailures
+          const faces = item.observations
+          encodingFailures += item.encodingFailures
           const observations = faces.map(face => ({
               photoId: photo.id,
               bboxX: face.bbox[0],
@@ -321,10 +341,83 @@ export class FaceKwService {
           detectionFailures++
           console.warn('Face detection failed for', photo.filepath, e)
         }
-        onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
       }
 
+      const batchImages: Buffer[] = []
+      const batchIndices: number[] = []
+      const flushBatch = async (): Promise<void> => {
+        if (batchIndices.length === 0) return
+        // A rejected request (worker crash, corrupt model) surfaces here and
+        // aborts the whole analysis: a dead worker cannot be healed by
+        // retrying, and the observations already committed stay in place.
+        if (!inferenceWorker) throw new Error('Face inference worker is not initialized')
+        const images = batchImages.splice(0)
+        const indices = batchIndices.splice(0)
+        const inferStart = performance.now()
+        const results = await inferenceWorker.analyzeBatch(images, inferenceConfig, signal)
+        inferMs += performance.now() - inferStart
+        if (results.length !== indices.length) {
+          throw new Error('Face inference worker returned a mismatched batch')
+        }
+        for (let b = 0; b < indices.length; b++) {
+          applyInferenceResult(indices[b], results[b])
+        }
+      }
+
+      for (let i = 0; i < totalPhotos; i++) {
+        if (signal.aborted) throw new CancelledError('Analysis cancelled')
+        prefetchDecodes(i)
+        const photo = photos[i]
+        const sourceStat = sourceStats.get(photo.id)
+        if (!sourceStat) {
+          if (missingPhotoIds.has(photo.id)) {
+            // Observations for ENOENT photos were cleaned up up-front; do
+            // not count them as detection failures.
+            onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+            continue
+          }
+          detectionFailures++
+          console.warn('Face detection failed for', photo.filepath, 'photo is not readable')
+          onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+          continue
+        }
+        const cached = cachedByPhoto.get(photo.id) ?? []
+        if (isCacheValid(photo.id, sourceStat)) {
+          totalFaces += cached.length
+          onProgress?.({ current: i + 1, total: totalPhotos, message: 'Reusing cached faces...' })
+          continue
+        }
+        const decodeStart = performance.now()
+        let preview: DecodeResult
+        try {
+          preview = await (decodePromises[i] ??
+            this.imageService.getPreview(photo.filepath, previewMaxDimension))
+        } catch (e) {
+          detectionFailures++
+          console.warn('Face detection failed for', photo.filepath, e)
+          onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+          continue
+        }
+        decodeWaitMs += performance.now() - decodeStart
+        if (batchIndices.length >= decodeWindow) {
+          await flushBatch()
+        }
+        batchImages.push(preview.buffer)
+        batchIndices.push(i)
+        inferredPhotoCount++
+        onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+      }
+      await flushBatch()
+
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
+
+      if (inferredPhotoCount > 0) {
+        console.debug(
+          `[face-kw] pipeline ${(performance.now() - pipelineStart).toFixed(0)}ms ` +
+            `(decode wait avg ${(decodeWaitMs / inferredPhotoCount).toFixed(1)}ms, ` +
+            `infer avg ${(inferMs / Math.max(1, Math.ceil(inferredPhotoCount / decodeWindow))).toFixed(1)}ms per batch of ${decodeWindow})`,
+        )
+      }
 
       // Determine failure before re-clustering so that an all-failed run does
       // not clear the previously bound clusters and role names.

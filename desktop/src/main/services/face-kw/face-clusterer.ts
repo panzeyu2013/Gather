@@ -150,10 +150,27 @@ export function clusterEmbeddings(
   const noiseIndices: number[] = []
   const minNeighbors = minPts - 1
   const progressStep = Math.max(1, Math.round(n / 20))
+  // Heartbeat step inside the BFS expansion loop. The outer scan callback
+  // only fires once per progressStep rows, so a single giant cluster can hold
+  // the worker for minutes without any progress frame — which the caller's
+  // no-progress timeout would mistake for a stall and kill. Emitting the
+  // merged processed count (scan + expansion) keeps the heartbeat alive while
+  // monotonic.
+  const bfsHeartbeatStep = Math.max(64, Math.round(n / 2000))
+  // Progress must never regress: the BFS expansion of an early cluster can
+  // jump the counter far ahead of the outer scan, which would otherwise
+  // report a lower "scanned rows" value right afterwards.
+  let lastProgress = 0
+  const emitProgress = (current: number): void => {
+    const capped = Math.min(current, n)
+    if (capped < lastProgress) return
+    lastProgress = capped
+    onProgress?.(capped, n)
+  }
 
   for (let i = 0; i < n; i++) {
     if (i % progressStep === 0) {
-      onProgress?.(i, n)
+      emitProgress(i)
     }
     if (visited[i]) continue
     visited[i] = 1
@@ -176,6 +193,10 @@ export function clusterEmbeddings(
     while (seedIdx < seeds.length) {
       const currentIdx = seeds[seedIdx]
       seedIdx++
+
+      if (seedIdx % bfsHeartbeatStep === 0) {
+        emitProgress(i + seedIdx)
+      }
 
       if (assigned[currentIdx]) continue
 
@@ -200,7 +221,7 @@ export function clusterEmbeddings(
 
     clusters.push(cluster)
   }
-  onProgress?.(n, n)
+  emitProgress(n)
 
   const noise = noiseIndices
     .filter(index => !assigned[index])

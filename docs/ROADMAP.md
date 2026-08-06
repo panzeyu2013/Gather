@@ -130,8 +130,8 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 | Culling 分页 | `culling.service.ts` pagePhotosQuery | 首屏只取当前页；富字段懒加载；旧 `culling.list` 入口保留 |
 | checksum 后台补齐 | `index.service.ts` lazy_checksum | 索引先跳过哈希，后台 checksum backfill 任务补齐 |
 | 阈值预计算多档 | `cluster-engine.ts` + similarity-result 多阈值 tier | 相邻阈值档位预计算，滑块切换不全量重跑 |
-| 聚类 Worker 流式进度/取消/异常收敛 | `analysis-worker-client.ts` | 进度回传、AbortSignal、timeout/exit 兜底；动态超时已接通（face 分支 n² 量级公式、上限 60min），超时为"无进展超时"——progress 心跳重置定时器，卡死才终止 |
-| 人脸解码/推理滑动窗口流水线 | `face-kw.service.ts` | `face_decode_concurrency` 4-8 |
+| 聚类 Worker 流式进度/取消/异常收敛 | `analysis-worker-client.ts` | 进度回传、AbortSignal、timeout/exit 兜底；动态超时已接通（face 分支按 512 维 flops 显式估算、上限 60min），超时为"无进展超时"——progress 心跳重置定时器，卡死才终止；BFS 扩展阶段按 `max(64, n/2000)` 步长回传心跳（进度单调不回退），单一大簇不会因无心跳被误杀 |
+| 人脸解码/推理滑动窗口流水线 | `face-kw.service.ts` | `face_decode_concurrency` 4-8；推理为批量请求（decodeWindow 张/批、单帧失败不影响整批），decode/infer 分阶段耗时有 profiling 日志 |
 | 人脸 DBSCAN 连续 Float32Array | `face-clusterer.ts` | 消除逐点分配与复制，降低内存峰值 |
 | 相似 hash 复用批量查询 | `similarity.service.ts` reuseSimilarityHashes | 按 asset_file_id 去重分块 `IN` 查询，消除逐照片 N+1（P1-5） |
 
@@ -173,7 +173,7 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 
 | 任务 | 状态 | 验收标准 |
 |---|---|---|
-| 0.1 聚类超时治理：接通动态超时估算 + 分段流式聚类 + 进度回传 | **已完成**：进度/取消/exit 兜底、动态超时（face 分支 n² 量级公式，上限 60min）已接通；超时为"无进展超时"——progress 心跳重置定时器，worker 持续回传进度不会被误杀，卡死（无进度）仍被终止 | Release：接通估算后 2 万条目不再超时、可取消、进度可见；Stretch：5 万条目在估算超时内完成 |
+| 0.1 聚类超时治理：接通动态超时估算 + 分段流式聚类 + 进度回传 | **已完成**：进度/取消/exit 兜底、动态超时（face 分支按 512 维 flops 显式估算，上限 60min）已接通；超时为"无进展超时"——progress 心跳重置定时器，worker 持续回传进度不会被误杀，卡死（无进度）仍被终止；BFS 扩展阶段心跳已补齐，单一大簇不会误杀 | Release：接通估算后 2 万条目不再超时、可取消、进度可见；Stretch：5 万条目在估算超时内完成 |
 | 0.2 人脸管线并行化：decode/inference 滑动窗口并发 4-8，接入后台任务 | **已完成**：滑动窗口流水线（face_decode_concurrency 4-8）+ 检测器 GPU 自动尝试与 warmup 降级（见 3.1） | Release：1 万张人脸分析 ≤ 30 分钟（M 系 CPU），期间 UI 可操作 |
 | 0.3 DBSCAN 降复杂度 | 部分完成：见下 | — |
 | 0.3a 连续 Float32Array、减少复制与内存峰值 | **已完成** | Stretch：10 万张脸内存 ≤ 1.5GB |
@@ -187,7 +187,7 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 | 任务 | 状态 | 验收标准 |
 |---|---|---|
 | 1.1 checksum 懒校验 + "跳过 checksum"设置 | **已完成** | 首次导入 5000 张 RAW ≤ 3 分钟（不含哈希），哈希后台补齐 |
-| 1.2 文件级失效粒度（替代 session 级全删） | **部分完成**：输入级按照片失效（hash/观测/分析态/asset_analysis/metadata cache）+ navigation_groups 按成员剪除；全局聚类结果保持 session 级删除（无增量聚类设施前不能局部失效，重分析按签名复用只重算变更照片） | 单文件变更只清其邻域结果，其余结果保持有效 |
+| 1.2 文件级失效粒度（替代 session 级全删） | **部分完成**：输入级按照片失效（hash/观测/分析态/asset_analysis/metadata cache）+ navigation_groups 按成员剪除；ENOENT（文件已删除）照片的陈旧观测与分析态在分析前清理，不再参与聚类；全局聚类结果保持 session 级删除（无增量聚类设施前不能局部失效，重分析按签名复用只重算变更照片） | 单文件变更只清其邻域结果，其余结果保持有效 |
 | 1.3 增量聚类 + 簇版本化 + 定期全局收敛 | 待做 | 新增 100 张后相似组在 10s 内局部更新；全局一致性由对账矩阵保证 |
 | 1.4 阈值预计算多档结果 | **已完成** | 阈值滑块切换 ≤ 500ms，无需重跑分析 |
 | 1.5 目录遍历并行化 + 扫描进度/暂停 | **已完成**：有界通道生产者-消费者并行遍历（WALK_CONCURRENCY=6，容量 256），遍历与扫描重叠 | 10 万文件树首次扫描 ≤ 2 分钟（不含哈希） |
@@ -293,6 +293,7 @@ Phase 0（止血：超时/聚类/缓存/分页）
 | 2026-08-06 | unit | 20k | dHash 聚类（th=16，popcount+wave BFS） | ≈1.05s | `cluster-engine-perf.test.ts` 预算断言 <2s |
 | 2026-08-06 | unit | 20k | 稠密阈值聚类（th=30） | ≈1.18s | 同上 |
 | 2026-08-06 | unit | — | 全量单测 | 通过 / 292 项（57 文件） | 含分页/懒校验/超时心跳/堆淘汰回归 |
+| 2026-08-06 | unit | 20k | BFS 心跳回归（精确路径单一大簇） | 心跳帧 ≥30 次、单调 | `face-clusterer.test.ts`；`metadata-outbox` 为基线既有 flaky（10ms 时序窗口） |
 | （四套基准跑通后补录） | app | | | | |
 
 ---

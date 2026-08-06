@@ -65,8 +65,11 @@
 - 缩略图磁盘缓存元数据（hash → lastAccess/createdAt/accessCount/fileSize）持久化在
   `cache-meta.db`（better-sqlite3 + WAL），替代全量 `JSON.stringify(cache-meta.json)`：
   热路径 `onAccess`/`onSet` 纯内存 + debounce 批量 upsert，主线程无同步序列化。
-- 淘汰采用"有界堆保留 k 个最差候选"的惰性扫描（O(n log k)），只在超预算时触发；
-  淘汰候选按 policy 值升序（LRU=lastAccess / FIFO=createdAt / LFU=accessCount）。
+- 淘汰候选由每策略 SQLite 索引排序窗口提供（`ORDER BY <policy> ASC, hash ASC LIMIT k`，
+  O(log n + k)），再与脏集合（值尚未落盘、可能与持久化行不一致的条目）合并、按内存
+  当前值重排取 k 个——与全量扫描严格等价，但主线程不再 O(n) 遍历；淘汰前先等待在途
+  持久化队列，避免 SQL 旧视图导致错误淘汰。候选按 policy 值升序
+  （LRU=lastAccess / FIFO=createdAt / LFU=accessCount）。
 - 降级不变量：DB 损坏 → 改名 `.corrupt-<ts>` 重建空库；仍失败（只读目录）→
   `:memory:` 纯内存模式；`waitUntilReady` 永不 reject；退出前 `flush()` 落盘。
 - 实现以 `desktop/src/main/services/image/disk-cache.ts` 为准；修改持久化格式必须

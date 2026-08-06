@@ -41,10 +41,12 @@ interface EvictionCandidate {
 // would then serialize dozens of synchronous writes on the main thread.
 const PERSIST_DEBOUNCE_MS = 500
 const PERSIST_FLUSH_THRESHOLD = 256
-// Lazy eviction: candidates are selected with a single O(n log k) scan
-// (bounded max-heap) only when the cache is over budget, instead of sorting
-// every entry on every batch of 10. The batch size doubles between passes so
-// pathological size distributions stay bounded by O(log n) passes.
+// Lazy eviction: candidates are selected only when the cache is over budget.
+// The per-policy ORDER BY index in SQLite yields the k smallest persisted
+// values in O(log n + k); every in-memory entry whose value can differ from
+// the persisted row (un-flushed updates) is tracked in the dirty set, so
+// merging those (small) sets and re-sorting on live in-memory values is
+// strictly equivalent to scanning the whole map — at a fraction of the cost.
 const MIN_EVICTION_BATCH = 100
 // Number of metadata rows materialized into the in-memory map per chunk
 // while loading; each chunk stays well under the 50ms main-thread budget.
@@ -58,6 +60,9 @@ export class DiskCacheManager {
   private readonly metaJsonPath: string
   private readonly db: BetterSqlite3.Database
   private readonly selectChunkStmt: BetterSqlite3.Statement<[number, number], DbRow>
+  private readonly selectEvictLruStmt: BetterSqlite3.Statement<[number], DbRow>
+  private readonly selectEvictFifoStmt: BetterSqlite3.Statement<[number], DbRow>
+  private readonly selectEvictLfuStmt: BetterSqlite3.Statement<[number], DbRow>
   private readonly upsertStmt: BetterSqlite3.Statement<[string, number, number, number, number]>
   private readonly deleteStmt: BetterSqlite3.Statement<[string]>
   private readonly persistTx: BetterSqlite3.Transaction<(
@@ -99,6 +104,17 @@ export class DiskCacheManager {
     this.db = this.openDb()
     this.selectChunkStmt = this.db.prepare(
       'SELECT hash, last_access, created_at, access_count, file_size FROM cache_meta ORDER BY hash LIMIT ? OFFSET ?',
+    )
+    // Eviction candidates come from the per-policy index; the hash tiebreak
+    // keeps the window deterministic across calls.
+    this.selectEvictLruStmt = this.db.prepare(
+      'SELECT hash, last_access, created_at, access_count, file_size FROM cache_meta ORDER BY last_access ASC, hash ASC LIMIT ?',
+    )
+    this.selectEvictFifoStmt = this.db.prepare(
+      'SELECT hash, last_access, created_at, access_count, file_size FROM cache_meta ORDER BY created_at ASC, hash ASC LIMIT ?',
+    )
+    this.selectEvictLfuStmt = this.db.prepare(
+      'SELECT hash, last_access, created_at, access_count, file_size FROM cache_meta ORDER BY access_count ASC, hash ASC LIMIT ?',
     )
     this.upsertStmt = this.db.prepare(`
       INSERT INTO cache_meta (hash, last_access, created_at, access_count, file_size)
@@ -142,7 +158,10 @@ export class DiskCacheManager {
         created_at INTEGER NOT NULL,
         access_count INTEGER NOT NULL,
         file_size INTEGER NOT NULL
-      )
+      );
+      CREATE INDEX IF NOT EXISTS idx_cache_meta_last_access ON cache_meta (last_access);
+      CREATE INDEX IF NOT EXISTS idx_cache_meta_created_at ON cache_meta (created_at);
+      CREATE INDEX IF NOT EXISTS idx_cache_meta_access_count ON cache_meta (access_count);
     `)
     return db
   }
@@ -239,6 +258,12 @@ export class DiskCacheManager {
   }
 
   private async performEviction(): Promise<void> {
+    // Flush whatever is in flight first: the SQLite rows must reflect the
+    // latest in-memory values before the index window can rank them, because
+    // queuePersist clears the dirty set the moment it enqueues (not when the
+    // write lands). New mutations made while awaiting are merged separately
+    // by selectEvictionBatch.
+    await this.persistQueue
     let evicted = 0
     let limit = MIN_EVICTION_BATCH
     while (this.totalSize > this.maxSizeBytes && this.fileCount > 0) {
@@ -288,72 +313,56 @@ export class DiskCacheManager {
     }
   }
 
-  // Retains the `limit` best (smallest policy value) candidates in a bounded
-  // max-heap-by-worst: every parent is worse than (or tied with) its children,
-  // so the root is the worst candidate kept. A candidate better than the root
-  // replaces it and is sifted down to restore the invariant, so the retained
-  // set is always the k smallest values. The result is sorted ascending by val
-  // (hash tiebreak) so the caller removes the most urgent entries first.
-  private selectEvictionBatch(limit: number): EvictionCandidate[] {
-    const heap: EvictionCandidate[] = []
-    for (const hash of Object.keys(this.meta.entries)) {
-      const entry = this.meta.entries[hash]
-      const candidate: EvictionCandidate = {
-        hash,
-        val: this.entryVal(entry),
-        size: entry.fileSize,
-      }
-      if (heap.length < limit) {
-        heap.push(candidate)
-        this.heapSiftUp(heap, heap.length - 1)
-      } else if (this.isWorseCandidate(heap[0], candidate)) {
-        heap[0] = candidate
-        this.heapSiftDown(heap, 0)
-      }
+  private evictRowsForPolicy(): BetterSqlite3.Statement<[number], DbRow> {
+    switch (this.policy) {
+      case EvictionPolicy.FIFO:
+        return this.selectEvictFifoStmt
+      case EvictionPolicy.LFU:
+        return this.selectEvictLfuStmt
+      case EvictionPolicy.LRU:
+      default:
+        return this.selectEvictLruStmt
     }
-    heap.sort((a, b) => {
+  }
+
+  /**
+   * Retain the `limit` smallest policy values without scanning the whole
+   * in-memory map. Persisted rows whose value equals the live one are ranked
+   * by the SQLite index (O(log n + limit)); rows whose value can differ from
+   * the persisted row are exactly the dirty set (every mutation goes through
+   * markDirty), so merging the dirty entries and re-sorting on live values
+   * yields the same `limit` best candidates as a full scan. The result is
+   * sorted ascending by val (hash tiebreak) so the caller removes the most
+   * urgent entries first.
+   */
+  private selectEvictionBatch(limit: number): EvictionCandidate[] {
+    const rows = this.evictRowsForPolicy().all(limit) as DbRow[]
+    const candidates: EvictionCandidate[] = []
+    const seen = new Set<string>()
+    for (const row of rows) {
+      // The row may be stale: evicted in memory but not yet persisted, or
+      // superseded by an update that is still dirty. The live entry is
+      // authoritative; a missing one is skipped.
+      const live = this.meta.entries[row.hash]
+      if (!live) continue
+      seen.add(row.hash)
+      candidates.push({ hash: row.hash, val: this.entryVal(live), size: live.fileSize })
+    }
+    // Un-flushed rows are not in SQLite yet (fresh writes, or a burst of
+    // accesses within the debounce window); merge them so a cache that has
+    // never persisted anything cannot fail to evict.
+    for (const hash of this.dirty) {
+      if (seen.has(hash)) continue
+      const entry = this.meta.entries[hash]
+      if (!entry) continue
+      seen.add(hash)
+      candidates.push({ hash, val: this.entryVal(entry), size: entry.fileSize })
+    }
+    candidates.sort((a, b) => {
       if (a.val !== b.val) return a.val - b.val
       return a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0
     })
-    return heap
-  }
-
-  private isWorseCandidate(a: EvictionCandidate, b: EvictionCandidate): boolean {
-    if (a.val !== b.val) return a.val > b.val
-    return a.hash > b.hash
-  }
-
-  private heapSiftUp(heap: EvictionCandidate[], index: number): void {
-    while (index > 0) {
-      const parent = (index - 1) >> 1
-      // Max-heap-by-worst: while the child is worse than its parent, swap so
-      // the worse element floats toward the root.
-      if (!this.isWorseCandidate(heap[index], heap[parent])) break
-      const tmp = heap[parent]
-      heap[parent] = heap[index]
-      heap[index] = tmp
-      index = parent
-    }
-  }
-
-  // Max-heap-by-worst sift-down: promote the worse child while it is worse
-  // than the parent, keeping the root as the worst retained candidate.
-  private heapSiftDown(heap: EvictionCandidate[], index: number): void {
-    const n = heap.length
-    while (true) {
-      const left = index * 2 + 1
-      if (left >= n) break
-      const right = left + 1
-      let worst = left
-      if (right < n && this.isWorseCandidate(heap[right], heap[left])) {
-        worst = right
-      }
-      if (!this.isWorseCandidate(heap[worst], heap[index])) break
-      const tmp = heap[worst]
-      heap[worst] = heap[index]
-      heap[index] = tmp
-      index = worst
-    }
+    return candidates.slice(0, limit)
   }
 
   getStats(): { totalSize: number; fileCount: number; maxSize: number; policy: string } {

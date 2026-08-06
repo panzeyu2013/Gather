@@ -79,9 +79,10 @@ describe('estimateAnalysisTimeoutMs', () => {
   })
 
   it('scales the face branch with the square of the library size', () => {
-    // 50k faces => 30s + 2.5e9 * 2.56e-4 ms ≈ 670s; 100k => ≈ 43 min.
-    expect(estimateAnalysisTimeoutMs('face', 50_000)).toBe(670_000)
-    expect(estimateAnalysisTimeoutMs('face', 100_000)).toBe(2_590_000)
+    // 50k faces => 30s + 2.5e9 pairs·512 dims·2 flops / 1e9 flops/s ≈ 43 min;
+    // 100k faces exceeds the 60-minute cap.
+    expect(estimateAnalysisTimeoutMs('face', 50_000)).toBe(2_590_000)
+    expect(estimateAnalysisTimeoutMs('face', 100_000)).toBe(3_600_000)
   })
 
   it('clamps absurd face counts before squaring (no float overflow, 60min cap)', () => {
@@ -92,7 +93,7 @@ describe('estimateAnalysisTimeoutMs', () => {
     expect(estimateAnalysisTimeoutMs('hash', 100_000, 5_000)).toBe(5_000)
     expect(estimateAnalysisTimeoutMs('face', 100_000, 123_456)).toBe(123_456)
     expect(estimateAnalysisTimeoutMs('hash', 100_000, 0)).toBe(900_000)
-    expect(estimateAnalysisTimeoutMs('face', 100_000, -1)).toBe(2_590_000)
+    expect(estimateAnalysisTimeoutMs('face', 100_000, -1)).toBe(3_600_000)
   })
 })
 

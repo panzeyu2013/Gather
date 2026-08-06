@@ -25,12 +25,14 @@ type WorkerMessage<T> = {
 
 // Dynamic per-analysis timeout so large workloads (20k+ hashes, 50k+ faces)
 // no longer hit the old fixed 60s cap. Callers may force their own value.
-// The face branch scales with n² (DBSCAN pairwise distance work: n²/2 pairs ×
-// 512 dims at ~2 GFLOP/s JS worker throughput ≈ 1.28e-4 ms per square face,
-// doubled for safety to 2.56e-4) and caps at 60 minutes.
-// The runWorker timeout is a no-progress timeout: every 'progress' frame the
-// worker emits re-arms it, so an active worker is never killed by the absolute
-// deadline, while a stalled one (no progress) is still terminated.
+// The face branch scales with n² (exact DBSCAN: n region queries × n rows ×
+// 2·dim multiply-add flops) at a conservative ~1 GFLOP/s JS worker
+// throughput, doubled for safety: 20k rows × 512 dims ≈ 4.1e11 flops ≈
+// 410s + 30s startup. The ANN (LSH) path is near-linear, so the formula is
+// conservative there — harmless, because the timeout is a no-progress
+// timeout: every 'progress' frame the worker emits re-arms it, so an active
+// worker is never killed by the absolute deadline, while a stalled one (no
+// progress) is still terminated.
 export function estimateAnalysisTimeoutMs(
   kind: 'hash' | 'face',
   entryCount: number,
@@ -43,7 +45,10 @@ export function estimateAnalysisTimeoutMs(
   // Clamp before squaring so absurd counts cannot overflow the float range;
   // realistic libraries (<= ~50k faces) land well under the 60-minute cap.
   const clampedCount = Math.min(entryCount, 1_000_000)
-  return Math.min(60 * 60_000, Math.max(60_000, 30_000 + clampedCount * clampedCount * 2.56e-4))
+  const dim = 512
+  const flops = clampedCount * clampedCount * dim
+  const conservativeMs = flops / 1e9 * 1000 * 2
+  return Math.min(60 * 60_000, Math.max(60_000, 30_000 + conservativeMs))
 }
 
 // A worker that silently dies (e.g. OOM/SIGKILL) only emits 'exit', which

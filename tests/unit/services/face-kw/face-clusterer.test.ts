@@ -78,6 +78,35 @@ describe('clusterEmbeddings', () => {
     expect(progress[progress.length - 1][0]).toBe(entries.length)
   })
 
+  it('keeps the heartbeat alive while expanding a giant cluster (exact path)', () => {
+    // A single cluster of 2000 identical points means the outer scan stops at
+    // i = 0 while the BFS expansion processes everything. Without the BFS
+    // heartbeat the callback would fire only every n/20 rows of the outer
+    // scan (~21 times); with it, the expansion emits far more frames, so the
+    // caller's no-progress timeout cannot kill an active worker.
+    const embedding = Array(128).fill(0.1)
+    const norm = Math.sqrt(embedding.reduce((s, v) => s + v * v, 0))
+    const normalized = embedding.map(v => v / norm)
+    const entries = Array.from({ length: 2000 }, (_, index) => ({
+      observationId: index + 1,
+      embedding: normalized,
+      photoId: `p${index}`,
+    }))
+
+    const progress: Array<[number, number]> = []
+    clusterEmbeddings(entries, 0.9, 2, (current, total) => {
+      progress.push([current, total])
+    }, { enabled: false })
+
+    expect(progress.length).toBeGreaterThanOrEqual(30)
+    let last = -1
+    for (const [current] of progress) {
+      expect(current).toBeGreaterThanOrEqual(last)
+      last = current
+    }
+    expect(progress[progress.length - 1][0]).toBe(entries.length)
+  })
+
   it('throws on mixed embedding dimensions', () => {
     const entries = [
       { observationId: 1, embedding: Array(128).fill(0.1), photoId: 'a' },

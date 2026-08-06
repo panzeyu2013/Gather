@@ -14,6 +14,7 @@ import {
 } from './face-encoder'
 import { initDetectorWithFallback } from './face-inference-fallback'
 import { MODEL_CONFIG } from './model-config'
+import type { FaceInferenceBatchItem } from './face-inference-worker-client'
 
 type Request =
   | {
@@ -25,11 +26,12 @@ type Request =
       threads: number
       encoderInputSize: number
       embeddingDim: number
+      inputSizes: number[]
     }
   | {
       id: number
-      kind: 'analyze'
-      image: Uint8Array
+      kind: 'analyzeBatch'
+      images: Uint8Array[]
       inputSizes: number[]
       confidenceThreshold: number
       nmsThreshold: number
@@ -43,7 +45,10 @@ if (!parentPort) throw new Error('face-inference-worker must run in a worker thr
 // Dummy gray frame for the init-time warmup run. Executing the full detector
 // once exercises the dynamic-output path before any real photo is analyzed,
 // so an accelerated EP that cannot actually run SCRFD is caught here and the
-// session is rebuilt on CPU instead of failing mid-analysis.
+// session is rebuilt on CPU instead of failing mid-analysis. The warmup uses
+// the same input sizes as the real analysis path: CoreML/ANE accept SCRFD at
+// some spatial sizes but reject others, so a single small-size run would
+// validate the wrong thing.
 function buildWarmupFrame(inputSize: number): FaceImageFrame {
   return {
     data: Buffer.alloc(inputSize * inputSize * 3, 128),
@@ -57,14 +62,20 @@ parentPort.on('message', async (request: Request) => {
   try {
     if (request.kind === 'init') {
       setEncoderConfig(request.encoderInputSize, request.embeddingDim)
+      const warmupSizes = [...new Set(
+        request.inputSizes
+          .map((size) => Math.floor(size))
+          .filter((size) => size >= 32 && size % 32 === 0),
+      )].sort((a, b) => a - b)
+      const warmupInputSize = warmupSizes[warmupSizes.length - 1] ?? MODEL_CONFIG.detect.inputSize
       const report = await initDetectorWithFallback(
         request.detectorPath,
         request.provider,
         {
           createSession: (modelPath, provider) => initDetector(modelPath, provider),
           warmup: () => detectFacesMultiScale(
-            buildWarmupFrame(MODEL_CONFIG.detect.inputSize),
-            [MODEL_CONFIG.detect.inputSize],
+            buildWarmupFrame(warmupInputSize),
+            warmupSizes.length > 0 ? warmupSizes : [MODEL_CONFIG.detect.inputSize],
             0.99,
             0.4,
             1,
@@ -84,32 +95,47 @@ parentPort.on('message', async (request: Request) => {
       return
     }
 
-    const frame = await prepareFaceImageFrame(Buffer.from(request.image))
-    const faces = await detectFacesMultiScale(
-      frame,
-      request.inputSizes,
-      request.confidenceThreshold,
-      request.nmsThreshold,
-      request.maxDetections,
-    )
-    const observations = []
-    let encodingFailures = 0
-    for (const face of faces) {
-      let embedding = new Array(request.embeddingDim).fill(0)
+    // Batch path: process every image independently so one corrupt frame
+    // cannot fail the whole batch. Per-image errors are reported on the item,
+    // and the main process records them as detection failures.
+    const results: FaceInferenceBatchItem[] = []
+    for (const image of request.images) {
       try {
-        embedding = await encodeFace(frame, face.bbox, face.landmarks)
-      } catch {
-        encodingFailures++
+        const frame = await prepareFaceImageFrame(Buffer.from(image))
+        const faces = await detectFacesMultiScale(
+          frame,
+          request.inputSizes,
+          request.confidenceThreshold,
+          request.nmsThreshold,
+          request.maxDetections,
+        )
+        const observations = []
+        let encodingFailures = 0
+        for (const face of faces) {
+          let embedding = new Array(request.embeddingDim).fill(0)
+          try {
+            embedding = await encodeFace(frame, face.bbox, face.landmarks)
+          } catch {
+            encodingFailures++
+          }
+          observations.push({
+            bbox: face.bbox,
+            confidence: face.confidence,
+            embedding,
+          })
+        }
+        results.push({ observations, encodingFailures })
+      } catch (error) {
+        results.push({
+          error: error instanceof Error ? error.message : String(error),
+          observations: [],
+          encodingFailures: 0,
+        })
       }
-      observations.push({
-        bbox: face.bbox,
-        confidence: face.confidence,
-        embedding,
-      })
     }
     parentPort!.postMessage({
       id: request.id,
-      result: { observations, encodingFailures },
+      result: results,
     })
   } catch (error) {
     parentPort!.postMessage({

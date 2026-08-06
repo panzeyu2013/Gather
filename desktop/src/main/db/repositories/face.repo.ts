@@ -271,6 +271,12 @@ export class FaceRepository {
     ).run(sessionId, photoId)
   }
 
+  deleteAnalysisStateByPhoto(sessionId: string, photoId: string): void {
+    this.db.prepare(
+      'DELETE FROM face_analysis_state WHERE session_id = ? AND photo_id = ?',
+    ).run(sessionId, photoId)
+  }
+
   /**
    * Atomically replace a photo's face observations. Old observations are only
    * removed once the new ones are committed, so a failed run never destroys

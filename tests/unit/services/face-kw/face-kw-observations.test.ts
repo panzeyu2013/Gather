@@ -12,8 +12,24 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../../../desktop/src/main/services/face-kw/face-inference-worker-client', () => ({
   FaceInferenceWorker: class {
     async init() {}
-    async analyze() {
-      if (mocks.analyzeImpl.current) return mocks.analyzeImpl.current()
+    async analyzeBatch(images: unknown[]) {
+      if (mocks.analyzeImpl.current) {
+        const results = []
+        for (let i = 0; i < images.length; i++) {
+          try {
+            results.push(await mocks.analyzeImpl.current())
+          } catch (error) {
+            // Per-item failure like the real worker: one bad frame must not
+            // fail the whole batch.
+            results.push({
+              error: error instanceof Error ? error.message : String(error),
+              observations: [],
+              encodingFailures: 0,
+            })
+          }
+        }
+        return results
+      }
       throw new Error('no analyze impl')
     }
     async shutdown() {}

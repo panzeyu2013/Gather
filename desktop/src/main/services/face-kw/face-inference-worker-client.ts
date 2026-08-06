@@ -8,6 +8,13 @@ export interface FaceInferenceObservation {
   embedding: number[]
 }
 
+export interface FaceInferenceBatchItem {
+  /** Per-image failure; the rest of the batch is unaffected. */
+  error?: string
+  observations: FaceInferenceObservation[]
+  encodingFailures: number
+}
+
 export interface FaceInferenceInitResult {
   /** Effective detector execution provider after fallback resolution. */
   provider: string
@@ -62,12 +69,13 @@ export class FaceInferenceWorker {
     threads: number
     encoderInputSize: number
     embeddingDim: number
+    inputSizes: number[]
   }, signal?: AbortSignal): Promise<FaceInferenceInitResult> {
     return this.request({ kind: 'init', ...config }, signal)
   }
 
-  analyze(
-    image: Buffer,
+  analyzeBatch(
+    images: Buffer[],
     config: {
       inputSizes: number[]
       confidenceThreshold: number
@@ -76,8 +84,8 @@ export class FaceInferenceWorker {
       embeddingDim: number
     },
     signal?: AbortSignal,
-  ): Promise<{ observations: FaceInferenceObservation[]; encodingFailures: number }> {
-    return this.request({ kind: 'analyze', image, ...config }, signal)
+  ): Promise<FaceInferenceBatchItem[]> {
+    return this.request({ kind: 'analyzeBatch', images, ...config }, signal)
   }
 
   async shutdown(): Promise<void> {

@@ -162,15 +162,22 @@ describe('DiskCacheManager stats and metadata', () => {
           await writeEntry(dir, manager, hash, size)
         }
 
-        // Randomize the policy values directly (lastAccess / createdAt /
-        // accessCount) after onSet; eviction reads these from memory only.
+        // Randomize the policy values through the public API so the updates
+        // are tracked as dirty (un-flushed) exactly like real mutations, and
+        // the eviction window sees them. accessCount has no direct setter:
+        // repeated onAccess calls approximate distinct values within a small
+        // domain, which exercises tie-breaking as well.
         const rng = mulberry32(0x9e3779b9 + combo)
-        const entries = manager.getMetadata().entries
         for (const hash of hashes) {
           const val = Math.floor(rng() * 1_000_001)
-          if (policy === EvictionPolicy.LFU) entries[hash].accessCount = val
-          else if (policy === EvictionPolicy.FIFO) entries[hash].createdAt = val
-          else entries[hash].lastAccess = val
+          if (policy === EvictionPolicy.LFU) {
+            const count = 1 + (val % 63)
+            for (let k = 0; k < count; k++) manager.onAccess(hash)
+          } else if (policy === EvictionPolicy.FIFO) {
+            manager.onSet(hash, 10, val)
+          } else {
+            manager.onAccess(hash, val)
+          }
         }
 
         const evicted = new Set(referenceEvictionBatch(manager.getMetadata(), policy, limit))
@@ -192,12 +199,9 @@ describe('DiskCacheManager stats and metadata', () => {
     for (const hash of ['aaaa', 'bbbb', 'cccc', 'dddd', 'eeee']) {
       await writeEntry(dir, manager, hash, 10)
     }
-    const entries = manager.getMetadata().entries
-    entries['aaaa'].lastAccess = 500
-    entries['bbbb'].lastAccess = 100
-    entries['cccc'].lastAccess = 400
-    entries['dddd'].lastAccess = 200
-    entries['eeee'].lastAccess = 300
+    for (const [hash, at] of [['aaaa', 500], ['bbbb', 100], ['cccc', 400], ['dddd', 200], ['eeee', 300]] as const) {
+      manager.onAccess(hash, at)
+    }
 
     await manager.evictIfNeeded()
 
