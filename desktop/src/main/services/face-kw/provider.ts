@@ -34,13 +34,16 @@ function normalizeProviderName(raw: string): string {
   return lower
 }
 
-export function resolveExecutionProviders(provider: string): string[] {
+export function resolveExecutionProviders(
+  provider: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   if (provider !== 'auto') {
     const primary = normalizeProviderName(provider)
     return primary === 'cpu' ? ['cpu'] : [primary, 'cpu']
   }
 
-  switch (process.platform) {
+  switch (platform) {
     case 'darwin':
       return ['coreml', 'cpu']
     case 'win32':
@@ -51,15 +54,19 @@ export function resolveExecutionProviders(provider: string): string[] {
 }
 
 /**
- * SCRFD's dynamic spatial outputs currently fail in ONNX Runtime's CoreML EP
- * when the same model is evaluated at both 128 and 640. Keep automatic face
- * detection on CPU on macOS; the fixed-shape ArcFace encoder can still use
- * CoreML. An explicit CoreML choice is honored and protected by runtime
- * fallback in the detector.
+ * Detector execution providers. Automatic selection on macOS now *attempts*
+ * CoreML first with CPU as the fallback within the provider list; SCRFD's
+ * dynamic spatial outputs are known to fail in the CoreML EP, so the
+ * inference worker additionally validates the created session with a warmup
+ * run and rebuilds it on CPU when the accelerated path cannot actually run
+ * the model (see face-inference-fallback.ts). Explicit provider choices
+ * ('cpu' / 'coreml') remain honored exactly as configured.
  */
-export function resolveDetectorExecutionProviders(provider: string): string[] {
-  if (provider === 'auto' && process.platform === 'darwin') return ['cpu']
-  return resolveExecutionProviders(provider)
+export function resolveDetectorExecutionProviders(
+  provider: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  return resolveExecutionProviders(provider, platform)
 }
 
 export function getAutoBackend(): string {
@@ -72,7 +79,7 @@ export function getAutoBackend(): string {
 
 export function getAutoBackendLabel(): string {
   switch (process.platform) {
-    case 'darwin': return 'CPU 检测 + CoreML 识别'
+    case 'darwin': return 'CoreML（失败自动回退 CPU）'
     case 'win32': return 'DirectML'
     default: return 'CPU'
   }

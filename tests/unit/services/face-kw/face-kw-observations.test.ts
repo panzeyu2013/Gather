@@ -74,7 +74,7 @@ function buildService(deps: {
   fs.writeFileSync(filepath, 'fake-image-bytes')
 
   const photoRepo = {
-    getBySession: vi.fn(() => [createPhoto(filepath)]),
+    getBySessionProjection: vi.fn(() => [createPhoto(filepath)]),
   } as unknown as PhotoRepository
 
   const sessionRepo = {

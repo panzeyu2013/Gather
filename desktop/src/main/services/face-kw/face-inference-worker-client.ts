@@ -8,6 +8,13 @@ export interface FaceInferenceObservation {
   embedding: number[]
 }
 
+export interface FaceInferenceInitResult {
+  /** Effective detector execution provider after fallback resolution. */
+  provider: string
+  /** True when the requested path failed and the detector was rebuilt on CPU. */
+  fallbackUsed: boolean
+}
+
 export class FaceInferenceWorker {
   private readonly worker = new Worker(path.join(__dirname, 'face-inference-worker.js'))
   private nextId = 1
@@ -55,7 +62,7 @@ export class FaceInferenceWorker {
     threads: number
     encoderInputSize: number
     embeddingDim: number
-  }, signal?: AbortSignal): Promise<boolean> {
+  }, signal?: AbortSignal): Promise<FaceInferenceInitResult> {
     return this.request({ kind: 'init', ...config }, signal)
   }
 

@@ -1,4 +1,4 @@
-import { PhotoRepository } from '../../db/repositories/photo.repo'
+import { PhotoRepository, type PhotoProjectionRow } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { FaceRepository, type FaceClusterInput } from '../../db/repositories/face.repo'
 import { PersonRepository } from '../../db/repositories/person.repo'
@@ -7,6 +7,7 @@ import { clusterFacesInWorker } from '../../utils/analysis-worker-client'
 import { FaceInferenceWorker } from './face-inference-worker-client'
 import * as fs from 'fs'
 import { ImageService } from '../image'
+import type { DecodeResult } from '../image'
 import { SettingsService } from '../settings/settings.service'
 import { CancelledError, NotFoundError, ValidationError } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
@@ -96,7 +97,9 @@ export class FaceKwService {
       const onnxThreads = this.settings.getNumber('onnx_threads', 4)
       const encoderInputSize = this.settings.getNumber('encoder_input_size', MODEL_CONFIG.encode.inputSize)
       const embeddingDim = this.settings.getNumber('embedding_dim', MODEL_CONFIG.encode.embeddingDim)
-      const photos = collapsePhotoAssets(this.photoRepo.getBySession(sessionId))
+      // Light projection: only identity/file/asset/dimension columns are
+      // needed here, so skip the heavy metadata/result JSON blobs.
+      const photos = collapsePhotoAssets(this.photoRepo.getBySessionProjection(sessionId))
       if (photos.length === 0) throw new ValidationError('当前工作区没有可分析的照片')
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
@@ -227,28 +230,54 @@ export class FaceKwService {
       onProgress?.({ current: 0, total: totalPhotos, message: 'Detecting faces...' })
 
       let totalFaces = 0
+      // Sliding-window decode pipeline: while photo i is being inferred, the
+      // previews for i+1..i+window are already being decoded (getPreview
+      // dedupes in-flight work and its DecodeLimiter caps actual decode
+      // concurrency). Cache hits slide the window without decoding.
+      const decodeWindow = Math.max(
+        1,
+        Math.min(8, Math.floor(this.settings.getNumber('face_decode_concurrency', 4))),
+      )
+      const decodePromises: Array<Promise<DecodeResult>> = new Array(totalPhotos)
+      let prefetchUntil = 0
+      const isCacheValid = (photoId: string, sourceStat: { size: number; mtimeMs: number }): boolean => {
+        const analysisState = analysisStates.get(photoId)
+        return Boolean(
+          analysisState &&
+          analysisState.sourceFileSize === sourceStat.size &&
+          Math.abs(analysisState.sourceFileMtimeMs - sourceStat.mtimeMs) < 1 &&
+          analysisState.analysisSignature === analysisSignature,
+        )
+      }
+      const prefetchDecodes = (current: number): void => {
+        const limit = Math.min(totalPhotos, current + decodeWindow)
+        while (prefetchUntil < limit) {
+          const index = prefetchUntil++
+          const photo = photos[index]
+          const sourceStat = sourceStats.get(photo.id)
+          if (!sourceStat || isCacheValid(photo.id, sourceStat)) continue
+          const pending = this.imageService.getPreview(photo.filepath, previewMaxDimension)
+          // Suppress unhandled-rejection warnings while the decode is in
+          // flight; the failure is observed when the photo is processed.
+          pending.catch(() => {})
+          decodePromises[index] = pending
+        }
+      }
       for (let i = 0; i < totalPhotos; i++) {
         if (signal.aborted) throw new CancelledError('Analysis cancelled')
+        prefetchDecodes(i)
         const photo = photos[i]
         try {
           const sourceStat = sourceStats.get(photo.id)
           if (!sourceStat) throw new Error(`Photo is not readable: ${photo.filepath}`)
           const cached = cachedByPhoto.get(photo.id) ?? []
-          const analysisState = analysisStates.get(photo.id)
-          if (
-            analysisState &&
-            analysisState.sourceFileSize === sourceStat.size &&
-            Math.abs(analysisState.sourceFileMtimeMs - sourceStat.mtimeMs) < 1 &&
-            analysisState.analysisSignature === analysisSignature
-          ) {
+          if (isCacheValid(photo.id, sourceStat)) {
             totalFaces += cached.length
             onProgress?.({ current: i + 1, total: totalPhotos, message: 'Reusing cached faces...' })
             continue
           }
-          const preview = await this.imageService.getPreview(
-            photo.filepath,
-            previewMaxDimension,
-          )
+          const preview = await (decodePromises[i] ??
+            this.imageService.getPreview(photo.filepath, previewMaxDimension))
           if (!inferenceWorker) throw new Error('Face inference worker is not initialized')
           const inference = await inferenceWorker.analyze(
             preview.buffer,
@@ -312,6 +341,9 @@ export class FaceKwService {
         minPts,
         signal,
         !analysisFailed,
+        (current, total) => {
+          onProgress?.({ current, total, message: 'Clustering faces...' })
+        },
       )
       this.faceRepo.upsertClusterSignature(sessionId, clusterSignature)
 
@@ -345,27 +377,31 @@ export class FaceKwService {
     if (observations.length === 0) {
       throw new ValidationError('No cached face observations found. Run analysis first.')
     }
-    const photos = this.photoRepo.getBySession(sessionId)
+    const photos = this.photoRepo.getBySessionProjection(sessionId)
     await this.clusterStoredObservations(sessionId, photos, eps, minPts)
     this.faceRepo.upsertClusterSignature(sessionId, `${eps}:${minPts}`)
   }
 
   private async clusterStoredObservations(
     sessionId: string,
-    photos: ReturnType<PhotoRepository['getBySession']>,
+    photos: PhotoProjectionRow[],
     eps: number,
     minPts: number,
     signal?: AbortSignal,
     clearOnEmpty = true,
+    onProgress?: (current: number, total: number) => void,
   ): Promise<void> {
     const observations = this.faceRepo.getObservations(sessionId)
     const observationById = new Map(observations.map(observation => [observation.id, observation]))
     const photoById = new Map(photos.map(photo => [photo.id, photo]))
     const entries: EmbeddingEntry[] = []
     for (const observation of observations) {
-      const bytes = new Uint8Array(observation.embedding)
-      const embedding = Array.from(
-        new Float32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4),
+      // View the stored BLOB directly as Float32Array — no per-row JS array
+      // copy; Float32Array survives the worker postMessage structured clone.
+      const embedding = new Float32Array(
+        observation.embedding.buffer,
+        observation.embedding.byteOffset,
+        observation.embedding.byteLength / 4,
       )
       if (embedding.some(value => value !== 0)) {
         entries.push({
@@ -381,6 +417,7 @@ export class FaceKwService {
       eps,
       minPts,
       signal,
+      onProgress,
     )
     const clusterInputs: FaceClusterInput[] = clusters.map((cluster, index) => ({
       label: `Person ${index + 1}`,
