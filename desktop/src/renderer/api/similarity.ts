@@ -5,6 +5,7 @@ import type {
   SimilarityGroupingMode,
   SimilarityImage,
   SimilarityKeywordAssignment,
+  SimilarityResultStats,
   WritebackItem,
   WritebackPreview,
   WritebackResult,
@@ -13,13 +14,7 @@ import type {
 export interface SimilarityResult {
   groups: SimilarityGroup[]
   ungrouped: SimilarityImage[]
-  stats: {
-    totalGroups: number
-    totalUngrouped: number
-    threshold: number
-    minGroupSize: number
-    groupingMode: SimilarityGroupingMode
-  }
+  stats: SimilarityResultStats
 }
 
 export const similarityApi = {
@@ -39,8 +34,11 @@ export const similarityApi = {
   cancel: (sessionId: string) =>
     sendCommand<boolean>('sim.cancel_analysis', { sessionId }),
 
-  getResult: (sessionId: string) =>
-    sendCommand<SimilarityResult | null>('sim.result', { sessionId }),
+  getResult: (sessionId: string, threshold?: number) =>
+    sendCommand<SimilarityResult | null>('sim.result', {
+      sessionId,
+      ...(threshold !== undefined ? { threshold } : {}),
+    }),
 
   recluster: (
     sessionId: string,
@@ -55,14 +53,23 @@ export const similarityApi = {
       groupingMode,
     }),
 
-  previewWriteback: (sessionId: string, assignments: SimilarityKeywordAssignment[]) =>
-    sendCommand<WritebackPreview>('sim.preview_writeback', { sessionId, assignments }),
+  previewWriteback: (
+    sessionId: string,
+    assignments: SimilarityKeywordAssignment[],
+    threshold?: number,
+  ) =>
+    sendCommand<WritebackPreview>('sim.preview_writeback', {
+      sessionId,
+      assignments,
+      ...(threshold !== undefined ? { threshold } : {}),
+    }),
 
-  writeback: (sessionId: string, items: WritebackItem[]) =>
+  writeback: (sessionId: string, items: WritebackItem[], threshold?: number) =>
     sendCommand<WritebackResult>('sim.writeback', {
       sessionId,
       itemIds: items.flatMap(item => item.id == null ? [] : [item.id]),
       confirmed: true,
+      ...(threshold !== undefined ? { threshold } : {}),
     }),
 
   retryFailedWriteback: (sessionId: string) =>

@@ -1,6 +1,10 @@
 import { SettingsService } from '../settings/settings.service'
 import { Database } from '../../db/database'
-import { PhotoRepository } from '../../db/repositories/photo.repo'
+import {
+  PhotoRepository,
+  type PhotoProjectionRow,
+  type PhotoRow,
+} from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { SimilarityResultRepository } from '../../db/repositories/similarity-result.repo'
 import { ImageService } from '../image'
@@ -11,6 +15,7 @@ import type {
   SimilarityGroup,
   SimilarityGroupingMode,
   SimilarityImage,
+  SimilarityResultStats,
 } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
@@ -18,18 +23,16 @@ import { stat } from 'fs/promises'
 import { batchAsync } from '../../utils/async'
 import { collapsePhotoAssets } from '../assets/logical-photo-assets'
 
-export const collapseSimilarityAssets = collapsePhotoAssets
+/** Collapse physical photos into logical assets; only reads id/asset_id/
+ * filename, so it works on the light projection rows used by analyze. */
+export const collapseSimilarityAssets = (
+  photos: PhotoProjectionRow[],
+): PhotoProjectionRow[] => collapsePhotoAssets(photos as PhotoRow[])
 
 export interface SimilarityResult {
   groups: SimilarityGroup[]
   ungrouped: SimilarityImage[]
-  stats: {
-    totalGroups: number
-    totalUngrouped: number
-    threshold: number
-    minGroupSize: number
-    groupingMode: SimilarityGroupingMode
-  }
+  stats: SimilarityResultStats
 }
 
 export function validateSimilarityParameters(
@@ -44,6 +47,12 @@ export function validateSimilarityParameters(
   }
 }
 
+// Number of asset_file_id values per IN chunk; keeps queries far under the
+// SQLite 999 bound while reducing 1-N per-photo lookups to a handful of
+// batched reads.
+const REUSE_HASH_CHUNK_SIZE = 400
+const NEIGHBOR_TIER_STEPS = [8, 4, -4, -8]
+
 export function reuseSimilarityHashes(
   db: Database,
   sessionId: string,
@@ -51,23 +60,51 @@ export function reuseSimilarityHashes(
   sourceStats: Map<string, { size: number; mtimeMs: number }>,
   existingHashMap: Map<string, string>,
 ): number {
-  const reusableHash = db.prepare(`
-    SELECT source_hash.hash_hex
-    FROM photos target
-    JOIN photos source_photo
-      ON source_photo.asset_file_id = target.asset_file_id
-     AND source_photo.id <> target.id
-    JOIN similarity_hashes source_hash
-      ON source_hash.photo_id = source_photo.id
-     AND source_hash.session_id = source_photo.session_id
-    WHERE target.id = ?
-      AND target.session_id = ?
-      AND target.asset_file_id IS NOT NULL
-      AND source_hash.file_size = ?
-      AND ABS(source_hash.file_mtime_ms - ?) < 1
-    ORDER BY source_hash.id DESC
-    LIMIT 1
-  `)
+  const photoRows = db
+    .prepare(
+      'SELECT id, asset_file_id FROM photos WHERE session_id = ? AND asset_file_id IS NOT NULL',
+    )
+    .all(sessionId) as Array<{ id: string; asset_file_id: string }>
+  const assetFileByPhoto = new Map(photoRows.map(row => [row.id, row.asset_file_id]))
+  const assetFileIds = [...new Set(photoRows.map(row => row.asset_file_id))]
+
+  // One batched read per chunk of asset files: every similarity hash belonging
+  // to photos that share an asset file with any target photo.
+  const rowsByAssetFile = new Map<
+    string,
+    Array<{ id: number; photoId: string; hashHex: string; fileSize: number; fileMtimeMs: number }>
+  >()
+  for (let offset = 0; offset < assetFileIds.length; offset += REUSE_HASH_CHUNK_SIZE) {
+    const chunk = assetFileIds.slice(offset, offset + REUSE_HASH_CHUNK_SIZE)
+    const placeholders = chunk.map(() => '?').join(', ')
+    const rows = db.prepare(`
+      SELECT h.id AS hash_id, h.photo_id, h.hash_hex, h.file_size, h.file_mtime_ms, p.asset_file_id
+      FROM similarity_hashes h
+      JOIN photos p ON h.photo_id = p.id
+      WHERE p.asset_file_id IN (${placeholders})
+    `).all(...chunk) as Array<{
+      hash_id: number
+      photo_id: string
+      hash_hex: string
+      file_size: number
+      file_mtime_ms: number
+      asset_file_id: string
+    }>
+    for (const row of rows) {
+      const assetFileId = row.asset_file_id
+      if (!assetFileId) continue
+      const list = rowsByAssetFile.get(assetFileId) ?? []
+      list.push({
+        id: row.hash_id,
+        photoId: row.photo_id,
+        hashHex: row.hash_hex,
+        fileSize: row.file_size,
+        fileMtimeMs: row.file_mtime_ms,
+      })
+      rowsByAssetFile.set(assetFileId, list)
+    }
+  }
+
   const saveReusableHash = db.prepare(`
     INSERT INTO similarity_hashes
       (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
@@ -83,21 +120,32 @@ export function reuseSimilarityHashes(
       if (existingHashMap.has(photo.id)) continue
       const sourceStat = sourceStats.get(photo.id)
       if (!sourceStat) continue
-      const source = reusableHash.get(
-        photo.id,
-        sessionId,
-        sourceStat.size,
-        sourceStat.mtimeMs,
-      ) as { hash_hex: string } | undefined
+      const assetFileId = assetFileByPhoto.get(photo.id)
+      if (!assetFileId) continue
+      const candidates = rowsByAssetFile.get(assetFileId)
+      if (!candidates) continue
+      let source: {
+        id: number
+        photoId: string
+        hashHex: string
+        fileSize: number
+        fileMtimeMs: number
+      } | undefined
+      for (const candidate of candidates) {
+        if (candidate.photoId === photo.id) continue
+        if (candidate.fileSize !== sourceStat.size) continue
+        if (Math.abs(candidate.fileMtimeMs - sourceStat.mtimeMs) >= 1) continue
+        if (!source || candidate.id > source.id) source = candidate
+      }
       if (!source) continue
       saveReusableHash.run(
         sessionId,
         photo.id,
-        source.hash_hex,
+        source.hashHex,
         sourceStat.size,
         sourceStat.mtimeMs,
       )
-      existingHashMap.set(photo.id, source.hash_hex)
+      existingHashMap.set(photo.id, source.hashHex)
       reused++
     }
   })()
@@ -141,7 +189,7 @@ export class SimilarityService {
     try {
       this.sessionRepo.updateAnalysisStatus(sessionId, 'running')
 
-      const photos = collapseSimilarityAssets(this.photoRepo.getBySession(sessionId))
+      const photos = collapseSimilarityAssets(this.photoRepo.getBySessionProjection(sessionId))
       if (photos.length === 0) {
         throw new Error('No photos in session')
       }
@@ -316,47 +364,52 @@ export class SimilarityService {
         minGroupSize,
         groupingMode,
         signal,
+        (current, total) => onProgress?.(current, total, 'Clustering similar images...'),
       )
 
       onProgress?.(entries.length, entries.length, 'Clustering complete')
 
       const pathMap = new Map(photos.map((p) => [p.id, p.filepath]))
 
-      const groups: SimilarityGroup[] = rawGroups.map((memberIds, idx) => ({
-        id: idx + 1,
-        label: `Group ${idx + 1}`,
-        count: memberIds.length,
-        images: memberIds.map((photoId, i) => ({
-          path: pathMap.get(photoId)!,
-          representative: i === 0,
-        })),
-      }))
-
-      const ungrouped: SimilarityImage[] = rawUngrouped.map((photoId) => ({
-        path: pathMap.get(photoId)!,
-      }))
-
-      const groupsJson = JSON.stringify({ groups, ungrouped })
-      const statsJson = JSON.stringify({
-        totalGroups: groups.length,
-        totalUngrouped: ungrouped.length,
+      const built = this.buildStoredResult(
+        rawGroups,
+        rawUngrouped,
+        pathMap,
         threshold,
         minGroupSize,
         groupingMode,
-      })
+        false,
+      )
 
       this.similarityResultRepo.replace(
         sessionId,
-        groupsJson,
-        statsJson,
+        built.groupsJson,
+        built.statsJson,
         threshold,
         minGroupSize,
-        rawGroups.flatMap((photoIds, groupIndex) =>
-          photoIds.map(photoId => ({ photoId, groupIndex })),
-        ),
+        built.memberships,
       )
 
       this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+
+      // Best-effort neighbor-threshold tiers: cheap to cluster with the same
+      // already-computed hashes, and a failure or cancellation here must not
+      // affect the main result which was already saved above.
+      try {
+        await this.precomputeNeighborTiers(
+          sessionId,
+          entries,
+          pathMap,
+          threshold,
+          minGroupSize,
+          groupingMode,
+          signal,
+          onProgress,
+        )
+      } catch (error) {
+        if (signal.aborted) return
+        console.warn('Similarity neighbor threshold precomputation failed', error)
+      }
     } catch (e: unknown) {
       this.sessionRepo.updateAnalysisStatus(
         sessionId,
@@ -370,32 +423,75 @@ export class SimilarityService {
     }
   }
 
-  getResult(sessionId: string): SimilarityResult | null {
-    const db = this.db
-    const row = db
-      .prepare(
-        'SELECT groups_json, stats_json FROM similarity_results WHERE session_id = ? ORDER BY id DESC LIMIT 1',
-      )
-      .get(sessionId) as { groups_json: string; stats_json: string } | undefined
+  getResult(sessionId: string, threshold?: number): SimilarityResult | null {
+    const row = threshold === undefined
+      ? this.similarityResultRepo.getLatest(sessionId)
+      : this.similarityResultRepo.getByThreshold(sessionId, threshold)
 
     if (!row) return null
 
-    const storedGroups = JSON.parse(row.groups_json) as {
-      groups: SimilarityGroup[]
-      ungrouped?: SimilarityImage[]
+    const storedStats = JSON.parse(row.stats_json) as Partial<SimilarityResultStats> & {
+      groupingMode?: SimilarityGroupingMode
     }
-    const storedStats = JSON.parse(row.stats_json) as Omit<
-      SimilarityResult['stats'],
-      'groupingMode'
-    > & { groupingMode?: SimilarityGroupingMode }
-    return {
-      groups: storedGroups.groups,
-      ungrouped: storedGroups.ungrouped ?? [],
-      stats: {
-        ...storedStats,
-        groupingMode: storedStats.groupingMode ?? 'global',
-      },
+    const stats: SimilarityResultStats = {
+      totalGroups: storedStats.totalGroups ?? 0,
+      totalUngrouped: storedStats.totalUngrouped ?? 0,
+      threshold: storedStats.threshold ?? 0,
+      minGroupSize: storedStats.minGroupSize ?? 2,
+      groupingMode: storedStats.groupingMode ?? 'global',
+      precomputed: storedStats.precomputed === true,
     }
+
+    // The members table is the source of truth for the group structure;
+    // groups_json is only parsed for legacy rows written before the members
+    // table existed (they have no member rows).
+    const members = this.similarityResultRepo.getGroupMembers(sessionId, row.id)
+    if (members === null) {
+      const storedGroups = JSON.parse(row.groups_json) as {
+        groups: SimilarityGroup[]
+        ungrouped?: SimilarityImage[]
+      }
+      return {
+        groups: storedGroups.groups,
+        ungrouped: storedGroups.ungrouped ?? [],
+        stats,
+      }
+    }
+
+    const groupsByIndex = new Map<number, SimilarityGroup>()
+    const groups: SimilarityGroup[] = []
+    for (const member of members) {
+      let group = groupsByIndex.get(member.groupIndex)
+      if (!group) {
+        group = {
+          id: member.groupIndex + 1,
+          label: `Group ${member.groupIndex + 1}`,
+          count: 0,
+          images: [],
+        }
+        groupsByIndex.set(member.groupIndex, group)
+        groups.push(group)
+      }
+      group.images.push({
+        path: member.filepath,
+        // First member of the group (lowest members rowid) is its
+        // representative, mirroring buildStoredResult.
+        representative: group.count === 0,
+      })
+      group.count++
+    }
+
+    // Ungrouped = logical assets of the session outside the members table,
+    // mirroring what analyze put in groups_json (collapsed assets minus
+    // grouped members). Order follows the import order of the projection.
+    const memberPhotoIds = new Set(members.map(member => member.photoId))
+    const ungrouped: SimilarityImage[] = collapseSimilarityAssets(
+      this.photoRepo.getBySessionProjection(sessionId),
+    )
+      .filter(photo => !memberPhotoIds.has(photo.id))
+      .map(photo => ({ path: photo.filepath }))
+
+    return { groups, ungrouped, stats }
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -415,17 +511,13 @@ export class SimilarityService {
     validateSimilarityParameters(threshold, minGroupSize)
     const db = this.db
 
-    const existing = db
-      .prepare(
-        'SELECT groups_json, stats_json FROM similarity_results WHERE session_id = ? ORDER BY id DESC LIMIT 1',
-      )
-      .get(sessionId) as { groups_json: string; stats_json: string } | undefined
+    const existing = this.similarityResultRepo.getLatest(sessionId)
 
     if (!existing) {
       throw new Error('No existing similarity results found. Run analysis first.')
     }
 
-    const photos = collapseSimilarityAssets(this.photoRepo.getBySession(sessionId))
+    const photos = collapseSimilarityAssets(this.photoRepo.getBySessionProjection(sessionId))
     const hashRows = db
       .prepare(
         'SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?',
@@ -451,6 +543,57 @@ export class SimilarityService {
 
     const pathMap = new Map(photos.map((p) => [p.id, p.filepath]))
 
+    const built = this.buildStoredResult(
+      rawGroups,
+      rawUngrouped,
+      pathMap,
+      threshold,
+      minGroupSize,
+      groupingMode,
+      false,
+    )
+
+    this.similarityResultRepo.replace(
+      sessionId,
+      built.groupsJson,
+      built.statsJson,
+      threshold,
+      minGroupSize,
+      built.memberships,
+    )
+
+    this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+
+    try {
+      await this.precomputeNeighborTiers(
+        sessionId,
+        entries,
+        pathMap,
+        threshold,
+        minGroupSize,
+        groupingMode,
+      )
+    } catch (error) {
+      console.warn('Similarity neighbor threshold precomputation failed', error)
+    }
+
+    return built.result
+  }
+
+  private buildStoredResult(
+    rawGroups: string[][],
+    rawUngrouped: string[],
+    pathMap: Map<string, string>,
+    threshold: number,
+    minGroupSize: number,
+    groupingMode: SimilarityGroupingMode,
+    precomputed: boolean,
+  ): {
+    result: SimilarityResult
+    groupsJson: string
+    statsJson: string
+    memberships: Array<{ photoId: string; groupIndex: number }>
+  } {
     const groups: SimilarityGroup[] = rawGroups.map((memberIds, idx) => ({
       id: idx + 1,
       label: `Group ${idx + 1}`,
@@ -472,31 +615,96 @@ export class SimilarityService {
       threshold,
       minGroupSize,
       groupingMode,
+      ...(precomputed ? { precomputed: true } : {}),
     })
 
-    this.similarityResultRepo.replace(
-      sessionId,
+    return {
+      result: {
+        groups,
+        ungrouped,
+        stats: {
+          totalGroups: groups.length,
+          totalUngrouped: ungrouped.length,
+          threshold,
+          minGroupSize,
+          groupingMode,
+        },
+      },
       groupsJson,
       statsJson,
-      threshold,
-      minGroupSize,
-      rawGroups.flatMap((photoIds, groupIndex) =>
+      memberships: rawGroups.flatMap((photoIds, groupIndex) =>
         photoIds.map(photoId => ({ photoId, groupIndex })),
       ),
-    )
+    }
+  }
 
-    this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+  private async precomputeNeighborTiers(
+    sessionId: string,
+    entries: HashEntry[],
+    pathMap: Map<string, string>,
+    threshold: number,
+    minGroupSize: number,
+    groupingMode: SimilarityGroupingMode,
+    signal?: AbortSignal,
+    onProgress?: (current: number, total: number, message: string) => void,
+  ): Promise<void> {
+    if (signal?.aborted) return
 
-    return {
-      groups,
-      ungrouped,
-      stats: {
-        totalGroups: groups.length,
-        totalUngrouped: ungrouped.length,
-        threshold,
+    const savedTiers = new Set<number>([threshold])
+    const candidates: number[] = []
+    for (const step of NEIGHBOR_TIER_STEPS) {
+      const tier = Math.max(0, Math.min(30, threshold + step))
+      if (!savedTiers.has(tier)) {
+        savedTiers.add(tier)
+        candidates.push(tier)
+      }
+    }
+    if (candidates.length === 0) return
+
+    const totalUnits = candidates.length * entries.length
+    for (const [index, tier] of candidates.entries()) {
+      if (signal?.aborted) return
+      const { groups: rawGroups, ungrouped: rawUngrouped } = await clusterHashesInWorker(
+        entries,
+        tier,
         minGroupSize,
         groupingMode,
-      },
+        signal,
+        (current) => {
+          onProgress?.(
+            // The worker may report current up to 2n on the recomputed path;
+            // clamp each tier to its own entries so per-tier totals never
+            // overflow the global totalUnits budget.
+            index * entries.length + Math.min(current, entries.length),
+            totalUnits,
+            'Precomputing neighbor thresholds...',
+          )
+        },
+      )
+      if (signal?.aborted) return
+
+      const built = this.buildStoredResult(
+        rawGroups,
+        rawUngrouped,
+        pathMap,
+        tier,
+        minGroupSize,
+        groupingMode,
+        true,
+      )
+      this.similarityResultRepo.replaceForThreshold(
+        sessionId,
+        built.groupsJson,
+        built.statsJson,
+        tier,
+        minGroupSize,
+        built.memberships,
+      )
+      onProgress?.(
+        (index + 1) * entries.length,
+        totalUnits,
+        'Precomputing neighbor thresholds...',
+      )
     }
   }
 }

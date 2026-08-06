@@ -83,6 +83,7 @@ export type {
   SimilarityGroupingMode,
   SimilarityGroup,
   SimilarityImage,
+  SimilarityResultStats,
 } from './protocol/similarity'
 
 export type {
@@ -209,6 +210,8 @@ export type {
   AssetCullingState,
   CullingAsset,
   CullingListParams,
+  CullingListPageParams,
+  CullingPage,
   CullingUpdatePatch,
   CullingUpdateParams,
   CullingUpdateResult,

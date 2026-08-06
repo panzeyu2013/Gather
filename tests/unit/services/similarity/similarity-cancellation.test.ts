@@ -36,7 +36,7 @@ describe('SimilarityService cancellation', () => {
     })
     const service = new SimilarityService(
       {
-        getBySession: vi.fn(() => [{
+        getBySessionProjection: vi.fn(() => [{
           id: 'photo',
           filepath,
           filename: 'photo.jpg',

@@ -50,10 +50,21 @@ async function buildKeywordPreview(
   assignments: SimilarityKeywordAssignment[],
   similarityService: SimilarityService,
   writebackService: WritebackService,
+  threshold?: number,
 ) {
-  const result = similarityService.getResult(sessionId)
+  // Resolve group ids against the displayed result row: the tier row when a
+  // threshold is given (precomputed neighbor tier), the latest main row
+  // otherwise. Using getLatest here would map tier group ids to the wrong
+  // keywords when the UI is showing a precomputed tier.
+  const result = threshold === undefined
+    ? similarityService.getResult(sessionId)
+    : similarityService.getResult(sessionId, threshold)
   if (!result) {
-    throw new Error('尚无相似度分析结果，请先完成分析')
+    throw new Error(
+      threshold === undefined
+        ? '尚无相似度分析结果，请先完成分析'
+        : '该阈值无结果，请重新聚类',
+    )
   }
 
   const { keywordsBySidecar, affectedPaths } = buildSimilarityKeywordPlan(
@@ -147,7 +158,8 @@ export function registerSimilarityHandlers(
     'sim.result',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const result = similarityService.getResult(sessionId)
+      const threshold = typeof params.threshold === 'number' ? params.threshold : undefined
+      const result = similarityService.getResult(sessionId, threshold)
       return ok(result)
     }),
   )
@@ -177,7 +189,14 @@ export function registerSimilarityHandlers(
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const assignments = validateAssignments(params.assignments)
-      return ok(await buildKeywordPreview(sessionId, assignments, similarityService, writebackService))
+      const threshold = typeof params.threshold === 'number' ? params.threshold : undefined
+      return ok(await buildKeywordPreview(
+        sessionId,
+        assignments,
+        similarityService,
+        writebackService,
+        threshold,
+      ))
     }),
   )
 
@@ -188,6 +207,13 @@ export function registerSimilarityHandlers(
         throw new Error('Writeback requires explicit confirmation')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
+      const threshold = typeof params.threshold === 'number' ? params.threshold : undefined
+      // The pending items were built from a specific result row; when the
+      // caller identifies the tier it was displayed with, make sure that row
+      // still exists so group ids never map to a vanished result.
+      if (threshold !== undefined && !similarityService.getResult(sessionId, threshold)) {
+        throw new Error('该阈值无结果，请重新聚类')
+      }
       const itemIds = Array.isArray(params.itemIds)
         ? params.itemIds.filter((id): id is number => Number.isInteger(id))
         : []

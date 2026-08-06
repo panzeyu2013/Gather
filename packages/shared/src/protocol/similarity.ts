@@ -15,6 +15,7 @@ export interface SimCancelAnalysisParams {
 
 export interface SimResultParams {
   sessionId: string
+  threshold?: number
 }
 
 export interface SimReclusterParams {
@@ -32,12 +33,14 @@ export interface SimilarityKeywordAssignment {
 export interface SimPreviewWritebackParams {
   sessionId: string
   assignments: SimilarityKeywordAssignment[]
+  threshold?: number
 }
 
 export interface SimWritebackParams {
   sessionId: string
   itemIds: number[]
   confirmed: boolean
+  threshold?: number
 }
 
 export interface SimWritebackItemsParams {
@@ -69,4 +72,16 @@ export interface SimilarityGroup {
 export interface SimilarityImage {
   path: string
   representative?: boolean
+}
+
+// Stats carried by the similarity result rows; `precomputed` marks rows
+// produced by the neighbor-threshold tier precomputation during analyze (their
+// minGroupSize/groupingMode reflect the main analysis, not the draft settings).
+export interface SimilarityResultStats {
+  totalGroups: number
+  totalUngrouped: number
+  threshold: number
+  minGroupSize: number
+  groupingMode: SimilarityGroupingMode
+  precomputed?: boolean
 }

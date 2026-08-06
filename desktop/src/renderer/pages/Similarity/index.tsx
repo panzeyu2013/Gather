@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { similarityApi, type SimilarityResult } from '../../api/similarity'
@@ -18,7 +18,15 @@ function ThumbnailImage({ path, className }: { path: string; className?: string 
   return <img src={imageApi.thumbnailUrl(path, 256)} alt={filename} className={className} />
 }
 
-function AnalysisPanel({ sessionId, result }: { sessionId: string; result: SimilarityResult | null }) {
+function AnalysisPanel({
+  sessionId,
+  result,
+  onResultAdopted,
+}: {
+  sessionId: string
+  result: SimilarityResult | null
+  onResultAdopted: () => void
+}) {
   const queryClient = useQueryClient()
   const {
     threshold,
@@ -109,6 +117,7 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
     ),
     onSuccess: (data) => {
       queryClient.setQueryData(['similarity', sessionId], data)
+      onResultAdopted()
     },
   })
 
@@ -120,6 +129,9 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
   // The result records the parameters it was actually computed with (validation
   // may clamp or default them). Sync the store only when a NEW result object
   // arrives, so draft slider edits are never overwritten by a stale result.
+  // Tier rows record the analyze-time minGroupSize/groupingMode, so when the
+  // result is precomputed only the threshold is synced; the minGroupSize and
+  // groupingMode stay whatever the user drafted.
   const lastSyncedResult = useRef<SimilarityResult | null>(null)
   useEffect(() => {
     if (!result || result === lastSyncedResult.current) return
@@ -127,13 +139,49 @@ function AnalysisPanel({ sessionId, result }: { sessionId: string; result: Simil
     if (result.stats.threshold != null) {
       setThreshold(result.stats.threshold)
     }
-    if (result.stats.minGroupSize != null) {
-      setMinGroupSize(result.stats.minGroupSize)
-    }
-    if (result.stats.groupingMode) {
-      setGroupingMode(result.stats.groupingMode)
+    if (!result.stats.precomputed) {
+      if (result.stats.minGroupSize != null) {
+        setMinGroupSize(result.stats.minGroupSize)
+      }
+      if (result.stats.groupingMode) {
+        setGroupingMode(result.stats.groupingMode)
+      }
     }
   }, [result, setThreshold, setMinGroupSize, setGroupingMode])
+
+  // Dragging the threshold slider switches to a precomputed neighbor tier
+  // (saved during analyze/recluster) instead of re-running clustering. If no
+  // tier exists for the draft value the request returns null and the draft is
+  // kept untouched; the user can still hit "重新聚类".
+  const tierRequestRef = useRef(0)
+  useEffect(() => {
+    if (!result) return
+    if (threshold === result.stats.threshold) return
+    const timer = setTimeout(() => {
+      const requestId = ++tierRequestRef.current
+      void (async () => {
+        try {
+          const tierResult = await similarityApi.getResult(sessionId, threshold)
+          // Guard against a stale tier response overwriting a newer draft:
+          // only adopt when the resolved row matches the requested threshold
+          // and no newer request has been issued since.
+          if (
+            tierResult &&
+            tierResult.stats.threshold === threshold &&
+            tierRequestRef.current === requestId
+          ) {
+            queryClient.setQueryData(['similarity', sessionId], tierResult)
+            // The adopted tier has its own group set; selections made against
+            // the previous result must not leak into it.
+            onResultAdopted()
+          }
+        } catch {
+          // No precomputed tier (or a transient failure): keep the draft value.
+        }
+      })()
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [threshold, result, sessionId, queryClient, onResultAdopted])
 
   return (
     <div className={styles.panel}>
@@ -358,7 +406,11 @@ function KeywordWritebackPanel({
     setBusy(true)
     setMessage(null)
     try {
-      const nextPreview = await similarityApi.previewWriteback(sessionId, assignments)
+      const nextPreview = await similarityApi.previewWriteback(
+        sessionId,
+        assignments,
+        result.stats.threshold,
+      )
       setPreview(nextPreview)
       setMessage(`预览完成：${nextPreview.affectedPhotos} 张照片将合并这些关键词。`)
     } catch (error) {
@@ -373,9 +425,17 @@ function KeywordWritebackPanel({
     setBusy(true)
     setMessage(null)
     try {
-      const currentPreview = preview ?? await similarityApi.previewWriteback(sessionId, assignments)
+      const currentPreview = preview ?? await similarityApi.previewWriteback(
+        sessionId,
+        assignments,
+        result.stats.threshold,
+      )
       setPreview(currentPreview)
-      const nextResult = await similarityApi.writeback(sessionId, currentPreview.items)
+      const nextResult = await similarityApi.writeback(
+        sessionId,
+        currentPreview.items,
+        result.stats.threshold,
+      )
       setWritebackResult(nextResult)
       setFailedItems(nextResult.failedItems)
       setSyncConfirmed(false)
@@ -521,6 +581,13 @@ export default function Similarity() {
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
   const resetSimilarityState = useSimilarityStore(state => state.reset)
 
+  // Called whenever the displayed result is replaced wholesale (a precomputed
+  // tier adopted from the slider, or a fresh recluster): selections made
+  // against the previous group set must not leak into the new one.
+  const onResultAdopted = useCallback(() => {
+    setSelectedGroupIds(new Set())
+  }, [])
+
   useEffect(() => {
     setSelectedGroupIds(new Set())
     resetSimilarityState()
@@ -556,7 +623,11 @@ export default function Similarity() {
   return (
     <div className={styles.page}>
       <h1 className={styles.title}>相似度分析</h1>
-      <AnalysisPanel sessionId={sessionId} result={result ?? null} />
+      <AnalysisPanel
+        sessionId={sessionId}
+        result={result ?? null}
+        onResultAdopted={onResultAdopted}
+      />
       {isLoading && <p className={styles.loading}>加载结果中...</p>}
       {result && (
         <>
