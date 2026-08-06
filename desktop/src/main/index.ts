@@ -12,7 +12,7 @@ import { FaceKwService } from './services/face-kw/face-kw.service'
 import { FaceRepository } from './db/repositories/face.repo'
 import { WritebackService } from './services/writeback/writeback.service'
 import { SimilarityService } from './services/similarity/similarity.service'
-import { ImageService } from './services/image'
+import { ImageService, type ThumbnailCache } from './services/image'
 import { PhotoRepository } from './db/repositories/photo.repo'
 import { AssetRepository } from './db/repositories/asset.repo'
 import { FilterEngine } from './services/filter/filter-engine'
@@ -551,7 +551,14 @@ function shutdown(): void {
     .catch((err) => {
       console.error('Shutdown error:', err instanceof Error ? err.message : err)
     })
-    .finally(() => {
+    .finally(async () => {
+      // Flush debounced cache metadata so lastAccess/accessCount changes in
+      // the debounce window survive the quit.
+      try {
+        await svc<ThumbnailCache>(DI_TOKENS.THUMBNAIL_CACHE).flush()
+      } catch (err) {
+        console.error('Thumbnail cache flush error:', err instanceof Error ? err.message : err)
+      }
       app.quit()
     })
 }

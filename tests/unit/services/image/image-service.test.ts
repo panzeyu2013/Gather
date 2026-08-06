@@ -54,12 +54,14 @@ vi.mock('../../../../desktop/src/main/services/image/decoders/sips-decoder', () 
 import {
   DiskThumbnailCache,
   ImageService,
+  MemoryThumbnailCache,
   type ThumbnailCache,
 } from '../../../../desktop/src/main/services/image/image.service'
 import type { DecodeResult, ImageDecoder } from '../../../../desktop/src/main/services/image/decoder'
 import { SharpDecoder } from '../../../../desktop/src/main/services/image/decoders/sharp-decoder'
 import { SipsDecoder } from '../../../../desktop/src/main/services/image/decoders/sips-decoder'
 import { IMAGE_CONFIG } from '../../../../desktop/src/main/services/image/image-config'
+import { getDefaults } from '../../../../desktop/src/main/services/settings/settings.service'
 import type { SettingsService } from '../../../../desktop/src/main/services/settings/settings.service'
 
 const decoded: DecodeResult = {
@@ -295,5 +297,64 @@ describe('ImageService preview pipeline', () => {
 
     expect(maxActive).toBe(2)
     expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(8)
+  })
+})
+
+describe('MemoryThumbnailCache byte budget', () => {
+  function settings(overrides: Record<string, number> = {}): SettingsService {
+    return {
+      get: (_key: string, fallback = '') => fallback,
+      getNumber: (key: string, fallback: number) => overrides[key] ?? fallback,
+    } as SettingsService
+  }
+
+  function entry(size: number): DecodeResult {
+    return { buffer: Buffer.alloc(size), format: 'jpeg', width: 100, height: 100 }
+  }
+
+  it('registers a large default entry count so the byte budget dominates eviction', () => {
+    expect(getDefaults()).toHaveProperty('memory_cache_size')
+    expect(Number(getDefaults().memory_cache_size)).toBe(10_000)
+  })
+
+  it('keeps hundreds of previews when the byte budget is not exceeded', async () => {
+    const cache = new MemoryThumbnailCache(settings())
+    for (let i = 0; i < 500; i++) {
+      await cache.set(`k${i}`, entry(1024))
+    }
+    expect(await cache.get('k0')).not.toBeNull()
+    expect(await cache.get('k499')).not.toBeNull()
+  })
+
+  it('evicts the oldest entries once the byte budget is exceeded', async () => {
+    const cache = new MemoryThumbnailCache(settings())
+    for (let i = 0; i < 500; i++) {
+      await cache.set(`k${i}`, entry(1024 * 1024))
+    }
+    expect(await cache.get('k0')).toBeNull()
+    expect(await cache.get('k499')).not.toBeNull()
+  })
+
+  it('still enforces a configured entry-count ceiling when bytes permit more', async () => {
+    const cache = new MemoryThumbnailCache(settings({ memory_cache_size: 3 }))
+    for (let i = 0; i < 10; i++) {
+      await cache.set(`k${i}`, entry(1024))
+    }
+    expect(await cache.get('k0')).toBeNull()
+    expect(await cache.get('k9')).not.toBeNull()
+  })
+
+  it('clamps an undersized configured entry count to at least 1', async () => {
+    const cache = new MemoryThumbnailCache(settings({ memory_cache_size: 0 }))
+    await cache.set('a', entry(1024))
+    await cache.set('b', entry(1024))
+    expect(await cache.get('a')).toBeNull()
+    expect(await cache.get('b')).not.toBeNull()
+  })
+
+  it('clamps an oversized configured entry count to 100_000', async () => {
+    const cache = new MemoryThumbnailCache(settings({ memory_cache_size: 1_000_000 }))
+    await cache.set('a', entry(1024))
+    expect(await cache.get('a')).not.toBeNull()
   })
 })

@@ -16,6 +16,7 @@ import { heavyTaskScheduler } from '../../utils/heavy-task-scheduler'
 export interface ThumbnailCache {
   get(key: string): Promise<DecodeResult | null>
   set(key: string, value: DecodeResult): Promise<void>
+  flush(): Promise<void>
 }
 
 // ── In-memory LRU cache ──
@@ -29,12 +30,16 @@ export class MemoryThumbnailCache implements ThumbnailCache {
   constructor(settings: SettingsService) {
     this.maxSize = Math.max(
       1,
-      Math.min(10_000, Math.floor(settings.getNumber('memory_cache_size', 200))),
+      Math.min(100_000, Math.floor(settings.getNumber('memory_cache_size', 10_000))),
     )
     this.maxBytes = Math.max(
       32,
       settings.getNumber('memory_cache_max_size_mb', 192),
     ) * 1024 * 1024
+  }
+
+  async flush(): Promise<void> {
+    // Nothing to persist: this tier is process-local.
   }
 
   async get(key: string): Promise<DecodeResult | null> {
@@ -127,6 +132,9 @@ export class DiskThumbnailCache implements ThumbnailCache {
     return nodePath.join(this.dir, `${this.hashKey(key)}.jpg`)
   }
 
+  async flush(): Promise<void> {
+    await this.manager.flush()
+  }
 }
 
 // ── Two-tier cache (memory → disk → decode) ──
@@ -155,6 +163,10 @@ export class TieredThumbnailCache implements ThumbnailCache {
 
   async set(key: string, value: DecodeResult): Promise<void> {
     await Promise.all([this.l1.set(key, value), this.l2.set(key, value)])
+  }
+
+  async flush(): Promise<void> {
+    await this.l2.flush()
   }
 }
 

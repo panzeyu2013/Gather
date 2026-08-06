@@ -356,6 +356,7 @@ export class ExportService {
             await heavyTaskScheduler.run(
               () => this.convertAndExport(photo.filepath, temporaryPath, options),
               1,
+              2,
             )
             await this.copyExclusive(temporaryPath, destPath)
             destinationCreated = true

@@ -89,12 +89,13 @@ export function getDefaults(): Record<string, string | number> {
     face_thumbnail_quality: 70,
     face_thumbnail_dir: '',
 
-    memory_cache_size: 200,
+    memory_cache_size: 10_000,
     memory_cache_max_size_mb: 192,
     disk_cache_dir: '',
     disk_cache_max_size_gb: 1,
     disk_cache_eviction_policy: 'lru',
     thumbnail_concurrency: Math.max(1, Math.min(4, os.cpus().length - 1)),
+    face_decode_concurrency: 4,
 
     db_cache_size_mb: 64,
     db_synchronous: 'full',
@@ -106,6 +107,8 @@ export function getDefaults(): Record<string, string | number> {
     metadata_write_mode: 'sidecar',
     metadata_write_debounce_ms: 500,
     capture_one_color_compatibility: 'label_and_urgency',
+
+    lazy_checksum: 'true',
   }
 }
 
