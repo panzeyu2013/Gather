@@ -50,33 +50,181 @@ function managedCacheRoots(settings: SettingsService): string[] {
   }
 }
 
+// Full-scan traversal is parallelized with bounded concurrency: opendir is
+// cheap, but thousands of simultaneous handles still thrash a spinning disk.
+// File paths are streamed through a bounded channel so the consumer can
+// start analyzing while the walk is still listing the tree (producer/
+// consumer overlap) without buffering every path in memory.
+const WALK_CONCURRENCY = 6
+const WALK_CHANNEL_CAPACITY = 256
+
+/**
+ * Bounded async channel used by `walk` to stream file paths to its consumer
+ * with backpressure: a producer that outruns the consumer waits instead of
+ * buffering the whole tree. `fail` surfaces a root-level error to the
+ * consumer; `close` ends the stream normally after draining the buffer.
+ */
+class BoundedChannel<T> {
+  private readonly buffer: T[] = []
+  private readonly pullers: Array<{
+    resolve: (result: IteratorResult<T>) => void
+    reject: (reason: unknown) => void
+  }> = []
+  private readonly pushers: Array<() => void> = []
+  private closed = false
+  private failure: unknown = null
+
+  constructor(private readonly capacity: number) {}
+
+  push(value: T): Promise<void> {
+    if (this.closed) return Promise.resolve()
+    this.buffer.push(value)
+    this.drain()
+    if (this.buffer.length > this.capacity) {
+      return new Promise<void>(resolve => this.pushers.push(resolve))
+    }
+    return Promise.resolve()
+  }
+
+  pull(): Promise<IteratorResult<T>> {
+    if (this.buffer.length > 0) {
+      const value = this.buffer.shift() as T
+      this.drain()
+      return Promise.resolve({ value, done: false })
+    }
+    if (this.closed) {
+      if (this.failure !== null) return Promise.reject(this.failure)
+      return Promise.resolve({ value: undefined, done: true })
+    }
+    return new Promise((resolve, reject) => this.pullers.push({ resolve, reject }))
+  }
+
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.drain()
+    for (const resolve of this.pushers.splice(0)) resolve()
+    for (const puller of this.pullers.splice(0)) {
+      puller.resolve({ value: undefined, done: true })
+    }
+  }
+
+  fail(error: unknown): void {
+    this.failure = error
+    this.closed = true
+    this.buffer.length = 0
+    for (const resolve of this.pushers.splice(0)) resolve()
+    for (const puller of this.pullers.splice(0)) puller.reject(error)
+  }
+
+  private drain(): void {
+    while (this.pullers.length > 0 && this.buffer.length > 0) {
+      const puller = this.pullers.shift() as {
+        resolve: (result: IteratorResult<T>) => void
+        reject: (reason: unknown) => void
+      }
+      puller.resolve({ value: this.buffer.shift() as T, done: false })
+    }
+    while (this.pushers.length > 0 && this.buffer.length <= this.capacity) {
+      ;(this.pushers.shift() as () => void)()
+    }
+  }
+}
+
+/**
+ * Parallel directory walk. A small pool of workers lists directories from a
+ * shared queue (top-level buckets) with bounded concurrency and streams the
+ * file paths out through a bounded channel. Semantics match the previous
+ * sequential walk: each file is produced exactly once (directory subtrees
+ * never overlap), an unreadable non-root directory is reported through
+ * `onUnreadableDirectory`, excluded roots are skipped entirely, and an
+ * unreadable root throws.
+ */
 async function* walk(
   root: string,
   excludedRoots: readonly string[],
   onUnreadableDirectory: (directory: string) => void,
-  isRoot = true,
 ): AsyncGenerator<string> {
-  let entries
-  try {
-    entries = await opendir(root)
-  } catch (error) {
-    if (isRoot) throw error
-    onUnreadableDirectory(root)
-    return
+  const channel = new BoundedChannel<string>(WALK_CHANNEL_CAPACITY)
+  const pendingDirs = [root]
+  let outstanding = 1
+  let rootError: unknown = null
+  let ended = false
+  const waiters: Array<() => void> = []
+
+  const signal = (): void => {
+    for (const waiter of waiters.splice(0)) waiter()
   }
-  try {
-    for await (const entry of entries) {
-      const full = path.join(root, entry.name)
-      if (excludedRoots.some(excluded => isWithin(full, excluded))) continue
-      if (entry.isDirectory()) {
-        yield* walk(full, excludedRoots, onUnreadableDirectory, false)
-      } else if (SUPPORTED.has(path.extname(entry.name).toLowerCase())) {
-        yield full
+
+  const finish = (): void => {
+    if (ended) return
+    if (outstanding > 0) return
+    ended = true
+    if (rootError !== null) channel.fail(rootError)
+    else channel.close()
+    signal()
+  }
+
+  const traverse = async (dir: string, isRoot: boolean): Promise<void> => {
+    try {
+      let entries: Awaited<ReturnType<typeof opendir>>
+      try {
+        entries = await opendir(dir)
+      } catch (error) {
+        if (isRoot) rootError = error
+        else onUnreadableDirectory(dir)
+        return
       }
+      try {
+        for await (const entry of entries) {
+          const full = path.join(dir, entry.name)
+          if (excludedRoots.some(excluded => isWithin(full, excluded))) continue
+          if (entry.isDirectory()) {
+            pendingDirs.push(full)
+            outstanding++
+            signal()
+          } else if (SUPPORTED.has(path.extname(entry.name).toLowerCase())) {
+            await channel.push(full)
+          }
+        }
+      } catch (error) {
+        if (isRoot) rootError = error
+        else onUnreadableDirectory(dir)
+      }
+    } finally {
+      outstanding--
+      finish()
+      signal()
     }
-  } catch (error) {
-    if (isRoot) throw error
-    onUnreadableDirectory(root)
+  }
+
+  const run = async (): Promise<void> => {
+    for (;;) {
+      if (ended) return
+      const dir = pendingDirs.shift()
+      if (dir === undefined) {
+        if (outstanding === 0) return
+        await new Promise<void>(resolve => waiters.push(resolve))
+        continue
+      }
+      await traverse(dir, dir === root)
+    }
+  }
+  const runners = Array.from({ length: WALK_CONCURRENCY }, () => run())
+
+  try {
+    for (;;) {
+      const item = await channel.pull()
+      if (item.done) {
+        await Promise.all(runners)
+        return
+      }
+      yield item.value
+    }
+  } finally {
+    // Consumer stopped early (break/cancel/error): close the channel so
+    // producers drop instead of blocking forever on a full buffer.
+    channel.close()
   }
 }
 
@@ -107,6 +255,16 @@ async function mapConcurrent<T, R>(
   return results
 }
 
+// Background checksum backfill: hashing RAW files is I/O bound, so batches are
+// small and concurrency modest to avoid disk thrashing during other activity.
+const CHECKSUM_BACKFILL_BATCH = 32
+const CHECKSUM_BACKFILL_CONCURRENCY = 6
+
+// scanBatch I/O concurrency: stat/dimension reads stay at four simultaneous
+// files, matching the old 64-file batches, so the parallel walk and streamed
+// processing do not add extra disk thrashing on spinning media.
+const SCAN_BATCH_CONCURRENCY = 4
+
 @injectable()
 export class IndexService {
   private watchers = new Map<string, FSWatcher>()
@@ -130,19 +288,112 @@ export class IndexService {
    */
   public stat: typeof stat = stat
 
+  /**
+   * Delete the per-photo analysis *inputs* for the given photos (per-photo
+   * granularity), so the next analysis pass recomputes only the affected
+   * photos and reuses the signatures/hashes of every other photo in the
+   * session. All of these tables are keyed by photo_id.
+   */
+  private deletePhotoInputs(photoIds: readonly string[]): void {
+    if (photoIds.length === 0) return
+    const placeholders = photoIds.map(() => '?').join(',')
+    this.db.prepare(`DELETE FROM similarity_hashes WHERE photo_id IN (${placeholders})`)
+      .run(...photoIds)
+    this.db.prepare(`DELETE FROM face_observations WHERE photo_id IN (${placeholders})`)
+      .run(...photoIds)
+    this.db.prepare(`DELETE FROM face_analysis_state WHERE photo_id IN (${placeholders})`)
+      .run(...photoIds)
+    this.db.prepare(`DELETE FROM asset_analysis WHERE photo_id IN (${placeholders})`)
+      .run(...photoIds)
+    this.db.prepare(`DELETE FROM photo_metadata_cache WHERE photo_id IN (${placeholders})`)
+      .run(...photoIds)
+  }
+
+  /**
+   * Automatic navigation groups are pruned per member: only groups that
+   * actually contain an affected photo are removed; the rest of the
+   * session's groups are preserved. Members are stored as a JSON array of
+   * photo ids in navigation_groups.photo_ids_json, so the groups are read
+   * out and filtered in JS before deletion (rows with unreadable JSON are
+   * kept rather than deleted on a guess).
+   */
+  private pruneAutomaticNavigationGroups(
+    sessionId: string,
+    photoIds: readonly string[],
+  ): void {
+    const affected = new Set(photoIds)
+    const groups = this.db.prepare(`
+      SELECT id, photo_ids_json FROM navigation_groups
+      WHERE session_id = ? AND source = 'automatic'
+    `).all(sessionId) as Array<{ id: string; photo_ids_json: string }>
+    const doomed: string[] = []
+    for (const group of groups) {
+      try {
+        const members = JSON.parse(group.photo_ids_json) as unknown
+        if (Array.isArray(members) && members.some(member => affected.has(String(member)))) {
+          doomed.push(group.id)
+        }
+      } catch {
+        // Corrupt JSON: keep the group.
+      }
+    }
+    if (doomed.length > 0) {
+      const placeholders = doomed.map(() => '?').join(',')
+      this.db.prepare(`DELETE FROM navigation_groups WHERE id IN (${placeholders})`)
+        .run(...doomed)
+    }
+  }
+
+  /**
+   * Global cluster results (similarity groups, face clusters, cluster
+   * members, role bindings) are deliberately invalidated at session scope:
+   * there is no incremental clustering facility yet, so a partial
+   * invalidation cannot be merged back into the existing global clusters.
+   * Neighborhood re-clustering depends on incremental clustering (ROADMAP
+   * 1.3); until then the fallback is input-level invalidation (per-photo
+   * deletes in deletePhotoInputs) plus a fast re-cluster — similarity
+   * re-clustering of ~20k photos takes about 1-2s, and the unchanged
+   * photos' signatures/hashes are reused instead of recomputed.
+   */
+  private deleteGlobalClusterResults(sessionId: string): void {
+    this.db.prepare('DELETE FROM similarity_results WHERE session_id = ?').run(sessionId)
+  }
+
+  /**
+   * Face clustering results also stay session-scoped (see
+   * deleteGlobalClusterResults). Members are removed before the observations
+   * they reference (face_cluster_members.observation_id -> face_observations).
+   */
+  private deleteFaceClusterResults(sessionId: string): void {
+    this.db.prepare('DELETE FROM face_cluster_state WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM face_cluster_members WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM role_bindings WHERE session_id = ?').run(sessionId)
+    this.db.prepare('DELETE FROM face_clusters WHERE session_id = ?').run(sessionId)
+  }
+
+  /**
+   * Invalidate analysis for photos whose file path changed (relink). Inputs
+   * are deleted per photo, automatic navigation groups are pruned per
+   * member, and global cluster results are dropped at session scope.
+   */
   private invalidatePathDependentAnalysis(photoIds: readonly string[]): void {
     if (photoIds.length === 0) return
     const placeholders = photoIds.map(() => '?').join(',')
     const affectedSessions = this.db.prepare(`
       SELECT DISTINCT session_id FROM photos WHERE id IN (${placeholders})
     `).all(...photoIds) as Array<{ session_id: string }>
-    for (const affected of affectedSessions) {
-      this.db.prepare('DELETE FROM similarity_results WHERE session_id = ?')
-        .run(affected.session_id)
-      this.db.prepare(
-        "DELETE FROM navigation_groups WHERE session_id = ? AND source = 'automatic'",
-      ).run(affected.session_id)
-    }
+    this.db.transaction(() => {
+      // Session-scoped cluster results first: their member rows must be gone
+      // before the per-photo observation deletes they reference.
+      for (const affected of affectedSessions) {
+        this.deleteFaceClusterResults(affected.session_id)
+        this.deleteGlobalClusterResults(affected.session_id)
+      }
+      this.deletePhotoInputs(photoIds)
+      for (const affected of affectedSessions) {
+        this.pruneAutomaticNavigationGroups(affected.session_id, photoIds)
+      }
+    })()
   }
 
   startWatchers(): void {
@@ -250,7 +501,7 @@ export class IndexService {
     if (!session) throw new Error('Session not found')
     if (!session.source_path) throw new Error('Session has no source directory')
     const excludedRoots = managedCacheRoots(this.settings)
-    let existing = this.photoRepo.getBySession(sessionId)
+    let existing = this.photoRepo.getBySessionProjection(sessionId)
     const generatedCachePhotos = existing.filter(photo =>
       excludedRoots.some(excluded => isWithin(path.resolve(photo.filepath), excluded)),
     )
@@ -313,7 +564,10 @@ export class IndexService {
       context?.throwIfCancelled()
       // RAW hashing is mostly I/O bound but too many simultaneous streams cause
       // severe disk thrashing. Keep this bounded independently of batch size.
-      const results = await mapConcurrent(filepaths, 4, async filepath => {
+      // Lazy mode indexes new/changed files from dimensions alone and defers
+      // checksum computation to the background checksum.backfill job.
+      const lazyChecksum = this.settings.get('lazy_checksum', 'true') !== 'false'
+      const results = await mapConcurrent(filepaths, SCAN_BATCH_CONCURRENCY, async filepath => {
         const normalized = path.normalize(path.resolve(filepath))
         // Confirm the file exists before counting it as discovered. A file
         // deleted between the directory listing and this stat() must not
@@ -330,7 +584,7 @@ export class IndexService {
         try {
           if (!photo) {
             const dimensions = await this.imageService.getDimensions(filepath)
-            const checksum = await sha256File(filepath)
+            const checksum = lazyChecksum ? '' : await sha256File(filepath)
             return { kind: 'new' as const, filepath, dimensions, source, checksum }
           }
           const indexed = photo.asset_file_id ? fileStats.get(photo.asset_file_id) : undefined
@@ -341,9 +595,18 @@ export class IndexService {
             return { kind: 'unchanged' as const }
           }
           const dimensions = await this.imageService.getDimensions(filepath)
-          const checksum = contentChanged || !indexed?.checksum
-            ? await sha256File(filepath)
+          const needsChecksum = contentChanged || !indexed?.checksum
+          const checksum = needsChecksum
+            ? (lazyChecksum ? '' : await sha256File(filepath))
             : indexed.checksum
+          // Race with the background checksum.backfill job (both run under
+          // MAX_CONCURRENT_JOBS=2): the fileStats snapshot above may be stale,
+          // showing checksum='' while backfill has already written a hash to
+          // photos/asset_files. When the file did NOT change, an empty
+          // snapshot checksum must not be treated as "needs a fresh hash" in
+          // a way that clears the concurrent write; the scan only computes or
+          // clears checksums for files it observed as actually changed.
+          const preserveChecksum = lazyChecksum && !contentChanged && !indexed?.checksum
           return {
             kind: 'existing' as const,
             photoId: photo.id,
@@ -352,6 +615,7 @@ export class IndexService {
             contentChanged,
             source,
             checksum,
+            preserveChecksum,
           }
         } catch {
           return { kind: 'failed' as const, filepath }
@@ -409,17 +673,25 @@ export class IndexService {
             result.dimensions.height,
             result.contentChanged,
           )
-          this.photoRepo.updateChecksum(
-            result.photoId,
-            result.checksum,
-            result.source.size,
-            result.source.mtimeMs,
-          )
+          // Lazy mode + unchanged file + empty checksum in the (possibly
+          // stale) snapshot: keep whatever is stored in photos.checksum.
+          // It may be a hash the concurrent backfill just wrote; clearing
+          // it to '' would discard that work and force a redundant re-hash
+          // on the next round. Real content changes still clear below.
+          if (!result.preserveChecksum) {
+            this.photoRepo.updateChecksum(
+              result.photoId,
+              result.checksum,
+              result.source.size,
+              result.source.mtimeMs,
+            )
+          }
           if (result.assetFileId) {
             this.db.transaction(() => {
               this.db.prepare(`
                 UPDATE asset_files
-                SET volume_id = ?, file_identity = ?, file_size = ?, file_mtime_ms = ?, checksum = ?,
+                SET volume_id = ?, file_identity = ?, file_size = ?, file_mtime_ms = ?,
+                    checksum = CASE WHEN ? = 1 THEN checksum ELSE ? END,
                     online_status = 'online', last_seen_at = ?, updated_at = ?
                 WHERE id = ?
               `).run(
@@ -427,6 +699,10 @@ export class IndexService {
                 String(result.source.ino),
                 result.source.size,
                 result.source.mtimeMs,
+                // Preserve the stored checksum instead of overwriting it
+                // when the file was not observed as changed but the snapshot
+                // lacked a checksum (see preserveChecksum above).
+                result.preserveChecksum ? 1 : 0,
                 result.checksum,
                 new Date().toISOString(),
                 new Date().toISOString(),
@@ -436,39 +712,26 @@ export class IndexService {
                 const affectedSessions = this.db.prepare(
                   'SELECT DISTINCT session_id FROM photos WHERE asset_file_id = ?',
                 ).all(result.assetFileId) as Array<{ session_id: string }>
+                const photoIds = (this.db.prepare(
+                  'SELECT id FROM photos WHERE asset_file_id = ?',
+                ).all(result.assetFileId) as Array<{ id: string }>)
+                  .map(row => row.id)
                 for (const affected of affectedSessions) {
-                  this.db.prepare('DELETE FROM similarity_results WHERE session_id = ?')
-                    .run(affected.session_id)
-                  this.db.prepare('DELETE FROM face_cluster_state WHERE session_id = ?')
-                    .run(affected.session_id)
-                  this.db.prepare('DELETE FROM face_cluster_members WHERE session_id = ?')
-                    .run(affected.session_id)
-                  this.db.prepare('DELETE FROM role_bindings WHERE session_id = ?')
-                    .run(affected.session_id)
-                  this.db.prepare('DELETE FROM face_clusters WHERE session_id = ?')
-                    .run(affected.session_id)
-                  this.db.prepare(
-                    "DELETE FROM navigation_groups WHERE session_id = ? AND source = 'automatic'",
-                  ).run(affected.session_id)
+                  // Global cluster results stay session-scoped on purpose (see
+                  // deleteGlobalClusterResults); cluster members are dropped
+                  // before the per-photo observation deletes they reference.
+                  this.deleteFaceClusterResults(affected.session_id)
+                  this.deleteGlobalClusterResults(affected.session_id)
+                  // Automatic navigation groups: only groups that actually
+                  // contain an affected photo are removed; the rest survive.
+                  this.pruneAutomaticNavigationGroups(affected.session_id, photoIds)
                 }
+                // Inputs are deleted per photo, plus a file-level sweep of
+                // asset_analysis for orphaned rows whose photo_id was already
+                // nulled by a previous photo deletion.
+                this.deletePhotoInputs(photoIds)
                 this.db.prepare('DELETE FROM asset_analysis WHERE asset_file_id = ?')
                   .run(result.assetFileId)
-                this.db.prepare(`
-                  DELETE FROM similarity_hashes
-                  WHERE photo_id IN (SELECT id FROM photos WHERE asset_file_id = ?)
-                `).run(result.assetFileId)
-                this.db.prepare(`
-                  DELETE FROM face_observations
-                  WHERE photo_id IN (SELECT id FROM photos WHERE asset_file_id = ?)
-                `).run(result.assetFileId)
-                this.db.prepare(`
-                  DELETE FROM face_analysis_state
-                  WHERE photo_id IN (SELECT id FROM photos WHERE asset_file_id = ?)
-                `).run(result.assetFileId)
-                this.db.prepare(`
-                  DELETE FROM photo_metadata_cache
-                  WHERE photo_id IN (SELECT id FROM photos WHERE asset_file_id = ?)
-                `).run(result.assetFileId)
                 this.db.prepare(`
                   UPDATE photos
                   SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
@@ -494,13 +757,15 @@ export class IndexService {
           skipped++
         }
       }
-      const inserted = this.photoRepo.addPhotos(sessionId, newEntries, 'index')
-      added += inserted.added
-      skipped += inserted.skipped
+      if (newEntries.length > 0) {
+        const inserted = this.photoRepo.addPhotos(sessionId, newEntries, 'index')
+        added += inserted.added
+        skipped += inserted.skipped
+      }
       if (newEntries.length > 0) {
         const newPaths = new Set(newEntries.map(entry => entry.filepath))
         const byPath = new Map(
-          this.photoRepo.getBySession(sessionId)
+          this.photoRepo.getBySessionProjection(sessionId)
             .filter(photo => newPaths.has(photo.filepath))
             .map(photo => [photo.filepath, photo]),
         )
@@ -533,25 +798,44 @@ export class IndexService {
       }
       if (candidates.length > 0) await scanBatch(candidates)
     } else {
-      let batch: string[] = []
+      // Producer/consumer: walk() streams paths through a bounded channel
+      // while scanBatch() consumes them, so traversal and analysis overlap
+      // instead of the old "accumulate 64 files, then process" double
+      // buffering. A fixed window of scanBatches (one file each) stays in
+      // flight, preserving the ~4-way I/O concurrency of the old batches
+      // without waiting for a full batch to fill.
+      let scanError: unknown = undefined
+      const inFlight = new Set<Promise<void>>()
+      const track = (task: Promise<void>): Promise<void> => {
+        inFlight.add(task)
+        return task.then(
+          () => { inFlight.delete(task) },
+          (error: unknown) => {
+            inFlight.delete(task)
+            scanError = scanError ?? error
+          },
+        )
+      }
       for await (const filepath of walk(
         session.source_path,
         excludedRoots,
         directory => failed.push(directory),
       )) {
-        batch.push(filepath)
+        context?.throwIfCancelled()
         discovered++
-        if (batch.length >= 64) {
-          await scanBatch(batch)
-          batch = []
-          context?.updateProgress({
-            current: discovered,
-            total: 0,
-            message: '正在增量扫描文件',
-          })
+        context?.updateProgress({
+          current: discovered,
+          total: 0,
+          message: '正在增量扫描文件',
+        })
+        while (inFlight.size >= SCAN_BATCH_CONCURRENCY) {
+          await Promise.race([...inFlight].map(task => task.catch(() => undefined)))
         }
+        if (scanError !== undefined) throw scanError
+        void track(scanBatch([filepath]))
       }
-      if (batch.length > 0) await scanBatch(batch)
+      await Promise.all([...inFlight].map(task => task.catch(() => undefined)))
+      if (scanError !== undefined) throw scanError
     }
     const requestedNormalized = requestedPaths
       ? new Set(requestedPaths.map(candidate => path.normalize(path.resolve(candidate))))
@@ -594,5 +878,140 @@ export class IndexService {
       missing: missing.length,
       failed,
     }
+  }
+
+  /**
+   * Number of photos in a session that still need a checksum computed
+   * (lazy mode leaves them empty). Used by the caller to decide whether a
+   * checksum.backfill job is worth creating.
+   */
+  pendingChecksums(sessionId: string): number {
+    return this.photoRepo.getBySessionProjection(sessionId)
+      .filter(photo => !photo.checksum && photo.status !== 'missing')
+      .length
+  }
+
+  /**
+   * Background backfill of checksums left empty by lazy indexing. Iterates
+   * until no photo still lacks a checksum: photos scanned while this job is
+   * running (a queued duplicate job would be deduped away) are picked up by
+   * the next pass. Each batch stats the file for fresh size/mtime so the
+   * checksum_file_size/mtime columns stay consistent with the hashed content.
+   *
+   * The same checksum is written to the linked asset_files row, keeping the
+   * incremental scan's unchanged-detection (which reads asset_files.checksum)
+   * in sync with photos.checksum; otherwise the next full scan would see an
+   * empty checksum and trigger yet another backfill.
+   *
+   * Both writes are guarded with `AND checksum = ''` (optimistic, only fill
+   * empty rows) so a concurrent metadata.scan that wrote or cleared a
+   * checksum is never overwritten: if the guarded photos update affects zero
+   * rows, the hash is skipped instead of clobbering the scan's value.
+   *
+   * Photos whose file cannot be stat()ed or hashed (deleted, disk offline,
+   * permanently unreadable) are recorded in a per-job failed set and excluded
+   * from later passes, so the loop terminates instead of retrying them
+   * forever; the next full scan marks them missing or a later job can retry.
+   */
+  async backfillChecksums(
+    sessionId: string,
+    context?: JobRunContext,
+  ): Promise<{ processed: number; backfilled: number; skipped: number }> {
+    let processed = 0
+    let backfilled = 0
+    let skipped = 0
+    const failedPhotoIds = new Set<string>()
+    for (;;) {
+      context?.throwIfCancelled()
+      const pending = this.photoRepo.getBySessionProjection(sessionId)
+        .filter(photo =>
+          !photo.checksum &&
+          photo.status !== 'missing' &&
+          !failedPhotoIds.has(photo.id),
+        )
+      if (pending.length === 0) break
+      context?.updateProgress({
+        current: 0,
+        total: pending.length,
+        message: '正在后台补齐文件校验和',
+      })
+      let passBackfilled = 0
+      for (let offset = 0; offset < pending.length; offset += CHECKSUM_BACKFILL_BATCH) {
+        context?.throwIfCancelled()
+        const batch = pending.slice(offset, offset + CHECKSUM_BACKFILL_BATCH)
+        const results = await mapConcurrent(
+          batch,
+          CHECKSUM_BACKFILL_CONCURRENCY,
+          async photo => {
+            try {
+              const source = await this.stat(photo.filepath)
+              const checksum = await sha256File(photo.filepath)
+              return { photo, checksum, size: source.size, mtimeMs: source.mtimeMs }
+            } catch {
+              // Deleted or unreadable since the scan; give up on it for this
+              // job run so the loop terminates. The next full scan marks it
+              // missing or a later backfill job can retry.
+              failedPhotoIds.add(photo.id)
+              return null
+            }
+          },
+        )
+        for (const result of results) {
+          if (result) {
+            this.db.transaction(() => {
+              // Optimistic fill: only write when the photo's checksum is
+              // still empty. A concurrent scan may have just written a hash
+              // (or cleared one for a file it observed as changed); the
+              // guard ensures backfill never overwrites the scan's decision,
+              // avoiding the scan/backfill ping-pong that used to clear
+              // freshly backfilled hashes.
+              const photoChanges = this.db.prepare(`
+                UPDATE photos
+                SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
+                    updated_at = ?
+                WHERE id = ? AND checksum = ''
+              `).run(
+                result.checksum,
+                result.size,
+                result.mtimeMs,
+                new Date().toISOString(),
+                result.photo.id,
+              ).changes
+              if (photoChanges === 0) {
+                // Another writer already filled (or cleared) this photo's
+                // checksum; skip the linked asset_files write as well so
+                // photos and asset_files stay consistent.
+                skipped++
+              } else {
+                if (result.photo.asset_file_id) {
+                  this.db.prepare(`
+                    UPDATE asset_files
+                    SET checksum = ?, file_size = ?, file_mtime_ms = ?, updated_at = ?
+                    WHERE id = ? AND checksum = ''
+                  `).run(
+                    result.checksum,
+                    result.size,
+                    result.mtimeMs,
+                    new Date().toISOString(),
+                    result.photo.asset_file_id,
+                  )
+                }
+                passBackfilled++
+                backfilled++
+              }
+            })()
+            processed++
+          } else {
+            processed++
+            skipped++
+          }
+        }
+        context?.updateProgress({ current: processed, total: pending.length })
+      }
+      // Everything still pending either failed or the retry would only repeat
+      // failures; stop instead of spinning on permanently unreadable files.
+      if (passBackfilled === 0) break
+    }
+    return { processed, backfilled, skipped }
   }
 }

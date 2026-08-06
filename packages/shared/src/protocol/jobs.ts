@@ -6,6 +6,7 @@ export type AnalysisJobType =
   | 'face.analyze'
   | 'quality.score'
   | 'export.execute'
+  | 'checksum.backfill'
 
 export type AnalysisJobStatus =
   | 'queued'

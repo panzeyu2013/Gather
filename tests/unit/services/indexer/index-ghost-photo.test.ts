@@ -42,7 +42,7 @@ describe('IndexService incremental scan ghost photos', () => {
         updatePhotoCount: vi.fn(),
       } as never,
       {
-        getBySession: vi.fn(() => [
+        getBySessionProjection: vi.fn(() => [
           { id: 'ghost', filepath: ghostPath, asset_file_id: 'file-ghost', status: 'pending' },
           { id: 'ok', filepath: okPath, asset_file_id: 'file-ok', status: 'pending' },
         ]),
@@ -92,7 +92,7 @@ describe('IndexService incremental scan ghost photos', () => {
         updatePhotoCount: vi.fn(),
       } as never,
       {
-        getBySession: vi.fn(() => [
+        getBySessionProjection: vi.fn(() => [
           { id: 'relinked', filepath: oldPath, asset_file_id: 'file-old', status: 'pending' },
           { id: 'ghost', filepath: ghostPath, asset_file_id: 'file-ghost', status: 'pending' },
         ]),

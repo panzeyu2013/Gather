@@ -266,7 +266,10 @@ describe('core reliability services', () => {
     fs.writeFileSync(newPath, 'new-content')
     const updateIndexedFile = vi.fn()
     const updateChecksum = vi.fn()
-    const addPhotos = vi.fn(() => ({ added: 1, skipped: 0 }))
+    const addPhotos = vi.fn((_sessionId: string, entries: unknown[]) => ({
+    added: entries.length,
+    skipped: 0,
+  }))
     const markMissing = vi.fn()
     const photos = [
       {
@@ -298,7 +301,7 @@ describe('core reliability services', () => {
         updatePhotoCount: vi.fn(),
       } as never,
       {
-        getBySession: vi.fn(() => photos),
+        getBySessionProjection: vi.fn(() => photos),
         addPhotos,
         updateIndexedFile,
         updateChecksum,
