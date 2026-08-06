@@ -12,9 +12,12 @@ if (!parentPort) {
 
 parentPort.on('message', (request: WorkerRequest) => {
   try {
+    const progress = (current: number, total: number): void => {
+      parentPort!.postMessage({ id: request.id, kind: 'progress', current, total })
+    }
     const result = request.kind === 'hash'
-      ? clusterByHash(request.entries, request.threshold, request.minGroupSize, request.mode)
-      : clusterEmbeddings(request.entries, request.eps, request.minPts)
+      ? clusterByHash(request.entries, request.threshold, request.minGroupSize, request.mode, progress)
+      : clusterEmbeddings(request.entries, request.eps, request.minPts, progress)
     parentPort!.postMessage({ id: request.id, result })
   } catch (error) {
     parentPort!.postMessage({

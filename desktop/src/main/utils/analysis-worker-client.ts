@@ -11,6 +11,39 @@ export type WorkerFactory = (scriptPath: string) => Worker
 export interface RunWorkerOptions {
   timeoutMs?: number
   createWorker?: WorkerFactory
+  onProgress?: (current: number, total: number) => void
+}
+
+type WorkerMessage<T> = {
+  id: number
+  result?: T
+  error?: string
+  kind?: 'progress'
+  current?: number
+  total?: number
+}
+
+// Dynamic per-analysis timeout so large workloads (20k+ hashes, 50k+ faces)
+// no longer hit the old fixed 60s cap. Callers may force their own value.
+// The face branch scales with n² (DBSCAN pairwise distance work: n²/2 pairs ×
+// 512 dims at ~2 GFLOP/s JS worker throughput ≈ 1.28e-4 ms per square face,
+// doubled for safety to 2.56e-4) and caps at 60 minutes.
+// The runWorker timeout is a no-progress timeout: every 'progress' frame the
+// worker emits re-arms it, so an active worker is never killed by the absolute
+// deadline, while a stalled one (no progress) is still terminated.
+export function estimateAnalysisTimeoutMs(
+  kind: 'hash' | 'face',
+  entryCount: number,
+  overrideMs?: number,
+): number {
+  if (overrideMs !== undefined && overrideMs > 0) return overrideMs
+  if (kind === 'hash') {
+    return Math.min(15 * 60_000, Math.max(60_000, 30_000 + entryCount * 10))
+  }
+  // Clamp before squaring so absurd counts cannot overflow the float range;
+  // realistic libraries (<= ~50k faces) land well under the 60-minute cap.
+  const clampedCount = Math.min(entryCount, 1_000_000)
+  return Math.min(60 * 60_000, Math.max(60_000, 30_000 + clampedCount * clampedCount * 2.56e-4))
 }
 
 // A worker that silently dies (e.g. OOM/SIGKILL) only emits 'exit', which
@@ -43,15 +76,40 @@ export function runWorker<T>(
         reject(new CancelledError('Analysis cancelled'))
       })
     }
-    timer = setTimeout(() => {
-      settle(() => {
-        terminate()
-        reject(new Error(`Analysis worker timed out after ${timeoutMs}ms`))
-      })
-    }, timeoutMs)
-    if (typeof timer.unref === 'function') timer.unref()
+    // No-progress timeout: armed on start and re-armed on every progress frame,
+    // so a worker that keeps reporting progress is never killed, while one that
+    // stalls (no progress) still hits the deadline.
+    const armTimeout = (): void => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        settle(() => {
+          terminate()
+          reject(new Error(`Analysis worker timed out after ${timeoutMs}ms`))
+        })
+      }, timeoutMs)
+      if (typeof timer.unref === 'function') timer.unref()
+    }
+    armTimeout()
     signal?.addEventListener('abort', onAbort, { once: true })
-    worker.once('message', (message: { id: number; result?: T; error?: string }) => {
+    const onMessage = (message: WorkerMessage<T>): void => {
+      if (settled) return
+      if (message.kind === 'progress') {
+        // Re-attach before invoking the callback so a throwing progress
+        // handler cannot consume the 'message' listener and drop the final
+        // result frame, which would leave the promise hanging until timeout.
+        worker.once('message', onMessage)
+        // Progress is a heartbeat: re-arm the timeout so an active worker is
+        // never killed by the deadline; settle still guards the single settle.
+        armTimeout()
+        if (message.id === id) {
+          try {
+            options.onProgress?.(message.current ?? 0, message.total ?? 0)
+          } catch (error) {
+            console.warn('analysis worker progress callback failed', error)
+          }
+        }
+        return
+      }
       settle(() => {
         terminate()
         if (message.id !== id) {
@@ -62,7 +120,8 @@ export function runWorker<T>(
           resolve(message.result as T)
         }
       })
-    })
+    }
+    worker.once('message', onMessage)
     worker.once('error', (error) => {
       settle(() => {
         terminate()
@@ -85,8 +144,10 @@ export function clusterHashesInWorker(
   minGroupSize: number,
   mode: HashGroupingMode = 'global',
   signal?: AbortSignal,
+  onProgress?: (current: number, total: number) => void,
 ): Promise<{ groups: string[][]; ungrouped: string[] }> {
-  return runWorker({ kind: 'hash', entries, threshold, minGroupSize, mode }, signal)
+  const timeoutMs = estimateAnalysisTimeoutMs('hash', entries.length)
+  return runWorker({ kind: 'hash', entries, threshold, minGroupSize, mode }, signal, { onProgress, timeoutMs })
 }
 
 export function clusterFacesInWorker(
@@ -94,6 +155,8 @@ export function clusterFacesInWorker(
   eps: number,
   minPts: number,
   signal?: AbortSignal,
+  onProgress?: (current: number, total: number) => void,
 ): Promise<{ clusters: EmbeddingEntry[][]; noise: EmbeddingEntry[] }> {
-  return runWorker({ kind: 'face', entries, eps, minPts }, signal)
+  const timeoutMs = estimateAnalysisTimeoutMs('face', entries.length)
+  return runWorker({ kind: 'face', entries, eps, minPts }, signal, { onProgress, timeoutMs })
 }
