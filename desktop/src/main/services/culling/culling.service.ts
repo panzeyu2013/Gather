@@ -1,11 +1,24 @@
-import { PhotoRepository, type PhotoRow } from '../../db/repositories/photo.repo'
+import {
+  PHOTO_PAGE_COLUMNS,
+  PhotoRepository,
+  RAW_EXTENSIONS,
+  RAW_EXTENSION_LIKE_SQL,
+  type PhotoPageRow,
+  type PhotoRow,
+} from '../../db/repositories/photo.repo'
 import {
   CullingDecisionRepository,
   type CullingDecisionRow,
 } from '../../db/repositories/culling-decision.repo'
 import { SimilarityResultRepository } from '../../db/repositories/similarity-result.repo'
-import { MetadataCacheRepository } from '../../db/repositories/metadata-cache.repo'
-import { MetadataOutboxRepository } from '../../db/repositories/metadata-outbox.repo'
+import {
+  MetadataCacheRepository,
+  type MetadataCacheRow,
+} from '../../db/repositories/metadata-cache.repo'
+import {
+  MetadataOutboxRepository,
+  type MetadataOutboxRow,
+} from '../../db/repositories/metadata-outbox.repo'
 import { CullingHistoryRepository } from '../../db/repositories/culling-history.repo'
 import { Database } from '../../db/database'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
@@ -19,6 +32,7 @@ import type {
   CullingFilters,
   CullingGroup,
   CullingImage,
+  CullingPage,
   CullingScope,
   CullingSummary,
   CullingUpdatePatch,
@@ -69,25 +83,40 @@ function parseJsonRecord(value: string): Record<string, unknown> {
   }
 }
 
-function photoRowToData(row: PhotoRow, faceCount: number): PhotoData {
+function photoRowToData(row: PhotoRow | PhotoPageRow, faceCount: number): PhotoData {
   return {
     id: row.id,
     sessionId: row.session_id,
     filepath: row.filepath,
     filename: row.filename,
-    checksum: row.checksum,
+    checksum: row.checksum ?? '',
     hasExistingXmp: false,
     faceCount,
     width: row.width ?? 0,
     height: row.height ?? 0,
-    metadata: parseJsonRecord(row.metadata),
-    result: parseJsonRecord(row.result),
+    metadata: parseJsonRecord(row.metadata ?? '{}'),
+    result: parseJsonRecord(row.result ?? '{}'),
     status: row.status,
     assetId: row.asset_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
 }
+
+/** All per-photo lookups that enrich a raw photo set into CullingAssets. */
+interface CullingRichLookup {
+  decisions: Map<string, CullingDecisionRow>
+  cacheRows: Map<string, MetadataCacheRow>
+  outboxByPath: Map<string, MetadataOutboxRow>
+  similarityMap: Map<string, string>
+  qualityByPhoto: Map<string, CullingAsset['quality']>
+  facesByPhoto: Map<string, number[][]>
+  analysisMaxByPhoto: Map<string, number>
+  peopleByPhoto: Map<string, string[]>
+  linkedCounts: Map<string, number>
+}
+
+type LookupMode = 'session' | 'page'
 
 @injectable()
 export class CullingService {
@@ -119,39 +148,354 @@ export class CullingService {
     requestedGroupId?: string,
   ): CullingAsset[] {
     const photos = this.photoRepo.getBySession(sessionId)
-    const decisions = new Map(
-      this.cullingDecisionRepo.getBySession(sessionId).map(row => [row.photo_id, row]),
+    const lookup = this.buildRichLookup(photos, sessionId, 'session')
+    return this.filterVisible(
+      this.assembleAssets(photos, lookup),
+      scope,
+      filters,
+      requestedGroupId,
     )
-    const cacheRows = new Map(
-      this.metadataCacheRepo.getBatch(photos.map(photo => photo.id))
-        .map(row => [row.photo_id, row]),
+  }
+
+  /**
+   * Paginated counterpart of `list()`. Only the current page's photo subset is
+   * enriched with decisions/cache/outbox/quality/faces/people; the heavy JSON
+   * columns are skipped via the light projection. Filters that can be expressed
+   * in SQL (pick state, rating, color label, quality status, similarity group
+   * membership) are pushed down to keep pages full. `total` is exact for pushed
+   * filters; approximate when a filter (e.g. `metadataConflictOnly`) is only
+   * applied after assembly.
+   *
+   * Pagination is grouped by logical asset (photos sharing an `asset_id`, e.g.
+   * RAW+JPEG variants), so an asset never spans two pages and
+   * `variantCount`/`linkedVariantCount` stay correct. `afterRowId` is the asset
+   * cursor returned as `nextRowId` by the previous page: the first `rowid` of
+   * its last asset group. The renderer only round-trips the cursor.
+   */
+  listPage(
+    sessionId: string,
+    scope: CullingScope,
+    filters?: CullingFilters,
+    requestedGroupId?: string,
+    afterRowId?: number,
+    limit = 200,
+  ): CullingPage {
+    const { photos, cursor } = this.pagePhotosQuery(
+      sessionId,
+      scope,
+      filters,
+      requestedGroupId,
+      afterRowId,
+      limit,
     )
-    const outboxByPath = new Map(
-      this.metadataOutboxRepo.getBySession(sessionId).map(row => [row.xmp_path, row]),
+    const lookup = this.buildRichLookup(photos, sessionId, 'page')
+    const assets = this.filterVisible(
+      this.assembleAssets(photos, lookup),
+      scope,
+      filters,
+      requestedGroupId,
     )
-    const similarityMap = this.getLatestSimilarityMap(sessionId)
-    const qualityByPhoto = new Map<string, CullingAsset['quality']>()
-    if (photos.length > 0) {
-      // Stay below SQLite's parameter limit for very large sessions.
-      const qualityRows: Array<{
-        requested_photo_id: string
-        result_json: string
-      }> = []
-      for (let index = 0; index < photos.length; index += 800) {
-        const chunk = photos.slice(index, index + 800)
-        qualityRows.push(...this.db.prepare(`
-          SELECT p.id AS requested_photo_id, aa.result_json
-          FROM photos p
-          JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
-          WHERE aa.analysis_type = 'technical_quality'
-            AND p.id IN (${chunk.map(() => '?').join(',')})
-          ORDER BY aa.updated_at DESC
-        `).all(...chunk.map(photo => photo.id)) as Array<{
-          requested_photo_id: string
-          result_json: string
-        }>)
+    const total = this.countForScope(
+      sessionId,
+      scope,
+      filters,
+      requestedGroupId,
+      lookup.similarityMap,
+    )
+    return { assets, nextRowId: cursor, total }
+  }
+
+  /** Two-step asset-grouped keyset page shared by all three scopes:
+   *  1. fetch up to `limit` asset groups (ordered by their first rowid,
+   *     `first_rowid > afterRowId`), applying the scope filter to the photos
+   *     that build the groups;
+   *  2. fetch every row of those groups, so a page always contains whole
+   *     assets.
+   * `afterRowId` here is the previous page's `nextRowId`, i.e. the first
+   * rowid of its last asset group. `cursor` is that same value for the
+   * current page: the group query's `first_rowid` of its last group — never a
+   * value derived from the loaded rows, whose minimum rowid may belong to a
+   * variant that did not match the predicate (re-deriving it would re-select
+   * the group on the next page and duplicate the asset across pages). */
+  private pagePhotosQuery(
+    sessionId: string,
+    scope: CullingScope,
+    filters: CullingFilters | undefined,
+    requestedGroupId: string | undefined,
+    afterRowId: number | undefined,
+    limit: number,
+  ): { photos: PhotoPageRow[]; cursor: number | null } {
+    if (scope === 'filtered') {
+      const { sql, params } = this.buildFilteredWhere(sessionId, filters)
+      const groups = this.db.prepare(`
+        SELECT COALESCE(p.asset_id, p.id) AS gid, MIN(p.rowid) AS first_rowid
+        FROM photos p
+        LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
+        LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
+        WHERE ${sql}
+        GROUP BY COALESCE(p.asset_id, p.id)
+        HAVING MIN(p.rowid) > ?
+        ORDER BY first_rowid
+        LIMIT ?
+      `).all(...params, afterRowId ?? 0, limit) as Array<{
+        gid: string
+        first_rowid: number
+      }>
+      return {
+        photos: this.loadAssetRows(sessionId, groups),
+        cursor: groups.length > 0 ? groups[groups.length - 1].first_rowid : null,
       }
-      for (const row of qualityRows) {
+    }
+    if (scope === 'similarity_group') {
+      const similarity = this.buildSimilarityClause(sessionId, requestedGroupId)
+      if (similarity) {
+        const groups = this.db.prepare(`
+          SELECT COALESCE(p.asset_id, p.id) AS gid, MIN(p.rowid) AS first_rowid
+          FROM photos p
+          WHERE p.session_id = ? AND ${similarity.sql} AND ${this.preferredRowPredicate()}
+          GROUP BY COALESCE(p.asset_id, p.id)
+          HAVING MIN(p.rowid) > ?
+          ORDER BY first_rowid
+          LIMIT ?
+        `).all(sessionId, ...similarity.params, afterRowId ?? 0, limit) as Array<{
+          gid: string
+          first_rowid: number
+        }>
+        return {
+          photos: this.loadAssetRows(sessionId, groups),
+          cursor: groups.length > 0 ? groups[groups.length - 1].first_rowid : null,
+        }
+      }
+    }
+    const { rows, cursor } = this.photoRepo.getAssetPage(sessionId, afterRowId, limit)
+    return { photos: rows, cursor }
+  }
+
+  /** Fetches every row of the given asset groups (chunked to stay below
+   * SQLite's parameter limit). */
+  private loadAssetRows(
+    sessionId: string,
+    groups: Array<{ gid: string; first_rowid: number }>,
+  ): PhotoPageRow[] {
+    if (groups.length === 0) return []
+    const rows: PhotoPageRow[] = []
+    for (let index = 0; index < groups.length; index += 800) {
+      const chunk = groups.slice(index, index + 800).map(group => group.gid)
+      rows.push(...this.db.prepare(`
+        SELECT ${PHOTO_PAGE_COLUMNS}
+        FROM photos p
+        WHERE p.session_id = ? AND COALESCE(p.asset_id, p.id) IN (${chunk.map(() => '?').join(',')})
+        ORDER BY p.rowid
+      `).all(sessionId, ...chunk) as PhotoPageRow[])
+    }
+    return rows
+  }
+
+  /** SQL predicate restricting filter-pushdown queries to the preferred row of
+   * each asset group: RAW variants first (same extension list as the JS-side
+   * `assembleAssets` preference), then the lowest rowid. Filters are evaluated
+   * against this preferred row so the SQL page/count and the JS
+   * `filterVisible` safety net always agree on which assets match — a
+   * non-preferred JPEG that hits a predicate no longer selects its asset
+   * while the preferred RAW does not. The predicate is a no-op for ungrouped
+   * photos (gid = id ⇒ the subquery returns the row itself). */
+  private preferredRowPredicate(): string {
+    return `p.id = (
+      SELECT p2.id FROM photos p2
+      WHERE p2.session_id = p.session_id
+        AND COALESCE(p2.asset_id, p2.id) = COALESCE(p.asset_id, p.id)
+      ORDER BY CASE WHEN ${RAW_EXTENSION_LIKE_SQL} THEN 1 ELSE 0 END DESC, p2.rowid
+      LIMIT 1
+    )`
+  }
+
+  /** Exact superset of `matchesFilters` minus `metadataConflictOnly` (which
+   * depends on the XMP sidecar path computed in JS). The page-level JS filter
+   * still runs afterwards as the source of truth. The predicate applies to
+   * the photos that build asset groups; the page cursor lives in the group
+   * query's HAVING clause instead. */
+  private buildFilteredWhere(
+    sessionId: string,
+    filters: CullingFilters | undefined,
+  ): { sql: string; params: unknown[] } {
+    const clauses: string[] = ['p.session_id = ?']
+    const params: unknown[] = [sessionId]
+    if (!filters) return { sql: clauses.join(' AND '), params }
+    if (filters.unreviewedOnly) {
+      clauses.push("COALESCE(d.decision, 'pending') = 'pending'")
+    }
+    if (filters.pickStates?.length) {
+      const decisions = filters.pickStates.map(state =>
+        state === 'picked' ? 'keep' : state === 'rejected' ? 'reject' : 'pending')
+      clauses.push(`COALESCE(d.decision, 'pending') IN (${decisions.map(() => '?').join(',')})`)
+      params.push(...decisions)
+    }
+    if (filters.ratings?.length) {
+      clauses.push(`COALESCE(d.rating, c.rating, 0) IN (${filters.ratings.map(() => '?').join(',')})`)
+      params.push(...filters.ratings)
+    }
+    if (filters.colorLabels?.length) {
+      clauses.push(
+        `COALESCE(NULLIF(d.color_label, ''), NULLIF(c.label, ''), 'None') IN (${filters.colorLabels.map(() => '?').join(',')})`,
+      )
+      params.push(...filters.colorLabels)
+    }
+    if (filters.qualityStatus === 'analysed' || filters.qualityStatus === 'failed') {
+      // json_valid() guards against historical rows whose result_json is not
+      // valid JSON: json_extract() would otherwise raise a malformed-JSON
+      // SQLite error and fail the whole page query.
+      clauses.push(`json_extract(COALESCE((
+        SELECT a3.result_json
+        FROM asset_analysis a3
+        WHERE a3.asset_file_id = p.asset_file_id
+          AND a3.analysis_type = 'technical_quality'
+          AND json_valid(a3.result_json)
+        ORDER BY a3.updated_at DESC
+        LIMIT 1
+      ), '{}'), '$.status') = ?`)
+      params.push(filters.qualityStatus === 'analysed' ? 'succeeded' : 'failed')
+    }
+    if (filters.qualityStatus === 'unanalysed') {
+      // Only a row with valid JSON counts as analysed; a malformed result_json
+      // is treated as "no quality result" by the JS layer, so the NOT EXISTS
+      // guard must mirror that (see the analysed/failed branch above).
+      clauses.push(`NOT EXISTS (
+        SELECT 1 FROM asset_analysis a3
+        WHERE a3.asset_file_id = p.asset_file_id
+          AND a3.analysis_type = 'technical_quality'
+          AND json_valid(a3.result_json)
+      )`)
+    }
+    clauses.push(this.preferredRowPredicate())
+    return { sql: clauses.join(' AND '), params }
+  }
+
+  /** Similarity-group membership as a SQL predicate. Returns null when the
+   * group id cannot be parsed, in which case the page is filtered in JS via
+   * the similarity map (still exact, possibly under-filled pages). */
+  private buildSimilarityClause(
+    sessionId: string,
+    requestedGroupId: string | undefined,
+  ): { sql: string; params: unknown[] } | null {
+    if (requestedGroupId) {
+      const separator = requestedGroupId.lastIndexOf(':')
+      const resultId = separator > 0 ? Number(requestedGroupId.slice(0, separator)) : Number.NaN
+      const groupIndex = separator > 0 ? Number(requestedGroupId.slice(separator + 1)) : Number.NaN
+      if (!Number.isInteger(resultId) || !Number.isInteger(groupIndex)) return null
+      return {
+        sql: `EXISTS (
+          SELECT 1 FROM similarity_result_members srm
+          WHERE srm.result_id = ? AND srm.group_index = ? AND srm.session_id = ?
+            AND srm.photo_id = p.id
+        )`,
+        params: [resultId, groupIndex, sessionId],
+      }
+    }
+    // Precomputed threshold tiers share the same table (marker in stats_json,
+    // see similarity-result.repo.ts); MAX(id) alone would pick the newest
+    // tier instead of the analysis/recluster row that getLatest resolves to,
+    // so the JS-side similarity map and the SQL predicate stay aligned.
+    return {
+      sql: `EXISTS (
+        SELECT 1 FROM similarity_result_members srm
+        WHERE srm.session_id = ? AND srm.photo_id = p.id
+          AND srm.result_id = (
+            SELECT MAX(id) FROM similarity_results
+            WHERE session_id = ? AND stats_json NOT LIKE '%"precomputed":true%'
+          )
+      )`,
+      params: [sessionId, sessionId],
+    }
+  }
+
+  /** Logical-asset count for the scope/filters, so `total` matches the number
+   * of entries the filmstrip shows once all pages are loaded (one per asset,
+   * not per physical photo row). */
+  private countForScope(
+    sessionId: string,
+    scope: CullingScope,
+    filters: CullingFilters | undefined,
+    requestedGroupId: string | undefined,
+    similarityMap: Map<string, string>,
+  ): number {
+    if (scope === 'similarity_group') {
+      const similarity = this.buildSimilarityClause(sessionId, requestedGroupId)
+      if (similarity) {
+        const row = this.db.prepare(`
+          SELECT COUNT(*) AS count
+          FROM (SELECT COALESCE(p.asset_id, p.id) AS gid
+                FROM photos p
+                WHERE p.session_id = ? AND ${similarity.sql}
+                  AND ${this.preferredRowPredicate()}
+                GROUP BY gid)
+        `).get(sessionId, ...similarity.params) as { count: number } | undefined
+        return row?.count ?? 0
+      }
+      // Unparseable group id: no SQL predicate; count via the JS similarity
+      // map (distinct member photo ids).
+      if (requestedGroupId) {
+        let count = 0
+        for (const groupId of similarityMap.values()) {
+          if (groupId === requestedGroupId) count++
+        }
+        return count
+      }
+      return similarityMap.size
+    }
+    if (scope === 'filtered') {
+      const { sql, params } = this.buildFilteredWhere(sessionId, filters)
+      const row = this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM (SELECT COALESCE(p.asset_id, p.id) AS gid
+              FROM photos p
+              LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
+              LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
+              WHERE ${sql}
+              GROUP BY gid)
+      `).get(...params) as { count: number } | undefined
+      return row?.count ?? 0
+    }
+    return this.photoRepo.countAssetsBySession(sessionId)
+  }
+
+  private withChunkedIds<T>(ids: string[], query: (chunk: string[]) => T[]): T[] {
+    const rows: T[] = []
+    for (let index = 0; index < ids.length; index += 800) {
+      rows.push(...query(ids.slice(index, index + 800)))
+    }
+    return rows
+  }
+
+  private loadOutboxByPaths(
+    sessionId: string,
+    xmpPaths: string[],
+  ): Map<string, MetadataOutboxRow> {
+    const rows = this.withChunkedIds([...new Set(xmpPaths)], chunk => this.db.prepare(`
+      SELECT o.*
+      FROM metadata_outbox o
+      JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
+      WHERE os.session_id = ? AND o.xmp_path IN (${chunk.map(() => '?').join(',')})
+    `).all(sessionId, ...chunk) as MetadataOutboxRow[])
+    return new Map(rows.map(row => [row.xmp_path, row]))
+  }
+
+  private loadQualityByPhoto(
+    photos: Array<PhotoRow | PhotoPageRow>,
+  ): Map<string, CullingAsset['quality']> {
+    const qualityByPhoto = new Map<string, CullingAsset['quality']>()
+    if (photos.length === 0) return qualityByPhoto
+    const qualityRows = this.withChunkedIds(photos.map(photo => photo.id), chunk => this.db.prepare(`
+      SELECT p.id AS requested_photo_id, aa.result_json
+      FROM photos p
+      JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
+      WHERE aa.analysis_type = 'technical_quality'
+        AND p.id IN (${chunk.map(() => '?').join(',')})
+      ORDER BY aa.updated_at DESC
+    `).all(...chunk) as Array<{
+      requested_photo_id: string
+      result_json: string
+    }>)
+    for (const row of qualityRows) {
       try {
         const parsed = JSON.parse(row.result_json) as {
           photoId?: string
@@ -183,34 +527,42 @@ export class CullingService {
           })
         }
       } catch { /* Ignore malformed historical analysis rows. */ }
-      }
     }
-    const qualityGroups = new Map<string, Array<NonNullable<CullingAsset['quality']>>>()
-    for (const [photoId, quality] of qualityByPhoto) {
-      const groupId = similarityMap.get(photoId)
-      if (!groupId || quality?.status !== 'succeeded') continue
-      const group = qualityGroups.get(groupId) ?? []
-      group.push(quality)
-      qualityGroups.set(groupId, group)
-    }
-    for (const group of qualityGroups.values()) {
-      group
-        .sort((left, right) => right.score - left.score)
-        .forEach((quality, index) => { quality.relativeRank = index + 1 })
-    }
-    const faceRows = this.db.prepare(`
-      SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
-      FROM face_observations
-      WHERE session_id = ?
-      ORDER BY id
-    `).all(sessionId) as Array<{
-      photo_id: string
-      bbox_x: number
-      bbox_y: number
-      bbox_w: number
-      bbox_h: number
-      analysis_signature: string
-    }>
+    return qualityByPhoto
+  }
+
+  private loadFaces(
+    photos: Array<PhotoRow | PhotoPageRow>,
+    sessionId: string,
+    mode: LookupMode,
+  ): { facesByPhoto: Map<string, number[][]>; analysisMaxByPhoto: Map<string, number> } {
+    const faceRows = mode === 'session'
+      ? this.db.prepare(`
+          SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
+          FROM face_observations
+          WHERE session_id = ?
+          ORDER BY id
+        `).all(sessionId) as Array<{
+          photo_id: string
+          bbox_x: number
+          bbox_y: number
+          bbox_w: number
+          bbox_h: number
+          analysis_signature: string
+        }>
+      : this.withChunkedIds(photos.map(photo => photo.id), chunk => this.db.prepare(`
+          SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
+          FROM face_observations
+          WHERE session_id = ? AND photo_id IN (${chunk.map(() => '?').join(',')})
+          ORDER BY id
+        `).all(sessionId, ...chunk) as Array<{
+          photo_id: string
+          bbox_x: number
+          bbox_y: number
+          bbox_w: number
+          bbox_h: number
+          analysis_signature: string
+        }>)
     const facesByPhoto = new Map<string, number[][]>()
     const analysisMaxByPhoto = new Map<string, number>()
     for (const face of faceRows) {
@@ -233,25 +585,110 @@ export class CullingService {
         }
       }
     }
-    const personRows = this.db.prepare(`
-      SELECT pp.photo_id, p.name
-      FROM person_photos pp
-      JOIN persons p ON p.id = pp.person_id
-      WHERE pp.session_id = ?
-      ORDER BY p.name
-    `).all(sessionId) as Array<{ photo_id: string; name: string }>
+    return { facesByPhoto, analysisMaxByPhoto }
+  }
+
+  private loadPeople(
+    photos: Array<PhotoRow | PhotoPageRow>,
+    sessionId: string,
+    mode: LookupMode,
+  ): Map<string, string[]> {
+    const personRows = mode === 'session'
+      ? this.db.prepare(`
+          SELECT pp.photo_id, p.name
+          FROM person_photos pp
+          JOIN persons p ON p.id = pp.person_id
+          WHERE pp.session_id = ?
+          ORDER BY p.name
+        `).all(sessionId) as Array<{ photo_id: string; name: string }>
+      : this.withChunkedIds(photos.map(photo => photo.id), chunk => this.db.prepare(`
+          SELECT pp.photo_id, p.name
+          FROM person_photos pp
+          JOIN persons p ON p.id = pp.person_id
+          WHERE pp.session_id = ? AND pp.photo_id IN (${chunk.map(() => '?').join(',')})
+          ORDER BY p.name
+        `).all(sessionId, ...chunk) as Array<{ photo_id: string; name: string }>)
     const peopleByPhoto = new Map<string, string[]>()
     for (const person of personRows) {
       const names = peopleByPhoto.get(person.photo_id) ?? []
       if (!names.includes(person.name)) names.push(person.name)
       peopleByPhoto.set(person.photo_id, names)
     }
+    return peopleByPhoto
+  }
+
+  private buildRichLookup(
+    photos: Array<PhotoRow | PhotoPageRow>,
+    sessionId: string,
+    mode: LookupMode,
+  ): CullingRichLookup {
+    const photoIds = photos.map(photo => photo.id)
+    const decisions = new Map(
+      (mode === 'session'
+        ? this.cullingDecisionRepo.getBySession(sessionId)
+        : this.cullingDecisionRepo.getByPhotoIds(sessionId, photoIds))
+        .map(row => [row.photo_id, row]),
+    )
+    const cacheRows = new Map(
+      this.metadataCacheRepo.getBatch(photoIds)
+        .map(row => [row.photo_id, row]),
+    )
+    const outboxByPath = mode === 'session'
+      ? new Map(
+        this.metadataOutboxRepo.getBySession(sessionId).map(row => [row.xmp_path, row]),
+      )
+      : this.loadOutboxByPaths(sessionId, photos.map(photo => getXmpSidecarPath(photo.filepath)))
+    const similarityMap = this.getLatestSimilarityMap(sessionId)
+    const qualityByPhoto = this.loadQualityByPhoto(photos)
+    const { facesByPhoto, analysisMaxByPhoto } = this.loadFaces(photos, sessionId, mode)
+    const peopleByPhoto = this.loadPeople(photos, sessionId, mode)
     const linkedCounts = new Map<string, number>()
     for (const photo of photos) {
       const xmpPath = getXmpSidecarPath(photo.filepath)
       linkedCounts.set(xmpPath, (linkedCounts.get(xmpPath) ?? 0) + 1)
     }
 
+    const qualityGroups = new Map<string, Array<NonNullable<CullingAsset['quality']>>>()
+    for (const [photoId, quality] of qualityByPhoto) {
+      const groupId = similarityMap.get(photoId)
+      if (!groupId || quality?.status !== 'succeeded') continue
+      const group = qualityGroups.get(groupId) ?? []
+      group.push(quality)
+      qualityGroups.set(groupId, group)
+    }
+    for (const group of qualityGroups.values()) {
+      group
+        .sort((left, right) => right.score - left.score)
+        .forEach((quality, index) => { quality.relativeRank = index + 1 })
+    }
+    return {
+      decisions,
+      cacheRows,
+      outboxByPath,
+      similarityMap,
+      qualityByPhoto,
+      facesByPhoto,
+      analysisMaxByPhoto,
+      peopleByPhoto,
+      linkedCounts,
+    }
+  }
+
+  private assembleAssets(
+    photos: Array<PhotoRow | PhotoPageRow>,
+    lookup: CullingRichLookup,
+  ): CullingAsset[] {
+    const {
+      decisions,
+      cacheRows,
+      outboxByPath,
+      similarityMap,
+      qualityByPhoto,
+      facesByPhoto,
+      analysisMaxByPhoto,
+      peopleByPhoto,
+      linkedCounts,
+    } = lookup
     const assets = photos.map((photo): CullingAsset => {
       const decision = decisions.get(photo.id)
       const cache = cacheRows.get(photo.id)
@@ -327,15 +764,15 @@ export class CullingService {
       }
     })
 
-    const visibleAssets = [...new Map(
+    return [...new Map(
       assets.map(asset => [asset.photo.assetId ?? `photo:${asset.photo.id}`, asset]),
     ).values()].map(asset => {
       const variants = asset.photo.assetId
         ? assets.filter(candidate => candidate.photo.assetId === asset.photo.assetId)
         : [asset]
       const preferred = variants.find(candidate =>
-        ['.nef', '.arw', '.cr2', '.cr3', '.dng', '.raf', '.orf', '.rw2', '.pef', '.srw']
-          .some(extension => candidate.photo.filename.toLowerCase().endsWith(extension)),
+        RAW_EXTENSIONS.some(extension =>
+          candidate.photo.filename.toLowerCase().endsWith(extension)),
       ) ?? variants[0]
       return {
         ...preferred,
@@ -351,8 +788,19 @@ export class CullingService {
         },
       }
     })
+  }
 
-    return visibleAssets.filter(asset => {
+  /** Final safety net on top of the SQL pushdown. For pushed-down filters
+   * (pick/rating/label/quality/similarity) the SQL predicate already operates
+   * on the preferred row, so this JS pass is expected to always pass; the
+   * non-pushdown `metadataConflictOnly` filter is applied here. */
+  private filterVisible(
+    assets: CullingAsset[],
+    scope: CullingScope,
+    filters: CullingFilters | undefined,
+    requestedGroupId?: string,
+  ): CullingAsset[] {
+    return assets.filter(asset => {
       if (scope === 'similarity_group') {
         if (!asset.similarityGroupId) return false
         if (requestedGroupId && asset.similarityGroupId !== requestedGroupId) return false

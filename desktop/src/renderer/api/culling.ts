@@ -4,6 +4,7 @@ import type {
   CullingAsset,
   CullingFilters,
   CullingGroup,
+  CullingPage,
   CullingScope,
   CullingSummary,
   CullingUpdatePatch,
@@ -24,6 +25,22 @@ export const cullingApi = {
     scope,
     ...(filters ? { filters } : {}),
     ...(groupId ? { groupId } : {}),
+  }),
+
+  listPage: (
+    sessionId: string,
+    scope: CullingScope,
+    filters?: CullingFilters,
+    groupId?: string,
+    afterRowId?: number,
+    limit?: number,
+  ) => sendCommand<CullingPage>('culling.list_page', {
+    sessionId,
+    scope,
+    ...(filters ? { filters } : {}),
+    ...(groupId ? { groupId } : {}),
+    ...(afterRowId !== undefined ? { afterRowId } : {}),
+    ...(limit !== undefined ? { limit } : {}),
   }),
 
   update: (

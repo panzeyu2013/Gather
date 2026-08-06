@@ -230,6 +230,7 @@ import type {
   CullingHistoryParams,
   CullingHistoryApplyParams,
   CullingListParams,
+  CullingListPageParams,
   CullingUpdateParams,
   CullingBatchUpdateParams,
   CullingDecideGroupParams,
@@ -338,6 +339,7 @@ export type Command =
   | { type: 'template.apply'; params: TemplateApplyParams }
   | { type: 'culling.groups'; params: CullingGroupsParams }
   | { type: 'culling.list'; params: CullingListParams }
+  | { type: 'culling.list_page'; params: CullingListPageParams }
   | { type: 'culling.update'; params: CullingUpdateParams }
   | { type: 'culling.batch_update'; params: CullingBatchUpdateParams }
   | { type: 'culling.decide_group'; params: CullingDecideGroupParams }
@@ -422,7 +424,7 @@ export const ALLOWED_COMMANDS = new Set([
   'export.preview', 'export.execute', 'export.cancel', 'export.report',
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
   'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
-  'culling.list', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
+  'culling.list', 'culling.list_page', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
   'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset', 'culling.history', 'culling.apply_history',
   'jobs.list', 'jobs.cancel', 'jobs.retry', 'jobs.clear_completed',
   'assets.candidates', 'assets.accept_candidate', 'assets.reject_candidate', 'assets.volumes', 'assets.relink_root',

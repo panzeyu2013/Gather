@@ -28,7 +28,7 @@ const ALLOWED_COMMANDS = new Set<CommandType>([
   'export.preview', 'export.execute', 'export.cancel', 'export.report',
   'template.create', 'template.list', 'template.get', 'template.update', 'template.delete', 'template.apply',
   'culling.groups', 'culling.decide', 'culling.batch_decide', 'culling.summary', 'culling.writeback',
-  'culling.list', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
+  'culling.list', 'culling.list_page', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
   'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset', 'culling.history', 'culling.apply_history',
   'jobs.list', 'jobs.cancel', 'jobs.retry', 'jobs.clear_completed',
   'assets.candidates', 'assets.accept_candidate', 'assets.reject_candidate', 'assets.volumes', 'assets.relink_root',

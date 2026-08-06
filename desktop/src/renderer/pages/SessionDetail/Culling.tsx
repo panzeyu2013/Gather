@@ -12,6 +12,7 @@ import type {
   CaptureOneColorLabel,
   CullingAsset,
   CullingFilters,
+  CullingPage,
   CullingScope,
   CullingUpdatePatch,
   CullingUpdateResult,
@@ -260,6 +261,13 @@ export default function Culling() {
   const [message, setMessage] = useState('')
   const dragRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null)
   const filmstripRef = useRef<HTMLDivElement>(null)
+  const assetsRef = useRef<CullingAsset[]>([])
+  const nextRowIdRef = useRef<number | null>(null)
+  const loadingMoreRef = useRef(false)
+  const queryKeyRef = useRef('')
+  const currentPhotoIdRef = useRef<string>()
+  const lastDataKeyRef = useRef('')
+  const positionRestoreLockRef = useRef(false)
 
   const assetQueryKey = useMemo(
     () => ['culling', 'assets', sessionId, scope, filters] as const,
@@ -267,9 +275,11 @@ export default function Culling() {
   )
   const { data, isLoading, refetch } = useQuery({
     queryKey: assetQueryKey,
-    queryFn: () => cullingApi.list(sessionId!, scope, filters),
+    queryFn: () => cullingApi.listPage(sessionId!, scope, filters, undefined, undefined, 500),
     enabled: Boolean(sessionId),
   })
+  const [nextRowId, setNextRowId] = useState<number | null>(null)
+  const [total, setTotal] = useState<number | undefined>(undefined)
   const { data: summary } = useQuery({
     queryKey: ['culling', 'summary', sessionId],
     queryFn: () => cullingApi.getSummary(sessionId!),
@@ -311,18 +321,157 @@ export default function Culling() {
     }
   }, [sessionId])
 
-  const jumpToNavigationGroup = useCallback((group: NavigationGroup) => {
-    const first = group.photoIds[0]
-    const index = assets.findIndex(asset => asset.photo.id === first)
-    if (index >= 0) {
-      setCurrentIndex(index)
-      setTransform({ scale: 1, x: 0, y: 0 })
+  const appendPageAssets = useCallback((incoming: CullingAsset[]) => {
+    setAssets(current => {
+      if (incoming.length === 0) return current
+      const seen = new Set(current.map(asset => asset.photo.id))
+      const appended = incoming.filter(asset => !seen.has(asset.photo.id))
+      return appended.length > 0 ? [...current, ...appended] : current
+    })
+  }, [])
+
+  const loadMore = useCallback(async () => {
+    if (!sessionId || loadingMoreRef.current) return
+    const next = nextRowIdRef.current
+    if (next == null) return
+    const keyAtStart = queryKeyRef.current
+    loadingMoreRef.current = true
+    try {
+      const page = await cullingApi.listPage(sessionId, scope, filters, undefined, next, 500)
+      // Scope/filters may have changed while the page was in flight; the new
+      // query refetch will reset the list, so discard a stale page.
+      if (queryKeyRef.current !== keyAtStart) return
+      appendPageAssets(page.assets)
+      setNextRowId(page.nextRowId)
+      setTotal(page.total)
+    } catch {
+      setMessage('加载更多照片失败')
+    } finally {
+      loadingMoreRef.current = false
     }
-  }, [assets])
+  }, [appendPageAssets, filters, scope, sessionId])
+
+  /** Appends pages starting at `baseNextRowId` (deduped against `baseIds`,
+   * mirroring `appendPageAssets`) until `photoId` is found. Returns the
+   * cumulative index of `photoId` — rowid order guarantees earlier photos
+   * surface first — or -1 when exhausted or when the 20-page safety cap is
+   * hit. The index is computed locally because `assetsRef` only catches up
+   * after the next render. */
+  const loadUntilPhoto = useCallback(async (
+    photoId: string,
+    baseCount: number,
+    baseNextRowId: number | null,
+    baseIds: Set<string>,
+  ): Promise<number> => {
+    if (!sessionId) return -1
+    const keyAtStart = queryKeyRef.current
+    let next = baseNextRowId
+    let index = baseCount
+    for (let pageCount = 0; pageCount < 20 && next != null; pageCount++) {
+      const page = await cullingApi.listPage(sessionId, scope, filters, undefined, next, 500)
+      if (queryKeyRef.current !== keyAtStart) return -1
+      appendPageAssets(page.assets)
+      setNextRowId(page.nextRowId)
+      next = page.nextRowId
+      for (const asset of page.assets) {
+        if (baseIds.has(asset.photo.id)) continue
+        baseIds.add(asset.photo.id)
+        if (asset.photo.id === photoId) return index
+        index++
+      }
+    }
+    return -1
+  }, [appendPageAssets, filters, scope, sessionId])
+
+  /** Loads pages until `photoId` is present and returns its cumulative index
+   * (or -1 when exhausted or when the 20-page safety cap is hit). */
+  const ensureLoadedUntilPhoto = useCallback(async (photoId: string): Promise<number> => {
+    if (!sessionId) return -1
+    const already = assetsRef.current.findIndex(asset => asset.photo.id === photoId)
+    if (already >= 0) return already
+    return loadUntilPhoto(
+      photoId,
+      assetsRef.current.length,
+      nextRowIdRef.current,
+      new Set(assetsRef.current.map(asset => asset.photo.id)),
+    )
+  }, [loadUntilPhoto])
+
+  /** Fetches every member of a similarity group via the paginated
+   * `similarity_group` scope (groups are small; capped at 20 pages). */
+  const fetchGroupAssets = useCallback(async (groupId: string): Promise<CullingAsset[]> => {
+    if (!sessionId) return []
+    const collected: CullingAsset[] = []
+    let afterRowId: number | undefined
+    for (let pageCount = 0; pageCount < 20; pageCount++) {
+      const page = await cullingApi.listPage(sessionId, 'similarity_group', {}, groupId, afterRowId, 500)
+      const seen = new Set(collected.map(asset => asset.photo.id))
+      for (const asset of page.assets) {
+        if (!seen.has(asset.photo.id)) collected.push(asset)
+      }
+      if (page.nextRowId == null) break
+      afterRowId = page.nextRowId
+    }
+    return collected
+  }, [sessionId])
+
+  const jumpToNavigationGroup = useCallback(async (group: NavigationGroup) => {
+    const first = group.photoIds[0]
+    const index = await ensureLoadedUntilPhoto(first)
+    if (index < 0) {
+      setMessage('目标照片未加载完整，请滚动胶片继续加载')
+      return
+    }
+    setCurrentIndex(index)
+    setTransform({ scale: 1, x: 0, y: 0 })
+  }, [ensureLoadedUntilPhoto])
 
   useEffect(() => {
-    if (data) setAssets(data)
-  }, [data])
+    currentPhotoIdRef.current = assets[currentIndex]?.photo.id
+  }, [assets, currentIndex])
+  useEffect(() => {
+    if (!data) return
+    const key = JSON.stringify(assetQueryKey)
+    const keyChanged = lastDataKeyRef.current !== key
+    lastDataKeyRef.current = key
+    const restorePosition = !keyChanged && !positionRestoreLockRef.current
+    positionRestoreLockRef.current = false
+    const previousId = currentPhotoIdRef.current
+    setAssets(data.assets)
+    setNextRowId(data.nextRowId)
+    setTotal(data.total)
+    if (
+      restorePosition &&
+      previousId &&
+      !data.assets.some(asset => asset.photo.id === previousId)
+    ) {
+      // A refetch replaces the list with the fresh first page, dropping any
+      // deeper scroll position; resume loading from that page until the
+      // previously viewed photo surfaces again so the window does not reset.
+      const freshIds = new Set(data.assets.map(asset => asset.photo.id))
+      void loadUntilPhoto(previousId, data.assets.length, data.nextRowId, freshIds)
+        .then(index => {
+          if (index >= 0) {
+            setCurrentIndex(index)
+            setTransform({ scale: 1, x: 0, y: 0 })
+          }
+        })
+    }
+  }, [assetQueryKey, data, loadUntilPhoto])
+  useEffect(() => {
+    assetsRef.current = assets
+  }, [assets])
+  useEffect(() => {
+    nextRowIdRef.current = nextRowId
+  }, [nextRowId])
+  useEffect(() => {
+    queryKeyRef.current = JSON.stringify(assetQueryKey)
+  }, [assetQueryKey])
+  useEffect(() => {
+    if (assets.length === 0 && nextRowId != null && !loadingMoreRef.current) {
+      void loadMore()
+    }
+  }, [assets.length, loadMore, nextRowId])
   useEffect(() => {
     if (initialSync) setSyncSummary(initialSync)
   }, [initialSync])
@@ -379,6 +528,9 @@ export default function Culling() {
     setSelectedIds(new Set())
     setUndoStack([])
     setRedoStack([])
+    setNextRowId(null)
+    setTotal(undefined)
+    loadingMoreRef.current = false
   }, [sessionId])
 
   const current = assets[currentIndex]
@@ -432,8 +584,10 @@ export default function Culling() {
   const refreshFiltered = useCallback(async (preferredPhotoId?: string) => {
     if (scope !== 'filtered') return
     const refreshed = await refetch()
-    const nextAssets = refreshed.data ?? []
+    const nextAssets = refreshed.data?.assets ?? []
     setAssets(nextAssets)
+    setNextRowId(refreshed.data?.nextRowId ?? null)
+    setTotal(refreshed.data?.total)
     setCurrentIndex(currentValue => {
       if (preferredPhotoId) {
         const preferredIndex = nextAssets.findIndex(
@@ -446,9 +600,17 @@ export default function Culling() {
   }, [refetch, scope])
 
   const advance = useCallback(() => {
-    setCurrentIndex(index => Math.min(index + 1, Math.max(0, assets.length - 1)))
+    setCurrentIndex(index => {
+      if (index >= assets.length - 1 && nextRowIdRef.current != null) {
+        // End of the loaded window but more pages exist — kick off the next
+        // page in the background so consecutive advances keep working.
+        void loadMore()
+        return index
+      }
+      return Math.min(index + 1, Math.max(0, assets.length - 1))
+    })
     setTransform({ scale: 1, x: 0, y: 0 })
-  }, [assets.length])
+  }, [assets.length, loadMore])
 
   const commitOne = useCallback(async (
     photoId: string,
@@ -693,7 +855,10 @@ export default function Culling() {
     setBusy(true)
     setMessage('')
     try {
-      const allAssets = await cullingApi.list(sessionId, 'all', {})
+      // Fetch the whole group through the paginated similarity_group scope
+      // (server pushes the group filter down to SQL) instead of the full
+      // session list.
+      const allAssets = await fetchGroupAssets(current.similarityGroupId)
       const fullGroup = allAssets.filter(
         asset => asset.similarityGroupId === current.similarityGroupId,
       )
@@ -749,6 +914,9 @@ export default function Culling() {
       }
       setSelectedIds(new Set())
       void queryClient.invalidateQueries({ queryKey: ['culling', 'summary', sessionId] })
+      // This flow positions itself after the refetch; the data effect must
+      // not restore the previous scroll position on top of the group advance.
+      positionRestoreLockRef.current = true
       await refetch()
       if (autoAdvance) {
         const nextIndex = assets.findIndex(
@@ -773,6 +941,7 @@ export default function Culling() {
     autoAdvance,
     current,
     currentIndex,
+    fetchGroupAssets,
     queryClient,
     refetch,
     sessionId,
@@ -887,7 +1056,7 @@ export default function Culling() {
             <select className={styles.select} defaultValue="" onChange={event => {
               setSelectedNavigationGroupId(event.target.value)
               const group = navigationGroups.find(item => item.id === event.target.value)
-              if (group) jumpToNavigationGroup(group)
+              if (group) void jumpToNavigationGroup(group)
             }}>
               <option value="">导航组 ({navigationGroups.length})</option>
               {navigationGroups.map(group => (
@@ -1041,7 +1210,7 @@ export default function Culling() {
         <button
           className={`${styles.navButton} ${styles.next}`}
           onClick={advance}
-          disabled={currentIndex === assets.length - 1}
+          disabled={currentIndex === assets.length - 1 && nextRowId === null}
           aria-label="下一张照片"
         >
           ›
@@ -1064,7 +1233,7 @@ export default function Culling() {
       )}
 
       <div className={styles.infoBar}>
-        <span className={styles.positionCount}>{currentIndex + 1} / {assets.length}</span>
+        <span className={styles.positionCount}>{currentIndex + 1} / {total ?? assets.length}</span>
         <span className={styles.keptStat}>保留 {summary?.kept ?? 0}</span>
         <span className={styles.rejectedStat}>淘汰 {summary?.rejected ?? 0}</span>
         <span>未处理 {summary?.pending ?? assets.length}</span>
@@ -1166,10 +1335,19 @@ export default function Culling() {
         )}
       </div>
 
-      <div className={styles.filmstrip} ref={filmstripRef}>
+      <div
+        className={styles.filmstrip}
+        ref={filmstripRef}
+        onScroll={event => {
+          const element = event.currentTarget
+          if (element.scrollHeight - element.scrollTop - element.clientHeight < 400) {
+            void loadMore()
+          }
+        }}
+      >
         <div className={styles.stripHeader}>
           <span>胶片</span>
-          <span>{assets.length}</span>
+          <span>{assets.length}{total != null && total > assets.length ? ` / ${total}` : ''}</span>
         </div>
         <div className={styles.stripSpacer} style={{ width: stripStart * 86 }} />
         {stripAssets.map((asset, offset) => {
@@ -1224,6 +1402,25 @@ export default function Culling() {
           className={styles.stripSpacer}
           style={{ width: Math.max(0, assets.length - stripStart - stripAssets.length) * 86 }}
         />
+        {nextRowId != null && (
+          <button
+            style={{
+              flex: '0 0 auto',
+              width: '100%',
+              height: 36,
+              marginTop: 4,
+              border: '1px solid var(--cull-border)',
+              borderRadius: 4,
+              background: 'transparent',
+              color: 'var(--cull-text)',
+              cursor: 'pointer',
+            }}
+            onClick={() => void loadMore()}
+            disabled={loadingMoreRef.current}
+          >
+            {loadingMoreRef.current ? '加载中…' : '加载更多'}
+          </button>
+        )}
       </div>
 
       <div className={styles.controls}>

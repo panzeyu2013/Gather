@@ -92,6 +92,32 @@ export function registerCullingHandlers(
     }),
   )
 
+  registry.register(
+    'culling.list_page',
+    wrapHandler(async (params) => {
+      const sessionId = validateString(params.sessionId, 'sessionId')
+      const scope = validateString(params.scope, 'scope') as CullingScope
+      if (!['all', 'filtered', 'similarity_group'].includes(scope)) {
+        throw new Error('Invalid culling scope')
+      }
+      const filters = parseFilters(params.filters)
+      const groupId = typeof params.groupId === 'string' ? params.groupId : undefined
+      // afterRowId is the opaque keyset cursor returned as `nextRowId` by the
+      // previous page: the first rowid of its last asset group (asset-grouped
+      // pagination keeps RAW/JPEG variants on one page). Still a photos.rowid
+      // value, so validation is unchanged.
+      const afterRowId = params.afterRowId === undefined ? undefined : Number(params.afterRowId)
+      if (afterRowId !== undefined && (!Number.isInteger(afterRowId) || afterRowId < 1)) {
+        throw new Error('afterRowId must be a positive integer')
+      }
+      const limit = params.limit === undefined ? 200 : Number(params.limit)
+      if (!Number.isInteger(limit) || limit < 1 || limit > 2000) {
+        throw new Error('limit must be an integer between 1 and 2000')
+      }
+      return ok(cullingService.listPage(sessionId, scope, filters, groupId, afterRowId, limit))
+    }),
+  )
+
   registry.register('culling.history', wrapHandler(async (params) => {
     const sessionId = validateString(params.sessionId, 'sessionId')
     const limit = params.limit === undefined ? undefined : Number(params.limit)

@@ -78,6 +78,26 @@ export interface CullingListParams {
   groupId?: string
 }
 
+/** One page of the paginated culling list. `nextRowId` is the keyset cursor
+ * (photos.rowid of the last fetched row) to pass as `afterRowId` on the next
+ * request, or null when there is no further data. `total` is the best-effort
+ * count for the scope/filters (approximate when filters cannot be pushed
+ * down to SQL, e.g. `metadataConflictOnly`). */
+export interface CullingPage {
+  assets: CullingAsset[]
+  nextRowId: number | null
+  total: number
+}
+
+export interface CullingListPageParams {
+  sessionId: string
+  scope: CullingScope
+  filters?: CullingFilters
+  groupId?: string
+  afterRowId?: number
+  limit?: number
+}
+
 export interface CullingUpdatePatch {
   rating?: number
   pickState?: PickState
