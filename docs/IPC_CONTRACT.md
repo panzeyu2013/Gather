@@ -18,8 +18,8 @@ this inventory records the compatibility rules that later migrations must preser
 | Group | Commands | Cancellation/status |
 |---|---|---|
 | Session/photo | `session.*`, `photo.list` | Session status is persisted; import errors are returned per file where supported |
-| Culling | `culling.*` | Per-session sync status; analysis and writeback failures remain retryable |
-| Similarity | `sim.analyze`, `sim.cancel_analysis`, `sim.result`, `sim.recluster` | Per-session cancellation and progress |
+| Culling | `culling.*`（分页入口 `culling.list_page`，`culling.list` 保留兼容） | Per-session sync status; analysis and writeback failures remain retryable |
+| Similarity | `sim.analyze`, `sim.cancel_analysis`, `sim.result`, `sim.recluster`, `sim.preview_writeback`, `sim.writeback` | Per-session cancellation and progress |
 | Face/person | `fkw.*`, `person.*` | Face analysis cancellation; person mutations require confirmation where destructive |
 | Metadata | `metadata.get`, `metadata.set`, `metadata.batch_set`, `metadata.conflicts`, `metadata.resolve_conflict`, `metadata.orphans`, `metadata.resolve_orphan` | Mutations and recovery choices require confirmation; unknown XMP fields are preserved |
 | Assets/index | `assets.*`, `index.scan` | Relinking requires confirmation; scans are persistent jobs and missing files are retained |
@@ -40,3 +40,31 @@ this inventory records the compatibility rules that later migrations must preser
    user command.
 5. Metadata mutations are patches, not complete XMP documents. The writer owns path
    resolution, baseline comparison, merge, backup, and recovery.
+
+## Pagination contract (added with `culling.list_page`)
+
+- Pages are grouped by **logical asset** (`COALESCE(asset_id, id)`); an asset (e.g. a
+  RAW+JPEG pair) never spans two pages, and each asset appears exactly once across pages.
+- `afterRowId`/`nextRowId` is an **opaque keyset cursor** (the first `rowid` of the last
+  asset group). The renderer must round-trip it verbatim and never interpret it.
+- `total` counts logical assets, not physical photo rows.
+- Filters are pushed down and evaluated on the asset's **preferred variant** (RAW
+  extension first, otherwise the lowest `rowid`); `culling.list` keeps the legacy
+  row-level behavior for compatibility.
+
+## Similarity result tiers (added with `sim.result`/`sim.preview_writeback`/`sim.writeback`)
+
+- `sim.result`, `sim.preview_writeback`, and `sim.writeback` accept an **optional
+  `threshold`** parameter. Without it they resolve the latest non-precomputed result
+  (the "main" row); with it they resolve that threshold's precomputed tier.
+- Precomputed tier rows are persisted in `similarity_results` and marked
+  `"precomputed": true` in `stats_json`. Every consumer that picks "the latest result"
+  (`getLatest`, the culling similarity-group SQL predicate, quality relative ranks)
+  MUST exclude rows carrying that marker — this invariant is covered by
+  `tests/unit/services/similarity/reuse-and-tiers.test.ts`.
+
+## Background jobs (added to `jobs.*`)
+
+- `checksum.backfill` (scope: session, auto-resumed): fills `photos.checksum` +
+  `asset_files.checksum` left empty by lazy indexing (`lazy_checksum` setting). Job
+  creation is deduped per session (`dedupeKey: checksum.backfill:<sessionId>`).

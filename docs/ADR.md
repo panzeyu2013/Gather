@@ -60,6 +60,53 @@
 
 ---
 
+## ADR-007 磁盘缓存元数据：SQLite + 惰性淘汰
+
+- 缩略图磁盘缓存元数据（hash → lastAccess/createdAt/accessCount/fileSize）持久化在
+  `cache-meta.db`（better-sqlite3 + WAL），替代全量 `JSON.stringify(cache-meta.json)`：
+  热路径 `onAccess`/`onSet` 纯内存 + debounce 批量 upsert，主线程无同步序列化。
+- 淘汰采用"有界堆保留 k 个最差候选"的惰性扫描（O(n log k)），只在超预算时触发；
+  淘汰候选按 policy 值升序（LRU=lastAccess / FIFO=createdAt / LFU=accessCount）。
+- 降级不变量：DB 损坏 → 改名 `.corrupt-<ts>` 重建空库；仍失败（只读目录）→
+  `:memory:` 纯内存模式；`waitUntilReady` 永不 reject；退出前 `flush()` 落盘。
+- 实现以 `desktop/src/main/services/image/disk-cache.ts` 为准；修改持久化格式必须
+  保留损坏/只读降级与重启对账（`readdir` + stat）语义。
+
+## ADR-008 Culling 分页按逻辑资产分组（不变量）
+
+- 分页（`culling.list_page`）以逻辑资产为最小单元：`COALESCE(asset_id, id)` 分组、
+  组内 `MIN(rowid)` 作 keyset 游标、组内全行一次加载——RAW/JPEG 变体**永不跨页**，
+  跨页遍历每个资产恰好出现一次（回退为按物理行分页将再次引入重复条目，禁止）。
+- `total` 一律按逻辑资产计数；过滤谓词下推到**首选变体**（RAW 扩展名优先，否则
+  `rowid` 最小者，与 `assembleAssets` 的 JS 首选逻辑共用同一扩展名常量）。
+- 游标对渲染层**不透明**：renderer 只回传 `nextRowId`，不得解析其含义。
+- 与 ADR-001/002 的 Asset 语义联动：任一物理行匹配谓词即入页会导致 total 虚高与
+  空页（仅非首选 JPEG 命中时），故 SQL 谓词必须限定首选行。
+
+## ADR-009 相似度"主档"与预计算档位
+
+- `similarity_results` 可存多档结果：分析/重聚类的"主档" + 预计算邻居阈值
+  （T±4/T±8）的档位行；档位行在 `stats_json` 内标记 `"precomputed": true`。
+- **"最新结果"的判定**（`getLatest`、culling 相似组 SQL、质量相对排名）必须排除
+  `precomputed` 行——否则档位插入顺序（主行先、档位后）会让 `MAX(id)` 选中档位，
+  造成相似组浏览与相对排名错乱。该不变量由 `reuse-and-tiers.test.ts` 与
+  `culling-page.test.ts` 强制。
+- 写回/预览默认按主档解析；渲染端展示档位时按展示阈值解析（`threshold` 参数），
+  档位不存在则报错要求重新聚类。
+
+## ADR-010 checksum 双写与乐观更新
+
+- 懒校验（`lazy_checksum`）下，`photos.checksum` 与 `asset_files.checksum` 必须
+  **同事务双写**：扫描的未变更检测读 `asset_files.checksum`，backfill 只写
+  `photos` 会导致下次全量扫描清空并反复重哈希（不收敛）。
+- 写入方向约束：扫描只在 `contentChanged` 时清空 checksum；对未变更但快照缺失
+  checksum 的文件**保留现值**（可能是并发 backfill 刚写入的哈希）；backfill 只
+  填空值（`AND checksum = ''` 乐观写，`changes = 0` 则不覆盖并跳过）。
+- 理由：`metadata.scan` 与 `checksum.backfill` 是独立 job（可并发），不串行化，
+  用方向约束 + 条件写消除互相覆盖。
+
+---
+
 ## 发布门禁（未完成，非未实现代码）
 
 1. **Asset 主读 Cutover**：必须在 dual-read/shadow-read 经历**至少一个完整稳定版本且
