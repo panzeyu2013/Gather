@@ -11,12 +11,17 @@ function extension(filename: string): string {
   return index >= 0 ? filename.slice(index).toLowerCase() : ''
 }
 
+/** The photo fields collapsePhotoAssets reads; light projections (e.g.
+ * `PhotoProjectionRow`, which omits the heavy metadata/result JSON columns)
+ * satisfy it structurally. */
+export type PhotoAssetCandidate = Pick<PhotoRow, 'id' | 'asset_id' | 'filename'>
+
 /**
  * Analysis and browsing operate on logical Photo Assets, not every physical
  * RAW/JPEG variant. Preserve import order and prefer the RAW member.
  */
-export function collapsePhotoAssets(photos: PhotoRow[]): PhotoRow[] {
-  const groups = new Map<string, PhotoRow[]>()
+export function collapsePhotoAssets<T extends PhotoAssetCandidate>(photos: T[]): T[] {
+  const groups = new Map<string, T[]>()
   for (const photo of photos) {
     const key = photo.asset_id ?? `photo:${photo.id}`
     const group = groups.get(key) ?? []

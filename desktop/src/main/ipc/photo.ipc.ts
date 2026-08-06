@@ -9,7 +9,7 @@ export function registerPhotoHandlers(registry: CommandRegistry, photoRepo: Phot
     'photo.list',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId', 64)
-      const rows = photoRepo.getBySession(sessionId)
+      const rows = photoRepo.getBySessionProjection(sessionId)
       const memberRoles = new Map(
         (db.prepare(`
           SELECT p.id AS photo_id, am.member_role
@@ -33,8 +33,8 @@ export function registerPhotoHandlers(registry: CommandRegistry, photoRepo: Phot
         faceCount: faceCountMap.get(row.id) ?? 0,
         width: row.width ?? 0,
         height: row.height ?? 0,
-        metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
-        result: typeof row.result === 'string' ? JSON.parse(row.result) : row.result,
+        metadata: {},
+        result: {},
         status: row.status,
         assetId: row.asset_id ?? undefined,
         variantCount: variants.length,
