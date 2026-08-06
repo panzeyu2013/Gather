@@ -219,10 +219,13 @@ describe('ImageService preview pipeline', () => {
     expect(decoderMocks.sharpPreview).toHaveBeenCalledWith('/photos/a.nef', 2048)
   })
 
-  it('tries embedded-preview extraction before sips for every configured RAW format', () => {
+  it('keeps the sips RAW extension list in sync with the sharp decoder lists', () => {
     const sharpRaw = new Set(IMAGE_CONFIG.sharp.rawExtensions)
     const sharpSupported = new Set(IMAGE_CONFIG.sharp.supportedExtensions)
 
+    // Embedded-preview extraction only happens for formats the sharp decoder
+    // actually registers, so any sips-only RAW would silently skip the
+    // preview-first path.
     for (const extension of IMAGE_CONFIG.sips.rawExtensions) {
       expect(sharpRaw.has(extension)).toBe(true)
       expect(sharpSupported.has(extension)).toBe(true)

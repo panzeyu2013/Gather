@@ -1,5 +1,6 @@
 import BetterSqlite3 from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
+import { SCHEMA_SQL } from '../../../../desktop/src/main/db/schema'
 import { CullingHistoryRepository } from '../../../../desktop/src/main/db/repositories/culling-history.repo'
 
 const databases: BetterSqlite3.Database[] = []
@@ -7,15 +8,14 @@ const databases: BetterSqlite3.Database[] = []
 function fixture(): CullingHistoryRepository {
   const db = new BetterSqlite3(':memory:')
   databases.push(db)
-  db.exec(`
-    CREATE TABLE culling_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      operation_json TEXT NOT NULL,
-      undone INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
-    )
-  `)
+  // Use the production schema so a column the repository depends on cannot
+  // silently diverge from the inline fixture table.
+  db.exec(SCHEMA_SQL)
+  db.prepare(`
+    INSERT INTO sessions (id, name, status, analysis_status, writeback_status,
+      import_source, source_path, photo_count, failed_writeback_count, created_at, updated_at)
+    VALUES ('session', '', 'draft', 'idle', 'idle', 'manual', '', 0, 0, ?, ?)
+  `).run(new Date().toISOString(), new Date().toISOString())
   return new CullingHistoryRepository({
     prepare: (sql: string) => db.prepare(sql),
     transaction: <T>(operation: () => T) => db.transaction(operation),

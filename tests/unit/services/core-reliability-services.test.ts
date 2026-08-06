@@ -1,12 +1,8 @@
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   JobCancelledError,
   JobService,
 } from '../../../desktop/src/main/services/jobs/job.service'
-import { IndexService } from '../../../desktop/src/main/services/indexer/index.service'
 import type {
   AnalysisJobData,
   AnalysisJobStatus,
@@ -15,13 +11,9 @@ import type {
 } from '@gather/shared'
 
 const services: JobService[] = []
-const temporaryDirectories: string[] = []
 
 afterEach(async () => {
   await Promise.all(services.splice(0).map(service => service.stop()))
-  for (const directory of temporaryDirectories.splice(0)) {
-    fs.rmSync(directory, { recursive: true, force: true })
-  }
 })
 
 async function waitFor(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -254,72 +246,5 @@ describe('core reliability services', () => {
     })
     await waitFor(() => repo.get(job.id)?.status === 'failed')
     await expect(jobs.waitForResult(job.id)).rejects.toThrow('boom')
-  })
-
-  it('reindexes changed files and marks disappeared files without SQL variable limits', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-index-test-'))
-    temporaryDirectories.push(root)
-    const changedPath = path.join(root, 'changed.jpg')
-    const newPath = path.join(root, 'new.jpg')
-    const missingPath = path.join(root, 'missing.jpg')
-    fs.writeFileSync(changedPath, 'changed-content')
-    fs.writeFileSync(newPath, 'new-content')
-    const updateIndexedFile = vi.fn()
-    const updateChecksum = vi.fn()
-    const addPhotos = vi.fn((_sessionId: string, entries: unknown[]) => ({
-    added: entries.length,
-    skipped: 0,
-  }))
-    const markMissing = vi.fn()
-    const photos = [
-      {
-        id: 'changed',
-        filepath: changedPath,
-        asset_file_id: 'file-changed',
-        status: 'pending',
-      },
-      {
-        id: 'missing',
-        filepath: missingPath,
-        asset_file_id: 'file-missing',
-        status: 'pending',
-      },
-    ]
-    const indexer = new IndexService(
-      {
-        prepare: vi.fn(() => ({
-          all: () => [
-            { id: 'file-changed', file_size: 1, file_mtime_ms: 1, checksum: '' },
-            { id: 'file-missing', file_size: 1, file_mtime_ms: 1, checksum: '' },
-          ],
-          run: vi.fn(),
-        })),
-        transaction: vi.fn((operation: () => void) => operation),
-      } as never,
-      {
-        get: vi.fn(() => ({ id: 'session', source_path: root })),
-        updatePhotoCount: vi.fn(),
-      } as never,
-      {
-        getBySessionProjection: vi.fn(() => photos),
-        addPhotos,
-        updateIndexedFile,
-        updateChecksum,
-        markMissing,
-        countBySession: vi.fn(() => 2),
-      } as never,
-      { backfillSession: vi.fn(), relinkMovedFile: vi.fn(() => null) } as never,
-      { getDimensions: vi.fn(async () => ({ width: 100, height: 80 })) } as never,
-      { get: vi.fn((_key: string, fallback: string) => fallback) } as never,
-    )
-
-    const result = await indexer.scanSession('session')
-
-    expect(result.added).toBe(1)
-    expect(updateIndexedFile).toHaveBeenCalledWith('changed', 100, 80, true)
-    expect(markMissing).toHaveBeenCalledWith(['missing'])
-    expect(addPhotos).toHaveBeenCalledWith('session', [
-      expect.objectContaining({ filepath: newPath, width: 100, height: 80 }),
-    ], 'index')
   })
 })

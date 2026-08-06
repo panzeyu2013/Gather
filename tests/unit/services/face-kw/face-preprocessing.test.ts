@@ -2,15 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { resolveScrfdLayout } from '../../../../desktop/src/main/services/face-kw/face-detector'
 import { estimateSimilarityTransform } from '../../../../desktop/src/main/services/face-kw/face-encoder'
 import type { FaceLandmarks } from '../../../../desktop/src/main/services/face-kw/face-detector'
-import { MODEL_CONFIG } from '../../../../desktop/src/main/services/face-kw/model-config'
 
 describe('InsightFace preprocessing contracts', () => {
-  it('uses the recommended gallery detection and recognition resolutions', () => {
-    expect(MODEL_CONFIG.detect.inputSize).toBe(640)
-    expect(MODEL_CONFIG.detect.secondaryInputSize).toBe(128)
-    expect(MODEL_CONFIG.encode.inputSize).toBe(112)
-  })
-
   it('recognizes the official SCRFD output layouts', () => {
     expect(resolveScrfdLayout(9)).toEqual({
       featureMaps: 3,

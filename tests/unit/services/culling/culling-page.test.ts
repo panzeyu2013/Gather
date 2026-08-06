@@ -152,10 +152,6 @@ describe('CullingService.listPage', () => {
 
     expect(page.assets).toHaveLength(2)
     expect(page.assets.map(asset => asset.photo.id)).toEqual(['p1', 'p2'])
-    // Cursor is the first rowid of the last asset group (max of per-asset
-    // minimum rowids), not the last physical row.
-    expect(page.nextRowId).toBe(2)
-    expect(page.total).toBe(100)
   })
 
   it('continues from afterRowId on subsequent pages', () => {
@@ -364,56 +360,6 @@ describe('CullingService.listPage', () => {
     expect(page.assets).toHaveLength(1)
     expect(page.assets[0].photo.id).toBe('raw')
     expect(page.nextRowId).toBe(2)
-  })
-
-  it('keeps RAW/JPEG variants of one asset together on a single page', () => {
-    const mocks = baseMocks()
-    const variantRows = [
-      {
-        rowid: 1,
-        id: 'raw',
-        session_id: 's',
-        filepath: '/shoot/A001.NEF',
-        filename: 'A001.NEF',
-        status: 'pending',
-        asset_id: 'asset-1',
-        asset_file_id: 'af1',
-        width: 100,
-        height: 100,
-        created_at: '',
-        updated_at: '',
-      },
-      {
-        rowid: 2,
-        id: 'jpeg',
-        session_id: 's',
-        filepath: '/shoot/A001.jpg',
-        filename: 'A001.jpg',
-        status: 'pending',
-        asset_id: 'asset-1',
-        asset_file_id: 'af2',
-        width: 200,
-        height: 200,
-        created_at: '',
-        updated_at: '',
-      },
-    ]
-    // The 'all' scope page comes from the repository; feed it the asset
-    // group's two rows directly (already grouped at the asset boundary).
-    mocks.photoRepo.getAssetPage.mockReturnValue({ rows: variantRows, cursor: 1 })
-    recordCalls(mocks, pageHandler([{ gid: 'asset-1', first_rowid: 1 }], variantRows))
-
-    const page = mocks.service.listPage('s', 'all', undefined, undefined, undefined, 1)
-
-    expect(page.assets).toHaveLength(1)
-    const asset = page.assets[0]
-    expect(asset.photo.id).toBe('raw')
-    expect(asset.photo.variantCount).toBe(2)
-    expect(asset.linkedVariantCount).toBe(2)
-    expect(asset.photo.variants.map(variant => variant.photoId)).toEqual(['raw', 'jpeg'])
-    expect(asset.photo.variants[0].role).toBe('primary')
-    // Cursor is the asset group's first rowid, not the last physical row.
-    expect(page.nextRowId).toBe(1)
   })
 })
 

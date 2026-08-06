@@ -15,12 +15,7 @@ describe('CullingService batch decisions', () => {
       upsertState: vi.fn(),
     }
     const similarityRepo = {
-      getLatest: vi.fn(() => ({
-        id: 9,
-        groups_json: JSON.stringify({
-          groups: [{ images: [{ path: '/a.jpg' }, { path: '/b.jpg' }] }],
-        }),
-      })),
+      getLatest: vi.fn(() => ({ id: 9 })),
       getPhotoGroupMap: vi.fn(() => new Map([
         ['p1', '9:0'],
         ['p2', '9:0'],
@@ -229,6 +224,61 @@ describe('CullingService batch decisions', () => {
       'p4',
       '12:0',
       expect.objectContaining({ decision: 'reject' }),
+    )
+    // The whole keep/reject batch is applied inside a single transaction.
+    expect(db.transaction).toHaveBeenCalled()
+  })
+
+  it('falls back to parsing groups_json when the members table is empty', () => {
+    const photoRepo = {
+      getBySession: vi.fn(() => [
+        { id: 'p1', filepath: '/a.jpg' },
+        { id: 'p2', filepath: '/b.jpg' },
+      ]),
+    }
+    const cullingRepo = {
+      getDecision: vi.fn(() => undefined),
+      getByPhotoIds: vi.fn(() => []),
+      upsertState: vi.fn(),
+    }
+    const similarityRepo = {
+      getLatest: vi.fn(() => ({
+        id: 9,
+        groups_json: JSON.stringify({
+          groups: [{ images: [{ path: '/a.jpg' }, { path: '/b.jpg' }] }],
+        }),
+      })),
+      // Empty members table: the JS fallback must rebuild the group index
+      // from groups_json instead of leaving every photo ungrouped.
+      getPhotoGroupMap: vi.fn(() => new Map()),
+    }
+    const service = new CullingService(
+      photoRepo as never,
+      cullingRepo as never,
+      similarityRepo as never,
+      { getBatch: vi.fn(() => []) } as never,
+      { get: vi.fn(() => null), mergePatch: vi.fn() } as never,
+      { transaction: vi.fn((operation: () => unknown) => operation) } as never,
+      { schedule: vi.fn() } as never,
+      { queuePhotoValues: vi.fn() } as never,
+      { getNumber: vi.fn((_key: string, fallback: number) => fallback) } as never,
+    )
+
+    service.batchDecide('session', ['p1', 'p2'], 'keep')
+
+    expect(cullingRepo.upsertState).toHaveBeenNthCalledWith(
+      1,
+      'session',
+      'p1',
+      '9:0',
+      expect.objectContaining({ decision: 'keep' }),
+    )
+    expect(cullingRepo.upsertState).toHaveBeenNthCalledWith(
+      2,
+      'session',
+      'p2',
+      '9:0',
+      expect.objectContaining({ decision: 'keep' }),
     )
   })
 

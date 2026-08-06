@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import {
-  createEmptyXmpDoc,
   parseXmp,
   extractKeywords,
   extractXmpAttributes,
@@ -136,15 +135,17 @@ describe('xmp-utils', () => {
     expect(keywords).toEqual(['first'])
   })
 
-  it('scenario 7: empty file → backupXmpFile copies it, restoreXmpFile handles', () => {
+  it('scenario 7: empty file → backupXmpFile copies it, restoreXmpFile restores', () => {
     const xp = xmpPath(dir)
-    writeFile(xp, validMinimalXmp([]))
+    writeFile(xp, '')
 
     const backup = backupXmpFile(xp)
     expect(fs.existsSync(backup)).toBe(true)
+    expect(readFile(backup)).toBe('')
 
     restoreXmpFile(xp, backup)
     expect(fs.existsSync(backup)).toBe(false)
+    expect(readFile(xp)).toBe('')
   })
 
   it('scenario 8: Unicode emoji keywords survive round-trip', () => {

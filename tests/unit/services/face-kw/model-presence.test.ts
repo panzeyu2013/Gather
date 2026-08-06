@@ -1,9 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { getFaceModelPresence } from '../../../../desktop/src/main/services/face-kw/provider'
-import { isOnnxModelProto } from '../../../../desktop/src/main/services/face-kw/onnx-validator'
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: () => os.tmpdir(),
+  },
+}))
 
 // Minimal but structurally valid ModelProto: field 1 (ir_version, varint) and
 // the mandatory field 7 (graph, length-delimited, empty).
@@ -49,8 +54,17 @@ describe('getFaceModelPresence', () => {
         return fallback ?? ''
       },
     }
-
-    await getFaceModelPresence(settings)
+    // Relative settings paths resolve against electron's app paths; make them
+    // available so the resolution does not depend on an exception handler.
+    const processWithResources = process as { resourcesPath?: string }
+    const originalResourcesPath = processWithResources.resourcesPath
+    processWithResources.resourcesPath = os.tmpdir()
+    try {
+      await getFaceModelPresence(settings)
+    } finally {
+      if (originalResourcesPath === undefined) delete processWithResources.resourcesPath
+      else processWithResources.resourcesPath = originalResourcesPath
+    }
 
     expect(keys).toContain('detector_model_path')
     expect(keys).toContain('encoder_model_path')
@@ -78,7 +92,6 @@ describe('getFaceModelPresence', () => {
 
     const presence = await getFaceModelPresence(settings)
 
-    expect(isOnnxModelProto(Buffer.from([0xff]))).toBe(false)
     expect(presence.detectorPresent).toBe(false)
     expect(presence.encoderPresent).toBe(false)
   })

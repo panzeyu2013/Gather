@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SCHEMA_SQL } from '../../../desktop/src/main/db/schema'
 import { getXmpSidecarPath } from '../../../desktop/src/main/services/xmp/xmp-sidecar-writer'
 import { extractKeywords, parseXmp, writeXmpAttributes } from '../../../desktop/src/main/services/xmp/xmp-utils'
-import { createReliabilityFixture, syntheticIndexRows } from '../../fixtures/reliability-fixtures'
+import { createReliabilityFixture } from '../../fixtures/reliability-fixtures'
 
 const fixtureRoots: string[] = []
 
@@ -14,7 +15,10 @@ afterEach(async () => {
 
 describe('P0-0 reliability fixtures', () => {
   it('matches the current schema table snapshot', async () => {
-    const snapshotPath = path.resolve(process.cwd(), '../docs/fixtures/schema-v27.snapshot.json')
+    // Resolve relative to this test file so the outcome never depends on the
+    // working directory the runner was launched from.
+    const testDir = path.dirname(fileURLToPath(import.meta.url))
+    const snapshotPath = path.resolve(testDir, '../../../docs/fixtures/schema-v27.snapshot.json')
     const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8')) as { schemaVersion: number; tables: string[] }
     const tables = [...SCHEMA_SQL.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/g)]
       .map((match) => match[1])
@@ -57,17 +61,5 @@ describe('P0-0 reliability fixtures', () => {
     expect(content).toContain('KeepMe')
     expect(content).toContain('external-value')
     expect(extractKeywords(parsed!)).toEqual(['existing', 'person:alice'])
-  })
-
-  it('generates deterministic synthetic index sizes for baseline runs', () => {
-    expect(syntheticIndexRows(500)).toHaveLength(500)
-    expect(syntheticIndexRows(5_000)).toHaveLength(5_000)
-    expect(syntheticIndexRows(10_000)).toHaveLength(10_000)
-    expect(syntheticIndexRows(3)[0]).toEqual({
-      id: 'synthetic-photo-1',
-      filepath: '/synthetic/Gather/1.jpg',
-      size: 1024,
-      mtimeMs: 1_700_000_000_000,
-    })
   })
 })

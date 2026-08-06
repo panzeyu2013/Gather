@@ -43,15 +43,3 @@ export async function computeBatchDHash(imageBuffers: Buffer[], chunkSize = 8): 
 
   return results
 }
-
-export function hammingDistance(hash1: string, hash2: string): number {
-  const a = BigInt(`0x${hash1}`)
-  const b = BigInt(`0x${hash2}`)
-  let xor = a ^ b
-  let count = 0
-  while (xor > 0n) {
-    count++
-    xor &= xor - 1n
-  }
-  return count
-}

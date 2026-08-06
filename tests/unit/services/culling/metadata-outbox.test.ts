@@ -93,6 +93,7 @@ class FakeOutbox {
       return
     }
     const current = this.rows.get(path)!
+    if (current.status !== 'conflict') return
     current.patch_json = JSON.stringify(patch)
     current.dirty_fields = JSON.stringify(dirtyFields)
     current.base_fingerprint = baselineFingerprint

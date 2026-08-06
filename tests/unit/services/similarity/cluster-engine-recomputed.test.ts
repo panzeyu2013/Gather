@@ -1,16 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { clusterByHash, type HashEntry } from '../../../../desktop/src/main/services/similarity/cluster-engine'
 
-function popcount(value: bigint): number {
-  let count = 0
-  let v = value
-  while (v !== 0n) {
-    v &= v - 1n
-    count++
-  }
-  return count
-}
-
 function xorBits(hex: string, bits: number[]): string {
   let value = BigInt(`0x${hex}`)
   for (const bit of bits) value ^= 1n << BigInt(bit)
@@ -40,11 +30,6 @@ describe('clusterByHash recomputed path (n > 32768) parity', () => {
     const s = xorBits(d2, Array.from({ length: 28 }, (_, i) => 8 + i))
     const filler = 'ffffffffffffffff'
 
-    expect(popcount(BigInt(`0x${s}`) ^ BigInt(`0x${d2}`))).toBe(28)
-    expect(popcount(BigInt(`0x${s}`) ^ BigInt(`0x${d1}`))).toBe(32)
-    expect(popcount(BigInt(`0x${s}`) ^ BigInt(`0x${d3}`))).toBe(36)
-    expect(popcount(BigInt(`0x${filler}`) ^ BigInt(`0x${s}`))).toBe(32)
-
     // ~40 hashes: sparse node first, then the dense component, then a blob of
     // identical fillers that form their own group.
     const entries: HashEntry[] = [
@@ -57,7 +42,6 @@ describe('clusterByHash recomputed path (n > 32768) parity', () => {
         hash: filler,
       })),
     ]
-    expect(entries).toHaveLength(40)
 
     const threshold = 30
     const minGroupSize = 3

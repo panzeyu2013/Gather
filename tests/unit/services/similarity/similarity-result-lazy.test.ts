@@ -135,7 +135,7 @@ describe('SimilarityService.getResult lazy group assembly', () => {
     const { service, resultRepo } = buildService(db)
 
     // Members are written sequentially: group 0 members first, then group 1.
-    const resultId = resultRepo.replace(
+    resultRepo.replace(
       'session',
       // Garbage JSON proves the members path never parses groups_json.
       'NOT VALID JSON',
@@ -154,7 +154,6 @@ describe('SimilarityService.getResult lazy group assembly', () => {
         { photoId: 's', groupIndex: 1 },
       ],
     )
-    expect(resultId).toBeGreaterThan(0)
 
     const result = service.getResult('session')
 
@@ -195,7 +194,7 @@ describe('SimilarityService.getResult lazy group assembly', () => {
     addPhoto(db, 'p1', 'session', '/shoot/p1.jpg', null)
     const { service } = buildService(db)
 
-    const legacyId = Number(db.prepare(`
+    db.prepare(`
       INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
       VALUES ('session', ?, ?, 10, 2, ?)
     `).run(
@@ -210,7 +209,7 @@ describe('SimilarityService.getResult lazy group assembly', () => {
       }),
       JSON.stringify({ totalGroups: 1, totalUngrouped: 1, threshold: 10, minGroupSize: 2, groupingMode: 'sequential' }),
       '2025-01-01T00:00:00.000Z',
-    ).lastInsertRowid)
+    )
 
     const result = service.getResult('session')
 
@@ -223,7 +222,6 @@ describe('SimilarityService.getResult lazy group assembly', () => {
     expect(result!.ungrouped).toEqual([{ path: '/shoot/alone.jpg' }])
     expect(result!.stats.groupingMode).toBe('sequential')
     expect(result!.stats.precomputed).toBe(false)
-    expect(legacyId).toBeGreaterThan(0)
   })
 
   it('resolves threshold tiers without regressing the default row', () => {

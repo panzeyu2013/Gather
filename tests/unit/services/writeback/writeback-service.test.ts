@@ -550,4 +550,65 @@ describe('WritebackService sidecar workflow', () => {
     expect(await writer.readKeywords(firstPhotoPath)).toEqual(['first-original'])
     expect(await writer.readKeywords(secondPhotoPath)).toEqual(['second-original'])
   })
+
+  it('blocks a new writeback while another module has written outbox work', async () => {
+    const photoPath = path.join(dir, 'IMG_GATE.NEF')
+    const repo = makeRepo()
+    const writer = new XmpSidecarWriter()
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [{ id: 'photo-gate', filepath: photoPath }])
+    const outboxRepo = {
+      hasActiveOtherModule: vi.fn(() => true),
+      get: vi.fn(() => null),
+    }
+    const service = new WritebackService(
+      repo as unknown as WritebackRepository,
+      router as unknown as MetadataWriterRouter,
+      {
+        getBySession: () => [{
+          id: 'photo-gate',
+          session_id: 'session-gate',
+          filepath: photoPath,
+          filename: 'IMG_GATE.NEF',
+        }],
+      } as unknown as PhotoRepository,
+      {
+        updateWritebackStatus: vi.fn(),
+        updateFailedWritebackCount: vi.fn(),
+      } as unknown as SessionRepository,
+      {
+        updateKeywords: vi.fn(),
+        updateRating: vi.fn(),
+        updateLabel: vi.fn(),
+      } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
+      outboxRepo as never,
+      {
+        markIntroduced: vi.fn(),
+        deactivate: vi.fn(),
+        getActiveIntroduced: vi.fn(() => []),
+      } as never,
+    )
+
+    await expect(service.preview(
+      'session-gate',
+      'similarity',
+      {},
+      new Set(['photo-gate']),
+      new Map(),
+    )).rejects.toThrow('请先完成其他模块')
+    expect(outboxRepo.hasActiveOtherModule).toHaveBeenCalledWith('session-gate', 'similarity')
+
+    // The outbox gate releases once the other module's work is gone.
+    outboxRepo.hasActiveOtherModule.mockReturnValue(false)
+    const preview = await service.preview(
+      'session-gate',
+      'similarity',
+      {},
+      new Set(['photo-gate']),
+      new Map([['photo-gate', ['ok']]]),
+    )
+    expect(preview.items).toHaveLength(1)
+  })
 })

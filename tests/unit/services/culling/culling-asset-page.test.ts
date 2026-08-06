@@ -20,8 +20,27 @@ interface Fixture {
 function fixture(): Fixture {
   const db = new BetterSqlite3(':memory:')
   databases.push(db)
-  db.exec('PRAGMA foreign_keys = OFF')
+  // Foreign keys stay ON: the fixture seeds the referenced sessions/assets/
+  // asset_files rows so a service regression that produces FK-invalid writes
+  // fails the tests instead of being masked.
   db.exec(SCHEMA_SQL)
+  db.prepare(`
+    INSERT INTO sessions (id, name, status, analysis_status, writeback_status,
+      import_source, source_path, photo_count, failed_writeback_count, created_at, updated_at)
+    VALUES ('s', '', 'draft', 'idle', 'idle', 'manual', '', 0, 0, ?, ?)
+  `).run(NOW, NOW)
+  db.prepare(`
+    INSERT INTO assets (id, status, created_at, updated_at)
+    VALUES ('asset-1', 'active', ?, ?)
+  `).run(NOW, NOW)
+  const insertFile = db.prepare(`
+    INSERT INTO asset_files (id, volume_id, normalized_path, filename, extension,
+      media_type, file_size, file_mtime_ms, online_status, created_at, updated_at)
+    VALUES (?, 'vol-1', ?, ?, ?, 'raw', 1024, 1000, 'online', ?, ?)
+  `)
+  for (const fileId of ['af-raw', 'af-jpeg', 'af-bad', 'af-mixed', 'af-good']) {
+    insertFile.run(fileId, `/shoot/${fileId}.nef`, `${fileId}.nef`, '.nef', NOW, NOW)
+  }
   const database = {
     prepare: (sql: string) => db.prepare(sql),
     transaction: (operation: (...args: never[]) => unknown) => db.transaction(operation),

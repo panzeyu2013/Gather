@@ -152,25 +152,26 @@ describe('clusterByHash semantic parity with the reference algorithm', () => {
 })
 
 describe('clusterByHash performance (20k entries)', () => {
-  it('clusters 20k random hashes well under the 2s budget', () => {
+  // The budget assertion is reachable: the per-test timeout (15s) is above the
+  // 10s bound, so a degraded engine fails the assertion instead of a framework
+  // timeout, and a healthy run stays well below both.
+  it('clusters 20k random hashes under the 10s budget', { timeout: 15_000 }, () => {
     const entries = makeEntries(20_000, 42)
     const start = performance.now()
     const result = clusterByHash(entries, 16, 2, 'global')
     const elapsed = performance.now() - start
-    // eslint-disable-next-line no-console
-    console.log(`[perf] 20k entries, threshold=16: ${elapsed.toFixed(0)}ms, groups=${result.groups.length}`)
     // CI machines are slower than the M-series dev machine; keep a generous
     // bound while still catching the previous O(n^2) degradation.
     expect(elapsed).toBeLessThan(10_000)
+    expect(result.groups.length).toBeGreaterThan(0)
   })
 
-  it('clusters 20k entries at a dense threshold (30) under budget', () => {
+  it('clusters 20k entries at a dense threshold (30) under the 10s budget', { timeout: 15_000 }, () => {
     const entries = makeEntries(20_000, 43)
     const start = performance.now()
     const result = clusterByHash(entries, 30, 2, 'global')
     const elapsed = performance.now() - start
-    // eslint-disable-next-line no-console
-    console.log(`[perf] 20k entries, threshold=30: ${elapsed.toFixed(0)}ms, groups=${result.groups.length}`)
     expect(elapsed).toBeLessThan(10_000)
+    expect(result.groups.length).toBeGreaterThan(0)
   })
 })

@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test'
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
@@ -9,7 +9,21 @@ let app: ElectronApplication
 let userDataDir: string
 let photoPath: string
 let sessionId: string
-const rendererErrors: string[] = []
+let rendererErrors: string[] = []
+
+test.setTimeout(120_000)
+
+function attachErrorListeners(window: Page): void {
+  window.on('pageerror', error => rendererErrors.push(error.message))
+  window.on('console', message => {
+    if (message.type() === 'error') rendererErrors.push(message.text())
+  })
+}
+
+test.beforeEach(() => {
+  // Isolate failures: an error from one test must not leak into the next.
+  rendererErrors = []
+})
 
 test.beforeAll(async () => {
   userDataDir = mkdtempSync(path.join(tmpdir(), 'gather-e2e-'))
@@ -33,11 +47,7 @@ test.beforeAll(async () => {
       NODE_ENV: 'production',
     },
   })
-  const window = await app.firstWindow()
-  window.on('pageerror', error => rendererErrors.push(error.message))
-  window.on('console', message => {
-    if (message.type() === 'error') rendererErrors.push(message.text())
-  })
+  attachErrorListeners(await app.firstWindow())
 })
 
 test('imports a photo and renders it through the binary image protocol', async () => {
@@ -127,7 +137,7 @@ test('accepts Capture One plugin imports from outside the dashboard', async () =
     )
   }, [photoPath])
 
-  await expect.poll(() => window.evaluate(() => window.location.hash))
+  await expect.poll(() => window.evaluate(() => window.location.hash), { timeout: 15_000 })
     .toMatch(/^#\/sessions\/[^/]+\/gallery$/)
   await expect(window.locator('img').first()).toBeVisible()
 })
@@ -296,14 +306,12 @@ test('rates and labels without a similarity group, then writes a Capture One XMP
   const reloadMetadata = window.getByRole('button', { name: '在 Capture One 中加载元数据' })
   await expect(reloadMetadata).toBeVisible()
   await expect(reloadMetadata).toBeEnabled()
-  expect((await window.locator('nav a').allTextContents()).slice(-6)).toEqual([
-    '浏览',
-    '相似度',
-    '人脸',
-    '重复',
-    '挑片',
-    '导出',
-  ])
+  // Assert the expected session links exist instead of slicing the last N nav
+  // entries, so adding new links elsewhere cannot break this for the wrong reason.
+  const navLinks = (await window.locator('nav a').allTextContents()).map(text => text.trim())
+  for (const expected of ['浏览', '相似度', '人脸', '重复', '挑片', '导出']) {
+    expect(navLinks).toContain(expected)
+  }
   if (process.env.GATHER_E2E_SCREENSHOT_PATH) {
     await window.screenshot({
       path: process.env.GATHER_E2E_SCREENSHOT_PATH,
@@ -373,6 +381,8 @@ test('restores culling state and XMP after an application restart', async () => 
       NODE_ENV: 'production',
     },
   })
+  // The restarted instance is a new window; capture its errors too.
+  attachErrorListeners(await app.firstWindow())
   const window = await app.firstWindow()
   const restored = await window.evaluate(async (id) => {
     const response = await window.gather.sendCommand('culling.list', {
@@ -393,15 +403,10 @@ test('restores culling state and XMP after an application restart', async () => 
     colorLabel: 'Green',
     pickState: 'picked',
   })
-  const xmpPath = photoPath.replace(/\.[^.]+$/, '.xmp')
-  expect(readFileSync(xmpPath, 'utf8')).toContain('>5</xmp:Rating>')
-  expect(readFileSync(xmpPath, 'utf8')).toContain('>Green</xmp:Label>')
-})
-
-test.afterAll(async () => {
-  await app?.close()
-  await exiftool.end()
-  rmSync(userDataDir, { recursive: true, force: true })
+  // The sidecar written before the restart must have survived it.
+  const xmp = readFileSync(photoPath.replace(/\.[^.]+$/, '.xmp'), 'utf8')
+  expect(xmp).toContain('>5</xmp:Rating>')
+  expect(xmp).toContain('>Green</xmp:Label>')
 })
 
 test('launches the production renderer and exposes the core workspace entry', async () => {
@@ -445,4 +450,10 @@ test('keeps navigation and culling controls usable in a compact window', async (
     })
   }
   expect(rendererErrors).toEqual([])
+})
+
+test.afterAll(async () => {
+  await app?.close()
+  await exiftool.end()
+  rmSync(userDataDir, { recursive: true, force: true })
 })

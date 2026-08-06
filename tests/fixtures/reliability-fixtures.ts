@@ -58,13 +58,3 @@ export async function createReliabilityFixture(prefix = 'gather-reliability-'): 
   }
 }
 
-export function syntheticIndexRows(count: number): Array<{ id: string; filepath: string; size: number; mtimeMs: number }> {
-  if (!Number.isInteger(count) || count < 0) throw new Error('count must be a non-negative integer')
-  return Array.from({ length: count }, (_, index) => ({
-    id: `synthetic-photo-${index + 1}`,
-    filepath: `/synthetic/Gather/${index + 1}.jpg`,
-    size: 1024 + index,
-    mtimeMs: 1_700_000_000_000 + index,
-  }))
-}
-

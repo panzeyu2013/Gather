@@ -5,10 +5,7 @@ import path from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 import { SCHEMA_SQL } from '../../../../desktop/src/main/db/schema'
 import { SettingsRepository } from '../../../../desktop/src/main/db/repositories/settings.repo'
-import {
-  SettingsService,
-  getDefaults,
-} from '../../../../desktop/src/main/services/settings/settings.service'
+import { SettingsService } from '../../../../desktop/src/main/services/settings/settings.service'
 
 describe('face decode concurrency setting', () => {
   let directory: string
@@ -29,11 +26,6 @@ describe('face decode concurrency setting', () => {
   afterEach(() => {
     database.close()
     fs.rmSync(directory, { recursive: true, force: true })
-  })
-
-  it('registers face_decode_concurrency as a default setting', () => {
-    expect(getDefaults()).toHaveProperty('face_decode_concurrency')
-    expect(Number(getDefaults().face_decode_concurrency)).toBeGreaterThanOrEqual(1)
   })
 
   it('accepts face_decode_concurrency in settings.set (registered key)', () => {

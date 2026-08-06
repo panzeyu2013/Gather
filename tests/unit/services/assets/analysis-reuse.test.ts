@@ -2,7 +2,6 @@ import BetterSqlite3 from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SCHEMA_SQL, INDEX_SQL } from '../../../../desktop/src/main/db/schema'
 import { FaceRepository } from '../../../../desktop/src/main/db/repositories/face.repo'
-import { reuseSimilarityHashes } from '../../../../desktop/src/main/services/similarity/similarity.service'
 
 const databases: BetterSqlite3.Database[] = []
 
@@ -106,27 +105,5 @@ describe('cross-session reusable analysis', () => {
       1234,
       'face-v1',
     )).toEqual({ reused: true, faceCount: 0 })
-  })
-
-  it('copies a valid similarity hash by AssetFile without decoding again', () => {
-    const { sqlite, db } = fixture()
-    sqlite.prepare(`
-      INSERT INTO similarity_hashes
-        (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
-      VALUES ('source-session', 'source-photo', '0123456789abcdef', 1024, 1234)
-    `).run()
-    const hashes = new Map<string, string>()
-    expect(reuseSimilarityHashes(
-      db as never,
-      'target-session',
-      [{ id: 'target-photo' }],
-      new Map([['target-photo', { size: 1024, mtimeMs: 1234 }]]),
-      hashes,
-    )).toBe(1)
-    expect(hashes.get('target-photo')).toBe('0123456789abcdef')
-    expect(sqlite.prepare(`
-      SELECT hash_hex FROM similarity_hashes
-      WHERE session_id = 'target-session' AND photo_id = 'target-photo'
-    `).get()).toEqual({ hash_hex: '0123456789abcdef' })
   })
 })

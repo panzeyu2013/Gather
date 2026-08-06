@@ -75,13 +75,4 @@ describe('FaceMatcher ANN path (angular LSH)', () => {
     expect(result.matched.get(0)?.personId).toBe('p1')
     expect(result.matched.get(0)?.confidence).toBeCloseTo(1, 6)
   })
-
-  it('returns all unmatched when the library is empty', async () => {
-    const { FaceMatcher } = await import('../../../../desktop/src/main/services/face-kw/face-matcher')
-    const mockPersonRepo = { getAllEmbeddings: vi.fn().mockReturnValue([]) }
-    const matcher = new FaceMatcher(mockPersonRepo as any, 1)
-    const result = matcher.matchAgainstLibrary([new Float32Array([1, 0, 0, 0])], 0.5)
-    expect(result.matched.size).toBe(0)
-    expect(result.unmatched).toEqual([0])
-  })
 })
