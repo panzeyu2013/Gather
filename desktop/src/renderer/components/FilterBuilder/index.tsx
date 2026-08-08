@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react'
 import type { FilterGroup, FilterRule } from '@gather/shared'
 import { filterApi } from '../../api/filter'
+import { useTranslation } from '../../locales'
 import { FILTER_FIELDS, getFilterOperators, parseFilterValue } from '../FilterBar/filter-constants'
 import styles from './FilterBuilder.module.css'
 
@@ -11,6 +12,7 @@ interface FilterBuilderProps {
 }
 
 export default function FilterBuilder({ sessionId, initialCriteria, onChange }: FilterBuilderProps) {
+  const { t } = useTranslation()
   const [criteria, setCriteria] = useState<FilterGroup>(
     initialCriteria ?? { logic: 'and', conditions: [] },
   )
@@ -112,11 +114,16 @@ export default function FilterBuilder({ sessionId, initialCriteria, onChange }: 
   return (
     <div className={styles.container}>
       <div className={styles.header}>
-        <span className={styles.logicBadge} onClick={toggleLogic}>
+        <button
+          type="button"
+          className={styles.logicBadge}
+          onClick={toggleLogic}
+          aria-pressed={criteria.logic === 'or'}
+        >
           {criteria.logic.toUpperCase()}
-        </span>
+        </button>
         <span className={styles.conditionsLabel}>
-          {criteria.conditions.length} condition{criteria.conditions.length !== 1 ? 's' : ''}
+          {t('filter.conditionCount', { count: criteria.conditions.length })}
         </span>
       </div>
 
@@ -140,10 +147,10 @@ export default function FilterBuilder({ sessionId, initialCriteria, onChange }: 
       <div className={styles.footer}>
         <div className={styles.addBtns}>
           <button className={styles.btn} onClick={addCondition}>
-            + Add Condition
+            {t('filter.addCondition')}
           </button>
           <button className={styles.btnOutline} onClick={addGroup}>
-            + Add Group
+            {t('filter.addGroup')}
           </button>
         </div>
         <div className={styles.previewRow}>
@@ -152,10 +159,10 @@ export default function FilterBuilder({ sessionId, initialCriteria, onChange }: 
             onClick={handlePreview}
             disabled={previewBusy || criteria.conditions.length === 0}
           >
-            {previewBusy ? 'Counting...' : 'Preview Count'}
+            {previewBusy ? t('filter.counting') : t('filter.previewCount')}
           </button>
           {previewCount !== null && (
-            <span className={styles.previewCount}>{previewCount} matching</span>
+            <span className={styles.previewCount}>{t('filter.matching', { count: previewCount })}</span>
           )}
         </div>
       </div>
@@ -176,11 +183,12 @@ function ConditionRow({
   onGroupChange: (child: FilterGroup) => void
   onRemove: () => void
 }) {
+  const { t } = useTranslation()
   if (!('field' in condition)) {
     return (
       <div className={styles.groupWrapper}>
         <FilterBuilder sessionId={sessionId} initialCriteria={condition} onChange={onGroupChange} />
-        <button className={styles.removeBtn} onClick={onRemove} aria-label="Remove group">
+        <button className={styles.removeBtn} onClick={onRemove} aria-label={t('dialog.removeGroup')}>
           &times;
         </button>
       </div>
@@ -199,7 +207,7 @@ function ConditionRow({
       >
         {FILTER_FIELDS.map((f) => (
           <option key={f.value} value={f.value}>
-            {f.label}
+            {t(f.labelKey)}
           </option>
         ))}
       </select>
@@ -210,7 +218,7 @@ function ConditionRow({
       >
         {operators.map((op) => (
           <option key={op.value} value={op.value}>
-            {op.label}
+            {t(op.labelKey)}
           </option>
         ))}
       </select>
@@ -220,10 +228,10 @@ function ConditionRow({
           type="text"
           value={Array.isArray(rule.value) ? (rule.value as string[]).join(', ') : String(rule.value ?? '')}
           onChange={(e) => onChange({ value: parseFilterValue(rule.field, rule.operator, e.target.value) })}
-          placeholder="value"
+          placeholder={t('filter.valuePlaceholder')}
         />
       )}
-      <button className={styles.removeBtn} onClick={onRemove} aria-label="Remove condition">
+      <button className={styles.removeBtn} onClick={onRemove} aria-label={t('dialog.removeCondition')}>
         &times;
       </button>
     </div>

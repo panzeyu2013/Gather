@@ -2,9 +2,11 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { usePersons, useCreatePerson } from '../../hooks/usePersons'
 import Dialog from '../../components/Dialog/Dialog'
+import { useTranslation } from '../../locales'
 import styles from './Persons.module.css'
 
 export default function PersonsPage() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const { data: persons = [], isLoading: loading } = usePersons()
   const createPerson = useCreatePerson()
@@ -28,10 +30,10 @@ export default function PersonsPage() {
     return (
       <div className={styles.page}>
         <div className={styles.header}>
-          <h1 className={styles.title}>人脸库</h1>
+          <h1 className={styles.title}>{t('persons.title')}</h1>
         </div>
         <div className={styles.loading}>
-          <p>加载中...</p>
+          <p>{t('persons.loading')}</p>
         </div>
       </div>
     )
@@ -40,17 +42,17 @@ export default function PersonsPage() {
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className={styles.title}>人脸库</h1>
+        <h1 className={styles.title}>{t('persons.title')}</h1>
         <div className={styles.actions}>
           <input
             className={styles.searchInput}
             type="text"
-            placeholder="搜索姓名..."
+            placeholder={t('persons.searchPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           <button className={styles.newBtn} onClick={() => setShowNewDialog(true)}>
-            + 新建
+            {t('persons.new')}
           </button>
         </div>
       </div>
@@ -59,63 +61,64 @@ export default function PersonsPage() {
         <div className={styles.empty}>
           <div className={styles.emptyIcon}>&#128100;</div>
           <p className={styles.emptyText}>
-            {search.trim() ? '未找到匹配的人物' : '暂无人物'}
+            {search.trim() ? t('persons.noMatch') : t('persons.emptyTitle')}
           </p>
           <p className={styles.emptyHint}>
-            {search.trim() ? '尝试其他关键词' : '新建人物以开始建立人脸库'}
+            {search.trim() ? t('persons.noMatchHint') : t('persons.emptyHint')}
           </p>
         </div>
       ) : (
         <div className={styles.grid}>
           {filtered.map((person) => (
-            <div
+            <button
               key={person.id}
+              type="button"
               className={styles.card}
               onClick={() => navigate(`/persons/${person.id}`)}
             >
-              <div className={styles.thumbnail}>
+              <span className={styles.thumbnail}>
                 {person.thumbnailBase64 ? (
                   <img src={`data:image/jpeg;base64,${person.thumbnailBase64}`} alt={person.name} />
                 ) : (
-                  <div className={styles.thumbnailPlaceholder}>
+                  <span className={styles.thumbnailPlaceholder}>
                     {person.name.charAt(0)}
-                  </div>
+                  </span>
                 )}
-              </div>
-              <div className={styles.cardBody}>
-                <p className={styles.cardName}>{person.name}</p>
-                <p className={styles.cardMeta}>
-                  {person.photoCount} 张照片 · {person.sessionCount} 个工作区
-                </p>
-              </div>
-            </div>
+              </span>
+              <span className={styles.cardBody}>
+                <span className={styles.cardName}>{person.name}</span>
+                <span className={styles.cardMeta}>
+                  {t('persons.photoCount', { photos: person.photoCount, sessions: person.sessionCount })}
+                </span>
+              </span>
+            </button>
           ))}
         </div>
       )}
 
-      <Dialog open={showNewDialog} onClose={() => setShowNewDialog(false)} title="新建人物">
+      <Dialog open={showNewDialog} onClose={() => setShowNewDialog(false)} title={t('persons.newDialogTitle')}>
         <div className={styles.formGroup}>
-          <label className={styles.label}>姓名</label>
+          <label className={styles.label}>{t('persons.name')}</label>
           <input
             className={styles.input}
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="输入人物姓名"
+            placeholder={t('persons.namePlaceholder')}
             autoFocus
             onKeyDown={(e) => { if (e.key === 'Enter') handleCreate() }}
           />
         </div>
         <div className={styles.formActions}>
           <button className={styles.cancelBtn} onClick={() => setShowNewDialog(false)}>
-            取消
+            {t('common.cancel')}
           </button>
           <button
             className={styles.submitBtn}
             onClick={handleCreate}
             disabled={!newName.trim()}
           >
-            创建
+            {t('persons.create')}
           </button>
         </div>
       </Dialog>

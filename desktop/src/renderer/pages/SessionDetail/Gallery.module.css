@@ -43,6 +43,11 @@
   outline: none;
 }
 
+.filterSelect:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, white);
+  outline-offset: 2px;
+}
+
 .selectionBar {
   display: flex;
   align-items: center;
@@ -130,6 +135,8 @@
   flex: none;
   box-sizing: border-box;
   border-radius: 5px;
+  border: none;
+  padding: 0;
   overflow: hidden;
   background: var(--color-bg-secondary, #ede6dc);
   cursor: pointer;

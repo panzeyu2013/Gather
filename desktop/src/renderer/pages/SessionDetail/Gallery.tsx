@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery } from '@tanstack/react-query'
 import { sessionApi } from '../../api/session'
 import { imageApi } from '../../api/image'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -8,23 +8,25 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import Lightbox from '../../components/Lightbox/Lightbox'
 import { layoutJustifiedRows } from './justified-layout'
 import type { PhotoData } from '@gather/shared'
+import { useTranslation, type TranslationKey } from '../../locales'
 import styles from './Gallery.module.css'
 
 const PAGE_SIZE = 200
 
-const FILTER_OPTIONS = [
-  { value: 'all', label: '全部' },
-  { value: 'hasFace', label: '有人脸' },
-  { value: 'noFace', label: '无人脸' },
+const FILTER_OPTIONS: Array<{ value: string; labelKey: TranslationKey }> = [
+  { value: 'all', labelKey: 'gallery.filterAll' },
+  { value: 'hasFace', labelKey: 'gallery.filterHasFace' },
+  { value: 'noFace', labelKey: 'gallery.filterNoFace' },
 ]
 
-const DENSITY_OPTIONS = [
-  { value: 160, label: '小图' },
-  { value: 220, label: '中图' },
-  { value: 300, label: '大图' },
+const DENSITY_OPTIONS: Array<{ value: number; labelKey: TranslationKey }> = [
+  { value: 160, labelKey: 'gallery.densitySmall' },
+  { value: 220, labelKey: 'gallery.densityMedium' },
+  { value: 300, labelKey: 'gallery.densityLarge' },
 ]
 
 export default function Gallery() {
+  const { t } = useTranslation()
   const { sessionId } = useParams<{ sessionId: string }>()
   const setSession = useSessionStore((s) => s.setSession)
 
@@ -185,7 +187,11 @@ export default function Gallery() {
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
       return next
     })
   }
@@ -196,8 +202,8 @@ export default function Gallery() {
 
   const closeLightbox = () => setLightboxIndex(null)
 
-  if (isLoading) return <div className={styles.container}><p>加载照片中...</p></div>
-  if (!loadedPhotos?.length) return <div className={styles.container}><div className={styles.empty}>暂无照片</div></div>
+  if (isLoading) return <div className={styles.container}><p>{t('gallery.loading')}</p></div>
+  if (!loadedPhotos?.length) return <div className={styles.container}><div className={styles.empty}>{t('gallery.empty')}</div></div>
 
   return (
     <div className={styles.container}>
@@ -206,19 +212,19 @@ export default function Gallery() {
           <input
             type="text"
             className={styles.searchInput}
-            placeholder="搜索文件名..."
+            placeholder={t('gallery.searchPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
         <select className={styles.filterSelect} value={filter} onChange={(e) => setFilter(e.target.value)}>
           {FILTER_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
+            <option key={opt.value} value={opt.value}>{t(opt.labelKey)}</option>
           ))}
         </select>
         <select className={styles.filterSelect} value={density} onChange={(e) => setDensity(Number(e.target.value))}>
           {DENSITY_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
+            <option key={opt.value} value={opt.value}>{t(opt.labelKey)}</option>
           ))}
         </select>
         <button
@@ -226,13 +232,13 @@ export default function Gallery() {
           aria-pressed={expandVariants}
           onClick={() => setExpandVariants(value => !value)}
         >
-          {expandVariants ? '折叠 RAW/JPEG' : '展开所有变体'}
+          {expandVariants ? t('gallery.collapseVariants') : t('gallery.expandVariants')}
         </button>
       </div>
       {selected.size > 0 && (
         <div className={styles.selectionBar}>
-          选中 {selected.size} 张照片
-          <button className={styles.clearBtn} onClick={() => setSelected(new Set())}>取消选择</button>
+          {t('gallery.selectedCount', { count: selected.size })}
+          <button className={styles.clearBtn} onClick={() => setSelected(new Set())}>{t('gallery.clearSelection')}</button>
         </div>
       )}
       <div
@@ -250,8 +256,9 @@ export default function Gallery() {
               {row.items.map((layoutItem) => {
                 const photo = filtered[layoutItem.index]
                 return (
-                  <div
+                  <button
                     key={photo.id}
+                    type="button"
                     className={`${styles.cell} ${selected.has(photo.id) ? styles.cellSelected : ''}`}
                     style={{ width: layoutItem.width, height: row.height }}
                     onClick={(e) => {
@@ -267,14 +274,14 @@ export default function Gallery() {
                       isSelected={selected.has(photo.id)}
                       thumbSize={thumbSize}
                     />
-                  </div>
+                  </button>
                 )
               })}
             </div>
           ))}
         </div>
         <div ref={sentinelRef} className={styles.loadMore}>
-          {isFetchingNextPage ? <span className={styles.loadMoreText}>加载更多...</span> : null}
+          {isFetchingNextPage ? <span className={styles.loadMoreText}>{t('gallery.loadMore')}</span> : null}
         </div>
       </div>
       {lightboxIndex !== null && filtered.length > 0 && (
@@ -293,10 +300,11 @@ function GalleryThumbnail({ photo, isSelected, thumbSize }: {
   isSelected: boolean
   thumbSize: number
 }) {
+  const { t } = useTranslation()
   const [src, setSrc] = useState<string | null>(null)
   const [hasError, setHasError] = useState(false)
   const [shouldLoad, setShouldLoad] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLSpanElement>(null)
 
   useEffect(() => {
     const element = containerRef.current
@@ -326,7 +334,7 @@ function GalleryThumbnail({ photo, isSelected, thumbSize }: {
   }, [photo.filepath, shouldLoad, thumbSize])
 
   return (
-    <div ref={containerRef} className={styles.thumb}>
+    <span ref={containerRef} className={styles.thumb}>
       {src ? (
         <img
           src={src}
@@ -339,18 +347,18 @@ function GalleryThumbnail({ photo, isSelected, thumbSize }: {
           }}
         />
       ) : hasError ? (
-        <div className={styles.thumbError}>
+        <span className={styles.thumbError}>
           <span className={styles.thumbErrorIcon}>!</span>
           <span className={styles.thumbErrorPath}>{photo.filename}</span>
-        </div>
+        </span>
       ) : (
-        <div className={styles.thumbPlaceholder} />
+        <span className={styles.thumbPlaceholder} />
       )}
-      <div className={styles.thumbName}>{photo.filename}</div>
+      <span className={styles.thumbName}>{photo.filename}</span>
       {(photo.variantCount ?? 1) > 1 && (
-        <div className={styles.variantBadge}>RAW+JPEG · {photo.variantCount}</div>
+        <span className={styles.variantBadge}>{t('gallery.variantBadge', { count: photo.variantCount })}</span>
       )}
-      {isSelected && <div className={styles.thumbCheck}>✓</div>}
-    </div>
+      {isSelected && <span className={styles.thumbCheck}>✓</span>}
+    </span>
   )
 }
