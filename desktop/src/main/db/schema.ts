@@ -7,10 +7,25 @@ CREATE TABLE IF NOT EXISTS sessions (
   writeback_status TEXT NOT NULL DEFAULT 'idle',
   import_source TEXT NOT NULL DEFAULT 'unknown',
   source_path TEXT NOT NULL DEFAULT '',
+  truncated_import INTEGER NOT NULL DEFAULT 0,
+  reload_acked_at TEXT,
+  index_seq INTEGER NOT NULL DEFAULT 0,
   photo_count INTEGER NOT NULL DEFAULT 0,
   failed_writeback_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS analysis_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  photo_count INTEGER NOT NULL,
+  index_seq INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  params TEXT NOT NULL,
+  status TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS photos (

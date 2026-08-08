@@ -11,6 +11,9 @@ export interface SessionRow {
   writeback_status: string
   import_source: string
   source_path: string
+  truncated_import: number
+  reload_acked_at: string | null
+  index_seq: number
   photo_count: number
   failed_writeback_count: number
   created_at: string
@@ -26,13 +29,13 @@ export class SessionRepository {
     return row ?? null
   }
 
-  create(name: string, source: string, sourcePath = ''): SessionRow {
+  create(name: string, source: string, sourcePath = '', truncatedImport = false): SessionRow {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     this.db.prepare(
-      `INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, source_path, photo_count, failed_writeback_count, created_at, updated_at)
-       VALUES (?, ?, 'draft', 'idle', 'idle', ?, ?, 0, 0, ?, ?)`,
-    ).run(id, name, source, sourcePath, now, now)
+      `INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, source_path, truncated_import, photo_count, failed_writeback_count, created_at, updated_at)
+       VALUES (?, ?, 'draft', 'idle', 'idle', ?, ?, ?, 0, 0, ?, ?)`,
+    ).run(id, name, source, sourcePath, truncatedImport ? 1 : 0, now, now)
     return this.get(id)!
   }
 
@@ -113,5 +116,36 @@ export class SessionRepository {
       new Date().toISOString(),
       id,
     )
+  }
+
+  getReloadAckedAt(sessionId: string): string | null {
+    const row = this.db.prepare(
+      'SELECT reload_acked_at FROM sessions WHERE id = ?',
+    ).get(sessionId) as { reload_acked_at: string | null } | undefined
+    return row?.reload_acked_at ?? null
+  }
+
+  setReloadAckedAt(sessionId: string, iso: string): boolean {
+    const result = this.db.prepare(
+      'UPDATE sessions SET reload_acked_at = ?, updated_at = ? WHERE id = ?',
+    ).run(iso, new Date().toISOString(), sessionId)
+    return result.changes > 0
+  }
+
+  getIndexSeq(id: string): number {
+    const row = this.db.prepare('SELECT index_seq FROM sessions WHERE id = ?')
+      .get(id) as { index_seq: number } | undefined
+    return row?.index_seq ?? 0
+  }
+
+  bumpIndexSeq(id: string): number {
+    const bump = this.db.transaction(() => {
+      this.db.prepare('UPDATE sessions SET index_seq = index_seq + 1, updated_at = ? WHERE id = ?')
+        .run(new Date().toISOString(), id)
+      const row = this.db.prepare('SELECT index_seq FROM sessions WHERE id = ?')
+        .get(id) as { index_seq: number } | undefined
+      return row?.index_seq ?? 0
+    })
+    return bump()
   }
 }

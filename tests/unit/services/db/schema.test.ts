@@ -62,6 +62,11 @@ describe('database schema migration boundaries', () => {
     expect(columns).toContain('source_path')
   })
 
+  it('marks sessions created from a truncated scan', () => {
+    const columns = columnsOf(createSchemaDb(), 'sessions')
+    expect(columns).toContain('truncated_import')
+  })
+
   it('tracks source fingerprints for perceptual-hash invalidation', () => {
     const db = createSchemaDb()
     const columns = columnsOf(db, 'similarity_hashes')
