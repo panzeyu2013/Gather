@@ -118,6 +118,50 @@ function photoRowToData(row: CullingPhotoRow, faceCount: number): PhotoData {
   }
 }
 
+/** asset_id → photos index of a photo set, built once per cached update
+ * context so the per-asset variant sweep in `updateState` (pick-state
+ * patches) is a map lookup instead of an O(n) scan of the session per
+ * update. Photos without an asset id are skipped: the sweep only matches
+ * photos sharing a real asset id (`photo.asset_id === target.asset_id` with
+ * a truthy `target.asset_id`). */
+function buildPhotosByAssetIndex(
+  photos: CullingPhotoRow[],
+): Map<string, CullingPhotoRow[]> {
+  const photosByAssetId = new Map<string, CullingPhotoRow[]>()
+  for (const photo of photos) {
+    if (!photo.asset_id) continue
+    const variants = photosByAssetId.get(photo.asset_id)
+    if (variants) variants.push(photo)
+    else photosByAssetId.set(photo.asset_id, [photo])
+  }
+  return photosByAssetId
+}
+
+/** Groups count of a similarity result row. The current pipeline writes
+ * `totalGroups` into the small stats_json object (see similarity.service),
+ * so the multi-MB groups_json is only parsed for legacy rows that predate
+ * the field. Corrupt rows degrade to 0 like the previous groups_json parse. */
+function parseTotalGroups(resultRow: SimilarityResultRow): number {
+  try {
+    const stats = JSON.parse(resultRow.stats_json) as { totalGroups?: unknown }
+    if (
+      typeof stats.totalGroups === 'number' &&
+      Number.isInteger(stats.totalGroups) &&
+      stats.totalGroups >= 0
+    ) {
+      return stats.totalGroups
+    }
+  } catch {
+    // stats_json may be absent on legacy rows; fall through to groups_json.
+  }
+  try {
+    const parsed = JSON.parse(resultRow.groups_json) as { groups?: unknown[] }
+    return parsed.groups?.length ?? 0
+  } catch {
+    return 0
+  }
+}
+
 /** All per-photo lookups that enrich a raw photo set into CullingAssets. */
 interface CullingRichLookup {
   decisions: Map<string, CullingDecisionRow>
@@ -144,6 +188,7 @@ export interface CullingUpdateContext {
   photos: CullingPhotoRow[]
   groupMap: Map<string, string>
   photoById: Map<string, CullingPhotoRow>
+  photosByAssetId: Map<string, CullingPhotoRow[]>
   linkedByXmp: Map<string, CullingPhotoRow[]>
   historySink?: CullingHistoryEntry[]
 }
@@ -164,6 +209,13 @@ interface SessionLookupEntry {
   facesByPhoto: Map<string, number[][]>
   analysisMaxByPhoto: Map<string, number>
   peopleByPhoto: Map<string, string[]>
+  /** Cached groups count (see `parseTotalGroups`), resolved lazily on the
+   * first summary read and keyed to the entry's result version: a result
+   * replace rebuilds the entry atomically, so a stale count can never be
+   * served. The count only depends on the result row, never on culling
+   * decisions, so caching it does not stale the badge counts. */
+  groupCount: number
+  groupCountResolved: boolean
   expiresAt: number
 }
 
@@ -177,6 +229,7 @@ interface SessionLookupEntry {
 interface SessionUpdateEntry {
   photos: CullingPhotoRow[]
   photoById: Map<string, CullingPhotoRow>
+  photosByAssetId: Map<string, CullingPhotoRow[]>
   groupMap: Map<string, string> | undefined
   groupMapResultId: number | undefined
   linkedByXmp: Map<string, CullingPhotoRow[]> | undefined
@@ -926,6 +979,7 @@ export class CullingService {
     return {
       photos: entry.photos,
       photoById: entry.photoById,
+      photosByAssetId: entry.photosByAssetId,
       groupMap: entry.groupMap!,
       linkedByXmp: entry.linkedByXmp!,
     }
@@ -942,6 +996,7 @@ export class CullingService {
     const entry: SessionUpdateEntry = {
       photos,
       photoById: new Map(photos.map(photo => [photo.id, photo])),
+      photosByAssetId: buildPhotosByAssetIndex(photos),
       groupMap: undefined,
       groupMapResultId: undefined,
       linkedByXmp: undefined,
@@ -965,6 +1020,7 @@ export class CullingService {
     const photos = this.loadSessionPhotos(sessionId)
     entry.photos = photos
     entry.photoById = new Map(photos.map(photo => [photo.id, photo]))
+    entry.photosByAssetId = buildPhotosByAssetIndex(photos)
     entry.groupMap = undefined
     entry.groupMapResultId = undefined
     entry.linkedByXmp = undefined
@@ -1033,6 +1089,7 @@ export class CullingService {
     let photoById = context?.photoById ?? entry.photoById
     let contextGroupMap = context?.groupMap
     let contextLinkedByXmp = context?.linkedByXmp
+    let contextPhotosByAssetId = context?.photosByAssetId
     let target = photoById.get(photoId) ?? photos.find(photo => photo.id === photoId)
     if (!target) {
       // The TTL-cached photo set can miss photos the indexer just added, so
@@ -1044,6 +1101,7 @@ export class CullingService {
       photoById = entry.photoById
       contextGroupMap = undefined
       contextLinkedByXmp = undefined
+      contextPhotosByAssetId = undefined
       target = photoById.get(photoId) ?? photos.find(photo => photo.id === photoId)
       if (!target) throw new Error('Photo does not belong to this workspace')
     }
@@ -1064,10 +1122,13 @@ export class CullingService {
     // redundant similarity read; it runs only on the direct-call paths and
     // after a fresh-read fallback dropped the context maps above.
     if (contextGroupMap === undefined) this.ensureUpdateExtras(entry, sessionId)
+    const photosByAssetId = contextPhotosByAssetId ?? entry.photosByAssetId
     const affectedById = new Map<string, CullingPhotoRow>()
     if (patch.pickState !== undefined && target.asset_id) {
-      for (const photo of photos) {
-        if (photo.asset_id === target.asset_id) affectedById.set(photo.id, photo)
+      // One map lookup instead of an O(n) scan of the session's photos per
+      // update; the asset→photos index is built once per cached context.
+      for (const photo of photosByAssetId.get(target.asset_id) ?? []) {
+        affectedById.set(photo.id, photo)
       }
     } else {
       affectedById.set(target.id, target)
@@ -1081,7 +1142,7 @@ export class CullingService {
     }
     const affectedPhotos = [...affectedById.values()]
     const pickTargets = patch.pickState !== undefined && target.asset_id
-      ? new Set(photos.filter(photo => photo.asset_id === target.asset_id).map(photo => photo.id))
+      ? new Set((photosByAssetId.get(target.asset_id) ?? []).map(photo => photo.id))
       : new Set([target.id])
     const groupMap = contextGroupMap ?? entry.groupMap!
     const resultStates: AssetCullingState[] = []
@@ -1226,15 +1287,32 @@ export class CullingService {
       ).values()]
     const results: CullingUpdateResult[] = []
     const historyEntries: CullingHistoryEntry[] = []
+    // One IN query preloads the decision rows of every operation target
+    // instead of a per-operation getDecision inside the transaction (an
+    // N+1 of single-row queries). The preload runs in the same synchronous
+    // tick as the transaction, and each photo is written at most once per
+    // batch (the operation ids are unique per logical asset / xmp path), so
+    // the pre-read revisions cannot go stale between preload and upsert.
+    const currentRows = new Map(
+      this.cullingDecisionRepo.getByPhotoIds(sessionId, operationIds)
+        .map(row => [row.photo_id, row]),
+    )
     this.db.transaction(() => {
       for (const photoId of operationIds) {
-        const current = this.cullingDecisionRepo.getDecision(sessionId, photoId)
+        const current = currentRows.get(photoId)
         results.push(this.updateState(
           sessionId,
           photoId,
           current?.revision ?? 0,
           patch,
-          { photos, groupMap, photoById, linkedByXmp, historySink: historyEntries },
+          {
+            photos,
+            groupMap,
+            photoById,
+            photosByAssetId: entry.photosByAssetId,
+            linkedByXmp,
+            historySink: historyEntries,
+          },
         ))
       }
       if (historyEntries.length > 0) {
@@ -1328,6 +1406,20 @@ export class CullingService {
     this.ensureUpdateExtras(updateEntry, sessionId)
     const groupMap = updateEntry.groupMap!
 
+    // The outbox is read once per session instead of twice per entry (10k
+    // undos would otherwise be 20k single-row queries): rows are keyed by
+    // xmp path and reused for the in-transaction syncStatus reads, which all
+    // run before queuePhotoValues writes any outbox row (the writes happen
+    // after the loop). Test doubles that only expose the per-path `get`
+    // fall back to it, preserving their behavior.
+    const outboxByPath = typeof this.metadataOutboxRepo.getBySession === 'function'
+      ? new Map(this.metadataOutboxRepo.getBySession(sessionId).map(row => [row.xmp_path, row]))
+      : null
+    const outboxStatus = (xmpPath: string): MetadataSyncStatus =>
+      outboxByPath
+        ? outboxByPath.get(xmpPath)?.status ?? 'clean'
+        : this.metadataOutboxRepo.get(xmpPath)?.status ?? 'clean'
+
     const results: CullingUpdateResult[] = []
     const historyEntries: CullingHistoryEntry[] = []
     const xmpPatches = new Map<string, {
@@ -1395,7 +1487,7 @@ export class CullingService {
         results.push({
           states: [after],
           xmpPath,
-          syncStatus: this.metadataOutboxRepo.get(xmpPath)?.status ?? 'clean',
+          syncStatus: outboxStatus(xmpPath),
         })
       }
       for (const { photoId, values } of xmpPatches.values()) {
@@ -1412,9 +1504,20 @@ export class CullingService {
       }
     })()
     for (const xmpPath of xmpPatches.keys()) this.metadataSync.schedule(xmpPath)
+    // queuePhotoValues wrote the outbox inside the transaction (mergePatch
+    // bumps the status to 'pending'), so the preloaded snapshot is refreshed
+    // with one more bulk read — the returned statuses must reflect the
+    // post-write rows, like the per-path re-reads they replace.
+    if (outboxByPath) {
+      for (const row of this.metadataOutboxRepo.getBySession(sessionId)) {
+        outboxByPath.set(row.xmp_path, row)
+      }
+    }
     return results.map(result => ({
       ...result,
-      syncStatus: this.metadataOutboxRepo.get(result.xmpPath)?.status ?? result.syncStatus,
+      syncStatus: outboxByPath
+        ? outboxByPath.get(result.xmpPath)?.status ?? result.syncStatus
+        : this.metadataOutboxRepo.get(result.xmpPath)?.status ?? result.syncStatus,
       historyOperationId,
     }))
   }
@@ -1534,10 +1637,13 @@ export class CullingService {
     const photos = this.photoRepo.getBySessionProjection(sessionId)
     const decisions = this.cullingDecisionRepo.getBySession(sessionId)
     const decisionByPhoto = new Map(decisions.map(row => [row.photo_id, row]))
-    const cacheByPhoto = new Map(
-      this.metadataCacheRepo.getBatch(photos.map(photo => photo.id))
-        .map(row => [row.photo_id, row]),
-    )
+    // The decision and cache reads stay fresh on every call: the renderer
+    // refetches the summary after each update/undo/redo and the badge counts
+    // must reflect the just-finished write, so the per-session caches are
+    // never reused here. Only the cache rows are read through a light
+    // projection (photo_id, rating, label): the keywords JSON column that
+    // getBatch carries is never needed for counting.
+    const cacheByPhoto = this.loadSummaryCacheByPhoto(photos)
     let kept = 0
     let rejected = 0
     let rated = 0
@@ -1553,18 +1659,20 @@ export class CullingService {
         labeled++
       }
     }
-    const resultRow = this.similarityResultRepo.getLatest(sessionId)
+    // The groups count is derived from the session lookup entry, which is
+    // version-keyed by the latest similarity result: stats_json.totalGroups
+    // (a small JSON object) replaces the multi-MB groups_json parse, and the
+    // result is cached per (session, result id) so a click burst stops
+    // re-parsing the payload. A result replace flips the id and rebuilds the
+    // entry atomically, so the cached count can never be stale.
+    const lookup = this.getSessionLookup(sessionId)
     let totalGroups = 0
-    if (resultRow) {
-      // groups_json is DB content; a corrupt row must not crash the whole
-      // session flow (the metadata outbox uses safeObject for the same
-      // reason).
-      try {
-        const parsed = JSON.parse(resultRow.groups_json) as { groups?: unknown[] }
-        totalGroups = parsed.groups?.length ?? 0
-      } catch {
-        totalGroups = 0
+    if (lookup.resultRow) {
+      if (!lookup.groupCountResolved) {
+        lookup.groupCount = parseTotalGroups(lookup.resultRow)
+        lookup.groupCountResolved = true
       }
+      totalGroups = lookup.groupCount
     }
     return {
       totalGroups,
@@ -1575,6 +1683,23 @@ export class CullingService {
       rated,
       labeled,
     }
+  }
+
+  /** Light photo_metadata_cache projection for `getSummary`: only the
+   * rating/label fallbacks of the counting loop are needed, so the heavy
+   * keywords JSON column read by `getBatch` is skipped. */
+  private loadSummaryCacheByPhoto(
+    photos: CullingPhotoRow[],
+  ): Map<string, { rating: number; label: string | null }> {
+    const cacheByPhoto = new Map<string, { rating: number; label: string | null }>()
+    if (photos.length === 0) return cacheByPhoto
+    const rows = this.withChunkedIds(photos.map(photo => photo.id), chunk => this.db.prepare(`
+      SELECT photo_id, rating, label
+      FROM photo_metadata_cache
+      WHERE photo_id IN (${chunk.map(() => '?').join(',')})
+    `).all(...chunk) as Array<{ photo_id: string; rating: number; label: string | null }>)
+    for (const row of rows) cacheByPhoto.set(row.photo_id, row)
+    return cacheByPhoto
   }
 
   reset(sessionId: string, groupId?: string): void {
@@ -1677,6 +1802,8 @@ export class CullingService {
       facesByPhoto: new Map(),
       analysisMaxByPhoto: new Map(),
       peopleByPhoto: new Map(),
+      groupCount: 0,
+      groupCountResolved: false,
       expiresAt: now + CullingService.LOOKUP_TTL_MS,
     }
     this.sessionLookupCache.set(sessionId, entry)

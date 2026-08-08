@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { exportApi } from '../../api/export'
@@ -113,13 +113,33 @@ export default function Export() {
     if (directory) setDestination(directory)
   }
 
+  // export:progress fires once per file; coalescing through rAF caps re-renders
+  // to one per animation frame (with the latest event), so the form/preview
+  // area isn't re-rendered on every single file.
+  const pendingProgressRef = useRef<ExportProgressData | null>(null)
+  const progressFrameRef = useRef<number | null>(null)
+
+  useEffect(() => () => {
+    if (progressFrameRef.current !== null) {
+      cancelAnimationFrame(progressFrameRef.current)
+    }
+  }, [])
+
   useEvent('export:progress', (data) => {
     const evt = data as ExportProgressData
     if (evt.sessionId !== sessionId) return
-    setProgress(evt)
-    if (evt.total > 0) {
-      setProgressPercent(Math.round((evt.current / evt.total) * 100))
-    }
+    pendingProgressRef.current = evt
+    if (progressFrameRef.current !== null) return
+    progressFrameRef.current = requestAnimationFrame(() => {
+      progressFrameRef.current = null
+      const latest = pendingProgressRef.current
+      pendingProgressRef.current = null
+      if (!latest) return
+      setProgress(latest)
+      if (latest.total > 0) {
+        setProgressPercent(Math.round((latest.current / latest.total) * 100))
+      }
+    })
   }, Boolean(sessionId))
 
   const namingPreview = namingPattern

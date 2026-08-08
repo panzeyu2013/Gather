@@ -1,8 +1,32 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { usePersons, useCreatePerson } from '../../hooks/usePersons'
+import { imageApi } from '../../api/image'
+import type { PersonData } from '@gather/shared'
 import Dialog from '../../components/Dialog/Dialog'
 import styles from './Persons.module.css'
+
+function PersonAvatar({ person }: { person: PersonData }) {
+  const src = person.thumbnailPath
+    ? imageApi.thumbnailUrl(person.thumbnailPath, 256)
+    : person.thumbnailBase64
+      ? `data:image/jpeg;base64,${person.thumbnailBase64}`
+      : null
+  const [failed, setFailed] = useState(false)
+  const lastSrcRef = useRef(src)
+  // A refreshed list can reuse this instance for a changed avatar source;
+  // a stale `failed` flag must not hide an image that now loads.
+  if (lastSrcRef.current !== src) {
+    lastSrcRef.current = src
+    setFailed(false)
+  }
+  if (!src || failed) {
+    return <div className={styles.thumbnailPlaceholder}>{person.name.charAt(0)}</div>
+  }
+  return (
+    <img src={src} alt={person.name} loading="lazy" onError={() => setFailed(true)} />
+  )
+}
 
 export default function PersonsPage() {
   const navigate = useNavigate()
@@ -74,13 +98,7 @@ export default function PersonsPage() {
               onClick={() => navigate(`/persons/${person.id}`)}
             >
               <div className={styles.thumbnail}>
-                {person.thumbnailBase64 ? (
-                  <img src={`data:image/jpeg;base64,${person.thumbnailBase64}`} alt={person.name} />
-                ) : (
-                  <div className={styles.thumbnailPlaceholder}>
-                    {person.name.charAt(0)}
-                  </div>
-                )}
+                <PersonAvatar person={person} />
               </div>
               <div className={styles.cardBody}>
                 <p className={styles.cardName}>{person.name}</p>

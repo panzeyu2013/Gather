@@ -324,7 +324,13 @@ export default function Culling() {
     queryKey: ['jobs', 'culling-quality', qualityJobId],
     queryFn: () => jobsApi.list(),
     enabled: Boolean(qualityJobId),
-    refetchInterval: 1_000,
+    // Only poll while the watched quality job is queued or running; an idle
+    // list doesn't re-fetch every 1s (same conditional polling as the Jobs page).
+    refetchInterval: (query) => (
+      query.state.data?.some((job) => ['queued', 'running'].includes(job.status))
+        ? 1_000
+        : false
+    ),
   })
   const [syncSummary, setSyncSummary] = useState<MetadataSyncSummary>()
   const { data: conflicts = [], refetch: refetchConflicts } = useQuery({
@@ -535,14 +541,32 @@ export default function Culling() {
   }, [qualityJobId, refetch, runningJobs])
   const conflictCountRef = useRef<number>(0)
   conflictCountRef.current = syncSummary?.conflict ?? initialSync?.conflict ?? 0
-  useEvent('culling:sync-status', (payload) => {
-    const next = payload as MetadataSyncSummary
-    if (next.sessionId !== sessionId) return
+  const pendingSyncRef = useRef<MetadataSyncSummary | null>(null)
+  const syncSummaryFrameRef = useRef<number | null>(null)
+
+  // Applies one sync-status payload. Only the fields that actually render
+  // (badge counts + the items-empty state behind syncLabel) are compared
+  // before committing, so a burst of equivalent summaries does not re-render
+  // the whole 1700-line page.
+  const applySyncStatus = useCallback((summary: MetadataSyncSummary) => {
+    if (summary.sessionId !== sessionId) return
     const previousConflicts = conflictCountRef.current
-    setSyncSummary(next)
+    setSyncSummary(current => (
+      current &&
+      current.conflict === summary.conflict &&
+      current.failed === summary.failed &&
+      current.written === summary.written &&
+      current.synced === summary.synced &&
+      current.pending === summary.pending &&
+      current.writing === summary.writing &&
+      (current.items.length === 0) === (summary.items.length === 0)
+    ) ? current : summary)
     setAssets(current => {
-      if (next.items.length === 0) return current
-      const statusByXmpPath = new Map(next.items.map(item => [item.xmpPath, item.status]))
+      if (summary.items.length === 0) return current
+      const statusByXmpPath = new Map(summary.items.map(item => [item.xmpPath, item.status]))
+      // Short circuit: none of the loaded assets change status, so keep the
+      // current array reference and skip the O(n) copy entirely.
+      if (!current.some(asset => statusByXmpPath.has(asset.xmpPath))) return current
       let changed = 0
       const updated = current.map(asset => {
         const status = statusByXmpPath.get(asset.xmpPath)
@@ -556,10 +580,33 @@ export default function Culling() {
     })
     // Path summaries are emitted per xmp_path, so one flush can raise the
     // conflict count 1..N across several events; refetch on any change.
-    if (next.conflict > 0 && next.conflict !== previousConflicts) {
+    if (summary.conflict > 0 && summary.conflict !== previousConflicts) {
       void refetchConflicts()
     }
+  }, [refetchConflicts, sessionId])
+  const applySyncStatusRef = useRef(applySyncStatus)
+  applySyncStatusRef.current = applySyncStatus
+  useEvent('culling:sync-status', (payload) => {
+    const next = payload as MetadataSyncSummary
+    if (next.sessionId !== sessionId) return
+    // Coalesce a flush's event burst into at most one pass per frame (the
+    // same rAF pattern as applyTransform): keep the latest payload and apply
+    // it once when the frame rolls. Each payload is a complete summary, so
+    // dropping the intermediate ones loses no state.
+    pendingSyncRef.current = next
+    if (syncSummaryFrameRef.current !== null) return
+    syncSummaryFrameRef.current = requestAnimationFrame(() => {
+      syncSummaryFrameRef.current = null
+      const summary = pendingSyncRef.current
+      pendingSyncRef.current = null
+      if (summary) applySyncStatusRef.current(summary)
+    })
   }, Boolean(sessionId))
+  useEffect(() => () => {
+    if (syncSummaryFrameRef.current !== null) {
+      cancelAnimationFrame(syncSummaryFrameRef.current)
+    }
+  }, [])
   useEffect(() => {
     setCurrentIndex(index => Math.min(index, Math.max(0, assets.length - 1)))
   }, [assets.length])
@@ -579,20 +626,46 @@ export default function Culling() {
   }, [sessionId])
 
   const current = assets[currentIndex]
-  const assetById = useMemo(
-    () => new Map(assets.map(asset => [asset.photo.id, asset])),
-    [assets],
-  )
+  // Prebuilt per-assets indexes so navigation uses O(1) lookups instead of
+  // filtering the whole loaded list (up to 10k assets) on every step; the
+  // indexes only rebuild when the assets array itself changes.
+  const assetsIndex = useMemo(() => {
+    const byId = new Map<string, CullingAsset>()
+    const byGroup = new Map<string, CullingAsset[]>()
+    for (const asset of assets) {
+      byId.set(asset.photo.id, asset)
+      if (asset.similarityGroupId) {
+        const group = byGroup.get(asset.similarityGroupId)
+        if (group) group.push(asset)
+        else byGroup.set(asset.similarityGroupId, [asset])
+      }
+    }
+    return { byId, byGroup }
+  }, [assets])
+  const assetById = assetsIndex.byId
   const currentGroupAssets = useMemo(() => {
     if (!current?.similarityGroupId) return current ? [current] : []
-    return assets.filter(asset => asset.similarityGroupId === current.similarityGroupId)
-  }, [assets, current])
+    // Group members keep the global asset order, same semantics as the
+    // previous assets.filter pass.
+    return assetsIndex.byGroup.get(current.similarityGroupId) ?? []
+  }, [assetsIndex, current])
   const comparisonAssets = useMemo(() => {
     if (!current) return []
-    const pool = current.similarityGroupId ? currentGroupAssets : assets
-    const others = pool.filter(asset => asset.photo.id !== current.photo.id)
-    return [current, ...others].slice(0, compareCount)
-  }, [assets, compareCount, current, currentGroupAssets])
+    if (compareCount === 1) return [current]
+    const pool = current.similarityGroupId
+      ? assetsIndex.byGroup.get(current.similarityGroupId) ?? []
+      : assets
+    // Matches [current, ...pool minus current].slice(0, compareCount) without
+    // allocating the full filtered list: take the first compareCount - 1
+    // other members after the current photo.
+    const others: CullingAsset[] = []
+    for (const asset of pool) {
+      if (asset.photo.id === current.photo.id) continue
+      others.push(asset)
+      if (others.length >= compareCount - 1) break
+    }
+    return [current, ...others]
+  }, [assets, assetsIndex, compareCount, current])
   const stripStart = Math.max(0, currentIndex - 50)
   const stripAssets = assets.slice(stripStart, stripStart + 101)
   const effectiveTargetIds = selectedIds.size > 0
@@ -1006,45 +1079,51 @@ export default function Culling() {
     }
   }, [sessionId])
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement
-      ) return
-      const mod = event.metaKey || event.ctrlKey
-      if (mod && event.key.toLowerCase() === 'z') {
-        event.preventDefault()
-        void (event.shiftKey ? redo() : undo())
-        return
-      }
-      if (busy) return
-      if (/^[0-5]$/.test(event.key)) {
-        event.preventDefault()
-        void commitTargets({ rating: Number(event.key) })
-      } else if (event.key.toLowerCase() === 'p' || event.key === ' ') {
-        event.preventDefault()
-        void commitTargets({ pickState: 'picked' })
-      } else if (event.key.toLowerCase() === 'x') {
-        event.preventDefault()
-        void commitTargets({ pickState: 'rejected' })
-      } else if (event.key.toLowerCase() === 'u') {
-        event.preventDefault()
-        void commitTargets({ pickState: 'unreviewed' }, false)
-      } else if (event.key === 'ArrowLeft') {
-        event.preventDefault()
-        setCurrentIndex(index => Math.max(0, index - 1))
-        resetTransform()
-      } else if (event.key === 'ArrowRight') {
-        event.preventDefault()
-        advance()
-      }
+  // The handler is held in a ref (the same "latest callback" pattern as the
+  // useEvent hook) so the window listener mounts exactly once: reassigning
+  // the ref each render keeps hot callbacks — commitTargets, undo, redo,
+  // busy — fresh without remove/add on every keydown-relevant re-render.
+  const keydownHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {})
+  keydownHandlerRef.current = (event) => {
+    const target = event.target
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement
+    ) return
+    const mod = event.metaKey || event.ctrlKey
+    if (mod && event.key.toLowerCase() === 'z') {
+      event.preventDefault()
+      void (event.shiftKey ? redo() : undo())
+      return
     }
+    if (busy) return
+    if (/^[0-5]$/.test(event.key)) {
+      event.preventDefault()
+      void commitTargets({ rating: Number(event.key) })
+    } else if (event.key.toLowerCase() === 'p' || event.key === ' ') {
+      event.preventDefault()
+      void commitTargets({ pickState: 'picked' })
+    } else if (event.key.toLowerCase() === 'x') {
+      event.preventDefault()
+      void commitTargets({ pickState: 'rejected' })
+    } else if (event.key.toLowerCase() === 'u') {
+      event.preventDefault()
+      void commitTargets({ pickState: 'unreviewed' }, false)
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      setCurrentIndex(index => Math.max(0, index - 1))
+      resetTransform()
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      advance()
+    }
+  }
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => keydownHandlerRef.current(event)
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [advance, busy, commitTargets, redo, resetTransform, undo])
+  }, [])
 
   if (!sessionId) {
     return <div className={styles.emptyState}>未选择工作区</div>

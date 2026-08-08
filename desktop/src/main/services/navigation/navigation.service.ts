@@ -87,7 +87,12 @@ export class NavigationService {
     dryRun = false,
   ): NavigationGroup[] {
     validateNavigationParameters(burstGapSeconds, sceneGapSeconds)
+    // captureRows is a heavy query (per-file quality lookup plus the
+    // similarity-hash join); fetch it once and reuse the rows for the
+    // fingerprint, grouping and both list() calls below — previously the
+    // query ran three times per analyze (directly and once per list()).
     const rows = this.captureRows(sessionId)
+    const capturedAt = new Map(rows.map(row => [row.id, row.capturedAt]))
     const fingerprint = crypto.createHash('sha256').update(JSON.stringify(
       [
         burstGapSeconds,
@@ -109,7 +114,7 @@ export class NavigationService {
       ],
     )).digest('hex')
     if (!dryRun) {
-      const cached = this.list(sessionId)
+      const cached = this.list(sessionId, capturedAt)
       const cachedFingerprint = this.db.prepare(`
         SELECT input_fingerprint FROM navigation_groups
         WHERE session_id = ? AND source = 'automatic' LIMIT 1
@@ -126,12 +131,12 @@ export class NavigationService {
     ].map(group => this.withLead(group, byId))
     if (!dryRun) {
       this.persistAutomatic(sessionId, groups, fingerprint)
-      return this.list(sessionId)
+      return this.list(sessionId, capturedAt)
     }
     return groups
   }
 
-  list(sessionId: string): NavigationGroup[] {
+  list(sessionId: string, capturedAt?: Map<string, string>): NavigationGroup[] {
     const rows = this.db.prepare(`
       SELECT id, group_type, photo_ids_json, lead_photo_id, explanation, source
       FROM navigation_groups WHERE session_id = ?
@@ -144,7 +149,10 @@ export class NavigationService {
       explanation: string
       source: 'automatic' | 'manual'
     }>
-    const capturedAt = new Map(this.captureRows(sessionId).map(row => [row.id, row.capturedAt]))
+    // Callers that already fetched captureRows (analyze) pass the map in;
+    // standalone callers fetch it here.
+    const capturedByPhoto = capturedAt ??
+      new Map(this.captureRows(sessionId).map(row => [row.id, row.capturedAt]))
     return rows.flatMap(row => {
       try {
         const photoIds = JSON.parse(row.photo_ids_json) as string[]
@@ -153,8 +161,8 @@ export class NavigationService {
           id: row.id,
           type: row.group_type,
           photoIds,
-          startAt: capturedAt.get(photoIds[0]) ?? '',
-          endAt: capturedAt.get(photoIds[photoIds.length - 1]) ?? '',
+          startAt: capturedByPhoto.get(photoIds[0]) ?? '',
+          endAt: capturedByPhoto.get(photoIds[photoIds.length - 1]) ?? '',
           leadPhotoId: row.lead_photo_id ?? undefined,
           explanation: row.explanation,
           source: row.source,
@@ -228,11 +236,7 @@ export class NavigationService {
         COALESCE(pmc.camera_model, '') AS camera_model,
         COALESCE(sh.hash_hex, '') AS hash_hex,
         COALESCE(pmc.rating, 0) AS rating,
-        (
-          SELECT aa.result_json FROM asset_analysis aa
-          WHERE aa.asset_file_id = p.asset_file_id AND aa.analysis_type = 'technical_quality'
-          ORDER BY aa.updated_at DESC LIMIT 1
-        ) AS quality_json
+        p.asset_file_id
       FROM photos p
       LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
       LEFT JOIN similarity_hashes sh ON sh.photo_id = p.id AND sh.session_id = p.session_id
@@ -246,10 +250,40 @@ export class NavigationService {
       camera_model: string
       hash_hex: string
       rating: number
-      quality_json: string | null
+      asset_file_id: string | null
     }>
+    // One IN query per 800 asset files replaces the correlated per-photo
+    // sub-select (SELECT aa.result_json ... LIMIT 1), which re-scanned
+    // asset_analysis per photo. ORDER BY asset_file_id, updated_at DESC plus
+    // first-row-wins per file mirrors the sub-select's newest-result choice.
+    const qualityByFile = new Map<string, string>()
+    const fileIds = [...new Set(
+      rows
+        .map(row => row.asset_file_id)
+        .filter((id): id is string => id !== null),
+    )]
+    for (let index = 0; index < fileIds.length; index += 800) {
+      const chunk = fileIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const analysisRows = this.db.prepare(`
+        SELECT aa.asset_file_id, aa.result_json
+        FROM asset_analysis aa
+        WHERE aa.asset_file_id IN (${placeholders}) AND aa.analysis_type = 'technical_quality'
+        ORDER BY aa.asset_file_id, aa.updated_at DESC
+      `).all(...chunk) as Array<{ asset_file_id: string; result_json: string }>
+      for (const row of analysisRows) {
+        if (!qualityByFile.has(row.asset_file_id)) {
+          qualityByFile.set(row.asset_file_id, row.result_json)
+        }
+      }
+    }
     return rows.map(row => {
-      const quality = safeQuality(row.quality_json)
+      // Photos without an asset file never matched the correlated sub-select
+      // (NULL = NULL is false), so they stay quality-less.
+      const qualityJson = row.asset_file_id
+        ? (qualityByFile.get(row.asset_file_id) ?? null)
+        : null
+      const quality = safeQuality(qualityJson)
       return {
         id: row.id,
         filepath: row.filepath,

@@ -18,7 +18,7 @@ this inventory records the compatibility rules that later migrations must preser
 | Group | Commands | Cancellation/status |
 |---|---|---|
 | Session/photo | `session.*`, `photo.list` | Session status is persisted; import errors are returned per file where supported |
-| Culling | `culling.*`（分页入口 `culling.list_page`，`culling.list` 保留兼容） | Per-session sync status; analysis and writeback failures remain retryable |
+| Culling | `culling.*`（分页入口 `culling.list_page`） | Per-session sync status; analysis and writeback failures remain retryable |
 | Similarity | `sim.analyze`, `sim.cancel_analysis`, `sim.result`, `sim.recluster`, `sim.preview_writeback`, `sim.writeback` | Per-session cancellation and progress |
 | Face/person | `fkw.*`, `person.*` | Face analysis cancellation; person mutations require confirmation where destructive |
 | Metadata | `metadata.get`, `metadata.set`, `metadata.batch_set`, `metadata.conflicts`, `metadata.resolve_conflict`, `metadata.orphans`, `metadata.resolve_orphan` | Mutations and recovery choices require confirmation; unknown XMP fields are preserved |
@@ -49,8 +49,7 @@ this inventory records the compatibility rules that later migrations must preser
   asset group). The renderer must round-trip it verbatim and never interpret it.
 - `total` counts logical assets, not physical photo rows.
 - Filters are pushed down and evaluated on the asset's **preferred variant** (RAW
-  extension first, otherwise the lowest `rowid`); `culling.list` keeps the legacy
-  row-level behavior for compatibility.
+  extension first, otherwise the lowest `rowid`).
 
 ## Similarity result tiers (added with `sim.result`/`sim.preview_writeback`/`sim.writeback`)
 

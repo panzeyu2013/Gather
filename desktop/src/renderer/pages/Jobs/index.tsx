@@ -11,7 +11,14 @@ const labels: Record<string, string> = {
 export default function Jobs() {
   const queryClient = useQueryClient()
   const { data: jobs = [], isLoading } = useQuery({
-    queryKey: ['jobs'], queryFn: () => jobsApi.list(), refetchInterval: 2_000,
+    queryKey: ['jobs'], queryFn: () => jobsApi.list(),
+    // Only poll while something is queued or running; idle lists don't re-fetch
+    // every 2s and don't re-render the whole page on a timer.
+    refetchInterval: (query) => (
+      query.state.data?.some((job) => ['queued', 'running'].includes(job.status))
+        ? 2_000
+        : false
+    ),
   })
   const action = useMutation({
     mutationFn: ({ id, type }: { id: string; type: 'cancel' | 'retry' | 'clear' }) => {

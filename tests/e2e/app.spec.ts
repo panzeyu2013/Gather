@@ -214,17 +214,18 @@ test('rates and labels without a similarity group, then writes a Capture One XMP
   </rdf:RDF>
 </x:xmpmeta>`)
   const assets = await window.evaluate(async (id) => {
-    const response = await window.gather.sendCommand('culling.list', {
+    const response = await window.gather.sendCommand('culling.list_page', {
       sessionId: id,
       scope: 'all',
+      limit: 2000,
     })
     if (!response.ok) {
       throw new Error(typeof response.error === 'string' ? response.error : response.error.message)
     }
-    return response.data as Array<{
+    return (response.data as { assets: Array<{
       photo: { id: string }
       state: { revision: number }
-    }>
+    }> }).assets
   }, sessionId)
   expect(assets).toHaveLength(1)
 
@@ -332,15 +333,16 @@ test('keeps a shared XMP outbox visible from every importing session', async () 
     })
     if (!created.ok) throw new Error(String(created.error))
     const secondSessionId = (created.data as { id: string }).id
-    const assets = await window.gather.sendCommand('culling.list', {
+    const assets = await window.gather.sendCommand('culling.list_page', {
       sessionId: secondSessionId,
       scope: 'all',
+      limit: 2000,
     })
     if (!assets.ok) throw new Error(String(assets.error))
-    const asset = (assets.data as Array<{
+    const asset = ((assets.data as { assets: Array<{
       photo: { id: string }
       state: { revision: number }
-    }>)[0]
+    }> }).assets)[0]
     const updated = await window.gather.sendCommand('culling.update', {
       sessionId: secondSessionId,
       photoId: asset.photo.id,
@@ -385,16 +387,17 @@ test('restores culling state and XMP after an application restart', async () => 
   attachErrorListeners(await app.firstWindow())
   const window = await app.firstWindow()
   const restored = await window.evaluate(async (id) => {
-    const response = await window.gather.sendCommand('culling.list', {
+    const response = await window.gather.sendCommand('culling.list_page', {
       sessionId: id,
       scope: 'all',
+      limit: 2000,
     })
     if (!response.ok) {
       throw new Error(typeof response.error === 'string' ? response.error : response.error.message)
     }
-    return response.data as Array<{
+    return (response.data as { assets: Array<{
       state: { rating: number; colorLabel: string; pickState: string }
-    }>
+    }> }).assets
   }, sessionId)
 
   expect(restored).toHaveLength(1)

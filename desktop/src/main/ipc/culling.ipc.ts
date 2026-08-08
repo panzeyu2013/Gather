@@ -79,20 +79,6 @@ export function registerCullingHandlers(
   metadataSync: MetadataSyncCoordinator,
 ): void {
   registry.register(
-    'culling.list',
-    wrapHandler(async (params) => {
-      const sessionId = validateString(params.sessionId, 'sessionId')
-      const scope = validateString(params.scope, 'scope') as CullingScope
-      if (!['all', 'filtered', 'similarity_group'].includes(scope)) {
-        throw new Error('Invalid culling scope')
-      }
-      const filters = parseFilters(params.filters)
-      const groupId = typeof params.groupId === 'string' ? params.groupId : undefined
-      return ok(cullingService.list(sessionId, scope, filters, groupId))
-    }),
-  )
-
-  registry.register(
     'culling.list_page',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')

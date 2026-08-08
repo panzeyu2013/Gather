@@ -148,7 +148,13 @@ export class MetadataSyncCoordinator {
   }
 
   getSummary(sessionId: string): MetadataSyncSummary {
-    const rows = this.outboxRepo.getBySession(sessionId)
+    // Light projection: summary consumers only read the columns the items
+    // carry (the renderer updates per-xmpPath status, writeback verifies
+    // error_message), never the patch/base-values JSON blobs. getBySession
+    // remains the fallback for legacy repo mocks.
+    const rows = typeof this.outboxRepo.getSummaryRowsBySession === 'function'
+      ? this.outboxRepo.getSummaryRowsBySession(sessionId)
+      : this.outboxRepo.getBySession(sessionId)
     const items: MetadataSyncItem[] = rows.map(row => ({
       xmpPath: row.xmp_path,
       revision: row.revision,

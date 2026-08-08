@@ -63,6 +63,16 @@ function tagsToCacheInput(tags: Partial<MetadataTags>): MetadataCacheInput {
   }
 }
 
+/** Mirrors EmbeddedWriter's normalization of exifr keyword lists (single
+ * values arrive as scalars). */
+function normalizeKeywordList(value: unknown): string[] | undefined {
+  const list = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]
+  const strings = list
+    .filter((item): item is string | number => typeof item === 'string' || typeof item === 'number')
+    .map(item => String(item))
+  return strings.length > 0 ? strings : undefined
+}
+
 @injectable()
 export class MetadataService {
   constructor(
@@ -82,6 +92,70 @@ export class MetadataService {
     if (selected === sidecar) return selectedAttributes
     const sidecarAttributes = await sidecar.readAttributes(photoPath)
     return { ...selectedAttributes, ...sidecarAttributes }
+  }
+
+  /**
+   * Effective writer attributes for a photo whose exifr parse already
+   * happened in getMetadata. Without this, a JPEG would be read twice: once
+   * by exifr and again by EmbeddedWriter.readAttributes extracting its XMP.
+   * For JPEG — the only format the embedded reader serves in-process with
+   * the same parse options — the embedded values are derived from the shared
+   * parse segments instead, so the external sidecar is the only extra read.
+   * When the in-process derivation cannot serve the file (IPTC-only keywords
+   * are charset-unreliable through exifr) it falls back to
+   * readEffectiveAttributes(), which goes through the exiftool pool exactly
+   * like the embedded writer does.
+   */
+  private async readEffectiveAttributesOnce(
+    photoPath: string,
+    parsed: Record<string, unknown>,
+    isJpeg: boolean,
+  ): Promise<MetadataWriteAttributes> {
+    const selected = this.writerRouter.selectForRead(photoPath)
+    const sidecar = this.writerRouter.selectSidecar()
+    if (selected === sidecar) {
+      // RAW / sidecar-mode photos: the selected reader IS the sidecar, one read.
+      return selected.readAttributes(photoPath)
+    }
+    if (isJpeg) {
+      const embedded = this.embeddedAttributesFromParse(parsed)
+      if (embedded) {
+        const sidecarAttributes = await sidecar.readAttributes(photoPath)
+        return { ...embedded, ...sidecarAttributes }
+      }
+    }
+    return this.readEffectiveAttributes(photoPath)
+  }
+
+  /**
+   * Embedded rating/label/keywords derived from an already-parsed exifr
+   * result, using exactly the rules of EmbeddedWriter.readExifrAttributes:
+   * XMP dc:subject wins over IPTC, xmp:Rating ?? IFD0 rating coerced to a
+   * number, xmp:Label. Returns null when the file must go through the
+   * embedded writer's exiftool pool instead (IPTC-only keywords).
+   */
+  private embeddedAttributesFromParse(
+    parsed: Record<string, unknown>,
+  ): MetadataWriteAttributes | null {
+    const xmp = parsed.xmp as Record<string, unknown> | undefined
+    const dc = parsed.dc as Record<string, unknown> | undefined
+    const iptc = parsed.iptc as Record<string, unknown> | undefined
+    const ifd0 = parsed.ifd0 as Record<string, unknown> | undefined
+    const rawRating = xmp?.Rating ?? ifd0?.Rating
+    const rating = typeof rawRating === 'number'
+      ? rawRating
+      : typeof rawRating === 'string' && Number.isFinite(Number(rawRating))
+        ? Number(rawRating)
+        : undefined
+    const keywords = normalizeKeywordList(dc?.subject)
+    if (keywords === undefined && iptc?.Keywords !== undefined) {
+      return null
+    }
+    return {
+      keywords: keywords ?? normalizeKeywordList(iptc?.Keywords),
+      rating,
+      label: typeof xmp?.Label === 'string' ? xmp.Label : undefined,
+    }
   }
 
   private getPhotosByIds(photoIds: string[]): { id: string; filepath: string; session_id: string }[] {
@@ -164,6 +238,16 @@ export class MetadataService {
       })
       const exifr = await getExifr()
       let sharpModule: typeof import('sharp') | null = null
+      // Upserts are buffered during the concurrent extraction and flushed in
+      // one transaction afterwards (metadataCacheRepo.upsert runs a bare
+      // statement, no internal transaction, so wrapping is safe). The per-photo
+      // try/catch still isolates extraction failures, which just skip their
+      // row's write.
+      const pendingUpserts: Array<{
+        photoId: string
+        sessionId: string
+        input: MetadataCacheInput
+      }> = []
 
       await batchAsync(photos, async (photo) => {
         try {
@@ -172,42 +256,49 @@ export class MetadataService {
           const fingerprint = fingerprints.get(photo.id)
 
           if (exifr) {
-            const exifData = await exifr.parse(photo.filepath)
+            // exifr defaults to skipping XMP, and the embedded reader would
+            // re-read the whole file to extract it — a JPEG would be parsed
+            // twice. Parse with the embedded reader's options (xmp/iptc on,
+            // per-segment output) so the effective attributes below derive
+            // from this single parse.
+            const parseWithOptions = exifr.parse as unknown as (
+              filePath: string,
+              options: Record<string, unknown>,
+            ) => Promise<Record<string, unknown> | null>
+            const isJpeg = /\.(?:jpg|jpeg)$/i.test(photo.filepath)
+            const exifData = await parseWithOptions(photo.filepath, isJpeg
+              ? { xmp: true, iptc: true, mergeOutput: false }
+              : { mergeOutput: false })
             if (exifData) {
+              const ifd0 = exifData.ifd0 as Record<string, unknown> | undefined
+              const exifSegment = exifData.exif as Record<string, unknown> | undefined
+              const gps = exifData.gps as Record<string, unknown> | undefined
               tags = {
-                make: exifData.Make as string,
-                model: exifData.Model as string,
-                lensModel: exifData.LensModel as string,
-                focalLength: exifData.FocalLength as number,
-                aperture: exifData.FNumber as number,
-                shutterSpeed: exifData.ExposureTime ? String(exifData.ExposureTime) : undefined,
-                iso: exifData.ISO as number,
-                dateTaken: exifData.DateTimeOriginal ? String(exifData.DateTimeOriginal) : undefined,
-                latitude: exifData.latitude as number,
-                longitude: exifData.longitude as number,
-                width: (exifData.ImageWidth ?? exifData.ExifImageWidth) as number,
-                height: (exifData.ImageHeight ?? exifData.ExifImageHeight) as number,
-                rating: typeof exifData.Rating === 'number'
-                  ? exifData.Rating
-                  : undefined,
-                label: typeof exifData.Label === 'string'
-                  ? exifData.Label
+                make: (ifd0?.Make ?? exifSegment?.Make) as string,
+                model: (ifd0?.Model ?? exifSegment?.Model) as string,
+                lensModel: exifSegment?.LensModel as string,
+                focalLength: exifSegment?.FocalLength as number,
+                aperture: exifSegment?.FNumber as number,
+                shutterSpeed: exifSegment?.ExposureTime ? String(exifSegment.ExposureTime) : undefined,
+                iso: exifSegment?.ISO as number,
+                dateTaken: exifSegment?.DateTimeOriginal ? String(exifSegment.DateTimeOriginal) : undefined,
+                latitude: gps?.latitude as number,
+                longitude: gps?.longitude as number,
+                width: (ifd0?.ImageWidth ?? exifSegment?.ExifImageWidth) as number,
+                height: (ifd0?.ImageHeight ?? exifSegment?.ExifImageHeight) as number,
+                rating: typeof ifd0?.Rating === 'number'
+                  ? ifd0.Rating
                   : undefined,
               }
               cacheInput = tagsToCacheInput(tags)
               cacheInput.fileSize = fingerprint?.size
               cacheInput.fileMtime = fingerprint?.value
-              // exifr parses embedded XMP when present; the selected writer also
-              // covers RAW sidecars that are not part of the source file.
-              const exifrSubject = (exifData as Record<string, unknown>).Subject
-              const exifrKeywords = (exifData as Record<string, unknown>).Keywords
-              const fromExifr = (Array.isArray(exifrSubject) ? exifrSubject : Array.isArray(exifrKeywords) ? exifrKeywords : null) as string[] | null
-              if (fromExifr && fromExifr.length > 0) {
-                tags.keywords = fromExifr
-                cacheInput.keywords = fromExifr
-              }
 
-              const writerAttributes = await this.readEffectiveAttributes(photo.filepath)
+              const writerAttributes = await this.readEffectiveAttributesOnce(
+                photo.filepath,
+                exifData,
+                isJpeg,
+              )
               this.preserveValuesOnCorruptSidecar(photo.id, photo.filepath, writerAttributes)
               if (writerAttributes.keywords !== undefined) {
                 tags.keywords = writerAttributes.keywords
@@ -223,7 +314,11 @@ export class MetadataService {
               }
 
               result.set(photo.id, tags)
-              this.metadataCacheRepo.upsert(photo.id, photo.session_id, cacheInput)
+              pendingUpserts.push({
+                photoId: photo.id,
+                sessionId: photo.session_id,
+                input: cacheInput,
+              })
               return
             }
           }
@@ -251,12 +346,25 @@ export class MetadataService {
           if (existingAttributes.label !== undefined) cacheInput.label = existingAttributes.label
 
           result.set(photo.id, tags)
-          this.metadataCacheRepo.upsert(photo.id, photo.session_id, cacheInput)
+          pendingUpserts.push({
+            photoId: photo.id,
+            sessionId: photo.session_id,
+            input: cacheInput,
+          })
         } catch (e) {
           console.warn(`Failed to extract metadata for ${photo.filepath}:`, e instanceof Error ? e.message : e)
           result.set(photo.id, {})
         }
       }, 10)
+
+      if (pendingUpserts.length > 0) {
+        const flushUpserts = this.db.transaction(() => {
+          for (const entry of pendingUpserts) {
+            this.metadataCacheRepo.upsert(entry.photoId, entry.sessionId, entry.input)
+          }
+        })
+        flushUpserts()
+      }
     }
 
     return result
@@ -320,6 +428,35 @@ export class MetadataService {
       // lookups below fall back to the old per-item behavior.
       console.warn('Failed to batch-load photos for metadata batch:', error instanceof Error ? error.message : error)
     }
+    // Batch-preload the resolved sidecar paths (one IN query per session)
+    // instead of one 5-way JOIN per update. Photos the resolver cannot serve
+    // fall back to the legacy sidecar path, exactly like the per-photo catch.
+    let xmpPathByPhoto: Map<string, string> | null = null
+    if (
+      photosById &&
+      this.assetResolver &&
+      typeof this.assetResolver.resolveMany === 'function'
+    ) {
+      try {
+        xmpPathByPhoto = new Map()
+        const idsBySession = new Map<string, string[]>()
+        for (const photo of photosById.values()) {
+          const ids = idsBySession.get(photo.session_id) ?? []
+          ids.push(photo.id)
+          idsBySession.set(photo.session_id, ids)
+        }
+        for (const [sessionId, ids] of idsBySession) {
+          for (const [photoId, asset] of this.assetResolver.resolveMany(sessionId, ids)) {
+            xmpPathByPhoto.set(photoId, asset.xmpPath)
+          }
+        }
+      } catch (error) {
+        // Fall back to per-photo resolution so a resolution failure cannot
+        // abort the whole batch.
+        xmpPathByPhoto = null
+        console.warn('Failed to batch-resolve assets for metadata batch:', error instanceof Error ? error.message : error)
+      }
+    }
     const groupKey = (photoId: string): string => {
       let photo = photosById?.get(photoId)
       if (!photo && photosById === null) {
@@ -327,7 +464,10 @@ export class MetadataService {
         photo = row.length > 0 ? row[0] : undefined
       }
       if (!photo) return `missing:${photoId}`
-      if (this.assetResolver) {
+      if (xmpPathByPhoto) {
+        const xmpPath = xmpPathByPhoto.get(photoId)
+        if (xmpPath) return xmpPath
+      } else if (this.assetResolver) {
         try {
           return this.assetResolver.resolve(photo.session_id, photoId).xmpPath
         } catch {

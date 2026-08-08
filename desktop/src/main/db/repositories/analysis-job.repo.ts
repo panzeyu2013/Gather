@@ -84,6 +84,14 @@ export class AnalysisJobRepository {
     return rows.map(toData)
   }
 
+  /** Rows of a single job type only, so callers never touch the heavy
+   * checkpoint blobs of unrelated job types (e.g. a 50k-id export checkpoint
+   * being parsed on every thumbnail preload). */
+  listByType(type: AnalysisJobType): AnalysisJobData[] {
+    const rows = this.db.prepare('SELECT * FROM analysis_jobs WHERE type = ? ORDER BY updated_at DESC').all(type) as JobRow[]
+    return rows.map(toData)
+  }
+
   requestCancel(id: string): boolean {
     return this.db.prepare(`
       UPDATE analysis_jobs

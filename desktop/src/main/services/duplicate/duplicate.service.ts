@@ -11,7 +11,7 @@ import { createHash } from 'crypto'
 import { batchAsync } from '../../utils/async'
 import { computeDHash } from '../similarity/hash-computer'
 import type { ImageService } from '../image'
-import { clusterByHash } from '../similarity/cluster-engine'
+import { clusterHashesInWorker } from '../../utils/analysis-worker-client'
 
 export function excludeExactDuplicateHashes<T extends { photo_id: string }>(
   rows: T[],
@@ -40,7 +40,7 @@ export async function computeVisualHashes(
     } catch {
       // A corrupt image should not prevent exact duplicate detection.
     }
-  }, 2)
+  }, 8)
   return hashes
 }
 
@@ -230,6 +230,65 @@ export class DuplicateService {
     })
     persistAnalysisData()
 
+    // The visual clustering pass is O(n²) in candidate hashes (a ~128MB
+    // bitset plus ~5×10⁸ Hamming distances at 32k photos). It ran
+    // synchronously on the main thread inside the write transaction, freezing
+    // the UI for seconds. The same global clustering the similarity service
+    // runs in its analysis worker is used here with identical group/threshold
+    // semantics; the reads below are hoisted out of the transaction so the
+    // worker can run between them, and the final transaction still persists
+    // every write atomically.
+    db.pragma('group_concat_limit = 0')
+
+    const exactRows = db
+      .prepare(
+        `SELECT checksum, COUNT(*) as cnt, GROUP_CONCAT(id) as photo_ids
+         FROM photos
+         WHERE session_id IN (${placeholders}) AND checksum != ''
+         GROUP BY checksum
+         HAVING COUNT(*) > 1`,
+      )
+      .all(...ids) as { checksum: string; cnt: number; photo_ids: string }[]
+
+    const exactPhotoIds = new Set<string>()
+    for (const row of exactRows) {
+      for (const photoId of row.photo_ids.split(',')) {
+        exactPhotoIds.add(photoId)
+      }
+    }
+
+    const hashRows = excludeExactDuplicateHashes(
+      db
+      .prepare(
+        `SELECT sh.photo_id, sh.hash_hex
+         FROM similarity_hashes sh
+         JOIN photos p ON p.id = sh.photo_id
+         WHERE p.session_id IN (${placeholders})
+         ORDER BY sh.photo_id`,
+      )
+      .all(...ids) as { photo_id: string; hash_hex: string }[],
+      exactPhotoIds,
+    )
+    const hashByPhotoId = new Map(
+      hashRows.map(row => [row.photo_id, row.hash_hex]),
+    )
+    const components = hashRows.length >= 2
+      ? (await clusterHashesInWorker(
+        hashRows.map(row => ({ photoId: row.photo_id, hash: row.hash_hex })),
+        threshold,
+        2,
+        'global',
+        signal,
+      )).groups
+      : []
+
+    const insertGroup = db.prepare(
+      'INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)',
+    )
+    const insertMember = db.prepare(
+      'INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime) VALUES (?, ?, ?, 1, ?, ?)',
+    )
+
     const scanTransaction = db.transaction(() => {
       db.prepare(`
         UPDATE photos
@@ -244,70 +303,25 @@ export class DuplicateService {
       db.prepare('DELETE FROM duplicate_group_members WHERE session_id IN (' + placeholders + ')').run(...ids)
       db.prepare('DELETE FROM duplicate_groups WHERE session_id IN (' + placeholders + ')').run(...ids)
 
-      db.pragma('group_concat_limit = 0')
-
-      const exactRows = db
-        .prepare(
-          `SELECT checksum, COUNT(*) as cnt, GROUP_CONCAT(id) as photo_ids
-           FROM photos
-           WHERE session_id IN (${placeholders}) AND checksum != ''
-           GROUP BY checksum
-           HAVING COUNT(*) > 1`,
-        )
-        .all(...ids) as { checksum: string; cnt: number; photo_ids: string }[]
-
-      const insertGroup = db.prepare(
-        'INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)',
-      )
-      const insertMember = db.prepare(
-        'INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime) VALUES (?, ?, ?, 1, ?, ?)',
-      )
-
-      const exactPhotoIds = new Set<string>()
       for (const row of exactRows) {
         const photoIds = row.photo_ids.split(',')
         const result = insertGroup.run(sessionId, 'exact', row.checksum, null, photoIds.length, now)
         const groupId = result.lastInsertRowid as number
         exactGroupIds.push(groupId)
         for (const photoId of photoIds) {
-          exactPhotoIds.add(photoId)
           const meta = photoMeta.get(photoId)
           insertMember.run(groupId, photoId, sessionId, meta?.size ?? null, meta?.mtime ?? null)
         }
       }
 
-      const hashRows = excludeExactDuplicateHashes(
-        db
-        .prepare(
-          `SELECT sh.photo_id, sh.hash_hex
-           FROM similarity_hashes sh
-           JOIN photos p ON p.id = sh.photo_id
-           WHERE p.session_id IN (${placeholders})
-           ORDER BY sh.photo_id`,
-        )
-        .all(...ids) as { photo_id: string; hash_hex: string }[],
-        exactPhotoIds,
-      )
-
-      if (hashRows.length >= 2) {
-        const hashByPhotoId = new Map(
-          hashRows.map(row => [row.photo_id, row.hash_hex]),
-        )
-        const components = clusterByHash(
-          hashRows.map(row => ({ photoId: row.photo_id, hash: row.hash_hex })),
-          threshold,
-          2,
-        ).groups
-
-        for (const memberIds of components) {
-          const firstHash = hashByPhotoId.get(memberIds[0])!
-          const result = insertGroup.run(sessionId, 'visual', null, firstHash, memberIds.length, now)
-          const groupId = result.lastInsertRowid as number
-          visualGroupIds.push(groupId)
-          for (const photoId of memberIds) {
-            const meta = photoMeta.get(photoId)
-            insertMember.run(groupId, photoId, sessionId, meta?.size ?? null, meta?.mtime ?? null)
-          }
+      for (const memberIds of components) {
+        const firstHash = hashByPhotoId.get(memberIds[0])!
+        const result = insertGroup.run(sessionId, 'visual', null, firstHash, memberIds.length, now)
+        const groupId = result.lastInsertRowid as number
+        visualGroupIds.push(groupId)
+        for (const photoId of memberIds) {
+          const meta = photoMeta.get(photoId)
+          insertMember.run(groupId, photoId, sessionId, meta?.size ?? null, meta?.mtime ?? null)
         }
       }
     })

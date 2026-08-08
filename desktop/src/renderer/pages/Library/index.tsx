@@ -311,7 +311,7 @@ export default function Library() {
               <div className={styles.divider} />
               <h2>待恢复 XMP</h2>
               <p className={styles.help}>原 Session 已删除，XMP 操作仍被安全保留。</p>
-              {metadataOrphans.map(orphan => (
+              {metadataOrphans.slice(0, 24).map(orphan => (
                 <div className={styles.candidate} key={orphan.xmpPath}>
                   <span title={orphan.xmpPath}>{orphan.xmpPath.split(/[/\\]/).pop()}</span>
                   <small>{orphan.status}{orphan.errorMessage ? ` · ${orphan.errorMessage}` : ''}</small>
@@ -324,6 +324,9 @@ export default function Library() {
                   </div>
                 </div>
               ))}
+              {metadataOrphans.length > 24 && (
+                <p className={styles.muted}>另有 {metadataOrphans.length - 24} 个待恢复 XMP 未列出</p>
+              )}
             </>
           )}
           {volumes.some(volume => volume.offlineFiles > 0) && (

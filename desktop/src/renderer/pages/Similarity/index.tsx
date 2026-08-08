@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { similarityApi, type SimilarityResult } from '../../api/similarity'
@@ -12,6 +12,42 @@ import WritebackReport from '../../components/WritebackReport/WritebackReport'
 import { useToastStore } from '../../components/Toast/ToastStore'
 import type { SimilarityGroup, SimilarityImage, WritebackItem, WritebackPreview, WritebackResult } from '@gather/shared'
 import styles from './Similarity.module.css'
+
+// Windowing constants for the group grid. The card grid is virtualized with a
+// fixed-height estimate per card (collapsed cards are constant-height; expanded
+// cards add an estimated member area based on the CSS grid layout), so only the
+// visible cards + overscan are mounted at once.
+const GROUP_MIN_COL_WIDTH = 280
+const GROUP_CARD_GAP = 16
+const GROUP_HEADER_HEIGHT = 90
+const TRUNCATED_MEMBER_LIMIT = 24
+const MEMBER_CELL_MIN_WIDTH = 100
+const MEMBER_CELL_GAP = 8
+const MEMBER_AREA_PADDING = 16
+const MEMBER_TOGGLE_HEIGHT = 54
+const GRID_OVERSCAN = 600
+
+function estimateGroupCardHeight(
+  group: SimilarityGroup,
+  expanded: boolean,
+  showAllMembers: boolean,
+  cardWidth: number,
+): number {
+  if (!expanded) return GROUP_HEADER_HEIGHT
+  const memberWidth = Math.max(0, cardWidth - 2 - MEMBER_AREA_PADDING)
+  const perRow = Math.max(
+    1,
+    Math.floor((memberWidth + MEMBER_CELL_GAP) / (MEMBER_CELL_MIN_WIDTH + MEMBER_CELL_GAP)),
+  )
+  const visibleCount = showAllMembers
+    ? group.images.length
+    : Math.min(TRUNCATED_MEMBER_LIMIT, group.images.length)
+  const rows = Math.max(1, Math.ceil(visibleCount / perRow))
+  const cellHeight = Math.max(0, (memberWidth - (perRow - 1) * MEMBER_CELL_GAP) / perRow)
+  const memberArea = MEMBER_AREA_PADDING + rows * cellHeight + (rows - 1) * MEMBER_CELL_GAP
+  const toggle = group.images.length > TRUNCATED_MEMBER_LIMIT ? MEMBER_TOGGLE_HEIGHT : 0
+  return GROUP_HEADER_HEIGHT + memberArea + toggle
+}
 
 function ThumbnailImage({ path, className }: { path: string; className?: string }) {
   const [failed, setFailed] = useState(false)
@@ -334,17 +370,28 @@ const GroupCard = memo(function GroupCard({
   group,
   selected,
   onSelectedChange,
+  expanded,
+  onToggleExpanded,
+  showAllMembers,
+  onToggleShowAll,
 }: {
   group: SimilarityGroup
   selected: boolean
   onSelectedChange: (groupId: number, selected: boolean) => void
+  expanded: boolean
+  onToggleExpanded: (groupId: number) => void
+  showAllMembers: boolean
+  onToggleShowAll: (groupId: number) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
   const rep = group.images.find((img) => img.representative) ?? group.images[0]
+  const visibleMembers = showAllMembers
+    ? group.images
+    : group.images.slice(0, TRUNCATED_MEMBER_LIMIT)
+  const hasMoreMembers = group.images.length > TRUNCATED_MEMBER_LIMIT
 
   return (
     <div className={styles.groupCard}>
-      <div className={styles.groupHeader} onClick={() => setExpanded(!expanded)}>
+      <div className={styles.groupHeader} onClick={() => onToggleExpanded(group.id)}>
         <input
           type="checkbox"
           checked={selected}
@@ -363,7 +410,7 @@ const GroupCard = memo(function GroupCard({
 
       {expanded && (
         <div className={styles.groupMembers}>
-          {group.images.map((img) => (
+          {visibleMembers.map((img) => (
             <div key={img.path} className={styles.memberItem}>
               <ThumbnailImage path={img.path} className={styles.memberThumb} />
               <span className={styles.memberName}>
@@ -373,10 +420,28 @@ const GroupCard = memo(function GroupCard({
           ))}
         </div>
       )}
+
+      {expanded && hasMoreMembers && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+          <button
+            type="button"
+            className={styles.reclusterBtn}
+            onClick={() => onToggleShowAll(group.id)}
+          >
+            {showAllMembers ? '收起' : `显示全部 (共 ${group.images.length} 张)`}
+          </button>
+        </div>
+      )}
     </div>
   )
 })
 
+// Windowed group grid: only the cards intersecting the scroll viewport (plus
+// overscan) are mounted. Cards are laid out with the same geometry the CSS
+// `auto-fill minmax(280px, 1fr)` grid would produce; the spacer div below
+// provides the total scroll height. Expansion/"show all" state lives here (not
+// inside GroupCard) so height estimates stay exact and the state survives cards
+// being unmounted as they scroll out of view.
 function GroupGrid({
   result,
   selectedGroupIds,
@@ -386,7 +451,125 @@ function GroupGrid({
   selectedGroupIds: Set<number>
   onSelectedChange: (groupId: number, selected: boolean) => void
 }) {
-  if (result.groups.length === 0) {
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set())
+  const [showAllIds, setShowAllIds] = useState<Set<number>>(() => new Set())
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewport, setViewport] = useState({ width: 0, height: 0 })
+  const containerRef = useRef<HTMLDivElement>(null)
+  const scrollFrameRef = useRef<number | null>(null)
+
+  const groups = result.groups
+
+  useEffect(() => {
+    setExpandedIds(new Set())
+    setShowAllIds(new Set())
+    setScrollTop(0)
+    if (containerRef.current) containerRef.current.scrollTop = 0
+  }, [result])
+
+  useEffect(() => {
+    const element = containerRef.current
+    if (!element) return
+    const update = () => {
+      setViewport((current) => (
+        current.width === element.clientWidth && current.height === element.clientHeight
+          ? current
+          : { width: element.clientWidth, height: element.clientHeight }
+      ))
+    }
+    update()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update)
+      return () => window.removeEventListener('resize', update)
+    }
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [result])
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) {
+      cancelAnimationFrame(scrollFrameRef.current)
+    }
+  }, [])
+
+  const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const nextScrollTop = event.currentTarget.scrollTop
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current)
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null
+      setScrollTop(nextScrollTop)
+    })
+  }, [])
+
+  const toggleExpanded = useCallback((groupId: number) => {
+    setExpandedIds((current) => {
+      const next = new Set(current)
+      if (next.has(groupId)) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
+  }, [])
+
+  const toggleShowAll = useCallback((groupId: number) => {
+    setShowAllIds((current) => {
+      const next = new Set(current)
+      if (next.has(groupId)) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
+  }, [])
+
+  // Same track-count formula the CSS `auto-fill minmax(280px, 1fr)` grid uses,
+  // so absolute card placement matches the visual layout exactly.
+  const cols = Math.max(
+    1,
+    Math.floor((viewport.width + GROUP_CARD_GAP) / (GROUP_MIN_COL_WIDTH + GROUP_CARD_GAP)),
+  )
+  const cardWidth = (viewport.width - (cols - 1) * GROUP_CARD_GAP) / cols
+
+  const { rows, totalHeight } = useMemo(() => {
+    const rowModels: { top: number; height: number; cards: { group: SimilarityGroup; index: number }[] }[] = []
+    let top = 0
+    for (let start = 0; start < groups.length; start += cols) {
+      const cards: { group: SimilarityGroup; index: number }[] = []
+      let rowHeight = 0
+      for (let offset = 0; offset < cols && start + offset < groups.length; offset += 1) {
+        const group = groups[start + offset]
+        cards.push({ group, index: start + offset })
+        rowHeight = Math.max(
+          rowHeight,
+          estimateGroupCardHeight(
+            group,
+            expandedIds.has(group.id),
+            showAllIds.has(group.id),
+            cardWidth,
+          ),
+        )
+      }
+      rowModels.push({ top, height: rowHeight, cards })
+      top += rowHeight + GROUP_CARD_GAP
+    }
+    return { rows: rowModels, totalHeight: Math.max(0, top - GROUP_CARD_GAP) }
+  }, [groups, cols, cardWidth, expandedIds, showAllIds])
+
+  const visibleRows = useMemo(() => {
+    const overscan = Math.max(GRID_OVERSCAN, viewport.height)
+    const visibleTop = Math.max(0, scrollTop - overscan)
+    const visibleBottom = scrollTop + viewport.height + overscan
+    return rows.filter((row) => (
+      row.top + row.height >= visibleTop && row.top <= visibleBottom
+    ))
+  }, [rows, scrollTop, viewport.height])
+
+  useEffect(() => {
+    const maximum = Math.max(0, totalHeight - viewport.height)
+    if (scrollTop <= maximum) return
+    if (containerRef.current) containerRef.current.scrollTop = maximum
+    setScrollTop(maximum)
+  }, [totalHeight, viewport.height, scrollTop])
+
+  if (groups.length === 0) {
     return (
       <div className={styles.empty}>
         <p>当前参数未找到相似分组。</p>
@@ -395,15 +578,36 @@ function GroupGrid({
   }
 
   return (
-    <div className={styles.grid}>
-      {result.groups.map((group) => (
-        <GroupCard
-          key={group.id}
-          group={group}
-          selected={selectedGroupIds.has(group.id)}
-          onSelectedChange={onSelectedChange}
-        />
-      ))}
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      style={{ position: 'relative', maxHeight: '70vh', overflowY: 'auto' }}
+    >
+      <div style={{ position: 'relative', height: totalHeight }}>
+        {visibleRows.map((row) => (
+          row.cards.map(({ group, index }) => (
+            <div
+              key={group.id}
+              style={{
+                position: 'absolute',
+                top: row.top,
+                left: (index % cols) * (cardWidth + GROUP_CARD_GAP),
+                width: cardWidth,
+              }}
+            >
+              <GroupCard
+                group={group}
+                selected={selectedGroupIds.has(group.id)}
+                onSelectedChange={onSelectedChange}
+                expanded={expandedIds.has(group.id)}
+                onToggleExpanded={toggleExpanded}
+                showAllMembers={showAllIds.has(group.id)}
+                onToggleShowAll={toggleShowAll}
+              />
+            </div>
+          ))
+        ))}
+      </div>
     </div>
   )
 }

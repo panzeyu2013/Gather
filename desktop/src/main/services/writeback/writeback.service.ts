@@ -106,17 +106,89 @@ export class WritebackService {
    * re-resolves the photo internally, so if the asset migration completed
    * between preview and execute this differs from the preview snapshot
    * (dbRow.xmp_path) — grouping and waiting must use the same live path or
-   * concurrent items that land on one sidecar race each other.
+   * concurrent items that land on one sidecar race each other. With
+   * `resolvedByPhoto` (the batch preload from resolveMany) the lookup is a
+   * Map hit; without it the per-photo resolve is used for legacy resolvers.
    */
-  private resolveExecuteXmpPath(sessionId: string, dbRow: WritebackItemRow): string {
+  private resolveExecuteXmpPath(
+    sessionId: string,
+    dbRow: WritebackItemRow,
+    resolvedByPhoto?: Map<string, string>,
+  ): string {
     if (this.assetResolver) {
-      try {
-        return this.assetResolver.resolve(sessionId, dbRow.photo_id).xmpPath
-      } catch {
-        // Resolution failure falls back to the stored preview path.
+      if (resolvedByPhoto) {
+        const xmpPath = resolvedByPhoto.get(dbRow.photo_id)
+        if (xmpPath) return xmpPath
+      } else {
+        try {
+          return this.assetResolver.resolve(sessionId, dbRow.photo_id).xmpPath
+        } catch {
+          // Resolution failure falls back to the stored preview path.
+        }
       }
     }
     return dbRow.xmp_path
+  }
+
+  /**
+   * One resolveMany query for the whole batch instead of one 5-way JOIN per
+   * item. Photos the resolver cannot serve are absent from the map and fall
+   * back to the stored preview path, exactly like the per-photo catch below.
+   */
+  private preloadResolvedXmpPaths(
+    sessionId: string,
+    rows: WritebackItemRow[],
+  ): Map<string, string> | undefined {
+    if (!this.assetResolver || typeof this.assetResolver.resolveMany !== 'function') {
+      return undefined
+    }
+    const resolved = this.assetResolver.resolveMany(
+      sessionId,
+      [...new Set(rows.map(row => row.photo_id))],
+    )
+    return new Map([...resolved].map(([photoId, asset]) => [photoId, asset.xmpPath]))
+  }
+
+  /**
+   * Preview-time resolution: one resolveMany batch query per session, with the
+   * legacy filepath/sidecar as the per-photo fallback for entries the resolver
+   * cannot serve. Doubles without resolveMany fall back to per-photo resolve,
+   * keeping the exact old semantics.
+   */
+  private resolvePreviewTargets(
+    sessionId: string,
+    photos: Array<{ id: string; filepath: string }>,
+  ): Map<string, { filepath: string; xmpPath: string }> {
+    const byPhoto = new Map<string, { filepath: string; xmpPath: string }>()
+    const fallback = (photo: { id: string; filepath: string }): { filepath: string; xmpPath: string } =>
+      ({ filepath: photo.filepath, xmpPath: getXmpSidecarPath(photo.filepath) })
+    if (this.assetResolver && typeof this.assetResolver.resolveMany === 'function') {
+      const resolved = this.assetResolver.resolveMany(
+        sessionId,
+        photos.map(photo => photo.id),
+      )
+      for (const photo of photos) {
+        const asset = resolved.get(photo.id)
+        byPhoto.set(photo.id, asset
+          ? { filepath: asset.filepath, xmpPath: asset.xmpPath }
+          : fallback(photo))
+      }
+      return byPhoto
+    }
+    for (const photo of photos) {
+      if (this.assetResolver) {
+        try {
+          const asset = this.assetResolver.resolve(sessionId, photo.id)
+          byPhoto.set(photo.id, { filepath: asset.filepath, xmpPath: asset.xmpPath })
+          continue
+        } catch {
+          // Unlinked or incomplete asset migration: keep the legacy path so
+          // preview still works for legacy sessions.
+        }
+      }
+      byPhoto.set(photo.id, fallback(photo))
+    }
+    return byPhoto
   }
 
   async preview(
@@ -139,27 +211,22 @@ export class WritebackService {
       this.metadataOutboxRepo?.discardModulePending(sessionId, mutationSource(module))
     }
 
-    const photos = this.photoRepo.getBySession(sessionId)
+    // Light projection: preview only needs photo identity and filepath; the
+    // heavy JSON columns (metadata/result) are never read. Falls back to the
+    // full row query for repository doubles without the projection.
+    const photos = typeof this.photoRepo.getBySessionProjection === 'function'
+      ? this.photoRepo.getBySessionProjection(sessionId)
+      : this.photoRepo.getBySession(sessionId)
     const filtered = photoIds ? photos.filter(p => photoIds.has(p.id)) : photos
 
     // Resolve the asset (and its sidecar) exactly like execute does: with
     // asset_read_mode='asset' and relinked files, the photo row's legacy
     // filepath/sidecar differ from what PhotoAssetResolver.resolve() returns,
     // and a preview/execute mismatch made every item fail permanently (the
-    // execute summary lookup keys on the resolved xmp path).
-    const resolveTarget = (photo: (typeof filtered)[number]): { filepath: string; xmpPath: string } => {
-      if (this.assetResolver) {
-        try {
-          const resolved = this.assetResolver.resolve(sessionId, photo.id)
-          return { filepath: resolved.filepath, xmpPath: resolved.xmpPath }
-        } catch {
-          // Unlinked or incomplete asset migration: keep the legacy path so
-          // preview still works for legacy sessions.
-        }
-      }
-      return { filepath: photo.filepath, xmpPath: getXmpSidecarPath(photo.filepath) }
-    }
-    const resolvedByPhoto = new Map(filtered.map(photo => [photo.id, resolveTarget(photo)]))
+    // execute summary lookup keys on the resolved xmp path). One resolveMany
+    // batch query replaces the per-photo resolve; entries the resolver cannot
+    // serve keep the legacy path so preview still works for legacy sessions.
+    const resolvedByPhoto = this.resolvePreviewTargets(sessionId, filtered)
     const additionsBySidecar = new Map<string, string[]>()
     const sharedCounts = new Map<string, number>()
     const uniquePhotos = new Map<string, (typeof filtered)[number]>()
@@ -238,6 +305,10 @@ export class WritebackService {
     const failedItems: WritebackItem[] = []
     const persistedRows = this.writebackRepo.getItems(sessionId, _module)
     const rowById = new Map(persistedRows.map(row => [row.id, row]))
+    // Batch-preload the execute-time sidecar paths once (single IN query)
+    // instead of re-resolving per item during grouping below and again during
+    // the summary verification.
+    const resolvedXmpByPhoto = this.preloadResolvedXmpPaths(sessionId, persistedRows)
     // Phase 1: prepare every item (merged keywords, mutation queued) before
     // any flush. The old per-item flushSession rewrote the whole session
     // queue once per item — O(items) XMP rewrites for RAW+JPEG pairs sharing
@@ -277,7 +348,7 @@ export class WritebackService {
         skipped++
         continue
       }
-      const groupKey = this.resolveExecuteXmpPath(sessionId, dbRow)
+      const groupKey = this.resolveExecuteXmpPath(sessionId, dbRow, resolvedXmpByPhoto)
       const group = groups.get(groupKey)
       if (group) group.push(item)
       else groups.set(groupKey, [item])
@@ -375,7 +446,7 @@ export class WritebackService {
         // that path differs from the preview snapshot (dbRow.xmp_path); match
         // the live resolution as well so a written item is not reported as
         // failed with the XMP already on disk.
-        const resolvedXmpPath = this.resolveExecuteXmpPath(sessionId, entry.dbRow)
+        const resolvedXmpPath = this.resolveExecuteXmpPath(sessionId, entry.dbRow, resolvedXmpByPhoto)
         const syncItem = summaryByPath.get(entry.dbRow.xmp_path) ??
           summaryByPath.get(resolvedXmpPath)
         if (!syncItem || !['written', 'synced'].includes(syncItem.status)) {

@@ -281,10 +281,32 @@ async function mapConcurrent<T, R>(
 const CHECKSUM_BACKFILL_BATCH = 32
 const CHECKSUM_BACKFILL_CONCURRENCY = 6
 
+// Keyset page size for the backfill pending-photo sweep: ~25 page queries per
+// 50k-photo pass instead of one per 200 (the repository default), so later
+// passes that continue from the cursor stay at a single tiny query.
+const CHECKSUM_BACKFILL_PAGE_SIZE = 2000
+
+/** Photo fields the checksum backfill reads; satisfied by both the projection
+ * row (PhotoProjectionRow) and the page row (PhotoPageRow). */
+type PendingBackfillPhoto = {
+  id: string
+  filepath: string
+  checksum?: string
+  status: string
+  asset_file_id: string | null
+}
+
 // scanBatch I/O concurrency: stat/dimension reads stay at four simultaneous
 // files, matching the old 64-file batches, so the parallel walk and streamed
 // processing do not add extra disk thrashing on spinning media.
 const SCAN_BATCH_CONCURRENCY = 4
+
+// Files accumulated by the streaming scan before one scanBatch is dispatched.
+// The batch's stat/hash compute still runs at SCAN_BATCH_CONCURRENCY, but all
+// of its writes commit in a single transaction — the previous per-file
+// scanBatch() calls committed one transaction per file (~50k fsync'd commits
+// on a large import).
+const SCAN_BATCH_FILES = 32
 
 @injectable()
 export class IndexService {
@@ -888,11 +910,12 @@ export class IndexService {
       if (candidates.length > 0) await scanBatch(candidates)
     } else {
       // Producer/consumer: walk() streams paths through a bounded channel
-      // while scanBatch() consumes them, so traversal and analysis overlap
-      // instead of the old "accumulate 64 files, then process" double
-      // buffering. A fixed window of scanBatches (one file each) stays in
-      // flight, preserving the ~4-way I/O concurrency of the old batches
-      // without waiting for a full batch to fill.
+      // while scanBatch() consumes them in SCAN_BATCH_FILES-sized batches, so
+      // traversal and analysis overlap instead of the old "accumulate 64
+      // files, then process" double buffering. Each batch's stat/hash work
+      // runs internally at SCAN_BATCH_CONCURRENCY (4-way) and every write of
+      // the batch commits in one transaction — dispatching one file per
+      // scanBatch used to commit a transaction per file.
       let scanError: unknown = undefined
       const inFlight = new Set<Promise<void>>()
       const track = (task: Promise<void>): Promise<void> => {
@@ -904,6 +927,20 @@ export class IndexService {
             scanError = scanError ?? error
           },
         )
+      }
+      // Dispatch the accumulated filepaths as a single scanBatch. At most one
+      // batch stays in flight: the batch's own 4-way concurrency is the I/O
+      // window (more in-flight batches would multiply it past the intended
+      // window and thrash the disk).
+      const pending: string[] = []
+      const flush = async (): Promise<void> => {
+        if (pending.length === 0) return
+        const batch = pending.splice(0)
+        while (inFlight.size >= 1) {
+          await Promise.race([...inFlight].map(task => task.catch(() => undefined)))
+        }
+        if (scanError !== undefined) throw scanError
+        void track(scanBatch(batch))
       }
       for await (const filepath of walk(
         session.source_path,
@@ -917,12 +954,10 @@ export class IndexService {
           total: 0,
           message: '正在增量扫描文件',
         })
-        while (inFlight.size >= SCAN_BATCH_CONCURRENCY) {
-          await Promise.race([...inFlight].map(task => task.catch(() => undefined)))
-        }
-        if (scanError !== undefined) throw scanError
-        void track(scanBatch([filepath]))
+        pending.push(filepath)
+        if (pending.length >= SCAN_BATCH_FILES) await flush()
       }
+      await flush()
       await Promise.all([...inFlight].map(task => task.catch(() => undefined)))
       if (scanError !== undefined) throw scanError
     }
@@ -981,6 +1016,44 @@ export class IndexService {
   }
 
   /**
+   * Rows still missing a checksum for one backfill pass. The production read
+   * sweeps via the keyset-paginated page query, so a later pass only re-reads
+   * rows inserted after the previous pass's cursor instead of re-sweeping the
+   * whole session; unit-test doubles that only expose the projection read
+   * fall back to it (the same feature-detection pattern as the culling
+   * service), preserving their per-pass call counts.
+   */
+  private loadPendingBackfill(
+    sessionId: string,
+    afterRowId: number | undefined,
+    failedPhotoIds: Set<string>,
+  ): { rows: PendingBackfillPhoto[]; lastRowId: number | undefined } {
+    if (typeof this.photoRepo.getBySessionPage !== 'function') {
+      const rows = this.photoRepo.getBySessionProjection(sessionId).filter(photo =>
+        !photo.checksum &&
+        photo.status !== 'missing' &&
+        !failedPhotoIds.has(photo.id),
+      )
+      return { rows, lastRowId: undefined }
+    }
+    const rows: PendingBackfillPhoto[] = []
+    let cursor: number | undefined = afterRowId
+    let lastRowId: number | undefined
+    for (;;) {
+      const page = this.photoRepo.getBySessionPage(sessionId, cursor, CHECKSUM_BACKFILL_PAGE_SIZE)
+      if (page.length === 0) break
+      lastRowId = page[page.length - 1].rowid
+      for (const photo of page) {
+        if (!photo.checksum && photo.status !== 'missing' && !failedPhotoIds.has(photo.id)) {
+          rows.push(photo)
+        }
+      }
+      cursor = lastRowId
+    }
+    return { rows, lastRowId }
+  }
+
+  /**
    * Background backfill of checksums left empty by lazy indexing. Iterates
    * until no photo still lacks a checksum: photos scanned while this job is
    * running (a queued duplicate job would be deduped away) are picked up by
@@ -1010,14 +1083,15 @@ export class IndexService {
     let backfilled = 0
     let skipped = 0
     const failedPhotoIds = new Set<string>()
+    // Keyset cursor for the pending read: the first pass sweeps the session
+    // once and later passes continue from the last rowid seen instead of
+    // re-reading the whole table on every pass (a large session with a
+    // persistent failure set used to re-sweep everything per pass).
+    let afterRowId: number | undefined
     for (;;) {
       context?.throwIfCancelled()
-      const pending = this.photoRepo.getBySessionProjection(sessionId)
-        .filter(photo =>
-          !photo.checksum &&
-          photo.status !== 'missing' &&
-          !failedPhotoIds.has(photo.id),
-        )
+      const { rows: pending, lastRowId } = this.loadPendingBackfill(sessionId, afterRowId, failedPhotoIds)
+      if (lastRowId !== undefined) afterRowId = lastRowId
       if (pending.length === 0) break
       context?.updateProgress({
         current: 0,

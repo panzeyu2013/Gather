@@ -616,15 +616,29 @@ export class FaceRepository {
       WHERE rb.session_id = ?
     `).all(sessionId) as Array<{ cluster_id: number; role_name: string; keywords: string }>
     if (bindings.length === 0) return []
-    const memberStmt = this.db.prepare(
-      'SELECT DISTINCT photo_id FROM face_cluster_members WHERE cluster_id = ?',
-    )
+    // One IN query (chunked by 800, as elsewhere in this file) replaces the
+    // previous per-binding member query; photo ids keep their per-cluster
+    // order because the rows come back in rowid order and are grouped in JS.
+    const memberPhotoIdsByCluster = new Map<number, string[]>()
+    const clusterIds = bindings.map(binding => binding.cluster_id)
+    for (let index = 0; index < clusterIds.length; index += 800) {
+      const chunk = clusterIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const rows = this.db.prepare(`
+        SELECT DISTINCT cluster_id, photo_id FROM face_cluster_members
+        WHERE cluster_id IN (${placeholders})
+      `).all(...chunk) as Array<{ cluster_id: number; photo_id: string }>
+      for (const row of rows) {
+        const list = memberPhotoIdsByCluster.get(row.cluster_id) ?? []
+        list.push(row.photo_id)
+        memberPhotoIdsByCluster.set(row.cluster_id, list)
+      }
+    }
     return bindings.map(binding => ({
       clusterId: binding.cluster_id,
       roleName: binding.role_name,
       keywords: JSON.parse(binding.keywords) as string[],
-      memberPhotoIds: (memberStmt.all(binding.cluster_id) as Array<{ photo_id: string }>)
-        .map(member => member.photo_id),
+      memberPhotoIds: memberPhotoIdsByCluster.get(binding.cluster_id) ?? [],
     }))
   }
 

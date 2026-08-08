@@ -209,7 +209,6 @@ export type {
   CullingFilters,
   AssetCullingState,
   CullingAsset,
-  CullingListParams,
   CullingListPageParams,
   CullingPage,
   CullingUpdatePatch,

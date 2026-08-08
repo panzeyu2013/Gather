@@ -4,6 +4,9 @@ import type { ImageService } from '../services/image'
 import type { SettingsService } from '../services/settings/settings.service'
 import type { JobService } from '../services/jobs/job.service'
 import { createHash } from 'node:crypto'
+import { container, DI_TOKENS } from '../di/container'
+import type { AnalysisJobRepository } from '../db/repositories/analysis-job.repo'
+import type { AnalysisJobType } from '@gather/shared'
 
 // Viewport preloads during scrolling re-request the same path windows many
 // times; answering those from an in-memory fingerprint map avoids scanning
@@ -29,18 +32,26 @@ const preloadThumbnailOrder: string[] = []
 let preloadReusableJobIds = new Set<string>()
 let preloadReusableRefreshedAt = 0
 
-function reusablePreloadJobIds(jobs: JobService): Set<string> {
+// The preload path only needs thumbnail.build rows; scanning the whole jobs
+// table (and parsing every row's checkpoint_json, including a running export
+// job's 50k-id array) is what made each miss O(jobs). JobService exposes no
+// per-type query, so the repo is resolved lazily from the container — by the
+// time any handler runs the container is fully initialized.
+let analysisJobRepo: AnalysisJobRepository | null = null
+function preloadJobsByType(type: AnalysisJobType) {
+  analysisJobRepo ??= container.resolve<AnalysisJobRepository>(DI_TOKENS.ANALYSIS_JOB_REPO)
+  return analysisJobRepo.listByType(type)
+}
+
+function reusablePreloadJobIds(): Set<string> {
   const now = Date.now()
   if (now - preloadReusableRefreshedAt < PRELOAD_REUSABLE_REFRESH_MS) {
     return preloadReusableJobIds
   }
   preloadReusableRefreshedAt = now
   preloadReusableJobIds = new Set(
-    jobs
-      .list()
-      .filter(job =>
-        job.type === 'thumbnail.build' &&
-        ['queued', 'running', 'succeeded'].includes(job.status))
+    preloadJobsByType('thumbnail.build')
+      .filter(job => ['queued', 'running', 'succeeded'].includes(job.status))
       .map(job => job.id),
   )
   return preloadReusableJobIds
@@ -115,16 +126,20 @@ export function registerImageHandlers(
         // Validate the HIT against the throttled liveness snapshot; an
         // invalid entry falls through to the scan path, which prunes it and
         // returns (or creates) a live job.
-        if (reusablePreloadJobIds(jobs).has(cachedJobId)) return ok(cachedJobId)
+        if (reusablePreloadJobIds().has(cachedJobId)) return ok(cachedJobId)
       }
       const requested = new Set(paths)
-      const allJobs = jobs.list()
+      // One type-filtered query instead of a full-table jobs.list(): the
+      // rows are already limited to thumbnail.build (whose checkpoints are
+      // small path/size lists), so no unrelated heavy checkpoint JSON is
+      // parsed on the hot path.
+      const thumbnailJobs = preloadJobsByType('thumbnail.build')
       // Prune cache entries whose job is no longer reusable (failed/
       // cancelled/interrupted, or cleared from the jobs table). The scan
       // that just ran is the only cheap place to learn that.
       const reusableJobIds = new Set(
-        allJobs
-          .filter(job => job.type === 'thumbnail.build' && ['queued', 'running', 'succeeded'].includes(job.status))
+        thumbnailJobs
+          .filter(job => ['queued', 'running', 'succeeded'].includes(job.status))
           .map(job => job.id),
       )
       for (const key of preloadThumbnailOrder) {
@@ -137,8 +152,8 @@ export function registerImageHandlers(
         preloadThumbnailOrder.length = 0
         preloadThumbnailOrder.push(...preloadThumbnailJobs.keys())
       }
-      const existing = allJobs.find(job => {
-        if (job.type !== 'thumbnail.build' || job.scopeType !== 'paths') return false
+      const existing = thumbnailJobs.find(job => {
+        if (job.scopeType !== 'paths') return false
         if (!['queued', 'running', 'succeeded'].includes(job.status)) return false
         if (typeof job.checkpoint.size !== 'number' || job.checkpoint.size !== size) return false
         const existingPaths = Array.isArray(job.checkpoint.paths)

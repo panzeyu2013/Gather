@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect } from 'react'
+import React, { Suspense, lazy, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, useParams, Navigate, Link, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import Loading from '../../components/Loading/Loading'
@@ -28,8 +28,18 @@ export default function SessionDetail() {
     if (sessionId) setSession(sessionId)
   }, [sessionId, setSession])
 
+  // SessionDetail remounts on every Session switch; the main process scan is
+  // idempotent, so throttle per-session IPC to at most one scan per 5s. The
+  // first visit of a session still scans; later auto-scans from the indexer
+  // are unaffected.
+  const lastScanAtRef = useRef<Record<string, number>>({})
+
   useEffect(() => {
     if (!sessionId || !session?.sourcePath) return
+    const now = Date.now()
+    const lastScanAt = lastScanAtRef.current[sessionId] ?? 0
+    if (now - lastScanAt < 5_000) return
+    lastScanAtRef.current[sessionId] = now
     void indexerApi.scan(sessionId).catch(error => {
       console.warn('Unable to schedule workspace index scan', error)
     })

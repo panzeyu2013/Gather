@@ -155,10 +155,12 @@ async function benchmark(count) {
     if (thumbnailJob?.id) await waitForJob(launched.page, thumbnailJob.id)
     const thumbnailMs = performance.now() - thumbnailStarted
 
-    const assets = await command(launched.page, 'culling.list', {
+    const assetsPage = await command(launched.page, 'culling.list_page', {
       sessionId: session.id,
       scope: 'all',
+      limit: 2000,
     })
+    const assets = assetsPage.assets
     const interactionSamples = []
     let interactionRevision = assets[0].state.revision
     for (let index = 0; index < 20; index++) {

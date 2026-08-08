@@ -1,11 +1,49 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { personApi } from '../../api/person'
+import { imageApi } from '../../api/image'
 import Dialog from '../../components/Dialog/Dialog'
 import ConfirmDialog from '../../components/Dialog/ConfirmDialog'
-import type { PersonDetailData } from '@gather/shared'
+import type { PersonDetailData, PersonPhotoItem } from '@gather/shared'
 import styles from './PersonDetail.module.css'
+
+function PersonAvatar({ person }: { person: PersonDetailData }) {
+  const src = person.thumbnailPath
+    ? imageApi.thumbnailUrl(person.thumbnailPath, 256)
+    : person.thumbnailBase64
+      ? `data:image/jpeg;base64,${person.thumbnailBase64}`
+      : null
+  const [failed, setFailed] = useState(false)
+  const lastSrcRef = useRef(src)
+  // Navigating between persons reuses this instance; a stale `failed` flag
+  // must not hide a freshly loaded avatar.
+  if (lastSrcRef.current !== src) {
+    lastSrcRef.current = src
+    setFailed(false)
+  }
+  if (!src || failed) {
+    return person.name.charAt(0)
+  }
+  return (
+    <img src={src} alt={person.name} loading="lazy" onError={() => setFailed(true)} />
+  )
+}
+
+function PhotoThumb({ photo }: { photo: PersonPhotoItem }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return <span className={styles.photoThumbPlaceholder}>&#128247;</span>
+  }
+  return (
+    <img
+      src={imageApi.thumbnailUrl(photo.filepath, 256)}
+      alt={photo.filename}
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  )
+}
 
 export default function PersonDetail() {
   const { personId } = useParams<{ personId: string }>()
@@ -98,11 +136,7 @@ export default function PersonDetail() {
       <div className={styles.header}>
         <div className={styles.headerLeft}>
           <div className={styles.avatar}>
-            {person.thumbnailBase64 ? (
-              <img src={`data:image/jpeg;base64,${person.thumbnailBase64}`} alt={person.name} />
-            ) : (
-              person.name.charAt(0)
-            )}
+            <PersonAvatar person={person} />
           </div>
           <div className={styles.headerInfo}>
             <h1 className={styles.name}>{person.name}</h1>
@@ -164,11 +198,7 @@ export default function PersonDetail() {
             {person.photos.map((photo) => (
               <div key={photo.photoId} className={styles.photoCard}>
                 <div className={styles.photoThumb}>
-                  {photo.thumbnailBase64 ? (
-                    <img src={`data:image/jpeg;base64,${photo.thumbnailBase64}`} alt={photo.filename} />
-                  ) : (
-                    <span className={styles.photoThumbPlaceholder}>&#128247;</span>
-                  )}
+                  <PhotoThumb photo={photo} />
                 </div>
                 <div className={styles.photoInfo}>
                   <p className={styles.photoName}>{photo.filename}</p>

@@ -1,6 +1,6 @@
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
-import type { PhotoRow } from '../../db/repositories/photo.repo'
+import type { PhotoProjectionRow } from '../../db/repositories/photo.repo'
 import type { ExportOptions, ExportPreview, ExportResult, ExportProgressData, ReportData } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
@@ -166,6 +166,18 @@ export class ExportService {
   }
 
   /**
+   * The light photo projection (no metadata/result JSON blobs) is used on the
+   * export hot paths — only identity/file/asset/dimension columns are read.
+   * The full-row fallback keeps unit-test doubles that only expose
+   * getBySession working (mirrors culling.service).
+   */
+  private loadSessionPhotos(sessionId: string): PhotoProjectionRow[] {
+    return typeof this.photoRepo.getBySessionProjection === 'function'
+      ? this.photoRepo.getBySessionProjection(sessionId)
+      : this.photoRepo.getBySession(sessionId)
+  }
+
+  /**
    * Exporting into the session's watched source directory (or a subdirectory
    * of it) would produce new copies that the index watcher immediately
    * re-imports as duplicates. Reject it server-side, not just in the UI.
@@ -224,7 +236,7 @@ export class ExportService {
   async preview(sessionId: string, options: ExportOptions): Promise<ExportPreview> {
     validateExportOptions(options)
     this.assertDestinationOutsideSource(sessionId, options.destination)
-    const photos = this.photoRepo.getBySession(sessionId)
+    const photos = this.loadSessionPhotos(sessionId)
     const filtered = this.filterPhotos(photos, options)
     const files = await batchAsync(filtered, async (photo) => {
       try {
@@ -263,7 +275,7 @@ export class ExportService {
     if (resume?.signal?.aborted) this.cancelFlags.set(sessionId, true)
     validateExportOptions(options)
     this.assertDestinationOutsideSource(sessionId, options.destination)
-    const photos = this.photoRepo.getBySession(sessionId)
+    const photos = this.loadSessionPhotos(sessionId)
     const sessionName = this.sessionRepo.get(sessionId)?.name ?? sessionId
     const filtered = this.filterPhotos(photos, options)
     const total = filtered.length
@@ -418,7 +430,7 @@ export class ExportService {
   }
 
   generateReport(sessionId: string, reportType: string, format?: string): ReportData {
-    const photos = this.photoRepo.getBySession(sessionId)
+    const photos = this.loadSessionPhotos(sessionId)
     const reportFormat = (format === 'md' ? 'md' : 'csv') as 'csv' | 'md'
     let content = ''
 
@@ -442,8 +454,8 @@ export class ExportService {
     }
   }
 
-  private filterPhotos(photos: PhotoRow[], options: ExportOptions): PhotoRow[] {
-    let scoped: PhotoRow[]
+  private filterPhotos(photos: PhotoProjectionRow[], options: ExportOptions): PhotoProjectionRow[] {
+    let scoped: PhotoProjectionRow[]
     if (options.scope === 'session') {
       scoped = photos.filter((p) => p.status !== 'removed')
     } else if (options.scope === 'selected' || options.scope === 'filtered') {
@@ -453,7 +465,7 @@ export class ExportService {
     }
     const policy = options.variantPolicy ?? 'preferred'
     if (policy === 'all') return scoped
-    const groups = new Map<string, PhotoRow[]>()
+    const groups = new Map<string, PhotoProjectionRow[]>()
     for (const photo of scoped) {
       const key = photo.asset_id ?? photo.id
       const variants = groups.get(key) ?? []
@@ -466,8 +478,8 @@ export class ExportService {
       '.rwl', '.sr2', '.srf', '.srw', '.x3f',
     ])
     const jpegExtensions = new Set(['.jpg', '.jpeg'])
-    const isRaw = (photo: PhotoRow) => rawExtensions.has(path.extname(photo.filename).toLowerCase())
-    const isJpeg = (photo: PhotoRow) => jpegExtensions.has(path.extname(photo.filename).toLowerCase())
+    const isRaw = (photo: PhotoProjectionRow) => rawExtensions.has(path.extname(photo.filename).toLowerCase())
+    const isJpeg = (photo: PhotoProjectionRow) => jpegExtensions.has(path.extname(photo.filename).toLowerCase())
     return [...groups.values()].flatMap(variants => {
       if (policy === 'raw') return variants.find(isRaw) ?? []
       if (policy === 'jpeg') return variants.find(isJpeg) ?? []
@@ -475,7 +487,7 @@ export class ExportService {
     })
   }
 
-  private resolveNaming(photo: PhotoRow, options: ExportOptions, counter: number, sessionName: string): string {
+  private resolveNaming(photo: PhotoProjectionRow, options: ExportOptions, counter: number, sessionName: string): string {
     const now = new Date()
     const dateStr = this.formatDate(now, options.naming.dateFormat ?? 'YYYY-MM-DD')
     const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '-')

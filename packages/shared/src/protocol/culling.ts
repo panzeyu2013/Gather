@@ -71,12 +71,6 @@ export interface CullingAsset {
   metadataSource?: MetadataMutationSource
 }
 
-export interface CullingListParams {
-  sessionId: string
-  scope: CullingScope
-  filters?: CullingFilters
-  groupId?: string
-}
 
 /** One page of the paginated culling list. `nextRowId` is the keyset cursor
  * (photos.rowid of the last fetched row) to pass as `afterRowId` on the next

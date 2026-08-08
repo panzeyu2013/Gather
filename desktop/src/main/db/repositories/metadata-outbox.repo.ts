@@ -30,6 +30,19 @@ export interface MetadataOutboxRow {
   updated_at: string
 }
 
+/** Light projection of an outbox row for summary push: every column the
+ * MetadataSyncSummary item needs, minus the heavy JSON blobs
+ * (patch_json/base_values_json) and the fields no summary consumer reads. */
+export interface MetadataOutboxSummaryRow {
+  xmp_path: string
+  revision: number
+  persisted_revision: number
+  status: MetadataOutboxStatus
+  attempt_count: number
+  error_message: string
+  updated_at: string
+}
+
 @injectable()
 export class MetadataOutboxRepository {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
@@ -48,6 +61,25 @@ export class MetadataOutboxRepository {
       WHERE os.session_id = ?
       ORDER BY o.updated_at, o.xmp_path
     `).all(sessionId) as MetadataOutboxRow[]
+  }
+
+  /**
+   * Summary-push projection: only the columns MetadataSyncItem consumers read
+   * (the renderer uses xmp_path/status per asset, writeback verification reads
+   * error_message; revision/persisted_revision/attempt_count/updated_at keep
+   * the payload shape intact). Avoids shipping the patch_json/base_values_json
+   * blobs on every throttled culling:sync-status push. Same ordering as
+   * getBySession so summaries stay stable.
+   */
+  getSummaryRowsBySession(sessionId: string): MetadataOutboxSummaryRow[] {
+    return this.db.prepare(`
+      SELECT o.xmp_path, o.revision, o.persisted_revision, o.status,
+             o.attempt_count, o.error_message, o.updated_at
+      FROM metadata_outbox o
+      JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
+      WHERE os.session_id = ?
+      ORDER BY o.updated_at, o.xmp_path
+    `).all(sessionId) as MetadataOutboxSummaryRow[]
   }
 
   getSessionIds(xmpPath: string): string[] {

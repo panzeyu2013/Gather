@@ -320,7 +320,7 @@ export class FaceKwService {
           const photo = photos[index]
           const sourceStat = sourceStats.get(photo.id)
           if (!sourceStat || isCacheValid(photo.id, sourceStat)) continue
-          const pending = this.imageService.getPreview(photo.filepath, previewMaxDimension)
+          const pending = this.imageService.getPreview(photo.filepath, previewMaxDimension, 0, false)
           // Suppress unhandled-rejection warnings while the decode is in
           // flight; the failure is observed when the photo is processed.
           pending.catch(() => {})
@@ -467,7 +467,7 @@ export class FaceKwService {
         let preview: DecodeResult
         try {
           preview = await (decodePromises[i] ??
-            this.imageService.getPreview(photo.filepath, previewMaxDimension))
+            this.imageService.getPreview(photo.filepath, previewMaxDimension, 0, false))
         } catch (e) {
           detectionFailures++
           console.warn('Face detection failed for', photo.filepath, e)
@@ -717,7 +717,14 @@ export class FaceKwService {
       thumbnailBase64: '',
       binding: c.binding ? { roleName: c.binding.roleName, keywords: c.binding.keywords } : null,
       thumbnailPhotoId: c.members?.[0]?.photo_id,
-      members: (c.members ?? []).map((m) => ({
+      // The grid cards only render the first 4 members (ClusterThumb slices
+      // to MAX_PREVIEW_MEMBERS) and count via `size`, so shipping every
+      // member (photoPath/bbox/confidence) to the renderer for a 20k-face
+      // session was multi-MB of payload per cluster. Members are truncated to
+      // the preview window; `size` keeps the exact total. The writeback
+      // preview and unbind paths read the full member lists straight from the
+      // repository, so they are unaffected.
+      members: (c.members ?? []).slice(0, 4).map((m) => ({
         memberId: m.id,
         photoId: m.photo_id,
         photoPath: m.photo_path,

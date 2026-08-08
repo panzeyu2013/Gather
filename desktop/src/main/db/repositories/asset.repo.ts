@@ -759,6 +759,24 @@ export class AssetRepository {
       JOIN session_assets sa ON sa.asset_id = am.asset_id
       WHERE sa.session_id = ? AND af.extension IN ('.nef', '.arw', '.cr2', '.cr3', '.dng', '.raf', '.orf', '.rw2', '.pef', '.srw', '.jpg', '.jpeg')
     `).all(sessionId) as Array<{ id: string; filename: string; normalized_path: string; extension: string }>
+    // Load every existing candidate row touching these files up front (one
+    // query per 500-file chunk instead of one SELECT per (raw, jpeg) pair —
+    // ~10k queries for a 10k-pair backfill). The pair table stays small, so
+    // the OR-scan over the chunk is negligible.
+    const fileIds = [...new Set(files.map(file => file.id))]
+    const existingPairs = new Set<string>()
+    for (let index = 0; index < fileIds.length; index += 500) {
+      const chunk = fileIds.slice(index, index + 500)
+      const placeholders = chunk.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT left_file_id, right_file_id FROM asset_link_candidates
+        WHERE left_file_id IN (${placeholders}) OR right_file_id IN (${placeholders})
+      `).all(...chunk, ...chunk) as Array<{ left_file_id: string; right_file_id: string }>
+      for (const row of rows) {
+        existingPairs.add(`${row.left_file_id}\0${row.right_file_id}`)
+        existingPairs.add(`${row.right_file_id}\0${row.left_file_id}`)
+      }
+    }
     let created = 0
     const candidatesByStem = new Map<string, {
       raws: typeof files
@@ -776,11 +794,7 @@ export class AssetRepository {
     for (const [groupKey, group] of candidatesByStem) {
       for (const raw of group.raws) {
         for (const jpeg of group.jpegs) {
-        const exists = this.db.prepare(`
-          SELECT id FROM asset_link_candidates
-          WHERE (left_file_id = ? AND right_file_id = ?) OR (left_file_id = ? AND right_file_id = ?)
-        `).get(raw.id, jpeg.id, jpeg.id, raw.id)
-        if (exists) continue
+        if (existingPairs.has(`${raw.id}\0${jpeg.id}`)) continue
         const timestamp = now()
         const unambiguous = group?.raws.length === 1 && group.jpegs.length === 1
         const candidateId = crypto.randomUUID()

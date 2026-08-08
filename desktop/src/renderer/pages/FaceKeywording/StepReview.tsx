@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState, memo } from 'react'
+import React, { useCallback, useEffect, useRef, useState, memo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useFaceKwStore, type ClusterData, type ClusterMemberData } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
@@ -8,6 +8,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import styles from './StepReview.module.css'
 
 const MAX_PREVIEW_MEMBERS = 4
+const CLUSTER_PAGE_SIZE = 100
 
 export default function StepReview() {
   const sessionId = useFaceKwStore((s) => s.sessionId)
@@ -46,12 +47,33 @@ export default function StepReview() {
     setSearchParams({}, { replace: true })
   }, [setSearchParams])
 
+  // Hundreds of clusters is typical; mount them in chunks instead of all at
+  // once. Reset the chunk when the role filter changes the visible set.
+  const [visibleClusterCount, setVisibleClusterCount] = useState(CLUSTER_PAGE_SIZE)
+  useEffect(() => {
+    setVisibleClusterCount(CLUSTER_PAGE_SIZE)
+  }, [roleFilter])
+  const shownClusters = visibleClusters.slice(0, visibleClusterCount)
+
   const selectedCluster = clusters.find((c) => c.id === selectedClusterId) ?? null
 
   const [roleName, setRoleName] = useState(selectedCluster?.binding?.roleName ?? '')
   const [keywords, setKeywords] = useState(selectedCluster?.binding?.keywords?.join(', ') ?? '')
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+
+  // F6: the form state only initializes from the selected cluster once, so a
+  // programmatic selection switch (e.g. handleMerge) left stale values behind.
+  // Sync on cluster id change only; the ref guards against a same-id refresh
+  // (bind/removeMember invalidate) clobbering an in-progress draft.
+  const syncedClusterIdRef = useRef(selectedCluster?.id ?? null)
+  useEffect(() => {
+    const nextId = selectedCluster?.id ?? null
+    if (syncedClusterIdRef.current === nextId) return
+    syncedClusterIdRef.current = nextId
+    setRoleName(selectedCluster?.binding?.roleName ?? '')
+    setKeywords(selectedCluster?.binding?.keywords?.join(', ') ?? '')
+  }, [selectedCluster])
 
   const handleSelectCluster = useCallback(
     (cluster: ClusterData) => {
@@ -136,7 +158,7 @@ export default function StepReview() {
           </div>
         )}
         <div className={styles.clusterGrid}>
-          {visibleClusters.map((cluster) => (
+          {shownClusters.map((cluster) => (
             <ClusterCard
               key={cluster.id}
               cluster={cluster}
@@ -146,6 +168,17 @@ export default function StepReview() {
             />
           ))}
         </div>
+        {visibleClusters.length > visibleClusterCount && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '14px 0' }}>
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              onClick={() => setVisibleClusterCount((count) => count + CLUSTER_PAGE_SIZE)}
+            >
+              加载更多 (还有 {visibleClusters.length - visibleClusterCount} 组)
+            </button>
+          </div>
+        )}
       </section>
 
       <aside className={styles.detailPane}>

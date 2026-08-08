@@ -3,7 +3,7 @@ import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { Database } from '../../db/database'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
-import type { PhotoRow } from '../../db/repositories/photo.repo'
+import type { PhotoProjectionRow } from '../../db/repositories/photo.repo'
 import type { ImageService } from '../image'
 import type { QualityResult } from '@gather/shared'
 import type { JobRunContext } from '../jobs/job.service'
@@ -74,9 +74,13 @@ export class QualityService {
     photoIds?: string[],
     context?: JobRunContext,
   ): Promise<QualityResult[]> {
-    const sessionPhotos = this.photoRepo.getBySession(sessionId)
-    const photos = photoIds
-      ? sessionPhotos.filter(photo => photoIds.includes(photo.id))
+    // The projection read skips the heavy metadata/result JSON columns, and
+    // the subset path filters through a Set instead of per-photo includes()
+    // inside the loop (O(n) once instead of O(n x m)).
+    const sessionPhotos = this.photoRepo.getBySessionProjection(sessionId)
+    const requested = photoIds ? new Set(photoIds) : null
+    const photos = requested
+      ? sessionPhotos.filter(photo => requested.has(photo.id))
       : collapsePhotoAssets(sessionPhotos)
     // Batch preloads: one IN query each replaces the per-photo cache and
     // face lookups (the whole run, not one SELECT per photo).
@@ -305,14 +309,21 @@ export class QualityService {
       ? [...new Set(photoIds)].filter(photoId => sessionIds.has(photoId))
       : [...sessionIds]
     if (ids.length === 0) return []
-    const placeholders = ids.map(() => '?').join(',')
-    const rows = this.db.prepare(`
-      SELECT aa.result_json, p.id AS requested_photo_id
-      FROM photos p
-      JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
-      WHERE aa.analysis_type = 'technical_quality' AND p.id IN (${placeholders})
-      ORDER BY aa.updated_at DESC
-    `).all(...ids) as Array<{ result_json: string; requested_photo_id: string }>
+    // The IN list is chunked (see chunkIds) so a whole-session id set stays
+    // under SQLite's variable bound (32766 on recent builds); the latest-map
+    // logic below is unchanged because every analysis row of a photo is
+    // returned by the single chunk that contains that photo's id.
+    const rows: Array<{ result_json: string; requested_photo_id: string }> = []
+    for (const chunk of this.chunkIds(ids)) {
+      const placeholders = chunk.map(() => '?').join(',')
+      rows.push(...this.db.prepare(`
+        SELECT aa.result_json, p.id AS requested_photo_id
+        FROM photos p
+        JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
+        WHERE aa.analysis_type = 'technical_quality' AND p.id IN (${placeholders})
+        ORDER BY aa.updated_at DESC
+      `).all(...chunk) as Array<{ result_json: string; requested_photo_id: string }>)
+    }
     const latest = new Map<string, QualityResult>()
     for (const row of rows) {
       try {
@@ -338,7 +349,7 @@ export class QualityService {
    * done in JS after stat()). Rows are ordered by updated_at DESC.
    */
   private getCachedBatch(
-    photos: PhotoRow[],
+    photos: PhotoProjectionRow[],
   ): Map<string, Array<{ fingerprint: string; result: QualityResult }>> {
     const rowsByPhoto = new Map<string, Array<{ fingerprint: string; result: QualityResult }>>()
     const ids = photos.map(photo => photo.id)
@@ -377,7 +388,7 @@ export class QualityService {
    */
   private getFacesBatch(
     sessionId: string,
-    photos: PhotoRow[],
+    photos: PhotoProjectionRow[],
   ): Map<string, {
     bbox_x: number
     bbox_y: number

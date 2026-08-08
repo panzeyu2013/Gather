@@ -41,7 +41,27 @@ export function registerFilterHandlers(registry: CommandRegistry, filterEngine: 
       const criteria = parseFilterCriteria(params.criteria as FilterGroup)
       const sortBy = typeof params.sortBy === 'string' ? params.sortBy : undefined
       const sortOrder = typeof params.sortOrder === 'string' ? params.sortOrder : undefined
-      const photos: PhotoData[] = filterEngine.filterPhotos(sessionId, criteria, sortBy, sortOrder)
+      // Contract: limit/offset are optional (clamped like filter.photos_global,
+      // 1..500 / >= 0). Without them the call defaults to a 100-row window:
+      // every row carries the heavy p.metadata/p.result JSON plus a per-row
+      // face_observations count sub-query, and the FilterBuilder preview would
+      // otherwise ship the whole session to the renderer. Callers that only
+      // need a count should use countPhotos; callers that need everything
+      // must pass an explicit limit.
+      const limit = typeof params.limit === 'number'
+        ? Math.max(1, Math.min(500, Math.floor(params.limit)))
+        : 100
+      const offset = typeof params.offset === 'number'
+        ? Math.max(0, Math.floor(params.offset))
+        : 0
+      const photos: PhotoData[] = filterEngine.filterPhotos(
+        sessionId,
+        criteria,
+        sortBy,
+        sortOrder,
+        limit,
+        offset,
+      )
       return ok(photos)
     }),
   )

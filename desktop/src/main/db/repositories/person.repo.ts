@@ -8,6 +8,8 @@ export interface PersonRow {
   name: string
   keywords: string
   thumbnail_base64: string
+  /** Filepath of the person's most recent photo (null when no linked photos). */
+  thumbnail_path: string | null
   notes: string
   match_threshold: number
   created_at: string
@@ -63,7 +65,13 @@ export class PersonRepository {
 
   listWithCounts(): (PersonRow & { photo_count: number; session_count: number })[] {
     return this.db.prepare(`
-      SELECT p.*, 
+      SELECT p.*,
+        (SELECT ph.filepath
+         FROM person_photos pp
+         JOIN photos ph ON ph.id = pp.photo_id
+         WHERE pp.person_id = p.id
+         ORDER BY pp.created_at DESC, pp.id DESC
+         LIMIT 1) as thumbnail_path,
         COALESCE(pp.photo_count, 0) as photo_count,
         COALESCE(pp.session_count, 0) as session_count
       FROM persons p
@@ -77,7 +85,17 @@ export class PersonRepository {
   }
 
   get(id: string): PersonRow | undefined {
-    return this.db.prepare('SELECT * FROM persons WHERE id = ?').get(id) as PersonRow | undefined
+    return this.db.prepare(`
+      SELECT *,
+        (SELECT ph.filepath
+         FROM person_photos pp
+         JOIN photos ph ON ph.id = pp.photo_id
+         WHERE pp.person_id = persons.id
+         ORDER BY pp.created_at DESC, pp.id DESC
+         LIMIT 1) as thumbnail_path
+      FROM persons
+      WHERE id = ?
+    `).get(id) as PersonRow | undefined
   }
 
   create(name: string, keywords?: string[]): string {

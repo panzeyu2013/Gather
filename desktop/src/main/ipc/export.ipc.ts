@@ -33,7 +33,18 @@ export function registerExportHandlers(
     // state — a crash loses at most the last throttled window, exactly as
     // before. The format is unchanged, so old persisted checkpoints read the
     // same way and no DB schema change is needed.
+    //
+    // The snapshot array itself is only handed to the job layer at most once
+    // per CHECKPOINT_WRITE_INTERVAL_MS instead of on every 250ms job-layer
+    // flush: a 50k-id export was re-serializing and re-writing the whole
+    // array ~4×/s (~1.5MB per write). The last write of every run is forced
+    // via updateCheckpoint below, so the persisted completedPhotoIds list
+    // remains complete for resume — a crash loses at most the ids completed
+    // in the final <=1s window, and those photos get re-exported with a _2
+    // suffix, the same order of magnitude as the previous 250ms window.
+    const CHECKPOINT_WRITE_INTERVAL_MS = 1000
     const completedIdsSnapshot: string[] = [...persistedCompletedIds]
+    let lastCheckpointWriteAt = 0
     const checkpoint = () => ({
       options: job.checkpoint.options,
       destinations,
@@ -46,12 +57,16 @@ export function registerExportHandlers(
       job.scopeId,
       job.checkpoint.options as Parameters<typeof exportService.execute>[1],
       progress => {
-        context.updateProgress({
-          current: progress.current,
-          total: progress.total,
-          message: `${progress.fileName} · ${progress.status}`,
-          checkpoint: checkpoint(),
-        })
+        const now = Date.now()
+        if (now - lastCheckpointWriteAt >= CHECKPOINT_WRITE_INTERVAL_MS) {
+          lastCheckpointWriteAt = now
+          context.updateProgress({
+            current: progress.current,
+            total: progress.total,
+            message: `${progress.fileName} · ${progress.status}`,
+            checkpoint: checkpoint(),
+          })
+        }
         progressSinks.get(job.id)?.forEach(sink => sink(progress))
       },
       {
@@ -70,10 +85,20 @@ export function registerExportHandlers(
             completedPhotoIds.add(photoId)
             completedIdsSnapshot.push(photoId)
           }
-          context.updateProgress({ checkpoint: checkpoint() })
+          const now = Date.now()
+          if (now - lastCheckpointWriteAt >= CHECKPOINT_WRITE_INTERVAL_MS) {
+            lastCheckpointWriteAt = now
+            context.updateProgress({ checkpoint: checkpoint() })
+          }
         },
       },
-    )
+    ).then(result => {
+      // Force the final full snapshot so a resume (or a re-run after a
+      // crash/cancel) always reads the complete completedPhotoIds list, even
+      // when the run ended inside the throttled window.
+      context.updateCheckpoint(checkpoint())
+      return result
+    })
   })
   registry.register(
     'export.preview',

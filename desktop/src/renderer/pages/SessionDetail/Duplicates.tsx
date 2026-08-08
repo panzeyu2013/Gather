@@ -5,6 +5,9 @@ import { imageApi } from '../../api/image'
 import type { DuplicateScanResult, DuplicateGroup, DuplicateGroupMember } from '@gather/shared'
 import styles from './Duplicates.module.css'
 
+const DEFAULT_MEMBER_LIMIT = 12
+const GROUP_PAGE_SIZE = 100
+
 function ThumbnailImage({ path, className }: { path: string; className?: string }) {
   const [failed, setFailed] = useState(false)
   const filename = path.split(/[/\\]/).pop() ?? path
@@ -56,6 +59,7 @@ const GroupCard = memo(function GroupCard({
   onToggleMember: (memberId: number, isKept: boolean) => void
 }) {
   const [showResolve, setShowResolve] = useState(false)
+  const [showAllMembers, setShowAllMembers] = useState(false)
 
   const recommendation = useMemo(() => {
     const sorted = [...group.members].sort((a, b) => {
@@ -65,6 +69,10 @@ const GroupCard = memo(function GroupCard({
     })
     return sorted[0]
   }, [group.members])
+
+  const visibleMembers = showAllMembers
+    ? group.members
+    : group.members.slice(0, DEFAULT_MEMBER_LIMIT)
 
   return (
     <div className={styles.groupCard}>
@@ -107,7 +115,7 @@ const GroupCard = memo(function GroupCard({
       )}
 
       <div className={styles.memberGrid}>
-        {group.members.map((member) => (
+        {visibleMembers.map((member) => (
           <div key={member.id} className={styles.memberWrapper}>
             <MemberCard member={member} onToggle={onToggleMember} />
             {recommendation && member.id === recommendation.id && (
@@ -116,6 +124,18 @@ const GroupCard = memo(function GroupCard({
           </div>
         ))}
       </div>
+
+      {group.members.length > DEFAULT_MEMBER_LIMIT && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '0 0 12px' }}>
+          <button
+            type="button"
+            className={styles.resolveBtn}
+            onClick={() => setShowAllMembers((value) => !value)}
+          >
+            {showAllMembers ? '收起' : `展开全部 (共 ${group.members.length} 张)`}
+          </button>
+        </div>
+      )}
     </div>
   )
 })
@@ -234,12 +254,31 @@ export default function Duplicates() {
     }
   }, [])
 
-  const filteredGroups = groups.filter(
-    (g) => g.groupType === activeTab,
-  )
+  // Single pass over `groups` deriving every filtered list, so tab rendering
+  // and the tab badges don't each run their own full filter per render.
+  const { filteredGroups, exactGroups, visualGroups } = useMemo(() => {
+    const exact: DuplicateGroup[] = []
+    const visual: DuplicateGroup[] = []
+    for (const g of groups) {
+      if (g.groupType === 'exact') exact.push(g)
+      else visual.push(g)
+    }
+    return {
+      filteredGroups: activeTab === 'exact' ? exact : visual,
+      exactGroups: exact,
+      visualGroups: visual,
+    }
+  }, [groups, activeTab])
 
-  const exactGroups = groups.filter((g) => g.groupType === 'exact')
-  const visualGroups = groups.filter((g) => g.groupType === 'visual')
+  // Hundreds of groups is typical; cap the mounted group list and let the user
+  // load more in chunks instead of mounting every group (and every member) at
+  // once. Reset the cap when the tab switches to a different group set.
+  const [visibleGroupCount, setVisibleGroupCount] = useState(GROUP_PAGE_SIZE)
+  useEffect(() => {
+    setVisibleGroupCount(GROUP_PAGE_SIZE)
+  }, [activeTab])
+
+  const visibleGroups = filteredGroups.slice(0, visibleGroupCount)
 
   if (!sessionId) {
     return <div className={styles.page}><p>未选择工作区</p></div>
@@ -314,7 +353,7 @@ export default function Duplicates() {
       )}
 
       <div className={styles.grid}>
-        {filteredGroups.map((group) => (
+        {visibleGroups.map((group) => (
           <GroupCard
             key={group.id}
             group={group}
@@ -323,6 +362,18 @@ export default function Duplicates() {
           />
         ))}
       </div>
+
+      {filteredGroups.length > visibleGroupCount && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0' }}>
+          <button
+            type="button"
+            className={styles.resolveBtn}
+            onClick={() => setVisibleGroupCount((count) => count + GROUP_PAGE_SIZE)}
+          >
+            加载更多 (还有 {filteredGroups.length - visibleGroupCount} 组)
+          </button>
+        </div>
+      )}
     </div>
   )
 }

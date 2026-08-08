@@ -16,6 +16,11 @@ import { heavyTaskScheduler } from '../../utils/heavy-task-scheduler'
 export interface ThumbnailCache {
   get(key: string): Promise<DecodeResult | null>
   set(key: string, value: DecodeResult): Promise<void>
+  /** Write into the in-memory tier only, skipping any persistent tier. Used
+   * by analysis passes that decode large previews (e.g. 2048px face
+   * detection) but should not fill the disk cache. Optional so single-tier
+   * caches can ignore it. */
+  setMemoryOnly?(key: string, value: DecodeResult): Promise<void>
   flush(): Promise<void>
 }
 
@@ -40,6 +45,10 @@ export class MemoryThumbnailCache implements ThumbnailCache {
 
   async flush(): Promise<void> {
     // Nothing to persist: this tier is process-local.
+  }
+
+  async setMemoryOnly(key: string, value: DecodeResult): Promise<void> {
+    await this.set(key, value)
   }
 
   async get(key: string): Promise<DecodeResult | null> {
@@ -175,6 +184,10 @@ export class TieredThumbnailCache implements ThumbnailCache {
     await Promise.all([this.l1.set(key, value), this.l2.set(key, value)])
   }
 
+  async setMemoryOnly(key: string, value: DecodeResult): Promise<void> {
+    await this.l1.set(key, value)
+  }
+
   async flush(): Promise<void> {
     await this.l2.flush()
   }
@@ -267,7 +280,12 @@ export class ImageService {
     })
   }
 
-  async getPreview(path: string, maxDimension?: number, priority = 0): Promise<DecodeResult> {
+  async getPreview(
+    path: string,
+    maxDimension?: number,
+    priority = 0,
+    persistDisk = true,
+  ): Promise<DecodeResult> {
     const resolvedDimension = maxDimension ? canonicalImageSize(maxDimension) : 2048
     const key = await buildCacheKey(path, `p${resolvedDimension}`)
     const existing = this.previewInFlight.get(key)
@@ -284,7 +302,11 @@ export class ImageService {
           ), priority),
           priority,
         )
-        await this.thumbnailCache.set(key, result)
+        if (persistDisk) {
+          await this.thumbnailCache.set(key, result)
+        } else {
+          await this.thumbnailCache.setMemoryOnly?.(key, result)
+        }
         return result
       })
     this.previewInFlight.set(key, pending)
@@ -301,13 +323,14 @@ export class ImageService {
     path: string,
     size = this.settings.getNumber('thumbnail_size', 1024),
     priority = 1,
+    persistDisk = true,
   ): Promise<DecodeResult> {
     const resolvedSize = canonicalImageSize(size)
     const cacheKey = await buildCacheKey(path, `t${resolvedSize}`)
     const existing = this.thumbnailInFlight.get(cacheKey)
     if (existing) return existing
 
-    const pending = this.loadOrCreateThumbnail(path, resolvedSize, cacheKey, priority)
+    const pending = this.loadOrCreateThumbnail(path, resolvedSize, cacheKey, priority, persistDisk)
     this.thumbnailInFlight.set(cacheKey, pending)
     try {
       return await pending
@@ -385,6 +408,7 @@ export class ImageService {
     size: number,
     cacheKey: string,
     priority: number,
+    persistDisk: boolean,
   ): Promise<DecodeResult> {
     const cached = await this.thumbnailCache.get(cacheKey)
     if (cached) return cached
@@ -397,7 +421,11 @@ export class ImageService {
       ), priority),
       priority,
     )
-    await this.thumbnailCache.set(cacheKey, result)
+    if (persistDisk) {
+      await this.thumbnailCache.set(cacheKey, result)
+    } else {
+      await this.thumbnailCache.setMemoryOnly?.(cacheKey, result)
+    }
     return result
   }
 

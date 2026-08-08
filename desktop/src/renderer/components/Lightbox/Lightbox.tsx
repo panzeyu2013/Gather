@@ -20,6 +20,7 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
   const containerRef = useRef<HTMLDivElement>(null)
   const rafRef = useRef<number | null>(null)
   const pendingPositionRef = useRef({ x: 0, y: 0 })
+  const pendingScaleRef = useRef(1)
 
   const photo = photos[index]
 
@@ -37,15 +38,34 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
     if (index > 0) setIndex(index - 1)
   }, [index])
 
+  // Coalesce wheel zoom updates into one setScale per frame, same rAF pattern
+  // as the position coalescing below: high-frequency wheel events write the
+  // latest clamped value into a ref and a single pending frame commits it.
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault()
-    setScale((prev) => Math.max(0.5, Math.min(5, prev + (e.deltaY > 0 ? -0.2 : 0.2))))
+    pendingScaleRef.current = Math.max(
+      0.5,
+      Math.min(5, pendingScaleRef.current + (e.deltaY > 0 ? -0.2 : 0.2)),
+    )
+    if (rafRef.current != null) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null
+      setScale(pendingScaleRef.current)
+    })
   }, [])
 
+  // `photos` is deliberately not a dependency: the Gallery chain-fetches and
+  // re-filters while the lightbox is open, so an unrelated photos-array change
+  // must not reset the zoom, pan position, or image src mid-viewing. Only the
+  // active photo (index + filepath) triggers a reload; the adjacent preload
+  // is best-effort and reads the current photos array when it runs.
   useEffect(() => {
     if (!photo) return
     setLoadError(false)
     setScale(1)
+    // Keep the wheel accumulator in sync with the committed reset so a pending
+    // or future wheel event resumes from 1x instead of the previous zoom.
+    pendingScaleRef.current = 1
     setPosition({ x: 0, y: 0 })
     const viewportDimension = Math.max(window.innerWidth, window.innerHeight)
     const maxDimension = Math.max(
@@ -58,7 +78,7 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
     void imageApi.preloadPreviews(adjacentPaths, maxDimension).catch(() => {
       // Prefetch is best-effort; the foreground request still reports errors.
     })
-  }, [index, photo?.filepath, photos])
+  }, [index, photo?.filepath])
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {

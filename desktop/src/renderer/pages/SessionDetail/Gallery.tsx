@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue, memo } from 'react'
 import { useParams } from 'react-router-dom'
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { sessionApi } from '../../api/session'
 import { imageApi } from '../../api/image'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -27,6 +27,7 @@ const DENSITY_OPTIONS = [
 export default function Gallery() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const setSession = useSessionStore((s) => s.setSession)
+  const queryClient = useQueryClient()
 
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
@@ -38,7 +39,7 @@ export default function Gallery() {
   const [galleryWidth, setGalleryWidth] = useState(0)
   const [galleryHeight, setGalleryHeight] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
-  const galleryRef = useRef<HTMLDivElement>(null)
+  const galleryRef = useRef<HTMLDivElement | null>(null)
   const scrollFrameRef = useRef<number | null>(null)
 
   const thumbnailSizeSetting = useSettingsStore((s) => s.settings['thumbnail_size'])
@@ -116,29 +117,70 @@ export default function Gallery() {
     void fetchNextPage()
   }, [searchActive, hasNextPage, isFetchingNextPage, fetchNextPage])
 
+  // Exiting search/filter drops the chain-fetched extra pages from the query
+  // cache: while a filter was active the effect above pulled every remaining
+  // page (100k+ rows for a big session), and clearing it must release them
+  // instead of keeping them held for the rest of the session. The first page
+  // is retained so the view does not flash empty; the sentinel resumes
+  // natural pagination from there. Search-time fetching behavior is untouched.
+  const searchActiveRef = useRef(false)
   useEffect(() => {
+    if (searchActiveRef.current === searchActive) return
+    searchActiveRef.current = searchActive
+    if (searchActive || !sessionId) return
+    queryClient.setQueryData<InfiniteData<{ rows: PhotoData[]; cursor: number | null }>>(
+      ['photos', sessionId, expandVariants],
+      (data) => {
+        if (!data || data.pages.length <= 1) return data
+        return {
+          ...data,
+          pages: data.pages.slice(0, 1),
+          pageParams: data.pageParams.slice(0, 1),
+        }
+      },
+    )
+  }, [expandVariants, queryClient, searchActive, sessionId])
+
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
+
+  // Stable measurement callback: reads the element through the ref so the
+  // observer survives page-load re-renders instead of being rebuilt on every
+  // fetched page.
+  const measureGallery = useCallback(() => {
     const element = galleryRef.current
     if (!element) return
+    setGalleryWidth((current) => (
+      current === element.clientWidth ? current : element.clientWidth
+    ))
+    setGalleryHeight((current) => (
+      current === element.clientHeight ? current : element.clientHeight
+    ))
+  }, [])
 
-    const updateWidth = () => {
-      setGalleryWidth((current) => (
-        current === element.clientWidth ? current : element.clientWidth
-      ))
-      setGalleryHeight((current) => (
-        current === element.clientHeight ? current : element.clientHeight
-      ))
-    }
-    updateWidth()
-
+  // The grid only mounts once the first page resolves, so the observer is
+  // attached via a callback ref: it runs exactly when the element appears
+  // (and detaches when it unmounts) instead of re-observing on every load.
+  const attachGalleryResize = useCallback((element: HTMLDivElement | null) => {
+    galleryRef.current = element
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateWidth)
-      return () => window.removeEventListener('resize', updateWidth)
+      if (element) {
+        measureGallery()
+        window.addEventListener('resize', measureGallery)
+      } else {
+        window.removeEventListener('resize', measureGallery)
+      }
+      return
     }
-
-    const observer = new ResizeObserver(updateWidth)
+    if (resizeObserverRef.current) {
+      resizeObserverRef.current.disconnect()
+      resizeObserverRef.current = null
+    }
+    if (!element) return
+    const observer = new ResizeObserver(measureGallery)
+    resizeObserverRef.current = observer
     observer.observe(element)
-    return () => observer.disconnect()
-  }, [isLoading, loadedPhotos?.length])
+    measureGallery()
+  }, [measureGallery])
 
   const rows = useMemo(
     () => layoutJustifiedRows(filtered, galleryWidth, density, 8),
@@ -238,7 +280,7 @@ export default function Gallery() {
         </div>
       )}
       <div
-        ref={galleryRef}
+        ref={attachGalleryResize}
         className={styles.grid}
         onScroll={handleScroll}
       >

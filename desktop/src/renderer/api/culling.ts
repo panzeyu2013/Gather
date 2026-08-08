@@ -1,7 +1,6 @@
 import { sendCommand } from './client'
 import type {
   CleanupResult,
-  CullingAsset,
   CullingFilters,
   CullingGroup,
   CullingPage,
@@ -15,18 +14,6 @@ import type {
 } from '@gather/shared'
 
 export const cullingApi = {
-  list: (
-    sessionId: string,
-    scope: CullingScope,
-    filters?: CullingFilters,
-    groupId?: string,
-  ) => sendCommand<CullingAsset[]>('culling.list', {
-    sessionId,
-    scope,
-    ...(filters ? { filters } : {}),
-    ...(groupId ? { groupId } : {}),
-  }),
-
   listPage: (
     sessionId: string,
     scope: CullingScope,
