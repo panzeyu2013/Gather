@@ -131,13 +131,13 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 | checksum 后台补齐 | `index.service.ts` lazy_checksum | 索引先跳过哈希，后台 checksum backfill 任务补齐 |
 | 阈值预计算多档 | `cluster-engine.ts` + similarity-result 多阈值 tier | 相邻阈值档位预计算，滑块切换不全量重跑 |
 | 聚类 Worker 流式进度/取消/异常收敛 | `analysis-worker-client.ts` | 进度回传、AbortSignal、timeout/exit 兜底；动态超时已接通（face 分支按 512 维 flops 显式估算、上限 60min），超时为"无进展超时"——progress 心跳重置定时器，卡死才终止；BFS 扩展阶段按 `max(64, n/2000)` 步长回传心跳（进度单调不回退），单一大簇不会因无心跳被误杀 |
-| 人脸解码/推理滑动窗口流水线 | `face-kw.service.ts` | `face_decode_concurrency` 4-8；推理为批量请求（decodeWindow 张/批、单帧失败不影响整批），decode/infer 分阶段耗时有 profiling 日志 |
+| 人脸解码/推理滑动窗口流水线 | `face-kw.service.ts` | `face_decode_concurrency` 4-8；推理为批量请求（decodeWindow 张/批、单帧失败不影响整批）；`face_inference_parallel_workers`（默认 1）可启用双推理 worker 分片并行（线程预算均分、后续 worker init 失败自动降级回单 worker）；decode/infer 分阶段耗时有 profiling 日志 |
 | 人脸 DBSCAN 连续 Float32Array | `face-clusterer.ts` | 消除逐点分配与复制，降低内存峰值 |
 | 相似 hash 复用批量查询 | `similarity.service.ts` reuseSimilarityHashes | 按 asset_file_id 去重分块 `IN` 查询，消除逐照片 N+1（P1-5） |
 
 ### 3.2 已实现但未接通（落差）
 
-（当前无：动态超时估算已接通并纳入 §3.1「聚类 Worker」行。）
+（当前无：动态超时估算已接通并纳入 §3.1「聚类 Worker」行；HNSW 索引组件已实现但消费方未接线，见里程碑 V.1。）
 
 ### 3.3 已实测基线（unit 级，非应用级）
 
@@ -187,7 +187,7 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 | 任务 | 状态 | 验收标准 |
 |---|---|---|
 | 1.1 checksum 懒校验 + "跳过 checksum"设置 | **已完成** | 首次导入 5000 张 RAW ≤ 3 分钟（不含哈希），哈希后台补齐 |
-| 1.2 文件级失效粒度（替代 session 级全删） | **部分完成**：输入级按照片失效（hash/观测/分析态/asset_analysis/metadata cache）+ navigation_groups 按成员剪除；ENOENT（文件已删除）照片的陈旧观测与分析态在分析前清理，不再参与聚类；全局聚类结果保持 session 级删除（无增量聚类设施前不能局部失效，重分析按签名复用只重算变更照片） | 单文件变更只清其邻域结果，其余结果保持有效 |
+| 1.2 文件级失效粒度（替代 session 级全删） | **部分完成**：输入级按照片失效（hash/观测/分析态/asset_analysis/metadata cache）+ navigation_groups 按成员剪除；ENOENT（文件已删除）照片的陈旧观测与分析态在分析前清理，不再参与聚类；重聚类后用户绑定的角色按成员重叠迁移到新簇（不再静默丢失）；全局聚类结果保持 session 级删除（无增量聚类设施前不能局部失效，重分析按签名复用只重算变更照片） | 单文件变更只清其邻域结果，其余结果保持有效 |
 | 1.3 增量聚类 + 簇版本化 + 定期全局收敛 | 待做 | 新增 100 张后相似组在 10s 内局部更新；全局一致性由对账矩阵保证 |
 | 1.4 阈值预计算多档结果 | **已完成** | 阈值滑块切换 ≤ 500ms，无需重跑分析 |
 | 1.5 目录遍历并行化 + 扫描进度/暂停 | **已完成**：有界通道生产者-消费者并行遍历（WALK_CONCURRENCY=6，容量 256），遍历与扫描重叠 | 10 万文件树首次扫描 ≤ 2 分钟（不含哈希） |
@@ -197,11 +197,11 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 
 > 独立于 Phase 2/3 排期；Phase 2、Phase 3 均依赖它，排期应不晚于 2.2 与 3.2。
 
-| 任务 | 验收标准 |
-|---|---|
-| V.1 向量表（SQLite 持久化 + 内存 HNSW）+ 模型版本指纹 | 10 万向量近似近邻查询 ≤ 10ms，召回 ≥ 0.9 |
-| V.2 与精确暴力的质量对账工具 | 召回/精度可复现测量，作为 0.3c 与 3.2 的公共工具 |
-| V.3 增量索引更新 | 新向量插入不触发全量重建 |
+| 任务 | 状态 | 验收标准 |
+|---|---|---|
+| V.1 向量表（SQLite 持久化 + 内存 HNSW）+ 模型版本指纹 | **HNSW 索引组件已完成**（`face-kw/hnsw-index.ts`：CosineHnswIndex，增量插入 + 阈值/ top-k 查询，多样性启发式连接；向量持久化与模型指纹由 `face_observations`/`analysis_signature` 既有机制承载，消费方接线待 Phase 2/3） | 10 万向量近似近邻查询 ≤ 10ms，召回 ≥ 0.9 |
+| V.2 与精确暴力的质量对账工具 | **已完成**（`hnsw-recall.test.ts` 门禁：合成 8 簇 512 维，recall@1 ≥ 0.9，含增量插入后召回稳定性） | 召回/精度可复现测量，作为 0.3c 与 3.2 的公共工具 |
+| V.3 增量索引更新 | **已完成**：insert 只触达邻域，无全量重建；测试覆盖容量翻倍与增量插入后的召回保持 | 新向量插入不触发全量重建 |
 
 ### Phase 2：相似度 Embedding 升级（决策 A，依赖 V）
 
@@ -252,8 +252,8 @@ Phase 0（止血：超时/聚类/缓存/分页）
 
 1. **补基线**：把已完成的缓存/分页/checksum/阈值改造接入四套基准（§六）并记录数值；
 2. **接通动态超时**（0.1 闭环）：已完成——两个聚类入口传入 `estimateAnalysisTimeoutMs` 估算值，progress 心跳维护"无进展超时"（见 §3.1）；
-3. **数据正确性优先**：细粒度失效（1.2）+ 增量/全量对账（1.6）；
-4. **建立里程碑 V**，以人脸 O(n²) 为第一个真实调用方（0.3b/0.3c 一起做质量对账）；
+3. **数据正确性优先**：细粒度失效（1.2）已完成输入级失效、ENOENT 清理与绑定迁移；增量/全量对账（1.6）待增量聚类设施（1.3）落地；
+4. **里程碑 V 消费方接线**：HNSW 索引组件与召回门禁已完成（V.1-V.3），下一步以人脸 O(n²) 聚类候选生成为第一个真实调用方接线，并跑 10 万规模基准验证；
 5. **验证 embedding 产品价值**（2.1 标注评估），通过后再建设完整图片推理管线；
 6. Windows、Rust core（4.3/4.4）保持决策门，不进入近期承诺。
 
@@ -293,7 +293,9 @@ Phase 0（止血：超时/聚类/缓存/分页）
 | 2026-08-06 | unit | 20k | dHash 聚类（th=16，popcount+wave BFS） | ≈1.05s | `cluster-engine-perf.test.ts` 预算断言 <2s |
 | 2026-08-06 | unit | 20k | 稠密阈值聚类（th=30） | ≈1.18s | 同上 |
 | 2026-08-06 | unit | — | 全量单测 | 通过 / 292 项（57 文件） | 含分页/懒校验/超时心跳/堆淘汰回归 |
-| 2026-08-06 | unit | 20k | BFS 心跳回归（精确路径单一大簇） | 心跳帧 ≥30 次、单调 | `face-clusterer.test.ts`；`metadata-outbox` 为基线既有 flaky（10ms 时序窗口） |
+| 2026-08-06 | unit | 2k | BFS 心跳回归（精确路径单一大簇） | 心跳帧 ≥30 次、单调 | `face-clusterer.test.ts` |
+| 2026-08-06 | unit | 1.5k | HNSW recall@1 门禁（保留集查询，合成 8 簇 512 维） | recall ≥ 0.9、查询 ≈0.3ms/次、增量插入召回波动 ≤ 0.05（实测 −0.008） | `hnsw-recall.test.ts`；构建约 3.5ms/向量，全量构建走后台任务承载 |
+| 2026-08-07 | unit | — | 全量单测 | 通过 / 342 项 | 含绑定迁移（photo_id 键 + 重叠降序认领）、HNSW 保留集召回门禁、双 worker 真并行、缓存启动对账只 stat 孤儿文件、outbox flaky 修复 |
 | （四套基准跑通后补录） | app | | | | |
 
 ---

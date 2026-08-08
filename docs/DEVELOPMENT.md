@@ -40,6 +40,7 @@ Capture One 读取。它是一个独立 Electron 应用，不依赖浏览器。
 | 存储 | `better-sqlite3`（WAL） |
 | 图像 | `sharp` + `sips`（macOS）解码链、`exiftool-vendored` |
 | 人脸 | ONNX Runtime（SCRFD 检测 + ArcFace 编码） |
+| 向量索引 | 内存 HNSW（`face-kw/hnsw-index.ts`，增量插入）+ angular LSH（`face-kw/lsh-index.ts`，一次性构建） |
 | 协议 | `packages/shared` TypeScript 契约 + `gather:command` IPC |
 | 打包 | `electron-builder`（macOS dmg / Windows NSIS） |
 

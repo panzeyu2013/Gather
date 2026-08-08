@@ -73,7 +73,7 @@
 - 降级不变量：DB 损坏 → 改名 `.corrupt-<ts>` 重建空库；仍失败（只读目录）→
   `:memory:` 纯内存模式；`waitUntilReady` 永不 reject；退出前 `flush()` 落盘。
 - 实现以 `desktop/src/main/services/image/disk-cache.ts` 为准；修改持久化格式必须
-  保留损坏/只读降级与重启对账（`readdir` + stat）语义。
+  保留损坏/只读降级与重启对账（`readdir` 差集 + 仅对孤儿文件 stat）语义。
 
 ## ADR-008 Culling 分页按逻辑资产分组（不变量）
 
@@ -107,6 +107,24 @@
   填空值（`AND checksum = ''` 乐观写，`changes = 0` 则不覆盖并跳过）。
 - 理由：`metadata.scan` 与 `checksum.backfill` 是独立 job（可并发），不串行化，
   用方向约束 + 条件写消除互相覆盖。
+
+## ADR-011 增量 ANN 索引：HNSW 组件（里程碑 V）
+
+- 新增 `face-kw/hnsw-index.ts`（`CosineHnswIndex`）：内存 HNSW（M=16/Mmax0=32/
+  efConstruction=32/efSearch=32），向量行主序共享 Float32Array + 逐节点分层邻接表，
+  距离为余弦点积（单位向量前提）。与 LSH（`lsh-index.ts`）互补：LSH 全量
+  `build()`（O(n·bits·dim)），适合一次性构建；HNSW 增量 `insert()` 只触达邻域，
+  适合"新增少量照片"的持续更新场景。
+- 连接与裁剪使用论文 Algorithm 4 的多样性启发式（候选按距离序 + 与已选邻居的
+  相似度拒绝），防止增量插入把簇间桥剪光导致图退化；候选到中心点的距离在排序前
+  一次性缓存，成对相似度按需计算。
+- 质量门禁（`hnsw-recall.test.ts`）：保留集查询（与索引同分布但未索引的
+  512 维 8 簇合成数据）recall@1 ≥ 0.9（查询 ≈0.3ms/次，构建 ≈3.5ms/向量——
+  全量构建应由后台任务承载，不承诺构建延迟；M=16/mMax0=64 下增量插入召回波动
+  实测 −0.008）。
+- 边界：本期只交付"索引 + 查询"组件；向量持久化与模型版本指纹沿用
+  `face_observations`/`analysis_signature` 既有机制，消费方接线（聚类候选生成、
+  跨 session 重识别）在 Phase 2/3 排期，不在此引入向量数据库选型。
 
 ---
 
