@@ -96,6 +96,7 @@ function buildService(deps: {
   const sessionRepo = {
     get: vi.fn(() => ({ id: sessionId, status: 'pending' })),
     updateAnalysisStatus: vi.fn(),
+    getIndexSeq: vi.fn(() => 0),
   } as unknown as SessionRepository
 
   const faceRepo = {
@@ -147,6 +148,10 @@ function buildService(deps: {
     {
       upsertByName: vi.fn(() => 'person-1'),
       addPhotos: vi.fn(),
+    } as never,
+    {
+      prepare: vi.fn(() => ({ run: vi.fn(() => ({ changes: 1, lastInsertRowid: 1 })) })),
+      transaction: <T>(operation: () => T) => operation,
     } as never,
   )
   return { service, faceRepo, sessionRepo, photoRepo }
@@ -238,6 +243,7 @@ describe('FaceKwService.bindCluster person-library bridging', () => {
       { getPreview: vi.fn() } as never,
       { get: vi.fn(), getNumber: vi.fn() } as never,
       personRepo,
+      {} as never,
     )
 
     await service.bindCluster(sessionId, 7, ' Alice ', ['kw1', 'kw1', ''])
@@ -271,6 +277,7 @@ describe('FaceKwService.bindCluster person-library bridging', () => {
       { getPreview: vi.fn() } as never,
       { get: vi.fn(), getNumber: vi.fn() } as never,
       personRepo,
+      {} as never,
     )
 
     await expect(service.bindCluster(sessionId, 7, 'Alice', ['kw1'])).resolves.toBeUndefined()
@@ -297,6 +304,7 @@ describe('FaceKwService.bindCluster person-library bridging', () => {
       { getPreview: vi.fn() } as never,
       { get: vi.fn(), getNumber: vi.fn() } as never,
       personRepo,
+      {} as never,
     )
 
     await service.unbindCluster(sessionId, 7)
@@ -325,6 +333,7 @@ describe('FaceKwService.bindCluster person-library bridging', () => {
       { getPreview: vi.fn() } as never,
       { get: vi.fn(), getNumber: vi.fn() } as never,
       personRepo,
+      {} as never,
     )
 
     await expect(service.unbindCluster(sessionId, 7)).resolves.toBeUndefined()

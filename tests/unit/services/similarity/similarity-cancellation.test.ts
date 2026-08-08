@@ -43,7 +43,7 @@ describe('SimilarityService cancellation', () => {
           asset_id: null,
         }]),
       } as never,
-      { updateAnalysisStatus: vi.fn() } as never,
+      { getIndexSeq: vi.fn(() => 0), updateAnalysisStatus: vi.fn() } as never,
       { replace: vi.fn() } as never,
       { getNumber: vi.fn((_key: string, fallback: number) => fallback) } as never,
       {
@@ -56,7 +56,7 @@ describe('SimilarityService cancellation', () => {
         prepare: vi.fn(() => ({
           all: vi.fn(() => []),
           get: vi.fn(() => undefined),
-          run: vi.fn(),
+          run: vi.fn(() => ({ changes: 1, lastInsertRowid: 1 })),
         })),
         transaction: vi.fn((operation: (...args: never[]) => unknown) => operation),
       } as never,
@@ -67,7 +67,7 @@ describe('SimilarityService cancellation', () => {
     await service.cancel('session')
 
     await expect(service.analyze('session')).rejects.toThrow(
-      'Similarity analysis is already running',
+      'SIM_ANALYSIS_RUNNING',
     )
 
     releaseThumbnail()

@@ -121,6 +121,11 @@
   background: var(--color-primary-soft);
 }
 
+.workbenchHeader .indexProgress {
+  grid-column: 1 / -1;
+  padding-bottom: 8px;
+}
+
 .eyebrow {
   display: block;
   margin-bottom: 1px;
@@ -149,6 +154,52 @@
   padding: 0 0 8px;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.indexProgress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 4px 2px 12px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.indexProgressLabel {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.indexProgressBar {
+  display: block;
+  flex: 0 0 140px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-bg-secondary);
+  overflow: hidden;
+}
+
+.indexProgressBarFill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-primary);
+  transition: width 0.2s ease;
+}
+
+.indexProgressError {
+  padding: 3px 9px;
+  border: none;
+  border-radius: 7px;
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.indexProgressError:hover {
+  background: color-mix(in srgb, var(--color-error) 16%, transparent);
 }
 
 .tab,

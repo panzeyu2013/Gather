@@ -11,7 +11,10 @@ export function registerJobHandlers(registry: CommandRegistry, jobs: JobService)
   registry.register('jobs.cancel', wrapHandler(async (params) => ok(jobs.cancel(validateString(params.jobId, 'jobId')))))
   registry.register('jobs.retry', wrapHandler(async (params) => ok(jobs.retry(validateString(params.jobId, 'jobId')))))
   registry.register('jobs.clear_completed', wrapHandler(async (params) => {
-    if (params.confirmed !== true) throw new Error('Clearing completed jobs requires confirmation')
+    if (params.confirmed !== true) throw new Error('JOBS_CLEAR_CONFIRM_REQUIRED')
+    // Stage-evidence rows (metadata.scan / export.execute) are excluded inside
+    // JobService.clearCompleted: deleting them would regress workspace stage
+    // (indexed→imported) and the exported soft flag (see job.service.ts).
     return ok(jobs.clearCompleted())
   }))
 }

@@ -40,6 +40,7 @@ describe('IndexService incremental scan ghost photos', () => {
       {
         get: vi.fn(() => ({ id: 'session', source_path: root })),
         updatePhotoCount: vi.fn(),
+        bumpIndexSeq: vi.fn(),
       } as never,
       {
         getBySessionProjection: vi.fn(() => [
@@ -90,6 +91,7 @@ describe('IndexService incremental scan ghost photos', () => {
       {
         get: vi.fn(() => ({ id: 'session', source_path: root })),
         updatePhotoCount: vi.fn(),
+        bumpIndexSeq: vi.fn(),
       } as never,
       {
         getBySessionProjection: vi.fn(() => [

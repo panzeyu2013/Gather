@@ -14,6 +14,17 @@ type JobExecutor = (job: AnalysisJobData, context: JobRunContext) => Promise<unk
 type JobProgressSink = (job: AnalysisJobData, update: JobProgressUpdate) => void
 const MAX_CONCURRENT_JOBS = 2
 const PROGRESS_WRITE_INTERVAL_MS = 250
+
+// Job types whose terminal rows double as workspace-status stage evidence
+// (workspace-status.service.ts latestScanJob / hasSuccessfulExport). They are
+// excluded from jobs.clear_completed so "清理已完成" never regresses a fully
+// indexed/exported workspace back to imported (design_improvements.md 1.4.3).
+// Bounded growth: metadata.scan is deduplicated to one row per session and the
+// export.execute rows are the only place the exported soft flag lives.
+// Deriving "indexed" from sessions.index_seq instead would be unreliable: the
+// seq is bumped only when a scan commits real changes, so a no-op success
+// (e.g. a scan over photos already inserted at create time) leaves it at 0.
+export const CLEAR_COMPLETED_STAGE_EVIDENCE_TYPES = ['metadata.scan', 'export.execute'] as const
 // Large face/similarity analyses routinely exceed ten minutes, so a shorter
 // default would surface spurious timeouts while the background job is still
 // legitimately running. The timeout only guards against permanently-stuck
@@ -105,7 +116,14 @@ export class JobService {
     const cancelled = this.repo.requestCancel(id)
     if (cancelled) {
       this.controllers.get(id)?.abort()
-      if (wasQueued) this.completeResult(id, { error: new JobCancelledError() })
+      if (wasQueued) {
+        this.completeResult(id, { error: new JobCancelledError() })
+        // A queued cancel never goes through runInternal, so it would emit no
+        // terminal progress frame; clients relying on jobs:progress (header
+        // progress copy, workspace status) would stay stuck at "扫描中…".
+        // Match the running-cancel path and push the terminal frame here.
+        this.emitTerminal(id, 'cancelled')
+      }
     }
     return cancelled
   }
@@ -131,7 +149,9 @@ export class JobService {
     }
     return retried
   }
-  clearCompleted(): number { return this.repo.clearCompleted() }
+  clearCompleted(): number {
+    return this.repo.clearCompleted(CLEAR_COMPLETED_STAGE_EVIDENCE_TYPES)
+  }
   waitForResult<T>(jobId: string, options: { timeoutMs?: number } = {}): Promise<T> {
     const completed = this.completedResults.get(jobId)
     if (completed) {

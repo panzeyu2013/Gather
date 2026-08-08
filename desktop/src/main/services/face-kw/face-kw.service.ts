@@ -2,6 +2,7 @@ import { PhotoRepository, type PhotoProjectionRow } from '../../db/repositories/
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { FaceRepository, type FaceClusterInput } from '../../db/repositories/face.repo'
 import { PersonRepository } from '../../db/repositories/person.repo'
+import { Database } from '../../db/database'
 import type { EmbeddingEntry } from './face-clusterer'
 import { clusterFacesInWorker } from '../../utils/analysis-worker-client'
 import { FaceInferenceWorker, type FaceInferenceBatchItem } from './face-inference-worker-client'
@@ -36,7 +37,7 @@ export interface FaceClusterData {
   }[]
 }
 
-export type ProgressCallback = (data: { current: number; total: number; message: string }) => void
+export type ProgressCallback = (data: { current: number; total: number; phase: string }) => void
 
 export interface FaceAnalysisResult {
   status: 'done' | 'failed' | 'cancelled'
@@ -46,10 +47,10 @@ export interface FaceAnalysisResult {
 
 export function validateFaceClusteringParameters(eps: number, minPts: number): void {
   if (!Number.isFinite(eps) || eps < 0 || eps > 1) {
-    throw new ValidationError('人脸聚类相似度必须是 0 到 1 之间的数字')
+    throw new ValidationError('FACE_EPS_INVALID')
   }
   if (!Number.isInteger(minPts) || minPts < 1) {
-    throw new ValidationError('人脸聚类最小样本数必须是大于等于 1 的整数')
+    throw new ValidationError('FACE_MIN_CLUSTER_INVALID')
   }
 }
 
@@ -64,6 +65,7 @@ export class FaceKwService {
     @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
     @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
     @inject(DI_TOKENS.PERSON_REPO) private personRepo: PersonRepository,
+    @inject(DI_TOKENS.DB) private db: Database,
   ) {}
 
   async analyze(
@@ -76,7 +78,7 @@ export class FaceKwService {
   ): Promise<FaceAnalysisResult> {
     validateFaceClusteringParameters(eps, minPts)
     if (this.controllers.has(sessionId)) {
-      throw new Error('Analysis is already in progress for this session')
+      throw new Error('FKW_ANALYSIS_RUNNING')
     }
     const controller = new AbortController()
     this.controllers.set(sessionId, controller)
@@ -85,13 +87,15 @@ export class FaceKwService {
     let detectionFailures = 0
     let encodingFailures = 0
     let inferenceWorkers: FaceInferenceWorker[] = []
+    let runId = 0
+    let runStatus: 'ok' | 'failed' = 'failed'
 
     try {
       const session = this.sessionRepo.get(sessionId)
-      if (!session) throw new NotFoundError('Session not found')
+      if (!session) throw new NotFoundError('SESSION_NOT_FOUND')
 
       this.sessionRepo.updateAnalysisStatus(sessionId, 'running')
-      onProgress?.({ current: 0, total: 0, message: 'Initializing face detector...' })
+      onProgress?.({ current: 0, total: 0, phase: 'face.init' })
 
       const onnxProvider = this.settings.get('onnx_provider', 'auto')
       const onnxThreads = this.settings.getNumber('onnx_threads', 4)
@@ -99,9 +103,23 @@ export class FaceKwService {
       const embeddingDim = this.settings.getNumber('embedding_dim', MODEL_CONFIG.encode.embeddingDim)
       // Light projection: only identity/file/asset/dimension columns are
       // needed here, so skip the heavy metadata/result JSON blobs.
-      const photos = collapsePhotoAssets(this.photoRepo.getBySessionProjection(sessionId))
-      if (photos.length === 0) throw new ValidationError('当前工作区没有可分析的照片')
+      // Photos and the index_seq snapshot share one read transaction
+      // (design §8 '分析读取用事务快照'): better-sqlite3 is synchronous, so no
+      // concurrent writer can interleave between the two reads today, but the
+      // snapshot keeps run.index_seq consistent with the analyzed photos.
+      const { photos, indexSeq } = this.db.transaction(() => ({
+        photos: collapsePhotoAssets(this.photoRepo.getBySessionProjection(sessionId)),
+        indexSeq: this.sessionRepo.getIndexSeq(sessionId),
+      }))()
+      if (photos.length === 0) throw new ValidationError('FACE_NO_PHOTOS')
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
+      runId = this.startAnalysisRun(
+        sessionId,
+        'face',
+        photos.length,
+        indexSeq,
+        { detectorPath, encoderPath, eps, minPts },
+      )
 
       const primaryDetectionSize = this.settings.getNumber(
         'detect_input_size',
@@ -227,8 +245,9 @@ export class FaceKwService {
         this.faceRepo.getClusterSignature(sessionId) === clusterSignature &&
         this.faceRepo.getClusters(sessionId).length > 0
       ) {
-        onProgress?.({ current: totalPhotos, total: totalPhotos, message: 'Reusing cached face clusters...' })
+        onProgress?.({ current: totalPhotos, total: totalPhotos, phase: 'face.cached-clusters' })
         this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+        runStatus = 'ok'
         return { status: 'done', detectionFailures, encodingFailures }
       }
       // Old clusters and role bindings are deliberately kept until new results
@@ -270,11 +289,12 @@ export class FaceKwService {
           }
         }
         if (inferenceWorkers.length === 0) {
+          // ADR-017: internal-invariant diagnostic (worker lifecycle).
           throw new Error('Face inference workers failed to initialize')
         }
       }
 
-      onProgress?.({ current: 0, total: totalPhotos, message: 'Detecting faces...' })
+      onProgress?.({ current: 0, total: totalPhotos, phase: 'face.detect' })
 
       let totalFaces = 0
       // Sliding-window decode pipeline: while photo i is being inferred, the
@@ -389,7 +409,7 @@ export class FaceKwService {
         // cannot be healed by retrying, and the observations already
         // committed stay in place.
         const worker = inferenceWorkers[w]
-        if (!worker) throw new Error('Face inference worker is not initialized')
+        if (!worker) throw new Error('Face inference worker is not initialized') // ADR-017: internal-invariant diagnostic
         const images = batchImages[w].splice(0)
         const indices = batchIndices[w].splice(0)
         const inferStart = performance.now()
@@ -397,7 +417,7 @@ export class FaceKwService {
           .then((results) => {
             inferMs += performance.now() - inferStart
             if (results.length !== indices.length) {
-              throw new Error('Face inference worker returned a mismatched batch')
+              throw new Error('Face inference worker returned a mismatched batch') // ADR-017: internal-invariant diagnostic
             }
             for (let b = 0; b < indices.length; b++) {
               applyInferenceResult(indices[b], results[b])
@@ -432,18 +452,18 @@ export class FaceKwService {
           if (missingPhotoIds.has(photo.id)) {
             // Observations for ENOENT photos were cleaned up up-front; do
             // not count them as detection failures.
-            onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+            onProgress?.({ current: i + 1, total: totalPhotos, phase: 'face.detect' })
             continue
           }
           detectionFailures++
           console.warn('Face detection failed for', photo.filepath, 'photo is not readable')
-          onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+          onProgress?.({ current: i + 1, total: totalPhotos, phase: 'face.detect' })
           continue
         }
         const cached = cachedByPhoto.get(photo.id) ?? []
         if (isCacheValid(photo.id, sourceStat)) {
           totalFaces += cached.length
-          onProgress?.({ current: i + 1, total: totalPhotos, message: 'Reusing cached faces...' })
+          onProgress?.({ current: i + 1, total: totalPhotos, phase: 'face.cached-faces' })
           continue
         }
         const decodeStart = performance.now()
@@ -454,7 +474,7 @@ export class FaceKwService {
         } catch (e) {
           detectionFailures++
           console.warn('Face detection failed for', photo.filepath, e)
-          onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+          onProgress?.({ current: i + 1, total: totalPhotos, phase: 'face.detect' })
           continue
         }
         decodeWaitMs += performance.now() - decodeStart
@@ -462,7 +482,7 @@ export class FaceKwService {
         // workers were initialized above; guard anyway so a future refactor
         // cannot divide by zero.
         if (inferenceWorkers.length === 0) {
-          throw new Error('Face inference worker is not initialized')
+          throw new Error('Face inference worker is not initialized') // ADR-017: internal-invariant diagnostic
         }
         const w = i % inferenceWorkers.length
         if (batchIndices[w].length >= decodeWindow) {
@@ -477,7 +497,7 @@ export class FaceKwService {
         batchImages[w].push(preview.buffer)
         batchIndices[w].push(i)
         inferredPhotoCount++
-        onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
+        onProgress?.({ current: i + 1, total: totalPhotos, phase: 'face.detect' })
       }
       await flushAllBatches()
 
@@ -498,7 +518,7 @@ export class FaceKwService {
         encodingFailures === totalFaces && totalFaces > 0
       const analysisFailed = allDetectionsFailed || allEncodingsFailed
 
-      onProgress?.({ current: 0, total: 0, message: 'Clustering faces...' })
+      onProgress?.({ current: 0, total: 0, phase: 'face.cluster' })
       await this.clusterStoredObservations(
         sessionId,
         photos,
@@ -507,7 +527,7 @@ export class FaceKwService {
         signal,
         !analysisFailed,
         (current, total) => {
-          onProgress?.({ current, total, message: 'Clustering faces...' })
+          onProgress?.({ current, total, phase: 'face.cluster' })
         },
       )
       this.faceRepo.upsertClusterSignature(sessionId, clusterSignature)
@@ -516,8 +536,9 @@ export class FaceKwService {
         this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
         return { status: 'failed', detectionFailures, encodingFailures }
       }
-      onProgress?.({ current: 0, total: 0, message: 'Analysis complete' })
+      onProgress?.({ current: 0, total: 0, phase: 'face.done' })
       this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+      runStatus = 'ok'
       return { status: 'done', detectionFailures, encodingFailures }
     } catch (e) {
       if (e instanceof CancelledError) {
@@ -527,6 +548,9 @@ export class FaceKwService {
       this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
       throw e
     } finally {
+      if (runId !== 0) {
+        this.finalizeAnalysisRun(runId, runStatus)
+      }
       this.controllers.delete(sessionId)
       for (const worker of inferenceWorkers) {
         try { await worker.shutdown() } catch (e) { console.warn('Failed to stop inference worker', e) }
@@ -534,13 +558,36 @@ export class FaceKwService {
     }
   }
 
+  private startAnalysisRun(
+    sessionId: string,
+    kind: string,
+    photoCount: number,
+    indexSeq: number,
+    params: unknown,
+  ): number {
+    const result = this.db.prepare(`
+      INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
+      VALUES (?, ?, ?, ?, ?, '', ?, 'running')
+    `).run(sessionId, kind, photoCount, indexSeq, new Date().toISOString(), JSON.stringify(params ?? {}))
+    return Number(result.lastInsertRowid)
+  }
+
+  // Cancelled runs finalize as 'failed' here while sessions.analysis_status
+  // becomes 'cancelled' (see the catch above): the run record only
+  // distinguishes ok/failed by design, so the divergence is intentional and
+  // informational — staleness detection (1.4.2) ignores non-ok runs either way.
+  private finalizeAnalysisRun(runId: number, status: 'ok' | 'failed'): void {
+    this.db.prepare('UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?')
+      .run(status, new Date().toISOString(), runId)
+  }
+
   async recluster(sessionId: string, eps: number, minPts: number): Promise<void> {
     validateFaceClusteringParameters(eps, minPts)
     const session = this.sessionRepo.get(sessionId)
-    if (!session) throw new NotFoundError('Session not found')
+    if (!session) throw new NotFoundError('SESSION_NOT_FOUND')
     const observations = this.faceRepo.getObservations(sessionId)
     if (observations.length === 0) {
-      throw new ValidationError('No cached face observations found. Run analysis first.')
+      throw new ValidationError('FKW_NO_OBSERVATIONS')
     }
     const photos = this.photoRepo.getBySessionProjection(sessionId)
     await this.clusterStoredObservations(sessionId, photos, eps, minPts)
@@ -702,12 +749,12 @@ export class FaceKwService {
 
   async bindCluster(sessionId: string, clusterId: number, roleName: string, keywords: string[]): Promise<void> {
     const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
-    if (!clusterSessionId) throw new NotFoundError('Cluster not found')
-    if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
+    if (!clusterSessionId) throw new NotFoundError('FKW_CLUSTER_NOT_FOUND')
+    if (clusterSessionId !== sessionId) throw new ValidationError('FKW_CLUSTER_NOT_IN_SESSION')
     const normalizedRoleName = roleName.trim()
-    if (!normalizedRoleName) throw new ValidationError('Role name cannot be empty')
+    if (!normalizedRoleName) throw new ValidationError('FKW_ROLE_NAME_EMPTY')
     if (!Array.isArray(keywords) || keywords.some(keyword => typeof keyword !== 'string')) {
-      throw new ValidationError('Keywords must be an array of strings')
+      throw new ValidationError('FKW_KEYWORDS_INVALID')
     }
     const dedupedKeywords = [...new Set(keywords.map(keyword => keyword.trim()).filter(Boolean))]
     this.faceRepo.updateBinding(
@@ -737,8 +784,8 @@ export class FaceKwService {
 
   async unbindCluster(sessionId: string, clusterId: number): Promise<void> {
     const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
-    if (!clusterSessionId) throw new NotFoundError('Cluster not found')
-    if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
+    if (!clusterSessionId) throw new NotFoundError('FKW_CLUSTER_NOT_FOUND')
+    if (clusterSessionId !== sessionId) throw new ValidationError('FKW_CLUSTER_NOT_IN_SESSION')
     this.faceRepo.deleteBinding(clusterId)
     // Drop person-library links for photos no longer covered by a role binding.
     // Best-effort — a linkage failure must not fail the unbinding itself.
@@ -751,12 +798,12 @@ export class FaceKwService {
 
   async mergeClusters(sessionId: string, sourceId: number, targetId: number): Promise<void> {
     if (sourceId === targetId) {
-      throw new ValidationError('不能将人脸组与自身合并')
+      throw new ValidationError('FACE_SELF_MERGE')
     }
     const sourceSessionId = this.faceRepo.getClusterSessionId(sourceId)
     const targetSessionId = this.faceRepo.getClusterSessionId(targetId)
-    if (!sourceSessionId || !targetSessionId) throw new NotFoundError('Cluster not found')
-    if (sourceSessionId !== sessionId || targetSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
+    if (!sourceSessionId || !targetSessionId) throw new NotFoundError('FKW_CLUSTER_NOT_FOUND')
+    if (sourceSessionId !== sessionId || targetSessionId !== sessionId) throw new ValidationError('FKW_CLUSTER_NOT_IN_SESSION')
     this.faceRepo.mergeClusters(sourceId, targetId)
     // Photos that moved to the target cluster now belong to the target role in
     // the person library; the source role loses them. Best-effort.
@@ -769,10 +816,10 @@ export class FaceKwService {
 
   async removeMember(sessionId: string, clusterId: number, memberId: number): Promise<void> {
     const clusterSessionId = this.faceRepo.getClusterSessionId(clusterId)
-    if (!clusterSessionId) throw new NotFoundError('Cluster not found')
-    if (clusterSessionId !== sessionId) throw new ValidationError('Cluster does not belong to this session')
+    if (!clusterSessionId) throw new NotFoundError('FKW_CLUSTER_NOT_FOUND')
+    if (clusterSessionId !== sessionId) throw new ValidationError('FKW_CLUSTER_NOT_IN_SESSION')
     if (!this.faceRepo.removeMemberFromCluster(clusterId, memberId)) {
-      throw new NotFoundError('Cluster member not found')
+      throw new NotFoundError('FKW_CLUSTER_MEMBER_NOT_FOUND')
     }
     // The removed member's photo is no longer covered by this cluster's role
     // binding; drop it from the person library if nothing else covers it.
