@@ -33,6 +33,11 @@ describe('face decode concurrency setting', () => {
     expect(service.getNumber('face_decode_concurrency', 4)).toBe(6)
   })
 
+  it('accepts face_inference_parallel_workers in settings.set (registered key)', () => {
+    expect(() => service.set('face_inference_parallel_workers', '2')).not.toThrow()
+    expect(service.getNumber('face_inference_parallel_workers', 1)).toBe(2)
+  })
+
   it('falls back to the default when the key is not persisted', () => {
     expect(service.getNumber('face_decode_concurrency', 4)).toBe(4)
   })

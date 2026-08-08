@@ -483,6 +483,36 @@ export class FaceRepository {
     for (const p of paths) this.deleteThumbnailFile(p)
   }
 
+  /**
+   * Role bindings with the photo ids of their members, used to migrate
+   * user-bound roles onto re-clustered clusters by member overlap.
+   * Photo ids are stable across re-analysis (observation ids are not: they
+   * are re-issued by replaceObservationsByPhoto on every analysis run).
+   */
+  getBindingsBySession(sessionId: string): Array<{
+    clusterId: number
+    roleName: string
+    keywords: string[]
+    memberPhotoIds: string[]
+  }> {
+    const bindings = this.db.prepare(`
+      SELECT rb.cluster_id, rb.role_name, rb.keywords
+      FROM role_bindings rb
+      WHERE rb.session_id = ?
+    `).all(sessionId) as Array<{ cluster_id: number; role_name: string; keywords: string }>
+    if (bindings.length === 0) return []
+    const memberStmt = this.db.prepare(
+      'SELECT DISTINCT photo_id FROM face_cluster_members WHERE cluster_id = ?',
+    )
+    return bindings.map(binding => ({
+      clusterId: binding.cluster_id,
+      roleName: binding.role_name,
+      keywords: JSON.parse(binding.keywords) as string[],
+      memberPhotoIds: (memberStmt.all(binding.cluster_id) as Array<{ photo_id: string }>)
+        .map(member => member.photo_id),
+    }))
+  }
+
   removeMemberFromCluster(clusterId: number, memberId: number): boolean {
     const memberCount = this.db.prepare(
       'SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?'

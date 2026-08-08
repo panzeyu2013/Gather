@@ -36,6 +36,7 @@ export class FaceInferenceWorker {
     const id = this.nextId++
     return new Promise<T>((resolve, reject) => {
       const onAbort = (): void => {
+        cleanup()
         this.closed = true
         void this.worker.terminate()
         reject(new CancelledError('Analysis cancelled'))
@@ -48,16 +49,27 @@ export class FaceInferenceWorker {
       }
       const onError = (error: Error): void => {
         cleanup()
+        this.closed = true
         reject(error)
+      }
+      // A worker killed by OOM/SIGKILL only emits 'exit' (the same failure
+      // mode analysis-worker-client.ts handles for clustering); without this
+      // the pending request would hang forever.
+      const onExit = (code: number): void => {
+        cleanup()
+        this.closed = true
+        reject(new Error(`Face inference worker exited unexpectedly (code ${code})`))
       }
       const cleanup = (): void => {
         signal?.removeEventListener('abort', onAbort)
         this.worker.off('message', onMessage)
         this.worker.off('error', onError)
+        this.worker.off('exit', onExit)
       }
       signal?.addEventListener('abort', onAbort, { once: true })
       this.worker.on('message', onMessage)
       this.worker.once('error', onError)
+      this.worker.once('exit', onExit)
       this.worker.postMessage({ ...payload, id })
     })
   }
@@ -91,7 +103,12 @@ export class FaceInferenceWorker {
   async shutdown(): Promise<void> {
     if (this.closed) return
     try {
-      await this.request<boolean>({ kind: 'shutdown' })
+      // A dead worker (crash consumed the 'error' event) would never answer
+      // the shutdown request; a bounded race keeps the caller from hanging.
+      await Promise.race([
+        this.request<boolean>({ kind: 'shutdown' }),
+        new Promise<void>(resolve => setTimeout(resolve, 2000)),
+      ])
     } finally {
       this.closed = true
       await this.worker.terminate()

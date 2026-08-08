@@ -84,7 +84,7 @@ export class FaceKwService {
 
     let detectionFailures = 0
     let encodingFailures = 0
-    let inferenceWorker: FaceInferenceWorker | null = null
+    let inferenceWorkers: FaceInferenceWorker[] = []
 
     try {
       const session = this.sessionRepo.get(sessionId)
@@ -235,16 +235,43 @@ export class FaceKwService {
       // are ready. Deleting them first would destroy user-bound clusters and
       // role names whenever model initialization or inference fails.
       if (photosNeedingAnalysis.length > 0) {
-        inferenceWorker = new FaceInferenceWorker()
-        await inferenceWorker.init({
-          detectorPath: resolveModelPath(detectorPath),
-          encoderPath: resolveModelPath(encoderPath),
-          provider: onnxProvider,
-          threads: onnxThreads,
-          encoderInputSize,
-          embeddingDim,
-          inputSizes: [primaryDetectionSize, secondaryDetectionSize],
-        }, signal)
+        // Parallel inference workers share the ONNX thread pool, so each
+        // worker gets the configured thread budget divided evenly. Workers
+        // are started one at a time: worker 0 must succeed, and any later
+        // worker that fails to init degrades the run back to fewer workers.
+        const requestedWorkers = Math.max(
+          1,
+          Math.min(2, Math.floor(this.settings.getNumber('face_inference_parallel_workers', 1))),
+        )
+        const threadsPerWorker = Math.max(1, Math.floor(onnxThreads / requestedWorkers))
+        for (let w = 0; w < requestedWorkers; w++) {
+          const worker = new FaceInferenceWorker()
+          try {
+            await worker.init({
+              detectorPath: resolveModelPath(detectorPath),
+              encoderPath: resolveModelPath(encoderPath),
+              provider: onnxProvider,
+              threads: threadsPerWorker,
+              encoderInputSize,
+              embeddingDim,
+              inputSizes: [primaryDetectionSize, secondaryDetectionSize],
+            }, signal)
+            inferenceWorkers.push(worker)
+          } catch (error) {
+            // A cancelled init must keep the cancelled status, not degrade
+            // into a generic init failure.
+            if (signal.aborted || error instanceof CancelledError) throw error
+            console.warn(
+              `Face inference worker ${w} failed to initialize; continuing with ${inferenceWorkers.length} worker(s)`,
+              error,
+            )
+            try { await worker.shutdown() } catch { /* worker never started */ }
+            break
+          }
+        }
+        if (inferenceWorkers.length === 0) {
+          throw new Error('Face inference workers failed to initialize')
+        }
       }
 
       onProgress?.({ current: 0, total: totalPhotos, message: 'Detecting faces...' })
@@ -343,25 +370,57 @@ export class FaceKwService {
         }
       }
 
-      const batchImages: Buffer[] = []
-      const batchIndices: number[] = []
-      const flushBatch = async (): Promise<void> => {
-        if (batchIndices.length === 0) return
-        // A rejected request (worker crash, corrupt model) surfaces here and
-        // aborts the whole analysis: a dead worker cannot be healed by
-        // retrying, and the observations already committed stay in place.
-        if (!inferenceWorker) throw new Error('Face inference worker is not initialized')
-        const images = batchImages.splice(0)
-        const indices = batchIndices.splice(0)
+      // One batch queue per worker; photo i is assigned to worker i % N so
+      // the inference load stays balanced while the batches stay small.
+      // Batches are dispatched as soon as a queue fills, but the in-flight
+      // count per worker is capped: without backpressure a large session
+      // would buffer every photo's preview in the worker's message queue
+      // (the pre-parallel code awaited inline for the same reason), which is
+      // gigabytes of memory on big libraries.
+      const MAX_IN_FLIGHT_BATCHES_PER_WORKER = 2
+      const batchImages: Buffer[][] = inferenceWorkers.map(() => [])
+      const batchIndices: number[][] = inferenceWorkers.map(() => [])
+      const pendingFlushes: Array<Promise<void>> = []
+      const inFlightByWorker: Array<Promise<void>[]> = inferenceWorkers.map(() => [])
+      const flushBatch = (w: number): void => {
+        if (batchIndices[w].length === 0) return
+        // A rejected request (worker crash, corrupt model) rejects the
+        // collected promise and aborts the whole analysis: a dead worker
+        // cannot be healed by retrying, and the observations already
+        // committed stay in place.
+        const worker = inferenceWorkers[w]
+        if (!worker) throw new Error('Face inference worker is not initialized')
+        const images = batchImages[w].splice(0)
+        const indices = batchIndices[w].splice(0)
         const inferStart = performance.now()
-        const results = await inferenceWorker.analyzeBatch(images, inferenceConfig, signal)
-        inferMs += performance.now() - inferStart
-        if (results.length !== indices.length) {
-          throw new Error('Face inference worker returned a mismatched batch')
+        const flushPromise = worker.analyzeBatch(images, inferenceConfig, signal)
+          .then((results) => {
+            inferMs += performance.now() - inferStart
+            if (results.length !== indices.length) {
+              throw new Error('Face inference worker returned a mismatched batch')
+            }
+            for (let b = 0; b < indices.length; b++) {
+              applyInferenceResult(indices[b], results[b])
+            }
+          })
+          .finally(() => {
+            const tracked = inFlightByWorker[w]
+            const index = tracked.indexOf(flushPromise)
+            if (index >= 0) tracked.splice(index, 1)
+          })
+        // The rejection is observed by flushAllBatches' Promise.all; this
+        // noop catch only prevents an unhandled-rejection warning if the
+        // worker dies while the loop is still awaiting decodes.
+        flushPromise.catch(() => {})
+        pendingFlushes.push(flushPromise)
+        inFlightByWorker[w].push(flushPromise)
+      }
+      const flushAllBatches = async (): Promise<void> => {
+        for (let w = 0; w < inferenceWorkers.length; w++) {
+          flushBatch(w)
         }
-        for (let b = 0; b < indices.length; b++) {
-          applyInferenceResult(indices[b], results[b])
-        }
+        await Promise.all(pendingFlushes)
+        pendingFlushes.length = 0
       }
 
       for (let i = 0; i < totalPhotos; i++) {
@@ -399,22 +458,35 @@ export class FaceKwService {
           continue
         }
         decodeWaitMs += performance.now() - decodeStart
-        if (batchIndices.length >= decodeWindow) {
-          await flushBatch()
+        // Photos reaching here are all in photosNeedingAnalysis, so the
+        // workers were initialized above; guard anyway so a future refactor
+        // cannot divide by zero.
+        if (inferenceWorkers.length === 0) {
+          throw new Error('Face inference worker is not initialized')
         }
-        batchImages.push(preview.buffer)
-        batchIndices.push(i)
+        const w = i % inferenceWorkers.length
+        if (batchIndices[w].length >= decodeWindow) {
+          // Backpressure: wait for an in-flight batch to finish before
+          // dispatching another, keeping at most MAX_IN_FLIGHT_BATCHES_PER_WORKER
+          // batches queued in the worker's message pipeline.
+          if (inFlightByWorker[w].length >= MAX_IN_FLIGHT_BATCHES_PER_WORKER) {
+            await inFlightByWorker[w][0].catch(() => undefined)
+          }
+          flushBatch(w)
+        }
+        batchImages[w].push(preview.buffer)
+        batchIndices[w].push(i)
         inferredPhotoCount++
         onProgress?.({ current: i + 1, total: totalPhotos, message: 'Detecting faces...' })
       }
-      await flushBatch()
+      await flushAllBatches()
 
       if (signal.aborted) throw new CancelledError('Analysis cancelled')
 
       if (inferredPhotoCount > 0) {
         console.debug(
           `[face-kw] pipeline ${(performance.now() - pipelineStart).toFixed(0)}ms ` +
-            `(decode wait avg ${(decodeWaitMs / inferredPhotoCount).toFixed(1)}ms, ` +
+            `(${inferenceWorkers.length} worker(s), decode wait avg ${(decodeWaitMs / inferredPhotoCount).toFixed(1)}ms, ` +
             `infer avg ${(inferMs / Math.max(1, Math.ceil(inferredPhotoCount / decodeWindow))).toFixed(1)}ms per batch of ${decodeWindow})`,
         )
       }
@@ -456,8 +528,8 @@ export class FaceKwService {
       throw e
     } finally {
       this.controllers.delete(sessionId)
-      if (inferenceWorker) {
-        try { await inferenceWorker.shutdown() } catch (e) { console.warn('Failed to stop inference worker', e) }
+      for (const worker of inferenceWorkers) {
+        try { await worker.shutdown() } catch (e) { console.warn('Failed to stop inference worker', e) }
       }
     }
   }
@@ -542,8 +614,68 @@ export class FaceKwService {
     // Replace previous clusters only when new ones are ready to persist. This
     // keeps existing clusters and role bindings intact if a re-analysis or
     // re-cluster fails partway through.
+    // User-bound roles are migrated by member overlap: re-clustering replaces
+    // every cluster id, so without this the bindings would silently vanish.
+    const previousBindings = this.faceRepo.getBindingsBySession(sessionId)
     this.faceRepo.deleteClustersBySession(sessionId)
-    this.faceRepo.saveClusters(sessionId, clusterInputs)
+    const newClusterIds = this.faceRepo.saveClusters(sessionId, clusterInputs)
+    if (previousBindings.length > 0) {
+      const membersByCluster = newClusterIds.map((clusterId, index) => ({
+        clusterId,
+        photoIds: new Set(
+          clusterInputs[index].members
+            .map(member => member.photoId)
+            .filter((id): id is string => id !== ''),
+        ),
+      }))
+      this.migrateBindings(previousBindings, membersByCluster)
+    }
+  }
+
+  /**
+   * Re-attach each role binding to the new cluster with the largest member
+   * overlap. Overlap is measured on photo ids (stable across re-analysis).
+   * Claims are made in descending overlap order so a competition between two
+   * bindings for one cluster is always won by the better match; a binding
+   * whose faces vanished from the new result is dropped. Best-effort: a
+   * migration failure must not fail the analysis itself.
+   */
+  private migrateBindings(
+    previousBindings: Array<{
+      clusterId: number
+      roleName: string
+      keywords: string[]
+      memberPhotoIds: string[]
+    }>,
+    newMembers: Array<{ clusterId: number; photoIds: Set<string> }>,
+  ): void {
+    const candidates: Array<{ binding: typeof previousBindings[number]; clusterId: number; overlap: number }> = []
+    for (const binding of previousBindings) {
+      const memberPhotos = new Set(binding.memberPhotoIds)
+      for (const candidate of newMembers) {
+        let overlap = 0
+        for (const photoId of candidate.photoIds) {
+          if (memberPhotos.has(photoId)) overlap++
+        }
+        if (overlap > 0) {
+          candidates.push({ binding, clusterId: candidate.clusterId, overlap })
+        }
+      }
+    }
+    candidates.sort((a, b) => b.overlap - a.overlap)
+    const claimedClusters = new Set<number>()
+    const migratedBindings = new Set<number>()
+    for (const candidate of candidates) {
+      if (claimedClusters.has(candidate.clusterId)) continue
+      if (migratedBindings.has(candidate.binding.clusterId)) continue
+      claimedClusters.add(candidate.clusterId)
+      migratedBindings.add(candidate.binding.clusterId)
+      try {
+        this.faceRepo.updateBinding(candidate.clusterId, candidate.binding.roleName, candidate.binding.keywords)
+      } catch (error) {
+        console.warn('Failed to migrate role binding after re-clustering', error)
+      }
+    }
   }
 
   async getClusters(sessionId: string): Promise<FaceClusterData[]> {
