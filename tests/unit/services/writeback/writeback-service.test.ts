@@ -187,6 +187,12 @@ function makeRepo() {
         row.session_id !== sessionId || (module !== undefined && row.module !== module),
       )
     },
+    deleteItemsByIds(sessionId: string, module: string, ids: number[]) {
+      const idSet = new Set(ids)
+      rows = rows.filter(row =>
+        !(row.session_id === sessionId && row.module === module && idSet.has(row.id)),
+      )
+    },
   }
 }
 
@@ -560,6 +566,7 @@ describe('WritebackService sidecar workflow', () => {
     const outboxRepo = {
       hasActiveOtherModule: vi.fn(() => true),
       get: vi.fn(() => null),
+      discardModulePending: vi.fn(),
     }
     const service = new WritebackService(
       repo as unknown as WritebackRepository,
@@ -610,5 +617,125 @@ describe('WritebackService sidecar workflow', () => {
       new Map([['photo-gate', ['ok']]]),
     )
     expect(preview.items).toHaveLength(1)
+  })
+
+  it('preview discards the module stale pending outbox rows it supersedes', async () => {
+    const photoPath = path.join(dir, 'IMG_DISCARD.NEF')
+    const repo = makeRepo()
+    const writer = new XmpSidecarWriter()
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [{ id: 'photo-discard', filepath: photoPath }])
+    const outboxRepo = {
+      hasActiveOtherModule: vi.fn(() => false),
+      get: vi.fn(() => null),
+      discardModulePending: vi.fn(),
+    }
+    const service = new WritebackService(
+      repo as unknown as WritebackRepository,
+      router as unknown as MetadataWriterRouter,
+      {
+        getBySession: () => [{
+          id: 'photo-discard',
+          session_id: 'session-discard',
+          filepath: photoPath,
+          filename: 'IMG_DISCARD.NEF',
+        }],
+      } as unknown as PhotoRepository,
+      {
+        updateWritebackStatus: vi.fn(),
+        updateFailedWritebackCount: vi.fn(),
+      } as unknown as SessionRepository,
+      {
+        updateKeywords: vi.fn(),
+        updateRating: vi.fn(),
+        updateLabel: vi.fn(),
+      } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
+      outboxRepo as never,
+      { markIntroduced: vi.fn(), deactivate: vi.fn(), getActiveIntroduced: vi.fn(() => []) } as never,
+    )
+
+    await service.preview(
+      'session-discard',
+      'similarity',
+      {},
+      new Set(['photo-discard']),
+      new Map([['photo-discard', ['fresh']]]),
+    )
+
+    // The stale same-module intent is dropped under the mutation-source name,
+    // so the next execute cannot merge the old keywords back via mergePatch.
+    expect(outboxRepo.discardModulePending).toHaveBeenCalledWith('session-discard', 'similarity')
+  })
+
+  it('preview resolves asset-mode sidecars like execute does', async () => {
+    const legacyPath = path.join(dir, 'RELINKED.NEF')
+    const assetPath = path.join(dir, 'store', 'ASSET_0001.NEF')
+    const assetXmp = getXmpSidecarPath(assetPath)
+    fs.mkdirSync(path.dirname(assetPath), { recursive: true })
+    writeXmpAttributes(assetXmp, { keywords: ['asset-existing'] })
+
+    const repo = makeRepo()
+    const writer = new XmpSidecarWriter()
+    const router = { selectSidecar: () => writer }
+    const pipeline = makeMetadataPipeline(router, [
+      { id: 'photo-asset', filepath: legacyPath },
+      { id: 'photo-asset', filepath: assetPath },
+    ])
+    const assetResolver = {
+      resolve: vi.fn(() => ({
+        photoId: 'photo-asset',
+        sessionId: 'session-asset',
+        assetId: 'asset-1',
+        assetFileId: 'file-1',
+        filepath: assetPath,
+        xmpPath: assetXmp,
+        source: 'asset' as const,
+      })),
+    }
+    const service = new WritebackService(
+      repo as unknown as WritebackRepository,
+      router as unknown as MetadataWriterRouter,
+      {
+        getBySession: () => [{
+          id: 'photo-asset',
+          session_id: 'session-asset',
+          filepath: legacyPath,
+          filename: 'RELINKED.NEF',
+        }],
+      } as unknown as PhotoRepository,
+      {
+        updateWritebackStatus: vi.fn(),
+        updateFailedWritebackCount: vi.fn(),
+      } as unknown as SessionRepository,
+      {
+        updateKeywords: vi.fn(),
+        updateRating: vi.fn(),
+        updateLabel: vi.fn(),
+      } as unknown as MetadataCacheRepository,
+      pipeline.sync,
+      pipeline.mutations as never,
+      { hasActiveOtherModule: vi.fn(() => false), get: vi.fn(() => null), discardModulePending: vi.fn() } as never,
+      { markIntroduced: vi.fn(), deactivate: vi.fn(), getActiveIntroduced: vi.fn(() => []) } as never,
+      assetResolver as never,
+    )
+
+    const preview = await service.preview(
+      'session-asset',
+      'similarity',
+      {},
+      new Set(['photo-asset']),
+      new Map([['photo-asset', ['portrait']]]),
+    )
+
+    // The preview item points at the resolved asset sidecar and reads
+    // existing keywords from the resolved asset file — the same xmp path the
+    // execute summary lookup will use, so items no longer fail forever under
+    // asset_read_mode='asset' after a relink.
+    expect(assetResolver.resolve).toHaveBeenCalledWith('session-asset', 'photo-asset')
+    expect(preview.items[0].xmpPath).toBe(assetXmp)
+    expect(preview.items[0].photoPath).toBe(assetPath)
+    expect(preview.items[0].keywords).toEqual(['asset-existing', 'portrait'])
   })
 })

@@ -90,6 +90,23 @@ export class MetadataOutboxRepository {
     `).all() as MetadataOutboxRow[]
   }
 
+  /** Recoverable rows that still belong to at least one session — the rows
+   * the startup coordinator auto-resumes. Rows without any session link are
+   * orphans of deleted sessions: they stay visible in the recovery UI but are
+   * only ever retried through an explicit resolveOrphan('retry') action. */
+  getRecoverableActive(): MetadataOutboxRow[] {
+    return this.db.prepare(`
+      SELECT *
+      FROM metadata_outbox
+      WHERE status IN ('pending', 'writing', 'failed')
+        AND EXISTS (
+          SELECT 1 FROM metadata_outbox_sessions os
+          WHERE os.xmp_path = metadata_outbox.xmp_path
+        )
+      ORDER BY updated_at
+    `).all() as MetadataOutboxRow[]
+  }
+
   getOrphans(): MetadataOutboxRow[] {
     return this.db.prepare(`
       SELECT o.*
@@ -311,7 +328,7 @@ export class MetadataOutboxRepository {
     ).run('', xmpPath)
   }
 
-  markSessionSynced(sessionId: string): void {
+  markSessionSynced(sessionId: string, sourceModule: string): void {
     const now = new Date().toISOString()
     const transaction = this.db.transaction(() => {
       this.db.prepare(`
@@ -319,13 +336,15 @@ export class MetadataOutboxRepository {
         SET confirmed_at = ?
         WHERE session_id = ?
           AND xmp_path IN (
-            SELECT xmp_path FROM metadata_outbox WHERE status IN ('written', 'synced')
+            SELECT xmp_path FROM metadata_outbox
+            WHERE status IN ('written', 'synced') AND source_module = ?
           )
-      `).run(now, sessionId)
+      `).run(now, sessionId, sourceModule)
       this.db.prepare(`
         UPDATE metadata_outbox
         SET status = 'synced', updated_at = ?
         WHERE status = 'written'
+          AND source_module = ?
           AND EXISTS (
             SELECT 1 FROM metadata_outbox_sessions os
             WHERE os.xmp_path = metadata_outbox.xmp_path
@@ -335,12 +354,58 @@ export class MetadataOutboxRepository {
             WHERE os.xmp_path = metadata_outbox.xmp_path
               AND os.confirmed_at = ''
           )
-      `).run(now)
+      `).run(now, sourceModule)
     })
     transaction()
   }
 
   delete(xmpPath: string): void {
     this.db.prepare('DELETE FROM metadata_outbox WHERE xmp_path = ?').run(xmpPath)
+  }
+
+  /**
+   * Clear a backup reference that no longer exists on disk. Used by
+   * finalizeSession: when a concurrent mutation bumps the revision while the
+   * backup is being removed, the surviving row inherits the stale
+   * backup_path; leaving it would make every later write skip creating a
+   * fresh backup and every cleanup fail with "备份不存在". Only clears the
+   * exact path that was removed, so a backup a concurrent writer created
+   * (different path) is never touched.
+   */
+  clearBackupPath(xmpPath: string, backupPath: string): void {
+    this.db.prepare(
+      'UPDATE metadata_outbox SET backup_path = ? WHERE xmp_path = ? AND backup_path = ?',
+    ).run('', xmpPath, backupPath)
+  }
+
+  /**
+   * Delete a row only when it still carries the given revision. Used after
+   * the backup file was already removed: a concurrent mutation bumps the
+   * revision, so the guard ensures the fresh row (and its own backup) is
+   * never deleted by a finalize that raced it.
+   */
+  deleteByRevision(xmpPath: string, revision: number): void {
+    this.db.prepare('DELETE FROM metadata_outbox WHERE xmp_path = ? AND revision = ?')
+      .run(xmpPath, revision)
+  }
+
+  /**
+   * Discard a module's not-yet-executed outbox intent for a session. A new
+   * preview rebuilds the whole writeback_items table for the module, so
+   * pending/failed outbox rows from an earlier round are superseded; leaving
+   * them behind would let execute's mergePatch (spread over the stale patch)
+   * resurrect keywords the user removed between previews. Written/synced
+   * rows are completed work and stay untouched.
+   */
+  discardModulePending(sessionId: string, sourceModule: string): void {
+    this.db.prepare(`
+      DELETE FROM metadata_outbox
+      WHERE source_module = ?
+        AND status IN ('pending', 'failed')
+        AND EXISTS (
+          SELECT 1 FROM metadata_outbox_sessions os
+          WHERE os.xmp_path = metadata_outbox.xmp_path AND os.session_id = ?
+        )
+    `).run(sourceModule, sessionId)
   }
 }

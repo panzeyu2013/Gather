@@ -112,9 +112,12 @@ export class MetadataSyncCoordinator {
     this.eventSink = eventSink ?? null
     // Orphans (rows whose creating Session was deleted) are intentionally
     // retained: they are recoverable XMP work exposed through the global
-    // recovery UI, not garbage to purge.
+    // recovery UI, not garbage to purge. They must NOT be auto-retried here
+    // though — a deleted session's pending work would otherwise keep writing
+    // XMP in the background with no UI record. Orphan rows are retried only
+    // through the explicit resolveOrphan('retry') action.
     this.outboxRepo.recoverInterrupted()
-    for (const row of this.outboxRepo.getRecoverable()) {
+    for (const row of this.outboxRepo.getRecoverableActive()) {
       this.schedule(row.xmp_path, 0)
     }
   }
@@ -344,7 +347,7 @@ export class MetadataSyncCoordinator {
     return this.flushSession(sessionId)
   }
 
-  confirmSync(sessionId: string): MetadataSyncSummary {
+  confirmSync(sessionId: string, sourceModule: string): MetadataSyncSummary {
     const summary = this.getSummary(sessionId)
     if (
       summary.pending > 0 ||
@@ -354,13 +357,17 @@ export class MetadataSyncCoordinator {
     ) {
       throw new Error('仍有未完成、失败或冲突的 XMP 项目，不能确认同步')
     }
-    this.outboxRepo.markSessionSynced(sessionId)
+    this.outboxRepo.markSessionSynced(sessionId, sourceModule)
     return this.emitSummary(sessionId)
   }
 
-  async cleanup(sessionId: string): Promise<CleanupResult> {
+  async cleanup(sessionId: string, sourceModule: string): Promise<CleanupResult> {
     const rows = this.outboxRepo.getBySession(sessionId)
-    const eligible = rows.filter(row => row.status === 'synced')
+    // Only restore rows written by the confirming module: a batch module's
+    // cleanup must not restore XMP written by another module that has not
+    // been confirmed in Capture One yet.
+    const eligible = rows.filter(row =>
+      row.status === 'synced' && row.source_module === sourceModule)
     if (eligible.length === 0 && rows.length > 0) {
       throw new Error('请先在 Capture One 中加载元数据并确认同步，再执行清理')
     }
@@ -417,18 +424,25 @@ export class MetadataSyncCoordinator {
     }
     for (const row of eligible) {
       // A new mutation may have been queued after the snapshot was taken.
-      // Wait for any in-flight write, then remove the outbox row BEFORE the
-      // async unlink: get() -> delete() are synchronous with no await between
-      // them, so a concurrent edit cannot interleave and be silently deleted.
-      // A mutation that lands while the backup is being removed inserts a fresh
-      // row (backup_path = '') instead of overwriting the one we deleted, so
-      // its pending transaction and a newly created backup are both preserved.
+      // Wait for any in-flight write, then remove the backup BEFORE deleting
+      // the row: an unlink failure must leave the row intact so the finalize
+      // can be retried instead of leaking the .gather-backup file forever.
+      // The row delete is revision-guarded: a mutation that lands while the
+      // backup is being removed bumps the revision, so only the exact
+      // finalized row is deleted and the fresh transaction survives. A
+      // surviving row must not keep pointing at the removed backup (its
+      // future writes would skip creating a fresh backup and cleanup would
+      // fail on the dangling path), so the stale reference is cleared.
       await this.waitForIdle(row.xmp_path)
       const latest = this.outboxRepo.get(row.xmp_path)
       if (!latest || latest.status !== 'synced') continue
-      this.outboxRepo.delete(latest.xmp_path)
-      if (latest.backup_path && existsSync(latest.backup_path)) {
-        await unlink(latest.backup_path)
+      const backupPath = latest.backup_path
+      if (backupPath && existsSync(backupPath)) {
+        await unlink(backupPath)
+      }
+      this.outboxRepo.deleteByRevision(latest.xmp_path, latest.revision)
+      if (backupPath) {
+        this.outboxRepo.clearBackupPath(latest.xmp_path, backupPath)
       }
     }
     return this.emitSummary(sessionId)
@@ -439,10 +453,19 @@ export class MetadataSyncCoordinator {
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.timers.clear()
     this.queued.clear()
-    await Promise.allSettled([
-      ...this.baselineTasks.values(),
-      ...this.active.values(),
-    ])
+    // Tasks can be added to `active` after the snapshot: a slot waiter is
+    // released when a task finishes (starting its own task), and a concurrent
+    // flushSession can call runPath directly. Keep waiting until active is
+    // empty AND no waiter is parked, so no new task can start on the closing
+    // database after shutdown returns.
+    for (;;) {
+      await Promise.allSettled([
+        ...this.baselineTasks.values(),
+        ...this.active.values(),
+      ])
+      if (this.active.size === 0 && this.slotWaiters.length === 0) break
+      await new Promise<void>(resolve => setTimeout(resolve, 20))
+    }
   }
 
   async waitForIdle(xmpPath: string, timeoutMs = 5_000): Promise<void> {
@@ -468,6 +491,7 @@ export class MetadataSyncCoordinator {
   }
 
   private runPath(xmpPath: string): Promise<void> {
+    if (this.stopped) return Promise.resolve()
     const existing = this.active.get(xmpPath)
     if (existing) return existing
     const task = this.withSlot(() => this.processUntilCurrent(xmpPath))
@@ -500,6 +524,7 @@ export class MetadataSyncCoordinator {
 
   private async processUntilCurrent(xmpPath: string): Promise<void> {
     for (;;) {
+      if (this.stopped) return
       await this.ensureBaseline(xmpPath)
       const row = this.outboxRepo.get(xmpPath)
       if (!row || !['pending', 'writing', 'failed'].includes(row.status)) return

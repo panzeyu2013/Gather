@@ -368,7 +368,7 @@ export function registerCullingHandlers(
     'culling.confirm_sync',
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      metadataSync.confirmSync(sessionId)
+      metadataSync.confirmSync(sessionId, 'culling')
       if (writebackService.getItems(sessionId, 'culling').length > 0) {
         await writebackService.confirmSync(sessionId, 'culling')
       }
@@ -383,7 +383,7 @@ export function registerCullingHandlers(
         throw new Error('Cleanup requires explicit confirmation')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const backgroundResult = await metadataSync.cleanup(sessionId)
+      const backgroundResult = await metadataSync.cleanup(sessionId, 'culling')
       const explicitResult = await writebackService.cleanup(sessionId, 'culling')
       return ok({
         deletedCount: backgroundResult.deletedCount + explicitResult.deletedCount,

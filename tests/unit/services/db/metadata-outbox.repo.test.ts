@@ -189,8 +189,72 @@ describe('MetadataOutboxRepository — conflict resolution', () => {
     repo.markWritten('/photos/I001.xmp', 1, 'fp', {}, '')
     expect(repo.get('/photos/I001.xmp')?.status).toBe('written')
 
-    repo.markSessionSynced('session-9')
+    repo.markSessionSynced('session-9', 'face-keyword')
     expect(repo.get('/photos/I001.xmp')?.status).toBe('synced')
     expect(repo.hasActiveOtherModule('session-9', 'similarity')).toBe(true)
+  })
+
+  it('does not transition rows written by another module', () => {
+    insertSession('session-10')
+    repo.mergePatch('/photos/J001.xmp', 'session-10', '/photos/J001.NEF', { rating: 4, source: 'culling' }, ['rating'])
+    repo.claim('/photos/J001.xmp', repo.get('/photos/J001.xmp')!.revision)
+    repo.markWritten('/photos/J001.xmp', 1, 'fp', {}, '')
+    expect(repo.get('/photos/J001.xmp')?.status).toBe('written')
+
+    // Confirming the face-keyword module must leave the culling row pending.
+    repo.markSessionSynced('session-10', 'face-keyword')
+    expect(repo.get('/photos/J001.xmp')?.status).toBe('written')
+
+    repo.markSessionSynced('session-10', 'culling')
+    expect(repo.get('/photos/J001.xmp')?.status).toBe('synced')
+  })
+
+  it('discardModulePending removes only same-module pending/failed rows of the session', () => {
+    insertSession('session-11')
+    insertSession('session-12')
+    repo.mergePatch('/photos/K001.xmp', 'session-11', '/photos/K001.NEF', { rating: 5, source: 'similarity' }, ['rating'])
+    repo.mergePatch('/photos/K002.xmp', 'session-11', '/photos/K002.NEF', { rating: 4, source: 'face-keyword' }, ['rating'])
+    repo.mergePatch('/photos/K003.xmp', 'session-12', '/photos/K003.NEF', { rating: 3, source: 'similarity' }, ['rating'])
+    repo.markStatus('/photos/K001.xmp', 'written')
+    repo.markStatus('/photos/K003.xmp', 'failed')
+
+    repo.discardModulePending('session-11', 'similarity')
+
+    // The written same-module row, the other-module row and the other
+    // session's pending work all survive.
+    expect(repo.get('/photos/K001.xmp')?.status).toBe('written')
+    expect(repo.get('/photos/K002.xmp')?.status).toBe('pending')
+    expect(repo.get('/photos/K003.xmp')?.status).toBe('failed')
+  })
+
+  it('deleteByRevision removes only the row matching the given revision', () => {
+    insertSession('session-13')
+    repo.mergePatch('/photos/L001.xmp', 'session-13', '/photos/L001.NEF', { rating: 5, source: 'similarity' }, ['rating'])
+    const first = repo.get('/photos/L001.xmp')!
+    // A concurrent mutation bumps the revision.
+    repo.mergePatch('/photos/L001.xmp', 'session-13', '/photos/L001.NEF', { rating: 4, source: 'similarity' }, ['rating'])
+    const second = repo.get('/photos/L001.xmp')!
+    expect(second.revision).toBe(first.revision + 1)
+
+    repo.deleteByRevision('/photos/L001.xmp', first.revision)
+    expect(repo.get('/photos/L001.xmp')?.revision).toBe(second.revision)
+
+    repo.deleteByRevision('/photos/L001.xmp', second.revision)
+    expect(repo.get('/photos/L001.xmp')).toBeNull()
+  })
+
+  it('getRecoverableActive excludes orphan rows without session links', () => {
+    insertSession('session-14')
+    repo.mergePatch('/photos/M001.xmp', 'session-14', '/photos/M001.NEF', { rating: 5, source: 'similarity' }, ['rating'])
+    // A row whose session was deleted keeps no metadata_outbox_sessions link
+    // (FK cascade), but the outbox row itself is retained as an orphan.
+    const orphan = repo.mergePatch('/photos/M002.xmp', 'session-14', '/photos/M002.NEF', { rating: 4, source: 'similarity' }, ['rating'])
+    db.prepare('DELETE FROM sessions WHERE id = ?').run('session-14')
+
+    expect(repo.get('/photos/M001.xmp')).not.toBeNull()
+    expect(orphan.status).toBe('pending')
+    expect(repo.getRecoverable().length).toBe(2)
+    // Startup auto-resume must not pick up the orphaned rows.
+    expect(repo.getRecoverableActive()).toHaveLength(0)
   })
 })

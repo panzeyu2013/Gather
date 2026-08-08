@@ -14,6 +14,7 @@ import type { MetadataMutationSource } from '@gather/shared'
 import { existsSync } from 'node:fs'
 import type { MetadataOutboxRepository } from '../../db/repositories/metadata-outbox.repo'
 import type { MetadataKeywordOriginRepository } from '../../db/repositories/metadata-keyword-origin.repo'
+import type { PhotoAssetResolver } from '../assets/photo-asset-resolver'
 
 function rowToItem(row: WritebackItemRow): WritebackItem {
   let attributes: Record<string, unknown> = {}
@@ -65,6 +66,8 @@ export class WritebackService {
     private metadataOutboxRepo?: MetadataOutboxRepository,
     @inject(DI_TOKENS.METADATA_KEYWORD_ORIGIN_REPO)
     private keywordOrigins?: MetadataKeywordOriginRepository,
+    @inject(DI_TOKENS.PHOTO_ASSET_RESOLVER)
+    private assetResolver?: PhotoAssetResolver,
   ) {}
 
   private assertNoActiveOtherModule(sessionId: string, module: string): void {
@@ -81,10 +84,14 @@ export class WritebackService {
       throw new Error('请先完成其他模块的 Capture One 同步和清理，再开始新的写回')
     }
     // Legacy fallback for callers constructed without the outbox repository.
+    // Mirrors the outbox gate: interactive culling sync is continuous and
+    // must never block a batch writeback, so culling rows are excluded here
+    // too (the outbox-side check already excludes them).
     const activeOtherModule = this.writebackRepo
       .getItems(sessionId)
       .find(item =>
         item.module !== module &&
+        item.module !== 'culling' &&
         (item.xmp_status === 'written' || item.xmp_status === 'synced'),
       )
     if (activeOtherModule) {
@@ -103,13 +110,43 @@ export class WritebackService {
   ): Promise<WritebackPreview> {
     this.assertNoActiveOtherModule(sessionId, module)
 
+    // A new preview supersedes the module's earlier intent: rebuilds
+    // writeback_items below, so any pending/failed outbox rows of this module
+    // from a previous round must go too — otherwise the next execute merges
+    // the stale patch (old keywords) into the new one via mergePatch.
+    // Excluded for culling: it is a continuous-sync module whose pending
+    // outbox rows may carry interactive rating/label edits that the keyword
+    // preview has nothing to do with — deleting them would silently lose work.
+    if (module !== 'culling') {
+      this.metadataOutboxRepo?.discardModulePending(sessionId, mutationSource(module))
+    }
+
     const photos = this.photoRepo.getBySession(sessionId)
     const filtered = photoIds ? photos.filter(p => photoIds.has(p.id)) : photos
+
+    // Resolve the asset (and its sidecar) exactly like execute does: with
+    // asset_read_mode='asset' and relinked files, the photo row's legacy
+    // filepath/sidecar differ from what PhotoAssetResolver.resolve() returns,
+    // and a preview/execute mismatch made every item fail permanently (the
+    // execute summary lookup keys on the resolved xmp path).
+    const resolveTarget = (photo: (typeof filtered)[number]): { filepath: string; xmpPath: string } => {
+      if (this.assetResolver) {
+        try {
+          const resolved = this.assetResolver.resolve(sessionId, photo.id)
+          return { filepath: resolved.filepath, xmpPath: resolved.xmpPath }
+        } catch {
+          // Unlinked or incomplete asset migration: keep the legacy path so
+          // preview still works for legacy sessions.
+        }
+      }
+      return { filepath: photo.filepath, xmpPath: getXmpSidecarPath(photo.filepath) }
+    }
+    const resolvedByPhoto = new Map(filtered.map(photo => [photo.id, resolveTarget(photo)]))
     const additionsBySidecar = new Map<string, string[]>()
     const sharedCounts = new Map<string, number>()
     const uniquePhotos = new Map<string, (typeof filtered)[number]>()
     for (const photo of filtered) {
-      const sidecarPath = getXmpSidecarPath(photo.filepath)
+      const { xmpPath: sidecarPath } = resolvedByPhoto.get(photo.id)!
       if (!uniquePhotos.has(sidecarPath)) uniquePhotos.set(sidecarPath, photo)
       sharedCounts.set(sidecarPath, (sharedCounts.get(sidecarPath) ?? 0) + 1)
       additionsBySidecar.set(sidecarPath, [
@@ -122,16 +159,16 @@ export class WritebackService {
 
     const items = await batchAsync([...uniquePhotos.values()], async (photo) => {
       const writer = this.writerRouter.selectSidecar()
-      const sidecarPath = getXmpSidecarPath(photo.filepath)
+      const { filepath, xmpPath: sidecarPath } = resolvedByPhoto.get(photo.id)!
       let existingKeywords: string[] = []
       try {
-        existingKeywords = await writer.readKeywords(photo.filepath)
+        existingKeywords = await writer.readKeywords(filepath)
       } catch {
         // corrupt or missing, start empty
       }
       return {
         photoId: photo.id,
-        photoPath: photo.filepath,
+        photoPath: filepath,
         module,
         keywords: [...new Set([
           ...existingKeywords,
@@ -158,7 +195,7 @@ export class WritebackService {
     }, 10)
 
     this.writebackRepo.saveItems(sessionId, module, items)
-    const failedCount = this.writebackRepo.getFailedCount(sessionId)
+    const failedCount = this.writebackRepo.getFailedCount(sessionId, module)
     this.sessionRepo.updateFailedWritebackCount(sessionId, failedCount)
     this.sessionRepo.updateWritebackStatus(sessionId, failedCount > 0 ? 'partial' : 'idle')
     const savedRows = this.writebackRepo.getItems(sessionId, module, 'pending')
@@ -183,6 +220,18 @@ export class WritebackService {
     const failedItems: WritebackItem[] = []
     const persistedRows = this.writebackRepo.getItems(sessionId, _module)
     const rowById = new Map(persistedRows.map(row => [row.id, row]))
+    // Phase 1: prepare every item (merged keywords, mutation queued) before
+    // any flush. The old per-item flushSession rewrote the whole session
+    // queue once per item — O(items) XMP rewrites for RAW+JPEG pairs sharing
+    // one sidecar. Mutations are queued now and flushed once below.
+    const prepared: Array<{
+      itemId: number
+      dbRow: WritebackItemRow
+      persistedItem: WritebackItem
+      photoPath: string
+      writeAttrs: Record<string, unknown>
+      keywordsBeforeWrite: string[]
+    }> = []
     for (const item of items) {
       const itemId = item.id
       if (itemId == null) {
@@ -239,34 +288,10 @@ export class WritebackService {
         this.metadataMutations.queuePhotoValues(
           sessionId,
           dbRow.photo_id,
-          writeAttrs as Record<string, unknown>,
+          writeAttrs,
           mutationSource(_module),
         )
-        const summary = await this.metadataSync.flushSession(sessionId)
-        const syncItem = summary.items.find(candidate => candidate.xmpPath === dbRow.xmp_path)
-        if (!syncItem || !['written', 'synced'].includes(syncItem.status)) {
-          throw new Error(syncItem?.errorMessage || `XMP write ended in ${syncItem?.status ?? 'unknown'} state`)
-        }
-        this.writebackRepo.updateStatus(itemId, 'written')
-        const attrs = writeAttrs as Record<string, unknown>
-        if (typeof attrs.rating === 'number') {
-          try { this.metadataCacheRepo.updateRating(dbRow.photo_id, attrs.rating as number) } catch { /* best effort */ }
-        }
-        if (typeof attrs.label === 'string') {
-          try { this.metadataCacheRepo.updateLabel(dbRow.photo_id, attrs.label) } catch { /* best effort */ }
-        }
-        if (Array.isArray(attrs.keywords)) {
-          try { this.metadataCacheRepo.updateKeywords(dbRow.photo_id, attrs.keywords as string[]) } catch { /* best effort */ }
-          if (_module === 'face_kw') {
-            const existing = new Set(keywordsBeforeWrite)
-            this.keywordOrigins?.markIntroduced(
-              dbRow.xmp_path,
-              'face-keyword',
-              (attrs.keywords as string[]).filter(keyword => !existing.has(keyword)),
-            )
-          }
-        }
-        written++
+        prepared.push({ itemId, dbRow, persistedItem, photoPath, writeAttrs, keywordsBeforeWrite })
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Unknown error'
         this.writebackRepo.updateStatus(itemId, 'failed', message)
@@ -276,7 +301,77 @@ export class WritebackService {
       }
     }
 
-    const failedCount = this.writebackRepo.getFailedCount(sessionId)
+    // Phase 2: one flush for the whole session queue, then verify each
+    // prepared item against its summary entry.
+    let summary: Awaited<ReturnType<MetadataSyncCoordinator['flushSession']>> | null = null
+    if (prepared.length > 0) {
+      try {
+        summary = await this.metadataSync.flushSession(sessionId)
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : 'Unknown error'
+        for (const entry of prepared) {
+          this.writebackRepo.updateStatus(entry.itemId, 'failed', message)
+          errors.push(`${entry.photoPath}: ${message}`)
+          failedItems.push(entry.persistedItem)
+          failed++
+        }
+        summary = null
+      }
+    }
+    if (summary) {
+      for (const entry of prepared) {
+        // The outbox keyed the mutation by the xmp path resolved at execute
+        // time. If the asset migration completed between preview and execute,
+        // that path differs from the preview snapshot (dbRow.xmp_path); match
+        // the live resolution as well so a written item is not reported as
+        // failed with the XMP already on disk.
+        let resolvedXmpPath = entry.dbRow.xmp_path
+        if (this.assetResolver) {
+          try {
+            resolvedXmpPath = this.assetResolver.resolve(sessionId, entry.dbRow.photo_id).xmpPath
+          } catch {
+            // Resolution failure falls back to the stored preview path.
+          }
+        }
+        const syncItem = summary.items.find(candidate =>
+          candidate.xmpPath === entry.dbRow.xmp_path ||
+          candidate.xmpPath === resolvedXmpPath,
+        )
+        if (!syncItem || !['written', 'synced'].includes(syncItem.status)) {
+          const message = syncItem?.errorMessage || `XMP write ended in ${syncItem?.status ?? 'unknown'} state`
+          this.writebackRepo.updateStatus(entry.itemId, 'failed', message)
+          errors.push(`${entry.photoPath}: ${message}`)
+          failedItems.push(entry.persistedItem)
+          failed++
+          continue
+        }
+        this.writebackRepo.updateStatus(entry.itemId, 'written')
+        const attrs = entry.writeAttrs
+        if (typeof attrs.rating === 'number') {
+          try { this.metadataCacheRepo.updateRating(entry.dbRow.photo_id, attrs.rating as number) } catch { /* best effort */ }
+        }
+        if (typeof attrs.label === 'string') {
+          try { this.metadataCacheRepo.updateLabel(entry.dbRow.photo_id, attrs.label) } catch { /* best effort */ }
+        }
+        if (Array.isArray(attrs.keywords)) {
+          try { this.metadataCacheRepo.updateKeywords(entry.dbRow.photo_id, attrs.keywords as string[]) } catch { /* best effort */ }
+          if (_module === 'face_kw') {
+            // keywordsBeforeWrite is the pre-flush snapshot captured in
+            // phase 1: keywords that were not on the file before our write
+            // are the ones this module introduced.
+            const existing = new Set(entry.keywordsBeforeWrite)
+            this.keywordOrigins?.markIntroduced(
+              entry.dbRow.xmp_path,
+              'face-keyword',
+              (attrs.keywords as string[]).filter(keyword => !existing.has(keyword)),
+            )
+          }
+        }
+        written++
+      }
+    }
+
+    const failedCount = this.writebackRepo.getFailedCount(sessionId, _module)
     this.sessionRepo.updateWritebackStatus(sessionId, failedCount > 0 ? 'partial' : 'done')
     this.sessionRepo.updateFailedWritebackCount(sessionId, failedCount)
 
@@ -361,7 +456,11 @@ export class WritebackService {
     if (this.writebackRepo.getFailedCount(sessionId, module) > 0) {
       throw new Error('仍有 XMP 写入失败项，请先重试或处理失败项')
     }
-    this.metadataSync.confirmSync(sessionId)
+    // The outbox stores the mutation-source name (face_kw -> 'face-keyword'),
+    // so the module-aware outbox confirm must use the mapped name; otherwise
+    // face_kw rows would never transition to synced and every later cleanup
+    // (and every other module's writeback) would be blocked forever.
+    this.metadataSync.confirmSync(sessionId, mutationSource(module))
     this.writebackRepo.markWrittenAsSynced(sessionId, module)
     this.sessionRepo.updateWritebackStatus(
       sessionId,
@@ -391,20 +490,28 @@ export class WritebackService {
 
   async cleanup(sessionId: string, module: string): Promise<CleanupResult> {
     const allItems = this.writebackRepo.getItems(sessionId, module)
-    const items = allItems.filter(item => item.xmp_status === 'synced')
-    if (items.length === 0 && allItems.length > 0) {
+    const syncedItems = allItems.filter(item => item.xmp_status === 'synced')
+    if (syncedItems.length === 0 && allItems.length > 0) {
       throw new Error('请先在 Capture One 中加载元数据并确认同步，再执行清理')
     }
 
-    const result = await this.metadataSync.cleanup(sessionId)
+    const result = await this.metadataSync.cleanup(sessionId, mutationSource(module))
     if (result.errors.length > 0) return result
-    this.writebackRepo.deleteItems(sessionId, module)
+    // Delete only the confirmed/synced rows: a re-preview after confirm
+    // created a new pending round whose rows (and outbox entries) are still
+    // live — wiping them here would let the background coordinator write
+    // unconfirmed keywords to XMP with no UI record.
+    this.writebackRepo.deleteItemsByIds(
+      sessionId,
+      module,
+      syncedItems.flatMap(item => item.id != null ? [item.id] : []),
+    )
     const remainingItems = this.writebackRepo.getItems(sessionId)
     this.sessionRepo.updateWritebackStatus(
       sessionId,
       remainingItems.length === 0
         ? 'cleaned'
-        : this.writebackRepo.getFailedCount(sessionId) > 0 ? 'partial' : 'done',
+        : remainingItems.some(item => item.xmp_status === 'failed') ? 'partial' : 'done',
     )
     return result
   }

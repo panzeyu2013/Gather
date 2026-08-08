@@ -115,6 +115,26 @@ export class WritebackRepository {
     this.db.prepare('DELETE FROM writeback_items WHERE session_id = ?').run(sessionId)
   }
 
+  /** Delete only the given rows of a module — cleanup must not remove a new
+   * pending round that a re-preview created after the confirmed round. */
+  deleteItemsByIds(sessionId: string, module: string, ids: number[]): void {
+    const doomed: number[] = []
+    const selectStmt = this.db.prepare(`
+      SELECT id FROM writeback_items
+      WHERE session_id = ? AND module = ? AND xmp_status = 'synced' AND id IN (${ids.map(() => '?').join(',')})
+    `)
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const chunk = ids.slice(offset, offset + 400)
+      doomed.push(...(selectStmt.all(sessionId, module, ...chunk) as Array<{ id: number }>)
+        .map(row => row.id))
+    }
+    for (let offset = 0; offset < doomed.length; offset += 400) {
+      const chunk = doomed.slice(offset, offset + 400)
+      const placeholders = chunk.map(() => '?').join(',')
+      this.db.prepare(`DELETE FROM writeback_items WHERE id IN (${placeholders})`).run(...chunk)
+    }
+  }
+
   updateBackupPath(itemId: number, path: string): void {
     this.db.prepare('UPDATE writeback_items SET backup_path = ? WHERE id = ?').run(path, itemId)
   }

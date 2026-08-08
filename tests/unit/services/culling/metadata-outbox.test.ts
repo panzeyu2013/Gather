@@ -78,8 +78,17 @@ class FakeOutbox {
 
   recoverInterrupted(): void {}
   getRecoverable(): MetadataOutboxRow[] { return [] }
+  getRecoverableActive(): MetadataOutboxRow[] { return [] }
   markSessionSynced(): void {}
   delete(path: string): void { this.rows.delete(path) }
+  deleteByRevision(path: string, revision: number): void {
+    const row = this.rows.get(path)
+    if (row && row.revision === revision) this.rows.delete(path)
+  }
+  clearBackupPath(path: string, backupPath: string): void {
+    const row = this.rows.get(path)
+    if (row && row.backup_path === backupPath) row.backup_path = ''
+  }
   resolveConflict(
     path: string,
     patch: Record<string, unknown>,
@@ -265,7 +274,15 @@ describe('metadata outbox coordinator', () => {
     )
 
     coordinator.schedule(xmpPath, 60_000)
-    await new Promise(resolve => setTimeout(resolve, 10))
+    // Wait until the baseline has actually been captured, instead of a fixed
+    // sleep: under parallel test load the ensureBaseline task can take longer
+    // than 10ms, and an external write landing before the baseline read would
+    // make the row look conflict-free.
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (repo.rows.get(xmpPath)!.base_fingerprint) break
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(repo.rows.get(xmpPath)!.base_fingerprint).not.toBe('')
     fs.writeFileSync(xmpPath, JSON.stringify({ rating: 3 }))
     const summary = await coordinator.flushSession('session')
     await coordinator.shutdown()
