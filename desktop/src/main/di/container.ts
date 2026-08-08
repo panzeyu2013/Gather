@@ -44,8 +44,10 @@ export const DI_TOKENS = {
   QUALITY_SERVICE: Symbol('QualityService'),
   NAVIGATION_SERVICE: Symbol('NavigationService'),
   PHOTO_ASSET_RESOLVER: Symbol('PhotoAssetResolver'),
+  WORKSPACE_STATUS_SERVICE: Symbol('WorkspaceStatusService'),
 
   WRITER_ROUTER: Symbol('MetadataWriterRouter'),
   THUMBNAIL_CACHE: Symbol('TieredThumbnailCache'),
   IMAGE_DECODERS: Symbol('ImageDecoders'),
+  CAPTURE_ONE_SYNC_STATE: Symbol('CaptureOneSyncState'),
 }

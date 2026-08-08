@@ -2,15 +2,41 @@
 // contextBridge 安全 API — 渲染进程唯一入口
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Command, Event, FaceModelsStatusData } from '@gather/shared'
+import type { Command, Event, FaceModelsStatusData, ScanResult, SessionData } from '@gather/shared'
 
 type CommandType = Command['type']
 type EventType = Event['type']
 
 // Sandboxed Electron preloads cannot require workspace packages at runtime.
 // Keep these values inline and verify parity with the shared protocol in tests.
+export interface C1Health {
+  reachable: boolean
+  appRunning: boolean
+  appName: string | null
+  documentOpen: boolean
+  automationAuthorized: boolean
+  selectedCount: number
+  latencyMs: number
+  lastError: string | null
+  timedOut: boolean
+  timestamp: string
+}
+// 会话级同步状态机视图（design_improvements.md 2.3.5 P1）。state 取值与
+// 主进程 CaptureOneSessionState 枚举一致（镜像维护，见 c1-sync-controls 校验测试）。
+export interface C1SyncStateView {
+  state: string
+  reloadAckedAt: string | null
+  xmp: {
+    pending: number
+    writing: number
+    written: number
+    failed: number
+    conflict: number
+    synced: number
+  }
+}
 const ALLOWED_COMMANDS = new Set<CommandType>([
-  'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
+  'session.create', 'session.create_from_directory', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.recluster', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'face.models_status',
@@ -19,7 +45,7 @@ const ALLOWED_COMMANDS = new Set<CommandType>([
   'sim.confirm_sync', 'sim.cleanup',
   'image.prioritize_thumbnail', 'image.preload_thumbnails', 'image.preload_previews', 'image.get_dimensions',
   'photo.list', 'photo.list_page',
-  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
+  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status', 'settings.set_language',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
   'metadata.get', 'metadata.set', 'metadata.batch_set', 'metadata.conflicts', 'metadata.resolve_conflict', 'metadata.orphans', 'metadata.resolve_orphan',
   'dup.scan', 'dup.groups', 'dup.resolve', 'dup.resolve_member',
@@ -31,6 +57,7 @@ const ALLOWED_COMMANDS = new Set<CommandType>([
   'culling.list', 'culling.list_page', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
   'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset', 'culling.history', 'culling.apply_history',
   'jobs.list', 'jobs.cancel', 'jobs.retry', 'jobs.clear_completed',
+  'workspace.status',
   'assets.candidates', 'assets.accept_candidate', 'assets.reject_candidate', 'assets.volumes', 'assets.relink_root',
   'index.scan',
   'quality.analyze', 'quality.get', 'navigation.analyze', 'navigation.list', 'navigation.split', 'navigation.merge',
@@ -79,16 +106,26 @@ export interface GatherAPI {
   readonly onReady: (callback: () => void) => () => void
   readonly onPluginImport: (callback: (files: string[]) => void) => () => void
   readonly getSelectedPhotos: () => Promise<string[]>
-  readonly reloadMetadata: () => Promise<void>
+  readonly reloadMetadata: (sessionId?: string) => Promise<void>
+  readonly getC1Health: () => Promise<C1Health>
+  readonly getC1SyncState: (sessionId: string) => Promise<C1SyncStateView>
   readonly rendererReady: () => Promise<void>
-  readonly selectDirectory: () => Promise<string | null>
-  readonly selectFiles: () => Promise<string[]>
+  readonly selectDirectory: (title?: string) => Promise<string | null>
+  readonly selectFiles: (options?: { title?: string; filterName?: string }) => Promise<string[]>
   readonly getVersion: () => Promise<string>
   readonly openDirectory: (dirPath: string) => Promise<void>
-  readonly scanDirectory: (dirPath: string) => Promise<string[]>
+  readonly scanDirectory: (dirPath: string) => Promise<ScanResult>
+  /** One-hop local import: sends only the source path; the main process
+   * creates the session and enqueues the background `metadata.scan` job. */
+  readonly createSessionFromDirectory: (name: string | undefined, sourcePath: string) => Promise<SessionData>
   readonly downloadDefaultModels: () => Promise<void>
   readonly onModelDownloadProgress: (callback: (data: unknown) => void) => () => void
   readonly modelsStatus: () => Promise<FaceModelsStatusData>
+  /** Effective UI locale (settings override > --lang > system); apply it via
+   * initI18n() before first render. */
+  readonly getAppLocale: () => Promise<{ language: 'zh-CN' | 'en' }>
+  /** Persist the language preference AND rebuild the app menu (single IPC). */
+  readonly setLanguage: (language: 'zh-CN' | 'en') => Promise<{ language: 'zh-CN' | 'en' }>
 }
 
 const api: GatherAPI = {
@@ -198,17 +235,23 @@ const api: GatherAPI = {
   getSelectedPhotos: () =>
     ipcRenderer.invoke('c1:get-selected-photos'),
 
-  reloadMetadata: () =>
-    ipcRenderer.invoke('c1:reload-metadata'),
+  reloadMetadata: (sessionId) =>
+    ipcRenderer.invoke('c1:reload-metadata', sessionId),
+
+  getC1Health: () =>
+    ipcRenderer.invoke('c1:health'),
+
+  getC1SyncState: (sessionId) =>
+    ipcRenderer.invoke('c1:sync-state', sessionId),
 
   rendererReady: () =>
     ipcRenderer.invoke('app:renderer-ready'),
 
-  selectDirectory: () =>
-    ipcRenderer.invoke('app:select-directory'),
+  selectDirectory: (title) =>
+    ipcRenderer.invoke('app:select-directory', title),
 
-  selectFiles: () =>
-    ipcRenderer.invoke('app:select-files'),
+  selectFiles: (options) =>
+    ipcRenderer.invoke('app:select-files', options),
 
   getVersion: () =>
     ipcRenderer.invoke('app:version'),
@@ -218,6 +261,9 @@ const api: GatherAPI = {
 
   scanDirectory: (dirPath) =>
     ipcRenderer.invoke('app:scan-directory', dirPath),
+
+  createSessionFromDirectory: (name, sourcePath) =>
+    api.sendCommand('session.create_from_directory', { name, sourcePath }) as Promise<SessionData>,
 
   downloadDefaultModels: () =>
     ipcRenderer.invoke('models.download_default'),
@@ -252,6 +298,12 @@ const api: GatherAPI = {
 
   modelsStatus: () =>
     api.sendCommand('face.models_status', {}) as Promise<FaceModelsStatusData>,
+
+  getAppLocale: () =>
+    ipcRenderer.invoke('app:get-app-locale') as Promise<{ language: 'zh-CN' | 'en' }>,
+
+  setLanguage: (language) =>
+    api.sendCommand('settings.set_language', { language }) as Promise<{ language: 'zh-CN' | 'en' }>,
 }
 
 contextBridge.exposeInMainWorld('gather', api)

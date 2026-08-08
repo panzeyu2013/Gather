@@ -10,8 +10,13 @@ export async function sendCommand<T = unknown>(
     if (typeof result.error === 'object' && result.error.type === 'CancelledError') {
       throw new CancelledError(result.error.message)
     }
+    const errorObject = typeof result.error === 'object' ? result.error : undefined
     const errorMsg = typeof result.error === 'string' ? result.error : result.error.message
-    throw new Error(errorMsg)
+    const error = new Error(errorMsg)
+    if (errorObject && typeof errorObject.params === 'object' && errorObject.params !== null) {
+      ;(error as Error & { params?: Record<string, unknown> }).params = errorObject.params
+    }
+    throw error
   }
   return result.data
 }
