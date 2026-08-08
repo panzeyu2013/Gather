@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, memo } from 'react'
 import { useParams } from 'react-router-dom'
 import { duplicateApi } from '../../api/duplicate'
 import { imageApi } from '../../api/image'
@@ -6,11 +6,23 @@ import type { DuplicateScanResult, DuplicateGroup, DuplicateGroupMember } from '
 import styles from './Duplicates.module.css'
 
 function ThumbnailImage({ path, className }: { path: string; className?: string }) {
+  const [failed, setFailed] = useState(false)
   const filename = path.split(/[/\\]/).pop() ?? path
-  return <img src={imageApi.thumbnailUrl(path, 256)} alt={filename} className={className} />
+  if (failed) {
+    return <div className={className ? `${className} ${styles.thumbPlaceholder}` : styles.thumbPlaceholder} />
+  }
+  return (
+    <img
+      src={imageApi.thumbnailUrl(path, 256)}
+      alt={filename}
+      loading="lazy"
+      className={className}
+      onError={() => setFailed(true)}
+    />
+  )
 }
 
-function MemberCard({
+const MemberCard = memo(function MemberCard({
   member,
   onToggle,
 }: {
@@ -32,9 +44,9 @@ function MemberCard({
       </button>
     </div>
   )
-}
+})
 
-function GroupCard({
+const GroupCard = memo(function GroupCard({
   group,
   onResolveGroup,
   onToggleMember,
@@ -45,11 +57,14 @@ function GroupCard({
 }) {
   const [showResolve, setShowResolve] = useState(false)
 
-  const recommendation = [...group.members].sort((a, b) => {
-    const scoreA = ((a.fileSize ?? 0) * 1000) + (new Date(a.fileMtime ?? 0).getTime() || 0)
-    const scoreB = ((b.fileSize ?? 0) * 1000) + (new Date(b.fileMtime ?? 0).getTime() || 0)
-    return scoreB - scoreA
-  })[0]
+  const recommendation = useMemo(() => {
+    const sorted = [...group.members].sort((a, b) => {
+      const scoreA = ((a.fileSize ?? 0) * 1000) + (new Date(a.fileMtime ?? 0).getTime() || 0)
+      const scoreB = ((b.fileSize ?? 0) * 1000) + (new Date(b.fileMtime ?? 0).getTime() || 0)
+      return scoreB - scoreA
+    })
+    return sorted[0]
+  }, [group.members])
 
   return (
     <div className={styles.groupCard}>
@@ -103,7 +118,7 @@ function GroupCard({
       </div>
     </div>
   )
-}
+})
 
 export default function Duplicates() {
   const { sessionId } = useParams<{ sessionId: string }>()
@@ -148,23 +163,76 @@ export default function Duplicates() {
     }
   }
 
-  const handleResolveGroup = async (groupId: number, resolution: 'keep_one' | 'keep_all') => {
+  // Local updates instead of a full reload: the API confirms the change
+  // server-side, so patching just the affected member/group keeps the UI in
+  // sync without re-fetching every group. The member patch mirrors
+  // DuplicateService.resolveGroup (desktop/src/main/services/duplicate/):
+  // keep_one keeps only the best member (score = fileSize*1000 + mtime ms,
+  // first member wins ties) and marks the rest discarded; keep_all keeps
+  // every member, and every member inherits the group resolution.
+  const handleResolveGroup = useCallback(async (groupId: number, resolution: 'keep_one' | 'keep_all') => {
     try {
-      await duplicateApi.resolveGroup(groupId, resolution)
-      await loadGroups()
+      const ok = await duplicateApi.resolveGroup(groupId, resolution)
+      if (!ok) {
+        setError('处理照片组失败，请重试')
+        return
+      }
+      setGroups((prev) => prev.map((g) => {
+        if (g.id !== groupId) return g
+        if (resolution === 'keep_all') {
+          return {
+            ...g,
+            resolution,
+            members: g.members.map((m) => ({ ...m, isKept: true, resolution })),
+          }
+        }
+        let bestId: number | undefined = g.members[0]?.id
+        let bestScore = -1
+        for (const m of g.members) {
+          const score = ((m.fileSize ?? 0) * 1000) + new Date(m.fileMtime || 0).getTime()
+          if (score > bestScore) {
+            bestScore = score
+            bestId = m.id
+          }
+        }
+        return {
+          ...g,
+          resolution,
+          members: g.members.map((m) => ({
+            ...m,
+            isKept: m.id === bestId,
+            resolution,
+          })),
+        }
+      }))
     } catch (e) {
       setError(e instanceof Error ? e.message : '处理照片组失败')
     }
-  }
+  }, [])
 
-  const handleToggleMember = async (memberId: number, isKept: boolean) => {
+  const handleToggleMember = useCallback(async (memberId: number, isKept: boolean) => {
     try {
-      await duplicateApi.resolveMember(memberId, isKept)
-      await loadGroups()
+      const ok = await duplicateApi.resolveMember(memberId, isKept)
+      if (!ok) {
+        setError('更新照片状态失败，请重试')
+        return
+      }
+      setGroups((prev) => prev.map((g) =>
+        g.members.some((m) => m.id === memberId)
+          ? {
+              ...g,
+              members: g.members.map((m) => (
+                m.id === memberId
+                  ? { ...m, isKept, resolution: isKept ? 'keep_all' : 'keep_one' }
+                  : m
+              )),
+            }
+          : g,
+      ))
     } catch (e) {
       setError(e instanceof Error ? e.message : '更新照片状态失败')
     }
-  }
+  }, [])
 
   const filteredGroups = groups.filter(
     (g) => g.groupType === activeTab,

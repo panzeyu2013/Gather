@@ -2,6 +2,7 @@ import { opendir, stat } from 'node:fs/promises'
 import { createReadStream, realpathSync, watch, type FSWatcher } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
+import BetterSqlite3 from 'better-sqlite3'
 import { app } from 'electron'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
@@ -710,16 +711,31 @@ export class IndexService {
       // 1000-file batch costs one pass over the session's groups instead of
       // 1000 (see invalidatePathDependentAnalysis).
       const batchAffectedPhotoIds = new Set<string>()
-      try {
-        for (const result of results) {
+      // All writes of the batch commit in a single transaction: per-photo
+      // transactions used to turn a 64-file batch into 64 fsync'd commits.
+      const commitBatch = this.db.transaction((batchResults: typeof results) => {
+        for (const result of batchResults) {
         if (result.kind === 'new') {
-          const relocated = this.assetRepo.relinkMovedFile(
-            result.filepath,
-            result.checksum,
-            result.source.size,
-            result.source.mtimeMs,
-            String(result.source.ino),
-          )
+          let relocated: ReturnType<AssetRepository['relinkMovedFile']>
+          try {
+            relocated = this.assetRepo.relinkMovedFile(
+              result.filepath,
+              result.checksum,
+              result.source.size,
+              result.source.mtimeMs,
+              String(result.source.ino),
+            )
+          } catch (error) {
+            // Per-file recoverable failures: the relink user guards (XMP
+            // write in progress, conflicting sidecar state) must not roll
+            // back the whole batch — the files processed so far were already
+            // handled and the previous per-file commits kept them. Mark the
+            // file failed and continue; only real database errors abort the
+            // batch (classified below by the SqliteError class).
+            if (error instanceof BetterSqlite3.SqliteError) throw error
+            failed.push(result.filepath)
+            continue
+          }
           if (relocated && relocated.photoIds.length > 0) {
             for (const photoId of relocated.photoIds) {
               batchAffectedPhotoIds.add(photoId)
@@ -769,55 +785,53 @@ export class IndexService {
             )
           }
           if (result.assetFileId) {
-            this.db.transaction(() => {
+            this.db.prepare(`
+              UPDATE asset_files
+              SET volume_id = ?, file_identity = ?, file_size = ?, file_mtime_ms = ?,
+                  checksum = CASE WHEN ? = 1 THEN checksum ELSE ? END,
+                  online_status = 'online', last_seen_at = ?, updated_at = ?
+              WHERE id = ?
+            `).run(
+              `dev:${result.source.dev}`,
+              String(result.source.ino),
+              result.source.size,
+              result.source.mtimeMs,
+              // Preserve the stored checksum instead of overwriting it
+              // when the file was not observed as changed but the snapshot
+              // lacked a checksum (see preserveChecksum above).
+              result.preserveChecksum ? 1 : 0,
+              result.checksum,
+              new Date().toISOString(),
+              new Date().toISOString(),
+              result.assetFileId,
+            )
+            if (result.contentChanged) {
+              const photoIds = (this.db.prepare(
+                'SELECT id FROM photos WHERE asset_file_id = ?',
+              ).all(result.assetFileId) as Array<{ id: string }>)
+                .map(row => row.id)
+              for (const photoId of photoIds) {
+                batchAffectedPhotoIds.add(photoId)
+              }
+              // File-level sweep of asset_analysis for orphaned rows whose
+              // photo_id was already nulled by a previous photo deletion.
+              this.db.prepare('DELETE FROM asset_analysis WHERE asset_file_id = ?')
+                .run(result.assetFileId)
               this.db.prepare(`
-                UPDATE asset_files
-                SET volume_id = ?, file_identity = ?, file_size = ?, file_mtime_ms = ?,
-                    checksum = CASE WHEN ? = 1 THEN checksum ELSE ? END,
-                    online_status = 'online', last_seen_at = ?, updated_at = ?
-                WHERE id = ?
+                UPDATE photos
+                SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
+                    width = ?, height = ?, updated_at = ?
+                WHERE asset_file_id = ?
               `).run(
-                `dev:${result.source.dev}`,
-                String(result.source.ino),
+                result.checksum,
                 result.source.size,
                 result.source.mtimeMs,
-                // Preserve the stored checksum instead of overwriting it
-                // when the file was not observed as changed but the snapshot
-                // lacked a checksum (see preserveChecksum above).
-                result.preserveChecksum ? 1 : 0,
-                result.checksum,
-                new Date().toISOString(),
+                result.dimensions.width,
+                result.dimensions.height,
                 new Date().toISOString(),
                 result.assetFileId,
               )
-              if (result.contentChanged) {
-                const photoIds = (this.db.prepare(
-                  'SELECT id FROM photos WHERE asset_file_id = ?',
-                ).all(result.assetFileId) as Array<{ id: string }>)
-                  .map(row => row.id)
-                for (const photoId of photoIds) {
-                  batchAffectedPhotoIds.add(photoId)
-                }
-                // File-level sweep of asset_analysis for orphaned rows whose
-                // photo_id was already nulled by a previous photo deletion.
-                this.db.prepare('DELETE FROM asset_analysis WHERE asset_file_id = ?')
-                  .run(result.assetFileId)
-                this.db.prepare(`
-                  UPDATE photos
-                  SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
-                      width = ?, height = ?, updated_at = ?
-                  WHERE asset_file_id = ?
-                `).run(
-                  result.checksum,
-                  result.source.size,
-                  result.source.mtimeMs,
-                  result.dimensions.width,
-                  result.dimensions.height,
-                  new Date().toISOString(),
-                  result.assetFileId,
-                )
-              }
-            })()
+            }
           }
         } else if (result.kind === 'failed') {
           failed.push(result.filepath)
@@ -827,14 +841,16 @@ export class IndexService {
           skipped++
         }
         }
-      } finally {
-        // One invalidation pass per scan batch: cluster results are dropped
-        // at session scope and automatic navigation groups pruned per member.
-        // In finally so a mid-batch error still invalidates what was already
-        // committed — otherwise stale cluster results would survive forever
-        // (the next scan sees the updated checksums and skips re-analysis).
-        this.invalidatePathDependentAnalysis([...batchAffectedPhotoIds])
-      }
+      })
+      commitBatch(results)
+      // One invalidation pass per scan batch, only after the batch committed:
+      // cluster results are dropped at session scope and automatic navigation
+      // groups pruned per member. A failed commit rolls back every write of
+      // the batch, so the photos' checksums and paths are unchanged and their
+      // previous analysis inputs and cluster results stay valid — deleting
+      // them here would strand analysis results that the next scan would skip
+      // re-building (it sees the unchanged checksums as already indexed).
+      this.invalidatePathDependentAnalysis([...batchAffectedPhotoIds])
       if (newEntries.length > 0) {
         const inserted = this.photoRepo.addPhotos(sessionId, newEntries, 'index')
         added += inserted.added
@@ -1029,9 +1045,12 @@ export class IndexService {
             }
           },
         )
-        for (const result of results) {
-          if (result) {
-            this.db.transaction(() => {
+        // The hashing phase above is read-only; all writes of the batch go
+        // into one transaction instead of one per photo (32 fsync'd commits
+        // per batch under synchronous=FULL).
+        const commitBatch = this.db.transaction((batchResults: typeof results) => {
+          for (const result of batchResults) {
+            if (result) {
               // Optimistic fill: only write when the photo's checksum is
               // still empty. A concurrent scan may have just written a hash
               // (or cleared one for a file it observed as changed); the
@@ -1072,13 +1091,13 @@ export class IndexService {
                 passBackfilled++
                 backfilled++
               }
-            })()
+            } else {
+              skipped++
+            }
             processed++
-          } else {
-            processed++
-            skipped++
           }
-        }
+        })
+        commitBatch(results)
         context?.updateProgress({ current: processed, total: pending.length })
       }
       // Everything still pending either failed or the retry would only repeat

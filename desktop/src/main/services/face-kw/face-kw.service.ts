@@ -9,6 +9,7 @@ import * as fs from 'fs'
 import { ImageService } from '../image'
 import type { DecodeResult } from '../image'
 import { SettingsService } from '../settings/settings.service'
+import type { CullingService } from '../culling/culling.service'
 import { CancelledError, NotFoundError, ValidationError } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
@@ -64,6 +65,7 @@ export class FaceKwService {
     @inject(DI_TOKENS.IMAGE_SERVICE) private imageService: ImageService,
     @inject(DI_TOKENS.SETTINGS_SERVICE) private settings: SettingsService,
     @inject(DI_TOKENS.PERSON_REPO) private personRepo: PersonRepository,
+    @inject(DI_TOKENS.CULLING_SERVICE) private culling?: CullingService,
   ) {}
 
   async analyze(
@@ -175,7 +177,14 @@ export class FaceKwService {
           `Face analysis: cleaned up ${missingPhotoIds.size} photo(s) whose files no longer exist`,
         )
       }
-      let reusedAcrossSessions = false
+      // Batch the cross-session reuse lookup: one IN query for every photo
+      // that needs analysis instead of a SELECT per photo.
+      const reuseTargets: Array<{
+        photoId: string
+        assetFileId: string | null
+        sourceFileSize: number
+        sourceFileMtimeMs: number
+      }> = []
       for (const photo of photos) {
         const sourceStat = sourceStats.get(photo.id)
         if (!sourceStat) continue
@@ -187,18 +196,26 @@ export class FaceKwService {
           analysisState.analysisSignature === analysisSignature,
         )
         if (cacheIsValid) continue
-        const reused = this.faceRepo.reuseObservationsForAssetFile(
-          sessionId,
-          photo.id,
-          sourceStat.size,
-          sourceStat.mtimeMs,
-          analysisSignature,
-        )
-        if (reused.reused) {
+        reuseTargets.push({
+          photoId: photo.id,
+          assetFileId: photo.asset_file_id ?? null,
+          sourceFileSize: sourceStat.size,
+          sourceFileMtimeMs: sourceStat.mtimeMs,
+        })
+      }
+      const reuseResults = this.faceRepo.reuseObservationsForAssetFile(
+        sessionId,
+        reuseTargets,
+        analysisSignature,
+      )
+      let reusedAcrossSessions = false
+      for (const target of reuseTargets) {
+        const reused = reuseResults[target.photoId]
+        if (reused?.reused) {
           reusedAcrossSessions = true
-          analysisStates.set(photo.id, {
-            sourceFileSize: sourceStat.size,
-            sourceFileMtimeMs: sourceStat.mtimeMs,
+          analysisStates.set(target.photoId, {
+            sourceFileSize: target.sourceFileSize,
+            sourceFileMtimeMs: target.sourceFileMtimeMs,
             analysisSignature,
           })
         }
@@ -514,17 +531,28 @@ export class FaceKwService {
 
       if (analysisFailed) {
         this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
+        // Observations written during this pass may have changed even though
+        // the run is reported failed; drop the culling lookup cache so its
+        // faces/quality snapshots rebuild on the next list() call.
+        this.culling?.invalidateSessionLookup(sessionId)
         return { status: 'failed', detectionFailures, encodingFailures }
       }
       onProgress?.({ current: 0, total: 0, message: 'Analysis complete' })
       this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+      // The culling lookup cache snapshots face observations; invalidate it
+      // now that the new observations/clusters are committed so the next
+      // list()/listPage() rebuilds instead of serving stale faces for the
+      // remainder of the TTL window.
+      this.culling?.invalidateSessionLookup(sessionId)
       return { status: 'done', detectionFailures, encodingFailures }
     } catch (e) {
       if (e instanceof CancelledError) {
         this.sessionRepo.updateAnalysisStatus(sessionId, 'cancelled')
+        this.culling?.invalidateSessionLookup(sessionId)
         return { status: 'cancelled', detectionFailures, encodingFailures }
       }
       this.sessionRepo.updateAnalysisStatus(sessionId, 'failed')
+      this.culling?.invalidateSessionLookup(sessionId)
       throw e
     } finally {
       this.controllers.delete(sessionId)

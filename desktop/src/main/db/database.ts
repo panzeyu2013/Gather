@@ -14,7 +14,10 @@ export class Database {
     this.db = new BetterSqlite3(dbPath)
 
     this.db.pragma('journal_mode = WAL')
-    this.db.pragma('synchronous = FULL')
+    // NORMAL in WAL mode still protects against file corruption (only the
+    // last committed transactions can be lost on power failure); FULL turns
+    // every commit into an fsync and dominates indexing/analysis throughput.
+    this.db.pragma('synchronous = NORMAL')
     this.db.pragma('cache_size = -64000')
     this.db.pragma('foreign_keys = ON')
     this.db.pragma('busy_timeout = 5000')

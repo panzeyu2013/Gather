@@ -58,6 +58,25 @@ export class MetadataOutboxRepository {
   }
 
   /**
+   * Per-status row counts for a session — a single GROUP BY instead of
+   * filtering the whole session's rows once per status.
+   */
+  countBySession(sessionId: string): Partial<Record<MetadataOutboxStatus, number>> {
+    const rows = this.db.prepare(`
+      SELECT o.status, COUNT(*) AS count
+      FROM metadata_outbox o
+      JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
+      WHERE os.session_id = ?
+      GROUP BY o.status
+    `).all(sessionId) as Array<{ status: MetadataOutboxStatus; count: number }>
+    const counts: Partial<Record<MetadataOutboxStatus, number>> = {}
+    for (const row of rows) {
+      counts[row.status] = row.count
+    }
+    return counts
+  }
+
+  /**
    * Whether the session still holds outbox work from a batch writeback workflow
    * other than the given module that is written or synced — i.e. it must be
    * confirmed in Capture One and cleaned up before another module starts.

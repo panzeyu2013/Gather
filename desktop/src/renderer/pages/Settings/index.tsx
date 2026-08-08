@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import Loading from '../../components/Loading/Loading'
 import SliderInput from '../../components/SliderInput/SliderInput'
@@ -137,9 +137,12 @@ export default function SettingsPage() {
     })
   }
 
-  const handleSliderChange = (key: string) => (value: number) => {
-    setSetting(key, String(value))
-  }
+  const handleSliderChange = useCallback(
+    (key: string) => (value: number) => {
+      setSetting(key, String(value))
+    },
+    [setSetting],
+  )
 
   const getVal = (key: string, fallback: string) => {
     const v = settings[key]

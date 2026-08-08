@@ -11,6 +11,17 @@ import styles from './Library.module.css'
 const PAGE_SIZE = 60
 const COLOR_LABELS = ['', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple']
 
+// Delays criteria propagation: the four free-text filters would otherwise
+// trigger a new IPC query on every keystroke.
+function useDebouncedValue<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
+
 function buildCriteria(
   search: string,
   rating: string,
@@ -68,20 +79,24 @@ export default function Library() {
   const [albumName, setAlbumName] = useState('')
   const [selectedAlbum, setSelectedAlbum] = useState<string>()
   const [page, setPage] = useState(0)
+  const debouncedSearch = useDebouncedValue(search)
+  const debouncedKeyword = useDebouncedValue(keyword)
+  const debouncedDirectory = useDebouncedValue(directory)
+  const debouncedPerson = useDebouncedValue(person)
   const criteria = useMemo(
     () => buildCriteria(
-      search,
+      debouncedSearch,
       rating,
       label,
       status,
-      keyword,
-      directory,
+      debouncedKeyword,
+      debouncedDirectory,
       volume,
-      person,
+      debouncedPerson,
       duplicates,
       recentDays,
     ),
-    [directory, duplicates, keyword, label, person, rating, recentDays, search, status, volume],
+    [debouncedDirectory, debouncedKeyword, debouncedPerson, debouncedSearch, duplicates, label, rating, recentDays, status, volume],
   )
   const criteriaKey = JSON.stringify(criteria)
 
@@ -337,7 +352,12 @@ export default function Library() {
             {photos.map(photo => (
               <article key={photo.assetId} className={styles.card}>
                 <div className={styles.thumbnail}>
-                  <img src={imageApi.thumbnailUrl(photo.filepath, 512)} alt={photo.filename} />
+                  <img
+                    src={imageApi.thumbnailUrl(photo.filepath, 512)}
+                    alt={photo.filename}
+                    loading="lazy"
+                    onError={(e) => { e.currentTarget.style.display = 'none' }}
+                  />
                   {photo.status === 'missing' && <span className={styles.offline}>离线</span>}
                 </div>
                 <strong title={photo.filename}>{photo.filename}</strong>

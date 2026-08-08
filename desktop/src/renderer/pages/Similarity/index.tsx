@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { similarityApi, type SimilarityResult } from '../../api/similarity'
@@ -14,8 +14,43 @@ import type { SimilarityGroup, SimilarityImage, WritebackItem, WritebackPreview,
 import styles from './Similarity.module.css'
 
 function ThumbnailImage({ path, className }: { path: string; className?: string }) {
+  const [failed, setFailed] = useState(false)
+  const lastPathRef = useRef(path)
+  // A memoized parent (GroupCard) can reuse this instance for a different
+  // path after a recluster/tier switch; a stale `failed` flag must not carry
+  // over, otherwise a valid image keeps showing the placeholder.
+  if (lastPathRef.current !== path) {
+    lastPathRef.current = path
+    setFailed(false)
+  }
   const filename = path.split(/[/\\]/).pop() ?? path
-  return <img src={imageApi.thumbnailUrl(path, 256)} alt={filename} className={className} />
+  if (failed) {
+    return <div className={className ? `${className} ${styles.thumbPlaceholder}` : styles.thumbPlaceholder} />
+  }
+  return (
+    <img
+      src={imageApi.thumbnailUrl(path, 256)}
+      alt={filename}
+      loading="lazy"
+      className={className}
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+// Subscribes only to the high-frequency progress fields so a progress tick
+// re-renders just the progress bar, not the whole analysis panel.
+function AnalysisProgress() {
+  const progressCurrent = useSimilarityStore((s) => s.progressCurrent)
+  const progressTotal = useSimilarityStore((s) => s.progressTotal)
+  const progressMessage = useSimilarityStore((s) => s.progressMessage)
+  return (
+    <ProgressBar
+      value={progressCurrent}
+      max={progressTotal}
+      label={progressMessage || '正在计算哈希并聚类...'}
+    />
+  )
 }
 
 function AnalysisPanel({
@@ -28,21 +63,17 @@ function AnalysisPanel({
   onResultAdopted: () => void
 }) {
   const queryClient = useQueryClient()
-  const {
-    threshold,
-    minGroupSize,
-    groupingMode,
-    isAnalyzing,
-    setThreshold,
-    setMinGroupSize,
-    setGroupingMode,
-    setIsAnalyzing,
-    setProgress,
-    progressCurrent,
-    progressTotal,
-    progressMessage,
-  } =
-    useSimilarityStore()
+  // Per-field selectors: only low-frequency fields here; progress is read by
+  // the dedicated AnalysisProgress component so ticks don't re-render the panel.
+  const threshold = useSimilarityStore((s) => s.threshold)
+  const minGroupSize = useSimilarityStore((s) => s.minGroupSize)
+  const groupingMode = useSimilarityStore((s) => s.groupingMode)
+  const isAnalyzing = useSimilarityStore((s) => s.isAnalyzing)
+  const setThreshold = useSimilarityStore((s) => s.setThreshold)
+  const setMinGroupSize = useSimilarityStore((s) => s.setMinGroupSize)
+  const setGroupingMode = useSimilarityStore((s) => s.setGroupingMode)
+  const setIsAnalyzing = useSimilarityStore((s) => s.setIsAnalyzing)
+  const setProgress = useSimilarityStore((s) => s.setProgress)
 
   const cancelMutation = useMutation({
     mutationFn: () => similarityApi.cancel(sessionId),
@@ -268,7 +299,7 @@ function AnalysisPanel({
 
       {(isAnalyzing || analyzeMutation.isPending) && (
         <div className={styles.progressSection}>
-          <ProgressBar value={progressCurrent} max={progressTotal} label={progressMessage || '正在计算哈希并聚类...'} />
+          <AnalysisProgress />
           <button
             className={styles.cancelBtn}
             onClick={() => cancelMutation.mutate()}
@@ -299,14 +330,14 @@ function AnalysisPanel({
   )
 }
 
-function GroupCard({
+const GroupCard = memo(function GroupCard({
   group,
   selected,
   onSelectedChange,
 }: {
   group: SimilarityGroup
   selected: boolean
-  onSelectedChange: (selected: boolean) => void
+  onSelectedChange: (groupId: number, selected: boolean) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const rep = group.images.find((img) => img.representative) ?? group.images[0]
@@ -317,7 +348,7 @@ function GroupCard({
         <input
           type="checkbox"
           checked={selected}
-          onChange={(event) => onSelectedChange(event.target.checked)}
+          onChange={(event) => onSelectedChange(group.id, event.target.checked)}
           onClick={(event) => event.stopPropagation()}
           aria-label={`选择 ${group.label}`}
           className={styles.groupCheckbox}
@@ -332,8 +363,8 @@ function GroupCard({
 
       {expanded && (
         <div className={styles.groupMembers}>
-          {group.images.map((img, i) => (
-            <div key={i} className={styles.memberItem}>
+          {group.images.map((img) => (
+            <div key={img.path} className={styles.memberItem}>
               <ThumbnailImage path={img.path} className={styles.memberThumb} />
               <span className={styles.memberName}>
                 {img.path.split(/[/\\]/).pop() ?? img.path}
@@ -344,7 +375,7 @@ function GroupCard({
       )}
     </div>
   )
-}
+})
 
 function GroupGrid({
   result,
@@ -370,7 +401,7 @@ function GroupGrid({
           key={group.id}
           group={group}
           selected={selectedGroupIds.has(group.id)}
-          onSelectedChange={(selected) => onSelectedChange(group.id, selected)}
+          onSelectedChange={onSelectedChange}
         />
       ))}
     </div>
@@ -598,6 +629,15 @@ export default function Similarity() {
     setSelectedGroupIds(new Set())
   }, [])
 
+  const onSelectedChange = useCallback((groupId: number, selected: boolean) => {
+    setSelectedGroupIds((current) => {
+      const next = new Set(current)
+      if (selected) next.add(groupId)
+      else next.delete(groupId)
+      return next
+    })
+  }, [])
+
   useEffect(() => {
     setSelectedGroupIds(new Set())
     resetSimilarityState()
@@ -617,6 +657,10 @@ export default function Similarity() {
       return false
     },
   })
+
+  const onSelectAll = useCallback((selected: boolean) => {
+    setSelectedGroupIds(selected ? new Set((result?.groups ?? []).map((group) => group.id)) : new Set())
+  }, [result])
 
   if (!sessionId) {
       return <div className={styles.page}><p>未选择工作区</p></div>
@@ -646,19 +690,12 @@ export default function Similarity() {
             sessionId={sessionId}
             result={result}
             selectedGroupIds={selectedGroupIds}
-            onSelectAll={(selected) => setSelectedGroupIds(
-              selected ? new Set(result.groups.map(group => group.id)) : new Set(),
-            )}
+            onSelectAll={onSelectAll}
           />
           <GroupGrid
             result={result}
             selectedGroupIds={selectedGroupIds}
-            onSelectedChange={(groupId, selected) => setSelectedGroupIds((current) => {
-              const next = new Set(current)
-              if (selected) next.add(groupId)
-              else next.delete(groupId)
-              return next
-            })}
+            onSelectedChange={onSelectedChange}
           />
         </>
       )}

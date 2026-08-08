@@ -298,16 +298,22 @@ export class ExportService {
         const ext = path.extname(destName)
         const base = destName.slice(0, -ext.length)
         let dedupeIdx = 2
+        // Lowercase once per candidate (and reuse for the add below) instead
+        // of allocating a new lowercased string on every compare.
+        let lowerName = destName.toLocaleLowerCase()
         while (
-          usedNames.has(destName.toLocaleLowerCase()) ||
+          usedNames.has(lowerName) ||
           fs.existsSync(path.join(destination, destName))
         ) {
           destName = `${base}_${dedupeIdx}${ext}`
           dedupeIdx++
+          lowerName = destName.toLocaleLowerCase()
         }
         resume?.onPlanned?.(photo.id, destName)
+        usedNames.add(lowerName)
+      } else {
+        usedNames.add(destName.toLocaleLowerCase())
       }
-      usedNames.add(destName.toLocaleLowerCase())
       return {
         index,
         photo,

@@ -14,6 +14,14 @@ type JobExecutor = (job: AnalysisJobData, context: JobRunContext) => Promise<unk
 type JobProgressSink = (job: AnalysisJobData, update: JobProgressUpdate) => void
 const MAX_CONCURRENT_JOBS = 2
 const PROGRESS_WRITE_INTERVAL_MS = 250
+// throwIfCancelled is the hottest path in the analysis/indexing loops (once
+// per photo/file), so the persisted-status check is throttled: the AbortSignal
+// check stays synchronous on every call, while the DB query that catches a
+// 'cancelling' status runs at most every 50 calls or every 500ms. cancel()
+// aborts the controller synchronously, so the signal alone never misses an
+// in-process cancel; the DB check remains as a cross-path backstop.
+const CANCEL_DB_CHECK_EVERY = 50
+const CANCEL_DB_CHECK_INTERVAL_MS = 500
 // Large face/similarity analyses routinely exceed ten minutes, so a shorter
 // default would surface spurious timeouts while the background job is still
 // legitimately running. The timeout only guards against permanently-stuck
@@ -239,6 +247,25 @@ export class JobService {
     }, 5_000)
     let lastProgressWriteAt = 0
     let pendingProgress: JobProgressUpdate | null = null
+    let cancelCheckCalls = 0
+    let lastCancelDbCheckAt = 0
+    const dbStatusCancelled = (): boolean => {
+      const latest = this.repo.get(job.id)
+      return latest?.status === 'cancelling' || latest?.status === 'cancelled'
+    }
+    const throwIfCancelled = (forceDbCheck = false): void => {
+      if (controller.signal.aborted) throw new JobCancelledError()
+      const now = Date.now()
+      if (
+        !forceDbCheck &&
+        ++cancelCheckCalls % CANCEL_DB_CHECK_EVERY !== 0 &&
+        now - lastCancelDbCheckAt < CANCEL_DB_CHECK_INTERVAL_MS
+      ) {
+        return
+      }
+      lastCancelDbCheckAt = now
+      if (dbStatusCancelled()) throw new JobCancelledError()
+    }
     const flushProgress = (): void => {
       if (!pendingProgress) return
       const update = pendingProgress
@@ -264,21 +291,15 @@ export class JobService {
         pendingProgress = { checkpoint }
         flushProgress()
       },
-      throwIfCancelled: () => {
-        const latest = this.repo.get(job.id)
-        if (
-          controller.signal.aborted ||
-          latest?.status === 'cancelling' ||
-          latest?.status === 'cancelled'
-        ) {
-          throw new JobCancelledError()
-        }
-      },
+      throwIfCancelled: () => throwIfCancelled(),
     }
     try {
       const result = await work(context)
       flushProgress()
-      context.throwIfCancelled()
+      // Force a fresh persisted-status check on the success path: work may
+      // have ended on a throttled window, and a queued cancel must still
+      // turn the final commit into a cancelled job.
+      throwIfCancelled(true)
       if (!this.finish(job.id, leaseOwner, 'succeeded')) {
         throw new Error('Analysis job lost its execution lease before completion')
       }

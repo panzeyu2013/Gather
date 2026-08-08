@@ -20,6 +20,14 @@ const PRECOMPUTED_TIER_MARKER = '"precomputed":true'
 
 @injectable()
 export class SimilarityResultRepository {
+  /** Bounded cache of the members-table projection: member rows are immutable
+   * per result id (they are only ever replaced together with their result
+   * row), so the map is reused across the many per-page culling lookups
+   * instead of re-reading the table every time. `replace`/`replaceForThreshold`
+   * invalidate the session's entries; the size cap keeps memory bounded. */
+  private photoGroupMapCache = new Map<string, Map<string, string>>()
+  private static readonly PHOTO_GROUP_MAP_CACHE_MAX = 32
+
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
   getLatest(sessionId: string): SimilarityResultRow | undefined {
@@ -64,6 +72,7 @@ export class SimilarityResultRepository {
       )
     })
     replaceResult()
+    this.invalidateSessionMembersCache(sessionId)
     return resultId
   }
 
@@ -92,6 +101,7 @@ export class SimilarityResultRepository {
       )
     })
     replaceResult()
+    this.invalidateSessionMembersCache(sessionId)
     return resultId
   }
 
@@ -120,12 +130,36 @@ export class SimilarityResultRepository {
   }
 
   getPhotoGroupMap(sessionId: string, resultId: number): Map<string, string> {
+    const key = `${sessionId}:${resultId}`
+    const cached = this.photoGroupMapCache.get(key)
+    // Return a copy instead of the cached instance: the map is shared with
+    // the culling service's per-session caches, so a future mutation by one
+    // caller must never poison the repo cache or the other shared holders.
+    // The cost is one copy per call, proportional to the member count.
+    if (cached) return new Map(cached)
     const rows = this.db.prepare(`
       SELECT photo_id, group_index
       FROM similarity_result_members
       WHERE session_id = ? AND result_id = ?
     `).all(sessionId, resultId) as Array<{ photo_id: string; group_index: number }>
-    return new Map(rows.map(row => [row.photo_id, `${resultId}:${row.group_index}`]))
+    const map = new Map(rows.map(row => [row.photo_id, `${resultId}:${row.group_index}`]))
+    this.photoGroupMapCache.set(key, map)
+    if (this.photoGroupMapCache.size > SimilarityResultRepository.PHOTO_GROUP_MAP_CACHE_MAX) {
+      // Map preserves insertion order: evict the oldest entry to stay bounded.
+      const oldest = this.photoGroupMapCache.keys().next().value
+      if (oldest !== undefined) this.photoGroupMapCache.delete(oldest)
+    }
+    return new Map(map)
+  }
+
+  /** Drops every cached membership map of the session. Called after a result
+   * replace so stale members can never be served; the new result id would
+   * miss the cache anyway, so this only keeps the cache bounded per session. */
+  private invalidateSessionMembersCache(sessionId: string): void {
+    const prefix = `${sessionId}:`
+    for (const key of [...this.photoGroupMapCache.keys()]) {
+      if (key.startsWith(prefix)) this.photoGroupMapCache.delete(key)
+    }
   }
 
   /** Group membership of a result row assembled from the members table, with

@@ -10,18 +10,43 @@ import styles from './StepAnalyze.module.css'
 
 const MODELS_GUIDANCE = '人脸模型未安装 → 打开设置自动下载（约 182 MB）'
 
+// Subscribes only to the high-frequency progress fields (plus the running
+// gate) so progress ticks re-render just the progress block, not the whole
+// analyze step.
+function AnalyzeProgress() {
+  const analysisStatus = useFaceKwStore((s) => s.analysisStatus)
+  const progressCurrent = useFaceKwStore((s) => s.progressCurrent)
+  const progressTotal = useFaceKwStore((s) => s.progressTotal)
+  const progressMessage = useFaceKwStore((s) => s.progressMessage)
+
+  if (analysisStatus !== 'running') return null
+
+  return (
+    <div className={styles.progress}>
+      <div className={styles.progressText}>
+        {progressMessage} {progressTotal > 0 ? `(${progressCurrent}/${progressTotal})` : ''}
+      </div>
+      {progressTotal > 0 && (
+        <div className={styles.progressTrack}>
+          <div
+            className={styles.progressFill}
+            style={{
+              width: `${Math.min(100, (progressCurrent / progressTotal) * 100)}%`,
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function StepAnalyze() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
-  const {
-    finishAnalysis,
-    analysisStatus,
-    setAnalysisStatus,
-    progressCurrent,
-    progressTotal,
-    progressMessage,
-    setProgress,
-  } = useFaceKwStore()
+  const finishAnalysis = useFaceKwStore((s) => s.finishAnalysis)
+  const analysisStatus = useFaceKwStore((s) => s.analysisStatus)
+  const setAnalysisStatus = useFaceKwStore((s) => s.setAnalysisStatus)
+  const setProgress = useFaceKwStore((s) => s.setProgress)
   const queryClient = useQueryClient()
 
   const [eps, setEps] = useState(0.6)
@@ -99,7 +124,12 @@ export default function StepAnalyze() {
         return
       }
       setProgress(sessionId, data.current, data.total, data.message || '正在检测人脸...')
-      setAnalysisStatus(sessionId, 'running')
+      // Only flip the gate on the first tick: setting the same value on every
+      // progress event relies on zustand's Object.is short-circuit, and this
+      // keeps the running-gate logic explicit for AnalyzeProgress.
+      if (useFaceKwStore.getState().analysisStatus !== 'running') {
+        setAnalysisStatus(sessionId, 'running')
+      }
     }
   }, Boolean(sessionId))
 
@@ -219,23 +249,7 @@ export default function StepAnalyze() {
         </div>
       )}
 
-      {isRunning && (
-        <div className={styles.progress}>
-          <div className={styles.progressText}>
-            {progressMessage} {progressTotal > 0 ? `(${progressCurrent}/${progressTotal})` : ''}
-          </div>
-          {progressTotal > 0 && (
-            <div className={styles.progressTrack}>
-              <div
-                className={styles.progressFill}
-                style={{
-                  width: `${Math.min(100, (progressCurrent / progressTotal) * 100)}%`,
-                }}
-              />
-            </div>
-          )}
-        </div>
-      )}
+      {isRunning && <AnalyzeProgress />}
 
       <div className={styles.actions}>
         {analysisStatus === 'idle' || analysisStatus === 'failed' || analysisStatus === 'cancelled' ? (

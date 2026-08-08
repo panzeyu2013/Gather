@@ -9,7 +9,10 @@ const StepWriteback = lazy(() => import('./StepWriteback'))
 
 export default function FaceKeywording() {
   const { sessionId } = useParams<{ sessionId: string }>()
-  const { step, setStep, setSessionId, analysisStatus } = useFaceKwStore()
+  const step = useFaceKwStore((s) => s.step)
+  const setStep = useFaceKwStore((s) => s.setStep)
+  const setSessionId = useFaceKwStore((s) => s.setSessionId)
+  const analysisStatus = useFaceKwStore((s) => s.analysisStatus)
 
   useEffect(() => {
     // Deliberately NOT cancelling the previous session's analysis: jobs run

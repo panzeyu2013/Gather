@@ -20,17 +20,24 @@ export function registerExportHandlers(
     )
       ? { ...job.checkpoint.destinations } as Record<string, string>
       : {}
-    const completedPhotoIds = new Set(
-      Array.isArray(job.checkpoint.completedPhotoIds)
-        ? job.checkpoint.completedPhotoIds.filter(
-          (value): value is string => typeof value === 'string',
-        )
-        : [],
-    )
+    const persistedCompletedIds = Array.isArray(job.checkpoint.completedPhotoIds)
+      ? job.checkpoint.completedPhotoIds.filter(
+        (value): value is string => typeof value === 'string',
+      )
+      : []
+    const completedPhotoIds = new Set(persistedCompletedIds)
+    // Incremental checkpoint snapshot: onCompleted appends a single id (O(1))
+    // instead of re-copying the whole set per photo. The snapshot array is
+    // shared by reference with every checkpoint object, so the job layer's
+    // throttled (250ms) progress flush always stringifies the live accumulated
+    // state — a crash loses at most the last throttled window, exactly as
+    // before. The format is unchanged, so old persisted checkpoints read the
+    // same way and no DB schema change is needed.
+    const completedIdsSnapshot: string[] = [...persistedCompletedIds]
     const checkpoint = () => ({
       options: job.checkpoint.options,
       destinations,
-      completedPhotoIds: [...completedPhotoIds],
+      completedPhotoIds: completedIdsSnapshot,
     })
     context.signal.addEventListener('abort', () => exportService.cancel(job.scopeId), {
       once: true,
@@ -56,7 +63,13 @@ export function registerExportHandlers(
         },
         onPlanReady: () => context.updateCheckpoint(checkpoint()),
         onCompleted: photoId => {
-          completedPhotoIds.add(photoId)
+          // Set.add is idempotent but the snapshot array is not, and a
+          // resumed photo whose file vanished re-fires onCompleted; only
+          // record ids that are genuinely new.
+          if (!completedPhotoIds.has(photoId)) {
+            completedPhotoIds.add(photoId)
+            completedIdsSnapshot.push(photoId)
+          }
           context.updateProgress({ checkpoint: checkpoint() })
         },
       },

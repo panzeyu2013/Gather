@@ -58,12 +58,18 @@ export class CullingDecisionRepository {
 
   getByPhotoIds(sessionId: string, photoIds: string[]): CullingDecisionRow[] {
     if (photoIds.length === 0) return []
-    const placeholders = photoIds.map(() => '?').join(',')
-    return this.db.prepare(`
-      SELECT *
-      FROM culling_decisions
-      WHERE session_id = ? AND photo_id IN (${placeholders})
-    `).all(sessionId, ...photoIds) as CullingDecisionRow[]
+    const rows: CullingDecisionRow[] = []
+    // Stay below SQLite's parameter limit while allowing large batches.
+    for (let index = 0; index < photoIds.length; index += 800) {
+      const chunk = photoIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(',')
+      rows.push(...this.db.prepare(`
+        SELECT *
+        FROM culling_decisions
+        WHERE session_id = ? AND photo_id IN (${placeholders})
+      `).all(sessionId, ...chunk) as CullingDecisionRow[])
+    }
+    return rows
   }
 
   upsertState(

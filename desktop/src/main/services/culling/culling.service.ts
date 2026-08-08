@@ -4,13 +4,17 @@ import {
   RAW_EXTENSIONS,
   RAW_EXTENSION_LIKE_SQL,
   type PhotoPageRow,
+  type PhotoProjectionRow,
   type PhotoRow,
 } from '../../db/repositories/photo.repo'
 import {
   CullingDecisionRepository,
   type CullingDecisionRow,
 } from '../../db/repositories/culling-decision.repo'
-import { SimilarityResultRepository } from '../../db/repositories/similarity-result.repo'
+import {
+  SimilarityResultRepository,
+  type SimilarityResultRow,
+} from '../../db/repositories/similarity-result.repo'
 import {
   MetadataCacheRepository,
   type MetadataCacheRow,
@@ -60,6 +64,17 @@ const COLOR_LABELS = new Set<CaptureOneColorLabel>([
   'Purple',
 ])
 
+/** Precompiled lowercase RAW extension set: the preferred-variant check
+ * becomes an O(1) extension probe instead of a per-candidate
+ * `some(...endsWith)` scan. */
+const PREFERRED_RAW_EXTENSIONS = new Set<string>(RAW_EXTENSIONS)
+
+function isPreferredRawVariant(filename: string): boolean {
+  const lower = filename.toLowerCase()
+  const dot = lower.lastIndexOf('.')
+  return dot >= 0 && PREFERRED_RAW_EXTENSIONS.has(lower.slice(dot))
+}
+
 function decisionToPickState(decision: string | undefined): PickState {
   if (decision === 'keep') return 'picked'
   if (decision === 'reject') return 'rejected'
@@ -83,7 +98,7 @@ function parseJsonRecord(value: string): Record<string, unknown> {
   }
 }
 
-function photoRowToData(row: PhotoRow | PhotoPageRow, faceCount: number): PhotoData {
+function photoRowToData(row: CullingPhotoRow, faceCount: number): PhotoData {
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -94,8 +109,8 @@ function photoRowToData(row: PhotoRow | PhotoPageRow, faceCount: number): PhotoD
     faceCount,
     width: row.width ?? 0,
     height: row.height ?? 0,
-    metadata: parseJsonRecord(row.metadata ?? '{}'),
-    result: parseJsonRecord(row.result ?? '{}'),
+    metadata: parseJsonRecord((row as PhotoPageRow).metadata ?? '{}'),
+    result: parseJsonRecord((row as PhotoPageRow).result ?? '{}'),
     status: row.status,
     assetId: row.asset_id ?? undefined,
     createdAt: row.created_at,
@@ -114,6 +129,59 @@ interface CullingRichLookup {
   analysisMaxByPhoto: Map<string, number>
   peopleByPhoto: Map<string, string[]>
   linkedCounts: Map<string, number>
+}
+
+/** Photo row shapes the culling service consumes: the heavy JSON columns are
+ * never read here, so the full row, the page projection and the light
+ * projection are interchangeable. */
+export type CullingPhotoRow = PhotoRow | PhotoPageRow | PhotoProjectionRow
+
+/** Reusable per-session input for `updateState`: photos, their id index, the
+ * similarity group index and the xmp-linkage map are all immutable during an
+ * update burst, so the IPC handler and the batch/history paths share one
+ * cached instance instead of re-reading the whole session per click. */
+export interface CullingUpdateContext {
+  photos: CullingPhotoRow[]
+  groupMap: Map<string, string>
+  photoById: Map<string, CullingPhotoRow>
+  linkedByXmp: Map<string, CullingPhotoRow[]>
+  historySink?: CullingHistoryEntry[]
+}
+
+/** Version-keyed cache entry: every field is derived from the latest
+ * similarity result (its `resultRow.id` is the version), so the entry is
+ * rebuilt atomically when a result is replaced and result ids never mix.
+ * `groupIndex` is resolved lazily (the groups_json fallback needs the photos
+ * row set); the analysis maps are populated by the first session-wide build.
+ * A short TTL bounds staleness from background quality/face analyses. */
+interface SessionLookupEntry {
+  resultRow: SimilarityResultRow | undefined
+  similarityMap: Map<string, string>
+  groupIndex: Map<string, string>
+  groupIndexResolved: boolean
+  analysesLoaded: boolean
+  qualityByPhoto: Map<string, CullingAsset['quality']>
+  facesByPhoto: Map<string, number[][]>
+  analysisMaxByPhoto: Map<string, number>
+  peopleByPhoto: Map<string, string[]>
+  expiresAt: number
+}
+
+/** TTL-cached update context; `groupMap`/`linkedByXmp` are filled lazily so
+ * the photo load and the stale-id validation can run before any similarity
+ * read (see `ensureUpdateExtras`). `groupMapResultId` pins the group index
+ * to the similarity result version it was built from: a result replace
+ * switches the id and forces a rebuild, so update clicks never write group
+ * ids of an earlier result. `refreshed` bounds the fresh-read fallback for
+ * photo misses (see `refreshSessionUpdateContext`) to once per TTL window. */
+interface SessionUpdateEntry {
+  photos: CullingPhotoRow[]
+  photoById: Map<string, CullingPhotoRow>
+  groupMap: Map<string, string> | undefined
+  groupMapResultId: number | undefined
+  linkedByXmp: Map<string, CullingPhotoRow[]> | undefined
+  refreshed: boolean
+  expiresAt: number
 }
 
 type LookupMode = 'session' | 'page'
@@ -140,6 +208,18 @@ export class CullingService {
     @inject(DI_TOKENS.CULLING_HISTORY_REPO)
     private cullingHistoryRepo?: CullingHistoryRepository,
   ) {}
+
+  /** Version-keyed per-session lookup cache (see `SessionLookupEntry`). The
+   * main process is single-threaded over synchronous better-sqlite3, so a
+   * plain Map is safe without locks. */
+  private sessionLookupCache = new Map<string, SessionLookupEntry>()
+  /** Session-scoped update context, reused across `update` clicks within a
+   * short window (see `SessionUpdateEntry`). */
+  private sessionUpdateCache = new Map<string, SessionUpdateEntry>()
+  private static readonly LOOKUP_TTL_MS = 5_000
+  private static readonly LOOKUP_CACHE_MAX = 8
+  private static readonly UPDATE_TTL_MS = 5_000
+  private static readonly UPDATE_CACHE_MAX = 8
 
   list(
     sessionId: string,
@@ -480,7 +560,7 @@ export class CullingService {
   }
 
   private loadQualityByPhoto(
-    photos: Array<PhotoRow | PhotoPageRow>,
+    photos: CullingPhotoRow[],
   ): Map<string, CullingAsset['quality']> {
     const qualityByPhoto = new Map<string, CullingAsset['quality']>()
     if (photos.length === 0) return qualityByPhoto
@@ -532,7 +612,7 @@ export class CullingService {
   }
 
   private loadFaces(
-    photos: Array<PhotoRow | PhotoPageRow>,
+    photos: CullingPhotoRow[],
     sessionId: string,
     mode: LookupMode,
   ): { facesByPhoto: Map<string, number[][]>; analysisMaxByPhoto: Map<string, number> } {
@@ -589,7 +669,7 @@ export class CullingService {
   }
 
   private loadPeople(
-    photos: Array<PhotoRow | PhotoPageRow>,
+    photos: CullingPhotoRow[],
     sessionId: string,
     mode: LookupMode,
   ): Map<string, string[]> {
@@ -618,7 +698,7 @@ export class CullingService {
   }
 
   private buildRichLookup(
-    photos: Array<PhotoRow | PhotoPageRow>,
+    photos: CullingPhotoRow[],
     sessionId: string,
     mode: LookupMode,
   ): CullingRichLookup {
@@ -639,9 +719,35 @@ export class CullingService {
       )
       : this.loadOutboxByPaths(sessionId, photos.map(photo => getXmpSidecarPath(photo.filepath)))
     const similarityMap = this.getLatestSimilarityMap(sessionId)
-    const qualityByPhoto = this.loadQualityByPhoto(photos)
-    const { facesByPhoto, analysisMaxByPhoto } = this.loadFaces(photos, sessionId, mode)
-    const peopleByPhoto = this.loadPeople(photos, sessionId, mode)
+    // The session-wide analysis tables (quality/faces/people) are only
+    // rewritten by background analyses, so session mode reuses the
+    // version-keyed cache instead of re-reading all of them per call; page
+    // mode keeps its per-page scoped queries.
+    const sessionLookup = this.getSessionLookup(sessionId)
+    let qualityByPhoto: Map<string, CullingAsset['quality']>
+    let facesByPhoto: Map<string, number[][]>
+    let analysisMaxByPhoto: Map<string, number>
+    let peopleByPhoto: Map<string, string[]>
+    if (mode === 'session') {
+      if (!sessionLookup.analysesLoaded) {
+        sessionLookup.analysesLoaded = true
+        sessionLookup.qualityByPhoto = this.loadQualityByPhoto(photos)
+        const faces = this.loadFaces(photos, sessionId, 'session')
+        sessionLookup.facesByPhoto = faces.facesByPhoto
+        sessionLookup.analysisMaxByPhoto = faces.analysisMaxByPhoto
+        sessionLookup.peopleByPhoto = this.loadPeople(photos, sessionId, 'session')
+      }
+      qualityByPhoto = sessionLookup.qualityByPhoto
+      facesByPhoto = sessionLookup.facesByPhoto
+      analysisMaxByPhoto = sessionLookup.analysisMaxByPhoto
+      peopleByPhoto = sessionLookup.peopleByPhoto
+    } else {
+      qualityByPhoto = this.loadQualityByPhoto(photos)
+      const faces = this.loadFaces(photos, sessionId, 'page')
+      facesByPhoto = faces.facesByPhoto
+      analysisMaxByPhoto = faces.analysisMaxByPhoto
+      peopleByPhoto = this.loadPeople(photos, sessionId, 'page')
+    }
     const linkedCounts = new Map<string, number>()
     for (const photo of photos) {
       const xmpPath = getXmpSidecarPath(photo.filepath)
@@ -675,7 +781,7 @@ export class CullingService {
   }
 
   private assembleAssets(
-    photos: Array<PhotoRow | PhotoPageRow>,
+    photos: CullingPhotoRow[],
     lookup: CullingRichLookup,
   ): CullingAsset[] {
     const {
@@ -764,15 +870,18 @@ export class CullingService {
       }
     })
 
-    return [...new Map(
-      assets.map(asset => [asset.photo.assetId ?? `photo:${asset.photo.id}`, asset]),
-    ).values()].map(asset => {
-      const variants = asset.photo.assetId
-        ? assets.filter(candidate => candidate.photo.assetId === asset.photo.assetId)
-        : [asset]
+    // Group once by logical asset id (single pass) instead of filtering the
+    // whole asset array per group (O(n²) on large sessions).
+    const assetsByAssetId = new Map<string, CullingAsset[]>()
+    for (const asset of assets) {
+      const assetId = asset.photo.assetId ?? `photo:${asset.photo.id}`
+      const variants = assetsByAssetId.get(assetId)
+      if (variants) variants.push(asset)
+      else assetsByAssetId.set(assetId, [asset])
+    }
+    return [...assetsByAssetId.values()].map(variants => {
       const preferred = variants.find(candidate =>
-        RAW_EXTENSIONS.some(extension =>
-          candidate.photo.filename.toLowerCase().endsWith(extension)),
+        isPreferredRawVariant(candidate.photo.filename),
       ) ?? variants[0]
       return {
         ...preferred,
@@ -805,9 +914,110 @@ export class CullingService {
         if (!asset.similarityGroupId) return false
         if (requestedGroupId && asset.similarityGroupId !== requestedGroupId) return false
       }
-      if (scope === 'filtered' && !this.matchesFilters(asset, filters)) return false
       return scope !== 'filtered' || this.matchesFilters(asset, filters)
     })
+  }
+
+  /** Cached `updateState` context (see `SessionUpdateEntry`); the IPC update
+   * handler reuses it so a click burst never re-reads the whole session. */
+  getUpdateContext(sessionId: string): CullingUpdateContext {
+    const entry = this.getSessionUpdateContext(sessionId)
+    this.ensureUpdateExtras(entry, sessionId)
+    return {
+      photos: entry.photos,
+      photoById: entry.photoById,
+      groupMap: entry.groupMap!,
+      linkedByXmp: entry.linkedByXmp!,
+    }
+  }
+
+  /** Photos + id index of the session, TTL-cached. The update paths use it so
+   * a click burst stops re-reading the whole session (heavy JSON columns
+   * skipped via the light projection) on every keystroke. */
+  private getSessionUpdateContext(sessionId: string): SessionUpdateEntry {
+    const now = Date.now()
+    const cached = this.sessionUpdateCache.get(sessionId)
+    if (cached && cached.expiresAt > now) return cached
+    const photos = this.loadSessionPhotos(sessionId)
+    const entry: SessionUpdateEntry = {
+      photos,
+      photoById: new Map(photos.map(photo => [photo.id, photo])),
+      groupMap: undefined,
+      groupMapResultId: undefined,
+      linkedByXmp: undefined,
+      refreshed: false,
+      expiresAt: now + CullingService.UPDATE_TTL_MS,
+    }
+    this.sessionUpdateCache.set(sessionId, entry)
+    this.pruneSessionUpdateCache()
+    return entry
+  }
+
+  /** Fresh-read fallback for a TTL-cached update context that missed a photo
+   * id: the indexer's add/delete can be invisible to the cache, so one fresh
+   * read per TTL window is attempted before the caller gives up (a newly
+   * imported photo must never be rejected, a really deleted one still is on
+   * the second check). The group index, xmp linkage and the session lookup
+   * are invalidated with the photo set so they rebuild against the new rows
+   * on the next `ensureUpdateExtras`. */
+  private refreshSessionUpdateContext(sessionId: string, entry: SessionUpdateEntry): void {
+    if (entry.refreshed) return
+    const photos = this.loadSessionPhotos(sessionId)
+    entry.photos = photos
+    entry.photoById = new Map(photos.map(photo => [photo.id, photo]))
+    entry.groupMap = undefined
+    entry.groupMapResultId = undefined
+    entry.linkedByXmp = undefined
+    entry.refreshed = true
+    // The group index may have been resolved against the previous photo set
+    // (groups_json fallback), so the session lookup is rebuilt from scratch.
+    this.sessionLookupCache.delete(sessionId)
+  }
+
+  /** Lazily fills the similarity group index and the xmp-linkage map of a
+   * cached update context. The group index is keyed by similarity result
+   * version (`getSessionLookup` resolves the latest row): every access
+   * re-checks the version, so a result replace rebuilds the map instead of
+   * writing orphan `${oldResultId}:${i}` group ids. The xmp linkage only
+   * depends on the photo set and is rebuilt together with it (see
+   * `refreshSessionUpdateContext`). Kept separate from the photos load so
+   * callers can validate photo ids before any similarity read, and so the
+   * O(n) xmp-sidecar scan runs once per entry/version instead of per click. */
+  private ensureUpdateExtras(entry: SessionUpdateEntry, sessionId: string): void {
+    const lookup = this.getSessionLookup(sessionId)
+    if (entry.groupMap !== undefined && entry.groupMapResultId === lookup.resultRow?.id) {
+      return
+    }
+    entry.groupMap = this.buildPhotoGroupIndex(entry.photos, sessionId, lookup)
+    entry.groupMapResultId = lookup.resultRow?.id
+    const linkedByXmp = new Map<string, CullingPhotoRow[]>()
+    for (const photo of entry.photos) {
+      const xmpPath = getXmpSidecarPath(photo.filepath)
+      const linked = linkedByXmp.get(xmpPath) ?? []
+      linked.push(photo)
+      linkedByXmp.set(xmpPath, linked)
+    }
+    entry.linkedByXmp = linkedByXmp
+  }
+
+  private pruneSessionUpdateCache(): void {
+    const now = Date.now()
+    for (const [sessionId, entry] of this.sessionUpdateCache) {
+      if (entry.expiresAt <= now) this.sessionUpdateCache.delete(sessionId)
+    }
+    while (this.sessionUpdateCache.size > CullingService.UPDATE_CACHE_MAX) {
+      const oldest = this.sessionUpdateCache.keys().next().value
+      if (oldest === undefined) break
+      this.sessionUpdateCache.delete(oldest)
+    }
+  }
+
+  private loadSessionPhotos(sessionId: string): CullingPhotoRow[] {
+    // The light projection is used on the hot paths; the full-row fallback
+    // keeps unit-test doubles that only expose getBySession working.
+    return typeof this.photoRepo.getBySessionProjection === 'function'
+      ? this.photoRepo.getBySessionProjection(sessionId)
+      : this.photoRepo.getBySession(sessionId)
   }
 
   updateState(
@@ -815,19 +1025,28 @@ export class CullingService {
     photoId: string,
     expectedRevision: number,
     patch: CullingUpdatePatch,
-    context?: {
-      photos: PhotoRow[]
-      groupMap: Map<string, string>
-      photoById: Map<string, PhotoRow>
-      linkedByXmp: Map<string, PhotoRow[]>
-      historySink?: CullingHistoryEntry[]
-    },
+    context?: CullingUpdateContext,
   ): CullingUpdateResult {
     this.validatePatch(patch)
-    const photos = context?.photos ?? this.photoRepo.getBySession(sessionId)
-    const target = context?.photoById.get(photoId)
-      ?? photos.find(photo => photo.id === photoId)
-    if (!target) throw new Error('Photo does not belong to this workspace')
+    const entry = this.getSessionUpdateContext(sessionId)
+    let photos = context?.photos ?? entry.photos
+    let photoById = context?.photoById ?? entry.photoById
+    let contextGroupMap = context?.groupMap
+    let contextLinkedByXmp = context?.linkedByXmp
+    let target = photoById.get(photoId) ?? photos.find(photo => photo.id === photoId)
+    if (!target) {
+      // The TTL-cached photo set can miss photos the indexer just added, so
+      // one fresh read per window is attempted before giving up (see
+      // refreshSessionUpdateContext). A stale caller-supplied context is
+      // dropped in favor of the refreshed entry.
+      this.refreshSessionUpdateContext(sessionId, entry)
+      photos = entry.photos
+      photoById = entry.photoById
+      contextGroupMap = undefined
+      contextLinkedByXmp = undefined
+      target = photoById.get(photoId) ?? photos.find(photo => photo.id === photoId)
+      if (!target) throw new Error('Photo does not belong to this workspace')
+    }
 
     const currentRow = this.cullingDecisionRepo.getDecision(sessionId, photoId)
     const currentRevision = currentRow?.revision ?? 0
@@ -840,7 +1059,12 @@ export class CullingService {
     const targetXmpPath = getXmpSidecarPath(target.filepath)
     const changesSharedMetadata =
       patch.rating !== undefined || patch.colorLabel !== undefined
-    const affectedById = new Map<string, PhotoRow>()
+    // A complete caller-supplied context (IPC/batch) already went through
+    // ensureUpdateExtras, so the per-click version check would be a
+    // redundant similarity read; it runs only on the direct-call paths and
+    // after a fresh-read fallback dropped the context maps above.
+    if (contextGroupMap === undefined) this.ensureUpdateExtras(entry, sessionId)
+    const affectedById = new Map<string, CullingPhotoRow>()
     if (patch.pickState !== undefined && target.asset_id) {
       for (const photo of photos) {
         if (photo.asset_id === target.asset_id) affectedById.set(photo.id, photo)
@@ -849,8 +1073,9 @@ export class CullingService {
       affectedById.set(target.id, target)
     }
     if (changesSharedMetadata) {
-      for (const photo of context?.linkedByXmp.get(targetXmpPath)
-        ?? photos.filter(photo => getXmpSidecarPath(photo.filepath) === targetXmpPath)) {
+      // The xmp→photos index is built once per cached context instead of an
+      // O(n) sidecar scan per click.
+      for (const photo of (contextLinkedByXmp ?? entry.linkedByXmp!).get(targetXmpPath) ?? []) {
         affectedById.set(photo.id, photo)
       }
     }
@@ -858,7 +1083,7 @@ export class CullingService {
     const pickTargets = patch.pickState !== undefined && target.asset_id
       ? new Set(photos.filter(photo => photo.asset_id === target.asset_id).map(photo => photo.id))
       : new Set([target.id])
-    const groupMap = context?.groupMap ?? this.buildPhotoGroupIndex(photos, sessionId)
+    const groupMap = contextGroupMap ?? entry.groupMap!
     const resultStates: AssetCullingState[] = []
     const beforeStates: AssetCullingState[] = []
     let historyOperationId: number | undefined
@@ -970,19 +1195,22 @@ export class CullingService {
     this.validatePatch(patch)
     const uniqueIds = [...new Set(photoIds)]
     if (uniqueIds.length === 0) throw new Error('请至少选择一张照片')
-    const photos = this.photoRepo.getBySession(sessionId)
-    const photoById = new Map(photos.map(photo => [photo.id, photo]))
-    if (uniqueIds.some(photoId => !photoById.has(photoId))) {
-      throw new Error('部分照片不属于当前工作区，请刷新后重试')
+    const entry = this.getSessionUpdateContext(sessionId)
+    // Validate the photo ids against the cached index before any similarity
+    // read (see ensureUpdateExtras). A miss may be a photo the indexer just
+    // added (invisible to the TTL cache), so one fresh read is attempted
+    // before the batch is rejected (see refreshSessionUpdateContext).
+    if (uniqueIds.some(photoId => !entry.photoById.has(photoId))) {
+      this.refreshSessionUpdateContext(sessionId, entry)
+      if (uniqueIds.some(photoId => !entry.photoById.has(photoId))) {
+        throw new Error('部分照片不属于当前工作区，请刷新后重试')
+      }
     }
-    const groupMap = this.buildPhotoGroupIndex(photos, sessionId)
-    const linkedByXmp = new Map<string, PhotoRow[]>()
-    for (const photo of photos) {
-      const xmpPath = getXmpSidecarPath(photo.filepath)
-      const linked = linkedByXmp.get(xmpPath) ?? []
-      linked.push(photo)
-      linkedByXmp.set(xmpPath, linked)
-    }
+    this.ensureUpdateExtras(entry, sessionId)
+    const photos = entry.photos
+    const photoById = entry.photoById
+    const groupMap = entry.groupMap!
+    const linkedByXmp = entry.linkedByXmp!
     const operationIds = patch.pickState === undefined
       ? [...new Map(
         uniqueIds.map(photoId => [
@@ -1054,9 +1282,13 @@ export class CullingService {
     const unique = new Set(entries.map(entry => entry.photoId))
     if (unique.size !== entries.length) throw new Error('History command contains duplicate photos')
     for (const entry of entries) this.validatePatch(entry.patch)
-    const photos = this.photoRepo.getBySession(sessionId)
-    const photoById = new Map(photos.map(photo => [photo.id, photo]))
-    const groupMap = this.buildPhotoGroupIndex(photos, sessionId)
+    const updateEntry = this.getSessionUpdateContext(sessionId)
+    // Same fresh-read fallback as updateState/batchUpdate: a photo the
+    // indexer just added can be missing from the TTL-cached photo set.
+    if (entries.some(entry => !updateEntry.photoById.has(entry.photoId))) {
+      this.refreshSessionUpdateContext(sessionId, updateEntry)
+    }
+    const photoById = updateEntry.photoById
     const currentRows = new Map(
       this.cullingDecisionRepo.getByPhotoIds(sessionId, entries.map(entry => entry.photoId))
         .map(row => [row.photo_id, row]),
@@ -1093,6 +1325,8 @@ export class CullingService {
         }
       }
     }
+    this.ensureUpdateExtras(updateEntry, sessionId)
+    const groupMap = updateEntry.groupMap!
 
     const results: CullingUpdateResult[] = []
     const historyEntries: CullingHistoryEntry[] = []
@@ -1409,20 +1643,79 @@ export class CullingService {
     }
   }
 
-  private getLatestSimilarityMap(sessionId: string): Map<string, string> {
-    const result = this.similarityResultRepo.getLatest(sessionId)
-    if (!result) return new Map()
-    return this.similarityResultRepo.getPhotoGroupMap(sessionId, result.id)
+  /** Drops the session's lookup cache entry so the next list()/listPage()
+   * call rebuilds it from fresh database state. Called by background analysis
+   * services (quality, face-keyword) when they finish a pass: the cached
+   * quality/faces/people maps would otherwise stay stale for the remainder
+   * of the TTL window. A missing entry is a no-op, and the rebuild keeps the
+   * result-version keying of `getSessionLookup` intact. */
+  invalidateSessionLookup(sessionId: string): void {
+    this.sessionLookupCache.delete(sessionId)
   }
 
-  private buildPhotoGroupIndex(
-    photos: Array<{ id: string; filepath: string }>,
-    sessionId: string,
-  ): Map<string, string> {
+  /** Latest similarity result row plus the version-keyed lookups derived from
+   * it; see `SessionLookupEntry`. The result id is the version: a replace
+   * switches it and rebuilds the entry atomically, so cached rows of one
+   * result never mix with another. */
+  private getSessionLookup(sessionId: string): SessionLookupEntry {
     const resultRow = this.similarityResultRepo.getLatest(sessionId)
-    if (!resultRow) return new Map()
-    const persisted = this.similarityResultRepo.getPhotoGroupMap(sessionId, resultRow.id)
-    if (persisted.size > 0) return persisted
+    const now = Date.now()
+    const cached = this.sessionLookupCache.get(sessionId)
+    if (cached && cached.resultRow?.id === resultRow?.id && cached.expiresAt > now) {
+      return cached
+    }
+    const similarityMap = resultRow
+      ? this.similarityResultRepo.getPhotoGroupMap(sessionId, resultRow.id)
+      : new Map<string, string>()
+    const entry: SessionLookupEntry = {
+      resultRow,
+      similarityMap,
+      groupIndex: similarityMap.size > 0 ? similarityMap : new Map(),
+      groupIndexResolved: similarityMap.size > 0,
+      analysesLoaded: false,
+      qualityByPhoto: new Map(),
+      facesByPhoto: new Map(),
+      analysisMaxByPhoto: new Map(),
+      peopleByPhoto: new Map(),
+      expiresAt: now + CullingService.LOOKUP_TTL_MS,
+    }
+    this.sessionLookupCache.set(sessionId, entry)
+    this.pruneSessionLookupCache()
+    return entry
+  }
+
+  /** Keeps the lookup cache bounded: drops expired entries and, when still
+   * over the cap, the oldest session (Map preserves insertion order). */
+  private pruneSessionLookupCache(): void {
+    const now = Date.now()
+    for (const [sessionId, entry] of this.sessionLookupCache) {
+      if (entry.expiresAt <= now) this.sessionLookupCache.delete(sessionId)
+    }
+    while (this.sessionLookupCache.size > CullingService.LOOKUP_CACHE_MAX) {
+      const oldest = this.sessionLookupCache.keys().next().value
+      if (oldest === undefined) break
+      this.sessionLookupCache.delete(oldest)
+    }
+  }
+
+  private getLatestSimilarityMap(sessionId: string): Map<string, string> {
+    return this.getSessionLookup(sessionId).similarityMap
+  }
+
+  /** Group index of every photo, resolved once per (session, result version)
+   * and reused by every update click: the members table is immutable between
+   * result replaces, so the index is rebuilt only on a version change. The
+   * caller may pass the already-resolved lookup (see `ensureUpdateExtras`)
+   * so the version resolution query runs once instead of twice per build. */
+  private buildPhotoGroupIndex(
+    photos: CullingPhotoRow[],
+    sessionId: string,
+    lookup: SessionLookupEntry = this.getSessionLookup(sessionId),
+  ): Map<string, string> {
+    if (lookup.groupIndexResolved) return lookup.groupIndex
+    lookup.groupIndexResolved = true
+    const resultRow = lookup.resultRow
+    if (!resultRow) return lookup.groupIndex
 
     // groups_json is DB content; corrupt or structurally unexpected rows
     // degrade to an empty index instead of crashing updateState/batchUpdate.
@@ -1443,7 +1736,8 @@ export class CullingService {
         if (photoId) groupByPhotoId.set(photoId, `${resultRow.id}:${index}`)
       }
     }
-    return groupByPhotoId
+    lookup.groupIndex = groupByPhotoId
+    return lookup.groupIndex
   }
 
   private matchesFilters(asset: CullingAsset, filters?: CullingFilters): boolean {

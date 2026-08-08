@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue, memo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { sessionApi } from '../../api/session'
@@ -29,6 +29,7 @@ export default function Gallery() {
   const setSession = useSessionStore((s) => s.setSession)
 
   const [search, setSearch] = useState('')
+  const deferredSearch = useDeferredValue(search)
   const [filter, setFilter] = useState('all')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
@@ -40,9 +41,10 @@ export default function Gallery() {
   const galleryRef = useRef<HTMLDivElement>(null)
   const scrollFrameRef = useRef<number | null>(null)
 
-  const settings = useSettingsStore((s) => s.settings)
+  const thumbnailSizeSetting = useSettingsStore((s) => s.settings['thumbnail_size'])
+  const settingsLoaded = useSettingsStore((s) => Object.keys(s.settings).length > 0)
   const loadSettings = useSettingsStore((s) => s.load)
-  const configuredThumbSize = parseInt(settings['thumbnail_size'] ?? '1024', 10)
+  const configuredThumbSize = parseInt(thumbnailSizeSetting ?? '1024', 10)
   const thumbSize = configuredThumbSize <= 320
     ? 256
     : configuredThumbSize <= 1280
@@ -50,12 +52,12 @@ export default function Gallery() {
       : 2048
 
   useEffect(() => {
-    if (Object.keys(settings).length === 0) loadSettings()
-  }, [loadSettings])
+    if (!settingsLoaded) loadSettings()
+  }, [loadSettings, settingsLoaded])
 
   // Searching or filtering must see the whole session, not just the pages
   // loaded so far: the chain-fetch effect below pulls every remaining page.
-  const searchActive = search.trim() !== '' || filter !== 'all'
+  const searchActive = deferredSearch.trim() !== '' || filter !== 'all'
 
   const { data: photos, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useInfiniteQuery({
     queryKey: ['photos', sessionId, expandVariants],
@@ -80,11 +82,11 @@ export default function Gallery() {
   }, [sessionId, setSession])
 
   const filtered = useMemo(() => (loadedPhotos ?? []).filter((p) => {
-    if (search && !p.filename.toLowerCase().includes(search.toLowerCase())) return false
+    if (deferredSearch && !p.filename.toLowerCase().includes(deferredSearch.toLowerCase())) return false
     if (filter === 'hasFace' && p.faceCount === 0) return false
     if (filter === 'noFace' && p.faceCount > 0) return false
     return true
-  }), [loadedPhotos, search, filter])
+  }), [loadedPhotos, deferredSearch, filter])
 
   // Load more pages as the user scrolls to the bottom. The sentinel lives
   // below the virtual canvas; an observer on it triggers the next keyset
@@ -288,7 +290,7 @@ export default function Gallery() {
   )
 }
 
-function GalleryThumbnail({ photo, isSelected, thumbSize }: {
+const GalleryThumbnail = memo(function GalleryThumbnail({ photo, isSelected, thumbSize }: {
   photo: PhotoData
   isSelected: boolean
   thumbSize: number
@@ -353,4 +355,4 @@ function GalleryThumbnail({ photo, isSelected, thumbSize }: {
       {isSelected && <div className={styles.thumbCheck}>✓</div>}
     </div>
   )
-}
+})

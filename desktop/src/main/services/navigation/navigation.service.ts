@@ -117,10 +117,13 @@ export class NavigationService {
       if (cached.length > 0 && cachedFingerprint?.input_fingerprint === fingerprint) return cached
     }
 
+    // Build the photo lookup once: withLead previously rebuilt the full
+    // rows-by-id map for every group (O(groups × rows) on large sessions).
+    const byId = new Map(rows.map(row => [row.id, row]))
     const groups = [
       ...this.group(rows, 'burst', burstGapSeconds),
       ...this.group(rows, 'scene', sceneGapSeconds),
-    ].map(group => this.withLead(group, rows))
+    ].map(group => this.withLead(group, byId))
     if (!dryRun) {
       this.persistAutomatic(sessionId, groups, fingerprint)
       return this.list(sessionId)
@@ -170,10 +173,11 @@ export class NavigationService {
       throw new Error('Split point must be inside the group')
     }
     const rows = this.captureRows(sessionId)
+    const byId = new Map(rows.map(row => [row.id, row]))
     const replacements = [
       { ...group, id: crypto.randomUUID(), photoIds: group.photoIds.slice(0, splitIndex), source: 'manual' as const },
       { ...group, id: crypto.randomUUID(), photoIds: group.photoIds.slice(splitIndex), source: 'manual' as const },
-    ].map(candidate => this.withLead(candidate, rows))
+    ].map(candidate => this.withLead(candidate, byId))
     this.db.transaction(() => {
       this.db.prepare('DELETE FROM navigation_groups WHERE id = ? AND session_id = ?')
         .run(groupId, sessionId)
@@ -190,7 +194,11 @@ export class NavigationService {
     if (new Set(selected.map(group => group.type)).size !== 1) {
       throw new Error('Only groups of the same type can be merged')
     }
-    const order = new Map(this.captureRows(sessionId).map((row, index) => [row.id, index]))
+    // captureRows is a heavy query (correlated quality sub-select per photo);
+    // fetch it once and derive both the merge order and the lead rankings.
+    const rows = this.captureRows(sessionId)
+    const byId = new Map(rows.map(row => [row.id, row]))
+    const order = new Map(rows.map((row, index) => [row.id, index]))
     const photoIds = [...new Set(selected.flatMap(group => group.photoIds))]
       .sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0))
     const merged = this.withLead({
@@ -201,7 +209,7 @@ export class NavigationService {
       endAt: '',
       explanation: '',
       source: 'manual',
-    }, this.captureRows(sessionId))
+    }, byId)
     this.db.transaction(() => {
       const placeholders = uniqueIds.map(() => '?').join(', ')
       this.db.prepare(`
@@ -303,8 +311,7 @@ export class NavigationService {
     return groups
   }
 
-  private withLead(group: NavigationGroup, rows: CaptureRow[]): NavigationGroup {
-    const byId = new Map(rows.map(row => [row.id, row]))
+  private withLead(group: NavigationGroup, byId: Map<string, CaptureRow>): NavigationGroup {
     const hasAnyQuality = group.photoIds.some(photoId => byId.get(photoId)?.hasQuality)
     const ranked = group.photoIds
       .flatMap(photoId => byId.get(photoId) ?? [])

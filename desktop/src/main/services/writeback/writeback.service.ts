@@ -4,7 +4,7 @@ import { MetadataWriterRouter } from '../xmp/metadata-writer-router'
 import { PhotoRepository } from '../../db/repositories/photo.repo'
 import { SessionRepository } from '../../db/repositories/session.repo'
 import { batchAsync, parseKeywords } from '../../utils/async'
-import type { WritebackPreview, WritebackResult, WritebackItem, CleanupResult, WritebackOptions } from '@gather/shared'
+import type { WritebackPreview, WritebackResult, WritebackItem, CleanupResult, WritebackOptions, MetadataSyncItem } from '@gather/shared'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
@@ -99,6 +99,24 @@ export class WritebackService {
         `请先完成 ${activeOtherModule.module} 的 Capture One 同步和清理，再开始新的写回`,
       )
     }
+  }
+
+  /**
+   * Sidecar path the outbox actually keys on at execute time. queuePhotoValues
+   * re-resolves the photo internally, so if the asset migration completed
+   * between preview and execute this differs from the preview snapshot
+   * (dbRow.xmp_path) — grouping and waiting must use the same live path or
+   * concurrent items that land on one sidecar race each other.
+   */
+  private resolveExecuteXmpPath(sessionId: string, dbRow: WritebackItemRow): string {
+    if (this.assetResolver) {
+      try {
+        return this.assetResolver.resolve(sessionId, dbRow.photo_id).xmpPath
+      } catch {
+        // Resolution failure falls back to the stored preview path.
+      }
+    }
+    return dbRow.xmp_path
   }
 
   async preview(
@@ -232,6 +250,17 @@ export class WritebackService {
       writeAttrs: Record<string, unknown>
       keywordsBeforeWrite: string[]
     }> = []
+    // Items sharing one sidecar (e.g. RAW+JPEG pairs) must stay in their
+    // original order: each one re-merges against the outbox row written by
+    // the previous one, so serializing per sidecar keeps that deterministic.
+    // Group by the path resolved at execute time, not the preview snapshot
+    // (dbRow.xmp_path): queuePhotoValues re-resolves internally, and an asset
+    // migration between preview and execute can make items of different
+    // preview groups land on the same sidecar — parallel mergePatch calls
+    // there would race with a non-deterministic winner and one item's
+    // keywords could be silently dropped. Different resolved paths have no
+    // shared state and can prepare in parallel.
+    const groups = new Map<string, WritebackItem[]>()
     for (const item of items) {
       const itemId = item.id
       if (itemId == null) {
@@ -248,58 +277,70 @@ export class WritebackService {
         skipped++
         continue
       }
-
-      const photoPath = dbRow.photo_path || (dbRow.xmp_path ? dbRow.xmp_path.replace(/\.xmp$/i, '') : '')
-      if (!photoPath) {
-        const message = 'Missing photo path for writeback item'
-        this.writebackRepo.updateStatus(itemId, 'failed', message)
-        errors.push(`${itemId}: ${message}`)
-        failedItems.push({ ...item, photoPath: '' })
-        failed++
-        continue
-      }
-      const persistedItem = rowToItem(dbRow)
-
-      try {
-        await this.metadataSync.waitForIdle(dbRow.xmp_path)
-        const keywordsBeforeWrite = await this.writerRouter
-          .selectSidecar()
-          .readKeywords(photoPath)
-        // Re-merge against the current file state instead of trusting the
-        // preview-time snapshot. External software may have added keywords
-        // between preview and execute; writing the stale list would silently
-        // discard those changes.
-        const writeKeywords = [...new Set([
-          ...keywordsBeforeWrite,
-          ...persistedItem.keywords,
-        ])]
-        // attributes.keywords (e.g. the culling writeback plan) must be merged
-        // too, otherwise the spread below would override the merged list and
-        // bypass this protection.
-        const mergedKeywords = [...new Set([
-          ...writeKeywords,
-          ...(Array.isArray(persistedItem.attributes?.keywords)
-            ? persistedItem.attributes.keywords
-            : []),
-        ])]
-        const writeAttrs: Record<string, unknown> = persistedItem.attributes
-          ? { ...persistedItem.attributes, keywords: mergedKeywords }
-          : { keywords: writeKeywords }
-        this.metadataMutations.queuePhotoValues(
-          sessionId,
-          dbRow.photo_id,
-          writeAttrs,
-          mutationSource(_module),
-        )
-        prepared.push({ itemId, dbRow, persistedItem, photoPath, writeAttrs, keywordsBeforeWrite })
-      } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : 'Unknown error'
-        this.writebackRepo.updateStatus(itemId, 'failed', message)
-        errors.push(`${photoPath}: ${message}`)
-        failedItems.push(persistedItem)
-        failed++
-      }
+      const groupKey = this.resolveExecuteXmpPath(sessionId, dbRow)
+      const group = groups.get(groupKey)
+      if (group) group.push(item)
+      else groups.set(groupKey, [item])
     }
+    await batchAsync([...groups.entries()], async ([groupKey, group]) => {
+      for (const item of group) {
+        const itemId = item.id as number
+        const dbRow = rowById.get(itemId) as WritebackItemRow
+
+        const photoPath = dbRow.photo_path || (dbRow.xmp_path ? dbRow.xmp_path.replace(/\.xmp$/i, '') : '')
+        if (!photoPath) {
+          const message = 'Missing photo path for writeback item'
+          this.writebackRepo.updateStatus(itemId, 'failed', message)
+          errors.push(`${itemId}: ${message}`)
+          failedItems.push({ ...item, photoPath: '' })
+          failed++
+          continue
+        }
+        const persistedItem = rowToItem(dbRow)
+
+        try {
+          // The outbox row (and the coordinator's active writes) are keyed by
+          // the resolved path, so wait on the same key.
+          await this.metadataSync.waitForIdle(groupKey)
+          const keywordsBeforeWrite = await this.writerRouter
+            .selectSidecar()
+            .readKeywords(photoPath)
+          // Re-merge against the current file state instead of trusting the
+          // preview-time snapshot. External software may have added keywords
+          // between preview and execute; writing the stale list would silently
+          // discard those changes.
+          const writeKeywords = [...new Set([
+            ...keywordsBeforeWrite,
+            ...persistedItem.keywords,
+          ])]
+          // attributes.keywords (e.g. the culling writeback plan) must be merged
+          // too, otherwise the spread below would override the merged list and
+          // bypass this protection.
+          const mergedKeywords = [...new Set([
+            ...writeKeywords,
+            ...(Array.isArray(persistedItem.attributes?.keywords)
+              ? persistedItem.attributes.keywords
+              : []),
+          ])]
+          const writeAttrs: Record<string, unknown> = persistedItem.attributes
+            ? { ...persistedItem.attributes, keywords: mergedKeywords }
+            : { keywords: writeKeywords }
+          this.metadataMutations.queuePhotoValues(
+            sessionId,
+            dbRow.photo_id,
+            writeAttrs,
+            mutationSource(_module),
+          )
+          prepared.push({ itemId, dbRow, persistedItem, photoPath, writeAttrs, keywordsBeforeWrite })
+        } catch (e: unknown) {
+          const message = e instanceof Error ? e.message : 'Unknown error'
+          this.writebackRepo.updateStatus(itemId, 'failed', message)
+          errors.push(`${photoPath}: ${message}`)
+          failedItems.push(persistedItem)
+          failed++
+        }
+      }
+    }, 4)
 
     // Phase 2: one flush for the whole session queue, then verify each
     // prepared item against its summary entry.
@@ -319,24 +360,24 @@ export class WritebackService {
       }
     }
     if (summary) {
+      // Index the flush summary once instead of scanning it per prepared
+      // item. Outbox rows are keyed by xmp_path so duplicates should not
+      // occur; the first occurrence wins when they do (matches find()).
+      const summaryByPath = new Map<string, MetadataSyncItem>()
+      for (const candidate of summary.items) {
+        if (!summaryByPath.has(candidate.xmpPath)) {
+          summaryByPath.set(candidate.xmpPath, candidate)
+        }
+      }
       for (const entry of prepared) {
         // The outbox keyed the mutation by the xmp path resolved at execute
         // time. If the asset migration completed between preview and execute,
         // that path differs from the preview snapshot (dbRow.xmp_path); match
         // the live resolution as well so a written item is not reported as
         // failed with the XMP already on disk.
-        let resolvedXmpPath = entry.dbRow.xmp_path
-        if (this.assetResolver) {
-          try {
-            resolvedXmpPath = this.assetResolver.resolve(sessionId, entry.dbRow.photo_id).xmpPath
-          } catch {
-            // Resolution failure falls back to the stored preview path.
-          }
-        }
-        const syncItem = summary.items.find(candidate =>
-          candidate.xmpPath === entry.dbRow.xmp_path ||
-          candidate.xmpPath === resolvedXmpPath,
-        )
+        const resolvedXmpPath = this.resolveExecuteXmpPath(sessionId, entry.dbRow)
+        const syncItem = summaryByPath.get(entry.dbRow.xmp_path) ??
+          summaryByPath.get(resolvedXmpPath)
         if (!syncItem || !['written', 'synced'].includes(syncItem.status)) {
           const message = syncItem?.errorMessage || `XMP write ended in ${syncItem?.status ?? 'unknown'} state`
           this.writebackRepo.updateStatus(entry.itemId, 'failed', message)

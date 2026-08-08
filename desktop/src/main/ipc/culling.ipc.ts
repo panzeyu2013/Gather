@@ -174,11 +174,16 @@ export function registerCullingHandlers(
       if (!params.patch || typeof params.patch !== 'object') {
         throw new Error('patch must be an object')
       }
+      // Reuse the session-scoped update context (photos/groupMap/xmp linkage,
+      // see CullingService.getUpdateContext) so a click burst stops
+      // re-reading the whole session on every keystroke.
+      const context = cullingService.getUpdateContext(sessionId)
       return ok(cullingService.updateState(
         sessionId,
         photoId,
         Number(params.expectedRevision),
         params.patch as CullingUpdatePatch,
+        context,
       ))
     }),
   )

@@ -8,7 +8,11 @@ import { useQuery } from '@tanstack/react-query'
 import styles from './StepWriteback.module.css'
 
 export default function StepWriteback() {
-  const { setWritebackReport, writebackReport, writebackRunning, setWritebackRunning, sessionId } = useFaceKwStore()
+  const setWritebackReport = useFaceKwStore((s) => s.setWritebackReport)
+  const writebackReport = useFaceKwStore((s) => s.writebackReport)
+  const writebackRunning = useFaceKwStore((s) => s.writebackRunning)
+  const setWritebackRunning = useFaceKwStore((s) => s.setWritebackRunning)
+  const sessionId = useFaceKwStore((s) => s.sessionId)
   const addToast = useToastStore((s) => s.addToast)
   const { data: clusters = [] } = useQuery({
     queryKey: ['face-clusters', sessionId],

@@ -52,11 +52,18 @@ const CAPTURE_ONE_URGENCY_LABEL = new Map(
 )
 
 const INVALID_XML_TEXT = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/
+// Bound the map so long-running sessions touching many distinct directories
+// do not grow it without limit; clearing evicts entries wholesale, and a
+// dropped entry only means the next write re-runs the (idempotent) cleanup.
+const MAX_TEMP_CLEANUP_ENTRIES = 100
 const TEMP_DIRECTORY_CLEANUPS = new Map<string, Promise<void>>()
 
 async function cleanupStaleGatherTemps(directoryPath: string): Promise<void> {
   const existing = TEMP_DIRECTORY_CLEANUPS.get(directoryPath)
   if (existing) return existing
+  if (TEMP_DIRECTORY_CLEANUPS.size >= MAX_TEMP_CLEANUP_ENTRIES) {
+    TEMP_DIRECTORY_CLEANUPS.clear()
+  }
   const cleanup = (async () => {
     try {
       const names = await readdir(directoryPath)

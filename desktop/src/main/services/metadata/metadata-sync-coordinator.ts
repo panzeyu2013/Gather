@@ -30,10 +30,15 @@ import {
   parseDirtyFields,
   tryParseDirtyFields,
 } from './metadata-conflict-fields'
+import { batchAsync } from '../../utils/async'
 
 const MAX_CONCURRENCY = 2
 const MAX_AUTOMATIC_ATTEMPTS = 5
 const RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 15_000, 30_000]
+/** Coalescing window for background per-row summary pushes. */
+const SUMMARY_EMIT_THROTTLE_MS = 100
+/** Force a summary push once this many rows completed inside one window. */
+const SUMMARY_EMIT_BURST_THRESHOLD = 50
 
 type EventSink = (summary: MetadataSyncSummary) => void
 
@@ -93,6 +98,8 @@ export class MetadataSyncCoordinator {
   private baselineTasks = new Map<string, Promise<void>>()
   private stopped = false
   private eventSink: EventSink | null = null
+  private summaryEmitTimers = new Map<string, NodeJS.Timeout>()
+  private summaryEmitCounts = new Map<string, number>()
 
   constructor(
     @inject(DI_TOKENS.METADATA_OUTBOX_REPO)
@@ -151,14 +158,21 @@ export class MetadataSyncCoordinator {
       errorMessage: row.error_message,
       updatedAt: row.updated_at,
     }))
+    // One grouped COUNT query instead of re-filtering the item array once per
+    // status; the filter fallback keeps legacy repo mocks working.
+    const counts = typeof this.outboxRepo.countBySession === 'function'
+      ? this.outboxRepo.countBySession(sessionId)
+      : {}
+    const count = (status: MetadataSyncItem['status']): number =>
+      counts[status] ?? items.filter(item => item.status === status).length
     return {
       sessionId,
-      pending: items.filter(item => item.status === 'pending').length,
-      writing: items.filter(item => item.status === 'writing').length,
-      written: items.filter(item => item.status === 'written').length,
-      failed: items.filter(item => item.status === 'failed').length,
-      conflict: items.filter(item => item.status === 'conflict').length,
-      synced: items.filter(item => item.status === 'synced').length,
+      pending: count('pending'),
+      writing: count('writing'),
+      written: count('written'),
+      failed: count('failed'),
+      conflict: count('conflict'),
+      synced: count('synced'),
       items,
     }
   }
@@ -166,7 +180,9 @@ export class MetadataSyncCoordinator {
   async getConflicts(sessionId: string): Promise<MetadataConflict[]> {
     const rows = this.outboxRepo.getBySession(sessionId)
       .filter(row => row.status === 'conflict')
-    return Promise.all(rows.map(async row => {
+    // Each conflict read hits the sidecar on disk; bound the parallelism to
+    // the same concurrency the writer pipeline uses.
+    return batchAsync(rows, async row => {
       const current = await this.writerRouter.selectSidecar().readAttributes(row.photo_path)
       const base = safeObject(row.base_values_json)
       const local = safeObject(row.patch_json)
@@ -178,7 +194,7 @@ export class MetadataSyncCoordinator {
         revision: row.revision,
         fields,
       }
-    }))
+    }, MAX_CONCURRENCY)
   }
 
   async resolveConflict(
@@ -371,9 +387,10 @@ export class MetadataSyncCoordinator {
     if (eligible.length === 0 && rows.length > 0) {
       throw new Error('请先在 Capture One 中加载元数据并确认同步，再执行清理')
     }
-    let deletedCount = 0
-    const errors: string[] = []
-    for (const row of eligible) {
+    // The per-row sequence (wait for idle → verify fingerprint → restore or
+    // unlink → mark cleaned) is order-sensitive only within one row, so
+    // unrelated rows may run in parallel.
+    const results = await batchAsync(eligible, async (row): Promise<{ deleted: boolean; error?: string }> => {
       try {
         // A new mutation may have been queued after the snapshot was taken.
         // Wait for any in-flight write and re-verify the row is still synced
@@ -381,7 +398,7 @@ export class MetadataSyncCoordinator {
         // silently reverted.
         await this.waitForIdle(row.xmp_path)
         const latest = this.outboxRepo.get(row.xmp_path)
-        if (!latest || latest.status !== 'synced') continue
+        if (!latest || latest.status !== 'synced') return { deleted: false }
         const currentFingerprint = await contentFingerprint(row.xmp_path)
         if (
           latest.base_fingerprint &&
@@ -406,11 +423,17 @@ export class MetadataSyncCoordinator {
         }
         this.outboxRepo.markStatus(latest.xmp_path, 'cleaned')
         this.outboxRepo.delete(latest.xmp_path)
-        deletedCount++
+        return { deleted: true }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        errors.push(`${row.xmp_path}: ${message}`)
+        return { deleted: false, error: `${row.xmp_path}: ${message}` }
       }
+    }, MAX_CONCURRENCY)
+    let deletedCount = 0
+    const errors: string[] = []
+    for (const result of results) {
+      if (result.deleted) deletedCount++
+      else if (result.error) errors.push(result.error)
     }
     this.emitSummary(sessionId)
     return { deletedCount, errors }
@@ -422,7 +445,10 @@ export class MetadataSyncCoordinator {
     if (eligible.length === 0 && rows.length > 0) {
       throw new Error('请先在 Capture One 中加载元数据并确认同步')
     }
-    for (const row of eligible) {
+    // The per-row sequence below is order-sensitive only within one row
+    // (backup removal before the revision-guarded delete), so unrelated rows
+    // may run in parallel.
+    await batchAsync(eligible, async (row) => {
       // A new mutation may have been queued after the snapshot was taken.
       // Wait for any in-flight write, then remove the backup BEFORE deleting
       // the row: an unlink failure must leave the row intact so the finalize
@@ -435,7 +461,7 @@ export class MetadataSyncCoordinator {
       // fail on the dangling path), so the stale reference is cleared.
       await this.waitForIdle(row.xmp_path)
       const latest = this.outboxRepo.get(row.xmp_path)
-      if (!latest || latest.status !== 'synced') continue
+      if (!latest || latest.status !== 'synced') return
       const backupPath = latest.backup_path
       if (backupPath && existsSync(backupPath)) {
         await unlink(backupPath)
@@ -444,7 +470,7 @@ export class MetadataSyncCoordinator {
       if (backupPath) {
         this.outboxRepo.clearBackupPath(latest.xmp_path, backupPath)
       }
-    }
+    }, MAX_CONCURRENCY)
     return this.emitSummary(sessionId)
   }
 
@@ -452,6 +478,11 @@ export class MetadataSyncCoordinator {
     this.stopped = true
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.timers.clear()
+    // Cancel pending coalesced summary pushes; direct emitSummary callers
+    // (confirmSync/cleanup/finalizeSession) already pushed their own updates.
+    for (const timer of this.summaryEmitTimers.values()) clearTimeout(timer)
+    this.summaryEmitTimers.clear()
+    this.summaryEmitCounts.clear()
     this.queued.clear()
     // Tasks can be added to `active` after the snapshot: a slot waiter is
     // released when a task finishes (starting its own task), and a concurrent
@@ -670,7 +701,28 @@ export class MetadataSyncCoordinator {
         (value): value is string => typeof value === 'string',
       )
     for (const sessionId of sessionIds) {
-      this.emitSummary(sessionId)
+      // Coalesce the per-row pushes of a busy write burst: rows finishing
+      // inside the same window emit a single fresh summary per session. A
+      // long uninterrupted burst (hundreds of rows) must still show
+      // progress, so the window is short and once enough rows completed
+      // inside it the summary is pushed immediately; the replaced timer
+      // still guarantees the final state is never lost.
+      const count = (this.summaryEmitCounts.get(sessionId) ?? 0) + 1
+      this.summaryEmitCounts.set(sessionId, count)
+      const existing = this.summaryEmitTimers.get(sessionId)
+      if (existing) clearTimeout(existing)
+      if (count >= SUMMARY_EMIT_BURST_THRESHOLD) {
+        this.summaryEmitCounts.set(sessionId, 0)
+        if (this.stopped) continue
+        this.emitSummary(sessionId)
+        continue
+      }
+      this.summaryEmitTimers.set(sessionId, setTimeout(() => {
+        this.summaryEmitTimers.delete(sessionId)
+        this.summaryEmitCounts.set(sessionId, 0)
+        if (this.stopped) return
+        this.emitSummary(sessionId)
+      }, SUMMARY_EMIT_THROTTLE_MS))
     }
   }
 }

@@ -130,11 +130,14 @@ export function registerFaceKwHandlers(
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const clusterId = validateNumber(params.clusterId, 'clusterId')
-      const cluster = faceRepo.getClusters(sessionId, true)
-        .find(candidate => candidate.id === clusterId)
+      // getClusters(includeMembers=true) is an expensive batch read; load it
+      // once and reuse the result for both the target lookup and the scan of
+      // remaining bound clusters.
+      const clusters = faceRepo.getClusters(sessionId, true)
+      const cluster = clusters.find(candidate => candidate.id === clusterId)
       if (!cluster) throw new Error('Cluster not found')
       const protectedByPath = new Map<string, Set<string>>()
-      for (const remaining of faceRepo.getClusters(sessionId, true)) {
+      for (const remaining of clusters) {
         if (remaining.id === clusterId) continue
         if (!remaining.binding) continue
         for (const member of remaining.members ?? []) {

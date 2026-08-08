@@ -30,7 +30,138 @@ function memberRole(extension: string): string {
 export class AssetRepository {
   private metadataRelocationSink: ((xmpPath: string) => void) | null = null
 
-  constructor(@inject(DI_TOKENS.DB) private db: Database) {}
+  // Prepared once at construction instead of per photo: backfillSession calls
+  // ensurePhoto once per row (thousands per session), so re-compiling ~11
+  // statements per photo used to dominate the migration pass. All SQL here is
+  // static, so every statement is safe to hoist.
+  private readonly stmtFileByIdentity: ReturnType<Database['prepare']>
+  private readonly stmtFileByPath: ReturnType<Database['prepare']>
+  private readonly stmtInsertAssetFile: ReturnType<Database['prepare']>
+  private readonly stmtUpdateAssetFile: ReturnType<Database['prepare']>
+  private readonly stmtUpdatePhotoFilepath: ReturnType<Database['prepare']>
+  private readonly stmtMembershipByFile: ReturnType<Database['prepare']>
+  private readonly stmtInsertAsset: ReturnType<Database['prepare']>
+  private readonly stmtInsertAssetMember: ReturnType<Database['prepare']>
+  private readonly stmtInsertSessionAsset: ReturnType<Database['prepare']>
+  private readonly stmtPhotoRowId: ReturnType<Database['prepare']>
+  private readonly stmtUpdateAssetStatus: ReturnType<Database['prepare']>
+  private readonly stmtUpdatePhotoAssetLink: ReturnType<Database['prepare']>
+  private readonly stmtInsertSidecarBinding: ReturnType<Database['prepare']>
+  private readonly stmtSidecarBindingByPath: ReturnType<Database['prepare']>
+  private readonly stmtInsertSidecarBindingFile: ReturnType<Database['prepare']>
+  private readonly stmtBackfillCount: ReturnType<Database['prepare']>
+  private readonly stmtBackfillStateGet: ReturnType<Database['prepare']>
+  private readonly stmtBackfillStateUpsert: ReturnType<Database['prepare']>
+  private readonly stmtBackfillPhotos: ReturnType<Database['prepare']>
+  private readonly stmtBackfillRemaining: ReturnType<Database['prepare']>
+  private readonly stmtBackfillStateUpdate: ReturnType<Database['prepare']>
+  private readonly stmtBackfillStateFail: ReturnType<Database['prepare']>
+  private readonly stmtBackfillStateComplete: ReturnType<Database['prepare']>
+
+  constructor(@inject(DI_TOKENS.DB) private db: Database) {
+    this.stmtFileByIdentity = db.prepare(`
+      SELECT * FROM asset_files
+      WHERE volume_id = ? AND file_identity = ?
+      ORDER BY updated_at DESC LIMIT 1
+    `)
+    this.stmtFileByPath = db.prepare(
+      'SELECT * FROM asset_files WHERE normalized_path = ? ORDER BY updated_at DESC LIMIT 1',
+    )
+    this.stmtInsertAssetFile = db.prepare(`
+      INSERT INTO asset_files (
+        id, volume_id, file_identity, normalized_path, filename, extension, media_type,
+        file_size, file_mtime_ms, checksum, online_status, last_seen_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    this.stmtUpdateAssetFile = db.prepare(`
+      UPDATE asset_files
+      SET volume_id = ?, file_identity = CASE WHEN ? != '' THEN ? ELSE file_identity END,
+          normalized_path = ?, filename = ?, extension = ?,
+          file_size = ?, file_mtime_ms = ?,
+          checksum = CASE WHEN ? != '' THEN ? ELSE checksum END, online_status = ?,
+          last_seen_at = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    this.stmtUpdatePhotoFilepath = db.prepare(`
+      UPDATE photos SET filepath = ?, filename = ?, status = 'pending', updated_at = ?
+      WHERE asset_file_id = ?
+    `)
+    this.stmtMembershipByFile = db.prepare(
+      'SELECT asset_id FROM asset_members WHERE file_id = ?',
+    )
+    this.stmtInsertAsset = db.prepare(
+      'INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    )
+    this.stmtInsertAssetMember = db.prepare(
+      'INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, binding_source) VALUES (?, ?, ?, 1, ?)',
+    )
+    this.stmtInsertSessionAsset = db.prepare(`
+      INSERT INTO session_assets (session_id, asset_id, display_file_id, import_order, added_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, asset_id) DO UPDATE SET display_file_id = excluded.display_file_id
+    `)
+    this.stmtPhotoRowId = db.prepare('SELECT rowid FROM photos WHERE id = ?')
+    this.stmtUpdateAssetStatus = db.prepare(
+      'UPDATE assets SET status = ?, updated_at = ? WHERE id = ?',
+    )
+    this.stmtUpdatePhotoAssetLink = db.prepare(
+      'UPDATE photos SET asset_id = ?, asset_file_id = ? WHERE id = ?',
+    )
+    this.stmtInsertSidecarBinding = db.prepare(`
+      INSERT INTO sidecar_bindings (id, xmp_path, normalized_xmp_path, binding_rule, created_at, updated_at)
+      VALUES (?, ?, ?, 'same_basename', ?, ?)
+      ON CONFLICT(normalized_xmp_path) DO UPDATE SET updated_at = excluded.updated_at
+    `)
+    this.stmtSidecarBindingByPath = db.prepare(
+      'SELECT id FROM sidecar_bindings WHERE normalized_xmp_path = ?',
+    )
+    this.stmtInsertSidecarBindingFile = db.prepare(
+      'INSERT OR IGNORE INTO sidecar_binding_files (sidecar_binding_id, file_id) VALUES (?, ?)',
+    )
+    this.stmtBackfillCount = db.prepare(
+      'SELECT COUNT(*) AS count FROM photos WHERE session_id = ?',
+    )
+    this.stmtBackfillStateGet = db.prepare(`
+      SELECT last_photo_rowid FROM asset_backfill_state WHERE session_id = ?
+    `)
+    this.stmtBackfillStateUpsert = db.prepare(`
+      INSERT INTO asset_backfill_state (
+        session_id, last_photo_rowid, total_photos, status, updated_at
+      ) VALUES (?, ?, ?, 'running', ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        total_photos = excluded.total_photos,
+        status = 'running',
+        updated_at = excluded.updated_at
+    `)
+    this.stmtBackfillPhotos = db.prepare(`
+      SELECT rowid AS migration_rowid, *
+      FROM photos
+      WHERE session_id = ? AND rowid > ?
+        AND (asset_id IS NULL OR asset_file_id IS NULL)
+      ORDER BY rowid
+      LIMIT 250
+    `)
+    this.stmtBackfillRemaining = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM photos
+      WHERE session_id = ? AND (asset_id IS NULL OR asset_file_id IS NULL)
+    `)
+    this.stmtBackfillStateUpdate = db.prepare(`
+      UPDATE asset_backfill_state
+      SET last_photo_rowid = ?, migrated_photos = migrated_photos + ?,
+          offline_files = offline_files + ?, updated_at = ?
+      WHERE session_id = ?
+    `)
+    this.stmtBackfillStateFail = db.prepare(`
+      UPDATE asset_backfill_state SET status = 'failed', updated_at = ?
+      WHERE session_id = ?
+    `)
+    this.stmtBackfillStateComplete = db.prepare(`
+      UPDATE asset_backfill_state
+      SET candidate_links = candidate_links + ?, status = 'completed', updated_at = ?
+      WHERE session_id = ?
+    `)
+  }
 
   setMetadataRelocationSink(sink: (xmpPath: string) => void): void {
     this.metadataRelocationSink = sink
@@ -187,39 +318,16 @@ export class AssetRepository {
   backfillSession(sessionId: string): { migrated: number; offline: number; candidates: number } {
     let migrated = 0
     let offline = 0
-    const total = (this.db.prepare(
-      'SELECT COUNT(*) AS count FROM photos WHERE session_id = ?',
-    ).get(sessionId) as { count: number }).count
-    const state = this.db.prepare(`
-      SELECT last_photo_rowid FROM asset_backfill_state WHERE session_id = ?
-    `).get(sessionId) as { last_photo_rowid: number } | undefined
+    const total = (this.stmtBackfillCount.get(sessionId) as { count: number }).count
+    const state = this.stmtBackfillStateGet.get(sessionId) as { last_photo_rowid: number } | undefined
     let cursor = state?.last_photo_rowid ?? 0
-    this.db.prepare(`
-      INSERT INTO asset_backfill_state (
-        session_id, last_photo_rowid, total_photos, status, updated_at
-      ) VALUES (?, ?, ?, 'running', ?)
-      ON CONFLICT(session_id) DO UPDATE SET
-        total_photos = excluded.total_photos,
-        status = 'running',
-        updated_at = excluded.updated_at
-    `).run(sessionId, cursor, total, now())
+    this.stmtBackfillStateUpsert.run(sessionId, cursor, total, now())
 
     try {
       for (;;) {
-        const photos = this.db.prepare(`
-          SELECT rowid AS migration_rowid, *
-          FROM photos
-          WHERE session_id = ? AND rowid > ?
-            AND (asset_id IS NULL OR asset_file_id IS NULL)
-          ORDER BY rowid
-          LIMIT 250
-        `).all(sessionId, cursor) as Array<PhotoRow & { migration_rowid: number }>
+        const photos = this.stmtBackfillPhotos.all(sessionId, cursor) as Array<PhotoRow & { migration_rowid: number }>
         if (photos.length === 0 && cursor > 0) {
-          const remaining = (this.db.prepare(`
-            SELECT COUNT(*) AS count
-            FROM photos
-            WHERE session_id = ? AND (asset_id IS NULL OR asset_file_id IS NULL)
-          `).get(sessionId) as { count: number }).count
+          const remaining = (this.stmtBackfillRemaining.get(sessionId) as { count: number }).count
           if (remaining > 0) {
             cursor = 0
             continue
@@ -235,29 +343,17 @@ export class AssetRepository {
             batchOffline += result.offline
             cursor = photo.migration_rowid
           }
-          this.db.prepare(`
-            UPDATE asset_backfill_state
-            SET last_photo_rowid = ?, migrated_photos = migrated_photos + ?,
-                offline_files = offline_files + ?, updated_at = ?
-            WHERE session_id = ?
-          `).run(cursor, batchMigrated, batchOffline, now(), sessionId)
+          this.stmtBackfillStateUpdate.run(cursor, batchMigrated, batchOffline, now(), sessionId)
         })()
         migrated += batchMigrated
         offline += batchOffline
       }
     } catch (error) {
-      this.db.prepare(`
-        UPDATE asset_backfill_state SET status = 'failed', updated_at = ?
-        WHERE session_id = ?
-      `).run(now(), sessionId)
+      this.stmtBackfillStateFail.run(now(), sessionId)
       throw error
     }
     const candidates = this.createRawJpegCandidates(sessionId)
-    this.db.prepare(`
-      UPDATE asset_backfill_state
-      SET candidate_links = candidate_links + ?, status = 'completed', updated_at = ?
-      WHERE session_id = ?
-    `).run(candidates, now(), sessionId)
+    this.stmtBackfillStateComplete.run(candidates, now(), sessionId)
     return { migrated, offline, candidates }
   }
 
@@ -830,23 +926,12 @@ export class AssetRepository {
       }
     })()
     let file: { id: string; normalized_path?: string } | undefined = fileIdentity
-      ? this.db.prepare(`
-          SELECT * FROM asset_files
-          WHERE volume_id = ? AND file_identity = ?
-          ORDER BY updated_at DESC LIMIT 1
-        `).get(volumeId, fileIdentity) as { id: string; normalized_path: string } | undefined
+      ? this.stmtFileByIdentity.get(volumeId, fileIdentity) as { id: string; normalized_path: string } | undefined
       : undefined
-    file ??= this.db.prepare(
-      'SELECT * FROM asset_files WHERE normalized_path = ? ORDER BY updated_at DESC LIMIT 1',
-    ).get(normalizedPath) as { id: string; normalized_path: string } | undefined
+    file ??= this.stmtFileByPath.get(normalizedPath) as { id: string; normalized_path: string } | undefined
     if (!file) {
       const fileId = crypto.randomUUID()
-      this.db.prepare(`
-        INSERT INTO asset_files (
-          id, volume_id, file_identity, normalized_path, filename, extension, media_type,
-          file_size, file_mtime_ms, checksum, online_status, last_seen_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      this.stmtInsertAssetFile.run(
         fileId, volumeId, fileIdentity, normalizedPath, path.basename(absolute), extension,
         mediaType(extension), fileSize, mtimeMs, photo.checksum, onlineStatus,
         timestamp, timestamp, timestamp,
@@ -854,15 +939,7 @@ export class AssetRepository {
       file = { id: fileId }
     } else {
       const previousPath = file.normalized_path
-      this.db.prepare(`
-        UPDATE asset_files
-        SET volume_id = ?, file_identity = CASE WHEN ? != '' THEN ? ELSE file_identity END,
-            normalized_path = ?, filename = ?, extension = ?,
-            file_size = ?, file_mtime_ms = ?,
-            checksum = CASE WHEN ? != '' THEN ? ELSE checksum END, online_status = ?,
-            last_seen_at = ?, updated_at = ?
-        WHERE id = ?
-      `).run(
+      this.stmtUpdateAssetFile.run(
         volumeId,
         fileIdentity,
         fileIdentity,
@@ -879,59 +956,34 @@ export class AssetRepository {
         file.id,
       )
       if (previousPath && previousPath !== normalizedPath && !existsSync(previousPath)) {
-        this.db.prepare(`
-          UPDATE photos SET filepath = ?, filename = ?, status = 'pending', updated_at = ?
-          WHERE asset_file_id = ?
-        `).run(normalizedPath, path.basename(normalizedPath), timestamp, file.id)
+        this.stmtUpdatePhotoFilepath.run(normalizedPath, path.basename(normalizedPath), timestamp, file.id)
       }
     }
 
-    let membership = this.db.prepare(
-      'SELECT asset_id FROM asset_members WHERE file_id = ?',
-    ).get(file.id) as { asset_id: string } | undefined
+    let membership = this.stmtMembershipByFile.get(file.id) as { asset_id: string } | undefined
     if (!membership) {
       const assetId = crypto.randomUUID()
-      this.db.prepare(
-        'INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      ).run(assetId, '', onlineStatus === 'online' ? 'active' : 'offline_unverified', timestamp, timestamp)
-      this.db.prepare(
-        'INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, binding_source) VALUES (?, ?, ?, 1, ?)',
-      ).run(assetId, file.id, memberRole(extension), 'backfill')
+      this.stmtInsertAsset.run(assetId, '', onlineStatus === 'online' ? 'active' : 'offline_unverified', timestamp, timestamp)
+      this.stmtInsertAssetMember.run(assetId, file.id, memberRole(extension), 'backfill')
       membership = { asset_id: assetId }
     }
 
-    this.db.prepare(`
-      INSERT INTO session_assets (session_id, asset_id, display_file_id, import_order, added_at)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(session_id, asset_id) DO UPDATE SET display_file_id = excluded.display_file_id
-    `).run(
+    this.stmtInsertSessionAsset.run(
       sessionId,
       membership.asset_id,
       file.id,
       (photo as PhotoRow & { migration_rowid?: number }).migration_rowid ??
-        (this.db.prepare('SELECT rowid FROM photos WHERE id = ?').get(photo.id) as {
-          rowid: number
-        }).rowid,
+        (this.stmtPhotoRowId.get(photo.id) as { rowid: number }).rowid,
       timestamp,
     )
-    this.db.prepare(
-      "UPDATE assets SET status = ?, updated_at = ? WHERE id = ?",
-    ).run(onlineStatus === 'online' ? 'active' : 'offline_unverified', timestamp, membership.asset_id)
-    this.db.prepare('UPDATE photos SET asset_id = ?, asset_file_id = ? WHERE id = ?')
-      .run(membership.asset_id, file.id, photo.id)
+    this.stmtUpdateAssetStatus.run(onlineStatus === 'online' ? 'active' : 'offline_unverified', timestamp, membership.asset_id)
+    this.stmtUpdatePhotoAssetLink.run(membership.asset_id, file.id, photo.id)
 
     const sidecarPath = getXmpSidecarPath(absolute)
     const bindingId = crypto.randomUUID()
-    this.db.prepare(`
-      INSERT INTO sidecar_bindings (id, xmp_path, normalized_xmp_path, binding_rule, created_at, updated_at)
-      VALUES (?, ?, ?, 'same_basename', ?, ?)
-      ON CONFLICT(normalized_xmp_path) DO UPDATE SET updated_at = excluded.updated_at
-    `).run(bindingId, sidecarPath, path.normalize(sidecarPath), timestamp, timestamp)
-    const binding = this.db.prepare('SELECT id FROM sidecar_bindings WHERE normalized_xmp_path = ?')
-      .get(path.normalize(sidecarPath)) as { id: string }
-    this.db.prepare(
-      'INSERT OR IGNORE INTO sidecar_binding_files (sidecar_binding_id, file_id) VALUES (?, ?)',
-    ).run(binding.id, file.id)
+    this.stmtInsertSidecarBinding.run(bindingId, sidecarPath, path.normalize(sidecarPath), timestamp, timestamp)
+    const binding = this.stmtSidecarBindingByPath.get(path.normalize(sidecarPath)) as { id: string }
+    this.stmtInsertSidecarBindingFile.run(binding.id, file.id)
 
     return { migrated: 1, offline: onlineStatus === 'online' ? 0 : 1, candidates: 0 }
   }

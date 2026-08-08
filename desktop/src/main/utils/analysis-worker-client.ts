@@ -54,6 +54,13 @@ export function estimateAnalysisTimeoutMs(
 // A worker that silently dies (e.g. OOM/SIGKILL) only emits 'exit', which
 // previously left the pending promise hanging forever and the thread alive.
 // Timeout and exit handlers now settle the promise and always terminate.
+//
+// Deliberately NOT pooled: unlike the face-inference worker this script loads
+// no models (startup is tens of ms against multi-minute clustering jobs), the
+// API is one-shot (one request per worker, terminated on settle), and the
+// unit tests drive runWorker through fake per-call workers, so reusing a
+// thread would change the lifecycle those tests rely on. The seconds-long
+// ONNX load is pooled in face-inference-worker-client.ts instead.
 export function runWorker<T>(
   request: Record<string, unknown>,
   signal?: AbortSignal,

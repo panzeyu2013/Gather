@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState, memo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useFaceKwStore, type ClusterData, type ClusterMemberData } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
@@ -10,21 +10,22 @@ import styles from './StepReview.module.css'
 const MAX_PREVIEW_MEMBERS = 4
 
 export default function StepReview() {
-  const {
-    sessionId,
-    selectedClusterId,
-    selectCluster,
-  } = useFaceKwStore()
+  const sessionId = useFaceKwStore((s) => s.sessionId)
+  const selectedClusterId = useFaceKwStore((s) => s.selectedClusterId)
+  const selectCluster = useFaceKwStore((s) => s.selectCluster)
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
-  const settings = useSettingsStore((s) => s.settings)
+  // Only the thumbnail_size key is used here; subscribing to the whole
+  // settings object re-renders this step on every settings write.
+  const thumbnailSizeRaw = useSettingsStore((s) => s.settings['thumbnail_size'])
+  const settingsLoaded = useSettingsStore((s) => Object.keys(s.settings).length > 0)
   const loadSettings = useSettingsStore((s) => s.load)
-  const configuredThumbSize = parseInt(settings['thumbnail_size'] ?? '1024', 10)
+  const configuredThumbSize = parseInt(thumbnailSizeRaw ?? '1024', 10)
   const thumbSize = configuredThumbSize <= 320 ? 128 : 256
 
   useEffect(() => {
-    if (Object.keys(settings).length === 0) loadSettings()
-  }, [loadSettings])
+    if (!settingsLoaded) loadSettings()
+  }, [settingsLoaded, loadSettings])
   const { data: clusters = [] } = useQuery({
     queryKey: ['face-clusters', sessionId],
     queryFn: async () => (await faceKwApi.getClusters(sessionId!)).map(cluster => ({
@@ -136,19 +137,13 @@ export default function StepReview() {
         )}
         <div className={styles.clusterGrid}>
           {visibleClusters.map((cluster) => (
-            <button
-              type="button"
+            <ClusterCard
               key={cluster.id}
-              onClick={() => handleSelectCluster(cluster)}
-              className={selectedClusterId === cluster.id ? styles.clusterCardSelected : styles.clusterCard}
-            >
-              <ClusterThumb members={cluster.members} size={cluster.size} thumbSize={thumbSize} />
-              <div className={styles.clusterLabel}>{cluster.label}</div>
-              <div className={styles.clusterMeta}>{cluster.size} 张人脸</div>
-              {cluster.binding && (
-                <div className={styles.bindingBadge}>{cluster.binding.roleName}</div>
-              )}
-            </button>
+              cluster={cluster}
+              selected={selectedClusterId === cluster.id}
+              thumbSize={thumbSize}
+              onSelect={handleSelectCluster}
+            />
           ))}
         </div>
       </section>
@@ -261,7 +256,36 @@ export default function StepReview() {
   )
 }
 
-function ClusterThumb({ members, size, thumbSize }: {
+// Memoized so scrolling/tab switches and selection changes don't rebuild the
+// whole cluster grid; cards only re-render when their own props change.
+const ClusterCard = memo(function ClusterCard({
+  cluster,
+  selected,
+  thumbSize,
+  onSelect,
+}: {
+  cluster: ClusterData
+  selected: boolean
+  thumbSize: number
+  onSelect: (cluster: ClusterData) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(cluster)}
+      className={selected ? styles.clusterCardSelected : styles.clusterCard}
+    >
+      <ClusterThumb members={cluster.members} size={cluster.size} thumbSize={thumbSize} />
+      <div className={styles.clusterLabel}>{cluster.label}</div>
+      <div className={styles.clusterMeta}>{cluster.size} 张人脸</div>
+      {cluster.binding && (
+        <div className={styles.bindingBadge}>{cluster.binding.roleName}</div>
+      )}
+    </button>
+  )
+})
+
+const ClusterThumb = memo(function ClusterThumb({ members, size, thumbSize }: {
   members: ClusterMemberData[]
   size: number
   thumbSize: number
@@ -302,4 +326,4 @@ function ClusterThumb({ members, size, thumbSize }: {
       </div>
     </div>
   )
-}
+})

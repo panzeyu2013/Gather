@@ -141,71 +141,153 @@ export class FaceRepository {
     }]))
   }
 
+  /**
+   * Reuse observations from another photo that shares the same asset file and
+   * was already analyzed with an identical file state (size/mtime) and
+   * signature. Batch form: the service passes every photo that needs analysis
+   * in one call, all candidate sources are loaded with a single IN query, and
+   * each target with a matching source gets the observations copied over.
+   * Returns a map keyed by target photo id; targets without a reusable source
+   * are absent from it. Same matching semantics as the per-photo form (newest
+   * matching source wins, the source's state session is its own session).
+   */
   reuseObservationsForAssetFile(
     sessionId: string,
     photoId: string,
     sourceFileSize: number,
     sourceFileMtimeMs: number,
     analysisSignature: string,
-  ): { reused: boolean; faceCount: number } {
-    const source = this.db.prepare(`
-      SELECT source_state.photo_id
-      FROM photos target
-      JOIN photos source_photo
-        ON source_photo.asset_file_id = target.asset_file_id
-       AND source_photo.id <> target.id
-      JOIN face_analysis_state source_state
-        ON source_state.photo_id = source_photo.id
-       AND source_state.session_id = source_photo.session_id
-      WHERE target.id = ?
-        AND target.session_id = ?
-        AND target.asset_file_id IS NOT NULL
-        AND source_state.source_file_size = ?
-        AND ABS(source_state.source_file_mtime_ms - ?) < 1
-        AND source_state.analysis_signature = ?
-      ORDER BY source_state.updated_at DESC
-      LIMIT 1
-    `).get(
-      photoId,
-      sessionId,
-      sourceFileSize,
-      sourceFileMtimeMs,
-      analysisSignature,
-    ) as { photo_id: string } | undefined
-    if (!source) return { reused: false, faceCount: 0 }
+  ): { reused: boolean; faceCount: number }
+  reuseObservationsForAssetFile(
+    sessionId: string,
+    targets: Array<{
+      photoId: string
+      assetFileId: string | null
+      sourceFileSize: number
+      sourceFileMtimeMs: number
+    }>,
+    analysisSignature: string,
+  ): Record<string, { reused: boolean; faceCount: number }>
+  reuseObservationsForAssetFile(
+    sessionId: string,
+    photoIdOrTargets: string | Array<{
+      photoId: string
+      assetFileId: string | null
+      sourceFileSize: number
+      sourceFileMtimeMs: number
+    }>,
+    sourceFileSizeOrSignature: number | string,
+    sourceFileMtimeMs?: number,
+    analysisSignature?: string,
+  ): { reused: boolean; faceCount: number } | Record<string, { reused: boolean; faceCount: number }> {
+    // Per-photo compatibility form: resolve the target's asset file first,
+    // then delegate to the batch path below.
+    if (typeof photoIdOrTargets === 'string') {
+      const photoId = photoIdOrTargets
+      const row = this.db.prepare(
+        'SELECT asset_file_id FROM photos WHERE id = ? AND session_id = ?',
+      ).get(photoId, sessionId) as { asset_file_id: string | null } | undefined
+      const results = this.reuseObservationsForAssetFile(sessionId, [{
+        photoId,
+        assetFileId: row?.asset_file_id ?? null,
+        sourceFileSize: sourceFileSizeOrSignature as number,
+        sourceFileMtimeMs: sourceFileMtimeMs as number,
+      }], analysisSignature as string)
+      return results[photoId] ?? { reused: false, faceCount: 0 }
+    }
 
-    let faceCount = 0
-    this.db.transaction(() => {
-      this.db.prepare(
-        'DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?',
-      ).run(sessionId, photoId)
-      const copied = this.db.prepare(`
-        INSERT INTO face_observations (
-          photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
-          source_file_size, source_file_mtime_ms, analysis_signature, created_at
+    const targets = photoIdOrTargets
+    // Batch form passes the signature as the third argument.
+    const signature = sourceFileSizeOrSignature as string
+    const results: Record<string, { reused: boolean; faceCount: number }> = {}
+    const assetFileIds = [...new Set(
+      targets
+        .map(target => target.assetFileId)
+        .filter((id): id is string => id !== null),
+    )]
+    if (assetFileIds.length === 0) return results
+    // ORDER BY s.updated_at DESC ranks every candidate; per target the first
+    // row that matches its file state is the source the per-photo query
+    // (ORDER BY updated_at DESC LIMIT 1) would have picked.
+    const sourcesByAssetFile = new Map<string, Array<{
+      photoId: string
+      sourceFileSize: number
+      sourceFileMtimeMs: number
+      analysisSignature: string
+    }>>()
+    for (let index = 0; index < assetFileIds.length; index += 800) {
+      const chunk = assetFileIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const rows = this.db.prepare(`
+        SELECT p.asset_file_id, s.photo_id, s.source_file_size,
+               s.source_file_mtime_ms, s.analysis_signature
+        FROM photos p
+        JOIN face_analysis_state s ON s.photo_id = p.id AND s.session_id = p.session_id
+        WHERE p.asset_file_id IN (${placeholders})
+        ORDER BY s.updated_at DESC
+      `).all(...chunk) as Array<{
+        asset_file_id: string
+        photo_id: string
+        source_file_size: number
+        source_file_mtime_ms: number
+        analysis_signature: string
+      }>
+      for (const row of rows) {
+        const list = sourcesByAssetFile.get(row.asset_file_id) ?? []
+        list.push({
+          photoId: row.photo_id,
+          sourceFileSize: row.source_file_size,
+          sourceFileMtimeMs: row.source_file_mtime_ms,
+          analysisSignature: row.analysis_signature,
+        })
+        sourcesByAssetFile.set(row.asset_file_id, list)
+      }
+    }
+    const deleteStmt = this.db.prepare(
+      'DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?',
+    )
+    const copyStmt = this.db.prepare(`
+      INSERT INTO face_observations (
+        photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
+        source_file_size, source_file_mtime_ms, analysis_signature, created_at
+      )
+      SELECT ?, ?, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
+             source_file_size, source_file_mtime_ms, analysis_signature, ?
+      FROM face_observations
+      WHERE photo_id = ?
+        AND session_id = (SELECT session_id FROM photos WHERE id = ?)
+    `)
+    for (const target of targets) {
+      if (!target.assetFileId) continue
+      const source = (sourcesByAssetFile.get(target.assetFileId) ?? []).find(candidate =>
+        candidate.photoId !== target.photoId &&
+        candidate.sourceFileSize === target.sourceFileSize &&
+        Math.abs(candidate.sourceFileMtimeMs - target.sourceFileMtimeMs) < 1 &&
+        candidate.analysisSignature === signature,
+      )
+      if (!source) continue
+      let faceCount = 0
+      this.db.transaction(() => {
+        deleteStmt.run(sessionId, target.photoId)
+        const copied = copyStmt.run(
+          target.photoId,
+          sessionId,
+          new Date().toISOString(),
+          source.photoId,
+          source.photoId,
         )
-        SELECT ?, ?, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
-               source_file_size, source_file_mtime_ms, analysis_signature, ?
-        FROM face_observations
-        WHERE photo_id = ?
-          AND session_id = (SELECT session_id FROM photos WHERE id = ?)
-      `).run(
-        photoId,
-        sessionId,
-        new Date().toISOString(),
-        source.photo_id,
-        source.photo_id,
-      )
-      faceCount = copied.changes
-      this.upsertAnalysisState(
-        sessionId,
-        photoId,
-        sourceFileSize,
-        sourceFileMtimeMs,
-        analysisSignature,
-      )
-    })()
-    return { reused: true, faceCount }
+        faceCount = copied.changes
+        this.upsertAnalysisState(
+          sessionId,
+          target.photoId,
+          target.sourceFileSize,
+          target.sourceFileMtimeMs,
+          signature,
+        )
+      })()
+      results[target.photoId] = { reused: true, faceCount }
+    }
+    return results
   }
 
   upsertAnalysisState(
@@ -362,10 +444,43 @@ export class FaceRepository {
 
   getClusters(sessionId: string, includeMembers = false): FaceClusterRow[] {
     const clusters = this.db.prepare('SELECT * FROM face_clusters WHERE session_id = ? AND member_count > 0 ORDER BY id').all(sessionId) as FaceClusterRow[]
-    if (!includeMembers) return clusters
+    if (!includeMembers || clusters.length === 0) return clusters
+    // Batch members and role bindings with two IN queries instead of the
+    // previous N+1 (two queries per cluster). Statements are prepared once
+    // outside the loop; the IN arity varies per chunk, mirroring photo.repo's
+    // keyset page queries. fm.id (INTEGER PRIMARY KEY = rowid) keeps the same
+    // natural member order the per-cluster query used.
+    const clusterIds = clusters.map(cluster => cluster.id)
+    const membersByCluster = new Map<number, FaceClusterMemberRow[]>()
+    for (let index = 0; index < clusterIds.length; index += 800) {
+      const chunk = clusterIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const rows = this.db.prepare(`
+        SELECT fm.id, fm.cluster_id, fm.session_id, fm.photo_id,
+               p.filepath as photo_path, fm.bbox, fm.confidence, fm.observation_id
+        FROM face_cluster_members fm
+        JOIN photos p ON fm.photo_id = p.id
+        WHERE fm.cluster_id IN (${placeholders})
+        ORDER BY fm.id
+      `).all(...chunk) as FaceClusterMemberRow[]
+      for (const row of rows) {
+        const list = membersByCluster.get(row.cluster_id) ?? []
+        list.push(row)
+        membersByCluster.set(row.cluster_id, list)
+      }
+    }
+    const bindingByCluster = new Map<number, { cluster_id: number; session_id: string; role_name: string; keywords: string }>()
+    for (let index = 0; index < clusterIds.length; index += 800) {
+      const chunk = clusterIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const rows = this.db.prepare(
+        `SELECT * FROM role_bindings WHERE cluster_id IN (${placeholders})`,
+      ).all(...chunk) as Array<{ cluster_id: number; session_id: string; role_name: string; keywords: string }>
+      for (const row of rows) bindingByCluster.set(row.cluster_id, row)
+    }
     for (const cluster of clusters) {
-      cluster.members = this.db.prepare('SELECT fm.id, fm.cluster_id, fm.session_id, fm.photo_id, p.filepath as photo_path, fm.bbox, fm.confidence, fm.observation_id FROM face_cluster_members fm JOIN photos p ON fm.photo_id = p.id WHERE fm.cluster_id = ?').all(cluster.id) as FaceClusterMemberRow[]
-      const binding = this.db.prepare('SELECT * FROM role_bindings WHERE cluster_id = ?').get(cluster.id) as { cluster_id: number; session_id: string; role_name: string; keywords: string } | undefined
+      cluster.members = membersByCluster.get(cluster.id) ?? []
+      const binding = bindingByCluster.get(cluster.id)
       if (binding) {
         cluster.binding = { clusterId: String(binding.cluster_id), roleName: binding.role_name, keywords: JSON.parse(binding.keywords) }
       }

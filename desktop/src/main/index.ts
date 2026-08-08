@@ -480,7 +480,7 @@ app.whenReady().then(async () => {
 
   const settings = svc<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
   const databaseRuntime = normalizeDatabaseRuntimeSettings(
-    settings.get('db_synchronous', 'full'),
+    settings.get('db_synchronous', 'normal'),
     settings.getNumber('db_cache_size_mb', 64),
   )
   db.pragma(`synchronous = ${databaseRuntime.synchronous}`)

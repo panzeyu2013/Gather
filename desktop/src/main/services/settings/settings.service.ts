@@ -99,7 +99,11 @@ export function getDefaults(): Record<string, string | number> {
     face_inference_parallel_workers: 1,
 
     db_cache_size_mb: 64,
-    db_synchronous: 'full',
+    // Keep in sync with the default used by the caller in main/index.ts
+    // (settings.get('db_synchronous', 'normal')): a mismatch would make the
+    // settings UI show FULL while the database actually runs NORMAL, and
+    // "reset to defaults" would silently switch a new install to FULL.
+    db_synchronous: 'normal',
 
     c1_timeout_ms: 15000,
     c1_retries: 3,

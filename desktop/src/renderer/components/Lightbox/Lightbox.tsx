@@ -18,8 +18,16 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
   const [src, setSrc] = useState<string | null>(null)
   const [loadError, setLoadError] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const rafRef = useRef<number | null>(null)
+  const pendingPositionRef = useRef({ x: 0, y: 0 })
 
   const photo = photos[index]
+
+  // Coalesce mousemove position updates into one setPosition per frame so a
+  // drag does not trigger a render on every pointer move.
+  useEffect(() => () => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+  }, [])
 
   const goNext = useCallback(() => {
     if (index < photos.length - 1) setIndex(index + 1)
@@ -79,7 +87,12 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!dragging) return
-    setPosition({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y })
+    pendingPositionRef.current = { x: e.clientX - dragStart.x, y: e.clientY - dragStart.y }
+    if (rafRef.current != null) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null
+      setPosition(pendingPositionRef.current)
+    })
   }
 
   const handleMouseUp = () => setDragging(false)

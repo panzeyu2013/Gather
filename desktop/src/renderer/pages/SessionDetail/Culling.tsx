@@ -260,6 +260,8 @@ export default function Culling() {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const dragRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null)
+  const transformRef = useRef<ViewTransform>({ scale: 1, x: 0, y: 0 })
+  const transformFrameRef = useRef<number | null>(null)
   const filmstripRef = useRef<HTMLDivElement>(null)
   const assetsRef = useRef<CullingAsset[]>([])
   const nextRowIdRef = useRef<number | null>(null)
@@ -268,6 +270,29 @@ export default function Culling() {
   const currentPhotoIdRef = useRef<string>()
   const lastDataKeyRef = useRef('')
   const positionRestoreLockRef = useRef(false)
+
+  const applyTransform = useCallback((next: ViewTransform) => {
+    transformRef.current = next
+    if (transformFrameRef.current !== null) return
+    transformFrameRef.current = requestAnimationFrame(() => {
+      transformFrameRef.current = null
+      setTransform(transformRef.current)
+    })
+  }, [])
+
+  // Resets must not go through the deferred rAF path: a pending frame would
+  // read the stale ref value on the next frame (before paint) and overwrite
+  // the freshly committed reset — e.g. zooming then arrow-keying to the next
+  // photo within ~16ms would keep the old scale. Cancel any pending frame and
+  // write ref + state synchronously so the reset is never swallowed.
+  const resetTransform = useCallback(() => {
+    if (transformFrameRef.current !== null) {
+      cancelAnimationFrame(transformFrameRef.current)
+      transformFrameRef.current = null
+    }
+    transformRef.current = { scale: 1, x: 0, y: 0 }
+    setTransform({ scale: 1, x: 0, y: 0 })
+  }, [])
 
   const assetQueryKey = useMemo(
     () => ['culling', 'assets', sessionId, scope, filters] as const,
@@ -423,8 +448,8 @@ export default function Culling() {
       return
     }
     setCurrentIndex(index)
-    setTransform({ scale: 1, x: 0, y: 0 })
-  }, [ensureLoadedUntilPhoto])
+    resetTransform()
+  }, [ensureLoadedUntilPhoto, resetTransform])
 
   useEffect(() => {
     currentPhotoIdRef.current = assets[currentIndex]?.photo.id
@@ -453,17 +478,27 @@ export default function Culling() {
         .then(index => {
           if (index >= 0) {
             setCurrentIndex(index)
-            setTransform({ scale: 1, x: 0, y: 0 })
+            resetTransform()
           }
         })
     }
-  }, [assetQueryKey, data, loadUntilPhoto])
+  }, [assetQueryKey, data, loadUntilPhoto, resetTransform])
   useEffect(() => {
     assetsRef.current = assets
   }, [assets])
   useEffect(() => {
     nextRowIdRef.current = nextRowId
   }, [nextRowId])
+  useEffect(() => {
+    if (transformRef.current !== transform) {
+      transformRef.current = transform
+    }
+  }, [transform])
+  useEffect(() => () => {
+    if (transformFrameRef.current !== null) {
+      cancelAnimationFrame(transformFrameRef.current)
+    }
+  }, [])
   useEffect(() => {
     queryKeyRef.current = JSON.stringify(assetQueryKey)
   }, [assetQueryKey])
@@ -505,10 +540,20 @@ export default function Culling() {
     if (next.sessionId !== sessionId) return
     const previousConflicts = conflictCountRef.current
     setSyncSummary(next)
-    setAssets(current => current.map(asset => {
-      const item = next.items.find(candidate => candidate.xmpPath === asset.xmpPath)
-      return item ? { ...asset, syncStatus: item.status } : asset
-    }))
+    setAssets(current => {
+      if (next.items.length === 0) return current
+      const statusByXmpPath = new Map(next.items.map(item => [item.xmpPath, item.status]))
+      let changed = 0
+      const updated = current.map(asset => {
+        const status = statusByXmpPath.get(asset.xmpPath)
+        if (status !== undefined && status !== asset.syncStatus) {
+          changed++
+          return { ...asset, syncStatus: status }
+        }
+        return asset
+      })
+      return changed > 0 ? updated : current
+    })
     // Path summaries are emitted per xmp_path, so one flush can raise the
     // conflict count 1..N across several events; refetch on any change.
     if (next.conflict > 0 && next.conflict !== previousConflicts) {
@@ -554,13 +599,14 @@ export default function Culling() {
     ? [...selectedIds]
     : current ? [current.photo.id] : []
 
+  const currentPhotoId = current?.photo.id
   useEffect(() => {
-    if (!current) return
-    const preload = assets
+    if (!currentPhotoId) return
+    const preload = assetsRef.current
       .slice(currentIndex, currentIndex + 8)
       .map(asset => asset.photo.filepath)
     void imageApi.preloadPreviews(preload, 2560).catch(() => undefined)
-  }, [assets, current, currentIndex])
+  }, [currentPhotoId, currentIndex])
 
   const applyResult = useCallback((result: CullingUpdateResult) => {
     const states = new Map(result.states.map(state => [state.photoId, state]))
@@ -609,8 +655,8 @@ export default function Culling() {
       }
       return Math.min(index + 1, Math.max(0, assets.length - 1))
     })
-    setTransform({ scale: 1, x: 0, y: 0 })
-  }, [assets.length, loadMore])
+    resetTransform()
+  }, [assets.length, loadMore, resetTransform])
 
   const commitOne = useCallback(async (
     photoId: string,
@@ -926,7 +972,7 @@ export default function Culling() {
         )
         if (nextIndex >= 0) {
           setCurrentIndex(nextIndex)
-          setTransform({ scale: 1, x: 0, y: 0 })
+          resetTransform()
         }
       }
     } catch (error) {
@@ -944,6 +990,7 @@ export default function Culling() {
     fetchGroupAssets,
     queryClient,
     refetch,
+    resetTransform,
     sessionId,
   ])
 
@@ -989,7 +1036,7 @@ export default function Culling() {
       } else if (event.key === 'ArrowLeft') {
         event.preventDefault()
         setCurrentIndex(index => Math.max(0, index - 1))
-        setTransform({ scale: 1, x: 0, y: 0 })
+        resetTransform()
       } else if (event.key === 'ArrowRight') {
         event.preventDefault()
         advance()
@@ -997,7 +1044,7 @@ export default function Culling() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [advance, busy, commitTargets, redo, undo])
+  }, [advance, busy, commitTargets, redo, resetTransform, undo])
 
   if (!sessionId) {
     return <div className={styles.emptyState}>未选择工作区</div>
@@ -1118,7 +1165,7 @@ export default function Culling() {
                 className={compareCount === count ? styles.active : ''}
                 onClick={() => {
                   setCompareCount(count)
-                  setTransform({ scale: 1, x: 0, y: 0 })
+                  resetTransform()
                 }}
               >
                 {count === 1 ? '单图' : `${count} 图`}
@@ -1131,7 +1178,7 @@ export default function Culling() {
               checked={faceAlign}
               onChange={event => {
                 setFaceAlign(event.target.checked)
-                setTransform({ scale: 1, x: 0, y: 0 })
+                resetTransform()
               }}
             />
             人脸对齐
@@ -1163,30 +1210,34 @@ export default function Culling() {
         className={`${styles.viewer} ${compareCount > 1 ? styles.comparing : ''}`}
         onWheel={event => {
           event.preventDefault()
-          setTransform(value => ({
+          const value = transformRef.current
+          applyTransform({
             ...value,
             scale: Math.max(1, Math.min(8, value.scale * (event.deltaY < 0 ? 1.15 : 0.87))),
-          }))
+          })
         }}
         onPointerDown={event => {
           event.currentTarget.setPointerCapture(event.pointerId)
+          const value = transformRef.current
           dragRef.current = {
             x: event.clientX,
             y: event.clientY,
-            originX: transform.x,
-            originY: transform.y,
+            originX: value.x,
+            originY: value.y,
           }
         }}
         onPointerMove={event => {
-          if (!dragRef.current) return
-          setTransform(value => ({
+          const drag = dragRef.current
+          if (!drag) return
+          const value = transformRef.current
+          applyTransform({
             ...value,
-            x: dragRef.current!.originX + event.clientX - dragRef.current!.x,
-            y: dragRef.current!.originY + event.clientY - dragRef.current!.y,
-          }))
+            x: drag.originX + event.clientX - drag.x,
+            y: drag.originY + event.clientY - drag.y,
+          })
         }}
         onPointerUp={() => { dragRef.current = null }}
-        onDoubleClick={() => setTransform({ scale: 1, x: 0, y: 0 })}
+        onDoubleClick={() => resetTransform()}
       >
         {comparisonAssets.map(asset => (
           <CullingImage
@@ -1200,7 +1251,7 @@ export default function Culling() {
           className={`${styles.navButton} ${styles.previous}`}
           onClick={() => {
             setCurrentIndex(index => Math.max(0, index - 1))
-            setTransform({ scale: 1, x: 0, y: 0 })
+            resetTransform()
           }}
           disabled={currentIndex === 0}
           aria-label="上一张照片"
@@ -1370,7 +1421,7 @@ export default function Culling() {
                   })
                 } else {
                   setCurrentIndex(index)
-                  setTransform({ scale: 1, x: 0, y: 0 })
+                  resetTransform()
                 }
               }}
               title={asset.photo.filename}

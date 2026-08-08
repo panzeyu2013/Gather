@@ -10,6 +10,7 @@ import type { MetadataWriteAttributes } from './metadata-writer.interface'
 import { cacheStalenessKey } from './metadata-fingerprint'
 import { existsSync } from 'fs'
 import { MetadataMutationService } from './metadata-mutation.service'
+import { PhotoAssetResolver } from '../assets/photo-asset-resolver'
 
 async function getExifr() {
   try {
@@ -70,6 +71,8 @@ export class MetadataService {
     @inject(DI_TOKENS.DB) private db: Database,
     @inject(DI_TOKENS.METADATA_MUTATION_SERVICE)
     private metadataMutations: MetadataMutationService,
+    @inject(DI_TOKENS.PHOTO_ASSET_RESOLVER)
+    private assetResolver?: PhotoAssetResolver,
   ) {}
 
   private async readEffectiveAttributes(photoPath: string) {
@@ -83,10 +86,17 @@ export class MetadataService {
 
   private getPhotosByIds(photoIds: string[]): { id: string; filepath: string; session_id: string }[] {
     if (photoIds.length === 0) return []
-    const placeholders = photoIds.map(() => '?').join(',')
-    return this.db
-      .prepare(`SELECT id, session_id, filepath FROM photos WHERE id IN (${placeholders})`)
-      .all(...photoIds) as { id: string; filepath: string; session_id: string }[]
+    const photos: { id: string; filepath: string; session_id: string }[] = []
+    // Stay below SQLite's commonly configured parameter limit, mirroring the
+    // cache repository's getBatch chunking.
+    for (let index = 0; index < photoIds.length; index += 800) {
+      const chunk = photoIds.slice(index, index + 800)
+      const placeholders = chunk.map(() => '?').join(',')
+      photos.push(...this.db
+        .prepare(`SELECT id, session_id, filepath FROM photos WHERE id IN (${placeholders})`)
+        .all(...chunk) as { id: string; filepath: string; session_id: string }[])
+    }
+    return photos
   }
 
   /**
@@ -292,27 +302,85 @@ export class MetadataService {
     let failed = 0
     const errors: string[] = []
 
-    for (const { photoId, tags } of updates) {
-      try {
-        await this.setMetadata(photoId, tags)
-        success++
-      } catch (e) {
-        failed++
-        const message = e instanceof Error ? e.message : 'Unknown error'
-        errors.push(`${photoId}: ${message}`)
-      }
+    // RAW+JPEG pairs (and relinked assets) can share one sidecar between
+    // different photo rows, so grouping by photoId alone leaves the order of
+    // two photos' writes to the same sidecar to whatever concurrent group
+    // reaches the mutation queue first. queueMutation serializes per resolved
+    // xmp_path, but only once the calls arrive; group by that same path here
+    // so entries of one sidecar run strictly serial and in input order, while
+    // different sidecars still run in parallel.
+    let photosById: Map<string, { id: string; filepath: string; session_id: string }> | null = null
+    try {
+      photosById = new Map(
+        this.getPhotosByIds(updates.map(update => update.photoId))
+          .map(photo => [photo.id, photo]),
+      )
+    } catch (error) {
+      // A single failing chunk must not abort the whole batch; per-photo
+      // lookups below fall back to the old per-item behavior.
+      console.warn('Failed to batch-load photos for metadata batch:', error instanceof Error ? error.message : error)
     }
+    const groupKey = (photoId: string): string => {
+      let photo = photosById?.get(photoId)
+      if (!photo && photosById === null) {
+        const row = this.getPhotosByIds([photoId])
+        photo = row.length > 0 ? row[0] : undefined
+      }
+      if (!photo) return `missing:${photoId}`
+      if (this.assetResolver) {
+        try {
+          return this.assetResolver.resolve(photo.session_id, photoId).xmpPath
+        } catch {
+          // Incomplete asset migration: group by the legacy path, which is
+          // what queueMutation resolves to in that case as well.
+        }
+      }
+      return getXmpSidecarPath(photo.filepath)
+    }
+    const bySidecar = new Map<string, { photoId: string; tags: Partial<MetadataTags> }[]>()
+    for (const update of updates) {
+      const key = groupKey(update.photoId)
+      const group = bySidecar.get(key)
+      if (group) group.push(update)
+      else bySidecar.set(key, [update])
+    }
+
+    await batchAsync([...bySidecar.values()], async (group) => {
+      for (const { photoId, tags } of group) {
+        try {
+          await this.setMetadata(photoId, tags)
+          success++
+        } catch (e) {
+          failed++
+          const message = e instanceof Error ? e.message : 'Unknown error'
+          errors.push(`${photoId}: ${message}`)
+        }
+      }
+    }, 4)
 
     return { success, failed, errors }
   }
 
   async populateCache(sessionId: string, photoIds: string[]): Promise<void> {
     const sharp = (await import('sharp')) as unknown as typeof import('sharp')
-    for (const photoId of photoIds) {
+    // One batched photos query instead of a SELECT per photo; if the batched
+    // read fails, fall back to per-photo lookups inside the per-item try so a
+    // single failure cannot abort the whole populateCache.
+    let photoById: Map<string, { id: string; filepath: string; session_id: string }> | null = null
+    try {
+      photoById = new Map(this.getPhotosByIds(photoIds).map(photo => [photo.id, photo]))
+    } catch (error) {
+      console.warn('Failed to batch-load photos for cache populate:', error instanceof Error ? error.message : error)
+    }
+    await batchAsync(photoIds, async (photoId) => {
       try {
-        const photos = this.getPhotosByIds([photoId])
-        if (photos.length === 0) continue
-        const metadata = await sharp(photos[0].filepath).metadata()
+        let photo = photoById?.get(photoId)
+        if (!photo && photoById === null) {
+          const row = this.getPhotosByIds([photoId])
+          photo = row.length > 0 ? row[0] : undefined
+        }
+        if (!photo) return
+        const metadata = await sharp(photo.filepath).metadata()
         const input: MetadataCacheInput = {
           sessionId,
           width: metadata.width,
@@ -323,6 +391,6 @@ export class MetadataService {
       } catch (e) {
         console.warn(`Failed to populate cache for photo ${photoId}:`, e instanceof Error ? e.message : e)
       }
-    }
+    }, 10)
   }
 }

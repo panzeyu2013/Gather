@@ -4,11 +4,16 @@ import type { FilterGroup, SmartAlbumData, SmartAlbumDetailData, PhotoData, Glob
 import type { FilterEngine } from '../services/filter/filter-engine'
 import type { SmartAlbumRepository } from '../db/repositories/smart-album.repo'
 
-function parseFilterCriteria(serialized: string, schemaVersion = 1): FilterGroup {
+function parseFilterCriteria(criteria: string | FilterGroup, schemaVersion = 1): FilterGroup {
   if (schemaVersion !== 1) {
     throw new Error(`Unsupported filter schema version: ${schemaVersion}`)
   }
-  const parsed = JSON.parse(serialized) as FilterGroup
+  // IPC params arrive as plain objects, so skip the JSON.stringify/parse
+  // round-trip entirely; rows loaded from the DB are JSON strings and are
+  // still parsed here.
+  const parsed = typeof criteria === 'string'
+    ? (JSON.parse(criteria) as FilterGroup)
+    : criteria
   const validateGroup = (group: FilterGroup): void => {
     if (!group || !['and', 'or'].includes(group.logic) || !Array.isArray(group.conditions)) {
       throw new Error('Filter criteria is invalid')
@@ -33,7 +38,7 @@ export function registerFilterHandlers(registry: CommandRegistry, filterEngine: 
     'filter.photos',
     wrapHandler((params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
-      const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
+      const criteria = parseFilterCriteria(params.criteria as FilterGroup)
       const sortBy = typeof params.sortBy === 'string' ? params.sortBy : undefined
       const sortOrder = typeof params.sortOrder === 'string' ? params.sortOrder : undefined
       const photos: PhotoData[] = filterEngine.filterPhotos(sessionId, criteria, sortBy, sortOrder)
@@ -44,7 +49,7 @@ export function registerFilterHandlers(registry: CommandRegistry, filterEngine: 
   registry.register(
     'filter.photos_global',
     wrapHandler(async (params) => {
-      const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
+      const criteria = parseFilterCriteria(params.criteria as FilterGroup)
       const sessionId = params.sessionId === undefined
         ? undefined
         : validateString(params.sessionId, 'sessionId')
@@ -85,7 +90,7 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
     'album.create',
     wrapHandler((params) => {
       const name = validateString(params.name, 'name')
-      const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
+      const criteria = parseFilterCriteria(params.criteria as FilterGroup)
       const sortBy = typeof params.sortBy === 'string' ? params.sortBy : undefined
       const sortOrder = typeof params.sortOrder === 'string' ? params.sortOrder : undefined
       const description = typeof params.description === 'string' ? params.description : undefined
@@ -190,7 +195,7 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
       if (typeof params.name === 'string') updateData.name = params.name
       if (typeof params.description === 'string') updateData.description = params.description
       if (params.criteria) {
-        const criteria = parseFilterCriteria(JSON.stringify(params.criteria))
+        const criteria = parseFilterCriteria(params.criteria as FilterGroup)
         engine.buildWhereClause(criteria)
         updateData.filterCriteria = criteria
       }
