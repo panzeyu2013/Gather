@@ -96,7 +96,10 @@ function AnalysisPanel({
 
   // Push-based progress from the JobService (jobs:progress). The subscription
   // stays active for the whole session so a reload mid-analysis keeps receiving
-  // progress; filtering happens in the callback.
+  // progress; filtering happens in the callback. Terminal frames carry the
+  // final status and clear the analyzing state (mount-time recovery would
+  // otherwise be stuck forever, since the invoking mutation is gone after a
+  // reload).
   useEvent('jobs:progress', (payload) => {
     const data = payload as JobProgressData
     if (
@@ -104,6 +107,13 @@ function AnalysisPanel({
       data.scopeType === 'session' &&
       data.scopeId === sessionId
     ) {
+      if (data.status) {
+        setIsAnalyzing(false)
+        if (data.status === 'succeeded') {
+          queryClient.invalidateQueries({ queryKey: ['similarity', sessionId] })
+        }
+        return
+      }
       setProgress(data.current, data.total, data.message || '正在计算哈希并聚类...')
     }
   }, Boolean(sessionId))

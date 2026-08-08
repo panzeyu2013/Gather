@@ -506,6 +506,13 @@ app.whenReady().then(async () => {
       current: update.current ?? 0,
       total: update.total ?? 0,
       message: update.message ?? '',
+      // Terminal frames (emitTerminal) carry the final status so clients can
+      // clear the "analyzing" state; regular frames omit it. interrupted is
+      // terminal too (shutdown interrupted the run; a reloaded page relies on
+      // this frame to stop showing "analyzing").
+      status: ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.status)
+        ? job.status
+        : undefined,
     })
   })
   indexer.startWatchers()

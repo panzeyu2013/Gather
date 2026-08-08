@@ -44,6 +44,24 @@ export function registerImageHandlers(
       const paths: string[] = Array.isArray(params.paths) ? params.paths.map((p: unknown) => validateString(p, 'paths[]')) : []
       const size = typeof params.size === 'number' ? params.size : settings.getNumber('thumbnail_size', 1024)
       if (paths.length === 0) return ok(null)
+      // Scrolling produces a new fingerprint per viewport, which would grow
+      // the jobs table with succeeded preload jobs forever. Reuse an existing
+      // non-failed job only when its path list already COVERS the requested
+      // paths (superset or equal): then nothing starves — a window with new
+      // paths still gets a fresh job that builds them.
+      const requested = new Set(paths)
+      const existing = (['queued', 'running', 'succeeded'] as const).flatMap(status => jobs.list(status))
+        .find(job => {
+          if (job.type !== 'thumbnail.build' || job.scopeType !== 'paths') return false
+          if (typeof job.checkpoint.size !== 'number' || job.checkpoint.size !== size) return false
+          const existingPaths = Array.isArray(job.checkpoint.paths)
+            ? job.checkpoint.paths.filter((value): value is string => typeof value === 'string')
+            : []
+          return existingPaths.length > 0 &&
+            requested.size <= existingPaths.length &&
+            paths.every(p => existingPaths.includes(p))
+        })
+      if (existing) return ok(existing.id)
       const fingerprint = createHash('sha256')
         .update(paths.join('\0'))
         .digest('hex')

@@ -11,7 +11,7 @@ export function registerExportHandlers(
   reportService: ReportService,
   jobs: JobService,
 ): void {
-  const progressSinks = new Map<string, (progress: ExportProgressData) => void>()
+  const progressSinks = new Map<string, Set<(progress: ExportProgressData) => void>>()
   jobs.registerExecutor('export.execute', (job, context) => {
     const destinations = (
       job.checkpoint.destinations &&
@@ -45,7 +45,7 @@ export function registerExportHandlers(
           message: `${progress.fileName} · ${progress.status}`,
           checkpoint: checkpoint(),
         })
-        progressSinks.get(job.scopeId)?.(progress)
+        progressSinks.get(job.id)?.forEach(sink => sink(progress))
       },
       {
         destinations,
@@ -86,11 +86,6 @@ export function registerExportHandlers(
       if (!options || typeof options !== 'object') {
         return err('导出参数无效')
       }
-      if (event) {
-        progressSinks.set(sessionId, progress => {
-          event.sender.send('gather:event', 'export:progress', progress)
-        })
-      }
       const job = jobs.create({
         type: 'export.execute',
         scopeType: 'session',
@@ -98,10 +93,32 @@ export function registerExportHandlers(
         dedupeKey: `export.execute:${sessionId}`,
         checkpoint: { options },
       })
+      // Key the sink by job id instead of session id: a repeated execute for
+      // the same session dedupes to the same job, so every caller's window
+      // gets its own progress stream instead of the last one overwriting the
+      // previous.
+      let sink: ((progress: ExportProgressData) => void) | undefined
+      if (event) {
+        const sender = event.sender
+        sink = (progress: ExportProgressData): void => {
+          if (!sender.isDestroyed()) {
+            sender.send('gather:event', 'export:progress', progress)
+          }
+        }
+        const sinks = progressSinks.get(job.id) ?? new Set()
+        sinks.add(sink)
+        progressSinks.set(job.id, sinks)
+      }
       try {
         return ok(await jobs.waitForResult(job.id))
       } finally {
-        progressSinks.delete(sessionId)
+        if (sink) {
+          const sinks = progressSinks.get(job.id)
+          if (sinks) {
+            sinks.delete(sink)
+            if (sinks.size === 0) progressSinks.delete(job.id)
+          }
+        }
       }
     }),
   )

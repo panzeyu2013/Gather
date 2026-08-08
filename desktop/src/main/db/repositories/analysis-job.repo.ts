@@ -50,8 +50,24 @@ export class AnalysisJobRepository {
         SELECT * FROM analysis_jobs WHERE dedupe_key = ?
           AND status IN ('queued', 'running', 'cancelling')
       `).get(params.dedupeKey) as JobRow | undefined
-      if (!existing) throw error
-      return toData(existing)
+      if (existing) return toData(existing)
+      // The only other row with this dedupe key is in a terminal state
+      // (failed/cancelled/succeeded). Re-running the same analysis after a
+      // failure or cancel must work from the UI, so reuse the row as an
+      // automatic retry instead of surfacing a raw UNIQUE error.
+      const terminal = this.db.prepare(`
+        SELECT * FROM analysis_jobs WHERE dedupe_key = ?
+          AND status IN ('failed', 'cancelled', 'interrupted', 'succeeded')
+      `).get(params.dedupeKey) as JobRow | undefined
+      if (!terminal) throw error
+      this.db.prepare(`
+        UPDATE analysis_jobs
+        SET status = 'queued', error_code = '', error_message = '', cancel_requested_at = '',
+            lease_owner = '', heartbeat_at = '', progress_current = 0,
+            progress_total = 0, progress_message = '', finished_at = '', updated_at = ?
+        WHERE id = ?
+      `).run(new Date().toISOString(), terminal.id)
+      return this.get(terminal.id)!
     }
     return this.get(id)!
   }
@@ -159,6 +175,11 @@ export class AnalysisJobRepository {
   }
 
   clearCompleted(): number {
-    return this.db.prepare("DELETE FROM analysis_jobs WHERE status IN ('succeeded', 'cancelled')").run().changes
+    // Terminal rows in every status are cleared so failed/interrupted jobs
+    // (which retry() and resumeInterrupted can no longer revive once cleared)
+    // do not accumulate forever next to succeeded/cancelled ones.
+    return this.db.prepare(
+      "DELETE FROM analysis_jobs WHERE status IN ('succeeded', 'cancelled', 'failed', 'interrupted')",
+    ).run().changes
   }
 }

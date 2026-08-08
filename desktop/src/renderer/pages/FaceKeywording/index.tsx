@@ -1,7 +1,6 @@
-import React, { Suspense, lazy, useEffect, useRef } from 'react'
+import React, { Suspense, lazy, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { useFaceKwStore } from './faceKwStore'
-import { faceKwApi } from '../../api/faceKw'
 import styles from './FaceKeywording.module.css'
 
 const StepAnalyze = lazy(() => import('./StepAnalyze'))
@@ -11,13 +10,11 @@ const StepWriteback = lazy(() => import('./StepWriteback'))
 export default function FaceKeywording() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const { step, setStep, setSessionId, analysisStatus } = useFaceKwStore()
-  const prevSessionRef = useRef(sessionId)
 
   useEffect(() => {
-    if (prevSessionRef.current && prevSessionRef.current !== sessionId) {
-      faceKwApi.cancel(prevSessionRef.current).catch(() => {})
-    }
-    prevSessionRef.current = sessionId
+    // Deliberately NOT cancelling the previous session's analysis: jobs run
+    // in the background by design (persisted, resumable after reload). Only
+    // the local store switches to the new session.
     if (sessionId) setSessionId(sessionId)
   }, [sessionId, setSessionId])
 

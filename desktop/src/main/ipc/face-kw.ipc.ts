@@ -40,7 +40,7 @@ export function registerFaceKwHandlers(
   })
   registry.register(
     'fkw.analyze',
-    wrapHandler(async (params, event) => {
+    wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const eps = typeof params.eps === 'number' ? params.eps : settings.getNumber('default_eps', 0.6)
       const minSamples = typeof params.minSamples === 'number' ? params.minSamples : settings.getNumber('default_min_samples', 2)
@@ -57,12 +57,6 @@ export function registerFaceKwHandlers(
         checkpoint: { detectorPath, encoderPath, eps, minSamples },
       })
       const result = await jobs.waitForResult(job.id)
-      event?.sender.send('gather:event', 'progress', {
-        sessionId,
-        current: 1,
-        total: 1,
-        message: 'Face analysis complete',
-      })
       return ok(result)
     }),
   )

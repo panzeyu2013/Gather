@@ -2,8 +2,9 @@ import React, { useState, useCallback, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useFaceKwStore } from './faceKwStore'
 import { faceKwApi } from '../../api/faceKw'
-import { onProgress } from '../../api/client'
-import type { FaceModelsStatusData, ProgressData } from '@gather/shared'
+import { jobsApi } from '../../api/jobs'
+import { useEvent } from '../../hooks/useEvent'
+import type { FaceModelsStatusData, JobProgressData } from '@gather/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import styles from './StepAnalyze.module.css'
 
@@ -49,16 +50,58 @@ export default function StepAnalyze() {
 
   const guidanceSuffix = modelsMissing ? `\n${MODELS_GUIDANCE}` : ''
 
+  // On mount, recover an in-flight face analysis (e.g. after a renderer
+  // reload) so the analyzing state and progress bar are restored.
   useEffect(() => {
-    return onProgress((data) => {
-      const p = data as ProgressData
-      if (p.sessionId && p.sessionId !== sessionId) return
-      if (p.current !== undefined && p.total !== undefined) {
-        setProgress(sessionId!, p.current, p.total, p.message ?? '')
-        if (p.status) setAnalysisStatus(sessionId!, p.status)
+    let disposed = false
+    void (async () => {
+      try {
+        const jobs = await jobsApi.list()
+        if (disposed) return
+        const job = jobs.find(
+          (candidate) =>
+            candidate.type === 'face.analyze' &&
+            candidate.scopeType === 'session' &&
+            candidate.scopeId === sessionId &&
+            ['queued', 'running', 'cancelling'].includes(candidate.status),
+        )
+        if (job) {
+          setAnalysisStatus(sessionId!, 'running')
+          setProgress(sessionId!, job.progressCurrent, job.progressTotal, job.progressMessage || '正在检测人脸...')
+        }
+      } catch {
+        // Best-effort; push events will carry subsequent progress.
       }
-    })
-  }, [sessionId, setProgress, setAnalysisStatus])
+    })()
+    return () => {
+      disposed = true
+    }
+  }, [sessionId, setAnalysisStatus, setProgress])
+
+  // Live progress comes from the JobService channel; the legacy 'progress'
+  // event only fires once when the IPC handler resolves, which would leave
+  // the progress bar empty during the whole run.
+  useEvent('jobs:progress', (payload) => {
+    if (!sessionId) return
+    const data = payload as JobProgressData
+    if (
+      data.jobType === 'face.analyze' &&
+      data.scopeType === 'session' &&
+      data.scopeId === sessionId
+    ) {
+      if (data.status) {
+        if (data.status === 'succeeded') finishAnalysis(sessionId)
+        else if (data.status === 'cancelled' || data.status === 'failed') {
+          setAnalysisStatus(sessionId, data.status)
+        } else if (data.status === 'interrupted') {
+          setAnalysisStatus(sessionId, 'failed')
+        }
+        return
+      }
+      setProgress(sessionId, data.current, data.total, data.message || '正在检测人脸...')
+      setAnalysisStatus(sessionId, 'running')
+    }
+  }, Boolean(sessionId))
 
   const handleAnalyze = useCallback(async () => {
     if (!sessionId) return

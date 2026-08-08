@@ -72,8 +72,12 @@ export class JobService {
     if (this.watchdog) clearInterval(this.watchdog)
     this.watchdog = null
     for (const controller of this.controllers.values()) controller.abort()
-    await Promise.allSettled([...this.activeRuns])
+    // The controllers are no longer needed once every run has been aborted
+    // (stopped=true also blocks drain), so release them before waiting: if an
+    // executor never settles, the caller's bounded shutdown race still
+    // completes without leaving dangling references.
     this.controllers.clear()
+    await Promise.allSettled([...this.activeRuns])
   }
 
   registerExecutor(
@@ -136,6 +140,14 @@ export class JobService {
     }
     const persisted = this.repo.get(jobId)
     if (!persisted) return Promise.reject(new Error(`Analysis job not found: ${jobId}`))
+    if (persisted.status === 'succeeded') {
+      // The in-memory completedResults entry is evicted 5 minutes after
+      // completion; a late waiter must still resolve instead of hanging for
+      // the full timeout. The original return value is no longer available —
+      // callers of waitForResult must not depend on it for already-finished
+      // jobs (the persistent job row is the durable record).
+      return Promise.resolve(undefined as T)
+    }
     if (['failed', 'interrupted', 'cancelled'].includes(persisted.status)) {
       return Promise.reject(
         persisted.status === 'cancelled'
@@ -182,6 +194,22 @@ export class JobService {
   }
   finish(id: string, leaseOwner: string, status: 'succeeded' | 'failed' | 'cancelled', error?: { code: string; message: string }): boolean {
     return this.repo.finish(id, leaseOwner, status, error)
+  }
+
+  /**
+   * Push a terminal progress frame so renderer clients that recovered an
+   * in-flight job on mount (and rely on events, not polling) learn that the
+   * job finished. Without this, a reloaded page stays stuck in the
+   * "analyzing" state forever.
+   */
+  private emitTerminal(jobId: string, status: 'succeeded' | 'failed' | 'cancelled' | 'interrupted'): void {
+    const latest = this.repo.get(jobId)
+    if (!latest) return
+    this.progressSink?.(latest, {
+      current: 1,
+      total: 1,
+      message: status,
+    })
   }
 
   run<T>(
@@ -254,6 +282,7 @@ export class JobService {
       if (!this.finish(job.id, leaseOwner, 'succeeded')) {
         throw new Error('Analysis job lost its execution lease before completion')
       }
+      this.emitTerminal(job.id, 'succeeded')
       return result
     } catch (error) {
       flushProgress()
@@ -262,6 +291,7 @@ export class JobService {
       const interruptedByShutdown = cancelled && this.stopped && latest?.status === 'running'
       if (interruptedByShutdown) {
         this.repo.interrupt(job.id, leaseOwner)
+        this.emitTerminal(job.id, 'interrupted')
       } else {
         this.finish(
           job.id,
@@ -272,6 +302,7 @@ export class JobService {
             message: error instanceof Error ? error.message : String(error),
           },
         )
+        this.emitTerminal(job.id, cancelled ? 'cancelled' : 'failed')
       }
       throw error
     } finally {
@@ -285,7 +316,11 @@ export class JobService {
     this.drainScheduled = true
     queueMicrotask(() => {
       this.drainScheduled = false
-      void this.drain()
+      // repo.list can throw (e.g. DB closed during shutdown); an unhandled
+      // rejection would escape scheduleDrain's fire-and-forget callers.
+      void this.drain().catch(error => {
+        console.warn('Background job drain failed', error)
+      })
     })
   }
 
@@ -299,7 +334,15 @@ export class JobService {
       void this.run(job, this.leaseOwner, context => executor(job, context))
         .then(result => this.completeResult(job.id, { value: result }))
         .catch(error => {
-          this.completeResult(job.id, { error })
+          // Suppress only when a result for this job already exists (e.g. a
+          // cross-process claim race where another runner completed it).
+          // The executor's own failure/cancel path must still reject waiters
+          // through completeResult: the DB status is already terminal by the
+          // time this catch runs, so a DB-status guard would leak every
+          // failed/cancelled job's waiter until the 60-minute timeout.
+          if (!this.completedResults.has(job.id)) {
+            this.completeResult(job.id, { error })
+          }
           if (!(error instanceof JobCancelledError)) {
             console.warn(`Background job ${job.id} failed`, error)
           }
