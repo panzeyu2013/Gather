@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { metadataApi } from '../../api/metadata'
 import type { MetadataTags } from '@gather/shared'
+import { useTranslation, type TranslationKey } from '../../locales'
 import EditableField from './EditableField'
 import styles from './MetadataPanel.module.css'
 
@@ -9,71 +10,71 @@ interface MetadataPanelProps {
 }
 
 type MetadataSection = {
-  title: string
-  fields: { label: string; key: keyof MetadataTags }[]
+  titleKey: TranslationKey
+  fields: { labelKey: TranslationKey; key: keyof MetadataTags }[]
 }
 
 const SECTIONS: MetadataSection[] = [
   {
-    title: '文件',
+    titleKey: 'metadata.file',
     fields: [
-      { label: '文件名', key: 'filename' },
-      { label: '文件大小', key: 'fileSize' },
-      { label: '格式', key: 'format' },
-      { label: '尺寸', key: 'width' },
+      { labelKey: 'metadata.filename', key: 'filename' },
+      { labelKey: 'metadata.fileSize', key: 'fileSize' },
+      { labelKey: 'metadata.format', key: 'format' },
+      { labelKey: 'metadata.dimensions', key: 'width' },
     ],
   },
   {
-    title: '相机',
+    titleKey: 'metadata.camera',
     fields: [
-      { label: '品牌', key: 'make' },
-      { label: '型号', key: 'model' },
-      { label: '序列号', key: 'serialNumber' },
+      { labelKey: 'metadata.make', key: 'make' },
+      { labelKey: 'metadata.model', key: 'model' },
+      { labelKey: 'metadata.serialNumber', key: 'serialNumber' },
     ],
   },
   {
-    title: '镜头',
+    titleKey: 'metadata.lens',
     fields: [
-      { label: '镜头型号', key: 'lensModel' },
-      { label: '最大光圈', key: 'maxAperture' },
+      { labelKey: 'metadata.lensModel', key: 'lensModel' },
+      { labelKey: 'metadata.maxAperture', key: 'maxAperture' },
     ],
   },
   {
-    title: '拍摄',
+    titleKey: 'metadata.shooting',
     fields: [
-      { label: '焦距', key: 'focalLength' },
-      { label: '光圈', key: 'aperture' },
-      { label: '快门速度', key: 'shutterSpeed' },
-      { label: 'ISO', key: 'iso' },
-      { label: '曝光补偿', key: 'exposureComp' },
-      { label: '测光模式', key: 'meteringMode' },
-      { label: '白平衡', key: 'whiteBalance' },
+      { labelKey: 'metadata.focalLength', key: 'focalLength' },
+      { labelKey: 'metadata.aperture', key: 'aperture' },
+      { labelKey: 'metadata.shutterSpeed', key: 'shutterSpeed' },
+      { labelKey: 'metadata.iso', key: 'iso' },
+      { labelKey: 'metadata.exposureComp', key: 'exposureComp' },
+      { labelKey: 'metadata.meteringMode', key: 'meteringMode' },
+      { labelKey: 'metadata.whiteBalance', key: 'whiteBalance' },
     ],
   },
   {
-    title: '时间',
+    titleKey: 'metadata.time',
     fields: [
-      { label: '拍摄日期', key: 'dateTaken' },
-      { label: '数字化日期', key: 'dateDigitized' },
+      { labelKey: 'metadata.dateTaken', key: 'dateTaken' },
+      { labelKey: 'metadata.dateDigitized', key: 'dateDigitized' },
     ],
   },
   {
-    title: 'GPS',
+    titleKey: 'metadata.gps',
     fields: [
-      { label: '纬度', key: 'latitude' },
-      { label: '经度', key: 'longitude' },
-      { label: '海拔', key: 'altitude' },
+      { labelKey: 'metadata.latitude', key: 'latitude' },
+      { labelKey: 'metadata.longitude', key: 'longitude' },
+      { labelKey: 'metadata.altitude', key: 'altitude' },
     ],
   },
   {
-    title: 'XMP',
+    titleKey: 'metadata.xmp',
     fields: [
-      { label: '标题', key: 'title' },
-      { label: '描述', key: 'description' },
-      { label: '作者', key: 'author' },
-      { label: '版权', key: 'copyright' },
-      { label: '评级', key: 'rating' },
-      { label: '标签', key: 'keywords' },
+      { labelKey: 'metadata.title', key: 'title' },
+      { labelKey: 'metadata.description', key: 'description' },
+      { labelKey: 'metadata.author', key: 'author' },
+      { labelKey: 'metadata.copyright', key: 'copyright' },
+      { labelKey: 'metadata.rating', key: 'rating' },
+      { labelKey: 'metadata.keywords', key: 'keywords' },
     ],
   },
 ]
@@ -86,6 +87,7 @@ function formatValue(value: unknown): string {
 }
 
 export default function MetadataPanel({ photoIds }: MetadataPanelProps) {
+  const { t } = useTranslation()
   const [metadata, setMetadata] = useState<Map<string, MetadataTags>>(new Map())
   const [loading, setLoading] = useState(true)
 
@@ -115,7 +117,7 @@ export default function MetadataPanel({ photoIds }: MetadataPanelProps) {
   }, [photoIds.join(',')])
 
   if (loading) {
-    return <div className={styles.panel}><div className={styles.loading}>加载中...</div></div>
+    return <div className={styles.panel}><div className={styles.loading}>{t('metadata.loading')}</div></div>
   }
 
   const primaryTags = photoIds.length > 0 ? metadata.get(photoIds[0]) : undefined
@@ -123,12 +125,12 @@ export default function MetadataPanel({ photoIds }: MetadataPanelProps) {
   return (
     <div className={styles.panel}>
       {SECTIONS.map((section) => (
-        <div key={section.title} className={styles.section}>
-          <div className={styles.sectionTitle}>{section.title}</div>
+        <div key={section.titleKey} className={styles.section}>
+          <div className={styles.sectionTitle}>{t(section.titleKey)}</div>
           {section.fields.map((field) => (
             <EditableField
               key={field.key}
-              label={field.label}
+              label={t(field.labelKey)}
               value={formatValue(primaryTags?.[field.key])}
               readOnly
             />

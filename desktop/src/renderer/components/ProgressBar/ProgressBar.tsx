@@ -1,4 +1,5 @@
 import React from 'react'
+import { useTranslation } from '../../locales'
 import styles from './ProgressBar.module.css'
 
 interface ProgressBarProps {
@@ -8,6 +9,7 @@ interface ProgressBarProps {
 }
 
 export default function ProgressBar({ value, max = 100, label }: ProgressBarProps) {
+  const { t } = useTranslation()
   const indeterminate = max <= 0 || !Number.isFinite(value / max)
   const pct = indeterminate ? 0 : Math.min(Math.round((value / max) * 100), 100)
 
@@ -26,7 +28,7 @@ export default function ProgressBar({ value, max = 100, label }: ProgressBarProp
           style={indeterminate ? undefined : { width: `${pct}%` }}
         />
       </div>
-      <span className={styles.pct}>{indeterminate ? '进行中…' : `${pct}%`}</span>
+      <span className={styles.pct}>{indeterminate ? t('progressBar.inProgress') : `${pct}%`}</span>
     </div>
   )
 }

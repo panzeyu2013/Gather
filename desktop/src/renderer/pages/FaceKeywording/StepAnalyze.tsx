@@ -6,11 +6,13 @@ import { jobsApi } from '../../api/jobs'
 import { useEvent } from '../../hooks/useEvent'
 import type { FaceModelsStatusData, JobProgressData } from '@gather/shared'
 import { useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from '../../locales'
+import { translateError } from '../../utils/errors'
+import { translatePhase } from '../../utils/progress'
 import styles from './StepAnalyze.module.css'
 
-const MODELS_GUIDANCE = '人脸模型未安装 → 打开设置自动下载（约 182 MB）'
-
 export default function StepAnalyze() {
+  const { t } = useTranslation()
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
   const {
@@ -48,7 +50,7 @@ export default function StepAnalyze() {
     }
   }, [])
 
-  const guidanceSuffix = modelsMissing ? `\n${MODELS_GUIDANCE}` : ''
+  const guidanceSuffix = modelsMissing ? `\n${t('face.modelsGuidance')}` : ''
 
   // On mount, recover an in-flight face analysis (e.g. after a renderer
   // reload) so the analyzing state and progress bar are restored.
@@ -67,7 +69,7 @@ export default function StepAnalyze() {
         )
         if (job) {
           setAnalysisStatus(sessionId!, 'running')
-          setProgress(sessionId!, job.progressCurrent, job.progressTotal, job.progressMessage || '正在检测人脸...')
+          setProgress(sessionId!, job.progressCurrent, job.progressTotal, job.progressMessage || 'face.detecting')
         }
       } catch {
         // Best-effort; push events will carry subsequent progress.
@@ -98,7 +100,7 @@ export default function StepAnalyze() {
         }
         return
       }
-      setProgress(sessionId, data.current, data.total, data.message || '正在检测人脸...')
+      setProgress(sessionId, data.current, data.total, data.phase || data.message || 'face.detecting')
       setAnalysisStatus(sessionId, 'running')
     }
   }, Boolean(sessionId))
@@ -118,7 +120,7 @@ export default function StepAnalyze() {
       }
       if (result.status === 'failed') {
         setError(
-          `分析失败：检测失败 ${result.detectionFailures} 张，编码失败 ${result.encodingFailures} 个人脸${guidanceSuffix}`,
+          t('face.analyzeFailed', { detect: result.detectionFailures, encode: result.encodingFailures }) + guidanceSuffix,
         )
         setAnalysisStatus(sessionId, 'failed')
         return
@@ -154,7 +156,7 @@ export default function StepAnalyze() {
       await queryClient.invalidateQueries({ queryKey: ['face-clusters', sessionId] })
       finishAnalysis(sessionId)
     } catch (error) {
-      setError(`${error instanceof Error ? error.message : '重新聚类失败'}${guidanceSuffix}`)
+      setError(`${error instanceof Error ? translateError(error) : t('face.reclusterFailed')}${guidanceSuffix}`)
       setAnalysisStatus(sessionId, 'failed')
     }
   }, [eps, minPts, sessionId, setAnalysisStatus, finishAnalysis, queryClient, guidanceSuffix])
@@ -163,16 +165,16 @@ export default function StepAnalyze() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>人脸检测与聚类</h2>
+      <h2 className={styles.title}>{t('face.title')}</h2>
 
       {modelsMissing && (
         <div className={styles.guidance}>
-          <span className={styles.guidanceText}>{MODELS_GUIDANCE}</span>
+          <span className={styles.guidanceText}>{t('face.modelsGuidance')}</span>
           <button
             className={styles.guidanceButton}
             onClick={() => navigate('/settings')}
           >
-            打开设置
+            {t('face.openSettings')}
           </button>
         </div>
       )}
@@ -180,7 +182,7 @@ export default function StepAnalyze() {
       <div className={styles.panel}>
       <div className={styles.field}>
         <label className={styles.label}>
-          相似度阈值 (EPS)
+          {t('face.epsLabel')}
         </label>
         <input
           type="range"
@@ -200,7 +202,7 @@ export default function StepAnalyze() {
 
       <div className={styles.field}>
         <label className={styles.label}>
-          最小聚类数
+          {t('face.minClusterLabel')}
         </label>
         <input
           type="number"
@@ -222,7 +224,7 @@ export default function StepAnalyze() {
       {isRunning && (
         <div className={styles.progress}>
           <div className={styles.progressText}>
-            {progressMessage} {progressTotal > 0 ? `(${progressCurrent}/${progressTotal})` : ''}
+            {translatePhase(progressMessage)} {progressTotal > 0 ? `(${progressCurrent}/${progressTotal})` : ''}
           </div>
           {progressTotal > 0 && (
             <div className={styles.progressTrack}>
@@ -243,12 +245,12 @@ export default function StepAnalyze() {
             onClick={handleAnalyze}
             className={styles.button}
           >
-            开始分析
+            {t('face.startAnalyze')}
           </button>
         ) : null}
         {analysisStatus === 'done' ? (
           <button onClick={handleRecluster} className={styles.button}>
-            仅重新聚类
+            {t('face.onlyRecluster')}
           </button>
         ) : null}
         {isRunning && (
@@ -256,7 +258,7 @@ export default function StepAnalyze() {
             onClick={handleCancel}
             className={styles.cancelButton}
           >
-            取消
+            {t('common.cancel')}
           </button>
         )}
       </div>

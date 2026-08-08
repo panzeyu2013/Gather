@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react'
 import type { FilterGroup, FilterRule } from '@gather/shared'
+import { useTranslation } from '../../locales'
 import { FILTER_FIELDS, getFilterOperators, parseFilterValue } from './filter-constants'
 import styles from './FilterBar.module.css'
 
@@ -18,6 +19,7 @@ interface ActiveRule {
 let nextId = 1
 
 export default function FilterBar({ sessionId: _sessionId, onFilterChange }: FilterBarProps) {
+  const { t } = useTranslation()
   const [rules, setRules] = useState<ActiveRule[]>([])
   const [logic, setLogic] = useState<'and' | 'or'>('and')
   const [editing, setEditing] = useState(false)
@@ -86,7 +88,7 @@ export default function FilterBar({ sessionId: _sessionId, onFilterChange }: Fil
             <button
               className={styles.chipRemove}
               onClick={() => removeRule(rule.id)}
-              aria-label="Remove filter"
+              aria-label={t('dialog.removeFilter')}
             >
               &times;
             </button>
@@ -112,7 +114,7 @@ export default function FilterBar({ sessionId: _sessionId, onFilterChange }: Fil
             >
               {FILTER_FIELDS.map((f) => (
                 <option key={f.value} value={f.value}>
-                  {f.label}
+                  {t(f.labelKey)}
                 </option>
               ))}
             </select>
@@ -123,7 +125,7 @@ export default function FilterBar({ sessionId: _sessionId, onFilterChange }: Fil
             >
               {getFilterOperators(newField).map((op) => (
                 <option key={op.value} value={op.value}>
-                  {op.label}
+                  {t(op.labelKey)}
                 </option>
               ))}
             </select>
@@ -136,25 +138,25 @@ export default function FilterBar({ sessionId: _sessionId, onFilterChange }: Fil
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') addRule()
                 }}
-                placeholder="value"
+                placeholder={t('filter.valuePlaceholder')}
                 autoFocus
               />
             )}
             <button className={styles.addBtn} onClick={addRule}>
-              Add
+              {t('filter.add')}
             </button>
             <button className={styles.cancelBtn} onClick={() => setEditing(false)}>
-              Cancel
+              {t('filter.cancel')}
             </button>
           </div>
         ) : (
           <button className={styles.addRuleBtn} onClick={() => setEditing(true)}>
-            + Add Filter
+            {t('filter.addFilter')}
           </button>
         )}
         {rules.length > 0 && (
           <button className={styles.clearBtn} onClick={clearAll}>
-            Clear All
+            {t('filter.clearAll')}
           </button>
         )}
       </div>

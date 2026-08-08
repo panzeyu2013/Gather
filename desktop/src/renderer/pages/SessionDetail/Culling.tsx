@@ -12,7 +12,6 @@ import type {
   CaptureOneColorLabel,
   CullingAsset,
   CullingFilters,
-  CullingPage,
   CullingScope,
   CullingUpdatePatch,
   CullingUpdateResult,
@@ -31,21 +30,38 @@ import { qualityApi } from '../../api/quality'
 import { jobsApi } from '../../api/jobs'
 import { useEvent } from '../../hooks/useEvent'
 import { useToastStore } from '../../components/Toast/ToastStore'
+import { t as defaultT, useTranslation, type TranslationKey, type TypedTFunction } from '../../locales'
+import { translateError, translateErrorCode } from '../../utils/errors'
 import styles from './Culling.module.css'
+
+/** Map the main-process navigation lead explanation code to tooltip copy
+ * (design_improvements.md 4.4.2); legacy rows pass through unchanged. */
+const navExplanation = (
+  explanation: string | undefined,
+  translator: TypedTFunction = defaultT,
+): string | undefined => {
+  if (!explanation) return undefined
+  switch (explanation) {
+    case 'NAV_RECOMMEND_QUALITY': return translator('culling.navExplanation.quality')
+    case 'NAV_RECOMMEND_RATING': return translator('culling.navExplanation.rating')
+    case 'NAV_RECOMMEND_ORDER': return translator('culling.navExplanation.order')
+    default: return explanation
+  }
+}
 
 const COLOR_LABELS: Array<{
   value: CaptureOneColorLabel
-  label: string
+  labelKey: TranslationKey
   color: string
 }> = [
-  { value: 'None', label: '无', color: '#777' },
-  { value: 'Red', label: '红', color: '#ef5350' },
-  { value: 'Orange', label: '橙', color: '#ff9800' },
-  { value: 'Yellow', label: '黄', color: '#fdd835' },
-  { value: 'Green', label: '绿', color: '#4caf50' },
-  { value: 'Blue', label: '蓝', color: '#42a5f5' },
-  { value: 'Pink', label: '粉', color: '#ec407a' },
-  { value: 'Purple', label: '紫', color: '#ab47bc' },
+  { value: 'None', labelKey: 'culling.color.none', color: '#777' },
+  { value: 'Red', labelKey: 'culling.color.red', color: '#ef5350' },
+  { value: 'Orange', labelKey: 'culling.color.orange', color: '#ff9800' },
+  { value: 'Yellow', labelKey: 'culling.color.yellow', color: '#fdd835' },
+  { value: 'Green', labelKey: 'culling.color.green', color: '#4caf50' },
+  { value: 'Blue', labelKey: 'culling.color.blue', color: '#42a5f5' },
+  { value: 'Pink', labelKey: 'culling.color.pink', color: '#ec407a' },
+  { value: 'Purple', labelKey: 'culling.color.purple', color: '#ab47bc' },
 ]
 
 interface HistoryEntry {
@@ -63,31 +79,31 @@ interface ViewTransform {
   y: number
 }
 
-function syncLabel(summary?: MetadataSyncSummary): string {
-  if (!summary || summary.items.length === 0) return 'XMP 已同步'
-  if (summary.conflict > 0) return `${summary.conflict} 个 XMP 冲突`
-  if (summary.failed > 0) return `${summary.failed} 个 XMP 写入失败`
+function syncLabel(summary: MetadataSyncSummary | undefined, translator: TypedTFunction): string {
+  if (!summary || summary.items.length === 0) return translator('culling.syncLabel.synced')
+  if (summary.conflict > 0) return translator('culling.syncLabel.conflict', { count: summary.conflict })
+  if (summary.failed > 0) return translator('culling.syncLabel.failed', { count: summary.failed })
   if (summary.pending + summary.writing > 0) {
-    return `${summary.pending + summary.writing} 个 XMP 等待写入`
+    return translator('culling.syncLabel.pending', { count: summary.pending + summary.writing })
   }
-  if (summary.written > 0) return `${summary.written} 个 XMP 已写入，等待 Capture One 加载`
-  if (summary.synced > 0) return `${summary.synced} 个 XMP 已确认加载`
-  return 'XMP 已同步'
+  if (summary.written > 0) return translator('culling.syncLabel.written', { count: summary.written })
+  if (summary.synced > 0) return translator('culling.syncLabel.loaded', { count: summary.synced })
+  return translator('culling.syncLabel.synced')
 }
 
-function valueLabel(value: unknown): string {
-  if (Array.isArray(value)) return value.join('、') || '空'
-  if (value === '' || value === undefined || value === null) return '空'
+function valueLabel(value: unknown, translator: TypedTFunction): string {
+  if (Array.isArray(value)) return value.join(translator('list.separator')) || translator('culling.valueLabel.empty')
+  if (value === '' || value === undefined || value === null) return translator('culling.valueLabel.empty')
   return String(value)
 }
 
-function sourceLabel(asset: CullingAsset): string {
-  if (asset.metadataSource === 'template') return '模板元数据'
-  if (asset.metadataSource === 'face-keyword') return '人脸关键词'
-  if (asset.metadataSource === 'similarity') return '相似组关键词'
-  if (asset.quality?.status === 'succeeded') return 'AI 技术分析'
-  if (asset.state.source === 'imported') return '导入元数据'
-  return '人工调整'
+function sourceLabel(asset: CullingAsset, translator: TypedTFunction): string {
+  if (asset.metadataSource === 'template') return translator('culling.source.template')
+  if (asset.metadataSource === 'face-keyword') return translator('culling.source.faceKeyword')
+  if (asset.metadataSource === 'similarity') return translator('culling.source.similarity')
+  if (asset.quality?.status === 'succeeded') return translator('culling.source.ai')
+  if (asset.state.source === 'imported') return translator('culling.source.imported')
+  return translator('culling.source.manual')
 }
 
 function ConflictPanel({
@@ -99,6 +115,7 @@ function ConflictPanel({
   conflicts: MetadataConflict[]
   onResolved: (summary: MetadataSyncSummary) => void
 }) {
+  const { t } = useTranslation()
   const [choices, setChoices] = useState<Record<string, MetadataConflictChoice>>({})
   const [resolving, setResolving] = useState(false)
   const conflict = conflicts[0]
@@ -110,14 +127,14 @@ function ConflictPanel({
   return (
     <section className={styles.conflictPanel}>
       <header>
-        <strong>XMP 字段冲突</strong>
+        <strong>{t('culling.conflict.title')}</strong>
         <span title={conflict.xmpPath}>{conflict.xmpPath.split(/[/\\]/).pop()}</span>
       </header>
       {conflict.fields.map(field => (
         <div className={styles.conflictField} key={field.field}>
-          <strong>{field.field === 'rating' ? '星级' : field.field === 'label' ? '颜色' : '关键词'}</strong>
-          <span title={valueLabel(field.local)}>Gather：{valueLabel(field.local)}</span>
-          <span title={valueLabel(field.remote)}>外部：{valueLabel(field.remote)}</span>
+          <strong>{field.field === 'rating' ? t('culling.conflict.fieldRating') : field.field === 'label' ? t('culling.conflict.fieldLabel') : t('culling.conflict.fieldKeyword')}</strong>
+          <span title={valueLabel(field.local, t)}>{t('culling.conflict.local', { value: valueLabel(field.local, t) })}</span>
+          <span title={valueLabel(field.remote, t)}>{t('culling.conflict.remote', { value: valueLabel(field.remote, t) })}</span>
           <select
             value={choices[field.field] ?? 'keep_local'}
             onChange={event => setChoices(current => ({
@@ -125,13 +142,13 @@ function ConflictPanel({
               [field.field]: event.target.value as MetadataConflictChoice,
             }))}
           >
-            <option value="keep_local">保留 Gather</option>
-            <option value="use_remote">采用外部值</option>
+            <option value="keep_local">{t('culling.conflict.keepLocal')}</option>
+            <option value="use_remote">{t('culling.conflict.useRemote')}</option>
           </select>
         </div>
       ))}
       <footer>
-        <span>{conflicts.length > 1 ? `还有 ${conflicts.length - 1} 个冲突` : '这是最后一个冲突'}</span>
+        <span>{conflicts.length > 1 ? t('culling.conflict.moreRemaining', { count: conflicts.length - 1 }) : t('culling.conflict.last')}</span>
         <button
           disabled={resolving}
           onClick={() => {
@@ -143,7 +160,7 @@ function ConflictPanel({
             ).then(onResolved).finally(() => setResolving(false))
           }}
         >
-          {resolving ? '处理中…' : '应用并继续写入'}
+          {resolving ? t('culling.conflict.resolving') : t('culling.conflict.apply')}
         </button>
       </footer>
     </section>
@@ -162,9 +179,10 @@ function statePatch(
 }
 
 function FilmThumb({ filepath, filename }: { filepath: string; filename: string }) {
+  const { t } = useTranslation()
   const [broken, setBroken] = useState(false)
   if (broken) {
-    return <span className={styles.thumbBroken}>离线</span>
+    return <span className={styles.thumbBroken}>{t('culling.offline')}</span>
   }
   return (
     <img
@@ -189,6 +207,7 @@ function CullingImage({
   const face = asset.faceBboxes[0]
   const faceX = face ? Math.max(0, Math.min(1, face[0] + face[2] / 2)) : 0.5
   const faceY = face ? Math.max(0, Math.min(1, face[1] + face[3] / 2)) : 0.5
+  const { t } = useTranslation()
   const alignX = faceAlign && face ? (0.5 - faceX) * 100 : 0
   const alignY = faceAlign && face ? (0.5 - faceY) * 100 : 0
   const scale = faceAlign && face ? Math.max(2, transform.scale) : transform.scale
@@ -196,8 +215,8 @@ function CullingImage({
     <div className={styles.compareCell}>
       {broken ? (
         <div className={styles.viewerBroken}>
-          <p>文件离线或无法解码</p>
-          <p className={styles.viewerBrokenHint}>可在全局图库中为离线存储卷重新定位</p>
+          <p>{t('culling.viewerBroken')}</p>
+          <p className={styles.viewerBrokenHint}>{t('culling.viewerBrokenHint')}</p>
         </div>
       ) : (
         <img
@@ -213,24 +232,27 @@ function CullingImage({
       )}
       <div className={styles.imageCaption}>
         <span>{asset.photo.filename}</span>
-        <span className={styles.sourceLabel}>{sourceLabel(asset)}</span>
-        <span>{asset.state.rating > 0 ? `${asset.state.rating}★` : '未评级'}</span>
+        <span className={styles.sourceLabel}>{sourceLabel(asset, t)}</span>
+        <span>{asset.state.rating > 0 ? `${asset.state.rating}★` : t('culling.unrated')}</span>
       </div>
       {asset.state.pickState !== 'unreviewed' && (
         <span className={`${styles.pickBadge} ${
           asset.state.pickState === 'picked' ? styles.picked : styles.rejected
         }`}>
-          {asset.state.pickState === 'picked' ? '保留' : '淘汰'}
+          {asset.state.pickState === 'picked' ? t('culling.picked') : t('culling.rejected')}
         </span>
       )}
-      {faceAlign && !face && <span className={styles.noFaceBadge}>未检测到人脸</span>}
+      {faceAlign && !face && <span className={styles.noFaceBadge}>{t('culling.noFace')}</span>}
       {asset.quality && (
         <span className={styles.qualityBadge} title={
           asset.quality.status === 'failed'
-            ? asset.quality.errorMessage ?? '质量分析失败'
-            : `AI 技术分析：清晰度 ${Math.round((asset.quality.subjectSharpness ?? asset.quality.sharpness) * 100)}%，曝光 ${Math.round(asset.quality.exposure * 100)}%`
+            ? asset.quality.errorMessage ?? t('culling.qualityFailed')
+            : t('culling.qualityInfo', {
+                sharpness: Math.round((asset.quality.subjectSharpness ?? asset.quality.sharpness) * 100),
+                exposure: Math.round(asset.quality.exposure * 100),
+              })
         }>
-          {asset.quality.status === 'failed' ? '分析失败' : `质量 ${Math.round(asset.quality.score * 100)}`}
+          {asset.quality.status === 'failed' ? t('culling.qualityFailedShort') : t('culling.qualityScore', { score: Math.round(asset.quality.score * 100) })}
           {asset.quality.warnings.length > 0 ? ' ⚠' : ''}
         </span>
       )}
@@ -242,6 +264,7 @@ export default function Culling() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const queryClient = useQueryClient()
   const addToast = useToastStore(state => state.addToast)
+  const { t } = useTranslation()
   const [scope, setScope] = useState<CullingScope>('all')
   const [filters, setFilters] = useState<CullingFilters>({})
   const [assets, setAssets] = useState<CullingAsset[]>([])
@@ -313,9 +336,9 @@ export default function Culling() {
     setNavigationBusy(true)
     try {
       setNavigationGroups(await navigationApi.analyze(sessionId, undefined, undefined, dryRun))
-      setMessage(dryRun ? '分组预览已生成；确认后可保存' : 'Burst/Scene 分组已保存')
+      setMessage(dryRun ? t('culling.navGroupPreview') : t('culling.navGroupSaved'))
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Burst/Scene 分析失败')
+      setMessage(error instanceof Error ? translateError(error) : t('culling.navGroupFailed'))
     } finally {
       setNavigationBusy(false)
     }
@@ -345,7 +368,7 @@ export default function Culling() {
       setNextRowId(page.nextRowId)
       setTotal(page.total)
     } catch {
-      setMessage('加载更多照片失败')
+      setMessage(t('culling.loadMoreFailed'))
     } finally {
       loadingMoreRef.current = false
     }
@@ -419,7 +442,7 @@ export default function Culling() {
     const first = group.photoIds[0]
     const index = await ensureLoadedUntilPhoto(first)
     if (index < 0) {
-      setMessage('目标照片未加载完整，请滚动胶片继续加载')
+      setMessage(t('culling.targetNotLoaded'))
       return
     }
     setCurrentIndex(index)
@@ -491,10 +514,10 @@ export default function Culling() {
     const job = runningJobs.find(candidate => candidate.id === qualityJobId)
     if (!job || ['queued', 'running', 'cancelling'].includes(job.status)) return
     if (job.status === 'succeeded') {
-      setMessage('质量分析完成')
+      setMessage(t('culling.qualityDone'))
       void refetch()
     } else {
-      setMessage(job.errorMessage || '质量分析未完成')
+      setMessage(translateErrorCode(job.errorMessage) || t('culling.qualityIncomplete'))
     }
     setQualityJobId(undefined)
   }, [qualityJobId, refetch, runningJobs])
@@ -664,7 +687,7 @@ export default function Culling() {
         advance()
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '更新失败')
+      setMessage(error instanceof Error ? translateError(error) : t('culling.updateFailed'))
       await refetch()
     } finally {
       setBusy(false)
@@ -742,7 +765,7 @@ export default function Culling() {
         advance()
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '批量更新失败')
+      setMessage(error instanceof Error ? translateError(error) : t('culling.batchUpdateFailed'))
       await refetch()
     } finally {
       setBusy(false)
@@ -797,8 +820,8 @@ export default function Culling() {
       setUndoStack([])
       setRedoStack([])
       setMessage(error instanceof Error
-        ? `撤销未完整执行，历史记录已重置：${error.message}`
-        : '撤销未完整执行，历史记录已重置')
+        ? t('culling.undoResetWithError', { message: translateError(error) })
+        : t('culling.undoReset'))
       await refetch()
     } finally {
       setBusy(false)
@@ -838,8 +861,8 @@ export default function Culling() {
       setUndoStack([])
       setRedoStack([])
       setMessage(error instanceof Error
-        ? `重做未完整执行，历史记录已重置：${error.message}`
-        : '重做未完整执行，历史记录已重置')
+        ? t('culling.redoResetWithError', { message: translateError(error) })
+        : t('culling.redoReset'))
       await refetch()
     } finally {
       setBusy(false)
@@ -867,7 +890,7 @@ export default function Culling() {
         fullGroup.length < 2 ||
         keepPhotoIds.some(photoId => !groupIds.has(photoId))
       ) {
-        throw new Error('相似组已变化，请刷新后重试')
+        throw new Error(t('culling.groupChanged'))
       }
 
       const results = await cullingApi.decideGroup(
@@ -930,7 +953,7 @@ export default function Culling() {
         }
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '组内批量操作失败')
+      setMessage(error instanceof Error ? translateError(error) : t('culling.groupOpFailed'))
       await refetch()
     } finally {
       setBusy(false)
@@ -953,7 +976,7 @@ export default function Culling() {
     try {
       setSyncSummary(await cullingApi.flush(sessionId))
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'XMP 写入失败')
+      setMessage(error instanceof Error ? translateError(error) : t('culling.xmpWriteFailed'))
     } finally {
       setBusy(false)
     }
@@ -1000,10 +1023,10 @@ export default function Culling() {
   }, [advance, busy, commitTargets, redo, undo])
 
   if (!sessionId) {
-    return <div className={styles.emptyState}>未选择工作区</div>
+    return <div className={styles.emptyState}>{t('culling.noWorkspace')}</div>
   }
   if (isLoading) {
-    return <div className={styles.emptyState}>正在载入挑片工作台…</div>
+    return <div className={styles.emptyState}>{t('culling.loading')}</div>
   }
   if (!assets.length) {
     return (
@@ -1017,7 +1040,7 @@ export default function Culling() {
           </div>
         </div>
         <div className={styles.emptyState}>
-          当前范围没有照片。切换到“全部照片”或清除筛选条件。
+          {t('culling.empty')}
         </div>
       </div>
     )
@@ -1034,23 +1057,23 @@ export default function Culling() {
         </div>
         <div className={styles.viewSection}>
           <button onClick={() => void analyzeNavigation()} disabled={navigationBusy}>
-            {navigationBusy ? '分析中…' : '保存 Burst/Scene 分组'}
+            {navigationBusy ? t('culling.navAnalyzing') : t('culling.navSave')}
           </button>
           <button onClick={() => void analyzeNavigation(true)} disabled={navigationBusy}>
-            预览分组
+            {t('culling.navPreview')}
           </button>
           <button
             disabled={Boolean(qualityJobId)}
             onClick={() => {
               void qualityApi.analyze(sessionId).then(job => {
                 setQualityJobId(job.id)
-                setMessage('质量分析已加入任务队列')
+                setMessage(t('culling.qualityQueued'))
               }).catch(error => {
-                setMessage(error instanceof Error ? error.message : '无法启动质量分析')
+                setMessage(error instanceof Error ? translateError(error) : t('culling.qualityStartFailed'))
               })
             }}
           >
-            {qualityJobId ? '质量分析中…' : '分析技术质量'}
+            {qualityJobId ? t('culling.qualityRunning') : t('culling.qualityAnalyze')}
           </button>
           {navigationGroups.length > 0 && (
             <select className={styles.select} defaultValue="" onChange={event => {
@@ -1058,11 +1081,11 @@ export default function Culling() {
               const group = navigationGroups.find(item => item.id === event.target.value)
               if (group) void jumpToNavigationGroup(group)
             }}>
-              <option value="">导航组 ({navigationGroups.length})</option>
+              <option value="">{t('culling.navGroup', { count: navigationGroups.length })}</option>
               {navigationGroups.map(group => (
                 <option key={group.id} value={group.id}>
-                  {group.type === 'burst' ? 'Burst' : 'Scene'} · {group.photoIds.length} 张
-                  {group.leadPhotoId ? ` · 推荐 ${group.photoIds.indexOf(group.leadPhotoId) + 1}` : ''}
+                  {t('culling.navGroupItem', { type: group.type === 'burst' ? 'Burst' : 'Scene', count: group.photoIds.length })}
+                  {group.leadPhotoId ? t('culling.navGroupLead', { index: group.photoIds.indexOf(group.leadPhotoId) + 1 }) : ''}
                 </option>
               ))}
             </select>
@@ -1070,19 +1093,19 @@ export default function Culling() {
           {selectedNavigationGroupId && (
             <>
               <button
-                title={navigationGroups.find(group => group.id === selectedNavigationGroupId)?.explanation}
+                title={navExplanation(navigationGroups.find(group => group.id === selectedNavigationGroupId)?.explanation)}
                 onClick={() => {
                   const group = navigationGroups.find(item => item.id === selectedNavigationGroupId)
                   if (!group || !current || group.photoIds.indexOf(current.photo.id) <= 0) {
-                    setMessage('请先定位到组内非首张照片')
+                    setMessage(t('culling.navSplitHint'))
                     return
                   }
                   void navigationApi.split(sessionId, group.id, current.photo.id)
                     .then(setNavigationGroups)
-                    .catch(error => setMessage(error instanceof Error ? error.message : '拆分失败'))
+                    .catch(error => setMessage(error instanceof Error ? translateError(error) : t('culling.navSplitFailed')))
                 }}
               >
-                从当前照片拆分
+                {t('culling.navSplit')}
               </button>
               <button
                 onClick={() => {
@@ -1091,15 +1114,15 @@ export default function Culling() {
                   const previous = navigationGroups.slice(0, index).reverse()
                     .find(group => group.type === selected?.type)
                   if (!selected || !previous) {
-                    setMessage('没有可合并的前一个同类组')
+                    setMessage(t('culling.navMergeHint'))
                     return
                   }
                   void navigationApi.merge(sessionId, [previous.id, selected.id])
                     .then(setNavigationGroups)
-                    .catch(error => setMessage(error instanceof Error ? error.message : '合并失败'))
+                    .catch(error => setMessage(error instanceof Error ? translateError(error) : t('culling.navMergeFailed')))
                 }}
               >
-                与前组合并
+                {t('culling.navMerge')}
               </button>
             </>
           )}
@@ -1109,7 +1132,7 @@ export default function Culling() {
               checked={autoAdvance}
               onChange={event => setAutoAdvance(event.target.checked)}
             />
-            自动前进
+            {t('culling.autoAdvance')}
           </label>
           <div className={styles.segmented}>
             {([1, 2, 4] as const).map(count => (
@@ -1121,7 +1144,7 @@ export default function Culling() {
                   setTransform({ scale: 1, x: 0, y: 0 })
                 }}
               >
-                {count === 1 ? '单图' : `${count} 图`}
+                {count === 1 ? t('culling.single') : t('culling.multi', { count })}
               </button>
             ))}
           </div>
@@ -1134,15 +1157,15 @@ export default function Culling() {
                 setTransform({ scale: 1, x: 0, y: 0 })
               }}
             />
-            人脸对齐
+            {t('culling.faceAlign')}
           </label>
           <div className={styles.historyActions}>
             <button
               className={styles.iconButton}
               onClick={() => void undo()}
               disabled={!undoStack.length || busy}
-              title="撤销（⌘Z）"
-              aria-label="撤销"
+              title={t('culling.undo')}
+              aria-label={t('culling.undoLabel')}
             >
               ↶
             </button>
@@ -1150,8 +1173,8 @@ export default function Culling() {
               className={styles.iconButton}
               onClick={() => void redo()}
               disabled={!redoStack.length || busy}
-              title="重做（⇧⌘Z）"
-              aria-label="重做"
+              title={t('culling.redo')}
+              aria-label={t('culling.redoLabel')}
             >
               ↷
             </button>
@@ -1203,7 +1226,7 @@ export default function Culling() {
             setTransform({ scale: 1, x: 0, y: 0 })
           }}
           disabled={currentIndex === 0}
-          aria-label="上一张照片"
+          aria-label={t('culling.prevPhoto')}
         >
           ‹
         </button>
@@ -1211,13 +1234,13 @@ export default function Culling() {
           className={`${styles.navButton} ${styles.next}`}
           onClick={advance}
           disabled={currentIndex === assets.length - 1 && nextRowId === null}
-          aria-label="下一张照片"
+          aria-label={t('culling.nextPhoto')}
         >
           ›
         </button>
         <div className={styles.zoomHint}>
           {Math.round((faceAlign ? Math.max(2, transform.scale) : transform.scale) * 100)}%
-          · 滚轮缩放 · 拖动平移 · 双击复位
+          {t('culling.zoomHint')}
         </div>
       </div>
 
@@ -1234,12 +1257,12 @@ export default function Culling() {
 
       <div className={styles.infoBar}>
         <span className={styles.positionCount}>{currentIndex + 1} / {total ?? assets.length}</span>
-        <span className={styles.keptStat}>保留 {summary?.kept ?? 0}</span>
-        <span className={styles.rejectedStat}>淘汰 {summary?.rejected ?? 0}</span>
-        <span>未处理 {summary?.pending ?? assets.length}</span>
+        <span className={styles.keptStat}>{t('culling.keptCount', { count: summary?.kept ?? 0 })}</span>
+        <span className={styles.rejectedStat}>{t('culling.rejectedCount', { count: summary?.rejected ?? 0 })}</span>
+        <span>{t('culling.pendingCount', { count: summary?.pending ?? assets.length })}</span>
         {current?.linkedVariantCount && current.linkedVariantCount > 1 && (
           <span className={styles.linkedNotice}>
-            同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 {current.linkedVariantCount} 个条目
+            {t('culling.linkedNotice', { count: current.linkedVariantCount })}
           </span>
         )}
         <span className={`${styles.syncState} ${
@@ -1247,25 +1270,25 @@ export default function Culling() {
             ? styles.syncError
             : ''
         }`}>
-          {syncLabel(syncSummary)}
+          {syncLabel(syncSummary, t)}
         </span>
-        <button onClick={() => void flush()} disabled={busy}>立即写入 XMP</button>
+        <button onClick={() => void flush()} disabled={busy}>{t('culling.flush')}</button>
         {(syncSummary?.written ?? 0) > 0 && (
           <button
             disabled={busy}
             onClick={() => {
               setBusy(true)
               void window.gather.reloadMetadata()
-                .then(() => setMessage('已在 Capture One 中加载元数据，返回后请确认同步'))
-                .catch(error => addToast('error', error instanceof Error ? error.message : '加载元数据失败'))
+                .then(() => setMessage(t('culling.reloadDone')))
+                .catch(error => addToast('error', error instanceof Error ? translateError(error) : t('culling.reloadFailed')))
                 .finally(() => setBusy(false))
             }}
           >
-            在 Capture One 中加载元数据
+            {t('culling.reloadBtn')}
           </button>
         )}
         {(syncSummary?.written ?? 0) > 0 && (
-          <span className={styles.syncHint}>先在 Capture One 中 Load Metadata，再返回 Gather 确认同步</span>
+          <span className={styles.syncHint}>{t('culling.syncHint')}</span>
         )}
         {(syncSummary?.failed ?? 0) > 0 && (
           <button
@@ -1274,11 +1297,11 @@ export default function Culling() {
               setBusy(true)
               void cullingApi.retrySync(sessionId)
                 .then(setSyncSummary)
-                .catch(error => setMessage(error instanceof Error ? error.message : '重试失败'))
+                .catch(error => setMessage(error instanceof Error ? translateError(error) : t('culling.retryFailedError')))
                 .finally(() => setBusy(false))
             }}
           >
-            重试失败项
+            {t('culling.retryFailed')}
           </button>
         )}
         {(syncSummary?.written ?? 0) > 0 && (
@@ -1289,11 +1312,11 @@ export default function Culling() {
               void cullingApi.confirmSync(sessionId)
                 .then(() => cullingApi.syncStatus(sessionId))
                 .then(setSyncSummary)
-                .catch(error => setMessage(error instanceof Error ? error.message : '确认失败'))
+                .catch(error => setMessage(error instanceof Error ? translateError(error) : t('culling.confirmFailed')))
                 .finally(() => setBusy(false))
             }}
           >
-            已在 Capture One 加载
+            {t('culling.confirmLoaded')}
           </button>
         )}
         {(syncSummary?.synced ?? 0) > 0 && (
@@ -1304,14 +1327,14 @@ export default function Culling() {
                 setBusy(true)
                 void cullingApi.finalizeSync(sessionId)
                   .then(summary => {
-                    setMessage('已保留当前 XMP，并结束本次同步')
+                    setMessage(t('culling.finalizeDone'))
                     setSyncSummary(summary)
                   })
-                  .catch(error => setMessage(error instanceof Error ? error.message : '结束同步失败'))
+                  .catch(error => setMessage(error instanceof Error ? translateError(error) : t('culling.finalizeFailed')))
                   .finally(() => setBusy(false))
               }}
             >
-              保留 XMP 并结束
+              {t('culling.finalizeBtn')}
             </button>
             <button
               onClick={() => {
@@ -1320,16 +1343,16 @@ export default function Culling() {
                 void cullingApi.cleanup(sessionId)
                   .then(result => {
                     setMessage(result.errors.length > 0
-                      ? `有 ${result.errors.length} 个 XMP 未清理：${result.errors[0]}`
-                      : `已清理 ${result.deletedCount} 个临时 XMP`)
+                      ? t('culling.cleanupError', { count: result.errors.length, detail: result.errors[0] })
+                      : t('culling.cleanupDone', { count: result.deletedCount }))
                     return cullingApi.syncStatus(sessionId)
                   })
                   .then(setSyncSummary)
-                  .catch(error => setMessage(error instanceof Error ? error.message : '清理失败'))
+                  .catch(error => setMessage(error instanceof Error ? translateError(error) : t('culling.cleanupFailed')))
                   .finally(() => setBusy(false))
               }}
             >
-              恢复原 XMP
+              {t('culling.restoreXmp')}
             </button>
           </>
         )}
@@ -1346,7 +1369,7 @@ export default function Culling() {
         }}
       >
         <div className={styles.stripHeader}>
-          <span>胶片</span>
+          <span>{t('culling.filmstrip')}</span>
           <span>{assets.length}{total != null && total > assets.length ? ` / ${total}` : ''}</span>
         </div>
         <div className={styles.stripSpacer} style={{ width: stripStart * 86 }} />
@@ -1363,9 +1386,11 @@ export default function Culling() {
                 if (event.metaKey || event.ctrlKey || event.shiftKey) {
                   setSelectedIds(previous => {
                     const next = new Set(previous)
-                    next.has(asset.photo.id)
-                      ? next.delete(asset.photo.id)
-                      : next.add(asset.photo.id)
+                    if (next.has(asset.photo.id)) {
+                      next.delete(asset.photo.id)
+                    } else {
+                      next.add(asset.photo.id)
+                    }
                     return next
                   })
                 } else {
@@ -1418,52 +1443,52 @@ export default function Culling() {
             onClick={() => void loadMore()}
             disabled={loadingMoreRef.current}
           >
-            {loadingMoreRef.current ? '加载中…' : '加载更多'}
+            {loadingMoreRef.current ? t('culling.loadingMore') : t('culling.loadMore')}
           </button>
         )}
       </div>
 
       <div className={styles.controls}>
-        <div className={styles.panelTitle}>挑片工具</div>
+        <div className={styles.panelTitle}>{t('culling.tools')}</div>
         <div className={styles.controlGroup}>
           <span className={styles.controlLabel}>
-            {selectedIds.size > 0 ? `批量 ${selectedIds.size} 张` : '当前照片'}
+            {selectedIds.size > 0 ? t('culling.batchCount', { count: selectedIds.size }) : t('culling.currentPhoto')}
           </span>
           <div className={styles.decisionBar}>
             <button
               className={`${styles.decisionButton} ${styles.pickButton}`}
               onClick={() => void commitTargets({ pickState: 'picked' })}
               disabled={busy}
-              aria-label="保留 P"
+              aria-label={t('culling.pickShortcut')}
             >
               <span className={styles.decisionIcon}>✓</span>
-              <span>保留</span>
+              <span>{t('culling.picked')}</span>
               <span className={styles.shortcut}>P</span>
             </button>
             <button
               className={`${styles.decisionButton} ${styles.rejectButton}`}
               onClick={() => void commitTargets({ pickState: 'rejected' })}
               disabled={busy}
-              aria-label="淘汰 X"
+              aria-label={t('culling.rejectShortcut')}
             >
               <span className={styles.decisionIcon}>×</span>
-              <span>淘汰</span>
+              <span>{t('culling.rejected')}</span>
               <span className={styles.shortcut}>X</span>
             </button>
             <button
               className={`${styles.decisionButton} ${styles.clearButton}`}
               onClick={() => void commitTargets({ pickState: 'unreviewed' }, false)}
               disabled={busy}
-              aria-label="清除 U"
+              aria-label={t('culling.clearShortcut')}
             >
               <span className={styles.decisionIcon}>○</span>
-              <span>清除</span>
+              <span>{t('culling.statusUnreviewed')}</span>
               <span className={styles.shortcut}>U</span>
             </button>
           </div>
         </div>
         <div className={styles.controlGroup}>
-          <span className={styles.controlLabel}>星级</span>
+          <span className={styles.controlLabel}>{t('culling.rating')}</span>
           {[0, 1, 2, 3, 4, 5].map(rating => (
             <button
               key={rating}
@@ -1478,7 +1503,7 @@ export default function Culling() {
           ))}
         </div>
         <div className={styles.controlGroup}>
-          <span className={styles.controlLabel}>颜色</span>
+          <span className={styles.controlLabel}>{t('culling.color')}</span>
           {COLOR_LABELS.map(label => (
             <button
               key={label.value}
@@ -1486,8 +1511,8 @@ export default function Culling() {
                 current?.state.colorLabel === label.value ? styles.selectedControl : ''
               }`}
               style={{ '--label-color': label.color } as React.CSSProperties}
-              title={label.label}
-              aria-label={`颜色：${label.label}`}
+              title={t(label.labelKey)}
+              aria-label={t('culling.colorLabel', { label: t(label.labelKey) })}
               onClick={() => void commitTargets({ colorLabel: label.value })}
               disabled={busy}
             >
@@ -1498,14 +1523,14 @@ export default function Culling() {
         {currentGroupAssets.length > 1 && (
           <div className={styles.groupDecision}>
             <span className={styles.controlLabel}>
-              相似组 · {currentGroupAssets.length} 张
+              {t('culling.similarGroup', { count: currentGroupAssets.length })}
             </span>
             <button
               className={styles.groupAction}
               onClick={() => void keepInGroupRejectRest([current.photo.id])}
               disabled={busy}
             >
-              保留当前 1 张
+              {t('culling.keepCurrent')}
             </button>
             <button
               className={styles.groupActionSecondary}
@@ -1518,15 +1543,15 @@ export default function Culling() {
                   photoId => !currentGroupAssets.some(asset => asset.photo.id === photoId),
                 )
               }
-              title="按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"
+              title={t('culling.keepSelectedHint')}
             >
-              保留已选 {selectedIds.size || 'K'} 张
+              {selectedIds.size > 0 ? t('culling.keepSelected', { count: selectedIds.size }) : t('culling.keepSelectedShortcut')}
             </button>
-            <span className={styles.groupHint}>其余照片自动淘汰</span>
+            <span className={styles.groupHint}>{t('culling.othersRejected')}</span>
           </div>
         )}
         {selectedIds.size > 0 && (
-          <button onClick={() => setSelectedIds(new Set())}>取消选择</button>
+          <button onClick={() => setSelectedIds(new Set())}>{t('culling.clearSelection')}</button>
         )}
       </div>
       {message && <div className={styles.feedbackMessage} role="status">{message}</div>}
@@ -1541,19 +1566,21 @@ function ScopeControls({
   scope: CullingScope
   setScope: (scope: CullingScope) => void
 }) {
+  const { t } = useTranslation()
+  const options: Array<[CullingScope, TranslationKey]> = [
+    ['all', 'culling.scopeAll'],
+    ['filtered', 'culling.scopeFiltered'],
+    ['similarity_group', 'culling.scopeSimilarityGroup'],
+  ]
   return (
     <div className={styles.segmented}>
-      {([
-        ['all', '全部照片'],
-        ['filtered', '筛选'],
-        ['similarity_group', '相似组'],
-      ] as Array<[CullingScope, string]>).map(([value, label]) => (
+      {options.map(([value, labelKey]) => (
         <button
           key={value}
           className={scope === value ? styles.active : ''}
           onClick={() => setScope(value)}
         >
-          {label}
+          {t(labelKey)}
         </button>
       ))}
     </div>
@@ -1567,6 +1594,7 @@ function FilterControls({
   filters: CullingFilters
   setFilters: React.Dispatch<React.SetStateAction<CullingFilters>>
 }) {
+  const { t } = useTranslation()
   return (
     <>
       <label className={styles.toggle}>
@@ -1578,7 +1606,7 @@ function FilterControls({
             unreviewedOnly: event.target.checked,
           }))}
         />
-        仅未处理
+        {t('culling.onlyUnreviewed')}
       </label>
       <select
         className={styles.select}
@@ -1590,10 +1618,10 @@ function FilterControls({
             : undefined,
         }))}
       >
-        <option value="">全部状态</option>
-        <option value="picked">保留</option>
-        <option value="rejected">淘汰</option>
-        <option value="unreviewed">未处理</option>
+        <option value="">{t('culling.statusAll')}</option>
+        <option value="picked">{t('culling.statusPicked')}</option>
+        <option value="rejected">{t('culling.statusRejected')}</option>
+        <option value="unreviewed">{t('culling.statusUnreviewed')}</option>
       </select>
       <select
         className={styles.select}
@@ -1605,10 +1633,10 @@ function FilterControls({
             : [Number(event.target.value)],
         }))}
       >
-        <option value="">全部星级</option>
+        <option value="">{t('culling.ratingAll')}</option>
         {[0, 1, 2, 3, 4, 5].map(rating => (
           <option key={rating} value={rating}>
-            {rating === 0 ? '未评级' : `${rating} 星`}
+            {rating === 0 ? t('culling.ratingNone') : t('culling.ratingValue', { count: rating })}
           </option>
         ))}
       </select>
@@ -1622,9 +1650,9 @@ function FilterControls({
             : undefined,
         }))}
       >
-        <option value="">全部颜色</option>
+        <option value="">{t('culling.colorAll')}</option>
         {COLOR_LABELS.map(label => (
-          <option key={label.value} value={label.value}>{label.label}</option>
+          <option key={label.value} value={label.value}>{t(label.labelKey)}</option>
         ))}
       </select>
       <select
@@ -1637,10 +1665,10 @@ function FilterControls({
             : undefined,
         }))}
       >
-        <option value="">全部分析状态</option>
-        <option value="analysed">已分析</option>
-        <option value="unanalysed">未分析</option>
-        <option value="failed">分析失败</option>
+        <option value="">{t('culling.analysisAll')}</option>
+        <option value="analysed">{t('culling.analysisDone')}</option>
+        <option value="unanalysed">{t('culling.analysisNotDone')}</option>
+        <option value="failed">{t('culling.analysisFailed')}</option>
       </select>
       <label className={styles.toggle}>
         <input
@@ -1651,9 +1679,9 @@ function FilterControls({
             metadataConflictOnly: event.target.checked,
           }))}
         />
-        仅 XMP 冲突
+        {t('culling.onlyConflict')}
       </label>
-      <button onClick={() => setFilters({})}>重置</button>
+      <button onClick={() => setFilters({})}>{t('culling.reset')}</button>
     </>
   )
 }

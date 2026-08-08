@@ -1,5 +1,7 @@
 import { sendCommand } from './client'
 
+export type AppLocale = 'zh-CN' | 'en'
+
 export interface MLStatus {
   platform: string
   autoBackend: string
@@ -25,4 +27,8 @@ export const settingsApi = {
   set: (key: string, value: string) => sendCommand<{ done: boolean }>('settings.set', { key, value }),
   reset: () => sendCommand<Record<string, string>>('settings.reset', {}),
   getMlStatus: () => sendCommand<MLStatus>('settings.get_ml_status', {}),
+  /** Persist `ui_language` AND rebuild the application menu in the main
+   * process; the caller then applies the locale via initI18n(). */
+  setLanguage: (language: AppLocale) =>
+    sendCommand<{ language: AppLocale }>('settings.set_language', { language }),
 }

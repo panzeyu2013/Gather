@@ -5,9 +5,12 @@ import WritebackReport from '../../components/WritebackReport/WritebackReport'
 import { useToastStore } from '../../components/Toast/ToastStore'
 import type { WritebackResult, WritebackItem } from '@gather/shared'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from '../../locales'
+import { translateError } from '../../utils/errors'
 import styles from './StepWriteback.module.css'
 
 export default function StepWriteback() {
+  const { t } = useTranslation()
   const { setWritebackReport, writebackReport, writebackRunning, setWritebackRunning, sessionId } = useFaceKwStore()
   const addToast = useToastStore((s) => s.addToast)
   const { data: clusters = [] } = useQuery({
@@ -37,9 +40,9 @@ export default function StepWriteback() {
     try {
       const preview = await faceKwApi.previewWriteback(sessionId)
       setPreviewItems(preview.items)
-      setWritebackReport(sessionId, `预览: ${preview.totalCount} 项, ${preview.affectedPhotos} 张照片受影响`)
+      setWritebackReport(sessionId, t('face.previewReport', { count: preview.totalCount, photos: preview.affectedPhotos }))
     } catch (e) {
-      setWritebackReport(sessionId, `预览失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, t('face.previewFailed', { message: translateError(e) }))
     }
   }
 
@@ -53,9 +56,9 @@ export default function StepWriteback() {
       setWritebackResult(result)
       setFailedItems(result.failedItems)
       setSyncConfirmed(false)
-      setWritebackReport(sessionId, `写回完成: ${result.written} 已写入, ${result.failed} 失败, ${result.skipped} 已跳过`)
+      setWritebackReport(sessionId, t('face.writebackReport', { written: result.written, failed: result.failed, skipped: result.skipped }))
     } catch (e) {
-      setWritebackReport(sessionId, `写回失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, t('face.writebackFailed', { message: translateError(e) }))
     } finally {
       setWritebackRunning(sessionId, false)
     }
@@ -65,13 +68,13 @@ export default function StepWriteback() {
     if (!sessionId) return
     setWritebackRunning(sessionId, true)
     try {
-      setWritebackReport(sessionId, '正在重试失败项...')
+      setWritebackReport(sessionId, t('face.retrying'))
       const failedOnly = failedItems
       const result = await faceKwApi.writeback(sessionId, failedOnly)
       setWritebackResult(result)
       if (result.failed === 0) setFailedItems([])
     } catch (e) {
-      setWritebackReport(sessionId, `重试失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, t('face.retryFailed', { message: translateError(e) }))
     } finally {
       setWritebackRunning(sessionId, false)
     }
@@ -82,9 +85,9 @@ export default function StepWriteback() {
     try {
       await faceKwApi.confirmSync(sessionId)
       setSyncConfirmed(true)
-      setWritebackReport(sessionId, '同步已确认。')
+      setWritebackReport(sessionId, t('face.syncConfirmed'))
     } catch (e) {
-      setWritebackReport(sessionId, `确认失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, t('face.confirmFailed', { message: translateError(e) }))
     }
   }
 
@@ -92,9 +95,9 @@ export default function StepWriteback() {
     if (!sessionId) return
     try {
       const result = await faceKwApi.cleanup(sessionId)
-      setWritebackReport(sessionId, `清理完成: ${result.deletedCount} 个文件已删除`)
+      setWritebackReport(sessionId, t('face.cleanupDone', { count: result.deletedCount }))
     } catch (e) {
-      setWritebackReport(sessionId, `清理失败: ${(e as Error).message}`)
+      setWritebackReport(sessionId, t('face.cleanupFailed', { message: translateError(e) }))
     }
   }
 
@@ -103,9 +106,9 @@ export default function StepWriteback() {
     setReloadBusy(true)
     try {
       await window.gather.reloadMetadata()
-      setWritebackReport(sessionId, '已在 Capture One 中加载元数据，返回后请确认同步')
+      setWritebackReport(sessionId, t('face.reloadDone'))
     } catch (e) {
-      addToast('error', (e as Error).message || '加载元数据失败')
+      addToast('error', translateError(e) || t('face.loadMetadataFailed'))
     } finally {
       setReloadBusy(false)
     }
@@ -113,20 +116,20 @@ export default function StepWriteback() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>写回 Capture One 关键词</h2>
+      <h2 className={styles.title}>{t('face.writebackTitle')}</h2>
 
       <div className={styles.stats}>
         <div className={styles.statCard}>
           <div className={styles.statValueAccent}>{boundClusters.length}</div>
-          <div className={styles.statLabel}>已绑定聚类</div>
+          <div className={styles.statLabel}>{t('face.boundClusters')}</div>
         </div>
         <div className={styles.statCard}>
           <div className={styles.statValue}>{totalAffected}</div>
-          <div className={styles.statLabel}>受影响照片</div>
+          <div className={styles.statLabel}>{t('face.affectedPhotos')}</div>
         </div>
         <div className={styles.statCard}>
           <div className={styles.statValueWarning}>{unboundClusters.length}</div>
-          <div className={styles.statLabel}>未绑定并跳过</div>
+          <div className={styles.statLabel}>{t('face.unboundSkipped')}</div>
         </div>
       </div>
 
@@ -134,7 +137,7 @@ export default function StepWriteback() {
         {boundClusters.map((c) => (
           <div key={c.id} className={styles.cluster}>
             <div className={styles.clusterTitle}>
-              {c.binding!.roleName} ({c.size} 张照片)
+              {c.binding!.roleName} ({t('face.clusterPhotoCount', { count: c.size })})
               <span className={styles.clusterKeywords}>
                 {c.binding!.keywords.join(', ')}
               </span>
@@ -143,34 +146,34 @@ export default function StepWriteback() {
               <div key={idx} className={styles.memberName}>{m.filename}</div>
             ))}
             {c.members.length > 5 && (
-              <div className={styles.more}>…及其他 {c.members.length - 5} 张</div>
+              <div className={styles.more}>{t('face.moreMembers', { count: c.members.length - 5 })}</div>
             )}
           </div>
         ))}
         {boundClusters.length === 0 && (
           <div className={styles.empty}>
-            没有已绑定的聚类可写回。请先绑定聚类。
+            {t('face.noBoundClusters')}
           </div>
         )}
       </div>
 
       {previewItems.length > 0 && (
-        <div className={styles.xmpPreview} aria-label="XMP 写回预览">
+        <div className={styles.xmpPreview} aria-label={t('face.xmpPreviewLabel')}>
           {previewItems.slice(0, 50).map(item => (
             <div className={styles.xmpPreviewRow} key={item.xmpPath}>
               <strong title={item.xmpPath}>{item.xmpPath.split(/[/\\]/).pop()}</strong>
               <span>
-                {(item.preview?.before.keywords ?? []).join('、') || '无关键词'}
+                {(item.preview?.before.keywords ?? []).join('、') || t('face.noKeywords')}
                 {' → '}
-                {(item.preview?.after.keywords ?? item.keywords).join('、') || '无关键词'}
+                {(item.preview?.after.keywords ?? item.keywords).join('、') || t('face.noKeywords')}
               </span>
               <small>
-                {item.preview?.willCreate ? '新建 XMP' : '更新 XMP'}
+                {item.preview?.willCreate ? t('face.newXmp') : t('face.updateXmp')}
                 {(item.preview?.sharedPhotoCount ?? 1) > 1
-                  ? ` · ${item.preview?.sharedPhotoCount} 张共享`
+                  ? t('face.sharedCount', { count: item.preview?.sharedPhotoCount })
                   : ''}
-                {item.preview?.externalChanged ? ' · 检测到外部冲突' : ''}
-                {' · 来源：人脸关键词'}
+                {item.preview?.externalChanged ? t('face.externalConflict') : ''}
+                {t('face.source')}
               </small>
             </div>
           ))}
@@ -183,7 +186,7 @@ export default function StepWriteback() {
           onClick={() => void handlePreview()}
           className={styles.secondaryButton}
         >
-          预览
+          {t('face.preview')}
         </button>
         <button
           type="button"
@@ -191,7 +194,7 @@ export default function StepWriteback() {
           disabled={boundClusters.length === 0 || writebackRunning}
           className={styles.primaryButton}
         >
-          {writebackRunning ? '写入中...' : '执行写回'}
+          {writebackRunning ? t('face.executing') : t('face.execute')}
         </button>
       </div>
 
@@ -212,9 +215,9 @@ export default function StepWriteback() {
             disabled={writebackRunning || reloadBusy}
             className={styles.secondaryButton}
           >
-            {reloadBusy ? '正在加载元数据...' : '在 Capture One 中加载元数据'}
+            {reloadBusy ? t('face.reloading') : t('face.reloadBtn')}
           </button>
-          <span className={styles.reloadHint}>先在 Capture One 中 Load Metadata，再返回 Gather 确认同步</span>
+          <span className={styles.reloadHint}>{t('face.reloadHint')}</span>
         </div>
       </>}
     </div>

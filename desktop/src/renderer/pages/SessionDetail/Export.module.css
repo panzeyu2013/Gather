@@ -118,6 +118,11 @@
   outline: none;
 }
 
+.inputSm:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, white);
+  outline-offset: 2px;
+}
+
 .slider {
   width: 100%;
   height: 6px;
@@ -126,6 +131,11 @@
   background: var(--color-border);
   border-radius: 3px;
   outline: none;
+}
+
+.slider:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, white);
+  outline-offset: 2px;
 }
 
 .slider::-webkit-slider-thumb {

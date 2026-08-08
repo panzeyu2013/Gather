@@ -32,7 +32,7 @@
 
 .dirtyHint {
   font-size: 12px;
-  color: var(--color-warning, #a16207);
+  color: var(--color-warning-text, #9c5e28);
 }
 
 .resetBtn:hover {

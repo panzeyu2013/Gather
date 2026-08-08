@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { useFaceKwStore } from './faceKwStore'
+import { useTranslation, type TranslationKey } from '../../locales'
 import styles from './FaceKeywording.module.css'
 
 const StepAnalyze = lazy(() => import('./StepAnalyze'))
@@ -8,6 +9,7 @@ const StepReview = lazy(() => import('./StepReview'))
 const StepWriteback = lazy(() => import('./StepWriteback'))
 
 export default function FaceKeywording() {
+  const { t } = useTranslation()
   const { sessionId } = useParams<{ sessionId: string }>()
   const { step, setStep, setSessionId, analysisStatus } = useFaceKwStore()
 
@@ -18,10 +20,10 @@ export default function FaceKeywording() {
     if (sessionId) setSessionId(sessionId)
   }, [sessionId, setSessionId])
 
-  const steps: { key: string; label: string }[] = [
-    { key: 'analyze', label: '分析' },
-    { key: 'review', label: '审核' },
-    { key: 'writeback', label: '写回' },
+  const steps: { key: string; labelKey: TranslationKey }[] = [
+    { key: 'analyze', labelKey: 'face.analyzeStep' },
+    { key: 'review', labelKey: 'face.reviewStep' },
+    { key: 'writeback', labelKey: 'face.writebackStep' },
   ]
 
   const currentIdx = steps.findIndex((s) => s.key === step)
@@ -40,7 +42,7 @@ export default function FaceKeywording() {
                 disabled={!isClickable && !isActive}
                 className={isActive ? styles.stepActive : isPast ? styles.stepPast : styles.step}
               >
-                {s.label}
+                {t(s.labelKey)}
               </button>
               {idx < steps.length - 1 && (
                 <span className={styles.separator}>→</span>
@@ -51,7 +53,7 @@ export default function FaceKeywording() {
       </div>
 
       <div className={styles.content}>
-        <Suspense fallback={<div className={styles.loading}>加载中...</div>}>
+        <Suspense fallback={<div className={styles.loading}>{t('face.loading')}</div>}>
           {step === 'analyze' && <StepAnalyze />}
           {step === 'review' && <StepReview />}
           {step === 'writeback' && <StepWriteback />}

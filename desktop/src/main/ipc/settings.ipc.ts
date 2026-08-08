@@ -2,6 +2,8 @@ import type { CommandRegistry } from './registry'
 import { ok, validateString, wrapHandler } from './helpers'
 import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getFaceModelPresence, getModelResourcesDir } from '../services/face-kw/provider'
 import type { SettingsService } from '../services/settings/settings.service'
+import { isAppLocale } from '../locale'
+import { setAppLocale } from '../menu'
 
 export function registerSettingsHandlers(registry: CommandRegistry, svc: SettingsService): void {
 
@@ -22,6 +24,20 @@ export function registerSettingsHandlers(registry: CommandRegistry, svc: Setting
   registry.register('settings.reset', wrapHandler(async () => {
     svc.reset()
     return ok(svc.getAll())
+  }))
+
+  // Language switch (i18n P2 收尾): persist the `ui_language` override AND
+  // rebuild the application menu in the same handler, so menu copy follows
+  // the new locale immediately (design_improvements.md 4.4.2). Values other
+  // than 'zh-CN'/'en' are rejected before anything is written.
+  registry.register('settings.set_language', wrapHandler(async (params) => {
+    const language = (params ?? {}).language
+    if (!isAppLocale(language)) {
+      throw new Error('SETTINGS_LANGUAGE_INVALID')
+    }
+    svc.set('ui_language', language)
+    setAppLocale(language)
+    return ok({ language })
   }))
 
   registry.register('settings.get_ml_status', wrapHandler(async () => {
