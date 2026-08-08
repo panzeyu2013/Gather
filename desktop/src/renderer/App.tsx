@@ -53,7 +53,7 @@ function CaptureOneImportListener() {
         )
       }
       setSession(session.id)
-      navigate(`/sessions/${session.id}`)
+      navigate(`/sessions/${session.id}/gallery`)
     } catch (error) {
       console.error('Plugin import failed:', error)
       addToast(
