@@ -24,19 +24,29 @@ function canonicalPath(value: string): string {
   try {
     return realpathSync.native(value)
   } catch {
-    const resolved = path.resolve(value)
-    if (process.platform === 'darwin' && (resolved === '/var' || resolved.startsWith('/var/'))) {
-      return `/private${resolved}`
-    }
-    if (process.platform === 'darwin' && (resolved === '/tmp' || resolved.startsWith('/tmp/'))) {
-      return `/private${resolved}`
-    }
-    return resolved
+    return textualPath(value)
   }
 }
 
+// Cheap textual canonicalization for per-file membership checks: resolves the
+// macOS /var -> /private/var and /tmp -> /private/tmp symlinks (the only
+// symlinked paths a directory walk can yield — opendir reports symlinks via
+// isSymbolicLink, so the walker never descends into them). Avoiding
+// realpathSync.native per file removes one syscall from every visited path
+// during a full scan (network volumes are 10-100x slower at it).
+function textualPath(value: string): string {
+  const resolved = path.resolve(value)
+  if (process.platform === 'darwin' && (resolved === '/var' || resolved.startsWith('/var/'))) {
+    return `/private${resolved}`
+  }
+  if (process.platform === 'darwin' && (resolved === '/tmp' || resolved.startsWith('/tmp/'))) {
+    return `/private${resolved}`
+  }
+  return resolved
+}
+
 function isWithin(candidate: string, canonicalRoot: string): boolean {
-  const relative = path.relative(canonicalRoot, canonicalPath(candidate))
+  const relative = path.relative(canonicalRoot, textualPath(candidate))
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
@@ -57,6 +67,16 @@ function managedCacheRoots(settings: SettingsService): string[] {
 // consumer overlap) without buffering every path in memory.
 const WALK_CONCURRENCY = 6
 const WALK_CHANNEL_CAPACITY = 256
+
+// IN-list chunk size: keeps every statement well under SQLite's variable
+// bound (32766 on recent builds) for the whole-session id sets a scan can
+// accumulate (generated-cache sweeps, missing-photo sweeps, pruning).
+const IN_CHUNK_SIZE = 400
+
+// Navigation-group LIKE prefilter cap: photo_ids_json is scanned per
+// affected id, so a very large affected set (whole-session reimport) falls
+// back to reading all automatic groups once and parsing in JS.
+const PRUNE_LIKE_PREFILTER_CAP = 200
 
 /**
  * Bounded async channel used by `walk` to stream file paths to its consumer
@@ -289,6 +309,17 @@ export class IndexService {
   public stat: typeof stat = stat
 
   /**
+   * Run `callback` over IN-list-sized chunks of `values` so no statement ever
+   * exceeds SQLite's variable limit (32766 for recent builds, 999 for older)
+   * no matter how large the caller's id set grows.
+   */
+  private forEachInChunk<T>(values: readonly T[], callback: (chunk: readonly T[]) => void): void {
+    for (let offset = 0; offset < values.length; offset += IN_CHUNK_SIZE) {
+      callback(values.slice(offset, offset + IN_CHUNK_SIZE))
+    }
+  }
+
+  /**
    * Delete the per-photo analysis *inputs* for the given photos (per-photo
    * granularity), so the next analysis pass recomputes only the affected
    * photos and reuses the signatures/hashes of every other photo in the
@@ -296,17 +327,19 @@ export class IndexService {
    */
   private deletePhotoInputs(photoIds: readonly string[]): void {
     if (photoIds.length === 0) return
-    const placeholders = photoIds.map(() => '?').join(',')
-    this.db.prepare(`DELETE FROM similarity_hashes WHERE photo_id IN (${placeholders})`)
-      .run(...photoIds)
-    this.db.prepare(`DELETE FROM face_observations WHERE photo_id IN (${placeholders})`)
-      .run(...photoIds)
-    this.db.prepare(`DELETE FROM face_analysis_state WHERE photo_id IN (${placeholders})`)
-      .run(...photoIds)
-    this.db.prepare(`DELETE FROM asset_analysis WHERE photo_id IN (${placeholders})`)
-      .run(...photoIds)
-    this.db.prepare(`DELETE FROM photo_metadata_cache WHERE photo_id IN (${placeholders})`)
-      .run(...photoIds)
+    this.forEachInChunk(photoIds, (chunk) => {
+      const placeholders = chunk.map(() => '?').join(',')
+      this.db.prepare(`DELETE FROM similarity_hashes WHERE photo_id IN (${placeholders})`)
+        .run(...chunk)
+      this.db.prepare(`DELETE FROM face_observations WHERE photo_id IN (${placeholders})`)
+        .run(...chunk)
+      this.db.prepare(`DELETE FROM face_analysis_state WHERE photo_id IN (${placeholders})`)
+        .run(...chunk)
+      this.db.prepare(`DELETE FROM asset_analysis WHERE photo_id IN (${placeholders})`)
+        .run(...chunk)
+      this.db.prepare(`DELETE FROM photo_metadata_cache WHERE photo_id IN (${placeholders})`)
+        .run(...chunk)
+    })
   }
 
   /**
@@ -316,16 +349,33 @@ export class IndexService {
    * photo ids in navigation_groups.photo_ids_json, so the groups are read
    * out and filtered in JS before deletion (rows with unreadable JSON are
    * kept rather than deleted on a guess).
+   *
+   * Photo ids are UUIDs, so the JSON-escaped member `"<uuid>"` is an exact
+   * substring: a LIKE prefilter (used when the affected set is small) skips
+   * the JSON.parse of every group in the session, which is what made
+   * per-file pruning O(changed x groups) on large sessions.
    */
   private pruneAutomaticNavigationGroups(
     sessionId: string,
     photoIds: readonly string[],
   ): void {
     const affected = new Set(photoIds)
-    const groups = this.db.prepare(`
-      SELECT id, photo_ids_json FROM navigation_groups
-      WHERE session_id = ? AND source = 'automatic'
-    `).all(sessionId) as Array<{ id: string; photo_ids_json: string }>
+    let groups: Array<{ id: string; photo_ids_json: string }> = []
+    if (photoIds.length > 0 && photoIds.length <= PRUNE_LIKE_PREFILTER_CAP) {
+      const conditions = photoIds.map(() => "photo_ids_json LIKE ? ESCAPE '\\'").join(' OR ')
+      const patterns = photoIds.map(id =>
+        `%"${id.replace(/[\\%_]/g, match => `\\${match}`)}"%`,
+      )
+      groups = this.db.prepare(`
+        SELECT id, photo_ids_json FROM navigation_groups
+        WHERE session_id = ? AND source = 'automatic' AND (${conditions})
+      `).all(sessionId, ...patterns) as Array<{ id: string; photo_ids_json: string }>
+    } else {
+      groups = this.db.prepare(`
+        SELECT id, photo_ids_json FROM navigation_groups
+        WHERE session_id = ? AND source = 'automatic'
+      `).all(sessionId) as Array<{ id: string; photo_ids_json: string }>
+    }
     const doomed: string[] = []
     for (const group of groups) {
       try {
@@ -337,11 +387,11 @@ export class IndexService {
         // Corrupt JSON: keep the group.
       }
     }
-    if (doomed.length > 0) {
-      const placeholders = doomed.map(() => '?').join(',')
+    this.forEachInChunk(doomed, (chunk) => {
+      const placeholders = chunk.map(() => '?').join(',')
       this.db.prepare(`DELETE FROM navigation_groups WHERE id IN (${placeholders})`)
-        .run(...doomed)
-    }
+        .run(...chunk)
+    })
   }
 
   /**
@@ -372,26 +422,46 @@ export class IndexService {
   }
 
   /**
-   * Invalidate analysis for photos whose file path changed (relink). Inputs
-   * are deleted per photo, automatic navigation groups are pruned per
-   * member, and global cluster results are dropped at session scope.
+   * Invalidate analysis for photos whose file path changed (relink) or whose
+   * content changed. Inputs are deleted per photo, automatic navigation
+   * groups are pruned per member, and global cluster results are dropped at
+   * session scope. Callers accumulate every affected photo of a scan batch
+   * and invoke this once per batch: the session-wide work (cluster deletes,
+   * group parsing) is then O(1) per session instead of O(changed x groups).
    */
   private invalidatePathDependentAnalysis(photoIds: readonly string[]): void {
     if (photoIds.length === 0) return
-    const placeholders = photoIds.map(() => '?').join(',')
-    const affectedSessions = this.db.prepare(`
-      SELECT DISTINCT session_id FROM photos WHERE id IN (${placeholders})
-    `).all(...photoIds) as Array<{ session_id: string }>
+    const affectedSessions = new Set<string>()
+    this.forEachInChunk(photoIds, (chunk) => {
+      const placeholders = chunk.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT DISTINCT session_id FROM photos WHERE id IN (${placeholders})
+      `).all(...chunk) as Array<{ session_id: string }>
+      for (const row of rows) affectedSessions.add(row.session_id)
+    })
+    // Per-session photo id sets keep pruning targeted at each session.
+    const photoIdsBySession = new Map<string, string[]>()
+    this.forEachInChunk(photoIds, (chunk) => {
+      const placeholders = chunk.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT id, session_id FROM photos WHERE id IN (${placeholders})
+      `).all(...chunk) as Array<{ id: string; session_id: string }>
+      for (const row of rows) {
+        const list = photoIdsBySession.get(row.session_id) ?? []
+        list.push(row.id)
+        photoIdsBySession.set(row.session_id, list)
+      }
+    })
     this.db.transaction(() => {
       // Session-scoped cluster results first: their member rows must be gone
       // before the per-photo observation deletes they reference.
-      for (const affected of affectedSessions) {
-        this.deleteFaceClusterResults(affected.session_id)
-        this.deleteGlobalClusterResults(affected.session_id)
+      for (const sessionId of affectedSessions) {
+        this.deleteFaceClusterResults(sessionId)
+        this.deleteGlobalClusterResults(sessionId)
       }
       this.deletePhotoInputs(photoIds)
-      for (const affected of affectedSessions) {
-        this.pruneAutomaticNavigationGroups(affected.session_id, photoIds)
+      for (const [sessionId, sessionPhotoIds] of photoIdsBySession) {
+        this.pruneAutomaticNavigationGroups(sessionId, sessionPhotoIds)
       }
     })()
   }
@@ -510,9 +580,11 @@ export class IndexService {
       const fileIds = generatedCachePhotos.flatMap(photo =>
         photo.asset_file_id ? [photo.asset_file_id] : [],
       )
-      const placeholders = photoIds.map(() => '?').join(', ')
       this.db.transaction(() => {
-        this.db.prepare(`DELETE FROM photos WHERE id IN (${placeholders})`).run(...photoIds)
+        this.forEachInChunk(photoIds, (chunk) => {
+          const placeholders = chunk.map(() => '?').join(', ')
+          this.db.prepare(`DELETE FROM photos WHERE id IN (${placeholders})`).run(...chunk)
+        })
         this.db.prepare(`
           DELETE FROM session_assets
           WHERE session_id = ? AND NOT EXISTS (
@@ -522,12 +594,14 @@ export class IndexService {
           )
         `).run(sessionId)
         if (fileIds.length > 0) {
-          const filePlaceholders = fileIds.map(() => '?').join(', ')
-          this.db.prepare(`
-            DELETE FROM asset_files
-            WHERE id IN (${filePlaceholders})
-              AND NOT EXISTS (SELECT 1 FROM photos p WHERE p.asset_file_id = asset_files.id)
-          `).run(...fileIds)
+          this.forEachInChunk(fileIds, (chunk) => {
+            const filePlaceholders = chunk.map(() => '?').join(', ')
+            this.db.prepare(`
+              DELETE FROM asset_files
+              WHERE id IN (${filePlaceholders})
+                AND NOT EXISTS (SELECT 1 FROM photos p WHERE p.asset_file_id = asset_files.id)
+            `).run(...chunk)
+          })
           this.db.prepare(`
             DELETE FROM assets
             WHERE NOT EXISTS (
@@ -536,7 +610,8 @@ export class IndexService {
           `).run()
         }
       })()
-      existing = existing.filter(photo => !photoIds.includes(photo.id))
+      const removedIds = new Set(photoIds)
+      existing = existing.filter(photo => !removedIds.has(photo.id))
     }
     const existingByPath = new Map(existing.map(photo => [
       path.normalize(path.resolve(photo.filepath)),
@@ -629,7 +704,14 @@ export class IndexService {
         fileSize: number
         fileMtimeMs: number
       }> = []
-      for (const result of results) {
+      // Photos whose content or location changed within this batch. The
+      // session-scoped invalidation (cluster deletes, navigation-group
+      // pruning) runs once per batch afterwards instead of per file, so a
+      // 1000-file batch costs one pass over the session's groups instead of
+      // 1000 (see invalidatePathDependentAnalysis).
+      const batchAffectedPhotoIds = new Set<string>()
+      try {
+        for (const result of results) {
         if (result.kind === 'new') {
           const relocated = this.assetRepo.relinkMovedFile(
             result.filepath,
@@ -639,8 +721,8 @@ export class IndexService {
             String(result.source.ino),
           )
           if (relocated && relocated.photoIds.length > 0) {
-            this.invalidatePathDependentAnalysis(relocated.photoIds)
             for (const photoId of relocated.photoIds) {
+              batchAffectedPhotoIds.add(photoId)
               relinkedPhotoIds.add(photoId)
               this.photoRepo.updateIndexedFile(
                 photoId,
@@ -709,27 +791,15 @@ export class IndexService {
                 result.assetFileId,
               )
               if (result.contentChanged) {
-                const affectedSessions = this.db.prepare(
-                  'SELECT DISTINCT session_id FROM photos WHERE asset_file_id = ?',
-                ).all(result.assetFileId) as Array<{ session_id: string }>
                 const photoIds = (this.db.prepare(
                   'SELECT id FROM photos WHERE asset_file_id = ?',
                 ).all(result.assetFileId) as Array<{ id: string }>)
                   .map(row => row.id)
-                for (const affected of affectedSessions) {
-                  // Global cluster results stay session-scoped on purpose (see
-                  // deleteGlobalClusterResults); cluster members are dropped
-                  // before the per-photo observation deletes they reference.
-                  this.deleteFaceClusterResults(affected.session_id)
-                  this.deleteGlobalClusterResults(affected.session_id)
-                  // Automatic navigation groups: only groups that actually
-                  // contain an affected photo are removed; the rest survive.
-                  this.pruneAutomaticNavigationGroups(affected.session_id, photoIds)
+                for (const photoId of photoIds) {
+                  batchAffectedPhotoIds.add(photoId)
                 }
-                // Inputs are deleted per photo, plus a file-level sweep of
-                // asset_analysis for orphaned rows whose photo_id was already
-                // nulled by a previous photo deletion.
-                this.deletePhotoInputs(photoIds)
+                // File-level sweep of asset_analysis for orphaned rows whose
+                // photo_id was already nulled by a previous photo deletion.
                 this.db.prepare('DELETE FROM asset_analysis WHERE asset_file_id = ?')
                   .run(result.assetFileId)
                 this.db.prepare(`
@@ -756,29 +826,32 @@ export class IndexService {
         } else {
           skipped++
         }
+        }
+      } finally {
+        // One invalidation pass per scan batch: cluster results are dropped
+        // at session scope and automatic navigation groups pruned per member.
+        // In finally so a mid-batch error still invalidates what was already
+        // committed — otherwise stale cluster results would survive forever
+        // (the next scan sees the updated checksums and skips re-analysis).
+        this.invalidatePathDependentAnalysis([...batchAffectedPhotoIds])
       }
       if (newEntries.length > 0) {
         const inserted = this.photoRepo.addPhotos(sessionId, newEntries, 'index')
         added += inserted.added
         skipped += inserted.skipped
-      }
-      if (newEntries.length > 0) {
-        const newPaths = new Set(newEntries.map(entry => entry.filepath))
-        const byPath = new Map(
-          this.photoRepo.getBySessionProjection(sessionId)
-            .filter(photo => newPaths.has(photo.filepath))
-            .map(photo => [photo.filepath, photo]),
-        )
-        for (const entry of newEntries) {
-          const photo = byPath.get(entry.filepath)
-          if (photo) {
-            this.photoRepo.updateChecksum(
-              photo.id,
-              entry.checksum,
-              entry.fileSize,
-              entry.fileMtimeMs,
-            )
-          }
+        // addPhotos returns the id of each fresh row, so the checksums are
+        // written without re-reading the whole session table — the previous
+        // getBySessionProjection here made a first import O(n²) (one full
+        // session read per file).
+        for (let i = 0; i < newEntries.length; i++) {
+          const id = inserted.ids[i]
+          if (!id) continue
+          this.photoRepo.updateChecksum(
+            id,
+            newEntries[i].checksum,
+            newEntries[i].fileSize,
+            newEntries[i].fileMtimeMs,
+          )
         }
       }
     }
@@ -857,13 +930,13 @@ export class IndexService {
     }
     if (missing.length > 0) {
       const fileIds = missing.flatMap(photo => photo.asset_file_id ? [photo.asset_file_id] : [])
-      if (fileIds.length > 0) {
-        const placeholders = fileIds.map(() => '?').join(', ')
+      this.forEachInChunk(fileIds, (chunk) => {
+        const placeholders = chunk.map(() => '?').join(', ')
         this.db.prepare(`
           UPDATE asset_files SET online_status = 'offline', updated_at = ?
           WHERE id IN (${placeholders})
-        `).run(new Date().toISOString(), ...fileIds)
-      }
+        `).run(new Date().toISOString(), ...chunk)
+      })
     }
     context?.updateProgress({
       current: discovered,

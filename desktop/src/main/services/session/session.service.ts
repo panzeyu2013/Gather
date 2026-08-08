@@ -233,7 +233,9 @@ export class SessionService {
     if (totalCount > 0 && session.status === 'draft') {
       this.sessionRepo.updateStatus(sessionId, 'photos_loaded')
     }
-    return { ...result, total: totalCount, failedFiles }
+    // ids are an internal seam for the indexer; do not leak them to the IPC
+    // layer (the shared AddPhotoResult contract has no such field).
+    return { added: result.added, skipped: result.skipped, total: totalCount, failedFiles }
   }
 
   updateSession(sessionId: string, name: string): SessionData {

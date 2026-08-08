@@ -70,6 +70,11 @@ export class MemoryThumbnailCache implements ThumbnailCache {
 
 // ── Disk-backed persistent cache ──
 
+// Cap on cached thumbnail reads: thumbnails are resized to <=2048px JPEGs
+// (single-digit MB at most); guarding the read keeps a corrupt/foreign file
+// from being loaded fully into memory and SOF-scanned on the main thread.
+const DISK_CACHE_READ_CAP_BYTES = 64 * 1024 * 1024
+
 export class DiskThumbnailCache implements ThumbnailCache {
   private dir: string
   private manager: DiskCacheManager
@@ -91,6 +96,11 @@ export class DiskThumbnailCache implements ThumbnailCache {
     const filePath = this.cachePath(key)
 
     try {
+      // A corrupt or foreign oversized file must not be read wholesale into
+      // memory and scanned on the main thread: thumbnails never exceed a few
+      // MB, so anything larger than the cap is treated as a cache miss.
+      const source = await fs.promises.stat(filePath)
+      if (source.size > DISK_CACHE_READ_CAP_BYTES) return null
       const buffer = await fs.promises.readFile(filePath)
       const hash = this.hashKey(key)
       const dimensions = readDimensions(buffer, '.jpg')
@@ -172,9 +182,29 @@ export class TieredThumbnailCache implements ThumbnailCache {
 
 // ── Cache key helpers ──
 
+// stat() results are memoized briefly: thumbnail browsing re-requests the
+// same filepaths many times per second (scrolling), and each stat on a
+// network drive or cold cache is a full round-trip. The 1s TTL is well below
+// the file watcher debounce, so a file replaced within the window at worst
+// serves one stale frame — the same trade-off the disk cache already makes.
+const STAT_TTL_MS = 1000
+const STAT_CACHE_MAX = 10_000
+const statCache = new Map<string, { size: number; mtimeMs: number; expires: number }>()
+
 async function buildCacheKey(filePath: string, variant: string): Promise<string> {
+  const now = Date.now()
+  const cached = statCache.get(filePath)
+  if (cached && cached.expires > now) {
+    return `${filePath}::${variant}@${cached.size}@${cached.mtimeMs}`
+  }
   try {
     const stat = await fs.promises.stat(filePath)
+    if (statCache.size >= STAT_CACHE_MAX) statCache.clear()
+    statCache.set(filePath, {
+      size: stat.size,
+      mtimeMs: Math.round(stat.mtimeMs),
+      expires: now + STAT_TTL_MS,
+    })
     return `${filePath}::${variant}@${stat.size}@${Math.round(stat.mtimeMs)}`
   } catch {
     return `${filePath}::${variant}@missing`

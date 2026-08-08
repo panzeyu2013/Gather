@@ -902,6 +902,10 @@ function runMigrationsUnsafe(database: Database): void {
   }
 
   // ── Version 22: reusable analysis belongs to the physical asset file ──
+  // v21 rows were per-photo and typically had asset_file_id NULL. Rows that
+  // can be linked through photos.asset_file_id are backfilled (and preserved)
+  // instead of dropped, so upgrading a large library does not trigger a
+  // needless full re-analysis; only rows with no linkable asset file are lost.
   if (currentVersion < 22) {
     db.transaction(() => {
       db.exec(`
@@ -928,7 +932,17 @@ function runMigrationsUnsafe(database: Database): void {
           model_id, model_version, input_fingerprint, created_at, updated_at
         FROM asset_analysis_v21
         WHERE asset_file_id IS NOT NULL
-          AND asset_file_id IN (SELECT id FROM asset_files);
+          AND asset_file_id IN (SELECT id FROM asset_files)
+        UNION ALL
+        SELECT id, photo_id,
+          (SELECT asset_file_id FROM photos WHERE photos.id = asset_analysis_v21.photo_id) AS asset_file_id,
+          analysis_type, result_json, warnings_json,
+          model_id, model_version, input_fingerprint, created_at, updated_at
+        FROM asset_analysis_v21
+        WHERE asset_file_id IS NULL
+          AND photo_id IS NOT NULL
+          AND (SELECT asset_file_id FROM photos WHERE photos.id = asset_analysis_v21.photo_id) IS NOT NULL
+        ORDER BY id;
         DROP TABLE asset_analysis_v21;
       `)
       setSchemaVersion(db, 22)

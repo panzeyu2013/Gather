@@ -61,7 +61,7 @@ function buildScanHarness(
   fileStats: ScanHarness['fileStats'],
   existingPhotos: Array<Record<string, unknown>>,
 ): ScanHarness {
-  const addPhotos = vi.fn(() => ({ added: 1, skipped: 0 }))
+  const addPhotos = vi.fn(() => ({ added: 1, skipped: 0, ids: ['photo-1'] }))
   const updateChecksum = vi.fn()
   const updateIndexedFile = vi.fn()
   const markMissing = vi.fn()

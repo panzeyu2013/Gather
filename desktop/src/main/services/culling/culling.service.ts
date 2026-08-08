@@ -1226,7 +1226,9 @@ export class CullingService {
     const resultRow = this.similarityResultRepo.getLatest(sessionId)
     if (!resultRow) return []
 
-    const photos = this.photoRepo.getBySession(sessionId)
+    // Light projection: only id/filepath/filename are needed here, so the
+    // heavy metadata/result JSON blobs are skipped.
+    const photos = this.photoRepo.getBySessionProjection(sessionId)
     const photoById = new Map(photos.map(photo => [photo.id, photo]))
     const membership = this.similarityResultRepo.getPhotoGroupMap(sessionId, resultRow.id)
     const membersByGroup = new Map<string, string[]>()
@@ -1243,7 +1245,10 @@ export class CullingService {
     )
 
     return [...membersByGroup.entries()].map(([groupId, photoIds]) => {
-      const groupIndex = Number(groupId.split(':').at(-1))
+      const parsedIndex = Number(groupId.split(':').at(-1))
+      // Malformed memberships (corrupt legacy rows) must not produce NaN
+      // sort keys that destabilize the group ordering.
+      const groupIndex = Number.isFinite(parsedIndex) ? parsedIndex : 0
       let keepCount = 0
       let rejectCount = 0
       let pendingCount = 0
@@ -1291,7 +1296,8 @@ export class CullingService {
   }
 
   getSummary(sessionId: string): CullingSummary {
-    const photos = this.photoRepo.getBySession(sessionId)
+    // Light projection: only photo ids feed the decision/cache lookups.
+    const photos = this.photoRepo.getBySessionProjection(sessionId)
     const decisions = this.cullingDecisionRepo.getBySession(sessionId)
     const decisionByPhoto = new Map(decisions.map(row => [row.photo_id, row]))
     const cacheByPhoto = new Map(
@@ -1316,8 +1322,15 @@ export class CullingService {
     const resultRow = this.similarityResultRepo.getLatest(sessionId)
     let totalGroups = 0
     if (resultRow) {
-      const parsed = JSON.parse(resultRow.groups_json) as { groups?: unknown[] }
-      totalGroups = parsed.groups?.length ?? 0
+      // groups_json is DB content; a corrupt row must not crash the whole
+      // session flow (the metadata outbox uses safeObject for the same
+      // reason).
+      try {
+        const parsed = JSON.parse(resultRow.groups_json) as { groups?: unknown[] }
+        totalGroups = parsed.groups?.length ?? 0
+      } catch {
+        totalGroups = 0
+      }
     }
     return {
       totalGroups,
@@ -1411,11 +1424,21 @@ export class CullingService {
     const persisted = this.similarityResultRepo.getPhotoGroupMap(sessionId, resultRow.id)
     if (persisted.size > 0) return persisted
 
-    const parsed = JSON.parse(resultRow.groups_json) as { groups: SimilarityGroup[] }
+    // groups_json is DB content; corrupt or structurally unexpected rows
+    // degrade to an empty index instead of crashing updateState/batchUpdate.
+    let groups: SimilarityGroup[]
+    try {
+      const parsed = JSON.parse(resultRow.groups_json) as { groups?: SimilarityGroup[] }
+      groups = Array.isArray(parsed.groups) ? parsed.groups : []
+    } catch {
+      groups = []
+    }
     const photoIdByPath = new Map(photos.map(photo => [photo.filepath, photo.id]))
     const groupByPhotoId = new Map<string, string>()
-    for (let index = 0; index < (parsed.groups ?? []).length; index++) {
-      for (const image of parsed.groups[index].images) {
+    for (let index = 0; index < groups.length; index++) {
+      const images = groups[index]?.images
+      if (!Array.isArray(images)) continue
+      for (const image of images) {
         const photoId = photoIdByPath.get(image.path)
         if (photoId) groupByPhotoId.set(photoId, `${resultRow.id}:${index}`)
       }

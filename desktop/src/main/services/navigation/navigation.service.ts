@@ -92,7 +92,20 @@ export class NavigationService {
       [
         burstGapSeconds,
         sceneGapSeconds,
-        rows.map(row => [row.id, row.capturedAt, row.hashHex, row.qualityScore]),
+        // The lead ranking mixes quality score, rating and quality warnings,
+        // so all three must be part of the fingerprint — otherwise a rating
+        // change (or a re-run of quality analysis) would leave the cached
+        // groups and their stale lead recommendations in place. Warnings are
+        // sorted so a non-deterministic storage order cannot spuriously
+        // invalidate (and rebuild with new ids) every automatic group.
+        rows.map(row => [
+          row.id,
+          row.capturedAt,
+          row.hashHex,
+          row.rating,
+          row.qualityScore,
+          [...row.qualityWarnings].sort(),
+        ]),
       ],
     )).digest('hex')
     if (!dryRun) {

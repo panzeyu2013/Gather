@@ -45,8 +45,9 @@ const PERSIST_FLUSH_THRESHOLD = 256
 // The per-policy ORDER BY index in SQLite yields the k smallest persisted
 // values in O(log n + k); every in-memory entry whose value can differ from
 // the persisted row (un-flushed updates) is tracked in the dirty set, so
-// merging those (small) sets and re-sorting on live in-memory values is
-// strictly equivalent to scanning the whole map — at a fraction of the cost.
+// merging those (small) sets — over a window of limit + |dirty| rows — and
+// re-sorting on live in-memory values is strictly equivalent to scanning the
+// whole map, at a fraction of the cost.
 const MIN_EVICTION_BATCH = 100
 // Number of metadata rows materialized into the in-memory map per chunk
 // while loading; each chunk stays well under the 50ms main-thread budget.
@@ -328,15 +329,18 @@ export class DiskCacheManager {
   /**
    * Retain the `limit` smallest policy values without scanning the whole
    * in-memory map. Persisted rows whose value equals the live one are ranked
-   * by the SQLite index (O(log n + limit)); rows whose value can differ from
-   * the persisted row are exactly the dirty set (every mutation goes through
-   * markDirty), so merging the dirty entries and re-sorting on live values
-   * yields the same `limit` best candidates as a full scan. The result is
-   * sorted ascending by val (hash tiebreak) so the caller removes the most
-   * urgent entries first.
+   * by the SQLite index; rows whose value can differ from the persisted row
+   * are exactly the dirty set (every mutation goes through markDirty). The
+   * window is sized `limit + |dirty|` so that dirty rows that fall inside the
+   * index window (persisted value small, live value large) cannot crowd out
+   * better clean rows that sit just outside it; merging the dirty entries and
+   * re-sorting on live values then yields the same `limit` best candidates as
+   * a full scan. The result is sorted ascending by val (hash tiebreak) so the
+   * caller removes the most urgent entries first.
    */
   private selectEvictionBatch(limit: number): EvictionCandidate[] {
-    const rows = this.evictRowsForPolicy().all(limit) as DbRow[]
+    const windowSize = limit + this.dirty.size
+    const rows = this.evictRowsForPolicy().all(windowSize) as DbRow[]
     const candidates: EvictionCandidate[] = []
     const seen = new Set<string>()
     for (const row of rows) {
@@ -444,9 +448,10 @@ export class DiskCacheManager {
     // Read rows in bounded chunks and yield between chunks so loading a
     // 100k-entry cache never blocks the main thread for a single 50ms+ slice.
     // ORDER BY hash keeps chunk boundaries stable under concurrent writers so
-    // no row is skipped or read twice. A read failure (corrupt DB, locked
-    // file) degrades to an empty map; the directory scan below reconciles
-    // what is actually on disk.
+    // no row is skipped or read twice. Sizes are accumulated here, so the
+    // reconciliation below only has to stat files that are NOT in the DB.
+    // A read failure (corrupt DB, locked file) degrades to an empty map; the
+    // directory scan below reconciles what is actually on disk.
     try {
       let offset = 0
       while (true) {
@@ -459,6 +464,7 @@ export class DiskCacheManager {
             fileSize: row.file_size,
           }
           this.fileCount++
+          this.totalSize += row.file_size
         }
         if (rows.length < LOAD_ROW_CHUNK) break
         offset += LOAD_ROW_CHUNK
@@ -471,55 +477,55 @@ export class DiskCacheManager {
       this.fileCount = 0
     }
 
-    const seen = new Set<string>()
+    // Reconcile with the filesystem without stat-ing every file:
+    //  - DB rows with no backing file are dangling (evicted or manually
+    //    removed while stopped); drop them straight from the readdir listing.
+    //  - Files with no DB row are leftovers from a partial run or a crash;
+    //    only those need a stat for size/timestamps.
+    //  - Files present in both are application-generated copies that cannot
+    //    change size externally, so the DB row is trusted as-is.
     try {
       const files = await fsp.readdir(this.cacheDir)
-      const jpgFiles = files.filter(file => file.endsWith('.jpg'))
+      const diskHashes = new Set<string>()
+      for (const file of files) {
+        if (file.endsWith('.jpg')) diskHashes.add(file.slice(0, -4))
+      }
+      for (const hash of Object.keys(this.meta.entries)) {
+        if (diskHashes.has(hash)) continue
+        const entry = this.meta.entries[hash]
+        delete this.meta.entries[hash]
+        this.pendingDeletes.add(hash)
+        this.fileCount--
+        this.totalSize -= entry.fileSize
+      }
+      const orphanHashes = [...diskHashes].filter(hash => !this.meta.entries[hash])
       const concurrency = 24
       let cursor = 0
       const scanNext = async (): Promise<void> => {
-        while (cursor < jpgFiles.length) {
-          const file = jpgFiles[cursor++]
-          const hash = file.slice(0, -4)
-          seen.add(hash)
-          const filePath = path.join(this.cacheDir, file)
+        while (cursor < orphanHashes.length) {
+          const hash = orphanHashes[cursor++]
+          const filePath = path.join(this.cacheDir, `${hash}.jpg`)
           try {
             const stat = await fsp.stat(filePath)
-            const existing = this.meta.entries[hash]
-            if (existing) {
-              if (existing.fileSize !== stat.size) {
-                existing.fileSize = stat.size
-                this.dirty.add(hash)
-              }
-            } else {
-              this.meta.entries[hash] = {
-                lastAccess: stat.atimeMs,
-                createdAt: stat.birthtimeMs || stat.mtimeMs,
-                accessCount: 0,
-                fileSize: stat.size,
-              }
-              this.fileCount++
-              this.dirty.add(hash)
+            this.meta.entries[hash] = {
+              lastAccess: stat.atimeMs,
+              createdAt: stat.birthtimeMs || stat.mtimeMs,
+              accessCount: 0,
+              fileSize: stat.size,
             }
+            this.fileCount++
             this.totalSize += stat.size
+            this.dirty.add(hash)
           } catch (e) {
-            console.warn('DiskCache: failed to stat cached file', file, e)
+            console.warn('DiskCache: failed to stat cached file', filePath, e)
           }
         }
       }
       await Promise.all(
-        Array.from({ length: Math.min(concurrency, jpgFiles.length) }, () => scanNext()),
+        Array.from({ length: Math.min(concurrency, orphanHashes.length) }, () => scanNext()),
       )
     } catch (e) {
       console.warn('DiskCache: failed to read cache directory', e)
-    }
-
-    for (const hash of Object.keys(this.meta.entries)) {
-      if (!seen.has(hash)) {
-        delete this.meta.entries[hash]
-        this.pendingDeletes.add(hash)
-        this.fileCount--
-      }
     }
 
     // Replay updates that arrived while load was still running so they win

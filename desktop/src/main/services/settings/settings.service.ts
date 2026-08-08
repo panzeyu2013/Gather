@@ -96,6 +96,7 @@ export function getDefaults(): Record<string, string | number> {
     disk_cache_eviction_policy: 'lru',
     thumbnail_concurrency: Math.max(1, Math.min(4, os.cpus().length - 1)),
     face_decode_concurrency: 4,
+    face_inference_parallel_workers: 1,
 
     db_cache_size_mb: 64,
     db_synchronous: 'full',
