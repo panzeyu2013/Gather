@@ -6,8 +6,18 @@ type SessionCreateResult = SessionData & Pick<AddPhotoResult, 'added' | 'skipped
 export const sessionApi = {
   list: () => sendCommand<SessionData[]>('session.list'),
   get: (id: string) => sendCommand<SessionData>('session.get', { sessionId: id }),
-  create: (name: string, source: string, filepaths?: string[], sourcePath?: string) =>
-    sendCommand<SessionCreateResult>('session.create', { name, source, filepaths, sourcePath }),
+  create: (
+    name: string,
+    source: string,
+    filepaths?: string[],
+    sourcePath?: string,
+    truncatedImport?: boolean,
+  ) =>
+    sendCommand<SessionCreateResult>('session.create', { name, source, filepaths, sourcePath, truncatedImport }),
+  /** One-hop local import: only the source path crosses IPC; the main process
+   * creates the session and enqueues the `metadata.scan` index job. */
+  createFromDirectory: (name: string | undefined, sourcePath: string) =>
+    sendCommand<SessionData>('session.create_from_directory', { name, sourcePath }),
   delete: (id: string) =>
     sendCommand<boolean>('session.delete', { sessionId: id, confirmed: true }),
   deleteMany: (ids: string[]) =>

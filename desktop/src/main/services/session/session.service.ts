@@ -15,6 +15,7 @@ import type {
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import path from 'path'
+import { stat } from 'fs/promises'
 
 export function commonParentDirectory(filepaths: string[]): string {
   if (filepaths.length === 0) return ''
@@ -69,6 +70,7 @@ function toSessionData(
     writeback_status: string
     import_source: string
     source_path: string
+    truncated_import: number
     photo_count: number
     failed_writeback_count: number
     created_at: string
@@ -85,6 +87,7 @@ function toSessionData(
     importSource: row.import_source,
     sourcePath: row.source_path,
     failedWritebackCount: row.failed_writeback_count,
+    truncatedImport: row.truncated_import === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -102,9 +105,34 @@ export class SessionService {
     @inject(DI_TOKENS.ASSET_REPO) private assetRepo?: AssetRepository,
   ) {}
 
-  createSession(name: string, source: string, sourcePath = ''): SessionData {
-    const row = this.sessionRepo.create(name, source, sourcePath)
+  createSession(name: string, source: string, sourcePath = '', truncatedImport = false): SessionData {
+    const row = this.sessionRepo.create(name, source, sourcePath, truncatedImport)
     return toSessionData(row)
+  }
+
+  /**
+   * One-hop local-directory import: validates the caller-supplied path as a
+   * real non-root directory and creates the session row with source_path set
+   * and import_source 'local'. Photos are NOT inserted here — the caller
+   * enqueues the `metadata.scan` index job, whose in-process streaming walk
+   * fills the session, so no file-path array ever crosses IPC.
+   */
+  async createFromDirectory(name: string, sourcePath: string, truncatedImport = false): Promise<SessionData> {
+    let stats
+    try {
+      stats = await stat(sourcePath)
+    } catch {
+      throw new Error('SESSION_SOURCE_NOT_DIR')
+    }
+    if (!stats.isDirectory()) throw new Error('SESSION_SOURCE_NOT_DIR')
+    // Same spirit as sanitizeSessionSourcePath: a filesystem root is not a
+    // meaningful photo source — scanning "/" would walk the entire volume.
+    const resolved = path.resolve(sourcePath)
+    if (resolved === path.parse(resolved).root) {
+      throw new Error('SESSION_SOURCE_ROOT_FORBIDDEN')
+    }
+    const sessionName = (name ?? '').trim() || path.basename(resolved)
+    return this.createSession(sessionName, 'local', resolved, truncatedImport)
   }
 
   listSessions(): SessionData[] {
@@ -140,7 +168,7 @@ export class SessionService {
       this.deleteSessionDependencies(sessionId)
       const deleted = this.sessionRepo.delete(sessionId)
       if (!deleted) {
-        throw new Error('Session not found')
+        throw new Error('SESSION_NOT_FOUND')
       }
       this.db.prepare(`
         UPDATE assets SET status = 'orphan', updated_at = ?
@@ -229,7 +257,14 @@ export class SessionService {
     const result = this.photoRepo.addPhotos(sessionId, entries, source)
     this.assetRepo?.backfillSession(sessionId)
     const totalCount = this.photoRepo.countBySession(sessionId)
-    this.sessionRepo.updatePhotoCount(sessionId, totalCount)
+    this.db.transaction(() => {
+      this.sessionRepo.updatePhotoCount(sessionId, totalCount)
+      // Newly added photos invalidate any previous analysis: bump index_seq
+      // in the same transaction so the last ok run goes stale (1.4.2).
+      if (result.added > 0) {
+        this.sessionRepo.bumpIndexSeq(sessionId)
+      }
+    })()
     if (totalCount > 0 && session.status === 'draft') {
       this.sessionRepo.updateStatus(sessionId, 'photos_loaded')
     }
@@ -241,7 +276,7 @@ export class SessionService {
   updateSession(sessionId: string, name: string): SessionData {
     const updated = this.sessionRepo.updateName(sessionId, name)
     if (!updated) {
-      throw new Error('Session not found')
+      throw new Error('SESSION_NOT_FOUND')
     }
     return toSessionData(this.sessionRepo.get(sessionId)!)
   }
