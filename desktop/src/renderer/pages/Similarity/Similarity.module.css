@@ -88,6 +88,11 @@
   outline: none;
 }
 
+.slider:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, white);
+  outline-offset: 2px;
+}
+
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -213,13 +218,31 @@
   overflow: hidden;
 }
 
-.groupHeader {
+.groupHeaderRow {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 12px;
+}
+
+.groupExpand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
   transition: background 0.15s;
+}
+
+.groupExpand:hover {
+  background: var(--color-hover);
 }
 
 @media (max-width: 640px) {
@@ -334,10 +357,6 @@
   color: var(--color-text-secondary);
 }
 
-.groupHeader:hover {
-  background: var(--color-hover);
-}
-
 .groupThumb {
   width: 64px;
   height: 64px;
@@ -352,6 +371,7 @@
 }
 
 .groupLabel {
+  display: block;
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text);
