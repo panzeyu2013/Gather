@@ -294,6 +294,7 @@ export type Command =
   | { type: 'image.get_dimensions'; params: { paths: string[] } }
   | { type: 'image.prioritize_thumbnail'; params: { path: string; size?: number } }
   | { type: 'photo.list'; params: { sessionId: string; expandVariants?: boolean } }
+  | { type: 'photo.list_page'; params: { sessionId: string; afterFirstRowid?: number; limit?: number; expandVariants?: boolean } }
   | { type: 'settings.get_all'; params: Record<string, never> }
   | { type: 'settings.get'; params: { key: string } }
   | { type: 'settings.set'; params: { key: string; value: string } }
@@ -390,6 +391,9 @@ export interface JobProgressData {
   current: number
   total: number
   message: string
+  /** Terminal frames carry the job's final status so clients can stop
+   * showing "analyzing" without polling. */
+  status?: string
 }
 
 export type Event =
@@ -414,7 +418,7 @@ export const ALLOWED_COMMANDS = new Set([
   'sim.preview_writeback', 'sim.writeback', 'sim.writeback_items', 'sim.retry_failed_writeback',
   'sim.confirm_sync', 'sim.cleanup',
   'image.preload_thumbnails', 'image.preload_previews', 'image.get_dimensions', 'image.prioritize_thumbnail',
-  'photo.list',
+  'photo.list', 'photo.list_page',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
   'metadata.get', 'metadata.set', 'metadata.batch_set', 'metadata.conflicts', 'metadata.resolve_conflict', 'metadata.orphans', 'metadata.resolve_orphan',

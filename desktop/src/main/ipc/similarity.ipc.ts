@@ -98,7 +98,10 @@ export function registerSimilarityHandlers(
   jobs.registerExecutor('similarity.analyze', async (job, context) => {
     const checkpoint = job.checkpoint
     context.signal.addEventListener('abort', () => {
-      void similarityService.cancel(job.scopeId)
+      // Abort from the job system: the similarity run is in flight, so the
+      // session column may be updated — but only when this run actually
+      // owns it (a queued-job abort must not stomp a concurrent face run).
+      void similarityService.cancel(job.scopeId, false)
     }, { once: true })
     await similarityService.analyze(job.scopeId, {
       threshold: typeof checkpoint.threshold === 'number' ? checkpoint.threshold : undefined,
@@ -115,7 +118,7 @@ export function registerSimilarityHandlers(
   })
   registry.register(
     'sim.analyze',
-    wrapHandler(async (params, event) => {
+    wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       const threshold =
         typeof params.threshold === 'number' ? params.threshold : undefined
@@ -134,12 +137,6 @@ export function registerSimilarityHandlers(
         checkpoint: { threshold, minGroupSize, groupingMode },
       })
       await jobs.waitForResult(job.id)
-      event?.sender.send('gather:event', 'progress', {
-        sessionId,
-        current: 1,
-        total: 1,
-        message: 'Similarity analysis complete',
-      })
       return ok(true)
     }),
   )
@@ -149,7 +146,10 @@ export function registerSimilarityHandlers(
     wrapHandler(async (params) => {
       const sessionId = validateString(params.sessionId, 'sessionId')
       jobs.cancelScope('similarity.analyze', sessionId)
-      await similarityService.cancel(sessionId)
+      // The session analysis_status is only written when a similarity run is
+      // actually in flight; cancelling a queued job (or an already-finished
+      // one) must not clobber a concurrently running face analysis.
+      await similarityService.cancel(sessionId, false)
       return ok(true)
     }),
   )
@@ -210,8 +210,9 @@ export function registerSimilarityHandlers(
       const threshold = typeof params.threshold === 'number' ? params.threshold : undefined
       // The pending items were built from a specific result row; when the
       // caller identifies the tier it was displayed with, make sure that row
-      // still exists so group ids never map to a vanished result.
-      if (threshold !== undefined && !similarityService.getResult(sessionId, threshold)) {
+      // still exists so group ids never map to a vanished result. This is a
+      // cheap row-existence check — not a full getResult rebuild.
+      if (threshold !== undefined && !similarityService.hasResult(sessionId, threshold)) {
         throw new Error('该阈值无结果，请重新聚类')
       }
       const itemIds = Array.isArray(params.itemIds)

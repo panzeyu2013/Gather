@@ -10,7 +10,6 @@ import { SimilarityResultRepository } from '../../db/repositories/similarity-res
 import { ImageService } from '../image'
 import { computeBatchDHash } from './hash-computer'
 import type { HashEntry } from './cluster-engine'
-import { clusterHashesInWorker } from '../../utils/analysis-worker-client'
 import type {
   SimilarityGroup,
   SimilarityGroupingMode,
@@ -22,6 +21,7 @@ import { DI_TOKENS } from '../../di/container'
 import { stat } from 'fs/promises'
 import { batchAsync } from '../../utils/async'
 import { collapsePhotoAssets } from '../assets/logical-photo-assets'
+import { clusterHashesInWorker, clusterHashesInWorkerMulti } from '../../utils/analysis-worker-client'
 
 /** Collapse physical photos into logical assets; only reads id/asset_id/
  * filename, so it works on the light projection rows used by analyze. */
@@ -210,8 +210,30 @@ export class SimilarityService {
           file_size: number
           file_mtime_ms: number
         }[]
+      // File stats come from the index scan (photos.checksum_file_size /
+      // checksum_file_mtime_ms) when available, so a full analyze no longer
+      // stats every photo on disk (SSD 1-3s, network volumes minutes). Only
+      // photos without an indexed stat (lazy imports, backfill pending) hit
+      // the filesystem.
       const sourceStats = new Map<string, { size: number; mtimeMs: number }>()
-      await batchAsync(photos, async (photo) => {
+      const needsStat: string[] = []
+      for (const photo of photos) {
+        // Photos already marked missing on disk must never reuse a stale
+        // indexed stat; only photos with a real indexed size take the
+        // no-stat fast path.
+        if (photo.status !== 'missing' && photo.checksum_file_size > 0) {
+          sourceStats.set(photo.id, {
+            size: photo.checksum_file_size,
+            mtimeMs: photo.checksum_file_mtime_ms,
+          })
+        } else {
+          needsStat.push(photo.id)
+        }
+      }
+      const photosById = new Map(photos.map(photo => [photo.id, photo]))
+      await batchAsync(needsStat, async (photoId) => {
+        const photo = photosById.get(photoId)
+        if (!photo) return
         try {
           const sourceStat = await stat(photo.filepath)
           sourceStats.set(photo.id, {
@@ -423,6 +445,19 @@ export class SimilarityService {
     }
   }
 
+  /**
+   * Cheap existence check for a result row: unlike getResult, this never
+   * touches the members table, the photo projection or the result payload,
+   * so "is this threshold precomputed" checks cost one indexed lookup instead
+   * of a full result rebuild.
+   */
+  hasResult(sessionId: string, threshold?: number): boolean {
+    const row = threshold === undefined
+      ? this.similarityResultRepo.getLatest(sessionId)
+      : this.similarityResultRepo.getByThreshold(sessionId, threshold)
+    return row !== undefined
+  }
+
   getResult(sessionId: string, threshold?: number): SimilarityResult | null {
     const row = threshold === undefined
       ? this.similarityResultRepo.getLatest(sessionId)
@@ -494,12 +529,20 @@ export class SimilarityService {
     return { groups, ungrouped, stats }
   }
 
-  async cancel(sessionId: string): Promise<void> {
+  async cancel(sessionId: string, markStatus = false): Promise<void> {
     const controller = this.controllers.get(sessionId)
+    const hadController = controller !== undefined
     if (controller) {
       controller.abort()
     }
-    this.sessionRepo.updateAnalysisStatus(sessionId, 'cancelled')
+    // analysis_status is a single session column shared with face analysis.
+    // Only write 'cancelled' when this module actually had an in-flight run —
+    // a cancel of a queued job, or a cancel while face analysis runs, must
+    // not flip the face status. The job row itself carries the cancelled
+    // state for queued jobs.
+    if (hadController || markStatus) {
+      this.sessionRepo.updateAnalysisStatus(sessionId, 'cancelled')
+    }
   }
 
   async recluster(
@@ -588,6 +631,7 @@ export class SimilarityService {
     minGroupSize: number,
     groupingMode: SimilarityGroupingMode,
     precomputed: boolean,
+    compactGroupsJson = false,
   ): {
     result: SimilarityResult
     groupsJson: string
@@ -608,7 +652,14 @@ export class SimilarityService {
       path: pathMap.get(photoId)!,
     }))
 
-    const groupsJson = JSON.stringify({ groups, ungrouped })
+    // Precomputed neighbor-tier rows are never read through groups_json:
+    // getLatest excludes them, culling resolves memberships from the members
+    // table, and getResult rebuilds groups from members too. Stringifying a
+    // multi-MB payload per tier is pure waste, so tier rows store a compact
+    // placeholder (the schema requires a non-empty string).
+    const groupsJson = compactGroupsJson
+      ? '{"groups":[],"ungrouped":[]}'
+      : JSON.stringify({ groups, ungrouped })
     const statsJson = JSON.stringify({
       totalGroups: groups.length,
       totalUngrouped: ungrouped.length,
@@ -661,35 +712,27 @@ export class SimilarityService {
     }
     if (candidates.length === 0) return
 
-    const totalUnits = candidates.length * entries.length
+    // One worker run clusters all tiers in a single pairwise distance pass
+    // (the distance is threshold-independent; only the judgment differs), so
+    // the 4-way precomputation no longer repeats the O(n^2) pass per tier.
+    const results = await clusterHashesInWorkerMulti(
+      entries,
+      candidates,
+      minGroupSize,
+      groupingMode,
+      signal,
+      (current, total) => onProgress?.(current, total, 'Precomputing neighbor thresholds...'),
+    )
     for (const [index, tier] of candidates.entries()) {
       if (signal?.aborted) return
-      const { groups: rawGroups, ungrouped: rawUngrouped } = await clusterHashesInWorker(
-        entries,
-        tier,
-        minGroupSize,
-        groupingMode,
-        signal,
-        (current) => {
-          onProgress?.(
-            // The worker may report current up to 2n on the recomputed path;
-            // clamp each tier to its own entries so per-tier totals never
-            // overflow the global totalUnits budget.
-            index * entries.length + Math.min(current, entries.length),
-            totalUnits,
-            'Precomputing neighbor thresholds...',
-          )
-        },
-      )
-      if (signal?.aborted) return
-
       const built = this.buildStoredResult(
-        rawGroups,
-        rawUngrouped,
+        results[index].groups,
+        results[index].ungrouped,
         pathMap,
         tier,
         minGroupSize,
         groupingMode,
+        true,
         true,
       )
       this.similarityResultRepo.replaceForThreshold(
@@ -699,11 +742,6 @@ export class SimilarityService {
         tier,
         minGroupSize,
         built.memberships,
-      )
-      onProgress?.(
-        (index + 1) * entries.length,
-        totalUnits,
-        'Precomputing neighbor thresholds...',
       )
     }
   }

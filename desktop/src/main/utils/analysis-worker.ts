@@ -1,9 +1,10 @@
 import { parentPort } from 'worker_threads'
-import { clusterByHash, type HashEntry, type HashGroupingMode } from '../services/similarity/cluster-engine'
+import { clusterByHash, clusterByHashMulti, type HashEntry, type HashGroupingMode } from '../services/similarity/cluster-engine'
 import { clusterEmbeddings, type EmbeddingEntry } from '../services/face-kw/face-clusterer'
 
 type WorkerRequest =
   | { id: number; kind: 'hash'; entries: HashEntry[]; threshold: number; minGroupSize: number; mode?: HashGroupingMode }
+  | { id: number; kind: 'hash-multi'; entries: HashEntry[]; thresholds: number[]; minGroupSize: number; mode?: HashGroupingMode }
   | { id: number; kind: 'face'; entries: EmbeddingEntry[]; eps: number; minPts: number }
 
 if (!parentPort) {
@@ -17,7 +18,9 @@ parentPort.on('message', (request: WorkerRequest) => {
     }
     const result = request.kind === 'hash'
       ? clusterByHash(request.entries, request.threshold, request.minGroupSize, request.mode, progress)
-      : clusterEmbeddings(request.entries, request.eps, request.minPts, progress)
+      : request.kind === 'hash-multi'
+        ? clusterByHashMulti(request.entries, request.thresholds, request.minGroupSize, request.mode, progress)
+        : clusterEmbeddings(request.entries, request.eps, request.minPts, progress)
     parentPort!.postMessage({ id: request.id, result })
   } catch (error) {
     parentPort!.postMessage({

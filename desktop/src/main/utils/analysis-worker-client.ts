@@ -103,15 +103,16 @@ export function runWorker<T>(
         // handler cannot consume the 'message' listener and drop the final
         // result frame, which would leave the promise hanging until timeout.
         worker.once('message', onMessage)
+        // A frame from a different request is not progress for this one:
+        // only frames matching this request re-arm the no-progress timeout.
+        if (message.id !== id) return
         // Progress is a heartbeat: re-arm the timeout so an active worker is
         // never killed by the deadline; settle still guards the single settle.
         armTimeout()
-        if (message.id === id) {
-          try {
-            options.onProgress?.(message.current ?? 0, message.total ?? 0)
-          } catch (error) {
-            console.warn('analysis worker progress callback failed', error)
-          }
+        try {
+          options.onProgress?.(message.current ?? 0, message.total ?? 0)
+        } catch (error) {
+          console.warn('analysis worker progress callback failed', error)
         }
         return
       }
@@ -153,6 +154,23 @@ export function clusterHashesInWorker(
 ): Promise<{ groups: string[][]; ungrouped: string[] }> {
   const timeoutMs = estimateAnalysisTimeoutMs('hash', entries.length)
   return runWorker({ kind: 'hash', entries, threshold, minGroupSize, mode }, signal, { onProgress, timeoutMs })
+}
+
+/** Cluster under several thresholds in one worker run: a single pairwise
+ * distance pass serves every tier (see clusterByHashMulti), so the neighbor
+ * threshold precomputation no longer repeats the whole O(n^2) pass per tier.
+ * The timeout scales with the tier count because the per-tier BFS phases also
+ * consume CPU time. */
+export function clusterHashesInWorkerMulti(
+  entries: HashEntry[],
+  thresholds: number[],
+  minGroupSize: number,
+  mode: HashGroupingMode = 'global',
+  signal?: AbortSignal,
+  onProgress?: (current: number, total: number) => void,
+): Promise<Array<{ groups: string[][]; ungrouped: string[] }>> {
+  const timeoutMs = estimateAnalysisTimeoutMs('hash', entries.length * Math.max(1, thresholds.length))
+  return runWorker({ kind: 'hash-multi', entries, thresholds, minGroupSize, mode }, signal, { onProgress, timeoutMs })
 }
 
 export function clusterFacesInWorker(

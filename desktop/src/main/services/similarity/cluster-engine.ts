@@ -146,6 +146,95 @@ export function clusterByHash(
   )
 }
 
+/**
+ * Cluster the same entries under several thresholds at once. The pairwise
+ * Hamming pass is threshold-independent: a single triangular pass computes
+ * each distance once and fans it out to every threshold's region sizes, so
+ * the k tiers cost one distance pass instead of k (the 4-way neighbor-tier
+ * precomputation in similarity.service is the main consumer).
+ *
+ * Sequential mode and the bitset path (small inputs, memory-bound) keep their
+ * per-threshold loops — the bitset matrix cannot be shared without multiplying
+ * memory k-fold — but the recomputed path (the one that runs for large
+ * sessions) shares the distance pass. Returns one result per entry of
+ * `thresholds` (duplicates are clustered once and mapped back).
+ *
+ * Progress totals are `count * (1 + thresholds.length)` units: one pass of
+ * `count` units, then `count` units per tier, so callers never see a
+ * non-monotonic bar across the whole batch.
+ */
+export function clusterByHashMulti(
+  entries: HashEntry[],
+  thresholds: number[],
+  minGroupSize: number,
+  mode: HashGroupingMode = 'global',
+  onProgress?: (current: number, total: number) => void,
+  // Test hook: forces the recomputed (n > maxBitsetEntries) path on smaller
+  // inputs so both code paths can be exercised without allocating the bitset
+  // matrix (mirrors clusterByHash).
+  maxBitsetEntries: number = MAX_BITSET_ENTRIES,
+): Array<{ groups: string[][]; ungrouped: string[] }> {
+  const unique = [...new Set(thresholds)].sort((a, b) => a - b)
+  const count = entries.length
+  const empty: Array<{ groups: string[][]; ungrouped: string[] }> =
+    thresholds.map(() => ({ groups: [], ungrouped: [] }))
+  if (count === 0 || unique.length === 0) return empty
+  const perTierUnits = count
+  const totalUnits = count * (unique.length + 1)
+
+  // The bitset path reports per-tier progress on a 0..2n scale (distance
+  // pass, then BFS with cumulative assigned counts that may dip below the
+  // pass end); clamping to a monotonic sequence keeps the UI bar stable.
+  let lastProgress = 0
+  const progressForTier = (tierIndex: number, tierCurrent: number): void => {
+    const mapped = count + tierIndex * perTierUnits + Math.min(tierCurrent, perTierUnits)
+    if (mapped > lastProgress) lastProgress = mapped
+    onProgress?.(lastProgress, totalUnits)
+  }
+
+  let bytesPerHash = 8
+  for (let i = 0; i < count; i++) {
+    const byteCount = hashByteCount(entries[i].hash)
+    if (byteCount > bytesPerHash) bytesPerHash = byteCount
+  }
+  const data = new Uint8Array(count * bytesPerHash)
+  const view16 = bytesPerHash === 8
+    ? new Uint16Array(data.buffer, 0, data.length >> 1)
+    : null
+  const ids = new Array<string>(count)
+  for (let i = 0; i < count; i++) {
+    writeHashBytes(data, i * bytesPerHash, entries[i].hash, bytesPerHash)
+    ids[i] = entries[i].photoId
+  }
+
+  if (mode === 'sequential') {
+    return thresholds.map((tier, tierIndex) => {
+      const result = clusterSequentially(
+        ids, data, view16, tier, minGroupSize, bytesPerHash,
+        (current) => progressForTier(tierIndex, current),
+      )
+      progressForTier(tierIndex, perTierUnits)
+      return result
+    })
+  }
+  if (count <= maxBitsetEntries) {
+    return thresholds.map((tier, tierIndex) => {
+      const result = clusterGloballyWithBitsets(
+        ids, data, view16, tier, minGroupSize, bytesPerHash,
+        (current) => progressForTier(tierIndex, current),
+      )
+      progressForTier(tierIndex, perTierUnits)
+      return result
+    })
+  }
+  const results = clusterGloballyRecomputedMulti(
+    ids, data, view16, unique, minGroupSize, bytesPerHash, onProgress, totalUnits,
+  )
+  // Map back to the caller's threshold order (with duplicate handling).
+  const byTier = new Map(unique.map((tier, index) => [tier, results[index]]))
+  return thresholds.map(tier => byTier.get(tier)!)
+}
+
 // Sequential mode keeps the previous semantics: consecutive entries whose
 // adjacent hashes are within threshold merge into one run.
 function clusterSequentially(
@@ -263,6 +352,82 @@ function clusterGloballyRecomputed(
     }
   }
 
+  const grouped = recomputedBfs(
+    ids, data, view16, threshold, minGroupSize, bytesPerHash, regionSizes,
+    (current) => onProgress?.(count + current, count * 2),
+  )
+  onProgress?.(count * 2, count * 2)
+  return grouped
+}
+
+// Multi-threshold variant of clusterGloballyRecomputed: one triangular pass
+// computes every pair's distance once and accumulates each threshold's region
+// sizes (k x Uint32Array(count) — a few MB even at 100k entries), then each
+// tier runs the same on-demand BFS as the single-threshold path.
+function clusterGloballyRecomputedMulti(
+  ids: string[],
+  data: Uint8Array,
+  view16: Uint16Array | null,
+  thresholds: number[],
+  minGroupSize: number,
+  bytesPerHash: number,
+  onProgress?: (current: number, total: number) => void,
+  totalUnits?: number,
+): Array<{ groups: string[][]; ungrouped: string[] }> {
+  const count = ids.length
+  const tiers = thresholds.length
+  const units = totalUnits ?? count * (tiers + 1)
+  if (count === 0) return thresholds.map(() => ({ groups: [], ungrouped: [] }))
+
+  const regionSizesByTier = thresholds.map(() => new Uint32Array(count))
+  const step = Math.max(512, Math.floor(count * 0.02))
+
+  for (let i = 0; i < count; i++) {
+    if ((i + 1) % step === 0 || i + 1 === count) {
+      onProgress?.(i + 1, units)
+    }
+    const offsetA = i * bytesPerHash
+    for (let j = i + 1; j < count; j++) {
+      const distance = hammingDistanceAt(data, view16, offsetA, j * bytesPerHash, bytesPerHash)
+      for (let tierIndex = 0; tierIndex < tiers; tierIndex++) {
+        if (distance <= thresholds[tierIndex]) {
+          regionSizesByTier[tierIndex][i]++
+          regionSizesByTier[tierIndex][j]++
+        }
+      }
+    }
+  }
+
+  const results: Array<{ groups: string[][]; ungrouped: string[] }> = []
+  for (let tierIndex = 0; tierIndex < tiers; tierIndex++) {
+    results.push(recomputedBfs(
+      ids, data, view16, thresholds[tierIndex], minGroupSize, bytesPerHash,
+      regionSizesByTier[tierIndex],
+      (current) => onProgress?.(count + tierIndex * count + Math.min(current, count), units),
+    ))
+    onProgress?.(count + (tierIndex + 1) * count, units)
+  }
+  return results
+}
+
+// BFS shared by the single- and multi-threshold recomputed paths: dense seeds
+// (region size >= minGroupSize - 1) expand by recomputing neighbor lists on
+// demand; sparse nodes join the group without expanding. Pure graph semantics
+// matching the wave BFS: any node on the frontier joins the group, so
+// expansion must not skip nodes that were merely marked visited by an earlier
+// seed check (sparse nodes whose index precedes the seed are
+// visited-but-ungrouped).
+function recomputedBfs(
+  ids: string[],
+  data: Uint8Array,
+  view16: Uint16Array | null,
+  threshold: number,
+  minGroupSize: number,
+  bytesPerHash: number,
+  regionSizes: Uint32Array,
+  onProgress?: (current: number, total: number) => void,
+): { groups: string[][]; ungrouped: string[] } {
+  const count = ids.length
   const neighbors = (index: number): number[] => {
     const result: number[] = []
     const offsetA = index * bytesPerHash
@@ -307,10 +472,6 @@ function clusterGloballyRecomputed(
       if (regionSizes[current] + 1 >= minGroupSize) {
         const currentNeighbors = neighbors(current)
         for (const neighbor of currentNeighbors) {
-          // Pure graph semantics matching the wave BFS: any node on the
-          // frontier joins the group, so expansion must not skip nodes that
-          // were merely marked visited by an earlier seed check (sparse nodes
-          // whose index precedes the seed are visited-but-ungrouped).
           if (!clustered[neighbor] && !queued[neighbor]) {
             queued[neighbor] = 1
             seedStack.push(neighbor)
@@ -323,12 +484,8 @@ function clusterGloballyRecomputed(
       }
     }
     groups.push(group)
-    onProgress?.(count + i + 1, count * 2)
+    onProgress?.(i + 1, count)
   }
-
-  // Final progress value so the bar always reaches 100% even when no dense
-  // seed produced a group (all nodes sparse).
-  onProgress?.(count * 2, count * 2)
 
   const ungrouped: string[] = []
   for (let i = 0; i < count; i++) {

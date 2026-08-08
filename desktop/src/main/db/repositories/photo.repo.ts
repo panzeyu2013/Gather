@@ -52,7 +52,7 @@ export interface PhotoPageRow {
 /** Column list shared by the repository keyset query and the service-side
  * filter-pushdown queries, so both stay in sync. Requires the `p` table alias. */
 export const PHOTO_PAGE_COLUMNS = `p.rowid, p.id, p.session_id, p.filepath, p.filename, p.status,
-  p.asset_id, p.asset_file_id, p.width, p.height, p.created_at, p.updated_at`
+  p.asset_id, p.asset_file_id, p.width, p.height, p.checksum, p.created_at, p.updated_at`
 
 /** RAW file extensions that make a photo the preferred variant of its logical
  * asset (photos sharing an `asset_id`, e.g. RAW+JPEG pairs). Shared by the
@@ -190,10 +190,15 @@ export class PhotoRepository {
     sessionId: string,
     filepaths: Array<{ filepath: string; width: number; height: number }>,
     _source: string,
-  ): { added: number; skipped: number } {
+  ): { added: number; skipped: number; ids: string[] } {
     const now = new Date().toISOString()
     let added = 0
     let skipped = 0
+    // ids[i] is the photo id for filepaths[i], or '' when the path already
+    // existed — lets the caller update the fresh rows without re-reading the
+    // whole session (an O(n) query per batch would make a first import
+    // O(n²) overall).
+    const ids: string[] = []
 
     const insertStmt = this.db.prepare(
       `INSERT OR IGNORE INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, width, height, created_at, updated_at)
@@ -207,6 +212,7 @@ export class PhotoRepository {
       for (const { filepath, width, height } of paths) {
         if (existsStmt.get(sessionId, filepath)) {
           skipped++
+          ids.push('')
           continue
         }
         const filename = filepath.split(/[/\\]/).pop() ?? filepath
@@ -214,14 +220,16 @@ export class PhotoRepository {
         const result = insertStmt.run(id, sessionId, filepath, filename, width, height, now, now)
         if (result.changes > 0) {
           added++
+          ids.push(id)
         } else {
           skipped++
+          ids.push('')
         }
       }
     })
 
     insertMany(filepaths)
-    return { added, skipped }
+    return { added, skipped, ids }
   }
 
   deleteBySession(sessionId: string): void {

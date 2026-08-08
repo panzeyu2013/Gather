@@ -18,7 +18,7 @@ const ALLOWED_COMMANDS = new Set<CommandType>([
   'sim.preview_writeback', 'sim.writeback', 'sim.writeback_items', 'sim.retry_failed_writeback',
   'sim.confirm_sync', 'sim.cleanup',
   'image.prioritize_thumbnail', 'image.preload_thumbnails', 'image.preload_previews', 'image.get_dimensions',
-  'photo.list',
+  'photo.list', 'photo.list_page',
   'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
   'metadata.get', 'metadata.set', 'metadata.batch_set', 'metadata.conflicts', 'metadata.resolve_conflict', 'metadata.orphans', 'metadata.resolve_orphan',
@@ -140,14 +140,29 @@ const api: GatherAPI = {
     if (typeof callback !== 'function') {
       throw new Error('Ready callback must be a function')
     }
+    const event = 'engine:status'
+    const current = (LISTENER_COUNTS.get(event) ?? 0) + 1
+    LISTENER_COUNTS.set(event, current)
+    if (current >= MAX_LISTENERS_PER_EVENT) {
+      console.warn(
+        `[EventSystem] "${event}" has ${current} listeners, possible leak. ` +
+        `Active events: ${[...LISTENER_COUNTS.entries()].map(([k, v]) => `${k}:${v}`).join(', ')}`
+      )
+    }
     const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
       if (evt === 'engine:status' && (data as { status: string }).status === 'ready') {
-        callback()
-        ipcRenderer.removeListener('gather:event', handler)
+        try {
+          callback()
+        } finally {
+          // A throwing callback must not leak the listener or its count.
+          ipcRenderer.removeListener('gather:event', handler)
+          LISTENER_COUNTS.set(event, Math.max(0, (LISTENER_COUNTS.get(event) ?? 1) - 1))
+        }
       }
     }
     ipcRenderer.on('gather:event', handler)
     return () => {
+      LISTENER_COUNTS.set(event, Math.max(0, (LISTENER_COUNTS.get(event) ?? 1) - 1))
       ipcRenderer.removeListener('gather:event', handler)
     }
   },
@@ -159,6 +174,15 @@ const api: GatherAPI = {
     if (typeof callback !== 'function') {
       throw new Error('Plugin import callback must be a function')
     }
+    const event = 'c1:plugin-import'
+    const current = (LISTENER_COUNTS.get(event) ?? 0) + 1
+    LISTENER_COUNTS.set(event, current)
+    if (current >= MAX_LISTENERS_PER_EVENT) {
+      console.warn(
+        `[EventSystem] "${event}" has ${current} listeners, possible leak. ` +
+        `Active events: ${[...LISTENER_COUNTS.entries()].map(([k, v]) => `${k}:${v}`).join(', ')}`
+      )
+    }
     const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
       if (evt === 'c1:plugin-import') {
         callback((data as { files: string[] }).files)
@@ -166,6 +190,7 @@ const api: GatherAPI = {
     }
     ipcRenderer.on('gather:event', handler)
     return () => {
+      LISTENER_COUNTS.set(event, Math.max(0, (LISTENER_COUNTS.get(event) ?? 1) - 1))
       ipcRenderer.removeListener('gather:event', handler)
     }
   },
@@ -204,6 +229,15 @@ const api: GatherAPI = {
     if (typeof callback !== 'function') {
       throw new Error('Model download progress callback must be a function')
     }
+    const event = 'models:download-progress'
+    const current = (LISTENER_COUNTS.get(event) ?? 0) + 1
+    LISTENER_COUNTS.set(event, current)
+    if (current >= MAX_LISTENERS_PER_EVENT) {
+      console.warn(
+        `[EventSystem] "${event}" has ${current} listeners, possible leak. ` +
+        `Active events: ${[...LISTENER_COUNTS.entries()].map(([k, v]) => `${k}:${v}`).join(', ')}`
+      )
+    }
     const handler = (_e: Electron.IpcRendererEvent, evt: string, data: unknown) => {
       if (evt === 'models:download-progress') {
         callback(data)
@@ -211,6 +245,7 @@ const api: GatherAPI = {
     }
     ipcRenderer.on('gather:event', handler)
     return () => {
+      LISTENER_COUNTS.set(event, Math.max(0, (LISTENER_COUNTS.get(event) ?? 1) - 1))
       ipcRenderer.removeListener('gather:event', handler)
     }
   },

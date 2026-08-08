@@ -18,4 +18,14 @@ export const sessionApi = {
     sendCommand<SessionData>('session.update', { sessionId, name }),
   getPhotos: (sessionId: string, expandVariants = false) =>
     sendCommand<PhotoData[]>('photo.list', { sessionId, expandVariants }),
+  getPhotosPage: (
+    sessionId: string,
+    options: { afterFirstRowid?: number; limit?: number; expandVariants?: boolean } = {},
+  ) =>
+    sendCommand<{ rows: PhotoData[]; cursor: number | null }>('photo.list_page', {
+      sessionId,
+      afterFirstRowid: options.afterFirstRowid,
+      limit: options.limit,
+      expandVariants: options.expandVariants,
+    }),
 }

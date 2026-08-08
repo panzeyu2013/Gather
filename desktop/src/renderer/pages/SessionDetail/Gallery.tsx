@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { sessionApi } from '../../api/session'
 import { imageApi } from '../../api/image'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -9,6 +9,8 @@ import Lightbox from '../../components/Lightbox/Lightbox'
 import { layoutJustifiedRows } from './justified-layout'
 import type { PhotoData } from '@gather/shared'
 import styles from './Gallery.module.css'
+
+const PAGE_SIZE = 200
 
 const FILTER_OPTIONS = [
   { value: 'all', label: '全部' },
@@ -51,22 +53,66 @@ export default function Gallery() {
     if (Object.keys(settings).length === 0) loadSettings()
   }, [loadSettings])
 
-  const { data: photos, isLoading } = useQuery({
+  // Searching or filtering must see the whole session, not just the pages
+  // loaded so far: the chain-fetch effect below pulls every remaining page.
+  const searchActive = search.trim() !== '' || filter !== 'all'
+
+  const { data: photos, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useInfiniteQuery({
     queryKey: ['photos', sessionId, expandVariants],
-    queryFn: () => sessionApi.getPhotos(sessionId!, expandVariants),
+    queryFn: ({ pageParam }) => sessionApi.getPhotosPage(sessionId!, {
+      afterFirstRowid: pageParam as number | undefined,
+      // Searching/filtering chain-fetches the whole session; larger pages
+      // cut the number of sequential round trips (200 -> ~100 for 100k).
+      limit: searchActive ? 1000 : PAGE_SIZE,
+      expandVariants,
+    }),
+    initialPageParam: undefined as number | undefined,
+    getNextPageParam: (lastPage) => lastPage.cursor ?? undefined,
     enabled: !!sessionId,
   })
+  const loadedPhotos = useMemo(
+    () => (photos?.pages ?? []).flatMap(page => page.rows),
+    [photos],
+  )
 
   useEffect(() => {
     if (sessionId) setSession(sessionId)
   }, [sessionId, setSession])
 
-  const filtered = useMemo(() => (photos ?? []).filter((p) => {
+  const filtered = useMemo(() => (loadedPhotos ?? []).filter((p) => {
     if (search && !p.filename.toLowerCase().includes(search.toLowerCase())) return false
     if (filter === 'hasFace' && p.faceCount === 0) return false
     if (filter === 'noFace' && p.faceCount > 0) return false
     return true
-  }), [photos, search, filter])
+  }), [loadedPhotos, search, filter])
+
+  // Load more pages as the user scrolls to the bottom. The sentinel lives
+  // below the virtual canvas; an observer on it triggers the next keyset
+  // page while the first page is still rendering.
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const element = sentinelRef.current
+    if (!element) return
+    if (typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          void fetchNextPage()
+        }
+      },
+      { rootMargin: '1600px' },
+    )
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [fetchNextPage, hasNextPage])
+
+  // Searching or filtering must see the whole session, not just the pages
+  // loaded so far: chain-fetch every remaining page while a filter is active.
+  useEffect(() => {
+    if (!searchActive) return
+    if (!hasNextPage || isFetchingNextPage) return
+    void fetchNextPage()
+  }, [searchActive, hasNextPage, isFetchingNextPage, fetchNextPage])
 
   useEffect(() => {
     const element = galleryRef.current
@@ -90,7 +136,7 @@ export default function Gallery() {
     const observer = new ResizeObserver(updateWidth)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [isLoading, photos?.length])
+  }, [isLoading, loadedPhotos?.length])
 
   const rows = useMemo(
     () => layoutJustifiedRows(filtered, galleryWidth, density, 8),
@@ -151,7 +197,7 @@ export default function Gallery() {
   const closeLightbox = () => setLightboxIndex(null)
 
   if (isLoading) return <div className={styles.container}><p>加载照片中...</p></div>
-  if (!photos?.length) return <div className={styles.container}><div className={styles.empty}>暂无照片</div></div>
+  if (!loadedPhotos?.length) return <div className={styles.container}><div className={styles.empty}>暂无照片</div></div>
 
   return (
     <div className={styles.container}>
@@ -226,6 +272,9 @@ export default function Gallery() {
               })}
             </div>
           ))}
+        </div>
+        <div ref={sentinelRef} className={styles.loadMore}>
+          {isFetchingNextPage ? <span className={styles.loadMoreText}>加载更多...</span> : null}
         </div>
       </div>
       {lightboxIndex !== null && filtered.length > 0 && (
