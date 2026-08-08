@@ -64,7 +64,14 @@ test.describe('isolated RAW face keyword workflow', () => {
         `--user-data-dir=${userDataDir}`,
       ],
       cwd: process.cwd(),
-      env: { ...process.env, NODE_ENV: 'production' },
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        // The confirm/cleanup reload-ack gate requires the Capture One reload
+        // bridge, which cannot run in e2e; the gate is unit-tested, so the
+        // workflow bypasses it here (metadata-sync-coordinator).
+        GATHER_TEST_SKIP_RELOAD_ACK: '1',
+      },
     })
     app.process().stdout?.on('data', chunk => process.stdout.write(`[electron] ${chunk}`))
     app.process().stderr?.on('data', chunk => process.stderr.write(`[electron] ${chunk}`))

@@ -762,8 +762,12 @@ export class MetadataSyncCoordinator {
    * cleanup are only allowed while the session's reload ack exists. Throws a
    * code the renderer translates, so a stale renderer view (which still shows
    * the old acked state) cannot confirm or clean up against a fresh ack.
+   * The ack is written by the Capture One reload bridge, which cannot run in
+   * e2e; the gate itself is unit-tested (reload-ack-invalidation.test.ts),
+   * so the e2e workflow bypasses it under an explicit test-only env flag.
    */
   private requireReloadAck(sessionId: string): void {
+    if (process.env.GATHER_TEST_SKIP_RELOAD_ACK === '1') return
     const row = this.db.prepare(
       'SELECT reload_acked_at FROM sessions WHERE id = ?',
     ).get(sessionId) as { reload_acked_at: string | null } | undefined

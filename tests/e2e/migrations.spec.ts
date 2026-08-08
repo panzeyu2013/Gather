@@ -10,8 +10,8 @@ function hasSqliteCli(): boolean {
 
 // Keep version expectations in one place so a schema bump touches them here only.
 const PRE_MIGRATION_VERSION = 14
-const CURRENT_SCHEMA_VERSION = '28'
-const LEGACY_BACKUP_PREFIX = 'gather.db.pre-v28-'
+const CURRENT_SCHEMA_VERSION = '31'
+const LEGACY_BACKUP_PREFIX = 'gather.db.pre-v31-'
 
 test('upgrades a legacy schema marker with a pre-migration backup', async () => {
   test.skip(!hasSqliteCli(), 'sqlite3 CLI is required for the legacy database fixture')
