@@ -52,7 +52,7 @@
 
 ## ADR-006 Schema 快照位置与用途
 
-- 当前 schema 快照：`docs/fixtures/schema-v27.snapshot.json`（记录表名集合）。
+- 当前 schema 快照：`docs/fixtures/schema.snapshot.json`（记录表名集合）。
 - 由 `tests/unit/services/core-reliability-baseline.test.ts` 校验 `SCHEMA_SQL` 与其一致；
   任何表级 schema 变更必须同步更新该快照。
 - 每次迁移运行末尾无条件执行 `INDEX_SQL`；索引的"单一规范定义"由
@@ -125,6 +125,163 @@
 - 边界：本期只交付"索引 + 查询"组件；向量持久化与模型版本指纹沿用
   `face_observations`/`analysis_signature` 既有机制，消费方接线（聚类候选生成、
   跨 session 重识别）在 Phase 2/3 排期，不在此引入向量数据库选型。
+
+---
+
+## ADR-012 分析过期检测：`analysis_runs` + `sessions.index_seq`
+
+已实现于 `desktop/src/main/db/migrations.ts`（v30）与
+`services/workspace/workspace-status.service.ts`：
+
+- 过期判定 `stale = 最近一次 ok run 的 index_seq < session.index_seq`；`index_seq`
+  只在索引提交点自增（`index.service.ts` 扫描事务后），相似度/人脸分析开始时读
+  事务快照写入 run 记录（`analysis_runs`）。
+- **不采用照片数 COUNT 比较**：删除照片时 COUNT 变小但分析结果并未过期，会产生
+  假阳性重算；`index_seq` 只随索引提交自增，语义精确（design_improvements.md
+  1.4.2 判定记录 ✅ 落地）。
+- 只取最近一次 `status='ok'` 的 run 参与判定，失败/取消的 run 不掩盖过期。
+- 并发约束：`index_seq` 自增走单事务；分析读取用事务快照。
+- 后果：新增照片 → Inbox 出现 `analysis_stale`；删图不误报；阶段判定
+  `indexed` 以索引 job 成功记录为准。
+
+## ADR-013 WorkspaceStatusService：只读聚合 + 离线复核 TTL
+
+已实现于 `desktop/src/main/services/workspace/workspace-status.service.ts`，
+IPC `workspace.status`：
+
+- 不引入新权威数据源：全部计数从 photos / analysis_runs / metadata_outbox /
+  jobs 派生，是 CQRS 式只读模型（1.3 第一性原理落地）。
+- 推荐动作 = **固定优先级序列表 + 布尔门控**（scan_incomplete → xmp_conflict →
+  analysis_stale → job_failed → 推进流程），拒绝规则引擎（1.4.3 ✂️ 落地）。
+- 离线照片复核 **TTL ≥ 5 分钟**（`OFFLINE_PHOTOS_TTL_MS = 5 * 60_000`）：
+  `photos.status='missing'` 是惰性检测，Inbox 刷新不得全盘 stat，否则退化为
+  性能陷阱（1.4.5 ➕ 落地）。
+- 刷新策略：轮询兜底 30s（索引活跃期 3s）+ 复用现有推送事件（`jobs:progress`
+  终态、`culling:sync-status`），不新增 push 通道。
+- 后果：离线计数最多滞后 TTL 5 分钟；Inbox 查询为常量级开销。
+
+## ADR-014 一跳化导入：路径数组不跨 IPC
+
+已实现于 `session.create_from_directory`（`desktop/src/main/ipc/session.ipc.ts`
++ `services/session/session.service.ts`）：
+
+- 50k 上限是**内存/IPC 载荷约束而非产品上限**（结构化克隆 5 万条路径的开销）；
+  主进程内流式遍历 + 分批落库后，上限在数据层消失，仅保留为 UI 计数预览上限
+  （3.2 根因修复落地）。
+- `app:scan-directory` 保留仅用于 UI 计数预览，返回
+  `ScanResult { files, truncated, scannedTotal, limit }`（`scannedTotal` 持续
+  累加、`truncated = scannedTotal > files.length`），截断标记落
+  `sessions.truncated_import`（迁移 v29）。
+- 后果：`session.create`（文件列表，兼容）与 `session.create_from_directory`
+  （路径一跳）双入口并存；UI 计数预览仍受 50k 约束，数据导入不受。
+
+## ADR-015 CaptureOneSyncState：会话级聚合 + `reload_acked_at` 重启重推导
+
+已实现于 `desktop/src/main/services/capture-one/sync-state.ts`；
+`sessions.reload_acked_at` 为迁移 v31：
+
+- 机器状态在内存、易失：重启后从 **outbox 行状态 + `reload_acked_at` 重推导**，
+  行是持久真相源、机器状态是派生值，不落库整个状态机（2.3.3 ➕ 落地）。
+- 会话级聚合规则确定性：`conflict > failed > syncing(pending/writing) >
+  safeToCleanup`；未知状态按保守处理，绝不声称 safeToCleanup（2.3.2 ➕ 落地）。
+- `reload_acked_at` **只在 reloadMetadata() 成功后写入**，保持"失败即回退、
+  不清理"策略；`safeToCleanup` 门控（reload 成功 + 延迟窗口）与 XMP 双写领域
+  模型同构（2.3.1 ✅ 落地）。
+- 协调器每次 emitSummary 后重推导会话状态并记录状态转换日志（`main/index.ts`
+  事件接线、`sync-state.ts` 转换日志），状态机转换全部可观测。
+- 后果：重启后跨会话恢复 `safeToCleanup` 而不误清理；清理动作永远不早于 C1
+  确认读取。
+
+## ADR-016 i18n：i18next + 类型化 key + 主进程只抛错误码
+
+已实现于 `desktop/src/renderer/locales/`（i18next + react-i18next，
+`TranslationKey` 由 zh-CN.json 推导）；P1 页面级迁移完成（697 处 `t()`、
+1063 key/语言，术语表冻结于 docs/i18n-glossary.md）：
+
+- 边界分工：主进程**只抛错误码**（`GATHER_ERROR_CODES`，
+  packages/shared/src/errors.ts）与**阶段码**（`progress.*`），渲染层统一映射
+  文案（`translateError` / `translatePhase`）；事件推送负载同样代码化
+  （4.4.2 ➕ 落地），禁止主进程返回拼接文案。
+- 拒绝 AST codemod（生成的无上下文 key 仍需全量人工复查，省不了审校时间）与
+  saveMissing/locize（无在线后端需求，会污染资源文件）——4.3/4.4.3 ✂️ 落地。
+- 语言来源：`navigator.language` 检测（zh → zh-CN，其余 en），fallback 到 en。
+- 后果：新增文案必须同时落两语言文件并过术语表；主进程文案以错误码形式跨 IPC。
+- P2：eslint 无硬编码守护（`gather/no-hardcoded-text`，见 ADR-019）与 Electron
+  菜单本地化（`main/menu.ts`）已落地；语言切换 UI（设置覆盖 + 菜单重建）
+  已落地，见 ADR-020。
+
+## ADR-017 错误码化的表面边界与文档例外
+
+- 错误码化覆盖两个表面：IPC 返回值（`C1_NOT_RUNNING` / `C1_NO_DOCUMENT` /
+  `C1_NOT_AUTHORIZED` / `C1_SCRIPT_FAILED` / `SCAN_INVALID_DIR` /
+  `SCAN_READ_FAILED`）与事件负载阶段码（`progress.<phase>` 键）。
+- 已记录例外：导出报告（`desktop/src/main/services/export/report.service.ts`
+  生成的 markdown 文档，如"# 人物""# 关键词"）是**文档内容而非 UI 文案**，
+  不纳入 i18n 与错误码体系；UI 文案（按钮、标签、toast、错误提示）一律走 i18n。
+- 后果："主进程无自然语言文案"有明确判据（文档内容豁免）；新增错误先加码、
+  再在渲染层补映射，不得回退到拼接文案。
+
+## ADR-018 Dialog 无障碍：自研 APG 焦点管理（portal + inert），拒绝 roving tabindex
+
+已实现于 `desktop/src/renderer/components/Dialog/Dialog.tsx`：
+
+- 自研实现对齐 W3C APG Dialog 模式：打开时记录触发元素并按内容聚焦
+  （`initialFocus` 支持不可逆操作聚焦"最不具破坏性动作"）、Tab 循环焦点陷阱、
+  关闭后焦点恢复、`aria-labelledby` 引用可见标题、`descriptionId` 仅在简单描述
+  时提供；portal 挂载 + 打开时给背景容器加 `inert`（5.1 ✅ 落地）。
+- **拒绝 roving tabindex（APG grid 模式）**：相似组是 ≤100 项的静态列表，自然
+  Tab 顺序即可访问；grid 的复杂度远超收益，仅列表虚拟化/超数百项再引入
+  （5.2 ✂️ 落地）。组头改为语义化 button + 并列 checkbox，`aria-expanded`
+  表达展开态。
+- 原生 `<dialog>.showModal()` 作为可选替代评估后未采纳，保持条件渲染 + 自研
+  （5.1 P1 可选项）。
+- 回归：jest-axe 组件测试（`tests/unit/renderer/a11y-dialog.test.tsx` /
+  `a11y-similarity.test.tsx` / `a11y-dashboard.test.tsx`，含焦点陷阱边界用例）；
+  对比度修复仅改全局 token（docs/a11y-audit.md §1.2）。
+
+## ADR-019 Electron 菜单本地化：主进程 label 映射 + locale 解析链
+
+已实现于 `desktop/src/main/menu.ts`（P2，工作区落地未提交）：
+
+- 菜单模板在**主进程**持有两套 label 映射（zh-CN/en），按当前 locale 重建并
+  `Menu.setApplicationMenu`；主进程仍不持有通知类自然语言文案，错误码边界不变
+  （与 ADR-016 一致）。
+- locale 解析链：`--lang`（Chromium/Electron 开关）优先，否则 `app.getLocale()`；
+  非 zh 前缀一律回退 en。Electron/Chromium 同样消费 `--lang`，应用菜单与
+  Chromium 内部对话框语言保持一致。
+- 未来语言切换：更新 locale 后调用 `rebuildMenu()` 即可，无其他接线；当前
+  **有意不提供语言切换 UI**（menu.ts 注释，P1 scope）。
+  **（已被 ADR-020 取代：语言切换 UI 已随 i18n P2 收尾落地，见 Settings
+  选择器 + `settings.set_language` + `setAppLocale`，本句作废。）**
+- 静态守护：eslint 规则 `gather/no-hardcoded-text`
+  （`desktop/eslint/no-hardcoded-text.cjs`）禁止渲染层 JSX 文本节点与
+  `aria-label` 出现非 i18n 字符串。
+- 后果：新增菜单项须同时落两语言 label 映射与术语表；渲染层文案仍走 i18next。
+
+## ADR-020 语言来源优先级 + 菜单重建接线（i18n P2 收尾）
+
+已实现于 `desktop/src/main/locale.ts`、`desktop/src/main/menu.ts`、
+`desktop/src/main/ipc/settings.ipc.ts` 与 `desktop/src/renderer/locales/`：
+
+- 语言优先级（design_improvements.md 4.2）：持久化设置 `ui_language`
+  （app_settings）覆盖 > `--lang` 启动开关 > `app.getLocale()`；非 zh 前缀
+  一律回退 en。纯函数 `resolveEffectiveLocale(langSwitch, systemLocale,
+  uiLanguage)`（`main/locale.ts`，无 electron 依赖，单元测试覆盖整条链）。
+  非法覆盖值按未设置处理，不污染解析链。
+- 语言切换 = 单命令双动作：`settings.set_language` 校验值（仅
+  zh-CN/en）、持久化 `ui_language`，并调用 `menu.ts` 新增的 `setAppLocale()`
+  立即重建菜单（`rebuildMenu()` 原导出不变）；渲染层随后 `initI18n(language)`
+  使 UI 文案即时切换。菜单与渲染层由同一有效 locale 驱动，永不撕裂。
+- 渲染层启动 bootstrap（`main.tsx`）：`app:get-app-locale`（新直连 IPC，
+  c1:health 同风格）→ `initI18n(effective)` → 首次 render；IPC 失败回退
+  `detectLanguage()`（navigator 检测，模块级默认不变，纯函数 t() 仍可用）。
+  首帧渲染前 i18n 已落定，避免 locale flash。
+- 语言选项标签（中文 / English）为固定品牌名，两语言文件同值，不随语言
+  本地化：选项本身命名的是该语言，本地化会自指（"中文"→"Chinese" 反而
+  更长），故有意固定。
+- 后果：新增语言选项须同步维护 `AppLocale` 联合类型、preload 白名单与
+  两语言文件；错误文案仍由渲染层映射（ADR-016/017 边界不变），主进程
+  只负责 locale 决议与菜单 label。
 
 ---
 

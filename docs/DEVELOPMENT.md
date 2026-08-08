@@ -196,7 +196,7 @@ tests/
 - 新增单元测试一律放 `tests/unit/` 对应子目录；相对导入按 `tests/unit/` 的
   层级计算。
 - 架构不变量测试（`tests/unit/shared/architecture-invariants.test.ts`）禁止
-  改动测试路径约定；schema 快照 `docs/fixtures/schema-v27.snapshot.json` 与
+  改动测试路径约定；schema 快照 `docs/fixtures/schema.snapshot.json` 与
   迁移索引 DDL 由该测试强制校验（ADR-006）。
 - `desktop/vitest.config.ts` 把 `better-sqlite3` 别名到
   `better-sqlite3-system`（为系统 Node 编译的副本），使单测无需手动重建
@@ -296,7 +296,7 @@ Electron Desktop App
     备份 → `integrity_check`；
   - 迁移失败保留失败副本并从备份恢复，不删任何用户照片或 XMP；
   - 迁移后 `foreign_key_check` + 关键表列不变量 + 版本校验；
-  - 表级 schema 变更必须同步 `docs/fixtures/schema-v27.snapshot.json`。
+  - 表级 schema 变更必须同步 `docs/fixtures/schema.snapshot.json`。
 
 ### 安全模型
 
