@@ -40,6 +40,10 @@ test.beforeAll(async () => {
     args: [
       path.resolve(process.cwd(), 'desktop'),
       `--user-data-dir=${userDataDir}`,
+      // The specs assert Chinese copy written before the i18n migration; pin
+      // the Chromium locale so the merged renderer renders deterministically
+      // on any host (CI runners default to en-US).
+      '--lang=zh-CN',
     ],
     cwd: process.cwd(),
     env: {
@@ -376,6 +380,7 @@ test('restores culling state and XMP after an application restart', async () => 
     args: [
       path.resolve(process.cwd(), 'desktop'),
       `--user-data-dir=${userDataDir}`,
+      '--lang=zh-CN',
     ],
     cwd: process.cwd(),
     env: {
