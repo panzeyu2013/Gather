@@ -78,8 +78,12 @@ export function getAutoBackend(): string {
 }
 
 export function getAutoBackendLabel(): string {
+  // Main-side label map (same mechanism as the app menu): the renderer shows
+  // this label via the settings IPC payload, so the label is resolved against
+  // the app locale instead of shipping zh copy from the main process.
+  const isZh = app.getLocale().toLowerCase().startsWith('zh')
   switch (process.platform) {
-    case 'darwin': return 'CoreML（失败自动回退 CPU）'
+    case 'darwin': return isZh ? 'CoreML（失败自动回退 CPU）' : 'CoreML (falls back to CPU on failure)'
     case 'win32': return 'DirectML'
     default: return 'CPU'
   }

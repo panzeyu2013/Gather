@@ -46,7 +46,7 @@ export class PhotoAssetResolver {
       asset_path: string | null
       xmp_path: string | null
     } | undefined
-    if (!row) throw new Error('Photo does not belong to this workspace')
+    if (!row) throw new Error('CULLING_PHOTO_NOT_IN_SESSION')
     const mode = this.settings.get('asset_read_mode', 'dual')
     const assetReady = Boolean(row.asset_id && row.asset_file_id && row.asset_path)
     const assetXmpPath = row.xmp_path ?? (row.asset_path ? getXmpSidecarPath(row.asset_path) : null)

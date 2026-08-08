@@ -78,7 +78,7 @@ describe('NavigationService', () => {
     expect(burst?.photoIds).toEqual(['p1', 'p2'])
     expect(scene?.photoIds).toEqual(['p1', 'p2', 'p3'])
     expect(burst?.leadPhotoId).toBe('p2')
-    expect(burst?.explanation).toContain('人工星级')
+    expect(burst?.explanation).toBe('NAV_RECOMMEND_RATING')
 
     const tighter = service.analyze('session', 0.5, 1_800)
     expect(tighter.some(group => group.type === 'burst')).toBe(false)

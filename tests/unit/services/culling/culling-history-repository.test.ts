@@ -41,11 +41,11 @@ describe('CullingHistoryRepository', () => {
     const second = repository.append('session', entry('p2'))
 
     expect(() => repository.setUndone('session', first.id, true))
-      .toThrow('只能撤销最近一次')
+      .toThrow('CULLING_UNDO_NOT_LATEST')
     repository.setUndone('session', second.id, true)
     repository.setUndone('session', first.id, true)
     expect(() => repository.setUndone('session', second.id, false))
-      .toThrow('必须按原顺序重做')
+      .toThrow('CULLING_REDO_OUT_OF_ORDER')
     repository.setUndone('session', first.id, false)
     repository.setUndone('session', second.id, false)
 

@@ -51,7 +51,7 @@ describe('ExportService option contracts', () => {
 
   it('rejects transformations that cannot apply to original copies', async () => {
     await expect(makeService().preview('session-1', options({ maxDimension: 1200 })))
-      .rejects.toThrow('保持原格式')
+      .rejects.toThrow('EXPORT_ORIGINAL_NO_TRANSFORM')
     await expect(makeService().preview('session-1', options({
       watermark: {
         type: 'text',
@@ -59,7 +59,7 @@ describe('ExportService option contracts', () => {
         position: 'bottom-right',
         opacity: 0.5,
       },
-    }))).rejects.toThrow('保持原格式')
+    }))).rejects.toThrow('EXPORT_ORIGINAL_NO_TRANSFORM')
   })
 
   it('creates missing destination directories and uses the real session name', async () => {
@@ -100,11 +100,11 @@ describe('ExportService option contracts', () => {
     await expect(makeService().preview(
       'session-1',
       options({ naming: { pattern: '../outside' } }),
-    )).rejects.toThrow('路径分隔符')
+    )).rejects.toThrow('EXPORT_NAMING_INVALID_CHARS')
     await expect(makeService().preview(
       'session-1',
       options({ format: 'jpeg', quality: Number.NaN }),
-    )).rejects.toThrow('JPEG 质量')
+    )).rejects.toThrow('EXPORT_JPEG_QUALITY_INVALID')
   })
 
   it('selects RAW, JPEG, preferred, or all members of a logical Asset', async () => {
@@ -167,13 +167,13 @@ describe('ExportService option contracts', () => {
     )
 
     await expect(service.preview('session-1', options({ destination: sourceDir })))
-      .rejects.toThrow('重新导入')
+      .rejects.toThrow('EXPORT_DIR_INSIDE_SESSION')
     await expect(service.preview('session-1', options({ destination: subDir })))
-      .rejects.toThrow('重新导入')
+      .rejects.toThrow('EXPORT_DIR_INSIDE_SESSION')
     await expect(service.execute('session-1', options({ destination: sourceDir })))
-      .rejects.toThrow('重新导入')
+      .rejects.toThrow('EXPORT_DIR_INSIDE_SESSION')
     await expect(service.execute('session-1', options({ destination: subDir })))
-      .rejects.toThrow('重新导入')
+      .rejects.toThrow('EXPORT_DIR_INSIDE_SESSION')
   })
 
   it('rejects a destination reached through a symlink into the source directory', async () => {
@@ -201,8 +201,8 @@ describe('ExportService option contracts', () => {
     )
 
     await expect(service.preview('session-1', options({ destination: link })))
-      .rejects.toThrow('重新导入')
+      .rejects.toThrow('EXPORT_DIR_INSIDE_SESSION')
     await expect(service.execute('session-1', options({ destination: link })))
-      .rejects.toThrow('重新导入')
+      .rejects.toThrow('EXPORT_DIR_INSIDE_SESSION')
   })
 })

@@ -13,6 +13,9 @@ export interface DownloadProgress {
   percent: number
   downloaded: number
   total: number
+  /** Stage code instead of natural-language copy (design_improvements.md
+   * 4.4.2): set only on milestone events (e.g. `models.installed`). */
+  phase?: string
 }
 
 const { packageUrl, fileMap: EXTRACT_MAP } = MODEL_CONFIG.download
@@ -156,14 +159,14 @@ export async function downloadDefaultModels(
     }
 
     if (!(await validModelFile(join(targetDir, 'face_detector.onnx')))) {
-      throw new Error('face_detector.onnx 缺失或已损坏，请重新下载')
+      throw new Error('FACE_MODEL_DETECTOR_CORRUPT')
     }
     if (!(await validModelFile(join(targetDir, 'face_encoder.onnx')))) {
-      throw new Error('face_encoder.onnx 缺失或已损坏，请重新下载')
+      throw new Error('FACE_MODEL_ENCODER_CORRUPT')
     }
 
     // A final 100% event means the models are installed, not merely downloaded.
-    onProgress({ filename: '人脸模型已安装', percent: 100, downloaded: 0, total: 0 })
+    onProgress({ filename: '', percent: 100, downloaded: 0, total: 0, phase: 'models.installed' })
   } catch (err) {
     throw err
   } finally {

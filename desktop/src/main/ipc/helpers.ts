@@ -9,6 +9,8 @@ export function err(error: string | { type: string; message: string }): Response
   return { ok: false, error }
 }
 
+// ADR-017: internal-invariant diagnostic — these messages are programming-error
+// diagnostics, never user-facing copy, so they stay English.
 export function validateString(value: unknown, name: string, maxLength = 4096, allowEmpty = false): string {
   if (typeof value !== 'string') {
     throw new ValidationError(`Invalid ${name}: must be a string`)
@@ -54,12 +56,23 @@ export function wrapHandler(handler: IpcHandler) {
     try {
       return await handler((params ?? {}) as Record<string, unknown>, event)
     } catch (e: unknown) {
+      // Optional interpolation params carried from the throwing service
+      // (e.g. CULLING_REVISION_CONFLICT expected/current) to the renderer.
+      const errorParams = (e as { params?: Record<string, unknown> }).params
       if (e instanceof ValidationError) {
-        return err({ type: 'ValidationError', message: e.message })
+        return err({
+          type: 'ValidationError',
+          message: e.message,
+          ...(errorParams ? { params: errorParams } : {}),
+        })
       }
       console.error('[IPC Handler Error]', e)
       const message = e instanceof Error ? e.message : 'Unknown error'
-      return err({ type: 'RuntimeError', message })
+      return err({
+        type: 'RuntimeError',
+        message,
+        ...(errorParams ? { params: errorParams } : {}),
+      })
     }
   }
 }

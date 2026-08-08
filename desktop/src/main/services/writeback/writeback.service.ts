@@ -81,7 +81,7 @@ export class WritebackService {
         mutationSource(module),
       )
     ) {
-      throw new Error('请先完成其他模块的 Capture One 同步和清理，再开始新的写回')
+      throw new Error('WRITEBACK_OTHER_MODULE_ACTIVE')
     }
     // Legacy fallback for callers constructed without the outbox repository.
     // Mirrors the outbox gate: interactive culling sync is continuous and
@@ -96,7 +96,7 @@ export class WritebackService {
       )
     if (activeOtherModule) {
       throw new Error(
-        `请先完成 ${activeOtherModule.module} 的 Capture One 同步和清理，再开始新的写回`,
+        'WRITEBACK_OTHER_MODULE_ACTIVE',
       )
     }
   }
@@ -424,7 +424,7 @@ export class WritebackService {
       if (!result || !['written', 'synced'].includes(result.status)) {
         throw new Error(
           result?.errorMessage ||
-          `撤销人脸关键词失败：${item.xmpPath} 处于 ${result?.status ?? 'unknown'} 状态`,
+          'WRITEBACK_UNDO_FACE_FAILED',
         )
       }
       this.keywordOrigins.deactivate(item.xmpPath, 'face-keyword', item.keywords)
@@ -454,7 +454,7 @@ export class WritebackService {
 
   async confirmSync(sessionId: string, module: string): Promise<void> {
     if (this.writebackRepo.getFailedCount(sessionId, module) > 0) {
-      throw new Error('仍有 XMP 写入失败项，请先重试或处理失败项')
+      throw new Error('WRITEBACK_FAILURES_PENDING')
     }
     // The outbox stores the mutation-source name (face_kw -> 'face-keyword'),
     // so the module-aware outbox confirm must use the mapped name; otherwise
@@ -492,7 +492,7 @@ export class WritebackService {
     const allItems = this.writebackRepo.getItems(sessionId, module)
     const syncedItems = allItems.filter(item => item.xmp_status === 'synced')
     if (syncedItems.length === 0 && allItems.length > 0) {
-      throw new Error('请先在 Capture One 中加载元数据并确认同步，再执行清理')
+      throw new Error('XMP_CLEANUP_REQUIRES_LOADED')
     }
 
     const result = await this.metadataSync.cleanup(sessionId, mutationSource(module))

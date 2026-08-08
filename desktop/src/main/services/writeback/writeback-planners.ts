@@ -33,7 +33,7 @@ export function buildSimilarityKeywordPlan(
   const affectedPaths = new Set<string>()
   for (const assignment of assignments) {
     const group = groupsById.get(assignment.groupId)
-    if (!group) throw new Error(`相似分组 ${assignment.groupId} 不属于当前工作区`)
+    if (!group) throw new Error('WRITEBACK_GROUP_NOT_IN_SESSION')
     for (const image of group.images) {
       affectedPaths.add(image.path)
       const sidecarPath = getXmpSidecarPath(image.path)

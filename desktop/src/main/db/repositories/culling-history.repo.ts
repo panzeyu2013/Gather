@@ -38,14 +38,14 @@ export class CullingHistoryRepository {
     `).get(sessionId, undone ? 0 : 1) as { id: number | null }
     if (boundary.id !== operationId) {
       throw new Error(undone
-        ? '只能撤销最近一次尚未撤销的操作'
-        : '必须按原顺序重做操作')
+        ? 'CULLING_UNDO_NOT_LATEST'
+        : 'CULLING_REDO_OUT_OF_ORDER')
     }
     const changed = this.db.prepare(`
       UPDATE culling_history SET undone = ?
       WHERE id = ? AND session_id = ? AND undone = ?
     `).run(undone ? 1 : 0, operationId, sessionId, undone ? 0 : 1).changes
-    if (changed !== 1) throw new Error('挑片历史状态已变化，请刷新后重试')
+    if (changed !== 1) throw new Error('CULLING_HISTORY_STALE')
   }
 
   get(sessionId: string, operationId: number): CullingHistoryOperation | null {
@@ -69,7 +69,7 @@ export class CullingHistoryRepository {
         createdAt: row.created_at,
       }
     } catch {
-      throw new Error('挑片历史记录已损坏，无法执行撤销或重做')
+      throw new Error('CULLING_HISTORY_CORRUPT')
     }
   }
 

@@ -127,7 +127,7 @@ export class DuplicateService {
         // skip unreadable files
       }
     }, 32)
-    onProgress?.(allPhotos.length, allPhotos.length * 3, '正在读取文件信息')
+    onProgress?.(allPhotos.length, allPhotos.length * 3, 'duplicate.read')
 
     const resolvedChecksums = new Map<string, string>()
     for (const photo of allPhotos) {
@@ -164,7 +164,7 @@ export class DuplicateService {
     onProgress?.(
       allPhotos.length + candidatePhotos.length,
       allPhotos.length * 3,
-      '正在计算内容校验和',
+      'duplicate.hash',
     )
 
     const existingVisualRows = db.prepare(
@@ -197,7 +197,7 @@ export class DuplicateService {
     for (const [photoId, hash] of computedVisualHashes) {
       resolvedVisualHashes.set(photoId, hash)
     }
-    onProgress?.(allPhotos.length * 3, allPhotos.length * 3, '重复扫描完成')
+    onProgress?.(allPhotos.length * 3, allPhotos.length * 3, 'duplicate.done')
 
     const persistAnalysisData = db.transaction(() => {
       const update = db.prepare(

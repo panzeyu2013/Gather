@@ -21,7 +21,7 @@ export function registerMetadataHandlers(
     'metadata.set',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('metadata.set requires confirmation')
+        throw new Error('METADATA_SET_CONFIRM_REQUIRED')
       }
       const photoId = validateString(params.photoId, 'photoId')
       const tags = (params.tags ?? {}) as Record<string, unknown>
@@ -34,10 +34,11 @@ export function registerMetadataHandlers(
     'metadata.batch_set',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('metadata.batch_set requires confirmation')
+        throw new Error('METADATA_BATCH_SET_CONFIRM_REQUIRED')
       }
       const updates = (params.updates ?? []) as { photoId: string; tags: Record<string, unknown> }[]
       if (!Array.isArray(updates) || updates.length === 0) {
+        // ADR-017: internal-invariant diagnostic (caller shape guard).
         return err('Invalid updates: must be a non-empty array')
       }
       const result = await metadataService.batchSet(
@@ -55,9 +56,10 @@ export function registerMetadataHandlers(
   }))
 
   registry.register('metadata.resolve_conflict', wrapHandler(async params => {
-    if (params.confirmed !== true) throw new Error('Resolving metadata conflicts requires confirmation')
+    if (params.confirmed !== true) throw new Error('METADATA_RESOLVE_CONFLICT_CONFIRM_REQUIRED')
     const choices = params.choices
     if (!choices || typeof choices !== 'object' || Array.isArray(choices)) {
+      // ADR-017: internal-invariant diagnostic (caller shape guard).
       throw new Error('choices must be an object')
     }
     for (const [field, choice] of Object.entries(choices)) {
@@ -76,8 +78,9 @@ export function registerMetadataHandlers(
   }))
 
   registry.register('metadata.resolve_orphan', wrapHandler(async params => {
-    if (params.confirmed !== true) throw new Error('Resolving orphan metadata requires confirmation')
+    if (params.confirmed !== true) throw new Error('METADATA_RESOLVE_ORPHAN_CONFIRM_REQUIRED')
     const action = validateString(params.action, 'action')
+    // ADR-017: internal-invariant diagnostics below (caller shape guard).
     if (!['keep', 'restore', 'retry'].includes(action)) throw new Error('Invalid orphan action')
     return ok(await metadataSync.resolveOrphan(
       validateString(params.xmpPath, 'xmpPath'),

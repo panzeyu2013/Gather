@@ -15,10 +15,10 @@ export function registerDuplicateHandlers(
         ? job.checkpoint.visualThreshold
         : undefined,
       context.signal,
-      (current, total, message) => context.updateProgress({
+      (current, total, phase) => context.updateProgress({
         current,
         total,
-        message,
+        phase,
         checkpoint: job.checkpoint,
       }),
     )
@@ -55,10 +55,11 @@ export function registerDuplicateHandlers(
     'dup.resolve',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('dup.resolve requires confirmation')
+        throw new Error('DUP_RESOLVE_CONFIRM_REQUIRED')
       }
       const groupId = validateNumber(params.groupId, 'groupId')
       const resolution = validateString(params.resolution, 'resolution')
+      // ADR-017: internal-invariant diagnostic (caller shape guard).
       if (resolution !== 'keep_one' && resolution !== 'keep_all') {
         throw new Error('Invalid resolution: must be keep_one or keep_all')
       }
@@ -71,7 +72,7 @@ export function registerDuplicateHandlers(
     'dup.resolve_member',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('dup.resolve_member requires confirmation')
+        throw new Error('DUP_RESOLVE_MEMBER_CONFIRM_REQUIRED')
       }
       const memberId = validateNumber(params.memberId, 'memberId')
       const isKept = typeof params.isKept === 'boolean' ? params.isKept : true

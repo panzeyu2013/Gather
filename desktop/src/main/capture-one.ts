@@ -6,8 +6,34 @@ import { promisify } from 'util'
 import { getService } from './di/init'
 import { DI_TOKENS } from './di/container'
 import type { SettingsService } from './services/settings/settings.service'
+import type { SessionRepository } from './db/repositories/session.repo'
+import type { GatherErrorCode } from '@gather/shared'
+import { classifyCaptureOneError } from './services/capture-one/errors'
 
 const execFile = promisify(execFileCb)
+
+// Error codes thrown across IPC (design_improvements.md 4.4.2): the main
+// process owns no natural-language copy, the renderer maps the code.
+// TCC Automation denial surfaces as Apple Events error -1743 / "not
+// authorized"; no open document produces "No document is open" variants;
+// a hang produces "timed out" / -1712. Classification lives in one shared
+// module (services/capture-one/errors.ts) so the bridge and the health
+// probe cannot drift apart.
+function classifyCaptureOneErrorCode(raw: string): GatherErrorCode {
+  switch (classifyCaptureOneError(raw)) {
+    case 'denied':
+      return 'C1_NOT_AUTHORIZED'
+    case 'noDocument':
+      return 'C1_NO_DOCUMENT'
+    default:
+      return 'C1_SCRIPT_FAILED'
+  }
+}
+
+function throwCode(code: GatherErrorCode, cause?: unknown): never {
+  const error = new Error(code, cause === undefined ? undefined : { cause })
+  throw error
+}
 
 // Allow legitimate Capture One install names such as "Capture One Pro",
 // "Capture One Express" or "Capture One 16 Pro" while keeping the name safe
@@ -27,8 +53,29 @@ end tell
 `
 }
 
+export function buildSelectedVariantsScript(appName: string): string {
+  return `
+tell application "${appName}"
+  try
+    set output to ""
+    set selectedImages to selected variants of current document
+    repeat with img in selectedImages
+      set output to output & (path of img as text) & linefeed
+    end repeat
+    return output
+  on error
+    return ""
+  end try
+end tell
+`
+}
+
 function getSettings(): SettingsService {
   return getService<SettingsService>(DI_TOKENS.SETTINGS_SERVICE)
+}
+
+function getSessionRepo(): SessionRepository {
+  return getService<SessionRepository>(DI_TOKENS.SESSION_REPO)
 }
 
 async function execAppleScript(script: string, retries?: number): Promise<string> {
@@ -44,7 +91,8 @@ async function execAppleScript(script: string, retries?: number): Promise<string
       await new Promise(r => setTimeout(r, 500 * (i + 1)))
     }
   }
-  throw new Error('unreachable')
+  // Only reachable with a non-positive retry setting; never let raw text leak.
+  throwCode('C1_SCRIPT_FAILED')
 }
 
 async function getCaptureOneAppName(): Promise<string | null> {
@@ -61,7 +109,9 @@ async function getCaptureOneAppName(): Promise<string | null> {
   if (!appName) return null
   const sanitized = sanitizeCaptureOneAppName(appName)
   if (!sanitized) {
-    throw new Error(`Potentially unsafe process name rejected: ${appName}`)
+    // The raw name is logged main-side only; the renderer gets a code.
+    console.error('Potentially unsafe process name rejected:', appName)
+    throwCode('C1_SCRIPT_FAILED')
   }
   return sanitized
 }
@@ -70,37 +120,28 @@ async function getCaptureOneAppName(): Promise<string | null> {
 export async function getSelectedPhotos(): Promise<string[]> {
   const appName = await getCaptureOneAppName()
   if (!appName) {
-    throw new Error('Could not connect to Capture One. Please make sure Capture One is running with a document open.')
+    throwCode('C1_NOT_RUNNING')
   }
 
-  const script = `
-tell application "${appName}"
-  try
-    set output to ""
-    set selectedImages to selected variants of current document
-    repeat with img in selectedImages
-      set output to output & (path of img as text) & linefeed
-    end repeat
-    return output
-  on error
-    return ""
-  end try
-end tell
-`
+  const script = buildSelectedVariantsScript(appName)
   try {
     const stdout = await execAppleScript(script)
     return stdout.trim().split('\n').map(s => s.trim()).filter(Boolean)
   } catch (err) {
     console.error('capture-one getSelectedPhotos failed:', err)
-    throw new Error('Could not connect to Capture One. Please make sure Capture One is running with a document open.', { cause: err })
+    throwCode(classifyCaptureOneErrorCode(err instanceof Error ? err.message : String(err)), err)
   }
 }
 
-/** 向 Capture One 发送 "重新加载元数据" 指令 */
-export async function reloadMetadata(): Promise<void> {
+/**
+ * 向 Capture One 发送 "重新加载元数据" 指令。
+ * sessionId 可选：提供时仅在成功（含延迟窗口）后写入 reload_acked_at，
+ * 作为 safeToCleanup 重启重推导的持久标记。缺失时不触碰数据库。
+ */
+export async function reloadMetadata(sessionId?: string): Promise<void> {
   const appName = await getCaptureOneAppName()
   if (!appName) {
-    throw new Error('Could not connect to Capture One to reload metadata. Please make sure Capture One is running with a document open.')
+    throwCode('C1_NOT_RUNNING')
   }
 
   // Do not swallow AppleScript errors here. The renderer only offers the
@@ -112,6 +153,9 @@ export async function reloadMetadata(): Promise<void> {
     await new Promise(r => setTimeout(r, getSettings().getNumber('c1_reload_delay_ms', 500)))
   } catch (err) {
     console.error('capture-one reloadMetadata failed:', err)
-    throw new Error('Could not connect to Capture One to reload metadata. Please make sure Capture One is running with a document open.', { cause: err })
+    throwCode(classifyCaptureOneErrorCode(err instanceof Error ? err.message : String(err)), err)
+  }
+  if (typeof sessionId === 'string' && sessionId.length > 0) {
+    getSessionRepo().setReloadAckedAt(sessionId, new Date().toISOString())
   }
 }

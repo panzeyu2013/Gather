@@ -299,6 +299,6 @@ describe('CullingService batch decisions', () => {
       'session',
       ['known', 'stale'],
       { rating: 5 },
-    )).toThrow('部分照片不属于当前工作区')
+    )).toThrow('CULLING_PHOTOS_NOT_IN_SESSION')
   })
 })

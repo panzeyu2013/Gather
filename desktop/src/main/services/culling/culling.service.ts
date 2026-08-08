@@ -83,6 +83,15 @@ function parseJsonRecord(value: string): Record<string, unknown> {
   }
 }
 
+/** Throw a GatherErrorCode with optional renderer interpolation params. */
+function codedError(code: string, params?: Record<string, unknown>): Error {
+  const error = new Error(code)
+  if (params) {
+    ;(error as Error & { params?: Record<string, unknown> }).params = params
+  }
+  return error
+}
+
 function photoRowToData(row: PhotoRow | PhotoPageRow, faceCount: number): PhotoData {
   return {
     id: row.id,
@@ -827,14 +836,15 @@ export class CullingService {
     const photos = context?.photos ?? this.photoRepo.getBySession(sessionId)
     const target = context?.photoById.get(photoId)
       ?? photos.find(photo => photo.id === photoId)
-    if (!target) throw new Error('Photo does not belong to this workspace')
+    if (!target) throw codedError('CULLING_PHOTO_NOT_IN_SESSION')
 
     const currentRow = this.cullingDecisionRepo.getDecision(sessionId, photoId)
     const currentRevision = currentRow?.revision ?? 0
     if (currentRevision !== expectedRevision) {
-      throw new Error(
-        `Culling revision conflict: expected ${expectedRevision}, current ${currentRevision}`,
-      )
+      throw codedError('CULLING_REVISION_CONFLICT', {
+        expected: expectedRevision,
+        current: currentRevision,
+      })
     }
 
     const targetXmpPath = getXmpSidecarPath(target.filepath)
@@ -969,11 +979,11 @@ export class CullingService {
   ): CullingUpdateResult[] {
     this.validatePatch(patch)
     const uniqueIds = [...new Set(photoIds)]
-    if (uniqueIds.length === 0) throw new Error('请至少选择一张照片')
+    if (uniqueIds.length === 0) throw new Error('CULLING_EMPTY_SELECTION')
     const photos = this.photoRepo.getBySession(sessionId)
     const photoById = new Map(photos.map(photo => [photo.id, photo]))
     if (uniqueIds.some(photoId => !photoById.has(photoId))) {
-      throw new Error('部分照片不属于当前工作区，请刷新后重试')
+      throw new Error('CULLING_PHOTOS_NOT_IN_SESSION')
     }
     const groupMap = this.buildPhotoGroupIndex(photos, sessionId)
     const linkedByXmp = new Map<string, PhotoRow[]>()
@@ -1029,9 +1039,9 @@ export class CullingService {
     let historicalFields = new Map<string, Array<keyof CullingUpdatePatch>>()
     if (historyOperationId !== undefined && direction) {
       const operation = this.cullingHistoryRepo?.get(sessionId, historyOperationId)
-      if (!operation) throw new Error('挑片历史记录不存在')
+      if (!operation) throw new Error('CULLING_HISTORY_NOT_FOUND')
       if (operation.undone !== (direction === 'redo')) {
-        throw new Error(direction === 'undo' ? '该操作已撤销' : '该操作尚未撤销')
+        throw new Error(direction === 'undo' ? 'CULLING_HISTORY_ALREADY_UNDONE' : 'CULLING_HISTORY_NOT_UNDONE')
       }
       historicalFields = new Map(
         operation.entries.map(entry => [entry.photoId, entry.fields]),
@@ -1052,6 +1062,7 @@ export class CullingService {
     }
     if (entries.length === 0) return []
     const unique = new Set(entries.map(entry => entry.photoId))
+    // ADR-017: internal-invariant diagnostic — a corrupted history payload.
     if (unique.size !== entries.length) throw new Error('History command contains duplicate photos')
     for (const entry of entries) this.validatePatch(entry.patch)
     const photos = this.photoRepo.getBySession(sessionId)
@@ -1066,12 +1077,13 @@ export class CullingService {
         .map(row => [row.photo_id, row]),
     )
     for (const entry of entries) {
-      if (!photoById.has(entry.photoId)) throw new Error('Photo does not belong to this workspace')
+      if (!photoById.has(entry.photoId)) throw codedError('CULLING_PHOTO_NOT_IN_SESSION')
       const currentRevision = currentRows.get(entry.photoId)?.revision ?? 0
       if (historyOperationId === undefined && currentRevision !== entry.expectedRevision) {
-        throw new Error(
-          `Culling revision conflict: expected ${entry.expectedRevision}, current ${currentRevision}`,
-        )
+        throw codedError('CULLING_REVISION_CONFLICT', {
+          expected: entry.expectedRevision,
+          current: currentRevision,
+        })
       }
     }
     if (historyOperationId !== undefined && direction) {
@@ -1088,7 +1100,7 @@ export class CullingService {
         const expected = direction === 'undo' ? historical.after : historical.before
         for (const field of historical.fields) {
           if (current[field] !== expected[field]) {
-            throw new Error('挑片状态已在历史记录之外发生变化，请刷新后重试')
+            throw new Error('CULLING_HISTORY_DIVERGED')
           }
         }
       }
@@ -1191,12 +1203,12 @@ export class CullingService {
     keepPhotoIds: string[],
   ): CullingUpdateResult[] {
     const resultRow = this.similarityResultRepo.getLatest(sessionId)
-    if (!resultRow) throw new Error('尚无相似度分析结果')
+    if (!resultRow) throw new Error('CULLING_NO_SIMILARITY')
     const membership = this.similarityResultRepo.getPhotoGroupMap(sessionId, resultRow.id)
     const groupPhotoIds = [...membership.entries()]
       .filter(([, candidateGroupId]) => candidateGroupId === groupId)
       .map(([photoId]) => photoId)
-    if (groupPhotoIds.length < 2) throw new Error('相似组不存在或成员不足')
+    if (groupPhotoIds.length < 2) throw new Error('CULLING_GROUP_TOO_SMALL')
 
     const keepIds = [...new Set(keepPhotoIds)]
     const groupIdSet = new Set(groupPhotoIds)
@@ -1205,7 +1217,7 @@ export class CullingService {
       keepIds.length >= groupPhotoIds.length ||
       keepIds.some(photoId => !groupIdSet.has(photoId))
     ) {
-      throw new Error('保留照片必须来自当前相似组，且至少淘汰一张')
+      throw new Error('CULLING_KEEP_NOT_IN_GROUP')
     }
     const keepIdSet = new Set(keepIds)
     const currentRows = new Map(
@@ -1354,8 +1366,10 @@ export class CullingService {
       patch.pickState === undefined &&
       patch.colorLabel === undefined
     ) {
-      throw new Error('Culling patch cannot be empty')
+      throw codedError('CULLING_PATCH_INVALID')
     }
+    // ADR-017: internal-invariant diagnostics below — the renderer only sends
+    // patches it built from the shared constants, so these are bug guards.
     if (
       patch.rating !== undefined &&
       (!Number.isInteger(patch.rating) || patch.rating < 0 || patch.rating > 5)

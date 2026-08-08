@@ -81,7 +81,7 @@ export class QualityService {
           context?.updateProgress({
             current: index + 1,
             total: photos.length,
-            message: '正在分析技术质量',
+            phase: 'quality.scoring',
             checkpoint: { nextPhotoIndex: index + 1 },
           })
           continue
@@ -170,7 +170,7 @@ export class QualityService {
           inputFingerprint,
           updatedAt: new Date().toISOString(),
         }
-        if (!assetFile?.asset_file_id) throw new Error('Photo has no indexed asset file')
+        if (!assetFile?.asset_file_id) throw new Error('QUALITY_NO_ASSET_FILE')
         this.db.prepare(`
           INSERT OR REPLACE INTO asset_analysis (
             photo_id, asset_file_id, analysis_type, result_json, warnings_json,
@@ -217,7 +217,7 @@ export class QualityService {
       context?.updateProgress({
         current: index + 1,
         total: photos.length,
-        message: '正在分析技术质量',
+        phase: 'quality.scoring',
         checkpoint: { nextPhotoIndex: index + 1 },
       })
     }

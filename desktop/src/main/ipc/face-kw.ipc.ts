@@ -114,7 +114,7 @@ export function registerFaceKwHandlers(
         !Array.isArray(params.keywords) ||
         params.keywords.some(keyword => typeof keyword !== 'string')
       ) {
-        throw new Error('keywords must be an array of strings')
+        throw new Error('FKW_KEYWORDS_INVALID')
       }
       const keywords = params.keywords as string[]
       await faceKwService.bindCluster(sessionId, clusterId, roleName, keywords)
@@ -126,13 +126,13 @@ export function registerFaceKwHandlers(
     'fkw.unbind',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Unbinding written face keywords requires confirmation')
+        throw new Error('FKW_UNBIND_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const clusterId = validateNumber(params.clusterId, 'clusterId')
       const cluster = faceRepo.getClusters(sessionId, true)
         .find(candidate => candidate.id === clusterId)
-      if (!cluster) throw new Error('Cluster not found')
+      if (!cluster) throw new Error('FKW_CLUSTER_NOT_FOUND')
       const protectedByPath = new Map<string, Set<string>>()
       for (const remaining of faceRepo.getClusters(sessionId, true)) {
         if (remaining.id === clusterId) continue
@@ -214,12 +214,12 @@ export function registerFaceKwHandlers(
     'fkw.writeback',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Writeback requires explicit confirmation')
+        throw new Error('WRITEBACK_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const items = (params.items ?? []) as import('@gather/shared').WritebackItem[]
       if (!Array.isArray(items)) {
-        throw new Error('Invalid items: must be an array')
+        throw new Error('FKW_ITEMS_INVALID')
       }
 
       return ok(await writebackService.execute(sessionId, 'face_kw', items))
@@ -241,7 +241,7 @@ export function registerFaceKwHandlers(
       const sessionId = validateString(params.sessionId, 'sessionId')
       const confirmed = typeof params.confirmed === 'boolean' ? params.confirmed : false
       if (confirmed !== true) {
-        throw new Error('Cleanup must be confirmed')
+        throw new Error('FKW_CLEANUP_CONFIRM_REQUIRED')
       }
       return ok(await writebackService.cleanup(sessionId, 'face_kw'))
     }),
@@ -251,7 +251,7 @@ export function registerFaceKwHandlers(
     'fkw.cleanup',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Cleanup requires explicit confirmation')
+        throw new Error('FKW_CLEANUP_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       return ok(await writebackService.cleanup(sessionId, 'face_kw'))

@@ -68,7 +68,7 @@ export function registerExportHandlers(
       const sessionId = validateString(params.sessionId, 'sessionId')
       const options = params.options as Record<string, unknown>
       if (!options || typeof options !== 'object') {
-        return err('导出参数无效')
+        return err('EXPORT_PARAMS_INVALID')
       }
       const preview = await exportService.preview(sessionId, options as unknown as Parameters<typeof exportService.preview>[1])
       return ok(preview)
@@ -79,12 +79,12 @@ export function registerExportHandlers(
     'export.execute',
     wrapHandler(async (params, event) => {
       if (params.confirmed !== true) {
-        throw new Error('开始导出前需要明确确认')
+        throw new Error('EXPORT_CONFIRMATION_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const options = params.options as Record<string, unknown>
       if (!options || typeof options !== 'object') {
-        return err('导出参数无效')
+        return err('EXPORT_PARAMS_INVALID')
       }
       const job = jobs.create({
         type: 'export.execute',

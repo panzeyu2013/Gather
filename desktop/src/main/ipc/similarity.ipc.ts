@@ -21,19 +21,21 @@ function normalizeKeywords(value: unknown): string[] {
   )]
 }
 
+// ADR-017: internal-invariant diagnostics below — the renderer validates the
+// same shapes from shared constants, so these throws are bug guards only.
 function validateAssignments(value: unknown): SimilarityKeywordAssignment[] {
   if (!Array.isArray(value) || value.length === 0) {
-    throw new Error('请至少选择一个相似分组并填写关键词')
+    throw new Error('SIM_WRITEBACK_EMPTY')
   }
 
   return value.map((assignment) => {
     if (!assignment || typeof assignment !== 'object') {
-      throw new Error('Invalid similarity keyword assignment')
+      throw new Error('SIM_ASSIGNMENT_INVALID')
     }
     const groupId = Number((assignment as { groupId?: unknown }).groupId)
     const keywords = normalizeKeywords((assignment as { keywords?: unknown }).keywords)
     if (!Number.isInteger(groupId) || keywords.length === 0) {
-      throw new Error('每个分组必须包含有效的分组 ID 和至少一个关键词')
+      throw new Error('SIM_WRITEBACK_INVALID_ITEM')
     }
     return { groupId, keywords }
   })
@@ -42,7 +44,7 @@ function validateAssignments(value: unknown): SimilarityKeywordAssignment[] {
 function validateGroupingMode(value: unknown): SimilarityGroupingMode {
   if (value === undefined || value === 'global') return 'global'
   if (value === 'sequential') return 'sequential'
-  throw new Error('Invalid similarity grouping mode')
+  throw new Error('SIM_GROUPING_MODE_INVALID')
 }
 
 async function buildKeywordPreview(
@@ -62,8 +64,8 @@ async function buildKeywordPreview(
   if (!result) {
     throw new Error(
       threshold === undefined
-        ? '尚无相似度分析结果，请先完成分析'
-        : '该阈值无结果，请重新聚类',
+        ? 'SIM_ANALYSIS_MISSING'
+        : 'SIM_THRESHOLD_NO_RESULTS',
     )
   }
 
@@ -107,10 +109,10 @@ export function registerSimilarityHandlers(
       threshold: typeof checkpoint.threshold === 'number' ? checkpoint.threshold : undefined,
       minGroupSize: typeof checkpoint.minGroupSize === 'number' ? checkpoint.minGroupSize : undefined,
       groupingMode: checkpoint.groupingMode === 'sequential' ? 'sequential' : 'global',
-      onProgress: (current, total, message) => context.updateProgress({
+      onProgress: (current, total, phase) => context.updateProgress({
         current,
         total,
-        message,
+        phase,
         checkpoint,
       }),
     })
@@ -204,7 +206,7 @@ export function registerSimilarityHandlers(
     'sim.writeback',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Writeback requires explicit confirmation')
+        throw new Error('WRITEBACK_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const threshold = typeof params.threshold === 'number' ? params.threshold : undefined
@@ -213,20 +215,20 @@ export function registerSimilarityHandlers(
       // still exists so group ids never map to a vanished result. This is a
       // cheap row-existence check — not a full getResult rebuild.
       if (threshold !== undefined && !similarityService.hasResult(sessionId, threshold)) {
-        throw new Error('该阈值无结果，请重新聚类')
+        throw new Error('SIM_THRESHOLD_NO_RESULTS')
       }
       const itemIds = Array.isArray(params.itemIds)
         ? params.itemIds.filter((id): id is number => Number.isInteger(id))
         : []
       if (itemIds.length === 0) {
-        throw new Error('没有可写入的预览项，请先生成预览')
+        throw new Error('SIM_PREVIEW_REQUIRED')
       }
       const idSet = new Set(itemIds)
       const writebackItems = writebackService
         .getItems(sessionId, 'similarity', 'pending')
         .filter(item => item.id != null && idSet.has(item.id))
       if (writebackItems.length !== idSet.size) {
-        throw new Error('写回预览已失效，请重新预览后再执行')
+        throw new Error('SIM_PREVIEW_STALE')
       }
       return ok(await writebackService.execute(sessionId, 'similarity', writebackItems))
     }),
@@ -244,7 +246,7 @@ export function registerSimilarityHandlers(
     'sim.retry_failed_writeback',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Retry failed writeback requires explicit confirmation')
+        throw new Error('WRITEBACK_RETRY_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       return ok(await writebackService.retryFailed(sessionId, 'similarity'))
@@ -264,7 +266,7 @@ export function registerSimilarityHandlers(
     'sim.cleanup',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Cleanup requires explicit confirmation')
+        throw new Error('WRITEBACK_CLEANUP_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       return ok(await writebackService.cleanup(sessionId, 'similarity'))
