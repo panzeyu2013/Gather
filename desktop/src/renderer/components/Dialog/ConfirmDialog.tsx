@@ -1,5 +1,6 @@
-import React from 'react'
+import React, { useRef } from 'react'
 import Dialog from './Dialog'
+import { useTranslation } from '../../locales'
 import styles from './ConfirmDialog.module.css'
 
 interface ConfirmDialogProps {
@@ -19,20 +20,27 @@ export default function ConfirmDialog({
   onConfirm,
   title,
   message,
-  confirmLabel = '确认',
-  cancelLabel = '取消',
+  confirmLabel,
+  cancelLabel,
   destructive = false,
 }: ConfirmDialogProps) {
+  const { t } = useTranslation()
+  const cancelRef = useRef<HTMLButtonElement>(null)
   return (
-    <Dialog open={open} onClose={onClose} title={title}>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={title}
+      initialFocus={cancelRef}
+    >
       <p className={styles.message}>{message}</p>
       <div className={styles.actions}>
-        <button className={styles.cancel} onClick={onClose}>{cancelLabel}</button>
+        <button ref={cancelRef} className={styles.cancel} onClick={onClose}>{cancelLabel ?? t('common.cancel')}</button>
         <button
           className={`${styles.confirm} ${destructive ? styles.destructive : ''}`}
           onClick={() => { onConfirm(); onClose() }}
         >
-          {confirmLabel}
+          {confirmLabel ?? t('common.confirm')}
         </button>
       </div>
     </Dialog>
