@@ -18,13 +18,13 @@ describe('P0-0 reliability fixtures', () => {
     // Resolve relative to this test file so the outcome never depends on the
     // working directory the runner was launched from.
     const testDir = path.dirname(fileURLToPath(import.meta.url))
-    const snapshotPath = path.resolve(testDir, '../../../docs/fixtures/schema-v27.snapshot.json')
+    const snapshotPath = path.resolve(testDir, '../../../docs/fixtures/schema.snapshot.json')
     const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8')) as { schemaVersion: number; tables: string[] }
     const tables = [...SCHEMA_SQL.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/g)]
       .map((match) => match[1])
       .sort()
 
-    expect(snapshot.schemaVersion).toBe(27)
+    expect(snapshot.schemaVersion).toBe(31)
     expect(tables).toEqual([...snapshot.tables].sort())
   })
 

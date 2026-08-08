@@ -35,10 +35,12 @@ export type {
   ImageGetPreviewParams,
   ImageGetThumbnailParams,
   ImagePreviewResult,
+  ScanResult,
 } from './protocol/core'
 
 export type {
   SessionCreateParams,
+  SessionCreateFromDirectoryParams,
   SessionDeleteParams,
   SessionDeleteManyParams,
   SessionAddPhotosParams,
@@ -133,6 +135,16 @@ export type {
 } from './protocol/jobs'
 
 export type { IndexScanParams, IndexScanResult } from './protocol/indexer'
+export type {
+  WorkspaceStage,
+  WorkspaceIndexingProgress,
+  WorkspaceStaleAnalysis,
+  WorkspaceXmpCounts,
+  WorkspaceFailedJob,
+  WorkspaceRecommendedNext,
+  WorkspaceStatus,
+  WorkspaceStatusParams,
+} from './protocol/workspace'
 export type {
   AssetCandidateListParams,
   AssetCandidateMutationParams,

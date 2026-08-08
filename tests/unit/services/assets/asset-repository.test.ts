@@ -254,4 +254,56 @@ describe('AssetRepository RAW/JPEG evidence', () => {
     expect(sqlite.prepare('SELECT source_path FROM sessions WHERE id = ?').get('session'))
       .toEqual({ source_path: path.join(newRoot, 'nested') })
   })
+
+  it('bumps sessions.index_seq on relink so the ok analysis run goes stale', () => {
+    const { sqlite, repository } = fixture()
+    const timestamp = '2026-07-30T12:05:00.000Z'
+    const oldRoot = mkdtempSync(path.join(os.tmpdir(), 'gather-relink-seq-old-'))
+    const newRoot = mkdtempSync(path.join(os.tmpdir(), 'gather-relink-seq-new-'))
+    temporaryDirectories.push(oldRoot, newRoot)
+    writeFileSync(path.join(newRoot, 'A001.NEF'), 'raw')
+    writeFileSync(path.join(newRoot, 'A001.JPG'), 'jpg')
+
+    for (const [fileId, filename] of [['raw-file', 'A001.NEF'], ['jpg-file', 'A001.JPG']]) {
+      sqlite.prepare('UPDATE asset_files SET normalized_path = ? WHERE id = ?')
+        .run(path.join(oldRoot, filename), fileId)
+      sqlite.prepare('UPDATE photos SET filepath = ? WHERE asset_file_id = ?')
+        .run(path.join(oldRoot, filename), fileId)
+    }
+    // Pre-relink analysis state: an ok similarity run snapshotted at
+    // index_seq 0 and its stored results — NOT stale before the relink.
+    sqlite.prepare(`
+      INSERT INTO analysis_runs (
+        session_id, kind, photo_count, index_seq, started_at, finished_at,
+        params, status
+      ) VALUES ('session', 'similarity', 2, 0, ?, ?, '{}', 'ok')
+    `).run(timestamp, timestamp)
+    sqlite.prepare(`
+      INSERT INTO similarity_results (
+        session_id, groups_json, stats_json, param_threshold,
+        param_min_group_size, created_at
+      ) VALUES ('session', '[]', '{}', 10, 2, ?)
+    `).run(timestamp)
+    expect(sqlite.prepare(
+      'SELECT index_seq FROM sessions WHERE id = ?',
+    ).get('session')).toEqual({ index_seq: 0 })
+
+    expect(repository.relinkRoot(oldRoot, newRoot)).toBe(2)
+
+    // Results are dropped and the cursor moved forward in the same
+    // transaction: 1.4.2 staleness (last_ok_run.index_seq < session.index_seq)
+    // now reports the analysis as stale instead of stage 'analyzed'.
+    expect(sqlite.prepare(
+      'SELECT COUNT(*) AS count FROM similarity_results WHERE session_id = ?',
+    ).get('session')).toEqual({ count: 0 })
+    const session = sqlite.prepare(
+      'SELECT index_seq FROM sessions WHERE id = ?',
+    ).get('session') as { index_seq: number }
+    expect(session.index_seq).toBe(1)
+    const lastOkRun = sqlite.prepare(`
+      SELECT index_seq FROM analysis_runs
+      WHERE session_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1
+    `).get('session') as { index_seq: number }
+    expect(lastOkRun.index_seq).toBeLessThan(session.index_seq)
+  })
 })

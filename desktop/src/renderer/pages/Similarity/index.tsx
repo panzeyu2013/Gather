@@ -10,7 +10,16 @@ import type { JobProgressData } from '@gather/shared'
 import ProgressBar from '../../components/ProgressBar/ProgressBar'
 import WritebackReport from '../../components/WritebackReport/WritebackReport'
 import { useToastStore } from '../../components/Toast/ToastStore'
-import type { SimilarityGroup, SimilarityImage, WritebackItem, WritebackPreview, WritebackResult } from '@gather/shared'
+import { useTranslation } from '../../locales'
+import { translateError } from '../../utils/errors'
+import { translatePhase } from '../../utils/progress'
+import type { SimilarityGroup, WritebackItem, WritebackPreview, WritebackResult, MetadataSyncSummary } from '@gather/shared'
+import { captureOneApi, type C1SyncStateView } from '../../api/captureOne'
+import {
+  deriveSyncControls,
+  deriveSyncControlHints,
+  syncStatusCopy,
+} from '../../utils/c1-sync-controls'
 import styles from './Similarity.module.css'
 
 // Windowing constants for the group grid. The card grid is virtualized with a
@@ -84,7 +93,7 @@ function AnalysisProgress() {
     <ProgressBar
       value={progressCurrent}
       max={progressTotal}
-      label={progressMessage || '正在计算哈希并聚类...'}
+      label={translatePhase(progressMessage)}
     />
   )
 }
@@ -99,6 +108,7 @@ function AnalysisPanel({
   onResultAdopted: () => void
 }) {
   const queryClient = useQueryClient()
+  const { t } = useTranslation()
   // Per-field selectors: only low-frequency fields here; progress is read by
   // the dedicated AnalysisProgress component so ticks don't re-render the panel.
   const threshold = useSimilarityStore((s) => s.threshold)
@@ -150,7 +160,7 @@ function AnalysisPanel({
         )
         if (job) {
           setIsAnalyzing(true)
-          setProgress(job.progressCurrent, job.progressTotal, job.progressMessage || '正在计算哈希并聚类...')
+          setProgress(job.progressCurrent, job.progressTotal, job.progressMessage || 'similarity.analyzing')
         }
       } catch {
         // Best-effort; push events will carry subsequent progress.
@@ -181,7 +191,7 @@ function AnalysisPanel({
         }
         return
       }
-      setProgress(data.current, data.total, data.message || '正在计算哈希并聚类...')
+      setProgress(data.current, data.total, data.phase || data.message || 'similarity.analyzing')
     }
   }, Boolean(sessionId))
 
@@ -262,33 +272,36 @@ function AnalysisPanel({
 
   return (
     <div className={styles.panel}>
-      <h2 className={styles.panelTitle}>分析控制</h2>
+      <h2 className={styles.panelTitle}>{t('similarity.analysisControl')}</h2>
 
       <div className={styles.controlRow}>
-        <span className={styles.controlLabel}>分组范围</span>
+        <span className={styles.controlLabel}>{t('similarity.groupingScope')}</span>
         <div className={styles.modeSelector}>
           <button
             className={groupingMode === 'sequential' ? styles.modeActive : styles.modeButton}
+            aria-pressed={groupingMode === 'sequential'}
             onClick={() => setGroupingMode('sequential')}
           >
-            <strong>顺序分组</strong>
-            <span>只合并导入顺序中连续相似的照片，适合连拍挑片</span>
+            <strong>{t('similarity.sequentialGrouping')}</strong>
+            <span>{t('similarity.sequentialGroupingHint')}</span>
           </button>
           <button
             className={groupingMode === 'global' ? styles.modeActive : styles.modeButton}
+            aria-pressed={groupingMode === 'global'}
             onClick={() => setGroupingMode('global')}
           >
-            <strong>全局分组</strong>
-            <span>在整个工作区查找相似照片，允许跨拍摄顺序聚合</span>
+            <strong>{t('similarity.globalGrouping')}</strong>
+            <span>{t('similarity.globalGroupingHint')}</span>
           </button>
         </div>
       </div>
 
       <div className={styles.controlRow}>
-        <label className={styles.controlLabel}>
-          相似度阈值：<strong>{threshold}</strong>
+        <label className={styles.controlLabel} htmlFor="similarity-threshold">
+          {t('similarity.thresholdLabel')}<strong>{threshold}</strong>
         </label>
         <input
+          id="similarity-threshold"
           type="range"
           min={0}
           max={30}
@@ -296,14 +309,15 @@ function AnalysisPanel({
           onChange={(e) => setThreshold(Number(e.target.value))}
           className={styles.slider}
         />
-        <span className={styles.rangeHint}>0 (严格) — 30 (宽松)</span>
+        <span className={styles.rangeHint}>{t('similarity.thresholdRangeHint')}</span>
       </div>
 
       <div className={styles.controlRow}>
-        <label className={styles.controlLabel}>
-          最小组大小: <strong>{minGroupSize}</strong>
+        <label className={styles.controlLabel} htmlFor="similarity-min-group-size">
+          {t('similarity.minGroupSizeLabel')}<strong>{minGroupSize}</strong>
         </label>
         <input
+          id="similarity-min-group-size"
           type="range"
           min={2}
           max={10}
@@ -319,7 +333,7 @@ function AnalysisPanel({
           onClick={handleAnalyze}
           disabled={isAnalyzing || analyzeMutation.isPending}
         >
-          {isAnalyzing || analyzeMutation.isPending ? '分析中...' : '开始分析'}
+          {isAnalyzing || analyzeMutation.isPending ? t('similarity.analyzing') : t('similarity.startAnalyze')}
         </button>
 
         {result && (
@@ -328,7 +342,7 @@ function AnalysisPanel({
             onClick={() => reclusterMutation.mutate()}
             disabled={reclusterMutation.isPending}
           >
-            {reclusterMutation.isPending ? '聚类中...' : '重新聚类'}
+            {reclusterMutation.isPending ? t('similarity.clustering') : t('similarity.recluster')}
           </button>
         )}
       </div>
@@ -341,24 +355,24 @@ function AnalysisPanel({
             onClick={() => cancelMutation.mutate()}
             disabled={cancelMutation.isPending}
           >
-            取消分析
+            {t('similarity.cancelAnalysis')}
           </button>
         </div>
       )}
 
       {analyzeMutation.isError && (
         <p className={styles.error}>
-          错误: {analyzeMutation.error instanceof Error ? analyzeMutation.error.message : '未知错误'}
+          {t('similarity.error', { message: translateError(analyzeMutation.error) })}
         </p>
       )}
 
       {result && result.stats && (
         <div className={styles.stats}>
-          <span>{result.stats.totalGroups} 个分组</span>
-          <span>{result.stats.totalUngrouped} 未分组</span>
-          <span>阈值 {result.stats.threshold}</span>
+          <span>{t('similarity.groupsCount', { count: result.stats.totalGroups })}</span>
+          <span>{t('similarity.ungroupedCount', { count: result.stats.totalUngrouped })}</span>
+          <span>{t('similarity.thresholdValue', { threshold: result.stats.threshold })}</span>
           <span>
-            {result.stats.groupingMode === 'sequential' ? '顺序分组' : '全局分组'}
+            {result.stats.groupingMode === 'sequential' ? t('similarity.sequentialGrouping') : t('similarity.globalGrouping')}
           </span>
         </div>
       )}
@@ -383,6 +397,7 @@ const GroupCard = memo(function GroupCard({
   showAllMembers: boolean
   onToggleShowAll: (groupId: number) => void
 }) {
+  const { t } = useTranslation()
   const rep = group.images.find((img) => img.representative) ?? group.images[0]
   const visibleMembers = showAllMembers
     ? group.images
@@ -391,21 +406,28 @@ const GroupCard = memo(function GroupCard({
 
   return (
     <div className={styles.groupCard}>
-      <div className={styles.groupHeader} onClick={() => onToggleExpanded(group.id)}>
+      <div className={styles.groupHeaderRow}>
         <input
           type="checkbox"
           checked={selected}
           onChange={(event) => onSelectedChange(group.id, event.target.checked)}
           onClick={(event) => event.stopPropagation()}
-          aria-label={`选择 ${group.label}`}
+          aria-label={t('similarity.selectGroup', { label: group.label })}
           className={styles.groupCheckbox}
         />
-        <ThumbnailImage path={rep.path} className={styles.groupThumb} />
-        <div className={styles.groupInfo}>
-          <h3 className={styles.groupLabel}>{group.label}</h3>
-          <span className={styles.groupCount}>{group.count} 张照片</span>
-        </div>
-        <span className={styles.expandIcon}>{expanded ? '▾' : '▸'}</span>
+        <button
+          type="button"
+          className={styles.groupExpand}
+          onClick={() => onToggleExpanded(group.id)}
+          aria-expanded={expanded}
+        >
+          <ThumbnailImage path={rep.path} className={styles.groupThumb} />
+          <span className={styles.groupInfo}>
+            <span className={styles.groupLabel}>{group.label}</span>
+            <span className={styles.groupCount}>{t('similarity.groupCount', { count: group.count })}</span>
+          </span>
+          <span aria-hidden="true" className={styles.expandIcon}>{expanded ? '▾' : '▸'}</span>
+        </button>
       </div>
 
       {expanded && (
@@ -451,6 +473,7 @@ function GroupGrid({
   selectedGroupIds: Set<number>
   onSelectedChange: (groupId: number, selected: boolean) => void
 }) {
+  const { t } = useTranslation()
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set())
   const [showAllIds, setShowAllIds] = useState<Set<number>>(() => new Set())
   const [scrollTop, setScrollTop] = useState(0)
@@ -572,7 +595,7 @@ function GroupGrid({
   if (groups.length === 0) {
     return (
       <div className={styles.empty}>
-        <p>当前参数未找到相似分组。</p>
+        <p>{t('similarity.noGroups')}</p>
       </div>
     )
   }
@@ -629,8 +652,32 @@ function KeywordWritebackPanel({
   const [failedItems, setFailedItems] = useState<WritebackItem[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [syncConfirmed, setSyncConfirmed] = useState(false)
+  // Session-level sync state machine view (2.3.5 P1): button availability and
+  // status copy are both driven by it.
+  const [syncView, setSyncView] = useState<C1SyncStateView | null>(null)
   const addToast = useToastStore((s) => s.addToast)
+  const { t } = useTranslation()
+
+  const refreshSyncState = useCallback(async () => {
+    try {
+      setSyncView(await captureOneApi.syncState(sessionId))
+    } catch {
+      // 保留上次视图；未知状态下按钮按保守策略全部禁用。
+    }
+  }, [sessionId])
+
+  // 挂载时拉取一次（写回协调器事件会持续刷新视图）。
+  useEffect(() => {
+    void refreshSyncState()
+  }, [refreshSyncState])
+
+  // 协调器每次 emitSummary 后重拉视图：写回行异步推进（pending/writing → written
+  // → synced），状态机文案随之更新。
+  useEvent('culling:sync-status', (payload) => {
+    const summary = payload as MetadataSyncSummary
+    if (summary.sessionId !== sessionId) return
+    void refreshSyncState()
+  }, Boolean(sessionId))
 
   const keywords = keywordInput
     .split(/[,，]/)
@@ -643,7 +690,7 @@ function KeywordWritebackPanel({
     setPreview(null)
     setWritebackResult(null)
     setFailedItems([])
-    setSyncConfirmed(false)
+    setSyncView(null)
   }, [keywordInput, selectedGroupIds])
 
   const handlePreview = async () => {
@@ -657,9 +704,9 @@ function KeywordWritebackPanel({
         result.stats.threshold,
       )
       setPreview(nextPreview)
-      setMessage(`预览完成：${nextPreview.affectedPhotos} 张照片将合并这些关键词。`)
+      setMessage(t('similarity.previewMessage', { count: nextPreview.affectedPhotos }))
     } catch (error) {
-      setMessage(`预览失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setMessage(t('similarity.previewFailed', { message: translateError(error) }))
     } finally {
       setBusy(false)
     }
@@ -683,12 +730,12 @@ function KeywordWritebackPanel({
       )
       setWritebackResult(nextResult)
       setFailedItems(nextResult.failedItems)
-      setSyncConfirmed(false)
-      setMessage(`XMP 写入完成：成功 ${nextResult.written}，失败 ${nextResult.failed}，跳过 ${nextResult.skipped}。`)
+      setMessage(t('similarity.writebackDone', { written: nextResult.written, failed: nextResult.failed, skipped: nextResult.skipped }))
     } catch (error) {
-      setMessage(`XMP 写入失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setMessage(t('similarity.writebackFailed', { message: translateError(error) }))
     } finally {
       setBusy(false)
+      void refreshSyncState()
     }
   }
 
@@ -698,55 +745,71 @@ function KeywordWritebackPanel({
       const nextResult = await similarityApi.retryFailedWriteback(sessionId)
       setWritebackResult(nextResult)
       setFailedItems(nextResult.failedItems)
-      setMessage(`重试完成：成功 ${nextResult.written}，失败 ${nextResult.failed}。`)
+      setMessage(t('similarity.retryDone', { written: nextResult.written, failed: nextResult.failed }))
     } catch (error) {
-      setMessage(`重试失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setMessage(t('similarity.retryFailed', { message: translateError(error) }))
     } finally {
       setBusy(false)
+      void refreshSyncState()
     }
   }
 
   const handleConfirmSync = async () => {
     try {
       await similarityApi.confirmSync(sessionId)
-      setSyncConfirmed(true)
-      setMessage('已确认 Capture One 完成“加载元数据”，现在可以安全清理临时 XMP 变更。')
+      setMessage(t('similarity.confirmSyncDone'))
     } catch (error) {
-      setMessage(`确认失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setMessage(t('similarity.confirmFailed', { message: translateError(error) }))
+    } finally {
+      void refreshSyncState()
     }
   }
 
   const handleCleanup = async () => {
     try {
       const cleanup = await similarityApi.cleanup(sessionId)
-      setMessage(`清理完成：已恢复或移除 ${cleanup.deletedCount} 个 sidecar 文件。`)
+      setMessage(t('similarity.cleanupDone', { count: cleanup.deletedCount }))
       setWritebackResult(null)
       setFailedItems([])
       setPreview(null)
     } catch (error) {
-      setMessage(`清理失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setMessage(t('similarity.cleanupFailed', { message: translateError(error) }))
+    } finally {
+      void refreshSyncState()
     }
   }
 
   const handleReloadMetadata = async () => {
     setBusy(true)
     try {
-      await window.gather.reloadMetadata()
-      setMessage('已在 Capture One 中加载元数据，返回后请确认同步')
+      await window.gather.reloadMetadata(sessionId)
+      setMessage(t('similarity.reloadDone'))
     } catch (error) {
-      addToast('error', error instanceof Error ? error.message : '加载元数据失败')
+      addToast('error', error instanceof Error ? translateError(error) : t('similarity.loadMetadataFailed'))
     } finally {
       setBusy(false)
+      void refreshSyncState()
     }
   }
+
+  const controls = deriveSyncControls({
+    syncState: syncView?.state ?? null,
+    hasWritten: (syncView?.xmp.written ?? 0) > 0,
+    acked: (syncView?.reloadAckedAt ?? null) != null,
+  })
+  const hints = deriveSyncControlHints(
+    syncView?.state ?? null,
+    controls,
+    (syncView?.reloadAckedAt ?? null) != null,
+  )
 
   return (
     <div className={styles.writebackPanel}>
       <div className={styles.writebackHeader}>
         <div>
-          <h2 className={styles.panelTitle}>批量写入 Capture One 关键词</h2>
+          <h2 className={styles.panelTitle}>{t('similarity.writebackTitle')}</h2>
           <p className={styles.writebackHint}>
-            选择相似分组，关键词会合并写入每张照片旁的 .xmp 文件，不修改原图。
+            {t('similarity.writebackHint')}
           </p>
         </div>
         <label className={styles.selectAll}>
@@ -755,7 +818,7 @@ function KeywordWritebackPanel({
             checked={result.groups.length > 0 && selectedGroupIds.size === result.groups.length}
             onChange={(event) => onSelectAll(event.target.checked)}
           />
-          全选分组
+          {t('similarity.selectAllGroups')}
         </label>
       </div>
       <div className={styles.keywordControls}>
@@ -763,57 +826,75 @@ function KeywordWritebackPanel({
           className={styles.keywordInput}
           value={keywordInput}
           onChange={(event) => setKeywordInput(event.target.value)}
-          placeholder="输入关键词，多个关键词用逗号分隔"
+          placeholder={t('similarity.keywordPlaceholder')}
+          aria-label={t('similarity.keywordLabel')}
         />
         <button className={styles.reclusterBtn} disabled={!canPreview} onClick={() => void handlePreview()}>
-          预览
+          {t('similarity.previewBtn')}
         </button>
         <button className={styles.analyzeBtn} disabled={!canPreview} onClick={() => void handleWriteback()}>
-          {busy ? '处理中...' : '写入 XMP'}
+          {busy ? t('similarity.processing') : t('similarity.writebackBtn')}
         </button>
       </div>
       <p className={styles.captureOneHint}>
-        写入后在 Capture One 中选择这些照片，执行“图像 → 加载元数据”；确认关键词已进入目录后，再点击“确认同步”和“清理”。
+        {t('similarity.captureOneHint')}
       </p>
       {message && <p className={styles.statusMessage}>{message}</p>}
       {preview && (
-        <div className={styles.writebackPreview} aria-label="XMP 写回预览">
+        <div className={styles.writebackPreview} aria-label={t('similarity.xmpPreviewLabel')}>
           {preview.items.slice(0, 50).map(item => (
             <div className={styles.writebackPreviewRow} key={item.xmpPath}>
               <strong title={item.xmpPath}>{item.xmpPath.split(/[/\\]/).pop()}</strong>
               <span>
-                {(item.preview?.before.keywords ?? []).join('、') || '无关键词'}
+                {(item.preview?.before.keywords ?? []).join('、') || t('similarity.noKeywords')}
                 {' → '}
-                {(item.preview?.after.keywords ?? item.keywords).join('、') || '无关键词'}
+                {(item.preview?.after.keywords ?? item.keywords).join('、') || t('similarity.noKeywords')}
               </span>
               <small>
-                {item.preview?.willCreate ? '新建 XMP' : '更新 XMP'}
+                {item.preview?.willCreate ? t('similarity.willCreateXmp') : t('similarity.updateXmp')}
                 {(item.preview?.sharedPhotoCount ?? 1) > 1
-                  ? ` · ${item.preview?.sharedPhotoCount} 张共享`
+                  ? t('similarity.sharedCount', { count: item.preview?.sharedPhotoCount })
                   : ''}
-                {item.preview?.externalChanged ? ' · 检测到外部冲突' : ''}
-                {' · 来源：相似组'}
+                {item.preview?.externalChanged ? t('similarity.externalConflict') : ''}
+                {t('similarity.source')}
               </small>
             </div>
           ))}
-          {preview.items.length > 50 && <small>另有 {preview.items.length - 50} 项未展开</small>}
+          {preview.items.length > 50 && <small>{t('similarity.moreItems', { count: preview.items.length - 50 })}</small>}
         </div>
       )}
       {writebackResult && (
         <>
+          <p className={styles.statusMessage}>
+            <strong>{t('similarity.syncStatus')}</strong>
+            {syncStatusCopy(syncView?.state ?? null)}
+          </p>
           <WritebackReport
             result={writebackResult}
             failedItems={failedItems}
             onRetryFailed={() => void handleRetry()}
             onConfirmSync={() => void handleConfirmSync()}
-            onCleanup={syncConfirmed ? () => void handleCleanup() : undefined}
+            onCleanup={() => void handleCleanup()}
             disabled={busy}
+            canConfirmSync={controls.canConfirmSync}
+            canCleanup={controls.canCleanup}
+            confirmHint={hints.confirmHint ?? undefined}
+            cleanupHint={hints.cleanupHint ?? undefined}
           />
           <div className={styles.reloadRow}>
-            <button className={styles.reclusterBtn} onClick={() => void handleReloadMetadata()} disabled={busy}>
-              在 Capture One 中加载元数据
+            <button
+              className={styles.reclusterBtn}
+              onClick={() => void handleReloadMetadata()}
+              disabled={busy || !controls.canLoadMetadata}
+              title={hints.loadHint ?? undefined}
+            >
+              {t('similarity.loadMetadataBtn')}
             </button>
-            <span className={styles.reloadHint}>先在 Capture One 中 Load Metadata，再返回 Gather 确认同步</span>
+            <span className={styles.reloadHint}>
+              {controls.canLoadMetadata
+                ? t('similarity.reloadHint')
+                : hints.loadHint}
+            </span>
           </div>
         </>
       )}
@@ -865,28 +946,29 @@ export default function Similarity() {
   const onSelectAll = useCallback((selected: boolean) => {
     setSelectedGroupIds(selected ? new Set((result?.groups ?? []).map((group) => group.id)) : new Set())
   }, [result])
+  const { t } = useTranslation()
 
   if (!sessionId) {
-      return <div className={styles.page}><p>未选择工作区</p></div>
+      return <div className={styles.page}><p>{t('similarity.noWorkspace')}</p></div>
   }
 
   if (error) {
     return (
       <div className={styles.page}>
-        <p>错误: {error instanceof Error ? error.message : '未知错误'}</p>
+        <p>{t('similarity.error', { message: translateError(error) })}</p>
       </div>
     )
   }
 
   return (
     <div className={styles.page}>
-      <h1 className={styles.title}>相似度分析</h1>
+      <h1 className={styles.title}>{t('similarity.title')}</h1>
       <AnalysisPanel
         sessionId={sessionId}
         result={result ?? null}
         onResultAdopted={onResultAdopted}
       />
-      {isLoading && <p className={styles.loading}>加载结果中...</p>}
+      {isLoading && <p className={styles.loading}>{t('similarity.loading')}</p>}
       {result && (
         <>
           <KeywordWritebackPanel

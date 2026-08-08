@@ -179,14 +179,14 @@ export class AssetRepository {
       'SELECT status FROM metadata_outbox WHERE xmp_path = ?',
     ).get(oldXmp) as { status: string } | undefined
     if (oldOutbox?.status === 'writing') {
-      throw new Error('XMP 正在写入，暂时不能重连照片；请稍后重新扫描')
+      throw new Error('ASSET_RELINK_XMP_BUSY')
     }
     if (oldOutbox) {
       const targetExists = this.db.prepare(
         'SELECT 1 FROM metadata_outbox WHERE xmp_path = ?',
       ).get(newXmp)
       if (targetExists) {
-        throw new Error('新旧路径都存在未完成的 XMP 操作，请先在恢复中心处理')
+        throw new Error('ASSET_RELINK_OUTBOX_CONFLICT')
       }
       this.db.prepare(`
         INSERT INTO metadata_outbox (
@@ -292,7 +292,7 @@ export class AssetRepository {
       oldState.keywords !== targetState.keywords ||
       oldState.fingerprint !== targetState.fingerprint
     )) {
-      throw new Error('目标路径已有不同的 XMP 元数据状态，请先人工确认后再重连')
+      throw new Error('ASSET_RELINK_XMP_CONFLICT')
     }
     if (oldState && !targetState) {
       this.db.prepare(`
@@ -533,6 +533,14 @@ export class AssetRepository {
         this.db.prepare(
           "DELETE FROM navigation_groups WHERE session_id = ? AND source = 'automatic'",
         ).run(affected.session_id)
+        // The relink dropped the session's similarity results, so its stored
+        // analysis data is gone while analysis_runs rows stay intact. Bump
+        // index_seq in the same transaction (1.4.2) so the last ok run is
+        // reported stale instead of the session wrongly staying at stage
+        // 'analyzed' with no staleAnalyses.
+        this.db.prepare(
+          'UPDATE sessions SET index_seq = index_seq + 1, updated_at = ? WHERE id = ?',
+        ).run(timestamp, affected.session_id)
       }
     })()
     relocatedOutboxPaths.forEach(xmpPath => this.metadataRelocationSink?.(xmpPath))
@@ -622,7 +630,7 @@ export class AssetRepository {
 
   acceptCandidate(candidateId: string): void {
     const candidate = this.getCandidate(candidateId)
-    if (!candidate) throw new Error('Asset link candidate not found')
+    if (!candidate) throw new Error('ASSET_LINK_CANDIDATE_NOT_FOUND')
     const accept = this.db.transaction(() => {
       this.mergeFileAssets(candidate.left_file_id, candidate.right_file_id)
       this.db.prepare(`
@@ -636,7 +644,7 @@ export class AssetRepository {
 
   rejectCandidate(candidateId: string): void {
     const candidate = this.getCandidate(candidateId)
-    if (!candidate) throw new Error('Asset link candidate not found')
+    if (!candidate) throw new Error('ASSET_LINK_CANDIDATE_NOT_FOUND')
     const reject = this.db.transaction(() => {
       if (candidate.status === 'accepted') {
         this.splitFileAsset(candidate.right_file_id)
@@ -872,7 +880,7 @@ export class AssetRepository {
     const membership = this.db.prepare(
       'SELECT asset_id FROM asset_members WHERE file_id = ?',
     ).get(fileId) as { asset_id: string } | undefined
-    if (!membership) throw new Error('Asset file is not linked to an Asset')
+    if (!membership) throw new Error('ASSET_FILE_NOT_LINKED')
     const siblingCount = this.db.prepare(
       'SELECT COUNT(*) AS count FROM asset_members WHERE asset_id = ?',
     ).get(membership.asset_id) as { count: number }

@@ -6,6 +6,8 @@ import { sessionApi } from '../../api/session'
 import { imageApi } from '../../api/image'
 import { metadataApi } from '../../api/metadata'
 import type { FilterGroup, FilterRule } from '@gather/shared'
+import { useTranslation } from '../../locales'
+import { translateError, translateErrorCode } from '../../utils/errors'
 import styles from './Library.module.css'
 
 const PAGE_SIZE = 60
@@ -64,6 +66,7 @@ function buildCriteria(
 }
 
 export default function Library() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [sessionFilter, setSessionFilter] = useState('')
   const [search, setSearch] = useState('')
@@ -170,7 +173,7 @@ export default function Library() {
   })
   const relinkVolume = useMutation({
     mutationFn: async (oldRoot: string) => {
-      const newRoot = await window.gather.selectDirectory()
+      const newRoot = await window.gather.selectDirectory(t('dialog.selectPhotoFolder'))
       if (!newRoot) return 0
       return assetApi.relinkRoot(oldRoot, newRoot)
     },
@@ -184,38 +187,38 @@ export default function Library() {
     <div className={styles.page}>
       <header className={styles.header}>
         <div>
-          <p className={styles.eyebrow}>GLOBAL LIBRARY</p>
-          <h1>全局图库</h1>
-          <p className={styles.muted}>以同一逻辑照片为单位，跨 Session 浏览、筛选和管理。</p>
+          <p className={styles.eyebrow}>{t('library.eyebrow')}</p>
+          <h1>{t('library.title')}</h1>
+          <p className={styles.muted}>{t('library.subtitle')}</p>
         </div>
         <select value={sessionFilter} onChange={event => setSessionFilter(event.target.value)}>
-          <option value="">全部 Session</option>
+          <option value="">{t('library.allSessions')}</option>
           {sessions.map(session => (
-            <option key={session.id} value={session.id}>{session.name}（{session.photoCount}）</option>
+            <option key={session.id} value={session.id}>{t('library.sessionOption', { name: session.name, count: session.photoCount })}</option>
           ))}
         </select>
       </header>
 
       <div className={styles.filters}>
-        <input value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索文件名" />
+        <input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('library.searchPlaceholder')} />
         <select value={rating} onChange={event => setRating(event.target.value)}>
-          <option value="">全部星级</option>
-          {[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>至少 {value} 星</option>)}
+          <option value="">{t('library.allRatings')}</option>
+          {[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{t('library.atLeastStars', { count: value })}</option>)}
         </select>
         <select value={label} onChange={event => setLabel(event.target.value)}>
-          <option value="">全部颜色</option>
+          <option value="">{t('library.allColors')}</option>
           {COLOR_LABELS.filter(Boolean).map(value => <option key={value} value={value}>{value}</option>)}
         </select>
         <select value={status} onChange={event => setStatus(event.target.value)}>
-          <option value="">全部在线状态</option>
-          <option value="online">在线</option>
-          <option value="missing">离线</option>
+          <option value="">{t('library.allOnlineStatus')}</option>
+          <option value="online">{t('library.online')}</option>
+          <option value="missing">{t('library.offline')}</option>
         </select>
-        <input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="关键词" />
-        <input value={person} onChange={event => setPerson(event.target.value)} placeholder="人物" />
-        <input value={directory} onChange={event => setDirectory(event.target.value)} placeholder="目录路径前缀" />
+        <input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder={t('library.keywordPlaceholder')} />
+        <input value={person} onChange={event => setPerson(event.target.value)} placeholder={t('library.personPlaceholder')} />
+        <input value={directory} onChange={event => setDirectory(event.target.value)} placeholder={t('library.directoryPlaceholder')} />
         <select value={volume} onChange={event => setVolume(event.target.value)}>
-          <option value="">全部存储卷</option>
+          <option value="">{t('library.allVolumes')}</option>
           {volumes.map(item => (
             <option key={item.volumeId} value={item.volumeId}>
               {item.roots[0] || item.volumeId}
@@ -223,30 +226,30 @@ export default function Library() {
           ))}
         </select>
         <select value={duplicates} onChange={event => setDuplicates(event.target.value)}>
-          <option value="">全部重复状态</option>
-          <option value="yes">有重复候选</option>
-          <option value="no">无重复候选</option>
+          <option value="">{t('library.allDuplicates')}</option>
+          <option value="yes">{t('library.hasDuplicates')}</option>
+          <option value="no">{t('library.noDuplicates')}</option>
         </select>
         <select value={recentDays} onChange={event => setRecentDays(event.target.value)}>
-          <option value="">全部导入时间</option>
-          <option value="1">最近 24 小时</option>
-          <option value="7">最近 7 天</option>
-          <option value="30">最近 30 天</option>
+          <option value="">{t('library.allImportTime')}</option>
+          <option value="1">{t('library.last24h')}</option>
+          <option value="7">{t('library.last7d')}</option>
+          <option value="30">{t('library.last30d')}</option>
         </select>
         <button onClick={() => {
           setSearch(''); setRating(''); setLabel(''); setStatus(''); setKeyword('')
           setDirectory(''); setVolume(''); setPerson(''); setDuplicates(''); setRecentDays('')
-        }}>清除筛选</button>
+        }}>{t('library.clearFilters')}</button>
       </div>
 
       <div className={styles.layout}>
         <aside className={styles.sidebar}>
-          <h2>智能相册</h2>
+          <h2>{t('library.smartAlbums')}</h2>
           <button
             className={!selectedAlbum ? styles.selected : ''}
             onClick={() => setSelectedAlbum(undefined)}
           >
-            全部照片
+            {t('library.allPhotos')}
           </button>
           {albums.map(album => (
             <button
@@ -259,28 +262,28 @@ export default function Library() {
               {album.validationError ? '⚠️' : album.icon} {album.name}
             </button>
           ))}
-          <input value={albumName} onChange={event => setAlbumName(event.target.value)} placeholder="新相册名称" />
+          <input value={albumName} onChange={event => setAlbumName(event.target.value)} placeholder={t('library.newAlbumPlaceholder')} />
           <button
             disabled={!albumName.trim() || createAlbum.isPending}
             onClick={() => createAlbum.mutate()}
           >
-            {createAlbum.isPending ? '保存中…' : '用当前筛选创建'}
+            {createAlbum.isPending ? t('library.saving') : t('library.createWithFilters')}
           </button>
           {selectedAlbum && (
             <>
               <button disabled={updateAlbum.isPending} onClick={() => updateAlbum.mutate()}>
-                更新为当前筛选
+                {t('library.updateAlbum')}
               </button>
               <button className={styles.danger} onClick={() => deleteAlbum.mutate(selectedAlbum)}>
-                删除当前相册
+                {t('library.deleteAlbum')}
               </button>
             </>
           )}
 
           <div className={styles.divider} />
-          <h2>RAW / JPEG 关联</h2>
+          <h2>{t('library.rawJpegLink')}</h2>
           <p className={styles.help}>
-            拍摄时间和相机信息均匹配的唯一 RAW/JPEG 组合会自动关联；证据不足时等待人工确认。
+            {t('library.rawJpegHelp')}
           </p>
           {linkCandidates.slice(0, 24).map(candidate => (
             <div className={styles.candidate} key={candidate.id}>
@@ -288,57 +291,57 @@ export default function Library() {
               <span title={candidate.rightPath}>{candidate.rightPath.split(/[/\\]/).pop()}</span>
               <small>
                 {candidate.status === 'accepted'
-                  ? '已关联'
-                  : candidate.status === 'rejected' ? '已拒绝' : `待确认 · ${Math.round(candidate.confidence * 100)}%`}
+                  ? t('library.linked')
+                  : candidate.status === 'rejected' ? t('library.rejected') : t('library.pending', { percent: Math.round(candidate.confidence * 100) })}
               </small>
               <div className={styles.candidateActions}>
                 {candidate.status !== 'accepted' && (
                   <button disabled={updateCandidate.isPending} onClick={() => updateCandidate.mutate({ id: candidate.id, accept: true })}>
-                    关联
+                    {t('library.link')}
                   </button>
                 )}
                 {candidate.status !== 'rejected' && (
                   <button disabled={updateCandidate.isPending} onClick={() => updateCandidate.mutate({ id: candidate.id, accept: false })}>
-                    {candidate.status === 'accepted' ? '拆分' : '拒绝'}
+                    {candidate.status === 'accepted' ? t('library.split') : t('library.reject')}
                   </button>
                 )}
               </div>
             </div>
           ))}
-          {linkCandidates.length === 0 && <p className={styles.muted}>暂无关联候选</p>}
+          {linkCandidates.length === 0 && <p className={styles.muted}>{t('library.noCandidates')}</p>}
           {metadataOrphans.length > 0 && (
             <>
               <div className={styles.divider} />
-              <h2>待恢复 XMP</h2>
-              <p className={styles.help}>原 Session 已删除，XMP 操作仍被安全保留。</p>
+              <h2>{t('library.orphanXmp')}</h2>
+              <p className={styles.help}>{t('library.orphanHelp')}</p>
               {metadataOrphans.slice(0, 24).map(orphan => (
                 <div className={styles.candidate} key={orphan.xmpPath}>
                   <span title={orphan.xmpPath}>{orphan.xmpPath.split(/[/\\]/).pop()}</span>
-                  <small>{orphan.status}{orphan.errorMessage ? ` · ${orphan.errorMessage}` : ''}</small>
+                  <small>{orphan.status}{orphan.errorMessage ? ` · ${translateErrorCode(orphan.errorMessage)}` : ''}</small>
                   <div className={styles.candidateActions}>
                     {['pending', 'failed'].includes(orphan.status) && (
-                      <button onClick={() => resolveOrphan.mutate({ xmpPath: orphan.xmpPath, action: 'retry' })}>重试</button>
+                      <button onClick={() => resolveOrphan.mutate({ xmpPath: orphan.xmpPath, action: 'retry' })}>{t('library.retry')}</button>
                     )}
-                    <button onClick={() => resolveOrphan.mutate({ xmpPath: orphan.xmpPath, action: 'keep' })}>保留 XMP</button>
-                    <button onClick={() => resolveOrphan.mutate({ xmpPath: orphan.xmpPath, action: 'restore' })}>恢复原始</button>
+                    <button onClick={() => resolveOrphan.mutate({ xmpPath: orphan.xmpPath, action: 'keep' })}>{t('library.keepXmp')}</button>
+                    <button onClick={() => resolveOrphan.mutate({ xmpPath: orphan.xmpPath, action: 'restore' })}>{t('library.restoreOriginal')}</button>
                   </div>
                 </div>
               ))}
               {metadataOrphans.length > 24 && (
-                <p className={styles.muted}>另有 {metadataOrphans.length - 24} 个待恢复 XMP 未列出</p>
+                <p className={styles.muted}>{t('library.orphanMore', { count: metadataOrphans.length - 24 })}</p>
               )}
             </>
           )}
           {volumes.some(volume => volume.offlineFiles > 0) && (
             <>
               <div className={styles.divider} />
-              <h2>离线存储卷</h2>
+              <h2>{t('library.offlineVolumes')}</h2>
               {volumes.filter(volume => volume.offlineFiles > 0).map(volume => (
                 <div className={styles.candidate} key={volume.volumeId}>
                   <span title={volume.roots.join(', ')}>{volume.roots.join('、') || volume.volumeId}</span>
-                  <small>{volume.offlineFiles} 个离线文件</small>
+                  <small>{t('library.offlineFiles', { count: volume.offlineFiles })}</small>
                   {volume.roots.map(root => (
-                    <button key={root} onClick={() => relinkVolume.mutate(root)}>重新定位…</button>
+                    <button key={root} onClick={() => relinkVolume.mutate(root)}>{t('library.relink')}</button>
                   ))}
                 </div>
               ))}
@@ -348,8 +351,8 @@ export default function Library() {
 
         <main className={styles.content}>
           <div className={styles.toolbar}>
-            <span>{isLoading ? '加载中…' : `共 ${total} 张逻辑照片`}</span>
-            <span>第 {Math.min(page * PAGE_SIZE + 1, Math.max(1, total))}–{Math.min((page + 1) * PAGE_SIZE, total)} 张</span>
+            <span>{isLoading ? t('library.loading') : t('library.totalCount', { count: total })}</span>
+            <span>{t('library.range', { start: Math.min(page * PAGE_SIZE + 1, Math.max(1, total)), end: Math.min((page + 1) * PAGE_SIZE, total) })}</span>
           </div>
           <div className={styles.grid}>
             {photos.map(photo => (
@@ -361,26 +364,26 @@ export default function Library() {
                     loading="lazy"
                     onError={(e) => { e.currentTarget.style.display = 'none' }}
                   />
-                  {photo.status === 'missing' && <span className={styles.offline}>离线</span>}
+                  {photo.status === 'missing' && <span className={styles.offline}>{t('library.offline')}</span>}
                 </div>
                 <strong title={photo.filename}>{photo.filename}</strong>
-                <span>{photo.rating > 0 ? `${'★'.repeat(photo.rating)}${'☆'.repeat(5 - photo.rating)}` : '未评级'}</span>
-                <span>{photo.label || '无色标'} · {photo.sessionNames.join('、')}</span>
+                <span>{photo.rating > 0 ? `${'★'.repeat(photo.rating)}${'☆'.repeat(5 - photo.rating)}` : t('library.unrated')}</span>
+                <span>{photo.label || t('library.noLabel')} · {photo.sessionNames.join('、')}</span>
                 {photo.keywords.length > 0 && <small>{photo.keywords.slice(0, 4).join(' · ')}</small>}
               </article>
             ))}
             {isError && (
               <p className={styles.muted}>
-                查询失败：{error instanceof Error ? error.message : '未知错误'}
-                <button className={styles.retryBtn} onClick={() => refetch()}>重试</button>
+                {t('error.queryFailed', { message: translateError(error) })}
+                <button className={styles.retryBtn} onClick={() => refetch()}>{t('common.retry')}</button>
               </p>
             )}
-            {!isLoading && !isError && photos.length === 0 && <p className={styles.muted}>没有符合条件的照片</p>}
+            {!isLoading && !isError && photos.length === 0 && <p className={styles.muted}>{t('library.noPhotos')}</p>}
           </div>
           <footer className={styles.pagination}>
-            <button disabled={page === 0} onClick={() => setPage(value => Math.max(0, value - 1))}>上一页</button>
+            <button disabled={page === 0} onClick={() => setPage(value => Math.max(0, value - 1))}>{t('library.prevPage')}</button>
             <span>{page + 1} / {Math.max(1, Math.ceil(total / PAGE_SIZE))}</span>
-            <button disabled={(page + 1) * PAGE_SIZE >= total} onClick={() => setPage(value => value + 1)}>下一页</button>
+            <button disabled={(page + 1) * PAGE_SIZE >= total} onClick={() => setPage(value => value + 1)}>{t('library.nextPage')}</button>
           </footer>
         </main>
       </div>

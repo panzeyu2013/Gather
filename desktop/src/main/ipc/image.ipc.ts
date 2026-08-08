@@ -87,7 +87,7 @@ export function registerImageHandlers(
       context.updateProgress({
         current,
         total,
-        message: '正在生成缩略图',
+        phase: 'thumbnail.building',
         checkpoint: { ...job.checkpoint, nextPathIndex: current },
       })
     })

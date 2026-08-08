@@ -591,8 +591,8 @@ export class IndexService {
     requestedPaths?: string[],
   ): Promise<IndexScanResult> {
     const session = this.sessionRepo.get(sessionId)
-    if (!session) throw new Error('Session not found')
-    if (!session.source_path) throw new Error('Session has no source directory')
+    if (!session) throw new Error('SESSION_NOT_FOUND')
+    if (!session.source_path) throw new Error('INDEX_SESSION_NO_SOURCE')
     const excludedRoots = managedCacheRoots(this.settings)
     let existing = this.photoRepo.getBySessionProjection(sessionId)
     const generatedCachePhotos = existing.filter(photo =>
@@ -658,6 +658,10 @@ export class IndexService {
     let discovered = 0
     let added = 0
     let skipped = 0
+    // Photos the scan re-indexed because their content changed. Together with
+    // `added`, `relinkedPhotoIds` and `missing` this drives the index_seq bump
+    // at the commit point: relinks are counted here too, not just additions.
+    let updatedExistingPhotos = 0
     const scanBatch = async (filepaths: string[]): Promise<void> => {
       context?.throwIfCancelled()
       // RAW hashing is mostly I/O bound but too many simultaneous streams cause
@@ -686,9 +690,20 @@ export class IndexService {
             return { kind: 'new' as const, filepath, dimensions, source, checksum }
           }
           const indexed = photo.asset_file_id ? fileStats.get(photo.asset_file_id) : undefined
-          const contentChanged = !indexed ||
-            indexed.file_size !== source.size ||
-            Math.abs(indexed.file_mtime_ms - source.mtimeMs) >= 1
+          // Content-changed only when a baseline proves the file differs.
+          // With no asset_files row (not yet backfilled, permanently offline
+          // files) the photo's own indexed stat (checksum_file_size /
+          // checksum_file_mtime_ms, written by previous scan commits) is the
+          // baseline: without it, every rescan would count the file as
+          // changed and bump index_seq on no-op scans. The photo still gets
+          // its dimension/checksum writes below — only the bump accounting
+          // stays honest about re-writes of identical values.
+          const contentChanged = indexed !== undefined
+            ? indexed.file_size !== source.size ||
+              Math.abs(indexed.file_mtime_ms - source.mtimeMs) >= 1
+            : !(photo.checksum_file_size > 0 &&
+                photo.checksum_file_size === source.size &&
+                Math.abs(photo.checksum_file_mtime_ms - source.mtimeMs) < 1)
           if (!contentChanged && photo.status !== 'missing' && indexed?.checksum) {
             return { kind: 'unchanged' as const }
           }
@@ -787,6 +802,9 @@ export class IndexService {
             })
           }
         } else if (result.kind === 'existing') {
+          if (result.contentChanged) {
+            updatedExistingPhotos++
+          }
           this.photoRepo.updateIndexedFile(
             result.photoId,
             result.dimensions.width,
@@ -952,7 +970,7 @@ export class IndexService {
         context?.updateProgress({
           current: discovered,
           total: 0,
-          message: '正在增量扫描文件',
+          phase: 'index.scanning',
         })
         pending.push(filepath)
         if (pending.length >= SCAN_BATCH_FILES) await flush()
@@ -974,8 +992,23 @@ export class IndexService {
     })
     this.photoRepo.markMissing(missing.map(photo => photo.id))
     this.assetRepo.backfillSession(sessionId)
-    const finalCount = this.photoRepo.countBySession(sessionId)
-    this.sessionRepo.updatePhotoCount(sessionId, finalCount)
+    // index_seq is the analysis-staleness cursor: bump it only when this scan
+    // committed real changes (newly added photos, content-changed or relinked
+    // photos, or newly missing photos). A no-op scan must not mark analyses
+    // stale.
+    const committedChanges =
+      added > 0 ||
+      updatedExistingPhotos > 0 ||
+      relinkedPhotoIds.size > 0 ||
+      missing.length > 0
+    let finalCount = 0
+    this.db.transaction(() => {
+      finalCount = this.photoRepo.countBySession(sessionId)
+      this.sessionRepo.updatePhotoCount(sessionId, finalCount)
+      if (committedChanges) {
+        this.sessionRepo.bumpIndexSeq(sessionId)
+      }
+    })()
     if (finalCount > 0 && session.status === 'draft') {
       this.sessionRepo.updateStatus(sessionId, 'photos_loaded')
     }
@@ -992,7 +1025,7 @@ export class IndexService {
     context?.updateProgress({
       current: discovered,
       total: discovered,
-      message: '索引完成',
+      phase: 'index.done',
     })
     return {
       sessionId,
@@ -1096,7 +1129,7 @@ export class IndexService {
       context?.updateProgress({
         current: 0,
         total: pending.length,
-        message: '正在后台补齐文件校验和',
+        phase: 'index.checksum',
       })
       let passBackfilled = 0
       for (let offset = 0; offset < pending.length; offset += CHECKSUM_BACKFILL_BATCH) {

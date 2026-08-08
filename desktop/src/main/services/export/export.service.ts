@@ -21,70 +21,70 @@ function escapeCsvField(value: string): string {
 
 function validateDestination(destination: string): void {
   if (!destination || typeof destination !== 'string') {
-    throw new Error('导出目录无效')
+    throw new Error('EXPORT_DIR_INVALID')
   }
   if (!path.isAbsolute(destination)) {
-    throw new Error('导出目录必须使用绝对路径')
+    throw new Error('EXPORT_DIR_ABSOLUTE_REQUIRED')
   }
   const resolved = path.resolve(destination)
   if (resolved === path.parse(resolved).root) {
-    throw new Error('不能直接导出到磁盘根目录')
+    throw new Error('EXPORT_DIR_ROOT_FORBIDDEN')
   }
 }
 
 function validateExportOptions(options: ExportOptions): void {
   validateDestination(options.destination)
   if (!['original', 'jpeg', 'tiff'].includes(options.format)) {
-    throw new Error('导出格式无效')
+    throw new Error('EXPORT_FORMAT_INVALID')
   }
   if (
     options.variantPolicy !== undefined &&
     !['preferred', 'raw', 'jpeg', 'all'].includes(options.variantPolicy)
   ) {
-    throw new Error('导出变体策略无效')
+    throw new Error('EXPORT_VARIANT_POLICY_INVALID')
   }
   if (options.format === 'original' && (options.maxDimension || options.watermark)) {
-    throw new Error('保持原格式仅复制文件，不能同时调整尺寸或添加水印')
+    throw new Error('EXPORT_ORIGINAL_NO_TRANSFORM')
   }
   if (!options.naming?.pattern?.trim()) {
-    throw new Error('文件命名规则不能为空')
+    throw new Error('EXPORT_NAMING_EMPTY')
   }
   if (
     options.naming.pattern.includes('/') ||
     options.naming.pattern.includes('\\') ||
     options.naming.pattern.includes('\0')
   ) {
-    throw new Error('文件命名规则不能包含路径分隔符或空字符')
+    throw new Error('EXPORT_NAMING_INVALID_CHARS')
   }
   if (
     options.quality !== undefined &&
     (!Number.isInteger(options.quality) || options.quality < 1 || options.quality > 100)
   ) {
-    throw new Error('JPEG 质量必须是 1 到 100 之间的整数')
+    throw new Error('EXPORT_JPEG_QUALITY_INVALID')
   }
   if (
     options.maxDimension !== undefined &&
     (!Number.isInteger(options.maxDimension) || options.maxDimension < 1)
   ) {
-    throw new Error('最长边必须是大于等于 1 的整数')
+    throw new Error('EXPORT_MAX_DIMENSION_INVALID')
   }
   if (
     options.naming.counterStart !== undefined &&
     (!Number.isInteger(options.naming.counterStart) || options.naming.counterStart < 0)
   ) {
-    throw new Error('起始序号必须是大于等于 0 的整数')
+    throw new Error('EXPORT_START_INDEX_INVALID')
   }
   if (options.watermark) {
     if (options.watermark.type !== 'text') {
-      throw new Error('当前版本仅支持文字水印')
+      throw new Error('EXPORT_WATERMARK_TYPE_UNSUPPORTED')
     }
-    if (!options.watermark.content.trim()) throw new Error('水印文字不能为空')
+    if (!options.watermark.content.trim()) throw new Error('EXPORT_WATERMARK_TEXT_EMPTY')
     if (
       !Number.isFinite(options.watermark.opacity) ||
       options.watermark.opacity < 0 ||
       options.watermark.opacity > 1
     ) {
-      throw new Error('水印不透明度必须在 0 到 1 之间')
+      throw new Error('EXPORT_WATERMARK_OPACITY_INVALID')
     }
     if (
       options.watermark.fontSize !== undefined &&
@@ -92,7 +92,7 @@ function validateExportOptions(options: ExportOptions): void {
         options.watermark.fontSize < 1 ||
         options.watermark.fontSize > 1000)
     ) {
-      throw new Error('水印字号必须在 1 到 1000 之间')
+      throw new Error('EXPORT_WATERMARK_FONT_SIZE_INVALID')
     }
   }
 }
@@ -186,7 +186,7 @@ export class ExportService {
     const session = this.sessionRepo.get(sessionId)
     if (!session?.source_path) return
     if (isWithinDirectory(destination, session.source_path)) {
-      throw new Error('不能导出到工作区导入目录或其子目录，导出的文件会被重新导入当前工作区')
+      throw new Error('EXPORT_DIR_INSIDE_SESSION')
     }
   }
 
@@ -206,7 +206,7 @@ export class ExportService {
       fs.promises.readFile(destination),
     ])
     if (!sourceBytes.equals(destinationBytes)) {
-      throw new Error(`目标 XMP 已存在且内容不同：${destination}`)
+      throw new Error('EXPORT_XMP_CONFLICT')
     }
   }
 
@@ -228,8 +228,8 @@ export class ExportService {
     try {
       await this.copyXmpSafely(xmpPath, getXmpSidecarPath(destPath))
     } catch (error) {
-      const message = error instanceof Error ? error.message : '未知错误'
-      errors.push(`${filename}: ${message}（图像已导出，仅 XMP 未复制）`)
+      const message = error instanceof Error ? error.message : 'EXPORT_UNKNOWN_ERROR'
+      errors.push(`${filename}: ${message}`)
     }
   }
 
@@ -358,7 +358,7 @@ export class ExportService {
       try {
         const resolvedDest = path.resolve(destPath)
         if (!resolvedDest.startsWith(destination + path.sep) && resolvedDest !== destination) {
-          throw new Error(`${photo.filename} 的导出路径无效`)
+          throw new Error('EXPORT_PATH_INVALID')
         }
 
         if (options.format === 'original') {
@@ -403,7 +403,7 @@ export class ExportService {
         if (destinationCreated) {
           await fs.promises.unlink(destPath).catch(() => undefined)
         }
-        const message = e instanceof Error ? e.message : '未知错误'
+        const message = e instanceof Error ? e.message : 'EXPORT_UNKNOWN_ERROR'
         errors.push(`${photo.filename}: ${message}`)
         failed++
         completed++
@@ -459,9 +459,9 @@ export class ExportService {
     if (options.scope === 'session') {
       scoped = photos.filter((p) => p.status !== 'removed')
     } else if (options.scope === 'selected' || options.scope === 'filtered') {
-      throw new Error(`暂不支持导出范围“${options.scope}”，请导出当前工作区的全部照片。`)
+      throw new Error('EXPORT_SCOPE_UNSUPPORTED')
     } else {
-      throw new Error(`未知导出范围：${options.scope}`)
+      throw new Error('EXPORT_SCOPE_UNKNOWN')
     }
     const policy = options.variantPolicy ?? 'preferred'
     if (policy === 'all') return scoped
@@ -524,9 +524,7 @@ export class ExportService {
     try {
       await sharp(sourcePath).metadata()
     } catch {
-      throw new Error(
-        `暂不支持将 ${path.extname(sourcePath) || '此文件类型'} 转换为全分辨率文件，请选择“保持原格式”。`,
-      )
+      throw new Error('EXPORT_RAW_CONVERT_UNSUPPORTED')
     }
 
     let pipeline = sharp(sourcePath)
@@ -566,7 +564,7 @@ export class ExportService {
       }
       pipeline = pipeline.tiff({ compression: compMap[compression] ?? 'lzw' })
     } else {
-      throw new Error(`不支持导出格式：${options.format}。可用格式为 JPEG、TIFF 或保持原格式。`)
+      throw new Error('EXPORT_FORMAT_UNSUPPORTED')
     }
 
     await pipeline.toFile(destPath)

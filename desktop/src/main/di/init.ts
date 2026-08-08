@@ -42,6 +42,8 @@ import { IndexService } from '../services/indexer/index.service'
 import { QualityService } from '../services/quality/quality.service'
 import { NavigationService } from '../services/navigation/navigation.service'
 import { PhotoAssetResolver } from '../services/assets/photo-asset-resolver'
+import { CaptureOneSyncState } from '../services/capture-one/sync-state'
+import { WorkspaceStatusService } from '../services/workspace/workspace-status.service'
 
 let initialized = false
 
@@ -77,6 +79,8 @@ export function initContainer(): void {
   container.registerSingleton(DI_TOKENS.QUALITY_SERVICE, QualityService)
   container.registerSingleton(DI_TOKENS.NAVIGATION_SERVICE, NavigationService)
   container.registerSingleton(DI_TOKENS.PHOTO_ASSET_RESOLVER, PhotoAssetResolver)
+  container.registerSingleton(DI_TOKENS.CAPTURE_ONE_SYNC_STATE, CaptureOneSyncState)
+  container.registerSingleton(DI_TOKENS.WORKSPACE_STATUS_SERVICE, WorkspaceStatusService)
   container.registerSingleton(DI_TOKENS.EXPORT_SERVICE, ExportService)
   container.registerSingleton(DI_TOKENS.REPORT_SERVICE, ReportService)
   container.registerSingleton(DI_TOKENS.SESSION_SERVICE, SessionService)

@@ -3,6 +3,8 @@ import { useParams } from 'react-router-dom'
 import { duplicateApi } from '../../api/duplicate'
 import { imageApi } from '../../api/image'
 import type { DuplicateScanResult, DuplicateGroup, DuplicateGroupMember } from '@gather/shared'
+import { useTranslation } from '../../locales'
+import { translateError } from '../../utils/errors'
 import styles from './Duplicates.module.css'
 
 const DEFAULT_MEMBER_LIMIT = 12
@@ -32,6 +34,7 @@ const MemberCard = memo(function MemberCard({
   member: DuplicateGroupMember
   onToggle: (memberId: number, isKept: boolean) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className={`${styles.memberCard} ${member.isKept ? styles.memberKept : styles.memberRejected}`}>
       <ThumbnailImage path={member.filepath} className={styles.memberThumb} />
@@ -43,7 +46,7 @@ const MemberCard = memo(function MemberCard({
         className={member.isKept ? styles.keptBtn : styles.rejectBtn}
         onClick={() => onToggle(member.id, !member.isKept)}
       >
-        {member.isKept ? '保留' : '丢弃'}
+        {member.isKept ? t('duplicate.keep') : t('duplicate.discard')}
       </button>
     </div>
   )
@@ -58,6 +61,7 @@ const GroupCard = memo(function GroupCard({
   onResolveGroup: (groupId: number, resolution: 'keep_one' | 'keep_all') => void
   onToggleMember: (memberId: number, isKept: boolean) => void
 }) {
+  const { t } = useTranslation()
   const [showResolve, setShowResolve] = useState(false)
   const [showAllMembers, setShowAllMembers] = useState(false)
 
@@ -78,15 +82,18 @@ const GroupCard = memo(function GroupCard({
     <div className={styles.groupCard}>
       <div className={styles.groupHeader}>
         <h3 className={styles.groupTitle}>
-          {group.groupType === 'exact' ? '完全重复' : '视觉相似'} · {group.memberCount} 张照片
-          {group.resolution ? ` · ${group.resolution === 'keep_one' ? '保留最佳' : '保留全部'}` : ''}
+          {t('duplicate.groupTitle', {
+            type: group.groupType === 'exact' ? t('duplicate.exactType') : t('duplicate.visualType'),
+            count: group.memberCount,
+          })}
+          {group.resolution ? ` · ${group.resolution === 'keep_one' ? t('duplicate.keepBest') : t('duplicate.keepAll')}` : ''}
         </h3>
         <div className={styles.groupActions}>
           <button
             className={styles.resolveBtn}
             onClick={() => setShowResolve(!showResolve)}
           >
-            处理
+            {t('duplicate.resolve')}
           </button>
         </div>
       </div>
@@ -100,7 +107,7 @@ const GroupCard = memo(function GroupCard({
               setShowResolve(false)
             }}
           >
-            保留最佳
+            {t('duplicate.keepBest')}
           </button>
           <button
             className={styles.resolveOption}
@@ -109,7 +116,7 @@ const GroupCard = memo(function GroupCard({
               setShowResolve(false)
             }}
           >
-            保留全部
+            {t('duplicate.keepAll')}
           </button>
         </div>
       )}
@@ -119,7 +126,7 @@ const GroupCard = memo(function GroupCard({
           <div key={member.id} className={styles.memberWrapper}>
             <MemberCard member={member} onToggle={onToggleMember} />
             {recommendation && member.id === recommendation.id && (
-              <span className={styles.recommendBadge}>推荐</span>
+              <span className={styles.recommendBadge}>{t('duplicate.recommend')}</span>
             )}
           </div>
         ))}
@@ -141,6 +148,7 @@ const GroupCard = memo(function GroupCard({
 })
 
 export default function Duplicates() {
+  const { t } = useTranslation()
   const { sessionId } = useParams<{ sessionId: string }>()
   const [scanResult, setScanResult] = useState<DuplicateScanResult | null>(null)
   const [groups, setGroups] = useState<DuplicateGroup[]>([])
@@ -158,7 +166,7 @@ export default function Duplicates() {
       const data = await duplicateApi.getGroups(sessionId)
       setGroups(data)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载重复照片组失败')
+      setError(e instanceof Error ? translateError(e) : t('error.loadDuplicatesFailed'))
     } finally {
       setLoading(false)
     }
@@ -177,7 +185,7 @@ export default function Duplicates() {
       setScanResult(result)
       await loadGroups()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '扫描失败')
+      setError(e instanceof Error ? translateError(e) : t('error.scanDuplicatesFailed'))
     } finally {
       setScanning(false)
     }
@@ -226,7 +234,7 @@ export default function Duplicates() {
         }
       }))
     } catch (e) {
-      setError(e instanceof Error ? e.message : '处理照片组失败')
+      setError(e instanceof Error ? translateError(e) : t('error.resolveGroupFailed'))
     }
   }, [])
 
@@ -250,7 +258,7 @@ export default function Duplicates() {
           : g,
       ))
     } catch (e) {
-      setError(e instanceof Error ? e.message : '更新照片状态失败')
+      setError(e instanceof Error ? translateError(e) : t('error.updateMemberFailed'))
     }
   }, [])
 
@@ -281,17 +289,17 @@ export default function Duplicates() {
   const visibleGroups = filteredGroups.slice(0, visibleGroupCount)
 
   if (!sessionId) {
-    return <div className={styles.page}><p>未选择工作区</p></div>
+    return <div className={styles.page}><p>{t('duplicate.noWorkspace')}</p></div>
   }
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>重复照片检测</h2>
+      <h2 className={styles.title}>{t('duplicate.title')}</h2>
 
       <div className={styles.panel}>
         <div className={styles.controlRow}>
           <label className={styles.controlLabel}>
-            视觉相似阈值: <strong>{visualThreshold}</strong>
+            {t('duplicate.visualThreshold')}: <strong>{visualThreshold}</strong>
           </label>
           <input
             type="range"
@@ -301,7 +309,7 @@ export default function Duplicates() {
             onChange={(e) => setVisualThreshold(Number(e.target.value))}
             className={styles.slider}
           />
-          <span className={styles.rangeHint}>0 (严格) — 10 (宽松)</span>
+          <span className={styles.rangeHint}>{t('duplicate.rangeHint')}</span>
         </div>
 
         <button
@@ -309,14 +317,14 @@ export default function Duplicates() {
           onClick={handleScan}
           disabled={scanning}
         >
-          {scanning ? '扫描中...' : '开始扫描'}
+          {scanning ? t('duplicate.scanning') : t('duplicate.startScan')}
         </button>
 
         {scanResult && (
           <div className={styles.scanStats}>
-            <span>完全重复: {scanResult.exactGroups.length} 组</span>
-            <span>视觉相似: {scanResult.visualGroups.length} 组</span>
-            <span>总计重复: {scanResult.totalDuplicates} 张</span>
+            <span>{t('duplicate.exactGroups', { count: scanResult.exactGroups.length })}</span>
+            <span>{t('duplicate.visualGroups', { count: scanResult.visualGroups.length })}</span>
+            <span>{t('duplicate.totalDuplicates', { count: scanResult.totalDuplicates })}</span>
           </div>
         )}
 
@@ -328,27 +336,27 @@ export default function Duplicates() {
           className={activeTab === 'exact' ? styles.tabActive : styles.tab}
           onClick={() => setActiveTab('exact')}
         >
-          完全重复 ({exactGroups.length})
+          {t('duplicate.exactTab', { count: exactGroups.length })}
         </button>
         <button
           className={activeTab === 'visual' ? styles.tabActive : styles.tab}
           onClick={() => setActiveTab('visual')}
         >
-          视觉相似 ({visualGroups.length})
+          {t('duplicate.visualTab', { count: visualGroups.length })}
         </button>
       </div>
 
-      {loading && <p className={styles.loading}>加载中...</p>}
+      {loading && <p className={styles.loading}>{t('duplicate.loading')}</p>}
 
       {!loading && filteredGroups.length === 0 && scanResult && (
         <div className={styles.empty}>
-          <p>未发现{activeTab === 'exact' ? '完全重复' : '视觉相似'}的照片</p>
+          <p>{activeTab === 'exact' ? t('duplicate.noExactFound') : t('duplicate.noVisualFound')}</p>
         </div>
       )}
 
       {!loading && filteredGroups.length === 0 && !scanResult && (
         <div className={styles.empty}>
-          <p>点击"开始扫描"按钮检测重复照片</p>
+          <p>{t('duplicate.scanHint')}</p>
         </div>
       )}
 
@@ -370,7 +378,7 @@ export default function Duplicates() {
             className={styles.resolveBtn}
             onClick={() => setVisibleGroupCount((count) => count + GROUP_PAGE_SIZE)}
           >
-            加载更多 (还有 {filteredGroups.length - visibleGroupCount} 组)
+            {t('duplicate.loadMore', { count: filteredGroups.length - visibleGroupCount })}
           </button>
         </div>
       )}

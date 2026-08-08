@@ -62,6 +62,10 @@ export interface JobClearCompletedParams { confirmed: boolean }
 export interface JobProgressUpdate {
   current?: number
   total?: number
+  /** Stage code for the running job (design_improvements.md 4.4.2), e.g.
+   * `index.scanning` / `similarity.cluster`. The main process never sends
+   * natural-language progress copy; the renderer maps the code to copy. */
+  phase?: string
   message?: string
   checkpoint?: Record<string, unknown>
 }

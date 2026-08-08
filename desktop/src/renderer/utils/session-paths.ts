@@ -1,3 +1,5 @@
+import { t as defaultT, type TypedTFunction } from '../locales'
+
 export function getPathBasename(filepath: string): string {
   return filepath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
 }
@@ -24,14 +26,20 @@ export function getCommonParentPath(filepaths: string[]): string {
 export function importFailureMessage(
   added: number,
   failedFiles: string[],
-  sourceLabel = '文件',
+  sourceLabel = '',
+  translator: TypedTFunction = defaultT,
 ): string {
   const examples = failedFiles
     .slice(0, 3)
     .map((filepath) => filepath.split(/[/\\]/).pop() ?? filepath)
-    .join('、')
+    .join(translator('list.separator'))
   const remaining = failedFiles.length > 3
-    ? ` 等 ${failedFiles.length} 个`
+    ? translator('dashboard.sessionImportMore', { count: failedFiles.length })
     : ''
-  return `${added} 张照片已导入；${sourceLabel}读取失败：${examples}${remaining}`
+  return translator('dashboard.sessionImportFailure', {
+    added,
+    source: sourceLabel || translator('dashboard.sessionImportSource'),
+    examples,
+    remaining,
+  })
 }

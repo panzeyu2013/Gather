@@ -5,12 +5,15 @@ import { faceKwApi } from '../../api/faceKw'
 import { imageApi } from '../../api/image'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from '../../locales'
+import { translateError } from '../../utils/errors'
 import styles from './StepReview.module.css'
 
 const MAX_PREVIEW_MEMBERS = 4
 const CLUSTER_PAGE_SIZE = 100
 
 export default function StepReview() {
+  const { t } = useTranslation()
   const sessionId = useFaceKwStore((s) => s.sessionId)
   const selectedClusterId = useFaceKwStore((s) => s.selectedClusterId)
   const selectCluster = useFaceKwStore((s) => s.selectCluster)
@@ -89,7 +92,7 @@ export default function StepReview() {
     if (!sessionId || !selectedCluster) return
     const normalizedRoleName = roleName.trim()
     if (!normalizedRoleName) {
-      setActionError('角色名称不能为空；它会作为 Capture One 关键词写入。')
+      setActionError(t('face.roleEmptyError'))
       return
     }
     const kwList = keywords.split(',').map((k) => k.trim()).filter(Boolean)
@@ -98,7 +101,7 @@ export default function StepReview() {
       await faceKwApi.bind(sessionId, selectedCluster.id, normalizedRoleName, kwList)
       await refreshClusters()
     } catch (e) {
-      setActionError(`绑定失败：${e instanceof Error ? e.message : '未知错误'}`)
+      setActionError(t('face.bindFailed', { message: translateError(e) }))
     }
   }, [sessionId, selectedCluster, roleName, keywords, refreshClusters])
 
@@ -109,20 +112,20 @@ export default function StepReview() {
       await faceKwApi.removeMember(sessionId, selectedCluster.id, memberId)
       await refreshClusters()
     } catch (e) {
-      setActionError(`移除成员失败：${e instanceof Error ? e.message : '未知错误'}`)
+      setActionError(t('face.removeMemberFailed', { message: translateError(e) }))
     }
   }, [sessionId, selectedCluster, refreshClusters])
 
   const handleUnbind = useCallback(async () => {
     if (!sessionId || !selectedCluster) return
-    if (!window.confirm('解绑后将撤销 Gather 人脸模块写入且未被其他绑定使用的关键词。继续吗？')) return
+    if (!window.confirm(t('face.unbindConfirm'))) return
     try {
       await faceKwApi.unbind(sessionId, selectedCluster.id)
       await refreshClusters()
       setRoleName('')
       setKeywords('')
     } catch (e) {
-      setActionError(`解绑失败：${e instanceof Error ? e.message : '未知错误'}`)
+      setActionError(t('face.unbindFailed', { message: translateError(e) }))
     }
   }, [sessionId, selectedCluster, refreshClusters, setRoleName, setKeywords])
 
@@ -134,7 +137,7 @@ export default function StepReview() {
       selectCluster(sessionId, mergeTargetId)
       setMergeTargetId(null)
     } catch (e) {
-      setActionError(`合并失败：${e instanceof Error ? e.message : '未知错误'}`)
+      setActionError(t('face.mergeFailed', { message: translateError(e) }))
     }
   }, [sessionId, selectedCluster, mergeTargetId, refreshClusters, selectCluster])
 
@@ -142,18 +145,18 @@ export default function StepReview() {
     <div className={styles.layout}>
       <section className={styles.clusterPane}>
         <header className={styles.paneHeader}>
-          <h3 className={styles.paneTitle}>人脸聚类</h3>
-          <span className={styles.paneCount}>{visibleClusters.length} 组</span>
+          <h3 className={styles.paneTitle}>{t('face.clusters')}</h3>
+          <span className={styles.paneCount}>{t('face.groupCount', { count: visibleClusters.length })}</span>
         </header>
         {roleFilter && (
           <div className={styles.roleFilterBar}>
-            <span>已按角色「{roleFilter}」筛选</span>
+            <span>{t('face.filteredByRole', { role: roleFilter })}</span>
             <button
               type="button"
               className={styles.roleFilterClear}
               onClick={clearRoleFilter}
             >
-              清除筛选
+              {t('face.clearFilter')}
             </button>
           </div>
         )}
@@ -175,7 +178,7 @@ export default function StepReview() {
               className={styles.secondaryButton}
               onClick={() => setVisibleClusterCount((count) => count + CLUSTER_PAGE_SIZE)}
             >
-              加载更多 (还有 {visibleClusters.length - visibleClusterCount} 组)
+              {t('face.loadMore', { count: visibleClusters.length - visibleClusterCount })}
             </button>
           </div>
         )}
@@ -186,7 +189,7 @@ export default function StepReview() {
           <>
             <header className={styles.detailHeader}>
               <h3 className={styles.detailTitle}>{selectedCluster.label}</h3>
-              <span className={styles.detailMeta}>{selectedCluster.size} 个成员</span>
+              <span className={styles.detailMeta}>{t('face.memberCount', { count: selectedCluster.size })}</span>
             </header>
 
             <div className={styles.memberList}>
@@ -201,10 +204,10 @@ export default function StepReview() {
                   <button
                     type="button"
                     onClick={() => void handleRemoveMember(m.memberId)}
-                    title="从该人脸聚类中移除"
+                    title={t('face.removeMemberTitle')}
                     className={styles.removeButton}
                   >
-                    移除
+                    {t('face.remove')}
                   </button>
                 </div>
               ))}
@@ -215,20 +218,20 @@ export default function StepReview() {
             )}
 
             <div className={styles.editor}>
-              <label className={styles.fieldLabel} htmlFor="face-role-name">角色名称</label>
+              <label className={styles.fieldLabel} htmlFor="face-role-name">{t('face.roleName')}</label>
               <input
                 id="face-role-name"
                 value={roleName}
                 onChange={(e) => setRoleName(e.target.value)}
-                placeholder="例如: 张三"
+                placeholder={t('face.roleNamePlaceholder')}
                 className={styles.input}
               />
-              <label className={styles.fieldLabel} htmlFor="face-keywords">关键词（逗号分隔）</label>
+              <label className={styles.fieldLabel} htmlFor="face-keywords">{t('face.keywords')}</label>
               <input
                 id="face-keywords"
                 value={keywords}
                 onChange={(e) => setKeywords(e.target.value)}
-                placeholder="例如: 人像, 户外, 微笑"
+                placeholder={t('face.keywordsPlaceholder')}
                 className={styles.input}
               />
             </div>
@@ -239,7 +242,7 @@ export default function StepReview() {
                 onClick={() => void handleBind()}
                 className={styles.primaryButton}
               >
-                {selectedCluster.binding ? '更新绑定' : '绑定'}
+                {selectedCluster.binding ? t('face.updateBinding') : t('face.bind')}
               </button>
               {selectedCluster.binding && (
                 <button
@@ -247,13 +250,13 @@ export default function StepReview() {
                   onClick={() => void handleUnbind()}
                   className={styles.dangerButton}
                 >
-                  解绑
+                  {t('face.unbind')}
                 </button>
               )}
             </div>
 
             <div className={styles.mergePanel}>
-              <label className={styles.fieldLabel} htmlFor="face-merge-target">合并到聚类</label>
+              <label className={styles.fieldLabel} htmlFor="face-merge-target">{t('face.mergeTo')}</label>
               <div className={styles.mergeRow}>
                 <select
                   id="face-merge-target"
@@ -261,12 +264,12 @@ export default function StepReview() {
                   onChange={(e) => setMergeTargetId(e.target.value ? Number(e.target.value) : null)}
                   className={styles.select}
                 >
-                  <option value="">选择目标...</option>
+                  <option value="">{t('face.mergeTargetPlaceholder')}</option>
                   {clusters
                     .filter((c) => c.id !== selectedCluster.id)
                     .map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.label} ({c.size} 张人脸)
+                        {c.label} ({t('face.faceCount', { count: c.size })})
                       </option>
                     ))}
                 </select>
@@ -276,13 +279,13 @@ export default function StepReview() {
                   disabled={!mergeTargetId}
                   className={styles.secondaryButton}
                 >
-                  合并
+                  {t('face.merge')}
                 </button>
               </div>
             </div>
           </>
         ) : (
-          <div className={styles.emptyDetail}>选择一个聚类以查看详情</div>
+          <div className={styles.emptyDetail}>{t('face.selectClusterHint')}</div>
         )}
       </aside>
     </div>
@@ -302,6 +305,7 @@ const ClusterCard = memo(function ClusterCard({
   thumbSize: number
   onSelect: (cluster: ClusterData) => void
 }) {
+  const { t } = useTranslation()
   return (
     <button
       type="button"
@@ -310,7 +314,7 @@ const ClusterCard = memo(function ClusterCard({
     >
       <ClusterThumb members={cluster.members} size={cluster.size} thumbSize={thumbSize} />
       <div className={styles.clusterLabel}>{cluster.label}</div>
-      <div className={styles.clusterMeta}>{cluster.size} 张人脸</div>
+      <div className={styles.clusterMeta}>{t('face.faceCount', { count: cluster.size })}</div>
       {cluster.binding && (
         <div className={styles.bindingBadge}>{cluster.binding.roleName}</div>
       )}

@@ -1,5 +1,7 @@
 import React from 'react'
 import type { WritebackResult, WritebackItem } from '@gather/shared'
+import { useTranslation } from '../../locales'
+import { translateErrorCode } from '../../utils/errors'
 import styles from './WritebackReport.module.css'
 
 interface WritebackReportProps {
@@ -9,6 +11,11 @@ interface WritebackReportProps {
   onConfirmSync: () => void
   onCleanup?: () => void
   disabled?: boolean
+  /** 状态机门控（2.3.5 P1）：false 时按钮保留但禁用，附禁用提示。 */
+  canConfirmSync?: boolean
+  canCleanup?: boolean
+  confirmHint?: string
+  cleanupHint?: string
 }
 
 export default function WritebackReport({
@@ -18,7 +25,12 @@ export default function WritebackReport({
   onConfirmSync,
   onCleanup,
   disabled = false,
+  canConfirmSync = true,
+  canCleanup = true,
+  confirmHint,
+  cleanupHint,
 }: WritebackReportProps) {
+  const { t } = useTranslation()
   const hasFailed = failedItems.length > 0
   const hasResult = result !== null
 
@@ -28,28 +40,28 @@ export default function WritebackReport({
         <div className={styles.summary}>
           <div className={`${styles.stat} ${styles.written}`}>
             <span className={styles.statValue}>{result!.written}</span>
-            <span className={styles.statLabel}>已写入</span>
+            <span className={styles.statLabel}>{t('writeback.written')}</span>
           </div>
           <div className={`${styles.stat} ${styles.failed}`}>
             <span className={styles.statValue}>{result!.failed}</span>
-            <span className={styles.statLabel}>失败</span>
+            <span className={styles.statLabel}>{t('writeback.failed')}</span>
           </div>
           <div className={`${styles.stat} ${styles.skipped}`}>
             <span className={styles.statValue}>{result!.skipped}</span>
-            <span className={styles.statLabel}>已跳过</span>
+            <span className={styles.statLabel}>{t('writeback.skipped')}</span>
           </div>
         </div>
       )}
 
       {hasFailed && (
         <div className={styles.failedSection}>
-          <h3 className={styles.failedTitle}>失败项 ({failedItems.length})</h3>
+          <h3 className={styles.failedTitle}>{t('writeback.failedItems', { count: failedItems.length })}</h3>
           <ul className={styles.failedList}>
             {failedItems.map((item) => (
               <li key={item.id ?? `${item.photoId}-${item.xmpPath}`} className={styles.failedItem}>
                 <span className={styles.failedPath}>{item.photoPath || item.xmpPath}</span>
                 {item.errorMessage && (
-                  <span className={styles.failedError}>{item.errorMessage}</span>
+                  <span className={styles.failedError}>{translateErrorCode(item.errorMessage)}</span>
                 )}
               </li>
             ))}
@@ -60,15 +72,25 @@ export default function WritebackReport({
       <div className={styles.actions}>
         {hasFailed && (
           <button className={styles.retryButton} onClick={onRetryFailed} disabled={disabled}>
-            重试失败项
+            {t('writeback.retryFailed')}
           </button>
         )}
-        <button className={styles.confirmButton} onClick={onConfirmSync} disabled={disabled}>
-          确认同步
+        <button
+          className={styles.confirmButton}
+          onClick={onConfirmSync}
+          disabled={disabled || !canConfirmSync}
+          title={confirmHint}
+        >
+          {t('writeback.confirmSync')}
         </button>
         {onCleanup && (
-          <button className={styles.cleanupButton} onClick={onCleanup} disabled={disabled}>
-            清理
+          <button
+            className={styles.cleanupButton}
+            onClick={onCleanup}
+            disabled={disabled || !canCleanup}
+            title={cleanupHint}
+          >
+            {t('writeback.cleanup')}
           </button>
         )}
       </div>

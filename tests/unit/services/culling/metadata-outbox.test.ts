@@ -141,7 +141,11 @@ function createCoordinator(
   writeAttributes: (photoPath: string, tags: Record<string, unknown>) => Promise<void>,
   readAttributes: (photoPath: string) => Promise<Record<string, unknown>>,
   db: unknown = {
-    prepare: () => ({ all: () => [] }),
+    prepare: () => ({
+      all: () => [],
+      get: () => undefined,
+      run: () => ({ changes: 0 }),
+    }),
     transaction: (fn: () => void) => fn,
   },
 ): MetadataSyncCoordinator {

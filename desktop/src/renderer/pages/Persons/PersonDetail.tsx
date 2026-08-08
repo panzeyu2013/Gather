@@ -6,6 +6,8 @@ import { imageApi } from '../../api/image'
 import Dialog from '../../components/Dialog/Dialog'
 import ConfirmDialog from '../../components/Dialog/ConfirmDialog'
 import type { PersonDetailData, PersonPhotoItem } from '@gather/shared'
+import { useTranslation } from '../../locales'
+import { translateError } from '../../utils/errors'
 import styles from './PersonDetail.module.css'
 
 function PersonAvatar({ person }: { person: PersonDetailData }) {
@@ -46,6 +48,7 @@ function PhotoThumb({ photo }: { photo: PersonPhotoItem }) {
 }
 
 export default function PersonDetail() {
+  const { t } = useTranslation()
   const { personId } = useParams<{ personId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -68,7 +71,7 @@ export default function PersonDetail() {
       setPerson(data)
       setLoading(false)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load person')
+      setError(e instanceof Error ? translateError(e) : t('error.loadPersonFailed'))
       setLoading(false)
     }
   }
@@ -91,7 +94,7 @@ export default function PersonDetail() {
       setShowEditDialog(false)
       loadPerson()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update')
+      setError(e instanceof Error ? translateError(e) : t('error.updatePersonFailed'))
     }
   }
 
@@ -102,7 +105,7 @@ export default function PersonDetail() {
       queryClient.invalidateQueries({ queryKey: ['persons'] })
       navigate('/persons', { replace: true })
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete')
+      setError(e instanceof Error ? translateError(e) : t('error.deletePersonFailed'))
     }
   }
 
@@ -110,7 +113,7 @@ export default function PersonDetail() {
     return (
       <div className={styles.page}>
         <div className={styles.loading}>
-          <p>加载中...</p>
+          <p>{t('persons.loading')}</p>
         </div>
       </div>
     )
@@ -120,9 +123,9 @@ export default function PersonDetail() {
     return (
       <div className={styles.page}>
         <button className={styles.backLink} onClick={() => navigate('/persons')}>
-          &larr; 返回人脸库
+          &larr; {t('persons.back')}
         </button>
-        <p>{error ?? '未找到该人物'}</p>
+        <p>{error ?? t('persons.notFound')}</p>
       </div>
     )
   }
@@ -130,7 +133,7 @@ export default function PersonDetail() {
   return (
     <div className={styles.page}>
       <button className={styles.backLink} onClick={() => navigate('/persons')}>
-        &larr; 返回人脸库
+        &larr; {t('persons.back')}
       </button>
 
       <div className={styles.header}>
@@ -141,7 +144,11 @@ export default function PersonDetail() {
           <div className={styles.headerInfo}>
             <h1 className={styles.name}>{person.name}</h1>
             <p className={styles.meta}>
-              {person.photoCount} 张照片 · {person.sessionCount} 个工作区 · 匹配阈值: {person.matchThreshold}
+              {t('persons.meta', {
+                photos: person.photoCount,
+                sessions: person.sessionCount,
+                threshold: person.matchThreshold,
+              })}
             </p>
           </div>
         </div>
@@ -154,33 +161,33 @@ export default function PersonDetail() {
               navigate(`/sessions/${sessionId}/face-kw?role=${encodeURIComponent(person.name)}`)
             }}
             disabled={person.photos.length === 0}
-            title={person.photos.length === 0 ? '该人物暂无关联照片，无法跳转审核' : '跳转到对应工作区的人脸审核并按角色筛选'}
+            title={person.photos.length === 0 ? t('persons.goReviewDisabled') : t('persons.goReviewTitle')}
           >
-            前往人脸审核
+            {t('persons.goReview')}
           </button>
           <button className={styles.editBtn} onClick={handleEdit}>
-            编辑
+            {t('persons.edit')}
           </button>
           <button className={styles.deleteBtn} onClick={() => setShowDeleteConfirm(true)}>
-            删除人物
+            {t('persons.delete')}
           </button>
         </div>
       </div>
 
       <div className={styles.section}>
-        <h2 className={styles.sectionTitle}>信息</h2>
+        <h2 className={styles.sectionTitle}>{t('persons.info')}</h2>
         <div className={styles.infoGrid}>
-          <span className={styles.infoLabel}>姓名</span>
+          <span className={styles.infoLabel}>{t('persons.name')}</span>
           <span className={styles.infoValue}>{person.name}</span>
-          <span className={styles.infoLabel}>关键词</span>
+          <span className={styles.infoLabel}>{t('persons.keywords')}</span>
           <span className={styles.infoValue}>
-            {person.keywords && person.keywords.length > 0 ? person.keywords.join(', ') : '无'}
+            {person.keywords && person.keywords.length > 0 ? person.keywords.join(', ') : t('persons.none')}
           </span>
-          <span className={styles.infoLabel}>备注</span>
-          <span className={styles.infoValue}>{person.notes || '无'}</span>
-          <span className={styles.infoLabel}>匹配阈值</span>
+          <span className={styles.infoLabel}>{t('persons.notes')}</span>
+          <span className={styles.infoValue}>{person.notes || t('persons.none')}</span>
+          <span className={styles.infoLabel}>{t('persons.matchThreshold')}</span>
           <span className={styles.infoValue}>{person.matchThreshold}</span>
-          <span className={styles.infoLabel}>创建时间</span>
+          <span className={styles.infoLabel}>{t('persons.createdAt')}</span>
           <span className={styles.infoValue}>
             {new Date(person.createdAt).toLocaleDateString()}
           </span>
@@ -189,10 +196,10 @@ export default function PersonDetail() {
 
       <div className={styles.section}>
         <h2 className={styles.sectionTitle}>
-          关联照片 ({person.totalPhotoCount})
+          {t('persons.photosCount', { count: person.totalPhotoCount })}
         </h2>
         {person.photos.length === 0 ? (
-          <p className={styles.meta}>暂无关联照片</p>
+          <p className={styles.meta}>{t('persons.noPhotos')}</p>
         ) : (
           <div className={styles.photoGrid}>
             {person.photos.map((photo) => (
@@ -210,9 +217,9 @@ export default function PersonDetail() {
         )}
       </div>
 
-      <Dialog open={showEditDialog} onClose={() => setShowEditDialog(false)} title="编辑人物信息">
+      <Dialog open={showEditDialog} onClose={() => setShowEditDialog(false)} title={t('persons.editTitle')}>
         <div className={styles.formGroup}>
-          <label className={styles.label}>姓名</label>
+          <label className={styles.label}>{t('persons.name')}</label>
           <input
             className={styles.input}
             type="text"
@@ -222,7 +229,7 @@ export default function PersonDetail() {
           />
         </div>
         <div className={styles.formGroup}>
-          <label className={styles.label}>备注</label>
+          <label className={styles.label}>{t('persons.notes')}</label>
           <textarea
             className={styles.textarea}
             value={editNotes}
@@ -232,14 +239,14 @@ export default function PersonDetail() {
         </div>
         <div className={styles.formActions}>
           <button className={styles.cancelBtn} onClick={() => setShowEditDialog(false)}>
-            取消
+            {t('common.cancel')}
           </button>
           <button
             className={styles.submitBtn}
             onClick={handleSaveEdit}
             disabled={!editName.trim()}
           >
-            保存
+            {t('common.save')}
           </button>
         </div>
       </Dialog>
@@ -248,9 +255,9 @@ export default function PersonDetail() {
         open={showDeleteConfirm}
         onClose={() => setShowDeleteConfirm(false)}
         onConfirm={handleDelete}
-        title="删除人物"
-        message={`确定要删除 "${person.name}" 吗？此操作将从人脸库中移除该人物及其所有关联的人脸数据。`}
-        confirmLabel="删除"
+        title={t('persons.deleteTitle')}
+        message={t('persons.deleteMessage', { name: person.name })}
+        confirmLabel={t('common.delete')}
         destructive
       />
     </div>

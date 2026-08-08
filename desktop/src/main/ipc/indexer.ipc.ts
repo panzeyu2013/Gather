@@ -41,7 +41,7 @@ export function registerIndexerHandlers(
       context.updateProgress({
         current: 0,
         total: photoIds.length,
-        message: '正在读取拍摄元数据',
+        phase: 'index.metadata-read',
       })
       await metadata.getMetadata(photoIds)
       assets.reconcileRawJpegLinks(job.scopeId)
@@ -49,7 +49,7 @@ export function registerIndexerHandlers(
       context.updateProgress({
         current: photoIds.length,
         total: photoIds.length,
-        message: '索引与元数据完成',
+        phase: 'index.metadata-done',
       })
       // Lazy mode leaves new/changed files without a checksum; queue a
       // background backfill. The dedupe_key makes concurrent creates collapse

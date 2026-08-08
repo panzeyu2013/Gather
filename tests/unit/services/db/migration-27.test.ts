@@ -40,6 +40,13 @@ beforeEach(async () => {
   for (const suffix of ['', '-wal', '-shm']) {
     fs.rmSync(path.join(userDataDir, `gather.db${suffix}`), { force: true })
   }
+  // Migration backups accumulate in userDataDir; each test must start from a
+  // clean slate so backup-count assertions are order-independent.
+  for (const name of fs.readdirSync(userDataDir)) {
+    if (/^gather\.db\.pre-v\d+-\d+\.bak$/.test(name)) {
+      fs.rmSync(path.join(userDataDir, name), { force: true })
+    }
+  }
   db = new Database()
 
   // Build a real v26 database: current schema minus the module provenance
@@ -85,9 +92,9 @@ describe('migration 27 — outbox module provenance', () => {
     ])
 
     const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-    expect(version.version).toBe(28)
+    expect(version.version).toBeGreaterThanOrEqual(30)
 
-    const backups = fs.readdirSync(userDataDir).filter(name => /^gather\.db\.pre-v28-.*\.bak$/.test(name))
+    const backups = fs.readdirSync(userDataDir).filter(name => /^gather\.db\.pre-v\d+-\d+\.bak$/.test(name))
     expect(backups.length).toBe(1)
   })
 
@@ -103,6 +110,6 @@ describe('migration 27 — outbox module provenance', () => {
     expect(columns.some(column => column.name === 'source_module')).toBe(true)
 
     const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-    expect(version.version).toBe(28)
+    expect(version.version).toBeGreaterThanOrEqual(30)
   })
 })

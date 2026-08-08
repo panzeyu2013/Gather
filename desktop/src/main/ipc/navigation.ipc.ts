@@ -24,6 +24,8 @@ export function registerNavigationHandlers(registry: CommandRegistry, navigation
     ))
   }))
   registry.register('navigation.merge', wrapHandler(async params => {
+    // ADR-017: internal-invariant diagnostic — the service re-validates this
+    // and maps the user-reachable condition to NAV_MERGE_MIN_TWO.
     if (!Array.isArray(params.groupIds) || params.groupIds.length < 2) {
       throw new Error('groupIds must contain at least two groups')
     }

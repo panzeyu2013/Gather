@@ -94,7 +94,7 @@ export class TemplateService {
     if (!template) throw new Error('Template not found')
 
     const session = this.db.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined
-    if (!session) throw new Error('Session not found')
+    if (!session) throw new Error('SESSION_NOT_FOUND')
 
     const allowed = ['draft', 'photos_loaded']
     if (!allowed.includes(session.status)) {

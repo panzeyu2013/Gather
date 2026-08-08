@@ -77,6 +77,7 @@ function buildScanHarness(
     {
       get: vi.fn(() => ({ id: 'session', source_path: fixture.root })),
       updatePhotoCount: vi.fn(),
+      bumpIndexSeq: vi.fn(),
     } as never,
     {
       getBySessionProjection: vi.fn(() => existingPhotos),

@@ -161,7 +161,7 @@ export class AnalysisJobRepository {
         checkpoint_json = ?, heartbeat_at = ?, updated_at = ?
       WHERE id = ? AND status IN ('running', 'cancelling') AND lease_owner = ?
     `).run(update.current ?? current.progressCurrent, update.total ?? current.progressTotal,
-      update.message ?? current.progressMessage, JSON.stringify(checkpoint), new Date().toISOString(), new Date().toISOString(), id, leaseOwner).changes === 1
+      update.phase ?? update.message ?? current.progressMessage, JSON.stringify(checkpoint), new Date().toISOString(), new Date().toISOString(), id, leaseOwner).changes === 1
   }
 
   finish(id: string, leaseOwner: string, status: 'succeeded' | 'failed' | 'cancelled', error?: { code: string; message: string }): boolean {
@@ -182,12 +182,18 @@ export class AnalysisJobRepository {
     `).run(message, now, now, id, leaseOwner).changes === 1
   }
 
-  clearCompleted(): number {
+  clearCompleted(excludeTypes: readonly string[] = []): number {
     // Terminal rows in every status are cleared so failed/interrupted jobs
     // (which retry() and resumeInterrupted can no longer revive once cleared)
     // do not accumulate forever next to succeeded/cancelled ones.
+    // Stage-evidence rows (metadata.scan / export.execute) are excluded by
+    // JobService so "clear completed" never regresses workspace status (see
+    // job.service.ts CLEAR_COMPLETED_STAGE_EVIDENCE_TYPES).
+    const exclusion = excludeTypes.length > 0
+      ? ` AND type NOT IN (${excludeTypes.map(() => '?').join(', ')})`
+      : ''
     return this.db.prepare(
-      "DELETE FROM analysis_jobs WHERE status IN ('succeeded', 'cancelled', 'failed', 'interrupted')",
-    ).run().changes
+      `DELETE FROM analysis_jobs WHERE status IN ('succeeded', 'cancelled', 'failed', 'interrupted')${exclusion}`,
+    ).run(...excludeTypes).changes
   }
 }

@@ -6,8 +6,8 @@
 
 ### 前置条件
 - [ ] macOS 13+，Capture One 23/24/25 已安装
-- [ ] Gather 已安装（或源码 `npm run dev` 启动，需先在根目录执行 `uv sync`）
-- [ ] Python 3.10+ 可用，仓库根目录已执行 `uv sync`
+- [ ] Gather 已安装（或源码 `npm run dev` 启动；环境准备见 docs/DEVELOPMENT.md，
+      仓库已纯 TypeScript 化，无 Python/uv 依赖）
 
 ### 测试素材
 准备 30-50 张测试照片，放入 Capture One Catalog：
@@ -38,21 +38,22 @@
 ## 一、启动与进程管理
 
 ### 1.1 正常启动
-- [ ] 终端执行 `npm run dev`（desktop 目录下，需先执行 `uv sync`）
-- [ ] 终端输出 `[main]` 编译成功 + `[renderer]` Webpack 启动
+- [ ] 终端执行 `npm run dev`（根目录）
+- [ ] 终端输出 `[main]` 编译成功 + `[renderer]` Vite 启动
 - [ ] 自动弹出 **Electron 窗口**（非浏览器标签页）
 - [ ] 窗口标题显示 "Gather"
 - [ ] Dashboard 页面正常渲染，无白屏
 
 ### 1.2 启动异常处理
-- [ ] **Python 缺失**：未安装 `uv sync` 时启动 → 窗口弹出错误提示（而非崩溃）
-- [ ] **端口占用**：5173 端口被占用时 → Webpack Dev Server 报错，不静默回退
+- [ ] **端口占用**：5173 端口被占用时 → Vite Dev Server 报错，不静默回退
 
 ### 1.3 进程生命周期
-- [ ] 关闭窗口 → Python 子进程同步退出，`ps aux | grep "engine.py"` 无残留
-- [ ] 强制 `kill` Electron 主进程 → Python 子进程 5 秒内退出
-- [ ] 重新打开（macOS Dock 图标点击）→ 窗口重建 + Python 重新 spawn，Dashboard 正常
-- [ ] 快捷键 `Cmd+Q` 正常退出
+
+> 本节原为 Python 引擎子进程生命周期检查；仓库已纯 TypeScript 化（Python 引擎
+> 已删除，进程模型见 docs/DEVELOPMENT.md「架构」），仅保留与 Electron 自身相关项：
+
+- [ ] 关闭窗口 → 应用进程保留（macOS 标准行为，`Cmd+W`）；Dock 图标点击 → 窗口重建 + Dashboard 正常
+- [ ] 快捷键 `Cmd+Q` 正常退出（窗口关闭 + 进程退出）
 
 ---
 

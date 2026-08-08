@@ -104,6 +104,13 @@ export interface AddPhotoResult {
   failedFiles: string[]
 }
 
+export interface ScanResult {
+  files: string[]
+  truncated: boolean
+  scannedTotal: number
+  limit: number
+}
+
 // ── 缩略图 / 图片相关参数类型 ──
 
 export interface ThumbnailGetParams {
@@ -194,14 +201,21 @@ export interface ResponseOk<T = unknown> {
 export interface ResponseErr {
   id?: number | string
   ok: false
-  error: string | { type: string; message: string }
+  error:
+    | string
+    | {
+        type: string
+        message: string
+        /** Interpolation params for the renderer copy (e.g. revision numbers). */
+        params?: Record<string, unknown>
+      }
 }
 
 export type Response<T = unknown> = ResponseOk<T> | ResponseErr
 
 // ── 导入子模块类型（仅类型，用于 Command 联合）──
 
-import type { SessionCreateParams, SessionDeleteParams, SessionDeleteManyParams, SessionAddPhotosParams, SessionGetParams, SessionUpdateParams } from './session'
+import type { SessionCreateParams, SessionCreateFromDirectoryParams, SessionDeleteParams, SessionDeleteManyParams, SessionAddPhotosParams, SessionGetParams, SessionUpdateParams } from './session'
 import type { FkwAnalyzeParams, FkwCancelAnalysisParams, FkwClustersParams, FkwBindParams, FkwUnbindParams, FkwMergeParams, FkwRemoveMemberParams, FkwPreviewParams, FkwWritebackParams, FkwConfirmSyncParams, FkwConfirmCleanupParams, FkwCleanupParams, FaceModelsStatusData } from './face'
 import type { SimAnalyzeParams, SimCancelAnalysisParams, SimResultParams, SimReclusterParams, SimPreviewWritebackParams, SimWritebackParams, SimWritebackItemsParams, SimRetryFailedWritebackParams, SimConfirmSyncParams, SimCleanupParams } from './similarity'
 import type { PersonListParams, PersonGetParams, PersonCreateParams, PersonUpdateParams, PersonDeleteParams, PersonMergeParams, PersonRemovePhotoParams, PersonSearchPhotosParams } from './person'
@@ -240,6 +254,7 @@ import type {
   MetadataSyncSummary,
 } from './culling'
 import type { JobListParams, JobCancelParams, JobRetryParams, JobClearCompletedParams } from './jobs'
+import type { WorkspaceStatusParams } from './workspace'
 import type { IndexScanParams } from './indexer'
 import type { QualityAnalyzeParams, QualityGetParams } from './quality'
 import type {
@@ -258,6 +273,7 @@ import type {
 
 export type Command =
   | { type: 'session.create'; params: SessionCreateParams }
+  | { type: 'session.create_from_directory'; params: SessionCreateFromDirectoryParams }
   | { type: 'session.list'; params: Record<string, never> }
   | { type: 'session.delete'; params: SessionDeleteParams }
   | { type: 'session.delete_many'; params: SessionDeleteManyParams }
@@ -299,6 +315,7 @@ export type Command =
   | { type: 'settings.set'; params: { key: string; value: string } }
   | { type: 'settings.reset'; params: Record<string, never> }
   | { type: 'settings.get_ml_status'; params: Record<string, never> }
+  | { type: 'settings.set_language'; params: { language: 'zh-CN' | 'en' } }
   | { type: 'person.list'; params: PersonListParams }
   | { type: 'person.get'; params: PersonGetParams }
   | { type: 'person.create'; params: PersonCreateParams }
@@ -360,6 +377,7 @@ export type Command =
   | { type: 'jobs.cancel'; params: JobCancelParams }
   | { type: 'jobs.retry'; params: JobRetryParams }
   | { type: 'jobs.clear_completed'; params: JobClearCompletedParams }
+  | { type: 'workspace.status'; params: WorkspaceStatusParams }
   | { type: 'assets.candidates'; params: AssetCandidateListParams }
   | { type: 'assets.accept_candidate'; params: AssetCandidateMutationParams }
   | { type: 'assets.reject_candidate'; params: AssetCandidateMutationParams }
@@ -388,6 +406,9 @@ export interface JobProgressData {
   scopeId: string
   current: number
   total: number
+  /** Stage code (e.g. `index.scanning`) mapped to copy by the renderer;
+   * legacy natural-language messages no longer cross IPC. */
+  phase?: string
   message: string
   /** Terminal frames carry the job's final status so clients can stop
    * showing "analyzing" without polling. */
@@ -408,7 +429,7 @@ export type Event =
 // ── 命令白名单 ──
 
 export const ALLOWED_COMMANDS = new Set([
-  'session.create', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
+  'session.create', 'session.create_from_directory', 'session.delete', 'session.delete_many', 'session.list', 'session.get', 'session.update', 'session.add_photos',
   'fkw.analyze', 'fkw.recluster', 'fkw.cancel_analysis', 'fkw.clusters', 'fkw.bind', 'fkw.unbind', 'fkw.merge',
   'fkw.remove_member', 'fkw.preview', 'fkw.writeback', 'fkw.confirm_sync', 'fkw.cleanup', 'fkw.confirm_cleanup',
   'face.models_status',
@@ -417,7 +438,7 @@ export const ALLOWED_COMMANDS = new Set([
   'sim.confirm_sync', 'sim.cleanup',
   'image.preload_thumbnails', 'image.preload_previews', 'image.get_dimensions', 'image.prioritize_thumbnail',
   'photo.list', 'photo.list_page',
-  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status',
+  'settings.get_all', 'settings.get', 'settings.set', 'settings.reset', 'settings.get_ml_status', 'settings.set_language',
   'person.list', 'person.get', 'person.create', 'person.update', 'person.delete', 'person.merge', 'person.remove_photo', 'person.search_photos',
   'metadata.get', 'metadata.set', 'metadata.batch_set', 'metadata.conflicts', 'metadata.resolve_conflict', 'metadata.orphans', 'metadata.resolve_orphan',
   'dup.scan', 'dup.groups', 'dup.resolve', 'dup.resolve_member',
@@ -429,6 +450,7 @@ export const ALLOWED_COMMANDS = new Set([
   'culling.list_page', 'culling.update', 'culling.batch_update', 'culling.decide_group', 'culling.sync_status', 'culling.flush', 'culling.retry_sync', 'culling.finalize_sync',
   'culling.retry_failed_writeback', 'culling.confirm_sync', 'culling.cleanup', 'culling.reset', 'culling.history', 'culling.apply_history',
   'jobs.list', 'jobs.cancel', 'jobs.retry', 'jobs.clear_completed',
+  'workspace.status',
   'assets.candidates', 'assets.accept_candidate', 'assets.reject_candidate', 'assets.volumes', 'assets.relink_root',
   'index.scan',
   'quality.analyze', 'quality.get', 'navigation.analyze', 'navigation.list', 'navigation.split', 'navigation.merge',

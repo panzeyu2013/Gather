@@ -1,6 +1,7 @@
 # Gather 产品与技术 Roadmap
 
-> 版本：v2（2026-08-05）
+> 版本：v2（2026-08-05）；v2.1（2026-08-08）补录 DESIGN_IMPROVEMENTS.md
+> 五项产品短板的实施状态，见 §3.5。
 > v2 修订：按执行层评审补齐「当前实现状态 / 真实基线 / 质量指标 / 依赖关系」，
 > 明确区分「已完成」「已实现未接通」「未验证假设」，验收拆为 Release 门与 Stretch 门。
 > 配套文档：[原生开发分析](NATIVE-DEVELOPMENT-ANALYSIS.md)、[ADR](ADR.md)。
@@ -156,6 +157,26 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 - 10 万规模下聚类/检索/缓存的真实表现（Stretch 门）；
 - 人脸推理与聚类在真实照片集上的吞吐与质量；
 - 增量 vs 全量的结果一致性（对账矩阵未建立）。
+
+### 3.5 产品短板改进批次（DESIGN_IMPROVEMENTS.md 五项，2026-08 快照）
+
+> 五项短板（任务中心 / C1 状态机 / 扫描透明 / i18n / 无障碍）的提案见
+> docs/DESIGN_IMPROVEMENTS.md，决策背景见 ADR-012~018；验收标准见该稿第 7 章。
+
+| 工作流 | 状态 | 关键落点（实现位置，非承诺） |
+|---|---|---|
+| 问题一：Workspace Control Center + Action Inbox | **已完成** | `analysis_runs` + `sessions.index_seq`（migrations v30）；`services/workspace/workspace-status.service.ts`（只读聚合、推荐动作固定优先级序列表、离线复核 TTL 5 分钟）；IPC `workspace.status` + `hooks/useWorkspaceStatus.ts`；`renderer/pages/SessionDetail/ControlCenter/`（阶段条 + Action Inbox + 推荐动作）；`indexer` 提交点自增 `index_seq`，相似度/人脸入口写 run |
+| 问题二：C1 预检 + 同步状态机 | **已完成** | `main/services/capture-one/`（`c1:health` 四层预检 + `CaptureOneSyncState`）；`sessions.reload_acked_at`（migrations v31）重启重推导；协调器事件接线 + 状态转换日志（`main/index.ts`、`sync-state.ts`）；Dashboard 导入预检（`utils/c1-preflight.ts`）、头部 `C1StatusCapsule`、Settings `C1HealthPanel`；相似页 Load/Cleanup 按钮由状态机驱动（`utils/c1-sync-controls.ts`） |
+| 问题三：扫描透明 + 一跳化导入 | **已完成** | `ScanResult{scannedTotal,truncated,limit}`（`app:scan-directory`）+ `sessions.truncated_import`（migrations v29）；`session.create_from_directory` 主进程流式落库（路径数组不再跨 IPC）；Dashboard "≥"/"扫描中…"文案规范（`Dashboard/index.tsx`）；工作区头部索引进度（`SessionDetail/indexProgress.ts`，精确值仅索引成功后呈现） |
+| 问题四：i18n | **P1 已完成 / P2 已完成（工作区落地，未提交）；语言切换 UI 已落地（本复核期间合入工作区，未提交）** | i18next + 类型化 key（`renderer/locales/`，1063 key/语言、697 处 `t()`）；错误码 `GATHER_ERROR_CODES` + 事件负载阶段码 `progress.*`，渲染层 `translateError`/`translatePhase` 映射；术语表冻结（docs/i18n-glossary.md）。**P2**：eslint 无硬编码守护（`eslint/no-hardcoded-text.cjs`，eslint.config.js 的 `gather/no-hardcoded-text` 规则）、Electron 菜单本地化（`main/menu.ts`：两语言 label 映射 + `--lang` → `app.getLocale()` → en 回退，接入 `main/index.ts`，硬编码 `appMenuTemplate` 已移除）。**语言切换**：Settings 语言选择器（`Settings/index.tsx:111,184,546-551`）→ `settings.set_language` IPC（`settings.ipc.ts:33-40`，持久化 `ui_language` + `setAppLocale` 重建菜单）→ 渲染层 `initI18n` 即时切换。链路单测：settings-language.test.ts（持久化/重启）+ menu-localization.test.ts（菜单构建与切换重建） |
+| 问题五：无障碍 | **P0 已完成 / P1 完成（工作区落地，未提交）；VoiceOver 手工走查待执行** | Dialog 焦点管理（`components/Dialog/Dialog.tsx`：portal + inert + `initialFocus`/`descriptionId` + 焦点恢复）；相似组按钮化语义（`aria-expanded` + 并列 checkbox，拒绝 roving tabindex）；jest-axe 回归（`tests/unit/renderer/a11y-*.test.tsx` 8 用例全绿，F-1/F-2 修复后零违规断言）；对比度修复（global.css 色板 token，见 docs/a11y-audit.md §1.2）。**F-1/F-2/F-3 已修复**（本复核期间合入工作区）：Dashboard 导入来源 select、Similarity 阈值/最小组大小滑块均补 `label htmlFor`+`id` 程序化关联，关键词输入框补 aria-label；`--color-warning-text` token（#9c5e28）已加入并用于警告文本（Culling/Settings/StepWriteback module.css），`--color-warning` 保留作背景/边框 |
+
+**剩余 / 下一步**
+
+1. **i18n 收尾**：已完成——语言切换 UI 已落地（Settings 选择器 + `settings.set_language` IPC + `setAppLocale` 菜单重建 + `initI18n` 即时切换）；链路单测已补（settings-language.test.ts 持久化/重启 + menu-localization.test.ts 菜单构建与切换重建）；
+2. **主进程残留错误码化清理**：已完成——`metadata-sync-coordinator.ts` 中文状态文案与 `throw new Error('XMP 已被其他软件修改…')` 已全部转为 `XMP_*` 错误码（如 `XMP_EXTERNALLY_MODIFIED`），主进程 CJK 仅剩文档内容例外（ADR-017）与菜单 label 表；观察项：`sync-state.ts:150,152` console.log 中文为开发日志；
+3. **无障碍 P1 收尾**：F-1（select 标签）/F-2（滑块标签）/F-3（placeholder-only 输入 aria-label）已修复，`--color-warning-text` token 已落地（本复核期间合入工作区），jest-axe 8 用例全绿；剩余唯一项：**VoiceOver 关键流程手工走查**（docs/a11y-audit.md §4，清单 4.1–4.4 未勾选，人工执行）；
+4. **验收复核**：DESIGN_IMPROVEMENTS.md 第 7 章已复核对勾（2026-08-08，19/20 项通过，唯一未勾选项为 VoiceOver 人工走查；证据指针见 §7）。复核环境：typecheck ✅、lint ✅、vitest 91 文件 558 用例 ✅。注意：本工作区为多人并行（语言切换/无障碍修复在复核期间实时合入，中间态曾出现 typecheck 红 3 处与 a11y 用例红 3 处，均已被并行工作流闭合；最终态全绿）。
 
 ---
 

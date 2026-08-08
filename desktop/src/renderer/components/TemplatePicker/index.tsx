@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import type { TemplateData } from '@gather/shared'
 import { templateApi } from '../../api/template'
+import { useTranslation } from '../../locales'
 import styles from './TemplatePicker.module.css'
 
 interface TemplatePickerProps {
@@ -8,6 +9,7 @@ interface TemplatePickerProps {
 }
 
 export default function TemplatePicker({ onSelect }: TemplatePickerProps) {
+  const { t } = useTranslation()
   const [templates, setTemplates] = useState<TemplateData[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -28,30 +30,30 @@ export default function TemplatePicker({ onSelect }: TemplatePickerProps) {
   }
 
   if (loading) {
-    return <div className={styles.container}>Loading templates...</div>
+    return <div className={styles.container}>{t('template.loading')}</div>
   }
 
   return (
     <div className={styles.container}>
-      <h3 className={styles.heading}>Workflow Template</h3>
+      <h3 className={styles.heading}>{t('template.heading')}</h3>
       <div className={styles.grid}>
         <button
           className={`${styles.card} ${selectedId === null ? styles.cardSelected : ''}`}
           onClick={() => handleSelect(null)}
         >
           <div className={styles.cardIcon}>✨</div>
-          <div className={styles.cardTitle}>No Template</div>
-          <div className={styles.cardDesc}>Start with default settings</div>
+          <div className={styles.cardTitle}>{t('template.none')}</div>
+          <div className={styles.cardDesc}>{t('template.noneHint')}</div>
         </button>
-        {templates.map((t) => (
+        {templates.map((template) => (
           <button
-            key={t.id}
-            className={`${styles.card} ${selectedId === t.id ? styles.cardSelected : ''}`}
-            onClick={() => handleSelect(t)}
+            key={template.id}
+            className={`${styles.card} ${selectedId === template.id ? styles.cardSelected : ''}`}
+            onClick={() => handleSelect(template)}
           >
             <div className={styles.cardIcon}>📋</div>
-            <div className={styles.cardTitle}>{t.name}</div>
-            <div className={styles.cardDesc}>{t.description || 'No description'}</div>
+            <div className={styles.cardTitle}>{template.name}</div>
+            <div className={styles.cardDesc}>{template.description || t('template.noDescription')}</div>
           </button>
         ))}
       </div>

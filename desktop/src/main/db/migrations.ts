@@ -6,7 +6,7 @@ import { FACE_THUMB_DIR } from '@gather/shared'
 import { SCHEMA_SQL, INDEX_SQL, UNIQUE_PHOTO_PATH_INDEX_SQL } from './schema'
 import BetterSqlite3 from 'better-sqlite3'
 
-const CURRENT_SCHEMA_VERSION = 28
+const CURRENT_SCHEMA_VERSION = 31
 
 const CREATE_FACE_CLUSTER_MEMBERS_SQL = `
   CREATE TABLE face_cluster_members (
@@ -364,6 +364,7 @@ function assertMigrationInvariants(db: BetterSqlite3.Database): void {
     ['culling_decisions', ['session_id', 'revision', 'decision_source']],
     ['culling_history', ['session_id', 'operation_json']],
     ['asset_backfill_state', ['session_id', 'last_photo_rowid', 'status']],
+    ['analysis_runs', ['session_id', 'kind', 'index_seq', 'status']],
   ] as Array<[string, string[]]>) {
     assertColumns(db, table, columns)
   }
@@ -1070,6 +1071,62 @@ function runMigrationsUnsafe(database: Database): void {
       setSchemaVersion(db, 28)
     })()
     currentVersion = 28
+  }
+
+  // ── Version 29: mark sessions created from a truncated initial scan ──
+  if (currentVersion < 29) {
+    db.transaction(() => {
+      addColumn(db, 'sessions', 'truncated_import', 'INTEGER NOT NULL DEFAULT 0')
+      assertColumns(db, 'sessions', ['truncated_import'])
+      setSchemaVersion(db, 29)
+    })()
+    currentVersion = 29
+  }
+
+  // ── Version 30: staleness foundation — analysis run records and index sequence ──
+  if (currentVersion < 30) {
+    db.transaction(() => {
+      addColumn(db, 'sessions', 'index_seq', 'INTEGER NOT NULL DEFAULT 0')
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS analysis_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          photo_count INTEGER NOT NULL,
+          index_seq INTEGER NOT NULL,
+          started_at TEXT NOT NULL,
+          finished_at TEXT NOT NULL,
+          params TEXT NOT NULL,
+          status TEXT NOT NULL
+        );
+      `)
+      assertColumns(db, 'sessions', ['index_seq'])
+      assertColumns(db, 'analysis_runs', [
+        'session_id',
+        'kind',
+        'photo_count',
+        'index_seq',
+        'started_at',
+        'finished_at',
+        'params',
+        'status',
+      ])
+      setSchemaVersion(db, 30)
+    })()
+    currentVersion = 30
+  }
+
+  // ── Version 31: remember when Capture One last confirmed a metadata reload ──
+  // Written only after reloadMetadata() succeeds, so a restart can re-derive
+  // safeToCleanup from the outbox rows plus this single marker. Nullable and
+  // without a default: legacy sessions never reloaded are explicitly NULL.
+  if (currentVersion < 31) {
+    db.transaction(() => {
+      addColumn(db, 'sessions', 'reload_acked_at', 'TEXT')
+      assertColumns(db, 'sessions', ['reload_acked_at'])
+      setSchemaVersion(db, 31)
+    })()
+    currentVersion = 31
   }
 
   if (currentVersion !== CURRENT_SCHEMA_VERSION) {

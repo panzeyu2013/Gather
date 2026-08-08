@@ -1,8 +1,15 @@
 # Gather 产品设计短板：设计、最佳实践与解决方案
 
-> 版本：2.0 · 状态：提案（Proposal，已过最佳实践复核）
+> 版本：2.0 · 状态：主体已实施（2026-08；原为提案）
 > 适用范围：desktop 桌面应用（Electron + React + SQLite）
 > 说明：本文档由原设计文档与最佳实践复核文档合并而成。每个问题包含：现状分析 → 最佳实践基线（权威资料 + 第一性原理）→ 最终设计（含判定记录）→ 落地路径。判定记录中明确标注哪些设计元素被保留（✅）、被简化或删除（✂️，即过度设计）与被补充（➕，即遗漏）。
+>
+> **实施状态（2026-08）**：五项问题的核心设计均已按判定记录落地，明细与剩余项见 [ROADMAP.md](ROADMAP.md) §3.5，决策背景见 [ADR.md](ADR.md) ADR-012~018：
+> - 问题一：`analysis_runs` + `sessions.index_seq`（迁移 v30）、`WorkspaceStatusService` + `workspace.status` + `useWorkspaceStatus`、Control Center（阶段条 + Action Inbox + 推荐动作）、离线复核 TTL ≥5 分钟 — ✅ 全部落地
+> - 问题二：`c1:health` 四层预检、`CaptureOneSyncState` 会话级聚合 + `reload_acked_at`（迁移 v31）重启重推导、协调器事件接线与转换日志、按钮状态机驱动、健康胶囊/面板与导入预检 — ✅ 全部落地
+> - 问题三：`ScanResult` 元数据 + `truncated_import`（迁移 v29）、`session.create_from_directory` 一跳化、Dashboard "≥"/"扫描中"文案规范、`indexProgress.ts` 头部索引进度 — ✅ 全部落地
+> - 问题四：i18n P1（i18next + 类型化 key、832 key/语言、`GatherErrorCode`/阶段码 + `translateError`/`translatePhase`、术语表 docs/i18n-glossary.md）✅；P2（eslint 守护 + 菜单本地化）✅ 已落地（工作区，见 ADR-019）；语言切换 UI ✅ 已落地（P2 收尾：设置覆盖 > --lang > 系统语言，见 ADR-020）
+> - 问题五：Dialog 焦点管理（portal + inert + `initialFocus`/`descriptionId`）、相似组键盘语义、jest-axe 回归、对比度修复 ✅；VoiceOver 手工走查 ⏳ 待执行（docs/a11y-audit.md）
 
 本文档针对以下五项已确认的产品设计短板：
 
@@ -723,35 +730,37 @@ export default function Dialog({ open, onClose, title, children, initialFocus, d
 
 ## 7. 验收标准
 
+> 复核记录（2026-08-08）：19/20 项通过代码/单测验证；唯一未勾选项为 VoiceOver 手工走查（人工执行，清单见 docs/a11y-audit.md §4）。证据为 file:line 指针；全套 `npm run typecheck` / `npm run lint --workspace=desktop` / `npm run test:vitest`（91 文件 558 用例）绿。
+
 **问题一（任务中心）**
-- [ ] 新用户进入工作区 5 秒内能说出"当前阶段 + 最多 3 条待办 + 推荐下一步"
-- [ ] 索引新增照片后，Inbox 在 ≤30s 内出现"分析过期"条目
-- [ ] Inbox 每条动作可一键跳转对应模块
-- [ ] "indexed"阶段判定以索引 job 成功记录为准（自动化测试）
-- [ ] 离线照片复核受 TTL（≥5 分钟）约束
+- [x] 新用户进入工作区 5 秒内能说出"当前阶段 + 最多 3 条待办 + 推荐下一步"（ControlCenter/index.tsx:90-159 阶段条+Inbox+推荐；SessionDetail/index.tsx:191 index 路由 = Control Center；Dashboard/index.tsx:218,323 跳转 /sessions/:id）
+- [x] 索引新增照片后，Inbox 在 ≤30s 内出现"分析过期"条目（index.service.ts:946-947 提交点 bump index_seq；similarity.service.ts:198/face-kw.service.ts:109 分析入口写 analysis_runs；workspace-status.service.ts:87-94 过期判定；useWorkspaceStatus.ts:10,27-46 轮询 30s + jobs:progress/culling:sync-status 事件失效）
+- [x] Inbox 每条动作可一键跳转对应模块（workspace-view.ts:66-152 deriveInboxItems 的 navigate/retry-job 动作目标；ControlCenter/index.tsx:130-137 动作按钮）
+- [x] "indexed"阶段判定以索引 job 成功记录为准（自动化测试）（workspace-status.service.ts:80 `scanJob.status==='succeeded'`；tests/unit/services/workspace/workspace-status.test.ts:158-171 含活跃 job 回退用例）
+- [x] 离线照片复核受 TTL（≥5 分钟）约束（workspace-status.service.ts:23 OFFLINE_PHOTOS_TTL_MS=5min + 缓存判定 :249-262；workspace-status.test.ts:267-284 假时钟 TTL 测试）
 
 **问题二（C1 状态机）**
-- [ ] 未运行 C1 / 未授权自动化（-1743）/ 未打开文档 三种失败都有专属预检结果与引导
-- [ ] 导入对话框先预检后进入选择
-- [ ] 会话级聚合规则（conflict > failed > pending > synced）有单测覆盖
-- [ ] 重启后状态从 DB 行重推导；`reload_acked_at` 写入后才可恢复 `safeToCleanup`
-- [ ] 状态机转换全部可观测（日志 + 健康胶囊）
+- [x] 未运行 C1 / 未授权自动化（-1743）/ 未打开文档 三种失败都有专属预检结果与引导（c1-health.ts:76-133 四层逐层降级 + isAutomationDeniedMessage :38；c1-preflight.ts:66-85 分键引导文案；tests/unit/renderer/c1-preflight.test.ts 10 用例）
+- [x] 导入对话框先预检后进入选择（Dashboard/index.tsx:254-262 handleCreate 预检不过直接 return，不调 getSelectedPhotos；:447-473 四格内联渲染）
+- [x] 会话级聚合规则（conflict > failed > pending > synced）有单测覆盖（sync-state.ts:56-86 aggregateSessionState；tests/unit/services/capture-one/sync-state.test.ts:19-104 九用例含 clean/cleaned 与未知态保守处理）
+- [x] 重启后状态从 DB 行重推导；`reload_acked_at` 写入后才可恢复 `safeToCleanup`（sync-state.ts:98-115 deriveSessionState 从 outbox+ack 重推导；capture-one.ts:149-151 reloadMetadata 成功后才写 ack；sync-state.test.ts:49-58 ack 门控用例；migration-31.test.ts 持久化）
+- [x] 状态机转换全部可观测（日志 + 健康胶囊）（sync-state.ts:145-155 reportTransition 初始/转换日志；C1StatusCapsule.tsx 头部胶囊 + Settings/C1HealthPanel.tsx）
 
 **问题三（扫描透明）**
-- [ ] >50,000 张目录导入时，创建流程明示截断与后台补齐；计数带"≥"/"扫描中"前缀
-- [ ] 工作区头部索引进度实时可见，完成后显示精确总数
-- [ ] `session.create(sourcePath)` 一跳化后路径数组不跨 IPC（回归测试）
+- [x] >50,000 张目录导入时，创建流程明示截断与后台补齐；计数带"≥"/"扫描中"前缀（scan-directory.ts:54 ScanResult{truncated,scannedTotal,limit}；Dashboard/index.tsx:209 truncatedToast；:353 photoCountLabel ≥ 前缀/scanning 文案）
+- [x] 工作区头部索引进度实时可见，完成后显示精确总数（SessionDetail/index.tsx:148-178 头部进度条/错误重试/精确计数；indexProgress.ts 完成态仅 succeeded 后呈现精确值；index.service.ts:944-945 COUNT(*) 回写 photo_count）
+- [x] `session.create(sourcePath)` 一跳化后路径数组不跨 IPC（回归测试）（packages/shared/src/protocol/session.ts:17-20 参数仅 {name?,sourcePath}；tests/unit/services/session-create-from-directory.test.ts:98-107 expectTypeOf 编译期守卫）
 
 **问题四（i18n）**
-- [ ] renderer 无硬编码界面文案（CI 扫描零告警）
-- [ ] zh-CN / en 双语可一键切换，菜单/错误/按钮/事件推送文案全覆盖
-- [ ] 主进程无自然语言文案（只含错误码/阶段码）
-- [ ] 术语表冻结后两语言文件术语一致（抽查）
+- [x] renderer 无硬编码界面文案（CI 扫描零告警）（`rg CJK renderer` 0 非注释命中；eslint.config.js:67,76 `gather/no-hardcoded-text` 规则 'error' 接线 + desktop/eslint/no-hardcoded-text.cjs 单测；`npm run lint --workspace=desktop` 通过）
+- [x] zh-CN / en 双语可一键切换，菜单/错误/按钮/事件推送文案全覆盖（Settings/index.tsx:111,184,546-551 语言选择器（label[htmlFor] 关联）+ setLanguage→initI18n 即时切换；settings.ipc.ts:33-40 `settings.set_language` 持久化 ui_language + setAppLocale 重建菜单；menu.ts 双语言 label + rebuild/setAppLocale（tests/unit/services/menu-localization.test.ts 覆盖 zh/en 构建与切换重建）；utils/errors.ts translateError 错误码映射；utils/progress.ts translatePhase 事件阶段码映射）
+- [x] 主进程无自然语言文案（只含错误码/阶段码）（`rg CJK main` 仅 report.service.ts/export.service.ts 文档内容（ADR-017 例外）+ menu.ts 双语言 label 表 + 注释；metadata-sync-coordinator.ts 已全部转为 XMP_* 错误码；残留英文 throw 为内部不变量/运维诊断，不经 translateError 面向用户。观察项：sync-state.ts:150,152 console.log 含中文，为开发日志非 UI 文案）
+- [x] 术语表冻结后两语言文件术语一致（抽查）（docs/i18n-glossary.md 已冻结；程序化 key 奇偶校验 zh-CN.json/en.json 各 1063 key、0 差异）
 
 **问题五（无障碍）**
-- [ ] 键盘可完整操作：Dialog 打开聚焦、Tab 循环、Esc 关闭、关闭恢复焦点；删除确认初始聚焦"取消"
-- [ ] 相似组可 Tab 到达、Space/Enter 展开、可勾选；aria-expanded 正确
-- [ ] VoiceOver 走查关键流程无阻断性问题；jest-axe 全绿（含焦点陷阱边界用例）
+- [x] 键盘可完整操作：Dialog 打开聚焦、Tab 循环、Esc 关闭、关闭恢复焦点；删除确认初始聚焦"取消"（Dialog.tsx:42-77 聚焦/陷阱/恢复 + :20-25 inert；ConfirmDialog.tsx:34 destructive→initialFocus 取消按钮；tests/unit/renderer/dialog.test.tsx 10 用例含零可聚焦边界）
+- [x] 相似组可 Tab 到达、Space/Enter 展开、可勾选；aria-expanded 正确（Similarity/index.tsx:328-347 并列 checkbox + aria-expanded 按钮；tests/unit/renderer/a11y-similarity.test.tsx 组头区零违规）
+- [ ] VoiceOver 走查关键流程无阻断性问题；jest-axe 全绿（含焦点陷阱边界用例）（jest-axe ✅：a11y-dialog/a11y-similarity/a11y-dashboard 8 用例全绿，F-1/F-2 修复后改为零违规断言，含焦点陷阱边界；**VoiceOver ⏳ 人工待执行**——docs/a11y-audit.md §4 清单（4.1-4.4 共 19 项）尚未勾选，须人工在 macOS 上执行）
 
 ## 8. 风险与注意事项
 

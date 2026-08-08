@@ -8,6 +8,8 @@ import { useToastStore, type ToastType } from './components/Toast/ToastStore'
 import { useEvent } from './hooks/useEvent'
 import { sessionApi } from './api/session'
 import { useSessionStore } from './stores/sessionStore'
+import { useTranslation } from './locales'
+import { translateError } from './utils/errors'
 import {
   getCommonParentPath,
   getPathBasename,
@@ -27,6 +29,7 @@ function CaptureOneImportListener() {
   const queryClient = useQueryClient()
   const setSession = useSessionStore(state => state.setSession)
   const addToast = useToastStore(state => state.addToast)
+  const { t } = useTranslation()
 
   useEvent('c1:plugin-import', async data => {
     const files = (data as { files?: unknown }).files
@@ -34,23 +37,28 @@ function CaptureOneImportListener() {
     const now = new Date()
     const sourcePath = getCommonParentPath(files)
     const name = getPathBasename(sourcePath) ||
-      `C1 导入 ${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`
+      t('app.c1ImportName', {
+        month: now.getMonth() + 1,
+        day: now.getDate(),
+        hour: now.getHours(),
+        minute: String(now.getMinutes()).padStart(2, '0'),
+      })
     try {
       const session = await sessionApi.create(name, 'capture-one', files, sourcePath)
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })
       if (session.failedFiles.length > 0) {
         addToast(
           'warning',
-          importFailureMessage(session.added, session.failedFiles, 'Capture One 文件'),
+          importFailureMessage(session.added, session.failedFiles, t('app.c1Files')),
         )
       }
       setSession(session.id)
-      navigate(`/sessions/${session.id}/gallery`)
+      navigate(`/sessions/${session.id}`)
     } catch (error) {
       console.error('Plugin import failed:', error)
       addToast(
         'error',
-        error instanceof Error ? error.message : 'Capture One 照片导入失败',
+        error instanceof Error ? translateError(error) : t('app.c1ImportFailed'),
       )
     }
   })
@@ -75,7 +83,9 @@ export default function App() {
     const type = allowedTypes.includes(notification.type as ToastType)
       ? notification.type as ToastType
       : 'info'
-    addToast(type, notification.message)
+    // Menu notifications carry GatherErrorCode (design_improvements.md 4.4.2);
+    // translate known codes, pass unknown text through unchanged.
+    addToast(type, translateError(notification.message))
   })
 
   return (

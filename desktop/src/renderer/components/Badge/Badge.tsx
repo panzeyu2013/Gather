@@ -1,4 +1,5 @@
 import React from 'react'
+import { useTranslation, type TranslationKey } from '../../locales'
 import styles from './Badge.module.css'
 
 interface BadgeProps {
@@ -21,27 +22,31 @@ const STATUS_COLORS: Record<string, string> = {
   cleaned: styles.cleaned,
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  draft: '草稿',
-  photos_loaded: '已导入',
-  analyzing: '分析中',
-  review: '待审核',
-  completed: '已完成',
-  failed: '失败',
-  running: '运行中',
-  done: '完成',
-  idle: '空闲',
-  cancelled: '已取消',
-  partial: '部分完成',
-  cleaned: '已清理',
+const STATUS_LABEL_KEYS: Record<string, TranslationKey> = {
+  draft: 'badge.draft',
+  photos_loaded: 'badge.photosLoaded',
+  analyzing: 'badge.analyzing',
+  review: 'badge.review',
+  completed: 'badge.completed',
+  failed: 'badge.failed',
+  running: 'badge.running',
+  done: 'badge.done',
+  idle: 'badge.idle',
+  cancelled: 'badge.cancelled',
+  partial: 'badge.partial',
+  cleaned: 'badge.cleaned',
 }
 
 export default function Badge({ status, label }: BadgeProps) {
+  const { t } = useTranslation()
   const colorClass = STATUS_COLORS[status] ?? styles.default
+  const fallbackLabel = STATUS_LABEL_KEYS[status]
+    ? t(STATUS_LABEL_KEYS[status])
+    : status
 
   return (
     <span className={`${styles.badge} ${colorClass}`}>
-      {label ?? STATUS_LABELS[status] ?? status}
+      {label ?? fallbackLabel}
     </span>
   )
 }

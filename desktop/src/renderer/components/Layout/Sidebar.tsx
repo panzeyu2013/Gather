@@ -1,6 +1,7 @@
 import React from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useTranslation } from '../../locales'
 import styles from './Sidebar.module.css'
 
 function HomeIcon() {
@@ -59,13 +60,14 @@ function PersonsIcon() {
 }
 
 export default function Sidebar() {
+  const { t } = useTranslation()
   const location = useLocation()
   const sessionId = useSessionStore((s) => s.currentSessionId)
   if (location.pathname.startsWith('/sessions/')) return null
 
   return (
-    <nav className={styles.sidebar} aria-label="主导航">
-      <NavLink to="/" end className={styles.brand} aria-label="Gather 工作台">
+    <nav className={styles.sidebar} aria-label={t('nav.mainNav')}>
+      <NavLink to="/" end className={styles.brand} aria-label={t('nav.brandLabel')}>
         <span className={styles.brandMark}>G</span>
         <span className={styles.brandName}>Gather</span>
       </NavLink>
@@ -73,40 +75,40 @@ export default function Sidebar() {
         <li className={styles.navItem}>
           <NavLink to="/" end className={({ isActive }) => isActive ? styles.active : styles.navLink}>
             <HomeIcon />
-            <span>工作台</span>
+            <span>{t('nav.home')}</span>
           </NavLink>
         </li>
         {sessionId && (
           <li className={styles.navItem}>
             <NavLink to={`/sessions/${sessionId}/gallery`} className={({ isActive }) => isActive ? styles.active : styles.navLink}>
               <SessionIcon />
-              <span>当前会话</span>
+              <span>{t('nav.currentSession')}</span>
             </NavLink>
           </li>
         )}
         <li className={styles.navItem}>
           <NavLink to="/library" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
             <LibraryIcon />
-            <span>全局图库</span>
+            <span>{t('nav.library')}</span>
           </NavLink>
         </li>
         <li className={styles.navItem}>
           <NavLink to="/persons" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
             <PersonsIcon />
-            <span>人脸库</span>
+            <span>{t('nav.persons')}</span>
           </NavLink>
         </li>
         <li className={styles.navItem}>
           <NavLink to="/jobs" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
             <JobsIcon />
-            <span>任务中心</span>
+            <span>{t('nav.jobs')}</span>
           </NavLink>
         </li>
       </ul>
       <div className={styles.bottomNav}>
         <NavLink to="/settings" className={({ isActive }) => isActive ? styles.active : styles.navLink}>
           <SettingsIcon />
-          <span>设置</span>
+          <span>{t('nav.settings')}</span>
         </NavLink>
       </div>
     </nav>

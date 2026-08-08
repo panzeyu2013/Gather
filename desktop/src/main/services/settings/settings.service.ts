@@ -113,6 +113,10 @@ export function getDefaults(): Record<string, string | number> {
     metadata_write_debounce_ms: 500,
     capture_one_color_compatibility: 'label_and_urgency',
 
+    // Effective UI/menu locale override ('' = not set → --lang/system locale,
+    // docs/design_improvements.md 4.2; written via `settings.set_language`).
+    ui_language: '',
+
     lazy_checksum: 'true',
   }
 }

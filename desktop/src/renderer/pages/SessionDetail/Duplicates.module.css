@@ -45,6 +45,11 @@
   outline: none;
 }
 
+.slider:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, white);
+  outline-offset: 2px;
+}
+
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;

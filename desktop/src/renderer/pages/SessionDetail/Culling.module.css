@@ -383,7 +383,7 @@
 }
 
 .linkedNotice {
-  color: var(--color-warning);
+  color: var(--color-warning-text);
 }
 
 .syncState {

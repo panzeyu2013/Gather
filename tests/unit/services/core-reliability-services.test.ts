@@ -209,6 +209,32 @@ describe('core reliability services', () => {
     expect(repo.get(job.id)?.attemptCount).toBe(2)
   })
 
+  it('emits a terminal cancelled frame when a queued job is cancelled', async () => {
+    const repo = new FakeJobRepository()
+    const jobs = new JobService(repo as never)
+    services.push(jobs)
+    // No executor registered for metadata.scan → the job stays queued and
+    // cancel() takes the queued-cancel path (never through runInternal).
+    const frames: Array<{ current: number; total: number; message: string }> = []
+    jobs.setProgressSink((_job, update) => {
+      frames.push({ current: update.current ?? 0, total: update.total ?? 0, message: update.message ?? '' })
+    })
+
+    const job = jobs.create({
+      type: 'metadata.scan',
+      scopeType: 'session',
+      scopeId: 'session',
+      dedupeKey: 'queued-cancel:session',
+    })
+    expect(jobs.cancel(job.id)).toBe(true)
+
+    expect(repo.get(job.id)?.status).toBe('cancelled')
+    // 回归：queued-cancel 必须与 running-cancel 一样推送终态帧，否则依赖
+    // jobs:progress 的客户端（SessionDetail 头部 / workspace status）会一直
+    // 卡在"扫描中…"直到 remount。
+    expect(frames).toEqual([{ current: 1, total: 1, message: 'cancelled' }])
+  })
+
   it('rejects waitForResult after a timeout when a job never finishes', async () => {
     const repo = new FakeJobRepository()
     const jobs = new JobService(repo as never)

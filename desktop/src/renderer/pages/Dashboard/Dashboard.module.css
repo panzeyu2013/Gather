@@ -219,6 +219,64 @@
   cursor: pointer;
 }
 
+/* ── Capture One 导入预检（2.3.5 P1）── */
+
+.c1Preflight {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  font-size: 13px;
+}
+
+.c1PreflightTitle {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.c1PreflightStatus {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.c1CheckList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.c1CheckPass,
+.c1CheckFail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text);
+}
+
+.c1CheckPass .c1CheckMark {
+  color: var(--color-success);
+  font-weight: 700;
+}
+
+.c1CheckFail .c1CheckMark {
+  color: var(--color-error);
+  font-weight: 700;
+}
+
+.c1PreflightReady {
+  margin: 10px 0 0;
+  color: var(--color-success);
+}
+
+.c1PreflightGuidance {
+  margin: 10px 0 0;
+  color: var(--color-error);
+  line-height: 1.5;
+}
+
 .formActions {
   display: flex;
   gap: 8px;

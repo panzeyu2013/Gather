@@ -85,6 +85,7 @@ function buildService(faceRepoOverrides: Record<string, unknown>) {
     { getPreview: vi.fn() } as unknown as ImageService,
     { get: vi.fn(), getNumber: vi.fn() } as unknown as SettingsService,
     {} as never,
+    {} as never,
   )
   return { service, faceRepo }
 }

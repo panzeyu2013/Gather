@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, Menu, dialog, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, protocol, session, shell } from 'electron'
 import { join, resolve } from 'path'
-import { readdir, stat } from 'fs/promises'
 import { getSelectedPhotos, reloadMetadata } from './capture-one'
+import { c1Health } from './services/capture-one/c1-health'
 import { Database } from './db/database'
 import { runMigrations } from './db/migrations'
 import { initContainer, getService } from './di/init'
@@ -30,9 +30,12 @@ import {
   type RuntimeLifecycle,
 } from './services/runtime/runtime-lifecycle'
 import { MetadataSyncCoordinator } from './services/metadata/metadata-sync-coordinator'
+import { CaptureOneSyncState } from './services/capture-one/sync-state'
 import { IMAGE_CONFIG } from './services/image/image-config'
 
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
+import { setupAppMenu } from './menu'
+import { resolveEffectiveLocale } from './locale'
 import { registerSessionHandlers } from './ipc/session.ipc'
 import { registerFaceKwHandlers } from './ipc/face-kw.ipc'
 import { registerSimilarityHandlers } from './ipc/similarity.ipc'
@@ -53,10 +56,13 @@ import { registerIndexerHandlers } from './ipc/indexer.ipc'
 import { registerQualityHandlers } from './ipc/quality.ipc'
 import { registerNavigationHandlers } from './ipc/navigation.ipc'
 import { registerAssetHandlers } from './ipc/assets.ipc'
+import { registerWorkspaceHandlers } from './ipc/workspace.ipc'
+import { WorkspaceStatusService } from './services/workspace/workspace-status.service'
 import { QualityService } from './services/quality/quality.service'
 import { NavigationService } from './services/navigation/navigation.service'
 import { parseImportDeepLink } from './deep-link'
 import { normalizeDatabaseRuntimeSettings } from './runtime-settings'
+import { scanDirectory } from './utils/scan-directory'
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const registry = new CommandRegistry()
@@ -105,81 +111,6 @@ const WINDOW_DEFAULT_WIDTH = 1200
 const WINDOW_DEFAULT_HEIGHT = 800
 const WINDOW_MIN_WIDTH = 480
 const WINDOW_MIN_HEIGHT = 360
-
-const appMenuTemplate: Electron.MenuItemConstructorOptions[] = [
-  {
-    label: 'Gather',
-    submenu: [
-      { role: 'about' },
-      { type: 'separator' },
-      { role: 'quit' },
-    ],
-  },
-  {
-    label: 'File',
-    submenu: [
-      {
-        label: 'Import from Capture One',
-        accelerator: 'CmdOrCtrl+Shift+I',
-        click: async () => {
-          try {
-            const files = await getSelectedPhotos()
-            if (files.length > 0) {
-              mainWindow?.webContents.send('gather:event', 'c1:plugin-import', { files })
-            } else {
-              mainWindow?.webContents.send('gather:event', 'gather:notification', {
-                type: 'warning',
-                message: 'No photos selected in Capture One.',
-              })
-            }
-          } catch (err) {
-            console.error('Capture One import failed:', err)
-            mainWindow?.webContents.send('gather:event', 'gather:notification', {
-              type: 'error',
-              message: err instanceof Error
-                ? `Capture One import failed: ${err.message}`
-                : 'Capture One import failed. Is Capture One running?',
-            })
-          }
-        },
-      },
-      { type: 'separator' },
-      { role: 'close' },
-    ],
-  },
-  {
-    label: 'Edit',
-    submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      { role: 'selectAll' },
-    ],
-  },
-  {
-    label: 'View',
-    submenu: [
-      { role: 'reload', visible: isDev },
-      { role: 'toggleDevTools', visible: isDev },
-      { type: 'separator' },
-      { role: 'zoomIn' },
-      { role: 'zoomOut' },
-      { role: 'resetZoom' },
-    ],
-  },
-  {
-    label: 'Window',
-    submenu: [
-      { role: 'minimize' },
-      { role: 'zoom' },
-      { type: 'separator' },
-      { role: 'front' },
-    ],
-  },
-]
 
 function createWindow(): void {
   rendererReady = false
@@ -274,7 +205,7 @@ function registerIpc(): void {
   }
 
   registerAllIpcHandlers(registry, ensureMainWindowSender)
-  registerSessionHandlers(registry, sessionService)
+  registerSessionHandlers(registry, sessionService, svc<JobService>(DI_TOKENS.JOB_SERVICE))
   registerFaceKwHandlers(
     registry,
     faceKwService,
@@ -327,15 +258,58 @@ function registerIpc(): void {
   )
   registerQualityHandlers(registry, svc<QualityService>(DI_TOKENS.QUALITY_SERVICE), svc<JobService>(DI_TOKENS.JOB_SERVICE))
   registerNavigationHandlers(registry, svc<NavigationService>(DI_TOKENS.NAVIGATION_SERVICE))
+  registerWorkspaceHandlers(
+    registry,
+    svc<WorkspaceStatusService>(DI_TOKENS.WORKSPACE_STATUS_SERVICE),
+  )
 
   ipcMain.handle('c1:get-selected-photos', async (e) => {
     ensureMainWindowSender(e)
     return getSelectedPhotos()
   })
 
-  ipcMain.handle('c1:reload-metadata', async (e) => {
+  ipcMain.handle('c1:reload-metadata', async (e, sessionId?: string) => {
     ensureMainWindowSender(e)
-    return reloadMetadata()
+    const normalized = typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 256
+      ? sessionId
+      : undefined
+    await reloadMetadata(normalized)
+    // reload_acked_at 已持久化（capture-one.ts）：协调器不会因 ack 发事件，
+    // 这里主动重推导一次，保持 ack 转换可观测（2.5 P1）。
+    if (normalized) svc<CaptureOneSyncState>(DI_TOKENS.CAPTURE_ONE_SYNC_STATE).observeReloadAck(normalized)
+  })
+
+  ipcMain.handle('c1:health', async (e) => {
+    ensureMainWindowSender(e)
+    return c1Health()
+  })
+
+  // 渲染层同步面板的会话级状态机视图（2.3.5）：派生状态 + 行计数 + ack。
+  // 只读聚合，不触发任何动作；与 CaptureOneSyncState 的重推导共用同一真相源。
+  ipcMain.handle('c1:sync-state', async (e, sessionId: string) => {
+    ensureMainWindowSender(e)
+    if (
+      typeof sessionId !== 'string' ||
+      sessionId.length === 0 ||
+      sessionId.length > 256
+    ) {
+      throw new Error('Invalid session id')
+    }
+    const syncState = svc<CaptureOneSyncState>(DI_TOKENS.CAPTURE_ONE_SYNC_STATE)
+    const summary = metadataSync.getSummary(sessionId)
+    const view = syncState.getSessionView(sessionId)
+    return {
+      state: view.state,
+      reloadAckedAt: view.reloadAckedAt,
+      xmp: {
+        pending: summary.pending,
+        writing: summary.writing,
+        written: summary.written,
+        failed: summary.failed,
+        conflict: summary.conflict,
+        synced: summary.synced,
+      },
+    }
   })
 
   ipcMain.handle('app:renderer-ready', (e) => {
@@ -352,25 +326,49 @@ function registerIpc(): void {
     return app.getVersion()
   })
 
-  ipcMain.handle('app:select-directory', async (e) => {
+  // Effective UI locale for the renderer bootstrap (i18n P2 收尾): same
+  // resolution chain as the menu (settings override > --lang > system > en).
+  // The renderer must apply it via initI18n() before first render to avoid a
+  // locale flash.
+  ipcMain.handle('app:get-app-locale', (e) => {
+    ensureMainWindowSender(e)
+    return {
+      language: resolveEffectiveLocale(
+        app.commandLine.getSwitchValue('lang'),
+        app.getLocale(),
+        settingsService.get('ui_language', ''),
+      ),
+    }
+  })
+
+  // Dialog copy is owned by the renderer (design_improvements.md 4.4.2):
+  // the caller passes a translated title/filter name, the main process only
+  // shows the OS dialog. Missing title falls back to the OS default.
+  ipcMain.handle('app:select-directory', async (e, title?: string) => {
     ensureMainWindowSender(e)
     if (!mainWindow) throw new Error('No window')
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
-      title: 'Select photo directory',
+      title: typeof title === 'string' && title.length > 0 ? title : undefined,
     })
     return result.canceled ? null : result.filePaths[0]
   })
 
-  ipcMain.handle('app:select-files', async (e) => {
+  ipcMain.handle('app:select-files', async (e, options?: { title?: string; filterName?: string }) => {
     ensureMainWindowSender(e)
     if (!mainWindow) throw new Error('No window')
+    const opts = options && typeof options === 'object' ? options : {}
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
-      title: 'Select photos',
+      title: typeof opts.title === 'string' && opts.title.length > 0 ? opts.title : undefined,
       filters: [
-        { name: 'Photos', extensions: supportedImageExtensions.map((extension) => extension.slice(1)) },
-      ],
+        {
+          name: typeof opts.filterName === 'string' && opts.filterName.length > 0
+            ? opts.filterName
+            : undefined,
+          extensions: supportedImageExtensions.map((extension) => extension.slice(1)),
+        },
+      ].filter((filter): filter is { name: string; extensions: string[] } => Boolean(filter.name)),
     })
     return result.canceled ? [] : result.filePaths
   })
@@ -381,39 +379,7 @@ function registerIpc(): void {
     if (typeof dirPath !== 'string' || dirPath.length === 0) {
       throw new Error('Invalid directory path')
     }
-    const files: string[] = []
-    // Bound the walk so scanning a huge tree cannot exhaust the main-process
-    // memory with an unbounded file list returned over IPC.
-    const MAX_SCANNED_FILES = 50_000
-    const scan = async (directory: string): Promise<void> => {
-      const entries = await readdir(directory, { withFileTypes: true })
-      for (const entry of entries) {
-        if (files.length >= MAX_SCANNED_FILES) return
-        // Do not follow symlinks: a link may escape the selected directory or
-        // introduce a directory cycle.
-        if (entry.isSymbolicLink()) continue
-        const fullPath = join(directory, entry.name)
-        try {
-          if (entry.isDirectory()) {
-            await scan(fullPath)
-          } else if (entry.isFile()) {
-            const ext = '.' + entry.name.split('.').pop()?.toLowerCase()
-            if (supportedImageExtensionSet.has(ext)) files.push(fullPath)
-          }
-        } catch {
-          // One unreadable child must not discard the rest of the selected
-          // directory. A failure at the root is still reported below.
-        }
-      }
-    }
-    try {
-      const root = await stat(dirPath)
-      if (!root.isDirectory()) throw new Error('Not a directory')
-      await scan(dirPath)
-    } catch {
-      throw new Error('Failed to read directory')
-    }
-    return files
+    return scanDirectory(dirPath, { supportedExtensions: supportedImageExtensionSet })
   })
 
   ipcMain.handle('app:open-directory', async (e, dirPath: string) => {
@@ -486,7 +452,17 @@ app.whenReady().then(async () => {
   db.pragma(`synchronous = ${databaseRuntime.synchronous}`)
   db.pragma(`cache_size = ${-databaseRuntime.cacheSizeMb * 1000}`)
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate))
+  // Effective locale: settings `ui_language` override > --lang switch >
+  // app.getLocale() (design_improvements.md 4.2, see main/locale.ts). The
+  // renderer mirrors this via `app:get-app-locale` at bootstrap.
+  setupAppMenu(
+    resolveEffectiveLocale(
+      app.commandLine.getSwitchValue('lang'),
+      app.getLocale(),
+      settings.get('ui_language', ''),
+    ),
+    (eventName, payload) => mainWindow?.webContents.send('gather:event', eventName, payload),
+  )
   createWindow()
   const jobs = svc<JobService>(DI_TOKENS.JOB_SERVICE)
   const indexer = svc<IndexService>(DI_TOKENS.INDEX_SERVICE)
@@ -505,6 +481,7 @@ app.whenReady().then(async () => {
       scopeId: job.scopeId,
       current: update.current ?? 0,
       total: update.total ?? 0,
+      phase: update.phase,
       message: update.message ?? '',
       // Terminal frames (emitTerminal) carry the final status so clients can
       // clear the "analyzing" state; regular frames omit it. interrupted is
@@ -517,11 +494,17 @@ app.whenReady().then(async () => {
   })
   indexer.startWatchers()
   metadataSync.start(
-    (summary) => mainWindow?.webContents.send(
-      'gather:event',
-      'culling:sync-status',
-      summary,
-    ),
+    (summary) => {
+      mainWindow?.webContents.send(
+        'gather:event',
+        'culling:sync-status',
+        summary,
+      )
+      // P1 事件接线（2.5）：协调器每次 emitSummary 后重推导会话状态，
+      // 转换以 [capture-one-sync] 日志输出（验收：状态机转换全部可观测）。
+      // 仅观测，不触发自动 reload / cleanup（保守策略不变）。
+      svc<CaptureOneSyncState>(DI_TOKENS.CAPTURE_ONE_SYNC_STATE).observeSummary(summary)
+    },
   )
 
   if (!app.isDefaultProtocolClient('gather')) {
@@ -537,9 +520,31 @@ app.whenReady().then(async () => {
   const message = error instanceof Error ? error.message : String(error)
   console.error('Application startup failed:', message)
   if (process.env.GATHER_TEST_FAIL_MIGRATION !== 'after-migrate') {
+    // Startup-fatal dialog: no renderer exists to map error copy, so the
+    // title/body are resolved with the same effective-locale chain as the
+    // menu (settings `ui_language` override > --lang switch > app locale).
+    // The settings service lives behind DI, which may have failed here, so
+    // the persisted override is read directly from the settings table
+    // (best-effort; a read failure just falls back to the --lang/system chain).
+    let uiLanguage = ''
+    try {
+      const row = new Database()
+        .prepare('SELECT value FROM app_settings WHERE key = ?')
+        .get('ui_language') as { value?: string } | undefined
+      uiLanguage = typeof row?.value === 'string' ? row.value : ''
+    } catch {
+      // Best-effort: the DB may be unreachable when initialization failed.
+    }
+    const isZh = resolveEffectiveLocale(
+      app.commandLine.getSwitchValue('lang'),
+      app.getLocale(),
+      uiLanguage,
+    ) === 'zh-CN'
     dialog.showErrorBox(
-      'Gather 无法启动',
-      `数据库迁移或应用初始化失败。原数据库已保留，请查看日志。\n\n${message}`,
+      isZh ? 'Gather 无法启动' : 'Gather failed to start',
+      isZh
+        ? `数据库迁移或应用初始化失败。原数据库已保留，请查看日志。\n\n${message}`
+        : `Database migration or app initialization failed. The original database was kept; see the logs.\n\n${message}`,
     )
   }
   app.quit()

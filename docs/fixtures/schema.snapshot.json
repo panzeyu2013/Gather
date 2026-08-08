@@ -1,7 +1,8 @@
 {
-  "schemaVersion": 27,
+  "schemaVersion": 31,
   "tables": [
     "analysis_jobs",
+    "analysis_runs",
     "app_settings",
     "asset_analysis",
     "asset_backfill_state",

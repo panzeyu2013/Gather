@@ -17,6 +17,8 @@ const COLOR_LABELS = new Set([
   'None', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple',
 ])
 
+// ADR-017: internal-invariant diagnostics below — the renderer validates the
+// same shapes from shared constants, so these throws are bug guards only.
 function parseFilters(value: unknown): CullingFilters | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -84,7 +86,7 @@ export function registerCullingHandlers(
       const sessionId = validateString(params.sessionId, 'sessionId')
       const scope = validateString(params.scope, 'scope') as CullingScope
       if (!['all', 'filtered', 'similarity_group'].includes(scope)) {
-        throw new Error('Invalid culling scope')
+        throw new Error('CULLING_INVALID_SCOPE')
       }
       const filters = parseFilters(params.filters)
       const groupId = typeof params.groupId === 'string' ? params.groupId : undefined
@@ -238,7 +240,7 @@ export function registerCullingHandlers(
     'culling.finalize_sync',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Finalizing XMP sync requires explicit confirmation')
+        throw new Error('CULLING_FINALIZE_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       return ok(await metadataSync.finalizeSession(sessionId))
@@ -295,7 +297,7 @@ export function registerCullingHandlers(
     'culling.writeback',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Writeback requires explicit confirmation')
+        throw new Error('WRITEBACK_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const target = validateString(params.target, 'target')
@@ -308,7 +310,7 @@ export function registerCullingHandlers(
         target as 'rating' | 'color_label' | 'keyword',
       )
       if (plan.size === 0) {
-        throw new Error('No culling decisions to write back')
+        throw new Error('CULLING_NO_DECISIONS')
       }
 
       const decidedPhotoIds = new Set(plan.keys())
@@ -335,7 +337,7 @@ export function registerCullingHandlers(
     'culling.reset',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('culling.reset requires confirmation')
+        throw new Error('CULLING_RESET_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const groupId = typeof params.groupId === 'string' ? params.groupId : undefined
@@ -348,7 +350,7 @@ export function registerCullingHandlers(
     'culling.retry_failed_writeback',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Retry failed writeback requires explicit confirmation')
+        throw new Error('WRITEBACK_RETRY_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       return ok(await writebackService.retryFailed(sessionId, 'culling'))
@@ -371,7 +373,7 @@ export function registerCullingHandlers(
     'culling.cleanup',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Cleanup requires explicit confirmation')
+        throw new Error('WRITEBACK_CLEANUP_CONFIRM_REQUIRED')
       }
       const sessionId = validateString(params.sessionId, 'sessionId')
       const backgroundResult = await metadataSync.cleanup(sessionId, 'culling')

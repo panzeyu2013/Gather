@@ -131,6 +131,13 @@ export class MetadataSyncCoordinator {
 
   schedule(xmpPath: string, delayMs?: number): void {
     if (this.stopped) return
+    // Every schedule() is new write activity (rows were just inserted or
+    // transitioned to pending/writing/failed by the caller): the session's
+    // previous reload ack no longer covers this file. Invalidate it BEFORE
+    // the row can become written/synced, so the renderer gate and the
+    // confirm/cleanup guards can never see a stale ack (data-loss fix:
+    // cleanup must not restore backups Capture One never loaded).
+    this.clearReloadAckForXmpPath(xmpPath)
     void this.ensureBaseline(xmpPath)
     const existing = this.timers.get(xmpPath)
     if (existing) clearTimeout(existing)
@@ -210,22 +217,23 @@ export class MetadataSyncCoordinator {
   ): Promise<MetadataSyncSummary> {
     const row = this.outboxRepo.getBySession(sessionId)
       .find(candidate => candidate.xmp_path === xmpPath)
-    if (!row || row.status !== 'conflict') throw new Error('Metadata conflict not found')
+    if (!row || row.status !== 'conflict') throw new Error('XMP_CONFLICT_NOT_FOUND')
     const conflict = (await this.getConflicts(sessionId))
       .find(candidate => candidate.xmpPath === xmpPath)
     if (!conflict || conflict.fields.length === 0) {
-      throw new Error('Metadata conflict details are unavailable')
+      throw new Error('XMP_CONFLICT_DETAILS_UNAVAILABLE')
     }
     for (const field of conflict.fields) {
       if (!choices[field.field]) {
-        throw new Error(`Missing conflict choice for ${field.field}`)
+        console.warn('Missing conflict choice for field', field.field)
+        throw new Error('XMP_CHOICE_MISSING')
       }
     }
     const current = await this.writerRouter.selectSidecar().readAttributes(row.photo_path)
     const patch = safeObject(row.patch_json)
     let dirtyFields = tryParseDirtyFields(row.dirty_fields)
     if (!dirtyFields) {
-      throw new Error('Metadata conflict has invalid dirty fields')
+      throw new Error('XMP_CONFLICT_DETAILS_INVALID')
     }
     for (const [field, choice] of Object.entries(choices) as Array<[MetadataField, MetadataConflictChoice]>) {
       if (choice === 'use_remote') {
@@ -322,20 +330,23 @@ export class MetadataSyncCoordinator {
     action: 'keep' | 'restore' | 'retry',
   ): Promise<MetadataOrphan[]> {
     const row = this.outboxRepo.getOrphans().find(candidate => candidate.xmp_path === xmpPath)
-    if (!row) throw new Error('Orphan metadata operation not found')
+    if (!row) throw new Error('XMP_ORPHAN_NOT_FOUND')
     if (action === 'retry') {
       if (row.status === 'conflict') {
-        throw new Error('冲突项目必须选择保留当前 XMP 或恢复写入前状态')
+        throw new Error('XMP_CONFLICT_RESOLUTION_REQUIRED')
       }
       if (row.status === 'failed') this.outboxRepo.resetForRetry(xmpPath)
-      else if (row.status !== 'pending') throw new Error('Only pending or failed operations can be retried')
+      else if (row.status !== 'pending') throw new Error('XMP_ORPHAN_NOT_RETRYABLE')
       this.schedule(xmpPath, 0)
       return this.listOrphans()
     }
     await this.waitForIdle(xmpPath)
     if (action === 'restore') {
       if (row.backup_path) {
-        if (!existsSync(row.backup_path)) throw new Error(`XMP backup is missing: ${row.backup_path}`)
+        if (!existsSync(row.backup_path)) {
+          console.warn('XMP backup is missing for orphan restore:', row.backup_path)
+          throw new Error('XMP_BACKUP_MISSING')
+        }
         await this.writerRouter.selectSidecar().restore(row.photo_path, row.backup_path)
       } else if (existsSync(row.xmp_path)) {
         await unlink(row.xmp_path)
@@ -364,6 +375,7 @@ export class MetadataSyncCoordinator {
     for (const row of this.outboxRepo.getBySession(sessionId)) {
       if (row.status === 'failed') {
         this.outboxRepo.resetForRetry(row.xmp_path)
+        this.clearReloadAckForXmpPath(row.xmp_path)
       }
     }
     return this.flushSession(sessionId)
@@ -377,8 +389,13 @@ export class MetadataSyncCoordinator {
       summary.failed > 0 ||
       summary.conflict > 0
     ) {
-      throw new Error('仍有未完成、失败或冲突的 XMP 项目，不能确认同步')
+      throw new Error('XMP_CONFIRM_INCOMPLETE')
     }
+    // Main-side guard closing the renderer-stale-view race: confirming sync
+    // promotes rows to synced (which unlocks cleanup), so Capture One must
+    // have loaded the metadata — i.e. a reload ack must exist. Without it,
+    // cleanup could restore XMP backups the user never loaded.
+    this.requireReloadAck(sessionId)
     this.outboxRepo.markSessionSynced(sessionId, sourceModule)
     return this.emitSummary(sessionId)
   }
@@ -391,7 +408,15 @@ export class MetadataSyncCoordinator {
     const eligible = rows.filter(row =>
       row.status === 'synced' && row.source_module === sourceModule)
     if (eligible.length === 0 && rows.length > 0) {
-      throw new Error('请先在 Capture One 中加载元数据并确认同步，再执行清理')
+      throw new Error('XMP_CLEANUP_REQUIRES_LOADED')
+    }
+    // Cleanup restores backups, so it may only run after Capture One loaded
+    // the metadata (the same reload-ack gate as confirmSync). A new write
+    // batch that landed after the last confirm invalidates the ack, so this
+    // guard rejects the stale-view cleanup instead of restoring XMP that
+    // Capture One never loaded.
+    if (eligible.length > 0) {
+      this.requireReloadAck(sessionId)
     }
     // The per-row sequence (wait for idle → verify fingerprint → restore or
     // unlink → mark cleaned) is order-sensitive only within one row, so
@@ -413,13 +438,13 @@ export class MetadataSyncCoordinator {
           this.outboxRepo.markStatus(
             row.xmp_path,
             'conflict',
-            'XMP 在 Capture One 加载后又被修改，已停止清理以保护外部更改',
+            'XMP_CLEANUP_ABORTED_EXTERNAL_EDIT',
           )
-          throw new Error('XMP 已被其他软件修改，不能自动恢复或删除')
+          throw new Error('XMP_EXTERNALLY_MODIFIED')
         }
         if (latest.backup_path) {
           if (!existsSync(latest.backup_path)) {
-            throw new Error(`原始 XMP 备份不存在：${latest.backup_path}`)
+            throw new Error('XMP_BACKUP_MISSING')
           }
           await this.writerRouter
             .selectSidecar()
@@ -449,7 +474,7 @@ export class MetadataSyncCoordinator {
     const rows = this.outboxRepo.getBySession(sessionId)
     const eligible = rows.filter(row => row.status === 'synced')
     if (eligible.length === 0 && rows.length > 0) {
-      throw new Error('请先在 Capture One 中加载元数据并确认同步')
+      throw new Error('XMP_CONFIRM_REQUIRES_SYNC')
     }
     // The per-row sequence below is order-sensitive only within one row
     // (backup removal before the revision-guarded delete), so unrelated rows
@@ -513,7 +538,8 @@ export class MetadataSyncCoordinator {
       const row = this.outboxRepo.get(xmpPath)
       if (!row || row.status !== 'writing') return
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for metadata writer: ${xmpPath}`)
+        console.warn('Timed out waiting for metadata writer:', xmpPath)
+        throw new Error('XMP_WRITER_TIMEOUT')
       }
       await new Promise<void>(resolve => setTimeout(resolve, 20))
     }
@@ -574,6 +600,9 @@ export class MetadataSyncCoordinator {
 
   private async processRow(row: MetadataOutboxRow): Promise<boolean> {
     if (!this.outboxRepo.claim(row.xmp_path, row.revision)) return false
+    // The row is now writing: any surviving reload ack (crash window between
+    // queue and claim) is invalidated before the row can reach written.
+    this.clearReloadAckForXmpPath(row.xmp_path)
 
     try {
       const currentFingerprint = await contentFingerprint(row.xmp_path)
@@ -608,7 +637,7 @@ export class MetadataSyncCoordinator {
         this.outboxRepo.markStatus(
           row.xmp_path,
           'conflict',
-          'XMP 已被其他软件修改，且与 Gather 待写字段冲突',
+          'XMP_EXTERNAL_EDIT_CONFLICT',
         )
         this.emitPathSummaries(row.xmp_path)
         return false
@@ -700,12 +729,49 @@ export class MetadataSyncCoordinator {
     return summary
   }
 
-  private emitPathSummaries(xmpPath: string): void {
-    const sessionIds = typeof this.outboxRepo.getSessionIds === 'function'
+  private getOutboxSessionIds(xmpPath: string): string[] {
+    return typeof this.outboxRepo.getSessionIds === 'function'
       ? this.outboxRepo.getSessionIds(xmpPath)
       : [this.outboxRepo.get(xmpPath)?.owner_session_id].filter(
         (value): value is string => typeof value === 'string',
       )
+  }
+
+  /**
+   * New write activity invalidates the session's reload ack: Capture One
+   * loaded the previous generation of metadata, so a fresh reload (and a
+   * fresh ack) is required before confirm/cleanup may run again. This is the
+   * durable half of the safeToCleanup gate (data-loss fix): cleanup restores
+   * XMP backups, and a stale ack would let it restore files Capture One
+   * never loaded.
+   */
+  private clearReloadAck(sessionId: string): void {
+    this.db.prepare(
+      'UPDATE sessions SET reload_acked_at = NULL, updated_at = ? WHERE id = ? AND reload_acked_at IS NOT NULL',
+    ).run(new Date().toISOString(), sessionId)
+  }
+
+  private clearReloadAckForXmpPath(xmpPath: string): void {
+    for (const sessionId of this.getOutboxSessionIds(xmpPath)) {
+      this.clearReloadAck(sessionId)
+    }
+  }
+
+  /**
+   * Main-side guard (complements the renderer button gate): confirm and
+   * cleanup are only allowed while the session's reload ack exists. Throws a
+   * code the renderer translates, so a stale renderer view (which still shows
+   * the old acked state) cannot confirm or clean up against a fresh ack.
+   */
+  private requireReloadAck(sessionId: string): void {
+    const row = this.db.prepare(
+      'SELECT reload_acked_at FROM sessions WHERE id = ?',
+    ).get(sessionId) as { reload_acked_at: string | null } | undefined
+    if (!row?.reload_acked_at) throw new Error('XMP_RELOAD_NOT_ACKED')
+  }
+
+  private emitPathSummaries(xmpPath: string): void {
+    const sessionIds = this.getOutboxSessionIds(xmpPath)
     for (const sessionId of sessionIds) {
       // Coalesce the per-row pushes of a busy write burst: rows finishing
       // inside the same window emit a single fresh summary per session. A

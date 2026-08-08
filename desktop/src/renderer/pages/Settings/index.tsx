@@ -1,63 +1,73 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useId, useState, useCallback } from 'react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import Loading from '../../components/Loading/Loading'
 import SliderInput from '../../components/SliderInput/SliderInput'
+import C1HealthPanel from './C1HealthPanel'
+import { settingsApi, type AppLocale } from '../../api/settings'
+import { useTranslation, detectLanguage, initI18n, type TranslationKey } from '../../locales'
+import { translatePhase } from '../../utils/progress'
 import styles from './Settings.module.css'
 
 interface SettingDefinition {
   key: string
-  label: string
+  labelKey: TranslationKey
   type: 'text' | 'number' | 'select'
-  description: string
+  descriptionKey: TranslationKey
 }
 
 interface SettingGroup {
-  title: string
+  id: string
+  titleKey: TranslationKey
   settings: SettingDefinition[]
 }
 
 const GROUPS: SettingGroup[] = [
   {
-    title: '缓存',
+    id: 'cache',
+    titleKey: 'settings.group.cache',
     settings: [
-      { key: 'memory_cache_size', label: '内存缓存条目数', type: 'number', description: '内存中缓存的缩略图最大数量' },
-      { key: 'memory_cache_max_size_mb', label: '内存缓存上限 (MB)', type: 'number', description: '缩略图和预览内存缓存的最大空间，防止高分辨率图片占满内存' },
-      { key: 'disk_cache_dir', label: '磁盘缓存目录', type: 'text', description: '磁盘缓存存储路径（留空使用默认）' },
-      { key: 'disk_cache_max_size_gb', label: '磁盘缓存上限 (GB)', type: 'number', description: '磁盘缓存占用硬盘的最大空间' },
-      { key: 'disk_cache_eviction_policy', label: '淘汰策略', type: 'select', description: 'lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）' },
+      { key: 'memory_cache_size', labelKey: 'settings.cache.memoryCacheSize', type: 'number', descriptionKey: 'settings.cache.memoryCacheSizeDesc' },
+      { key: 'memory_cache_max_size_mb', labelKey: 'settings.cache.memoryCacheMaxMb', type: 'number', descriptionKey: 'settings.cache.memoryCacheMaxMbDesc' },
+      { key: 'disk_cache_dir', labelKey: 'settings.cache.diskCacheDir', type: 'text', descriptionKey: 'settings.cache.diskCacheDirDesc' },
+      { key: 'disk_cache_max_size_gb', labelKey: 'settings.cache.diskCacheMaxGb', type: 'number', descriptionKey: 'settings.cache.diskCacheMaxGbDesc' },
+      { key: 'disk_cache_eviction_policy', labelKey: 'settings.cache.evictionPolicy', type: 'select', descriptionKey: 'settings.cache.evictionPolicyDesc' },
     ],
   },
   {
-    title: '图片处理',
+    id: 'image',
+    titleKey: 'settings.group.image',
     settings: [
-      { key: 'thumbnail_size', label: '缩略图尺寸', type: 'number', description: '画廊缓存分辨率（建议 1024；内部按 256/1024/2048 三级复用）' },
-      { key: 'thumbnail_quality', label: '缩略图质量', type: 'number', description: '缩略图的 JPEG 压缩质量 (0-100)' },
-      { key: 'thumbnail_concurrency', label: '缩略图生成并发数', type: 'number', description: '同时生成缩略图的任务数（RAW 建议 2-4，最大 8）' },
-      { key: 'face_thumbnail_size', label: '人脸缩略图尺寸', type: 'number', description: '人脸缩略图的宽高像素值' },
-      { key: 'face_thumbnail_quality', label: '人脸缩略图质量', type: 'number', description: '人脸缩略图的 JPEG 压缩质量 (0-100)' },
+      { key: 'thumbnail_size', labelKey: 'settings.image.thumbnailSize', type: 'number', descriptionKey: 'settings.image.thumbnailSizeDesc' },
+      { key: 'thumbnail_quality', labelKey: 'settings.image.thumbnailQuality', type: 'number', descriptionKey: 'settings.image.thumbnailQualityDesc' },
+      { key: 'thumbnail_concurrency', labelKey: 'settings.image.thumbnailConcurrency', type: 'number', descriptionKey: 'settings.image.thumbnailConcurrencyDesc' },
+      { key: 'face_thumbnail_size', labelKey: 'settings.image.faceThumbSize', type: 'number', descriptionKey: 'settings.image.faceThumbSizeDesc' },
+      { key: 'face_thumbnail_quality', labelKey: 'settings.image.faceThumbQuality', type: 'number', descriptionKey: 'settings.image.faceThumbQualityDesc' },
     ],
   },
   {
-    title: '数据库',
+    id: 'db',
+    titleKey: 'settings.group.db',
     settings: [
-      { key: 'db_cache_size_mb', label: '缓存大小 (MB)', type: 'number', description: 'SQLite 数据库的页面缓存大小' },
-      { key: 'db_synchronous', label: '同步模式', type: 'select', description: 'off=OFF（关闭）, normal=NORMAL（正常）, full=FULL（完整）' },
+      { key: 'db_cache_size_mb', labelKey: 'settings.db.cacheSizeMb', type: 'number', descriptionKey: 'settings.db.cacheSizeMbDesc' },
+      { key: 'db_synchronous', labelKey: 'settings.db.syncMode', type: 'select', descriptionKey: 'settings.db.syncModeDesc' },
     ],
   },
   {
-    title: 'Capture One 集成',
+    id: 'c1',
+    titleKey: 'settings.group.c1',
     settings: [
-      { key: 'c1_timeout_ms', label: '超时时间 (ms)', type: 'number', description: '与 Capture One 通信的超时毫秒数' },
-      { key: 'c1_retries', label: '重试次数', type: 'number', description: '与 Capture One 通信的最大重试次数' },
-      { key: 'c1_reload_delay_ms', label: '重载延迟 (ms)', type: 'number', description: '重载元数据后的等待延迟毫秒数' },
+      { key: 'c1_timeout_ms', labelKey: 'settings.c1.timeoutMs', type: 'number', descriptionKey: 'settings.c1.timeoutMsDesc' },
+      { key: 'c1_retries', labelKey: 'settings.c1.retries', type: 'number', descriptionKey: 'settings.c1.retriesDesc' },
+      { key: 'c1_reload_delay_ms', labelKey: 'settings.c1.reloadDelayMs', type: 'number', descriptionKey: 'settings.c1.reloadDelayMsDesc' },
     ],
   },
   {
-    title: '元数据',
+    id: 'metadata',
+    titleKey: 'settings.group.metadata',
     settings: [
-      { key: 'metadata_write_mode', label: '写入方式', type: 'select', description: 'auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded' },
-      { key: 'metadata_write_debounce_ms', label: '后台写入防抖 (ms)', type: 'number', description: '连续评级或改色后等待多久合并写入，建议 300-800' },
-      { key: 'capture_one_color_compatibility', label: 'Capture One 颜色兼容', type: 'select', description: 'label_and_urgency=Label + Urgency（推荐，兼容更多版本）, label_only=仅标准 xmp:Label' },
+      { key: 'metadata_write_mode', labelKey: 'settings.metadata.writeMode', type: 'select', descriptionKey: 'settings.metadata.writeModeDesc' },
+      { key: 'metadata_write_debounce_ms', labelKey: 'settings.metadata.debounceMs', type: 'number', descriptionKey: 'settings.metadata.debounceMsDesc' },
+      { key: 'capture_one_color_compatibility', labelKey: 'settings.metadata.colorCompat', type: 'select', descriptionKey: 'settings.metadata.colorCompatDesc' },
     ],
   },
 ]
@@ -69,7 +79,21 @@ function parseSelectOptions(description: string): { value: string; label: string
   })
 }
 
+const FACE_SECTION_ID = 'face-analysis'
+const MODELS_RUN_ID = 'models-run'
+const ADVANCED_ID = 'advanced'
+const LANGUAGE_ID = 'language'
+
+// Fixed brand-style option labels (中文 / English, identical in both locale
+// files): the options name the language itself, so localizing them would be
+// self-referential and longer than the value they communicate.
+const LANGUAGE_OPTIONS: Array<{ value: AppLocale; labelKey: TranslationKey }> = [
+  { value: 'zh-CN', labelKey: 'settings.language.optionZh' },
+  { value: 'en', labelKey: 'settings.language.optionEn' },
+]
+
 export default function SettingsPage() {
+  const { t } = useTranslation()
   const settings = useSettingsStore((s) => s.settings)
   const loading = useSettingsStore((s) => s.loading)
   const dirty = useSettingsStore((s) => s.dirty)
@@ -80,9 +104,12 @@ export default function SettingsPage() {
   const setSetting = useSettingsStore((s) => s.setSetting)
   const resetToDefaults = useSettingsStore((s) => s.resetToDefaults)
 
-  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(GROUPS.map((g) => g.title).concat('人脸分析')))
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(GROUPS.map((g) => g.id).concat(FACE_SECTION_ID, LANGUAGE_ID)))
   const [openSubSections, setOpenSubSections] = useState<Set<string>>(new Set())
-  const [downloadProgress, setDownloadProgress] = useState<{ filename: string; percent: number } | null>(null)
+  const [c1HealthOpen, setC1HealthOpen] = useState(true)
+  const [language, setLanguage] = useState<AppLocale>(detectLanguage() as AppLocale)
+  const languageSelectId = useId()
+  const [downloadProgress, setDownloadProgress] = useState<{ filename: string; percent: number; phase?: string } | null>(null)
   const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'done' | 'error'>('idle')
   const backendManual = mlStatus ? !mlStatus.isAuto : false
   const cpuCount = navigator.hardwareConcurrency || 4
@@ -91,6 +118,13 @@ export default function SettingsPage() {
   useEffect(() => {
     load()
     loadMlStatus()
+    // The effective locale (settings override > --lang > system) lives in the
+    // main process; reflect it here so the select shows what is really active.
+    window.gather.getAppLocale()
+      .then(({ language: effective }) => setLanguage(effective))
+      .catch(() => {
+        // Fall back to the navigator-based default (same failure path as main.tsx).
+      })
   }, [load, loadMlStatus])
 
   useEffect(() => {
@@ -144,6 +178,20 @@ export default function SettingsPage() {
     [setSetting],
   )
 
+  // One action, two effects (i18n P2 收尾): persist + rebuild the menu in the
+  // main process, then apply the same locale here so UI copy switches
+  // instantly. Menu and renderer copy are driven by the same value, so they
+  // never disagree.
+  const handleLanguageChange = async (value: AppLocale) => {
+    try {
+      await settingsApi.setLanguage(value)
+      await initI18n(value)
+      setLanguage(value)
+    } catch (err) {
+      console.error('Failed to switch language:', err)
+    }
+  }
+
   const getVal = (key: string, fallback: string) => {
     const v = settings[key]
     return v !== undefined && v !== '' ? v : fallback
@@ -153,7 +201,7 @@ export default function SettingsPage() {
     return (
       <div className={styles.page}>
         <div className={styles.header}>
-          <h1 className={styles.title}>设置</h1>
+          <h1 className={styles.title}>{t('settings.title')}</h1>
         </div>
         <div className={styles.loading}>
           <Loading />
@@ -163,22 +211,22 @@ export default function SettingsPage() {
   }
 
   const faceSection = (
-    <div key="人脸分析" className={styles.section}>
-      <button className={styles.sectionHeader} onClick={() => toggleSection('人脸分析')}>
-        <span className={`${styles.chevron} ${openSections.has('人脸分析') ? styles.chevronOpen : ''}`}>
+    <div key={FACE_SECTION_ID} className={styles.section}>
+      <button className={styles.sectionHeader} onClick={() => toggleSection(FACE_SECTION_ID)}>
+        <span className={`${styles.chevron} ${openSections.has(FACE_SECTION_ID) ? styles.chevronOpen : ''}`}>
           &#9654;
         </span>
-        人脸分析
+        {t('settings.faceAnalysis')}
       </button>
 
-      {openSections.has('人脸分析') && (
+      {openSections.has(FACE_SECTION_ID) && (
         <div className={styles.sectionBody}>
-          <div className={styles.subSectionLabel}>常规参数</div>
+          <div className={styles.subSectionLabel}>{t('settings.general')}</div>
 
           <div className={styles.settingRow}>
             <div className={styles.settingInfo}>
-              <p className={styles.settingLabel}>检测敏感度</p>
-              <p className={styles.settingDesc}>低于此置信度的人脸将被忽略</p>
+              <p className={styles.settingLabel}>{t('settings.detectConfidence')}</p>
+              <p className={styles.settingDesc}>{t('settings.detectConfidenceDesc')}</p>
             </div>
             <div className={styles.sliderInput}>
               <SliderInput
@@ -193,8 +241,8 @@ export default function SettingsPage() {
 
           <div className={styles.settingRow}>
             <div className={styles.settingInfo}>
-              <p className={styles.settingLabel}>聚类半径</p>
-              <p className={styles.settingDesc}>值越大，不同人脸越容易被归为同一人</p>
+              <p className={styles.settingLabel}>{t('settings.clusterRadius')}</p>
+              <p className={styles.settingDesc}>{t('settings.clusterRadiusDesc')}</p>
             </div>
             <div className={styles.sliderInput}>
               <SliderInput
@@ -209,8 +257,8 @@ export default function SettingsPage() {
 
           <div className={styles.settingRow}>
             <div className={styles.settingInfo}>
-              <p className={styles.settingLabel}>最小样本数</p>
-              <p className={styles.settingDesc}>一个人至少出现 N 张照片才形成聚类</p>
+              <p className={styles.settingLabel}>{t('settings.minSamples')}</p>
+              <p className={styles.settingDesc}>{t('settings.minSamplesDesc')}</p>
             </div>
             <div className={styles.sliderInput}>
               <SliderInput
@@ -223,47 +271,47 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* 模型与运行 */}
+          {/* Models & runtime */}
           <div className={styles.settingDivider} />
-          <button className={styles.subSectionHeader} onClick={() => toggleSubSection('模型与运行')}>
-            <span className={`${styles.subChevron} ${openSubSections.has('模型与运行') ? styles.subChevronOpen : ''}`}>
+          <button className={styles.subSectionHeader} onClick={() => toggleSubSection(MODELS_RUN_ID)}>
+            <span className={`${styles.subChevron} ${openSubSections.has(MODELS_RUN_ID) ? styles.subChevronOpen : ''}`}>
               &#9654;
             </span>
-            模型与运行
+            {t('settings.modelsRun')}
             <span className={styles.subSectionHint}>
-              {mlStatusLoading ? '检测中…' : mlStatus ? (mlStatus.detectorModel.exists && mlStatus.encoderModel.exists ? '✓' : '⚠') : ''}
+              {mlStatusLoading ? t('settings.detecting') : mlStatus ? (mlStatus.detectorModel.exists && mlStatus.encoderModel.exists ? '✓' : '⚠') : ''}
             </span>
           </button>
 
-          {openSubSections.has('模型与运行') && (
+          {openSubSections.has(MODELS_RUN_ID) && (
             <div className={styles.subSectionBody}>
               {mlStatusLoading ? (
-                <div className={styles.statusLoading}>正在检测模型状态…</div>
+                <div className={styles.statusLoading}>{t('settings.detectingStatus')}</div>
               ) : mlStatus ? (
                 <>
                   <div className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>检测模型</p>
+                      <p className={styles.settingLabel}>{t('settings.detectorModel')}</p>
                     </div>
                     <div className={styles.modelStatus}>
                       <span className={mlStatus.detectorModel.exists ? styles.statusOk : styles.statusFail}>
-                        {mlStatus.detectorModel.exists ? '✓ 正常' : '✗ 未找到'}
+                        {mlStatus.detectorModel.exists ? t('settings.ok') : t('settings.missing')}
                       </span>
                     </div>
                   </div>
                   <div className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>编码模型</p>
+                      <p className={styles.settingLabel}>{t('settings.encoderModel')}</p>
                     </div>
                     <div className={styles.modelStatus}>
                       <span className={mlStatus.encoderModel.exists ? styles.statusOk : styles.statusFail}>
-                        {mlStatus.encoderModel.exists ? '✓ 正常' : '✗ 未找到'}
+                        {mlStatus.encoderModel.exists ? t('settings.ok') : t('settings.missing')}
                       </span>
                     </div>
                   </div>
                   <div className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>检测模型路径</p>
+                      <p className={styles.settingLabel}>{t('settings.detectorPath')}</p>
                       <p className={styles.settingDesc}>{mlStatus.detectorModel.resolvedPath}</p>
                     </div>
                     <div className={styles.pathRow}>
@@ -278,13 +326,13 @@ export default function SettingsPage() {
                         className={styles.pathBtn}
                         onClick={() => window.gather.openDirectory(mlStatus.detectorModel.resolvedPath.replace(/\/[^/]+$/, ''))}
                       >
-                        打开
+                        {t('settings.open')}
                       </button>
                     </div>
                   </div>
                   <div className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>编码模型路径</p>
+                      <p className={styles.settingLabel}>{t('settings.encoderPath')}</p>
                       <p className={styles.settingDesc}>{mlStatus.encoderModel.resolvedPath}</p>
                     </div>
                     <div className={styles.pathRow}>
@@ -299,52 +347,56 @@ export default function SettingsPage() {
                         className={styles.pathBtn}
                         onClick={() => window.gather.openDirectory(mlStatus.encoderModel.resolvedPath.replace(/\/[^/]+$/, ''))}
                       >
-                        打开
+                        {t('settings.open')}
                       </button>
                     </div>
                   </div>
 
                   {(!mlStatus.detectorModel.exists || !mlStatus.encoderModel.exists) && (
                     <div className={styles.installBanner}>
-                      <p>模型文件未找到。请将 ONNX 模型文件放入以下文件夹：<br />{mlStatus.modelResourcesDir}</p>
+                      <p>{t('settings.modelsMissing')}<br />{mlStatus.modelResourcesDir}</p>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <button className={styles.installBtn} onClick={() => window.gather.openDirectory(mlStatus.modelResourcesDir)}>
-                          打开模型文件夹
+                          {t('settings.openModelFolder')}
                         </button>
                         <button
                           className={styles.installBtn}
                           onClick={handleInstallModels}
                           disabled={downloadState === 'downloading'}
                         >
-                          {downloadState === 'downloading' ? '下载中…' : downloadState === 'error' ? '下载失败' : '自动下载模型'}
+                          {downloadState === 'downloading' ? t('settings.downloading') : downloadState === 'error' ? t('settings.downloadFailed') : t('settings.downloadModels')}
                         </button>
                       </div>
                       {downloadProgress && (
                         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                          {downloadProgress.filename}: {Math.round(downloadProgress.percent)}%
+                          {downloadProgress.phase
+                            ? translatePhase(downloadProgress.phase)
+                            : t('settings.modelsDownloadFilename', { filename: downloadProgress.filename, percent: Math.round(downloadProgress.percent) })}
                         </div>
                       )}
                     </div>
                   )}
                   <div className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>模型信息</p>
+                      <p className={styles.settingLabel}>{t('settings.modelInfo')}</p>
                     </div>
                     <div className={styles.modelInfoText}>
-                      双尺度检测 {mlStatus.modelInfo.secondaryDetectInputSize}×{mlStatus.modelInfo.secondaryDetectInputSize}
-                      {' + '}{mlStatus.modelInfo.detectInputSize}×{mlStatus.modelInfo.detectInputSize}
-                      ，分析预览最长边 {mlStatus.modelInfo.previewMaxDimension}px
-                      ，编码输入 {mlStatus.modelInfo.encoderInputSize}×{mlStatus.modelInfo.encoderInputSize}
-                      ，特征维度 {mlStatus.modelInfo.embeddingDim}
+                      {t('settings.modelInfoText', {
+                        sec: mlStatus.modelInfo.secondaryDetectInputSize,
+                        prim: mlStatus.modelInfo.detectInputSize,
+                        preview: mlStatus.modelInfo.previewMaxDimension,
+                        enc: mlStatus.modelInfo.encoderInputSize,
+                        dim: mlStatus.modelInfo.embeddingDim,
+                      })}
                     </div>
                   </div>
                   <div className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>运行后端</p>
+                      <p className={styles.settingLabel}>{t('settings.backend')}</p>
                       <p className={styles.settingDesc}>
                         {mlStatus.isAuto
-                          ? `自动适配（${mlStatus.autoBackendLabel}）`
-                          : `手动：${mlStatus.provider}`}
+                          ? t('settings.autoBackend', { backend: mlStatus.autoBackendLabel })
+                          : t('settings.manualBackend', { provider: mlStatus.provider })}
                       </p>
                     </div>
                     <div className={styles.backendControl}>
@@ -362,7 +414,7 @@ export default function SettingsPage() {
                           loadMlStatus()
                         }}
                       >
-                        {backendManual ? '恢复自动' : '手动切换'}
+                        {backendManual ? t('settings.restoreAuto') : t('settings.manualSwitch')}
                       </button>
                       {backendManual && (
                         <select
@@ -382,25 +434,25 @@ export default function SettingsPage() {
                   </div>
                 </>
               ) : (
-                <div className={styles.statusLoading}>无法获取模型状态</div>
+                <div className={styles.statusLoading}>{t('settings.noModelStatus')}</div>
               )}
             </div>
           )}
 
-          {/* 高级参数 */}
-          <button className={styles.subSectionHeader} onClick={() => toggleSubSection('高级参数')}>
-            <span className={`${styles.subChevron} ${openSubSections.has('高级参数') ? styles.subChevronOpen : ''}`}>
+          {/* Advanced parameters */}
+          <button className={styles.subSectionHeader} onClick={() => toggleSubSection(ADVANCED_ID)}>
+            <span className={`${styles.subChevron} ${openSubSections.has(ADVANCED_ID) ? styles.subChevronOpen : ''}`}>
               &#9654;
             </span>
-            高级参数
+            {t('settings.advanced')}
           </button>
 
-          {openSubSections.has('高级参数') && (
+          {openSubSections.has(ADVANCED_ID) && (
             <div className={styles.subSectionBody}>
               <div className={styles.settingRow}>
                 <div className={styles.settingInfo}>
-                  <p className={styles.settingLabel}>NMS 阈值</p>
-                  <p className={styles.settingDesc}>重叠人脸的过滤阈值</p>
+                  <p className={styles.settingLabel}>{t('settings.nmsThreshold')}</p>
+                  <p className={styles.settingDesc}>{t('settings.nmsThresholdDesc')}</p>
                 </div>
                 <div className={styles.sliderInput}>
                   <SliderInput
@@ -414,8 +466,8 @@ export default function SettingsPage() {
               </div>
               <div className={styles.settingRow}>
                 <div className={styles.settingInfo}>
-                  <p className={styles.settingLabel}>最大检测数</p>
-                  <p className={styles.settingDesc}>单张图片最多检测的人脸数</p>
+                  <p className={styles.settingLabel}>{t('settings.maxDetections')}</p>
+                  <p className={styles.settingDesc}>{t('settings.maxDetectionsDesc')}</p>
                 </div>
                 <div className={styles.sliderInput}>
                   <SliderInput
@@ -429,8 +481,8 @@ export default function SettingsPage() {
               </div>
               <div className={styles.settingRow}>
                 <div className={styles.settingInfo}>
-                  <p className={styles.settingLabel}>ONNX 线程</p>
-                  <p className={styles.settingDesc}>推理并行线程数</p>
+                  <p className={styles.settingLabel}>{t('settings.onnxThreads')}</p>
+                  <p className={styles.settingDesc}>{t('settings.onnxThreadsDesc')}</p>
                 </div>
                 <div className={styles.sliderInput}>
                   <SliderInput
@@ -452,43 +504,95 @@ export default function SettingsPage() {
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className={styles.title}>设置</h1>
-        {dirty && <span className={styles.dirtyHint}>有未保存的更改（修改已立即生效）</span>}
+        <h1 className={styles.title}>{t('settings.title')}</h1>
+        {dirty && <span className={styles.dirtyHint}>{t('settings.dirtyHint')}</span>}
         <button className={styles.resetBtn} onClick={() => {
-          if (window.confirm('确定要将所有设置恢复为默认值吗？此操作不可撤销。')) {
+          if (window.confirm(t('settings.resetConfirm'))) {
             resetToDefaults()
           }
         }}>
-          重置为默认值
+          {t('settings.resetDefaults')}
         </button>
+      </div>
+
+      <div className={styles.section}>
+        <button
+          className={styles.sectionHeader}
+          onClick={() => setC1HealthOpen((open) => !open)}
+        >
+          <span className={`${styles.chevron} ${c1HealthOpen ? styles.chevronOpen : ''}`}>
+            &#9654;
+          </span>
+          {t('settings.c1Health')}
+        </button>
+        {c1HealthOpen && (
+          <div className={styles.sectionBody}>
+            <C1HealthPanel />
+          </div>
+        )}
+      </div>
+
+      <div className={styles.section}>
+        <button
+          className={styles.sectionHeader}
+          onClick={() => toggleSection(LANGUAGE_ID)}
+        >
+          <span className={`${styles.chevron} ${openSections.has(LANGUAGE_ID) ? styles.chevronOpen : ''}`}>
+            &#9654;
+          </span>
+          {t('settings.group.language')}
+        </button>
+        {openSections.has(LANGUAGE_ID) && (
+          <div className={styles.sectionBody}>
+            <div className={styles.settingRow}>
+              <div className={styles.settingInfo}>
+                <label className={styles.settingLabel} htmlFor={languageSelectId}>{t('settings.language.label')}</label>
+                <p className={styles.settingDesc}>{t('settings.language.desc')}</p>
+              </div>
+              <div className={styles.settingInput}>
+                <select
+                  id={languageSelectId}
+                  className={styles.select}
+                  value={language}
+                  onChange={(e) => handleLanguageChange(e.target.value as AppLocale)}
+                >
+                  {LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {faceSection}
 
       {GROUPS.map((group) => (
-        <div key={group.title} className={styles.section}>
+        <div key={group.id} className={styles.section}>
           <button
             className={styles.sectionHeader}
-            onClick={() => toggleSection(group.title)}
+            onClick={() => toggleSection(group.id)}
           >
-            <span className={`${styles.chevron} ${openSections.has(group.title) ? styles.chevronOpen : ''}`}>
+            <span className={`${styles.chevron} ${openSections.has(group.id) ? styles.chevronOpen : ''}`}>
               &#9654;
             </span>
-            {group.title}
+            {t(group.titleKey)}
           </button>
 
-          {openSections.has(group.title) && (
+          {openSections.has(group.id) && (
             <div className={styles.sectionBody}>
               {group.settings.map((setting) => {
                 const currentValue = settings[setting.key] ?? ''
+                const description = t(setting.descriptionKey)
 
                 if (setting.type === 'select') {
-                  const options = parseSelectOptions(setting.description)
+                  const options = parseSelectOptions(description)
                   return (
                     <div key={setting.key} className={styles.settingRow}>
                       <div className={styles.settingInfo}>
-                        <p className={styles.settingLabel}>{setting.label}</p>
-                        <p className={styles.settingDesc}>{parseSelectOptions(setting.description).map(o => o.label).join('、')}</p>
+                        <p className={styles.settingLabel}>{t(setting.labelKey)}</p>
+                        <p className={styles.settingDesc}>{parseSelectOptions(description).map(o => o.label).join(t('list.separator'))}</p>
                       </div>
                       <div className={styles.settingInput}>
                         <select
@@ -496,7 +600,7 @@ export default function SettingsPage() {
                           value={currentValue}
                           onChange={(e) => setSetting(setting.key, e.target.value)}
                         >
-                          <option value="" disabled>请选择</option>
+                          <option value="" disabled>{t('settings.choose')}</option>
                           {options.map((opt) => (
                             <option key={opt.value} value={opt.value}>{opt.label}</option>
                           ))}
@@ -509,8 +613,8 @@ export default function SettingsPage() {
                 return (
                   <div key={setting.key} className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>{setting.label}</p>
-                      <p className={styles.settingDesc}>{setting.description}</p>
+                      <p className={styles.settingLabel}>{t(setting.labelKey)}</p>
+                      <p className={styles.settingDesc}>{t(setting.descriptionKey)}</p>
                     </div>
                     <div className={styles.settingInput}>
                       <input

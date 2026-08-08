@@ -38,7 +38,7 @@ export class PhotoAssetResolver {
       WHERE p.id = ? AND p.session_id = ?
       ORDER BY sb.updated_at DESC LIMIT 1
     `).get(photoId, sessionId) as ResolverRow | undefined
-    if (!row) throw new Error('Photo does not belong to this workspace')
+    if (!row) throw new Error('CULLING_PHOTO_NOT_IN_SESSION')
     const resolved = this.buildResolved(row, this.settings.get('asset_read_mode', 'dual'))
     if (!resolved) throw new Error('Photo Asset migration is incomplete for this photo')
     return resolved

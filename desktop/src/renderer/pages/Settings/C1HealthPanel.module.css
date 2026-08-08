@@ -1,0 +1,155 @@
+.panel {
+  padding-top: 6px;
+}
+
+.subSectionLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 0 4px;
+}
+
+.settingRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.settingInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.settingLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+  margin: 0 0 4px;
+}
+
+.settingDesc {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.settingValue {
+  flex-shrink: 0;
+  color: var(--color-text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settingDivider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 10px 0;
+}
+
+.checkRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0 6px;
+}
+
+.checkBtn {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.checkBtn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.checkBtn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.checkList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 18px;
+  padding: 2px 0 4px;
+}
+
+.checkItem {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.checkMark {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  flex: 0 0 auto;
+}
+
+.checkPass {
+  background: color-mix(in srgb, var(--color-success, #22c55e) 14%, transparent);
+  color: var(--color-success, #22c55e);
+}
+
+.checkFail {
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
+}
+
+.panelHint {
+  margin: 2px 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.queueGrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px 0 6px;
+}
+
+.queueCell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+}
+
+.queueValue {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.queueLabel {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}

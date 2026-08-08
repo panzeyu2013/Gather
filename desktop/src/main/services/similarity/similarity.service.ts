@@ -40,10 +40,10 @@ export function validateSimilarityParameters(
   minGroupSize: number,
 ): void {
   if (!Number.isInteger(threshold) || threshold < 0 || threshold > 64) {
-    throw new Error('相似度阈值必须是 0 到 64 之间的整数')
+    throw new Error('SIM_THRESHOLD_INVALID')
   }
   if (!Number.isInteger(minGroupSize) || minGroupSize < 2) {
-    throw new Error('相似组最小照片数必须是大于等于 2 的整数')
+    throw new Error('SIM_MIN_GROUP_INVALID')
   }
 }
 
@@ -175,7 +175,7 @@ export class SimilarityService {
     },
   ): Promise<void> {
     if (this.controllers.has(sessionId)) {
-      throw new Error('Similarity analysis is already running for this session')
+      throw new Error('SIM_ANALYSIS_RUNNING')
     }
     const controller = new AbortController()
     this.controllers.set(sessionId, controller)
@@ -186,13 +186,30 @@ export class SimilarityService {
     const groupingMode = options?.groupingMode ?? 'global'
     validateSimilarityParameters(threshold, minGroupSize)
 
+    let runId = 0
+    let runStatus: 'ok' | 'failed' = 'failed'
     try {
       this.sessionRepo.updateAnalysisStatus(sessionId, 'running')
 
-      const photos = collapseSimilarityAssets(this.photoRepo.getBySessionProjection(sessionId))
+      // Photos and the index_seq snapshot share one read transaction
+      // (design §8 '分析读取用事务快照'). better-sqlite3 is synchronous so a
+      // concurrent writer cannot interleave between the two reads today, but
+      // the snapshot keeps run.index_seq consistent with the photos the run
+      // analyzes even if that ever changes.
+      const { photos, indexSeq } = this.db.transaction(() => ({
+        photos: collapseSimilarityAssets(this.photoRepo.getBySessionProjection(sessionId)),
+        indexSeq: this.sessionRepo.getIndexSeq(sessionId),
+      }))()
       if (photos.length === 0) {
-        throw new Error('No photos in session')
+        throw new Error('SIM_NO_PHOTOS')
       }
+      runId = this.startAnalysisRun(
+        sessionId,
+        'similarity',
+        photos.length,
+        indexSeq,
+        { threshold, minGroupSize, groupingMode },
+      )
 
       const onProgress = options?.onProgress
 
@@ -264,7 +281,7 @@ export class SimilarityService {
       if (uncachedPhotos.length > 0) {
         if (signal.aborted) return
 
-        onProgress?.(0, uncachedPhotos.length, 'Computing perceptual hashes...')
+        onProgress?.(0, uncachedPhotos.length, 'similarity.hash')
         const insertStmt = db.prepare(
           `INSERT INTO similarity_hashes
              (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
@@ -357,14 +374,14 @@ export class SimilarityService {
           onProgress?.(
             Math.min(offset + batch.length, uncachedPhotos.length),
             uncachedPhotos.length,
-            'Computing perceptual hashes...',
+            'similarity.hash',
           )
         }
 
         onProgress?.(
           uncachedPhotos.length,
           uncachedPhotos.length,
-          'Hash computation complete',
+          'similarity.hash-done',
         )
       }
 
@@ -375,10 +392,10 @@ export class SimilarityService {
         .map((p) => ({ photoId: p.id, hash: existingHashMap.get(p.id)! }))
 
       if (entries.length === 0) {
-        throw new Error('No hash data available for clustering')
+        throw new Error('SIM_NO_HASH_DATA')
       }
 
-      onProgress?.(0, entries.length, 'Clustering similar images...')
+      onProgress?.(0, entries.length, 'similarity.cluster')
 
       const { groups: rawGroups, ungrouped: rawUngrouped } = await clusterHashesInWorker(
         entries,
@@ -386,10 +403,10 @@ export class SimilarityService {
         minGroupSize,
         groupingMode,
         signal,
-        (current, total) => onProgress?.(current, total, 'Clustering similar images...'),
+        (current, total) => onProgress?.(current, total, 'similarity.cluster'),
       )
 
-      onProgress?.(entries.length, entries.length, 'Clustering complete')
+      onProgress?.(entries.length, entries.length, 'similarity.cluster-done')
 
       const pathMap = new Map(photos.map((p) => [p.id, p.filepath]))
 
@@ -413,6 +430,7 @@ export class SimilarityService {
       )
 
       this.sessionRepo.updateAnalysisStatus(sessionId, 'done')
+      runStatus = 'ok'
 
       // Best-effort neighbor-threshold tiers: cheap to cluster with the same
       // already-computed hashes, and a failure or cancellation here must not
@@ -439,10 +457,36 @@ export class SimilarityService {
       )
       throw e
     } finally {
+      if (runId !== 0) {
+        this.finalizeAnalysisRun(runId, runStatus)
+      }
       if (this.controllers.get(sessionId) === controller) {
         this.controllers.delete(sessionId)
       }
     }
+  }
+
+  private startAnalysisRun(
+    sessionId: string,
+    kind: string,
+    photoCount: number,
+    indexSeq: number,
+    params: unknown,
+  ): number {
+    const result = this.db.prepare(`
+      INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
+      VALUES (?, ?, ?, ?, ?, '', ?, 'running')
+    `).run(sessionId, kind, photoCount, indexSeq, new Date().toISOString(), JSON.stringify(params ?? {}))
+    return Number(result.lastInsertRowid)
+  }
+
+  // Cancelled runs finalize as 'failed' here while sessions.analysis_status
+  // becomes 'cancelled' (see the catch above): the run record only
+  // distinguishes ok/failed by design, so the divergence is intentional and
+  // informational — staleness detection (1.4.2) ignores non-ok runs either way.
+  private finalizeAnalysisRun(runId: number, status: 'ok' | 'failed'): void {
+    this.db.prepare('UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?')
+      .run(status, new Date().toISOString(), runId)
   }
 
   /**
@@ -557,7 +601,7 @@ export class SimilarityService {
     const existing = this.similarityResultRepo.getLatest(sessionId)
 
     if (!existing) {
-      throw new Error('No existing similarity results found. Run analysis first.')
+      throw new Error('SIM_NO_RESULTS')
     }
 
     const photos = collapseSimilarityAssets(this.photoRepo.getBySessionProjection(sessionId))
@@ -574,7 +618,7 @@ export class SimilarityService {
     })
 
     if (entries.length === 0) {
-      throw new Error('No hash data available for reclustering')
+      throw new Error('SIM_NO_HASH_RECLUSTER')
     }
 
     const { groups: rawGroups, ungrouped: rawUngrouped } = await clusterHashesInWorker(
@@ -721,7 +765,7 @@ export class SimilarityService {
       minGroupSize,
       groupingMode,
       signal,
-      (current, total) => onProgress?.(current, total, 'Precomputing neighbor thresholds...'),
+      (current, total) => onProgress?.(current, total, 'similarity.thresholds'),
     )
     for (const [index, tier] of candidates.entries()) {
       if (signal?.aborted) return

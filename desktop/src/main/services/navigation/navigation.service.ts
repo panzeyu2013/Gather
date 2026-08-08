@@ -23,10 +23,10 @@ export function validateNavigationParameters(
   sceneGapSeconds: number,
 ): void {
   if (!Number.isFinite(burstGapSeconds) || burstGapSeconds < 0.1 || burstGapSeconds > 300) {
-    throw new Error('连拍间隔必须在 0.1 到 300 秒之间')
+    throw new Error('NAV_BURST_GAP_INVALID')
   }
   if (!Number.isFinite(sceneGapSeconds) || sceneGapSeconds < burstGapSeconds || sceneGapSeconds > 86_400) {
-    throw new Error('场景间隔必须不小于连拍间隔，且不超过 24 小时')
+    throw new Error('NAV_SCENE_GAP_INVALID')
   }
 }
 
@@ -175,10 +175,10 @@ export class NavigationService {
 
   split(sessionId: string, groupId: string, beforePhotoId: string): NavigationGroup[] {
     const group = this.list(sessionId).find(candidate => candidate.id === groupId)
-    if (!group) throw new Error('Navigation group not found')
+    if (!group) throw new Error('NAV_GROUP_NOT_FOUND')
     const splitIndex = group.photoIds.indexOf(beforePhotoId)
     if (splitIndex <= 0 || splitIndex >= group.photoIds.length) {
-      throw new Error('Split point must be inside the group')
+      throw new Error('NAV_SPLIT_OUT_OF_GROUP')
     }
     const rows = this.captureRows(sessionId)
     const byId = new Map(rows.map(row => [row.id, row]))
@@ -196,11 +196,11 @@ export class NavigationService {
 
   merge(sessionId: string, groupIds: string[]): NavigationGroup[] {
     const uniqueIds = [...new Set(groupIds)]
-    if (uniqueIds.length < 2) throw new Error('At least two groups are required')
+    if (uniqueIds.length < 2) throw new Error('NAV_MERGE_MIN_TWO')
     const selected = this.list(sessionId).filter(group => uniqueIds.includes(group.id))
-    if (selected.length !== uniqueIds.length) throw new Error('Navigation group not found')
+    if (selected.length !== uniqueIds.length) throw new Error('NAV_GROUP_NOT_FOUND')
     if (new Set(selected.map(group => group.type)).size !== 1) {
-      throw new Error('Only groups of the same type can be merged')
+      throw new Error('NAV_MERGE_TYPE_MISMATCH')
     }
     // captureRows is a heavy query (correlated quality sub-select per photo);
     // fetch it once and derive both the merge order and the lead rankings.
@@ -366,10 +366,10 @@ export class NavigationService {
       endAt: byId.get(group.photoIds[group.photoIds.length - 1])?.capturedAt ?? group.endAt,
       leadPhotoId: lead?.id,
       explanation: lead && hasAnyQuality
-        ? `推荐 ${lead.filename}：质量 ${Math.round(lead.qualityScore * 100)}，星级 ${lead.rating}`
+        ? 'NAV_RECOMMEND_QUALITY'
         : lead?.rating
-          ? `尚无可用质量评分；按人工星级选择 ${lead.filename}`
-          : '尚无可用质量评分或人工星级，按拍摄顺序选择首张',
+          ? 'NAV_RECOMMEND_RATING'
+          : 'NAV_RECOMMEND_ORDER',
     }
   }
 

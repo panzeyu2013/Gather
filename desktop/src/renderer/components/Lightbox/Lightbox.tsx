@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { imageApi } from '../../api/image'
 import type { PhotoData } from '@gather/shared'
+import { useTranslation } from '../../locales'
 import styles from './Lightbox.module.css'
 
 interface LightboxProps {
@@ -10,6 +11,7 @@ interface LightboxProps {
 }
 
 export default function Lightbox({ photos, initialIndex, onClose }: LightboxProps) {
+  const { t } = useTranslation()
   const [index, setIndex] = useState(initialIndex)
   const [scale, setScale] = useState(1)
   const [position, setPosition] = useState({ x: 0, y: 0 })
@@ -156,9 +158,9 @@ export default function Lightbox({ photos, initialIndex, onClose }: LightboxProp
             }}
           />
         ) : loadError ? (
-          <div className={styles.error}>图片加载失败</div>
+          <div className={styles.error}>{t('lightbox.loadFailed')}</div>
         ) : (
-          <div className={styles.loading}>加载中...</div>
+          <div className={styles.loading}>{t('lightbox.loading')}</div>
         )}
       </div>
       <button className={styles.navBtn} style={{ right: 16 }} onClick={(e) => { e.stopPropagation(); goNext() }} disabled={index >= photos.length - 1}>

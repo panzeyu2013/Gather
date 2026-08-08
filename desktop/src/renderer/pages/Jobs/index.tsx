@@ -1,14 +1,19 @@
 import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { jobsApi } from '../../api/jobs'
+import { useTranslation, type TranslationKey } from '../../locales'
+import { translateErrorCode } from '../../utils/errors'
+import { translatePhase } from '../../utils/progress'
 import styles from './Jobs.module.css'
 
-const labels: Record<string, string> = {
-  queued: '排队中', running: '运行中', cancelling: '取消中', succeeded: '已完成',
-  failed: '失败', cancelled: '已取消', interrupted: '已中断',
+const STATUS_LABEL_KEYS: Record<string, TranslationKey> = {
+  queued: 'jobs.status.queued', running: 'jobs.status.running', cancelling: 'jobs.status.cancelling',
+  succeeded: 'jobs.status.succeeded', failed: 'jobs.status.failed', cancelled: 'jobs.status.cancelled',
+  interrupted: 'jobs.status.interrupted',
 }
 
 export default function Jobs() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const { data: jobs = [], isLoading } = useQuery({
     queryKey: ['jobs'], queryFn: () => jobsApi.list(),
@@ -30,38 +35,38 @@ export default function Jobs() {
   return (
     <div className={styles.page}>
       <header className={styles.header}>
-        <div><p className={styles.eyebrow}>TASK CENTER</p><h1>任务中心</h1><p className={styles.muted}>持久化分析任务、进度和失败恢复。</p></div>
+        <div><p className={styles.eyebrow}>{t('jobs.eyebrow')}</p><h1>{t('jobs.title')}</h1><p className={styles.muted}>{t('jobs.subtitle')}</p></div>
         <button
           disabled={action.isPending || !jobs.some(job => ['succeeded', 'cancelled'].includes(job.status))}
           onClick={() => action.mutate({ id: '', type: 'clear' })}
         >
-          清理已完成
+          {t('jobs.clearCompleted')}
         </button>
       </header>
       <div className={styles.list}>
-        {isLoading && <p className={styles.muted}>加载中…</p>}
+        {isLoading && <p className={styles.muted}>{t('jobs.loading')}</p>}
         {jobs.map(job => {
           const progress = job.progressTotal > 0 ? Math.round(job.progressCurrent / job.progressTotal * 100) : 0
           return <article className={styles.row} key={job.id}>
             <div className={styles.identity}>
               <strong>{job.type}</strong>
               <span>{job.scopeId}</span>
-              <small>尝试 {job.attemptCount} 次</small>
+              <small>{t('jobs.attempts', { count: job.attemptCount })}</small>
               {job.errorMessage && (
                 <small className={styles.error} title={job.errorMessage}>
-                  {job.errorCode ? `${job.errorCode}：` : ''}{job.errorMessage}
+                  {translateErrorCode(job.errorMessage)}
                 </small>
               )}
             </div>
-            <div className={styles.status}>{labels[job.status] ?? job.status}</div>
-            <div className={styles.progress}><div style={{ width: `${progress}%` }} /><span>{progress}% {job.progressMessage}</span></div>
+            <div className={styles.status}>{STATUS_LABEL_KEYS[job.status] ? t(STATUS_LABEL_KEYS[job.status]) : job.status}</div>
+            <div className={styles.progress}><div style={{ width: `${progress}%` }} /><span>{progress}% {translatePhase(job.progressMessage)}</span></div>
             <div className={styles.actions}>
-              {['queued', 'running'].includes(job.status) && <button onClick={() => action.mutate({ id: job.id, type: 'cancel' })}>取消</button>}
-              {['failed', 'interrupted', 'cancelled'].includes(job.status) && <button onClick={() => action.mutate({ id: job.id, type: 'retry' })}>重试</button>}
+              {['queued', 'running'].includes(job.status) && <button onClick={() => action.mutate({ id: job.id, type: 'cancel' })}>{t('jobs.cancel')}</button>}
+              {['failed', 'interrupted', 'cancelled'].includes(job.status) && <button onClick={() => action.mutate({ id: job.id, type: 'retry' })}>{t('jobs.retry')}</button>}
             </div>
           </article>
         })}
-        {!isLoading && jobs.length === 0 && <p className={styles.muted}>暂无后台任务</p>}
+        {!isLoading && jobs.length === 0 && <p className={styles.muted}>{t('jobs.empty')}</p>}
       </div>
     </div>
   )

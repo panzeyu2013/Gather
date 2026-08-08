@@ -323,7 +323,7 @@ describe('WritebackService sidecar workflow', () => {
       new Map([['photo-2', ['Bob']]]),
     )
     await service.execute('session-2', 'face_kw', repeatedPreview.items)
-    await expect(service.cleanup('session-2', 'face_kw')).rejects.toThrow('Capture One')
+    await expect(service.cleanup('session-2', 'face_kw')).rejects.toThrow('XMP_CLEANUP_REQUIRES_LOADED')
 
     await service.confirmSync('session-2', 'face_kw')
     await service.cleanup('session-2', 'face_kw')
@@ -604,7 +604,7 @@ describe('WritebackService sidecar workflow', () => {
       {},
       new Set(['photo-gate']),
       new Map(),
-    )).rejects.toThrow('请先完成其他模块')
+    )).rejects.toThrow('WRITEBACK_OTHER_MODULE_ACTIVE')
     expect(outboxRepo.hasActiveOtherModule).toHaveBeenCalledWith('session-gate', 'similarity')
 
     // The outbox gate releases once the other module's work is gone.
