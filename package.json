@@ -10,6 +10,7 @@
     "build": "npm run build --workspace=@gather/shared && npm run build --workspace=desktop",
     "typecheck": "npm run typecheck --workspace=desktop && npm run typecheck --workspace=packages/shared",
     "lint": "npm run lint --workspace=desktop",
+    "test": "npm run test:vitest && npm run test:e2e",
     "test:vitest": "npm run test --workspace=desktop",
     "test:e2e": "npx playwright test --config=tests/e2e/playwright.config.ts",
     "benchmark:reliability": "node scripts/reliability-benchmark.mjs",
