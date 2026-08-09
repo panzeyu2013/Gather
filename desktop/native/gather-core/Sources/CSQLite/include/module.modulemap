@@ -1,0 +1,7 @@
+// SQLite3 C 系统库的模块映射 shim。Linux 工具链不内置 SQLite3 模块，
+// macOS 亦无独立模块，故统一以 C target 暴露（双平台均可解析）。
+module CSQLite [system] {
+    header "shim.h"
+    link "sqlite3"
+    export *
+}

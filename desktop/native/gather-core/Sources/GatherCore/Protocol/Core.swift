@@ -345,6 +345,10 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     // Navigation
     case NAV_BURST_GAP_INVALID
     case NAV_SCENE_GAP_INVALID
+    case NAV_GROUP_NOT_FOUND
+    case NAV_MERGE_MIN_TWO
+    case NAV_MERGE_TYPE_MISMATCH
+    case NAV_SPLIT_OUT_OF_GROUP
     // Culling + culling history
     case CULLING_EMPTY_SELECTION
     case CULLING_PHOTOS_NOT_IN_SESSION

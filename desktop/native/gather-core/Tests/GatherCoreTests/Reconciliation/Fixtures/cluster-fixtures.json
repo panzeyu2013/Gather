@@ -1,0 +1,814 @@
+{
+  "seed": 20260809,
+  "source": "desktop/src/main/services/similarity/cluster-engine.ts",
+  "cases": [
+    {
+      "name": "empty-global",
+      "mode": "global",
+      "threshold": 4,
+      "minGroupSize": 2,
+      "entries": [],
+      "expected": {
+        "groups": [],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "empty-sequential",
+      "mode": "sequential",
+      "threshold": 4,
+      "minGroupSize": 2,
+      "entries": [],
+      "expected": {
+        "groups": [],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "single-min1",
+      "mode": "global",
+      "threshold": 4,
+      "minGroupSize": 1,
+      "entries": [
+        {
+          "photoId": "solo",
+          "hash": "228794877b2ff261"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "solo"
+          ]
+        ],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "single-min2",
+      "mode": "global",
+      "threshold": 4,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "solo",
+          "hash": "228794877b2ff261"
+        }
+      ],
+      "expected": {
+        "groups": [],
+        "ungrouped": [
+          "solo"
+        ]
+      }
+    },
+    {
+      "name": "identical-threshold0",
+      "mode": "global",
+      "threshold": 0,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "d0",
+          "hash": "c95b3b902296f340"
+        },
+        {
+          "photoId": "d1",
+          "hash": "c95b3b902296f340"
+        },
+        {
+          "photoId": "far",
+          "hash": "981d9e65d706f832"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "d0",
+            "d1"
+          ]
+        ],
+        "ungrouped": [
+          "far"
+        ]
+      }
+    },
+    {
+      "name": "star-threshold1",
+      "mode": "global",
+      "threshold": 1,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "h0",
+          "hash": "9b8a1b816fdea499"
+        },
+        {
+          "photoId": "h1",
+          "hash": "8b8a1b816fdea499"
+        },
+        {
+          "photoId": "h2",
+          "hash": "9a8a1b816fdea499"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "h0",
+            "h1",
+            "h2"
+          ]
+        ],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "cluster4-threshold2-min3",
+      "mode": "global",
+      "threshold": 2,
+      "minGroupSize": 3,
+      "entries": [
+        {
+          "photoId": "c0",
+          "hash": "a3370a27044eaca3"
+        },
+        {
+          "photoId": "c1",
+          "hash": "a3371a27044eaca3"
+        },
+        {
+          "photoId": "c2",
+          "hash": "a3370827044eaca3"
+        },
+        {
+          "photoId": "c3",
+          "hash": "a3370a67044eaca3"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "c0",
+            "c1",
+            "c2",
+            "c3"
+          ]
+        ],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "cluster4-threshold1-min3",
+      "mode": "global",
+      "threshold": 1,
+      "minGroupSize": 3,
+      "entries": [
+        {
+          "photoId": "c0",
+          "hash": "a3370a27044eaca3"
+        },
+        {
+          "photoId": "c1",
+          "hash": "a3371a27044eaca3"
+        },
+        {
+          "photoId": "c2",
+          "hash": "a3370827044eaca3"
+        },
+        {
+          "photoId": "c3",
+          "hash": "a3370a67044eaca3"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "c0",
+            "c1",
+            "c2",
+            "c3"
+          ]
+        ],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "boundary-pair-threshold4",
+      "mode": "global",
+      "threshold": 4,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "b0",
+          "hash": "fb05f746992f6c54"
+        },
+        {
+          "photoId": "b1",
+          "hash": "ea14f746992f6c54"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "b0",
+            "b1"
+          ]
+        ],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "boundary-pair-threshold3",
+      "mode": "global",
+      "threshold": 3,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "b0",
+          "hash": "fb05f746992f6c54"
+        },
+        {
+          "photoId": "b1",
+          "hash": "ea14f746992f6c54"
+        }
+      ],
+      "expected": {
+        "groups": [],
+        "ungrouped": [
+          "b0",
+          "b1"
+        ]
+      }
+    },
+    {
+      "name": "mixed-threshold2",
+      "mode": "global",
+      "threshold": 2,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "c0",
+          "hash": "a3370a27044eaca3"
+        },
+        {
+          "photoId": "c1",
+          "hash": "a3371a27044eaca3"
+        },
+        {
+          "photoId": "c2",
+          "hash": "a3370827044eaca3"
+        },
+        {
+          "photoId": "c3",
+          "hash": "a3370a67044eaca3"
+        },
+        {
+          "photoId": "b0",
+          "hash": "fb05f746992f6c54"
+        },
+        {
+          "photoId": "b1",
+          "hash": "ea14f746992f6c54"
+        },
+        {
+          "photoId": "s0",
+          "hash": "f8a4ac4012b18657"
+        },
+        {
+          "photoId": "x0",
+          "hash": "de5c00b89576e63a"
+        },
+        {
+          "photoId": "x1",
+          "hash": "d408b969db7613f8"
+        },
+        {
+          "photoId": "d0",
+          "hash": "c95b3b902296f340"
+        },
+        {
+          "photoId": "d1",
+          "hash": "c95b3b902296f340"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "c0",
+            "c1",
+            "c2",
+            "c3"
+          ],
+          [
+            "d0",
+            "d1"
+          ]
+        ],
+        "ungrouped": [
+          "b0",
+          "b1",
+          "s0",
+          "x0",
+          "x1"
+        ]
+      }
+    },
+    {
+      "name": "mixed-threshold4",
+      "mode": "global",
+      "threshold": 4,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "c0",
+          "hash": "a3370a27044eaca3"
+        },
+        {
+          "photoId": "c1",
+          "hash": "a3371a27044eaca3"
+        },
+        {
+          "photoId": "c2",
+          "hash": "a3370827044eaca3"
+        },
+        {
+          "photoId": "c3",
+          "hash": "a3370a67044eaca3"
+        },
+        {
+          "photoId": "b0",
+          "hash": "fb05f746992f6c54"
+        },
+        {
+          "photoId": "b1",
+          "hash": "ea14f746992f6c54"
+        },
+        {
+          "photoId": "s0",
+          "hash": "f8a4ac4012b18657"
+        },
+        {
+          "photoId": "x0",
+          "hash": "de5c00b89576e63a"
+        },
+        {
+          "photoId": "x1",
+          "hash": "d408b969db7613f8"
+        },
+        {
+          "photoId": "d0",
+          "hash": "c95b3b902296f340"
+        },
+        {
+          "photoId": "d1",
+          "hash": "c95b3b902296f340"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "c0",
+            "c1",
+            "c2",
+            "c3"
+          ],
+          [
+            "b0",
+            "b1"
+          ],
+          [
+            "d0",
+            "d1"
+          ]
+        ],
+        "ungrouped": [
+          "s0",
+          "x0",
+          "x1"
+        ]
+      }
+    },
+    {
+      "name": "burst-sequential",
+      "mode": "sequential",
+      "threshold": 2,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "burst-a1",
+          "hash": "ffffffffffffffff"
+        },
+        {
+          "photoId": "burst-a2",
+          "hash": "fffffffffffffffe"
+        },
+        {
+          "photoId": "break",
+          "hash": "0000000000000000"
+        },
+        {
+          "photoId": "burst-a3",
+          "hash": "ffffffffffffffff"
+        },
+        {
+          "photoId": "burst-a4",
+          "hash": "fffffffffffffffe"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "burst-a1",
+            "burst-a2"
+          ],
+          [
+            "burst-a3",
+            "burst-a4"
+          ]
+        ],
+        "ungrouped": [
+          "break"
+        ]
+      }
+    },
+    {
+      "name": "burst-global",
+      "mode": "global",
+      "threshold": 2,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "burst-a1",
+          "hash": "ffffffffffffffff"
+        },
+        {
+          "photoId": "burst-a2",
+          "hash": "fffffffffffffffe"
+        },
+        {
+          "photoId": "break",
+          "hash": "0000000000000000"
+        },
+        {
+          "photoId": "burst-a3",
+          "hash": "ffffffffffffffff"
+        },
+        {
+          "photoId": "burst-a4",
+          "hash": "fffffffffffffffe"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "burst-a1",
+            "burst-a2",
+            "burst-a3",
+            "burst-a4"
+          ]
+        ],
+        "ungrouped": [
+          "break"
+        ]
+      }
+    },
+    {
+      "name": "wide-cluster-threshold2",
+      "mode": "global",
+      "threshold": 2,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "w0",
+          "hash": "1a111454f828e8472d44944af034ee43"
+        },
+        {
+          "photoId": "w1",
+          "hash": "1a111454e828e8472d44944af034ee43"
+        },
+        {
+          "photoId": "w2",
+          "hash": "1a111454fa28e8472d44944af034ee43"
+        },
+        {
+          "photoId": "w3",
+          "hash": "1a111454f868e8472d44944af034ee43"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "w0",
+            "w1",
+            "w2",
+            "w3"
+          ]
+        ],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "wide-padded-equal-threshold0",
+      "mode": "global",
+      "threshold": 0,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "wide",
+          "hash": "0000000000000000a290854d67780b3b"
+        },
+        {
+          "photoId": "short",
+          "hash": "a290854d67780b3b"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "wide",
+            "short"
+          ]
+        ],
+        "ungrouped": []
+      }
+    },
+    {
+      "name": "odd-length-hex-threshold1",
+      "mode": "global",
+      "threshold": 1,
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "odd",
+          "hash": "49fa285f21a9e2c"
+        },
+        {
+          "photoId": "odd-sib",
+          "hash": "49fa285f21a9e2d"
+        }
+      ],
+      "expected": {
+        "groups": [
+          [
+            "odd",
+            "odd-sib"
+          ]
+        ],
+        "ungrouped": []
+      }
+    }
+  ],
+  "multiCases": [
+    {
+      "name": "mixed-tiers",
+      "mode": "global",
+      "thresholds": [
+        0,
+        2,
+        4
+      ],
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "c0",
+          "hash": "a3370a27044eaca3"
+        },
+        {
+          "photoId": "c1",
+          "hash": "a3371a27044eaca3"
+        },
+        {
+          "photoId": "c2",
+          "hash": "a3370827044eaca3"
+        },
+        {
+          "photoId": "c3",
+          "hash": "a3370a67044eaca3"
+        },
+        {
+          "photoId": "b0",
+          "hash": "fb05f746992f6c54"
+        },
+        {
+          "photoId": "b1",
+          "hash": "ea14f746992f6c54"
+        },
+        {
+          "photoId": "s0",
+          "hash": "f8a4ac4012b18657"
+        },
+        {
+          "photoId": "x0",
+          "hash": "de5c00b89576e63a"
+        },
+        {
+          "photoId": "x1",
+          "hash": "d408b969db7613f8"
+        },
+        {
+          "photoId": "d0",
+          "hash": "c95b3b902296f340"
+        },
+        {
+          "photoId": "d1",
+          "hash": "c95b3b902296f340"
+        }
+      ],
+      "expected": [
+        {
+          "groups": [
+            [
+              "d0",
+              "d1"
+            ]
+          ],
+          "ungrouped": [
+            "c0",
+            "c1",
+            "c2",
+            "c3",
+            "b0",
+            "b1",
+            "s0",
+            "x0",
+            "x1"
+          ]
+        },
+        {
+          "groups": [
+            [
+              "c0",
+              "c1",
+              "c2",
+              "c3"
+            ],
+            [
+              "d0",
+              "d1"
+            ]
+          ],
+          "ungrouped": [
+            "b0",
+            "b1",
+            "s0",
+            "x0",
+            "x1"
+          ]
+        },
+        {
+          "groups": [
+            [
+              "c0",
+              "c1",
+              "c2",
+              "c3"
+            ],
+            [
+              "b0",
+              "b1"
+            ],
+            [
+              "d0",
+              "d1"
+            ]
+          ],
+          "ungrouped": [
+            "s0",
+            "x0",
+            "x1"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "burst-tiers-sequential",
+      "mode": "sequential",
+      "thresholds": [
+        1,
+        2
+      ],
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "burst-a1",
+          "hash": "ffffffffffffffff"
+        },
+        {
+          "photoId": "burst-a2",
+          "hash": "fffffffffffffffe"
+        },
+        {
+          "photoId": "break",
+          "hash": "0000000000000000"
+        },
+        {
+          "photoId": "burst-a3",
+          "hash": "ffffffffffffffff"
+        },
+        {
+          "photoId": "burst-a4",
+          "hash": "fffffffffffffffe"
+        }
+      ],
+      "expected": [
+        {
+          "groups": [
+            [
+              "burst-a1",
+              "burst-a2"
+            ],
+            [
+              "burst-a3",
+              "burst-a4"
+            ]
+          ],
+          "ungrouped": [
+            "break"
+          ]
+        },
+        {
+          "groups": [
+            [
+              "burst-a1",
+              "burst-a2"
+            ],
+            [
+              "burst-a3",
+              "burst-a4"
+            ]
+          ],
+          "ungrouped": [
+            "break"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "wide-tiers",
+      "mode": "global",
+      "thresholds": [
+        0,
+        2
+      ],
+      "minGroupSize": 2,
+      "entries": [
+        {
+          "photoId": "w0",
+          "hash": "1a111454f828e8472d44944af034ee43"
+        },
+        {
+          "photoId": "w1",
+          "hash": "1a111454e828e8472d44944af034ee43"
+        },
+        {
+          "photoId": "w2",
+          "hash": "1a111454fa28e8472d44944af034ee43"
+        },
+        {
+          "photoId": "w3",
+          "hash": "1a111454f868e8472d44944af034ee43"
+        },
+        {
+          "photoId": "wide",
+          "hash": "0000000000000000a290854d67780b3b"
+        },
+        {
+          "photoId": "short",
+          "hash": "a290854d67780b3b"
+        }
+      ],
+      "expected": [
+        {
+          "groups": [
+            [
+              "wide",
+              "short"
+            ]
+          ],
+          "ungrouped": [
+            "w0",
+            "w1",
+            "w2",
+            "w3"
+          ]
+        },
+        {
+          "groups": [
+            [
+              "w0",
+              "w1",
+              "w2",
+              "w3"
+            ],
+            [
+              "wide",
+              "short"
+            ]
+          ],
+          "ungrouped": []
+        }
+      ]
+    }
+  ]
+}

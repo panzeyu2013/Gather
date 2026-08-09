@@ -309,16 +309,21 @@ WKWebView 桥、Xcode 签名打包。
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 1.1 | 契约定型（16+core 领域 → Swift） | 进行中 | — | core+session 已示范：`GatherCore/Protocol/Core.swift`、`Session.swift` + `SessionContractTests.swift` |
-| 1.2 | 数据库层（schema/migrations/repos） | 待做 | — | — |
-| 1.3 | helper 形态（HelperProtocol + helper-client） | 进行中 | — | 线协议已建：`GatherCore/IPC/HelperMessage.swift`；Electron 侧 helper-client.ts 待建 |
-| 1.4 | 日志/遥测 | 进行中 | — | 基础日志器已建：`GatherCore/Logging/Logger.swift`；遥测采集待建 |
-| 1.5 | 对账测试框架 | 待做 | — | — |
+| 1.1 | 契约定型（16+core 领域 → Swift） | 已完成 | 2026-08-09 | 15 域全部落地 `GatherCore/Protocol/*.swift` + 逐域契约测试（15 套件）；core/session 先行示范；`swift test` 375 全绿 |
+| 1.2 | 数据库层（schema/migrations/repos） | 已完成 | 2026-08-09 | `Database/DB.swift`（系统 SQLite3 薄包装，better-sqlite3 语义）、`Schema.swift`（41 条 SQL verbatim）、`Migrations.swift`（0→31 全路径 + ADR-005/006 备份回滚）、`Repositories/` 15 个 repo（147 测试）；schema 与 `docs/fixtures/schema.snapshot.json` 41 表全对 |
+| 1.3 | helper 形态（HelperProtocol + helper-client） | 已完成 | 2026-08-09 | `IPC/HelperProtocol.swift` 核心路由 + `GatherCoreHelper/main.swift`（stdout JSON 行）+ Electron 侧 `main/services/helper/helper-client.ts`（按 id 匹配/超时）；冒烟通过（echo/session:mock/未知命令） |
+| 1.4 | 日志/遥测 | 已完成 | 2026-08-09 | `Logging/Telemetry.swift`（duration/counter/gauge，NDJSON 对齐基准脚本输出；GATHER_TELEMETRY=1 开关）+ 8 测试 |
+| 1.5 | 对账测试框架 | 已完成 | 2026-08-09 | `GatherCoreTests/Reconciliation/`：3 个移植函数首批对账通过——dHash（50 fixture）/ dHash 聚类（17+3）/ Face 预处理（17）；TS 侧生成器 `scripts/reconciliation/generate-*.mjs`（`--check` 双跑拦截漂移） |
 
-> 附注：骨架已可编译（`desktop/native/gather-core`，swift build 通过）。本机仅
-> CommandLineTools（无 XCTest.framework），`swift test` 为空跑假绿——Agent 勘察
-> 结论：需安装 swift.org 官方 toolchain（推荐）或引入 swift-testing 后方可真正
-> 运行 XCTest，此决策待用户拍板（2026-08-09）。
+> 附注（2026-08-09 工具链决议）：本机已装 swift.org 官方 toolchain 6.1.2（Linux，
+> swift test 真跑 375 测试全绿）。三项决策修正：
+> 1. **SQLite.swift 弃用**：其全部版本携带 Apple 专属 SQLCipher 二进制 target，
+>    Linux SwiftPM 无法解析；改用系统 `import SQLite3` + C shim（`Sources/CSQLite/`），
+>    零外部依赖，语义对齐 better-sqlite3（`Database/DB.swift`）。
+> 2. **测试框架**：沿用 Swift Testing（CLT-only 环境的既定选择）；注意 Linux 6.1.2
+>    上 `@Test(.serialized)` 不生效，涉及静态全局状态的测试（Logger/Telemetry）须用
+>    模块内互斥锁（stateLock 模式）。
+> 3. **Package.swift**：原 CLT 专属 rpath 改为 `#if os(macOS)` 条件化，Linux 可编译。
 
 ### 10.3 Phase 2：热路径下沉
 

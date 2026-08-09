@@ -6,7 +6,8 @@ import Testing
 @testable import GatherCore
 
 struct LoggerTests {
-    @Test func allLevelsEmitNonEmptyTimestampedLines() {
+    // GatherLogger 为静态可变全局（output/minimumLevel），并行运行会相互干扰，串行执行。
+    @Test(.serialized) func allLevelsEmitNonEmptyTimestampedLines() {
         let lines = captureLines(minimumLevel: .debug) {
             GatherLogger.log("debug message", level: .debug)
             GatherLogger.log("info message", level: .info)
@@ -21,7 +22,7 @@ struct LoggerTests {
         }
     }
 
-    @Test func minimumLevelFiltersLowerSeverity() {
+    @Test(.serialized) func minimumLevelFiltersLowerSeverity() {
         let lines = captureLines(minimumLevel: .warn) {
             GatherLogger.log("debug message", level: .debug)
             GatherLogger.log("info message", level: .info)
@@ -32,7 +33,12 @@ struct LoggerTests {
         #expect(lines.count == 2)
     }
 
+    // 与 GatherLogger.log() 共用 stateLock：整个 capture 期间独占全局状态，
+    // 并行运行时与其他测试互斥（swift-testing 的 .serialized 在 Linux 6.1.2 上不生效）。
     private func captureLines(minimumLevel: LogLevel, log: () -> Void) -> [String] {
+        GatherLogger.stateLock.lock()
+        defer { GatherLogger.stateLock.unlock() }
+
         let defaultOutput = GatherLogger.output
         let defaultLevel = GatherLogger.minimumLevel
         defer {
