@@ -3,6 +3,7 @@ import { ok, validateString, wrapHandler } from './helpers'
 import { getAutoBackend, getAutoBackendLabel, getAvailableBackends, getFaceModelPresence, getModelResourcesDir } from '../services/face-kw/provider'
 import type { SettingsService } from '../services/settings/settings.service'
 import { isAppLocale } from '../locale'
+import { effectiveAppLocale } from '../locale-app'
 import { setAppLocale } from '../menu'
 
 export function registerSettingsHandlers(registry: CommandRegistry, svc: SettingsService): void {
@@ -48,7 +49,7 @@ export function registerSettingsHandlers(registry: CommandRegistry, svc: Setting
     return ok({
       platform: process.platform,
       autoBackend: getAutoBackend(),
-      autoBackendLabel: getAutoBackendLabel(),
+      autoBackendLabel: getAutoBackendLabel(effectiveAppLocale(svc.get('ui_language'))),
       provider,
       isAuto,
       availableBackends: getAvailableBackends(),

@@ -18,6 +18,7 @@ import { app, Menu } from 'electron'
 import { isGatherErrorCode } from '@gather/shared'
 import { getSelectedPhotos } from './capture-one'
 import type { AppLocale } from './locale'
+import { mainCopy } from './locale-copy'
 
 // Keep the pre-refactor public surface: main/index.ts imports these from
 // './menu' (ADR-019); the implementation now lives in ./locale.
@@ -28,87 +29,8 @@ export type MenuSend = (eventName: string, payload: unknown) => void
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 
-interface MenuLabels {
-  appName: string
-  file: string
-  edit: string
-  view: string
-  window: string
-  importFromCaptureOne: string
-  about: string
-  quit: string
-  close: string
-  undo: string
-  redo: string
-  cut: string
-  copy: string
-  paste: string
-  selectAll: string
-  reload: string
-  toggleDevTools: string
-  zoomIn: string
-  zoomOut: string
-  resetZoom: string
-  minimize: string
-  zoom: string
-  front: string
-}
-
-const LABELS: Record<AppLocale, MenuLabels> = {
-  en: {
-    appName: 'Gather',
-    file: 'File',
-    edit: 'Edit',
-    view: 'View',
-    window: 'Window',
-    importFromCaptureOne: 'Import from Capture One',
-    about: 'About Gather',
-    quit: 'Quit Gather',
-    close: 'Close Window',
-    undo: 'Undo',
-    redo: 'Redo',
-    cut: 'Cut',
-    copy: 'Copy',
-    paste: 'Paste',
-    selectAll: 'Select All',
-    reload: 'Reload',
-    toggleDevTools: 'Toggle Developer Tools',
-    zoomIn: 'Zoom In',
-    zoomOut: 'Zoom Out',
-    resetZoom: 'Actual Size',
-    minimize: 'Minimize',
-    zoom: 'Zoom',
-    front: 'Bring All to Front',
-  },
-  'zh-CN': {
-    appName: 'Gather',
-    file: '文件',
-    edit: '编辑',
-    view: '视图',
-    window: '窗口',
-    importFromCaptureOne: '从 Capture One 导入',
-    about: '关于 Gather',
-    quit: '退出 Gather',
-    close: '关闭窗口',
-    undo: '撤销',
-    redo: '重做',
-    cut: '剪切',
-    copy: '复制',
-    paste: '粘贴',
-    selectAll: '全选',
-    reload: '重新加载',
-    toggleDevTools: '切换开发者工具',
-    zoomIn: '放大',
-    zoomOut: '缩小',
-    resetZoom: '实际大小',
-    minimize: '最小化',
-    zoom: '缩放',
-    front: '全部置于顶层',
-  },
-}
-
 export function buildAppMenu(locale: AppLocale, send: MenuSend): Electron.MenuItemConstructorOptions[] {
-  const l = LABELS[locale]
+  const l = mainCopy(locale).menu
   return [
     {
       label: l.appName,

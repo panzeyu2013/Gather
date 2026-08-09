@@ -4,12 +4,15 @@ import { ok, err, validateString, wrapHandler } from './helpers'
 import type { ExportService } from '../services/export/export.service'
 import type { ReportService } from '../services/export/report.service'
 import type { JobService } from '../services/jobs/job.service'
+import type { SettingsService } from '../services/settings/settings.service'
+import { effectiveAppLocale } from '../locale-app'
 
 export function registerExportHandlers(
   registry: CommandRegistry,
   exportService: ExportService,
   reportService: ReportService,
   jobs: JobService,
+  settingsService: SettingsService,
 ): void {
   const progressSinks = new Map<string, Set<(progress: ExportProgressData) => void>>()
   jobs.registerExecutor('export.execute', (job, context) => {
@@ -63,7 +66,7 @@ export function registerExportHandlers(
           context.updateProgress({
             current: progress.current,
             total: progress.total,
-            message: `${progress.fileName} · ${progress.status}`,
+            message: 'export.processing',
             checkpoint: checkpoint(),
           })
         }
@@ -177,16 +180,19 @@ export function registerExportHandlers(
       const sessionId = validateString(params.sessionId, 'sessionId')
       const reportType = typeof params.reportType === 'string' ? params.reportType : 'session_summary'
       const format = typeof params.format === 'string' ? params.format : undefined
+      // 报告/导出文档是用户可见内容：按当前有效语言生成（与菜单/致命弹窗
+      // 共用同一主进程文案表）。
+      const locale = effectiveAppLocale(settingsService.get('ui_language'))
 
       if (reportType === 'person') {
-        const content = reportService.generatePersonReport(sessionId)
+        const content = reportService.generatePersonReport(sessionId, locale)
         return ok({ path: '', content, format: 'md' as const })
       }
       if (reportType === 'keyword') {
-        const content = reportService.generateKeywordReport(sessionId)
+        const content = reportService.generateKeywordReport(sessionId, locale)
         return ok({ path: '', content, format: 'md' as const })
       }
-      return ok(exportService.generateReport(sessionId, reportType, format))
+      return ok(exportService.generateReport(sessionId, reportType, format, locale))
     }),
   )
 }

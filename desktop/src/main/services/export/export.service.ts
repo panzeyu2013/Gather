@@ -10,6 +10,8 @@ import * as path from 'path'
 import { randomUUID } from 'node:crypto'
 import { getXmpSidecarPath } from '../xmp/xmp-sidecar-writer'
 import { batchAsync } from '../../utils/async'
+import type { AppLocale } from '../../locale'
+import { mainCopy } from '../../locale-copy'
 import { heavyTaskScheduler } from '../../utils/heavy-task-scheduler'
 
 function escapeCsvField(value: string): string {
@@ -429,19 +431,20 @@ export class ExportService {
     }
   }
 
-  generateReport(sessionId: string, reportType: string, format?: string): ReportData {
+  generateReport(sessionId: string, reportType: string, format?: string, locale: AppLocale = 'en'): ReportData {
     const photos = this.loadSessionPhotos(sessionId)
     const reportFormat = (format === 'md' ? 'md' : 'csv') as 'csv' | 'md'
+    const r = mainCopy(locale).reports.exportReport
     let content = ''
 
     if (reportType === 'session_summary') {
       if (reportFormat === 'csv') {
-        content = '文件名,文件路径\n'
+        content = `${r.csvHeader}\n`
         content += photos.map((p) => `${escapeCsvField(p.filename)},${escapeCsvField(p.filepath)}`).join('\n')
       } else {
-        content = '# 工作区导出报告\n\n'
-        content += `照片总数：${photos.length}\n\n`
-        content += '| 文件名 | 文件路径 |\n'
+        content = `${r.title}\n\n`
+        content += `${r.totalPhotos}${photos.length}\n\n`
+        content += `${r.tableHeader}\n`
         content += '|----------|----------|\n'
         content += photos.map((p) => `| ${p.filename.replace(/\|/g, '\\|')} | ${p.filepath.replace(/\|/g, '\\|')} |`).join('\n')
       }

@@ -1,6 +1,8 @@
 import { Database } from '../../db/database'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
+import type { AppLocale } from '../../locale'
+import { mainCopy } from '../../locale-copy'
 
 interface CullingDecisionRow {
   photo_id: string
@@ -11,14 +13,15 @@ interface CullingDecisionRow {
 export class ReportService {
   constructor(@inject(DI_TOKENS.DB) private db: Database) {}
 
-  generateSessionSummary(sessionId: string): string {
+  generateSessionSummary(sessionId: string, locale: AppLocale): string {
     const photos = this.db
       .prepare('SELECT filename, filepath, status FROM photos WHERE session_id = ?')
       .all(sessionId) as { filename: string; filepath: string; status: string }[]
 
-    let md = '# 工作区摘要\n\n'
-    md += `**照片总数：** ${photos.length}\n\n`
-    md += '| # | 文件名 | 文件路径 | 状态 |\n'
+    const r = mainCopy(locale).reports.sessionSummary
+    let md = `${r.title}\n\n`
+    md += `${r.totalPhotos} ${photos.length}\n\n`
+    md += `${r.tableHeader}\n`
     md += '|---|----------|----------|--------|\n'
     photos.forEach((p, i) => {
       md += `| ${i + 1} | ${p.filename.replace(/\|/g, '\\|')} | ${p.filepath.replace(/\|/g, '\\|')} | ${p.status.replace(/\|/g, '\\|')} |\n`
@@ -27,7 +30,7 @@ export class ReportService {
     return md
   }
 
-  generatePersonReport(sessionId: string): string {
+  generatePersonReport(sessionId: string, locale: AppLocale): string {
     const bindings = this.db
       .prepare(
         `SELECT rb.role_name, rb.keywords, fc.label, fc.member_count
@@ -37,9 +40,10 @@ export class ReportService {
       )
       .all(sessionId) as { role_name: string; keywords: string; label: string; member_count: number }[]
 
-    let md = '# 人物报告\n\n'
-    md += `**绑定数量：** ${bindings.length}\n\n`
-    md += '| 角色 | 关键词 | 人脸组 | 人脸数量 |\n'
+    const r = mainCopy(locale).reports.personReport
+    let md = `${r.title}\n\n`
+    md += `${r.bindingCount} ${bindings.length}\n\n`
+    md += `${r.tableHeader}\n`
     md += '|------|----------|---------|-------|\n'
     for (const b of bindings) {
       const keywords = JSON.parse(b.keywords) as string[]
@@ -49,7 +53,7 @@ export class ReportService {
     return md
   }
 
-  generateKeywordReport(sessionId: string): string {
+  generateKeywordReport(sessionId: string, locale: AppLocale): string {
     const keywordRows = this.db
       .prepare(
         `SELECT DISTINCT keywords
@@ -76,19 +80,20 @@ export class ReportService {
       else if (row.decision === 'reject') cullingKeywords.add('culling:reject')
     }
 
-    let md = '# 关键词报告\n\n'
-    md += '## 人脸关键词\n\n'
+    const r = mainCopy(locale).reports.keywordReport
+    let md = `${r.title}\n\n`
+    md += `${r.faceKeywords}\n\n`
     if (keywordSet.size === 0) {
-      md += '*(无)*\n'
+      md += `${r.none}\n`
     } else {
       for (const k of Array.from(keywordSet).sort()) {
         md += `- ${k}\n`
       }
     }
 
-    md += '\n## 筛选关键词\n\n'
+    md += `\n${r.cullingKeywords}\n\n`
     if (cullingKeywords.size === 0) {
-      md += '*(无)*\n'
+      md += `${r.none}\n`
     } else {
       for (const k of Array.from(cullingKeywords).sort()) {
         md += `- ${k}\n`

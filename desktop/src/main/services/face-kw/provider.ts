@@ -2,6 +2,8 @@ import { app } from 'electron'
 import { join, isAbsolute, resolve } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { isValidOnnxModel } from './onnx-validator'
+import type { AppLocale } from '../../locale'
+import { mainCopy } from '../../locale-copy'
 
 function getModelFilename(modelPath: string): string {
   return modelPath.replace(/^models[/\\]/, '')
@@ -77,13 +79,13 @@ export function getAutoBackend(): string {
   }
 }
 
-export function getAutoBackendLabel(): string {
-  // Main-side label map (same mechanism as the app menu): the renderer shows
-  // this label via the settings IPC payload, so the label is resolved against
-  // the app locale instead of shipping zh copy from the main process.
-  const isZh = app.getLocale().toLowerCase().startsWith('zh')
+export function getAutoBackendLabel(locale: AppLocale): string {
+  // Main-side label (same copy table as the menu / fatal dialog): the
+  // renderer shows this label via the settings IPC payload, and the label is
+  // resolved against the effective app locale in settings.ipc.ts. 'DirectML'
+  // / 'CPU' are brand tokens identical across locales.
   switch (process.platform) {
-    case 'darwin': return isZh ? 'CoreML（失败自动回退 CPU）' : 'CoreML (falls back to CPU on failure)'
+    case 'darwin': return mainCopy(locale).mlBackendAuto
     case 'win32': return 'DirectML'
     default: return 'CPU'
   }

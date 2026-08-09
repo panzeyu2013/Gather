@@ -36,6 +36,7 @@ import { IMAGE_CONFIG } from './services/image/image-config'
 import { CommandRegistry, registerAllIpcHandlers } from './ipc/registry'
 import { setupAppMenu } from './menu'
 import { resolveEffectiveLocale } from './locale'
+import { mainCopy } from './locale-copy'
 import { registerSessionHandlers } from './ipc/session.ipc'
 import { registerFaceKwHandlers } from './ipc/face-kw.ipc'
 import { registerSimilarityHandlers } from './ipc/similarity.ipc'
@@ -246,6 +247,7 @@ function registerIpc(): void {
     exportService,
     reportService,
     svc<JobService>(DI_TOKENS.JOB_SERVICE),
+    settingsService,
   )
   registerJobHandlers(registry, svc<JobService>(DI_TOKENS.JOB_SERVICE))
   registerIndexerHandlers(
@@ -535,17 +537,13 @@ app.whenReady().then(async () => {
     } catch {
       // Best-effort: the DB may be unreachable when initialization failed.
     }
-    const isZh = resolveEffectiveLocale(
+    const locale = resolveEffectiveLocale(
       app.commandLine.getSwitchValue('lang'),
       app.getLocale(),
       uiLanguage,
-    ) === 'zh-CN'
-    dialog.showErrorBox(
-      isZh ? 'Gather 无法启动' : 'Gather failed to start',
-      isZh
-        ? `数据库迁移或应用初始化失败。原数据库已保留，请查看日志。\n\n${message}`
-        : `Database migration or app initialization failed. The original database was kept; see the logs.\n\n${message}`,
     )
+    const fatal = mainCopy(locale).fatalDialog
+    dialog.showErrorBox(fatal.title, fatal.body(message))
   }
   app.quit()
 })
