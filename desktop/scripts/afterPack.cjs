@@ -41,7 +41,14 @@ module.exports = async function afterPack(context) {
     throw new Error('[afterPack] GatherLink.coplugin build produced no executable')
   }
 
-  const dest = path.join(context.appOutDir, 'Contents', 'Resources', 'plugins', productName)
+  // On macOS appOutDir is the architecture output directory, not the .app
+  // bundle itself. Resolve the actual bundle so the plugin ships inside the
+  // installed application instead of beside it in a stray Contents folder.
+  const appBundle = path.join(
+    context.appOutDir,
+    `${context.packager.appInfo.productFilename}.app`,
+  )
+  const dest = path.join(appBundle, 'Contents', 'Resources', 'plugins', productName)
   fs.cpSync(productDir, dest, { recursive: true })
   console.log(`[afterPack] Bundled ${productName} -> ${dest}`)
 }

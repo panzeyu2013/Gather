@@ -6,12 +6,37 @@ import { sessionApi } from '../../api/session'
 import { imageApi } from '../../api/image'
 import { metadataApi } from '../../api/metadata'
 import type { FilterGroup, FilterRule } from '@gather/shared'
-import { useTranslation } from '../../locales'
+import { useTranslation, type TranslationKey } from '../../locales'
 import { translateError, translateErrorCode } from '../../utils/errors'
 import styles from './Library.module.css'
 
 const PAGE_SIZE = 60
-const COLOR_LABELS = ['', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Pink', 'Purple']
+const COLOR_LABELS: Array<{ value: string; labelKey: TranslationKey }> = [
+  { value: 'Red', labelKey: 'culling.color.red' },
+  { value: 'Orange', labelKey: 'culling.color.orange' },
+  { value: 'Yellow', labelKey: 'culling.color.yellow' },
+  { value: 'Green', labelKey: 'culling.color.green' },
+  { value: 'Blue', labelKey: 'culling.color.blue' },
+  { value: 'Pink', labelKey: 'culling.color.pink' },
+  { value: 'Purple', labelKey: 'culling.color.purple' },
+]
+
+function SelectChevron({ className }: { className: string }) {
+  return (
+    <svg className={className} viewBox="0 0 14 8" aria-hidden="true">
+      <path d="M1 1l6 6 6-6" />
+    </svg>
+  )
+}
+
+function FilterSelect({ children, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <span className={styles.filterSelectWrap}>
+      <select {...props} className={styles.filterSelect}>{children}</select>
+      <SelectChevron className={styles.filterSelectIcon} />
+    </span>
+  )
+}
 
 // Delays criteria propagation: the four free-text filters would otherwise
 // trigger a new IPC query on every keystroke.
@@ -79,6 +104,7 @@ export default function Library() {
   const [person, setPerson] = useState('')
   const [duplicates, setDuplicates] = useState('')
   const [recentDays, setRecentDays] = useState('')
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [albumName, setAlbumName] = useState('')
   const [selectedAlbum, setSelectedAlbum] = useState<string>()
   const [page, setPage] = useState(0)
@@ -102,6 +128,10 @@ export default function Library() {
     [debouncedDirectory, debouncedKeyword, debouncedPerson, debouncedSearch, duplicates, label, rating, recentDays, status, volume],
   )
   const criteriaKey = JSON.stringify(criteria)
+  const activeFilterCount = [search, rating, label, status, keyword, directory, volume, person, duplicates, recentDays]
+    .filter(value => value.trim()).length
+  const advancedFilterCount = [keyword, directory, volume, person, duplicates, recentDays]
+    .filter(value => value.trim()).length
 
   useEffect(() => setPage(0), [criteriaKey, selectedAlbum, sessionFilter])
 
@@ -191,55 +221,85 @@ export default function Library() {
           <h1>{t('library.title')}</h1>
           <p className={styles.muted}>{t('library.subtitle')}</p>
         </div>
-        <select value={sessionFilter} onChange={event => setSessionFilter(event.target.value)}>
-          <option value="">{t('library.allSessions')}</option>
-          {sessions.map(session => (
-            <option key={session.id} value={session.id}>{t('library.sessionOption', { name: session.name, count: session.photoCount })}</option>
-          ))}
-        </select>
+        <span className={styles.workspaceSelectWrap}>
+          <select
+            className={styles.workspaceSelect}
+            aria-label={t('library.allSessions')}
+            value={sessionFilter}
+            onChange={event => setSessionFilter(event.target.value)}
+          >
+            <option value="">{t('library.allSessions')}</option>
+            {sessions.map(session => (
+              <option key={session.id} value={session.id}>{t('library.sessionOption', { name: session.name, count: session.photoCount })}</option>
+            ))}
+          </select>
+          <SelectChevron className={styles.workspaceSelectIcon} />
+        </span>
       </header>
 
-      <div className={styles.filters}>
-        <input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('library.searchPlaceholder')} />
-        <select value={rating} onChange={event => setRating(event.target.value)}>
-          <option value="">{t('library.allRatings')}</option>
-          {[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{t('library.atLeastStars', { count: value })}</option>)}
-        </select>
-        <select value={label} onChange={event => setLabel(event.target.value)}>
-          <option value="">{t('library.allColors')}</option>
-          {COLOR_LABELS.filter(Boolean).map(value => <option key={value} value={value}>{value}</option>)}
-        </select>
-        <select value={status} onChange={event => setStatus(event.target.value)}>
-          <option value="">{t('library.allOnlineStatus')}</option>
-          <option value="online">{t('library.online')}</option>
-          <option value="missing">{t('library.offline')}</option>
-        </select>
-        <input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder={t('library.keywordPlaceholder')} />
-        <input value={person} onChange={event => setPerson(event.target.value)} placeholder={t('library.personPlaceholder')} />
-        <input value={directory} onChange={event => setDirectory(event.target.value)} placeholder={t('library.directoryPlaceholder')} />
-        <select value={volume} onChange={event => setVolume(event.target.value)}>
-          <option value="">{t('library.allVolumes')}</option>
-          {volumes.map(item => (
-            <option key={item.volumeId} value={item.volumeId}>
-              {item.roots[0] || item.volumeId}
-            </option>
-          ))}
-        </select>
-        <select value={duplicates} onChange={event => setDuplicates(event.target.value)}>
-          <option value="">{t('library.allDuplicates')}</option>
-          <option value="yes">{t('library.hasDuplicates')}</option>
-          <option value="no">{t('library.noDuplicates')}</option>
-        </select>
-        <select value={recentDays} onChange={event => setRecentDays(event.target.value)}>
-          <option value="">{t('library.allImportTime')}</option>
-          <option value="1">{t('library.last24h')}</option>
-          <option value="7">{t('library.last7d')}</option>
-          <option value="30">{t('library.last30d')}</option>
-        </select>
-        <button onClick={() => {
-          setSearch(''); setRating(''); setLabel(''); setStatus(''); setKeyword('')
-          setDirectory(''); setVolume(''); setPerson(''); setDuplicates(''); setRecentDays('')
-        }}>{t('library.clearFilters')}</button>
+      <div className={styles.filterPanel}>
+        <div className={styles.filters}>
+          <input aria-label={t('library.searchPlaceholder')} value={search} onChange={event => setSearch(event.target.value)} placeholder={t('library.searchPlaceholder')} />
+          <FilterSelect aria-label={t('library.allRatings')} value={rating} onChange={event => setRating(event.target.value)}>
+            <option value="">{t('library.allRatings')}</option>
+            {[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{t('library.atLeastStars', { count: value })}</option>)}
+          </FilterSelect>
+          <FilterSelect aria-label={t('library.allColors')} value={label} onChange={event => setLabel(event.target.value)}>
+            <option value="">{t('library.allColors')}</option>
+            {COLOR_LABELS.map(item => (
+              <option key={item.value} value={item.value}>{t(item.labelKey)}</option>
+            ))}
+          </FilterSelect>
+          <FilterSelect aria-label={t('library.allOnlineStatus')} value={status} onChange={event => setStatus(event.target.value)}>
+            <option value="">{t('library.allOnlineStatus')}</option>
+            <option value="online">{t('library.online')}</option>
+            <option value="missing">{t('library.offline')}</option>
+          </FilterSelect>
+        </div>
+        {showAdvancedFilters && (
+          <div className={styles.advancedFilters}>
+          <input aria-label={t('library.keywordPlaceholder')} value={keyword} onChange={event => setKeyword(event.target.value)} placeholder={t('library.keywordPlaceholder')} />
+          <input aria-label={t('library.personPlaceholder')} value={person} onChange={event => setPerson(event.target.value)} placeholder={t('library.personPlaceholder')} />
+          <input aria-label={t('library.directoryPlaceholder')} value={directory} onChange={event => setDirectory(event.target.value)} placeholder={t('library.directoryPlaceholder')} />
+          <FilterSelect aria-label={t('library.allVolumes')} value={volume} onChange={event => setVolume(event.target.value)}>
+            <option value="">{t('library.allVolumes')}</option>
+            {volumes.map(item => (
+              <option key={item.volumeId} value={item.volumeId}>
+                {item.roots[0] || item.volumeId}
+              </option>
+            ))}
+          </FilterSelect>
+          <FilterSelect aria-label={t('library.allDuplicates')} value={duplicates} onChange={event => setDuplicates(event.target.value)}>
+            <option value="">{t('library.allDuplicates')}</option>
+            <option value="yes">{t('library.hasDuplicates')}</option>
+            <option value="no">{t('library.noDuplicates')}</option>
+          </FilterSelect>
+          <FilterSelect aria-label={t('library.allImportTime')} value={recentDays} onChange={event => setRecentDays(event.target.value)}>
+            <option value="">{t('library.allImportTime')}</option>
+            <option value="1">{t('library.last24h')}</option>
+            <option value="7">{t('library.last7d')}</option>
+            <option value="30">{t('library.last30d')}</option>
+          </FilterSelect>
+          </div>
+        )}
+        <div className={styles.filterActions}>
+          <button
+            type="button"
+            className={styles.moreFiltersBtn}
+            aria-expanded={showAdvancedFilters}
+            onClick={() => setShowAdvancedFilters(value => !value)}
+          >
+            {showAdvancedFilters
+              ? t('library.hideMoreFilters')
+              : advancedFilterCount > 0
+                ? t('library.showMoreFiltersActive', { count: advancedFilterCount })
+                : t('library.showMoreFilters')}
+          </button>
+          <button className={styles.clearFiltersBtn} disabled={activeFilterCount === 0} onClick={() => {
+            setSearch(''); setRating(''); setLabel(''); setStatus(''); setKeyword('')
+            setDirectory(''); setVolume(''); setPerson(''); setDuplicates(''); setRecentDays('')
+          }}>{t('library.clearFilters')}</button>
+        </div>
       </div>
 
       <div className={styles.layout}>
@@ -262,7 +322,7 @@ export default function Library() {
               {album.validationError ? '⚠️' : album.icon} {album.name}
             </button>
           ))}
-          <input value={albumName} onChange={event => setAlbumName(event.target.value)} placeholder={t('library.newAlbumPlaceholder')} />
+          <input aria-label={t('library.newAlbumPlaceholder')} value={albumName} onChange={event => setAlbumName(event.target.value)} placeholder={t('library.newAlbumPlaceholder')} />
           <button
             disabled={!albumName.trim() || createAlbum.isPending}
             onClick={() => createAlbum.mutate()}

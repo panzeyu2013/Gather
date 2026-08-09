@@ -180,12 +180,30 @@ export default function Export() {
         </div>
       </div>
 
+      <div className={styles.actionBar}>
+        <div className={styles.actionSummary}>
+          <strong>{format === 'original' ? t('export.formatOriginal') : format.toUpperCase()}</strong>
+          <span>{destination || t('export.folderPlaceholder')}</span>
+        </div>
+        <div className={styles.actions}>
+          <button className={styles.btn} onClick={handlePreview} disabled={previewQuery.isFetching || needsDestination}>
+            {previewQuery.isFetching ? t('export.previewing') : t('export.previewBtn')}
+          </button>
+          <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleExport} disabled={exportMutation.isPending || needsDestination}>
+            {exportMutation.isPending ? t('export.exporting') : t('export.exportingBtn')}
+          </button>
+          <button className={styles.btn} onClick={handleCancel} disabled={!exportMutation.isPending}>
+            {t('export.cancelExport')}
+          </button>
+        </div>
+      </div>
+
       <div className={styles.formGrid}>
-      <section className={styles.card}>
+      <section className={`${styles.card} ${format === 'original' ? styles.cardWide : ''}`}>
         <h3 className={styles.cardTitle}>{t('export.fileSettings')}</h3>
         <div className={styles.section}>
-        <label className={styles.label}>{t('export.format')}</label>
-        <select className={styles.select} value={format} onChange={(e) => setFormat(e.target.value as ExportOptions['format'])}>
+        <label className={styles.label} htmlFor="export-format">{t('export.format')}</label>
+        <select id="export-format" className={styles.select} value={format} onChange={(e) => setFormat(e.target.value as ExportOptions['format'])}>
           <option value="original">{t('export.formatOriginal')}</option>
           <option value="jpeg">JPEG</option>
           <option value="tiff">TIFF</option>
@@ -193,8 +211,9 @@ export default function Export() {
       </div>
 
       <div className={styles.section}>
-        <label className={styles.label}>{t('export.variantPolicy')}</label>
+        <label className={styles.label} htmlFor="export-variant-policy">{t('export.variantPolicy')}</label>
         <select
+          id="export-variant-policy"
           className={styles.select}
           value={variantPolicy}
           onChange={(event) => setVariantPolicy(
@@ -210,15 +229,15 @@ export default function Export() {
 
       {format === 'jpeg' && (
         <div className={styles.section}>
-          <label className={styles.label}>{t('export.jpegQuality', { value: quality })}</label>
-          <input type="range" min={1} max={100} value={quality} onChange={(e) => setQuality(parseInt(e.target.value, 10))} className={styles.slider} />
+          <label className={styles.label} htmlFor="export-jpeg-quality">{t('export.jpegQuality', { value: quality })}</label>
+          <input id="export-jpeg-quality" type="range" min={1} max={100} value={quality} onChange={(e) => setQuality(parseInt(e.target.value, 10))} className={styles.slider} />
         </div>
       )}
 
       {format === 'tiff' && (
         <div className={styles.section}>
-          <label className={styles.label}>{t('export.tiffCompression')}</label>
-          <select className={styles.select} value={tiffCompression} onChange={(e) => setTiffCompression(e.target.value as ExportOptions['tiffCompression'])}>
+          <label className={styles.label} htmlFor="export-tiff-compression">{t('export.tiffCompression')}</label>
+          <select id="export-tiff-compression" className={styles.select} value={tiffCompression} onChange={(e) => setTiffCompression(e.target.value as ExportOptions['tiffCompression'])}>
             <option value="none">{t('export.tiffNone')}</option>
             <option value="lzw">LZW</option>
             <option value="deflate">{t('export.tiffDeflate')}</option>
@@ -228,8 +247,8 @@ export default function Export() {
 
       {format !== 'original' && (
         <div className={styles.section}>
-          <label className={styles.label}>{t('export.maxDimension')}</label>
-          <input type="number" className={styles.input} value={maxDimension} onChange={(e) => setMaxDimension(e.target.value)} placeholder={t('export.maxDimensionPlaceholder')} min={1} />
+          <label className={styles.label} htmlFor="export-max-dimension">{t('export.maxDimension')}</label>
+          <input id="export-max-dimension" type="number" className={styles.input} value={maxDimension} onChange={(e) => setMaxDimension(e.target.value)} placeholder={t('export.maxDimensionPlaceholder')} min={1} />
         </div>
       )}
       </section>
@@ -265,8 +284,8 @@ export default function Export() {
       <section className={`${styles.card} ${styles.cardWide}`}>
         <h3 className={styles.cardTitle}>{t('export.naming')}</h3>
       <div className={styles.section}>
-        <label className={styles.label}>{t('export.namingPattern')}</label>
-        <input type="text" className={styles.input} value={namingPattern} onChange={(e) => setNamingPattern(e.target.value)} />
+        <label className={styles.label} htmlFor="export-naming-pattern">{t('export.namingPattern')}</label>
+        <input id="export-naming-pattern" type="text" className={styles.input} value={namingPattern} onChange={(e) => setNamingPattern(e.target.value)} />
         <div className={styles.hint}>{t('export.namingHint', { date: '{date}', time: '{time}', counter: '{counter}', original: '{original}', session: '{session}' })}</div>
         {namingPattern && (
           <div className={styles.preview}>{t('export.namingPreview', { preview: namingPreview })}</div>
@@ -274,9 +293,9 @@ export default function Export() {
       </div>
 
       <div className={styles.section}>
-        <label className={styles.label}>{t('export.folder')}</label>
+        <label className={styles.label} htmlFor="export-folder">{t('export.folder')}</label>
         <div className={styles.folderPicker}>
-          <input type="text" className={styles.input} value={destination} onChange={(e) => setDestination(e.target.value)} placeholder={t('export.folderPlaceholder')} />
+          <input id="export-folder" type="text" className={styles.input} value={destination} onChange={(e) => setDestination(e.target.value)} placeholder={t('export.folderPlaceholder')} />
           <button type="button" className={styles.btn} onClick={handleSelectDestination}>{t('export.folderBtn')}</button>
         </div>
         <div className={styles.hint}>
@@ -291,18 +310,6 @@ export default function Export() {
         </label>
       </div>
       </section>
-      </div>
-
-      <div className={styles.actions}>
-        <button className={styles.btn} onClick={handlePreview} disabled={previewQuery.isFetching || needsDestination}>
-          {previewQuery.isFetching ? t('export.previewing') : t('export.previewBtn')}
-        </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleExport} disabled={exportMutation.isPending || needsDestination}>
-          {exportMutation.isPending ? t('export.exporting') : t('export.exportingBtn')}
-        </button>
-        <button className={styles.btn} onClick={handleCancel} disabled={!exportMutation.isPending}>
-          {t('export.cancelExport')}
-        </button>
       </div>
 
       {preview && (

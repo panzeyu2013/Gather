@@ -1,6 +1,7 @@
 .page {
   max-width: 960px;
   margin: 0 auto;
+  padding: 28px 32px 40px;
 }
 
 .backLink {
@@ -14,11 +15,14 @@
   cursor: pointer;
   background: none;
   border: none;
-  padding: 0;
+  min-height: var(--control-height-sm);
+  padding: 0 10px;
+  border-radius: 10px;
 }
 
 .backLink:hover {
   color: var(--color-primary);
+  background: var(--color-hover);
 }
 
 .header {
@@ -83,19 +87,22 @@
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  min-height: var(--control-height-md);
+  padding: 0 16px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: var(--shadow-control);
 }
 
 .reviewBtn {
   background: transparent;
   border: 1px solid var(--color-primary);
   color: var(--color-primary);
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  min-height: var(--control-height-md);
+  padding: 0 16px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -110,8 +117,9 @@
   background: transparent;
   border: 1px solid var(--color-error);
   color: var(--color-error);
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  min-height: var(--control-height-md);
+  padding: 0 16px;
   font-size: 14px;
   cursor: pointer;
 }
@@ -152,7 +160,7 @@
 .photoCard {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   overflow: hidden;
 }
 
@@ -220,7 +228,8 @@
   width: 100%;
   background: var(--color-bg);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  min-height: var(--control-height-md);
+  border-radius: var(--radius-control);
   padding: 10px 14px;
   font-size: 14px;
   color: var(--color-text);
@@ -236,7 +245,7 @@
   width: 100%;
   background: var(--color-bg);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   padding: 10px 14px;
   font-size: 14px;
   color: var(--color-text);
@@ -261,8 +270,9 @@
   background: transparent;
   border: 1px solid var(--color-border);
   color: var(--color-text);
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  min-height: var(--control-height-md);
+  padding: 0 16px;
   font-size: 14px;
   cursor: pointer;
 }
@@ -271,11 +281,29 @@
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  min-height: var(--control-height-md);
+  padding: 0 16px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: var(--shadow-control);
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding: 20px;
+  }
+
+  .header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .headerActions {
+    flex-wrap: wrap;
+  }
 }
 
 .submitBtn:disabled {

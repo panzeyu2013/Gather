@@ -17,11 +17,11 @@
 
 .searchInput {
   width: 100%;
-  min-height: 36px;
-  padding: 8px 12px;
+  min-height: var(--control-height-md);
+  padding: 0 13px;
   background: var(--color-surface);
   border: 1px solid var(--color-border, #444);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--color-text, #fff);
   font-size: 14px;
   outline: none;
@@ -33,11 +33,11 @@
 }
 
 .filterSelect {
-  min-height: 36px;
-  padding: 8px 12px;
+  min-height: var(--control-height-md);
+  padding: 0 13px;
   background: var(--color-surface);
   border: 1px solid var(--color-border, #444);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--color-text, #fff);
   font-size: 14px;
   outline: none;
@@ -55,7 +55,7 @@
   padding: 8px 12px;
   margin-bottom: 12px;
   background: var(--color-primary, #6c8cff);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: #fff;
   font-size: 13px;
   flex-shrink: 0;
@@ -66,15 +66,16 @@
   background: rgba(255,255,255,0.2);
   border: none;
   color: #fff;
-  padding: 4px 12px;
-  border-radius: 4px;
+  min-height: var(--control-height-sm);
+  padding: 0 13px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   font-size: 12px;
 }
 
 .variantToggle {
-  min-height: 36px;
-  padding: 8px 16px;
+  min-height: var(--control-height-md);
+  padding: 0 17px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
   background: var(--color-surface);
@@ -131,10 +132,11 @@
 }
 
 .cell {
+  display: block;
   position: relative;
   flex: none;
   box-sizing: border-box;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   border: none;
   padding: 0;
   overflow: hidden;
@@ -159,7 +161,7 @@
   left: 0;
   width: 100%;
   height: 100%;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--color-bg-secondary, #ede6dc);
 }

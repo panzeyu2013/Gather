@@ -120,6 +120,22 @@ function AnalysisPanel({
   const setGroupingMode = useSimilarityStore((s) => s.setGroupingMode)
   const setIsAnalyzing = useSimilarityStore((s) => s.setIsAnalyzing)
   const setProgress = useSimilarityStore((s) => s.setProgress)
+  const activePreset = threshold === 6 && minGroupSize === 2
+    ? 'strict'
+    : threshold === 10 && minGroupSize === 2
+      ? 'balanced'
+      : threshold === 16 && minGroupSize === 3
+        ? 'loose'
+        : null
+  const applyPreset = (preset: 'strict' | 'balanced' | 'loose') => {
+    const values = preset === 'strict'
+      ? { threshold: 6, minGroupSize: 2 }
+      : preset === 'balanced'
+        ? { threshold: 10, minGroupSize: 2 }
+        : { threshold: 16, minGroupSize: 3 }
+    setThreshold(values.threshold)
+    setMinGroupSize(values.minGroupSize)
+  }
 
   const cancelMutation = useMutation({
     mutationFn: () => similarityApi.cancel(sessionId),
@@ -297,35 +313,58 @@ function AnalysisPanel({
       </div>
 
       <div className={styles.controlRow}>
-        <label className={styles.controlLabel} htmlFor="similarity-threshold">
-          {t('similarity.thresholdLabel')}<strong>{threshold}</strong>
-        </label>
-        <input
-          id="similarity-threshold"
-          type="range"
-          min={0}
-          max={30}
-          value={threshold}
-          onChange={(e) => setThreshold(Number(e.target.value))}
-          className={styles.slider}
-        />
-        <span className={styles.rangeHint}>{t('similarity.thresholdRangeHint')}</span>
+        <span className={styles.controlLabel}>{t('analysisPreset.label')}</span>
+        <div className={styles.presetSelector}>
+          {(['strict', 'balanced', 'loose'] as const).map((preset) => (
+            <button
+              type="button"
+              key={preset}
+              className={activePreset === preset ? styles.presetActive : styles.presetButton}
+              aria-pressed={activePreset === preset}
+              onClick={() => applyPreset(preset)}
+            >
+              {t(`analysisPreset.${preset}`)}
+            </button>
+          ))}
+        </div>
+        <span className={styles.rangeHint}>{t('similarity.presetHint')}</span>
       </div>
 
-      <div className={styles.controlRow}>
-        <label className={styles.controlLabel} htmlFor="similarity-min-group-size">
-          {t('similarity.minGroupSizeLabel')}<strong>{minGroupSize}</strong>
-        </label>
-        <input
-          id="similarity-min-group-size"
-          type="range"
-          min={2}
-          max={10}
-          value={minGroupSize}
-          onChange={(e) => setMinGroupSize(Number(e.target.value))}
-          className={styles.slider}
-        />
-      </div>
+      <details className={styles.advancedSettings}>
+        <summary>{t('analysisPreset.advanced')}</summary>
+        <div className={styles.advancedSettingsBody}>
+          <div className={styles.controlRow}>
+            <label className={styles.controlLabel} htmlFor="similarity-threshold">
+              {t('similarity.thresholdLabel')}<strong>{threshold}</strong>
+            </label>
+            <input
+              id="similarity-threshold"
+              type="range"
+              min={0}
+              max={30}
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+              className={styles.slider}
+            />
+            <span className={styles.rangeHint}>{t('similarity.thresholdRangeHint')}</span>
+          </div>
+
+          <div className={styles.controlRow}>
+            <label className={styles.controlLabel} htmlFor="similarity-min-group-size">
+              {t('similarity.minGroupSizeLabel')}<strong>{minGroupSize}</strong>
+            </label>
+            <input
+              id="similarity-min-group-size"
+              type="range"
+              min={2}
+              max={10}
+              value={minGroupSize}
+              onChange={(e) => setMinGroupSize(Number(e.target.value))}
+              className={styles.slider}
+            />
+          </div>
+        </div>
+      </details>
 
       <div className={styles.controlActions}>
         <button

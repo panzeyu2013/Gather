@@ -1,6 +1,6 @@
-.page { height: 100%; overflow: auto; padding: 28px 32px; color: var(--color-text); background: var(--color-bg); }
-.header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 18px; }
-.header h1 { margin: 4px 0 6px; font-size: 28px; }
+.page { width: 100%; max-width: 1600px; min-height: 100%; margin: 0 auto; padding: 32px clamp(20px, 4vw, 48px) 56px; color: var(--color-text); background: var(--color-bg); }
+.header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 26px; }
+.header h1 { margin: 4px 0 6px; font-size: 24px; }
 .eyebrow { margin: 0; color: var(--color-primary); font-size: 11px; letter-spacing: .14em; }
 .muted, .help { margin: 0; color: var(--color-text-secondary); }
 
@@ -8,37 +8,98 @@
   margin-left: 8px;
   padding: 2px 10px;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: 9px;
   background: var(--color-bg-secondary);
   color: var(--color-text);
   font-size: 12px;
   cursor: pointer;
 }
 .help { font-size: 12px; line-height: 1.5; }
-.header select, .filters input, .filters select, .sidebar input {
-  min-height: 36px; border: 1px solid var(--color-border); border-radius: 10px;
-  padding: 7px 10px; background: var(--color-surface); color: inherit;
+.filters input, .advancedFilters input, .filterSelect, .sidebar input {
+  min-height: var(--control-height-md); border: 1px solid var(--color-border); border-radius: var(--radius-control);
+  padding: 0 12px; background: var(--color-control); color: inherit;
+  transition: border-color var(--transition-control), background var(--transition-control), box-shadow var(--transition-control);
+}
+.workspaceSelectWrap {
+  position: relative;
+  align-self: flex-start;
+  margin-top: 18px;
+}
+.workspaceSelect {
+  display: block;
+  align-self: flex-start;
+  min-height: var(--control-height-sm);
+  padding: 0 34px 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  appearance: none;
+  background: var(--color-control);
+  color: inherit;
+  font-size: 13px;
+  transition: border-color var(--transition-control), background var(--transition-control), box-shadow var(--transition-control);
+}
+.workspaceSelectIcon {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 14px;
+  height: 8px;
+  pointer-events: none;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5px;
+}
+.filterPanel {
+  margin-bottom: 18px; padding: 14px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-sm);
 }
 .filters {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px; margin-bottom: 18px; padding: 12px; border: 1px solid var(--color-border);
-  border-radius: 14px; background: var(--color-surface);
+  display: grid; grid-template-columns: minmax(220px, 1.5fr) repeat(3, minmax(150px, 1fr));
+  gap: 10px;
 }
-.filters button, .sidebar button, .pagination button {
-  min-height: 36px; border: 1px solid var(--color-border); border-radius: 10px;
-  padding: 7px 11px; background: var(--color-surface-elevated, var(--color-surface));
-  color: inherit; cursor: pointer;
+.advancedFilters {
+  display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--color-border);
 }
-.filters button:hover, .sidebar button:hover, .sidebar .selected, .pagination button:hover:not(:disabled) {
+.filterSelectWrap { position: relative; min-width: 0; }
+.filterSelect { display: block; width: 100%; appearance: none; padding: 0 34px 0 12px; }
+.filterSelectIcon {
+  position: absolute; top: 50%; right: 12px; width: 14px; height: 8px;
+  pointer-events: none; transform: translateY(-50%); fill: none; stroke: currentColor;
+  stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5px;
+}
+.filters input::placeholder, .advancedFilters input::placeholder { color: color-mix(in srgb, var(--color-text-secondary) 84%, transparent); }
+.filterActions { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--color-border); }
+.moreFiltersBtn, .clearFiltersBtn, .sidebar button, .pagination button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: var(--control-height-md); border: 1px solid var(--color-border); border-radius: var(--radius-control);
+  padding: 0 14px; background: var(--color-control);
+  color: inherit; cursor: pointer; transition: border-color var(--transition-control), background var(--transition-control), transform var(--transition-control);
+}
+.clearFiltersBtn {
+  min-height: 32px; padding: 0 10px; border-color: transparent; border-radius: 8px;
+  background: transparent; color: var(--color-text-secondary); font-size: 12px;
+}
+.moreFiltersBtn {
+  min-height: 32px; padding: 0 10px; border-color: transparent; border-radius: 8px;
+  background: transparent; color: var(--color-primary); font-size: 12px; font-weight: 600;
+}
+.moreFiltersBtn:hover { background: var(--color-primary-soft); }
+.clearFiltersBtn:hover { background: var(--color-hover); color: var(--color-text); }
+.clearFiltersBtn:disabled { opacity: .45; cursor: default; }
+.sidebar button:hover, .sidebar .selected, .pagination button:hover:not(:disabled) {
   border-color: var(--color-primary); background: var(--color-hover);
 }
 .layout { display: grid; grid-template-columns: 258px minmax(0, 1fr); gap: 18px; }
 .sidebar {
   display: flex; flex-direction: column; align-self: start; gap: 8px; padding: 14px;
-  border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-surface);
+  border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-sm);
 }
 .sidebar h2 { margin: 2px 0 4px; font-size: 14px; }
-.sidebar button { text-align: left; }
+.sidebar button { justify-content: flex-start; text-align: left; }
 .sidebar button:disabled, .pagination button:disabled { opacity: .45; cursor: default; }
 .sidebar .danger { color: #b13b3b; }
 .divider { height: 1px; margin: 8px 0; background: var(--color-border); }
@@ -47,7 +108,7 @@
 .candidate small, .card small { color: var(--color-text-secondary); }
 .candidateActions { display: flex; gap: 6px; margin-top: 4px; }
 .candidateActions button { flex: 1; min-height: 30px; padding: 4px 7px; text-align: center; }
-.content { min-width: 0; border: 1px solid var(--color-border); border-radius: 14px; overflow: hidden; background: var(--color-surface); }
+.content { min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; background: var(--color-surface); box-shadow: var(--shadow-sm); }
 .toolbar { display: flex; justify-content: space-between; padding: 11px 14px; border-bottom: 1px solid var(--color-border); color: var(--color-text-secondary); font-size: 13px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; padding: 14px; }
 .card { min-width: 0; display: grid; gap: 5px; padding-bottom: 8px; color: var(--color-text-secondary); font-size: 12px; }
@@ -57,11 +118,14 @@
 .offline { position: absolute; right: 7px; bottom: 7px; padding: 3px 7px; border-radius: 999px; background: rgba(0, 0, 0, .7); color: white; }
 .pagination { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 12px; border-top: 1px solid var(--color-border); }
 @media (max-width: 1000px) {
-  .filters { grid-template-columns: repeat(3, 1fr); }
+  .filters, .advancedFilters { grid-template-columns: repeat(2, 1fr); }
   .layout { grid-template-columns: 220px minmax(0, 1fr); }
 }
 @media (max-width: 760px) {
   .page { padding: 18px; }
   .header { flex-direction: column; }
-  .filters, .layout { grid-template-columns: 1fr; }
+  .workspaceSelectWrap, .workspaceSelect { width: 100%; }
+  .workspaceSelectWrap { margin-top: 0; }
+  .workspaceSelect { min-height: var(--control-height-md); border-radius: var(--radius-control); }
+  .filters, .advancedFilters, .layout { grid-template-columns: 1fr; }
 }

@@ -4,7 +4,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useTranslation } from '../../locales'
 import styles from './Sidebar.module.css'
 
-function HomeIcon() {
+export function HomeIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z" />
@@ -39,7 +39,7 @@ function LibraryIcon() {
   )
 }
 
-function JobsIcon() {
+export function JobsIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="12" r="9" />
@@ -48,7 +48,7 @@ function JobsIcon() {
   )
 }
 
-function PersonsIcon() {
+export function PersonsIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="9" cy="8" r="3.5" />

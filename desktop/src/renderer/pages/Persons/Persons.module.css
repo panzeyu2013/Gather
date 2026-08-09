@@ -1,6 +1,7 @@
 .page {
-  max-width: 960px;
+  max-width: 1040px;
   margin: 0 auto;
+  padding: 32px clamp(20px, 4vw, 48px) 56px;
 }
 
 .header {
@@ -24,26 +25,34 @@
 }
 
 .newBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  min-height: var(--control-height-md);
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border: none;
-  border-radius: 6px;
-  padding: 10px 20px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s;
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--color-primary) 18%, transparent);
+  transition: background var(--transition-control), transform var(--transition-control), box-shadow var(--transition-control);
 }
 
 .newBtn:hover {
   background: var(--color-primary-hover);
+  transform: translateY(-1px);
 }
 
 .searchInput {
+  min-height: var(--control-height-md);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  padding: 0 14px;
   font-size: 14px;
   color: var(--color-text);
   min-width: 240px;
@@ -67,14 +76,38 @@
 }
 
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  padding: 48px 24px;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-surface) 74%, transparent);
   text-align: center;
-  padding: 80px 0;
   color: var(--color-text-secondary);
 }
 
 .emptyIcon {
-  font-size: 48px;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
   margin-bottom: 16px;
+  border-radius: 22px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.emptyIcon svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .emptyText {
@@ -89,6 +122,21 @@
   margin: 0;
 }
 
+.emptyAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height-md);
+  margin-top: 18px;
+  padding: 0 18px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-control);
+  color: var(--color-text-inverse);
+  background: var(--color-primary);
+  font-weight: 650;
+  cursor: pointer;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -96,9 +144,10 @@
 }
 
 .card {
+  display: block;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   padding: 0;
   text-align: left;
@@ -175,11 +224,12 @@
 }
 
 .input {
+  min-height: var(--control-height-md);
   width: 100%;
   background: var(--color-bg);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  padding: 0 14px;
   font-size: 14px;
   color: var(--color-text);
   outline: none;
@@ -198,21 +248,23 @@
 }
 
 .cancelBtn {
-  background: transparent;
+  min-height: var(--control-height-md);
+  background: var(--color-control);
   border: 1px solid var(--color-border);
   color: var(--color-text);
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
   font-size: 14px;
   cursor: pointer;
 }
 
 .submitBtn {
+  min-height: var(--control-height-md);
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -221,4 +273,22 @@
 .submitBtn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+@media (max-width: 680px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .actions,
+  .searchInput {
+    width: 100%;
+  }
+
+  .newBtn {
+    flex-shrink: 0;
+    min-width: 112px;
+  }
 }

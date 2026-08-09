@@ -5,6 +5,7 @@ import { imageApi } from '../../api/image'
 import type { PersonData } from '@gather/shared'
 import Dialog from '../../components/Dialog/Dialog'
 import { useTranslation } from '../../locales'
+import { PersonsIcon } from '../../components/Layout/Sidebar'
 import styles from './Persons.module.css'
 
 function PersonAvatar({ person }: { person: PersonData }) {
@@ -67,29 +68,37 @@ export default function PersonsPage() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h1 className={styles.title}>{t('persons.title')}</h1>
-        <div className={styles.actions}>
-          <input
-            className={styles.searchInput}
-            type="text"
-            placeholder={t('persons.searchPlaceholder')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <button className={styles.newBtn} onClick={() => setShowNewDialog(true)}>
-            {t('persons.new')}
-          </button>
-        </div>
+        {persons.length > 0 && (
+          <div className={styles.actions}>
+            <input
+              className={styles.searchInput}
+              type="text"
+              placeholder={t('persons.searchPlaceholder')}
+              aria-label={t('persons.searchPlaceholder')}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <button className={styles.newBtn} onClick={() => setShowNewDialog(true)}>
+              {t('persons.new')}
+            </button>
+          </div>
+        )}
       </div>
 
       {filtered.length === 0 ? (
         <div className={styles.empty}>
-          <div className={styles.emptyIcon}>&#128100;</div>
+          <div className={styles.emptyIcon} aria-hidden="true"><PersonsIcon /></div>
           <p className={styles.emptyText}>
             {search.trim() ? t('persons.noMatch') : t('persons.emptyTitle')}
           </p>
           <p className={styles.emptyHint}>
             {search.trim() ? t('persons.noMatchHint') : t('persons.emptyHint')}
           </p>
+          {!search.trim() && (
+            <button className={styles.emptyAction} onClick={() => setShowNewDialog(true)}>
+              {t('persons.new')}
+            </button>
+          )}
         </div>
       ) : (
         <div className={styles.grid}>
@@ -116,8 +125,9 @@ export default function PersonsPage() {
 
       <Dialog open={showNewDialog} onClose={() => setShowNewDialog(false)} title={t('persons.newDialogTitle')}>
         <div className={styles.formGroup}>
-          <label className={styles.label}>{t('persons.name')}</label>
+          <label className={styles.label} htmlFor="person-name">{t('persons.name')}</label>
           <input
+            id="person-name"
             className={styles.input}
             type="text"
             value={newName}

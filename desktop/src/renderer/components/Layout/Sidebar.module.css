@@ -90,14 +90,14 @@
 }
 
 .navLink:hover {
-  background: var(--color-hover);
+  background: color-mix(in srgb, var(--color-primary) 5%, transparent);
   color: var(--color-text);
-  transform: translateY(-1px);
 }
 
 .active {
   color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 11%, var(--color-surface));
+  background: var(--color-primary-soft);
+  font-weight: 700;
 }
 
 .active::before {
@@ -105,9 +105,10 @@
   top: 14px;
   bottom: 14px;
   left: -10px;
-  width: 3px;
+  width: 4px;
   border-radius: 0 3px 3px 0;
   background: var(--color-primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 10%, transparent);
   content: '';
 }
 

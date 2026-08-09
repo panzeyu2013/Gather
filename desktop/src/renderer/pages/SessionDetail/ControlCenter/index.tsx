@@ -1,12 +1,12 @@
 import React, { useCallback, Fragment } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { sessionApi } from '../../../api/session'
 import { jobsApi } from '../../../api/jobs'
 import { indexerApi } from '../../../api/indexer'
 import { useWorkspaceStatus } from '../../../hooks/useWorkspaceStatus'
 import { useToastStore } from '../../../components/Toast/ToastStore'
-import { useTranslation, type TranslationKey } from '../../../locales'
+import { useTranslation } from '../../../locales'
 import { translateError } from '../../../utils/errors'
 import {
   deriveInboxItems,
@@ -16,15 +16,6 @@ import {
   type InboxItem,
 } from './workspace-view'
 import styles from './ControlCenter.module.css'
-
-const TOOLS: Array<{ to: string; labelKey: TranslationKey }> = [
-  { to: 'gallery', labelKey: 'workspace.gallery' },
-  { to: 'similarity', labelKey: 'workspace.similarity' },
-  { to: 'face-kw', labelKey: 'workspace.face' },
-  { to: 'duplicates', labelKey: 'workspace.duplicate' },
-  { to: 'culling', labelKey: 'workspace.culling' },
-  { to: 'export', labelKey: 'workspace.export' },
-]
 
 export default function ControlCenter() {
   const { sessionId = '' } = useParams<{ sessionId: string }>()
@@ -181,20 +172,6 @@ export default function ControlCenter() {
         </div>
       </section>
 
-      <section className={styles.card}>
-        <h3 className={styles.cardTitle}>{t('controlCenter.toolboxTitle')}</h3>
-        <div className={styles.toolbox}>
-          {TOOLS.map((tool) => (
-            <Link
-              key={tool.to}
-              to={`/sessions/${sessionId}/${tool.to}`}
-              className={styles.toolChip}
-            >
-              {t(tool.labelKey)}
-            </Link>
-          ))}
-        </div>
-      </section>
     </div>
   )
 }

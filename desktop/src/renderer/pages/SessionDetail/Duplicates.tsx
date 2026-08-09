@@ -157,6 +157,13 @@ export default function Duplicates() {
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [visualThreshold, setVisualThreshold] = useState(4)
+  const activePreset = visualThreshold === 2
+    ? 'strict'
+    : visualThreshold === 4
+      ? 'balanced'
+      : visualThreshold === 7
+        ? 'loose'
+        : null
 
   const loadGroups = useCallback(async () => {
     if (!sessionId) return
@@ -298,19 +305,44 @@ export default function Duplicates() {
 
       <div className={styles.panel}>
         <div className={styles.controlRow}>
-          <label className={styles.controlLabel}>
-            {t('duplicate.visualThreshold')}: <strong>{visualThreshold}</strong>
-          </label>
-          <input
-            type="range"
-            min={0}
-            max={10}
-            value={visualThreshold}
-            onChange={(e) => setVisualThreshold(Number(e.target.value))}
-            className={styles.slider}
-          />
-          <span className={styles.rangeHint}>{t('duplicate.rangeHint')}</span>
+          <span className={styles.controlLabel}>{t('analysisPreset.label')}</span>
+          <div className={styles.presetSelector}>
+            {(['strict', 'balanced', 'loose'] as const).map((preset) => (
+              <button
+                type="button"
+                key={preset}
+                className={activePreset === preset ? styles.presetActive : styles.presetButton}
+                aria-pressed={activePreset === preset}
+                disabled={scanning}
+                onClick={() => setVisualThreshold(preset === 'strict' ? 2 : preset === 'balanced' ? 4 : 7)}
+              >
+                {t(`analysisPreset.${preset}`)}
+              </button>
+            ))}
+          </div>
+          <span className={styles.rangeHint}>{t('duplicate.presetHint')}</span>
         </div>
+
+        <details className={styles.advancedSettings}>
+          <summary>{t('analysisPreset.advanced')}</summary>
+          <div className={styles.advancedSettingsBody}>
+            <label className={styles.controlLabel} htmlFor="duplicate-visual-threshold">
+              {t('duplicate.visualThreshold')}: <strong>{visualThreshold}</strong>
+            </label>
+            <input
+              id="duplicate-visual-threshold"
+              type="range"
+              min={0}
+              max={10}
+              value={visualThreshold}
+              onChange={(e) => setVisualThreshold(Number(e.target.value))}
+              className={styles.slider}
+            />
+            <span className={styles.rangeHint}>{t('duplicate.rangeHint')}</span>
+          </div>
+        </details>
+
+        <p className={styles.scanExplanation}>{t('duplicate.scanExplanation')}</p>
 
         <button
           className={styles.scanBtn}

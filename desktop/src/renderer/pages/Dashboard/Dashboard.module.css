@@ -30,19 +30,31 @@
 }
 
 .newBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  min-height: var(--control-height-md);
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border: none;
-  border-radius: 6px;
-  padding: 10px 20px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s;
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--color-primary) 18%, transparent);
+  transition: background var(--transition-control), box-shadow var(--transition-control), transform var(--transition-control);
 }
 
 .newBtn:hover {
   background: var(--color-primary-hover);
+  box-shadow: 0 9px 20px color-mix(in srgb, var(--color-primary) 22%, transparent);
+  transform: translateY(-1px);
+}
+
+.newBtn:active {
+  transform: translateY(0);
 }
 
 /* ── Session cards ── */
@@ -54,6 +66,7 @@
 }
 
 .card {
+  position: relative;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -71,10 +84,23 @@
   transform: translateY(-1px);
 }
 
-.cardInfo {
+.cardOpen:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 80%, white);
+  outline-offset: 3px;
+}
+
+.cardOpen {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .cardName {
@@ -93,25 +119,53 @@
 }
 
 .cardActions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.actionBtn {
-  background: transparent;
+.actionMenu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 112px;
+  padding: 6px;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 6px 12px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow-md);
+}
+
+.actionMenu .deleteBtn {
+  width: 100%;
+  justify-content: flex-start;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.actionBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height-sm);
+  background: var(--color-control);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 0 13px;
   font-size: 12px;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.15s;
+  box-shadow: 0 1px 2px rgba(61, 56, 51, 0.04);
+  transition: color var(--transition-control), border-color var(--transition-control), background var(--transition-control), transform var(--transition-control);
 }
 
 .actionBtn:hover {
   border-color: var(--color-primary);
+  background: var(--color-primary-soft);
   color: var(--color-primary);
+  transform: translateY(-1px);
 }
 
 .deleteBtn {
@@ -132,9 +186,24 @@
 }
 
 .emptyIcon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.4;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  border-radius: 22px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.emptyIcon svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .emptyText {
@@ -163,10 +232,11 @@
 }
 
 .input {
+  min-height: var(--control-height-md);
   width: 100%;
-  padding: 8px 12px;
+  padding: 0 13px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--color-bg);
   color: var(--color-text);
   font-size: 14px;
@@ -185,10 +255,11 @@
 }
 
 .folderInput {
+  min-height: var(--control-height-md);
   flex: 1;
-  padding: 8px 12px;
+  padding: 0 13px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--color-bg);
   color: var(--color-text);
   font-size: 13px;
@@ -197,11 +268,15 @@
 }
 
 .folderBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height-md);
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border: none;
-  border-radius: 6px;
-  padding: 8px 14px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -285,21 +360,29 @@
 }
 
 .cancelBtn {
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height-md);
+  background: var(--color-control);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
   font-size: 13px;
   color: var(--color-text-secondary);
   cursor: pointer;
 }
 
 .submitBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height-md);
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -338,11 +421,17 @@
 }
 
 .multiSelectBtn {
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  min-height: var(--control-height-md);
+  background: var(--color-control);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 13px;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
@@ -354,9 +443,10 @@
 }
 
 .cancelSelectBtn {
+  min-height: var(--control-height-md);
   background: transparent;
   border: none;
-  padding: 6px 10px;
+  padding: 0 12px;
   font-size: 13px;
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -367,10 +457,11 @@
 }
 
 .batchDeleteBtn {
-  background: transparent;
+  min-height: var(--control-height-md);
+  background: var(--color-control);
   border: 1px solid var(--color-error);
-  border-radius: 6px;
-  padding: 6px 14px;
+  border-radius: var(--radius-control);
+  padding: 0 15px;
   font-size: 13px;
   color: var(--color-error);
   cursor: pointer;
@@ -400,8 +491,15 @@
   }
 
   .headerActions {
-    flex-direction: column-reverse;
-    align-items: flex-end;
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .headerActions > *,
+  .newBtn,
+  .multiSelectBtn {
+    flex: 1;
+    min-width: 0;
   }
 
   .card {

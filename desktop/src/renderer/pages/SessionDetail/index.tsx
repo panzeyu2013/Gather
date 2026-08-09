@@ -125,7 +125,7 @@ export default function SessionDetail() {
 
   return (
     <div className={styles.container}>
-      <header className={`${styles.sessionHeader} ${isCulling ? styles.workbenchHeader : ''}`}>
+      <header className={`${styles.sessionHeader} ${styles.workbenchHeader}`}>
         <div className={styles.sessionIdentity}>
           <Link to="/" className={styles.backLink} aria-label={t('session.header.back')} title={t('session.header.back')}>←</Link>
           <div className={styles.sessionTitleGroup}>

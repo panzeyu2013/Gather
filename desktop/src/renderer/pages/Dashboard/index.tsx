@@ -24,6 +24,7 @@ import {
 } from '../../utils/c1-preflight'
 import { useTranslation, type TranslationKey } from '../../locales'
 import { translateError } from '../../utils/errors'
+import { HomeIcon } from '../../components/Layout/Sidebar'
 import styles from './Dashboard.module.css'
 
 export { getCommonParentPath, getPathBasename } from '../../utils/session-paths'
@@ -75,6 +76,7 @@ export default function Dashboard() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false)
   const [selectMode, setSelectMode] = useState(false)
+  const [menuSessionId, setMenuSessionId] = useState<string | null>(null)
   const selectAllRef = useRef<HTMLInputElement>(null)
   // Capture One 导入预检（2.3.5 P1）：进入选择前先跑 c1:health 四格检查，
   // 失败时内联展示引导，不调用 getSelectedPhotos。
@@ -429,7 +431,7 @@ export default function Dashboard() {
 
       {!sessions || sessions.length === 0 ? (
         <div className={styles.empty}>
-          <div className={styles.emptyIcon}>&#128247;</div>
+          <div className={styles.emptyIcon} aria-hidden="true"><HomeIcon /></div>
           <p className={styles.emptyText}>{t('dashboard.emptyText')}</p>
           <p className={styles.emptyHint}>
             {t('dashboard.emptyHint')}
@@ -439,27 +441,50 @@ export default function Dashboard() {
           <div>
             <div className={styles.list}>
               {sessions.map((s) => (
-                <div key={s.id} className={`${styles.card} ${selectedIds.has(s.id) ? styles.cardSelected : ''}`}>
-                  <div className={styles.cardInfo}>
+                <div
+                  key={s.id}
+                  className={`${styles.card} ${selectedIds.has(s.id) ? styles.cardSelected : ''}`}
+                >
+                  <button
+                    type="button"
+                    className={styles.cardOpen}
+                    aria-pressed={selectMode ? selectedIds.has(s.id) : undefined}
+                    aria-label={selectMode ? s.name : t('dashboard.openWorkspace', { name: s.name })}
+                    onClick={() => selectMode ? toggleSelect(s.id) : handleAnalyze(s)}
+                  >
                     <h3 className={styles.cardName}>{s.name}</h3>
                     <div className={styles.cardMeta}>
                       <Badge status={s.status} />
                       <span>{photoCountLabel(s)}</span>
-                      {deriveCardIndexKind(scanJobs.get(s.id)) === 'failed' && (
-                        <button className={styles.actionBtn} onClick={() => retryScan(s.id)}>
-                          {t('jobs.retry')}
-                        </button>
-                      )}
                       <span>{formatDate(s.createdAt)}</span>
                     </div>
-                  </div>
-                  <div className={styles.cardActions}>
+                  </button>
+                  <div className={styles.cardActions} onClick={event => event.stopPropagation()}>
+                    {deriveCardIndexKind(scanJobs.get(s.id)) === 'failed' && (
+                      <button className={styles.actionBtn} onClick={() => retryScan(s.id)}>
+                        {t('jobs.retry')}
+                      </button>
+                    )}
                     <button className={styles.actionBtn} onClick={() => handleAnalyze(s)}>
                       {t('dashboard.enter')}
                     </button>
-                    <button className={styles.deleteBtn} onClick={() => setDeleteTarget(s)}>
-                      {t('dashboard.delete')}
+                    <button
+                      className={styles.actionBtn}
+                      aria-expanded={menuSessionId === s.id}
+                      onClick={() => setMenuSessionId(current => current === s.id ? null : s.id)}
+                    >
+                      {t('dashboard.manage')}
                     </button>
+                    {menuSessionId === s.id && (
+                      <div className={styles.actionMenu}>
+                        <button className={styles.deleteBtn} onClick={() => {
+                          setMenuSessionId(null)
+                          setDeleteTarget(s)
+                        }}>
+                          {t('dashboard.delete')}
+                        </button>
+                      </div>
+                    )}
                     {selectMode && (
                       <span className={styles.cardCheckbox}>
                         <input

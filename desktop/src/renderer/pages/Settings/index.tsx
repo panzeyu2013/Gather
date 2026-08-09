@@ -105,9 +105,9 @@ export default function SettingsPage() {
   const setSetting = useSettingsStore((s) => s.setSetting)
   const resetToDefaults = useSettingsStore((s) => s.resetToDefaults)
 
-  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(GROUPS.map((g) => g.id).concat(FACE_SECTION_ID, LANGUAGE_ID)))
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set([LANGUAGE_ID]))
   const [openSubSections, setOpenSubSections] = useState<Set<string>>(new Set())
-  const [c1HealthOpen, setC1HealthOpen] = useState(true)
+  const [c1HealthOpen, setC1HealthOpen] = useState(false)
   const [language, setLanguage] = useState<AppLocale>(detectLanguage() as AppLocale)
   const languageSelectId = useId()
   const [downloadProgress, setDownloadProgress] = useState<{ filename: string; percent: number; phase?: string } | null>(null)
@@ -519,20 +519,23 @@ export default function SettingsPage() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h1 className={styles.title}>{t('settings.title')}</h1>
-        {dirty && <span className={styles.dirtyHint}>{t('settings.dirtyHint')}</span>}
-        <button className={styles.resetBtn} onClick={() => {
-          if (window.confirm(t('settings.resetConfirm'))) {
-            void handleResetToDefaults()
-          }
-        }}>
-          {t('settings.resetDefaults')}
-        </button>
+        <div className={styles.headerActions}>
+          {dirty && <span className={styles.dirtyHint}>{t('settings.dirtyHint')}</span>}
+          <button className={styles.resetBtn} onClick={() => {
+            if (window.confirm(t('settings.resetConfirm'))) {
+              void handleResetToDefaults()
+            }
+          }}>
+            {t('settings.resetDefaults')}
+          </button>
+        </div>
       </div>
 
       <div className={styles.section}>
         <button
           className={styles.sectionHeader}
           onClick={() => setC1HealthOpen((open) => !open)}
+          aria-expanded={c1HealthOpen}
         >
           <span className={`${styles.chevron} ${c1HealthOpen ? styles.chevronOpen : ''}`}>
             &#9654;
@@ -550,6 +553,7 @@ export default function SettingsPage() {
         <button
           className={styles.sectionHeader}
           onClick={() => toggleSection(LANGUAGE_ID)}
+          aria-expanded={openSections.has(LANGUAGE_ID)}
         >
           <span className={`${styles.chevron} ${openSections.has(LANGUAGE_ID) ? styles.chevronOpen : ''}`}>
             &#9654;
@@ -587,6 +591,7 @@ export default function SettingsPage() {
           <button
             className={styles.sectionHeader}
             onClick={() => toggleSection(group.id)}
+            aria-expanded={openSections.has(group.id)}
           >
             <span className={`${styles.chevron} ${openSections.has(group.id) ? styles.chevronOpen : ''}`}>
               &#9654;
@@ -605,11 +610,12 @@ export default function SettingsPage() {
                   return (
                     <div key={setting.key} className={styles.settingRow}>
                       <div className={styles.settingInfo}>
-                        <p className={styles.settingLabel}>{t(setting.labelKey)}</p>
+                        <label className={styles.settingLabel} htmlFor={`setting-${setting.key}`}>{t(setting.labelKey)}</label>
                         <p className={styles.settingDesc}>{parseSelectOptions(description).map(o => o.label).join(t('list.separator'))}</p>
                       </div>
                       <div className={styles.settingInput}>
                         <select
+                          id={`setting-${setting.key}`}
                           className={styles.select}
                           value={currentValue}
                           onChange={(e) => setSetting(setting.key, e.target.value)}
@@ -627,11 +633,12 @@ export default function SettingsPage() {
                 return (
                   <div key={setting.key} className={styles.settingRow}>
                     <div className={styles.settingInfo}>
-                      <p className={styles.settingLabel}>{t(setting.labelKey)}</p>
+                      <label className={styles.settingLabel} htmlFor={`setting-${setting.key}`}>{t(setting.labelKey)}</label>
                       <p className={styles.settingDesc}>{t(setting.descriptionKey)}</p>
                     </div>
                     <div className={styles.settingInput}>
                       <input
+                        id={`setting-${setting.key}`}
                         className={styles.input}
                         type={setting.type === 'number' ? 'number' : 'text'}
                         value={currentValue}

@@ -53,6 +53,25 @@ export default function StepAnalyze() {
 
   const [eps, setEps] = useState(0.6)
   const [minPts, setMinPts] = useState(3)
+  const activePreset = eps === 0.72 && minPts === 3
+    ? 'strict'
+    : eps === 0.6 && minPts === 3
+      ? 'balanced'
+      : eps === 0.5 && minPts === 2
+        ? 'loose'
+        : null
+  const applyPreset = (preset: 'strict' | 'balanced' | 'loose') => {
+    if (preset === 'strict') {
+      setEps(0.72)
+      setMinPts(3)
+    } else if (preset === 'balanced') {
+      setEps(0.6)
+      setMinPts(3)
+    } else {
+      setEps(0.5)
+      setMinPts(2)
+    }
+  }
   const [error, setError] = useState<string | null>(null)
   const [modelsStatus, setModelsStatus] = useState<FaceModelsStatusData | null>(null)
 
@@ -211,39 +230,65 @@ export default function StepAnalyze() {
 
       <div className={styles.panel}>
       <div className={styles.field}>
-        <label className={styles.label}>
-          {t('face.epsLabel')}
-        </label>
-        <input
-          type="range"
-          min="0.3"
-          max="0.95"
-          step="0.05"
-          value={eps}
-          onChange={(e) => setEps(parseFloat(e.target.value))}
-          disabled={isRunning}
-          className={styles.slider}
-          style={{
-            background: `linear-gradient(to right, var(--color-primary) 0%, var(--color-primary) ${((eps - 0.3) / 0.65) * 100}%, var(--color-border) ${((eps - 0.3) / 0.65) * 100}%, var(--color-border) 100%)`,
-          }}
-        />
-        <span className={styles.value}>{eps.toFixed(2)}</span>
+        <span className={styles.label}>{t('analysisPreset.label')}</span>
+        <div className={styles.presetSelector}>
+          {(['strict', 'balanced', 'loose'] as const).map((preset) => (
+            <button
+              type="button"
+              key={preset}
+              className={activePreset === preset ? styles.presetActive : styles.presetButton}
+              aria-pressed={activePreset === preset}
+              disabled={isRunning}
+              onClick={() => applyPreset(preset)}
+            >
+              {t(`analysisPreset.${preset}`)}
+            </button>
+          ))}
+        </div>
+        <p className={styles.fieldHint}>{t('face.presetHint')}</p>
       </div>
 
-      <div className={styles.field}>
-        <label className={styles.label}>
-          {t('face.minClusterLabel')}
-        </label>
-        <input
-          type="number"
-          min={2}
-          max={20}
-          value={minPts}
-          onChange={(e) => setMinPts(parseInt(e.target.value, 10) || 3)}
-          disabled={isRunning}
-          className={styles.numberInput}
-        />
-      </div>
+      <details className={styles.advancedSettings}>
+        <summary>{t('analysisPreset.advanced')}</summary>
+        <div className={styles.advancedSettingsBody}>
+          <div className={styles.field}>
+            <div className={styles.fieldHeading}>
+              <label className={styles.label} htmlFor="face-eps">{t('face.epsLabel')}</label>
+              <span className={styles.value}>{eps.toFixed(2)}</span>
+            </div>
+            <p className={styles.fieldHint}>{t('face.epsHint')}</p>
+            <input
+              id="face-eps"
+              type="range"
+              min="0.3"
+              max="0.95"
+              step="0.01"
+              value={eps}
+              onChange={(e) => setEps(parseFloat(e.target.value))}
+              disabled={isRunning}
+              className={styles.slider}
+              style={{
+                background: `linear-gradient(to right, var(--color-primary) 0%, var(--color-primary) ${((eps - 0.3) / 0.65) * 100}%, var(--color-border) ${((eps - 0.3) / 0.65) * 100}%, var(--color-border) 100%)`,
+              }}
+            />
+          </div>
+
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor="face-min-cluster">{t('face.minClusterLabel')}</label>
+            <p className={styles.fieldHint}>{t('face.minClusterHint')}</p>
+            <input
+              id="face-min-cluster"
+              type="number"
+              min={2}
+              max={20}
+              value={minPts}
+              onChange={(e) => setMinPts(parseInt(e.target.value, 10) || 3)}
+              disabled={isRunning}
+              className={styles.numberInput}
+            />
+          </div>
+        </div>
+      </details>
 
       {error && (
         <div className={styles.error}>

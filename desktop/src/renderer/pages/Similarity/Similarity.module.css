@@ -15,7 +15,8 @@
 .panel {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
   padding: 18px;
   margin-bottom: 16px;
 }
@@ -44,7 +45,7 @@
   gap: 3px;
   padding: 11px 12px;
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   color: var(--color-text);
   text-align: left;
   background: var(--color-bg);
@@ -64,7 +65,6 @@
 .modeActive {
   border-color: var(--color-primary);
   background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
-  box-shadow: inset 3px 0 var(--color-primary);
 }
 
 .controlLabel {
@@ -110,6 +110,52 @@
   margin-top: 4px;
 }
 
+.presetSelector {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.presetButton,
+.presetActive {
+  min-height: var(--control-height-md);
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius-control);
+  background: var(--color-control);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.presetButton:hover {
+  border-color: var(--color-primary);
+}
+
+.presetActive {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.advancedSettings {
+  margin: 0 0 16px;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.advancedSettings summary {
+  padding: 12px 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.advancedSettingsBody {
+  padding: 4px 0 2px;
+}
+
 .controlActions {
   display: flex;
   gap: 12px;
@@ -118,9 +164,13 @@
 
 .analyzeBtn,
 .reclusterBtn {
-  padding: 8px 20px;
+  display: inline-flex;
+  min-height: var(--control-height-md);
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--control-padding-x);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -130,6 +180,7 @@
 .analyzeBtn {
   background: var(--color-primary);
   color: var(--color-text-inverse);
+  box-shadow: var(--shadow-control);
 }
 
 .analyzeBtn:hover:not(:disabled) {
@@ -164,9 +215,13 @@
 }
 
 .cancelBtn {
-  padding: 6px 14px;
+  display: inline-flex;
+  min-height: var(--control-height-sm);
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--color-bg-secondary);
   color: var(--color-text);
   font-size: 13px;
@@ -214,7 +269,8 @@
 .groupCard {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
 
@@ -261,7 +317,7 @@
 .writebackPanel {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 20px;
   margin-bottom: 24px;
 }
@@ -299,7 +355,8 @@
   flex: 1;
   padding: 9px 12px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  min-height: var(--control-height-md);
+  border-radius: var(--radius-control);
   color: var(--color-text);
   background: var(--color-bg-secondary);
 }
@@ -361,7 +418,7 @@
   width: 64px;
   height: 64px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: 10px;
   flex-shrink: 0;
 }
 
@@ -408,7 +465,7 @@
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: 10px;
   background: var(--color-bg-secondary);
 }
 
@@ -432,7 +489,7 @@
   font-size: 11px;
   text-align: center;
   padding: 4px;
-  border-radius: 4px;
+  border-radius: 10px;
   overflow: hidden;
 }
 
