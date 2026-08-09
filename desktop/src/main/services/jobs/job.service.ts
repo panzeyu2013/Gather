@@ -1,7 +1,13 @@
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { AnalysisJobRepository } from '../../db/repositories/analysis-job.repo'
-import type { AnalysisJobStatus, JobCreateParams, JobProgressUpdate, AnalysisJobData } from '@gather/shared'
+import {
+  isGatherErrorCode,
+  type AnalysisJobStatus,
+  type JobCreateParams,
+  type JobProgressUpdate,
+  type AnalysisJobData,
+} from '@gather/shared'
 
 export interface JobRunContext {
   signal: AbortSignal
@@ -340,7 +346,9 @@ export class JobService {
           leaseOwner,
           cancelled ? 'cancelled' : 'failed',
           cancelled ? undefined : {
-            code: 'worker_error',
+            code: error instanceof Error && isGatherErrorCode(error.message)
+              ? error.message
+              : 'worker_error',
             message: error instanceof Error ? error.message : String(error),
           },
         )

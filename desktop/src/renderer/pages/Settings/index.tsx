@@ -5,6 +5,7 @@ import SliderInput from '../../components/SliderInput/SliderInput'
 import C1HealthPanel from './C1HealthPanel'
 import { settingsApi, type AppLocale } from '../../api/settings'
 import { useTranslation, detectLanguage, initI18n, type TranslationKey } from '../../locales'
+import { resetSettingsAndApplyLocale } from '../../utils/settings-locale'
 import { translatePhase } from '../../utils/progress'
 import styles from './Settings.module.css'
 
@@ -189,6 +190,19 @@ export default function SettingsPage() {
       setLanguage(value)
     } catch (err) {
       console.error('Failed to switch language:', err)
+    }
+  }
+
+  const handleResetToDefaults = async () => {
+    try {
+      const effective = await resetSettingsAndApplyLocale(
+        resetToDefaults,
+        () => window.gather.getAppLocale(),
+        initI18n,
+      )
+      setLanguage(effective)
+    } catch (err) {
+      console.error('Failed to reset settings:', err)
     }
   }
 
@@ -508,7 +522,7 @@ export default function SettingsPage() {
         {dirty && <span className={styles.dirtyHint}>{t('settings.dirtyHint')}</span>}
         <button className={styles.resetBtn} onClick={() => {
           if (window.confirm(t('settings.resetConfirm'))) {
-            resetToDefaults()
+            void handleResetToDefaults()
           }
         }}>
           {t('settings.resetDefaults')}

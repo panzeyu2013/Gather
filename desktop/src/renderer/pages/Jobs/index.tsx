@@ -4,6 +4,7 @@ import { jobsApi } from '../../api/jobs'
 import { useTranslation, type TranslationKey } from '../../locales'
 import { translateJobErrorMessage } from '../../utils/errors'
 import { translatePhase } from '../../utils/progress'
+import { isAnalysisJobClearable } from '../../utils/jobs'
 import styles from './Jobs.module.css'
 
 const STATUS_LABEL_KEYS: Record<string, TranslationKey> = {
@@ -37,7 +38,7 @@ export default function Jobs() {
       <header className={styles.header}>
         <div><p className={styles.eyebrow}>{t('jobs.eyebrow')}</p><h1>{t('jobs.title')}</h1><p className={styles.muted}>{t('jobs.subtitle')}</p></div>
         <button
-          disabled={action.isPending || !jobs.some(job => ['succeeded', 'cancelled'].includes(job.status))}
+          disabled={action.isPending || !jobs.some(isAnalysisJobClearable)}
           onClick={() => action.mutate({ id: '', type: 'clear' })}
         >
           {t('jobs.clearCompleted')}

@@ -24,6 +24,10 @@ export function registerSettingsHandlers(registry: CommandRegistry, svc: Setting
 
   registry.register('settings.reset', wrapHandler(async () => {
     svc.reset()
+    // Reset clears the persisted override, so immediately rebuild the native
+    // menu against the remaining --lang/system locale chain. The renderer
+    // reads the same effective locale after this command and switches i18next.
+    setAppLocale(effectiveAppLocale(svc.get('ui_language')))
     return ok(svc.getAll())
   }))
 

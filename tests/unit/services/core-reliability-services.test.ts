@@ -272,5 +272,29 @@ describe('core reliability services', () => {
     })
     await waitFor(() => repo.get(job.id)?.status === 'failed')
     await expect(jobs.waitForResult(job.id)).rejects.toThrow('boom')
+    expect(repo.get(job.id)?.errorCode).toBe('worker_error')
+  })
+
+  it('persists a recognized GatherErrorCode for a failed background job', async () => {
+    const repo = new FakeJobRepository()
+    const jobs = new JobService(repo as never)
+    services.push(jobs)
+    jobs.registerExecutor('duplicate.scan', async () => {
+      throw new Error('DUPLICATE_SCAN_BUSY')
+    })
+    jobs.start()
+
+    const job = jobs.create({
+      type: 'duplicate.scan',
+      scopeType: 'session',
+      scopeId: 'session',
+      dedupeKey: 'duplicate.scan:session',
+    })
+    await waitFor(() => repo.get(job.id)?.status === 'failed')
+
+    expect(repo.get(job.id)).toMatchObject({
+      errorCode: 'DUPLICATE_SCAN_BUSY',
+      errorMessage: 'DUPLICATE_SCAN_BUSY',
+    })
   })
 })
