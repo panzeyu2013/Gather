@@ -6,7 +6,9 @@ import type { SmartAlbumRepository } from '../db/repositories/smart-album.repo'
 
 function parseFilterCriteria(criteria: string | FilterGroup, schemaVersion = 1): FilterGroup {
   if (schemaVersion !== 1) {
-    throw new Error(`Unsupported filter schema version: ${schemaVersion}`)
+    const error = new Error('FILTER_SCHEMA_UNSUPPORTED')
+    ;(error as Error & { params?: Record<string, unknown> }).params = { version: schemaVersion }
+    throw error
   }
   // IPC params arrive as plain objects, so skip the JSON.stringify/parse
   // round-trip entirely; rows loaded from the DB are JSON strings and are
@@ -188,7 +190,7 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
     wrapHandler((params) => {
       const albumId = validateString(params.albumId, 'albumId')
       const row = repo.get(albumId)
-      if (!row) return err('Album not found')
+      if (!row) return err('ALBUM_NOT_FOUND')
       const criteria = parseFilterCriteria(row.filter_criteria, row.schema_version)
       const data: SmartAlbumDetailData = {
         id: row.id,
@@ -244,7 +246,7 @@ export function registerAlbumHandlers(registry: CommandRegistry, filterEngine: F
     wrapHandler((params) => {
       const albumId = validateString(params.albumId, 'albumId')
       const row = repo.get(albumId)
-      if (!row) return err('Album not found')
+      if (!row) return err('ALBUM_NOT_FOUND')
 
       const criteria = parseFilterCriteria(row.filter_criteria, row.schema_version)
       const limit = typeof params.limit === 'number' ? params.limit : undefined

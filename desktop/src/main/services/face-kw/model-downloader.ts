@@ -111,7 +111,7 @@ async function unzipFile(zipPath: string, destDir: string): Promise<void> {
     try {
       await execFileAsync('unzip', ['-o', zipPath, '-d', destDir])
     } catch {
-      throw new Error('Failed to extract model files. Please ensure "unzip" or "tar" is available on your system.')
+      throw new Error('MODEL_EXTRACT_FAILED')
     }
   }
 }

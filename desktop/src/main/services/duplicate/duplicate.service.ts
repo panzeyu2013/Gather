@@ -63,7 +63,7 @@ export class DuplicateService {
   ): Promise<DuplicateScanResult> {
     if (this.scanPromise) {
       if (this.scanSessionId === sessionId && this.scanThreshold === visualThreshold) return this.scanPromise
-      throw new Error('A scan is already in progress with different parameters')
+      throw new Error('DUPLICATE_SCAN_BUSY')
     }
 
     this.scanSessionId = sessionId

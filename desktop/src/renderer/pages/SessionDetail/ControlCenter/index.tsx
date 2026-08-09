@@ -148,6 +148,7 @@ export default function ControlCenter() {
             {inboxItems.map((item, i) => (
               <li key={`${item.kind}-${i}`} className={styles.inboxItem}>
                 <span className={styles.inboxLabel}>{item.label}</span>
+                {item.detail && <span className={styles.inboxDetail}>{item.detail}</span>}
                 <button
                   type="button"
                   className={styles.inboxAction}

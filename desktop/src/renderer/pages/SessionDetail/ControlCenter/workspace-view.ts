@@ -3,8 +3,9 @@
 // 进度、推荐下一步映射、C1 健康胶囊映射、工作区头部文案规范（3.3.3）。
 
 import type { WorkspaceStatus, WorkspaceStage } from '@gather/shared'
+import { isGatherErrorCode } from '@gather/shared'
 import type { C1SyncStateView } from '../../../api/captureOne'
-import { t as defaultT, type TypedTFunction } from '../../../locales'
+import { t as defaultT, type TranslationKey, type TypedTFunction } from '../../../locales'
 
 // ---------- Action Inbox（1.4.3） ----------
 
@@ -27,11 +28,14 @@ export interface InboxItem {
   label: string
   actionLabel: string
   action: InboxAction
+  /** Optional second line of copy; raw diagnostics never land here, only
+   * mapped error-code text (or null). */
+  detail?: string | null
 }
 
 export interface InboxFailedJobItem extends InboxItem {
   kind: 'job_failed'
-  job: { id: string; type: string; message: string }
+  job: { id: string; type: string; code: string; message: string }
 }
 
 export const MAX_FAILED_JOB_ROWS = 3
@@ -138,8 +142,12 @@ export function deriveInboxItems(
         kind: 'job_failed',
         label: translator('inbox.jobFailed.label', {
           type: jobTypeLabel(job.type, translator),
-          message: job.message,
         }),
+        // 错误码映射（4.4.2）：仅展示可翻译的错误码文本；原始诊断
+        // （worker_error/英文不变量）不落 UI 文案。
+        detail: isGatherErrorCode(job.code)
+          ? translator([`error.${job.code}` as TranslationKey, 'inbox.jobFailed.detailGeneric'])
+          : null,
         actionLabel: translator('inbox.action.retry'),
         action: { type: 'retry-job', jobId: job.id },
         job,

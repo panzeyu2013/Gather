@@ -100,7 +100,7 @@ export class QualityService {
       context?.updateProgress({
         current,
         total: photos.length,
-        message: '正在分析技术质量',
+        message: 'quality.scoring',
         // Keep the job's creation checkpoint alive: the executor resumes a
         // subset run from checkpoint.photoIds, so a checkpoint update that
         // dropped it would make an interrupted run re-analyze the whole
@@ -219,7 +219,7 @@ export class QualityService {
               inputFingerprint,
               updatedAt: new Date().toISOString(),
             }
-            if (!assetFileId) throw new Error('Photo has no indexed asset file')
+            if (!assetFileId) throw new Error('QUALITY_NO_ASSET_FILE')
             insert = {
               photoId: photo.id,
               assetFileId,

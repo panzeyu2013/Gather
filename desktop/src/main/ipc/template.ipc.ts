@@ -10,7 +10,7 @@ export function registerTemplateHandlers(registry: CommandRegistry, templateServ
       const name = validateString(params.name, 'name')
       const description = typeof params.description === 'string' ? params.description : ''
       if (!params.config || typeof params.config !== 'object') {
-        throw new Error('Invalid config: must be an object')
+        throw new Error('TEMPLATE_CONFIG_INVALID')
       }
       const template = templateService.create(name, description, params.config as WorkflowTemplateConfig)
       return ok(template)
@@ -29,7 +29,7 @@ export function registerTemplateHandlers(registry: CommandRegistry, templateServ
     wrapHandler(async (params) => {
       const templateId = validateString(params.templateId, 'templateId')
       const template = templateService.get(templateId)
-      if (!template) return err('Template not found')
+      if (!template) return err('TEMPLATE_NOT_FOUND')
       return ok(template)
     }),
   )
@@ -42,7 +42,7 @@ export function registerTemplateHandlers(registry: CommandRegistry, templateServ
       if (params.name !== undefined) fields.name = validateString(params.name, 'name')
       if (params.description !== undefined) fields.description = String(params.description)
       if (params.config !== undefined) {
-        if (typeof params.config !== 'object') throw new Error('Invalid config: must be an object')
+        if (typeof params.config !== 'object') throw new Error('TEMPLATE_CONFIG_INVALID')
         fields.config = params.config as WorkflowTemplateConfig
       }
       return ok(templateService.update(templateId, fields))
@@ -52,7 +52,7 @@ export function registerTemplateHandlers(registry: CommandRegistry, templateServ
   registry.register(
     'template.delete',
     wrapHandler(async (params) => {
-      if (params.confirmed !== true) throw new Error('template.delete requires confirmation')
+      if (params.confirmed !== true) throw new Error('TEMPLATE_DELETE_CONFIRM_REQUIRED')
       const templateId = validateString(params.templateId, 'templateId')
       templateService.delete(templateId)
       return ok({ done: true })
@@ -62,7 +62,7 @@ export function registerTemplateHandlers(registry: CommandRegistry, templateServ
   registry.register(
     'template.apply',
     wrapHandler(async (params) => {
-      if (params.confirmed !== true) throw new Error('template.apply requires confirmation')
+      if (params.confirmed !== true) throw new Error('TEMPLATE_APPLY_CONFIRM_REQUIRED')
       const templateId = validateString(params.templateId, 'templateId')
       const sessionId = validateString(params.sessionId, 'sessionId')
       templateService.apply(templateId, sessionId)

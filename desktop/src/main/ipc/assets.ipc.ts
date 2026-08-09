@@ -13,12 +13,12 @@ export function registerAssetHandlers(
     return ok(assets.listCandidates(sessionId))
   }))
   registry.register('assets.accept_candidate', wrapHandler(async params => {
-    if (params.confirmed !== true) throw new Error('Accepting an Asset link requires confirmation')
+    if (params.confirmed !== true) throw new Error('ASSET_LINK_ACCEPT_CONFIRM_REQUIRED')
     assets.acceptCandidate(validateString(params.candidateId, 'candidateId'))
     return ok(true)
   }))
   registry.register('assets.reject_candidate', wrapHandler(async params => {
-    if (params.confirmed !== true) throw new Error('Rejecting an Asset link requires confirmation')
+    if (params.confirmed !== true) throw new Error('ASSET_LINK_REJECT_CONFIRM_REQUIRED')
     assets.rejectCandidate(validateString(params.candidateId, 'candidateId'))
     return ok(true)
   }))
@@ -26,7 +26,7 @@ export function registerAssetHandlers(
     return ok(assets.listVolumes())
   }))
   registry.register('assets.relink_root', wrapHandler(async params => {
-    if (params.confirmed !== true) throw new Error('Relinking an Asset root requires confirmation')
+    if (params.confirmed !== true) throw new Error('ASSET_RELINK_CONFIRM_REQUIRED')
     return ok(assets.relinkRoot(
       validateString(params.oldRoot, 'oldRoot'),
       validateString(params.newRoot, 'newRoot'),

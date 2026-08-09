@@ -2,7 +2,7 @@ import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { jobsApi } from '../../api/jobs'
 import { useTranslation, type TranslationKey } from '../../locales'
-import { translateErrorCode } from '../../utils/errors'
+import { translateJobErrorMessage } from '../../utils/errors'
 import { translatePhase } from '../../utils/progress'
 import styles from './Jobs.module.css'
 
@@ -54,7 +54,7 @@ export default function Jobs() {
               <small>{t('jobs.attempts', { count: job.attemptCount })}</small>
               {job.errorMessage && (
                 <small className={styles.error} title={job.errorMessage}>
-                  {translateErrorCode(job.errorMessage)}
+                  {translateJobErrorMessage(job.errorMessage, t)}
                 </small>
               )}
             </div>

@@ -342,7 +342,7 @@ describe('WorkspaceStatusService recommendedNext priority', () => {
     const status = service.getStatus(sessionId)!
     expect(status.recommendedNext).toEqual({ action: 'retry_jobs', target: 'jobs' })
     expect(status.failedJobs).toEqual([
-      { id: 'job-1', type: 'quality.score', message: 'boom' },
+      { id: 'job-1', type: 'quality.score', code: '', message: 'boom' },
     ])
   })
 
@@ -420,7 +420,7 @@ describe('WorkspaceStatusService soft flags and counts', () => {
     expect(status.xmp).toEqual({ pending: 3, conflict: 4 })
   })
 
-  it('prefers error_message over error_code for failed job messages', () => {
+  it('returns error_code and error_message separately for failed jobs', () => {
     const { db, service, sessionId } = build()
     addPhoto(db, sessionId, 'photo-1')
     addJob(db, sessionId, {
@@ -440,8 +440,8 @@ describe('WorkspaceStatusService soft flags and counts', () => {
     })
     const status = service.getStatus(sessionId)!
     expect(status.failedJobs).toEqual([
-      { id: 'job-2', type: 'thumbnail.build', message: 'worker_error' },
-      { id: 'job-1', type: 'export.execute', message: 'disk full' },
+      { id: 'job-2', type: 'thumbnail.build', code: 'worker_error', message: '' },
+      { id: 'job-1', type: 'export.execute', code: 'worker_error', message: 'disk full' },
     ])
   })
 })
@@ -496,7 +496,7 @@ describe('WorkspaceStatusService clear_completed stage-evidence protection', () 
     // "index failed" seed), so it must survive clearing and stay in failedJobs;
     // the quality row is not stage evidence and is cleared normally.
     expect(status.failedJobs).toEqual([
-      { id: 'scan-1', type: 'metadata.scan', message: 'io' },
+      { id: 'scan-1', type: 'metadata.scan', code: '', message: 'io' },
     ])
     expect(status.indexing.status).toBe('failed')
   })

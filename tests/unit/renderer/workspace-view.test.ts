@@ -27,7 +27,8 @@ const zh: TypedTFunction = ((key: any, options?: Record<string, unknown>) => {
     'inbox.xmpPending.label': (o) => `${o.count} 个 XMP 待写入`,
     'inbox.xmpPending.action': () => '检查',
     'inbox.offlinePhotos.label': (o) => `${o.count} 张照片离线（源文件不可读）`,
-    'inbox.jobFailed.label': (o) => `${o.type}任务失败：${o.message}`,
+    'inbox.jobFailed.label': (o) => `${o.type}任务失败`,
+    'inbox.jobFailed.detailGeneric': () => '查看任务列表了解详情',
     'inbox.exportPending.label': () => '已挑片但尚未导出',
     'inbox.exportPending.action': () => '去导出',
     'inbox.action.analyze': () => '重新分析',
@@ -132,10 +133,10 @@ describe('deriveInboxItems — priority order + 判定 (design 1.4.3)', () => {
       staleAnalyses: [{ kind: 'similarity', lastRunAt: '2026-01-01T00:00:00.000Z' }],
       offlinePhotos: 4,
       failedJobs: [
-        { id: 'j1', type: 'similarity.analyze', message: 'timeout' },
-        { id: 'j2', type: 'export.execute', message: 'disk full' },
-        { id: 'j3', type: 'dup.scan', message: 'oom' },
-        { id: 'j4', type: 'metadata.scan', message: 'io' },
+        { id: 'j1', type: 'similarity.analyze', code: 'worker_error', message: 'timeout' },
+        { id: 'j2', type: 'export.execute', code: 'worker_error', message: 'disk full' },
+        { id: 'j3', type: 'dup.scan', code: 'worker_error', message: 'oom' },
+        { id: 'j4', type: 'metadata.scan', code: 'worker_error', message: 'io' },
       ],
       softFlags: { culled: true, exported: false },
     }), false, zh)
@@ -175,7 +176,7 @@ describe('deriveInboxItems — priority order + 判定 (design 1.4.3)', () => {
     const items = deriveInboxItems(status({
       stage: 'imported',
       indexing: { total: 0, done: 0, percent: 0, status: 'failed' },
-      failedJobs: [{ id: 'scan-1', type: 'metadata.scan', message: 'io' }],
+      failedJobs: [{ id: 'scan-1', type: 'metadata.scan', code: 'worker_error', message: 'io' }],
     }), false, zh)
     expect(items.map((i) => i.kind)).toEqual(['scan_incomplete', 'job_failed'])
   })
@@ -245,15 +246,27 @@ describe('deriveInboxItems — priority order + 判定 (design 1.4.3)', () => {
     })
   })
 
-  it('job_failed: retry action carries the job id, label maps job type', () => {
+  it('job_failed: retry action carries the job id, label maps job type, no raw message', () => {
     const items = deriveInboxItems(status({
-      failedJobs: [{ id: 'j9', type: 'similarity.analyze', message: 'worker timeout' }],
+      failedJobs: [{ id: 'j9', type: 'similarity.analyze', code: 'worker_error', message: 'worker timeout' }],
     }), false, zh)
     expect(items[0]).toMatchObject({
       kind: 'job_failed',
-      label: '相似度分析任务失败：worker timeout',
+      label: '相似度分析任务失败',
+      detail: null,
       actionLabel: '重试',
       action: { type: 'retry-job', jobId: 'j9' },
+    })
+  })
+
+  it('job_failed: mapped detail only when the job code is a GatherErrorCode', () => {
+    const items = deriveInboxItems(status({
+      failedJobs: [{ id: 'j10', type: 'dup.scan', code: 'DUPLICATE_SCAN_BUSY', message: 'A scan is already in progress' }],
+    }), false, zh)
+    expect(items[0]).toMatchObject({
+      kind: 'job_failed',
+      label: '重复扫描任务失败',
+      detail: 'error.DUPLICATE_SCAN_BUSY',
     })
   })
 

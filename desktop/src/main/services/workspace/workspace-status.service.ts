@@ -227,7 +227,8 @@ export class WorkspaceStatusService {
     return rows.map(row => ({
       id: row.id,
       type: row.type,
-      message: row.error_message || row.error_code || 'Unknown error',
+      code: row.error_code,
+      message: row.error_message,
     }))
   }
 

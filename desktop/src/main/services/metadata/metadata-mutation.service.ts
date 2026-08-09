@@ -44,7 +44,7 @@ export class MetadataMutationService {
   ): MetadataMutationResult {
     const resolved = this.assetResolver.resolve(sessionId, photoId)
     const dirtyFields = Object.keys(values).filter(field => ['rating', 'label', 'keywords'].includes(field)) as Array<'rating' | 'label' | 'keywords'>
-    if (dirtyFields.length === 0) throw new Error('Metadata mutation has no supported fields')
+    if (dirtyFields.length === 0) throw new Error('METADATA_MUTATION_EMPTY')
     const row = this.outboxRepo.mergePatch(
       resolved.xmpPath,
       sessionId,

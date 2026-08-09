@@ -27,6 +27,11 @@ export interface WorkspaceXmpCounts {
 export interface WorkspaceFailedJob {
   id: string
   type: string
+  /** Error code from the job row (GatherErrorCode when the executor threw
+   * one, otherwise an operational code like 'worker_error'). */
+  code: string
+  /** Raw diagnostic detail from the job row; never shown verbatim in UI
+   * copy, only in tooltips/diagnostics. */
   message: string
 }
 

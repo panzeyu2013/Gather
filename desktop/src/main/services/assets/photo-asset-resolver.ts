@@ -40,7 +40,7 @@ export class PhotoAssetResolver {
     `).get(photoId, sessionId) as ResolverRow | undefined
     if (!row) throw new Error('CULLING_PHOTO_NOT_IN_SESSION')
     const resolved = this.buildResolved(row, this.settings.get('asset_read_mode', 'dual'))
-    if (!resolved) throw new Error('Photo Asset migration is incomplete for this photo')
+    if (!resolved) throw new Error('ASSET_MIGRATION_INCOMPLETE')
     return resolved
   }
 

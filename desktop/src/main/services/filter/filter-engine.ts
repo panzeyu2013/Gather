@@ -32,7 +32,9 @@ function resolveField(rule: FilterRule): { prefix: string; col: string } {
   if (METADATA_FIELDS.has(rule.field)) {
     return { prefix: 'pmc', col: rule.field }
   }
-  throw new Error('Unknown filter field: ' + rule.field)
+  const error = new Error('FILTER_FIELD_UNKNOWN')
+  ;(error as Error & { params?: Record<string, unknown> }).params = { field: rule.field }
+  throw error
 }
 
 @injectable()

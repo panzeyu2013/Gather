@@ -162,7 +162,7 @@ export class SessionService {
 
   deleteSession(sessionId: string, confirmed: boolean): void {
     if (!confirmed) {
-      throw new Error('Deletion must be confirmed')
+      throw new Error('SESSION_DELETE_NOT_CONFIRMED')
     }
     const del = this.db.transaction(() => {
       this.deleteSessionDependencies(sessionId)
@@ -183,7 +183,7 @@ export class SessionService {
 
   deleteSessions(sessionIds: string[], confirmed: boolean): number {
     if (!confirmed) {
-      throw new Error('Deletion must be confirmed')
+      throw new Error('SESSION_DELETE_NOT_CONFIRMED')
     }
     const del = this.db.transaction((ids: string[]) => {
       for (const id of ids) {
@@ -225,7 +225,7 @@ export class SessionService {
   async addPhotos(sessionId: string, filepaths: string[], source: string): Promise<AddPhotoResult> {
     const session = this.sessionRepo.get(sessionId)
     if (!session) {
-      throw new Error('Session not found')
+      throw new Error('SESSION_NOT_FOUND')
     }
     const normalizedFilepaths = normalizeImportFilepaths(filepaths)
     if (!session.source_path && normalizedFilepaths.length >= 2) {

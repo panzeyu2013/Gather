@@ -60,7 +60,7 @@ export function registerPersonHandlers(registry: CommandRegistry, personRepo: Pe
     wrapHandler(async (params) => {
       const personId = validateString(params.personId, 'personId')
       const row = personRepo.get(personId)
-      if (!row) throw new Error('Person not found')
+      if (!row) throw new Error('PERSON_NOT_FOUND')
       const data = toPersonData(row)!
       const photosResult = personRepo.getPhotosWithDetails(personId)
       const photos: PersonPhotoItem[] = photosResult.photos.map((p) => ({
@@ -106,7 +106,7 @@ export function registerPersonHandlers(registry: CommandRegistry, personRepo: Pe
     'person.delete',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Delete requires explicit confirmation')
+        throw new Error('PERSON_DELETE_CONFIRM_REQUIRED')
       }
       const personId = validateString(params.personId, 'personId')
       personRepo.delete(personId)
@@ -118,7 +118,7 @@ export function registerPersonHandlers(registry: CommandRegistry, personRepo: Pe
     'person.merge',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('Merge requires explicit confirmation')
+        throw new Error('PERSON_MERGE_CONFIRM_REQUIRED')
       }
       const sourceId = validateString(params.sourceId, 'sourceId')
       const targetId = validateString(params.targetId, 'targetId')
@@ -131,7 +131,7 @@ export function registerPersonHandlers(registry: CommandRegistry, personRepo: Pe
     'person.remove_photo',
     wrapHandler(async (params) => {
       if (params.confirmed !== true) {
-        throw new Error('person.remove_photo requires confirmation')
+        throw new Error('PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED')
       }
       const personId = validateString(params.personId, 'personId')
       const photoId = validateString(params.photoId, 'photoId')

@@ -38,3 +38,19 @@ export function translateError(
   }
   return error instanceof Error ? error.message : String(error)
 }
+
+/**
+ * Map a persisted job failure (error_message column) for display: a
+ * GatherErrorCode is translated like any other code; anything else
+ * (operational diagnostics like 'worker_error', raw English invariants) must
+ * never be shown verbatim, so it degrades to the generic failure copy. The
+ * raw detail stays available for tooltips.
+ */
+export function translateJobErrorMessage(
+  message: string | null | undefined,
+  translator: TypedTFunction = defaultT,
+): string {
+  if (!message) return translator('error.unspecific')
+  if (isGatherErrorCode(message)) return translateErrorCode(message, translator)
+  return translator('error.unspecific')
+}

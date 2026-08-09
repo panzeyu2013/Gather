@@ -307,7 +307,7 @@ export class FaceKwService {
         }
         if (inferenceWorkers.length === 0) {
           // ADR-017: internal-invariant diagnostic (worker lifecycle).
-          throw new Error('Face inference workers failed to initialize')
+          throw new Error('FACE_WORKERS_INIT_FAILED')
         }
       }
 

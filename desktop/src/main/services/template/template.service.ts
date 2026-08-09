@@ -56,7 +56,7 @@ export class TemplateService {
     fields: Partial<{ name: string; description: string; config: WorkflowTemplateConfig }>,
   ): TemplateData {
     const existing = this.get(id)
-    if (!existing) throw new Error('Template not found')
+    if (!existing) throw new Error('TEMPLATE_NOT_FOUND')
 
     const now = new Date().toISOString()
     const sets: string[] = []
@@ -91,7 +91,7 @@ export class TemplateService {
 
   apply(templateId: string, sessionId: string): void {
     const template = this.get(templateId)
-    if (!template) throw new Error('Template not found')
+    if (!template) throw new Error('TEMPLATE_NOT_FOUND')
 
     const session = this.db.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined
     if (!session) throw new Error('SESSION_NOT_FOUND')
