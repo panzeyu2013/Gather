@@ -1,0 +1,209 @@
+{
+  "source": "desktop/src/main/services/image/decoders/fast-dimensions.ts",
+  "cases": [
+    {
+      "name": "jpeg-sof0",
+      "ext": ".jpg",
+      "dataBase64": "/9j/wAALCAB4APABIgAA",
+      "expected": [
+        240,
+        120
+      ]
+    },
+    {
+      "name": "jpeg-sof1",
+      "ext": ".jpeg",
+      "dataBase64": "/9j/wQALCABAAGABIgAA",
+      "expected": [
+        96,
+        64
+      ]
+    },
+    {
+      "name": "jpeg-sof2",
+      "ext": ".jpg",
+      "dataBase64": "/9j/wgALCAAwAEgBIgAA",
+      "expected": [
+        72,
+        48
+      ]
+    },
+    {
+      "name": "png-ihdr",
+      "ext": ".png",
+      "dataBase64": "iVBORw0KGgoAAAANSUhEUgAAAgAAAAHgCAYAAAAAAAAA",
+      "expected": [
+        512,
+        480
+      ]
+    },
+    {
+      "name": "gif87a",
+      "ext": ".gif",
+      "dataBase64": "R0lGODdhgABgAAAAAA==",
+      "expected": [
+        128,
+        96
+      ]
+    },
+    {
+      "name": "gif89a",
+      "ext": ".gif",
+      "dataBase64": "R0lGODlhQAHwAAAAAA==",
+      "expected": [
+        320,
+        240
+      ]
+    },
+    {
+      "name": "bmp",
+      "ext": ".bmp",
+      "dataBase64": "Qk0aAAAAAAAAADYAAAAoAAAAGAAAACAAAAA=",
+      "expected": [
+        24,
+        32
+      ]
+    },
+    {
+      "name": "bmp-negative-height",
+      "ext": ".bmp",
+      "dataBase64": "Qk0aAAAAAAAAADYAAAAoAAAAKAAAAND///8=",
+      "expected": [
+        40,
+        48
+      ]
+    },
+    {
+      "name": "webp-vp8",
+      "ext": ".webp",
+      "dataBase64": "UklGRh4AAABXRUJQVlA4IAoAAACdASqdASqAguAB",
+      "expected": [
+        640,
+        480
+      ]
+    },
+    {
+      "name": "webp-vp8l",
+      "ext": ".webp",
+      "dataBase64": "UklGRh4AAABXRUJQVlA4TAUAAAAvJIAFgAAAAAAA",
+      "expected": [
+        37,
+        23
+      ]
+    },
+    {
+      "name": "webp-vp8x",
+      "ext": ".webp",
+      "dataBase64": "UklGRh4AAABXRUJQVlA4WAoAeAAAQQAAAAAAAAAA",
+      "expected": [
+        121,
+        66
+      ]
+    },
+    {
+      "name": "tiff-ii",
+      "ext": ".tif",
+      "dataBase64": "SUkqAAgAAAACAAABAwABAAAAHgAAAAEBAwABAAAAFAAAAAAAAAA=",
+      "expected": [
+        30,
+        20
+      ]
+    },
+    {
+      "name": "tiff-mm",
+      "ext": ".tiff",
+      "dataBase64": "TU0AKgAAAAgAAgEAAAMAAAABABIAAAEBAAMAAAABACwAAAAAAAA=",
+      "expected": [
+        18,
+        44
+      ]
+    },
+    {
+      "name": "tiff-long-type",
+      "ext": ".tif",
+      "dataBase64": "SUkqAAgAAAACAAABBAABAAAALAEAAAEBBAABAAAALQEAAAAAAAA=",
+      "expected": [
+        300,
+        301
+      ]
+    },
+    {
+      "name": "too-short-11",
+      "ext": ".jpg",
+      "dataBase64": "/9j/wAALCAB4APA=",
+      "expected": null
+    },
+    {
+      "name": "unknown-magic",
+      "ext": ".jpg",
+      "dataBase64": "AAAAAAAAAAAAAAAA",
+      "expected": null
+    },
+    {
+      "name": "jpeg-sof-overlong",
+      "ext": ".jpg",
+      "dataBase64": "/9j/wAARCAB4APABIgAA",
+      "expected": null
+    },
+    {
+      "name": "jpeg-sof3-unsupported",
+      "ext": ".jpg",
+      "dataBase64": "/9j/wwALCAB4APABIgAA",
+      "expected": null
+    },
+    {
+      "name": "jpeg-zero-width-then-valid",
+      "ext": ".jpg",
+      "dataBase64": "/9j/wAALCAABAAABIgAA/9j/wQALCAACAAMBIgAA",
+      "expected": [
+        3,
+        2
+      ]
+    },
+    {
+      "name": "png-bad-ihdr",
+      "ext": ".png",
+      "dataBase64": "iVBORw0KGgoAAAANQUJDRAAAAAAAAAAAAAAAAAAAAAA=",
+      "expected": null
+    },
+    {
+      "name": "png-zero-width",
+      "ext": ".png",
+      "dataBase64": "iVBORw0KGgoAAAANSUhEUgAAAAAAAAAFCAYAAAAAAAAA",
+      "expected": null
+    },
+    {
+      "name": "bmp-zero-width",
+      "ext": ".bmp",
+      "dataBase64": "Qk0aAAAAAAAAADYAAAAoAAAAAAAAACAAAAA=",
+      "expected": null
+    },
+    {
+      "name": "tiff-offset-out-of-range",
+      "ext": ".tif",
+      "dataBase64": "SUkqABAAAAAAAAAAAAAAAA==",
+      "expected": null
+    },
+    {
+      "name": "webp-truncated",
+      "ext": ".webp",
+      "dataBase64": "UklGRhQAAABXRUJQVlA4IAQAAAA=",
+      "expected": null
+    },
+    {
+      "name": "ext-tiff-fallback",
+      "ext": ".tiff",
+      "dataBase64": "QUEAAAAAAAgAAgEAAAMAAAABAB4AAAEBAAMAAAABABQAAAAAAAA=",
+      "expected": [
+        30,
+        20
+      ]
+    },
+    {
+      "name": "ext-tif-null",
+      "ext": ".tif",
+      "dataBase64": "AAAAAAAAAAAAAAAA",
+      "expected": null
+    }
+  ]
+}
