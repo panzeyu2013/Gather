@@ -34,6 +34,10 @@ desktop/out/
 # Capture One SDK (downloaded reference, not committed)
 Capture*One*Plugin*SDK*/
 
+# Swift Package Manager
+.build/
+.swiftpm/
+
 .env*
 *.log
 .coverage
