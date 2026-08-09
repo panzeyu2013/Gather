@@ -329,10 +329,10 @@ WKWebView 桥、Xcode 签名打包。
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 2.1 | 解码 + 缩略图 | 待做 | — | — |
-| 2.2 | 人脸推理（Vision） | 待做 | — | — |
-| 2.3 | 哈希/聚类/向量移植 | 待做 | — | — |
-| 2.4 | 文件监控（NSFileCoordinator） | 待做 | — | — |
+| 2.1 | 解码 + 缩略图 | 部分完成 | 2026-08-09 | `Image/Dimensions.swift`（fast-dimensions 移植，26 case 对账）+ `Database/ImageCache.swift`（disk-cache 重写，SHA-256/LRU/TTL/对账启动逻辑，21 测试）+ helper `image:dimensions` 命令 + `image.service.ts` 改路由（GATHER_CORE_HELPER=1 优先、失败回退原路径，默认零变化）。**待 Mac**：`Image/RAWDecoder.swift`（CoreImage RAW 管线）、缩略图 `CGImageSourceCreateThumbnailAtIndex` |
+| 2.2 | 人脸推理（Vision） | 待做 | — | **需 macOS**：Detector/Encoder/Inference/Provider（Vision 框架）；Preprocessing 已移植（1.5 对账） |
+| 2.3 | 哈希/聚类/向量移植 | 已完成 | 2026-08-09 | `Similarity/Hash.swift`+`ClusterEngine.swift`（1.5 对账）+ `Face/Clusterer.swift`（DBSCAN+LSH 门，8 case 对账）+ `Face/VectorIndex.swift`（CosineHnswIndex+CosineLshIndex，topK 逐位一致/recall≥TS）+ `Face/Matcher.swift`（11 用例对账）+ `Services/JobScheduler.swift`（Actor 预算准入，排队取消）+ `AnalysisWorker.swift`（进度流/错误传播） |
+| 2.4 | 文件监控（NSFileCoordinator） | 待做 | — | **需 macOS**：`Watch/Coordinator.swift` |
 
 ### 10.4 Phase 3：宿主切换 + 领域服务与 UI 迁移
 

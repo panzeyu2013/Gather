@@ -67,6 +67,86 @@ struct HelperProtocolTests {
         #expect(session.photoCount == 12)
     }
 
+    // MARK: - image:dimensions
+
+    @Test func imageDimensionsReadsJpegHeader() throws {
+        // 冒烟便捷形态（payload 为普通 JSON 字符串）：合法 JPEG SOF0 头 → 240×120。
+        let line = #"{"id":"7","command":"image:dimensions","payload":"{\"ext\":\".jpg\",\"dataBase64\":\"/9j/wAALCAB4APABIgAA\"}"}"#
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(response.id == "7")
+        #expect(response.ok)
+        #expect(response.error == nil)
+        let result = try HelperWire.decode(ImageCommands.DimensionsResult.self, from: try #require(response.payload))
+        #expect(result == ImageCommands.DimensionsResult(width: 240, height: 120))
+    }
+
+    @Test func imageDimensionsStandardWireForm() throws {
+        // 标准形态（payload 为 base64 Data）：合法 PNG IHDR → 512×480。
+        let payload = Data(#"{"ext":".png","dataBase64":"iVBORw0KGgoAAAANSUhEUgAAAgAAAAHgCAYAAAAAAAAA"}"#.utf8)
+        let request = HelperRequest(id: "8", command: "image:dimensions", payload: payload)
+        let line = try #require(String(data: HelperWire.encode(request), encoding: .utf8))
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(response.id == "8")
+        #expect(response.ok)
+        #expect(response.error == nil)
+        let result = try HelperWire.decode(ImageCommands.DimensionsResult.self, from: try #require(response.payload))
+        #expect(result == ImageCommands.DimensionsResult(width: 512, height: 480))
+    }
+
+    @Test func imageDimensionsCorruptDataReturnsNullPayload() throws {
+        // 损坏数据（magic 不匹配）：尺寸不可读，ok=true + payload JSON null。
+        let line = #"{"id":"9","command":"image:dimensions","payload":"{\"ext\":\".jpg\",\"dataBase64\":\"AAAAAAAAAAAAAAAA\"}"}"#
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(response.id == "9")
+        #expect(response.ok)
+        #expect(response.error == nil)
+        #expect(response.payload == ImageCommands.dimensionsNullPayload)
+    }
+
+    @Test func imageDimensionsUnknownExtensionReturnsNullPayload() throws {
+        // 未知扩展且无匹配 magic（ext 兜底只认 .tif/.tiff）→ null。
+        let line = #"{"id":"10","command":"image:dimensions","payload":"{\"ext\":\".xyz\",\"dataBase64\":\"AAAAAAAAAAAAAAAA\"}"}"#
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(response.id == "10")
+        #expect(response.ok)
+        #expect(response.error == nil)
+        #expect(response.payload == ImageCommands.dimensionsNullPayload)
+    }
+
+    @Test func imageDimensionsExtIgnoredWhenMagicMatches() throws {
+        // 未知扩展但 JPEG magic 可识别：尺寸仍返回（与 TS detectFormat 语义一致）。
+        let line = #"{"id":"12","command":"image:dimensions","payload":"{\"ext\":\".xyz\",\"dataBase64\":\"/9j/wAALCAB4APABIgAA\"}"}"#
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(response.ok)
+        let result = try HelperWire.decode(ImageCommands.DimensionsResult.self, from: try #require(response.payload))
+        #expect(result == ImageCommands.DimensionsResult(width: 240, height: 120))
+    }
+
+    @Test func imageDimensionsMissingFieldReturnsError() throws {
+        // payload 缺 dataBase64 字段 → ok=false + error。
+        let line = #"{"id":"13","command":"image:dimensions","payload":"{\"ext\":\".jpg\"}"}"#
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(!response.ok)
+        #expect(response.id == "13")
+        #expect(response.error?.contains("image:dimensions") == true)
+    }
+
+    @Test func imageDimensionsInvalidBase64ReturnsError() throws {
+        // dataBase64 非法 → ok=false + error。
+        let line = #"{"id":"14","command":"image:dimensions","payload":"{\"ext\":\".jpg\",\"dataBase64\":\"%%%\"}"}"#
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(!response.ok)
+        #expect(response.id == "14")
+        #expect(response.error?.contains("image:dimensions") == true)
+    }
+
     // MARK: - 非法输入
 
     @Test func invalidJSONLineReturnsError() throws {

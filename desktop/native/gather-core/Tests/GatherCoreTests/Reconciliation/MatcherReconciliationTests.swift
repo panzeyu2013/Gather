@@ -1,0 +1,233 @@
+// desktop/native/gather-core/Tests/GatherCoreTests/Reconciliation/MatcherReconciliationTests.swift
+// face-matcher 对账测试（Phase 2 任务 2.3「face-matcher 移植」）。
+// fixture 由 scripts/reconciliation/generate-matcher-fixtures.mjs 生成（参照
+// 实现 = face-matcher.ts 全类照抄 + lsh-index.ts 的 CosineLshIndex，语料参照
+// tests/unit/services/face-kw/face-matcher.test.ts），本测试加载同一 JSON
+// 逐 case 比对：
+//   - matched：personId 精确相等、confidence 容差 1e-4、条数一致；
+//   - unmatched 下标数组精确相等；
+//   - 路径选择（exact/lsh）与 fixture 标注一致（@testable debugUsedLsh）。
+// 另附边界单元测试：空库、阈值边界（含等号）、零向量、维度不匹配、
+// invalidateCache、LSH vs 暴力扫描召回门（>= 0.95）。
+
+import Foundation
+import Testing
+@testable import GatherCore
+
+struct MatcherReconciliationTests {
+
+    // MARK: fixture
+
+    private struct Fixture: Decodable {
+        let seed: Int
+        let cases: [MatchCase]
+
+        struct MatchCase: Decodable {
+            let name: String
+            let path: String
+            let lshMinPoints: Int
+            let threshold: Double
+            let library: [LibraryRow]
+            let queries: [[Float]]
+            let expected: Expected
+        }
+
+        struct LibraryRow: Decodable {
+            let personId: String
+            let embedding: [Float]
+        }
+
+        struct Expected: Decodable {
+            let matched: [String: MatchValue]
+            let unmatched: [Int]
+        }
+
+        struct MatchValue: Decodable {
+            let personId: String
+            let confidence: Double
+        }
+    }
+
+    private static func loadFixture() throws -> Fixture {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures")
+            .appendingPathComponent("matcher-fixtures.json")
+        return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: file))
+    }
+
+    private static func makeMatcher(_ c: Fixture.MatchCase) -> FaceMatcher {
+        FaceMatcher(
+            library: c.library.map { LibraryEmbedding(personId: $0.personId, embedding: $0.embedding) },
+            lshMinPoints: c.lshMinPoints)
+    }
+
+    // MARK: 对账
+
+    @Test func matchResultsMatchFixture() throws {
+        let fixture = try Self.loadFixture()
+        #expect(!fixture.cases.isEmpty, "fixture 不应为空")
+        for c in fixture.cases {
+            let matcher = Self.makeMatcher(c)
+            let result = try matcher.matchAgainstLibrary(c.queries, threshold: c.threshold)
+            #expect(result.unmatched == c.expected.unmatched, "case \(c.name): unmatched 与 TS 不一致")
+            #expect(
+                result.matched.count == c.expected.matched.count,
+                "case \(c.name): matched 条数不一致（Swift=\(result.matched.count), TS=\(c.expected.matched.count)）")
+            for (key, expected) in c.expected.matched {
+                guard let queryIndex = Int(key) else {
+                    Issue.record("case \(c.name): 非法查询下标 key=\(key)")
+                    continue
+                }
+                let actual = result.matched[queryIndex]
+                #expect(actual != nil, "case \(c.name): query \(queryIndex) 缺失匹配")
+                if let actual {
+                    #expect(actual.personId == expected.personId, "case \(c.name): query \(queryIndex) personId 不一致")
+                    let deviation = abs(actual.confidence - expected.confidence)
+                    #expect(deviation < 1e-4, "case \(c.name): query \(queryIndex) confidence 偏差 \(deviation) >= 1e-4")
+                }
+            }
+            // 路径选择与 fixture 标注一致（空库不走任何分支，debugUsedLsh=false）
+            if c.path == "lsh" {
+                #expect(matcher.debugUsedLsh, "case \(c.name): 应走 LSH 分支")
+            } else {
+                #expect(!matcher.debugUsedLsh, "case \(c.name): 应走精确扫描分支")
+            }
+        }
+    }
+
+    // 同一 fixture 内 test-basis 双路径逐查询一致（precision 恒等）
+    @Test func bothPathsAgreeOnBasisCase() throws {
+        let fixture = try Self.loadFixture()
+        let lshCase = try #require(fixture.cases.first { $0.name == "test-basis-lsh" })
+        let exactCase = try #require(fixture.cases.first { $0.name == "test-basis-exact" })
+        let lsh = try Self.makeMatcher(lshCase).matchAgainstLibrary(lshCase.queries, threshold: lshCase.threshold)
+        let exact = try Self.makeMatcher(exactCase).matchAgainstLibrary(exactCase.queries, threshold: exactCase.threshold)
+        #expect(exact.matched.count == lsh.matched.count, "两路径 matched 条数不一致")
+        for (queryIndex, match) in lsh.matched {
+            let brute = exact.matched[queryIndex]
+            #expect(brute?.personId == match.personId, "query \(queryIndex): 两路径 personId 不一致")
+            if let brute {
+                #expect(abs(brute.confidence - match.confidence) < 1e-4, "query \(queryIndex): 两路径置信度偏差过大")
+            }
+        }
+        #expect(exact.unmatched == lsh.unmatched, "两路径 unmatched 不一致")
+    }
+
+    // synthetic-lsh：LSH 结果与同一数据的暴力扫描逐查询对齐
+    //（precision 恒等 + 召回 >= 0.95 任务门限）
+    @Test func lshMatchesBruteForceWithinRecallGate() throws {
+        let fixture = try Self.loadFixture()
+        let lshCase = try #require(fixture.cases.first { $0.name == "synthetic-lsh" })
+        let lshResult = try Self.makeMatcher(lshCase)
+            .matchAgainstLibrary(lshCase.queries, threshold: lshCase.threshold)
+        let bruteMatcher = FaceMatcher(
+            library: lshCase.library.map { LibraryEmbedding(personId: $0.personId, embedding: $0.embedding) },
+            lshMinPoints: Int.max)
+        let bruteResult = try bruteMatcher.matchAgainstLibrary(lshCase.queries, threshold: lshCase.threshold)
+
+        // precision 恒等：LSH 命中必须是暴力命中的子集（LSH 只收缩候选集）
+        for (queryIndex, match) in lshResult.matched {
+            #expect(
+                bruteResult.matched[queryIndex]?.personId == match.personId,
+                "query \(queryIndex): LSH 命中不在暴力结果中")
+        }
+        // 召回 >= 0.95
+        var agreed = 0
+        var total = 0
+        for (queryIndex, brute) in bruteResult.matched {
+            total += 1
+            if lshResult.matched[queryIndex]?.personId == brute.personId { agreed += 1 }
+        }
+        let recall = total > 0 ? Double(agreed) / Double(total) : 1
+        #expect(recall >= 0.95, "LSH 召回 \(recall) < 0.95 门限")
+        #expect(lshResult.matched.count >= 3, "fixture 应覆盖多条命中")
+        #expect(!lshResult.unmatched.isEmpty, "fixture 应覆盖未命中")
+    }
+
+    // MARK: 边界单元测试
+
+    // face-matcher.ts:71-76（空库全部 unmatched）
+    @Test func emptyLibraryReturnsAllUnmatched() throws {
+        let matcher = FaceMatcher(library: [])
+        let result = try matcher.matchAgainstLibrary(
+            [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+            threshold: 0.5)
+        #expect(result.matched.isEmpty)
+        #expect(result.unmatched == [0, 1])
+    }
+
+    // face-matcher.ts:116（bestScore >= threshold 才命中；正交查询余弦 0）
+    @Test func belowThresholdRemainsUnmatched() throws {
+        let matcher = FaceMatcher(library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])])
+        let result = try matcher.matchAgainstLibrary([[0, 1, 0, 0]], threshold: 0.9)
+        #expect(result.matched.isEmpty)
+        #expect(result.unmatched == [0])
+    }
+
+    // 阈值含等号：余弦恰 1.0 时 threshold=1.0 必须命中、略高必须未命中
+    @Test func thresholdBoundaryIsInclusive() throws {
+        let matcher = FaceMatcher(library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])])
+        let at = try matcher.matchAgainstLibrary([[1, 0, 0, 0]], threshold: 1.0)
+        #expect(at.matched[0]?.personId == "p1")
+        #expect(abs((at.matched[0]?.confidence ?? 0) - 1.0) < 1e-9)
+        let above = try matcher.matchAgainstLibrary([[1, 0, 0, 0]], threshold: 1.0 + 1e-6)
+        #expect(above.matched.isEmpty)
+        #expect(above.unmatched == [0])
+    }
+
+    // LSH 路径阈值含等号（lsh-index.ts:338 `score < threshold` 剔除）
+    @Test func lshPathThresholdBoundaryIsInclusive() throws {
+        let matcher = FaceMatcher(
+            library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])],
+            lshMinPoints: 0)
+        let result = try matcher.matchAgainstLibrary([[1, 0, 0, 0]], threshold: 1.0)
+        #expect(result.matched[0]?.personId == "p1")
+        #expect(abs((result.matched[0]?.confidence ?? 0) - 1.0) < 1e-9)
+    }
+
+    // 零向量：余弦为 0（face-matcher.ts:140 提前返回 0），阈值 > 0 不可能命中
+    @Test func zeroVectorIsUnmatched() throws {
+        let matcher = FaceMatcher(library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])])
+        let result = try matcher.matchAgainstLibrary([[0, 0, 0, 0]], threshold: 0.1)
+        #expect(result.matched.isEmpty)
+        #expect(result.unmatched == [0])
+    }
+
+    // 维度不匹配：精确路径 face-matcher.ts:129、LSH 路径 face-matcher.ts:82
+    @Test func rejectsVectorLengthMismatch() throws {
+        let exact = FaceMatcher(library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])])
+        #expect(throws: MatcherError.vectorLengthMismatch(expected: 4, received: 3)) {
+            _ = try exact.matchAgainstLibrary([[0.5, 0.5, 0.5]], threshold: 0.9)
+        }
+        let lsh = FaceMatcher(
+            library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])],
+            lshMinPoints: 0)
+        #expect(throws: MatcherError.vectorLengthMismatch(expected: 4, received: 5)) {
+            _ = try lsh.matchAgainstLibrary([[1, 0, 0, 0, 0]], threshold: 0.9)
+        }
+    }
+
+    // face-matcher.ts:57-61（invalidateCache 释放索引，下次匹配重建）
+    @Test func invalidateCacheResetsAndRebuilds() throws {
+        let matcher = FaceMatcher(
+            library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])],
+            lshMinPoints: 0)
+        let first = try matcher.matchAgainstLibrary([[1, 0, 0, 0]], threshold: 0.9)
+        #expect(first.matched[0] != nil)
+        #expect(matcher.debugUsedLsh, "lshMinPoints=0 时应建 LSH 索引")
+        matcher.invalidateCache()
+        #expect(!matcher.debugUsedLsh, "invalidateCache 后索引应释放")
+        let second = try matcher.matchAgainstLibrary([[1, 0, 0, 0]], threshold: 0.9)
+        #expect(second.matched[0] != nil, "失效后再次匹配应重建索引")
+        #expect(matcher.debugUsedLsh)
+    }
+
+    // 非单位查询（5 倍幅值）在精确路径下余弦仍正确（face-matcher.ts:70-77 测试场景）
+    @Test func exactPathNonUnitQueryScoresCorrectly() throws {
+        let matcher = FaceMatcher(library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])])
+        let result = try matcher.matchAgainstLibrary([[5, 0, 0, 0]], threshold: 0.99)
+        #expect(result.matched[0]?.personId == "p1")
+        #expect(abs((result.matched[0]?.confidence ?? 0) - 1.0) < 1e-9)
+    }
+}

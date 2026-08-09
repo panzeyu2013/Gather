@@ -45,6 +45,8 @@ public enum HelperProtocol {
                 return HelperResponse(id: request.id, ok: false, error: "session:mock payload encode failed")
             }
             return HelperResponse(id: request.id, ok: true, payload: payload)
+        case "image:dimensions":
+            return ImageCommands.dimensions(request: request)
         default:
             return HelperResponse(id: request.id, ok: false, error: "unknown command: \(request.command)")
         }

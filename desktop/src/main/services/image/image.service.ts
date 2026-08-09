@@ -10,6 +10,46 @@ import type { DecodeResult, ImageDecoder } from './decoder'
 import { injectable, inject } from '../../di/container'
 import { DI_TOKENS } from '../../di/container'
 import { heavyTaskScheduler } from '../../utils/heavy-task-scheduler'
+import { IMAGE_CONFIG } from './image-config'
+import { invoke } from '../helper/helper-client'
+
+// ── Native helper routing (Phase 2.1) ──
+
+// helper 尺寸读取只路由到与 fast-dimensions 语义完全一致的非 RAW 格式。
+// RAW 扩展在 sharp-decoder 中会对 fast-dimensions 结果叠加 EXIF 方向交换
+// （orientation 5-8 时交换宽高），该逻辑没有进 helper，RAW 保持原路径。
+const HELPER_DIMENSIONS_EXTENSIONS = new Set(
+  IMAGE_CONFIG.sharp.supportedExtensions.filter(
+    ext => !IMAGE_CONFIG.sharp.rawExtensions.includes(ext),
+  ),
+)
+// 与 sharp-decoder 的 HEADER_READ_SIZE 一致，保证喂给 helper 的输入字节与
+// 原 fast-dimensions 路径完全相同，语义零漂移（JPEG SOF 常落在 EXIF APP1
+// 段之后，256 字节往往不够；TIFF IFD 也可能超出 256 字节）。
+const HELPER_HEADER_READ_BYTES = 65536
+
+// 探测 helper 可用性：GATHER_CORE_HELPER=1 显式启用，且
+// GATHER_CORE_HELPER_PATH 指向存在的二进制（与 helper-client 的路径约定一致）。
+function helperDimensionsEnabled(): boolean {
+  if (process.env.GATHER_CORE_HELPER !== '1') return false
+  const helperPath = process.env.GATHER_CORE_HELPER_PATH
+  return helperPath !== undefined && helperPath !== '' && fs.existsSync(helperPath)
+}
+
+async function readFileHeader(filePath: string, size: number): Promise<Buffer | null> {
+  try {
+    const fd = await fs.promises.open(filePath, 'r')
+    try {
+      const buffer = Buffer.alloc(size)
+      const { bytesRead } = await fd.read(buffer, 0, size, 0)
+      return buffer.subarray(0, bytesRead)
+    } finally {
+      await fd.close()
+    }
+  } catch {
+    return null
+  }
+}
 
 // ── Cache interface ──
 
@@ -385,14 +425,14 @@ export class ImageService {
     const existing = this.dimensionsInFlight.get(path)
     if (existing) return existing
 
-    const pending = this.decodeLimiter.run(
-      () => heavyTaskScheduler.run(() => this.decodeWithFallback(
-        path,
-        'dimensions',
-        (decoder) => decoder.getDimensions(path),
-      ), 1),
-      1,
-    )
+    // helper 路由层优先（仅 GATHER_CORE_HELPER=1 且二进制存在时生效）；
+    // 任何失败/不可用都回退原解码器链，保持既有行为。
+    const pending = this.readDimensionsWithHelper(path)
+      .catch(() => null)
+      .then(async (helperDims) => {
+        if (helperDims) return helperDims
+        return this.decodeDimensionsWithFallback(path)
+      })
     this.dimensionsInFlight.set(path, pending)
     try {
       return await pending
@@ -401,6 +441,49 @@ export class ImageService {
         this.dimensionsInFlight.delete(path)
       }
     }
+  }
+
+  /** 原实现（默认路径）：解码器链（fast-dimensions → sharp/sips）取尺寸。 */
+  private async decodeDimensionsWithFallback(path: string): Promise<{ width: number; height: number }> {
+    return this.decodeLimiter.run(
+      () => heavyTaskScheduler.run(() => this.decodeWithFallback(
+        path,
+        'dimensions',
+        (decoder) => decoder.getDimensions(path),
+      ), 1),
+      1,
+    )
+  }
+
+  /** helper 路由：读文件头 + ext 调 helper image:dimensions；
+   * 未启用/不可用/失败/尺寸不可读一律返回 null，由调用方回退原路径。 */
+  private async readDimensionsWithHelper(path: string): Promise<{ width: number; height: number } | null> {
+    if (!helperDimensionsEnabled()) return null
+    const ext = nodePath.extname(path).toLowerCase()
+    if (!HELPER_DIMENSIONS_EXTENSIONS.has(ext)) return null
+    const header = await readFileHeader(path, HELPER_HEADER_READ_BYTES)
+    if (!header) return null
+    const response = await invoke('image:dimensions', JSON.stringify({
+      ext,
+      dataBase64: header.toString('base64'),
+    }))
+    if (!response.ok || response.payload === undefined || response.payload === '') return null
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(response.payload)
+    } catch {
+      return null
+    }
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const dims = parsed as { width?: unknown; height?: unknown }
+    if (
+      typeof dims.width !== 'number' || typeof dims.height !== 'number' ||
+      !Number.isInteger(dims.width) || !Number.isInteger(dims.height) ||
+      dims.width <= 0 || dims.height <= 0
+    ) {
+      return null
+    }
+    return { width: dims.width, height: dims.height }
   }
 
   private async loadOrCreateThumbnail(
