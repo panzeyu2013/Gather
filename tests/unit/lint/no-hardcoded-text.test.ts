@@ -31,8 +31,14 @@ describe('gather/no-hardcoded-text', () => {
         { code: '<input placeholder="" />' },
         { code: '<div>{"×"}</div>' },
         { code: '<div>{`${count} photos`}</div>' },
+        { code: '<div>{showAll ? t(\'a.collapse\') : t(\'a.showAll\')}</div>' },
+        { code: '<div>{showAll ? \'x\' : t(\'a.showAll\')}</div>' },
         { code: '<div className={`${styles.a} ${styles.b}`}>x</div>' },
         { code: '<div>{`${styles.a}-${styles.b}`}</div>' },
+        { code: 'const label = \'coreml\'; <div>{label}</div>' },
+        { code: 'setError(\'Failed\')' },
+        { code: '<NavLink to={`/sessions/${sessionId}/gallery`}>x</NavLink>' },
+        { code: '<div className={({ isActive }) => isActive ? styles.a : styles.b}>x</div>' },
       ],
       invalid: [
         { code: '<div>你好</div>', errors: [{ messageId: 'hardcodedText' }] },
@@ -44,6 +50,10 @@ describe('gather/no-hardcoded-text', () => {
         { code: '<div>{"中文"}</div>', errors: [{ messageId: 'hardcodedText' }] },
         { code: '<div>{`${x} 张`}</div>', errors: [{ messageId: 'hardcodedText' }] },
         { code: '<div>{`You have ${count} photos`}</div>', errors: [{ messageId: 'hardcodedText' }] },
+        { code: '<div>{showAll ? \'收起\' : `展开全部 (共 ${count} 张)`}</div>', errors: [{ messageId: 'hardcodedText' }] },
+        { code: '<div>{count > 0 && \'中文\'}</div>', errors: [{ messageId: 'hardcodedText' }] },
+        { code: 'setError(\'处理照片组失败，请重试\')', errors: [{ messageId: 'hardcodedLiteral' }] },
+        { code: 'const msg = `已导入 ${count} 张`; <div>{msg}</div>', errors: [{ messageId: 'hardcodedLiteral' }] },
       ],
     })
   })

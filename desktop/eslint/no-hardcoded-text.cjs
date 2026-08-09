@@ -1,8 +1,10 @@
-// Static guard for i18n (design_improvements.md 4.4.3): flag JSX text nodes
-// and string-literal aria-label/aria-description/placeholder/title attributes
-// that contain natural language (CJK or an English sentence). The renderer
-// has migrated to i18next; new copy must go through t() so it is
-// translated and type-checked. Expression values (t('...')) are allowed.
+// Static guard for i18n (docs/DESIGN_IMPROVEMENTS.md 4.4.3): flag JSX text
+// nodes, JSX expression literals (including ternary/logical branches) and
+// string-literal aria-label/aria-description/placeholder/title attributes
+// that contain natural language (CJK or an English sentence). Any string
+// literal containing CJK anywhere in a renderer .tsx file is user-facing
+// copy too (setState/toast/error payloads), so it is flagged regardless of
+// JSX position. Expression values (t('...')) are allowed.
 'use strict'
 
 const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
@@ -23,21 +25,51 @@ function isHardcodedCopy(text) {
   return containsCjk(text) || isEnglishSentence(text)
 }
 
+// Collect the static copy parts of an expression: string/template literals,
+// recursing through ternary and logical branches so `cond ? '收起' : t('k')`
+// and `a && '中文'` are caught, not just top-level literals.
+function collectExpressionStrings(node, out) {
+  if (!node) return
+  switch (node.type) {
+    case 'Literal':
+      if (typeof node.value === 'string') out.push(node.value)
+      break
+    case 'TemplateLiteral':
+      out.push(node.quasis.map((quasi) => quasi.value.cooked).join(''))
+      break
+    case 'ConditionalExpression':
+      collectExpressionStrings(node.consequent, out)
+      collectExpressionStrings(node.alternate, out)
+      break
+    case 'LogicalExpression':
+      collectExpressionStrings(node.left, out)
+      collectExpressionStrings(node.right, out)
+      break
+    case 'ParenthesizedExpression':
+      collectExpressionStrings(node.expression, out)
+      break
+    default:
+      break
+  }
+}
+
 /** @type {import('eslint').Rule.RuleModule} */
 module.exports = {
   meta: {
     type: 'suggestion',
     docs: {
-      description: 'Disallow non-i18n text in JSX children and string-literal aria/placeholder/title attributes',
+      description: 'Disallow non-i18n text in JSX children, string-literal aria/placeholder/title attributes, and CJK string literals anywhere in renderer .tsx files',
       recommended: false,
     },
     messages: {
       hardcodedText: 'Hardcoded JSX text: use t() from the i18n framework (desktop/src/renderer/locales) instead of a literal.',
       hardcodedAttribute: 'Hardcoded "{{attr}}" attribute value: use t() from the i18n framework (desktop/src/renderer/locales) instead of a string literal.',
+      hardcodedLiteral: 'Hardcoded CJK string literal: use t() from the i18n framework (desktop/src/renderer/locales) instead of a raw literal.',
     },
   },
   create(context) {
     const FLAGGED_ATTRIBUTES = new Set(['aria-label', 'aria-description', 'placeholder', 'title'])
+    const sourceCode = context.sourceCode
 
     return {
       JSXText(node) {
@@ -46,24 +78,21 @@ module.exports = {
         if (!isHardcodedCopy(trimmed)) return
         context.report({ node, messageId: 'hardcodedText' })
       },
-      // Expression children like {'中文'} or {`${x} 张`} bypass JSXText;
-      // flag the static parts (attribute values stay under JSXAttribute).
+      // Expression children like {'中文'}, {`${x} 张`} or ternary branches
+      // bypass JSXText; flag the static parts. Attribute values (className=,
+      // to=, src=…) are route/style expressions, not copy, so only direct
+      // JSXElement children are scanned.
       JSXExpressionContainer(node) {
         if (node.parent.type !== 'JSXElement') return
-        const expr = node.expression
-        let text = null
-        if (expr.type === 'Literal' && typeof expr.value === 'string') {
-          text = expr.value
-        } else if (expr.type === 'TemplateLiteral') {
-          // Expressions inside the template are i18n-safe (t('...'), vars);
-          // only the literal quasi parts carry copy.
-          text = expr.quasis.map((quasi) => quasi.value.cooked).join('')
+        const strings = []
+        collectExpressionStrings(node.expression, strings)
+        for (const text of strings) {
+          const trimmed = text.trim()
+          if (trimmed === '') continue
+          if (!isHardcodedCopy(trimmed)) continue
+          context.report({ node, messageId: 'hardcodedText' })
+          return
         }
-        if (text === null) return
-        const trimmed = text.trim()
-        if (trimmed === '') return
-        if (!isHardcodedCopy(trimmed)) return
-        context.report({ node, messageId: 'hardcodedText' })
       },
       JSXAttribute(node) {
         const attrName = node.name && node.name.type === 'JSXIdentifier' ? node.name.name : null
@@ -75,6 +104,33 @@ module.exports = {
         if (typeof value.value !== 'string') return
         if (!isHardcodedCopy(value.value)) return
         context.report({ node, messageId: 'hardcodedAttribute', data: { attr: attrName } })
+      },
+      // CJK string literals outside JSX (setState/toast/error payloads in
+      // .tsx files) are user-facing copy; JSX subtrees are already covered by
+      // the visitors above, so they are skipped here to avoid double reports.
+      'Program:exit'(node) {
+        const walk = (child, inJsx) => {
+          if (!child || typeof child.type !== 'string') return
+          const nodeInJsx = inJsx || child.type === 'JSXElement'
+          if (!inJsx) {
+            let text = null
+            if (child.type === 'Literal' && typeof child.value === 'string') {
+              text = child.value
+            } else if (child.type === 'TemplateLiteral') {
+              text = child.quasis.map((quasi) => quasi.value.cooked).join('')
+            }
+            if (text !== null && containsCjk(text.trim())) {
+              context.report({ node: child, messageId: 'hardcodedLiteral' })
+            }
+          }
+          for (const key of Object.keys(child)) {
+            if (key === 'parent') continue
+            const value = child[key]
+            if (Array.isArray(value)) value.forEach((item) => walk(item, nodeInJsx))
+            else walk(value, nodeInJsx)
+          }
+        }
+        walk(node, false)
       },
     }
   },

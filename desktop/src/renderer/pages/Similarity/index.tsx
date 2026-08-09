@@ -450,7 +450,7 @@ const GroupCard = memo(function GroupCard({
             className={styles.reclusterBtn}
             onClick={() => onToggleShowAll(group.id)}
           >
-            {showAllMembers ? '收起' : `显示全部 (共 ${group.images.length} 张)`}
+            {showAllMembers ? t('similarity.collapse') : t('similarity.showAll', { count: group.images.length })}
           </button>
         </div>
       )}

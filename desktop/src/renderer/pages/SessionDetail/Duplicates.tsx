@@ -139,7 +139,7 @@ const GroupCard = memo(function GroupCard({
             className={styles.resolveBtn}
             onClick={() => setShowAllMembers((value) => !value)}
           >
-            {showAllMembers ? '收起' : `展开全部 (共 ${group.members.length} 张)`}
+            {showAllMembers ? t('duplicate.collapse') : t('duplicate.showAll', { count: group.members.length })}
           </button>
         </div>
       )}
@@ -202,7 +202,7 @@ export default function Duplicates() {
     try {
       const ok = await duplicateApi.resolveGroup(groupId, resolution)
       if (!ok) {
-        setError('处理照片组失败，请重试')
+        setError(t('error.resolveGroupRetry'))
         return
       }
       setGroups((prev) => prev.map((g) => {
@@ -242,7 +242,7 @@ export default function Duplicates() {
     try {
       const ok = await duplicateApi.resolveMember(memberId, isKept)
       if (!ok) {
-        setError('更新照片状态失败，请重试')
+        setError(t('error.updateMemberRetry'))
         return
       }
       setGroups((prev) => prev.map((g) =>
