@@ -34,6 +34,22 @@ public enum SimilarityServiceError: Error, Equatable {
     case noHashRecluster
 }
 
+/// TS 错误消息逐字对齐（executor 失败路径经 JobService 以 String(describing:)
+/// 记录为 errorMessage，必须等于 TS error.message）。
+extension SimilarityServiceError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .thresholdInvalid: "SIM_THRESHOLD_INVALID"
+        case .minGroupInvalid: "SIM_MIN_GROUP_INVALID"
+        case .analysisRunning: "SIM_ANALYSIS_RUNNING"
+        case .noPhotos: "SIM_NO_PHOTOS"
+        case .noHashData: "SIM_NO_HASH_DATA"
+        case .noResults: "SIM_NO_RESULTS"
+        case .noHashRecluster: "SIM_NO_HASH_RECLUSTER"
+        }
+    }
+}
+
 /// TS 错误码映射（rawValue 与 TS 错误消息字符串逐字一致，桥接层序列化用）。
 extension SimilarityServiceError {
     public var gatherCode: GatherErrorCode {
@@ -48,8 +64,9 @@ extension SimilarityServiceError {
         }
     }
 }
-/// TS: SimilarityResult（相似度结果，非协议类型）。
-public struct SimilarityResult: Equatable, Sendable {
+/// TS: SimilarityResult（相似度结果，非协议类型；sim.result / sim.recluster
+/// 经 IPC 原样序列化 → Codable 合成 key 与 TS 逐字相同）。
+public struct SimilarityResult: Codable, Equatable, Sendable {
     public let groups: [SimilarityGroup]
     public let ungrouped: [SimilarityImage]
     public let stats: SimilarityResultStats

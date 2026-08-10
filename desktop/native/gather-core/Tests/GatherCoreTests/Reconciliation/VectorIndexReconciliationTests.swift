@@ -20,6 +20,17 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+/// 向量索引对账（HNSW 1000 行 × 100 查询 + LSH 召回，~6s）默认不随
+/// `swift test` 运行（开发迭代高频跑全量时拖慢节奏）；单独执行：
+///
+///     GATHER_RECONCILIATION_VECTOR=1 swift test \
+///       --filter VectorIndexReconciliationTests
+///
+/// 门禁说明：本套件是 2.3「向量移植」的 TS↔Swift 对账门（topK 逐位一致 +
+/// LSH 召回 ≥ TS 参照），提交涉及 VectorIndex/Clusterer 移植代码时必须显式
+/// 运行；与对账框架其他套件（dHash/聚类/matcher）的运行策略不同属有意为之
+/// （后者为毫秒级）。
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["GATHER_RECONCILIATION_VECTOR"] == "1"))
 struct VectorIndexReconciliationTests {
 
     private struct Fixture: Decodable {

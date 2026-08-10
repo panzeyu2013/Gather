@@ -94,6 +94,34 @@ public enum RAWDecoder {
         try decodeScaled(path: path, maxPixel: max(maxDimension, 1), quality: quality)
     }
 
+    /// 9x8 灰度像素网格（72 字节）——dHash 输入（TS: sharp resize(9, 8,
+    /// { fit: 'fill' }).grayscale().raw()）。非等比拉伸到 9x8（fill 语义），
+    /// 输出 top-down 行序（CGContext 默认左下原点，须翻转对齐 sharp raw）。
+    public static func pixels9x8(path: String, maxPixel: Int? = nil) -> [UInt8]? {
+        let url = URL(fileURLWithPath: path)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = makeImage(from: source, maxPixel: maxPixel) else { return nil }
+        let width = 9
+        let height = 8
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        guard let colorSpace = CGColorSpaceCreateDeviceGray() as CGColorSpace?,
+              let context = CGContext(
+                  data: &pixels,
+                  width: width,
+                  height: height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: width,
+                  space: colorSpace,
+                  bitmapInfo: CGImageAlphaInfo.none.rawValue
+              ) else { return nil }
+        context.interpolationQuality = .high
+        // 翻转坐标系：内存第 0 行 = 图像顶部（sharp raw 的 top-down 行序）。
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return pixels
+    }
+
     /// 缩放解码公共路径：maxPixel <= 0 表示不缩放（全尺寸）。
     public static func decodeScaled(path: String, maxPixel: Int?, quality: Double) throws -> RAWDecodeResult {
         let ext = (path as NSString).pathExtension.lowercased()

@@ -11,7 +11,9 @@
 
 两条路径（生成器重算 ↔ Swift 测试）验证的是同一份入库 fixture，任何一侧语义漂移都会在 CI 双跑中暴露。
 
-## 当前覆盖：dHash（`DHashReconciliationTests.swift`）
+## 当前覆盖
+
+### dHash（`DHashReconciliationTests.swift`）
 
 - fixture：`Fixtures/dhash-fixtures.json`（seed=42，50 cases）
 - 输入：9x8 灰度像素网格（72 个 0-255 值）；输出：16 位小写 hex
@@ -19,6 +21,25 @@
 - 移植对照：TS `desktop/src/main/services/similarity/hash-computer.ts` 第 14-27 行核心循环
   ↔ Swift `Sources/GatherCore/Similarity/Hash.swift`
 - 范围说明：sharp resize/grayscale 属解码层，Phase 2.1 在 Swift 侧以 CoreImage 实现，不在本对账范围
+
+### 向量索引（`VectorIndexReconciliationTests.swift`）—— 单独运行
+
+- fixture：`Fixtures/vector-fixtures.json`（seed 固定，1000 行 × 100 查询）
+- 覆盖：HNSW topK 索引/得分逐位一致、各节点层级（PRNG 流）、阈值检索 vs 暴力点积；
+  LSH 邻域召回 ≥ TS 参照；空索引/维度/配置校验；`LSH_MIN_POINTS` 常量
+- 移植对照：TS `face-kw/hnsw-index.ts`、`lsh-index.ts` ↔ Swift
+  `Sources/GatherCore/Face/VectorIndex.swift`
+- **默认不随 `swift test` 运行**（全套 ~6s，开发迭代高频跑全量时拖慢节奏），
+  用环境变量门控（`@Suite(.enabled(if:))`）：
+
+  ```bash
+  # 单独运行（默认 swift test 会跳过本套件）
+  GATHER_RECONCILIATION_VECTOR=1 swift test --filter VectorIndexReconciliationTests
+  ```
+
+- **门禁**：凡改动 VectorIndex/Clusterer 移植代码或 fixture 生成器
+  （`scripts/reconciliation/generate-vector-fixtures.mjs`）必须显式运行本套件；
+  与 dHash/聚类/matcher 等毫秒级对账套件随全量跑的策略不同属有意为之。
 
 ## 如何扩展新函数
 

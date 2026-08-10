@@ -124,6 +124,40 @@ public enum JSONValue: Codable, Equatable, Sendable {
     }
 }
 
+// ── JSONValue 访问器 ──
+// 供宿主（gather-app）等消费方安全读取，避免在模块外做 case 模式匹配
+// （macOS 26 SDK Foundation 自带同名 JSONValue，模块外 .object 等模式
+// 会解析到 Foundation 版本导致编译错误；访问器集中在本模块内实现）。
+// 注意：stringValue/arrayValue 已有 RepositorySupport.swift 的重载（String
+// /[String] 语义），此处不重复定义。
+public extension JSONValue {
+    var isObject: Bool {
+        if case .object = self { return true }
+        return false
+    }
+
+    var objectValue: [String: JSONValue]? {
+        if case .object(let value) = self { return value }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    /// 原始数组元素（RepositorySupport.arrayValue 是 [String]? 便捷版）。
+    var arrayElements: [JSONValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+
+    var numberValue: Double? {
+        if case .number(let value) = self { return value }
+        return nil
+    }
+}
+
 // ── 响应 id 字段 ──
 // TS: id?: number | string（ResponseOk / ResponseErr 共用）
 public enum ResponseID: Codable, Equatable, Sendable {

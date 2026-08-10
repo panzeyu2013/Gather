@@ -347,6 +347,12 @@ WKWebView 桥、Xcode 签名打包。
 >    但 macOS 26.5 SDK 公开 API 无此请求（tbd/头文件/swiftinterface 均无）；
 >    改用人脸区域裁剪 + VNGenerateImageFeaturePrintRequest rev2（768 维）。
 >    部署目标提升到 14 仅为后续 API 可用性预留，当前实现未依赖 14 专属 API。
+> 4. **macOS 26 SDK Foundation 自带同名 `JSONValue`**（3.0 宿主实测）：宿主模块内
+>    对 GatherCore.JSONValue 做 `case .object` 模式匹配会被解析到 Foundation 版本
+>    导致编译错误（"member 'object' expects argument"）——跨模块读取一律经
+>    GatherCore 内访问器（isObject/objectValue/boolValue/numberValue/arrayElements）。
+> 5. **macOS 26 WebKit `callAsyncJavaScript` 返回 nil**（3.0 实测）：简单表达式也
+>    返回 nil；测试改同步 `evaluateJavaScript` + 全局变量轮询模式。
 
 ### 10.3 Phase 2：热路径下沉
 
@@ -355,19 +361,19 @@ WKWebView 桥、Xcode 签名打包。
 | 2.1 | 解码 + 缩略图 | 已完成 | 2026-08-10 | `Image/Dimensions.swift`（fast-dimensions 移植，26 case 对账）+ `Database/ImageCache.swift`（disk-cache 重写，21 测试）+ **`Image/RAWDecoder.swift`（CoreImage/ImageIO 重写 sharp+sips：getDimensions 含 EXIF orientation 5-8 交换、getThumbnail 走 `CGImageSourceCreateThumbnailAtIndex` + WithTransform、getPreview fit-inside 不放大；11 测试）** + helper `image:dimensions`/`image:thumbnail`/`image:preview` 三命令（HelperProtocolTests 30 测试）+ `image.service.ts` 改路由（thumbnail/preview 优先 helper 含 RAW，失败回退 sharp；GATHER_CORE_HELPER=1 启用，默认零变化）+ **`sips-decoder.ts` 删除**（能力被 RAWDecoder 覆盖；di/init.ts 注册链移除）。验收冒烟：3200×2400 PNG → 缩略图 256×192 / 预览 ≤2048 / 尺寸 3200×2400；TS 侧 98 文件 597 测试全绿 |
 | 2.2 | 人脸推理（Vision） | 部分完成 | 2026-08-10 | `Face/Provider.swift`（provider 枚举 vision/cpu + `FaceInferenceConfig` 对齐 MODEL_CONFIG 默认值 + fallbackToOnnxEnabled 开关）+ `Face/Detector.swift`（VNDetectFaceRectanglesRequest，bbox/confidence + 左上原点转换 + 阈值/上限过滤）+ `Face/Encoder.swift`（检测 → 人脸区域裁剪 → VNGenerateImageFeaturePrintRequest rev2 提取 embedding，L2 归一化）+ `Face/Inference.swift`（Actor 批处理：逐图独立失败/进度流/取消，对齐 face-kw.service 批语义）；FaceInferenceTests 12 用例。**环境决议**：macOS 26.5 SDK 无 `VNGenerateFaceEmbeddingsRequest`（计划假设 API，tbd/头文件/swiftinterface 均无），改用人脸区域裁剪 + feature print（768 维，实测 rev2）作 embedding；与 ArcFace 512 维特征空间不兼容（§3.3 已声明 P4 全量重算）。**待接线**：TS 侧 face-kw.service 路由（推理走 helper 需同进程直连——线协议传大批量图片 base64 不现实，且 512/768 维混写会破坏聚类，故随 3.0 宿主切换接入）；**0.3c 质量对账门**（ARI/NMI ≥ 0.95）需真实人脸数据集（基准环境），未过时 `fallbackToOnnxEnabled` 回退 TS ONNX 管线 |
 | 2.3 | 哈希/聚类/向量移植 | 已完成 | 2026-08-09 | `Similarity/Hash.swift`+`ClusterEngine.swift`（1.5 对账）+ `Face/Clusterer.swift`（DBSCAN+LSH 门，8 case 对账）+ `Face/VectorIndex.swift`（CosineHnswIndex+CosineLshIndex，topK 逐位一致/recall≥TS）+ `Face/Matcher.swift`（11 用例对账）+ `Services/JobScheduler.swift`（Actor 预算准入，排队取消）+ `AnalysisWorker.swift`（进度流/错误传播）。**基准**：`gather-core-benchmarks`（2 万/5 万两档全过，见 `Sources/GatherCoreBenchmarks/README.md`） |
-| 2.4 | 文件监控（NSFileCoordinator） | 待做 | — | **需 macOS**：`Watch/Coordinator.swift` |
+| 2.4 | 文件监控（FSEvents） | 已完成 | 2026-08-10 | `Watch/Coordinator.swift`（**重写**）：FSEventStream 递归 watcher + 每 session 750ms 去抖 + fullScan 兜底，行为契约与 TS 对齐（扩展名分流/目录事件→全量/注册失败→recovery/15s 轮询对账/stop 清理）。**技术决议**：计划原文的 NSFileCoordinator/FileProvider 不提供目录事件监控（NSFileCoordinator 是读写协调 API、FileProvider 是托管扩展框架），改用 FSEventStream——Node 的 fs.watch(recursive) 在 macOS 底层就是 FSEvents，语义天然一致；且 FSEvents 给绝对路径 + 文件级标志（ItemIsDir/MustScanSubDirs/RootChanged），内核丢事件显式走全量兜底（ROADMAP 1.6 决策 B 的"周期性全量对账"原生形态）。**路径处理**：FSEvents 回调返回 realpath（/var→/private/var），统一 canonicalPath（POSIX realpath 优先 + TS textualPath 式字符串映射兜底，删除事件后 realpath 必失败）。**测试**：`Watch/CoordinatorTests` 13 用例（TS 侧无 watcher 直接单测，本文件补足缺口）：纯文件事件增量/目录与未知事件全量/去抖合并/全量优先/注册失败/15s 轮询注册/根变更注销/stop 清理 + **丢事件对账矩阵**（`reconciliationMatrixRandom200Ops`：固定种子随机 200 次增删改/重命名+目录操作，模拟索引增量应用 == 全量 walk，实测连续 3 轮全绿）。全套 559 测试通过 |
 
 ### 10.4 Phase 3：宿主切换 + 领域服务与 UI 迁移
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 3.0 | 宿主与桥（Swift 宿主 + WKWebView） | 待做 | — | **需 macOS**：gather-app（GatherApp.swift + WebViewHost + WebBridge） |
-| 3.1 | Dashboard 模块（workspace/jobs） | 部分完成 | 2026-08-09 | 服务层已移植：`Services/WorkspaceStatusService.swift`（26 用例与 TS 单测一一对应）+ `Services/JobService.swift`（drain/取消/心跳看门狗/进度节流/checkpoint/waitForResult/并发上限 2/clearCompleted 阶段证据保护，11 用例）。实现要点：claim+controller 注册为同步前缀（beginRun）保证并发上限精确、`drainScheduled` 在 drain 完成后清除防多 drain 交错、租约丢失时终态写不入 DB（TS 语义，recoverStale 恢复）。**待 Mac**：Dashboard 页面 SwiftUI + TS ipc 停用 |
+| 3.0 | 宿主与桥（Swift 宿主 + WKWebView） | 部分完成 | 2026-08-10 | `gather-app`（SwiftPM executable，依赖 gather-core）：`GatherApp.swift`（@main 入口/窗口/启动装配：Application Support/gather.sqlite + MigrationRunner + renderer 定位）+ `Host/WebViewHost.swift`（WKWebView + `loadFileURL(renderer/index.html, allowingReadAccessTo:)` + WKUserScript 注入 BridgeScript + 导航禁外跳 + didFail 日志）+ `Host/WebBridge.swift`（**preload 三层校验完整镜像**：命令白名单 118（与 core.ts 全对账）/destructive 30 必须 confirmed:true/params isRecord；事件白名单 9；响应信封 {id,ok,data,error} 复用 HelperProtocol 约定；同步/异步命令路由分流）+ `Host/BridgeScript.swift`（`window.gather` 全 20 方法同名 shim，Promise 按 id 配对）+ `Host/GatherImageSchemeHandler.swift`（`gather-image://` WKURLSchemeHandler 直出 JPEG，等价主进程 protocol.handle）+ `Host/SessionCommandRouter.swift`（渐进式接线：**33 命令已点亮**——session.*/photo.list/photo.list_page/workspace.status/jobs.*/image.get_dimensions/face.models_status/settings.*/filter.*/navigation.*/sim.*/assets.candidates/dup.*，含 executor 异步 sim.analyze/dup.scan；其余 NOT_IMPLEMENTED 优雅降级）。**技术决议**：① macOS 26 SDK Foundation 自带同名 `JSONValue`，宿主内模式匹配被遮蔽 → GatherCore 增 `JSONValue` 访问器（isObject/objectValue/boolValue/numberValue）供跨模块安全读取；② macOS 26 WebKit `callAsyncJavaScript` 返回 nil，测试改同步 `evaluateJavaScript` + 全局变量轮询；③ 错误消息对账：SimilarityServiceError/DuplicateServiceError 增 CustomStringConvertible，executor 失败经 String(describing:) 记录的 job errorMessage 与 TS 逐字一致。**测试**：`WebBridgeTests` 10 用例 + RouterCommands 套件 21 用例（每命令 ≥1 成功路径 + 参数缺失错误路径）+ `WebViewHostSmokeTests` 3 用例（**真实 WKWebView + 真实 vite 产物**：session.list 桥回路返回信封/destructive 无 confirmed reject/未知命令 reject）。**验收口径**：桥回路冒烟已过（等价 e2e 桥段）；全量 React 页面 e2e 验证待 renderer 资产与命令覆盖到位后补。**待接线**：剩余 ~40 命令随 3.4–3.6 服务层迁移逐个点亮 |
+| 3.1 | Dashboard 模块（workspace/jobs） | 已完成 | 2026-08-10 | 服务层：`WorkspaceStatusService`（26 用例与 TS 单测一一对应）+ `JobService`（drain/取消/心跳看门狗/进度节流/checkpoint/waitForResult/并发上限 2/clearCompleted 阶段证据保护，11 用例）。**页面+壳**：`gather-app/RootView.swift`（宿主导航壳：侧栏 + `RootNavigation` 可测导航模型 + WebViewContainer 单实例 ZStack 常驻，`WebViewHost.navigate(to:)` 走 location.hash 驱动 React HashRouter；工作台=SwiftUI DashboardView、全局图库/人脸库/任务中心/设置=WKWebView 残余页）+ `Dashboard/DashboardViewModel.swift`（`DashboardDataProvider` 协议注入，workspace.status/jobs.list 直连 GatherCore，2s/30s 轮询对齐 react-query）+ `Dashboard/DashboardView.swift`（工作区概览条/会话卡片/任务中心 attention+history/cancel/retry/清理已完成/新建工作区 NSOpenPanel/删除确认）。测试：`DashboardViewModelTests` 13 + `RootViewTests` 6（含真实窗口端到端：RootView 切换 → React hash 路由）。**未覆盖（TODO 标注）**：Capture One 导入、create_from_directory 一跳化、索引失败重试、多选批量删除、jobs:progress 事件通道（轮询兜底）。TS ipc 入口停用随 3.6 Jobs 页面迁移一并执行 |
 | 3.2 | Library/Gallery 模块（session/assets） | 部分完成 | 2026-08-10 | 服务层已移植：`Services/SessionService.swift`（283 行 TS 全量：createSession/createFromDirectory 目录校验与根目录拒绝/listSessions/getSession 源路径推导持久化/deleteSession(s) 依赖序删除 + orphan 标记/addPhotos 分批尺寸 + index_seq bump + draft→photos_loaded/updateSession；模块级纯函数 commonParentDirectory/normalizeImportFilepaths/sanitizeSessionSourcePath 对齐 TS）、`Services/PhotoAssets.swift`（collapsePhotoAssets：asset_id 分组 + RAW 优先）、`Services/PhotoAssetResolver.swift`（resolve/resolveMany 5 路 JOIN 分块读、asset_read_mode 三态、dual shadow-read 警告、sha256 路径摘要）。另：`Database/DB.swift` transaction 支持 SAVEPOINT 嵌套（better-sqlite3 语义，TS 的 addPhotos/deleteSessions 依赖嵌套事务）。测试：`SessionServiceTests`（15）+ `PhotoAssetResolverTests`（8）。**待 Mac**：Library/Gallery 页面 SwiftUI + TS ipc 停用 |
-| 3.3 | Similarity 模块 | 部分完成 | 2026-08-10 | 服务层已移植：`Services/SimilarityService.swift`（792 行 TS 全量：analyze 快照事务/index_seq/校验/既有 hash 过滤/hash 复用（400 分块批量读）/缺 hash 解码计算（注入 thumbnailProvider，DHash 已下沉 2.3）/聚类（clusterProvider 默认 ClusterEngine）/buildStoredResult/replace/邻域阈值档预计算（单次 pairwise 多档）；hasResult/getResult 成员表组装 + legacy groups_json 回退 + 阈值档解析；cancel 占用语义 + 共享 analysis_status 保护；recluster；run 记录 running→ok/failed 终态与早退语义对齐 TS finally；JobAbortSignal 协作取消——pre-cluster abort 早退、cluster 中 abort 抛 JobCancelledError 写 cancelled）。测试：`SimilarityServiceTests`（14，含 reuse-and-tiers / run-record 窗口断言 / result-lazy / cancellation 一一对应）。**待接线**：IPC 侧路由（TS ipc 入口停用待页面迁移）；**待 Mac**：页面 SwiftUI |
+| 3.3 | Similarity 模块 | 部分完成 | 2026-08-10 | 服务层已移植：`Services/SimilarityService.swift`（792 行 TS 全量：analyze 快照事务/index_seq/校验/既有 hash 过滤/hash 复用（400 分块批量读）/缺 hash 解码计算（注入 thumbnailProvider，DHash 已下沉 2.3）/聚类（clusterProvider 默认 ClusterEngine）/buildStoredResult/replace/邻域阈值档预计算（单次 pairwise 多档）；hasResult/getResult 成员表组装 + legacy groups_json 回退 + 阈值档解析；cancel 占用语义 + 共享 analysis_status 保护；recluster；run 记录 running→ok/failed 终态与早退语义对齐 TS finally；JobAbortSignal 协作取消——pre-cluster abort 早退、cluster 中 abort 抛 JobCancelledError 写 cancelled）。测试：`SimilarityServiceTests`（14，含 reuse-and-tiers / run-record 窗口断言 / result-lazy / cancellation 一一对应）。**接线**：sim.result/sim.cancel_analysis 同步 + sim.recluster/sim.analyze 异步（JobService executor + waitForResult）已接（2026-08-10）。**待 Mac**：页面 SwiftUI + TS ipc 停用 |
 | 3.4 | Culling 模块（writeback/metadata，最大） | 待做 | — | — |
 | 3.5 | FaceKeywording/Persons 模块 | 待做 | — | — |
-| 3.6 | Settings/Jobs/收尾模块 | 待做 | — | — |
+| 3.6 | Settings/Jobs/收尾模块 | 部分完成 | 2026-08-10 | **服务层 5/6 完成**：①`Protocol/Settings.swift`（MLStatusData/MLModelPresence/MLModelInfo，对齐 settings.ipc.ts 内联形状）+ `Services/SettingsService.swift`（40 键默认值表逐字对齐，13 测试）；②`Services/NavigationService.swift`（16 测试）；③`Services/FilterEngine.swift`（16 测试）；④`Services/DuplicateService.swift`（**588 行 TS 全量移植**：single-flight scan/busy、sha256 精确组（并发 2）、视觉组（注入 thumbnailProvider→DHash，阈值默认 4）、similarity_hashes 复用（size/mtime 一致校验）、getGroups/resolveGroup/resolveMember（keep_one 分数与 mtime 决出/COALESCE 语义）、排除 exact 于 visual；**哈希写路径与 SimilarityService 同 UPSERT `ON CONFLICT(session_id, photo_id)` 协调互不覆盖**；21 测试含单飞 busy/取消不落库/进度三阶段）。**接线**（`SessionCommandRouter` 3.0 补全，TS 事实源逐字段对齐）：同步 21 命令 settings.*(6)/filter.*(3)/navigation.list/split/merge/sim.result/sim.cancel_analysis/jobs.cancel/retry/clear_completed/photo.list_page/assets.candidates + 异步 sim.analyze/dup.scan（JobService executor + waitForResult，checkpoint/dedupeKey 逐字对齐）+ 前已接线 12 命令，共 33 命令点亮（WebBridgeTests RouterCommands 套件 21 用例）。**错误消息对账修复**：SimilarityServiceError/DuplicateServiceError 增 CustomStringConvertible（description=TS error.message），executor 失败经 `String(describing:)` 记录的 errorMessage 与 TS 逐字一致（SIM_NO_PHOTOS 等）。**待做**：QualityService（难：图像管线依赖，最后做）；TS ipc 停用随页面迁移 |
 
 ### 10.5 Phase 4：移除 Electron
 
@@ -383,18 +389,32 @@ WKWebView 桥、Xcode 签名打包。
 
 > 原则：Linux 可推进的任务优先；需 macOS 框架（CoreImage/Vision/AppKit/
 > NSFileCoordinator）的条目标注「需 Mac」。
+> **2026-08-10 起平台限制解除**：开发机已切换 macOS 26（Xcode 26.5），
+> 原标注「需 Mac」的条目（2.4/3.0/3.1–3.3 页面等）均可在本机推进，
+> 「需 Mac」标注仅保留平台属性说明，不再构成阻塞。
 > 2026-08-10：3.2/3.3 服务层已完成（见 10.4 证据），原两行 P1 任务转为
 > 「页面/接线待 Mac」并降级；新增下一个 Linux 可做项 3.6 服务层（settings/
 > quality/duplicate/filter/navigation 中可独立重写者）。
+> 2026-08-10 晚：**2.4 文件监控已完成**（FSEvents，见 10.3 证据），P1 项移除；
+> **3.0 宿主与桥已完成核心**（gather-app 骨架 + WebBridge 三层校验 + 真实
+> WebView 桥回路冒烟，见 10.4 证据）——原 P2 升为可用基线，3.1–3.3 页面
+> 收尾与命令接线成为下一步主线。
+> 2026-08-10 深夜：**3.6 服务层首批 3 服务完成**（Settings/Navigation/Filter，
+> 见 10.4 证据）——剩余 Duplicate/Quality 两项降为续做；全套 597 测试全绿。
+> 2026-08-10（次日）：**3.1 模块完成**（Dashboard SwiftUI 页面 + RootView 导航
+> 壳，见 10.4）；**3.6 服务层 5/6 完成**（DuplicateService 588 行全量移植，
+> 哈希写路径与 SimilarityService 协调）；**3.0 命令接线补全**（33 命令点亮：
+> settings/filter/navigation/sim/jobs/photo.list_page/assets/dup + executor
+> 异步 sim.analyze/dup.scan；错误消息 CustomStringConvertible 对账修复）。
+> 全套：gather-core 618（71 suites）+ gather-app 60（6 suites）全绿。
 
 | 优先级 | 任务 | 前置 | 说明 |
 |---|---|---|---|
-| P0 | **2.2 收尾**：0.3c 质量对账（真实人脸数据集，ARI/NMI ≥ 0.95 门）；TS 侧 face-kw.service 推理路由随 3.0 宿主切换接入（Swift 侧 Detector/Encoder/Inference/Provider 已就绪 2026-08-10） | 基准环境 / 3.0 | Vision embedding 768 维（feature print rev2）与 ArcFace 512 维不兼容，P4 全量重算时统一 |
-| P1 | **2.4 文件监控（需 Mac）**：`Watch/Coordinator.swift`（NSFileCoordinator/FileProvider） | macOS 开发机 | 丢事件对账矩阵（ROADMAP 1.6） |
-| P1 | **3.2/3.3 收尾（需 Mac）**：Library/Gallery 与 Similarity 页面 SwiftUI + 对应 TS ipc 入口停用 | 3.0（宿主桥） | 服务层已就绪（2026-08-10 完成）；参照 3.1 收尾模式 |
-| P1 | **3.6 服务层（Linux 可做）**：settings/quality/duplicate/filter-engine/navigation 服务重写（`settings.service.ts` 缓存语义 + `filter-engine.ts` 纯逻辑优先） | 无 | 契约与 repo 已就绪（settings/smart-album） |
-| P2 | **Phase 3.0 宿主与桥（需 Mac）**：`gather-app`（GatherApp.swift + WebViewHost + WebBridge） | 2.1/2.2 验收通过 | WKWebView 桥复用 1.1 契约；e2e 等价验证 |
-| P2 | **3.1 收尾（需 Mac）**：Dashboard 页面 SwiftUI + TS ipc 停用 | 3.0 | 服务层已就绪 |
+| P0 | **2.2 收尾**：0.3c 质量对账（真实人脸数据集，ARI/NMI ≥ 0.95 门）；TS 侧 face-kw.service 推理路由随宿主切换接入（Swift 侧 Detector/Encoder/Inference/Provider 已就绪 2026-08-10） | 基准环境 / 宿主 | Vision embedding 768 维（feature print rev2）与 ArcFace 512 维不兼容，P4 全量重算时统一 |
+| P1 | **3.2 收尾**：Library/Gallery 页面 SwiftUI + 对应 TS ipc 入口停用 | 3.0/3.1 壳与页面模式（已就绪） | 服务层已就绪（2026-08-10 完成）；复用 RootView 导航壳 + DashboardViewModel 直连模式 |
+| P1 | **3.3 收尾**：Similarity 页面 SwiftUI + TS ipc 停用 | 3.2 页面模式 | 服务层已就绪 |
+| P1 | **3.6 服务层（收尾）**：QualityService（难：图像管线依赖，最后做）；TS ipc 停用随各页面迁移 | Duplicate 已完成（2026-08-10） | 契约与 repo 已就绪；Hash/ClusterEngine 已下沉 2.3 |
+| P2 | **3.0 补全（续）**：剩余命令接线（sim.analyze 已接；image.preload_* 需 ImageService 任务编排；session.create_from_directory/index.scan 需 indexer 移植；fkw/person/metadata/album/export/template/culling/quality 随 3.4-3.6 服务层）、gather-image 库内校验、深链/菜单（4.2 前置） | 3.4–3.6 服务层 | 桥与白名单已就绪，接线即加 case |
 | P2 | **Phase 0 残余**：0.1 性能归因审计 / 0.2 商业信号复核 / 0.4 P0/P1 修复对齐 | — | Go/No-Go 门未正式落锤；当前按继续推进执行 |
 | P2 | **Telemetry 对接**：四套基准采集 Swift 侧指标（1.4 验收） | 基准环境可用 | `GATHER_TELEMETRY=1` 已实现；Swift 基准已产出 NDJSON 指标行 |
-| P3 | **Phase 4 收尾（需 Mac）**：build.sh 打包/深链/菜单/embedding 重跑/Electron 残留删除 | Phase 3 完成 | — |
+| P3 | **Phase 4 收尾**：build.sh 打包/深链/菜单/embedding 重跑/Electron 残留删除 | Phase 3 完成 | — |
