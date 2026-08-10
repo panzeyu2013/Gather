@@ -131,14 +131,41 @@ public final class DBConnection {
     public func commit() throws { try exec("COMMIT") }
     public func rollback() throws { try exec("ROLLBACK") }
 
+    /// 嵌套事务计数：嵌套调用退化为 SAVEPOINT（better-sqlite3 语义——
+    /// TS 的 db.transaction 可嵌套，session.service 的 addPhotos/deleteSessions
+    /// 依赖 savepoint 原子性；SQLite 裸 BEGIN 嵌套会直接报错）。
+    private var transactionDepth = 0
+
     public func transaction<T>(_ body: () throws -> T) throws -> T {
-        try begin()
+        transactionDepth += 1
+        let isNested = transactionDepth > 1
+        do {
+            if isNested {
+                try exec("SAVEPOINT gather_tx_\(transactionDepth)")
+            } else {
+                try begin()
+            }
+        } catch {
+            transactionDepth -= 1
+            throw error
+        }
         do {
             let result = try body()
-            try commit()
+            if isNested {
+                try exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
+            } else {
+                try commit()
+            }
+            transactionDepth -= 1
             return result
         } catch {
-            try? rollback()
+            if isNested {
+                try? exec("ROLLBACK TO SAVEPOINT gather_tx_\(transactionDepth)")
+                try? exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
+            } else {
+                try? rollback()
+            }
+            transactionDepth -= 1
             throw error
         }
     }

@@ -348,8 +348,8 @@ WKWebView 桥、Xcode 签名打包。
 |---|---|---|---|---|
 | 3.0 | 宿主与桥（Swift 宿主 + WKWebView） | 待做 | — | **需 macOS**：gather-app（GatherApp.swift + WebViewHost + WebBridge） |
 | 3.1 | Dashboard 模块（workspace/jobs） | 部分完成 | 2026-08-09 | 服务层已移植：`Services/WorkspaceStatusService.swift`（26 用例与 TS 单测一一对应）+ `Services/JobService.swift`（drain/取消/心跳看门狗/进度节流/checkpoint/waitForResult/并发上限 2/clearCompleted 阶段证据保护，11 用例）。实现要点：claim+controller 注册为同步前缀（beginRun）保证并发上限精确、`drainScheduled` 在 drain 完成后清除防多 drain 交错、租约丢失时终态写不入 DB（TS 语义，recoverStale 恢复）。**待 Mac**：Dashboard 页面 SwiftUI + TS ipc 停用 |
-| 3.2 | Library/Gallery 模块（session/assets） | 待做 | — | — |
-| 3.3 | Similarity 模块 | 待做 | — | — |
+| 3.2 | Library/Gallery 模块（session/assets） | 部分完成 | 2026-08-10 | 服务层已移植：`Services/SessionService.swift`（283 行 TS 全量：createSession/createFromDirectory 目录校验与根目录拒绝/listSessions/getSession 源路径推导持久化/deleteSession(s) 依赖序删除 + orphan 标记/addPhotos 分批尺寸 + index_seq bump + draft→photos_loaded/updateSession；模块级纯函数 commonParentDirectory/normalizeImportFilepaths/sanitizeSessionSourcePath 对齐 TS）、`Services/PhotoAssets.swift`（collapsePhotoAssets：asset_id 分组 + RAW 优先）、`Services/PhotoAssetResolver.swift`（resolve/resolveMany 5 路 JOIN 分块读、asset_read_mode 三态、dual shadow-read 警告、sha256 路径摘要）。另：`Database/DB.swift` transaction 支持 SAVEPOINT 嵌套（better-sqlite3 语义，TS 的 addPhotos/deleteSessions 依赖嵌套事务）。测试：`SessionServiceTests`（15）+ `PhotoAssetResolverTests`（8）。**待 Mac**：Library/Gallery 页面 SwiftUI + TS ipc 停用 |
+| 3.3 | Similarity 模块 | 部分完成 | 2026-08-10 | 服务层已移植：`Services/SimilarityService.swift`（792 行 TS 全量：analyze 快照事务/index_seq/校验/既有 hash 过滤/hash 复用（400 分块批量读）/缺 hash 解码计算（注入 thumbnailProvider，DHash 已下沉 2.3）/聚类（clusterProvider 默认 ClusterEngine）/buildStoredResult/replace/邻域阈值档预计算（单次 pairwise 多档）；hasResult/getResult 成员表组装 + legacy groups_json 回退 + 阈值档解析；cancel 占用语义 + 共享 analysis_status 保护；recluster；run 记录 running→ok/failed 终态与早退语义对齐 TS finally；JobAbortSignal 协作取消——pre-cluster abort 早退、cluster 中 abort 抛 JobCancelledError 写 cancelled）。测试：`SimilarityServiceTests`（14，含 reuse-and-tiers / run-record 窗口断言 / result-lazy / cancellation 一一对应）。**待接线**：IPC 侧路由（TS ipc 入口停用待页面迁移）；**待 Mac**：页面 SwiftUI |
 | 3.4 | Culling 模块（writeback/metadata，最大） | 待做 | — | — |
 | 3.5 | FaceKeywording/Persons 模块 | 待做 | — | — |
 | 3.6 | Settings/Jobs/收尾模块 | 待做 | — | — |
@@ -364,18 +364,21 @@ WKWebView 桥、Xcode 签名打包。
 | 4.4 | 删除 Electron 残留 | 待做 | — | — |
 | 4.5 | 收尾验收（四套基准 + Stretch 门） | 待做 | — | — |
 
-### 10.6 后续计划与待办（2026-08-09 快照）
+### 10.6 后续计划与待办（2026-08-10 快照）
 
 > 原则：Linux 可推进的任务优先；需 macOS 框架（CoreImage/Vision/AppKit/
 > NSFileCoordinator）的条目标注「需 Mac」。
+> 2026-08-10：3.2/3.3 服务层已完成（见 10.4 证据），原两行 P1 任务转为
+> 「页面/接线待 Mac」并降级；新增下一个 Linux 可做项 3.6 服务层（settings/
+> quality/duplicate/filter/navigation 中可独立重写者）。
 
 | 优先级 | 任务 | 前置 | 说明 |
 |---|---|---|---|
 | P0 | **2.1 剩余（需 Mac）**：`Image/RAWDecoder.swift`（CoreImage RAW 管线替代 libvips）、缩略图 `CGImageSourceCreateThumbnailAtIndex`、`sips-decoder.ts` 删除 | macOS 开发机 | 完成后 2.1 验收（Import 基准 RAW/JPEG 冷热两轮） |
 | P0 | **2.2 人脸推理（需 Mac）**：`Face/Detector.swift`/`Encoder.swift`（Vision）、`Inference.swift`（Actor + 流式进度/取消）、`Provider.swift`（vision/cpu 回退开关） | macOS 开发机 | 0.3c 质量对账 ARI/NMI ≥ 0.95 门；ONNX 模型下载器/validator 删除 |
 | P1 | **2.4 文件监控（需 Mac）**：`Watch/Coordinator.swift`（NSFileCoordinator/FileProvider） | macOS 开发机 | 丢事件对账矩阵（ROADMAP 1.6） |
-| P1 | **3.2 Library/Gallery 服务层**（session/assets 服务重写，Linux 可做） | 无 | 契约与 repo（session/photo/asset）已就绪；参照 3.1 模式 |
-| P1 | **3.3 Similarity 服务层**（similarity.service.ts 重写，算法已下沉 2.3） | 无 | 792 行 TS；similarity-result.repo 已就绪 |
+| P1 | **3.2/3.3 收尾（需 Mac）**：Library/Gallery 与 Similarity 页面 SwiftUI + 对应 TS ipc 入口停用 | 3.0（宿主桥） | 服务层已就绪（2026-08-10 完成）；参照 3.1 收尾模式 |
+| P1 | **3.6 服务层（Linux 可做）**：settings/quality/duplicate/filter-engine/navigation 服务重写（`settings.service.ts` 缓存语义 + `filter-engine.ts` 纯逻辑优先） | 无 | 契约与 repo 已就绪（settings/smart-album） |
 | P2 | **Phase 3.0 宿主与桥（需 Mac）**：`gather-app`（GatherApp.swift + WebViewHost + WebBridge） | 2.1/2.2 验收通过 | WKWebView 桥复用 1.1 契约；e2e 等价验证 |
 | P2 | **3.1 收尾（需 Mac）**：Dashboard 页面 SwiftUI + TS ipc 停用 | 3.0 | 服务层已就绪 |
 | P2 | **Phase 0 残余**：0.1 性能归因审计 / 0.2 商业信号复核 / 0.4 P0/P1 修复对齐 | — | Go/No-Go 门未正式落锤；当前按继续推进执行 |

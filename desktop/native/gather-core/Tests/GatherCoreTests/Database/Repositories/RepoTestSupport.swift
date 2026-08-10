@@ -50,6 +50,14 @@ func insertAssetFile(
     ])
 }
 
+/// assets 行（session_assets.asset_id / photos.asset_id 外键）。
+func insertAsset(_ db: DBConnection, id: String, status: String = "active") throws {
+    _ = try db.prepare("""
+        INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
+        VALUES (?, '', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+    """).run([.text(id), .text(status)])
+}
+
 /// 创建临时目录（测试结束由调用方删除）。
 func makeTempDir() throws -> String {
     let dir = FileManager.default.temporaryDirectory

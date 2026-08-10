@@ -314,7 +314,12 @@ struct JobServiceTests {
         #expect(updated == 1, "模拟租约被夺应成功")
 
         gate.open()
-        try await Task.sleep(for: .milliseconds(400))
+        // 心跳失败传播有调度延迟：轮询等待而非固定 sleep（工具链决议 #4）。
+        await waitUntil(timeoutMs: 4_000) {
+            boxLock.lock()
+            defer { boxLock.unlock() }
+            return observedAbort != nil
+        }
 
         // 心跳失败必须把取消信号传播到执行上下文。
         boxLock.lock()
