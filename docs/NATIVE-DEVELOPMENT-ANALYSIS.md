@@ -313,17 +313,25 @@ WKWebView 桥、Xcode 签名打包。
 | 1.2 | 数据库层（schema/migrations/repos） | 已完成 | 2026-08-09 | `Database/DB.swift`（系统 SQLite3 薄包装，better-sqlite3 语义）、`Schema.swift`（41 条 SQL verbatim）、`Migrations.swift`（0→31 全路径 + ADR-005/006 备份回滚）、`Repositories/` 15 个 repo（147 测试）；schema 与 `docs/fixtures/schema.snapshot.json` 41 表全对 |
 | 1.3 | helper 形态（HelperProtocol + helper-client） | 已完成 | 2026-08-09 | `IPC/HelperProtocol.swift` 核心路由 + `GatherCoreHelper/main.swift`（stdout JSON 行）+ Electron 侧 `main/services/helper/helper-client.ts`（按 id 匹配/超时）；冒烟通过（echo/session:mock/未知命令） |
 | 1.4 | 日志/遥测 | 已完成 | 2026-08-09 | `Logging/Telemetry.swift`（duration/counter/gauge，NDJSON 对齐基准脚本输出；GATHER_TELEMETRY=1 开关）+ 8 测试 |
-| 1.5 | 对账测试框架 | 已完成 | 2026-08-09 | `GatherCoreTests/Reconciliation/`：3 个移植函数首批对账通过——dHash（50 fixture）/ dHash 聚类（17+3）/ Face 预处理（17）；TS 侧生成器 `scripts/reconciliation/generate-*.mjs`（`--check` 双跑拦截漂移） |
+| 1.5 | 对账测试框架 | 已完成 | 2026-08-09 | `GatherCoreTests/Reconciliation/`：首批 3 函数（dHash 50 / 聚类 17+3 / Face 预处理 17）；后扩展至 **7 函数**——dimensions（26）/ vector（1000 行 topK 逐位一致 + recall）/ clusterer（8）/ matcher（6 case）；TS 侧生成器 `scripts/reconciliation/generate-*.mjs`（固定种子 + `--check` 双跑拦截漂移，已实测抓到 1 个字节序移植 bug） |
 
 > 附注（2026-08-09 工具链决议）：本机已装 swift.org 官方 toolchain 6.1.2（Linux，
-> swift test 真跑 475 测试全绿）。三项决策修正：
+> swift test 真跑 475 测试全绿）。四项决策修正：
 > 1. **SQLite.swift 弃用**：其全部版本携带 Apple 专属 SQLCipher 二进制 target，
 >    Linux SwiftPM 无法解析；改用系统 `import SQLite3` + C shim（`Sources/CSQLite/`），
 >    零外部依赖，语义对齐 better-sqlite3（`Database/DB.swift`）。
 > 2. **测试框架**：沿用 Swift Testing（CLT-only 环境的既定选择）；注意 Linux 6.1.2
 >    上 `@Test(.serialized)` 不生效，涉及静态全局状态的测试（Logger/Telemetry）须用
 >    模块内互斥锁（stateLock 模式）。
-> 3. **Package.swift**：原 CLT 专属 rpath 改为 `#if os(macOS)` 条件化，Linux 可编译。
+> 3. **Package.swift**：原 CLT 专属 rpath 改为 `#if os(macOS)` 条件化，Linux 可编译；
+>    fixtures/README 显式 exclude，构建 0 warning。
+> 4. **Swift 6 并发检查**（JobService 实现经验）：async 上下文直接调用
+>    `NSLock.lock()/unlock()` 会报「unavailable from asynchronous contexts」——
+>    须把临界区提取为同步辅助函数（takeCompletedResult/setController 等），
+>    async 方法只调用同步辅助。另：`Task {}` 为异步调度（TS 的 async 函数在
+>    首个 await 前同步执行），依赖「注册即生效」的状态（如并发计数）必须在
+>    Task 外同步完成；swift-testing 并行跑测试时 Task 调度延迟明显，涉及
+>    时序的测试须轮询等待条件而非固定 sleep。
 
 ### 10.3 Phase 2：热路径下沉
 
@@ -339,7 +347,7 @@ WKWebView 桥、Xcode 签名打包。
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
 | 3.0 | 宿主与桥（Swift 宿主 + WKWebView） | 待做 | — | **需 macOS**：gather-app（GatherApp.swift + WebViewHost + WebBridge） |
-| 3.1 | Dashboard 模块（workspace/jobs） | 部分完成 | 2026-08-09 | 服务层已移植：`Services/WorkspaceStatusService.swift`（26 用例与 TS 单测一一对应）+ `Services/JobService.swift`（drain/取消/心跳/进度节流/并发上限，11 用例）。**待 Mac**：Dashboard 页面 SwiftUI + TS ipc 停用 |
+| 3.1 | Dashboard 模块（workspace/jobs） | 部分完成 | 2026-08-09 | 服务层已移植：`Services/WorkspaceStatusService.swift`（26 用例与 TS 单测一一对应）+ `Services/JobService.swift`（drain/取消/心跳看门狗/进度节流/checkpoint/waitForResult/并发上限 2/clearCompleted 阶段证据保护，11 用例）。实现要点：claim+controller 注册为同步前缀（beginRun）保证并发上限精确、`drainScheduled` 在 drain 完成后清除防多 drain 交错、租约丢失时终态写不入 DB（TS 语义，recoverStale 恢复）。**待 Mac**：Dashboard 页面 SwiftUI + TS ipc 停用 |
 | 3.2 | Library/Gallery 模块（session/assets） | 待做 | — | — |
 | 3.3 | Similarity 模块 | 待做 | — | — |
 | 3.4 | Culling 模块（writeback/metadata，最大） | 待做 | — | — |
