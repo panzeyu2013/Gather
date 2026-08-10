@@ -53,4 +53,86 @@ public enum ImageCommands {
         }
         return HelperResponse(id: request.id, ok: true, payload: encoded)
     }
+
+    // ── image:thumbnail / image:preview（2.1 剩余，macOS 专属）──
+
+    /// 解码请求：path 为源文件路径；scale 为缩放目标像素（thumbnail: size，
+    /// preview: maxDimension）。
+    public struct DecodeRequest: Codable, Equatable {
+        public let path: String
+        public let scale: Int
+
+        public init(path: String, scale: Int) {
+            self.path = path
+            self.scale = scale
+        }
+    }
+
+    /// 解码结果 payload：JPEG base64 + 输出宽高（对齐 TS DecodeResult 字段语义）。
+    public struct DecodeResultPayload: Codable, Equatable {
+        public let bufferBase64: String
+        public let format: String
+        public let width: Int
+        public let height: Int
+
+        public init(bufferBase64: String, format: String, width: Int, height: Int) {
+            self.bufferBase64 = bufferBase64
+            self.format = format
+            self.width = width
+            self.height = height
+        }
+    }
+
+    /// 处理 image:thumbnail：{ path, size } → JPEG 缩略图（CGImageSource 缩略）。
+    public static func thumbnail(request: HelperRequest) -> HelperResponse {
+        decodeScaled(request: request, command: "image:thumbnail")
+    }
+
+    /// 处理 image:preview：{ path, maxDimension } → JPEG 预览（fit-inside）。
+    public static func preview(request: HelperRequest) -> HelperResponse {
+        decodeScaled(request: request, command: "image:preview")
+    }
+
+    private static func decodeScaled(request: HelperRequest, command: String) -> HelperResponse {
+        guard let payload = request.payload,
+            let decoded = try? HelperWire.decode(DecodeRequest.self, from: payload) else {
+            return HelperResponse(id: request.id, ok: false, error: "\(command): invalid payload")
+        }
+        let result: RAWDecodeResult
+        do {
+            if command == "image:thumbnail" {
+                result = try RAWDecoder.getThumbnail(path: decoded.path, size: decoded.scale)
+            } else {
+                result = try RAWDecoder.getPreview(path: decoded.path, maxDimension: decoded.scale)
+            }
+        } catch let error as RAWDecoderError {
+            return HelperResponse(id: request.id, ok: false, error: "\(command): \(errorDescription(error))")
+        } catch {
+            return HelperResponse(id: request.id, ok: false, error: "\(command): \(error.localizedDescription)")
+        }
+        guard let encoded = try? HelperWire.encode(DecodeResultPayload(
+            bufferBase64: result.buffer.base64EncodedString(),
+            format: result.format,
+            width: result.width,
+            height: result.height
+        )) else {
+            return HelperResponse(id: request.id, ok: false, error: "\(command): payload encode failed")
+        }
+        return HelperResponse(id: request.id, ok: true, payload: encoded)
+    }
+
+    private static func errorDescription(_ error: RAWDecoderError) -> String {
+        switch error {
+        case .unsupportedExtension(let ext):
+            return "unsupported extension \(ext)"
+        case .cannotOpenSource(let path):
+            return "cannot open source \(path)"
+        case .noImage(let path):
+            return "no image at \(path)"
+        case .dimensionsUnavailable(let path):
+            return "dimensions unavailable \(path)"
+        case .jpegEncodeFailed(let path):
+            return "jpeg encode failed \(path)"
+        }
+    }
 }

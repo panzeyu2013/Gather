@@ -337,7 +337,7 @@ WKWebView 桥、Xcode 签名打包。
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 2.1 | 解码 + 缩略图 | 部分完成 | 2026-08-09 | `Image/Dimensions.swift`（fast-dimensions 移植，26 case 对账）+ `Database/ImageCache.swift`（disk-cache 重写，SHA-256/LRU/TTL/对账启动逻辑，21 测试）+ helper `image:dimensions` 命令 + `image.service.ts` 改路由（GATHER_CORE_HELPER=1 优先、失败回退原路径，默认零变化）。**待 Mac**：`Image/RAWDecoder.swift`（CoreImage RAW 管线）、缩略图 `CGImageSourceCreateThumbnailAtIndex` |
+| 2.1 | 解码 + 缩略图 | 已完成 | 2026-08-10 | `Image/Dimensions.swift`（fast-dimensions 移植，26 case 对账）+ `Database/ImageCache.swift`（disk-cache 重写，21 测试）+ **`Image/RAWDecoder.swift`（CoreImage/ImageIO 重写 sharp+sips：getDimensions 含 EXIF orientation 5-8 交换、getThumbnail 走 `CGImageSourceCreateThumbnailAtIndex` + WithTransform、getPreview fit-inside 不放大；11 测试）** + helper `image:dimensions`/`image:thumbnail`/`image:preview` 三命令（HelperProtocolTests 30 测试）+ `image.service.ts` 改路由（thumbnail/preview 优先 helper 含 RAW，失败回退 sharp；GATHER_CORE_HELPER=1 启用，默认零变化）+ **`sips-decoder.ts` 删除**（能力被 RAWDecoder 覆盖；di/init.ts 注册链移除）。验收冒烟：3200×2400 PNG → 缩略图 256×192 / 预览 ≤2048 / 尺寸 3200×2400；TS 侧 98 文件 597 测试全绿 |
 | 2.2 | 人脸推理（Vision） | 待做 | — | **需 macOS**：Detector/Encoder/Inference/Provider（Vision 框架）；Preprocessing 已移植（1.5 对账） |
 | 2.3 | 哈希/聚类/向量移植 | 已完成 | 2026-08-09 | `Similarity/Hash.swift`+`ClusterEngine.swift`（1.5 对账）+ `Face/Clusterer.swift`（DBSCAN+LSH 门，8 case 对账）+ `Face/VectorIndex.swift`（CosineHnswIndex+CosineLshIndex，topK 逐位一致/recall≥TS）+ `Face/Matcher.swift`（11 用例对账）+ `Services/JobScheduler.swift`（Actor 预算准入，排队取消）+ `AnalysisWorker.swift`（进度流/错误传播）。**基准**：`gather-core-benchmarks`（2 万/5 万两档全过，见 `Sources/GatherCoreBenchmarks/README.md`） |
 | 2.4 | 文件监控（NSFileCoordinator） | 待做 | — | **需 macOS**：`Watch/Coordinator.swift` |
@@ -374,7 +374,6 @@ WKWebView 桥、Xcode 签名打包。
 
 | 优先级 | 任务 | 前置 | 说明 |
 |---|---|---|---|
-| P0 | **2.1 剩余（需 Mac）**：`Image/RAWDecoder.swift`（CoreImage RAW 管线替代 libvips）、缩略图 `CGImageSourceCreateThumbnailAtIndex`、`sips-decoder.ts` 删除 | macOS 开发机 | 完成后 2.1 验收（Import 基准 RAW/JPEG 冷热两轮） |
 | P0 | **2.2 人脸推理（需 Mac）**：`Face/Detector.swift`/`Encoder.swift`（Vision）、`Inference.swift`（Actor + 流式进度/取消）、`Provider.swift`（vision/cpu 回退开关） | macOS 开发机 | 0.3c 质量对账 ARI/NMI ≥ 0.95 门；ONNX 模型下载器/validator 删除 |
 | P1 | **2.4 文件监控（需 Mac）**：`Watch/Coordinator.swift`（NSFileCoordinator/FileProvider） | macOS 开发机 | 丢事件对账矩阵（ROADMAP 1.6） |
 | P1 | **3.2/3.3 收尾（需 Mac）**：Library/Gallery 与 Similarity 页面 SwiftUI + 对应 TS ipc 入口停用 | 3.0（宿主桥） | 服务层已就绪（2026-08-10 完成）；参照 3.1 收尾模式 |

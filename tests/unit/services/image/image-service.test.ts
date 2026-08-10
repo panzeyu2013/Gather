@@ -8,9 +8,7 @@ const decoderMocks = vi.hoisted(() => ({
   sharpPreview: vi.fn(),
   sharpThumbnail: vi.fn(),
   sharpDimensions: vi.fn(),
-  sipsPreview: vi.fn(),
-  sipsThumbnail: vi.fn(),
-  sipsDimensions: vi.fn(),
+  helperInvoke: vi.fn(),
 }))
 
 vi.mock('electron', () => ({
@@ -35,20 +33,10 @@ vi.mock('../../../../desktop/src/main/services/image/decoders/sharp-decoder', ()
   },
 }))
 
-vi.mock('../../../../desktop/src/main/services/image/decoders/sips-decoder', () => ({
-  SipsDecoder: class SipsDecoder {
-    readonly name = 'Sips test decoder'
-    supports(): boolean { return true }
-    getPreview(path: string, maxDimension?: number) {
-      return decoderMocks.sipsPreview(path, maxDimension)
-    }
-    getThumbnail(path: string, size: number) {
-      return decoderMocks.sipsThumbnail(path, size)
-    }
-    getDimensions(path: string) {
-      return decoderMocks.sipsDimensions(path)
-    }
-  },
+// helper-client 打桩：不真正 spawn gather-core-helper，由测试控制 invoke 行为。
+vi.mock('../../../../desktop/src/main/services/helper/helper-client', () => ({
+  invoke: (command: string, payload?: string) =>
+    decoderMocks.helperInvoke(command, payload),
 }))
 
 import {
@@ -59,8 +47,6 @@ import {
 } from '../../../../desktop/src/main/services/image/image.service'
 import type { DecodeResult, ImageDecoder } from '../../../../desktop/src/main/services/image/decoder'
 import { SharpDecoder } from '../../../../desktop/src/main/services/image/decoders/sharp-decoder'
-import { SipsDecoder } from '../../../../desktop/src/main/services/image/decoders/sips-decoder'
-import { IMAGE_CONFIG } from '../../../../desktop/src/main/services/image/image-config'
 import { getDefaults } from '../../../../desktop/src/main/services/settings/settings.service'
 import type { SettingsService } from '../../../../desktop/src/main/services/settings/settings.service'
 
@@ -71,12 +57,26 @@ const decoded: DecodeResult = {
   height: 800,
 }
 
+// helper 路由启用需要环境变量指向真实存在的二进制路径（helperDimensionsEnabled
+// 会 fs.existsSync 校验）。每次测试临时创建占位文件。
+let helperPath = ''
+
+function enableHelper(): void {
+  process.env.GATHER_CORE_HELPER = '1'
+  process.env.GATHER_CORE_HELPER_PATH = helperPath
+}
+
+function disableHelper(): void {
+  delete process.env.GATHER_CORE_HELPER
+  delete process.env.GATHER_CORE_HELPER_PATH
+}
+
 function sharpOnly(settings: SettingsService): ImageDecoder[] {
   return [new SharpDecoder(settings)]
 }
 
-function sharpThenSips(settings: SettingsService): ImageDecoder[] {
-  return [new SharpDecoder(settings), new SipsDecoder()]
+function helperDecoded(): DecodeResult {
+  return { buffer: Buffer.from('jpeg'), format: 'jpeg', width: 640, height: 480 }
 }
 
 function createCache(): ThumbnailCache & { values: Map<string, DecodeResult> } {
@@ -102,14 +102,35 @@ function createSettings(concurrency = 2): SettingsService {
 
 describe('ImageService preview pipeline', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    // resetAllMocks 会连 mock 实现与 once 队列一起清掉（clearAllMocks 不清
+    // mockResolvedValueOnce 残留，会污染后续测试），随后统一恢复默认实现。
+    vi.resetAllMocks()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-helper-stub-'))
+    helperPath = path.join(dir, 'gather-core-helper')
+    fs.writeFileSync(helperPath, '')
     decoderMocks.sharpPreview.mockResolvedValue(decoded)
     decoderMocks.sharpThumbnail.mockResolvedValue(decoded)
     decoderMocks.sharpDimensions.mockResolvedValue({ width: 1200, height: 800 })
-    decoderMocks.sipsPreview.mockResolvedValue(decoded)
-    decoderMocks.sipsThumbnail.mockResolvedValue(decoded)
-    decoderMocks.sipsDimensions.mockResolvedValue({ width: 1200, height: 800 })
   })
+
+  afterEach(() => {
+    disableHelper()
+    fs.rmSync(path.dirname(helperPath), { recursive: true, force: true })
+  })
+
+  /// 设置 helper mock 默认成功响应（须在 enableHelper 后调用，避免被 resetAllMocks 清除）。
+  function stubHelperOk(): void {
+    decoderMocks.helperInvoke.mockResolvedValue({
+      id: '1',
+      ok: true,
+      payload: JSON.stringify({
+        bufferBase64: Buffer.from('jpeg').toString('base64'),
+        format: 'jpeg',
+        width: 640,
+        height: 480,
+      }),
+    })
+  }
 
   it('coalesces concurrent thumbnail requests for the same RAW file', async () => {
     const cache = createCache()
@@ -126,19 +147,34 @@ describe('ImageService preview pipeline', () => {
     expect(cache.set).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to the next registered decoder for priority requests', async () => {
-    const cache = createCache()
-    const settings = createSettings()
-    const service = new ImageService(cache, settings, sharpThenSips(settings))
-    decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('unsupported image'))
+  it('routes thumbnail decode to the native helper when enabled', async () => {
+    enableHelper()
+    stubHelperOk()
+    const service = new ImageService(createCache(), createSettings(), sharpOnly(createSettings()))
+
+    const result = await service.getThumbnail('/photos/a.nef', 2880)
+
+    expect(decoderMocks.helperInvoke).toHaveBeenCalledTimes(1)
+    expect(decoderMocks.helperInvoke).toHaveBeenCalledWith(
+      'image:thumbnail',
+      JSON.stringify({ path: '/photos/a.nef', scale: 2048 }),
+    )
+    expect(decoderMocks.sharpThumbnail).not.toHaveBeenCalled()
+    expect(result.width).toBe(640)
+    expect(result.height).toBe(480)
+  })
+
+  it('falls back to sharp when the helper decode fails', async () => {
+    enableHelper()
+    decoderMocks.helperInvoke.mockResolvedValueOnce({ id: '1', ok: false, error: 'unsupported' })
+    const service = new ImageService(createCache(), createSettings(), sharpOnly(createSettings()))
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     try {
-      await service.prioritizeThumbnail('/photos/a.nef', 2880)
+      await service.getThumbnail('/photos/a.nef', 2880)
 
+      expect(decoderMocks.helperInvoke).toHaveBeenCalledTimes(1)
       expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
-      expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
-      expect(cache.values.size).toBe(1)
       // A successful fallback must stay quiet: per-attempt warnings would spam
       // for files that are repeatedly requested while a later decoder succeeds.
       expect(warning).not.toHaveBeenCalled()
@@ -148,11 +184,10 @@ describe('ImageService preview pipeline', () => {
   })
 
   it('tries every registered decoder before giving up', async () => {
-    const cache = createCache()
-    const settings = createSettings()
-    const service = new ImageService(cache, settings, sharpThenSips(settings))
+    enableHelper()
+    decoderMocks.helperInvoke.mockRejectedValueOnce(new Error('helper failed'))
     decoderMocks.sharpThumbnail.mockRejectedValueOnce(new Error('sharp failed'))
-    decoderMocks.sipsThumbnail.mockRejectedValueOnce(new Error('sips failed'))
+    const service = new ImageService(createCache(), createSettings(), sharpOnly(createSettings()))
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     try {
@@ -160,9 +195,8 @@ describe('ImageService preview pipeline', () => {
         .catch((error: unknown) => error)
 
       expect(failure).toBeInstanceOf(AggregateError)
-      expect((failure as AggregateError).errors).toHaveLength(2)
+      expect((failure as AggregateError).errors).toHaveLength(1)
       expect(decoderMocks.sharpThumbnail).toHaveBeenCalledTimes(1)
-      expect(decoderMocks.sipsThumbnail).toHaveBeenCalledTimes(1)
       // Only the final aggregate failure is logged, exactly once.
       expect(warning).toHaveBeenCalledTimes(1)
     } finally {
@@ -170,26 +204,48 @@ describe('ImageService preview pipeline', () => {
     }
   })
 
-  it('applies the same fallback chain to previews', async () => {
-    const settings = createSettings()
-    const service = new ImageService(createCache(), settings, sharpThenSips(settings))
-    decoderMocks.sharpPreview.mockRejectedValueOnce(new Error('preview failed'))
+  it('applies the same helper-first chain to previews', async () => {
+    enableHelper()
+    stubHelperOk()
+    const service = new ImageService(createCache(), createSettings(), sharpOnly(createSettings()))
 
     await service.getPreview('/photos/a.nef', 4096)
 
-    expect(decoderMocks.sharpPreview).toHaveBeenCalledTimes(1)
-    expect(decoderMocks.sipsPreview).toHaveBeenCalledTimes(1)
+    expect(decoderMocks.helperInvoke).toHaveBeenCalledTimes(1)
+    expect(decoderMocks.helperInvoke).toHaveBeenCalledWith(
+      'image:preview',
+      JSON.stringify({ path: '/photos/a.nef', scale: 2048 }),
+    )
+    expect(decoderMocks.sharpPreview).not.toHaveBeenCalled()
   })
 
-  it('applies the same fallback chain to dimensions', async () => {
-    const settings = createSettings()
-    const service = new ImageService(createCache(), settings, sharpThenSips(settings))
-    decoderMocks.sharpDimensions.mockRejectedValueOnce(new Error('dimensions failed'))
+  it('routes non-RAW dimensions through the helper and falls back on failure', async () => {
+    enableHelper()
+    stubHelperOk()
+    // helper 路由会先 readFileHeader 读真实文件头，须用真实 JPEG 文件。
+    const jpegDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gather-real-jpeg-'))
+    const realJpeg = path.join(jpegDir, 'photo.jpg')
+    fs.writeFileSync(realJpeg, Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QganBlZyB2MS4wICh1c2luZyBJSkcgSlBFRyB2ODApLCBxdWFsaXR5IDkwCg==', 'base64'))
+    try {
+      const service = new ImageService(createCache(), createSettings(), sharpOnly(createSettings()))
 
-    await service.getDimensions('/photos/a.nef')
+      // 非 RAW：dimensions 走 image:dimensions helper 路由。
+      const dims = await service.getDimensions(realJpeg)
 
-    expect(decoderMocks.sharpDimensions).toHaveBeenCalledTimes(1)
-    expect(decoderMocks.sipsDimensions).toHaveBeenCalledTimes(1)
+      expect(dims).toEqual({ width: 640, height: 480 })
+      expect(decoderMocks.helperInvoke).toHaveBeenCalledTimes(1)
+      expect(decoderMocks.helperInvoke).toHaveBeenCalledWith(
+        'image:dimensions',
+        expect.stringContaining('"ext":".jpg"'),
+      )
+      expect(decoderMocks.sharpDimensions).not.toHaveBeenCalled()
+
+      decoderMocks.helperInvoke.mockResolvedValueOnce({ id: '2', ok: false, error: 'boom' })
+      await service.getDimensions(realJpeg)
+      expect(decoderMocks.sharpDimensions).toHaveBeenCalledTimes(1)
+    } finally {
+      fs.rmSync(jpegDir, { recursive: true, force: true })
+    }
   })
 
   it('coalesces preview and dimensions requests independently', async () => {
@@ -219,17 +275,18 @@ describe('ImageService preview pipeline', () => {
     expect(decoderMocks.sharpPreview).toHaveBeenCalledWith('/photos/a.nef', 2048)
   })
 
-  it('keeps the sips RAW extension list in sync with the sharp decoder lists', () => {
-    const sharpRaw = new Set(IMAGE_CONFIG.sharp.rawExtensions)
-    const sharpSupported = new Set(IMAGE_CONFIG.sharp.supportedExtensions)
+  it('routes RAW decode (thumbnail/preview) to the helper', async () => {
+    enableHelper()
+    stubHelperOk()
+    const service = new ImageService(createCache(), createSettings(), sharpOnly(createSettings()))
 
-    // Embedded-preview extraction only happens for formats the sharp decoder
-    // actually registers, so any sips-only RAW would silently skip the
-    // preview-first path.
-    for (const extension of IMAGE_CONFIG.sips.rawExtensions) {
-      expect(sharpRaw.has(extension)).toBe(true)
-      expect(sharpSupported.has(extension)).toBe(true)
-    }
+    await service.getThumbnail('/photos/a.nef', 2880)
+    await service.getPreview('/photos/a.nef', 4096)
+
+    const commands = decoderMocks.helperInvoke.mock.calls.map(([command]) => command)
+    expect(commands).toEqual(['image:thumbnail', 'image:preview'])
+    expect(decoderMocks.sharpThumbnail).not.toHaveBeenCalled()
+    expect(decoderMocks.sharpPreview).not.toHaveBeenCalled()
   })
 
   it('restores display dimensions when loading a thumbnail from disk cache', async () => {

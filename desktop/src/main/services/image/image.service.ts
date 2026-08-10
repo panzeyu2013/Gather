@@ -23,6 +23,9 @@ const HELPER_DIMENSIONS_EXTENSIONS = new Set(
     ext => !IMAGE_CONFIG.sharp.rawExtensions.includes(ext),
   ),
 )
+// helper 解码（thumbnail/preview）路由：RAWDecoder 覆盖 sharp.supportedExtensions
+// 全集（含 RAW），全部走 helper；失败/不可用一律回退原解码器链。
+const HELPER_DECODE_EXTENSIONS = new Set(IMAGE_CONFIG.sharp.supportedExtensions)
 // 与 sharp-decoder 的 HEADER_READ_SIZE 一致，保证喂给 helper 的输入字节与
 // 原 fast-dimensions 路径完全相同，语义零漂移（JPEG SOF 常落在 EXIF APP1
 // 段之后，256 字节往往不够；TIFF IFD 也可能超出 256 字节）。
@@ -339,6 +342,7 @@ export class ImageService {
             path,
             'preview',
             (decoder) => decoder.getPreview(path, resolvedDimension),
+            () => this.decodeWithHelper(path, 'preview', resolvedDimension),
           ), priority),
           priority,
         )
@@ -457,8 +461,7 @@ export class ImageService {
 
   /** helper 路由：读文件头 + ext 调 helper image:dimensions；
    * 未启用/不可用/失败/尺寸不可读一律返回 null，由调用方回退原路径。 */
-  private async readDimensionsWithHelper(path: string): Promise<{ width: number; height: number } | null> {
-    if (!helperDimensionsEnabled()) return null
+  private async readDimensionsWithHelper(path: string): Promise<{ width: number; height: number } | null> {    if (!helperDimensionsEnabled()) return null
     const ext = nodePath.extname(path).toLowerCase()
     if (!HELPER_DIMENSIONS_EXTENSIONS.has(ext)) return null
     const header = await readFileHeader(path, HELPER_HEADER_READ_BYTES)
@@ -501,6 +504,7 @@ export class ImageService {
         path,
         'thumbnail',
         (decoder) => decoder.getThumbnail(path, size),
+        () => this.decodeWithHelper(path, 'thumbnail', size),
       ), priority),
       priority,
     )
@@ -516,7 +520,17 @@ export class ImageService {
     path: string,
     operation: string,
     decode: (decoder: ImageDecoder) => Promise<T>,
+    decodeViaHelper?: () => Promise<T>,
   ): Promise<T> {
+    // helper 路由层优先（仅 GATHER_CORE_HELPER=1 且二进制存在时生效）；
+    // 任何失败/不可用都回退原解码器链，保持既有行为。
+    if (decodeViaHelper) {
+      try {
+        return await decodeViaHelper()
+      } catch {
+        // helper 失败（文件损坏/格式不支持/helper 进程异常）→ 回退。
+      }
+    }
     // Try every registered decoder that claims the extension, in registration
     // order. The composition root decides which decoders exist per platform,
     // so this core never branches on process.platform.
@@ -543,5 +557,62 @@ export class ImageService {
       errors,
       `Unable to decode ${path} for ${operation} with any of: ${candidates.map(d => d.name).join(', ')}`,
     )
+  }
+
+  /** helper 解码路由（Phase 2.1 剩余，macOS）：thumbnail/preview 走
+   * gather-core-helper（ImageIO/CoreImage，含 RAW）。未启用/扩展名不在
+   * 路由集/失败一律抛错，由 decodeWithFallback 回退原解码器链。 */
+  private async decodeWithHelper(
+    path: string,
+    operation: 'thumbnail' | 'preview',
+    size: number,
+  ): Promise<DecodeResult> {
+    if (!helperDimensionsEnabled()) {
+      throw new Error('helper decode disabled')
+    }
+    const ext = nodePath.extname(path).toLowerCase()
+    if (!HELPER_DECODE_EXTENSIONS.has(ext)) {
+      throw new Error(`extension not routed to helper: ${ext}`)
+    }
+    const command = operation === 'thumbnail' ? 'image:thumbnail' : 'image:preview'
+    const response = await invoke(command, JSON.stringify({ path, scale: size }))
+    if (!response.ok || response.payload === undefined || response.payload === '') {
+      throw new Error(response.error ?? `helper ${command} failed`)
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(response.payload)
+    } catch {
+      throw new Error(`helper ${command} returned unparseable payload`)
+    }
+    if (typeof parsed !== 'object' || parsed === null) {
+      throw new Error(`helper ${command} returned non-object payload`)
+    }
+    const result = parsed as {
+      bufferBase64?: unknown
+      format?: unknown
+      width?: unknown
+      height?: unknown
+    }
+    if (
+      typeof result.bufferBase64 !== 'string' ||
+      typeof result.format !== 'string' ||
+      typeof result.width !== 'number' ||
+      typeof result.height !== 'number' ||
+      !Number.isInteger(result.width) || !Number.isInteger(result.height) ||
+      result.width <= 0 || result.height <= 0
+    ) {
+      throw new Error(`helper ${command} returned invalid decode result`)
+    }
+    const buffer = Buffer.from(result.bufferBase64, 'base64')
+    if (buffer.length === 0) {
+      throw new Error(`helper ${command} returned empty buffer`)
+    }
+    return {
+      buffer,
+      format: result.format as DecodeResult['format'],
+      width: result.width,
+      height: result.height,
+    }
   }
 }

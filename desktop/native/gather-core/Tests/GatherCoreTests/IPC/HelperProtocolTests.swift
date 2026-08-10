@@ -3,6 +3,9 @@
 
 import Foundation
 import Testing
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 @testable import GatherCore
 
 struct HelperProtocolTests {
@@ -145,6 +148,99 @@ struct HelperProtocolTests {
         #expect(!response.ok)
         #expect(response.id == "14")
         #expect(response.error?.contains("image:dimensions") == true)
+    }
+
+    // MARK: - image:thumbnail / image:preview
+
+    @Test func imageThumbnailDecodesRealJpeg() throws {
+        // 真实 JPEG 文件 → 缩略图（标准线协议形态，payload 为 base64 Data）。
+        let url = try makeTestJPEG(width: 1200, height: 800)
+        defer { cleanup([url]) }
+        let payload = Data(#"{"path":"\#(url.path)","scale":256}"#.utf8)
+        let request = HelperRequest(id: "20", command: "image:thumbnail", payload: payload)
+        let line = try #require(String(data: HelperWire.encode(request), encoding: .utf8))
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(response.id == "20")
+        #expect(response.ok)
+        #expect(response.error == nil)
+        let result = try HelperWire.decode(ImageCommands.DecodeResultPayload.self, from: try #require(response.payload))
+        #expect(result.format == "jpeg")
+        #expect(result.width <= 256 && result.height <= 256)
+        let jpeg = try #require(Data(base64Encoded: result.bufferBase64))
+        #expect(jpeg.count > 2)
+        #expect(jpeg[0] == 0xFF && jpeg[1] == 0xD8)
+    }
+
+    @Test func imagePreviewFitsInside() throws {
+        let url = try makeTestJPEG(width: 4000, height: 2000)
+        defer { cleanup([url]) }
+        let payload = Data(#"{"path":"\#(url.path)","scale":2048}"#.utf8)
+        let request = HelperRequest(id: "21", command: "image:preview", payload: payload)
+        let line = try #require(String(data: HelperWire.encode(request), encoding: .utf8))
+        let data = try #require(HelperProtocol.handleLine(line))
+        let response = try HelperWire.decode(HelperResponse.self, from: data)
+        #expect(response.ok)
+        let result = try HelperWire.decode(ImageCommands.DecodeResultPayload.self, from: try #require(response.payload))
+        #expect(result.format == "jpeg")
+        #expect(result.width <= 2048 && result.height <= 2048)
+    }
+
+    @Test func imageThumbnailUnsupportedExtensionReturnsError() {
+        let payload = Data(#"{"path":"/tmp/foo.gif","scale":256}"#.utf8)
+        let request = HelperRequest(id: "22", command: "image:thumbnail", payload: payload)
+        let line = try! String(data: HelperWire.encode(request), encoding: .utf8)!
+        let data = HelperProtocol.handleLine(line)!
+        let response = try! HelperWire.decode(HelperResponse.self, from: data)
+        #expect(!response.ok)
+        #expect(response.error?.contains("unsupported extension") == true)
+    }
+
+    @Test func imageThumbnailMissingFileReturnsError() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-helper-missing-\(UUID().uuidString).jpg")
+        let payload = Data(#"{"path":"\#(missing.path)","scale":256}"#.utf8)
+        let request = HelperRequest(id: "23", command: "image:thumbnail", payload: payload)
+        let line = try! String(data: HelperWire.encode(request), encoding: .utf8)!
+        let data = HelperProtocol.handleLine(line)!
+        let response = try! HelperWire.decode(HelperResponse.self, from: data)
+        #expect(!response.ok)
+        #expect(response.id == "23")
+        #expect(response.error != nil)
+    }
+
+    // MARK: - 测试图片工具
+
+    /// 生成纯色 JPEG 文件（HelperProtocolTests 内复用，避免跨套件共享状态）。
+    private func makeTestJPEG(width: Int, height: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-helper-\(UUID().uuidString).jpg")
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw TestError("CGContext failed") }
+        context.setFillColor(CGColor(red: 0.2, green: 0.3, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        guard let image = context.makeImage() else { throw TestError("makeImage failed") }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil)
+        else { throw TestError("destination failed") }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw TestError("finalize failed") }
+        try (data as Data).write(to: url)
+        return url
+    }
+
+    private func cleanup(_ urls: [URL]) {
+        for url in urls { try? FileManager.default.removeItem(at: url) }
+    }
+
+    private struct TestError: Error, CustomStringConvertible {
+        let message: String
+        init(_ message: String) { self.message = message }
+        var description: String { message }
     }
 
     // MARK: - 非法输入

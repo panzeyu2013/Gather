@@ -47,6 +47,10 @@ public enum HelperProtocol {
             return HelperResponse(id: request.id, ok: true, payload: payload)
         case "image:dimensions":
             return ImageCommands.dimensions(request: request)
+        case "image:thumbnail":
+            return ImageCommands.thumbnail(request: request)
+        case "image:preview":
+            return ImageCommands.preview(request: request)
         default:
             return HelperResponse(id: request.id, ok: false, error: "unknown command: \(request.command)")
         }
