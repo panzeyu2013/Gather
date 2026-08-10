@@ -32,6 +32,8 @@ let package = Package(
         .library(name: "GatherCore", targets: ["GatherCore"]),
         // helper 线协议可执行（1.3）：stdout JSON 行协议，供 Electron 壳 child_process 调用。
         .executable(name: "gather-core-helper", targets: ["GatherCoreHelper"]),
+        // Similarity 基准（2.3 验收 2 万/5 万）：产出 JSON 行指标（对齐 scripts/*.mjs 风格）。
+        .executable(name: "gather-core-benchmarks", targets: ["GatherCoreBenchmarks"]),
     ],
     targets: [
         .target(
@@ -44,9 +46,15 @@ let package = Package(
             name: "GatherCoreHelper",
             dependencies: ["GatherCore"]
         ),
+        .executableTarget(
+            name: "GatherCoreBenchmarks",
+            dependencies: ["GatherCore"],
+            exclude: ["README.md"]
+        ),
         .testTarget(
             name: "GatherCoreTests",
             dependencies: ["GatherCore"],
+            exclude: ["Reconciliation/Fixtures", "Reconciliation/README.md"],
             swiftSettings: testSwiftSettings,
             linkerSettings: testLinkerSettings
         ),

@@ -4,8 +4,7 @@
 // 字段名与 TS 一致（camelCase），Codable 合成 JSON key 与 TS 逐字相同。
 //
 // 说明: face.ts import type { WritebackOptions, WritebackItem } from './core'；
-// Core.swift 尚未包含这两个 core.ts 类型，且本任务不得改动已有文件，
-// 故按 core.ts 的最终 JSON 形状落地于此（见文件尾部 Writeback* 区块）。
+// 这两个 core.ts 类型位于 Core.swift（Writeback* 区块），此处直接引用。
 
 import Foundation
 
@@ -267,113 +266,5 @@ public struct FaceCluster: Codable, Equatable, Sendable {
         self.syncedToLibrary = syncedToLibrary
         self.matchedPersonId = matchedPersonId
         self.matchConfidence = matchConfidence
-    }
-}
-
-// ── core.ts 依赖（face.ts 引用，Core.swift 未包含，按 JSON 形状落地于此）──
-
-// TS: WritebackOptions（core.ts）—— FkwPreviewParams.options
-public struct WritebackOptions: Codable, Equatable, Sendable {
-    public var createAlbums: Bool? // TS: createAlbums?
-    public var addPrefix: Bool? // TS: addPrefix?
-    public var markUngrouped: Bool? // TS: markUngrouped?
-    public var writeIPTC: Bool? // TS: writeIPTC?
-
-    public init(createAlbums: Bool? = nil, addPrefix: Bool? = nil, markUngrouped: Bool? = nil, writeIPTC: Bool? = nil) {
-        self.createAlbums = createAlbums
-        self.addPrefix = addPrefix
-        self.markUngrouped = markUngrouped
-        self.writeIPTC = writeIPTC
-    }
-}
-
-// TS: WritebackAttributes（core.ts）
-public struct WritebackAttributes: Codable, Equatable, Sendable {
-    public var keywords: [String]? // TS: keywords?
-    public var rating: Double? // TS: rating?
-    public var label: String? // TS: label?
-
-    public init(keywords: [String]? = nil, rating: Double? = nil, label: String? = nil) {
-        self.keywords = keywords
-        self.rating = rating
-        self.label = label
-    }
-}
-
-// TS: WritebackItem.preview.dirtyFields（core.ts 内联联合 'rating' | 'label' | 'keywords'）
-public enum WritebackDirtyField: String, Codable, CaseIterable, Equatable, Sendable {
-    case rating
-    case label
-    case keywords
-}
-
-// TS: WritebackItem.preview（core.ts 内联匿名对象）
-public struct WritebackItemPreview: Codable, Equatable, Sendable {
-    public var dirtyFields: [WritebackDirtyField]
-    public var before: WritebackAttributes
-    public var after: WritebackAttributes
-    public var source: String
-    public var sharedPhotoCount: Int
-    public var externalChanged: Bool
-    public var willCreate: Bool
-
-    public init(dirtyFields: [WritebackDirtyField], before: WritebackAttributes, after: WritebackAttributes, source: String, sharedPhotoCount: Int, externalChanged: Bool, willCreate: Bool) {
-        self.dirtyFields = dirtyFields
-        self.before = before
-        self.after = after
-        self.source = source
-        self.sharedPhotoCount = sharedPhotoCount
-        self.externalChanged = externalChanged
-        self.willCreate = willCreate
-    }
-}
-
-// TS: WritebackItem（core.ts）—— FkwWritebackParams.items
-public struct WritebackItem: Codable, Equatable, Sendable {
-    public var id: Int? // TS: id?
-    public var photoId: String
-    public var photoPath: String
-    public var sessionId: String
-    public var module: String
-    public var keywords: [String]
-    public var attributes: WritebackAttributes? // TS: attributes?
-    public var xmpPath: String
-    public var backupPath: String
-    public var xmpStatus: String
-    public var errorMessage: String
-    public var attemptCount: Int
-    public var lastAttemptAt: String
-    public var preview: WritebackItemPreview? // TS: preview?
-
-    public init(
-        id: Int? = nil,
-        photoId: String,
-        photoPath: String,
-        sessionId: String,
-        module: String,
-        keywords: [String],
-        attributes: WritebackAttributes? = nil,
-        xmpPath: String,
-        backupPath: String,
-        xmpStatus: String,
-        errorMessage: String,
-        attemptCount: Int,
-        lastAttemptAt: String,
-        preview: WritebackItemPreview? = nil
-    ) {
-        self.id = id
-        self.photoId = photoId
-        self.photoPath = photoPath
-        self.sessionId = sessionId
-        self.module = module
-        self.keywords = keywords
-        self.attributes = attributes
-        self.xmpPath = xmpPath
-        self.backupPath = backupPath
-        self.xmpStatus = xmpStatus
-        self.errorMessage = errorMessage
-        self.attemptCount = attemptCount
-        self.lastAttemptAt = lastAttemptAt
-        self.preview = preview
     }
 }

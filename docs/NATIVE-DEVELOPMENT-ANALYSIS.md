@@ -316,7 +316,7 @@ WKWebView 桥、Xcode 签名打包。
 | 1.5 | 对账测试框架 | 已完成 | 2026-08-09 | `GatherCoreTests/Reconciliation/`：3 个移植函数首批对账通过——dHash（50 fixture）/ dHash 聚类（17+3）/ Face 预处理（17）；TS 侧生成器 `scripts/reconciliation/generate-*.mjs`（`--check` 双跑拦截漂移） |
 
 > 附注（2026-08-09 工具链决议）：本机已装 swift.org 官方 toolchain 6.1.2（Linux，
-> swift test 真跑 375 测试全绿）。三项决策修正：
+> swift test 真跑 475 测试全绿）。三项决策修正：
 > 1. **SQLite.swift 弃用**：其全部版本携带 Apple 专属 SQLCipher 二进制 target，
 >    Linux SwiftPM 无法解析；改用系统 `import SQLite3` + C shim（`Sources/CSQLite/`），
 >    零外部依赖，语义对齐 better-sqlite3（`Database/DB.swift`）。
@@ -331,15 +331,15 @@ WKWebView 桥、Xcode 签名打包。
 |---|---|---|---|---|
 | 2.1 | 解码 + 缩略图 | 部分完成 | 2026-08-09 | `Image/Dimensions.swift`（fast-dimensions 移植，26 case 对账）+ `Database/ImageCache.swift`（disk-cache 重写，SHA-256/LRU/TTL/对账启动逻辑，21 测试）+ helper `image:dimensions` 命令 + `image.service.ts` 改路由（GATHER_CORE_HELPER=1 优先、失败回退原路径，默认零变化）。**待 Mac**：`Image/RAWDecoder.swift`（CoreImage RAW 管线）、缩略图 `CGImageSourceCreateThumbnailAtIndex` |
 | 2.2 | 人脸推理（Vision） | 待做 | — | **需 macOS**：Detector/Encoder/Inference/Provider（Vision 框架）；Preprocessing 已移植（1.5 对账） |
-| 2.3 | 哈希/聚类/向量移植 | 已完成 | 2026-08-09 | `Similarity/Hash.swift`+`ClusterEngine.swift`（1.5 对账）+ `Face/Clusterer.swift`（DBSCAN+LSH 门，8 case 对账）+ `Face/VectorIndex.swift`（CosineHnswIndex+CosineLshIndex，topK 逐位一致/recall≥TS）+ `Face/Matcher.swift`（11 用例对账）+ `Services/JobScheduler.swift`（Actor 预算准入，排队取消）+ `AnalysisWorker.swift`（进度流/错误传播） |
+| 2.3 | 哈希/聚类/向量移植 | 已完成 | 2026-08-09 | `Similarity/Hash.swift`+`ClusterEngine.swift`（1.5 对账）+ `Face/Clusterer.swift`（DBSCAN+LSH 门，8 case 对账）+ `Face/VectorIndex.swift`（CosineHnswIndex+CosineLshIndex，topK 逐位一致/recall≥TS）+ `Face/Matcher.swift`（11 用例对账）+ `Services/JobScheduler.swift`（Actor 预算准入，排队取消）+ `AnalysisWorker.swift`（进度流/错误传播）。**基准**：`gather-core-benchmarks`（2 万/5 万两档全过，见 `Sources/GatherCoreBenchmarks/README.md`） |
 | 2.4 | 文件监控（NSFileCoordinator） | 待做 | — | **需 macOS**：`Watch/Coordinator.swift` |
 
 ### 10.4 Phase 3：宿主切换 + 领域服务与 UI 迁移
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 3.0 | 宿主与桥（Swift 宿主 + WKWebView） | 待做 | — | — |
-| 3.1 | Dashboard 模块（workspace/jobs） | 待做 | — | — |
+| 3.0 | 宿主与桥（Swift 宿主 + WKWebView） | 待做 | — | **需 macOS**：gather-app（GatherApp.swift + WebViewHost + WebBridge） |
+| 3.1 | Dashboard 模块（workspace/jobs） | 部分完成 | 2026-08-09 | 服务层已移植：`Services/WorkspaceStatusService.swift`（26 用例与 TS 单测一一对应）+ `Services/JobService.swift`（drain/取消/心跳/进度节流/并发上限，11 用例）。**待 Mac**：Dashboard 页面 SwiftUI + TS ipc 停用 |
 | 3.2 | Library/Gallery 模块（session/assets） | 待做 | — | — |
 | 3.3 | Similarity 模块 | 待做 | — | — |
 | 3.4 | Culling 模块（writeback/metadata，最大） | 待做 | — | — |
@@ -355,3 +355,21 @@ WKWebView 桥、Xcode 签名打包。
 | 4.3 | embedding 重跑 | 待做 | — | — |
 | 4.4 | 删除 Electron 残留 | 待做 | — | — |
 | 4.5 | 收尾验收（四套基准 + Stretch 门） | 待做 | — | — |
+
+### 10.6 后续计划与待办（2026-08-09 快照）
+
+> 原则：Linux 可推进的任务优先；需 macOS 框架（CoreImage/Vision/AppKit/
+> NSFileCoordinator）的条目标注「需 Mac」。
+
+| 优先级 | 任务 | 前置 | 说明 |
+|---|---|---|---|
+| P0 | **2.1 剩余（需 Mac）**：`Image/RAWDecoder.swift`（CoreImage RAW 管线替代 libvips）、缩略图 `CGImageSourceCreateThumbnailAtIndex`、`sips-decoder.ts` 删除 | macOS 开发机 | 完成后 2.1 验收（Import 基准 RAW/JPEG 冷热两轮） |
+| P0 | **2.2 人脸推理（需 Mac）**：`Face/Detector.swift`/`Encoder.swift`（Vision）、`Inference.swift`（Actor + 流式进度/取消）、`Provider.swift`（vision/cpu 回退开关） | macOS 开发机 | 0.3c 质量对账 ARI/NMI ≥ 0.95 门；ONNX 模型下载器/validator 删除 |
+| P1 | **2.4 文件监控（需 Mac）**：`Watch/Coordinator.swift`（NSFileCoordinator/FileProvider） | macOS 开发机 | 丢事件对账矩阵（ROADMAP 1.6） |
+| P1 | **3.2 Library/Gallery 服务层**（session/assets 服务重写，Linux 可做） | 无 | 契约与 repo（session/photo/asset）已就绪；参照 3.1 模式 |
+| P1 | **3.3 Similarity 服务层**（similarity.service.ts 重写，算法已下沉 2.3） | 无 | 792 行 TS；similarity-result.repo 已就绪 |
+| P2 | **Phase 3.0 宿主与桥（需 Mac）**：`gather-app`（GatherApp.swift + WebViewHost + WebBridge） | 2.1/2.2 验收通过 | WKWebView 桥复用 1.1 契约；e2e 等价验证 |
+| P2 | **3.1 收尾（需 Mac）**：Dashboard 页面 SwiftUI + TS ipc 停用 | 3.0 | 服务层已就绪 |
+| P2 | **Phase 0 残余**：0.1 性能归因审计 / 0.2 商业信号复核 / 0.4 P0/P1 修复对齐 | — | Go/No-Go 门未正式落锤；当前按继续推进执行 |
+| P2 | **Telemetry 对接**：四套基准采集 Swift 侧指标（1.4 验收） | 基准环境可用 | `GATHER_TELEMETRY=1` 已实现；Swift 基准已产出 NDJSON 指标行 |
+| P3 | **Phase 4 收尾（需 Mac）**：build.sh 打包/深链/菜单/embedding 重跑/Electron 残留删除 | Phase 3 完成 | — |

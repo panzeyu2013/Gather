@@ -459,3 +459,202 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case ASSET_LINK_REJECT_CONFIRM_REQUIRED
     case ASSET_RELINK_CONFIRM_REQUIRED
 }
+
+// ── 共享的 writeback / cleanup 类型（core.ts:35-105）──
+// face.ts import type { WritebackOptions, WritebackItem } from './core'，
+// 这些类型属 core.ts 归属，Face.swift 直接引用。
+
+// TS: WritebackAttributes（core.ts:35-40）
+public struct WritebackAttributes: Codable, Equatable, Sendable {
+    public var keywords: [String]? // TS: keywords?
+    public var rating: Double? // TS: rating?
+    public var label: String? // TS: label?
+
+    public init(keywords: [String]? = nil, rating: Double? = nil, label: String? = nil) {
+        self.keywords = keywords
+        self.rating = rating
+        self.label = label
+    }
+}
+
+// TS: GroupData（core.ts:41-45）
+public struct GroupData: Codable, Equatable, Sendable {
+    public struct ImageRef: Codable, Equatable, Sendable {
+        public var path: String
+
+        public init(path: String) {
+            self.path = path
+        }
+    }
+
+    public var id: ResponseID // TS: id: number | string
+    public var images: [ImageRef]
+    public var label: String? // TS: label?
+
+    public init(id: ResponseID, images: [ImageRef], label: String? = nil) {
+        self.id = id
+        self.images = images
+        self.label = label
+    }
+}
+
+// TS: WritebackOptions（core.ts:47-52）
+public struct WritebackOptions: Codable, Equatable, Sendable {
+    public var createAlbums: Bool? // TS: createAlbums?
+    public var addPrefix: Bool? // TS: addPrefix?
+    public var markUngrouped: Bool? // TS: markUngrouped?
+    public var writeIPTC: Bool? // TS: writeIPTC?
+
+    public init(createAlbums: Bool? = nil, addPrefix: Bool? = nil, markUngrouped: Bool? = nil, writeIPTC: Bool? = nil) {
+        self.createAlbums = createAlbums
+        self.addPrefix = addPrefix
+        self.markUngrouped = markUngrouped
+        self.writeIPTC = writeIPTC
+    }
+}
+
+// TS: WritebackPreview（core.ts:54-58）
+public struct WritebackPreview: Codable, Equatable, Sendable {
+    public var items: [WritebackItem]
+    public var totalCount: Int
+    public var affectedPhotos: Int
+
+    public init(items: [WritebackItem], totalCount: Int, affectedPhotos: Int) {
+        self.items = items
+        self.totalCount = totalCount
+        self.affectedPhotos = affectedPhotos
+    }
+}
+
+// TS: WritebackItem.preview.dirtyFields（core.ts 内联联合 'rating' | 'label' | 'keywords'）
+public enum WritebackDirtyField: String, Codable, CaseIterable, Equatable, Sendable {
+    case rating
+    case label
+    case keywords
+}
+
+// TS: WritebackItem.preview（core.ts:76-84 内联匿名对象）
+public struct WritebackItemPreview: Codable, Equatable, Sendable {
+    public var dirtyFields: [WritebackDirtyField]
+    public var before: WritebackAttributes
+    public var after: WritebackAttributes
+    public var source: String
+    public var sharedPhotoCount: Int
+    public var externalChanged: Bool
+    public var willCreate: Bool
+
+    public init(dirtyFields: [WritebackDirtyField], before: WritebackAttributes, after: WritebackAttributes, source: String, sharedPhotoCount: Int, externalChanged: Bool, willCreate: Bool) {
+        self.dirtyFields = dirtyFields
+        self.before = before
+        self.after = after
+        self.source = source
+        self.sharedPhotoCount = sharedPhotoCount
+        self.externalChanged = externalChanged
+        self.willCreate = willCreate
+    }
+}
+
+// TS: WritebackItem（core.ts:60-84）
+public struct WritebackItem: Codable, Equatable, Sendable {
+    public var id: Int? // TS: id?
+    public var photoId: String
+    public var photoPath: String
+    public var sessionId: String
+    public var module: String
+    public var keywords: [String]
+    public var attributes: WritebackAttributes? // TS: attributes?
+    public var xmpPath: String
+    public var backupPath: String
+    public var xmpStatus: String
+    public var errorMessage: String
+    public var attemptCount: Int
+    public var lastAttemptAt: String
+    public var preview: WritebackItemPreview? // TS: preview?
+
+    public init(
+        id: Int? = nil,
+        photoId: String,
+        photoPath: String,
+        sessionId: String,
+        module: String,
+        keywords: [String],
+        attributes: WritebackAttributes? = nil,
+        xmpPath: String,
+        backupPath: String,
+        xmpStatus: String,
+        errorMessage: String,
+        attemptCount: Int,
+        lastAttemptAt: String,
+        preview: WritebackItemPreview? = nil
+    ) {
+        self.id = id
+        self.photoId = photoId
+        self.photoPath = photoPath
+        self.sessionId = sessionId
+        self.module = module
+        self.keywords = keywords
+        self.attributes = attributes
+        self.xmpPath = xmpPath
+        self.backupPath = backupPath
+        self.xmpStatus = xmpStatus
+        self.errorMessage = errorMessage
+        self.attemptCount = attemptCount
+        self.lastAttemptAt = lastAttemptAt
+        self.preview = preview
+    }
+}
+
+// TS: WritebackResult（core.ts:85-93）
+public struct WritebackResult: Codable, Equatable, Sendable {
+    public var totalAffected: Int
+    public var written: Int
+    public var failed: Int
+    public var skipped: Int
+    public var errors: [String]
+    public var failedItems: [WritebackItem]
+    public var report: String
+
+    public init(
+        totalAffected: Int,
+        written: Int,
+        failed: Int,
+        skipped: Int,
+        errors: [String],
+        failedItems: [WritebackItem],
+        report: String
+    ) {
+        self.totalAffected = totalAffected
+        self.written = written
+        self.failed = failed
+        self.skipped = skipped
+        self.errors = errors
+        self.failedItems = failedItems
+        self.report = report
+    }
+}
+
+// TS: CleanupResult（core.ts:95-98）
+public struct CleanupResult: Codable, Equatable, Sendable {
+    public var deletedCount: Int
+    public var errors: [String]
+
+    public init(deletedCount: Int, errors: [String]) {
+        self.deletedCount = deletedCount
+        self.errors = errors
+    }
+}
+
+// TS: AddPhotoResult（core.ts:100-104）
+public struct AddPhotoResult: Codable, Equatable, Sendable {
+    public var added: Int
+    public var skipped: Int
+    public var total: Int
+    public var failedFiles: [String]
+
+    public init(added: Int, skipped: Int, total: Int, failedFiles: [String]) {
+        self.added = added
+        self.skipped = skipped
+        self.total = total
+        self.failedFiles = failedFiles
+    }
+}
