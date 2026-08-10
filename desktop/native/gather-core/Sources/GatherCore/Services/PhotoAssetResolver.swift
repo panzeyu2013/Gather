@@ -156,3 +156,13 @@ public enum PhotoAssetResolverError: Error, Equatable {
     case photoNotInSession
     case migrationIncomplete
 }
+
+/// TS 错误码映射（rawValue 与 TS 错误消息字符串逐字一致，桥接层序列化用）。
+extension PhotoAssetResolverError {
+    public var gatherCode: GatherErrorCode {
+        switch self {
+        case .photoNotInSession: .CULLING_PHOTO_NOT_IN_SESSION
+        case .migrationIncomplete: .ASSET_MIGRATION_INCOMPLETE
+        }
+    }
+}

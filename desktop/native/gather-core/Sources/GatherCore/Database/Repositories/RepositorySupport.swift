@@ -83,11 +83,20 @@ public enum TSPath {
     public static var separator: String { "/" }
 
     /// TS `path.resolve(...)`：转为绝对路径并标准化。
+    /// standardizingPath 会展开前导 `~`（Node path.resolve 不展开，视为字面
+    /// 文件名），故先以 NUL 占位保护、标准化后还原。
     public static func resolve(_ path: String) -> String {
-        let ns = path as NSString
-        if ns.isAbsolutePath { return ns.standardizingPath }
-        let cwd = FileManager.default.currentDirectoryPath as NSString
-        return cwd.appendingPathComponent(path).standardizingPath
+        var work = path
+        let hadTilde = work.hasPrefix("~")
+        if hadTilde { work = "\u{0}" + String(work.dropFirst()) }
+        let ns = work as NSString
+        let result = ns.isAbsolutePath
+            ? ns.standardizingPath
+            : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(work).standardizingPath
+        if hadTilde {
+            return result.replacingOccurrences(of: "\u{0}", with: "~")
+        }
+        return result
     }
 
     /// TS `path.normalize(...)`。

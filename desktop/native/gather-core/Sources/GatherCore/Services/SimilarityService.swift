@@ -2,15 +2,26 @@
 // TS 源: desktop/src/main/services/similarity/similarity.service.ts（Phase 3.3 移植，
 // 算法已随 2.3 下沉 ClusterEngine / DHash）
 //
-// 移植差异说明：
+// 移植差异说明（2026-08-10 逐模块对账结论，均为有意取舍）：
 // - TS 的图片解码（sharp 缩略图）与 worker 聚类经注入的 thumbnailProvider /
 //   clusterProvider 接入，本文件零图片/线程依赖，Linux 可单测。
 // - thumbnailProvider 返回 9x8 灰度像素网格（72 字节），对应 TS
 //   computeBatchDHash 的输入（sharp resize 9x8 + grayscale 之后）。
 // - 取消语义对齐：pre-cluster 阶段 abort 后直接 return（TS 早退路径，
 //   cancel() 已写 'cancelled'）；cluster 期间 abort 以 JobCancelledError 抛出
-//   （对齐 TS worker 拒绝路径），catch 写 'cancelled'。
-// - 聚类为同步 CPU 调用（ClusterEngine 为纯函数），helper 层可自行派发后台。
+//   （对齐 TS worker 拒绝路径），catch 写 'cancelled'。唯一竞态差异：
+//   abort 恰在 cluster 结束后、落库前发生——TS 会保存结果并写 'done'
+//   （worker 已 settle），Swift 在 cluster 返回后补查 signal 抛取消、
+//   不落库（更严格，保留）。
+// - 聚类为同步 CPU 调用（ClusterEngine 为纯函数），helper 层可自行派发后台；
+//   TS worker 的 no-progress 超时（60s~15min）属 worker 层职责，Swift 侧
+//   由 AnalysisWorker/helper 层补等价看门狗，不在本服务内。
+// - catch/finally 内的状态写与 run 终态用 try? 吞次生错误（TS 会覆盖原错误，
+//   更稳，保留）。
+// - JSON 载荷（analysis_runs.params / groups_json / stats_json）经
+//   JSONEncoder 输出，键序不保证与 TS JSON.stringify 的插入序一致；所有
+//   消费方均按 JSON 语义解析（getLatest 的 precomputed 子串匹配、getResult
+//   逐键读取），字节序无影响。
 import Foundation
 
 public enum SimilarityServiceError: Error, Equatable {
@@ -21,6 +32,21 @@ public enum SimilarityServiceError: Error, Equatable {
     case noHashData
     case noResults
     case noHashRecluster
+}
+
+/// TS 错误码映射（rawValue 与 TS 错误消息字符串逐字一致，桥接层序列化用）。
+extension SimilarityServiceError {
+    public var gatherCode: GatherErrorCode {
+        switch self {
+        case .thresholdInvalid: .SIM_THRESHOLD_INVALID
+        case .minGroupInvalid: .SIM_MIN_GROUP_INVALID
+        case .analysisRunning: .SIM_ANALYSIS_RUNNING
+        case .noPhotos: .SIM_NO_PHOTOS
+        case .noHashData: .SIM_NO_HASH_DATA
+        case .noResults: .SIM_NO_RESULTS
+        case .noHashRecluster: .SIM_NO_HASH_RECLUSTER
+        }
+    }
 }
 /// TS: SimilarityResult（相似度结果，非协议类型）。
 public struct SimilarityResult: Equatable, Sendable {
@@ -45,12 +71,13 @@ extension HashGroupingMode {
     }
 }
 
-/// TS: validateSimilarityParameters。
-public func validateSimilarityParameters(threshold: Int, minGroupSize: Int) throws {
-    if threshold < 0 || threshold > 64 {
+/// TS: validateSimilarityParameters。参数类型为 Double 对齐 TS number：
+/// Number.isInteger 校验（拒绝 NaN/∞/小数），通过后调用方再安全转 Int。
+public func validateSimilarityParameters(threshold: Double, minGroupSize: Double) throws {
+    if threshold.isNaN || threshold.isInfinite || threshold.rounded() != threshold || threshold < 0 || threshold > 64 {
         throw SimilarityServiceError.thresholdInvalid
     }
-    if minGroupSize < 2 {
+    if minGroupSize.isNaN || minGroupSize.isInfinite || minGroupSize.rounded() != minGroupSize || minGroupSize < 2 {
         throw SimilarityServiceError.minGroupInvalid
     }
 }
@@ -134,23 +161,29 @@ public final class SimilarityService {
     }
 
     /// 全量分析：hash 复用 → 缺失 hash 解码计算 → 聚类 → 落结果 →
-    /// 邻域阈值档预计算（best-effort）。
+    /// 邻域阈值档预计算（best-effort）。threshold/minGroupSize 为 Double
+    /// 对齐 TS number；validate 通过后安全转 Int。
     public func analyze(
         sessionId: String,
-        threshold: Int? = nil,
-        minGroupSize: Int? = nil,
+        threshold: Double? = nil,
+        minGroupSize: Double? = nil,
         groupingMode: SimilarityGroupingMode? = nil,
         onProgress: ProgressHandler? = nil
     ) async throws {
-        let threshold = threshold ?? Int(getNumber("default_threshold", 10))
-        let minGroupSize = minGroupSize ?? Int(getNumber("default_min_group_size", 2))
-        let groupingMode = groupingMode ?? .global
-
+        // TS 顺序：先查占用并注册 controller，再读设置与校验
+        // （validate 在 try/defer 之外——校验失败时 controller 不清理，
+        // 与 TS 缺陷逐字一致）。
         if controller(for: sessionId) != nil { throw SimilarityServiceError.analysisRunning }
         let signal = JobAbortSignal()
         registerController(signal, for: sessionId)
 
-        try validateSimilarityParameters(threshold: threshold, minGroupSize: minGroupSize)
+        let thresholdValue = threshold ?? getNumber("default_threshold", 10)
+        let minGroupSizeValue = minGroupSize ?? getNumber("default_min_group_size", 2)
+        let groupingMode = groupingMode ?? .global
+
+        try validateSimilarityParameters(threshold: thresholdValue, minGroupSize: minGroupSizeValue)
+        let threshold = Int(thresholdValue)
+        let minGroupSize = Int(minGroupSizeValue)
 
         var runId: Int64 = 0
         var runStatus: String = "failed"
@@ -437,12 +470,13 @@ public final class SimilarityService {
         let stats = try parseStoredStats(row.statsJson)
 
         // 成员表是组结构的权威来源；groups_json 仅为成员表出现前的旧行解析。
+        // 畸形 JSON 抛错对齐 TS JSON.parse（不静默降级）。
         let members = try similarityResultRepo.getGroupMembers(sessionId: sessionId, resultId: row.id)
         if members == nil {
-            guard let data = row.groupsJson.data(using: .utf8),
-                  let stored = try? JSONDecoder().decode(StoredGroupsJSON.self, from: data) else {
-                return SimilarityResult(groups: [], ungrouped: [], stats: stats)
+            guard let data = row.groupsJson.data(using: .utf8) else {
+                throw SimilarityServiceError.noResults
             }
+            let stored = try JSONDecoder().decode(StoredGroupsJSON.self, from: data)
             return SimilarityResult(
                 groups: stored.groups,
                 ungrouped: stored.ungrouped ?? [],
@@ -498,11 +532,13 @@ public final class SimilarityService {
     /// 阈值重聚类：复用已有 hash，不重算。
     public func recluster(
         sessionId: String,
-        threshold: Int,
-        minGroupSize: Int,
+        threshold: Double,
+        minGroupSize: Double,
         groupingMode: SimilarityGroupingMode = .global
     ) async throws -> SimilarityResult {
         try validateSimilarityParameters(threshold: threshold, minGroupSize: minGroupSize)
+        let threshold = Int(threshold)
+        let minGroupSize = Int(minGroupSize)
 
         let existing = try similarityResultRepo.getLatest(sessionId: sessionId)
         if existing == nil { throw SimilarityServiceError.noResults }
@@ -712,15 +748,13 @@ public final class SimilarityService {
         }
     }
 
-    /// TS: getResult 的 stats 解析（Partial + 默认值）。
+    /// TS: getResult 的 stats 解析（Partial + 默认值；畸形 JSON 抛错对齐
+    /// TS JSON.parse，不静默降级为全默认）。
     private func parseStoredStats(_ statsJson: String) throws -> SimilarityResultStats {
-        guard let data = statsJson.data(using: .utf8),
-              let stored = try? JSONDecoder().decode(StoredStatsPayload.self, from: data) else {
-            return SimilarityResultStats(
-                totalGroups: 0, totalUngrouped: 0, threshold: 0,
-                minGroupSize: 2, groupingMode: .global
-            )
+        guard let data = statsJson.data(using: .utf8) else {
+            throw SimilarityServiceError.noResults
         }
+        let stored = try JSONDecoder().decode(StoredStatsPayload.self, from: data)
         return SimilarityResultStats(
             totalGroups: stored.totalGroups ?? 0,
             totalUngrouped: stored.totalUngrouped ?? 0,

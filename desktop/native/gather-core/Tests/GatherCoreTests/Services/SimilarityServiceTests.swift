@@ -133,13 +133,19 @@ struct SimilarityParameterTests {
     func rejectsInvalid() {
         #expect(throws: SimilarityServiceError.thresholdInvalid) { try validateSimilarityParameters(threshold: -1, minGroupSize: 2) }
         #expect(throws: SimilarityServiceError.thresholdInvalid) { try validateSimilarityParameters(threshold: 65, minGroupSize: 2) }
+        #expect(throws: SimilarityServiceError.thresholdInvalid) { try validateSimilarityParameters(threshold: 10.5, minGroupSize: 2) }
+        #expect(throws: SimilarityServiceError.thresholdInvalid) { try validateSimilarityParameters(threshold: .nan, minGroupSize: 2) }
+        #expect(throws: SimilarityServiceError.thresholdInvalid) { try validateSimilarityParameters(threshold: .infinity, minGroupSize: 2) }
         #expect(throws: SimilarityServiceError.minGroupInvalid) { try validateSimilarityParameters(threshold: 10, minGroupSize: 1) }
+        #expect(throws: SimilarityServiceError.minGroupInvalid) { try validateSimilarityParameters(threshold: 10, minGroupSize: 2.5) }
     }
 
     @Test("accepts the full dHash threshold range and a valid group size")
     func acceptsValid() {
         #expect(throws: Never.self) { try validateSimilarityParameters(threshold: 0, minGroupSize: 2) }
         #expect(throws: Never.self) { try validateSimilarityParameters(threshold: 64, minGroupSize: 10) }
+        // 整数化 Double（TS Number.isInteger(10.0) === true）。
+        #expect(throws: Never.self) { try validateSimilarityParameters(threshold: 10.0, minGroupSize: 2.0) }
     }
 
     @Test("collapses one representative per linked RAW/JPEG asset preferring RAW")
@@ -605,5 +611,68 @@ struct SimilarityCancellationTests {
 
         let after = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
         #expect(after?.analysisStatus == "idle")
+    }
+}
+
+@Suite("SimilarityServiceError 错误码映射与健壮性")
+struct SimilarityServiceRobustnessTests {
+    @Test("maps every case to its TS error code")
+    func mapsToGatherCodes() {
+        #expect(SimilarityServiceError.thresholdInvalid.gatherCode == .SIM_THRESHOLD_INVALID)
+        #expect(SimilarityServiceError.minGroupInvalid.gatherCode == .SIM_MIN_GROUP_INVALID)
+        #expect(SimilarityServiceError.analysisRunning.gatherCode == .SIM_ANALYSIS_RUNNING)
+        #expect(SimilarityServiceError.noPhotos.gatherCode == .SIM_NO_PHOTOS)
+        #expect(SimilarityServiceError.noHashData.gatherCode == .SIM_NO_HASH_DATA)
+        #expect(SimilarityServiceError.noResults.gatherCode == .SIM_NO_RESULTS)
+        #expect(SimilarityServiceError.noHashRecluster.gatherCode == .SIM_NO_HASH_RECLUSTER)
+    }
+
+    @Test("analyze rejects a corrupt settings value instead of crashing")
+    func analyzeSurvivesNanSettings() async throws {
+        let harness = try makeHarness(settings: ["default_threshold": .nan])
+
+        // TS：Number.isInteger(NaN) === false → SIM_THRESHOLD_INVALID；Swift
+        // 同样抛错而非 Int(NaN) 崩溃。
+        await #expect(throws: SimilarityServiceError.thresholdInvalid) {
+            try await harness.service.analyze(sessionId: harness.sessionId)
+        }
+        // 占用已释放（controller 在 try 之前注册、校验失败不清理——TS 缺陷
+        // 逐字保留？校验失败发生在 controller 注册之后，defer 尚未建立，
+        // 因此 controller 保留。与 TS 一致，故这里不再断言可重入）。
+        let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
+        #expect(session?.analysisStatus == "idle")
+    }
+
+    @Test("getResult throws on corrupt stored stats like TS JSON.parse")
+    func getResultThrowsOnCorruptStats() throws {
+        let db = try makeMigratedDB()
+        try seedSessionRow(db, "session")
+        _ = try db.prepare("""
+            INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
+            VALUES ('session', '{"groups":[]}', 'NOT VALID JSON', 10, 2, '2025-01-01T00:00:00.000Z')
+          """).run()
+        let service = SimilarityService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            similarityResultRepo: SimilarityResultRepo(connection: db),
+            connection: db
+        )
+
+        #expect(throws: (any Error).self) {
+            try service.getResult(sessionId: "session")
+        }
+    }
+
+    @Test("recluster rejects non-integer thresholds like TS")
+    func reclusterRejectsFractionalThreshold() async throws {
+        let harness = try makeHarness()
+        _ = try SimilarityResultRepo(connection: harness.db).replace(
+            sessionId: harness.sessionId, groupsJson: "{\"groups\":[]}",
+            statsJson: "{}", threshold: 10, minGroupSize: 2, memberships: []
+        )
+
+        await #expect(throws: SimilarityServiceError.thresholdInvalid) {
+            try await harness.service.recluster(sessionId: harness.sessionId, threshold: 10.5, minGroupSize: 2)
+        }
     }
 }

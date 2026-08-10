@@ -17,6 +17,18 @@ public enum SessionServiceError: Error, Equatable {
     case sessionNotFound
 }
 
+/// TS 错误码映射（rawValue 与 TS 错误消息字符串逐字一致，桥接层序列化用）。
+extension SessionServiceError {
+    public var gatherCode: GatherErrorCode {
+        switch self {
+        case .sourceNotDir: .SESSION_SOURCE_NOT_DIR
+        case .sourceRootForbidden: .SESSION_SOURCE_ROOT_FORBIDDEN
+        case .deleteNotConfirmed: .SESSION_DELETE_NOT_CONFIRMED
+        case .sessionNotFound: .SESSION_NOT_FOUND
+        }
+    }
+}
+
 /// TS: AddPhotoResult（@gather/shared）。
 public struct SessionAddPhotoResult: Equatable, Sendable {
     public let added: Int
@@ -77,9 +89,9 @@ public final class SessionService {
         if resolved == "/" {
             throw SessionServiceError.sourceRootForbidden
         }
-        let sessionName = name.trimmingCharacters(in: .whitespaces).isEmpty
-            ? TSPath.basename(resolved)
-            : name.trimmingCharacters(in: .whitespaces)
+        // TS: (name ?? '').trim() —— 空白含换行等，用 whitespacesAndNewlines 对齐。
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionName = trimmedName.isEmpty ? TSPath.basename(resolved) : trimmedName
         return try createSession(name: sessionName, source: "local", sourcePath: resolved, truncatedImport: truncatedImport)
     }
 
@@ -98,6 +110,8 @@ public final class SessionService {
                 let sourcePath = commonParentDirectory(filepaths: photos.map(\.filepath))
                 if !sourcePath.isEmpty {
                     _ = try sessionRepo.updateSourcePath(id: sessionId, sourcePath: sourcePath)
+                    // 与 TS 差异（有意）：TS 改内存行返回旧 updatedAt；这里重取
+                    // 返回持久化后的新 updatedAt，DB 结果一致。
                     guard let updated = try sessionRepo.get(id: sessionId) else { return nil }
                     row = updated
                 }
@@ -171,10 +185,17 @@ public final class SessionService {
         var failedFiles: [String] = []
         var entries: [PhotoAddInput] = []
 
+        // TS: Math.floor(import_concurrency) 再钳制 1..32；NaN 时 TS 批大小为 NaN
+        // → 循环零次执行。Int(NaN/∞) 会 fatalError 崩溃，必须先过滤再转换。
         let configured = getNumber("import_concurrency", 8)
-        let batchSize = max(1, min(32, Int(configured)))
+        let batchSize: Int
+        if configured.isNaN || configured.isInfinite {
+            batchSize = 0
+        } else {
+            batchSize = max(1, min(32, Int(configured)))
+        }
         var index = 0
-        while index < normalized.count {
+        while index < normalized.count && batchSize > 0 {
             let batch = Array(normalized[index..<min(index + batchSize, normalized.count)])
             index += batchSize
             for fp in batch {
@@ -275,7 +296,10 @@ public func normalizeImportFilepaths(_ filepaths: [String]) -> [String] {
     var seen = Set<String>()
     var result: [String] = []
     for fp in filepaths {
-        let trimmed = fp.trimmingCharacters(in: .whitespaces)
+        // TS String.prototype.trim() 去全部 Unicode 空白；Swift 无等价内置，
+        // whitespacesAndNewlines 覆盖 ASCII 空白（含 \n\r\t），其余差异
+        // 仅涉 Unicode 空白字符，可接受。
+        let trimmed = fp.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { continue }
         let resolved = TSPath.resolve(trimmed)
         if seen.insert(resolved).inserted { result.append(resolved) }

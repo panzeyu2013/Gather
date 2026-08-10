@@ -273,6 +273,8 @@ struct SessionPathUtilityTests {
         #expect(normalizeImportFilepaths(["  /a/x.jpg  ", "/a/x.jpg", "", "  ", "/a/y.jpg"]) == [
             TSPath.resolve("/a/x.jpg"), TSPath.resolve("/a/y.jpg"),
         ])
+        // trim 覆盖换行（TS String.prototype.trim 行为）。
+        #expect(normalizeImportFilepaths(["\n/a/z.jpg\n"]) == [TSPath.resolve("/a/z.jpg")])
     }
 
     @Test("sanitizeSessionSourcePath only accepts the real common parent of 2+ photos")
@@ -289,5 +291,52 @@ struct SessionPathUtilityTests {
         #expect(sanitizeSessionSourcePath(sourcePath: "/", filepaths: [a, b]) == "")
         // 非公共父目录拒绝。
         #expect(sanitizeSessionSourcePath(sourcePath: root + "/y", filepaths: [a, b]) == "")
+    }
+
+    @Test("TSPath.resolve treats a leading tilde as a literal component like Node path.resolve")
+    func resolveKeepsTildeLiteral() {
+        let cwd = FileManager.default.currentDirectoryPath
+        // Node path.resolve('~/foo') → cwd/~/foo（不展开家目录）。
+        #expect(TSPath.resolve("~/foo") == cwd + "/~/foo")
+        #expect(TSPath.resolve("~") == cwd + "/~")
+        // 绝对路径中的 ~ 组件也保持字面。
+        #expect(TSPath.resolve("/a/~/b") == "/a/~/b")
+    }
+}
+
+@Suite("SessionServiceError 错误码映射")
+struct SessionServiceErrorCodeTests {
+    @Test("maps every case to its TS error code")
+    func mapsToGatherCodes() {
+        #expect(SessionServiceError.sourceNotDir.gatherCode == .SESSION_SOURCE_NOT_DIR)
+        #expect(SessionServiceError.sourceRootForbidden.gatherCode == .SESSION_SOURCE_ROOT_FORBIDDEN)
+        #expect(SessionServiceError.deleteNotConfirmed.gatherCode == .SESSION_DELETE_NOT_CONFIRMED)
+        #expect(SessionServiceError.sessionNotFound.gatherCode == .SESSION_NOT_FOUND)
+    }
+
+    @Test("addPhotos survives a corrupt import_concurrency setting like TS")
+    func addPhotosWithNanConcurrency() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let photoA = try writeTempFile(in: dir, name: "a.jpg")
+
+        let db = try makeMigratedDB()
+        let sessionRepo = SessionRepo(connection: db)
+        let service = SessionService(
+            sessionRepo: sessionRepo,
+            photoRepo: PhotoRepo(connection: db),
+            faceRepo: FaceRepo(connection: db),
+            connection: db,
+            getNumber: { _, _ in .nan },
+            dimensionsProvider: { _ in (100, 80) }
+        )
+        let session = try sessionRepo.create(name: "Add", source: "folder")
+
+        // TS：batchSize=NaN 时循环零批次执行，不崩溃、不报错。
+        let result = try service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
+
+        #expect(result.added == 0)
+        #expect(result.failedFiles.isEmpty)
+        #expect(try sessionRepo.getIndexSeq(id: session.id) == 0)
     }
 }

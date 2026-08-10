@@ -134,9 +134,15 @@ public final class DBConnection {
     /// 嵌套事务计数：嵌套调用退化为 SAVEPOINT（better-sqlite3 语义——
     /// TS 的 db.transaction 可嵌套，session.service 的 addPhotos/deleteSessions
     /// 依赖 savepoint 原子性；SQLite 裸 BEGIN 嵌套会直接报错）。
+    /// 计数与锁：SQLITE_OPEN_FULLMUTEX 只串行化 SQLite 内部，不保护 depth；
+    /// 事务全程持 NSRecursiveLock 保证同一连接上事务严格串行（对齐
+    /// better-sqlite3 单线程语义），嵌套调用经递归锁重入。
     private var transactionDepth = 0
+    private let transactionLock = NSRecursiveLock()
 
     public func transaction<T>(_ body: () throws -> T) throws -> T {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
         transactionDepth += 1
         let isNested = transactionDepth > 1
         do {
@@ -160,10 +166,10 @@ public final class DBConnection {
             return result
         } catch {
             if isNested {
-                try? exec("ROLLBACK TO SAVEPOINT gather_tx_\(transactionDepth)")
-                try? exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
+                _ = try? exec("ROLLBACK TO SAVEPOINT gather_tx_\(transactionDepth)")
+                _ = try? exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
             } else {
-                try? rollback()
+                _ = try? rollback()
             }
             transactionDepth -= 1
             throw error
