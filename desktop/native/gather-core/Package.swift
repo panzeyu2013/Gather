@@ -14,8 +14,9 @@ let testSwiftSettings: [SwiftSetting] = [
 ]
 let testLinkerSettings: [LinkerSetting] = [
     .unsafeFlags([
-        "-rpath", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
-        "-rpath", "/Library/Developer/CommandLineTools/Library/Developer/usr/lib",
+        "-Xlinker", "-F", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/usr/lib",
     ]),
 ]
 #else

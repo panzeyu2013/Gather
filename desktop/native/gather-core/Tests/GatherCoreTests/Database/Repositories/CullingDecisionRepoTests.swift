@@ -28,7 +28,10 @@ struct CullingDecisionRepoTests {
         #expect(row?.revision == 0)
         #expect(row?.createdAt != "")
 
-        // 同一 (session, photo) 重复 upsert 走 ON CONFLICT 更新，不新增行
+        // 同一 (session, photo) 重复 upsert 走 ON CONFLICT 更新，不新增行。
+        // 等 2ms 确保 updated_at 时间戳前进（ISO 毫秒精度，同毫秒内两次写
+        // 会产生相同时间戳，断言会误失败）。
+        Thread.sleep(forTimeInterval: 0.002)
         try repo.upsert(sessionId: "s1", photoId: "p1", groupId: "g2", decision: "reject")
         row = try repo.getDecision(sessionId: "s1", photoId: "p1")
         #expect(row?.decision == "reject")

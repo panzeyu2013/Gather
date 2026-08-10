@@ -92,7 +92,7 @@ public enum TSPath {
         let ns = work as NSString
         let result = ns.isAbsolutePath
             ? ns.standardizingPath
-            : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(work).standardizingPath
+            : ((FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(work) as NSString).standardizingPath
         if hadTilde {
             return result.replacingOccurrences(of: "\u{0}", with: "~")
         }
@@ -143,8 +143,8 @@ public enum TSPath {
 
     /// TS `path.relative(from, to)`。
     public static func relative(_ from: String, to: String) -> String {
-        let fromComponents = resolve(from).pathComponents
-        let toComponents = resolve(to).pathComponents
+        let fromComponents = (resolve(from) as NSString).pathComponents
+        let toComponents = (resolve(to) as NSString).pathComponents
         var common = 0
         while common < fromComponents.count, common < toComponents.count,
               fromComponents[common] == toComponents[common] {
@@ -169,7 +169,7 @@ public enum TSPath {
 
     /// TS `path.parse(x).name`（无扩展名的文件名）。
     public static func stem(_ path: String) -> String {
-        (path as NSString).deletingPathExtension.lastPathComponent
+        ((path as NSString).deletingPathExtension as NSString).lastPathComponent
     }
 
     /// TS `path.join(parsed.dir, \`${parsed.name}.xmp\`)`（xmp-sidecar-writer 语义）。
