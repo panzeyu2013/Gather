@@ -1138,7 +1138,24 @@ public struct MigrationRunner {
     }
 
     /// 只读打开备份文件，PRAGMA integrity_check 必须恰好返回一行 "ok"。
+    /// 注（2026-08-10 macOS 26 实测）：SQLite 3.51 对 header 标记 WAL 的库，
+    /// 只读打开要求同名 -shm 文件存在，否则 prepare 报 SQLITE_CANTOPEN
+    /// （旧版 SQLite / Electron 打包版无此行为）。备份文件由 backup API
+    /// 生成，不带 -wal/-shm 伴随文件；故先创建空伴随文件以满足只读打开
+    /// 协议（空 -wal 表示 checkpoint 已完整，读主文件），检查后清理。
     private func backupIntegrityCheckOK(_ path: String) throws -> Bool {
+        let walPath = path + "-wal"
+        let shmPath = path + "-shm"
+        for companion in [walPath, shmPath] {
+            if !FileManager.default.fileExists(atPath: companion) {
+                FileManager.default.createFile(atPath: companion, contents: nil)
+            }
+        }
+        defer {
+            for companion in [walPath, shmPath] {
+                try? FileManager.default.removeItem(atPath: companion)
+            }
+        }
         var backup: OpaquePointer?
         let rc = sqlite3_open_v2(path, &backup, SQLITE_OPEN_READONLY, nil)
         guard rc == SQLITE_OK, let backup else {

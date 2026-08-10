@@ -85,14 +85,22 @@ public enum TSPath {
     /// TS `path.resolve(...)`：转为绝对路径并标准化。
     /// standardizingPath 会展开前导 `~`（Node path.resolve 不展开，视为字面
     /// 文件名），故先以 NUL 占位保护、标准化后还原。
+    /// 注：拼接用字符串 + "/" 而非 NSString.appendingPathComponent——
+    /// macOS Foundation 对含 NUL 的字符串调用 appendingPathComponent 会
+    /// 返回 nil 并隐式解包崩溃（Linux corelibs 不触发）；字符串拼接 +
+    /// standardizingPath 的规范化结果等价（重复斜杠/./.. 均被折叠）。
     public static func resolve(_ path: String) -> String {
         var work = path
         let hadTilde = work.hasPrefix("~")
         if hadTilde { work = "\u{0}" + String(work.dropFirst()) }
         let ns = work as NSString
-        let result = ns.isAbsolutePath
-            ? ns.standardizingPath
-            : ((FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(work) as NSString).standardizingPath
+        let result: String
+        if ns.isAbsolutePath {
+            result = ns.standardizingPath
+        } else {
+            let joined = FileManager.default.currentDirectoryPath + "/" + work
+            result = (joined as NSString).standardizingPath
+        }
         if hadTilde {
             return result.replacingOccurrences(of: "\u{0}", with: "~")
         }

@@ -27,7 +27,8 @@ let testLinkerSettings: [LinkerSetting] = []
 let package = Package(
     name: "gather-core",
     platforms: [
-        .macOS(.v13),
+        // 2.2 人脸推理依赖 VNGenerateFaceEmbeddingsRequest（macOS 14+）。
+        .macOS(.v14),
     ],
     products: [
         .library(name: "GatherCore", targets: ["GatherCore"]),

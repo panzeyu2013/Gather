@@ -332,13 +332,28 @@ WKWebView 桥、Xcode 签名打包。
 >    首个 await 前同步执行），依赖「注册即生效」的状态（如并发计数）必须在
 >    Task 外同步完成；swift-testing 并行跑测试时 Task 调度延迟明显，涉及
 >    时序的测试须轮询等待条件而非固定 sleep。
+>
+> 附注 2（2026-08-10 macOS 26 环境实测，切换完整 Xcode 26.5 后）：
+> 1. **macOS Foundation 与 Linux corelibs 的 NSString 差异**：Linux 上 String 有
+>    `standardizingPath`/`pathComponents`/`lastPathComponent` 扩展，macOS 只有
+>    NSString 有；且含 NUL 的 String 经 `NSString.appendingPathComponent` 会返回
+>    nil 导致隐式解包崩溃（RepositorySupport.swift 的 tilde 保护逻辑，Linux 不触发）。
+>    修复：字符串拼接 + standardizingPath 替代桥接调用。
+> 2. **SQLite 3.51 只读 WAL 行为**：header 标记 WAL 的库只读打开必须有同名
+>    -shm 文件，否则 prepare 报 SQLITE_CANTOPEN（旧版/Electron 打包版无此行为）；
+>    迁移备份完整性检查因此失败。修复：检查前创建空 -wal/-shm 伴随文件、检查后清理
+>    （Migrations.swift backupIntegrityCheckOK）。
+> 3. **部署目标 macOS 13 → 14**：2.2 人脸推理原假设 VNGenerateFaceEmbeddingsRequest，
+>    但 macOS 26.5 SDK 公开 API 无此请求（tbd/头文件/swiftinterface 均无）；
+>    改用人脸区域裁剪 + VNGenerateImageFeaturePrintRequest rev2（768 维）。
+>    部署目标提升到 14 仅为后续 API 可用性预留，当前实现未依赖 14 专属 API。
 
 ### 10.3 Phase 2：热路径下沉
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
 | 2.1 | 解码 + 缩略图 | 已完成 | 2026-08-10 | `Image/Dimensions.swift`（fast-dimensions 移植，26 case 对账）+ `Database/ImageCache.swift`（disk-cache 重写，21 测试）+ **`Image/RAWDecoder.swift`（CoreImage/ImageIO 重写 sharp+sips：getDimensions 含 EXIF orientation 5-8 交换、getThumbnail 走 `CGImageSourceCreateThumbnailAtIndex` + WithTransform、getPreview fit-inside 不放大；11 测试）** + helper `image:dimensions`/`image:thumbnail`/`image:preview` 三命令（HelperProtocolTests 30 测试）+ `image.service.ts` 改路由（thumbnail/preview 优先 helper 含 RAW，失败回退 sharp；GATHER_CORE_HELPER=1 启用，默认零变化）+ **`sips-decoder.ts` 删除**（能力被 RAWDecoder 覆盖；di/init.ts 注册链移除）。验收冒烟：3200×2400 PNG → 缩略图 256×192 / 预览 ≤2048 / 尺寸 3200×2400；TS 侧 98 文件 597 测试全绿 |
-| 2.2 | 人脸推理（Vision） | 待做 | — | **需 macOS**：Detector/Encoder/Inference/Provider（Vision 框架）；Preprocessing 已移植（1.5 对账） |
+| 2.2 | 人脸推理（Vision） | 部分完成 | 2026-08-10 | `Face/Provider.swift`（provider 枚举 vision/cpu + `FaceInferenceConfig` 对齐 MODEL_CONFIG 默认值 + fallbackToOnnxEnabled 开关）+ `Face/Detector.swift`（VNDetectFaceRectanglesRequest，bbox/confidence + 左上原点转换 + 阈值/上限过滤）+ `Face/Encoder.swift`（检测 → 人脸区域裁剪 → VNGenerateImageFeaturePrintRequest rev2 提取 embedding，L2 归一化）+ `Face/Inference.swift`（Actor 批处理：逐图独立失败/进度流/取消，对齐 face-kw.service 批语义）；FaceInferenceTests 12 用例。**环境决议**：macOS 26.5 SDK 无 `VNGenerateFaceEmbeddingsRequest`（计划假设 API，tbd/头文件/swiftinterface 均无），改用人脸区域裁剪 + feature print（768 维，实测 rev2）作 embedding；与 ArcFace 512 维特征空间不兼容（§3.3 已声明 P4 全量重算）。**待接线**：TS 侧 face-kw.service 路由（推理走 helper 需同进程直连——线协议传大批量图片 base64 不现实，且 512/768 维混写会破坏聚类，故随 3.0 宿主切换接入）；**0.3c 质量对账门**（ARI/NMI ≥ 0.95）需真实人脸数据集（基准环境），未过时 `fallbackToOnnxEnabled` 回退 TS ONNX 管线 |
 | 2.3 | 哈希/聚类/向量移植 | 已完成 | 2026-08-09 | `Similarity/Hash.swift`+`ClusterEngine.swift`（1.5 对账）+ `Face/Clusterer.swift`（DBSCAN+LSH 门，8 case 对账）+ `Face/VectorIndex.swift`（CosineHnswIndex+CosineLshIndex，topK 逐位一致/recall≥TS）+ `Face/Matcher.swift`（11 用例对账）+ `Services/JobScheduler.swift`（Actor 预算准入，排队取消）+ `AnalysisWorker.swift`（进度流/错误传播）。**基准**：`gather-core-benchmarks`（2 万/5 万两档全过，见 `Sources/GatherCoreBenchmarks/README.md`） |
 | 2.4 | 文件监控（NSFileCoordinator） | 待做 | — | **需 macOS**：`Watch/Coordinator.swift` |
 
@@ -374,7 +389,7 @@ WKWebView 桥、Xcode 签名打包。
 
 | 优先级 | 任务 | 前置 | 说明 |
 |---|---|---|---|
-| P0 | **2.2 人脸推理（需 Mac）**：`Face/Detector.swift`/`Encoder.swift`（Vision）、`Inference.swift`（Actor + 流式进度/取消）、`Provider.swift`（vision/cpu 回退开关） | macOS 开发机 | 0.3c 质量对账 ARI/NMI ≥ 0.95 门；ONNX 模型下载器/validator 删除 |
+| P0 | **2.2 收尾**：0.3c 质量对账（真实人脸数据集，ARI/NMI ≥ 0.95 门）；TS 侧 face-kw.service 推理路由随 3.0 宿主切换接入（Swift 侧 Detector/Encoder/Inference/Provider 已就绪 2026-08-10） | 基准环境 / 3.0 | Vision embedding 768 维（feature print rev2）与 ArcFace 512 维不兼容，P4 全量重算时统一 |
 | P1 | **2.4 文件监控（需 Mac）**：`Watch/Coordinator.swift`（NSFileCoordinator/FileProvider） | macOS 开发机 | 丢事件对账矩阵（ROADMAP 1.6） |
 | P1 | **3.2/3.3 收尾（需 Mac）**：Library/Gallery 与 Similarity 页面 SwiftUI + 对应 TS ipc 入口停用 | 3.0（宿主桥） | 服务层已就绪（2026-08-10 完成）；参照 3.1 收尾模式 |
 | P1 | **3.6 服务层（Linux 可做）**：settings/quality/duplicate/filter-engine/navigation 服务重写（`settings.service.ts` 缓存语义 + `filter-engine.ts` 纯逻辑优先） | 无 | 契约与 repo 已就绪（settings/smart-album） |
