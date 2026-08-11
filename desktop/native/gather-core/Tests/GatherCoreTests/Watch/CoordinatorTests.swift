@@ -306,6 +306,10 @@ struct WatchCoordinatorTests {
         let sink = HandlerSink()
         let coordinator = makeCoordinator(sessions: sessions, sink: sink)
         coordinator.start()
+        // FSEvents 可能在 start 后补发 watcher 建立前已排队的目录事件；
+        // 先让初始化窗口收敛并清空，避免把建测试目录的历史事件混入本用例的 burst。
+        settle()
+        sink.reset()
 
         // 同时修改 6 个已存在文件 → 一次窗口内合并（纯文件事件批次）。
         for url in paths {
