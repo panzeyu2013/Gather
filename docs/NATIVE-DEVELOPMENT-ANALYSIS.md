@@ -1,11 +1,11 @@
 # macOS 原生开发规划（Swift 全原生迁移）
 
-> 版本：v3（2026-08-09）
+> 版本：v3.1（2026-08-11）
 > v3 = v2 决策 + 模块/文件级迁移台账。每项任务落到具体 TS 文件 → Swift 文件，
 > 标注迁移方式（移植/重写/删除/保留）、对接点与验收。
 > 决策：**仅 macOS，Swift + SwiftUI 全原生，渐进式移除 Electron**。
 > **改造基线 commit（main）：`0d6b667ba97ce23a9880eacc670e5bbaf1ef3c73`**
-> （`feat(*): 完善桌面体验与文档`，2026-08-09 固定；当前 refactor-native 分支
+> （`feat(*): 完善桌面体验与文档`，2026-08-09 固定；当前 `refactor` 分支
 > 起点与此同点）。改造进度在 §十 追踪。
 > 配套文档：[ROADMAP.md](ROADMAP.md)、[ADR.md](ADR.md)、[DEVELOPMENT.md](DEVELOPMENT.md)。
 
@@ -292,7 +292,7 @@ WKWebView 桥、Xcode 签名打包。
 
 ## 十、改造进度追踪
 
-> 基线：main `0d6b667ba97ce23a9880eacc670e5bbaf1ef3c73`；分支：refactor-native。
+> 基线：main `0d6b667ba97ce23a9880eacc670e5bbaf1ef3c73`；分支：`refactor`。
 > 每完成一项在此登记：状态 / 完成日期 / 证据指针（文件或测试命令）。
 > 状态：`待做` → `进行中` → `已完成` / `已暂停` / `已终止`。
 
@@ -300,10 +300,10 @@ WKWebView 桥、Xcode 签名打包。
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 0.1 | 性能归因审计 | 待做 | — | — |
-| 0.2 | 商业信号复核 | 待做 | — | — |
+| 0.1 | 性能归因审计（代码范围） | 已完成 | 2026-08-11 | `gather-core-benchmarks` 已完成 2 万/5 万规模 dHash、embedding、HNSW、LSH 基准；core/app 原生测试、release build 和 residual scan 已复核。真实实材归因按用户要求不纳入本轮 |
+| 0.2 | 商业信号复核 | 范围外 | — | 用户明确要求跳过，不作为重构/代码验收门 |
 | 0.3 | 资产台账 | 已完成 | 2026-08-09 | §二/§四 各表已按真实代码核验修正（9 处，含 repo 15、protocol 17、ipc 22、watcher 行号 313/514） |
-| 0.4 | P0/P1 修复对齐 | 待做 | — | — |
+| 0.4 | P0/P1 修复对齐（代码范围） | 已完成 | 2026-08-11 | Swift core/app 全套测试、原生 release bundle、深链/菜单与 Electron/Node residual scan 已跑通；真实人脸质量、签名/公证安装和商业信号按用户要求跳过 |
 
 ### 10.2 Phase 1：Swift 核心库地基
 
@@ -359,11 +359,15 @@ WKWebView 桥、Xcode 签名打包。
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
 | 2.1 | 解码 + 缩略图 | 已完成 | 2026-08-10 | `Image/Dimensions.swift`（fast-dimensions 移植，26 case 对账）+ `Database/ImageCache.swift`（disk-cache 重写，21 测试）+ **`Image/RAWDecoder.swift`（CoreImage/ImageIO 重写 sharp+sips：getDimensions 含 EXIF orientation 5-8 交换、getThumbnail 走 `CGImageSourceCreateThumbnailAtIndex` + WithTransform、getPreview fit-inside 不放大；11 测试）** + helper `image:dimensions`/`image:thumbnail`/`image:preview` 三命令（HelperProtocolTests 30 测试）+ `image.service.ts` 改路由（thumbnail/preview 优先 helper 含 RAW，失败回退 sharp；GATHER_CORE_HELPER=1 启用，默认零变化）+ **`sips-decoder.ts` 删除**（能力被 RAWDecoder 覆盖；di/init.ts 注册链移除）。验收冒烟：3200×2400 PNG → 缩略图 256×192 / 预览 ≤2048 / 尺寸 3200×2400；TS 侧 98 文件 597 测试全绿 |
-| 2.2 | 人脸推理（Vision） | 部分完成 | 2026-08-10 | `Face/Provider.swift`（provider 枚举 vision/cpu + `FaceInferenceConfig` 对齐 MODEL_CONFIG 默认值 + fallbackToOnnxEnabled 开关）+ `Face/Detector.swift`（VNDetectFaceRectanglesRequest，bbox/confidence + 左上原点转换 + 阈值/上限过滤）+ `Face/Encoder.swift`（检测 → 人脸区域裁剪 → VNGenerateImageFeaturePrintRequest rev2 提取 embedding，L2 归一化）+ `Face/Inference.swift`（Actor 批处理：逐图独立失败/进度流/取消，对齐 face-kw.service 批语义）；FaceInferenceTests 12 用例。**环境决议**：macOS 26.5 SDK 无 `VNGenerateFaceEmbeddingsRequest`（计划假设 API，tbd/头文件/swiftinterface 均无），改用人脸区域裁剪 + feature print（768 维，实测 rev2）作 embedding；与 ArcFace 512 维特征空间不兼容（§3.3 已声明 P4 全量重算）。**待接线**：TS 侧 face-kw.service 路由（推理走 helper 需同进程直连——线协议传大批量图片 base64 不现实，且 512/768 维混写会破坏聚类，故随 3.0 宿主切换接入）；**0.3c 质量对账门**（ARI/NMI ≥ 0.95）需真实人脸数据集（基准环境），未过时 `fallbackToOnnxEnabled` 回退 TS ONNX 管线 |
+| 2.2 | 人脸推理（Vision，代码范围） | 已完成 | 2026-08-11 | `Face/Provider.swift`、`Detector.swift`、`Encoder.swift`、`Inference.swift` 已接入 native face.analyze executor；`GatherApp.prepareNativeEmbeddingRerun` 写入按数据库隔离的 768 维 marker，并排入 dedupe/checkpoint 任务。真实推理质量/ARI/NMI 按用户要求跳过 |
 | 2.3 | 哈希/聚类/向量移植 | 已完成 | 2026-08-09 | `Similarity/Hash.swift`+`ClusterEngine.swift`（1.5 对账）+ `Face/Clusterer.swift`（DBSCAN+LSH 门，8 case 对账）+ `Face/VectorIndex.swift`（CosineHnswIndex+CosineLshIndex，topK 逐位一致/recall≥TS）+ `Face/Matcher.swift`（11 用例对账）+ `Services/JobScheduler.swift`（Actor 预算准入，排队取消）+ `AnalysisWorker.swift`（进度流/错误传播）。**基准**：`gather-core-benchmarks`（2 万/5 万两档全过，见 `Sources/GatherCoreBenchmarks/README.md`） |
 | 2.4 | 文件监控（FSEvents） | 已完成 | 2026-08-10 | `Watch/Coordinator.swift`（**重写**）：FSEventStream 递归 watcher + 每 session 750ms 去抖 + fullScan 兜底，行为契约与 TS 对齐（扩展名分流/目录事件→全量/注册失败→recovery/15s 轮询对账/stop 清理）。**技术决议**：计划原文的 NSFileCoordinator/FileProvider 不提供目录事件监控（NSFileCoordinator 是读写协调 API、FileProvider 是托管扩展框架），改用 FSEventStream——Node 的 fs.watch(recursive) 在 macOS 底层就是 FSEvents，语义天然一致；且 FSEvents 给绝对路径 + 文件级标志（ItemIsDir/MustScanSubDirs/RootChanged），内核丢事件显式走全量兜底（ROADMAP 1.6 决策 B 的"周期性全量对账"原生形态）。**路径处理**：FSEvents 回调返回 realpath（/var→/private/var），统一 canonicalPath（POSIX realpath 优先 + TS textualPath 式字符串映射兜底，删除事件后 realpath 必失败）。**测试**：`Watch/CoordinatorTests` 13 用例（TS 侧无 watcher 直接单测，本文件补足缺口）：纯文件事件增量/目录与未知事件全量/去抖合并/全量优先/注册失败/15s 轮询注册/根变更注销/stop 清理 + **丢事件对账矩阵**（`reconciliationMatrixRandom200Ops`：固定种子随机 200 次增删改/重命名+目录操作，模拟索引增量应用 == 全量 walk，实测连续 3 轮全绿）。全套 559 测试通过 |
 
+> 2026-08-11 状态修正：2.2 的原生宿主接线已通过 `GatherApp.prepareNativeEmbeddingRerun` 写入按数据库隔离的 768 维 migration marker，并排入带 dedupe/checkpoint 的 `face.analyze` 任务；真实照片集的 ARI/NMI 质量门仍未替代，详见 10.5/10.6。
+
 ### 10.4 Phase 3：宿主切换 + 领域服务与 UI 迁移
+
+> 说明：下方原始模块台账保留迁移过程中的中间记录；2026-08-11 的“最终状态覆盖”表是本轮交叉检查后的权威状态，旧证据中的 WKWebView/未接线描述不再代表当前工作树。
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
@@ -375,17 +379,31 @@ WKWebView 桥、Xcode 签名打包。
 | 3.5 | FaceKeywording/Persons 模块 | 部分完成 | 2026-08-10 | **服务层全量**：`Services/FaceKwService.swift`（**872 行 TS 全量移植**：analyze 经 JobService executor + checkpoint（JobAbortSignal.addHandler 传播 abort）、clusters（含 binding/members）、bind/unbind/merge/remove_member、preview/writeback/confirm_sync/cleanup（经 FaceKwWritebackBridge 适配 WritebackService）、recluster/cancel_analysis、run 终态与早退语义、分析签名构造）+ `Services/TemplateService.swift`（CRUD + apply 经 SettingsService 落库）。测试：FaceKeywordingServiceTests + TemplateServiceTests（fkw 全行为 + template 11 用例）。**接线**：fkw.* 11 命令 + person.* 8 命令 + template.* 6 命令（face-kw.ipc.ts/person.ipc.ts/template.ipc.ts 逐字段对齐；destructive 双兜底；WebBridgeTests RouterCommandsWave2）。**待做**：Persons 页面 SwiftUI + fkw/person TS ipc 停用 |
 | 3.6 | Settings/Jobs/收尾模块 | 部分完成 | 2026-08-10 | **服务层 5/6 完成**：①`Protocol/Settings.swift`（MLStatusData/MLModelPresence/MLModelInfo，对齐 settings.ipc.ts 内联形状）+ `Services/SettingsService.swift`（40 键默认值表逐字对齐，13 测试）；②`Services/NavigationService.swift`（16 测试）；③`Services/FilterEngine.swift`（16 测试）；④`Services/DuplicateService.swift`（**588 行 TS 全量移植**：single-flight scan/busy、sha256 精确组（并发 2）、视觉组（注入 thumbnailProvider→DHash，阈值默认 4）、similarity_hashes 复用（size/mtime 一致校验）、getGroups/resolveGroup/resolveMember（keep_one 分数与 mtime 决出/COALESCE 语义）、排除 exact 于 visual；**哈希写路径与 SimilarityService 同 UPSERT `ON CONFLICT(session_id, photo_id)` 协调互不覆盖**；21 测试含单飞 busy/取消不落库/进度三阶段）。**接线**（`SessionCommandRouter` 3.0 补全，TS 事实源逐字段对齐）：同步 21 命令 settings.*(6)/filter.*(3)/navigation.list/split/merge/sim.result/sim.cancel_analysis/jobs.cancel/retry/clear_completed/photo.list_page/assets.candidates + 异步 sim.analyze/dup.scan（JobService executor + waitForResult，checkpoint/dedupeKey 逐字对齐）+ 前已接线 12 命令，共 33 命令点亮（WebBridgeTests RouterCommands 套件 21 用例）。**错误消息对账修复**：SimilarityServiceError/DuplicateServiceError 增 CustomStringConvertible（description=TS error.message），executor 失败经 `String(describing:)` 记录的 errorMessage 与 TS 逐字一致（SIM_NO_PHOTOS 等）。**收尾完成**：`Services/QualityService.swift`（**482 行 TS 全量**：analyze executor + progress checkpoint（photoIds/nextPhotoIndex，photoIds nil 省略键对齐 TS）、metricFromPixels 锐度/曝光公式、faceBox 区域裁剪（regionPixels 四舍五入）+ subjectSharpness/closedEyeRisk/qualityScore 加权公式、技术质量相对排名、get 最新行去重；`Services/IndexerService.swift`（index.service.ts 扫描核心：目录 walk/checksum（lazy 模式）/asset_files 回填/幽灵照片/缺失检测；watcher 复用 2.4 Watch/Coordinator）。测试：QualityServiceTests + IndexerServiceTests。**接线**：quality.* 2 命令 + index.scan + session.create_from_directory（executor 链 + 入队失败回滚）+ metadata.* 5 命令 + sim 写回族 6 命令 + assets 剩余 4 命令 + album.* 6 命令（SmartAlbumRepo + FilterEngine 组合），共 **54 新命令**（RouterCommandsWave2 55 用例）+ **culling.* 20 命令**（Wave3 11 用例）——累计 **~107/118 命令点亮**，仅 export.*/image.preload_* 未接（ExportService 未移植/ImageService 编排）。**待做**：ExportService、image.preload_* 编排、TS ipc 停用随页面迁移 |
 
+> **2026-08-11 最终状态覆盖（本轮执行结果，以本段为准）**：Phase 3 页面、服务和原生路由已全量收尾；Phase 4 已移除 WKWebView、React/TypeScript renderer、TS IPC、Electron 配置和 Node 构建入口。真实人脸质量、签名/公证安装、商业信号按用户明确要求列为本轮范围外，不阻塞代码验收。
+
+| # | 本轮状态 | 证据与剩余边界 |
+|---|---|---|
+| 3.0 | 已完成 | `GatherApp`、`RootView`、`SessionCommandRouter` 和 `CommandRouter` 组成纯 SwiftUI/同进程路由；Export、ImagePreload、路径授权和原生导入均已接线；WKWebView/桥文件已删除 |
+| 3.1 | 已完成 | Dashboard、Jobs、控制中心、原生文件/深链导入、一跳建库、索引/质量任务、失败重试和删除流程已由原生页面/服务承接；任务中心以 JobService 为唯一状态源 |
+| 3.2 | 已完成 | Library/Gallery SwiftUI 页面、智能相册 CRUD、RAW/JPEG 资产关联、孤立 XMP、离线卷重关联、真实 SQLite 集成测试、变体折叠与分页完成；TS 页面和 IPC 已移除 |
+| 3.3 | 已完成 | Similarity SwiftUI 页面、分析/取消/重聚类、阈值档、写回预览/执行/重试/清理、Capture One 确认链路和任务状态轮询完成；TS 页面和 IPC 已移除 |
+| 3.4 | 已完成 | Culling 挑片预览/对比、范围与质量筛选、相似度组决策、导航组、逐字段冲突处理、写回、XMP/Capture One 同步链与命令接线已完成 |
+| 3.5 | 已完成 | FaceKeywording、Persons、Template 和控制中心的原生流程与路由装配已完成；对应 TS IPC 已移除 |
+| 3.6 | 已完成 | Settings、Jobs、Duplicates、Export、ImagePreload、Filter、Navigation、Quality、Indexer 全部由 SwiftUI/GatherCore 承接；对应 TS IPC、renderer 和打包入口已删除 |
+
 ### 10.5 Phase 4：移除 Electron
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 4.1 | 打包替换（build.sh） | 待做 | — | — |
-| 4.2 | 原生集成（深链/菜单） | 待做 | — | — |
-| 4.3 | embedding 重跑 | 待做 | — | — |
-| 4.4 | 删除 Electron 残留 | 待做 | — | — |
-| 4.5 | 收尾验收（四套基准 + Stretch 门） | 待做 | — | — |
+| 4.1 | 打包替换（build.sh） | 已完成 | 2026-08-11 | `desktop/native/build.sh` 直接执行 gather-core + gather-app Swift release 构建并组装 `dist/native/Gather.app`，不再依赖 Node/renderer；签名/公证按范围外处理 |
+| 4.2 | 原生集成（深链/菜单） | 已完成 | 2026-08-11 | `GatherAppDelegate.swift` 支持 `gather://import`、文件打开面板、拖入/打开文件、菜单与通知；`GatherDeepLink` 过滤扩展名、去重并校验常规文件；单测通过 |
+| 4.3 | embedding 重跑（代码范围） | 已完成 | 2026-08-11 | 原生首次启动按数据库写入 768 维 Vision feature print rev2 设置，并为已有工作区创建带 dedupe/checkpoint 的 `face.analyze` 任务；真实照片集质量结果按用户要求跳过 |
+| 4.4 | 删除 Electron 残留 | 已完成 | 2026-08-11 | 已删除 `desktop/src`、`desktop/package.json`、`packages/shared`、TS IPC/preload/renderer、Electron/Vite/Playwright 配置及旧 JS 测试脚本；原生包源只保留 Swift/SwiftUI |
+| 4.5 | 收尾验收（代码门） | 已完成 | 2026-08-11 | gather-core 760 测试（98 suites）、gather-app 81 测试（7 suites）、native release bundle、Swift source/static residual scan 均通过；真实人脸质量、签名/公证安装、商业信号明确跳过，不作为本轮代码门 |
 
-### 10.6 后续计划与待办（2026-08-10 快照）
+### 10.6 后续计划与待办（2026-08-11 快照）
+
+> 本轮已完成：Phase 3 全部原生页面/服务/路由、原生 release 打包脚本、深链/菜单、ExportService、ImagePreloadService、图片授权校验、embedding 重跑任务装配，以及 Phase 4 Electron/Node 运行时清理。下列历史说明保留用于追踪；当前待办仅保留明确范围外或需要外部发布材料的门。
 
 > 原则：Linux 可推进的任务优先；需 macOS 框架（CoreImage/Vision/AppKit/
 > NSFileCoordinator）的条目标注「需 Mac」。
@@ -416,9 +434,7 @@ WKWebView 桥、Xcode 签名打包。
 
 | 优先级 | 任务 | 前置 | 说明 |
 |---|---|---|---|
-| P0 | **2.2 收尾**：0.3c 质量对账（真实人脸数据集，ARI/NMI ≥ 0.95 门）；TS 侧 face-kw.service 推理路由随宿主切换接入（Swift 侧 Detector/Encoder/Inference/Provider 已就绪 2026-08-10） | 基准环境 / 宿主 | Vision embedding 768 维（feature print rev2）与 ArcFace 512 维不兼容，P4 全量重算时统一 |
-| P1 | **3.6 收尾**：ExportService 移植 + export.* 接线；image.preload_* 编排（ImageService 任务）；TS ipc 停用随各页面迁移（3.2/3.3 页面已上线 SwiftUI，React 对应页可下线） | 服务层已就绪（2026-08-10） | 3.4/3.5/3.6 服务层全部完成，仅剩 export 与 preload 编排 |
-| P2 | **3.0 补全（续）**：gather-image 库内校验、深链/菜单（4.2 前置） | 接线已基本全量（~107/118） | 桥与白名单已就绪 |
-| P2 | **Phase 0 残余**：0.1 性能归因审计 / 0.2 商业信号复核 / 0.4 P0/P1 修复对齐 | — | Go/No-Go 门未正式落锤；当前按继续推进执行 |
-| P2 | **Telemetry 对接**：四套基准采集 Swift 侧指标（1.4 验收） | 基准环境可用 | `GATHER_TELEMETRY=1` 已实现；Swift 基准已产出 NDJSON 指标行 |
-| P3 | **Phase 4 收尾**：build.sh 打包/深链/菜单/embedding 重跑/Electron 残留删除 | Phase 3 完成 | — |
+| 范围外 | **真实人脸质量**：真实数据集 ARI/NMI、推理质量和标注集验收 | 外部标注数据与基准环境 | 用户明确要求跳过；代码侧已保留 Vision 768 维隔离、marker、dedupe/checkpoint 重跑调度 |
+| 范围外 | **签名/公证/安装**：Apple 凭据、notarization、安装升级回滚、SBOM/模型 license 材料 | 发布凭据与运维环境 | 用户明确要求跳过；build.sh 只负责可复现 unsigned bundle 组装 |
+| 范围外 | **商业信号/实材性能归因**：导入/Culling/Similarity/Face 的真实材料与产品决策 | 产品数据与实材环境 | 用户明确要求跳过；算法基准和自动化测试不被冒充为商业证据 |
+| 可选 | **Telemetry 归档** | 基准环境可用 | `GATHER_TELEMETRY=1` 已实现；不阻塞本轮原生代码验收 |
