@@ -3,7 +3,7 @@
 // 已移植领域服务（GatherCore）直连；未移植命令返回 NOT_IMPLEMENTED，
 // 渲染层按 ok:false 优雅降级（页面可先展示，功能逐个点亮）。
 //
-// 接线清单（截至 2026-08-10，对应 NATIVE-DEVELOPMENT-ANALYSIS.md §10.4/§10.6）：
+// 接线清单（截至 2026-08-11，对应 NATIVE-DEVELOPMENT-ANALYSIS.md §10.4/§10.6）：
 //   同步（execute）：
 //     session.* / photo.list → SessionService + PhotoRepo（3.2 服务层）
 //     workspace.status → WorkspaceStatusService（3.1 服务层）
@@ -20,22 +20,54 @@
 //     sim.result（同步查询）/ sim.cancel_analysis → SimilarityService（3.3；
 //       TS 源 similarity.ipc.ts）
 //     photo.list_page → PhotoRepo.getAssetPage + 资产装配（TS 源 photo.ipc.ts）
-//     assets.candidates → AssetRepo.listCandidates（TS 源 assets.ipc.ts）
+//     assets.candidates / accept_candidate / reject_candidate / volumes /
+//       relink_root → AssetRepo（TS 源 assets.ipc.ts）
 //     dup.groups / dup.resolve / dup.resolve_member → DuplicateService（3.6；
 //       TS 源 duplicate.ipc.ts）
+//     fkw.clusters / bind / merge / remove_member / cancel_analysis →
+//       FaceKwService（TS 源 face-kw.ipc.ts；写回族 fkw.unbind / preview /
+//       writeback / confirm_sync / cleanup / confirm_cleanup 经 FaceWritebackProvider
+//       适配 WritebackService，TS 语义 await → awaitSync 信号量桥接）
+//     person.* → PersonRepo（TS 源 person.ipc.ts）
+//     template.* → TemplateService（TS 源 template.ipc.ts）
+//     quality.get → QualityService（TS 源 quality.ipc.ts）
+//     metadata.get / set / batch_set / conflicts / orphans →
+//       MetadataService + MetadataSyncCoordinator（TS 源 metadata.ipc.ts；
+//       set/batch_set/conflicts 的 TS await → awaitSync 桥接）
+//     sim.preview_writeback / writeback / writeback_items /
+//       retry_failed_writeback / confirm_sync / cleanup → WritebackService
+//       （TS 源 similarity.ipc.ts 190-274 行）
+//     album.* → SmartAlbumRepo + FilterEngine（TS 源 filter.ipc.ts
+//       registerAlbumHandlers 段）
+//     culling.* 同步面（TS 源 culling.ipc.ts）：list_page / history /
+//       apply_history / update / batch_update / decide_group / sync_status /
+//       finalize_sync（destructive）/ groups / decide / batch_decide / summary /
+//       retry_failed_writeback（destructive）/ confirm_sync / cleanup
+//       （destructive）/ reset（destructive）→ CullingService（Wave 2；
+//       sync/writeback 端口注入真实 MetadataSyncCoordinator / WritebackService）
 //   异步（executeAsync）：
 //     navigation.analyze → NavigationService.analyze（TS 源 navigation.ipc.ts，
 //       TS 侧为 async wrapper 内同步执行，Swift 同步直连）
 //     sim.recluster → SimilarityService.recluster（TS 侧 await worker）
 //     sim.analyze / dup.scan → JobService executor + waitForResult（TS 源
 //       similarity.ipc.ts / duplicate.ipc.ts）
+//     fkw.analyze → JobService executor（face.analyze）+ waitForResult；
+//       job abort 经 signal handler 传播给 FaceKwService（TS 源 face-kw.ipc.ts）
+//     fkw.recluster → FaceKwService.recluster（TS 源 face-kw.ipc.ts）
+//     index.scan / quality.analyze → JobService executor（metadata.scan /
+//       quality.score）创建即返回 job（TS 源 indexer.ipc.ts / quality.ipc.ts）
+//     session.create_from_directory → SessionService.createFromDirectory +
+//       metadata.scan job 入队（TS 源 session.ipc.ts）
+//     metadata.resolve_conflict / resolve_orphan → MetadataSyncCoordinator
+//       （TS 源 metadata.ipc.ts；destructive 二次兜底）
+//     culling.writeback / flush / retry_sync → CullingService（TS 源
+//       culling.ipc.ts；writeback destructive 二次兜底；bridge 白名单
+//       asyncCommands 路由到 executeAsync）
 //   未接线（依赖未移植服务，保持 NOT_IMPLEMENTED）：
+//     export.* → ExportService 未移植（preview 计划/复制管线/JPEG 转换/report
+//       为独立服务层，成本重，不内联）
 //     image.preload_thumbnails / preload_previews / prioritize_thumbnail
 //       （需 ImageService 缩略图任务编排）
-//     fkw.* / person.* / metadata.* / album.* / export.* /
-//       template.* / culling.* / quality.* / index.scan /
-//       session.create_from_directory / assets.accept_candidate /
-//       assets.reject_candidate / assets.volumes / assets.relink_root
 import Foundation
 import GatherCore
 
@@ -53,6 +85,19 @@ public final class SessionCommandRouter: CommandRouter {
     private let duplicateService: DuplicateService
     private let assetRepo: AssetRepo
     private let db: DBConnection
+    /// 3.0 接线扩展：人脸关键字 / 人物库 / 模板 / 质量 / 索引 / 元数据 / 写回 / 智能相册。
+    private let faceKwService: FaceKwService
+    private let personRepo: PersonRepo
+    private let templateService: TemplateService
+    private let qualityService: QualityService
+    private let indexerService: IndexerService
+    private let metadataService: MetadataService
+    private let metadataSyncCoordinator: MetadataSyncCoordinator
+    private let metadataMutationService: MetadataMutationService
+    private let writebackService: WritebackService
+    private let smartAlbumRepo: SmartAlbumRepo
+    /// 3.4 Culling 模块（sync/writeback 端口注入真实协调器与写回服务）。
+    private let cullingService: CullingService
 
     public init(
         db: DBConnection,
@@ -65,7 +110,18 @@ public final class SessionCommandRouter: CommandRouter {
         navigationService: NavigationService,
         similarityService: SimilarityService,
         duplicateService: DuplicateService,
-        assetRepo: AssetRepo
+        assetRepo: AssetRepo,
+        faceKwService: FaceKwService,
+        personRepo: PersonRepo,
+        templateService: TemplateService,
+        qualityService: QualityService,
+        indexerService: IndexerService,
+        metadataService: MetadataService,
+        metadataSyncCoordinator: MetadataSyncCoordinator,
+        metadataMutationService: MetadataMutationService,
+        writebackService: WritebackService,
+        smartAlbumRepo: SmartAlbumRepo,
+        cullingService: CullingService
     ) {
         self.db = db
         self.sessionService = sessionService
@@ -78,19 +134,123 @@ public final class SessionCommandRouter: CommandRouter {
         self.similarityService = similarityService
         self.duplicateService = duplicateService
         self.assetRepo = assetRepo
+        self.faceKwService = faceKwService
+        self.personRepo = personRepo
+        self.templateService = templateService
+        self.qualityService = qualityService
+        self.indexerService = indexerService
+        self.metadataService = metadataService
+        self.metadataSyncCoordinator = metadataSyncCoordinator
+        self.metadataMutationService = metadataMutationService
+        self.writebackService = writebackService
+        self.smartAlbumRepo = smartAlbumRepo
+        self.cullingService = cullingService
         registerExecutors()
     }
 
     /// 便捷装配：单 DB 连接构建全部已移植服务。
-    public static func makeDefault(db: DBConnection) -> SessionCommandRouter {
+    /// - xmpProvider：XMP 侧车读写宿主实现（默认 SidecarXMPProvider；测试注入
+    ///   内存假件）。
+    /// - metadataWriteDebounceMs：协调器写去抖（TS 设置 metadata_write_debounce_ms，
+    ///   默认 500；测试注入大值避免后台任务在用例窗口内落盘）。
+    /// - faceKwService：默认装配 Vision 推理 + RAWDecoder 解码；测试可注入
+    ///   假推理/解码（对齐 gather-core FaceKeywordingServiceTests 模式）。
+    public static func makeDefault(
+        db: DBConnection,
+        xmpProvider: (any XMPProvider)? = nil,
+        metadataWriteDebounceMs: Double? = nil,
+        faceKwService: FaceKwService? = nil
+    ) -> SessionCommandRouter {
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let settingsService = SettingsService(repo: SettingsRepo(connection: db))
+        let similarityResultRepo = SimilarityResultRepo(connection: db)
         let similarityService = SimilarityService(
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
-            similarityResultRepo: SimilarityResultRepo(connection: db),
+            similarityResultRepo: similarityResultRepo,
             connection: db,
+            getNumber: { key, defaultValue in
+                settingsService.getNumber(key, defaultValue: defaultValue)
+            }
+        )
+        let assetRepo = AssetRepo(connection: db)
+        // 元数据写回链（TS di/init.ts 组合根）：XMP provider → 协调器 →
+        // 变更服务 → 元数据服务 / 写回服务（XMPProvider 为宿主接缝，3.4
+        // 正式 exiftool/XML-DOM 桥落位前用 SidecarXMPProvider 保证端到端可用）。
+        let xmp = xmpProvider ?? SidecarXMPProvider()
+        let outboxRepo = MetadataOutboxRepo(connection: db)
+        let writebackRepo = WritebackRepo(connection: db)
+        let metadataCacheRepo = MetadataCacheRepo(connection: db)
+        let assetResolver = PhotoAssetResolver(connection: db, getSetting: { key, defaultValue in
+            settingsService.get(key, defaultValue: defaultValue)
+        })
+        let metadataSyncCoordinator = MetadataSyncCoordinator(
+            outboxRepo: outboxRepo,
+            writebackRepo: writebackRepo,
+            xmp: xmp,
+            connection: db,
+            getNumber: { key, defaultValue in
+                if key == "metadata_write_debounce_ms", let metadataWriteDebounceMs {
+                    return metadataWriteDebounceMs
+                }
+                return settingsService.getNumber(key, defaultValue: defaultValue)
+            }
+        )
+        let metadataMutationService = MetadataMutationService(
+            outboxRepo: outboxRepo,
+            xmp: xmp,
+            sync: metadataSyncCoordinator,
+            assetResolver: assetResolver
+        )
+        let metadataService = MetadataService(
+            metadataCacheRepo: metadataCacheRepo,
+            xmp: xmp,
+            connection: db,
+            mutations: metadataMutationService,
+            assetResolver: assetResolver
+        )
+        let writebackService = WritebackService(
+            writebackRepo: writebackRepo,
+            xmp: xmp,
+            photoRepo: photoRepo,
+            sessionRepo: sessionRepo,
+            metadataCacheRepo: metadataCacheRepo,
+            metadataSync: metadataSyncCoordinator,
+            metadataMutations: metadataMutationService,
+            outboxRepo: outboxRepo,
+            keywordOrigins: MetadataKeywordOriginRepo(connection: db),
+            assetResolver: assetResolver
+        )
+        let personRepo = PersonRepo(connection: db)
+        let resolvedFaceKwService = faceKwService ?? FaceKwService(
+            photoRepo: photoRepo,
+            sessionRepo: sessionRepo,
+            faceRepo: FaceRepo(connection: db),
+            personRepo: personRepo,
+            connection: db,
+            getNumber: { key, defaultValue in
+                settingsService.getNumber(key, defaultValue: defaultValue)
+            },
+            getString: { key, defaultValue in
+                settingsService.get(key, defaultValue: defaultValue)
+            },
+            writebackProvider: FaceKwWritebackBridge(writebackService: writebackService)
+        )
+        // 3.4 CullingService：sync/writeback 端口注入真实
+        // MetadataSyncCoordinator / WritebackService（CullingSyncPort /
+        // CullingWritebackPort 扩展即上述类型，见 CullingService.swift）。
+        let cullingService = CullingService(
+            photoRepo: photoRepo,
+            cullingDecisionRepo: CullingDecisionRepo(connection: db),
+            similarityResultRepo: similarityResultRepo,
+            metadataCacheRepo: metadataCacheRepo,
+            metadataOutboxRepo: outboxRepo,
+            connection: db,
+            metadataSync: metadataSyncCoordinator,
+            metadataMutations: metadataMutationService,
+            writeback: writebackService,
+            cullingHistoryRepo: CullingHistoryRepo(connection: db),
             getNumber: { key, defaultValue in
                 settingsService.getNumber(key, defaultValue: defaultValue)
             }
@@ -106,13 +266,13 @@ public final class SessionCommandRouter: CommandRouter {
                     let dims = try RAWDecoder.getDimensions(path: path)
                     return (dims.width, dims.height)
                 },
-                assetRepo: AssetRepo(connection: db)
+                assetRepo: assetRepo
             ),
             workspaceStatusService: WorkspaceStatusService(
                 connection: db,
                 sessionRepo: sessionRepo,
                 photoRepo: photoRepo,
-                outboxRepo: MetadataOutboxRepo(connection: db)
+                outboxRepo: outboxRepo
             ),
             jobService: JobService(repo: AnalysisJobRepo(connection: db)),
             photoRepo: photoRepo,
@@ -131,7 +291,34 @@ public final class SessionCommandRouter: CommandRouter {
                         mode: mode, onProgress: onProgress)
                 }
             ),
-            assetRepo: AssetRepo(connection: db)
+            assetRepo: assetRepo,
+            faceKwService: resolvedFaceKwService,
+            personRepo: personRepo,
+            templateService: TemplateService(connection: db, settings: settingsService),
+            qualityService: QualityService(
+                photoRepo: photoRepo,
+                connection: db,
+                imageProvider: QualityService.defaultImageProvider,
+                statProvider: QualityService.defaultStat
+            ),
+            indexerService: IndexerService(
+                connection: db,
+                sessionRepo: sessionRepo,
+                photoRepo: photoRepo,
+                assetRepo: assetRepo,
+                getDimensions: { path in
+                    try RAWDecoder.getDimensions(path: path)
+                },
+                getSetting: { key, defaultValue in
+                    settingsService.get(key, defaultValue: defaultValue)
+                }
+            ),
+            metadataService: metadataService,
+            metadataSyncCoordinator: metadataSyncCoordinator,
+            metadataMutationService: metadataMutationService,
+            writebackService: writebackService,
+            smartAlbumRepo: SmartAlbumRepo(connection: db),
+            cullingService: cullingService
         )
     }
 
@@ -170,6 +357,81 @@ public final class SessionCommandRouter: CommandRouter {
                     context.updateProgress(JobProgressUpdate(
                         current: current, total: total, phase: phase, checkpoint: job.checkpoint))
                 }
+            )
+            return result
+        }
+
+        // TS 源: face-kw.ipc.ts:24-40 —— face.analyze executor。job abort 经
+        // signal handler 传播给 FaceKwService 的自持 controller（TS
+        // addEventListener('abort') 语义；JobAbortSignal.addHandler 即等价物）。
+        jobService.registerExecutor(type: .faceAnalyze) { [faceKwService] job, context in
+            context.signal.addHandler {
+                faceKwService.cancel(sessionId: job.scopeId)
+            }
+            let checkpoint = job.checkpoint
+            let result = try await faceKwService.analyze(
+                sessionId: job.scopeId,
+                detectorPath: checkpoint["detectorPath"]?.stringValue ?? "models/face_detector.onnx",
+                encoderPath: checkpoint["encoderPath"]?.stringValue ?? "models/face_encoder.onnx",
+                eps: checkpoint["eps"]?.numberValue,
+                minPts: checkpoint["minSamples"]?.numberValue,
+                onProgress: { current, total, phase in
+                    context.updateProgress(JobProgressUpdate(
+                        current: current, total: total, phase: phase, checkpoint: checkpoint))
+                }
+            )
+            return result
+        }
+
+        // TS 源: quality.ipc.ts:7-12 —— quality.score executor（photoIds 从
+        // checkpoint 还原，TS 非数组过滤语义）。
+        jobService.registerExecutor(type: .qualityScore) { [qualityService] job, context in
+            let photoIds = job.checkpoint["photoIds"]?.arrayElements?.compactMap(\.stringValue)
+            return try await qualityService.analyze(
+                sessionId: job.scopeId,
+                photoIds: photoIds,
+                context: context
+            )
+        }
+
+        // TS 源: indexer.ipc.ts:26-67 —— metadata.scan executor：扫描 →
+        // 元数据提取 → 资产链接对账 → checkpoint 落结果（恢复语义），
+        // 剩余待回填 checksum 时入队 checksum.backfill。
+        jobService.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoRepo, assetRepo, jobService] job, context in
+            let result = try await indexerService.scanSession(
+                sessionId: job.scopeId,
+                context: context
+            )
+            try context.throwIfCancelled()
+            let photoIds = try photoRepo.getBySessionProjection(sessionId: job.scopeId)
+                .filter { $0.status != "missing" }
+                .map(\.id)
+            context.updateProgress(JobProgressUpdate(
+                current: 0, total: photoIds.count, phase: "index.metadata-read"
+            ))
+            _ = try await metadataService.getMetadata(photoIds: photoIds)
+            _ = try assetRepo.reconcileRawJpegLinks(job.scopeId)
+            context.updateCheckpoint(["result": try JSONValue(from: result)])
+            context.updateProgress(JobProgressUpdate(
+                current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
+            ))
+            if (try indexerService.pendingChecksums(sessionId: job.scopeId)) > 0 {
+                _ = try jobService.create(JobCreateParams(
+                    type: .checksumBackfill,
+                    scopeType: "session",
+                    scopeId: job.scopeId,
+                    dedupeKey: "checksum.backfill:\(job.scopeId)"
+                ))
+            }
+            return result
+        }
+
+        // TS 源: indexer.ipc.ts:26-32 —— checksum.backfill executor（后台回填
+        // 懒索引留下的空 checksum）。
+        jobService.registerExecutor(type: .checksumBackfill) { [indexerService] job, context in
+            let result = try await indexerService.backfillChecksums(
+                sessionId: job.scopeId,
+                context: context
             )
             return result
         }
@@ -460,6 +722,542 @@ public final class SessionCommandRouter: CommandRouter {
             try duplicateService.resolveMember(memberId: Int(memberId), isKept: isKept)
             return .bool(true)
 
+        // ── fkw.*（TS 源 face-kw.ipc.ts）──
+
+        case "fkw.clusters":
+            // face-kw.ipc.ts:98-105 —— ok(getClusters(sessionId))。
+            let sessionId = try requiredString(params, "sessionId")
+            let clusters = try faceKwService.getClusters(sessionId: sessionId)
+            return try GatherCore.JSONValue(from: clusters)
+
+        case "fkw.bind":
+            // face-kw.ipc.ts:107-123 —— clusterId/roleName/keywords 校验后绑定。
+            let sessionId = try requiredString(params, "sessionId")
+            let clusterId = try requiredNumber(params, "clusterId")
+            let roleName = try requiredString(params, "roleName")
+            // TS FKW_KEYWORDS_INVALID：非数组或含非字符串元素即拒绝。
+            guard case .array(let keywordValues)? = params["keywords"],
+                  keywordValues.allSatisfy({ $0.stringValue != nil })
+            else {
+                throw BridgeError.badParams("FKW_KEYWORDS_INVALID")
+            }
+            let keywords = keywordValues.compactMap(\.stringValue)
+            try faceKwService.bindCluster(
+                sessionId: sessionId, clusterId: Int64(clusterId), roleName: roleName, keywords: keywords)
+            return .object(["done": .bool(true)])
+
+        case "fkw.unbind":
+            // face-kw.ipc.ts:125-172 —— destructive（confirmed 由 WebBridge
+            // 校验；直连路由时二次兜底）；removeOwnedFaceKeywords + 解除绑定。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("FKW_UNBIND_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let clusterId = try requiredNumber(params, "clusterId")
+            let result = try awaitSync {
+                try await self.faceKwService.unbind(
+                    sessionId: sessionId, clusterId: Int64(clusterId), confirmed: true)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "fkw.merge":
+            // face-kw.ipc.ts:174-183 —— 源/目标簇合并。
+            let sessionId = try requiredString(params, "sessionId")
+            let source = try requiredNumber(params, "source")
+            let target = try requiredNumber(params, "target")
+            try faceKwService.mergeClusters(sessionId: sessionId, sourceId: Int64(source), targetId: Int64(target))
+            return .object(["done": .bool(true)])
+
+        case "fkw.remove_member":
+            // face-kw.ipc.ts:185-194 —— 从簇中移除成员。
+            let sessionId = try requiredString(params, "sessionId")
+            let clusterId = try requiredNumber(params, "clusterId")
+            let memberId = try requiredNumber(params, "memberId")
+            try faceKwService.removeMember(sessionId: sessionId, clusterId: Int64(clusterId), memberId: Int64(memberId))
+            return .object(["done": .bool(true)])
+
+        case "fkw.preview":
+            // face-kw.ipc.ts:196-214 —— 写回预览（options ?? {}）。
+            let sessionId = try requiredString(params, "sessionId")
+            let options = try parseWritebackOptions(params["options"])
+            let preview = try awaitSync {
+                try await self.faceKwService.preview(sessionId: sessionId, options: options)
+            }
+            return try GatherCore.JSONValue(from: preview)
+
+        case "fkw.writeback":
+            // face-kw.ipc.ts:216-230 —— destructive；items 为 WritebackItem[]。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("WRITEBACK_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let items = try parseFaceKwWritebackItems(params["items"])
+            let result = try awaitSync {
+                try await self.faceKwService.writeback(sessionId: sessionId, confirmed: true, items: items)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "fkw.confirm_sync":
+            // face-kw.ipc.ts:232-239 —— ok(true)。
+            let sessionId = try requiredString(params, "sessionId")
+            let ok = try awaitSync {
+                try await self.faceKwService.confirmSync(sessionId: sessionId)
+            }
+            return .bool(ok)
+
+        case "fkw.confirm_cleanup":
+            // face-kw.ipc.ts:241-251 —— destructive；confirmed 非 true 拒绝。
+            let sessionId = try requiredString(params, "sessionId")
+            let confirmed = optionalBool(params, "confirmed") ?? false
+            guard confirmed else {
+                throw BridgeError.badParams("FKW_CLEANUP_CONFIRM_REQUIRED")
+            }
+            let result = try awaitSync {
+                try await self.faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "fkw.cleanup":
+            // face-kw.ipc.ts:253-262 —— destructive；同 confirm_cleanup 语义。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("FKW_CLEANUP_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let result = try awaitSync {
+                try await self.faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "fkw.cancel_analysis":
+            // face-kw.ipc.ts:72-80 —— jobs.cancelScope + cancel，返回 {done:true}。
+            let sessionId = try requiredString(params, "sessionId")
+            _ = try jobService.cancelScope(type: .faceAnalyze, scopeId: sessionId)
+            faceKwService.cancel(sessionId: sessionId)
+            return .object(["done": .bool(true)])
+
+        // ── person.*（TS 源 person.ipc.ts）──
+
+        case "person.list":
+            // person.ipc.ts:31-56 —— listWithCounts → PersonData[]。
+            let rows = try personRepo.listWithCounts()
+            return try .array(rows.map { try GatherCore.JSONValue(from: personData(row: $0)) })
+
+        case "person.get":
+            // person.ipc.ts:58-79 —— PERSON_NOT_FOUND；detail = data + photos。
+            let personId = try requiredString(params, "personId")
+            guard let row = try personRepo.get(id: personId) else {
+                throw BridgeError.notFound("PERSON_NOT_FOUND")
+            }
+            let photos = try personRepo.getPhotosWithDetails(personId: personId)
+            let detail = PersonDetailData(
+                id: row.id,
+                name: row.name,
+                keywords: parseKeywordsJSON(row.keywords),
+                thumbnailBase64: row.thumbnailBase64,
+                thumbnailPath: row.thumbnailPath,
+                notes: row.notes,
+                matchThreshold: row.matchThreshold,
+                photoCount: try personRepo.countPhotos(personId: personId),
+                sessionCount: try personRepo.getSessionCount(personId: personId),
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt,
+                photos: photos.photos.map(personPhotoItem),
+                totalPhotoCount: photos.total
+            )
+            return try GatherCore.JSONValue(from: detail)
+
+        case "person.create":
+            // person.ipc.ts:81-89 —— name 必填；keywords 可选。
+            let name = try validatedString(params, "name")
+            let keywords = try optionalStringArray(params, "keywords")
+            let id = try personRepo.create(name: name, keywords: keywords)
+            return .object(["id": .string(id)])
+
+        case "person.update":
+            // person.ipc.ts:91-103 —— 仅更新传入的字段。
+            let personId = try requiredString(params, "personId")
+            let fields = try parsePersonUpdateFields(params)
+            try personRepo.update(id: personId, fields: fields)
+            return .object(["done": .bool(true)])
+
+        case "person.delete":
+            // person.ipc.ts:105-115 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("PERSON_DELETE_CONFIRM_REQUIRED")
+            }
+            let personId = try requiredString(params, "personId")
+            try personRepo.delete(id: personId)
+            return .object(["done": .bool(true)])
+
+        case "person.merge":
+            // person.ipc.ts:117-128 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("PERSON_MERGE_CONFIRM_REQUIRED")
+            }
+            let sourceId = try requiredString(params, "sourceId")
+            let targetId = try requiredString(params, "targetId")
+            try personRepo.merge(sourceId: sourceId, targetId: targetId)
+            return .object(["done": .bool(true)])
+
+        case "person.remove_photo":
+            // person.ipc.ts:130-141 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED")
+            }
+            let personId = try requiredString(params, "personId")
+            let photoId = try requiredString(params, "photoId")
+            try personRepo.removePhoto(personId: personId, photoId: photoId)
+            return .object(["done": .bool(true)])
+
+        case "person.search_photos":
+            // person.ipc.ts:143-165 —— { photos, total }；sessionIds/limit/offset 可选。
+            let personId = try requiredString(params, "personId")
+            let sessionIds = try optionalStringArray(params, "sessionIds")
+            let limit = try optionalNumber(params, "limit").map { Int($0) }
+            let offset = try optionalNumber(params, "offset").map { Int($0) }
+            let result = try personRepo.getPhotosWithDetails(
+                personId: personId, sessionIds: sessionIds, limit: limit, offset: offset)
+            return .object([
+                "photos": try .array(result.photos.map { try GatherCore.JSONValue(from: personPhotoItem($0)) }),
+                "total": .number(Double(result.total)),
+            ])
+
+        // ── template.*（TS 源 template.ipc.ts）──
+
+        case "template.create":
+            // template.ipc.ts:7-18 —— config 非对象抛 TEMPLATE_CONFIG_INVALID。
+            let name = try validatedString(params, "name")
+            let description = try optionalString(params, "description") ?? ""
+            guard let configValue = params["config"], configValue.isObject else {
+                throw BridgeError.badParams("TEMPLATE_CONFIG_INVALID")
+            }
+            let config = try decodeJSON(WorkflowTemplateConfig.self, from: configValue)
+            let template = try templateService.create(name: name, description: description, config: config)
+            return try GatherCore.JSONValue(from: template)
+
+        case "template.list":
+            return try GatherCore.JSONValue(from: templateService.list())
+
+        case "template.get":
+            let templateId = try requiredString(params, "templateId")
+            guard let template = try templateService.get(id: templateId) else {
+                throw BridgeError.notFound("TEMPLATE_NOT_FOUND")
+            }
+            return try GatherCore.JSONValue(from: template)
+
+        case "template.update":
+            // template.ipc.ts:37-50 —— 仅更新传入字段；description 强制 String 化。
+            let templateId = try requiredString(params, "templateId")
+            var fields = TemplateUpdateFields()
+            if let name = try optionalString(params, "name") {
+                fields.name = name
+            }
+            if let description = params["description"] {
+                fields.description = description.stringValue ?? String(describing: description)
+            }
+            if let configValue = params["config"] {
+                guard configValue.isObject else {
+                    throw BridgeError.badParams("TEMPLATE_CONFIG_INVALID")
+                }
+                fields.config = try decodeJSON(WorkflowTemplateConfig.self, from: configValue)
+            }
+            let template = try templateService.update(id: templateId, fields: fields)
+            return try GatherCore.JSONValue(from: template)
+
+        case "template.delete":
+            // template.ipc.ts:52-60 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("TEMPLATE_DELETE_CONFIRM_REQUIRED")
+            }
+            let templateId = try requiredString(params, "templateId")
+            try templateService.delete(id: templateId)
+            return .object(["done": .bool(true)])
+
+        case "template.apply":
+            // template.ipc.ts:62-71 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("TEMPLATE_APPLY_CONFIRM_REQUIRED")
+            }
+            let templateId = try requiredString(params, "templateId")
+            let sessionId = try requiredString(params, "sessionId")
+            try templateService.apply(templateId: templateId, sessionId: sessionId)
+            return .object(["done": .bool(true)])
+
+        // ── quality.*（TS 源 quality.ipc.ts）──
+
+        case "quality.get":
+            // quality.ipc.ts:25-30 —— photoIds 可选（validateStringArray 语义）。
+            let sessionId = try requiredString(params, "sessionId")
+            let photoIds = try optionalStringArray(params, "photoIds")
+            let results = try qualityService.get(sessionId: sessionId, photoIds: photoIds)
+            return try GatherCore.JSONValue(from: results)
+
+        // ── metadata.*（TS 源 metadata.ipc.ts）──
+
+        case "metadata.get":
+            // metadata.ipc.ts:11-18 —— ok(Object.fromEntries(map))。
+            let photoIds = try requiredStringArray(params, "photoIds")
+            // TS validateStringArray：非空数组（空数组同样拒绝）。
+            guard !photoIds.isEmpty else {
+                throw BridgeError.badParams("INVALID_PARAM:photoIds")
+            }
+            let map = try awaitSync {
+                try await self.metadataService.getMetadata(photoIds: photoIds)
+            }
+            var object: [String: GatherCore.JSONValue] = [:]
+            for (photoId, tags) in map {
+                object[photoId] = try GatherCore.JSONValue(from: tags)
+            }
+            return .object(object)
+
+        case "metadata.set":
+            // metadata.ipc.ts:20-31 —— destructive；tags 为对象。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("METADATA_SET_CONFIRM_REQUIRED")
+            }
+            let photoId = try requiredString(params, "photoId")
+            let tags = try parseMetadataTags(params["tags"])
+            let result = try awaitSync {
+                try await self.metadataService.setMetadata(photoId: photoId, tags: tags)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "metadata.batch_set":
+            // metadata.ipc.ts:33-52 —— destructive；updates 非空数组校验。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("METADATA_BATCH_SET_CONFIRM_REQUIRED")
+            }
+            guard let updates = params["updates"]?.arrayElements, !updates.isEmpty else {
+                throw BridgeError.badParams("Invalid updates: must be a non-empty array")
+            }
+            let parsed: [(photoId: String, tags: MetadataTags)] = try updates.map { item in
+                let object = try requireObject(item, "updates[].photoId")
+                let photoId = try requiredSubString(object, "photoId")
+                let tags = try parseMetadataTags(object["tags"])
+                return (photoId, tags)
+            }
+            let result = try awaitSync {
+                try await self.metadataService.batchSet(updates: parsed)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "metadata.conflicts":
+            // metadata.ipc.ts:54-56 —— ok(getConflicts(sessionId))。
+            let sessionId = try requiredString(params, "sessionId")
+            let conflicts = try awaitSync {
+                try await self.metadataSyncCoordinator.getConflicts(sessionId: sessionId)
+            }
+            return try GatherCore.JSONValue(from: conflicts)
+
+        case "metadata.orphans":
+            // metadata.ipc.ts:76-78 —— ok(listOrphans())。
+            return try GatherCore.JSONValue(from: metadataSyncCoordinator.listOrphans())
+
+        // ── sim.* 写回族（TS 源 similarity.ipc.ts:189-274）──
+
+        case "sim.preview_writeback":
+            let sessionId = try requiredString(params, "sessionId")
+            let assignments = try validateSimilarityAssignments(params["assignments"])
+            let threshold = try optionalNumber(params, "threshold").map { Int($0) }
+            return try awaitSync {
+                try await self.buildSimilarityKeywordPreview(
+                    sessionId: sessionId, assignments: assignments, threshold: threshold)
+            }
+
+        case "sim.writeback":
+            // similarity.ipc.ts:205-235 —— destructive；itemIds 必填非空。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("WRITEBACK_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let threshold = try optionalNumber(params, "threshold").map { Int($0) }
+            if let threshold, !(try similarityService.hasResult(sessionId: sessionId, threshold: threshold)) {
+                throw BridgeError.badParams("SIM_THRESHOLD_NO_RESULTS")
+            }
+            let itemIds: [Int] = params["itemIds"]?.arrayElements?
+                .compactMap(\.numberValue)
+                .filter { $0.rounded() == $0 }
+                .map { Int($0) } ?? []
+            guard !itemIds.isEmpty else {
+                throw BridgeError.badParams("SIM_PREVIEW_REQUIRED")
+            }
+            let idSet = Set(itemIds)
+            let pendingItems = try writebackService.getItems(sessionId: sessionId, module: "similarity", status: "pending")
+                .filter { item in item.id.map { idSet.contains($0) } ?? false }
+            guard pendingItems.count == idSet.count else {
+                throw BridgeError.badParams("SIM_PREVIEW_STALE")
+            }
+            let result = try awaitSync {
+                try await self.writebackService.execute(sessionId: sessionId, module: "similarity", items: pendingItems)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "sim.writeback_items":
+            let sessionId = try requiredString(params, "sessionId")
+            return try GatherCore.JSONValue(from: writebackService.getItems(sessionId: sessionId, module: "similarity"))
+
+        case "sim.retry_failed_writeback":
+            // similarity.ipc.ts:246-254 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("WRITEBACK_RETRY_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let result = try awaitSync {
+                try await self.writebackService.retryFailed(sessionId: sessionId, module: "similarity")
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        case "sim.confirm_sync":
+            // similarity.ipc.ts:257-263 —— ok(true)。
+            let sessionId = try requiredString(params, "sessionId")
+            try awaitSync {
+                try await self.writebackService.confirmSync(sessionId: sessionId, module: "similarity")
+            }
+            return .bool(true)
+
+        case "sim.cleanup":
+            // similarity.ipc.ts:265-274 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("WRITEBACK_CLEANUP_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let result = try awaitSync {
+                try await self.writebackService.cleanup(sessionId: sessionId, module: "similarity")
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        // ── assets.*（TS 源 assets.ipc.ts）──
+
+        case "assets.accept_candidate":
+            // assets.ipc.ts:15-19 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("ASSET_LINK_ACCEPT_CONFIRM_REQUIRED")
+            }
+            let candidateId = try requiredString(params, "candidateId")
+            // 仓库层 DBError.message → BridgeError（WebBridge 仅对 BridgeError
+            // 走 message 透传；NSError 桥接会丢失消息）。
+            try mapRepoError { try assetRepo.acceptCandidate(candidateId) }
+            return .bool(true)
+
+        case "assets.reject_candidate":
+            // assets.ipc.ts:20-24 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("ASSET_LINK_REJECT_CONFIRM_REQUIRED")
+            }
+            let candidateId = try requiredString(params, "candidateId")
+            try mapRepoError { try assetRepo.rejectCandidate(candidateId) }
+            return .bool(true)
+
+        case "assets.volumes":
+            // assets.ipc.ts:25-27 —— ok(listVolumes())。
+            return try GatherCore.JSONValue(from: assetRepo.listVolumes())
+
+        case "assets.relink_root":
+            // assets.ipc.ts:28-34 —— destructive。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("ASSET_RELINK_CONFIRM_REQUIRED")
+            }
+            let oldRoot = try requiredString(params, "oldRoot")
+            let newRoot = try requiredString(params, "newRoot")
+            return .number(Double(try mapRepoError {
+                try assetRepo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
+            }))
+
+        // ── album.*（TS 源 filter.ipc.ts registerAlbumHandlers）──
+
+        case "album.create":
+            // filter.ipc.ts:111-146 —— criteria 经 buildWhereClause 校验后落库。
+            let name = try validatedString(params, "name")
+            let criteria = try parseFilterCriteria(params)
+            _ = try filterEngine.buildWhereClause(criteria)
+            let sortBy = try optionalString(params, "sortBy")
+            let sortOrder = try optionalString(params, "sortOrder")
+            let description = try optionalString(params, "description")
+            let icon = try optionalString(params, "icon")
+            let row = try smartAlbumRepo.create(data: SmartAlbumCreateData(
+                name: name, description: description, filterCriteria: criteria,
+                sortBy: sortBy, sortOrder: sortOrder, icon: icon))
+            let detail = try albumDetailData(row: row)
+            return try GatherCore.JSONValue(from: detail)
+
+        case "album.list":
+            // filter.ipc.ts:148-186 —— 损坏 criteria 的行带 validationError 保留。
+            let rows = try smartAlbumRepo.list()
+            let albums: [SmartAlbumData] = rows.map { row in
+                do {
+                    let criteria = try decodeJSON(FilterGroup.self, from: JSONValue.parse(row.filterCriteria))
+                    _ = try filterEngine.buildWhereClause(criteria)
+                    return SmartAlbumData(
+                        id: row.id, schemaVersion: row.schemaVersion, name: row.name,
+                        description: row.description, filterCriteria: criteria,
+                        sortBy: row.sortBy, sortOrder: row.sortOrder, icon: row.icon,
+                        createdAt: row.createdAt, updatedAt: row.updatedAt)
+                } catch {
+                    return SmartAlbumData(
+                        id: row.id, schemaVersion: row.schemaVersion, name: row.name,
+                        description: row.description,
+                        filterCriteria: FilterGroup(logic: .and, conditions: []),
+                        sortBy: row.sortBy, sortOrder: row.sortOrder, icon: row.icon,
+                        createdAt: row.createdAt, updatedAt: row.updatedAt,
+                        validationError: Self.errorMessage(error))
+                }
+            }
+            return try GatherCore.JSONValue(from: albums)
+
+        case "album.get":
+            // filter.ipc.ts:188-210 —— ALBUM_NOT_FOUND。
+            let albumId = try requiredString(params, "albumId")
+            guard let row = try smartAlbumRepo.get(id: albumId) else {
+                throw BridgeError.notFound("ALBUM_NOT_FOUND")
+            }
+            return try GatherCore.JSONValue(from: albumDetailData(row: row))
+
+        case "album.update":
+            // filter.ipc.ts:212-230 —— 仅更新传入字段；criteria 传入时校验。
+            let albumId = try requiredString(params, "albumId")
+            let name = try optionalString(params, "name")
+            let description = try optionalString(params, "description")
+            var criteria: FilterGroup?
+            if let rawCriteria = params["criteria"] {
+                guard rawCriteria.isObject else { throw BridgeError.badParams("Filter criteria is invalid") }
+                criteria = try parseFilterCriteria(params)
+                _ = try filterEngine.buildWhereClause(criteria!)
+            }
+            let sortBy = try optionalString(params, "sortBy")
+            let sortOrder = try optionalString(params, "sortOrder")
+            let icon = try optionalString(params, "icon")
+            try smartAlbumRepo.update(id: albumId, data: SmartAlbumUpdateData(
+                name: name, description: description, filterCriteria: criteria,
+                sortBy: sortBy, sortOrder: sortOrder, icon: icon))
+            return .object(["done": .bool(true)])
+
+        case "album.delete":
+            // filter.ipc.ts:232-242 —— destructive（TS 消息非 GatherErrorCode）。
+            guard confirmed(params) else {
+                throw BridgeError.badParams("album.delete requires confirmation")
+            }
+            let albumId = try requiredString(params, "albumId")
+            try smartAlbumRepo.delete(id: albumId)
+            return .object(["done": .bool(true)])
+
+        case "album.get_photos":
+            // filter.ipc.ts:244-266 —— ALBUM_NOT_FOUND；limit 1..500 缺省 100。
+            let albumId = try requiredString(params, "albumId")
+            guard let row = try smartAlbumRepo.get(id: albumId) else {
+                throw BridgeError.notFound("ALBUM_NOT_FOUND")
+            }
+            let criteria = try decodeJSON(FilterGroup.self, from: JSONValue.parse(row.filterCriteria))
+            let limit = clampedLimit(params, default: 100, max: 500)
+            let offset = clampedOffset(params)
+            let photos = try filterEngine.filterGlobally(
+                criteria: criteria, sortBy: row.sortBy, sortOrder: row.sortOrder,
+                limit: limit, offset: offset)
+            let total = try filterEngine.countGlobally(criteria: criteria)
+            return .object([
+                "photos": try .array(photos.map { try GatherCore.JSONValue(from: $0) }),
+                "total": .number(Double(total)),
+            ])
+
         // ── image / face ──
 
         case "image.get_dimensions":
@@ -478,6 +1276,234 @@ public final class SessionCommandRouter: CommandRouter {
                 "modelsPresent": .bool(true),
                 "downloading": .bool(false),
             ])
+
+        // ── culling.* 同步面（TS 源 culling.ipc.ts；3.4 CullingService）──
+
+        // culling.ipc.ts:83-107 —— 资产分组 keyset 分页；scope 白名单 +
+        // afterRowId/limit 校验（limit 缺省 200，上限 2000）。
+        case "culling.list_page":
+            let sessionId = try requiredString(params, "sessionId")
+            let scopeRaw = try requiredString(params, "scope")
+            guard let scope = CullingScope(rawValue: scopeRaw) else {
+                throw BridgeError.badParams("CULLING_INVALID_SCOPE")
+            }
+            let filters = try parseCullingFilters(params["filters"])
+            let groupId = try optionalString(params, "groupId")
+            // afterRowId 是上一页返回的 keyset 游标（仍是 photos.rowid 值）。
+            let afterRowId: Int64?
+            if let raw = params["afterRowId"] {
+                guard let value = raw.numberValue, value.isFinite,
+                      value.rounded() == value, value >= 1 else {
+                    throw BridgeError.badParams("afterRowId must be a positive integer")
+                }
+                afterRowId = Int64(value)
+            } else {
+                afterRowId = nil
+            }
+            let limit: Int
+            if let raw = params["limit"] {
+                guard let value = raw.numberValue, value.isFinite,
+                      value.rounded() == value,
+                      value >= 1, value <= Double(CullingService.pageLimitMax) else {
+                    throw BridgeError.badParams("limit must be an integer between 1 and 2000")
+                }
+                limit = Int(value)
+            } else {
+                limit = 200
+            }
+            let page = try cullingService.listPage(
+                sessionId: sessionId, scope: scope, filters: filters,
+                requestedGroupId: groupId, afterRowId: afterRowId, limit: limit)
+            return try GatherCore.JSONValue(from: page)
+
+        // culling.ipc.ts:109-116 —— 历史栈（limit 1..500 缺省 100）。
+        case "culling.history":
+            let sessionId = try requiredString(params, "sessionId")
+            let limit: Int?
+            if let raw = params["limit"] {
+                guard let value = raw.numberValue, value.isFinite,
+                      value.rounded() == value, value >= 1, value <= 500 else {
+                    throw BridgeError.badParams("limit must be an integer between 1 and 500")
+                }
+                limit = Int(value)
+            } else {
+                limit = nil
+            }
+            let operations = try cullingService.getHistory(sessionId: sessionId, limit: limit ?? 100)
+            return try GatherCore.JSONValue(from: operations)
+
+        // culling.ipc.ts:118-152 —— undo/redo 显式条目；entries 非空数组（≤10000）。
+        case "culling.apply_history":
+            let sessionId = try requiredString(params, "sessionId")
+            guard let entryValues = params["entries"]?.arrayElements,
+                  !entryValues.isEmpty, entryValues.count <= CullingService.batchMax else {
+                throw BridgeError.badParams("entries must be a non-empty array with at most 10000 items")
+            }
+            let entries: [CullingHistoryApplyEntry] = try entryValues.enumerated().map { index, item in
+                guard let object = item.objectValue else {
+                    throw BridgeError.badParams("entries[\(index)] is invalid")
+                }
+                guard let patchValue = object["patch"] else {
+                    throw BridgeError.badParams("entries[\(index)].patch is invalid")
+                }
+                guard let expectedRevision = object["expectedRevision"]?.numberValue,
+                      expectedRevision.isFinite, expectedRevision.rounded() == expectedRevision,
+                      expectedRevision >= 0 else {
+                    throw BridgeError.badParams("entries[\(index)].expectedRevision is invalid")
+                }
+                guard let photoId = object["photoId"]?.stringValue else {
+                    throw BridgeError.badParams("MISSING_PARAM:entries[\(index)].photoId")
+                }
+                return CullingHistoryApplyEntry(
+                    photoId: photoId,
+                    expectedRevision: Int(expectedRevision),
+                    patch: try parseCullingUpdatePatch(patchValue)
+                )
+            }
+            guard let historyOperationId = params["historyOperationId"]?.numberValue,
+                  historyOperationId.isFinite, historyOperationId.rounded() == historyOperationId,
+                  historyOperationId >= 1 else {
+                throw BridgeError.badParams("historyOperationId must be a positive integer")
+            }
+            let directionRaw = try requiredString(params, "direction")
+            guard let direction = CullingHistoryDirection(rawValue: directionRaw) else {
+                throw BridgeError.badParams("direction must be undo or redo")
+            }
+            let results = try cullingService.applyHistory(
+                sessionId: sessionId,
+                requestedEntries: entries,
+                historyOperationId: Int(historyOperationId),
+                direction: direction)
+            return try GatherCore.JSONValue(from: results)
+
+        // culling.ipc.ts:154-177 —— 单张更新；复用缓存的会话级更新上下文
+        //（点击突发不再重读整个会话）。
+        case "culling.update":
+            let sessionId = try requiredString(params, "sessionId")
+            let photoId = try requiredString(params, "photoId")
+            guard let expectedRevision = params["expectedRevision"]?.numberValue,
+                  expectedRevision.isFinite, expectedRevision.rounded() == expectedRevision,
+                  expectedRevision >= 0 else {
+                throw BridgeError.badParams("expectedRevision must be a non-negative integer")
+            }
+            let patch = try parseCullingUpdatePatch(params["patch"])
+            let context = try cullingService.getUpdateContext(sessionId: sessionId)
+            let result = try cullingService.updateState(
+                sessionId: sessionId, photoId: photoId,
+                expectedRevision: Int(expectedRevision), patch: patch, context: context)
+            return try GatherCore.JSONValue(from: result)
+
+        // culling.ipc.ts:179-198 —— 批量更新（photoIds ≤10000，单事务）。
+        case "culling.batch_update":
+            let sessionId = try requiredString(params, "sessionId")
+            let photoIds = try requiredStringArray(params, "photoIds")
+            if photoIds.count > CullingService.batchMax {
+                throw BridgeError.badParams("Too many photoIds in one batch")
+            }
+            let patch = try parseCullingUpdatePatch(params["patch"])
+            let results = try cullingService.batchUpdate(
+                sessionId: sessionId, photoIds: photoIds, patch: patch)
+            return try GatherCore.JSONValue(from: results)
+
+        // culling.ipc.ts:200-213 —— 整组批量 keep/reject。
+        case "culling.decide_group":
+            let sessionId = try requiredString(params, "sessionId")
+            let groupId = try requiredString(params, "groupId")
+            let keepPhotoIds = try requiredStringArray(params, "keepPhotoIds")
+            if keepPhotoIds.count > CullingService.batchMax {
+                throw BridgeError.badParams("Too many keepPhotoIds")
+            }
+            let results = try cullingService.decideSimilarityGroup(
+                sessionId: sessionId, groupId: groupId, keepPhotoIds: keepPhotoIds)
+            return try GatherCore.JSONValue(from: results)
+
+        // culling.ipc.ts:215-221 —— ok(metadataSync.getSummary(sessionId))。
+        case "culling.sync_status":
+            let sessionId = try requiredString(params, "sessionId")
+            return try GatherCore.JSONValue(from: cullingService.syncStatus(sessionId: sessionId))
+
+        // culling.ipc.ts:239-248 —— destructive（桥层 + 直连二次兜底）。
+        case "culling.finalize_sync":
+            guard confirmed(params) else {
+                throw BridgeError.badParams("CULLING_FINALIZE_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let summary = try awaitSync {
+                try await self.cullingService.finalizeSync(sessionId: sessionId, confirmed: true)
+            }
+            return try GatherCore.JSONValue(from: summary)
+
+        // culling.ipc.ts:250-257 —— 相似度分组（决策计数 + 成员轻投影）。
+        case "culling.groups":
+            let sessionId = try requiredString(params, "sessionId")
+            return try GatherCore.JSONValue(from: cullingService.getGroups(sessionId: sessionId))
+
+        // culling.ipc.ts:259-271 —— 旧版 renderer 单张决策；ok(true)。
+        case "culling.decide":
+            let sessionId = try requiredString(params, "sessionId")
+            let photoId = try requiredString(params, "photoId")
+            let decisionRaw = try requiredString(params, "decision")
+            guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
+                throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
+            }
+            try cullingService.decide(sessionId: sessionId, photoId: photoId, decision: decision)
+            return .bool(true)
+
+        // culling.ipc.ts:273-285 —— 旧版 renderer 批量决策；ok(true)。
+        case "culling.batch_decide":
+            let sessionId = try requiredString(params, "sessionId")
+            let photoIds = try requiredStringArray(params, "photoIds")
+            let decisionRaw = try requiredString(params, "decision")
+            guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
+                throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
+            }
+            try cullingService.batchDecide(sessionId: sessionId, photoIds: photoIds, decision: decision)
+            return .bool(true)
+
+        // culling.ipc.ts:287-294 —— 徽标计数。
+        case "culling.summary":
+            let sessionId = try requiredString(params, "sessionId")
+            return try GatherCore.JSONValue(from: cullingService.getSummary(sessionId: sessionId))
+
+        // culling.ipc.ts:349-358 —— destructive；重试失败写回项。
+        case "culling.retry_failed_writeback":
+            guard confirmed(params) else {
+                throw BridgeError.badParams("WRITEBACK_RETRY_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let result = try awaitSync {
+                try await self.cullingService.retryFailedWriteback(sessionId: sessionId, confirmed: true)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        // culling.ipc.ts:360-370 —— 协调器确认 + 写回项存在时的写回确认；ok(true)。
+        case "culling.confirm_sync":
+            let sessionId = try requiredString(params, "sessionId")
+            try awaitSync {
+                try await self.cullingService.confirmSync(sessionId: sessionId)
+            }
+            return .bool(true)
+
+        // culling.ipc.ts:372-386 —— destructive；协调器 + 写回并集清理。
+        case "culling.cleanup":
+            guard confirmed(params) else {
+                throw BridgeError.badParams("WRITEBACK_CLEANUP_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let result = try awaitSync {
+                try await self.cullingService.cleanup(sessionId: sessionId, confirmed: true)
+            }
+            return try GatherCore.JSONValue(from: result)
+
+        // culling.ipc.ts:336-347 —— destructive；groupId 可选（整会话或按组）。
+        case "culling.reset":
+            guard confirmed(params) else {
+                throw BridgeError.badParams("CULLING_RESET_CONFIRM_REQUIRED")
+            }
+            let sessionId = try requiredString(params, "sessionId")
+            let groupId = try optionalString(params, "groupId")
+            try cullingService.resetCommand(sessionId: sessionId, groupId: groupId, confirmed: true)
+            return .bool(true)
 
         default:
             throw BridgeError.notImplemented(command)
@@ -611,6 +1637,275 @@ public final class SessionCommandRouter: CommandRouter {
                         throw JobServiceError.jobFailed(job.id, "empty duplicate.scan result")
                     }
                     let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: face-kw.ipc.ts:41-62 —— 建 job 走 face.analyze executor +
+        // waitForResult；eps/minSamples/detectorPath/encoderPath 缺省走设置。
+        case "fkw.analyze":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            let eps = try? optionalNumber(params, "eps")
+            let minSamples = try? optionalNumber(params, "minSamples")
+            let detectorPath = (try? optionalString(params, "detectorPath"))
+                ?? settingsService.get("detector_model_path", defaultValue: "models/face_detector.onnx")
+            let encoderPath = (try? optionalString(params, "encoderPath"))
+                ?? settingsService.get("encoder_model_path", defaultValue: "models/face_encoder.onnx")
+            Task {
+                do {
+                    try validateFaceClusteringParameters(
+                        eps: eps ?? settingsService.getNumber("default_eps", defaultValue: 0.6),
+                        minPts: minSamples ?? settingsService.getNumber("default_min_samples", defaultValue: 2)
+                    )
+                    let job = try jobService.create(JobCreateParams(
+                        type: .faceAnalyze,
+                        scopeType: "session",
+                        scopeId: sessionId,
+                        dedupeKey: "face.analyze:\(sessionId):\(detectorPath):\(encoderPath):\(eps ?? 0.6):\(minSamples ?? 2)",
+                        checkpoint: [
+                            "detectorPath": .string(detectorPath),
+                            "encoderPath": .string(encoderPath),
+                            "eps": eps.map { .number($0) } ?? .null,
+                            "minSamples": minSamples.map { .number($0) } ?? .null,
+                        ]
+                    ))
+                    let result: FaceAnalysisResult? = try await jobService.waitForResult(jobId: job.id)
+                    guard let result else {
+                        throw JobServiceError.jobFailed(job.id, "empty fkw.analyze result")
+                    }
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: face-kw.ipc.ts:82-96 —— 仅重聚类（不重推理），返回 {done:true}。
+        case "fkw.recluster":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            let eps = try? optionalNumber(params, "eps")
+            let minSamples = try? optionalNumber(params, "minSamples")
+            Task {
+                do {
+                    let epsValue = eps ?? settingsService.getNumber("default_eps", defaultValue: 0.6)
+                    let minSamplesValue = minSamples ?? settingsService.getNumber("default_min_samples", defaultValue: 2)
+                    try validateFaceClusteringParameters(eps: epsValue, minPts: minSamplesValue)
+                    try await faceKwService.recluster(sessionId: sessionId, eps: epsValue, minPts: minSamplesValue)
+                    completion(WebResponse(id: "", ok: true, data: .object(["done": .bool(true)])))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: indexer.ipc.ts:68-77 —— 建 metadata.scan job 即返回
+        // （progress 走 jobs:progress 事件/轮询，不等完成）。
+        case "index.scan":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            do {
+                let job = try jobService.create(JobCreateParams(
+                    type: .metadataScan,
+                    scopeType: "session",
+                    scopeId: sessionId,
+                    dedupeKey: "metadata.scan:\(sessionId)"
+                ))
+                let data = try GatherCore.JSONValue(from: job)
+                completion(WebResponse(id: "", ok: true, data: data))
+            } catch {
+                completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+            }
+
+        // TS 源: quality.ipc.ts:13-24 —— 建 quality.score job 即返回。
+        case "quality.analyze":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            let photoIds = try? optionalStringArray(params, "photoIds")
+            // TS validateStringArray：提供但为空 → INVALID_PARAM。
+            if let photoIds, photoIds.isEmpty {
+                completion(WebResponse(id: "", ok: false, error: "INVALID_PARAM:photoIds"))
+                return
+            }
+            do {
+                let job = try jobService.create(JobCreateParams(
+                    type: .qualityScore,
+                    scopeType: "session",
+                    scopeId: sessionId,
+                    dedupeKey: "quality.score:\(sessionId):\(photoIds?.sorted().joined(separator: ",") ?? "all")",
+                    checkpoint: [
+                        "photoIds": photoIds.map { .array($0.map(JSONValue.string)) } ?? .null,
+                    ]
+                ))
+                let data = try GatherCore.JSONValue(from: job)
+                completion(WebResponse(id: "", ok: true, data: data))
+            } catch {
+                completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+            }
+
+        // TS 源: session.ipc.ts:36-59 —— 一跳导入：建会话 + metadata.scan job
+        // 入队；job 创建失败回滚会话行。
+        case "session.create_from_directory":
+            let name = (try? optionalString(params, "name")) ?? ""
+            guard let sourcePath = try? requiredString(params, "sourcePath") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sourcePath"))
+                return
+            }
+            do {
+                let session = try sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
+                do {
+                    _ = try jobService.create(JobCreateParams(
+                        type: .metadataScan,
+                        scopeType: "session",
+                        scopeId: session.id,
+                        dedupeKey: "metadata.scan:\(session.id)"
+                    ))
+                } catch {
+                    // TS: 入队失败回滚会话行，工作区列表不出现半成品会话。
+                    try? sessionService.deleteSession(session.id, confirmed: true)
+                    throw error
+                }
+                let data = try GatherCore.JSONValue(from: session)
+                completion(WebResponse(id: "", ok: true, data: data))
+            } catch {
+                completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+            }
+
+        // TS 源: metadata.ipc.ts:58-74 —— destructive；choices 逐字段校验。
+        case "metadata.resolve_conflict":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "METADATA_RESOLVE_CONFLICT_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            guard let xmpPath = try? requiredString(params, "xmpPath") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:xmpPath"))
+                return
+            }
+            guard let choicesValue = params["choices"], let choicesObject = choicesValue.objectValue else {
+                completion(WebResponse(id: "", ok: false, error: "choices must be an object"))
+                return
+            }
+            var choices: [MetadataField: MetadataConflictChoice] = [:]
+            for (field, choice) in choicesObject {
+                guard let fieldEnum = MetadataField(rawValue: field) else {
+                    completion(WebResponse(id: "", ok: false, error: "Invalid metadata field: \(field)"))
+                    return
+                }
+                guard let raw = choice.stringValue,
+                      let choiceEnum = MetadataConflictChoice(rawValue: raw) else {
+                    completion(WebResponse(id: "", ok: false, error: "Invalid conflict choice: \(choice.stringValue ?? "")"))
+                    return
+                }
+                choices[fieldEnum] = choiceEnum
+            }
+            Task {
+                do {
+                    let summary = try await metadataSyncCoordinator.resolveConflict(
+                        sessionId: sessionId, xmpPath: xmpPath, choices: choices)
+                    let data = try GatherCore.JSONValue(from: summary)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: metadata.ipc.ts:80-89 —— destructive；action 校验。
+        case "metadata.resolve_orphan":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "METADATA_RESOLVE_ORPHAN_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let xmpPath = try? requiredString(params, "xmpPath") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:xmpPath"))
+                return
+            }
+            guard let rawAction = try? requiredString(params, "action"),
+                  let action = MetadataOrphanAction(rawValue: rawAction) else {
+                completion(WebResponse(id: "", ok: false, error: "Invalid orphan action"))
+                return
+            }
+            Task {
+                do {
+                    let orphans = try await metadataSyncCoordinator.resolveOrphan(xmpPath: xmpPath, action: action)
+                    let data = try GatherCore.JSONValue(from: orphans)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: culling.ipc.ts:296-334 —— destructive 写回（桥层
+        // CONFIRMATION_REQUIRED + 直连路由 WRITEBACK_CONFIRM_REQUIRED 二次兜底）；
+        // 决策计划 → preview → 属性合并 → execute（asyncCommands 白名单路由）。
+        case "culling.writeback":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "WRITEBACK_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            guard let targetRaw = try? requiredString(params, "target") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:target"))
+                return
+            }
+            guard let target = CullingWritebackTarget(rawValue: targetRaw) else {
+                completion(WebResponse(id: "", ok: false, error: "Invalid target: must be rating, color_label, or keyword"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await cullingService.writeback(
+                        sessionId: sessionId, target: target, confirmed: true)
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: culling.ipc.ts:223-229 —— 取消计时器后并行冲刷会话内
+        // pending/writing/failed 行（asyncCommands 白名单路由）。
+        case "culling.flush":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let summary = try await cullingService.flush(sessionId: sessionId)
+                    let data = try GatherCore.JSONValue(from: summary)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: culling.ipc.ts:231-237 —— failed 行重置后整体 flush。
+        case "culling.retry_sync":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let summary = try await cullingService.retrySync(sessionId: sessionId)
+                    let data = try GatherCore.JSONValue(from: summary)
                     completion(WebResponse(id: "", ok: true, data: data))
                 } catch {
                     completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
@@ -924,6 +2219,323 @@ public final class SessionCommandRouter: CommandRouter {
         return size.intValue > 0
     }
 
+    // MARK: async → sync 桥接
+
+    /// 仓库层 DBError.message → BridgeError（WebBridge 只对 BridgeError 做
+    /// message 透传，NSError 桥接会把 DBError 描述丢给系统错误文案）。
+    private func mapRepoError<T>(_ body: () throws -> T) throws -> T {
+        do {
+            return try body()
+        } catch let error as DBError {
+            if case .message(let message) = error {
+                throw BridgeError.badParams(message)
+            }
+            throw error
+        }
+    }
+
+    /// TS wrapHandler 的 await 语义（主进程线程内等待 async 服务完成）：
+    /// execute() 为同步接口，对 async 服务方法用信号量桥接。服务实现均为
+    /// 后台 I/O（SQLite/文件），不依赖主线程，无死锁风险（与 TS 主进程
+    /// 事件循环内 await 的对外行为一致）。
+    private func awaitSync<T>(_ operation: @escaping () async throws -> T) throws -> T {
+        let box = SyncAwaitBox<T>()
+        Task {
+            do {
+                box.complete(.success(try await operation()))
+            } catch {
+                box.complete(.failure(error))
+            }
+        }
+        return try box.wait()
+    }
+
+    // MARK: 参数解析（TS helpers / ipc 校验语义）
+
+    /// TS validateStringArray（person/quality/metadata 共用）。
+    private func optionalStringArray(_ params: [String: GatherCore.JSONValue], _ key: String) throws -> [String]? {
+        guard let value = params[key] else { return nil }
+        guard case .array(let items) = value else {
+            throw BridgeError.badParams("MISSING_PARAM:\(key)")
+        }
+        guard items.allSatisfy({ $0.stringValue != nil }) else {
+            throw BridgeError.badParams("INVALID_PARAM:\(key)")
+        }
+        return items.compactMap(\.stringValue)
+    }
+
+    /// 子对象取值（metadata.batch_set 的 updates[] 元素）。
+    private func requireObject(_ value: GatherCore.JSONValue, _ context: String) throws -> [String: GatherCore.JSONValue] {
+        guard let object = value.objectValue else {
+            throw BridgeError.badParams("INVALID_PARAM:\(context)")
+        }
+        return object
+    }
+
+    private func requiredSubString(_ object: [String: GatherCore.JSONValue], _ key: String) throws -> String {
+        guard let value = object[key]?.stringValue else {
+            throw BridgeError.badParams("MISSING_PARAM:\(key)")
+        }
+        return value
+    }
+
+    /// TS JSON.parse(row.keywords)（person 关键词列）。
+    private func parseKeywordsJSON(_ raw: String) -> [String] {
+        guard let parsed = try? GatherCore.JSONValue.parse(raw) else { return [] }
+        return parsed.arrayElements?.compactMap(\.stringValue) ?? []
+    }
+
+    /// TS person.ipc.ts makeToPersonData。
+    private func personData(row: PersonWithCountsRow) throws -> PersonData {
+        PersonData(
+            id: row.person.id,
+            name: row.person.name,
+            keywords: parseKeywordsJSON(row.person.keywords),
+            thumbnailBase64: row.person.thumbnailBase64,
+            thumbnailPath: row.person.thumbnailPath,
+            notes: row.person.notes,
+            matchThreshold: row.person.matchThreshold,
+            photoCount: row.photoCount,
+            sessionCount: row.sessionCount,
+            createdAt: row.person.createdAt,
+            updatedAt: row.person.updatedAt
+        )
+    }
+
+    /// TS person.ipc.ts 的 PersonPhotoItem 映射（faceBbox JSON.parse 兜底 []）。
+    private func personPhotoItem(_ detail: PersonPhotoDetail) -> PersonPhotoItem {
+        let bbox = (try? GatherCore.JSONValue.parse(detail.photo.faceBbox))?
+            .arrayElements?.compactMap(\.numberValue) ?? []
+        return PersonPhotoItem(
+            photoId: detail.photo.photoId,
+            sessionId: detail.photo.sessionId,
+            sessionName: detail.sessionName,
+            filename: detail.filename,
+            filepath: detail.filepath,
+            faceBbox: bbox,
+            confidence: detail.photo.confidence
+        )
+    }
+
+    /// TS person.ipc.ts update 的 fields 解析（仅传入字段参与更新）。
+    private func parsePersonUpdateFields(_ params: [String: GatherCore.JSONValue]) throws -> PersonUpdateFields {
+        PersonUpdateFields(
+            name: try optionalString(params, "name")?.trimmingCharacters(in: .whitespacesAndNewlines),
+            keywords: try optionalStringArray(params, "keywords"),
+            notes: try optionalString(params, "notes"),
+            matchThreshold: try optionalNumber(params, "matchThreshold")
+        )
+    }
+
+    /// TS WritebackOptions（fkw.preview 的 options ?? {}）。
+    private func parseWritebackOptions(_ value: GatherCore.JSONValue?) throws -> FaceKwWritebackOptions {
+        guard let value else { return FaceKwWritebackOptions() }
+        guard let object = value.objectValue else { return FaceKwWritebackOptions() }
+        return FaceKwWritebackOptions(
+            createAlbums: object["createAlbums"]?.boolValue,
+            addPrefix: object["addPrefix"]?.boolValue,
+            markUngrouped: object["markUngrouped"]?.boolValue,
+            writeIPTC: object["writeIPTC"]?.boolValue
+        )
+    }
+
+    /// TS face-kw.ipc.ts:223 `(params.items ?? [])` —— 非数组抛 FKW_ITEMS_INVALID。
+    private func parseFaceKwWritebackItems(_ value: GatherCore.JSONValue?) throws -> [FaceKwWritebackItem]? {
+        guard let value else { return nil }
+        guard let items = value.arrayElements else {
+            throw BridgeError.badParams("FKW_ITEMS_INVALID")
+        }
+        return try items.map { item in
+            try decodeJSON(FaceKwWritebackItem.self, from: item)
+        }
+    }
+
+    /// TS metadata.ipc.ts `(params.tags ?? {})` —— 非对象按空处理（TS 强转）。
+    private func parseMetadataTags(_ value: GatherCore.JSONValue?) throws -> MetadataTags {
+        guard let value, let object = value.objectValue else { return MetadataTags() }
+        return try decodeJSON(MetadataTags.self, from: .object(object))
+    }
+
+    // MARK: culling.* 参数解析（TS 源 culling.ipc.ts）
+
+    /// TS parseFilters（culling.ipc.ts:22-75）：字段白名单 + 逐字段校验
+    /// （ADR-017 internal-invariant diagnostics，消息与 TS 逐字一致）。
+    private func parseCullingFilters(_ value: GatherCore.JSONValue?) throws -> CullingFilters? {
+        guard let value else { return nil }
+        guard let object = value.objectValue else {
+            throw BridgeError.badParams("filters must be an object")
+        }
+        var filters = CullingFilters()
+        if let raw = object["unreviewedOnly"] {
+            guard raw.boolValue != nil else {
+                throw BridgeError.badParams("unreviewedOnly must be a boolean")
+            }
+            filters.unreviewedOnly = raw.boolValue
+        }
+        if let raw = object["ratings"] {
+            guard let ratings = raw.arrayElements,
+                  ratings.allSatisfy({ value in
+                      guard let number = value.numberValue, number.isFinite else { return false }
+                      return number.rounded() == number && (0...5).contains(number)
+                  }) else {
+                throw BridgeError.badParams("ratings must contain integers from 0 to 5")
+            }
+            filters.ratings = ratings.compactMap(\.numberValue)
+        }
+        if let raw = object["pickStates"] {
+            guard let states = raw.arrayElements,
+                  states.allSatisfy({ $0.stringValue.flatMap(PickState.init(rawValue:)) != nil }) else {
+                throw BridgeError.badParams("pickStates contains an invalid state")
+            }
+            filters.pickStates = states.compactMap { $0.stringValue.flatMap(PickState.init(rawValue:)) }
+        }
+        if let raw = object["colorLabels"] {
+            guard let labels = raw.arrayElements,
+                  labels.allSatisfy({ $0.stringValue.flatMap(CaptureOneColorLabel.init(rawValue:)) != nil }) else {
+                throw BridgeError.badParams("colorLabels contains an invalid label")
+            }
+            filters.colorLabels = labels.compactMap { $0.stringValue.flatMap(CaptureOneColorLabel.init(rawValue:)) }
+        }
+        if let raw = object["qualityStatus"] {
+            guard let string = raw.stringValue,
+                  let status = CullingFilterQualityStatus(rawValue: string) else {
+                throw BridgeError.badParams("qualityStatus is invalid")
+            }
+            filters.qualityStatus = status
+        }
+        if let raw = object["metadataConflictOnly"] {
+            guard raw.boolValue != nil else {
+                throw BridgeError.badParams("metadataConflictOnly must be a boolean")
+            }
+            filters.metadataConflictOnly = raw.boolValue
+        }
+        return filters
+    }
+
+    /// TS `params.patch as CullingUpdatePatch`（TS 为运行时空转，非法值由服务的
+    /// validatePatch 拒绝）—— 取值并复用 validatePatch 的逐字错误消息。
+    private func parseCullingUpdatePatch(_ value: GatherCore.JSONValue?) throws -> CullingUpdatePatch {
+        guard let object = value?.objectValue else {
+            throw BridgeError.badParams("patch must be an object")
+        }
+        var patch = CullingUpdatePatch()
+        if let raw = object["rating"] {
+            guard let number = raw.numberValue, number.isFinite,
+                  number.rounded() == number, (0...5).contains(number) else {
+                throw BridgeError.badParams("rating must be an integer from 0 to 5")
+            }
+            patch.rating = number
+        }
+        if let raw = object["pickState"] {
+            guard let string = raw.stringValue,
+                  let state = PickState(rawValue: string) else {
+                throw BridgeError.badParams("Invalid pickState")
+            }
+            patch.pickState = state
+        }
+        if let raw = object["colorLabel"] {
+            guard let string = raw.stringValue,
+                  let label = CaptureOneColorLabel(rawValue: string) else {
+                throw BridgeError.badParams("Invalid colorLabel")
+            }
+            patch.colorLabel = label
+        }
+        return patch
+    }
+
+    /// JSONValue → Codable（JSONDecoder 往返；解码失败为契约漂移，抛原始错误）。
+    private func decodeJSON<T: Decodable>(_ type: T.Type, from value: GatherCore.JSONValue) throws -> T {
+        try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
+    }
+
+    /// TS similarity.ipc.ts validateAssignments（ADR-017 内部不变式校验；
+    /// normalizeKeywords 对非字符串元素静默丢弃）。
+    private func validateSimilarityAssignments(_ value: GatherCore.JSONValue?) throws -> [SimilarityKeywordAssignment] {
+        guard let items = value?.arrayElements, !items.isEmpty else {
+            throw BridgeError.badParams("SIM_WRITEBACK_EMPTY")
+        }
+        return try items.map { item in
+            guard let object = item.objectValue else {
+                throw BridgeError.badParams("SIM_ASSIGNMENT_INVALID")
+            }
+            guard let groupId = object["groupId"]?.numberValue,
+                  groupId.rounded() == groupId,
+                  let rawKeywords = object["keywords"]?.arrayElements
+            else {
+                throw BridgeError.badParams("SIM_WRITEBACK_INVALID_ITEM")
+            }
+            var seen = Set<String>()
+            let keywords = rawKeywords.compactMap(\.stringValue)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
+            guard !keywords.isEmpty else {
+                throw BridgeError.badParams("SIM_WRITEBACK_INVALID_ITEM")
+            }
+            return SimilarityKeywordAssignment(groupId: Int(groupId), keywords: keywords)
+        }
+    }
+
+    /// TS similarity.ipc.ts buildKeywordPreview（50-91 行）。
+    private func buildSimilarityKeywordPreview(
+        sessionId: String,
+        assignments: [SimilarityKeywordAssignment],
+        threshold: Int?
+    ) async throws -> GatherCore.JSONValue {
+        let result = try similarityService.getResult(sessionId: sessionId, threshold: threshold)
+        guard let result else {
+            throw BridgeError.badParams(threshold == nil ? "SIM_ANALYSIS_MISSING" : "SIM_THRESHOLD_NO_RESULTS")
+        }
+        let plan = try buildSimilarityKeywordPlan(
+            groups: result.groups,
+            assignments: assignments.map { (groupId: $0.groupId, keywords: $0.keywords) }
+        )
+        let preview = try await writebackService.preview(sessionId: sessionId, module: "similarity")
+        let selectedItems = preview.items
+            .filter { plan.keywordsBySidecar[$0.xmpPath] != nil }
+            .map { item -> WritebackItem in
+                var merged = item
+                merged.keywords = orderedUnion(
+                    item.keywords,
+                    plan.keywordsBySidecar[item.xmpPath] ?? []
+                )
+                return merged
+            }
+        try writebackService.persistKeywords(items: selectedItems)
+        return .object([
+            "items": try .array(selectedItems.map { try GatherCore.JSONValue(from: $0) }),
+            "totalCount": .number(Double(selectedItems.count)),
+            "affectedPhotos": .number(Double(plan.affectedPaths.count)),
+        ])
+    }
+
+    /// TS filter.ipc.ts SmartAlbumDetailData（album.create / album.get）。
+    private func albumDetailData(row: SmartAlbumRow) throws -> SmartAlbumDetailData {
+        let criteria = try decodeJSON(FilterGroup.self, from: GatherCore.JSONValue.parse(row.filterCriteria))
+        return SmartAlbumDetailData(
+            id: row.id,
+            schemaVersion: row.schemaVersion,
+            name: row.name,
+            description: row.description,
+            filterCriteria: criteria,
+            sortBy: row.sortBy,
+            sortOrder: row.sortOrder,
+            icon: row.icon,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            photoCount: try filterEngine.countGlobally(criteria: criteria)
+        )
+    }
+
+    /// TS `[...new Set([...a, ...b])]`（sim.preview_writeback 关键词合并）。
+    private func orderedUnion(_ a: [String], _ b: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in a + b where seen.insert(value).inserted {
+            result.append(value)
+        }
+        return result
+    }
+
     // MARK: 错误消息
 
     /// 错误 message 保持 GatherErrorCode 字符串（renderer translateError 映射）。
@@ -940,6 +2552,24 @@ public final class SessionCommandRouter: CommandRouter {
         if let duplicateError = error as? DuplicateServiceError {
             return duplicateError.description
         }
+        if let faceKwError = error as? FaceKwServiceError { return faceKwError.description }
+        if let templateError = error as? TemplateServiceError { return templateError.description }
+        if let qualityError = error as? QualityServiceError { return qualityError.description }
+        if let indexerError = error as? IndexerServiceError { return indexerError.description }
+        if let writebackError = error as? WritebackServiceError { return writebackError.description }
+        if let metadataSyncError = error as? MetadataSyncError { return metadataSyncError.description }
+        if let metadataMutationError = error as? MetadataMutationError {
+            return metadataMutationError.description
+        }
+        if let metadataServiceError = error as? MetadataServiceError {
+            return metadataServiceError.description
+        }
+        if let cullingError = error as? CullingServiceError { return cullingError.description }
+        // 仓库层直接抛出的 DBError.message（TS 侧 throw new Error(code) 的
+        // 仓库等价物，如 ASSET_LINK_CANDIDATE_NOT_FOUND）逐字透传。
+        if let dbError = error as? DBError, case .message(let message) = dbError {
+            return message
+        }
         // JobService.waitForResult 失败终态：message 即 TS errorMessage
         // （executor 抛错经 String(describing:) 记录，错误枚举 description 对齐 TS）。
         if case JobServiceError.jobFailed(_, let message) = error { return message }
@@ -947,6 +2577,25 @@ public final class SessionCommandRouter: CommandRouter {
         let nsError = error as NSError
         return nsError.userInfo[NSLocalizedDescriptionKey] as? String
             ?? nsError.localizedDescription
+    }
+}
+
+/// awaitSync 的信号量结果盒（@unchecked Sendable：跨线程一次性写入）。
+private final class SyncAwaitBox<T>: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var result: Result<T, Error>?
+
+    func complete(_ result: Result<T, Error>) {
+        self.result = result
+        semaphore.signal()
+    }
+
+    func wait() throws -> T {
+        semaphore.wait()
+        guard let result else {
+            throw BridgeError.badParams("AWAIT_SYNC_INTERNAL")
+        }
+        return try result.get()
     }
 }
 

@@ -34,7 +34,9 @@ public final class JobAbortSignal {
         handlers.forEach { $0() }
     }
 
-    func addHandler(_ handler: @escaping () -> Void) {
+    /// TS AbortSignal.addEventListener（abort 监听；宿主 executor 用于把
+    /// job 取消传播给服务的自持 controller，如 fkw.analyze）。
+    public func addHandler(_ handler: @escaping () -> Void) {
         lock.lock()
         defer { lock.unlock() }
         if _aborted {

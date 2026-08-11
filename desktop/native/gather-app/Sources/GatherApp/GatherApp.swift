@@ -14,13 +14,22 @@ import GatherCore
 struct GatherApp: App {
     @State private var host: WebViewHost?
     @State private var provider: LiveDashboardDataProvider?
+    @State private var libraryProvider: LiveLibraryDataProvider?
+    @State private var galleryProvider: LiveGalleryDataProvider?
+    @State private var similarityProvider: LiveSimilarityDataProvider?
     @State private var dbPath: String?
 
     var body: some Scene {
         WindowGroup {
             Group {
-                if let host, let provider {
-                    RootView(host: host, provider: provider)
+                if let host, let provider, let libraryProvider, let galleryProvider, let similarityProvider {
+                    RootView(
+                        host: host,
+                        provider: provider,
+                        libraryProvider: libraryProvider,
+                        galleryProvider: galleryProvider,
+                        similarityProvider: similarityProvider
+                    )
                 } else {
                     Text("初始化中…")
                         .frame(minWidth: 1200, minHeight: 800)
@@ -55,11 +64,19 @@ struct GatherApp: App {
                 workspaceStatusService: router.workspaceStatusService,
                 jobService: router.jobService
             )
+            // 3.2/3.3 页面 provider：经路由直连（photo.list_page/filter.*/sim.*
+            // 装配形状以路由为唯一事实源）。
+            let libraryProvider = LiveLibraryDataProvider(router: router)
+            let galleryProvider = LiveGalleryDataProvider(router: router)
+            let similarityProvider = LiveSimilarityDataProvider(router: router)
             let rendererDir = Self.resolveRendererDir()
             let host = WebViewHost(rendererDir: rendererDir, router: router)
             await MainActor.run {
                 self.host = host
                 self.provider = provider
+                self.libraryProvider = libraryProvider
+                self.galleryProvider = galleryProvider
+                self.similarityProvider = similarityProvider
                 self.dbPath = dbURL.path
             }
         } catch {
