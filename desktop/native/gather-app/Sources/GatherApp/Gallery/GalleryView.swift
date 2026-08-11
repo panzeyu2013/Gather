@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherApp/Gallery/GalleryView.swift
-// Phase 3.2 Gallery（工作区浏览）：SwiftUI 页面（宿主内直连 GatherCore，不走 WKWebView）。
+// Phase 3.2 Gallery（工作区浏览）：SwiftUI 页面（宿主内直连 GatherCore）。
 // TS 源: desktop/src/renderer/pages/SessionDetail/Gallery.tsx（工具栏/选择栏/
 //       justified 网格/哨兵分页/变体徽标）+ pages/SessionDetail/index.tsx（页签）
 // 中文文案硬编码（项目 i18n 于 3.6 收尾，本阶段对齐 TS 默认语言 zh-CN）。
@@ -7,9 +7,9 @@ import SwiftUI
 import AppKit
 import GatherCore
 
-/// 工作区页签（对齐 SessionDetail/index.tsx 的 NavLink 六项；浏览=本页、
-/// 相似度=SwiftUI 页，其余走 WKWebView）。
-enum SessionWebTab: String, CaseIterable, Identifiable {
+/// 工作区页签（对齐 SessionDetail/index.tsx 的 NavLink；全部由 SwiftUI 承载）。
+enum SessionTab: String, CaseIterable, Identifiable {
+    case control = "control"
     case faceKw = "face-kw"
     case duplicates
     case culling
@@ -19,6 +19,7 @@ enum SessionWebTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .control: return "控制中心"
         case .faceKw: return "人脸"
         case .duplicates: return "重复"
         case .culling: return "挑片"
@@ -31,7 +32,7 @@ struct GalleryView: View {
     @Bindable var viewModel: GalleryViewModel
     let onBack: () -> Void
     let onOpenSimilarity: (String) -> Void
-    let onOpenWebTab: (String, SessionWebTab) -> Void
+    let onOpenTab: (String, SessionTab) -> Void
 
     /// TS: DENSITY_OPTIONS（行高密度）。
     private static let densityOptions: [(value: Double, label: String)] = [
@@ -104,9 +105,9 @@ struct GalleryView: View {
                 tabButton(title: "相似度", isActive: false) {
                     onOpenSimilarity(viewModel.sessionId)
                 }
-                ForEach(SessionWebTab.allCases) { tab in
+                ForEach(SessionTab.allCases) { tab in
                     tabButton(title: tab.title, isActive: false) {
-                        onOpenWebTab(viewModel.sessionId, tab)
+                        onOpenTab(viewModel.sessionId, tab)
                     }
                 }
             }
@@ -338,6 +339,9 @@ private struct LightboxView: View {
     let onClose: () -> Void
 
     @State private var index: Int
+    @State private var scale = 1.0
+    @State private var gestureScale = 1.0
+    @State private var offset = CGSize.zero
 
     init(photos: [GalleryPhotoData], initialIndex: Int, onClose: @escaping () -> Void) {
         self.photos = photos
@@ -372,6 +376,25 @@ private struct LightboxView: View {
                         preview: true
                     )
                     .frame(width: geometry.size.width, height: geometry.size.height)
+                    .scaleEffect(scale)
+                    .offset(offset)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                scale = min(5, max(0.5, gestureScale * value))
+                            }
+                            .onEnded { _ in
+                                gestureScale = scale
+                                if scale <= 1 { offset = .zero }
+                            }
+                    )
+                    .simultaneousGesture(
+                        DragGesture()
+                            .onChanged { value in
+                                guard scale > 1 else { return }
+                                offset = value.translation
+                            }
+                    )
                 }
                 .background(Color.black.opacity(0.9))
                 .clipped()
@@ -385,13 +408,30 @@ private struct LightboxView: View {
                     }
                     Spacer()
                     Button {
+                        scale = max(0.5, scale - 0.25)
+                        gestureScale = scale
+                        if scale <= 1 { offset = .zero }
+                    } label: { Image(systemName: "minus.magnifyingglass") }
+                    Text("\(Int(scale * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 44)
+                    Button {
+                        scale = min(5, scale + 0.25)
+                        gestureScale = scale
+                    } label: { Image(systemName: "plus.magnifyingglass") }
+                    Button("重置") {
+                        resetTransform()
+                    }
+                    Button {
                         index = max(0, index - 1)
+                        resetTransform()
                     } label: {
                         Image(systemName: "chevron.left")
                     }
                     .disabled(index == 0)
                     Button {
                         index = min(photos.count - 1, index + 1)
+                        resetTransform()
                     } label: {
                         Image(systemName: "chevron.right")
                     }
@@ -402,6 +442,12 @@ private struct LightboxView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 480)
+    }
+
+    private func resetTransform() {
+        scale = 1
+        gestureScale = 1
+        offset = .zero
     }
 
     private func metadataItem(_ title: String, _ value: String) -> some View {

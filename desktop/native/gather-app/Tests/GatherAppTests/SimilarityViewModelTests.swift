@@ -93,6 +93,24 @@ private final class StubSimilarityProvider: SimilarityDataProvider {
         jobs
     }
 
+    func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) throws -> WritebackPreview {
+        WritebackPreview(items: [], totalCount: 0, affectedPhotos: 0)
+    }
+
+    func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult {
+        WritebackResult(totalAffected: 0, written: 0, failed: 0, skipped: 0, errors: [], failedItems: [], report: "")
+    }
+
+    func retryFailedWriteback(sessionId: String) async throws -> WritebackResult {
+        WritebackResult(totalAffected: 0, written: 0, failed: 0, skipped: 0, errors: [], failedItems: [], report: "")
+    }
+
+    func confirmSync(sessionId: String) throws {}
+
+    func cleanupWriteback(sessionId: String) async throws -> CleanupResult {
+        CleanupResult(deletedCount: 0, errors: [])
+    }
+
     static func result(
         totalGroups: Int = 2,
         totalUngrouped: Int = 1,

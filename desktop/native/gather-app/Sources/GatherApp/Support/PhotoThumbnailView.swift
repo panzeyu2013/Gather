@@ -1,10 +1,8 @@
 // desktop/native/gather-app/Sources/GatherApp/Support/PhotoThumbnailView.swift
-// 3.2/3.3 共享缩略图视图：gather-image:// scheme 的 SwiftUI 等价物。
+// 3.2/3.3 共享缩略图视图：原生 RAWDecoder 的 SwiftUI 适配。
 // TS 源: desktop/src/renderer/api/image.ts thumbnailUrl(path, size)
-// 差异说明：WKWebView 的 <img src="gather-image://thumbnail?path=&size=">
-// 由 GatherImageSchemeHandler 直出 JPEG；SwiftUI 的 AsyncImage 走 URLSession，
-// 不支持自定义 scheme，故同进程直连 RAWDecoder（语义等价：库内路径 →
-// 解码 JPEG → NSImage，失败显示占位符）。NSCache 做进程内内存缓存。
+// 页面同进程直连 RAWDecoder（库内路径 → 解码 JPEG → NSImage，失败显示占位符）。
+// NSCache 做进程内内存缓存。
 import SwiftUI
 import AppKit
 import GatherCore

@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherApp/Dashboard/DashboardView.swift
-// Phase 3.1 Dashboard：SwiftUI 页面（宿主内直连 GatherCore，不走 WKWebView）。
+// Phase 3.1 Dashboard：SwiftUI 页面（宿主内直连 GatherCore）。
 // TS 源: desktop/src/renderer/pages/Dashboard/index.tsx + pages/Jobs/index.tsx
 // 中文文案硬编码（项目 i18n 于 3.6 收尾，本阶段对齐 TS 默认语言 zh-CN）。
 import SwiftUI
@@ -13,6 +13,7 @@ struct DashboardView: View {
     @State private var showNewSheet = false
     @State private var deleteTarget: SessionData?
     @State private var showHistory = false
+    @State private var pendingFolderPath = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -49,8 +50,17 @@ struct DashboardView: View {
             await viewModel.loadAll()
             viewModel.startAutoRefresh()
         }
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuNewWorkspace)) { _ in
+            pendingFolderPath = ""
+            showNewSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuImportFolder)) { notification in
+            guard let directory = notification.object as? URL else { return }
+            pendingFolderPath = directory.path
+            showNewSheet = true
+        }
         .sheet(isPresented: $showNewSheet) {
-            NewSessionSheet(viewModel: viewModel)
+            NewSessionSheet(viewModel: viewModel, initialFolderPath: pendingFolderPath)
         }
         .confirmationDialog(
             "删除工作区",
@@ -413,7 +423,7 @@ private struct JobRowView: View {
     }
 }
 
-// MARK: - 新建工作区（TS Dashboard Dialog；Capture One 导入后续阶段接线）
+// MARK: - 新建工作区（目录校验 + metadata.scan 一跳入队）
 
 private struct NewSessionSheet: View {
     @Bindable var viewModel: DashboardViewModel
@@ -422,6 +432,12 @@ private struct NewSessionSheet: View {
     @State private var name = ""
     @State private var nameEdited = false
     @State private var folderPath = ""
+
+    init(viewModel: DashboardViewModel, initialFolderPath: String = "") {
+        self.viewModel = viewModel
+        _folderPath = State(initialValue: initialFolderPath)
+        _name = State(initialValue: initialFolderPath.isEmpty ? "" : URL(fileURLWithPath: initialFolderPath).lastPathComponent)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -441,7 +457,7 @@ private struct NewSessionSheet: View {
                     .font(.callout)
                     .foregroundStyle(.red)
             }
-            Text("本地文件夹导入将创建工作区；照片导入与后台索引（index.scan）及 Capture One 导入将在后续阶段接线。")
+            Text("创建后会立即启动照片索引；索引进度和失败重试可在任务中心查看。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {

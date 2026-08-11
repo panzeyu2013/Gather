@@ -7,9 +7,10 @@
 // 差异说明（有意）：
 // - TS 的 react-query 缓存 + criteriaKey/page 联动 → 显式防抖提交
 //   （search/keyword/directory/person 四个自由文本字段 300ms，其余字段立即）；
-// - 智能相册（album.* 未接线）与资产关联/离线卷侧栏（assets.* 未接线）不展示；
+// - 智能相册、RAW/JPEG 资产关联、孤立 XMP 与离线卷操作均通过同一命令路由展示；
 // - 分页为 offset 形态（filter.photos_global 的 limit/offset 钳制在路由内）。
 import Foundation
+import AppKit
 import GatherCore
 
 /// TS: Library/index.tsx 筛选表单状态（useState 组，字符串语义对齐
@@ -97,6 +98,77 @@ public protocol LibraryDataProvider {
         limit: Int,
         offset: Int
     ) throws -> (photos: [GlobalPhotoResult], total: Int)
+
+    /// TS: albumApi.list / getPhotos / create / update / delete。
+    /// 默认实现保留测试 stub 与最小第三方 provider 的兼容性；真实 provider
+    /// 必须覆盖这些方法，避免 Library 页面静默丢失智能相册能力。
+    func listAlbums() throws -> [SmartAlbumData]
+    func albumPhotos(
+        albumId: String,
+        limit: Int,
+        offset: Int
+    ) throws -> (photos: [GlobalPhotoResult], total: Int)
+    func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData
+    func updateAlbum(albumId: String, criteria: FilterGroup) throws
+    func deleteAlbum(albumId: String) throws
+
+    /// TS: assetApi.candidates / acceptCandidate / rejectCandidate / volumes / relinkRoot。
+    func listAssetCandidates() throws -> [AssetLinkCandidateData]
+    func updateAssetCandidate(candidateId: String, accept: Bool) throws
+    func listAssetVolumes() throws -> [AssetVolumeData]
+    func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int
+
+    /// TS: metadataApi.orphans / resolveOrphan。
+    func listMetadataOrphans() throws -> [MetadataOrphan]
+    func resolveMetadataOrphan(
+        xmpPath: String,
+        action: MetadataOrphanAction
+    ) async throws -> [MetadataOrphan]
+}
+
+public extension LibraryDataProvider {
+    func listAlbums() throws -> [SmartAlbumData] { [] }
+
+    func albumPhotos(
+        albumId: String,
+        limit: Int,
+        offset: Int
+    ) throws -> (photos: [GlobalPhotoResult], total: Int) {
+        ([], 0)
+    }
+
+    func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData {
+        throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
+    }
+
+    func updateAlbum(albumId: String, criteria: FilterGroup) throws {
+        throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
+    }
+
+    func deleteAlbum(albumId: String) throws {
+        throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
+    }
+
+    func listAssetCandidates() throws -> [AssetLinkCandidateData] { [] }
+
+    func updateAssetCandidate(candidateId: String, accept: Bool) throws {
+        throw NativeCommandError.failed("ASSET_LINK_NOT_SUPPORTED")
+    }
+
+    func listAssetVolumes() throws -> [AssetVolumeData] { [] }
+
+    func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int {
+        throw NativeCommandError.failed("ASSET_RELINK_NOT_SUPPORTED")
+    }
+
+    func listMetadataOrphans() throws -> [MetadataOrphan] { [] }
+
+    func resolveMetadataOrphan(
+        xmpPath: String,
+        action: MetadataOrphanAction
+    ) async throws -> [MetadataOrphan] {
+        throw NativeCommandError.failed("METADATA_ORPHAN_NOT_SUPPORTED")
+    }
 }
 
 /// 真实实现：同进程直连 SessionCommandRouter（photo.list_page 等装配形状
@@ -129,6 +201,98 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         let total = Int(object["total"]?.numberValue ?? 0)
         return (photos, total)
     }
+
+    public func listAlbums() throws -> [SmartAlbumData] {
+        let response = try router.execute("album.list", params: [:])
+        return try response.decoded(as: [SmartAlbumData].self)
+    }
+
+    public func albumPhotos(
+        albumId: String,
+        limit: Int,
+        offset: Int
+    ) throws -> (photos: [GlobalPhotoResult], total: Int) {
+        let response = try router.execute("album.get_photos", params: [
+            "albumId": .string(albumId),
+            "limit": .number(Double(limit)),
+            "offset": .number(Double(offset)),
+        ])
+        let object = response.objectValue ?? [:]
+        let photos: [GlobalPhotoResult] = try (object["photos"] ?? .array([])).decoded(as: [GlobalPhotoResult].self)
+        let total = Int(object["total"]?.numberValue ?? 0)
+        return (photos, total)
+    }
+
+    public func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData {
+        let response = try router.execute("album.create", params: [
+            "name": .string(name),
+            "criteria": try JSONValue(from: criteria),
+        ])
+        return try response.decoded(as: SmartAlbumData.self)
+    }
+
+    public func updateAlbum(albumId: String, criteria: FilterGroup) throws {
+        _ = try router.execute("album.update", params: [
+            "albumId": .string(albumId),
+            "criteria": try JSONValue(from: criteria),
+        ])
+    }
+
+    public func deleteAlbum(albumId: String) throws {
+        _ = try router.execute("album.delete", params: [
+            "albumId": .string(albumId),
+            "confirmed": .bool(true),
+        ])
+    }
+
+    public func listAssetCandidates() throws -> [AssetLinkCandidateData] {
+        let response = try router.execute("assets.candidates", params: [:])
+        return try response.decoded(as: [AssetLinkCandidateData].self)
+    }
+
+    public func updateAssetCandidate(candidateId: String, accept: Bool) throws {
+        _ = try router.execute(
+            accept ? "assets.accept_candidate" : "assets.reject_candidate",
+            params: [
+                "candidateId": .string(candidateId),
+                "confirmed": .bool(true),
+            ]
+        )
+    }
+
+    public func listAssetVolumes() throws -> [AssetVolumeData] {
+        let response = try router.execute("assets.volumes", params: [:])
+        return try response.decoded(as: [AssetVolumeData].self)
+    }
+
+    public func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int {
+        let response = try router.execute("assets.relink_root", params: [
+            "oldRoot": .string(oldRoot),
+            "newRoot": .string(newRoot),
+            "confirmed": .bool(true),
+        ])
+        return Int(response.numberValue ?? 0)
+    }
+
+    public func listMetadataOrphans() throws -> [MetadataOrphan] {
+        let response = try router.execute("metadata.orphans", params: [:])
+        return try response.decoded(as: [MetadataOrphan].self)
+    }
+
+    public func resolveMetadataOrphan(
+        xmpPath: String,
+        action: MetadataOrphanAction
+    ) async throws -> [MetadataOrphan] {
+        let response = try await NativeCommandClient(router: router).executeAsync(
+            "metadata.resolve_orphan",
+            params: [
+                "xmpPath": .string(xmpPath),
+                "action": .string(action.rawValue),
+                "confirmed": .bool(true),
+            ]
+        )
+        return try response.decoded(as: [MetadataOrphan].self)
+    }
 }
 
 /// 全局图库视图模型：跨工作区照片浏览（filter.photos_global 分页 + 防抖）。
@@ -160,10 +324,17 @@ public final class LibraryViewModel {
     private(set) public var page = 0
     private(set) public var isFetching = false
     private(set) public var actionError: String?
+    private(set) public var albums: [SmartAlbumData] = []
+    private(set) public var assetCandidates: [AssetLinkCandidateData] = []
+    private(set) public var metadataOrphans: [MetadataOrphan] = []
+    private(set) public var assetVolumes: [AssetVolumeData] = []
+    private(set) public var isSupportBusy = false
     /// 筛选表单（视图双向绑定；字段变更须经 onFilterChanged 提交）。
     public var filter = LibraryFilterState()
     /// 选中工作区（'' = 全部工作区，对齐 TS sessionFilter）。
     public var sessionFilter = ""
+    /// 选中智能相册；nil 表示全部照片（TS selectedAlbum）。
+    private(set) public var selectedAlbumId: String?
 
     /// debounceDelay 测试可注入（默认 300ms，对齐 TS useDebouncedValue）。
     public init(provider: LibraryDataProvider, debounceDelay: Duration = .milliseconds(300)) {
@@ -176,12 +347,116 @@ public final class LibraryViewModel {
     func load() async {
         phase = .loading
         await reloadSessions()
+        reloadSupport()
         await reload()
     }
 
     func reloadSessions() async {
         do {
             sessions = try provider.listSessions()
+        } catch {
+            actionError = Self.message(for: error)
+        }
+    }
+
+    /// 加载 Library 页面除照片分页外的三组支持数据。
+    /// 任一组失败不会阻塞图库主查询，但会保留可见错误，避免静默降级。
+    public func reloadSupport() {
+        do { albums = try provider.listAlbums() }
+        catch { actionError = Self.message(for: error) }
+        do { assetCandidates = try provider.listAssetCandidates() }
+        catch { actionError = Self.message(for: error) }
+        do { metadataOrphans = try provider.listMetadataOrphans() }
+        catch { actionError = Self.message(for: error) }
+        do { assetVolumes = try provider.listAssetVolumes() }
+        catch { actionError = Self.message(for: error) }
+    }
+
+    /// 智能相册选择沿用 TS 的页码归零和 query key 语义。
+    public func selectAlbum(_ albumId: String?) {
+        guard selectedAlbumId != albumId else { return }
+        selectedAlbumId = albumId
+        page = 0
+        fetchTask?.cancel()
+        fetchTask = Task { [weak self] in
+            await self?.fetchPage(0, isFirst: true)
+        }
+    }
+
+    public func createAlbum(name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await performSupportMutation {
+            _ = try self.provider.createAlbum(
+                name: trimmed,
+                criteria: buildLibraryCriteria(self.committed)
+            )
+            self.albums = try self.provider.listAlbums()
+        }
+    }
+
+    public func updateSelectedAlbum() async {
+        guard let albumId = selectedAlbumId else { return }
+        await performSupportMutation {
+            try self.provider.updateAlbum(
+                albumId: albumId,
+                criteria: buildLibraryCriteria(self.committed)
+            )
+            self.albums = try self.provider.listAlbums()
+            await self.reload()
+        }
+    }
+
+    public func deleteSelectedAlbum() async {
+        guard let albumId = selectedAlbumId else { return }
+        await performSupportMutation {
+            try self.provider.deleteAlbum(albumId: albumId)
+            self.selectedAlbumId = nil
+            self.albums = try self.provider.listAlbums()
+            await self.reload()
+        }
+    }
+
+    public func updateCandidate(_ candidate: AssetLinkCandidateData, accept: Bool) async {
+        await performSupportMutation {
+            try self.provider.updateAssetCandidate(candidateId: candidate.id, accept: accept)
+            self.assetCandidates = try self.provider.listAssetCandidates()
+            self.assetVolumes = try self.provider.listAssetVolumes()
+            await self.reload()
+        }
+    }
+
+    public func resolveOrphan(_ orphan: MetadataOrphan, action: MetadataOrphanAction) async {
+        await performSupportMutation {
+            self.metadataOrphans = try await self.provider.resolveMetadataOrphan(
+                xmpPath: orphan.xmpPath,
+                action: action
+            )
+        }
+    }
+
+    /// 让用户选择新根目录后执行受确认保护的 relink_root。
+    public func relinkVolume(root oldRoot: String) async {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择新目录"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        await performSupportMutation {
+            _ = try self.provider.relinkAssetRoot(oldRoot: oldRoot, newRoot: url.path)
+            self.assetVolumes = try self.provider.listAssetVolumes()
+            await self.reload()
+        }
+    }
+
+    private func performSupportMutation(_ operation: @escaping () async throws -> Void) async {
+        guard !isSupportBusy else { return }
+        isSupportBusy = true
+        defer { isSupportBusy = false }
+        do {
+            try await operation()
+            actionError = nil
         } catch {
             actionError = Self.message(for: error)
         }
@@ -300,12 +575,21 @@ public final class LibraryViewModel {
         isFetching = true
         defer { isFetching = false }
         do {
-            let result = try provider.globalPhotos(
-                criteria: buildLibraryCriteria(committed),
-                sessionId: sessionFilter.isEmpty ? nil : sessionFilter,
-                limit: Self.pageSize,
-                offset: target * Self.pageSize
-            )
+            let result: (photos: [GlobalPhotoResult], total: Int)
+            if let selectedAlbumId {
+                result = try provider.albumPhotos(
+                    albumId: selectedAlbumId,
+                    limit: Self.pageSize,
+                    offset: target * Self.pageSize
+                )
+            } else {
+                result = try provider.globalPhotos(
+                    criteria: buildLibraryCriteria(committed),
+                    sessionId: sessionFilter.isEmpty ? nil : sessionFilter,
+                    limit: Self.pageSize,
+                    offset: target * Self.pageSize
+                )
+            }
             photos = result.photos
             total = result.total
             page = target

@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherApp/Dashboard/DashboardViewModel.swift
-// Phase 3.1 Dashboard：视图模型（服务可注入，同进程直连 GatherCore，不走 WKWebView）。
+// Phase 3.1 Dashboard：视图模型（服务可注入，同进程直连 GatherCore）。
 // TS 源: desktop/src/renderer/pages/Dashboard/index.tsx（scanJobs 种子/卡片计数文案）
 //       + pages/Jobs/index.tsx（任务面板交互）+ hooks/useWorkspaceStatus.ts（状态聚合）
 //
@@ -22,6 +22,13 @@ protocol DashboardDataProvider {
     func cancelJob(_ jobId: String) throws -> Bool
     func retryJob(_ jobId: String) throws -> Bool
     func clearCompletedJobs() throws -> Int
+    func enqueueIndexScan(sessionId: String) throws
+}
+
+extension DashboardDataProvider {
+    /// 测试 provider 不需要启动后台 worker；真实 provider 在这里接入
+    /// metadata.scan，保证“创建工作区”是创建 + 索引的一跳流程。
+    func enqueueIndexScan(sessionId: String) throws {}
 }
 
 /// 真实实现：同进程直连已移植 GatherCore 服务（与 SessionCommandRouter
@@ -46,7 +53,7 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
     }
 
     func createSession(name: String, source: String, sourcePath: String) throws -> SessionData {
-        try sessionService.createSession(name: name, source: source, sourcePath: sourcePath)
+        try sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
     }
 
     func deleteSession(_ sessionId: String) throws {
@@ -72,6 +79,15 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
 
     func clearCompletedJobs() throws -> Int {
         try jobService.clearCompleted()
+    }
+
+    func enqueueIndexScan(sessionId: String) throws {
+        _ = try jobService.create(JobCreateParams(
+            type: .metadataScan,
+            scopeType: "session",
+            scopeId: sessionId,
+            dedupeKey: "metadata.scan:\(sessionId)"
+        ))
     }
 }
 
@@ -209,14 +225,15 @@ final class DashboardViewModel {
 
     // MARK: 动作
 
-    /// 新建工作区：本地文件夹路径建 session 行（TS 一跳导入
-    /// create_from_directory 与后台索引 index.scan 后续阶段接线）。
+    /// 新建工作区：校验目录、创建 session 并立即入队 metadata.scan，
+    /// 让用户一次点击完成建库与索引启动。
     func createSession(name: String, sourcePath: String) async -> SessionData? {
         isCreating = true
         createError = nil
         defer { isCreating = false }
         do {
             let session = try provider.createSession(name: name, source: "local", sourcePath: sourcePath)
+            try provider.enqueueIndexScan(sessionId: session.id)
             lastFullRefreshAt = .distantPast
             await refreshAll()
             return session

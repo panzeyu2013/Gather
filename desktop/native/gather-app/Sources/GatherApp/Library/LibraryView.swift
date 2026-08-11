@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherApp/Library/LibraryView.swift
-// Phase 3.2 Library（全局图库）：SwiftUI 页面（宿主内直连 GatherCore，不走 WKWebView）。
+// Phase 3.2 Library（全局图库）：SwiftUI 页面（宿主内直连 GatherCore）。
 // TS 源: desktop/src/renderer/pages/Library/index.tsx（筛选面板/工具栏/卡片网格/分页）
 // 中文文案硬编码（项目 i18n 于 3.6 收尾，本阶段对齐 TS 默认语言 zh-CN）。
 import SwiftUI
@@ -11,6 +11,8 @@ struct LibraryView: View {
     let onOpenSession: (String) -> Void
 
     @State private var showAdvancedFilters = false
+    @State private var albumName = ""
+    @State private var showDeleteAlbumConfirmation = false
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
 
@@ -25,6 +27,7 @@ struct LibraryView: View {
             }
             header
             filterPanel
+            supportPanel
             Divider()
             toolbar
             content
@@ -106,10 +109,13 @@ struct LibraryView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 180)
                         .onChange(of: viewModel.filter.directory) { _, _ in viewModel.onFilterChanged() }
-                    TextField("全部存储卷", text: $viewModel.filter.volume)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 130)
-                        .onChange(of: viewModel.filter.volume) { _, _ in viewModel.onFilterChanged() }
+                    filterSelect(
+                        "全部存储卷",
+                        selection: $viewModel.filter.volume,
+                        options: viewModel.assetVolumes.map {
+                            ($0.roots.first ?? $0.volumeId, $0.volumeId)
+                        }
+                    )
                     filterSelect(
                         "全部重复状态",
                         selection: $viewModel.filter.duplicates,
@@ -135,6 +141,217 @@ struct LibraryView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
+    }
+
+    // MARK: 支持能力（TS Library sidebar：智能相册、RAW/JPEG 关联、孤立 XMP、离线卷）
+
+    private var supportPanel: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 12) {
+                smartAlbumsCard
+                    .frame(width: 280)
+                assetCandidatesCard
+                    .frame(width: 320)
+                metadataOrphansCard
+                    .frame(width: 320)
+                offlineVolumesCard
+                    .frame(width: 300)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 10)
+        }
+        .frame(maxHeight: 190)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var smartAlbumsCard: some View {
+        supportCard(title: "智能相册", systemImage: "rectangle.stack") {
+            Picker("相册", selection: Binding(
+                get: { viewModel.selectedAlbumId ?? "" },
+                set: { viewModel.selectAlbum($0.isEmpty ? nil : $0) }
+            )) {
+                Text("全部照片").tag("")
+                ForEach(viewModel.albums, id: \.id) { album in
+                    Text(album.validationError == nil ? album.name : "⚠️ (album.name)")
+                        .tag(album.id)
+                        .help(album.validationError ?? "")
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 6) {
+                TextField("新相册名称", text: $albumName)
+                    .textFieldStyle(.roundedBorder)
+                Button("创建") {
+                    let name = albumName
+                    albumName = ""
+                    Task { await viewModel.createAlbum(name: name) }
+                }
+                .disabled(albumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isSupportBusy)
+            }
+            if viewModel.selectedAlbumId != nil {
+                HStack(spacing: 8) {
+                    Button("用当前筛选更新") {
+                        Task { await viewModel.updateSelectedAlbum() }
+                    }
+                    .disabled(viewModel.isSupportBusy)
+                    Button("删除", role: .destructive) {
+                        showDeleteAlbumConfirmation = true
+                    }
+                    .disabled(viewModel.isSupportBusy)
+                }
+            }
+        }
+        .confirmationDialog(
+            "删除当前智能相册？",
+            isPresented: $showDeleteAlbumConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("删除相册", role: .destructive) {
+                Task { await viewModel.deleteSelectedAlbum() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除相册规则，不会删除照片文件。")
+        }
+    }
+
+    private var assetCandidatesCard: some View {
+        supportCard(title: "RAW/JPEG 资产关联", systemImage: "link") {
+            if viewModel.assetCandidates.isEmpty {
+                Text("暂无待处理关联候选")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(viewModel.assetCandidates.prefix(4)), id: \.id) { candidate in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(Self.basename(candidate.leftPath)) ↔ \(Self.basename(candidate.rightPath))")
+                            .font(.caption)
+                            .lineLimit(1)
+                            .help("\(candidate.leftPath)\n\(candidate.rightPath)")
+                        Text("\(candidate.status.rawValue) · 置信度 \(Int(candidate.confidence * 100))%")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            if candidate.status != .accepted {
+                                Button("接受") {
+                                    Task { await viewModel.updateCandidate(candidate, accept: true) }
+                                }
+                                .disabled(viewModel.isSupportBusy)
+                            }
+                            if candidate.status != .rejected {
+                                Button(candidate.status == .accepted ? "拆分" : "拒绝") {
+                                    Task { await viewModel.updateCandidate(candidate, accept: false) }
+                                }
+                                .disabled(viewModel.isSupportBusy)
+                            }
+                        }
+                    }
+                    if candidate.id != viewModel.assetCandidates.prefix(4).last?.id {
+                        Divider()
+                    }
+                }
+                if viewModel.assetCandidates.count > 4 {
+                    Text("还有 (viewModel.assetCandidates.count - 4) 个候选")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var metadataOrphansCard: some View {
+        supportCard(title: "孤立 XMP", systemImage: "doc.badge.ellipsis") {
+            if viewModel.metadataOrphans.isEmpty {
+                Text("没有孤立 XMP")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(viewModel.metadataOrphans.prefix(4)), id: \.xmpPath) { orphan in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(Self.basename(orphan.xmpPath))
+                            .font(.caption)
+                            .lineLimit(1)
+                            .help(orphan.xmpPath)
+                        Text(orphan.errorMessage.isEmpty ? orphan.status : "\(orphan.status) · \(orphan.errorMessage)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        HStack(spacing: 6) {
+                            if orphan.status == "pending" || orphan.status == "failed" {
+                                Button("重试") {
+                                    Task { await viewModel.resolveOrphan(orphan, action: .retry) }
+                                }
+                                .disabled(viewModel.isSupportBusy)
+                            }
+                            Button("保留 XMP") {
+                                Task { await viewModel.resolveOrphan(orphan, action: .keep) }
+                            }
+                            .disabled(viewModel.isSupportBusy)
+                            Button("恢复原片") {
+                                Task { await viewModel.resolveOrphan(orphan, action: .restore) }
+                            }
+                            .disabled(viewModel.isSupportBusy)
+                        }
+                    }
+                    if orphan.xmpPath != viewModel.metadataOrphans.prefix(4).last?.xmpPath {
+                        Divider()
+                    }
+                }
+            }
+        }
+    }
+
+    private var offlineVolumesCard: some View {
+        supportCard(title: "离线存储卷", systemImage: "externaldrive.badge.exclamationmark") {
+            let offlineVolumes = viewModel.assetVolumes.filter { $0.offlineFiles > 0 }
+            if offlineVolumes.isEmpty {
+                Text("没有需要重新关联的离线卷")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(offlineVolumes, id: \.volumeId) { volume in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(volume.roots.joined(separator: "、").isEmpty ? volume.volumeId : volume.roots.joined(separator: "、"))
+                            .font(.caption)
+                            .lineLimit(2)
+                            .help(volume.roots.joined(separator: "\n"))
+                        Text("离线文件：\(volume.offlineFiles)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        ForEach(volume.roots, id: \.self) { root in
+                            Button("重新关联此目录") {
+                                Task { await viewModel.relinkVolume(root: root) }
+                            }
+                            .disabled(viewModel.isSupportBusy)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func supportCard<Content: View>(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+            content()
+        }
+        .padding(10)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private static func basename(_ path: String) -> String {
+        URL(fileURLWithPath: path).lastPathComponent
     }
 
     private var moreFiltersLabel: String {

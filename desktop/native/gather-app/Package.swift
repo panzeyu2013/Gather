@@ -1,7 +1,7 @@
 // swift-tools-version: 5.9
-// Gather 原生宿主 app（Phase 3.0 起）。
-// SwiftUI 宿主 + WKWebView 托管残余 React 页（Strangler Fig 换壳），
-// 桥契约复用 gather-core 的 Protocol（1.1）与 HelperProtocol 信封约定。
+// Gather 原生宿主 app。
+// SwiftUI 页面与 GatherCore 同进程运行；CommandRouter 复用
+// gather-core 的 Protocol 与 HelperProtocol 信封约定。
 import PackageDescription
 
 let package = Package(
@@ -21,7 +21,18 @@ let package = Package(
             dependencies: [
                 .product(name: "GatherCore", package: "gather-core"),
             ],
-            exclude: ["Resources/renderer-dist"]
+            path: ".",
+            exclude: ["Tests", "Resources"],
+            sources: [
+                "Sources/GatherApp",
+                "Jobs",
+                "Settings",
+                "FaceKeywording",
+                "Duplicates",
+                "Culling",
+                "Export",
+                "ControlCenter",
+            ],
         ),
         .testTarget(
             name: "GatherAppTests",

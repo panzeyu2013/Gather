@@ -1,16 +1,16 @@
 // desktop/native/gather-app/Sources/GatherApp/Host/SessionCommandRouter.swift
-// Phase 3.0 宿主与桥：命令路由（渐进式接线）。
-// 已移植领域服务（GatherCore）直连；未移植命令返回 NOT_IMPLEMENTED，
-// 渲染层按 ok:false 优雅降级（页面可先展示，功能逐个点亮）。
+// Phase 3/4 宿主与桥：纯 SwiftUI 同进程命令路由。
+// 所有当前产品页面所需命令均在下方接入 GatherCore 服务；未知命令仍以
+// NOT_IMPLEMENTED 明确失败，避免把协议遗漏伪装成成功。
 //
 // 接线清单（截至 2026-08-11，对应 NATIVE-DEVELOPMENT-ANALYSIS.md §10.4/§10.6）：
 //   同步（execute）：
 //     session.* / photo.list → SessionService + PhotoRepo（3.2 服务层）
 //     workspace.status → WorkspaceStatusService（3.1 服务层）
 //     jobs.list / jobs.cancel / jobs.retry / jobs.clear_completed → JobService
-//     image.get_dimensions → RAWDecoder（2.1；注意 TS 为 paths[] 批量形态，
-//       当前按单 path 形态保留，字段名一致）
-//     face.models_status → FaceInferenceConfig 占位（2.2）
+//     image.get_dimensions / image.prioritize_thumbnail / image.preload_* →
+//       ImagePreloadService + RAWDecoder（2.1/3.6；缩略图任务走 JobService）
+//     face.models_status → FaceInferenceConfig / Vision provider 状态（2.2）
 //     settings.get_all / get / set / reset / set_language / get_ml_status
 //       → SettingsService（3.6；TS 源 settings.ipc.ts）
 //     filter.photos / photos_global / suggest → FilterEngine（3.6；
@@ -63,11 +63,7 @@
 //     culling.writeback / flush / retry_sync → CullingService（TS 源
 //       culling.ipc.ts；writeback destructive 二次兜底；bridge 白名单
 //       asyncCommands 路由到 executeAsync）
-//   未接线（依赖未移植服务，保持 NOT_IMPLEMENTED）：
-//     export.* → ExportService 未移植（preview 计划/复制管线/JPEG 转换/report
-//       为独立服务层，成本重，不内联）
-//     image.preload_thumbnails / preload_previews / prioritize_thumbnail
-//       （需 ImageService 缩略图任务编排）
+//   export.* → ExportService（预览/原图复制/JPEG-TIFF 转换/XMP/断点续作/report）
 import Foundation
 import GatherCore
 
@@ -98,6 +94,8 @@ public final class SessionCommandRouter: CommandRouter {
     private let smartAlbumRepo: SmartAlbumRepo
     /// 3.4 Culling 模块（sync/writeback 端口注入真实协调器与写回服务）。
     private let cullingService: CullingService
+    public let exportService: ExportService
+    private let imagePreloadService: ImagePreloadService
 
     public init(
         db: DBConnection,
@@ -121,7 +119,9 @@ public final class SessionCommandRouter: CommandRouter {
         metadataMutationService: MetadataMutationService,
         writebackService: WritebackService,
         smartAlbumRepo: SmartAlbumRepo,
-        cullingService: CullingService
+        cullingService: CullingService,
+        exportService: ExportService,
+        imagePreloadService: ImagePreloadService
     ) {
         self.db = db
         self.sessionService = sessionService
@@ -145,7 +145,18 @@ public final class SessionCommandRouter: CommandRouter {
         self.writebackService = writebackService
         self.smartAlbumRepo = smartAlbumRepo
         self.cullingService = cullingService
+        self.exportService = exportService
+        self.imagePreloadService = imagePreloadService
         registerExecutors()
+    }
+
+    /// Capture One 脚本成功后由宿主调用，写入持久 reload ack；页面不得在
+    /// AppleScript 失败时伪造该标记。
+    public func recordCaptureOneReloadAck(sessionId: String) throws {
+        _ = try SessionRepo(connection: db).setReloadAckedAt(
+            sessionId: sessionId,
+            iso: nowISOString()
+        )
     }
 
     /// 便捷装配：单 DB 连接构建全部已移植服务。
@@ -223,6 +234,9 @@ public final class SessionCommandRouter: CommandRouter {
             assetResolver: assetResolver
         )
         let personRepo = PersonRepo(connection: db)
+        let jobService = JobService(repo: AnalysisJobRepo(connection: db))
+        let exportService = ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
+        let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
@@ -274,7 +288,7 @@ public final class SessionCommandRouter: CommandRouter {
                 photoRepo: photoRepo,
                 outboxRepo: outboxRepo
             ),
-            jobService: JobService(repo: AnalysisJobRepo(connection: db)),
+            jobService: jobService,
             photoRepo: photoRepo,
             settingsService: settingsService,
             filterEngine: FilterEngine(connection: db),
@@ -318,7 +332,9 @@ public final class SessionCommandRouter: CommandRouter {
             metadataMutationService: metadataMutationService,
             writebackService: writebackService,
             smartAlbumRepo: SmartAlbumRepo(connection: db),
-            cullingService: cullingService
+            cullingService: cullingService,
+            exportService: exportService,
+            imagePreloadService: imagePreloadService
         )
     }
 
@@ -433,6 +449,74 @@ public final class SessionCommandRouter: CommandRouter {
                 sessionId: job.scopeId,
                 context: context
             )
+            return result
+        }
+
+        // TS image.ipc.ts：缩略图预加载是低优先级可恢复任务；ImageIO
+        // 解码失败按单张跳过，JobService 仍负责取消/心跳/终态。
+        jobService.registerExecutor(type: .thumbnailBuild) { [imagePreloadService] job, context in
+            let paths = job.checkpoint["paths"]?.arrayElements?.compactMap(\.stringValue) ?? []
+            let size = Int(job.checkpoint["size"]?.numberValue ?? 1024)
+            return try imagePreloadService.buildThumbnails(
+                paths: paths,
+                size: size,
+                signal: context.signal,
+                onProgress: { current, total in
+                    context.updateProgress(JobProgressUpdate(
+                        current: current, total: total, phase: "thumbnail.building",
+                        checkpoint: [
+                            "paths": .array(paths.map(JSONValue.string)),
+                            "size": .number(Double(size)),
+                            "nextPathIndex": .number(Double(current)),
+                        ]
+                    ))
+                }
+            )
+        }
+
+        // TS export.ipc.ts：断点状态以 checkpoint 为唯一持久化来源，
+        // 避免导出中途退出后重新生成同名文件。
+        jobService.registerExecutor(type: .exportExecute) { [exportService] job, context in
+            let options: ExportOptions = try self.decodeJSON(
+                ExportOptions.self,
+                from: job.checkpoint["options"] ?? .object([:])
+            )
+            var destinations = job.checkpoint["destinations"]?.objectValue?.reduce(into: [String: String]()) { result, item in
+                if let value = item.value.stringValue { result[item.key] = value }
+            } ?? [:]
+            var completedIds = Set(job.checkpoint["completedPhotoIds"]?.arrayElements?.compactMap(\.stringValue) ?? [])
+            var completedSnapshot = Array(completedIds)
+            let checkpoint: () -> [String: JSONValue] = {
+                [
+                    "options": (try? JSONValue(from: options)) ?? .object([:]),
+                    "destinations": .object(destinations.mapValues(JSONValue.string)),
+                    "completedPhotoIds": .array(completedSnapshot.map(JSONValue.string)),
+                ]
+            }
+            context.signal.addHandler { exportService.cancel(sessionId: job.scopeId) }
+            let result = try exportService.execute(
+                sessionId: job.scopeId,
+                options: options,
+                onProgress: { progress in
+                    context.updateProgress(JobProgressUpdate(
+                        current: progress.current,
+                        total: progress.total,
+                        message: progress.status == "error" ? (progress.errorMessage ?? "export.error") : "export.processing",
+                        checkpoint: checkpoint()
+                    ))
+                },
+                resume: NativeExportResumeState(
+                    destinations: destinations,
+                    completedPhotoIds: completedIds,
+                    onPlanned: { photoId, destinationName in destinations[photoId] = destinationName },
+                    onPlanReady: { context.updateCheckpoint(checkpoint()) },
+                    onCompleted: { photoId in
+                        if completedIds.insert(photoId).inserted { completedSnapshot.append(photoId) }
+                        context.updateProgress(JobProgressUpdate(checkpoint: checkpoint()))
+                    }
+                )
+            )
+            context.updateCheckpoint(checkpoint())
             return result
         }
     }
@@ -554,7 +638,7 @@ public final class SessionCommandRouter: CommandRouter {
             let jobId = try requiredString(params, "jobId")
             return .bool(try jobService.retry(jobId))
 
-        // TS 源: jobs.ipc.ts:13-19 —— destructive（confirmed 由 WebBridge 校验；
+        // TS 源: jobs.ipc.ts:13-19 —— destructive（confirmed 由命令边界校验；
         // 直连路由时二次兜底，对齐 TS JOBS_CLEAR_CONFIRM_REQUIRED）。
         case "jobs.clear_completed":
             guard confirmed(params) else {
@@ -581,8 +665,8 @@ public final class SessionCommandRouter: CommandRouter {
             return .object(["done": .bool(true)])
 
         case "settings.reset":
-            // settings.ipc.ts:25-32 —— 重置后 ok(svc.getAll())（菜单重建属
-            // Electron 主进程职责，Swift 宿主无原生菜单，跳过）。
+            // settings.ipc.ts:25-32 —— 重置后返回全部设置；菜单由原生
+            // AppDelegate 管理，不在设置服务内重建。
             try settingsService.reset()
             return .object(settingsService.getAll().mapValues(GatherCore.JSONValue.string))
 
@@ -698,7 +782,7 @@ public final class SessionCommandRouter: CommandRouter {
             let sessionId = try requiredString(params, "sessionId")
             return try GatherCore.JSONValue(from: duplicateService.getGroups(sessionId: sessionId))
 
-        // TS: duplicate.ipc.ts:57-75 —— destructive（confirmed 由 WebBridge 校验；
+        // TS: duplicate.ipc.ts:57-75 —— destructive（confirmed 由命令边界校验；
         // 直连路由时二次兜底）；resolution 仅 keep_one/keep_all（ADR-017）。
         case "dup.resolve":
             guard confirmed(params) else {
@@ -747,7 +831,7 @@ public final class SessionCommandRouter: CommandRouter {
             return .object(["done": .bool(true)])
 
         case "fkw.unbind":
-            // face-kw.ipc.ts:125-172 —— destructive（confirmed 由 WebBridge
+            // face-kw.ipc.ts:125-172 —— destructive（confirmed 由命令边界
             // 校验；直连路由时二次兜底）；removeOwnedFaceKeywords + 解除绑定。
             guard confirmed(params) else {
                 throw BridgeError.badParams("FKW_UNBIND_CONFIRM_REQUIRED")
@@ -1134,7 +1218,7 @@ public final class SessionCommandRouter: CommandRouter {
                 throw BridgeError.badParams("ASSET_LINK_ACCEPT_CONFIRM_REQUIRED")
             }
             let candidateId = try requiredString(params, "candidateId")
-            // 仓库层 DBError.message → BridgeError（WebBridge 仅对 BridgeError
+            // 仓库层 DBError.message → BridgeError（命令边界仅对 BridgeError
             // 走 message 透传；NSError 桥接会丢失消息）。
             try mapRepoError { try assetRepo.acceptCandidate(candidateId) }
             return .bool(true)
@@ -1260,13 +1344,72 @@ public final class SessionCommandRouter: CommandRouter {
 
         // ── image / face ──
 
-        case "image.get_dimensions":
+        case "image.prioritize_thumbnail":
             let path = try requiredString(params, "path")
+            try requirePhotoPath(path)
+            let size = Int((try? optionalNumber(params, "size")) ?? settingsService.getNumber("thumbnail_size", defaultValue: 1024))
+            try imagePreloadService.prioritizeThumbnail(path: path, size: size)
+            return .null
+
+        case "image.preload_thumbnails":
+            let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
+            guard !paths.isEmpty else { return .null }
+            let size = Int((try? optionalNumber(params, "size")) ?? settingsService.getNumber("thumbnail_size", defaultValue: 1024))
+            let fingerprint = paths.joined(separator: "\u{0}")
+            let job = try jobService.create(JobCreateParams(
+                type: .thumbnailBuild,
+                scopeType: "paths",
+                scopeId: paths[0],
+                dedupeKey: "thumbnail.build:\(size):\(fingerprint)",
+                priority: -1,
+                checkpoint: [
+                    "paths": .array(paths.map(JSONValue.string)),
+                    "size": .number(Double(size)),
+                ]
+            ))
+            return .string(job.id)
+
+        case "image.preload_previews":
+            let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
+            let maxDimension = Int((try? optionalNumber(params, "maxDimension")) ?? 2048)
+            imagePreloadService.preloadPreviews(paths: paths, maxDimension: maxDimension)
+            return .null
+
+        case "image.get_dimensions":
+            if let paths = params["paths"]?.arrayElements?.compactMap(\.stringValue) {
+                var results: [String: GatherCore.JSONValue] = [:]
+                for path in try allowedPhotoPaths(paths) {
+                    if let dims = try? RAWDecoder.getDimensions(path: path) {
+                        results[path] = .object([
+                            "width": .number(Double(dims.width)),
+                            "height": .number(Double(dims.height)),
+                        ])
+                    }
+                }
+                return .object(results)
+            }
+            let path = try requiredString(params, "path")
+            try requirePhotoPath(path)
             let dims = try RAWDecoder.getDimensions(path: path)
-            return .object([
-                "width": .number(Double(dims.width)),
-                "height": .number(Double(dims.height)),
-            ])
+            return .object(["width": .number(Double(dims.width)), "height": .number(Double(dims.height))])
+
+        case "export.preview":
+            let sessionId = try requiredString(params, "sessionId")
+            let options = try decodeJSON(ExportOptions.self, from: params["options"] ?? .object([:]))
+            return try GatherCore.JSONValue(from: exportService.preview(sessionId: sessionId, options: options))
+
+        case "export.cancel":
+            let sessionId = try requiredString(params, "sessionId")
+            _ = try jobService.cancelScope(type: .exportExecute, scopeId: sessionId)
+            exportService.cancel(sessionId: sessionId)
+            return .bool(true)
+
+        case "export.report":
+            let sessionId = try requiredString(params, "sessionId")
+            let reportType = try optionalString(params, "reportType") ?? "session_summary"
+            let format = try optionalString(params, "format")
+            return try GatherCore.JSONValue(from: exportService.generateReport(
+                sessionId: sessionId, reportType: reportType, format: format))
 
         case "face.models_status":
             // 2.2 决议：Vision 无需模型资产 → 恒 vision provider、无需下载。
@@ -1912,9 +2055,57 @@ public final class SessionCommandRouter: CommandRouter {
                 }
             }
 
+        // TS export.ipc.ts：preview 为 async IPC，execute 创建可恢复导出 job
+        // 并等待结果；路由仍保留 destructive confirmation 检查。
+        case "export.preview":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let options = try self.decodeJSON(ExportOptions.self, from: params["options"] ?? .object([:]))
+                    let preview = try self.exportService.preview(sessionId: sessionId, options: options)
+                    completion(WebResponse(id: "", ok: true, data: try GatherCore.JSONValue(from: preview)))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "export.execute":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "EXPORT_CONFIRMATION_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let options = try self.decodeJSON(ExportOptions.self, from: params["options"] ?? .object([:]))
+                    // makeDefault 的 router 可被 CLI/测试直接调用；start 是幂等的，
+                    // 这里确保 export.execute 不会因宿主忘记启动 job service 而永久 queued。
+                    self.jobService.start()
+                    let job = try self.jobService.create(JobCreateParams(
+                        type: .exportExecute,
+                        scopeType: "session",
+                        scopeId: sessionId,
+                        dedupeKey: "export.execute:\(sessionId)",
+                        checkpoint: ["options": try GatherCore.JSONValue(from: options)]
+                    ))
+                    let result: ExportResult? = try await self.jobService.waitForResult(jobId: job.id)
+                    guard let result else {
+                        throw JobServiceError.jobFailed(job.id, "empty export.execute result")
+                    }
+                    completion(WebResponse(id: "", ok: true, data: try GatherCore.JSONValue(from: result)))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
         default:
-            // 长任务（analyze/create_from_directory 等）随服务层逐个移植接入；
-            // 当前未接线 → NOT_IMPLEMENTED。
+            // 命令协议外的长任务或拼写错误均明确失败，禁止静默成功。
             completion(WebResponse(id: "", ok: false, error: "NOT_IMPLEMENTED: \(command)"))
         }
     }
@@ -1926,6 +2117,25 @@ public final class SessionCommandRouter: CommandRouter {
             throw BridgeError.badParams("MISSING_PARAM:\(key)")
         }
         return value
+    }
+
+    /// Image commands receive user-controlled input. Keep the native decode
+    /// boundary tied to photoRepo.containsFilepath so callers cannot use
+    /// dimensions/preload as an arbitrary file oracle.
+    private func requirePhotoPath(_ path: String) throws {
+        guard !path.isEmpty, path.count <= 4096,
+              try photoRepo.containsFilepath(filepath: path) else {
+            throw BridgeError.notFound("PHOTO_NOT_FOUND")
+        }
+    }
+
+    private func allowedPhotoPaths(_ paths: [String]) throws -> [String] {
+        var seen = Set<String>()
+        var allowed: [String] = []
+        for path in paths where !path.isEmpty && path.count <= 4096 && seen.insert(path).inserted {
+            if try photoRepo.containsFilepath(filepath: path) { allowed.append(path) }
+        }
+        return allowed
     }
 
     private func optionalString(_ params: [String: GatherCore.JSONValue], _ key: String) throws -> String? {
@@ -2221,7 +2431,7 @@ public final class SessionCommandRouter: CommandRouter {
 
     // MARK: async → sync 桥接
 
-    /// 仓库层 DBError.message → BridgeError（WebBridge 只对 BridgeError 做
+    /// 仓库层 DBError.message → BridgeError（命令边界只对 BridgeError 做
     /// message 透传，NSError 桥接会把 DBError 描述丢给系统错误文案）。
     private func mapRepoError<T>(_ body: () throws -> T) throws -> T {
         do {
@@ -2565,6 +2775,8 @@ public final class SessionCommandRouter: CommandRouter {
             return metadataServiceError.description
         }
         if let cullingError = error as? CullingServiceError { return cullingError.description }
+        if let exportError = error as? ExportServiceError { return exportError.description }
+        if let imageError = error as? ImagePreloadError { return imageError.description }
         // 仓库层直接抛出的 DBError.message（TS 侧 throw new Error(code) 的
         // 仓库等价物，如 ASSET_LINK_CANDIDATE_NOT_FOUND）逐字透传。
         if let dbError = error as? DBError, case .message(let message) = dbError {

@@ -434,4 +434,31 @@ struct LibraryViewModelTests {
         #expect(viewModel.total == 5)
         #expect(viewModel.photos.count == 5)
     }
+
+    // Library 侧栏的真实路由对账：智能相册 CRUD/分页与资产、孤立 XMP、卷列表
+    // 均必须可调用，不能只靠 UI stub 通过编译。
+    @Test func liveProviderSupportsLibrarySupportCommands() throws {
+        let (provider, db) = try makeLiveProvider()
+        try insertSession(db, "s1")
+        try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5)
+
+        let criteria = FilterGroup(logic: .and, conditions: [
+            .rule(FilterRule(field: "rating", operator: .gte, value: .number(4))),
+        ])
+        let created = try provider.createAlbum(name: "高评分", criteria: criteria)
+        #expect(created.name == "高评分")
+        #expect(try provider.listAlbums().contains(where: { $0.id == created.id }))
+
+        let page = try provider.albumPhotos(albumId: created.id, limit: 60, offset: 0)
+        #expect(page.total == 1)
+        #expect(page.photos.map(\.photoId) == ["p1"])
+
+        try provider.updateAlbum(albumId: created.id, criteria: FilterGroup(logic: .and, conditions: []))
+        try provider.deleteAlbum(albumId: created.id)
+        #expect(try provider.listAlbums().contains(where: { $0.id == created.id }) == false)
+
+        _ = try provider.listAssetCandidates()
+        _ = try provider.listMetadataOrphans()
+        _ = try provider.listAssetVolumes()
+    }
 }

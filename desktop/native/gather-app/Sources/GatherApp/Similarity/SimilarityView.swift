@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherApp/Similarity/SimilarityView.swift
-// Phase 3.3 Similarity（相似度分析）：SwiftUI 页面（宿主内直连 GatherCore，不走 WKWebView）。
+// Phase 3.3 Similarity（相似度分析）：SwiftUI 页面（宿主内直连 GatherCore）。
 // TS 源: desktop/src/renderer/pages/Similarity/index.tsx（AnalysisPanel 分析控制 +
 //       GroupGrid 分组卡片网格 + stats）
 // 中文文案硬编码（项目 i18n 于 3.6 收尾，本阶段对齐 TS 默认语言 zh-CN）。
@@ -25,6 +25,8 @@ struct SimilarityView: View {
     /// 状态在卡片滚出后不丢失）。
     @State private var expandedIds: Set<Int> = []
     @State private var showAllIds: Set<Int> = []
+    @State private var confirmWriteback = false
+    @State private var confirmCleanup = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,6 +41,9 @@ struct SimilarityView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     analysisPanel
+                    if viewModel.result != nil {
+                        writebackPanel
+                    }
                     if viewModel.isAnalyzing {
                         progressSection
                     }
@@ -54,6 +59,18 @@ struct SimilarityView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .task {
             await viewModel.load()
+        }
+        .confirmationDialog("确认写回相似度关键字？", isPresented: $confirmWriteback, titleVisibility: .visible) {
+            Button("确认写回") { Task { await viewModel.executeKeywordWriteback() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("写回前请检查预览；写入后需要重新加载 Capture One，再确认同步。")
+        }
+        .confirmationDialog("确认清理相似度写回备份？", isPresented: $confirmCleanup, titleVisibility: .visible) {
+            Button("清理", role: .destructive) { Task { await viewModel.cleanupKeywordWriteback() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只应在 Capture One 已重新加载并确认同步后执行。")
         }
     }
 
@@ -173,6 +190,57 @@ struct SimilarityView: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
+    private var writebackPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("分组关键字写回")
+                    .font(.title3.bold())
+                Spacer()
+                Button("生成预览", systemImage: "eye") {
+                    viewModel.previewKeywordWriteback()
+                }
+                Button("确认写回", systemImage: "square.and.arrow.down") {
+                    confirmWriteback = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.writebackPreview?.items.isEmpty != false || viewModel.isWritingBack)
+            }
+            HStack {
+                TextField("关键字，用逗号分隔（作用于已选分组）", text: $viewModel.writebackKeywords)
+                    .textFieldStyle(.roundedBorder)
+                Text("已选 \(viewModel.selectedGroupIds.count) 组")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let preview = viewModel.writebackPreview {
+                Text("预览：影响 \(preview.affectedPhotos) 张照片，共 \(preview.totalCount) 个写回项")
+                    .font(.callout)
+                ForEach(preview.items.prefix(6), id: \.photoId) { item in
+                    Text("\(URL(fileURLWithPath: item.photoPath).lastPathComponent)：\(item.keywords.joined(separator: ", "))")
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+            } else {
+                Text("选择分组并生成预览后才可以写回。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let result = viewModel.writebackResult {
+                Text("结果：总计 \(result.totalAffected) · 成功 \(result.written) · 失败 \(result.failed) · 跳过 \(result.skipped)")
+                HStack {
+                    Button("重试失败项") { Task { await viewModel.retryKeywordWriteback() } }
+                        .disabled(result.failedItems.isEmpty)
+                    Button("Capture One 重新加载并确认") {
+                        Task { await viewModel.reloadCaptureOneAndConfirm() }
+                    }
+                    Button("清理备份", role: .destructive) { confirmCleanup = true }
+                }
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
     private func modeButton(title: String, hint: String, isActive: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 2) {
@@ -253,7 +321,7 @@ struct SimilarityView: View {
             statItem("阈值 \(Int(result.stats.threshold))")
             statItem(result.stats.groupingMode == .sequential ? "顺序分组" : "全局分组")
             Spacer()
-            // 全选分组（对齐 KeywordWritebackPanel 的 selectAll；写回面板未接线）。
+            // 全选分组（对齐 KeywordWritebackPanel 的 selectAll；写回面板已接线）。
             Toggle(isOn: Binding(
                 get: {
                     !result.groups.isEmpty && viewModel.selectedGroupIds.count == result.groups.count

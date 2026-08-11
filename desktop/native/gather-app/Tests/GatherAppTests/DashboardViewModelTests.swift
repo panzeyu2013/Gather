@@ -3,7 +3,7 @@
 // 覆盖：workspace status 加载、jobs 列表加载、scanJobs 派生、卡片计数文案
 // （TS deriveCardIndexKind/photoCountLabel 语义）、cancel/retry/clear_completed
 // 调用正确性、错误态（stub 注入）。
-// 集成用例用真实临时 SQLite + 已移植服务（对齐 WebBridgeTests 风格）。
+// 集成用例用真实临时 SQLite + 已移植服务。
 
 import Foundation
 import Testing

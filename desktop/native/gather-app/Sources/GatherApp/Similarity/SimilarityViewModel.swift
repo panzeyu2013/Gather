@@ -8,8 +8,8 @@
 // - TS 的 jobs:progress 推送 → 分析期间轮询 jobs.list（1s，测试可注入），
 //   进度相位经 progressPhaseLabel 映射中文（progress.* 键值）；
 // - 挂载恢复（重启后残留 running 任务）经轮询首帧识别并续传进度；
-// - 关键词写回面板（sim.preview_writeback/sim.writeback 未接线）不展示，
-//   选择集合保留（对齐 onResultAdopted 清空语义）。
+// - 关键词写回面板复用 sim.preview_writeback/sim.writeback 的预览、确认、
+//   C1 reload ack 和失败重试链，选择集合仍对齐 onResultAdopted 清空语义。
 import Foundation
 import GatherCore
 
@@ -36,6 +36,11 @@ public protocol SimilarityDataProvider {
     ) async throws -> SimilarityResult
     /// 分析进度轮询（TS jobsApi.list 过滤 similarity.analyze + scopeId）。
     func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData]
+    func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) throws -> WritebackPreview
+    func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult
+    func retryFailedWriteback(sessionId: String) async throws -> WritebackResult
+    func confirmSync(sessionId: String) throws
+    func cleanupWriteback(sessionId: String) async throws -> CleanupResult
 }
 
 /// 真实实现：同进程直连 SessionCommandRouter（sim.* 已接线命令以路由为
@@ -113,6 +118,70 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
     public func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData] {
         try router.jobService.list().filter { $0.type == .similarityAnalyze && $0.scopeId == sessionId }
     }
+
+    public func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) throws -> WritebackPreview {
+        var params: [String: JSONValue] = [
+            "sessionId": .string(sessionId),
+            "assignments": try .array(assignments.map { try JSONValue(from: $0) }),
+        ]
+        if let threshold { params["threshold"] = .number(Double(threshold)) }
+        return try router.execute("sim.preview_writeback", params: params).decoded(as: WritebackPreview.self)
+    }
+
+    public func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult {
+        var params: [String: JSONValue] = [
+            "sessionId": .string(sessionId),
+            "itemIds": .array(itemIds.map { .number(Double($0)) }),
+            "confirmed": .bool(true),
+        ]
+        if let threshold { params["threshold"] = .number(Double(threshold)) }
+        return try await withCheckedThrowingContinuation { continuation in
+            router.executeAsync("sim.writeback", params: params) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_WRITEBACK_FAILED"))
+                    return
+                }
+                do { continuation.resume(returning: try data.decoded(as: WritebackResult.self)) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    public func retryFailedWriteback(sessionId: String) async throws -> WritebackResult {
+        try await withCheckedThrowingContinuation { continuation in
+            router.executeAsync("sim.retry_failed_writeback", params: [
+                "sessionId": .string(sessionId),
+                "confirmed": .bool(true),
+            ]) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_RETRY_WRITEBACK_FAILED"))
+                    return
+                }
+                do { continuation.resume(returning: try data.decoded(as: WritebackResult.self)) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    public func confirmSync(sessionId: String) throws {
+        _ = try router.execute("sim.confirm_sync", params: ["sessionId": .string(sessionId)])
+    }
+
+    public func cleanupWriteback(sessionId: String) async throws -> CleanupResult {
+        try await withCheckedThrowingContinuation { continuation in
+            router.executeAsync("sim.cleanup", params: [
+                "sessionId": .string(sessionId),
+                "confirmed": .bool(true),
+            ]) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_CLEANUP_FAILED"))
+                    return
+                }
+                do { continuation.resume(returning: try data.decoded(as: CleanupResult.self)) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
 }
 
 /// 相似度视图模型：分析控制（阈值/组大小/分组模式/预设）+ 运行状态机
@@ -147,6 +216,7 @@ public final class SimilarityViewModel {
     private var analysisTask: Task<Void, Never>?
     private var tierTask: Task<Void, Never>?
     private var tierRequestID = 0
+    private let captureOne: CaptureOneBridge
 
     private(set) public var phase: Phase = .idle
     private(set) public var result: SimilarityResult?
@@ -157,6 +227,10 @@ public final class SimilarityViewModel {
     private(set) public var progressTotal = 0
     private(set) public var progressMessage = ""
     private(set) public var selectedGroupIds: Set<Int> = []
+    private(set) public var writebackPreview: WritebackPreview?
+    private(set) public var writebackResult: WritebackResult?
+    private(set) public var isWritingBack = false
+    public var writebackKeywords = ""
     /// 草稿参数（TS similarityStore：阈值/组大小/分组模式）。
     public var threshold = SimilarityViewModel.defaultThreshold
     public var minGroupSize = SimilarityViewModel.defaultMinGroupSize
@@ -166,12 +240,14 @@ public final class SimilarityViewModel {
         sessionId: String,
         provider: SimilarityDataProvider,
         pollInterval: Duration = .seconds(1),
-        tierDebounceDelay: Duration = .milliseconds(300)
+        tierDebounceDelay: Duration = .milliseconds(300),
+        captureOne: CaptureOneBridge = CaptureOneBridge()
     ) {
         self.sessionId = sessionId
         self.provider = provider
         self.pollInterval = pollInterval
         self.tierDebounceDelay = tierDebounceDelay
+        self.captureOne = captureOne
     }
 
     // MARK: 加载与恢复（TS useQuery + 挂载恢复 effect）
@@ -398,6 +474,82 @@ public final class SimilarityViewModel {
         selectedGroupIds = selected
             ? Set(result?.groups.map(\.id) ?? [])
             : []
+    }
+
+    // MARK: 关键词写回（TS KeywordWritebackPanel）
+
+    public func previewKeywordWriteback() {
+        let words = writebackKeywords.split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        guard !selectedGroupIds.isEmpty else {
+            errorMessage = "请选择至少一个相似度分组"
+            return
+        }
+        guard !words.isEmpty else {
+            errorMessage = "请输入要写回的关键字"
+            return
+        }
+        do {
+            let assignments = selectedGroupIds.sorted().map { SimilarityKeywordAssignment(groupId: $0, keywords: words) }
+            writebackPreview = try provider.previewWriteback(
+                sessionId: sessionId,
+                assignments: assignments,
+                threshold: threshold
+            )
+            writebackResult = nil
+            errorMessage = nil
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    public func executeKeywordWriteback() async {
+        guard let preview = writebackPreview else {
+            errorMessage = "请先生成写回预览"
+            return
+        }
+        let ids = preview.items.compactMap(\.id)
+        guard !ids.isEmpty else {
+            errorMessage = "预览没有可写回项"
+            return
+        }
+        isWritingBack = true
+        defer { isWritingBack = false }
+        do {
+            writebackResult = try await provider.writeback(sessionId: sessionId, itemIds: ids, threshold: threshold)
+            errorMessage = nil
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    public func retryKeywordWriteback() async {
+        do {
+            writebackResult = try await provider.retryFailedWriteback(sessionId: sessionId)
+            errorMessage = nil
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    public func reloadCaptureOneAndConfirm() async {
+        do {
+            try await captureOne.reloadMetadata(sessionId: sessionId)
+            try provider.confirmSync(sessionId: sessionId)
+            writebackResult = writebackResult
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    public func cleanupKeywordWriteback() async {
+        do {
+            _ = try await provider.cleanupWriteback(sessionId: sessionId)
+            errorMessage = nil
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
     }
 
     // MARK: 错误 message（对齐 DashboardViewModel.message）

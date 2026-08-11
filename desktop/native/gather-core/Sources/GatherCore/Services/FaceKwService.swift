@@ -22,12 +22,10 @@
 //   的插入序一致；消费方按 JSON 语义解析。
 // - 写回（fkw.unbind 的 removeOwnedFaceKeywords、fkw.preview / writeback /
 //   confirm_sync / confirm_cleanup / cleanup）经注入的 FaceWritebackProvider
-//   调用（3.4 Wave 实现留待后续，未注入时抛 WRITEBACK_PROVIDER_NOT_INJECTED，
-//   该错误非 TS 错误码，属迁移接缝）。接缝类型（FaceKwWriteback*）为
-//   @gather/shared core.ts 写回段的契约副本，字段逐字对齐；3.4 共享写回类型
-//   落位后可在不影响 JSON 形状的前提下替换。
+//   调用；宿主已注入 WritebackService 适配器。未注入 provider 时仍明确抛出
+//   WRITEBACK_PROVIDER_NOT_INJECTED，避免误报写回成功。
 // - TS 侧 analyze/错误路径会 invalidateSessionLookup（culling 缓存）；Swift
-//   侧 CullingService 尚未移植（3.x），该调用省略。
+//   侧通过原生挑片页面重新加载 session 数据，保持同进程状态一致。
 import Foundation
 
 public enum FaceKwServiceError: Error, Equatable {
