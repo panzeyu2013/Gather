@@ -23,10 +23,8 @@ dist/
 *.coplugin
 release/
 
-# Node / Electron
+# Native desktop build output
 node_modules/
-
-# Desktop build output
 desktop/dist/
 desktop/release/
 desktop/out/
@@ -43,10 +41,7 @@ Capture*One*Plugin*SDK*/
 .coverage
 coverage/
 test-results/
-dist-electron/
-*.tsbuildinfo
 .mypy_cache/
 
-# Local-only e2e fixtures (ONNX models + RAW photos with faces).
-# See scripts/setup-local-face-fixtures.mjs
+# Local-only native fixtures (ONNX models + RAW photos with faces).
 tests/fixtures/local/

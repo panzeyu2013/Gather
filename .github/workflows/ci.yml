@@ -1,4 +1,4 @@
-name: CI
+name: Native CI
 
 on:
   push:
@@ -7,53 +7,19 @@ on:
   workflow_dispatch:
 
 jobs:
-  unit:
-    runs-on: ubuntu-latest
+  gather-core:
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build --workspace=@gather/shared
-      - name: Typecheck
-        run: npx tsc -p desktop/tsconfig.main.json --noEmit && npx tsc -p desktop/tsconfig.renderer.json --noEmit
-      - name: Lint
-        run: npm run lint
-      - name: Unit tests
-        run: npm run test:vitest
+      - name: Core tests
+        run: swift test --package-path desktop/native/gather-core
 
-  e2e:
-    # Electron native modules (better-sqlite3, onnxruntime) are rebuilt for the
-    # Electron ABI; run e2e on macOS where the app is packaged and launched.
-    runs-on: macos-latest
-    needs: unit
+  gather-app:
+    runs-on: macos-14
+    needs: gather-core
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Playwright e2e smoke workflow
-        run: npx playwright test --config=tests/e2e/playwright.config.ts
-
-  benchmark:
-    # Manual / nightly reliability + application-scale benchmarks. Results are
-    # kept as artifacts so regressions can be compared against previous baselines.
-    runs-on: macos-latest
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Reliability benchmark
-        run: node scripts/reliability-benchmark.mjs
-      - name: Application-scale benchmark
-        run: node scripts/application-scale-benchmark.mjs
+      - name: App tests
+        run: swift test --package-path desktop/native/gather-app
+      - name: Native bundle build
+        run: ./desktop/native/build.sh

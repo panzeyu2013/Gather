@@ -1,5 +1,7 @@
+*.app
+*.dmg
+*.coplugin
+.build/
 node_modules/
-dist/
-release/
 *.log
 .DS_Store
