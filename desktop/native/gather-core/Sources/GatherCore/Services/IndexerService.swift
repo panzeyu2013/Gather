@@ -174,7 +174,7 @@ public final class IndexerService {
         let configured = getSetting("disk_cache_dir", "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !configured.isEmpty { return [Self.canonicalPath(configured)] }
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            // TS: app.getPath('userData') + 'thumbnails'（Electron userData 在
+            // Application Support/Gather/thumbnails（应用数据目录在
             // macOS 即 Application Support/<app>）。
             return [Self.canonicalPath(appSupport.appendingPathComponent("thumbnails").path)]
         }

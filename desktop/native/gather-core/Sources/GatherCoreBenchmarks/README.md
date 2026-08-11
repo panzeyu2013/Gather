@@ -1,8 +1,7 @@
 # gather-core-benchmarks（Similarity 基准）
 
-计划 2.3 验收「Similarity 基准 2 万/5 万」的 Swift 侧等价基准。TS 侧
-`scripts/application-scale-benchmark.mjs` 依赖 Electron 主进程与 sharp，
-在 Linux 开发环境不可运行；本基准在 Swift 侧覆盖算法层四类负载，
+计划 2.3 验收「Similarity 基准 2 万/5 万」的 Swift 原生基准。
+本基准覆盖算法层四类负载，
 产出 NDJSON 指标行（对齐基准脚本的 stdout JSON 行风格）。
 
 ## 用法

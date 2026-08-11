@@ -32,7 +32,7 @@ let package = Package(
     ],
     products: [
         .library(name: "GatherCore", targets: ["GatherCore"]),
-        // helper 线协议可执行（1.3）：stdout JSON 行协议，供 Electron 壳 child_process 调用。
+        // helper 线协议可执行（1.3）：stdout JSON 行协议，供外部工具调用。
         .executable(name: "gather-core-helper", targets: ["GatherCoreHelper"]),
         // Similarity 基准（2.3 验收 2 万/5 万）：产出 JSON 行指标（对齐 scripts/*.mjs 风格）。
         .executable(name: "gather-core-benchmarks", targets: ["GatherCoreBenchmarks"]),

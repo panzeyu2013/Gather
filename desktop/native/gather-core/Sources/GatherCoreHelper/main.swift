@@ -11,7 +11,7 @@ import Darwin
 import Glibc
 #endif
 
-// Electron 侧关闭管道时避免默认 SIGPIPE 杀进程，让写入自然失败、循环继续。
+// 调用方关闭管道时避免默认 SIGPIPE 杀进程，让写入自然失败、循环继续。
 signal(SIGPIPE, SIG_IGN)
 
 // 日志一律走 stderr，stdout 只承载 JSON 响应行，互不污染。
