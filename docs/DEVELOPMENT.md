@@ -48,7 +48,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
 ./desktop/native/build.sh
 ```
 
-产物为 `dist/native/Gather.app`。脚本会构建 gather-core、GatherApp，并在存在
+产物为 `release/Gather.app`。脚本会构建 gather-core、GatherApp，并在存在
 Capture One 插件源码时尝试构建插件。默认产物保持未签名；签名、公证和安装包是
 独立的发布流程。
 

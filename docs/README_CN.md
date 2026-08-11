@@ -54,7 +54,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
 ./desktop/native/build.sh
 ```
 
-产物位于 `dist/native/Gather.app`。脚本只构建 Swift 核心和 SwiftUI 应用，不需要
+产物位于 `release/Gather.app`。脚本只构建 Swift 核心和 SwiftUI 应用，不需要
 JavaScript 工具链；设置 `CODESIGN_IDENTITY` 后才会执行可选签名。
 
 ## 数据与安全模型

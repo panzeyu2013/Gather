@@ -73,7 +73,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
 ./desktop/native/build.sh
 ```
 
-The bundle is assembled at `dist/native/Gather.app`. Set
+The bundle is assembled at `release/Gather.app`. Set
 `CONFIGURATION=release` for a release build. The script does not require a
 JavaScript toolchain and leaves signing disabled unless `CODESIGN_IDENTITY`
 is explicitly provided.

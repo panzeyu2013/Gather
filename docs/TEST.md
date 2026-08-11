@@ -37,7 +37,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 
 ## 三、应用启动与导航
 
-- [ ] `dist/native/Gather.app` 可启动，主窗口显示 Dashboard
+- [ ] `release/Gather.app` 可启动，主窗口显示 Dashboard
 - [ ] Dashboard、Library、Gallery、Similarity、Persons 页面可互相导航
 - [ ] Jobs、Settings、Control Center 可从原生菜单/页面打开
 - [ ] session 页面切换不会串用其他 session 的数据
@@ -129,9 +129,10 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
 2026-08-11 在当前工作树已验证：
 
 - gather-core：760 个测试、98 个套件通过；其中
-  `VectorIndexReconciliationTests` 因现有 fixture 条件按测试自身规则跳过；
-- gather-app：78 个测试、7 个套件通过；
-- `desktop/native/build.sh` 成功组装 `dist/native/Gather.app`；
+  `VectorIndexReconciliationTests` 默认跳过，由 `GATHER_RECONCILIATION_VECTOR=1`
+  显式门控（CI 已按此参数单独运行）；
+- gather-app：81 个测试、7 个套件通过；
+- `desktop/native/build.sh` 成功组装 `release/Gather.app`；
 - `desktop/src`、`packages/shared`、`tests`、`scripts` 当前无工作树文件，原生代码无
   WebKit/JavaScriptCore/WKWebView/WebViewHost/WebBridge 引用；
 - `.app` 保持未签名，符合本轮明确排除的发布边界。

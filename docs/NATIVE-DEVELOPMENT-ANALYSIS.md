@@ -313,7 +313,7 @@ WKWebView 桥、Xcode 签名打包。
 | 1.2 | 数据库层（schema/migrations/repos） | 已完成 | 2026-08-09 | `Database/DB.swift`（系统 SQLite3 薄包装，better-sqlite3 语义）、`Schema.swift`（41 条 SQL verbatim）、`Migrations.swift`（0→31 全路径 + ADR-005/006 备份回滚）、`Repositories/` 15 个 repo（147 测试）；schema 与 `docs/fixtures/schema.snapshot.json` 41 表全对 |
 | 1.3 | helper 形态（HelperProtocol + helper-client） | 已完成 | 2026-08-09 | `IPC/HelperProtocol.swift` 核心路由 + `GatherCoreHelper/main.swift`（stdout JSON 行）+ Electron 侧 `main/services/helper/helper-client.ts`（按 id 匹配/超时）；冒烟通过（echo/session:mock/未知命令） |
 | 1.4 | 日志/遥测 | 已完成 | 2026-08-09 | `Logging/Telemetry.swift`（duration/counter/gauge，NDJSON 对齐基准脚本输出；GATHER_TELEMETRY=1 开关）+ 8 测试 |
-| 1.5 | 对账测试框架 | 已完成 | 2026-08-09 | `GatherCoreTests/Reconciliation/`：首批 3 函数（dHash 50 / 聚类 17+3 / Face 预处理 17）；后扩展至 **7 函数**——dimensions（26）/ vector（1000 行 topK 逐位一致 + recall）/ clusterer（8）/ matcher（6 case）；TS 侧生成器 `scripts/reconciliation/generate-*.mjs`（固定种子 + `--check` 双跑拦截漂移，已实测抓到 1 个字节序移植 bug） |
+| 1.5 | 对账测试框架 | 已完成 | 2026-08-09 | `GatherCoreTests/Reconciliation/`：首批 3 函数（dHash 50 / 聚类 17+3 / Face 预处理 17）；后扩展至 **7 函数**——dimensions（26）/ vector（1000 行 topK 逐位一致 + recall，`GATHER_RECONCILIATION_VECTOR=1` 显式门控，CI 单独跑）/ clusterer（8）/ matcher（6 case）；TS 侧生成器 `scripts/reconciliation/generate-*.mjs`（固定种子 + `--check` 双跑拦截漂移，已实测抓到 1 个字节序移植 bug） |
 
 > 附注（2026-08-09 工具链决议）：本机已装 swift.org 官方 toolchain 6.1.2（Linux，
 > swift test 真跑 475 测试全绿）。四项决策修正：
@@ -395,7 +395,7 @@ WKWebView 桥、Xcode 签名打包。
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
 |---|---|---|---|---|
-| 4.1 | 打包替换（build.sh） | 已完成 | 2026-08-11 | `desktop/native/build.sh` 直接执行 gather-core + gather-app Swift release 构建并组装 `dist/native/Gather.app`，不再依赖 Node/renderer；签名/公证按范围外处理 |
+| 4.1 | 打包替换（build.sh） | 已完成 | 2026-08-11 | `desktop/native/build.sh` 直接执行 gather-core + gather-app Swift release 构建并组装 `release/Gather.app`（默认输出目录，可用 `OUTPUT_DIR` 覆盖），不再依赖 Node/renderer；签名/公证按范围外处理 |
 | 4.2 | 原生集成（深链/菜单） | 已完成 | 2026-08-11 | `GatherAppDelegate.swift` 支持 `gather://import`、文件打开面板、拖入/打开文件、菜单与通知；`GatherDeepLink` 过滤扩展名、去重并校验常规文件；单测通过 |
 | 4.3 | embedding 重跑（代码范围） | 已完成 | 2026-08-11 | 原生首次启动按数据库写入 768 维 Vision feature print rev2 设置，并为已有工作区创建带 dedupe/checkpoint 的 `face.analyze` 任务；真实照片集质量结果按用户要求跳过 |
 | 4.4 | 删除 Electron 残留 | 已完成 | 2026-08-11 | 已删除 `desktop/src`、`desktop/package.json`、`packages/shared`、TS IPC/preload/renderer、Electron/Vite/Playwright 配置及旧 JS 测试脚本；原生包源只保留 Swift/SwiftUI |

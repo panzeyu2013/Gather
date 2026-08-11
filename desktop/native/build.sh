@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-release}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist/native}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/release}"
 APP_BUNDLE="$OUTPUT_DIR/Gather.app"
 CORE_PACKAGE="$SCRIPT_DIR/gather-core"
 APP_PACKAGE="$SCRIPT_DIR/gather-app"
