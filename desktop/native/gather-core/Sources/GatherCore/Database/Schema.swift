@@ -514,6 +514,12 @@ public enum SchemaSQL {
     CREATE INDEX IF NOT EXISTS idx_photos_created_at ON photos(created_at);
     CREATE INDEX IF NOT EXISTS idx_photos_asset ON photos(asset_id);
     CREATE INDEX IF NOT EXISTS idx_photos_asset_file ON photos(asset_file_id);
+    -- 审计 P1-性能（v32）：资产组聚合（GROUP BY asset_id 分支走覆盖索引）与
+    -- 首选行相关子查询（COALESCE 等值匹配）走索引。注：SQLite 表达式索引
+    -- 禁止引用 rowid，故索引不含 rowid 列（GROUP BY 的 MIN(rowid) 由覆盖
+    -- 索引 + 临时聚合完成，首选行排序在组内小集合上进行）。
+    CREATE INDEX IF NOT EXISTS idx_photos_asset_group
+      ON photos(session_id, COALESCE(NULLIF(asset_id, ''), id));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_files_volume_path ON asset_files(volume_id, normalized_path);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_files_volume_identity
       ON asset_files(volume_id, file_identity) WHERE file_identity != '';

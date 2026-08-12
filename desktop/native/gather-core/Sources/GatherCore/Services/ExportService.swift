@@ -427,7 +427,14 @@ public final class ExportService {
             .replacingOccurrences(of: "YYYY", with: String(Calendar.current.component(.year, from: date)))
             .replacingOccurrences(of: "MM", with: String(format: "%02d", Calendar.current.component(.month, from: date)))
             .replacingOccurrences(of: "DD", with: String(format: "%02d", Calendar.current.component(.day, from: date)))
-        let time = DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .medium).replacingOccurrences(of: ":", with: "-")
+        // {time} 固定 HH-mm-ss（24h 制）：localizedString(.medium) 在 12h locale
+        // 下产出 "3-45-30 PM"（含空格 + AM/PM），与 ExportView 预览的 HH-mm-ss
+        // 不符。与 TS 的差异：TS 两端统一 24h 制，此处对齐该语义。
+        // 审计 P1：静态 DateFormatter 被 worker 线程（并发导出）与主线程共用
+        // 存在数据竞争，改为函数内新建（格式化成本可忽略）。
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH-mm-ss"
+        let time = formatter.string(from: date)
         var pattern = options.naming.pattern
         pattern = pattern.replacingOccurrences(of: "{date}", with: dateString)
         pattern = pattern.replacingOccurrences(of: "{time}", with: time)

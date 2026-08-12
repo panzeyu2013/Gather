@@ -264,6 +264,9 @@ public final class IndexerService {
         var skipped = 0
         // 内容变化的存量照片计数（连同 added/relinked/missing 驱动 index_seq）。
         var updatedExistingPhotos = 0
+        // 提前声明：扫描中途取消/出错时 catch 路径需要判断是否发生过变更
+        // （此时尚未做对账，保持空）。
+        var missing: [PhotoProjectionRow] = []
 
         /// TS: scanBatch —— 一批文件的 stat/尺寸/checksum（并发 4）+ 单事务提交。
         let scanBatch: ([String]) async throws -> Void = { filepaths in
@@ -463,118 +466,137 @@ public final class IndexerService {
             }
         }
 
-        if let requestedPaths {
-            var candidates: [String] = []
-            for filepath in Set(requestedPaths.map { TSPath.resolve($0) }) {
-                if excludedRoots.contains(where: { Self.isWithin(candidate: filepath, canonicalRoot: $0) }) { continue }
-                do {
-                    let source = try self.stat(filepath)
-                    if source.isFile && Self.supportedExtensions.contains(TSPath.extname(filepath).lowercased()) {
-                        candidates.append(filepath)
+        // 扫描 + 终态提交整体受保护：批次提交后发生的取消/错误不得吞掉
+        // index_seq bump。index_seq 是分析过期游标（sessions.index_seq vs
+        // analysis_runs.index_seq）——批次已提交的新照片对已完成分析
+        // （sim/fkw）的可见性完全依赖它推进；任何终态只要发生过真实变更
+        // 都必须 bump（TS「任何批次提交后都 bump」语义）。
+        do {
+            if let requestedPaths {
+                var candidates: [String] = []
+                for filepath in Set(requestedPaths.map { TSPath.resolve($0) }) {
+                    if excludedRoots.contains(where: { Self.isWithin(candidate: filepath, canonicalRoot: $0) }) { continue }
+                    do {
+                        let source = try self.stat(filepath)
+                        if source.isFile && Self.supportedExtensions.contains(TSPath.extname(filepath).lowercased()) {
+                            candidates.append(filepath)
+                            discovered += 1
+                        }
+                    } catch {
+                        // 缺失路径在下方对账。
+                    }
+                }
+                if !candidates.isEmpty { try await scanBatch(candidates) }
+            } else {
+                // 生产者/消费者：walk 经有界通道流式产出，scanBatch 按 32 个一批消费。
+                let channel = WalkChannel(capacity: Self.walkChannelCapacity)
+                let producer = Task {
+                    await Self.traverse(
+                        directory: session.sourcePath,
+                        isRoot: true,
+                        excludedRoots: excludedRoots,
+                        channel: channel
+                    )
+                    channel.close()
+                }
+                // 消费者提前退出（错误/取消）时解除阻塞中的生产者（TS walk 的
+                // finally close 语义）。
+                defer { channel.close() }
+                var pending: [String] = []
+                var keepGoing = true
+                while keepGoing {
+                    let event: WalkEvent
+                    do {
+                        event = try await channel.pull()
+                    } catch {
+                        await producer.value
+                        throw error
+                    }
+                    switch event {
+                    case .done:
+                        keepGoing = false
+                    case .unreadableDirectory(let directory):
+                        failed.append(directory)
+                    case .file(let filepath):
+                        try context?.throwIfCancelled()
                         discovered += 1
-                    }
-                } catch {
-                    // 缺失路径在下方对账。
-                }
-            }
-            if !candidates.isEmpty { try await scanBatch(candidates) }
-        } else {
-            // 生产者/消费者：walk 经有界通道流式产出，scanBatch 按 32 个一批消费。
-            let channel = WalkChannel(capacity: Self.walkChannelCapacity)
-            let producer = Task {
-                await Self.traverse(
-                    directory: session.sourcePath,
-                    isRoot: true,
-                    excludedRoots: excludedRoots,
-                    channel: channel
-                )
-                channel.close()
-            }
-            // 消费者提前退出（错误/取消）时解除阻塞中的生产者（TS walk 的
-            // finally close 语义）。
-            defer { channel.close() }
-            var pending: [String] = []
-            var keepGoing = true
-            while keepGoing {
-                let event: WalkEvent
-                do {
-                    event = try await channel.pull()
-                } catch {
-                    await producer.value
-                    throw error
-                }
-                switch event {
-                case .done:
-                    keepGoing = false
-                case .unreadableDirectory(let directory):
-                    failed.append(directory)
-                case .file(let filepath):
-                    try context?.throwIfCancelled()
-                    discovered += 1
-                    context?.updateProgress(JobProgressUpdate(
-                        current: discovered, total: 0, phase: "index.scanning"
-                    ))
-                    pending.append(filepath)
-                    if pending.count >= Self.scanBatchFiles {
-                        try await scanBatch(pending)
-                        pending.removeAll(keepingCapacity: true)
+                        context?.updateProgress(JobProgressUpdate(
+                            current: discovered, total: 0, phase: "index.scanning"
+                        ))
+                        pending.append(filepath)
+                        if pending.count >= Self.scanBatchFiles {
+                            try await scanBatch(pending)
+                            pending.removeAll(keepingCapacity: true)
+                        }
                     }
                 }
+                if !pending.isEmpty { try await scanBatch(pending) }
             }
-            if !pending.isEmpty { try await scanBatch(pending) }
-        }
 
-        let requestedNormalized: Set<String>? = requestedPaths.map {
-            Set($0.map { TSPath.normalize(TSPath.resolve($0)) })
-        }
-        var missing: [PhotoProjectionRow] = []
-        for photo in existing {
-            let normalized = TSPath.normalize(TSPath.resolve(photo.filepath))
-            let inRequested = requestedNormalized.map { $0.contains(normalized) } ?? true
-            if inRequested
-                && !discoveredSet.contains(normalized)
-                && !relinkedPhotoIds.contains(photo.id) {
-                missing.append(photo)
+            let requestedNormalized: Set<String>? = requestedPaths.map {
+                Set($0.map { TSPath.normalize(TSPath.resolve($0)) })
             }
-        }
-        try self.photoRepo.markMissing(photoIds: missing.map(\.id))
-        _ = try self.assetRepo.backfillSession(sessionId)
-        // index_seq 是分析过期游标：仅在真实变更（新增/内容变/重链接/新增缺失）
-        // 时 bump；空转扫描不得把分析标脏。
-        let committedChanges = added > 0
-            || updatedExistingPhotos > 0
-            || !relinkedPhotoIds.isEmpty
-            || !missing.isEmpty
-        var finalCount = 0
-        try self.connection.transaction {
-            finalCount = try self.photoRepo.countBySession(sessionId: sessionId)
-            try self.sessionRepo.updatePhotoCount(id: sessionId, count: finalCount)
+            for photo in existing {
+                let normalized = TSPath.normalize(TSPath.resolve(photo.filepath))
+                let inRequested = requestedNormalized.map { $0.contains(normalized) } ?? true
+                if inRequested
+                    && !discoveredSet.contains(normalized)
+                    && !relinkedPhotoIds.contains(photo.id) {
+                    missing.append(photo)
+                }
+            }
+            try self.photoRepo.markMissing(photoIds: missing.map(\.id))
+            _ = try self.assetRepo.backfillSession(sessionId)
+            // index_seq 是分析过期游标：仅在真实变更（新增/内容变/重链接/新增缺失）
+            // 时 bump；空转扫描不得把分析标脏。
+            let committedChanges = added > 0
+                || updatedExistingPhotos > 0
+                || !relinkedPhotoIds.isEmpty
+                || !missing.isEmpty
+            var finalCount = 0
+            try self.connection.transaction {
+                finalCount = try self.photoRepo.countBySession(sessionId: sessionId)
+                try self.sessionRepo.updatePhotoCount(id: sessionId, count: finalCount)
+                if committedChanges {
+                    _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)
+                }
+            }
+            if finalCount > 0 && session.status == "draft" {
+                try self.sessionRepo.updateStatus(id: sessionId, status: "photos_loaded")
+            }
+            if !missing.isEmpty {
+                let fileIds = missing.compactMap(\.assetFileId)
+                for chunk in chunked(fileIds) {
+                    let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                    _ = try self.connection.prepare("""
+                        UPDATE asset_files SET online_status = 'offline', updated_at = ?
+                        WHERE id IN (\(placeholders))
+                      """).run([.text(nowISOString())] + chunk.map { .text($0) })
+                }
+            }
+            context?.updateProgress(JobProgressUpdate(current: discovered, total: discovered, phase: "index.done"))
+            return IndexScanResult(
+                sessionId: sessionId,
+                discovered: discovered,
+                added: added,
+                skipped: skipped,
+                missing: missing.count,
+                failed: failed
+            )
+        } catch {
+            // 取消/失败路径同样推进已提交批次的 index_seq（独立事务，
+            // best-effort 不掩盖原错误）：已导入照片对已完成分析可见。
+            let committedChanges = added > 0
+                || updatedExistingPhotos > 0
+                || !relinkedPhotoIds.isEmpty
+                || !missing.isEmpty
             if committedChanges {
-                _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)
+                try? self.connection.transaction {
+                    _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)
+                }
             }
+            throw error
         }
-        if finalCount > 0 && session.status == "draft" {
-            try self.sessionRepo.updateStatus(id: sessionId, status: "photos_loaded")
-        }
-        if !missing.isEmpty {
-            let fileIds = missing.compactMap(\.assetFileId)
-            for chunk in chunked(fileIds) {
-                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                _ = try self.connection.prepare("""
-                    UPDATE asset_files SET online_status = 'offline', updated_at = ?
-                    WHERE id IN (\(placeholders))
-                  """).run([.text(nowISOString())] + chunk.map { .text($0) })
-            }
-        }
-        context?.updateProgress(JobProgressUpdate(current: discovered, total: discovered, phase: "index.done"))
-        return IndexScanResult(
-            sessionId: sessionId,
-            discovered: discovered,
-            added: added,
-            skipped: skipped,
-            missing: missing.count,
-            failed: failed
-        )
     }
 
     // ─────────────────────────── checksum 回填 ───────────────────────────

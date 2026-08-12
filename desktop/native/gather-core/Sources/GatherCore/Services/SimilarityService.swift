@@ -187,12 +187,11 @@ public final class SimilarityService {
         groupingMode: SimilarityGroupingMode? = nil,
         onProgress: ProgressHandler? = nil
     ) async throws {
-        // TS 顺序：先查占用并注册 controller，再读设置与校验
-        // （validate 在 try/defer 之外——校验失败时 controller 不清理，
-        // 与 TS 缺陷逐字一致）。
+        // 占用检查保持 TS 顺序；参数校验移到 controller 注册之前。
+        // TS 源在注册之后才 validate（validate 在 try/defer 之外）——校验
+        // 失败时 controller 不清理，该会话永久 SIM_ANALYSIS_RUNNING。
+        // 此处为有意修复（与 TS 的差异：非法参数不会泄漏占用）。
         if controller(for: sessionId) != nil { throw SimilarityServiceError.analysisRunning }
-        let signal = JobAbortSignal()
-        registerController(signal, for: sessionId)
 
         let thresholdValue = threshold ?? getNumber("default_threshold", 10)
         let minGroupSizeValue = minGroupSize ?? getNumber("default_min_group_size", 2)
@@ -201,6 +200,9 @@ public final class SimilarityService {
         try validateSimilarityParameters(threshold: thresholdValue, minGroupSize: minGroupSizeValue)
         let threshold = Int(thresholdValue)
         let minGroupSize = Int(minGroupSizeValue)
+
+        let signal = JobAbortSignal()
+        registerController(signal, for: sessionId)
 
         var runId: Int64 = 0
         var runStatus: String = "failed"
@@ -294,13 +296,34 @@ public final class SimilarityService {
                     offset += decodeBatchSize
 
                     var insertRows: [SimilarityHashInsert] = []
-                    for photo in batch {
-                        guard let pixels = await thumbnailProvider(photo.filepath, previewMaxDimension),
-                              let stat = sourceStats[photo.id] else { continue }
+                    // 审计 P1-性能：批内并发解码（batch 大小即
+                    // similarity_decode_concurrency 设置，4 默认）。此前
+                    // for-await 顺序解码，10 万张有效并发 = 1。RAWDecoder
+                    // 走 ImageIO 线程安全，sourceStats 只读并发访问安全。
+                    typealias DecodeResult = (photoId: String, pixels: [UInt8]?, stat: (size: Int, mtimeMs: Double)?)
+                    let results = await withTaskGroup(
+                        of: DecodeResult.self,
+                        returning: [DecodeResult].self
+                    ) { group in
+                        for photo in batch {
+                            group.addTask { [thumbnailProvider, sourceStats] in
+                                let pixels = await thumbnailProvider(photo.filepath, previewMaxDimension)
+                                return (photo.id, pixels, sourceStats[photo.id])
+                            }
+                        }
+                        var all: [DecodeResult] = []
+                        all.reserveCapacity(batch.count)
+                        for await result in group {
+                            all.append(result)
+                        }
+                        return all
+                    }
+                    for result in results {
+                        guard let pixels = result.pixels, let stat = result.stat else { continue }
                         let hash = DHash.compute(pixels9x8: pixels)
-                        existingHashMap[photo.id] = hash
+                        existingHashMap[result.photoId] = hash
                         insertRows.append(SimilarityHashInsert(
-                            sessionId: sessionId, photoId: photo.id, hash: hash,
+                            sessionId: sessionId, photoId: result.photoId, hash: hash,
                             fileSize: stat.size, fileMtimeMs: stat.mtimeMs
                         ))
                     }

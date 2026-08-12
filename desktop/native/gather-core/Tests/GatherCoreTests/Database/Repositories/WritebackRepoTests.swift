@@ -183,6 +183,32 @@ struct WritebackRepoTests {
         #expect(remaining[0].id == rows[1].id, "written 行不应被清理")
     }
 
+    @Test func deleteItemsByIdsChunkedOver400DeletesLastBlock() throws {
+        // 审计 P1：分块（400/批）路径的末块回归——此前末块可能残留。
+        let db = try makeDB()
+        try insertSession(db, id: "s1")
+        let repo = WritebackRepo(connection: db)
+        let count = 450
+
+        // 分批 save（每次 saveItems 全量替换，需一次写入全部）。
+        var items: [WritebackItemInput] = []
+        for i in 0..<count {
+            let photoId = "p\(String(format: "%04d", i))"
+            try insertPhoto(db, id: photoId, sessionId: "s1")
+            items.append(item(photoId))
+        }
+        try repo.saveItems(sessionId: "s1", module: "culling", items: items)
+        let rows = try repo.getItems(sessionId: "s1")
+        #expect(rows.count == count)
+        for row in rows {
+            try repo.updateStatus(itemId: row.id, status: "synced")
+        }
+
+        // 全部删除：跨 400 边界（450 = 400 + 50 末块）。
+        try repo.deleteItemsByIds(sessionId: "s1", module: "culling", ids: rows.map(\.id))
+        #expect(try repo.getItems(sessionId: "s1").isEmpty, "450 条 synced 行应全部被清理（含末块）")
+    }
+
     @Test func updateBackupPathAttributesKeywords() throws {
         let db = try makeDB()
         try insertSession(db, id: "s1")

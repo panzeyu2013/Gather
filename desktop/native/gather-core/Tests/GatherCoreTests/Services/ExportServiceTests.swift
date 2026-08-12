@@ -190,4 +190,53 @@ struct ExportServiceTests {
         #expect(try Data(contentsOf: output).count > 0)
     }
 #endif
+
+    /// 第四轮审计 #5（MED）：{time} 占位符 12h/24h 不一致。
+    /// 修复前用 DateFormatter.localizedString(.medium)：12h locale 产出
+    /// "3-45-30 PM"（空格 + AM/PM），与 ExportView 预览的 HH-mm-ss 不符。
+    /// 修复后固定 HH-mm-ss（24h 制），任何 locale 下输出一致。
+    @Test func timePlaceholderUsesFixed24HourFormat() throws {
+        let db = try makeExportDatabase()
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-source-" + UUID().uuidString, isDirectory: true)
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-time-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        let input = source.appendingPathComponent("photo.jpg")
+        try Data("photo".utf8).write(to: input)
+        let session = try SessionRepo(connection: db).create(
+            name: "Time", source: "local", sourcePath: source.path
+        )
+        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        let service = ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            connection: db
+        )
+        let options = ExportOptions(
+            scope: .session,
+            variantPolicy: .preferred,
+            format: .original,
+            naming: ExportNaming(pattern: "{time}"),
+            includeXmp: false,
+            destination: destination.path
+        )
+
+        let result = try service.execute(sessionId: session.id, options: options)
+        #expect(result.exported == 1)
+        let files = try FileManager.default.contentsOfDirectory(atPath: destination.path)
+        #expect(files.count == 1)
+        let name = files[0]
+        // 固定 HH-mm-ss：24h 制、无空格无 AM/PM。
+        #expect(
+            name.range(of: #"^\d{2}-\d{2}-\d{2}\.jpg$"#, options: .regularExpression) != nil,
+            "导出文件名应形如 HH-mm-ss.jpg，实际 \(name)"
+        )
+        #expect(!name.contains("AM"), "12h 制 AM 泄漏：\(name)")
+        #expect(!name.contains("PM"), "12h 制 PM 泄漏：\(name)")
+    }
 }

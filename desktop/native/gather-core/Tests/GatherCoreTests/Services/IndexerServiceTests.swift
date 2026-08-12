@@ -286,6 +286,77 @@ struct IndexSeqTests {
     }
 }
 
+/// 第四轮审计 #3（MED）：取消/失败后 index_seq 不 bump。
+/// 批次已提交但扫描中途取消时，新照片对已完成分析（sim/fkw）的可见性
+/// 依赖 index_seq 游标推进；任何终态只要发生过真实变更都必须 bump。
+@Suite("IndexService index_seq on cancelled scan")
+struct CancelledScanIndexSeqTests {
+    @Test("bumps index_seq when the scan is cancelled after a batch committed")
+    func bumpsIndexSeqOnCancelledScan() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        // 33 张照片（字典序：…p7、p8、p9）：首批 32 张提交时，第 32 张
+        // （p8.jpg）解码中 abort；随后的 pull 循环 throwIfCancelled 抛取消。
+        for i in 0..<33 {
+            try Data("content-\(i)".utf8).write(to: URL(fileURLWithPath: root + "/p\(i).jpg"))
+        }
+        let db = try makeMigratedDB()
+        let sessionRepo = SessionRepo(connection: db)
+        let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
+        // 预置已完成的 sim/fkw 分析（快照 index_seq=0）：扫描必须推进会话
+        // index_seq，否则这两条已完成分析永远看不到新照片。
+        _ = try db.prepare("""
+            INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
+            VALUES (?, 'similarity', 0, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{}', 'ok')
+          """).run([.text(session.id)])
+        _ = try db.prepare("""
+            INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
+            VALUES (?, 'face_keywording', 0, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{}', 'ok')
+          """).run([.text(session.id)])
+
+        // 首批 32 张的末位（p8.jpg）解码时 abort：批仍提交；扫描在 pull 循环
+        // 的 throwIfCancelled 抛 JobCancelledError（修复前异常跳过终态块，
+        // index_seq 停在 0）。
+        let signal = JobAbortSignal()
+        let lastBatchPath = root + "/p8.jpg"
+        let indexer = IndexerService(
+            connection: db,
+            sessionRepo: sessionRepo,
+            photoRepo: PhotoRepo(connection: db),
+            assetRepo: AssetRepo(connection: db),
+            getDimensions: { path in
+                if path == lastBatchPath {
+                    signal.abort()
+                    throw JobCancelledError()
+                }
+                return (100, 80)
+            },
+            getSetting: { _, defaultValue in defaultValue }
+        )
+        let repo = AnalysisJobRepo(connection: db)
+        let job = try repo.create(JobCreateParams(
+            type: .metadataScan, scopeType: "session", scopeId: session.id, dedupeKey: "d"
+        ))
+        let context = JobRunContext(
+            signal: signal,
+            repo: repo,
+            jobId: job.id,
+            leaseOwner: "test",
+            updateProgress: { _, _, _ in true },
+            progressSink: nil
+        )
+
+        await #expect(throws: JobCancelledError.self) {
+            try await indexer.scanSession(sessionId: session.id, context: context)
+        }
+        // 首批已提交（p8 转 failed，不入库）：新照片入库。
+        #expect(try rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 31)
+        // 修复点：取消路径同样 bump —— 预置的已完成分析（index_seq=0）相对
+        // 会话 index_seq（1）过期，新照片对分析可见。
+        #expect(try sessionRepo.getIndexSeq(id: session.id) == 1)
+    }
+}
+
 // MARK: - 懒 checksum（TS index-lazy-checksum.test.ts 逐条对应）
 
 @Suite("IndexService lazy checksum")

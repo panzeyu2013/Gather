@@ -254,6 +254,58 @@ struct JobServiceTests {
         }
     }
 
+    /// 第四轮审计 #1（HIGH）：waitForResult 注册竞态。
+    /// 修复前「检查完成结果」与「注册 waiter」是两个临界区——任务在
+    /// takeCompletedResult(nil) 与 appendWaiter 之间完成时，新等待者永不
+    /// resume（挂满 60 分钟超时）。修复后检查与注册同一临界区，已登记结果
+    /// 立即取回。此用例构造「任务已完成但结果未取」场景，waitForResult
+    /// 必须立即返回而非等待超时。
+    @Test func waitForResultReturnsImmediatelyForCompletedButUntakenResult() async throws {
+        let env = try Env()
+        let job = try env.service.create(env.makeParams(type: .duplicateScan))
+        // 任务已完成（完成结果已登记、尚未被任何 waitForResult 取走）。
+        env.service.completeResultForTesting(id: job.id, value: "early-result")
+
+        let value: String? = try await env.service.waitForResult(jobId: job.id, timeoutMs: 500)
+        #expect(value == "early-result")
+    }
+
+    /// 第四轮审计 #2（MED）：排队取消结果被 drain 的 claim 失败分支覆盖。
+    /// queued 任务取消时 completeResult(JobCancelledError) 已登记；若 drain
+    /// 在 list 快照之后、claim 之前赶上（claim 失败分支无条件
+    /// completeResult(.error(notClaimable))），等待者会收到错误类型漂移。
+    /// 修复后已登记结果存在时跳过覆盖。此用例直接驱动该分支做确定性验证。
+    @Test func claimFailureDoesNotOverwriteQueuedCancellationResult() async throws {
+        let env = try Env()
+        env.service.start()
+        defer { Task { await env.service.stop() } }
+
+        // 排队任务取消：cancel 同步登记 JobCancelledError。
+        let job = try env.service.create(env.makeParams(type: .duplicateScan))
+        #expect(try env.service.cancel(job.id))
+        // drain 的 claim 失败分支：任务在 list 快照与 claim 之间被取消。
+        env.service.handleClaimFailure(id: job.id, error: JobServiceError.notClaimable(job.id))
+
+        do {
+            let _: String? = try await env.service.waitForResult(jobId: job.id, timeoutMs: 500)
+            Issue.record("应抛 JobCancelledError 而非 notClaimable")
+        } catch is JobCancelledError {
+            // 预期
+        } catch {
+            Issue.record("错误类型漂移：收到 \(error)")
+        }
+
+        // 对照组：无已登记结果时 claim 失败照常分发 notClaimable。
+        let other = try env.service.create(env.makeParams(type: .duplicateScan, scopeId: "s2"))
+        env.service.handleClaimFailure(id: other.id, error: JobServiceError.notClaimable(other.id))
+        do {
+            let _: String? = try await env.service.waitForResult(jobId: other.id, timeoutMs: 500)
+            Issue.record("应抛 notClaimable")
+        } catch let JobServiceError.notClaimable(id) {
+            #expect(id == other.id)
+        }
+    }
+
     @Test func throttlesProgressAndFlushesCheckpoint() async throws {
         let env = try Env()
         var updates: [JobProgressUpdate] = []

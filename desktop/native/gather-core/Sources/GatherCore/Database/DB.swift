@@ -69,6 +69,24 @@ public final class DBConnection {
         handle = db
         try exec("PRAGMA journal_mode = WAL;")
         try exec("PRAGMA foreign_keys = ON;")
+        // 审计 P1-1：多线程共用单连接（JobService worker/协调器/主线程 UI），
+        // 无 busy_timeout 时并发写立即 SQLITE_BUSY 冒泡到 UI。5s 等待让
+        // 短暂写锁竞争（WAL 单写者）退化为排队而非报错。
+        try exec("PRAGMA busy_timeout = 5000;")
+    }
+
+    /// 连接级串行化锁（审计 P1-1）：同一连接上所有 SQL 执行（事务与非事务）
+    /// 互斥，对齐 better-sqlite3 单线程语义——防止线程 B 的 autocommit 语句
+    /// 插入线程 A 的 BEGIN…COMMIT 之间随其回滚静默丢失，以及
+    /// sqlite3_changes/last_insert_rowid 的跨线程错乱。NSRecursiveLock 支持
+    /// transaction() 内嵌套的 exec/prepare 重入。
+    private let connectionLock = NSRecursiveLock()
+
+    /// 供 DBStatement 执行期持有连接锁（fileprivate：仅数据库层内部使用）。
+    fileprivate func withConnectionLock<T>(_ body: () throws -> T) rethrows -> T {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return try body()
     }
 
     public func close() {
@@ -82,48 +100,58 @@ public final class DBConnection {
     var rawHandle: OpaquePointer? { handle }
 
     public var lastInsertRowid: Int64 {
-        guard let handle else { return 0 }
-        return sqlite3_last_insert_rowid(handle)
+        withConnectionLock {
+            guard let handle else { return 0 }
+            return sqlite3_last_insert_rowid(handle)
+        }
     }
 
     public var changes: Int {
-        guard let handle else { return 0 }
-        return Int(sqlite3_changes(handle))
+        withConnectionLock {
+            guard let handle else { return 0 }
+            return Int(sqlite3_changes(handle))
+        }
     }
 
     /// user_version pragma（迁移版本号）。
     public var userVersion: Int {
         get {
-            guard let row = try? prepare("PRAGMA user_version").get() else { return 0 }
-            return Int(row[0].intValue ?? 0)
+            withConnectionLock {
+                guard let row = try? prepare("PRAGMA user_version").get() else { return 0 }
+                return Int(row[0].intValue ?? 0)
+            }
         }
         set {
             _ = try? exec("PRAGMA user_version = \(newValue)")
         }
     }
 
-    /// 执行无返回值的 SQL。
+    /// 执行无返回值的 SQL（连接级锁内执行，见 withConnectionLock）。
     @discardableResult
     public func exec(_ sql: String) throws -> Int {
-        guard let handle else { throw DBError.message("数据库已关闭") }
-        var err: UnsafeMutablePointer<CChar>?
-        let rc = sqlite3_exec(handle, sql, nil, nil, &err)
-        if rc != SQLITE_OK {
-            let msg = err.map { String(cString: $0) } ?? "sqlite3_exec 失败"
-            sqlite3_free(err)
-            throw DBError.message("\(msg)（SQL: \(sql.prefix(200))）")
+        try withConnectionLock {
+            guard let handle else { throw DBError.message("数据库已关闭") }
+            var err: UnsafeMutablePointer<CChar>?
+            let rc = sqlite3_exec(handle, sql, nil, nil, &err)
+            if rc != SQLITE_OK {
+                let msg = err.map { String(cString: $0) } ?? "sqlite3_exec 失败"
+                sqlite3_free(err)
+                throw DBError.message("\(msg)（SQL: \(sql.prefix(200))）")
+            }
+            return Int(sqlite3_changes(handle))
         }
-        return Int(sqlite3_changes(handle))
     }
 
     public func prepare(_ sql: String) throws -> DBStatement {
-        guard let handle else { throw DBError.message("数据库已关闭") }
-        var stmt: OpaquePointer?
-        let rc = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
-        guard rc == SQLITE_OK, let stmt else {
-            throw DBError.message("SQL 编译失败: \(String(cString: sqlite3_errmsg(handle)))")
+        try withConnectionLock {
+            guard let handle else { throw DBError.message("数据库已关闭") }
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
+            guard rc == SQLITE_OK, let stmt else {
+                throw DBError.message("SQL 编译失败: \(String(cString: sqlite3_errmsg(handle)))")
+            }
+            return DBStatement(handle: stmt, owner: self)
         }
-        return DBStatement(handle: stmt, owner: self)
     }
 
     // ── 事务 ──
@@ -134,45 +162,42 @@ public final class DBConnection {
     /// 嵌套事务计数：嵌套调用退化为 SAVEPOINT（better-sqlite3 语义——
     /// TS 的 db.transaction 可嵌套，session.service 的 addPhotos/deleteSessions
     /// 依赖 savepoint 原子性；SQLite 裸 BEGIN 嵌套会直接报错）。
-    /// 计数与锁：SQLITE_OPEN_FULLMUTEX 只串行化 SQLite 内部，不保护 depth；
-    /// 事务全程持 NSRecursiveLock 保证同一连接上事务严格串行（对齐
-    /// better-sqlite3 单线程语义），嵌套调用经递归锁重入。
+    /// 事务全程持连接级锁（withConnectionLock）保证同一连接上事务严格串行。
     private var transactionDepth = 0
-    private let transactionLock = NSRecursiveLock()
 
     public func transaction<T>(_ body: () throws -> T) throws -> T {
-        transactionLock.lock()
-        defer { transactionLock.unlock() }
-        transactionDepth += 1
-        let isNested = transactionDepth > 1
-        do {
-            if isNested {
-                try exec("SAVEPOINT gather_tx_\(transactionDepth)")
-            } else {
-                try begin()
+        try withConnectionLock {
+            transactionDepth += 1
+            let isNested = transactionDepth > 1
+            do {
+                if isNested {
+                    try exec("SAVEPOINT gather_tx_\(transactionDepth)")
+                } else {
+                    try begin()
+                }
+            } catch {
+                transactionDepth -= 1
+                throw error
             }
-        } catch {
-            transactionDepth -= 1
-            throw error
-        }
-        do {
-            let result = try body()
-            if isNested {
-                try exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
-            } else {
-                try commit()
+            do {
+                let result = try body()
+                if isNested {
+                    try exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
+                } else {
+                    try commit()
+                }
+                transactionDepth -= 1
+                return result
+            } catch {
+                if isNested {
+                    _ = try? exec("ROLLBACK TO SAVEPOINT gather_tx_\(transactionDepth)")
+                    _ = try? exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
+                } else {
+                    _ = try? rollback()
+                }
+                transactionDepth -= 1
+                throw error
             }
-            transactionDepth -= 1
-            return result
-        } catch {
-            if isNested {
-                _ = try? exec("ROLLBACK TO SAVEPOINT gather_tx_\(transactionDepth)")
-                _ = try? exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
-            } else {
-                _ = try? rollback()
-            }
-            transactionDepth -= 1
-            throw error
         }
     }
 }
@@ -191,7 +216,8 @@ public final class DBStatement {
 
     /// 按顺序绑定位置参数（1-based，对应 SQL 中的 `?`）。
     public func bind(_ index: Int, _ value: DBValue?) throws {
-        let rc: Int32
+        try owner.withConnectionLock {
+            let rc: Int32
         switch value ?? .null {
         case .null:
             rc = sqlite3_bind_null(stmt, Int32(index))
@@ -206,7 +232,8 @@ public final class DBStatement {
                 sqlite3_bind_blob(stmt, Int32(index), buf.baseAddress, Int32(buf.count), SQLITE_TRANSIENT_PTR)
             }
         }
-        guard rc == SQLITE_OK else { throw DBError.message("绑定参数失败: \(sqlite3_errcode(stmt))") }
+            guard rc == SQLITE_OK else { throw DBError.message("绑定参数失败: \(sqlite3_errcode(stmt))") }
+        }
     }
 
     public func bind(_ values: [DBValue?]) throws {
@@ -216,47 +243,55 @@ public final class DBStatement {
     }
 
     public func reset() {
-        sqlite3_reset(stmt)
-        sqlite3_clear_bindings(stmt)
+        owner.withConnectionLock {
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
     }
 
-    /// 执行并取回全部行。
+    /// 执行并取回全部行（连接级锁内执行，见 withConnectionLock）。
     public func query(_ values: [DBValue?] = []) throws -> [DBRow] {
-        try bind(values)
-        defer { reset() }
-        var rows: [DBRow] = []
-        while true {
-            let rc = sqlite3_step(stmt)
-            if rc == SQLITE_ROW {
-                rows.append(columns())
-            } else if rc == SQLITE_DONE {
-                break
-            } else {
-                throw DBError.message("查询失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+        try owner.withConnectionLock {
+            try bind(values)
+            defer { reset() }
+            var rows: [DBRow] = []
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    rows.append(columns())
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw DBError.message("查询失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+                }
             }
+            return rows
         }
-        return rows
     }
 
-    /// 执行并返回受影响行数。
+    /// 执行并返回受影响行数（连接级锁内执行，见 withConnectionLock）。
     public func run(_ values: [DBValue?] = []) throws -> Int {
-        try bind(values)
-        defer { reset() }
-        let rc = sqlite3_step(stmt)
-        guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
-            throw DBError.message("执行失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+        try owner.withConnectionLock {
+            try bind(values)
+            defer { reset() }
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
+                throw DBError.message("执行失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+            }
+            return Int(sqlite3_changes(ownerHandle))
         }
-        return owner.changes
     }
 
-    /// 取单行（无行返回 nil）。
+    /// 取单行（无行返回 nil；连接级锁内执行，见 withConnectionLock）。
     public func get(_ values: [DBValue?] = []) throws -> DBRow? {
-        try bind(values)
-        defer { reset() }
-        let rc = sqlite3_step(stmt)
-        if rc == SQLITE_ROW { return columns() }
-        if rc == SQLITE_DONE { return nil }
-        throw DBError.message("查询失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+        try owner.withConnectionLock {
+            try bind(values)
+            defer { reset() }
+            let rc = sqlite3_step(stmt)
+            if rc == SQLITE_ROW { return columns() }
+            if rc == SQLITE_DONE { return nil }
+            throw DBError.message("查询失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+        }
     }
 
     private func columns() -> DBRow {

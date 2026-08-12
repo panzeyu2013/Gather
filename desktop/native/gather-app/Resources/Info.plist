@@ -24,6 +24,8 @@
 	<string>14.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Gather 需要通过自动化（AppleScript）读取 Capture One 当前选中的照片并同步元数据，以实现从 Capture One 导入与写回。</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

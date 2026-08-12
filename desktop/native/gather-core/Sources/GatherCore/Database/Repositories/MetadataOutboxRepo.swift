@@ -187,29 +187,32 @@ public final class MetadataOutboxRepo {
         patch: JSONValue,
         dirtyFields: [String]
     ) throws -> MetadataOutboxRow {
-        let existing = try get(xmpPath)
-        var existingPatch = JSONValue.object([:])
-        var existingDirty: [String] = []
-        if let existing {
-            let startsNewRevision =
-                existing.persistedRevision == existing.revision &&
-                ["written", "synced", "clean", "cleaned"].contains(existing.status)
-            if !startsNewRevision {
-                existingPatch = (try? JSONValue.parse(existing.patchJSON)) ?? JSONValue.object([:])
-                existingDirty = ((try? JSONValue.parse(existing.dirtyFields)) as JSONValue?)?.arrayValue ?? []
-            }
-        }
-        let mergedPatch = mergeObjects(existingPatch, patch)
-        var mergedDirty: [String] = []
-        for d in existingDirty + dirtyFields where !mergedDirty.contains(d) {
-            mergedDirty.append(d)
-        }
-        let sourceModule = patch["source"]?.stringValue ?? ""
-        let resolvedSource = sourceModule.isEmpty ? "manual" : sourceModule
-        let revision = (existing?.revision ?? 0) + 1
-        let now = nowISOString()
-
+        // 审计 P1：读-改-写必须整体入事务——此前 get() 在事务外，两会话
+        // 共享同一 sidecar 并发入队时 revision 相同、后写覆盖先写，关键词/
+        // 评级等字段静默丢失。
         try connection.transaction {
+            let existing = try get(xmpPath)
+            var existingPatch = JSONValue.object([:])
+            var existingDirty: [String] = []
+            if let existing {
+                let startsNewRevision =
+                    existing.persistedRevision == existing.revision &&
+                    ["written", "synced", "clean", "cleaned"].contains(existing.status)
+                if !startsNewRevision {
+                    existingPatch = (try? JSONValue.parse(existing.patchJSON)) ?? JSONValue.object([:])
+                    existingDirty = ((try? JSONValue.parse(existing.dirtyFields)) as JSONValue?)?.arrayValue ?? []
+                }
+            }
+            let mergedPatch = mergeObjects(existingPatch, patch)
+            var mergedDirty: [String] = []
+            for d in existingDirty + dirtyFields where !mergedDirty.contains(d) {
+                mergedDirty.append(d)
+            }
+            let sourceModule = patch["source"]?.stringValue ?? ""
+            let resolvedSource = sourceModule.isEmpty ? "manual" : sourceModule
+            let revision = (existing?.revision ?? 0) + 1
+            let now = nowISOString()
+
             _ = try connection.prepare("""
                 INSERT INTO metadata_outbox (
                 xmp_path, owner_session_id, created_by_session_id, photo_path, patch_json, dirty_fields,

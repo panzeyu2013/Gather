@@ -208,10 +208,27 @@ public final class PhotoRepo {
     }
 
     /// 按逻辑资产分组的分页（RAW/JPEG 变体同页），返回每页行 + 游标。
+    /// 审计 P1-性能：原 GROUP BY COALESCE(asset_id,id) 无索引可走（SQLite
+    /// 表达式索引禁止引用 rowid）→ 改两分支 UNION：有 asset_id 的照片按
+    /// asset_id 分组（走 idx_photos_asset_group 覆盖索引），无 asset_id 的
+    /// 照片每行自成一组。语义与 COALESCE 分组等价。
     public func getAssetPage(sessionId: String, afterFirstRowid: Int64? = nil, limit: Int = 200) throws -> (rows: [PhotoPageRow], cursor: Int64?) {
         let groups = try connection.prepare(
-            "SELECT COALESCE(asset_id, id) AS gid, MIN(rowid) AS first_rowid FROM photos WHERE session_id = ? GROUP BY COALESCE(asset_id, id) HAVING MIN(rowid) > ? ORDER BY first_rowid LIMIT ?"
-        ).query([.text(sessionId), .int(afterFirstRowid ?? 0), .int(Int64(limit))])
+            """
+            SELECT gid, MIN(first_rowid) AS first_rowid FROM (
+              SELECT asset_id AS gid, MIN(rowid) AS first_rowid
+                FROM photos WHERE session_id = ? AND asset_id IS NOT NULL
+                GROUP BY asset_id
+              UNION ALL
+              SELECT id AS gid, rowid AS first_rowid
+                FROM photos WHERE session_id = ? AND asset_id IS NULL
+            )
+            GROUP BY gid
+            HAVING MIN(first_rowid) > ?
+            ORDER BY MIN(first_rowid)
+            LIMIT ?
+            """
+        ).query([.text(sessionId), .text(sessionId), .int(afterFirstRowid ?? 0), .int(Int64(limit))])
         if groups.isEmpty {
             return ([], nil)
         }
@@ -221,7 +238,7 @@ public final class PhotoRepo {
             let chunk = gids[chunkStart..<min(chunkStart + 800, gids.count)].map { $0.gid }
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             let chunkRows = try connection.prepare(
-                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND COALESCE(p.asset_id, p.id) IN (\(placeholders)) ORDER BY p.rowid"
+                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders)) ORDER BY p.rowid"
             ).query([.text(sessionId)] + chunk.map { .text($0) })
             rows.append(contentsOf: try chunkRows.map { try PhotoPageRow(row: $0) })
         }
@@ -230,7 +247,7 @@ public final class PhotoRepo {
 
     public func countAssetsBySession(sessionId: String) throws -> Int {
         let row = try connection.prepare(
-            "SELECT COUNT(*) AS count FROM (SELECT COALESCE(asset_id, id) AS gid FROM photos WHERE session_id = ? GROUP BY gid)"
+            "SELECT COUNT(*) AS count FROM (SELECT COALESCE(NULLIF(asset_id, ''), id) AS gid FROM photos WHERE session_id = ? GROUP BY gid)"
         ).get([.text(sessionId)])
         return Int(row?[0].intValue ?? 0)
     }

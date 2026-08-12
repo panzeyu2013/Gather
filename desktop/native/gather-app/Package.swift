@@ -25,7 +25,6 @@ let package = Package(
             exclude: ["Tests", "Resources"],
             sources: [
                 "Sources/GatherApp",
-                "Jobs",
                 "Settings",
                 "FaceKeywording",
                 "Duplicates",

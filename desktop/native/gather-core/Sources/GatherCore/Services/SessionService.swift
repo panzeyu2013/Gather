@@ -166,6 +166,10 @@ public final class SessionService {
         _ = try connection.prepare("DELETE FROM person_photos WHERE session_id = ?").run([.text(sessionId)])
         _ = try connection.prepare("DELETE FROM photo_metadata_cache WHERE session_id = ?").run([.text(sessionId)])
         _ = try connection.prepare("DELETE FROM writeback_items WHERE session_id = ?").run([.text(sessionId)])
+        // 审计 P2：analysis_jobs 无 FK，会话删除后残留僵尸行（状态查询/
+        // 任务中心会一直看到幽灵任务）。
+        _ = try connection.prepare("DELETE FROM analysis_jobs WHERE scope_type = 'session' AND scope_id = ?")
+            .run([.text(sessionId)])
         try photoRepo.deleteBySession(sessionId: sessionId)
     }
 

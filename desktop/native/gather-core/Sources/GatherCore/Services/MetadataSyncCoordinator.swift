@@ -96,7 +96,14 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     public let skipReloadAck: Bool
 
     /// TS: eventSink（summary push 回调，宿主组合根接线）。
-    public var eventSink: ((MetadataSyncSummary) -> Void)?
+    /// 审计 P1-并发：后台 writer 线程读、MainActor（Router 接线处）写 →
+    /// 锁保护；调用时先取副本再回调（锁内回调可能反向调用协调器而死锁）。
+    private let eventSinkLock = NSLock()
+    private var _eventSink: ((MetadataSyncSummary) -> Void)?
+    public var eventSink: ((MetadataSyncSummary) -> Void)? {
+        get { eventSinkLock.withLock { _eventSink } }
+        set { eventSinkLock.withLock { _eventSink = newValue } }
+    }
 
     /// TS: timers（Map<xmpPath, Timeout>）→ 可取消 Task。
     private var timers: [String: Task<Void, Never>] = [:]
@@ -667,7 +674,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     private func emitSummary(sessionId: String) throws -> MetadataSyncSummary {
         let summary = try getSummary(sessionId: sessionId)
-        eventSink?(summary)
+        let sink = eventSinkLock.withLock { _eventSink }
+        sink?(summary)
         return summary
     }
 

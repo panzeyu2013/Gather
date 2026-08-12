@@ -1211,12 +1211,12 @@ public final class CullingService {
         if scope == .filtered {
             let whereClause = buildFilteredWhere(sessionId: sessionId, filters: filters)
             let groups = try connection.prepare("""
-                SELECT COALESCE(p.asset_id, p.id) AS gid, MIN(p.rowid) AS first_rowid
+                SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
                 FROM photos p
                 LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
                 LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
                 WHERE \(whereClause.sql)
-                GROUP BY COALESCE(p.asset_id, p.id)
+                GROUP BY COALESCE(NULLIF(p.asset_id, ''), p.id)
                 HAVING MIN(p.rowid) > ?
                 ORDER BY first_rowid
                 LIMIT ?
@@ -1231,10 +1231,10 @@ public final class CullingService {
             let similarity = buildSimilarityClause(sessionId: sessionId, requestedGroupId: requestedGroupId)
             if let similarity {
                 let groups = try connection.prepare("""
-                    SELECT COALESCE(p.asset_id, p.id) AS gid, MIN(p.rowid) AS first_rowid
+                    SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
                     FROM photos p
                     WHERE p.session_id = ? AND \(similarity.sql) AND \(preferredRowPredicate())
-                    GROUP BY COALESCE(p.asset_id, p.id)
+                    GROUP BY COALESCE(NULLIF(p.asset_id, ''), p.id)
                     HAVING MIN(p.rowid) > ?
                     ORDER BY first_rowid
                     LIMIT ?
@@ -1266,7 +1266,7 @@ public final class CullingService {
             let chunkRows = try connection.prepare("""
                 SELECT \(PhotoRepo.photoPageColumns)
                 FROM photos p
-                WHERE p.session_id = ? AND COALESCE(p.asset_id, p.id) IN (\(placeholders))
+                WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders))
                 ORDER BY p.rowid
               """).query([.text(sessionId)] + chunk.map { .text($0) })
             rows.append(contentsOf: try chunkRows.map { try CullingPhotoRow(row: PhotoPageRow(row: $0)) })
@@ -1281,7 +1281,7 @@ public final class CullingService {
         "p.id = (" +
             "SELECT p2.id FROM photos p2" +
             " WHERE p2.session_id = p.session_id" +
-            " AND COALESCE(p2.asset_id, p2.id) = COALESCE(p.asset_id, p.id)" +
+            " AND COALESCE(NULLIF(p2.asset_id, ''), p2.id) = COALESCE(NULLIF(p.asset_id, ''), p.id)" +
             " ORDER BY CASE WHEN \(PhotoRepo.rawExtensionLikeSQL) THEN 1 ELSE 0 END DESC, p2.rowid" +
             " LIMIT 1" +
         ")"
@@ -1414,7 +1414,7 @@ public final class CullingService {
             if let similarity {
                 let row = try connection.prepare("""
                     SELECT COUNT(*) AS count
-                    FROM (SELECT COALESCE(p.asset_id, p.id) AS gid
+                    FROM (SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
                           FROM photos p
                           WHERE p.session_id = ? AND \(similarity.sql)
                             AND \(preferredRowPredicate())
@@ -1436,7 +1436,7 @@ public final class CullingService {
             let whereClause = buildFilteredWhere(sessionId: sessionId, filters: filters)
             let row = try connection.prepare("""
                 SELECT COUNT(*) AS count
-                FROM (SELECT COALESCE(p.asset_id, p.id) AS gid
+                FROM (SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
                       FROM photos p
                       LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
                       LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id

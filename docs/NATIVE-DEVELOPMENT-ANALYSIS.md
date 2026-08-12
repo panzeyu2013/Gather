@@ -287,6 +287,7 @@ WKWebView 桥、Xcode 签名打包。
 - [DEVELOPMENT.md](DEVELOPMENT.md)：构建/测试/打包约定（P1-4 逐项迁移）
 - [IPC_CONTRACT.md](IPC_CONTRACT.md)：1.1 契约定型输入
 - [TEST.md](TEST.md)：单测/e2e 基线，3.4 写回对账来源
+- 本文件 §十一：**UI 对齐补强清单**（main 基线 vs 原生版逐页/逐组件差异与修复台账，2026-08-12 并入原 UI_COMPARISON_REPORT.md）
 
 ---
 
@@ -391,6 +392,14 @@ WKWebView 桥、Xcode 签名打包。
 | 3.5 | 已完成 | FaceKeywording、Persons、Template 和控制中心的原生流程与路由装配已完成；对应 TS IPC 已移除 |
 | 3.6 | 已完成 | Settings、Jobs、Duplicates、Export、ImagePreload、Filter、Navigation、Quality、Indexer 全部由 SwiftUI/GatherCore 承接；对应 TS IPC、renderer 和打包入口已删除 |
 
+
+> **2026-08-12 第四轮命令面校准**：SessionCommandRouter 实测 **118/118 命令全点亮**
+> （同步 execute 103 + 异步 executeAsync 22，去重 118，与 TS preload 白名单逐名相等；
+> export.* 与 image.preload_* 均已接线）。destructive 确认门控 31/31 全覆盖。
+> 历史文本中的 "~107/118"、"仅 export.*/image.preload_* NOT_IMPLEMENTED"、
+> "culling 20（sync 17 + async 3）"（实为 19：16+3）、"fkw 11 命令"（实为 13）、
+> "metadata 5 命令"（实为 7）均已过时，以本段为准。
+
 ### 10.5 Phase 4：移除 Electron
 
 | # | 任务 | 状态 | 完成日期 | 证据 |
@@ -438,3 +447,289 @@ WKWebView 桥、Xcode 签名打包。
 | 范围外 | **签名/公证/安装**：Apple 凭据、notarization、安装升级回滚、SBOM/模型 license 材料 | 发布凭据与运维环境 | 用户明确要求跳过；build.sh 只负责可复现 unsigned bundle 组装 |
 | 范围外 | **商业信号/实材性能归因**：导入/Culling/Similarity/Face 的真实材料与产品决策 | 产品数据与实材环境 | 用户明确要求跳过；算法基准和自动化测试不被冒充为商业证据 |
 | 可选 | **Telemetry 归档** | 基准环境可用 | `GATHER_TELEMETRY=1` 已实现；不阻塞本轮原生代码验收 |
+
+---
+
+## 十一、UI 对齐补强清单（main 基线 vs 原生版）
+
+> 2026-08-12：由 8 个并行 subagent 对每个页面/组件逐一通读生成，并入原
+> `UI_COMPARISON_REPORT.md`（该独立文件已删除，本节为权威台账）。
+> 基线：`main` 分支 `desktop/src/renderer`（Electron + React 18 + TS + CSS Modules
+> + i18next）；对比对象：当前 `refactor` 分支 `desktop/native/gather-app`（SwiftUI +
+> GatherCore 同进程直连）。行号引用均以分析时点为准。
+> 状态图例：`待做` → `进行中` → `已完成`。
+> **2026-08-12 第一轮修复（9 个并行 subagent 分域实施）**：全局设施（GatherLocalization
+> 本地化层 / GatherEventCenter 事件总线 / GatherToast Toast 系统 / NativeCommandClient
+> 出口翻译）与逐页 P0/P1 修复已落地，当时 gather-app 81/81 + gather-core 760/760 全绿
+> （第二轮后 90/90，见 §11.12）；P2 样式与数据源限制项见 §11.11。
+> **2026-08-12 第三轮（本轮）**：一致性审计后修复崩溃/生命周期/契约差异，见 §11.13。
+
+### 11.0 总览与全局缺口
+
+- 数据/命令契约层对齐度高（gather-core 逐字段搬运 TS 契约），差异集中在 **UI 层**。
+- **五大方向性缺口**：
+  1. **C1（Capture One）集成层整体缺失**：导入预检四层门控、健康面板、同步状态机、状态胶囊全部缺失；
+  2. **事件驱动刷新未接线**：`jobs:progress` / `culling:sync-status` / `gather:notification` 三条推送通道无任何 SwiftUI 消费者，各页靠手动刷新或局部轮询；
+  3. **错误码与文案无本地化**：`GatherErrorCode`、job type/status/progressMessage 的 rawValue 直接展示给用户，无 i18n；
+  4. **品牌视觉语言整体丢失**：主色 `#a54d2a`、暖米底色 `#f5f0eb`、边框+阴影+圆角(10/14/20)+hover 全部退化为系统蓝/系统灰平面风；
+  5. **Toast 系统完全缺失**，替换为常驻 banner，且 `captureOneError` 通知已 post 但无人订阅（错误静默丢失）。
+
+#### 全局设计 token 对比（global.css vs SwiftUI 实际值）
+
+| Token | 原始版 | 原生版 | 结论 |
+|---|---|---|---|
+| 背景 | `--color-bg:#f5f0eb` 暖米色 | `windowBackgroundColor` 系统灰 | 品牌底色丢失 |
+| 表面 | `#faf7f2` / elevated `#fffaf6` | `.controlBackgroundColor` | 近似、无 elevated |
+| 主色 | `--color-primary:#a54d2a`（陶土橘），hover `#9e4525`，soft `#f3dfd4` | `Color.accentColor`（系统蓝），全工程无 `.tint` 覆盖 | **品牌主色丢失** |
+| 语义色 | success `#31723d` / error `#b3403f` / warning `#d4944f` / info `#2d6ba1` | 系统 `.green/.red/.orange/.blue` | 语义近似 |
+| 圆角 | sm 10 / md 14 / lg 20 / control 12 / pill 999（px） | 内联字面量 6/8/10（pt），无 token | 更锐利、无体系 |
+| 阴影 | `--shadow-sm/md/control` 双层柔和阴影 | **无任何阴影** | 层级感缺失 |
+| hover | `--color-hover:#f0e8de`、按钮上浮/换色/反色 | 仅系统按钮默认态 | 反馈缺失 |
+| 字号 | 14px 基线；h1 24px/700；卡片名 16px/600 | 13pt 基线；24pt 页头；`.headline`13pt | 层级近似、值不同 |
+| 暗色模式 | **无**（固定浅色） | 系统语义色自动适配 | **原生更强** |
+| 响应式 | 多页 media query（680/760/900/1000px） | 无（窗口 min 1100×720） | 原生无 |
+
+### 11.1 Dashboard / Library
+
+**对齐良好**：10 个筛选字段、300ms 防抖、60/页分页、criteriaKey 归零页码、会话列表骨架均等价。
+
+**P0 缺口**
+
+| 功能 | 原始位置 | 原生现状 | 状态 |
+|---|---|---|---|
+| Capture One 导入（来源选择 + 四层预检门控 reachable/appRunning/automationAuthorized/documentOpen） | Dashboard/index.tsx L190-198, L295-303, L538-571；c1-preflight.ts L61-104 | NewSessionSheet 仅本地文件夹（DashboardView.swift L428-502）；`onCaptureOneImport` 桥已存在但 UI 无入口 | 已完成 |
+| 多选 + 全选(半选) + 批量删除 | index.tsx L76-78, L244-249, L393-425, L618-626 | 无 | 已完成 |
+| 索引失败卡片重试按钮 | index.tsx L361-371, L463-467 | 无 | 已完成 |
+| Toast 通知系统（截断导入警告/部分失败提示） | ToastStore + index.tsx L208-219 | 无（仅 actionError 横幅） | 已完成 |
+| jobs:progress 事件实时推送 | index.tsx L118-153 | 仅 2s/30s 轮询，且每 tick 每会话 N+1 查 workspace.status | 已完成 |
+| 错误码 → 中文文案 | utils/errors.ts L12-40；locales/ | 裸 code 直显 | 已完成 |
+| Library 支持面板 24 条上限 + "另有 N 个" | Library/index.tsx L348, L377, L390-392 | 仅 4 条、无更多提示 | 已完成 |
+| 字符串插值 bug | — | LibraryView.swift L175 `"⚠️ (album.name)"`、L256 `"还有 (...count - 4) 个候选"` 为字面量 | 已完成 |
+| i18n（zh/en） | locales/ 全套 | 全部硬编码中文 | 部分完成（仅 Settings 页 PageCopy，全应用 i18n 未做，见 11.11 ③） |
+
+**P1/P2**：卡片 hover 上浮+主色边框、选中态（原 css L81-85, L476-479）→ 无；日期格式 `2026年8月11日 14:30` vs `yyyy/M/d HH:mm`；RAW/JPEG 候选状态文案、孤立 XMP 错误码翻译 → rawValue 直出；任务进度 phase 翻译 → progressMessage 原文；侧边栏 76px 图标栏+4px 指示条 vs 200px 文字侧栏；离线角标 黑底70% vs 红底85%；星级文本色 vs 橙色。注：FilterBar/FilterBuilder 原始版亦为无引用死代码，不列入缺失。
+
+### 11.2 SessionDetail 外壳 + Gallery + ControlCenter
+
+**对齐良好**：justified 布局算法逐行等价（含单测）、搜索拉满链、selection 语义、resize 重排。
+
+**P0 缺口**
+
+| 功能 | 原始位置 | 原生现状 | 状态 |
+|---|---|---|---|
+| C1 状态胶囊（健康色点+队列计数+最近同步+12s 轮询+事件刷新） | index.tsx L136；C1StatusCapsule.tsx 全 | 完全缺失 | 待做（控制中心仅 syncCard 静态计数） |
+| 会话头索引进度条 + 失败重试 + 权威计数三态文案（含 "≥" 截断语义） | index.tsx L158-188；indexProgress.ts L32-64 | Gallery 头无；控制中心仅静态数字 + rawValue 枚举 | 已完成 |
+| 控制中心 Action Inbox（7 类聚合、固定优先级、失败任务 ≤3 行） | ControlCenter/index.tsx L127-154；workspace-view.ts L70-169 | 完全缺失；推荐卡直接显示 `recommendedNext.action` 原始枚举字符串 | 已完成 |
+| 三硬阶段进度条 + 软标记 | ControlCenter/index.tsx L100-125 | 仅文本数值 | 已完成 |
+| 推荐下一步 6 态完整映射 | workspace-view.ts L210-276 | 仅字符串 contains 猜页签（`retry_jobs` 无法路由） | 已完成 |
+| 事件驱动刷新 + 30s/3s 轮询兜底 | useWorkspaceStatus.ts L10-49；index.tsx L86-106 | 控制中心无轮询、无自动刷新，仅手动"刷新"按钮 | 已完成 |
+| 访问会话自动触发 metadata.scan（5s 节流） | index.tsx L52-61 | 缺失（需手动点扫描索引） | 待做（控制中心有手动按钮） |
+| Lightbox 滚轮缩放（0.5–5x）/ ←/→ 键盘翻页 / 相邻图预加载 | Lightbox.tsx L46-57, L78-95 | 均缺失（仅手势/按钮/Esc） | 待做（越界保护已补，见 11.13） |
+| 错误码 i18n | utils/errors.ts | 裸码直显 | 已完成 |
+
+**P1/P2**：缩略图尺寸按设置 256/1024/2048 vs 固定 512；搜索 useDeferredValue 即时 vs 300ms 防抖（注释为有意差异）；布局变矮时 scrollTop 钳制 → 无；单元格 hover 阴影/提亮、图片 contain 留边 vs fill 裁切；选择栏 primary 实底白字 vs accent 6% 淡底；返回语义 控制中心→Dashboard vs →Gallery。原生更强项：Gallery 失败态+重试、Lightbox 元数据 4 项、离线徽标、控制中心 jobsCard 内联任务列表。
+
+### 11.3 Culling / Duplicates（原生版最薄弱页）
+
+**P0 缺口（效率级缺失）**
+
+| 功能 | 原始位置 | 原生现状 | 状态 |
+|---|---|---|---|
+| 三栏工作台布局（工具条/查看器/胶片条/左侧评分区） | Culling.tsx L1175-1686；Culling.module.css L10-19 | 单列 ScrollView 表单 + 网格；查看器降级为弹出 sheet | 待做（11.11 自述保留） |
+| 键盘快捷键：0-5 评分、P/空格保留、X 拒绝、U 待定、←/→ 翻页、Cmd+Z 撤销重做 | Culling.tsx L1109-1149 | 全无 | 已完成 |
+| 胶片条（±50 虚拟化窗口、Cmd/Ctrl/Shift 多选、状态叠加层） | L1491-1579 | 完全缺失 | 待做（11.11 自述保留） |
+| 多条件组合筛选（星级+颜色+状态+冲突+未审） | L1720-1817 | 单一 FilterMode 枚举，星级/颜色维度缺失 | 已完成 |
+| 批量评分/批量颜色（作用于选中集） | L828-906, L1587-1652 | 仅批量 pickState | 已完成 |
+| 相似度组对比池（对比同组成员而非连续照片） | L675-691 | L1084 固定相邻照片 | 已完成 |
+| 人脸中心对齐平移（faceAlign） | L208-213, L229 | 仅放大，不对准 | 已完成 |
+| 内嵌查看器滚轮缩放 + 双击复位 + 缩放百分比 | L1311-1375 | sheet 内无滚轮/双击 | 已完成 |
+| culling:sync-status 事件订阅 + rAF 合帧 → 局部 patch | L612-632, L707-724 | 无事件；每次更新后整页 6 接口重拉，选择状态丢失 | 已完成 |
+| 预览预加载（后 8 张大图） | L699-705 | 无 | 已完成 |
+| 浏览位置恢复（refetch 后 loadUntilPhoto） | L486-514 | 无 | 已完成 |
+| "保留当前/保留所选，拒绝其余" + 自动跳到下一组 | L991-1091, L1653-1682 | 仅"只保留第一张" | 已完成 |
+| 加载中/空列表/无工作区引导态 | L1151-1173 | 无渲染（isLoading 存在未渲染，空列表空白） | 已完成 |
+| Duplicates：推荐徽章（best-member 评分） | Duplicates.tsx L68-75, L128-131 | 无 | 已完成 |
+| Duplicates：成员上限 12 + 展开/折叠 | L10, L77-79, L135-145 | 全部渲染 | 已完成 |
+| Duplicates：三档预设（2/4/7）+ 0-10 滑块 | L309-343 | Stepper 1...16（范围语义不一致） | 已完成 |
+| Duplicates：100 组分页 + 加载更多 | L11, L291-296, L406-416 | 全量一次性渲染 | 已完成 |
+| 错误码本地化 | utils/errors.ts | 原始描述直出 | 已完成 |
+
+**P1/P2**：自动前进开关、主视图 1/2/4 对比与 faceAlign 开关、导航组跳转、联动变体提示；同步按钮条件显隐（written>0/synced>0）→ 常显；评分/颜色当前值高亮、快捷键小字标注 → Menu 无反馈；Duplicates 成员文件大小、Tab 计数徽标、本地 patch 更新（每次整页重拉）；样式：胶片缩略图 122px 双高亮、42px 决策大按钮、28px 颜色圆钮、浮动冲突面板 → 全部无。
+
+### 11.4 Export / Jobs
+
+**P0 缺口**
+
+| 功能 | 原始位置 | 原生现状 | 状态 |
+|---|---|---|---|
+| Export 实时进度（逐文件 current/total/文件名、百分比、进度条、"Preparing export..."） | Export.tsx L131-158, L334-346；export.ipc.ts L141-163 | 完全无进度 UI，仅 isWorking 禁按钮；底层进度数据其实已写 DB（SessionCommandRouter L500-507） | 已完成 |
+| Jobs 自动刷新（有活跃任务 2s 条件轮询） | Jobs/index.tsx L32-41 | 一次性 .task + 手动刷新；JobService.setProgressSink 存在但宿主从未接线 | 已完成 |
+| 命名变量提示 + 实时命名预览（{date}/{time}/{counter}...） | Export.tsx L160-166, L286-293 | 仅一个文本框 | 已完成 |
+| 预览空间不足红色警告 | Export.tsx L320-325 | 无 | 已完成 |
+| 错误码→文案（EXPORT_*/CANCELLED） | utils/errors.ts | 裸码直显 | 已完成 |
+| Jobs 状态/类型/阶段本地化（"取消中"/"metadata.scan"/progressMessage） | index.tsx L11-26；utils/progress.ts | rawValue 直出 | 已完成 |
+| Jobs 加载态 | index.tsx L85-86 | isLoading 未渲染 | 已完成 |
+
+**P1/P2**：默认导出格式 original vs jpeg；原图格式下应隐藏水印/最长边控件（原生提交即报 EXPORT_ORIGINAL_NO_TRANSFORM——UI 可达的运行时错误）；水印默认 opacity 0.5/字号 24/滑块 0.1–1 vs 0.65/"32"/0.05–1；naming counterStart/dateFormat 默认值未传；JPEG 质量滑块 vs 文本框；目录为空按钮禁用 vs 提交时报错；历史折叠 + 计数；清空已完成精确禁用（阶段证据排除）；空态虚线框；尝试次数显示；工作区名称 vs id 前缀；样式：Jobs 表格列对齐 vs 流式卡片、28px 圆角进度条 vs 系统细条、sticky 毛玻璃操作栏 vs 无。
+
+### 11.5 Similarity
+
+**P0 缺口**
+
+| 功能 | 原始位置 | 原生现状 | 状态 |
+|---|---|---|---|
+| C1 同步状态机（syncState 视图 + loadMetadata/confirmSync/cleanup 三按钮门控 + 禁用 hints + 状态文案 + 事件刷新） | c1-sync-controls.ts 全；index.tsx L696-719, L834-843, L905-937 | 三个无门控按钮；reload+confirm 合并成一步，丢失 ack 语义；误点清理可能破坏写回备份 | 已完成 |
+| XMP 写回预览明细（before→after 关键词、新建/更新、共享照片数、外部冲突标记、来源、50 条+more） | index.tsx L882-904 | 仅 6 条"文件名：关键词" | 已完成 |
+| 失败项明细列表（路径 + 翻译错误码） | WritebackReport.tsx L56-70 | 无（仅重试按钮） | 已完成 |
+| 空分组空态 + 加载中态 | index.tsx L634-640, L1010 | 无 | 已完成 |
+| culling:sync-status 事件驱动刷新 | index.tsx L715-719 | 无 | 已完成 |
+| 中文逗号关键词分隔（"，" 不生效，真实缺陷） | index.tsx L721-724 | SimilarityViewModel L482 仅英文逗号 | 已完成 |
+
+**P1/P2**：写回结果三色统计卡 → 单行文本；busy 文案 → 无；关键词/选择变化时清空旧写回结果 → 不清（旧结果残留误判风险）；结果替换时重置展开/滚动状态 → 仅 onAppear；代表缩略图 64×64 r10 → 56×56 r4；网格 70vh → 固定 520；页面 1040px 居中 → 全宽；滑块自定义 → 系统 Slider；进度 1s 轮询替代推送（可接受）；分析/取消按钮 pending 态缺失。原生更强项：写回确认对话框、清理确认对话框（原始版直接执行）。
+
+### 11.6 Persons / FaceKeywording
+
+**P0 缺口**
+
+| 功能 | 原始位置 | 原生现状 | 状态 |
+|---|---|---|---|
+| FaceKeywording 三步状态机 + 步骤条 + "分析完成才可进审核"门控 | FaceKeywording/index.tsx L26-56 | 单页堆叠，无门控（分析未完成也可点写回） | 已完成 |
+| 分析实时进度（jobs:progress → 相位文案 + current/total + 进度条） | StepAnalyze.tsx L17-42, L130-155 | 无任何进度反馈（阻塞 await waitForResult） | 已完成 |
+| 分析断点恢复（挂载查 jobs.list 恢复 running 态） | StepAnalyze.tsx L101-125 | 无（重进页面分析状态丢失） | 已完成 |
+| 模型缺失引导（警示条 + 打开设置） | StepAnalyze.tsx L78-97, L219-229 | 无 | 已完成 |
+| 审核角色筛选条 + "前往人脸审核"携带 `?role=` 预筛选 | StepReview.tsx L45-51；PersonDetail.tsx L161 | role 丢失（RootView L160 只传 sessionId） | 待做 |
+| 审核 100/批分页 + 加载更多 | StepReview.tsx L13, L55-59, L174-184 | 一次性渲染全部簇 | 已完成 |
+| 写回统计卡（3 项）+ 簇级预览 + XMP 前后对比（前 50 项） | StepWriteback.tsx L125-185 | 仅一行摘要 + 前 8 行；FaceKwWritebackBridge 字段已全量搬运，缺的只是 UI | 已完成 |
+| 写回失败明细 + 错误码翻译 | WritebackReport.tsx L56-70 | 仅计数 | 已完成 |
+| 清理备份门控（确认同步后才可清理） | StepWriteback.tsx L212 | 无条件可点 | 已完成 |
+| Persons 空态/无结果态/加载态 | Persons/index.tsx L54-102 | 均缺失 | 已完成 |
+| Persons 错误静默：actionError 被赋值但 View 无渲染点 | PersonDetail.tsx L74, L97, L108 | PersonsViewModel.swift L107, L118, L129 → 无 UI | 已完成 |
+
+**P1/P2**：eps 范围 0.3–0.95 vs Stepper 0.1...2（超 1 触发 FACE_EPS_INVALID）；默认 minSamples=2 vs 原版 3；簇卡 2×2 拼贴+绑定徽章、成员置信度/序号、合并目标下拉 → 单缩略图/手输编号；预设三档 + 高级折叠面板 → 裸 Stepper；人物卡片封面网格 → 列表行；详情头像/阈值 → 无；样式：步骤胶囊、统计卡 tabular-nums、选中 ring 光环 → 无。
+
+### 11.7 Settings / C1HealthPanel
+
+**P0 缺口**
+
+| 功能 | 原始位置 | 原生现状 | 状态 |
+|---|---|---|---|
+| C1 健康面板整体（四层预检 + ✓/✗ 徽标 + 重新检测按钮 + 错误提示） | C1HealthPanel.tsx 全；c1-health.ts L76-140 | 仅一行"已连接：进程探测"文本；错误直接显示 `C1_NOT_RUNNING` | 已完成 |
+| 写回队列 6 格计数 + 12s 轮询 + 最近同步时间 + 命令耗时 | C1HealthPanel.tsx L17-33, L47-77, L116-155 | 无 | 部分完成（面板+四层预检已做；6 格/最近同步时间占位，见 11.11 ②） |
+| 模型下载（横幅 + 进度 + 阶段翻译 + 失败态） | index.tsx L369-392 | 全库无 download 命令 | 不适用（2.2 决议 Vision 无需模型资产，SessionCommandRouter:1422） |
+| 人脸分析常规参数（3 滑块）+ 高级参数（3 滑块） | index.tsx L227-286, L457-512 | 无滑块；40 个原始 key 平铺 + 单 TextField 编辑 | 已完成 |
+| 模型路径编辑 + 打开目录 + blur 重查 | index.tsx L326-367 | 路径不可编辑 | 已完成 |
+| 5 分组 × 18 项的 label/描述/select 选项/数值 min-max | index.tsx L25-74, L604-651 | 丢失（内部键直接暴露可编辑） | 已完成 |
+| 语言即时生效（i18n 全量 + 主进程菜单重建 + 系统语言回退） | index.tsx L186-194；settings.ipc.ts L38-46 | 假功能：仅持久化 + notice；菜单不重建；界面全部硬编码中文 | 部分完成（仅设置页联动，菜单/全应用未做，见 11.11 ①） |
+
+**P1/P2**：立即保存 + dirty 提示 vs 逐 key 显式保存；250ms 防抖+失败回滚+重置门闩 → 无；折叠分区 + chevron 动画 → 常显；页面级 loading → 仅 modelCard 占位；后端 auto/manual 双态 + "恢复自动"链接 → 仅 Picker；卡片边框/阴影/14px 圆角、✓/✗ 徽标、队列 6 格网格、安装横幅 → 无。原生更强项：恢复默认 confirmationDialog、暗色模式跟随系统。
+
+### 11.8 通用组件体系
+
+| 组件 | 原始版 | 原生版 | 结论 | 状态 |
+|---|---|---|---|---|
+| Toast（4 类型/5s 自动消失/堆叠/×关闭/全局事件） | ToastStore.ts L17-29 | 无；两色常驻 banner | P0 | 已完成 |
+| gather:notification 事件链 | App.tsx L79-89 | `GatherAppNotification.captureOneError` 已 post 但全工程无订阅者，导入失败静默丢失 | P0 | 已完成 |
+| ErrorBoundary 崩溃兜底 | 路由级降级 UI + 重试 | 无（SwiftUI 崩溃即白屏） | P0 | 待做 |
+| SliderInput（Settings 6 项数值） | 滑块+数字+clamp+step | 退化裸 TextField | P0 | 已完成 |
+| Dialog/ConfirmDialog | 焦点陷阱/inert/遮罩点击关闭/Esc | sheet/confirmationDialog 系统级（遮罩点击不关闭） | P1 | 待做 |
+| Lightbox | 滚轮缩放/键盘翻页/预加载/DPR | 按钮+捏合/Esc | P1 | 待做 |
+| Badge 12 色状态表 | 独立色表 11px uppercase | 单色 capsule（5 会话状态） | P1 | 待做 |
+| WritebackReport | 统计卡 + 失败项明细 | 计数文本 | P1 | 已完成 |
+| ProgressBar | 8px 主色条 + 不确定态滑动动画 | 系统 ProgressView | P2 | 待做 |
+| MetadataPanel / TemplatePicker | 原始版亦为无引用死代码 | 无 | P2（无实际影响） | 已完成 |
+| PageShell | 路由切换滚动归零 | 保留滚动位置 | P2 | 待做 |
+| Sidebar | 76px 图标栏 + 指示条 + hover + /sessions 下隐藏 + 当前会话快捷项 | 200px 文字侧栏 + ⌘0 开关 | P2 | 待做 |
+
+### 11.9 全局性修复顺序（跨页面通用，建议先做）
+
+1. **事件总线/推送接线**：把 `jobs:progress` / `culling:sync-status`（或 JobService.setProgressSink → NotificationCenter）接成 SwiftUI 可订阅通道，替代全手动刷新；受益页：Dashboard、ControlCenter、Gallery、Culling、Jobs、Export、Similarity、FaceKeywording。
+2. **错误码/状态文案本地化层**：建 `GatherErrorCode → 中文文案` 映射（错误码、job type、job status、progress phase 四类约 60-80 键），在 `NativeCommandClient.message(for:)` 出口统一翻译；消除所有 rawValue 直显。
+3. **设计 token 落地**：定义 `GatherTheme`（brandColor #a54d2a、背景、圆角、阴影、hover），替换 40+ 处内联 cornerRadius 与 30+ 处 controlBackgroundColor 重复。
+4. **Toast 系统**：轻量全局 toast/banner 层（至少订阅 captureOneError），先解决"错误静默丢失"。
+5. **轮询规范**：以 SimilarityViewModel 1s 轮询为范式下沉到 Jobs/Export/ControlCenter/FaceKeywording。
+
+### 11.10 原生版最薄弱点 Top 汇总（subagent 共识）
+
+1. **C1 集成层整体缺失**（导入预检门控、健康面板、同步状态机、状态胶囊）——产品核心闭环不可感知，且误清理有数据风险。
+2. **Culling 工作台降级**（胶片条 + 快捷键 + 内嵌查看器 + 批量操作 + 实时同步反馈全无）——挑片核心效率场景不可用。
+3. **控制中心从决策引擎降级为数据展示页**（Action Inbox、阶段条、推荐下一步映射全无，且把枚举字符串当文案）。
+4. **无事件/推送机制**（全页面退化为手动刷新/局部轮询）。
+5. **错误静默与假功能**：Persons actionError 无 UI、captureOneError 无订阅者、语言切换只改自己、中文逗号不生效。
+
+### 11.11 修复轮限制与后续待办（2026-08-12）
+
+> 9 个并行 subagent 分域实施 + 全局设施落地，测试全绿。以下为各域汇报的数据源
+> 限制与未做项，作为下一轮输入。
+
+| 域 | 限制 / 未做项 |
+|---|---|
+| Similarity | C1 同步状态机的 ack 状态无路由查询命令，以本地标记近似（服务端 requireReloadAck 兜底）；建议后续在 SessionCommandRouter 接线 c1:sync-state 查询 |
+| Settings | ① 语言切换仅设置页文案联动，应用菜单未随 ui_language 重建（GatherAppDelegate.installMenu 需提取为可重建入口）；② C1 健康面板写回队列 6 格与最近同步时间依赖未接线的 c1:sync-state；③ 其余页面仍硬编码中文（全应用 i18n 未做） |
+| Dashboard | 预检 automationAuthorized/documentOpen 为 osascript 探测近似；C1 队列/同步状态未上卡片（原版仅胶囊有） |
+| Culling | 键盘焦点机制仅编译级验证，真机若按钮点击后快捷键失效需调整 focusable 策略；胶片条（filmstrip）与内嵌主视图查看器仍未重建（工作台布局差异保留）；culling:sync-status 实时推送仍无（事件总线只覆盖 jobs） |
+| 通用 | GatherTheme 设计 token（品牌色 #a54d2a/暖米底/圆角/阴影/hover）未落地（P2）；Lightbox 滚轮缩放/键盘翻页/预加载、Dialog 遮罩点击关闭、Badge 12 色表、ErrorBoundary 等价物、PageShell 滚动归零、侧边栏形态（P2）未做；全应用 i18n 未做 |
+
+### 11.12 一致性审计轮（2026-08-12，第二轮）
+
+> 5 个只读审计 subagent 逐域核对服务契约/TS 基线后，4 个修复 subagent 分域落地。
+> gather-app 90/90（含新增 GatherLocalization/GatherEventCenter/GatherToast 9 项测试）
+> + gather-core 760/760 全绿。已修复清单：
+
+| 严重度 | 问题 | 修复 |
+|---|---|---|
+| HIGH | FaceKw 写回链路 5 命令（unbind/preview/writeback/confirm_sync/confirm_cleanup/cleanup）经 executeAsync 路由无分支 → NOT_IMPLEMENTED 不可用 | SessionCommandRouter.executeAsync 补 6 个 fkw 分支（与同步侧同参数校验/服务调用） |
+| HIGH | c1SyncStatus 事件死通道（postC1SyncStatusChange 无调用点，Culling/ControlCenter/Similarity 事件刷新空转） | makeDefault 接线 metadataSyncCoordinator.eventSink → 广播；Culling 另补同步状态轮询兜底 |
+| MED | Similarity 写回/预览传草稿 threshold vs TS result.stats.threshold（SIM_THRESHOLD_NO_RESULTS 风险） | 新增 writebackThreshold 取结果档位，三处调用点统一 |
+| MED | Culling 相似度分组范围被单组化（未选组空页+自动选第一组）；跨页选择被第一页取交截断 | 未选组发全量请求（服务端 buildSimilarityClause(nil) 已支持）；loadedPhotoIds 全集取交 |
+| MED | C1 单文件导入 sourcePath 未 sanitize（索引器可能监控整个父目录）；入队失败无回滚（半成品会话） | 复用 SessionService.sanitizeSessionSourcePath；enqueue 失败 deleteSession 回滚 |
+| MED | 裸错误码直显（Dashboard/Gallery/Library/Similarity 4 处 message(for:)） | 统一 GatherLocalization.errorText 出口 |
+| MED | Gallery/Library 打开即快照（无事件刷新） | onReceive(jobTerminal) + 500ms 防抖刷新（Gallery 按 sessionId 过滤） |
+| MED | Settings C1 健康每 12s 全量重探测（持续向 C1 发 Apple Event）vs TS 仅挂载+手动 | 改为单次检测+手动重检；timedOut 判定移到 notAuthorized 前（TS errors.ts 优先级） |
+| LOW×12 | Culling 插值 bug「(photoId)」/rawValue 直显×4（pickState/冲突字段/导航组类型/候选状态）；对比池回退路径；jumpToNextGroup 向后；快捷键 busy 防护；质量错误 jobErrorMessage；FaceKw 裸码×2/0 簇 phase 回退；Duplicates 阈值 0...10/标点；Persons select 静默/删除文案/标题/死代码；ControlCenter default→done/detail nil；标点混用；C1 错误码 3 个补表 | 全部落地 |
+
+**遗留**（记录在案，未修）：Similarity 同步状态为模块级 vs TS 会话级聚合（服务端兜底无数据风险）；retry_jobs 由"跳任务中心"改为"逐个重试"（有意差异，文案已注明）；fkw 键盘焦点需真机验证；c1:sync-state 查询命令仍未接线（Settings 队列 6 格/最近同步时间占位）。
+
+### 11.13 第三轮扫描（2026-08-12）
+
+> 5 个只读审计 subagent（Gallery/Lightbox 算法、Export/Jobs 行为、并发与生命周期、
+> 测试覆盖、文案与台账漂移）+ 5 个修复 subagent 分域落地。gather-app 90/90 +
+> gather-core 760/760 全绿。另校准 §11.1-11.8 台账 10 处状态（审计发现 9 处
+> "已完成"与代码/自述遗留矛盾）。
+
+| 严重度 | 问题 | 修复 |
+|---|---|---|
+| HIGH | Gallery Lightbox 陈旧 index 越界崩溃（事件刷新缩水 photos 后 `photos[index]`） | 按 photo.id 定位/消失即关闭/safe 下标/`Array.subscript(safe:)`；Lightbox 打开期间事件刷新改为"跳过重排+关闭后补刷" |
+| HIGH | CullingViewerView 陈旧 index 越界崩溃（质量分析完成/刷新缩回 500 条） | `@State index` → `currentPhotoId` 按 id 重定位、越界 guard、move 钳制 |
+| HIGH | 会话切换后 Gallery/Similarity 新 VM 永不加载（opacity 常驻 + `.task` 仅首帧） | `.task(id: sessionId)` + `.onChange(of: sessionId)` 双触发 + VM init 兜底（loadIfNeeded 幂等） |
+| HIGH | 缩略图主线程同步解码（RAW 100-800ms 卡 UI、无并发上限） | `Task.detached(.utility)` 后台解码 + DispatchSemaphore(4) 限流（对齐 thumbnail_concurrency）；NSCache 键含 size/preview |
+| MED | Gallery 布局缓存键过弱（同 count 复用错位行）/行宽超算 32px/缩略图硬编码 512 vs 设置分桶 256/1024/2048/reload 与在途链式拉取竞态滞留 loading/fetchTask 死代码 | 键加数据哈希+数据变化失效；行宽 -32；读 thumbnail_size 分桶；reload 先 cancel fetchTask + phase 兜底；[weak self] |
+| MED | Similarity/Dashboard 轮询在隐藏时持续（stop 无调用点）；Similarity pollProgress 永不退出；adoptResult last-writer-wins | RootView onChange 离开/回来显式 stop/start（Dashboard 加 isVisible 钩子）；30 轮无活跃退出；resultRequestID 结果代防过期覆盖 |
+| MED | Culling 加载更多按钮抢焦（快捷键静默失效无恢复）；颜色菜单英文裸值；拆分按钮 UUID 直显；try? 吞错×6（同步状态/辅助查询/写回解码） | 补 nonFocusable；颜色中文表；按钮显文件名；lastSyncError 字段 + 解码失败不再假报成功 |
+| MED | Export 空水印报错 vs TS 静默；freeSpace=-1 误报空间不足；无"准备中"态；错误明细 10→3 条；maxDimension 小数截断 | 空文本不发 watermark；freeSpace>=0 门控+未知显示；preparing 卡片；prefix(3)；parseInt 语义截断 |
+| MED | Jobs hasClearableHistory 仅计 succeeded（漏 failed/cancelled/interrupted）；事件刷新 4 次/秒 | 基于全部 jobs 四态+阶段证据排除；1s 最小间隔合并 |
+| MED | ControlCenter 加载/空态缺失；FaceKeywording isLoading 未渲染（误显空态）+"打开设置自动下载模型"空头指引 | 加载指示+空态引导；isLoading 渲染；模型文案改中性 |
+| LOW×8 | Similarity 相位文案重复实现→统一 GatherLocalization；adoptTier/listSimilarityJobs/refreshSyncState try? 补反馈；Persons 搜索/加载省略号+删除确认插名+reloadAndSelect 吞错；Culling 方向键 .repeat；FaceKw/ControlCenter/Persons 文案统一 | 全部落地 |
+| 台账 | 头部 81/81 vs 11.12 90/90 不一致；9 处"已完成"与代码/遗留矛盾（C1 胶囊、自动扫描、Lightbox 键盘滚轮、胶片条、role 筛选、模型下载、队列 6 格、菜单重建、全应用 i18n） | 头部标注轮次；10 处状态改为 待做/部分完成/不适用（Vision 决议无模型下载） |
+
+**遗留**：Lightbox 滚轮缩放/←→ 键盘/相邻预加载、胶片条与三栏工作台、C1 状态胶囊、role 预筛选、c1:sync-state 查询接线（Settings 队列 6 格/最近同步时间占位）、全应用 i18n 与菜单语言重建（以上仍为待做）；测试缺口：8 个 VM（Culling/FaceKw/Export/Duplicates/Jobs/Settings/Persons/SessionControl）与 executeAsync 路由层无直接测试（已列 P0-P3 补测优先级，未执行）。
+
+### 11.14 第四轮扫描（2026-08-12）
+
+> 6 个只读审计 subagent（应用外壳、第三轮修复验证、gather-core 服务层首审、命令面
+> 完整性、SwiftUI 视图模式、文案统一清单）+ 5 个修复 subagent 分域落地。
+> gather-app 92/92（+2：importCompleted 通知、深链大小写）+ gather-core 765/765
+> （+5：waitForResult 竞态/claim 覆盖/index_seq/controller 泄漏/{time} 格式）。
+
+| 严重度 | 问题 | 修复 |
+|---|---|---|
+| HIGH | JobService.waitForResult 注册竞态（takeCompletedResult 与 appendWaiter 之间任务完成 → 等待者挂满 60 分钟超时） | 检查+注册并入同一把锁（registerWaiterOrTakeCompletedResult）；补确定性测试 |
+| HIGH | SimilarityService 校验失败后 controller 泄漏（registerController 先于校验 → 会话永久 SIM_ANALYSIS_RUNNING 直到重启） | 校验移到注册之前；注释注明"有意修复，与 TS 差异"；补测试 |
+| P1 | Gallery Lightbox refreshDeferredWhileLightbox 永不消费（onClose 绕过 sheet setter → 补刷丢失+标志泄漏） | 抽 closeLightbox() 共用；onChange 兜底 |
+| P1 | PhotoThumbnailView 复用竞态（image 不随 cacheKey 重置→旧图闪烁；detached 解码无 key 校验→短暂错图） | 缓存未命中先清 image/failed；写回前校验启动时捕获的 key |
+| P1 | RootView 隐藏页控件可聚焦/可达（opacity 不挡 VoiceOver/Tab，隐藏 TextField 截走 Culling 快捷键） | 五个常驻页加 .accessibilityHidden(!isVisible) |
+| MED×6 | ① cancelScope 排队取消结果被 drain notClaimable 覆盖 → claim 失败先查 hasCompletedResult；② IndexerService 取消后 index_seq 不 bump → 终态统一 bump（含取消/失败路径）；③ ExportService {time} 12h AM/PM vs 预览 24h → 固定 HH-mm-ss；④ session.create 忽略 filepaths/truncatedImport + source 默认 folder≠manual → 补 addPhotos 返回 {session,failedFiles,added,skipped}、默认 manual；⑤ export options 解码错误英文散文 → EXPORT_PARAMS_INVALID；⑥ Cmd+Shift+I/深链导入成功后无导航/反馈 → importCompleted 通知（userInfo sessionId/failedCount/addedCount）+ RootView 订阅导航+失败 Toast；Cmd+O 无图分支先切页 | 全部落地（各补测试） |
+| P2×8 | Culling 查看器关闭焦点恢复；lastSyncError 独立提示位；Similarity 清理/确认同步补 confirmationDialog、双路加载幂等守卫、pollProgress 失败轮不误退；Dashboard 任务行 progressMessage 本地化；fkw.writeback async 非法 items 对齐 FKW_ITEMS_INVALID；workspace.status 参数 required；Persons alert→confirmationDialog；FaceKw/Duplicates 惰性列表；无障碍 label×4；GatherLocalization 省略号统一 | 全部落地 |
+| 文案 | P0×11（9 处错误横幅「操作失败：」前缀 + 本地化省略号）+ P1×16（引号/括号全角、暂无同步状态等） | 全部落地 |
+| 台账 | 命令面 118/118 校准（旧 "~107/118"、culling 20/fkw 11/metadata 5 过时）；引导区新增校准段 | 已修 |
+
+**遗留（新增记录）**：gather-core 三服务（MetadataSyncCoordinator/WritebackService/CaptureOneSyncState）无直接测试且 XMP 磁盘路径零覆盖；LOW 若干（eventSink 无锁读写、waitForIdle 无超时、markIntroduced try? 吞错、'cancelling' 重启重跑、sim.analyze dedupeKey 字面默认、fkw 取消窄窗口、MetadataSyncCoordinator 唤醒延迟、GatherAppDelegate 白名单已并入共享常量 RAWDecoder.supportedExtensions）；P2 台账项：Similarity 同步状态模块级 vs 会话级、fkw 键盘焦点需真机验证。

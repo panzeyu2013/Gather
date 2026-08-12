@@ -166,6 +166,29 @@ struct SimilarityParameterTests {
     }
 }
 
+/// 第四轮审计 #4（HIGH）：校验失败后 controller 泄漏。
+/// 修复前 registerController 在 validateSimilarityParameters 之前——校验抛错
+/// 时 defer 不执行，controller 永久残留，该会话此后任何 analyze 都被
+/// SIM_ANALYSIS_RUNNING 拒绝。此用例验证非法参数抛错后再次调用不被拒绝。
+@Suite("similarity controller lifecycle on validation failure")
+struct SimilarityControllerValidationTests {
+    @Test("invalid parameters do not leak the running controller")
+    func invalidParametersDoNotLeakController() async throws {
+        let harness = try makeHarness()
+
+        // 非法参数：校验失败，不得留下 controller。
+        await #expect(throws: SimilarityServiceError.thresholdInvalid) {
+            try await harness.service.analyze(sessionId: harness.sessionId, threshold: 100)
+        }
+
+        // 再次调用不被 SIM_ANALYSIS_RUNNING 拒绝：合法参数应正常走完分析。
+        await #expect(throws: Never.self) {
+            try await harness.service.analyze(sessionId: harness.sessionId, threshold: 10, minGroupSize: 2)
+        }
+        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "done")
+    }
+}
+
 // MARK: - reuseSimilarityHashes 批量复用
 
 @Suite("reuseSimilarityHashes batch reuse")

@@ -1,24 +1,27 @@
 // swift-tools-version: 5.9
 // Gather Swift 核心库（P1 起）。无外部依赖，仅系统框架（Foundation）。
 import PackageDescription
+import Foundation
 
-// 本机仅装 Command Line Tools（无完整 Xcode）时，Swift Testing 框架位于 CLT 的
-// Library/Developer/Frameworks，需显式加入搜索路径与运行期 rpath（仅 macOS）。
-// Linux 上这些路径不存在，跳过；装有 Xcode / 官方 swift.org toolchain 的机器
-// 亦无需这些路径。
+// 审计 P2-构建：CLT 搜索路径仅在本机只装 Command Line Tools（无完整 Xcode）
+// 时才有必要——Swift Testing 框架位于 CLT 的 Library/Developer/Frameworks。
+// 探测 CLT 框架存在且 Xcode 缺失时添加，避免环境耦合 hack。
 #if os(macOS)
-let testSwiftSettings: [SwiftSetting] = [
+private let cltFrameworksPath = "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"
+private let needsCLTSearchPaths =
+    FileManager.default.fileExists(atPath: "\(cltFrameworksPath)/SwiftTesting.framework")
+    && !FileManager.default.fileExists(atPath: "/Applications/Xcode.app")
+
+let testSwiftSettings: [SwiftSetting] = needsCLTSearchPaths ? [
+    .unsafeFlags(["-F", cltFrameworksPath]),
+] : []
+let testLinkerSettings: [LinkerSetting] = needsCLTSearchPaths ? [
     .unsafeFlags([
-        "-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
-    ]),
-]
-let testLinkerSettings: [LinkerSetting] = [
-    .unsafeFlags([
-        "-Xlinker", "-F", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
-        "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-Xlinker", "-F", "-Xlinker", cltFrameworksPath,
+        "-Xlinker", "-rpath", "-Xlinker", "\(cltFrameworksPath)",
         "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/usr/lib",
     ]),
-]
+] : []
 #else
 let testSwiftSettings: [SwiftSetting] = []
 let testLinkerSettings: [LinkerSetting] = []

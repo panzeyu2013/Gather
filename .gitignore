@@ -45,3 +45,12 @@ test-results/
 
 # Local-only native fixtures (ONNX models + RAW photos with faces).
 tests/fixtures/local/
+
+# 证书/签名材料（审计 P2-安全：防止密钥材料入库）。
+*.p12
+*.cer
+*.crt
+*.pem
+*.key
+*.mobileprovision
+*.entitlements.xcconfig

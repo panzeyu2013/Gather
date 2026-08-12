@@ -11,7 +11,7 @@ import Foundation
 import CSQLite
 
 public struct MigrationRunner {
-    public static let currentSchemaVersion = 31
+    public static let currentSchemaVersion = 32
 
     /// 数据库文件路径（TS: app.getPath('userData')/gather.db）。为 nil 时跳过
     /// 备份/回滚（内存库或测试场景），迁移仍正常执行。
@@ -39,7 +39,7 @@ public struct MigrationRunner {
 
     /// 执行全部迁移（幂等：已是最新版本时为空操作），按 ADR-005 备份/回滚。
     public func migrate(_ connection: DBConnection) throws {
-        let previousVersion = getSchemaVersion(connection)
+        let previousVersion = try getSchemaVersion(connection)
         let backupPath = try createMigrationBackup(connection, currentVersion: previousVersion)
         do {
             try runMigrationsUnsafe(connection)
@@ -62,14 +62,19 @@ public struct MigrationRunner {
 
     // ─────────────────────────── schema_version 语义 ───────────────────────────
 
-    private func getSchemaVersion(_ db: DBConnection) -> Int {
+    private func getSchemaVersion(_ db: DBConnection) throws -> Int {
         do {
             guard let row = try db.prepare("SELECT MAX(version) as version FROM schema_version").get() else {
                 return 0
             }
             return Int(row[0].intValue ?? 0)
         } catch {
-            return 0
+            // 首次迁移前 schema_version 表尚不存在（正常 → 0）；
+            // 其余错误（库损坏等）显式抛出，由 migrate() 备份/回滚路径接管。
+            if "\(error)".contains("no such table") {
+                return 0
+            }
+            throw DBError.message("读取 schema_version 失败: \(error)")
         }
     }
 
@@ -131,7 +136,7 @@ public struct MigrationRunner {
     private func runMigrationsUnsafe(_ db: DBConnection) throws {
         try db.exec(SchemaSQL.schemaSQL)
 
-        var currentVersion = getSchemaVersion(db)
+        var currentVersion = try getSchemaVersion(db)
 
         // ── Version 1: initial migrations ──
         if currentVersion < 1 {
@@ -887,6 +892,23 @@ public struct MigrationRunner {
             currentVersion = 31
         }
 
+        // ── Version 32: 查询性能表达式索引（审计 P1-性能）──
+        // idx_photos_asset_group（session_id, COALESCE(NULLIF(asset_id,''),id)）
+        // 服务两类查询：filterGlobally 的 asset_key 等值匹配（相关子查询
+        // GROUP_CONCAT）与 Culling 首选行子查询。表达式必须与查询字面一致
+        // （SQLite 表达式索引要求字面等价，NULLIF 包装否则不匹配 → 全扫）。
+        // DROP+CREATE 保证表达式修正后已应用 v32 的库重跑安全。
+        // 新库经 SchemaSQL.indexSQL 直接建（snapshot 已含），存量库在此补。
+        if currentVersion < 32 {
+            try db.exec("""
+                DROP INDEX IF EXISTS idx_photos_asset_group;
+                CREATE INDEX IF NOT EXISTS idx_photos_asset_group
+                  ON photos(session_id, COALESCE(NULLIF(asset_id, ''), id));
+                """)
+            try setSchemaVersion(db, 32)
+            currentVersion = 32
+        }
+
         if currentVersion != Self.currentSchemaVersion {
             throw DBError.message("Unexpected schema version \(currentVersion)")
         }
@@ -1214,12 +1236,17 @@ public struct MigrationRunner {
     }
 
     private func restoreBackup(_ connection: DBConnection, dbPath: String, backupPath: String) throws {
+        // 审计 P1：先复制到临时文件再原子 rename——此前"先删活库再复制"在
+        // copyItem 失败（磁盘满等）时活动库已删除、连接永久失效，只剩备份。
         connection.close()
-        try? FileManager.default.removeItem(atPath: dbPath)
-        try FileManager.default.copyItem(atPath: backupPath, toPath: dbPath)
+        let tmpPath = dbPath + ".restore-tmp"
+        _ = try? FileManager.default.removeItem(atPath: tmpPath)
+        try FileManager.default.copyItem(atPath: backupPath, toPath: tmpPath)
         for suffix in ["-wal", "-shm"] {
             try? FileManager.default.removeItem(atPath: dbPath + suffix)
         }
+        _ = try? FileManager.default.removeItem(atPath: dbPath)
+        try FileManager.default.moveItem(atPath: tmpPath, toPath: dbPath)
         try connection.reopen()
     }
 
@@ -1248,7 +1275,7 @@ public struct MigrationRunner {
     // ─────────────────────────── 迁移后不变量 ───────────────────────────
 
     private func assertMigrationInvariants(_ db: DBConnection) throws {
-        let version = getSchemaVersion(db)
+        let version = try getSchemaVersion(db)
         if version != Self.currentSchemaVersion {
             throw DBError.message("Migration ended at an unexpected schema version: \(version)")
         }

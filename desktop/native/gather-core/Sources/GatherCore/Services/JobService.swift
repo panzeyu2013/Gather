@@ -37,13 +37,16 @@ public final class JobAbortSignal {
     /// TS AbortSignal.addEventListener（abort 监听；宿主 executor 用于把
     /// job 取消传播给服务的自持 controller，如 fkw.analyze）。
     public func addHandler(_ handler: @escaping () -> Void) {
+        // 审计 P1-并发：已 abort 时不得持锁回调（handler 可能反向取锁 →
+        // 非递归锁死锁）。与 abort() 的"拷贝后锁外调用"模式一致。
         lock.lock()
-        defer { lock.unlock() }
         if _aborted {
+            lock.unlock()
             handler()
-        } else {
-            handlers.append(handler)
+            return
         }
+        handlers.append(handler)
+        lock.unlock()
     }
 }
 
@@ -409,7 +412,19 @@ public final class JobService {
         let timeout = timeoutMs ?? JobService.waitForResultTimeoutMs
         let result: Any? = try await withCheckedThrowingContinuation { continuation in
             let waiter = Waiter(continuation)
-            appendWaiter(jobId: jobId, waiter: waiter)
+            // 竞态修复：「检查完成结果」与「注册 waiter」必须同一临界区。
+            // 修复前为两个临界区——任务在 takeCompletedResult(nil) 与
+            // appendWaiter 之间完成时（completeResult 已 removeValue 并 resume
+            // 先到的等待者），新等待者永不 resume，挂满 60 分钟超时。
+            // 现在注册时若结果已登记则直接取回立即返回。
+            if let completed = registerWaiterOrTakeCompletedResult(jobId: jobId, waiter: waiter) {
+                if let error = completed.error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: completed.value)
+                }
+                return
+            }
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(timeout))
                 guard let self else { return }
@@ -428,12 +443,30 @@ public final class JobService {
         return completedResults[jobId]
     }
 
-    private func appendWaiter(jobId: String, waiter: Waiter) {
+    /// 原子操作：同一临界区内「检查已完成结果」并「注册 waiter」。
+    /// 返回已登记结果时 waiter 未注册（调用方直接取回结果）；nil 表示已注册等待。
+    private func registerWaiterOrTakeCompletedResult(jobId: String, waiter: Waiter) -> CompletedResult? {
         lock.lock()
+        if let completed = completedResults[jobId] {
+            lock.unlock()
+            return completed
+        }
         var waiters = resultWaiters[jobId] ?? []
         waiters.append(waiter)
         resultWaiters[jobId] = waiters
         lock.unlock()
+        return nil
+    }
+
+    /// 测试接缝（@testable 专用）：把已完成结果登记进内存表，模拟
+    /// 「任务已完成、结果尚未被取走」。生产路径经 drain/execute 的
+    /// completeResult 登记，此处只是等价直通。
+    internal func completeResultForTesting(id: String, value: Any? = nil, error: Error? = nil) {
+        if let error {
+            completeResult(id: id, completed: .error(error))
+        } else {
+            completeResult(id: id, completed: .value(value))
+        }
     }
 
     // ── 执行 ──
@@ -646,8 +679,10 @@ public final class JobService {
             do {
                 controller = try beginRun(job: job, leaseOwner: leaseOwner)
             } catch {
-                // claim 失败（跨进程竞态等）按 TS drain 的 catch 路径分发结果。
-                completeResult(id: job.id, completed: .error(error))
+                // claim 失败（跨进程竞态等）按 TS drain 的 catch 路径分发结果；
+                // 排队取消已登记 JobCancelledError 时跳过覆盖（等待者必须收到
+                // 取消错误而非 notClaimable）。
+                self.handleClaimFailure(id: job.id, error: error)
                 continue
             }
 
@@ -688,6 +723,16 @@ public final class JobService {
         lock.lock()
         defer { lock.unlock() }
         return completedResults[id] != nil
+    }
+
+    /// drain 的 claim 失败分支：分发 notClaimable 完成结果；排队取消已登记
+    /// JobCancelledError（cancel → completeResult）时跳过覆盖，否则等待者
+    /// 会收到错误类型漂移（notClaimable 替代 JobCancelledError）。
+    /// internal 供 @testable 直接驱动该分支做确定性测试。
+    internal func handleClaimFailure(id: String, error: Error) {
+        if !hasCompletedResult(id: id) {
+            completeResult(id: id, completed: .error(error))
+        }
     }
 
     private func removeActiveRun(id: String) {
