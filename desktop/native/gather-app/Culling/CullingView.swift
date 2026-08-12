@@ -6,27 +6,21 @@ import GatherCore
 @MainActor
 @Observable
 public final class CullingViewModel {
-    public enum FilterMode: String, CaseIterable, Equatable {
-        case all
-        case unreviewed
-        case picked
-        case rejected
-        case conflicts
-        case qualityAnalysed
-        case qualityUnanalysed
-        case qualityFailed
+    /// 组合筛选状态：对齐 TS CullingFilters + FilterControls（Culling.tsx:1720-1817）——
+    /// 未审/状态/星级/颜色/质量/冲突 六个维度可任意叠加，全部关闭即"全部"。
+    public struct FilterState: Equatable {
+        public var unreviewedOnly = false
+        public var pickState: PickState?
+        public var rating: Int?
+        public var colorLabel: CaptureOneColorLabel?
+        public var qualityStatus: CullingFilterQualityStatus?
+        public var metadataConflictOnly = false
 
-        var title: String {
-            switch self {
-            case .all: return "全部"
-            case .unreviewed: return "待挑选"
-            case .picked: return "保留"
-            case .rejected: return "拒绝"
-            case .conflicts: return "元数据冲突"
-            case .qualityAnalysed: return "已分析质量"
-            case .qualityUnanalysed: return "未分析质量"
-            case .qualityFailed: return "质量失败"
-            }
+        public init() {}
+
+        public var isActive: Bool {
+            unreviewedOnly || pickState != nil || rating != nil || colorLabel != nil
+                || qualityStatus != nil || metadataConflictOnly
         }
     }
 
@@ -44,6 +38,56 @@ public final class CullingViewModel {
         }
     }
 
+    /// 同步状态机（对齐旧版 c1-sync-controls.ts C1SyncState 语义，从
+    /// MetadataSyncSummary 推导）：syncing=正在写入、c1Read=已写入待 C1 确认、
+    /// safeToCleanup=全部行终态（synced>0）、synced=无行。
+    public enum SyncFlowState: Equatable {
+        case disconnected
+        case conflict
+        case failed
+        case syncing
+        case c1Read
+        case safeToCleanup
+        case synced
+    }
+
+    /// 纯函数版按钮可用性矩阵：对齐 TS deriveSyncControls({ syncState, hasWritten, acked })
+    /// （tests/unit/renderer/c1-sync-controls.test.ts 的 8 组门控用例）。
+    /// internal：CullingViewModelTests 直测。
+    struct SyncFlowControls: Equatable {
+        let canLoadMetadata: Bool
+        let canConfirmSync: Bool
+        let canCleanup: Bool
+    }
+
+    enum CullingSyncFlow {
+        static func deriveControls(
+            syncState: SyncFlowState,
+            hasWritten: Bool,
+            acked: Bool
+        ) -> SyncFlowControls {
+            switch syncState {
+            case .syncing, .c1Read, .safeToCleanup:
+                // syncing：可重载（无需 ack）；c1Read/safeToCleanup 同左。
+                let canLoad = true
+                let canConfirm: Bool
+                switch syncState {
+                case .safeToCleanup: canConfirm = true
+                case .c1Read: canConfirm = acked && hasWritten
+                default: canConfirm = false
+                }
+                return SyncFlowControls(
+                    canLoadMetadata: canLoad,
+                    canConfirmSync: canConfirm,
+                    canCleanup: syncState == .safeToCleanup
+                )
+            case .disconnected, .conflict, .failed, .synced:
+                // 保守：全部禁用。
+                return SyncFlowControls(canLoadMetadata: false, canConfirmSync: false, canCleanup: false)
+            }
+        }
+    }
+
     private let client: NativeCommandClient
     private let captureOne: CaptureOneBridge
     public let sessionId: String
@@ -57,8 +101,26 @@ public final class CullingViewModel {
     private(set) public var qualityJob: AnalysisJobData?
     private(set) public var errorMessage: String?
     private(set) public var notice: String?
-    public var filterMode: FilterMode = .all
+    /// 同步状态/辅助查询（groups/sync_status/history/conflicts）失败时记录，
+    /// 用于 UI 提示"同步状态加载失败"（业务查询失败不阻断主列表）。
+    private(set) public var lastSyncError: String?
+    /// reloadMetadata() 成功后才置位（对齐旧版"reload 成功才写 durable ack"语义）；
+    /// confirm 按钮需 ack + written 才可用（deriveSyncControls 保守策略）。
+    public private(set) var reloadAcked = false
+    public var filterState = FilterState()
+    public var autoAdvance = true
+    /// 审计 P1-并发：可见性门控——analyzeQuality 500ms 轮询在页面离开
+    /// （条件渲染销毁）后停止，避免隐藏期后台空转。
+    public var isActive = true
+    public private(set) var currentPhotoId: String?
+    public var currentAsset: CullingAsset? {
+        guard let currentPhotoId else { return page?.assets.first }
+        return page?.assets.first { $0.photo.id == currentPhotoId } ?? page?.assets.first
+    }
     public private(set) var selectedPhotoIds: Set<String> = []
+    /// 本次会话已加载的全部 photoIds（loadMore 累加、整页刷新重置），
+    /// 用于刷新时与选择集取交，避免跨页选择被静默清除。
+    private var loadedPhotoIds: Set<String> = []
     private(set) public var navigationGroups: [NavigationGroup] = []
     private(set) public var isNavigationBusy = false
     public private(set) var selectedNavigationGroupId = ""
@@ -78,6 +140,69 @@ public final class CullingViewModel {
         loadPage(reset: true)
     }
 
+    /// 从 MetadataSyncSummary 推导同步状态机（优先级对齐旧版 syncLabel：
+    /// 冲突 > 失败 > 写入中 > 已写入 > 已载入 > 空）。
+    public func syncFlowState() -> SyncFlowState {
+        guard let syncStatus else { return .disconnected }
+        if syncStatus.conflict > 0 { return .conflict }
+        if syncStatus.failed > 0 { return .failed }
+        if syncStatus.pending + syncStatus.writing > 0 { return .syncing }
+        if syncStatus.written > 0 { return .c1Read }
+        if syncStatus.synced > 0 { return .safeToCleanup }
+        return .synced
+    }
+
+    /// 对齐 deriveSyncControls：syncing/c1Read/safeToCleanup 才可重载元数据。
+    public var canLoadMetadata: Bool {
+        CullingSyncFlow.deriveControls(
+            syncState: syncFlowState(),
+            hasWritten: (syncStatus?.written ?? 0) > 0,
+            acked: reloadAcked
+        ).canLoadMetadata
+    }
+
+    /// 对齐 deriveSyncControls：确认需（c1Read + 存在 written 行 + ack）或 safeToCleanup。
+    public var canConfirmSync: Bool {
+        CullingSyncFlow.deriveControls(
+            syncState: syncFlowState(),
+            hasWritten: (syncStatus?.written ?? 0) > 0,
+            acked: reloadAcked
+        ).canConfirmSync
+    }
+
+    /// 对齐 deriveSyncControls：清理仅 safeToCleanup 可用。
+    public var canCleanup: Bool {
+        CullingSyncFlow.deriveControls(
+            syncState: syncFlowState(),
+            hasWritten: (syncStatus?.written ?? 0) > 0,
+            acked: reloadAcked
+        ).canCleanup
+    }
+    /// c1SyncStatus 事件（GatherEventCenter.c1SyncStatus，object 为 sessionId）的轻量刷新。
+    public func refreshSyncStatus() {
+        var failure: String?
+        do {
+            syncStatus = try client.execute("culling.sync_status", params: [
+                "sessionId": .string(sessionId),
+            ]).decoded(as: MetadataSyncSummary.self)
+        } catch {
+            failure = NativeCommandClient.message(for: error)
+        }
+        do {
+            summary = try client.execute("culling.summary", params: [
+                "sessionId": .string(sessionId),
+            ]).decoded(as: CullingSummary.self)
+        } catch {
+            failure = failure ?? NativeCommandClient.message(for: error)
+        }
+        lastSyncError = failure
+    }
+
+    /// 测试注入：直接设置同步摘要，绕开命令层（CullingSyncFlowTests 直测状态机推导）。
+    func applySyncSummaryForTesting(_ summary: MetadataSyncSummary?) {
+        syncStatus = summary
+    }
+
     /// TS: qualityApi.analyze + jobs.list 轮询。这里仅接入技术质量任务；
     /// 人脸推理质量按用户要求不作为本轮验收门。
     public func analyzeQuality() async {
@@ -91,12 +216,13 @@ public final class CullingViewModel {
             let job = try data.decoded(as: AnalysisJobData.self)
             qualityJob = job
             notice = "技术质量分析已排队"
-            while !Task.isCancelled {
+            while !Task.isCancelled && isActive {
                 do {
                     try await Task.sleep(for: .milliseconds(500))
                 } catch {
                     return
                 }
+                if !isActive { return }
                 let jobs = try client.execute("jobs.list", params: [:]).decoded(as: [AnalysisJobData].self)
                 guard let latest = jobs.first(where: { $0.id == job.id }) else { return }
                 qualityJob = latest
@@ -108,7 +234,7 @@ public final class CullingViewModel {
                     loadPage(reset: true)
                     return
                 case .failed, .cancelled, .interrupted:
-                    errorMessage = latest.errorMessage.isEmpty ? "技术质量分析未完成" : latest.errorMessage
+                    errorMessage = GatherLocalization.jobErrorMessage(latest.errorMessage)
                     loadPage(reset: true)
                     return
                 }
@@ -200,12 +326,56 @@ public final class CullingViewModel {
         }
     }
 
+    /// 对齐旧版工具栏"从当前照片拆分"：需要当前照片在选中组内且非首张。
+    public func splitCurrentFromNavigationGroup() {
+        guard let current = currentPhotoId, !current.isEmpty,
+              let group = navigationGroups.first(where: { $0.id == selectedNavigationGroupId }),
+              let index = group.photoIds.firstIndex(of: current), index > 0 else {
+            errorMessage = "请先定位到组内非首张照片"
+            return
+        }
+        splitNavigation(beforePhotoId: current)
+    }
+
+    /// 对齐旧版 keepInGroupRejectRest 的工具列入口：按相似组 id 定位组并决策。
+    public func keepInGroupRejectRest(_ groupId: String, keepPhotoIds: [String], shouldAdvance: Bool = true) {
+        guard let group = similarityGroups.first(where: { $0.groupId == groupId }) else {
+            errorMessage = "相似组已变化，请刷新后重试"
+            return
+        }
+        decideSimilarityGroup(group, keepPhotoIds: keepPhotoIds, shouldAdvance: shouldAdvance)
+    }
+
     private func normalizeNavigationSelection() {
         if !navigationGroups.contains(where: { $0.id == selectedNavigationGroupId }) {
             selectedNavigationGroupId = navigationGroups.first?.id ?? ""
         }
         let validIds = Set(navigationGroups.map(\.id))
         selectedNavigationGroupIds = selectedNavigationGroupIds.intersection(validIds)
+    }
+
+    /// 对齐旧版工具栏"与前组合并"：将当前选中的导航组与上一个同类型组合并。
+    /// 旧版在导航组下拉选中组后提供与前一个同类型组（Burst/Scene）的合并按钮。
+    public func mergeCurrentWithPreviousSameType() {
+        guard let selected = navigationGroups.first(where: { $0.id == selectedNavigationGroupId }),
+              let index = navigationGroups.firstIndex(where: { $0.id == selected.id }),
+              let previous = navigationGroups[..<index].reversed().first(where: { $0.type == selected.type }) else {
+            errorMessage = "没有可合并的前一个同类组"
+            return
+        }
+        selectedNavigationGroupIds = [previous.id, selected.id]
+        mergeSelectedNavigationGroups()
+    }
+
+    /// 对齐旧版导航组下拉跳转：选中组后定位到该组的推荐首张照片。
+    public func selectNavigationGroupAndJump(_ groupId: String) {
+        guard let group = navigationGroups.first(where: { $0.id == groupId }) else { return }
+        selectNavigationGroup(groupId)
+        if let lead = group.leadPhotoId {
+            selectCurrent(lead)
+        } else if let first = group.photoIds.first {
+            selectCurrent(first)
+        }
     }
 
     public func loadMore() {
@@ -228,72 +398,113 @@ public final class CullingViewModel {
                 "scope": .string(scope.rawValue),
                 "limit": .number(500),
             ]
-            if scope == .filtered, let filters = filtersForCurrentMode() {
+            if scope == .filtered, let filters = filtersForCurrentState() {
                 params["filters"] = try JSONValue(from: filters)
             }
-            if scope == .similarityGroup {
-                guard !selectedSimilarityGroupId.isEmpty else {
-                    page = CullingPage(assets: [], nextRowId: nil, total: 0)
-                    return
-                }
+            // 对齐 TS：scope=similarity 不带 groupId 时请求全部相似组照片
+            // （服务端 buildSimilarityClause(nil)）；仅显式选中某一组才下发 groupId。
+            if scope == .similarityGroup, !selectedSimilarityGroupId.isEmpty {
                 params["groupId"] = .string(selectedSimilarityGroupId)
             }
             if !reset, let afterRowId = page?.nextRowId {
                 params["afterRowId"] = .number(Double(afterRowId))
             }
             let nextPage = try client.execute("culling.list_page", params: params).decoded(as: CullingPage.self)
+            let newIds = Set(nextPage.assets.map { $0.photo.id })
             if reset || page == nil {
+                // 对齐 TS：update/batchUpdate/undo/redo 后整页刷新不清空选择，
+                // 仅在选择已失效（不在本次会话已加载的照片全集）时清空对应条目。
+                selectedPhotoIds.formIntersection(loadedPhotoIds)
+                loadedPhotoIds = newIds
                 page = nextPage
-                selectedPhotoIds = []
+                if let current = currentPhotoId, !newIds.contains(current) {
+                    currentPhotoId = nextPage.assets.first?.photo.id
+                }
+                if currentPhotoId == nil {
+                    currentPhotoId = nextPage.assets.first?.photo.id
+                }
             } else if let oldPage = page {
                 page = CullingPage(
                     assets: oldPage.assets + nextPage.assets,
                     nextRowId: nextPage.nextRowId,
                     total: nextPage.total
                 )
+                loadedPhotoIds.formUnion(newIds)
             }
             summary = try client.execute("culling.summary", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: CullingSummary.self)
-            similarityGroups = (try? client.execute("culling.groups", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: [CullingGroup].self)) ?? []
-            if !similarityGroups.contains(where: { $0.groupId == selectedSimilarityGroupId }) {
-                selectedSimilarityGroupId = similarityGroups.first?.groupId ?? ""
+            // 以下为辅助查询：失败保持降级（空结果）但不静默，写入 lastSyncError 由 UI 提示。
+            lastSyncError = nil
+            do {
+                similarityGroups = try client.execute("culling.groups", params: [
+                    "sessionId": .string(sessionId),
+                ]).decoded(as: [CullingGroup].self)
+            } catch {
+                similarityGroups = []
+                lastSyncError = NativeCommandClient.message(for: error)
             }
-            syncStatus = try? client.execute("culling.sync_status", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: MetadataSyncSummary.self)
-            history = (try? client.execute("culling.history", params: [
-                "sessionId": .string(sessionId),
-                "limit": .number(100),
-            ]).decoded(as: [CullingHistoryOperation].self)) ?? []
-            conflicts = (try? client.execute("metadata.conflicts", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: [MetadataConflict].self)) ?? []
+            // 对齐 TS：不自动选中第一组；未显式选组时保持空选，
+            // 请求服务端全部相似组照片。
+            if !similarityGroups.contains(where: { $0.groupId == selectedSimilarityGroupId }) {
+                selectedSimilarityGroupId = ""
+            }
+            do {
+                syncStatus = try client.execute("culling.sync_status", params: [
+                    "sessionId": .string(sessionId),
+                ]).decoded(as: MetadataSyncSummary.self)
+            } catch {
+                syncStatus = nil
+                lastSyncError = NativeCommandClient.message(for: error)
+            }
+            do {
+                history = try client.execute("culling.history", params: [
+                    "sessionId": .string(sessionId),
+                    "limit": .number(100),
+                ]).decoded(as: [CullingHistoryOperation].self)
+            } catch {
+                history = []
+                lastSyncError = NativeCommandClient.message(for: error)
+            }
+            do {
+                conflicts = try client.execute("metadata.conflicts", params: [
+                    "sessionId": .string(sessionId),
+                ]).decoded(as: [MetadataConflict].self)
+            } catch {
+                conflicts = []
+                lastSyncError = NativeCommandClient.message(for: error)
+            }
             errorMessage = nil
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    private func filtersForCurrentMode() -> CullingFilters? {
-        switch filterMode {
-        case .all: return nil
-        case .unreviewed: return CullingFilters(pickStates: [.unreviewed])
-        case .picked: return CullingFilters(pickStates: [.picked])
-        case .rejected: return CullingFilters(pickStates: [.rejected])
-        case .conflicts: return CullingFilters(metadataConflictOnly: true)
-        case .qualityAnalysed: return CullingFilters(qualityStatus: .analysed)
-        case .qualityUnanalysed: return CullingFilters(qualityStatus: .unanalysed)
-        case .qualityFailed: return CullingFilters(qualityStatus: .failed)
-        }
+    private func filtersForCurrentState() -> CullingFilters? {
+        var filters = CullingFilters()
+        var active = false
+        if filterState.unreviewedOnly { filters.unreviewedOnly = true; active = true }
+        if let state = filterState.pickState { filters.pickStates = [state]; active = true }
+        if let rating = filterState.rating { filters.ratings = [Double(rating)]; active = true }
+        if let label = filterState.colorLabel { filters.colorLabels = [label]; active = true }
+        if let quality = filterState.qualityStatus { filters.qualityStatus = quality; active = true }
+        if filterState.metadataConflictOnly { filters.metadataConflictOnly = true; active = true }
+        return active ? filters : nil
     }
 
-    public func setFilter(_ mode: FilterMode) {
-        guard filterMode != mode || (mode == .all && scopeMode != .all) else { return }
-        filterMode = mode
-        scopeMode = mode == .all ? .all : .filtered
+    /// 任意维度变化入口：更新组合筛选状态并整页刷新；
+    /// 无活跃筛选时回到"全部"范围（与原 all → scope .all 行为一致）。
+    public func setFilterState(_ mutate: (inout FilterState) -> Void) {
+        mutate(&filterState)
+        scopeMode = filterState.isActive ? .filtered : .all
+        loadPage(reset: true)
+    }
+
+    /// TS FilterControls 重置（setFilters({})）。
+    public func resetFilters() {
+        guard filterState.isActive || scopeMode != .all else { return }
+        filterState = FilterState()
+        scopeMode = .all
         loadPage(reset: true)
     }
 
@@ -310,10 +521,13 @@ public final class CullingViewModel {
         loadPage(reset: true)
     }
 
-    public func decideSimilarityGroup(_ group: CullingGroup, keepPhotoIds: [String]) {
+    public func decideSimilarityGroup(_ group: CullingGroup, keepPhotoIds: [String], shouldAdvance: Bool = true) {
         let validIds = Set(group.images.map(\.photoId))
-        guard !keepPhotoIds.isEmpty, Set(keepPhotoIds).isSubset(of: validIds) else {
-            errorMessage = "请选择当前相似度组中的照片"
+        // 对齐 TS keepInGroupRejectRest：保留 1..组员数-1 张、且都在组内。
+        guard !keepPhotoIds.isEmpty,
+              keepPhotoIds.count < group.images.count,
+              Set(keepPhotoIds).isSubset(of: validIds) else {
+            errorMessage = "请选择当前相似度组中 1 至 \(max(1, group.images.count - 1)) 张照片"
             return
         }
         do {
@@ -324,9 +538,31 @@ public final class CullingViewModel {
             ])
             notice = "已更新相似度组挑片决策"
             loadPage(reset: true)
+            if shouldAdvance && autoAdvance {
+                jumpToNextGroup(after: group)
+            }
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
+    }
+
+    /// 对齐 TS keepInGroupRejectRest 的组前进：相似度组范围内直接切下一组；
+    /// 其他范围对齐 TS（Culling.tsx:1063-1073）从当前照片之后查找第一个
+    /// 不同相似度组的资产，避免跳到当前照片之前。
+    private func jumpToNextGroup(after group: CullingGroup) {
+        if scopeMode == .similarityGroup {
+            let groups = similarityGroups
+            guard let index = groups.firstIndex(where: { $0.groupId == group.groupId }),
+                  let next = groups.dropFirst(index + 1).first else { return }
+            selectSimilarityGroup(next.groupId)
+            return
+        }
+        guard let assets = page?.assets, let current = currentPhotoId,
+              let currentIndex = assets.firstIndex(where: { $0.photo.id == current }) else { return }
+        let currentGroupId = assets[currentIndex].similarityGroupId
+        guard let next = assets.dropFirst(currentIndex + 1)
+            .first(where: { $0.similarityGroupId != currentGroupId }) else { return }
+        currentPhotoId = next.photo.id
     }
 
     public func toggleSelection(_ photoId: String) {
@@ -345,7 +581,8 @@ public final class CullingViewModel {
         selectedPhotoIds = []
     }
 
-    public func update(_ asset: CullingAsset, patch: CullingUpdatePatch) {
+    /// 单张更新；nextPhotoId 非空时在刷新前预置当前照片（自动前进目标）。
+    public func update(_ asset: CullingAsset, patch: CullingUpdatePatch, nextPhotoId: String? = nil) {
         do {
             _ = try client.execute("culling.update", params: [
                 "sessionId": .string(sessionId),
@@ -353,6 +590,7 @@ public final class CullingViewModel {
                 "expectedRevision": .number(Double(asset.state.revision)),
                 "patch": try JSONValue(from: patch),
             ])
+            if let nextPhotoId { currentPhotoId = nextPhotoId }
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -371,9 +609,61 @@ public final class CullingViewModel {
                 "patch": try JSONValue(from: patch),
             ])
             notice = "已更新 \(selectedPhotoIds.count) 张照片"
+            // 刷新后仅清空失效选择，批量操作后选择保持（任务 6 要求）。
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
+        }
+    }
+
+    /// TS commitTargets（Culling.tsx:828-906）：快捷键/工具栏决策作用于选中集，
+    /// 无选中时作用于当前照片；U 待定不前进，其余决策按自动前进开关前进。
+    public func commit(patch: CullingUpdatePatch, shouldAdvance: Bool = true) {
+        guard !isLoading else { return }
+        let targets = selectedPhotoIds.isEmpty
+            ? (currentAsset.map { [$0.photo.id] } ?? [])
+            : Array(selectedPhotoIds)
+        guard !targets.isEmpty else { return }
+        if targets.count == 1 {
+            guard let asset = page?.assets.first(where: { $0.photo.id == targets[0] }) else { return }
+            let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: targets[0]) : nil
+            update(asset, patch: patch, nextPhotoId: nextId)
+        } else {
+            batchUpdate(patch: patch)
+        }
+    }
+
+    public func nextPhotoId(after photoId: String) -> String? {
+        guard let assets = page?.assets,
+              let index = assets.firstIndex(where: { $0.photo.id == photoId }) else { return nil }
+        return assets.indices.contains(index + 1) ? assets[index + 1].photo.id : nil
+    }
+
+    public func selectCurrent(_ photoId: String) {
+        guard page?.assets.contains(where: { $0.photo.id == photoId }) == true else { return }
+        currentPhotoId = photoId
+    }
+
+    /// TS advance：←/→ 翻页；到达已加载窗口末尾且还有下一页时后台加载。
+    public func advanceCurrent() {
+        guard let assets = page?.assets, !assets.isEmpty else { return }
+        if let current = currentPhotoId, let index = assets.firstIndex(where: { $0.photo.id == current }) {
+            if index < assets.count - 1 {
+                currentPhotoId = assets[index + 1].photo.id
+            } else if page?.nextRowId != nil {
+                loadMore()
+            }
+        } else {
+            currentPhotoId = assets.first?.photo.id
+        }
+    }
+
+    public func retreatCurrent() {
+        guard let assets = page?.assets, !assets.isEmpty else { return }
+        if let current = currentPhotoId, let index = assets.firstIndex(where: { $0.photo.id == current }) {
+            currentPhotoId = assets[max(0, index - 1)].photo.id
+        } else {
+            currentPhotoId = assets.first?.photo.id
         }
     }
 
@@ -428,8 +718,13 @@ public final class CullingViewModel {
                 "target": .string(target.rawValue),
                 "confirmed": .bool(true),
             ])
-            syncStatus = try? data.decoded(as: MetadataSyncSummary.self)
-            notice = "已写回 \(targetLabel(target))；请让 Capture One 重新加载元数据后确认同步"
+            do {
+                syncStatus = try data.decoded(as: MetadataSyncSummary.self)
+                notice = "已写回 \(targetLabel(target))；请让 Capture One 重新加载元数据后确认同步"
+            } catch {
+                syncStatus = nil
+                notice = "已写回 \(targetLabel(target))，但同步状态读取失败，请刷新页面确认"
+            }
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -441,8 +736,13 @@ public final class CullingViewModel {
             let data = try await client.executeAsync(retry ? "culling.retry_sync" : "culling.flush", params: [
                 "sessionId": .string(sessionId),
             ])
-            syncStatus = try? data.decoded(as: MetadataSyncSummary.self)
-            notice = retry ? "已重试同步队列" : "已刷新同步队列"
+            do {
+                syncStatus = try data.decoded(as: MetadataSyncSummary.self)
+                notice = retry ? "已重试同步队列" : "已刷新同步队列"
+            } catch {
+                syncStatus = nil
+                notice = retry ? "已重试同步队列，但同步状态读取失败" : "已刷新同步队列，但同步状态读取失败"
+            }
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -455,8 +755,13 @@ public final class CullingViewModel {
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            syncStatus = try? data.decoded(as: MetadataSyncSummary.self)
-            notice = "已重试失败写回项"
+            do {
+                syncStatus = try data.decoded(as: MetadataSyncSummary.self)
+                notice = "已重试失败写回项"
+            } catch {
+                syncStatus = nil
+                notice = "已重试失败写回项，但同步状态读取失败"
+            }
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -466,9 +771,10 @@ public final class CullingViewModel {
     public func reloadCaptureOne() async {
         do {
             try await captureOne.reloadMetadata(sessionId: sessionId)
+            reloadAcked = true
             notice = "Capture One 已重新加载元数据，现在可以确认同步"
         } catch {
-            errorMessage = String(describing: error)
+            errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
@@ -554,71 +860,82 @@ public final class CullingViewModel {
 
 public struct CullingView: View {
     @State private var viewModel: CullingViewModel
+    private let router: CommandRouter
     private let onBack: () -> Void
-    @State private var writebackTarget: CullingWritebackTarget?
+    private let onOpenSimilarity: (String) -> Void
+    private let onOpenTab: (String, SessionTab) -> Void
+    private let onOpenGallery: (String) -> Void
+    private let onOpenSettings: () -> Void
     @State private var confirmReset = false
     @State private var confirmCleanup = false
-    @State private var confirmFinalize = false
-    @State private var groupDecisionTarget: CullingGroup?
-    @State private var groupDecisionKeepIds: [String] = []
     @State private var conflictChoices: [String: MetadataConflictChoice] = [:]
-    @State private var viewerIndex: Int?
+    @State private var compareCount = 1
+    @State private var faceAlign = false
+    @FocusState private var keyboardFocus: Bool
 
-    public init(sessionId: String, router: CommandRouter, onBack: @escaping () -> Void = {}) {
+    init(
+        sessionId: String,
+        router: CommandRouter,
+        onBack: @escaping () -> Void = {},
+        onOpenSimilarity: @escaping (String) -> Void = { _ in },
+        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
+        onOpenGallery: @escaping (String) -> Void = { _ in },
+        onOpenSettings: @escaping () -> Void = {}
+    ) {
         _viewModel = State(initialValue: CullingViewModel(sessionId: sessionId, router: router))
+        self.router = router
         self.onBack = onBack
+        self.onOpenSimilarity = onOpenSimilarity
+        self.onOpenTab = onOpenTab
+        self.onOpenGallery = onOpenGallery
+        self.onOpenSettings = onOpenSettings
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let error = viewModel.errorMessage { NativeBanner(text: error, color: .red) }
-            if let notice = viewModel.notice { NativeBanner(text: notice, color: .green) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    filterCard
-                    navigationCard
-                    similarityGroupCard
-                    syncCard
-                    if let summary = viewModel.summary { summaryCard(summary) }
-                    conflictCard
-                    if let page = viewModel.page {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 12)], spacing: 12) {
-                            ForEach(Array(page.assets.enumerated()), id: \.element.photo.id) { index, asset in
-                                assetCard(asset, index: index)
-                            }
-                        }
-                        if page.nextRowId != nil {
-                            Button("加载更多（已加载 \(page.assets.count) / \(page.total)）") {
-                                viewModel.loadMore()
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 8)
-                        }
-                    }
+            if let error = viewModel.errorMessage { NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error) }
+            if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
+            if viewModel.sessionId.isEmpty {
+                emptyGuide("请先打开一个工作区，再进入挑片页。")
+            } else if viewModel.page == nil && viewModel.errorMessage == nil {
+                HStack {
+                    Spacer()
+                    ProgressView("正在载入挑片工作台…")
+                        .controlSize(.large)
+                        .padding(.vertical, 60)
+                    Spacer()
                 }
-                .padding(24)
+            } else if let page = viewModel.page, page.assets.isEmpty {
+                // TS Culling.tsx:1157-1173：空列表时保留工具/筛选栏 + 空态文案。
+                VStack(spacing: 0) {
+                    toolbarRow
+                    emptyGuide("当前范围没有照片。切换到\u{201c}全部照片\u{201d}或清除筛选条件。")
+                }
+            } else {
+                workbench
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .task { viewModel.load() }
-        .confirmationDialog(
-            "确认写回 Capture One？",
-            isPresented: Binding(
-                get: { writebackTarget != nil },
-                set: { if !$0 { writebackTarget = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("确认写回") {
-                guard let target = writebackTarget else { return }
-                writebackTarget = nil
-                Task { await viewModel.writeback(target: target) }
-            }
-            Button("取消", role: .cancel) { writebackTarget = nil }
-        } message: {
-            Text("这会把已排队的挑片元数据写入 XMP。写入后仍需重新加载 Capture One，再确认同步。")
+        .background(Color.gatherBackground)
+        .focusable()
+        .focused($keyboardFocus)
+        .focusEffectDisabled()
+        .onKeyPress(phases: [.down, .repeat]) { handleKeyPress($0) }
+        .task {
+            viewModel.load()
+            keyboardFocus = true
         }
+        // 可见性门控（审计 P1-并发）：条件渲染页离开即销毁，isActive=false
+        // 让 analyzeQuality 轮询及时退出。
+        .onAppear { viewModel.isActive = true }
+        .onDisappear { viewModel.isActive = false }
+        // 写回协调器 emitSummary 后刷新同步状态（TS useEvent('culling:sync-status')）。
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
+            guard (notification.object as? String) == viewModel.sessionId else { return }
+            viewModel.refreshSyncStatus()
+        }
+        // 对齐旧版 UX：写回/组决策等高频操作无确认弹窗（由 API 层 confirmed:true 承担）；
+        // 仅保留两个破坏性操作的确认（重置挑片 / 清理备份）。
         .confirmationDialog("确认重置挑片状态？", isPresented: $confirmReset, titleVisibility: .visible) {
             Button("重置", role: .destructive) { viewModel.reset() }
             Button("取消", role: .cancel) {}
@@ -631,334 +948,706 @@ public struct CullingView: View {
         } message: {
             Text("仅在 Capture One 已重新加载并确认同步后清理备份。")
         }
-        .confirmationDialog("确认完成元数据同步？", isPresented: $confirmFinalize, titleVisibility: .visible) {
-            Button("完成同步", role: .destructive) { Task { await viewModel.finalizeSync() } }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只有在 Capture One 已重新加载并确认同步后，才应关闭本次同步记录。")
-        }
-        .confirmationDialog("确认更新相似度组决策？", isPresented: Binding(
-            get: { groupDecisionTarget != nil },
-            set: { if !$0 { groupDecisionTarget = nil; groupDecisionKeepIds = [] } }
-        ), titleVisibility: .visible) {
-            Button("确认更新", role: .destructive) {
-                if let group = groupDecisionTarget {
-                    viewModel.decideSimilarityGroup(group, keepPhotoIds: groupDecisionKeepIds)
-                }
-                groupDecisionTarget = nil
-                groupDecisionKeepIds = []
-            }
-            Button("取消", role: .cancel) {
-                groupDecisionTarget = nil
-                groupDecisionKeepIds = []
-            }
-        } message: {
-            Text("未选中的成员会被标记为拒绝；照片文件不会删除。")
-        }
-        .sheet(isPresented: Binding(
-            get: { viewerIndex != nil },
-            set: { if !$0 { viewerIndex = nil } }
-        )) {
-            if let viewerIndex, let assets = viewModel.page?.assets {
-                CullingViewerView(
-                    assets: assets,
-                    initialIndex: viewerIndex,
-                    onClose: { self.viewerIndex = nil }
-                )
-            }
-        }
     }
 
     private var header: some View {
-        HStack {
-            Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("挑片与写回").font(.system(size: 24, weight: .bold))
-                Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain).nonFocusable()
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("挑片与写回").font(.system(size: 24, weight: .bold))
+                    Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
+                }
+                Spacer()
+                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
+                Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }.nonFocusable()
             }
-            Spacer()
-            Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }
+            SessionTabBar(
+                selection: .tab(.culling),
+                onBrowse: { onOpenGallery(viewModel.sessionId) },
+                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
+                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
+            )
         }
         .padding(24)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color.gatherSurface)
     }
 
-    private var filterCard: some View {
-        HStack(spacing: 12) {
-            Picker("筛选", selection: Binding(
-                get: { viewModel.filterMode },
-                set: { viewModel.setFilter($0) }
-            )) {
-                ForEach(CullingViewModel.FilterMode.allCases, id: \.self) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .frame(width: 170)
-            Picker("范围", selection: Binding(
-                get: { viewModel.scopeMode },
-                set: { viewModel.setScope($0) }
-            )) {
-                ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
-                    Text(scope.title).tag(scope)
-                }
-            }
-            .frame(width: 150)
-            if viewModel.scopeMode == .similarityGroup, !viewModel.similarityGroups.isEmpty {
-                Picker("相似度组", selection: Binding(
-                    get: { viewModel.selectedSimilarityGroupId },
-                    set: { viewModel.selectSimilarityGroup($0) }
-                )) {
-                    ForEach(viewModel.similarityGroups, id: \.groupId) { group in
-                        Text("组 \(group.groupIndex) · \(group.images.count) 张").tag(group.groupId)
-                    }
-                }
-                .frame(width: 160)
-            }
-            if !viewModel.selectedPhotoIds.isEmpty {
-                Text("已选 \(viewModel.selectedPhotoIds.count) 张")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Menu("批量操作") {
-                    Button("批量保留") { viewModel.batchUpdate(patch: CullingUpdatePatch(pickState: .picked)) }
-                    Button("批量拒绝") { viewModel.batchUpdate(patch: CullingUpdatePatch(pickState: .rejected)) }
-                    Button("批量待定") { viewModel.batchUpdate(patch: CullingUpdatePatch(pickState: .unreviewed)) }
-                    Divider()
-                    Button("清除选择") { viewModel.clearSelection() }
-                }
-            }
-            Button("全选已加载") { viewModel.selectAllLoaded() }
-            Button("撤销") { viewModel.undo() }.disabled(viewModel.history.first(where: { !$0.undone }) == nil)
-            Button("重做") { viewModel.redo() }.disabled(viewModel.history.first(where: { $0.undone }) == nil)
-            Button(viewModel.isQualityBusy ? "技术质量分析中…" : "分析技术质量") {
-                Task { await viewModel.analyzeQuality() }
-            }
-            .disabled(viewModel.isQualityBusy)
-            Spacer()
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-    }
+    // MARK: 三栏工作台（对齐旧版 Culling.module.css:10-19 网格：
+    // 214px 工具列 | 查看器+infoBar | 196px 胶片条；顶部工具栏横贯）。
 
-    private var syncCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("元数据同步").font(.headline)
-                    if let sync = viewModel.syncStatus {
-                        Text("待处理 \(sync.pending) · 写入中 \(sync.writing) · 已写入 \(sync.written) · 失败 \(sync.failed) · 冲突 \(sync.conflict)")
-                            .font(.caption)
-                            .foregroundStyle(sync.failed + sync.conflict > 0 ? .red : .secondary)
-                    } else {
-                        Text("状态未知").font(.caption).foregroundStyle(.secondary)
-                    }
+    private var workbench: some View {
+        VStack(spacing: 0) {
+            toolbarRow
+            HStack(spacing: 0) {
+                toolsColumn
+                    .frame(width: 214)
+                VStack(spacing: 0) {
+                    // 查看器：id 随 对比/人脸对齐/当前照片 变化，复用旧版
+                    // resetTransform 语义（对比模式切换、翻页、缩略图跳转均复位缩放）。
+                    CullingWorkbenchViewer(
+                        viewModel: viewModel,
+                        compareCount: compareCount,
+                        faceAlign: faceAlign
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .id("culling-viewer-\(compareCount)-\(faceAlign)-\(viewModel.currentPhotoId ?? "nil")")
+                    infoBar
                 }
-                Spacer()
-                Menu("写回") {
-                    Button("评分") { writebackTarget = .rating }
-                    Button("颜色标签") { writebackTarget = .colorLabel }
-                    Button("关键字") { writebackTarget = .keyword }
-                }
-                Button("刷新队列") { Task { await viewModel.flush() } }
-                Button("重试同步") { Task { await viewModel.flush(retry: true) } }
-                Button("重试失败写回") { Task { await viewModel.retryFailedWriteback() } }
-            }
-            HStack {
-                Button("Capture One 重新加载") { Task { await viewModel.reloadCaptureOne() } }
-                Button("确认已同步") { viewModel.confirmSync() }
-                if viewModel.syncStatus?.synced ?? 0 > 0 {
-                    Button("完成同步") { confirmFinalize = true }
-                }
-                Button("清理备份", role: .destructive) { confirmCleanup = true }
-                Spacer()
-                Button("重置挑片", role: .destructive) { confirmReset = true }
+                filmstrip
+                    .frame(width: 196)
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(alignment: .bottomTrailing) {
+            // 浮动冲突面板（对齐旧版 .conflictPanel 定位：右下、infoBar 之上）。
+            conflictPanel
+                .padding(.trailing, 14)
+                .padding(.bottom, 52)
+        }
     }
 
-    private var navigationCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("导航组").font(.headline)
-                    Text("按连拍/场景组织照片，支持预览、拆分和合并。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    // MARK: 顶部工具栏（对齐旧版 Culling.tsx:1177-1309 的 toolbar：
+    // 范围分段 + 筛选控件 + 视图操作区）。
+
+    private var toolbarRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                Picker("范围", selection: scopeBinding) {
+                    ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
+                        Text(scope.title).tag(scope)
+                    }
                 }
-                Spacer()
-                Button("刷新") { viewModel.loadNavigation() }
-                Button("预览分析") {
-                    Task { await viewModel.analyzeNavigation(dryRun: true) }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+                .nonFocusable()
+
+                Divider().frame(height: 18)
+
+                Toggle("仅未处理", isOn: unreviewedOnlyBinding)
+                    .toggleStyle(.checkbox)
+                    .nonFocusable()
+                Picker("状态", selection: pickStateBinding) {
+                    Text("全部状态").tag(PickState?.none)
+                    ForEach(PickState.allCases, id: \.self) { state in
+                        Text(pickStateTitle(state)).tag(PickState?.some(state))
+                    }
                 }
-                .disabled(viewModel.isNavigationBusy)
-                Button("分析并保存") {
+                .frame(width: 100)
+                .nonFocusable()
+                Picker("星级", selection: ratingBinding) {
+                    Text("全部星级").tag(Int?.none)
+                    ForEach(0...5, id: \.self) { rating in
+                        Text(rating == 0 ? "未评级" : "\(rating) 星").tag(Int?.some(rating))
+                    }
+                }
+                .frame(width: 95)
+                .nonFocusable()
+                Picker("颜色", selection: colorFilterBinding) {
+                    Text("全部颜色").tag(CaptureOneColorLabel?.none)
+                    ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
+                        Text(Self.colorLabelTitle(label)).tag(CaptureOneColorLabel?.some(label))
+                    }
+                }
+                .frame(width: 95)
+                .nonFocusable()
+                Picker("质量", selection: qualityStatusBinding) {
+                    Text("全部分析状态").tag(CullingFilterQualityStatus?.none)
+                    Text("已分析").tag(CullingFilterQualityStatus?.some(.analysed))
+                    Text("未分析").tag(CullingFilterQualityStatus?.some(.unanalysed))
+                    Text("分析失败").tag(CullingFilterQualityStatus?.some(.failed))
+                }
+                .frame(width: 115)
+                .nonFocusable()
+                Toggle("仅 XMP 冲突", isOn: conflictOnlyBinding)
+                    .toggleStyle(.checkbox)
+                    .nonFocusable()
+                Button("重置") { viewModel.resetFilters() }.nonFocusable()
+
+                Spacer(minLength: 12)
+
+                Button("保存 Burst/Scene 分组") {
                     Task { await viewModel.analyzeNavigation(dryRun: false) }
                 }
                 .disabled(viewModel.isNavigationBusy)
-            }
-            if viewModel.navigationGroups.isEmpty {
-                Text("暂无导航组；可先执行预览分析。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("导航组（可多选合并）")
-                            .font(.caption.weight(.semibold))
+                .nonFocusable()
+                Button("预览分组") {
+                    Task { await viewModel.analyzeNavigation(dryRun: true) }
+                }
+                .disabled(viewModel.isNavigationBusy)
+                .nonFocusable()
+                Button(viewModel.isQualityBusy ? "质量分析中…" : "分析技术质量") {
+                    Task { await viewModel.analyzeQuality() }
+                }
+                .disabled(viewModel.isQualityBusy)
+                .nonFocusable()
+
+                if !viewModel.navigationGroups.isEmpty {
+                    Picker("导航组 (\(viewModel.navigationGroups.count))", selection: navigationGroupBinding) {
                         ForEach(viewModel.navigationGroups, id: \.id) { group in
-                            HStack(spacing: 6) {
-                                Toggle("", isOn: Binding(
-                                    get: { viewModel.selectedNavigationGroupIds.contains(group.id) },
-                                    set: { _ in viewModel.toggleNavigationGroup(group.id) }
-                                ))
-                                .toggleStyle(.checkbox)
-                                .labelsHidden()
-                                Button {
-                                    viewModel.selectNavigationGroup(group.id)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(group.type.rawValue) · \(group.photoIds.count) 张")
-                                            .font(.caption)
-                                        Text(group.explanation.isEmpty ? group.source.rawValue : group.explanation)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
+                            let leadLabel = group.leadPhotoId
+                                .flatMap { lead in group.photoIds.firstIndex(of: lead) }
+                                .map { " · 推荐 \($0 + 1)" } ?? ""
+                            Text("\(group.type == .burst ? "Burst" : "Scene") · \(group.photoIds.count) 张\(leadLabel)").tag(group.id)
+                        }
+                    }
+                    .frame(width: 190)
+                    .nonFocusable()
+                    Button("从当前照片拆分") {
+                        viewModel.splitCurrentFromNavigationGroup()
+                    }
+                    .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
+                    .nonFocusable()
+                    Button("与前组合并") {
+                        viewModel.mergeCurrentWithPreviousSameType()
+                    }
+                    .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
+                    .nonFocusable()
+                }
+
+                Toggle("自动前进", isOn: autoAdvanceBinding)
+                    .toggleStyle(.checkbox)
+                    .nonFocusable()
+
+                Picker("对比", selection: $compareCount) {
+                    Text("单图").tag(1)
+                    Text("2 图").tag(2)
+                    Text("4 图").tag(4)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+                .nonFocusable()
+
+                Toggle("人脸对齐", isOn: $faceAlign)
+                    .toggleStyle(.checkbox)
+                    .nonFocusable()
+
+                Button("↶") { viewModel.undo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(viewModel.history.first(where: { !$0.undone }) == nil || isBusy)
+                    .help("撤销（⌘Z）")
+                    .nonFocusable()
+                Button("↷") { viewModel.redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(viewModel.history.first(where: { $0.undone }) == nil || isBusy)
+                    .help("重做（⇧⌘Z）")
+                    .nonFocusable()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .background(Color.gatherSurface)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    // MARK: 工具列（grid-column 1：决策条 / 星级 / 颜色 / 相似组决策 / 选择管理）。
+
+    private var toolsColumn: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("挑片工具")
+                    .font(.system(size: 11, weight: .semibold))
+                    .kerning(0.4)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                // 决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）。
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(viewModel.selectedPhotoIds.isEmpty ? "当前照片" : "批量 \(viewModel.selectedPhotoIds.count) 张")
+                        .controlLabelStyle()
+                    HStack(spacing: 6) {
+                        decisionButton(icon: "✓", iconColor: Color(hex: 0x63c977), title: "保留", shortcut: "P") {
+                            viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
+                        }
+                        decisionButton(icon: "×", iconColor: Color(hex: 0xe46c68), title: "淘汰", shortcut: "X") {
+                            viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
+                        }
+                        decisionButton(icon: "○", iconColor: .secondary, title: "未处理", shortcut: "U") {
+                            viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
+                        }
+                    }
+                }
+                .controlGroupStyle()
+
+                // 星级（对齐旧版 ratingButton 0-5 数字+星，当前照片星级高亮）。
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("星级").controlLabelStyle()
+                    HStack(spacing: 6) {
+                        ForEach(0...5, id: \.self) { rating in
+                            let isCurrent = (viewModel.currentAsset?.state.rating ?? 0) == Double(rating)
+                            Button(rating == 0 ? "0" : "\(rating)★") {
+                                viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating)))
+                            }
+                            .buttonStyle(.bordered)
+                            .font(.system(size: 11))
+                            .frame(width: 28, height: 28)
+                            .background(isCurrent ? GatherTheme.primarySoft : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .stroke(isCurrent ? GatherTheme.primary : Color.clear, lineWidth: 1)
+                            )
+                            .disabled(isBusy)
+                            .nonFocusable()
+                        }
+                    }
+                }
+                .controlGroupStyle()
+
+                // 颜色（对齐旧版 colorButton 圆形色钮 + 选中外环）。
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("颜色").controlLabelStyle()
+                    HStack(spacing: 6) {
+                        ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
+                            let isCurrent = viewModel.currentAsset?.state.colorLabel == label
+                            Button {
+                                viewModel.commit(patch: CullingUpdatePatch(colorLabel: label))
+                            } label: {
+                                Circle()
+                                    .fill(Self.colorDot(label))
+                                    .frame(width: 24, height: 24)
+                                    .overlay(
+                                        Circle().stroke(Color.black.opacity(0.35), lineWidth: 2)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .overlay(
+                                Circle()
+                                    .stroke(isCurrent ? Color(nsColor: .secondaryLabelColor) : Color.clear, lineWidth: 2)
+                                    .padding(-3)
+                            )
+                            .help(Self.colorLabelTitle(label))
+                            .disabled(isBusy)
+                            .nonFocusable()
+                        }
+                    }
+                }
+                .controlGroupStyle()
+
+                // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
+                if currentGroupAssets.count > 1, let current = viewModel.currentAsset {
+                    let groupIds = Set(currentGroupAssets.map(\.photo.id))
+                    let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
+                    let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < currentGroupAssets.count
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("相似组 · \(currentGroupAssets.count) 张").controlLabelStyle()
+                        Button("保留当前 1 张") {
+                            viewModel.keepInGroupRejectRest(
+                                current.similarityGroupId ?? "",
+                                keepPhotoIds: [current.photo.id]
+                            )
+                        }
+                        .frame(maxWidth: .infinity)
+                        .disabled(isBusy)
+                        .nonFocusable()
+                        Button(selectedInGroup.isEmpty ? "保留已选 K 张" : "保留已选 \(selectedInGroup.count) 张") {
+                            viewModel.keepInGroupRejectRest(
+                                current.similarityGroupId ?? "",
+                                keepPhotoIds: selectedInGroup.sorted()
+                            )
+                        }
+                        .frame(maxWidth: .infinity)
+                        .disabled(!keepValid || isBusy)
+                        .help(keepValid ? "" : "按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片")
+                        .nonFocusable()
+                        Text("其余照片自动淘汰")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlGroupStyle()
+                    .padding(.top, 10)
+                }
+
+                if !viewModel.selectedPhotoIds.isEmpty {
+                    Button("取消选择") { viewModel.clearSelection() }
+                        .frame(maxWidth: .infinity)
+                        .nonFocusable()
+                        .padding(.top, 10)
+                }
+
+                Spacer(minLength: 12)
+
+                // 附加统计（对齐 summaryCard 的增强项：已评分/已标记）。
+                if let summary = viewModel.summary {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("评分 \(summary.rated)").controlLabelStyle()
+                        Text("标记 \(summary.labeled)").controlLabelStyle()
+                    }
+                    .controlGroupStyle()
+                }
+            }
+            .padding(10)
+        }
+        .background(Color.gatherSurface)
+        .overlay(alignment: .trailing) { Divider() }
+    }
+
+    private func decisionButton(
+        icon: String,
+        iconColor: Color,
+        title: String,
+        shortcut: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Text(icon)
+                    .font(.system(size: 14))
+                    .foregroundStyle(iconColor)
+                Text(shortcut)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 40)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Color.clear)
+        .overlay(Rectangle().stroke(Color(nsColor: .separatorColor), lineWidth: 0.5))
+        .disabled(isBusy)
+        .help(title)
+        .accessibilityLabel("\(title) \(shortcut)")
+        .nonFocusable()
+    }
+
+    // MARK: infoBar（grid-row 3：位置计数 + 保留/淘汰/未处理统计 + 同步状态 + 同步按钮）。
+
+    private var infoBar: some View {
+        HStack(spacing: 12) {
+            if let page = viewModel.page {
+                Text("\(currentIndex + 1) / \(viewModel.page?.total ?? page.assets.count)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.gatherTextPrimary)
+            }
+            if let summary = viewModel.summary {
+                Text("保留 \(summary.kept)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(hex: 0x4a8b55))
+                Text("淘汰 \(summary.rejected)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(GatherTheme.error)
+                Text("未处理 \(summary.pending)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            // linkedNotice：同名 RAW/JPEG 共享 XMP 提示（对齐旧版 Culling.tsx:1393-1397）。
+            if let current = viewModel.currentAsset, current.linkedVariantCount > 1 {
+                Text("同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 \(current.linkedVariantCount) 个条目")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(hex: 0x9c5e28))
+                    .lineLimit(1)
+            }
+            Spacer()
+            if let sync = viewModel.syncStatus {
+                Text(syncStatusText(sync))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(sync.failed + sync.conflict > 0 ? GatherTheme.error : Color(hex: 0x4a8b55))
+            }
+            // 常驻引导行（对齐旧版 culling.syncHint：先在 Capture One 中 Load Metadata）。
+            if (viewModel.syncStatus?.written ?? 0) > 0 {
+                Text("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .opacity(0.8)
+                    .lineLimit(1)
+            }
+            Button("立即写入 XMP") { Task { await viewModel.flush() } }
+                .disabled(isBusy)
+                .nonFocusable()
+            if (viewModel.syncStatus?.written ?? 0) > 0 {
+                Button("在 Capture One 中加载元数据") { Task { await viewModel.reloadCaptureOne() } }
+                    .disabled(!viewModel.canLoadMetadata || isBusy)
+                    .help(syncLoadHint)
+                    .nonFocusable()
+            }
+            if (viewModel.syncStatus?.failed ?? 0) > 0 {
+                Button("重试失败项") { Task { await viewModel.retryFailedWriteback() } }
+                    .disabled(isBusy)
+                    .nonFocusable()
+            }
+            if (viewModel.syncStatus?.written ?? 0) > 0 {
+                Button("已在 Capture One 加载") { viewModel.confirmSync() }
+                    .disabled(!viewModel.canConfirmSync || isBusy)
+                    .help(syncConfirmHint)
+                    .nonFocusable()
+            }
+            if (viewModel.syncStatus?.synced ?? 0) > 0 {
+                Button("保留 XMP 并结束") { Task { await viewModel.finalizeSync() } }
+                    .disabled(isBusy)
+                    .nonFocusable()
+                Button("恢复原 XMP", role: .destructive) { confirmCleanup = true }
+                    .disabled(!viewModel.canCleanup)
+                    .help(syncCleanupHint)
+                    .nonFocusable()
+            }
+            Button("重置挑片", role: .destructive) { confirmReset = true }.nonFocusable()
+        }
+        .font(.system(size: 11))
+        .padding(.horizontal, 10)
+        .frame(minHeight: 36)
+        .background(Color.gatherSurface)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var isBusy: Bool {
+        viewModel.isLoading || viewModel.isNavigationBusy || viewModel.isQualityBusy
+    }
+
+    /// 逐按钮禁用 hint（对齐旧版 c1-sync-controls.ts 的独立 title 提示粒度）。
+    private var syncLoadHint: String {
+        switch viewModel.syncFlowState() {
+        case .synced: return "已完成同步，无需再次加载元数据"
+        case .failed: return "存在写入失败项，请先重试"
+        case .conflict: return "存在 XMP 冲突，请先裁决"
+        default: return "没有可加载的已写入元数据"
+        }
+    }
+
+    private var syncConfirmHint: String {
+        switch viewModel.syncFlowState() {
+        case .synced: return "已完成同步"
+        default:
+            return viewModel.reloadAcked
+                ? "请先等待写入完成或处理失败项"
+                : "请先在 Capture One 中加载元数据，再确认同步"
+        }
+    }
+
+    private var syncCleanupHint: String {
+        viewModel.syncFlowState() == .synced
+            ? "已完成清理"
+            : "请先加载元数据并确认同步，再执行清理"
+    }
+
+    // MARK: 胶片条（grid-column 3：122pt 缩略图 + 色标线 + 星级 + 决策圆点 + 文件名）。
+
+    private var filmstrip: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("胶片")
+                    .font(.system(size: 11, weight: .semibold))
+                    .kerning(0.4)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let page = viewModel.page {
+                    Text("\(page.assets.count)\(page.total > page.assets.count ? " / \(page.total)" : "")")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(Color.gatherSurface)
+            .overlay(alignment: .bottom) { Divider() }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(Array((viewModel.page?.assets ?? []).enumerated()), id: \.element.photo.id) { index, asset in
+                            CullingFilmThumbView(viewModel: viewModel, asset: asset)
+                                .id(asset.photo.id)
+                                // 滚动近底自动续页（对齐旧版胶片条 scrollTop < 400px 触发 loadMore）。
+                                .onAppear {
+                                    let count = viewModel.page?.assets.count ?? 0
+                                    if index >= count - 4, viewModel.page?.nextRowId != nil {
+                                        viewModel.loadMore()
                                     }
                                 }
-                                .buttonStyle(.plain)
-                            }
                         }
-                        Button("合并已选（\(viewModel.selectedNavigationGroupIds.count)）") {
-                            viewModel.mergeSelectedNavigationGroups()
-                        }
-                        .disabled(viewModel.selectedNavigationGroupIds.count < 2 || viewModel.isNavigationBusy)
-                    }
-                    Divider()
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("拆分当前组").font(.caption.weight(.semibold))
-                        if let group = viewModel.navigationGroups.first(where: { $0.id == viewModel.selectedNavigationGroupId }) {
-                            Text("可在下列照片之前拆分：")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            ForEach(Array(group.photoIds.dropFirst()), id: \.self) { photoId in
-                                Button("在 (photoId) 之前拆分") {
-                                    viewModel.splitNavigation(beforePhotoId: photoId)
-                                }
-                                .font(.caption)
-                                .disabled(viewModel.isNavigationBusy)
+                        if viewModel.page?.nextRowId != nil {
+                            Button(viewModel.isLoading ? "加载中…" : "加载更多") {
+                                viewModel.loadMore()
                             }
-                        } else {
-                            Text("请选择导航组")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            .disabled(viewModel.isLoading)
+                            .font(.system(size: 11))
+                            .frame(maxWidth: .infinity)
+                            .nonFocusable()
                         }
                     }
-                    .frame(minWidth: 220, alignment: .leading)
+                    .padding(8)
+                }
+                // 当前照片自动滚动（对齐旧版 scrollIntoView block:nearest）。
+                .onChange(of: viewModel.currentPhotoId) { _, newValue in
+                    guard let newValue else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(newValue, anchor: .center)
+                    }
                 }
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(Color.gatherSurface)
+        .overlay(alignment: .leading) { Divider() }
     }
 
+    private var currentIndex: Int {
+        guard let id = viewModel.currentPhotoId,
+              let found = viewModel.page?.assets.firstIndex(where: { $0.photo.id == id }) else { return 0 }
+        return found
+    }
+
+    /// 当前照片所在相似组（已加载范围内）成员，对齐 TS currentGroupAssets。
+    private var currentGroupAssets: [CullingAsset] {
+        guard let current = viewModel.currentAsset, let groupId = current.similarityGroupId else { return [] }
+        return viewModel.page?.assets.filter { $0.similarityGroupId == groupId } ?? []
+    }
+
+    // MARK: 浮动冲突面板（对齐旧版 .conflictPanel：每次展示一个冲突，应用后进入下一个）。
+
     @ViewBuilder
-    private var similarityGroupCard: some View {
-        if !viewModel.similarityGroups.isEmpty {
+    private var conflictPanel: some View {
+        if let conflict = viewModel.conflicts.first {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("相似度组决策").font(.headline)
-                    Text("可保留一张并拒绝其余成员").font(.caption).foregroundStyle(.secondary)
+                    Text("XMP 字段冲突").font(.headline)
                     Spacer()
+                    Text(URL(fileURLWithPath: conflict.xmpPath).lastPathComponent)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(conflict.xmpPath)
                 }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 10) {
-                        ForEach(viewModel.similarityGroups, id: \.groupId) { group in
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("组 \(group.groupIndex) · \(group.images.count) 张")
-                                    .font(.caption.weight(.semibold))
-                                Text("保留 \(group.keepCount) · 拒绝 \(group.rejectCount) · 待定 \(group.pendingCount)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                HStack(spacing: 6) {
-                                    Button("只保留第一张") {
-                                        groupDecisionTarget = group
-                                        groupDecisionKeepIds = group.images.first.map { [$0.photoId] } ?? []
-                                    }
-                                    .disabled(group.images.count < 2)
-                                    Button("查看组") {
-                                        viewModel.selectSimilarityGroup(group.groupId)
-                                    }
-                                }
-                            }
-                            .padding(8)
-                            .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .controlBackgroundColor)))
+                ForEach(conflict.fields, id: \.field.rawValue) { field in
+                    let key = "\(conflict.xmpPath)|\(field.field.rawValue)"
+                    HStack(spacing: 8) {
+                        Text(metadataFieldTitle(field.field))
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 44, alignment: .leading)
+                        Text("Gather：\(valueLabel(field.local))")
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .help(valueLabel(field.local))
+                        Text("外部：\(valueLabel(field.remote))")
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .help(valueLabel(field.remote))
+                        Picker("处理", selection: Binding(
+                            get: { conflictChoices[key] ?? .keepLocal },
+                            set: { conflictChoices[key] = $0 }
+                        )) {
+                            Text("保留 Gather").tag(MetadataConflictChoice.keepLocal)
+                            Text("采用外部值").tag(MetadataConflictChoice.useRemote)
                         }
+                        .pickerStyle(.menu)
+                        .frame(width: 110)
+                        .nonFocusable()
                     }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+                }
+                HStack {
+                    Text(viewModel.conflicts.count > 1
+                        ? "还有 \(viewModel.conflicts.count - 1) 个冲突"
+                        : "这是最后一个冲突")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("应用并继续写入") {
+                        let choices = Dictionary(uniqueKeysWithValues: conflict.fields.map { field in
+                            (field.field, conflictChoices["\(conflict.xmpPath)|\(field.field.rawValue)"] ?? .keepLocal)
+                        })
+                        viewModel.resolve(conflict, choices: choices)
+                    }
+                    .font(.caption)
+                    .nonFocusable()
                 }
             }
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+            .frame(width: 540)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Color.gatherSurface))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color(hex: 0xc7614f).opacity(0.55), lineWidth: 1)
+            )
+            .shadow(color: Color(red: 0.24, green: 0.14, blue: 0.11).opacity(0.2), radius: 16, y: 8)
         }
     }
 
-    @ViewBuilder
-    private var conflictCard: some View {
-        if !viewModel.conflicts.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("元数据冲突（\(viewModel.conflicts.count)）").font(.headline)
-                ForEach(viewModel.conflicts, id: \.xmpPath) { conflict in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(URL(fileURLWithPath: conflict.photoPath).lastPathComponent)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                        ForEach(conflict.fields, id: \.field.rawValue) { field in
-                            let key = "\(conflict.xmpPath)|\(field.field.rawValue)"
-                            HStack(spacing: 8) {
-                                Text(field.field.rawValue)
-                                    .frame(width: 70, alignment: .leading)
-                                Text("Gather：\(valueLabel(field.local))")
-                                    .lineLimit(1)
-                                Text("文件：\(valueLabel(field.remote))")
-                                    .lineLimit(1)
-                                Picker("处理", selection: Binding(
-                                    get: { conflictChoices[key] ?? .keepLocal },
-                                    set: { conflictChoices[key] = $0 }
-                                )) {
-                                    Text("保留 Gather").tag(MetadataConflictChoice.keepLocal)
-                                    Text("使用文件").tag(MetadataConflictChoice.useRemote)
-                                }
-                                .pickerStyle(.menu)
-                            }
-                        }
-                        Button("应用当前冲突选择") {
-                            let choices = Dictionary(uniqueKeysWithValues: conflict.fields.map { field in
-                                (field.field, conflictChoices["\(conflict.xmpPath)|\(field.field.rawValue)"] ?? .keepLocal)
-                            })
-                            viewModel.resolve(conflict, choices: choices)
-                        }
-                        .font(.caption)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .padding(14)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
+    // MARK: 键盘快捷键（对齐 Culling.tsx:1109-1149 window keydown handler）。
+    // 0-5 评分、P/空格 保留、X 淘汰、U 未处理（不前进）、←/→ 翻页；
+    // Cmd+Z / Shift+Cmd+Z 由工具栏按钮的 keyboardShortcut 承担。
+    private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        guard !viewModel.isLoading, !viewModel.isNavigationBusy, !viewModel.isQualityBusy else {
+            return .ignored
+        }
+        if press.key == .leftArrow {
+            viewModel.retreatCurrent()
+            return .handled
+        }
+        if press.key == .rightArrow {
+            viewModel.advanceCurrent()
+            return .handled
+        }
+        let character = press.characters.lowercased()
+        if character == " " || character == "p" {
+            viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
+            return .handled
+        }
+        if character == "x" {
+            viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
+            return .handled
+        }
+        if character == "u" {
+            viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
+            return .handled
+        }
+        if character.count == 1, let rating = Int(character), (0...5).contains(rating) {
+            viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating)))
+            return .handled
+        }
+        return .ignored
+    }
+
+    private func emptyGuide(_ text: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 34))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 48)
+    }
+
+    /// 颜色标签色点（供胶片条/工具列/筛选卡共用）。
+    fileprivate static func colorDot(_ label: CaptureOneColorLabel) -> Color {
+        switch label {
+        case .none: return Color(hex: 0x777777)
+        case .red: return Color(hex: 0xef5350)
+        case .orange: return Color(hex: 0xff9800)
+        case .yellow: return Color(hex: 0xfdd835)
+        case .green: return Color(hex: 0x4caf50)
+        case .blue: return Color(hex: 0x42a5f5)
+        case .pink: return Color(hex: 0xec407a)
+        case .purple: return Color(hex: 0xab47bc)
         }
     }
 
-    private func summaryCard(_ summary: CullingSummary) -> some View {
-        HStack(spacing: 18) {
-            summaryValue("总计", summary.totalPhotos)
-            summaryValue("保留", summary.kept)
-            summaryValue("拒绝", summary.rejected)
-            summaryValue("待定", summary.pending)
-            summaryValue("已评分", summary.rated)
-            summaryValue("已标记", summary.labeled)
-            Spacer()
+    /// 颜色标签中文文案（对齐 LibraryView.swift LibraryColorOption.label 表）。
+    fileprivate static func colorLabelTitle(_ label: CaptureOneColorLabel) -> String {
+        switch label {
+        case .none: return "无"
+        case .red: return "红"
+        case .orange: return "橙"
+        case .yellow: return "黄"
+        case .green: return "绿"
+        case .blue: return "蓝"
+        case .pink: return "粉"
+        case .purple: return "紫"
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
+    private func metadataFieldTitle(_ field: MetadataField) -> String {
+        switch field {
+        case .rating: return "星级"
+        case .label: return "颜色"
+        case .keywords: return "关键词"
+        }
     }
 
     private func valueLabel(_ value: GatherCore.JSONValue) -> String {
@@ -972,198 +1661,497 @@ public struct CullingView: View {
         }
     }
 
-    private func summaryValue(_ title: String, _ value: Int) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text("\(value)").font(.title3.weight(.semibold))
-        }
+    /// 对齐旧版 syncLabel 六档文案：已同步 / N 个冲突 / N 个失败 /
+    /// N 待写入 / N 已写入 / N 已载入。
+    private func syncStatusText(_ sync: MetadataSyncSummary) -> String {
+        if sync.items.isEmpty { return "XMP 已同步" }
+        if sync.conflict > 0 { return "\(sync.conflict) 个 XMP 冲突" }
+        if sync.failed > 0 { return "\(sync.failed) 个 XMP 写入失败" }
+        if sync.pending + sync.writing > 0 { return "\(sync.pending + sync.writing) 个 XMP 等待写入" }
+        if sync.written > 0 { return "\(sync.written) 个 XMP 已写入，等待 Capture One 加载" }
+        if sync.synced > 0 { return "\(sync.synced) 个 XMP 已确认加载" }
+        return "XMP 已同步"
     }
 
-    private func assetCard(_ asset: CullingAsset, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ZStack(alignment: .topTrailing) {
-                Button {
-                    viewerIndex = index
-                } label: {
-                    PhotoThumbnailView(path: asset.photo.filepath, size: 300, placeholderSize: CGSize(width: 230, height: 160))
-                }
-                .buttonStyle(.plain)
-                Toggle("", isOn: Binding(
-                    get: { viewModel.selectedPhotoIds.contains(asset.photo.id) },
-                    set: { _ in viewModel.toggleSelection(asset.photo.id) }
-                ))
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .padding(8)
-            }
-            Text(asset.photo.filename).font(.caption).lineLimit(1)
-            HStack {
-                Text(asset.state.pickState.rawValue).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text("★ \(Int(asset.state.rating))").font(.caption)
-            }
-            if let quality = asset.quality {
-                Text(quality.status == .succeeded
-                    ? "技术质量 \(Int(quality.score * 100))% · 清晰度 \(Int(quality.sharpness * 100))%"
-                    : "技术质量分析失败\(quality.errorMessage.map { "：\($0)" } ?? "")")
-                    .font(.caption2)
-                    .foregroundStyle(quality.status == .succeeded ? Color.secondary : Color.red)
-                    .lineLimit(2)
-            }
-            HStack(spacing: 5) {
-                Button("保留") { viewModel.update(asset, patch: CullingUpdatePatch(pickState: .picked)) }
-                Button("拒绝") { viewModel.update(asset, patch: CullingUpdatePatch(pickState: .rejected)) }
-                Button("待定") { viewModel.update(asset, patch: CullingUpdatePatch(pickState: .unreviewed)) }
-            }
-            .buttonStyle(.bordered)
-            HStack {
-                Menu("评分") {
-                    ForEach(0...5, id: \.self) { rating in
-                        Button("★ \(rating)") { viewModel.update(asset, patch: CullingUpdatePatch(rating: Double(rating))) }
-                    }
-                }
-                Menu("颜色") {
-                    ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
-                        Button(label.rawValue) { viewModel.update(asset, patch: CullingUpdatePatch(colorLabel: label)) }
-                    }
-                }
-            }
-            .font(.caption)
-        }
-        .nativeCard()
+    // MARK: 筛选/范围绑定（组合筛选状态，任意变化触发整页刷新）
+
+    private var unreviewedOnlyBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.filterState.unreviewedOnly },
+            set: { value in viewModel.setFilterState { $0.unreviewedOnly = value } }
+        )
+    }
+
+    private var pickStateBinding: Binding<PickState?> {
+        Binding(
+            get: { viewModel.filterState.pickState },
+            set: { value in viewModel.setFilterState { $0.pickState = value } }
+        )
+    }
+
+    private var ratingBinding: Binding<Int?> {
+        Binding(
+            get: { viewModel.filterState.rating },
+            set: { value in viewModel.setFilterState { $0.rating = value } }
+        )
+    }
+
+    private var colorFilterBinding: Binding<CaptureOneColorLabel?> {
+        Binding(
+            get: { viewModel.filterState.colorLabel },
+            set: { value in viewModel.setFilterState { $0.colorLabel = value } }
+        )
+    }
+
+    private var qualityStatusBinding: Binding<CullingFilterQualityStatus?> {
+        Binding(
+            get: { viewModel.filterState.qualityStatus },
+            set: { value in viewModel.setFilterState { $0.qualityStatus = value } }
+        )
+    }
+
+    private var conflictOnlyBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.filterState.metadataConflictOnly },
+            set: { value in viewModel.setFilterState { $0.metadataConflictOnly = value } }
+        )
+    }
+
+    private var autoAdvanceBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.autoAdvance },
+            set: { viewModel.autoAdvance = $0 }
+        )
+    }
+
+    private var scopeBinding: Binding<CullingViewModel.ScopeMode> {
+        Binding(
+            get: { viewModel.scopeMode },
+            set: { viewModel.setScope($0) }
+        )
+    }
+
+    private var navigationGroupBinding: Binding<String> {
+        Binding(
+            get: { viewModel.selectedNavigationGroupId },
+            set: { viewModel.selectNavigationGroupAndJump($0) }
+        )
     }
 }
 
-/// 挑片预览器：保留主分支的前后浏览、缩放、拖拽、面部对齐和 1/2/4 张对比
-/// 能力；状态修改仍由主页面的安全写回控件负责。
-private struct CullingViewerView: View {
-    let assets: [CullingAsset]
-    let initialIndex: Int
-    let onClose: () -> Void
+/// 胶片缩略图：122pt 方图 + 4pt 色标线 + 左上星级 + 右上决策圆点 + 底部文件名。
+/// 点击选择当前照片；⌘/Ctrl/Shift 点击切换多选（对齐旧版 Culling.tsx:1509-1530）。
+private struct CullingFilmThumbView: View {
+    let viewModel: CullingViewModel
+    let asset: CullingAsset
 
-    @State private var index: Int
-    @State private var scale = 1.0
-    @State private var gestureScale = 1.0
-    @State private var offset = CGSize.zero
-    @State private var compareCount = 1
-    @State private var faceAlign = false
+    private var isCurrent: Bool {
+        viewModel.currentPhotoId == asset.photo.id
+    }
 
-    init(assets: [CullingAsset], initialIndex: Int, onClose: @escaping () -> Void) {
-        self.assets = assets
-        self.initialIndex = initialIndex
-        self.onClose = onClose
-        _index = State(initialValue: min(max(0, initialIndex), max(0, assets.count - 1)))
+    private var isSelected: Bool {
+        viewModel.selectedPhotoIds.contains(asset.photo.id)
+    }
+
+    private var borderColor: Color {
+        if isCurrent { return Color(hex: 0xdc8058) }
+        if isSelected { return Color(hex: 0xe9c366) }
+        return .clear
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(assets[index].photo.filename)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text("\(index + 1) / \(assets.count) · \(assets[index].state.pickState.rawValue)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Picker("对比", selection: $compareCount) {
-                    Text("单张").tag(1)
-                    Text("两张").tag(2)
-                    Text("四张").tag(4)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-                Toggle("面部对齐", isOn: $faceAlign)
-                    .toggleStyle(.checkbox)
-                Button("关闭", action: onClose)
-                    .keyboardShortcut(.cancelAction)
+        Button {
+            if NSEvent.modifierFlags.intersection([.command, .control, .shift]) != [] {
+                viewModel.toggleSelection(asset.photo.id)
+            } else {
+                viewModel.selectCurrent(asset.photo.id)
             }
+        } label: {
+            ZStack(alignment: .bottom) {
+                PhotoThumbnailView(
+                    path: asset.photo.filepath,
+                    size: 256,
+                    placeholderSize: CGSize(width: 196, height: 122)
+                )
+                .frame(width: 196, height: 122)
+                .clipped()
+                if asset.state.colorLabel != .none {
+                    Rectangle()
+                        .fill(CullingView.colorDot(asset.state.colorLabel))
+                        .frame(height: 4)
+                }
+                if asset.state.rating > 0 {
+                    Text("\(Int(asset.state.rating))★")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(hex: 0xffd966))
+                        .shadow(color: .black.opacity(0.6), radius: 2, y: 1)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(4)
+                }
+                if asset.state.pickState != .unreviewed {
+                    Circle()
+                        .fill(asset.state.pickState == .picked ? Color(hex: 0x8ee59b) : Color(hex: 0xffb1b1))
+                        .frame(width: 9, height: 9)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(4)
+                }
+                Text(asset.photo.filename)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color(hex: 0xeee9e5))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(Color(hex: 0x0d0c0b).opacity(0.7))
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(height: 122)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(borderColor, lineWidth: 2))
+        .opacity(isCurrent || isSelected ? 1 : 0.78)
+        .help(asset.photo.filename)
+    }
+}
 
-            GeometryReader { geometry in
-                let visible = Array(assets.dropFirst(index).prefix(compareCount))
-                HStack(spacing: 8) {
-                    ForEach(Array(visible.enumerated()), id: \.element.photo.id) { offsetIndex, asset in
-                        ZStack(alignment: .bottomLeading) {
-                            PhotoThumbnailView(path: asset.photo.filepath, size: 2048, preview: true)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .scaleEffect(faceAlign && !asset.faceBboxes.isEmpty ? max(2, scale) : scale)
-                                .offset(offset)
-                                .gesture(
-                                    MagnificationGesture()
-                                        .onChanged { value in
-                                            scale = min(8, max(1, gestureScale * value))
-                                        }
-                                        .onEnded { _ in
-                                            gestureScale = scale
-                                        }
-                                )
-                                .simultaneousGesture(
-                                    DragGesture()
-                                        .onChanged { value in
-                                            guard scale > 1 else { return }
-                                            offset = value.translation
-                                        }
-                                )
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(offsetIndex == 0 ? "当前" : "对比 \(offsetIndex + 1)")
-                                    .font(.caption2.weight(.semibold))
-                                Text(asset.photo.filename)
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                            .foregroundStyle(.white)
-                            .padding(6)
-                            .background(Color.black.opacity(0.45))
+/// 查看器对比网格单元格：按已加载顺序（order 0 = 当前照片）。
+private struct ViewerCell: Identifiable {
+    let id: String
+    let order: Int
+    let asset: CullingAsset
+}
+
+/// 工作台内嵌查看器：对齐旧版查看器核心能力——1/2/4 张对比（4 张为 2x2 网格）、
+/// 滚轮缩放（1.15/0.87，范围 1..8）+ 任意缩放级拖拽平移 + 双击复位 + zoomHint、
+/// 每格字幕（文件名 + 来源 + 星级/未评级）+ 保留/淘汰徽标 + 无脸徽标 + 质量徽标。
+private struct CullingWorkbenchViewer: View {
+    let viewModel: CullingViewModel
+    let compareCount: Int
+    let faceAlign: Bool
+
+    @State private var scale = 1.0
+    @State private var gestureScale = 1.0
+    @State private var offset = CGSize.zero
+    @State private var hoveredCellId: String?
+    @State private var imageFrame: CGRect = .zero
+    @State private var wheelMonitor: Any?
+    @State private var viewerWindow: NSWindow?
+
+    /// 当前已加载列表（viewModel.page 变化经 @Observable 自动回流）。
+    private var assets: [CullingAsset] {
+        viewModel.page?.assets ?? []
+    }
+
+    /// 当前项下标：按 photo.id 查找；找不到时回退 0（非空列表）。
+    private var currentIndex: Int {
+        guard let id = viewModel.currentPhotoId,
+              let found = assets.firstIndex(where: { $0.photo.id == id }) else { return 0 }
+        return found
+    }
+
+    /// 越界保护的下标访问；列表为空时返回 nil。
+    private var currentAsset: CullingAsset? {
+        assets.indices.contains(currentIndex) ? assets[currentIndex] : nil
+    }
+
+    /// 面部对齐时的有效缩放（旧版 faceAlign 下 scale 下限 2）。
+    private var effectiveScale: Double {
+        faceAlign ? max(2, scale) : scale
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let visible = comparisonAssets()
+            let cellGroups = groupCells(visible)
+            let columns = visible.count > 1 ? 2 : 1
+            let cellWidth = columns > 1 ? (geometry.size.width - 8) / 2 : geometry.size.width
+            let cellHeight = cellGroups.count > 1 ? (geometry.size.height - 8) / 2 : geometry.size.height
+            VStack(spacing: 8) {
+                ForEach(0..<cellGroups.count, id: \.self) { rowIndex in
+                    HStack(spacing: 8) {
+                        ForEach(cellGroups[rowIndex]) { cell in
+                            cellView(cell)
+                                .frame(width: cellWidth, height: cellHeight)
                         }
-                        .frame(width: max(240, geometry.size.width / CGFloat(max(1, visible.count)) - 8), height: geometry.size.height)
-                        .clipped()
-                        .background(Color.black.opacity(0.9))
                     }
                 }
             }
-            .background(Color.black.opacity(0.9))
-            .clipped()
-
-            HStack(spacing: 14) {
-                Button("上一张") {
-                    index = max(0, index - 1)
-                    resetTransform()
-                }
-                .disabled(index == 0)
-                Button("下一张") {
-                    index = min(max(0, assets.count - 1), index + 1)
-                    resetTransform()
-                }
-                .disabled(index >= assets.count - 1)
-                Button("缩小") {
-                    scale = max(1, scale - 0.25)
-                    gestureScale = scale
-                }
-                Text("\(Int(scale * 100))%")
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 50)
-                Button("放大") {
-                    scale = min(8, scale + 0.25)
-                    gestureScale = scale
-                }
-                Button("重置") { resetTransform() }
-                Spacer()
-                if let quality = assets[index].quality, quality.status == .succeeded {
-                    Text("技术质量 \(Int(quality.score * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear {
+                // 记录图像区域在窗口坐标系中的位置，用于滚轮事件命中判断。
+                imageFrame = geometry.frame(in: .global)
+            }
+            .onChange(of: geometry.frame(in: .global)) { _, newFrame in
+                imageFrame = newFrame
             }
         }
-        .padding(18)
-        .frame(minWidth: 900, minHeight: 620)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(hex: 0x202020))
+        .clipped()
+        .overlay(alignment: .top) {
+            // 缩放提示（对齐旧版 zoomHint：居中毛玻璃胶囊，百分比 + 操作提示）。
+            Text("\(Int(effectiveScale * 100))% 滚轮缩放 · 拖动平移 · 双击复位")
+                .font(.system(size: 10))
+                .foregroundStyle(Color(hex: 0xaaaaaa))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color(hex: 0x191919).opacity(0.75)))
+                .padding(.top, 8)
+        }
+        .background(WindowBridge { window in
+            viewerWindow = window
+        })
+        .onAppear {
+            startWheelMonitor()
+        }
+        .onDisappear {
+            stopWheelMonitor()
+        }
+    }
+
+    /// 对比单元格：黑底 + 缩放/平移手势 + 底部字幕条 + 徽标 + hover 主色描边 + 双击复位。
+    private func cellView(_ cell: ViewerCell) -> some View {
+        let asset = cell.asset
+        return GeometryReader { cellGeometry in
+            let face = asset.faceBboxes.first
+            let faceX = face.map { min(max($0[0] + $0[2] / 2, 0), 1) } ?? 0.5
+            let faceY = face.map { min(max($0[1] + $0[3] / 2, 0), 1) } ?? 0.5
+            let alignOffset = faceAlign && face != nil
+                ? CGSize(
+                    width: (0.5 - faceX) * cellGeometry.size.width,
+                    height: (0.5 - faceY) * cellGeometry.size.height
+                )
+                : .zero
+            ZStack(alignment: .bottom) {
+                PhotoThumbnailView(path: asset.photo.filepath, size: 2560, preview: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .scaleEffect(faceAlign && face != nil ? max(2, scale) : scale)
+                    .offset(x: offset.width + alignOffset.width, y: offset.height + alignOffset.height)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                scale = min(8, max(1, gestureScale * value))
+                            }
+                            .onEnded { _ in
+                                gestureScale = scale
+                            }
+                    )
+                    .simultaneousGesture(
+                        DragGesture()
+                            .onChanged { value in
+                                // 对齐旧版 onPointerDown：任意缩放级均可拖拽平移。
+                                offset = value.translation
+                            }
+                    )
+                // 底部字幕条（文件名 / 来源 / 星级）。
+                HStack(spacing: 8) {
+                    Text(asset.photo.filename).lineLimit(1)
+                    Spacer()
+                    Text(sourceLabel(asset))
+                        .foregroundStyle(Color(hex: 0xaeb4bc))
+                        .lineLimit(1)
+                    Spacer()
+                    Text(asset.state.rating > 0 ? "\(Int(asset.state.rating))★" : "未评级")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(Color(hex: 0xdddddd))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .background(Color(hex: 0x191919).opacity(0.9))
+                // 右上保留/淘汰徽标。
+                if asset.state.pickState != .unreviewed {
+                    Text(asset.state.pickState == .picked ? "保留" : "淘汰")
+                        .font(.system(size: 12))
+                        .foregroundStyle(asset.state.pickState == .picked ? Color(hex: 0x8ee59b) : Color(hex: 0xffb1b1))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(
+                            asset.state.pickState == .picked
+                                ? Color(red: 36.0 / 255, green: 117.0 / 255, blue: 52.0 / 255).opacity(0.85)
+                                : Color(red: 145.0 / 255, green: 40.0 / 255, blue: 40.0 / 255).opacity(0.85)
+                        ))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(10)
+                }
+                // 左上无脸徽标（仅人脸对齐开启且该照片无检测结果时）。
+                if faceAlign && face == nil {
+                    Text("未检测到人脸")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(hex: 0xf5c16c))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.black.opacity(0.65)))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(10)
+                }
+                // 右下质量徽标（对齐旧版 qualityBadge + warnings ⚠）。
+                if let quality = asset.quality {
+                    Text(qualityBadgeText(quality))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.68)))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .padding(8)
+                        .help(qualityHelpText(quality))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .background(Color(hex: 0x080808))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(hoveredCellId == cell.id ? GatherTheme.primary.opacity(0.65) : Color(white: 0.07), lineWidth: 1)
+            )
+            .onHover { hovering in
+                hoveredCellId = hovering ? cell.id : nil
+            }
+            .onTapGesture(count: 2) {
+                resetTransform()
+            }
+        }
+    }
+
+    /// 对比网格按行分组（2 列；4 张 = 2x2，3 张 = 2+1）。
+    private func groupCells(_ visible: [CullingAsset]) -> [[ViewerCell]] {
+        var groups: [[ViewerCell]] = []
+        var row: [ViewerCell] = []
+        for (order, asset) in visible.enumerated() {
+            row.append(ViewerCell(id: asset.photo.id, order: order, asset: asset))
+            if row.count == 2 {
+                groups.append(row)
+                row = []
+            }
+        }
+        if !row.isEmpty { groups.append(row) }
+        return groups
+    }
+
+    /// 对齐 TS comparisonAssets（Culling.tsx:675-691）：单张对比直接返回当前；
+    /// 对比来源优先取当前照片相似度组内的成员（按已加载顺序），无组时取
+    /// 全列表；组内仅当前一张时返回 [current]，不取连续照片兜底。
+    private func comparisonAssets() -> [CullingAsset] {
+        guard let current = currentAsset else { return [] }
+        guard compareCount > 1 else { return [current] }
+        let pool = current.similarityGroupId.map { groupId in
+            assets.filter { $0.similarityGroupId == groupId }
+        } ?? assets
+        let others = pool.filter { $0.photo.id != current.photo.id }.prefix(compareCount - 1)
+        return [current] + Array(others)
+    }
+
+    /// 来源标签（对齐 TS sourceLabel：template/face-keyword/similarity/AI/导入/人工）。
+    private func sourceLabel(_ asset: CullingAsset) -> String {
+        switch asset.metadataSource {
+        case .template: return "模板元数据"
+        case .faceKeyword: return "人脸关键词"
+        case .similarity: return "相似组关键词"
+        case .manual, .culling: break
+        case .none: break
+        }
+        if asset.quality?.status == .succeeded { return "AI 技术分析" }
+        if asset.state.source == .imported { return "导入元数据" }
+        return "人工调整"
+    }
+
+    private func qualityBadgeText(_ quality: CullingQuality) -> String {
+        if quality.status == .failed { return "分析失败" + (quality.warnings.isEmpty ? "" : " ⚠") }
+        return "质量 \(Int(quality.score * 100))" + (quality.warnings.isEmpty ? "" : " ⚠")
+    }
+
+    private func qualityHelpText(_ quality: CullingQuality) -> String {
+        if quality.status == .failed {
+            return quality.errorMessage ?? "质量分析失败"
+        }
+        let sharpness = Int((quality.subjectSharpness ?? quality.sharpness) * 100)
+        let exposure = Int(quality.exposure * 100)
+        return "AI 技术分析：清晰度 \(sharpness)%，曝光 \(exposure)%"
     }
 
     private func resetTransform() {
         scale = 1
         gestureScale = 1
         offset = .zero
+    }
+
+    // MARK: 滚轮缩放（对齐旧版 onWheel：向上 1.15、向下 0.87，范围 1..8）
+    private func startWheelMonitor() {
+        stopWheelMonitor()
+        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            self.handleWheel(event)
+            return event
+        }
+    }
+
+    private func stopWheelMonitor() {
+        if let wheelMonitor {
+            NSEvent.removeMonitor(wheelMonitor)
+            self.wheelMonitor = nil
+        }
+    }
+
+    private func handleWheel(_ event: NSEvent) {
+        // 仅响应查看器窗口内、指针位于图像区域上的滚动事件。
+        guard let window = viewerWindow, event.window === window,
+              let contentView = window.contentView else { return }
+        let flippedY = contentView.bounds.height - event.locationInWindow.y
+        let point = CGPoint(x: event.locationInWindow.x, y: flippedY)
+        guard imageFrame.contains(point) else { return }
+        let next = min(8, max(1, scale * (event.scrollingDeltaY < 0 ? 1.15 : 0.87)))
+        guard next != scale else { return }
+        scale = next
+        gestureScale = next
+    }
+}
+
+/// 获取承载视图的 NSWindow（滚轮事件监听的窗口归属判断用）。
+private struct WindowBridge: NSViewRepresentable {
+    let onResolve: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { onResolve(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { onResolve(nsView.window) }
+    }
+}
+
+/// 挑片状态中文文案（供主页面与胶片条共用）。
+fileprivate func pickStateTitle(_ state: PickState) -> String {
+    switch state {
+    case .unreviewed: return "未处理"
+    case .picked: return "保留"
+    case .rejected: return "淘汰"
+    }
+}
+
+/// 工具列/胶片条控制组标签样式（对齐旧版 .controlLabel：10px/600/字距 0.04em）。
+private extension View {
+    func controlLabelStyle() -> some View {
+        font(.system(size: 10, weight: .semibold))
+            .kerning(0.4)
+            .foregroundStyle(.secondary)
+    }
+}
+
+/// 工具列控制组容器（对齐旧版 .controlGroup：下边框分隔 + 垂直间距）。
+private extension View {
+    func controlGroupStyle() -> some View {
+        padding(.vertical, 12)
+            .overlay(alignment: .bottom) { Divider() }
+            .padding(.bottom, 12)
+    }
+}
+
+/// 键盘焦点屏蔽：挑片页主视图持有 onKeyPress 键盘焦点；页内控件
+/// 一律不可聚焦，避免点击按钮后焦点被抢走导致快捷键失效
+/// （文本输入控件不存在，焦点天然不会落在输入框上）。
+private extension View {
+    func nonFocusable() -> some View {
+        focusable(false)
     }
 }

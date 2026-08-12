@@ -33,6 +33,9 @@ private final class StubGalleryProvider: GalleryDataProvider {
     var rows: [GalleryPhotoData] = []
     var pageError: String?
     var sessionError: String?
+    /// workspace.status 桩（索引头数据源）。
+    var workspaceStatusValue: WorkspaceStatus?
+    var workspaceStatusError: String?
     private(set) var pageCalls: [(afterFirstRowid: Int64?, limit: Int, expandVariants: Bool)] = []
 
     func getSession(_ sessionId: String) throws -> SessionData? {
@@ -52,6 +55,19 @@ private final class StubGalleryProvider: GalleryDataProvider {
         let end = min(startIndex + limit, rows.count)
         let slice = Array(rows[startIndex..<end])
         return (slice, end < rows.count ? Int64(end) : nil)
+    }
+
+    func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus? {
+        if let workspaceStatusError {
+            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: workspaceStatusError])
+        }
+        return workspaceStatusValue
+    }
+
+    func retryIndex(sessionId: String) async throws {
+        if let workspaceStatusError {
+            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: workspaceStatusError])
+        }
     }
 
     static func session(_ id: String) -> SessionData {
@@ -396,5 +412,92 @@ struct GalleryViewModelTests {
         viewModel.filterOrVariantChanged()
         try? await Task.sleep(for: .milliseconds(20))
         #expect(viewModel.filteredPhotos.map(\.id) == ["faced"])
+    }
+
+    // ── 终态事件刷新（P15：保留已加载深度，不回卷首页）──
+
+    // 事件刷新按原已加载深度重新拉取（游标从头起），而不是重置回首页：
+    // 450 张已滚到 400 深度 → 重取 200+200 两页就地覆盖。
+    @Test func eventRefreshPreservesLoadedDepth() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.rows = (0..<450).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        await viewModel.loadMoreIfNeeded()
+        #expect(viewModel.loadedPhotos.count == 400)
+
+        await viewModel.refreshOnEvent()
+
+        #expect(viewModel.loadedPhotos.count == 400)
+        #expect(viewModel.phase == .loaded)
+        // 从头重取：最后两次取页游标为 [nil, 200]（覆盖到 400 即停）。
+        #expect(Array(stub.pageCalls.suffix(2).map(\.afterFirstRowid)) == [nil, 200])
+    }
+
+    // 事件后照片缩水（如重新扫描剔除失效项）：就地收敛到新总数，
+    // 不整页失败、不重置回首页。
+    @Test func eventRefreshShrinksGridInPlace() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.rows = (0..<450).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        await viewModel.loadMoreIfNeeded()
+        #expect(viewModel.loadedPhotos.count == 400)
+
+        stub.rows = (0..<250).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.refreshOnEvent()
+
+        #expect(viewModel.loadedPhotos.count == 250)
+        #expect(viewModel.phase == .loaded)
+    }
+
+    // 事件刷新同时刷新 workspaceStatus（索引头随之更新）与 session。
+    @Test func eventRefreshUpdatesIndexStatus() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.rows = (0..<10).map { StubGalleryProvider.photo("p\($0)") }
+        stub.workspaceStatusValue = WorkspaceStatus(
+            sessionId: "s1",
+            stage: .created,
+            softFlags: WorkspaceSoftFlags(culled: false, exported: false),
+            indexing: WorkspaceIndexingProgress(total: 0, done: 0, percent: 0, status: .active),
+            staleAnalyses: [],
+            xmp: WorkspaceXmpCounts(pending: 0, conflict: 0),
+            offlinePhotos: 0,
+            failedJobs: [],
+            recommendedNext: nil,
+            generatedAt: ""
+        )
+        await viewModel.load()
+        #expect(viewModel.workspaceStatus?.indexing.status == .active)
+
+        // 终态事件后 scan job 行终结：workspace.status 派生 idle。
+        stub.workspaceStatusValue = WorkspaceStatus(
+            sessionId: "s1",
+            stage: .imported,
+            softFlags: WorkspaceSoftFlags(culled: false, exported: false),
+            indexing: WorkspaceIndexingProgress(total: 0, done: 0, percent: 0, status: .idle),
+            staleAnalyses: [],
+            xmp: WorkspaceXmpCounts(pending: 0, conflict: 0),
+            offlinePhotos: 0,
+            failedJobs: [],
+            recommendedNext: nil,
+            generatedAt: ""
+        )
+        await viewModel.refreshOnEvent()
+        #expect(viewModel.workspaceStatus?.indexing.status == .idle)
+        #expect(viewModel.workspaceStatus?.stage == .imported)
+    }
+
+    // 搜索/筛选激活时事件刷新保持链式拉满（过滤结果全局完整）。
+    @Test func eventRefreshKeepsChainFetchWhenSearchActive() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.rows = (0..<450).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+
+        viewModel.search = "p4"
+        viewModel.searchChanged()
+        #expect(await waitUntilAsync { viewModel.loadedPhotos.count == 450 }, "搜索链应拉满 450，实际 \(viewModel.loadedPhotos.count)")
+
+        await viewModel.refreshOnEvent()
+        #expect(viewModel.loadedPhotos.count == 450)
+        #expect(viewModel.phase == .loaded)
     }
 }

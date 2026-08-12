@@ -183,6 +183,12 @@ public final class SessionCommandRouter: CommandRouter {
             connection: db,
             getNumber: { key, defaultValue in
                 settingsService.getNumber(key, defaultValue: defaultValue)
+            },
+            // 修复（审计 P0-1）：此前未注入 thumbnailProvider（默认恒 nil），
+            // 相似度分析全部哈希计算失败 → SIM_NO_HASH_DATA。与
+            // DuplicateService 共用同一 RAWDecoder 9x8 灰度管线。
+            thumbnailProvider: { path, size in
+                RAWDecoder.pixels9x8(path: path, maxPixel: size)
             }
         )
         let assetRepo = AssetRepo(connection: db)
@@ -214,6 +220,13 @@ public final class SessionCommandRouter: CommandRouter {
             sync: metadataSyncCoordinator,
             assetResolver: assetResolver
         )
+        // UI 对齐（§十一 11.9-1）：写回协调器 emitSummary 后广播 c1-sync-status
+        // 事件，驱动 Culling/ControlCenter/Similarity 的同步状态即时刷新。
+        metadataSyncCoordinator.eventSink = { summary in
+            Task { @MainActor in
+                GatherEventCenter.shared.postC1SyncStatusChange(sessionId: summary.sessionId)
+            }
+        }
         let metadataService = MetadataService(
             metadataCacheRepo: metadataCacheRepo,
             xmp: xmp,
@@ -539,10 +552,28 @@ public final class SessionCommandRouter: CommandRouter {
             return try GatherCore.JSONValue(from: session)
 
         case "session.create":
+            // TS session.ipc.ts createSessionParams：source 缺省 "manual"（非 "folder"）。
             let name = try requiredString(params, "name")
-            let source = try optionalString(params, "source") ?? "folder"
+            let source = try optionalString(params, "source") ?? "manual"
             let sourcePath = try optionalString(params, "sourcePath") ?? ""
-            let session = try sessionService.createSession(name: name, source: source, sourcePath: sourcePath)
+            let truncatedImport = optionalBool(params, "truncatedImport") ?? false
+            let session = try sessionService.createSession(
+                name: name, source: source, sourcePath: sourcePath, truncatedImport: truncatedImport)
+            // TS 契约：filepaths 传入时创建即导入（addPhotos），返回
+            // {session, failedFiles, added, skipped}；照片落库后重取会话
+            // （status/photoCount 已更新），对齐 DashboardViewModel
+            // LiveDashboardDataProvider.createSessionFromFiles。
+            if let filepaths = try optionalStringArray(params, "filepaths"), !filepaths.isEmpty {
+                let result = try sessionService.addPhotos(
+                    sessionId: session.id, filepaths: filepaths, source: source)
+                let refreshed = try sessionService.getSession(session.id) ?? session
+                return .object([
+                    "session": try GatherCore.JSONValue(from: refreshed),
+                    "failedFiles": .array(result.failedFiles.map(GatherCore.JSONValue.string)),
+                    "added": .number(Double(result.added)),
+                    "skipped": .number(Double(result.skipped)),
+                ])
+            }
             return try GatherCore.JSONValue(from: session)
 
         case "session.delete":
@@ -616,7 +647,10 @@ public final class SessionCommandRouter: CommandRouter {
         // ── workspace（3.1 服务层）──
 
         case "workspace.status":
-            let sessionId = try optionalString(params, "sessionId") ?? ""
+            // Protocol WorkspaceStatusParams.sessionId 非可选；现有调用方
+            // （SessionControlView.load / 测试）均显式传 sessionId，故用
+            // requiredString（缺省 "" 会静默查全部会话）。
+            let sessionId = try requiredString(params, "sessionId")
             guard let status = try workspaceStatusService.getStatus(sessionId: sessionId) else {
                 throw BridgeError.notFound("SESSION_NOT_FOUND")
             }
@@ -678,6 +712,8 @@ public final class SessionCommandRouter: CommandRouter {
                 throw BridgeError.badParams("SETTINGS_LANGUAGE_INVALID")
             }
             try settingsService.set("ui_language", value: language)
+            // 菜单文案跟随语言重建（对齐旧版 setAppLocale 即时 rebuild）。
+            NotificationCenter.default.post(name: GatherAppNotification.languageChanged, object: language)
             return .object(["language": .string(language)])
 
         case "settings.get_ml_status":
@@ -1395,7 +1431,7 @@ public final class SessionCommandRouter: CommandRouter {
 
         case "export.preview":
             let sessionId = try requiredString(params, "sessionId")
-            let options = try decodeJSON(ExportOptions.self, from: params["options"] ?? .object([:]))
+            let options = try decodeExportOptions(params["options"] ?? .object([:]))
             return try GatherCore.JSONValue(from: exportService.preview(sessionId: sessionId, options: options))
 
         case "export.cancel":
@@ -1561,9 +1597,18 @@ public final class SessionCommandRouter: CommandRouter {
             return try GatherCore.JSONValue(from: results)
 
         // culling.ipc.ts:215-221 —— ok(metadataSync.getSummary(sessionId))。
+        // 额外附回 reloadAckedAt（session.reload_acked_at）：旧版胶囊的"最近同步"
+        // 由 c1:sync-state 的 reloadAckedAt 提供；原生侧合并进同步摘要响应，
+        // 解码方忽略未知键不受影响。
         case "culling.sync_status":
             let sessionId = try requiredString(params, "sessionId")
-            return try GatherCore.JSONValue(from: cullingService.syncStatus(sessionId: sessionId))
+            let summary = try cullingService.syncStatus(sessionId: sessionId)
+            guard var object = try? JSONValue(from: summary), case .object(var dict) = object else {
+                return try GatherCore.JSONValue(from: summary)
+            }
+            let reloadAckedAt = try? SessionRepo(connection: db).get(id: sessionId)?.reloadAckedAt
+            dict["reloadAckedAt"] = reloadAckedAt.map(JSONValue.string) ?? .null
+            return .object(dict)
 
         // culling.ipc.ts:239-248 —— destructive（桥层 + 直连二次兜底）。
         case "culling.finalize_sync":
@@ -1848,10 +1893,224 @@ public final class SessionCommandRouter: CommandRouter {
                 }
             }
 
+        // TS 源: face-kw.ipc.ts:125-262 —— fkw 写回族：同步侧已有实现，
+        // 这里补齐 executeAsync 转发分支（executeAsync 无分支会 NOT_IMPLEMENTED）。
+        case "fkw.unbind":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "FKW_UNBIND_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            guard let clusterId = try? requiredNumber(params, "clusterId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:clusterId"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await faceKwService.unbind(
+                        sessionId: sessionId, clusterId: Int64(clusterId), confirmed: true)
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "fkw.preview":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            let options = (try? parseWritebackOptions(params["options"])) ?? FaceKwWritebackOptions()
+            Task {
+                do {
+                    let preview = try await faceKwService.preview(sessionId: sessionId, options: options)
+                    let data = try GatherCore.JSONValue(from: preview)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "fkw.writeback":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "WRITEBACK_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            // TS face-kw.ipc.ts:223 `(params.items ?? [])` —— 非数组抛
+            // FKW_ITEMS_INVALID（对齐同步分支，不静默降级为空数组）。
+            let items: [FaceKwWritebackItem]
+            do {
+                items = try parseFaceKwWritebackItems(params["items"]) ?? []
+            } catch {
+                completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                return
+            }
+            Task {
+                do {
+                    let result = try await faceKwService.writeback(sessionId: sessionId, confirmed: true, items: items)
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "fkw.confirm_sync":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let ok = try await faceKwService.confirmSync(sessionId: sessionId)
+                    completion(WebResponse(id: "", ok: true, data: .bool(ok)))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "fkw.confirm_cleanup":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "FKW_CLEANUP_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "fkw.cleanup":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "FKW_CLEANUP_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // 审计 P0-2 修复：页面走 executeAsync 的 5 个命令此前落入
+        // NOT_IMPLEMENTED（dup.groups 导致重复页整页打不开、culling/sim 的
+        // cleanup/retry 失效）。补转发分支（Task 内 await，与同步分支同语义）。
+        case "dup.groups":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let data = try GatherCore.JSONValue(from: duplicateService.getGroups(sessionId: sessionId))
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "culling.retry_failed_writeback":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "WRITEBACK_RETRY_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await cullingService.retryFailedWriteback(sessionId: sessionId, confirmed: true)
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "culling.cleanup":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "WRITEBACK_CLEANUP_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await cullingService.cleanup(sessionId: sessionId, confirmed: true)
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "sim.retry_failed_writeback":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "WRITEBACK_RETRY_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await writebackService.retryFailed(sessionId: sessionId, module: "similarity")
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "sim.cleanup":
+            guard confirmed(params) else {
+                completion(WebResponse(id: "", ok: false, error: "WRITEBACK_CLEANUP_CONFIRM_REQUIRED"))
+                return
+            }
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let result = try await writebackService.cleanup(sessionId: sessionId, module: "similarity")
+                    let data = try GatherCore.JSONValue(from: result)
+                    completion(WebResponse(id: "", ok: true, data: data))
+                } catch {
+                    completion(WebResponse(id: "", ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
         // TS 源: indexer.ipc.ts:68-77 —— 建 metadata.scan job 即返回
         // （progress 走 jobs:progress 事件/轮询，不等完成）。
-        case "index.scan":
-            guard let sessionId = try? requiredString(params, "sessionId") else {
+        case "index.scan":            guard let sessionId = try? requiredString(params, "sessionId") else {
                 completion(WebResponse(id: "", ok: false, error: "MISSING_PARAM:sessionId"))
                 return
             }
@@ -2064,7 +2323,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let options = try self.decodeJSON(ExportOptions.self, from: params["options"] ?? .object([:]))
+                    let options = try self.decodeExportOptions(params["options"] ?? .object([:]))
                     let preview = try self.exportService.preview(sessionId: sessionId, options: options)
                     completion(WebResponse(id: "", ok: true, data: try GatherCore.JSONValue(from: preview)))
                 } catch {
@@ -2083,7 +2342,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let options = try self.decodeJSON(ExportOptions.self, from: params["options"] ?? .object([:]))
+                    let options = try self.decodeExportOptions(params["options"] ?? .object([:]))
                     // makeDefault 的 router 可被 CLI/测试直接调用；start 是幂等的，
                     // 这里确保 export.execute 不会因宿主忘记启动 job service 而永久 queued。
                     self.jobService.start()
@@ -2658,6 +2917,17 @@ public final class SessionCommandRouter: CommandRouter {
         try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
     }
 
+    /// TS export.ipc.ts：options 解码失败统一抛 EXPORT_PARAMS_INVALID（码值）。
+    /// DecodingError 的英文散文会绕过 renderer 的 translateError 映射，故在此
+    /// 收敛为 GatherErrorCode，保持「错误载荷是码值」约定。
+    private func decodeExportOptions(_ value: GatherCore.JSONValue) throws -> ExportOptions {
+        do {
+            return try decodeJSON(ExportOptions.self, from: value)
+        } catch {
+            throw BridgeError.badParams("EXPORT_PARAMS_INVALID")
+        }
+    }
+
     /// TS similarity.ipc.ts validateAssignments（ADR-017 内部不变式校验；
     /// normalizeKeywords 对非字符串元素静默丢弃）。
     private func validateSimilarityAssignments(_ value: GatherCore.JSONValue?) throws -> [SimilarityKeywordAssignment] {
@@ -2756,7 +3026,15 @@ public final class SessionCommandRouter: CommandRouter {
         // 各已移植服务的错误 description 与 TS 错误消息逐字一致。
         if let settingsError = error as? SettingsError { return settingsError.description }
         if let navigationError = error as? NavigationError { return navigationError.description }
-        if let filterError = error as? FilterEngineError { return filterError.description }
+        if let filterError = error as? FilterEngineError {
+            // 参数化错误码：{{field}} 占位符在此处直接回填（对齐 TS
+            // translateErrorCode 的 params 插值；非错误码字符串经
+            // NativeCommandClient.message(for:) 原样透传展示）。
+            if case .fieldUnknown(let field) = filterError {
+                return "未知的筛选字段：\(field)"
+            }
+            return filterError.description
+        }
         if let similarityError = error as? SimilarityServiceError { return similarityError.gatherCode.rawValue }
         if let assetError = error as? PhotoAssetResolverError { return assetError.gatherCode.rawValue }
         if let duplicateError = error as? DuplicateServiceError {
@@ -2774,7 +3052,14 @@ public final class SessionCommandRouter: CommandRouter {
         if let metadataServiceError = error as? MetadataServiceError {
             return metadataServiceError.description
         }
-        if let cullingError = error as? CullingServiceError { return cullingError.description }
+        if let cullingError = error as? CullingServiceError {
+            // 参数化错误码：期望/当前版本号在此回填（对齐 TS translateErrorCode
+            // params 插值，见 CULLING_REVISION_CONFLICT 模板）。
+            if case .revisionConflict(let expected, let current) = cullingError {
+                return "挑片版本冲突：期望 \(expected)，当前 \(current)"
+            }
+            return cullingError.description
+        }
         if let exportError = error as? ExportServiceError { return exportError.description }
         if let imageError = error as? ImagePreloadError { return imageError.description }
         // 仓库层直接抛出的 DBError.message（TS 侧 throw new Error(code) 的
@@ -2786,6 +3071,12 @@ public final class SessionCommandRouter: CommandRouter {
         // （executor 抛错经 String(describing:) 记录，错误枚举 description 对齐 TS）。
         if case JobServiceError.jobFailed(_, let message) = error { return message }
         if error is JobCancelledError { return "CANCELLED" }
+        // DecodingError（JSON 解码契约漂移）：错误载荷必须保持码值，英文散文
+        // 会绕过 translateError 映射，统一收敛为 INVALID_PARAMS。
+        if error is DecodingError { return "INVALID_PARAMS" }
+        // NSError 无法稳定映射到具体业务码（无可靠 userInfo 结构），保留
+        // localizedDescription 供宿主日志排查；renderer 侧经 translateError
+        // 未命中时回退 error.unspecific，不会泄露原始散文到用户可见文案。
         let nsError = error as NSError
         return nsError.userInfo[NSLocalizedDescriptionKey] as? String
             ?? nsError.localizedDescription

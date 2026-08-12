@@ -77,24 +77,33 @@ public final class PersonsViewModel {
         return persons.filter { $0.name.lowercased().contains(query) }
     }
 
+    /// 打开新建 sheet 或新动作前清空上次的错误横幅。
+    public func clearActionError() {
+        actionError = nil
+    }
+
     public func load() async {
         phase = .loading
         do {
             persons = try provider.list()
             phase = .loaded
             if let selectedId = selected?.id, persons.contains(where: { $0.id == selectedId }) {
-                try? select(selectedId)
+                select(selectedId)
             } else if selected == nil, let first = persons.first {
-                try? select(first.id)
+                select(first.id)
             }
         } catch {
             phase = .failed(Self.message(error))
         }
     }
 
-    public func select(_ personId: String) throws {
-        selected = try provider.get(personId)
-        actionError = nil
+    public func select(_ personId: String) {
+        do {
+            selected = try provider.get(personId)
+            actionError = nil
+        } catch {
+            actionError = Self.message(error)
+        }
     }
 
     @discardableResult
@@ -109,24 +118,36 @@ public final class PersonsViewModel {
         }
     }
 
-    public func saveSelected(name: String, notes: String) async {
-        guard let personId = selected?.id else { return }
+    /// 清空当前选中回到列表占位（对齐旧版 PersonDetail 顶部「← 返回」）。
+    public func deselect() {
+        selected = nil
+        actionError = nil
+    }
+
+    @discardableResult
+    public func saveSelected(name: String, notes: String) async -> Bool {
+        guard let personId = selected?.id else { return false }
         do {
             try provider.update(personId: personId, name: name, notes: notes)
             try await reloadAndSelect(personId)
+            return true
         } catch {
             actionError = Self.message(error)
+            return false
         }
     }
 
-    public func deleteSelected() async {
-        guard let personId = selected?.id else { return }
+    @discardableResult
+    public func deleteSelected() async -> Bool {
+        guard let personId = selected?.id else { return false }
         do {
             try provider.delete(personId: personId)
             selected = nil
             try await reloadAndSelect(nil)
+            return true
         } catch {
             actionError = Self.message(error)
+            return false
         }
     }
 
@@ -134,15 +155,26 @@ public final class PersonsViewModel {
         persons = try provider.list()
         if let personId, persons.contains(where: { $0.id == personId }) {
             selected = try provider.get(personId)
+            actionError = nil
+        } else if let first = persons.first {
+            // 主列表成功但详情加载失败时写入 actionError，不静默置 nil。
+            do {
+                selected = try provider.get(first.id)
+                actionError = nil
+            } catch {
+                selected = nil
+                actionError = Self.message(error)
+            }
         } else {
-            selected = persons.first.flatMap { try? provider.get($0.id) }
+            selected = nil
+            actionError = nil
         }
         phase = .loaded
-        actionError = nil
     }
 
+    /// 对齐 TS translateError（utils/errors.ts）：错误码翻译为中文文案，
+    /// 未知错误码回退通用文案，其余原样展示。
     private static func message(_ error: Error) -> String {
-        if let routerError = error as? RouterCommandError { return routerError.message }
-        return (error as NSError).localizedDescription
+        GatherLocalization.message(for: error)
     }
 }

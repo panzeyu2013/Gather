@@ -50,10 +50,12 @@ public final class NativeCommandClient {
         return data
     }
 
+    /// 对齐 TS translateError：错误消息是 GatherErrorCode 则翻译为中文文案，
+    /// 否则原样返回。页面展示一律经此出口，避免裸错误码直显。
     public static func message(for error: Error) -> String {
-        if let native = error as? NativeCommandError { return native.description }
-        if let router = error as? RouterCommandError { return router.message }
-        if let bridge = error as? BridgeError { return bridge.description }
-        return (error as NSError).localizedDescription
+        if let native = error as? NativeCommandError { return GatherLocalization.errorText(native.description) }
+        if let router = error as? RouterCommandError { return GatherLocalization.errorText(router.message) }
+        if let bridge = error as? BridgeError { return GatherLocalization.errorText(bridge.description) }
+        return GatherLocalization.errorText((error as NSError).localizedDescription)
     }
 }

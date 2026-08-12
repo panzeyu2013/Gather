@@ -1,11 +1,77 @@
 // Phase 3.5：人脸分析、簇绑定、成员修订和安全写回流程。
 // TS 源：desktop/src/renderer/pages/FaceKeywording/* + face-kw.ipc.ts。
+// 对齐清单（2026-08-12）：
+// - 三步向导外壳（index.tsx）：顶部胶囊 step indicator（分析→审核→写回，
+//   34pt 高 / 999px 圆角、→ 分隔、已过步骤可回点、下一步 analysis done 门控），
+//   切换步骤仅渲染当前步骤内容。
+// - Step 1 分析（StepAnalyze.tsx）：模型缺失引导条（warning 边框 +「前往设置」
+//   按钮，onOpenSettings 为 nil 时禁用）+ 匹配强度预设三按钮（strict 0.72/3、
+//   balanced 0.6/3、loose 0.5/2）+ 高级参数（eps：SliderInputView 渐变滑块 +
+//   数字输入 0.3–0.95 step 0.01；minSamples：SliderInputIntView 2–20）+
+//   错误块（error 色 12% 底）+ 自定义 8pt 圆角进度条（相位 + (n/N) + 0.2s 过渡，
+//   min(100, ratio) 宽度）+ 动作区（开始分析 / 仅重新聚类 / 取消红字）。
+// - 实时进度：订阅 GatherEventCenter.jobProgress（job.type == face.analyze 且
+//   scopeId == sessionId），相位经 GatherLocalization.progressPhaseText 翻译，
+//   终态事件（succeeded/failed/cancelled/interrupted）翻转状态机，succeeded
+//   即 finishAnalysis → 进入审核（StepAnalyze.tsx:130-155）。
+// - 断点恢复：挂载时 jobs.list 查 queued/running/cancelling 的 face.analyze
+//   任务，恢复「分析中」状态与进度（StepAnalyze.tsx:101-125）。
+// - Step 2 审核（StepReview.tsx）：左簇网格（adaptive minmax(132,1fr) gap 10，
+//   2x2 蒙太奇圆角 9、hover 主色描边 + 上浮、选中主色描边 + 外发光、label 13 /
+//   成员数 11 / 绑定角色 success 胶囊 10）+ 右侧 340pt 详情栏（成员列表 #序号 +
+//   文件名 + 置信度%、移除红字；角色/关键字编辑 + 绑定/更新绑定/解除；
+//   合并目标下拉过滤当前簇，选项 label (n 张)）+ 每批 100「加载更多」。
+//   角色过滤条（旧版 URL searchParam，本页用角色胶囊切换；Persons 深链
+//   ?role= 经 initialRoleFilter 播种，分析已完成时直达审核步骤）。
+// - Step 3 写回（StepWriteback.tsx）：三统计卡（已绑定簇 accent / 受影响照片 /
+//   未绑定跳过 warning，数值 24pt tabular）+ 绑定簇预览（roleName + keywords +
+//   前 5 文件名 + 剩余数）+ XMP 预览三行明细（文件名 / before→after / 新建|更新
+//   XMP + 共享数 + 外部冲突 + 来源，前 50 行，max-height 240）+ 预览/执行 +
+//   写回报告（已写入/失败/已跳过三色统计卡 28pt + 失败项 + 重试/确认同步/清理 +
+//   reload 行；预览生成后即显示操作行）。
+// - 保留合理增益：3 个 confirmationDialog（解除绑定/确认写回/清理；移除成员
+//   对齐旧版即时执行）、ContentUnavailableView 空态、顶部错误/提示横幅、
+//   审核动作失败的内联错误块。
+import Combine
 import SwiftUI
 import GatherCore
 
 @MainActor
 @Observable
 public final class FaceKeywordingViewModel {
+    /// TS AnalysisStatus：idle/running/done/failed/cancelled。
+    public enum AnalysisPhase: Equatable {
+        case idle
+        case running
+        case done
+        case failed
+        case cancelled
+    }
+
+    /// TS faceKwStore Step：'analyze' | 'review' | 'writeback'。
+    public enum Step: String, Equatable {
+        case analyze
+        case review
+        case writeback
+    }
+
+    public struct Preset: Equatable, Identifiable {
+        public let name: String
+        public let title: String
+        public let eps: Double
+        public let minSamples: Int
+        public var id: String { name }
+    }
+
+    /// TS StepAnalyze applyPreset：strict 0.72/3、balanced 0.6/3、loose 0.5/2。
+    public static let presets: [Preset] = [
+        Preset(name: "strict", title: "严格", eps: 0.72, minSamples: 3),
+        Preset(name: "balanced", title: "均衡", eps: 0.6, minSamples: 3),
+        Preset(name: "loose", title: "宽松", eps: 0.5, minSamples: 2),
+    ]
+    /// TS StepReview CLUSTER_PAGE_SIZE。
+    public static let clusterPageSize = 100
+
     private let client: NativeCommandClient
     private let captureOne: CaptureOneBridge
     public let sessionId: String
@@ -13,22 +79,88 @@ public final class FaceKeywordingViewModel {
     private(set) public var analysisResult: FaceAnalysisResult?
     private(set) public var preview: FaceKwWritebackPreview?
     private(set) public var writebackResult: FaceKwWritebackResult?
-    private(set) public var isLoading = false
-    private(set) public var isAnalyzing = false
+    /// 初始为 true：首帧即渲染加载态，避免 load() 完成前误显空态。
+    private(set) public var isLoading = true
     private(set) public var isWritingBack = false
     private(set) public var errorMessage: String?
     private(set) public var notice: String?
+    private(set) public var analysisPhase: AnalysisPhase = .idle
+    private(set) public var progressCurrent = 0
+    private(set) public var progressTotal = 0
+    private(set) public var progressPhase = "face.detecting"
+    private(set) public var modelsMissing = false
+    private(set) public var isSyncConfirmed = false
+    /// 分析 succeeded 快照：0 簇时也保持已完成，仅首屏无分析历史才回退 idle。
+    private var analysisSucceeded = false
+    /// TS faceKwStore step：向导当前步骤。
+    public var step: Step = .analyze
     public var roleName = ""
     public var keywords = ""
     public var eps = 0.6
-    public var minSamples = 2
-    public var mergeTarget = ""
+    public var minSamples = 3
+    /// TS StepReview mergeTargetId：合并目标簇下拉（自由文本输入改为下拉选择）。
+    public var mergeTargetId: Int?
     public private(set) var selectedClusterId: Int?
+    /// TS StepReview roleFilter（URL searchParam `role`）：审核步骤角色过滤；
+    /// 由 initialRoleFilter 深链播种（Persons 页「前往人脸审核」），
+    /// 也可在页面内通过角色胶囊切换/清除。
+    public var roleFilter: String?
+    /// TS 深链（?role=）：Persons 页传入时播种 roleFilter 并在分析已完成时
+    /// 直接进入审核步骤；默认 nil 不影响现有调用方。
+    public let initialRoleFilter: String?
+    /// 深链播种只执行一次：后续 load()（分析完成/操作刷新）不再强制跳步骤，
+    /// 避免用户在写回步骤时被拉回审核。
+    private var initialRoleSeeded = false
+    /// TS StepReview actionError：审核步骤动作（绑定/移除/解除/合并）的内联
+    /// 错误文案（旧版详情栏内联错误块，StepReview.tsx:216-218）。
+    private(set) public var reviewActionError: String?
 
-    public init(sessionId: String, router: CommandRouter) {
+    public init(
+        sessionId: String,
+        router: CommandRouter,
+        initialRoleFilter: String? = nil
+    ) {
         self.sessionId = sessionId
         self.client = NativeCommandClient(router: router)
         self.captureOne = CaptureOneBridge(router: router)
+        self.initialRoleFilter = initialRoleFilter
+    }
+
+    public var analysisDone: Bool { analysisPhase == .done }
+
+    public var canWriteback: Bool {
+        // TS StepWriteback.tsx:195-203：仅分析未完成或正在写回时禁用；
+        // 无预览时执行会自动补一次预览（handleExecute 语义）。
+        analysisDone && !isWritingBack
+    }
+
+    public var boundClusters: [FaceClusterData] { clusters.filter { $0.binding != nil } }
+    public var unboundClusters: [FaceClusterData] { clusters.filter { $0.binding == nil } }
+    public var totalAffected: Int { boundClusters.reduce(0) { $0 + $1.size } }
+
+    /// TS StepReview selectedCluster：详情栏当前簇。
+    public var selectedCluster: FaceClusterData? {
+        guard let selectedClusterId else { return nil }
+        return clusters.first { $0.id == selectedClusterId }
+    }
+
+    public func applyPreset(_ name: String) {
+        guard let preset = Self.presets.first(where: { $0.name == name }) else { return }
+        eps = preset.eps
+        minSamples = preset.minSamples
+    }
+
+    public var activePreset: String? {
+        if eps == 0.72 && minSamples == 3 { return "strict" }
+        if eps == 0.6 && minSamples == 3 { return "balanced" }
+        if eps == 0.5 && minSamples == 2 { return "loose" }
+        return nil
+    }
+
+    /// TS faceKwStore setStep：已过步骤可回点；下一步门控由 View 的
+    /// analysisDone 判定（StepAnalyze/index.tsx isClickable）。
+    public func setStep(_ step: Step) {
+        self.step = step
     }
 
     public func load() {
@@ -46,17 +178,42 @@ public final class FaceKeywordingViewModel {
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
+        refreshModelsStatus()
+        recoverAnalysis()
+        seedInitialRoleFilter()
     }
 
     public func select(_ cluster: FaceClusterData) {
         selectedClusterId = cluster.id
         roleName = cluster.binding?.roleName ?? ""
         keywords = cluster.binding?.keywords.joined(separator: ", ") ?? ""
+        mergeTargetId = nil
+        reviewActionError = nil
+    }
+
+    /// TS 深链（?role=）：播种角色过滤；分析已完成（done）时直接进入审核步骤
+    /// （review 步骤可点性本就被 analysisDone 门控，等价于旧版直接落在审核页）。
+    private func seedInitialRoleFilter() {
+        guard !initialRoleSeeded, let role = initialRoleFilter else { return }
+        initialRoleSeeded = true
+        roleFilter = role
+        if analysisDone { step = .review }
+    }
+
+    /// TS finishAnalysis：成功 → 审核步骤 + done 状态。
+    private func finishAnalysis() {
+        analysisPhase = .done
+        analysisSucceeded = true
+        step = .review
     }
 
     public func analyze() async {
-        isAnalyzing = true
-        defer { isAnalyzing = false }
+        guard analysisPhase != .running else { return }
+        analysisPhase = .running
+        progressCurrent = 0
+        progressTotal = 0
+        progressPhase = "face.detecting"
+        errorMessage = nil
         do {
             let data = try await client.executeAsync("fkw.analyze", params: [
                 "sessionId": .string(sessionId),
@@ -64,10 +221,28 @@ public final class FaceKeywordingViewModel {
                 "minSamples": .number(Double(minSamples)),
             ])
             analysisResult = try data.decoded(as: FaceAnalysisResult.self)
+            if let result = analysisResult, result.status == "cancelled" {
+                analysisPhase = .cancelled
+                notice = "人脸分析已取消"
+                return
+            }
+            if let result = analysisResult, result.status == "failed" {
+                analysisPhase = .failed
+                // 无内嵌前缀：横幅统一加「操作失败：」，避免双前缀。
+                errorMessage = "检测失败 \(result.detectionFailures) 张，编码失败 \(result.encodingFailures) 个人脸" + guidanceSuffix
+                return
+            }
+            finishAnalysis()
             notice = "人脸分析完成"
             load()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            if Self.rawMessage(for: error).localizedCaseInsensitiveContains("cancelled") {
+                analysisPhase = .cancelled
+                notice = "人脸分析已取消"
+            } else {
+                analysisPhase = .failed
+                errorMessage = NativeCommandClient.message(for: error) + guidanceSuffix
+            }
         }
     }
 
@@ -81,16 +256,25 @@ public final class FaceKeywordingViewModel {
     }
 
     public func recluster() async {
+        guard analysisPhase != .running else { return }
+        analysisPhase = .running
+        errorMessage = nil
         do {
             _ = try await client.executeAsync("fkw.recluster", params: [
                 "sessionId": .string(sessionId),
                 "eps": .number(eps),
                 "minSamples": .number(Double(minSamples)),
             ])
+            finishAnalysis()
             notice = "已重新聚类"
             load()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            if Self.rawMessage(for: error).localizedCaseInsensitiveContains("cancelled") {
+                analysisPhase = .cancelled
+            } else {
+                analysisPhase = .failed
+                errorMessage = NativeCommandClient.message(for: error) + guidanceSuffix
+            }
         }
     }
 
@@ -98,7 +282,10 @@ public final class FaceKeywordingViewModel {
         let role = roleName.trimmingCharacters(in: .whitespacesAndNewlines)
         let words = parseKeywords()
         guard !role.isEmpty else {
-            errorMessage = "FKW_ROLE_NAME_EMPTY"
+            // TS handleBind：空角色名 → 详情栏内联错误（StepReview.tsx:95-97）。
+            let text = GatherLocalization.errorText("FKW_ROLE_NAME_EMPTY")
+            errorMessage = text
+            reviewActionError = text
             return
         }
         do {
@@ -109,9 +296,11 @@ public final class FaceKeywordingViewModel {
                 "keywords": .array(words.map(JSONValue.string)),
             ])
             notice = "已绑定簇 #\(cluster.id)"
+            reviewActionError = nil
             load()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
+            reviewActionError = errorMessage
         }
     }
 
@@ -123,9 +312,11 @@ public final class FaceKeywordingViewModel {
                 "confirmed": .bool(true),
             ])
             notice = "已解除簇 #\(cluster.id) 的绑定"
+            reviewActionError = nil
             load()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
+            reviewActionError = errorMessage
         }
     }
 
@@ -137,15 +328,22 @@ public final class FaceKeywordingViewModel {
                 "memberId": .number(Double(member.memberId)),
             ])
             notice = "已从簇 #\(cluster.id) 移除成员"
+            reviewActionError = nil
             load()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
+            reviewActionError = errorMessage
         }
     }
 
+    /// TS handleMerge：合并到下拉目标（过滤当前簇），成功后选中目标簇。
     public func merge(_ cluster: FaceClusterData) {
-        guard let target = Int(mergeTarget), target > 0, target != cluster.id else {
-            errorMessage = "请输入有效的目标簇编号"
+        guard let target = mergeTargetId,
+              target != cluster.id,
+              clusters.contains(where: { $0.id == target }) else {
+            let text = "请选择有效的目标簇"
+            errorMessage = text
+            reviewActionError = text
             return
         }
         do {
@@ -155,14 +353,23 @@ public final class FaceKeywordingViewModel {
                 "target": .number(Double(target)),
             ])
             notice = "已将簇 #\(cluster.id) 合并到簇 #\(target)"
-            mergeTarget = ""
+            mergeTargetId = nil
+            reviewActionError = nil
             load()
+            if let targetCluster = clusters.first(where: { $0.id == target }) {
+                select(targetCluster)
+            }
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
+            reviewActionError = errorMessage
         }
     }
 
     public func previewWriteback() async {
+        guard analysisDone else {
+            errorMessage = "请先完成人脸分析"
+            return
+        }
         do {
             let options = FaceKwWritebackOptions(
                 createAlbums: false,
@@ -182,20 +389,44 @@ public final class FaceKeywordingViewModel {
         }
     }
 
+    /// TS handleExecute（StepWriteback.tsx:53-69）：确认写回时若尚无预览，
+    /// 先自动生成一次预览，再按预览项执行写回（一键直写语义）。
     public func writeback() async {
-        guard let preview, !preview.items.isEmpty else {
-            errorMessage = "请先生成写回预览"
+        guard analysisDone else {
+            errorMessage = "请先完成人脸分析"
             return
         }
         isWritingBack = true
         defer { isWritingBack = false }
         do {
+            let preview: FaceKwWritebackPreview
+            if let existing = self.preview {
+                preview = existing
+            } else {
+                let options = FaceKwWritebackOptions(
+                    createAlbums: false,
+                    addPrefix: false,
+                    markUngrouped: false,
+                    writeIPTC: false
+                )
+                let data = try await client.executeAsync("fkw.preview", params: [
+                    "sessionId": .string(sessionId),
+                    "options": try JSONValue(from: options),
+                ])
+                preview = try data.decoded(as: FaceKwWritebackPreview.self)
+                self.preview = preview
+            }
+            guard !preview.items.isEmpty else {
+                errorMessage = "预览没有可写回项"
+                return
+            }
             let data = try await client.executeAsync("fkw.writeback", params: [
                 "sessionId": .string(sessionId),
                 "items": .array(try preview.items.map { try JSONValue(from: $0) }),
                 "confirmed": .bool(true),
             ])
             writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
+            isSyncConfirmed = false
             notice = "已写回 \(writebackResult?.written ?? 0) 项；请先让 Capture One 重新加载元数据"
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -214,6 +445,7 @@ public final class FaceKeywordingViewModel {
                 "confirmed": .bool(true),
             ])
             writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
+            isSyncConfirmed = false
             notice = "已重试失败写回项"
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -225,13 +457,14 @@ public final class FaceKeywordingViewModel {
             try await captureOne.reloadMetadata(sessionId: sessionId)
             notice = "Capture One 已重新加载元数据，现在可以确认同步"
         } catch {
-            errorMessage = String(describing: error)
+            errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
     public func confirmSync() async {
         do {
             _ = try await client.executeAsync("fkw.confirm_sync", params: ["sessionId": .string(sessionId)])
+            isSyncConfirmed = true
             notice = "已确认人脸关键字同步"
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -250,6 +483,79 @@ public final class FaceKeywordingViewModel {
         }
     }
 
+    /// TS jobs:progress 订阅入口（JobService 进度/终态帧）。
+    public func applyJobEvent(_ event: GatherJobEvent) {
+        guard event.job.type == .faceAnalyze,
+              event.job.scopeType == "session",
+              event.job.scopeId == sessionId else { return }
+        if event.isTerminal {
+            switch event.job.status {
+            case .succeeded:
+                // TS finishAnalysis：succeeded 终态直接进入审核步骤。
+                finishAnalysis()
+                progressCurrent = event.job.progressCurrent
+                progressTotal = event.job.progressTotal
+                load()
+            case .cancelled:
+                analysisPhase = .cancelled
+                notice = "人脸分析已取消"
+            case .interrupted, .failed:
+                analysisPhase = .failed
+                errorMessage = GatherLocalization.jobErrorMessage(
+                    event.job.errorMessage.isEmpty ? nil : event.job.errorMessage)
+            case .queued, .running, .cancelling:
+                break
+            }
+            return
+        }
+        progressCurrent = event.update.current ?? event.job.progressCurrent
+        progressTotal = event.update.total ?? event.job.progressTotal
+        progressPhase = event.update.phase ?? event.update.message ?? "face.detecting"
+        analysisPhase = .running
+    }
+
+    private var guidanceSuffix: String {
+        modelsMissing ? "\n人脸推理当前使用系统内置引擎" : ""
+    }
+
+    private func refreshModelsStatus() {
+        do {
+            let data = try client.execute("face.models_status").decoded(as: FaceModelsStatusData.self)
+            // 2.2 决议：Vision provider 恒可用（无 ONNX 模型资产）→
+            // modelsPresent 恒 true → modelsMissing 恒 false。横幅/引导分支
+            // 为防御性保留（若未来引入 cpu provider 回退则自然生效）。
+            modelsMissing = !data.modelsPresent
+        } catch {
+            modelsMissing = false
+        }
+    }
+
+    private func recoverAnalysis() {
+        let jobs = (try? client.execute("jobs.list").decoded(as: [AnalysisJobData].self)) ?? []
+        guard let job = jobs.first(where: { candidate in
+            candidate.type == .faceAnalyze &&
+                candidate.scopeType == "session" &&
+                candidate.scopeId == sessionId &&
+                ["queued", "running", "cancelling"].contains(candidate.status.rawValue)
+        }) else {
+            if analysisPhase != .running {
+                analysisPhase = (analysisSucceeded || !clusters.isEmpty) ? .done : .idle
+            }
+            return
+        }
+        analysisPhase = .running
+        progressCurrent = job.progressCurrent
+        progressTotal = job.progressTotal
+        progressPhase = job.progressMessage.isEmpty ? "face.detecting" : job.progressMessage
+    }
+
+    private static func rawMessage(for error: Error) -> String {
+        if let native = error as? NativeCommandError { return native.description }
+        if let router = error as? RouterCommandError { return router.message }
+        if let bridge = error as? BridgeError { return bridge.description }
+        return (error as NSError).localizedDescription
+    }
+
     private func parseKeywords() -> [String] {
         keywords.split(separator: ",").map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -257,48 +563,96 @@ public final class FaceKeywordingViewModel {
     }
 }
 
+private struct FaceModelsStatusData: Codable {
+    let provider: String
+    let fallbackToOnnxEnabled: Bool
+    let modelsPresent: Bool
+    let downloading: Bool
+}
+
 public struct FaceKeywordingView: View {
     @State private var viewModel: FaceKeywordingViewModel
+    private let router: CommandRouter
     private let onBack: () -> Void
+    private let onOpenSimilarity: (String) -> Void
+    private let onOpenTab: (String, SessionTab) -> Void
+    private let onOpenGallery: (String) -> Void
+    /// 前往设置回调：可选（RootView 由外部接线）；nil 时页面内按钮禁用。
+    private let onOpenSettings: (() -> Void)?
     @State private var unbindTarget: FaceClusterData?
-    @State private var removeTarget: (cluster: FaceClusterData, member: ClusterMember)?
     @State private var confirmUnbind = false
-    @State private var confirmRemove = false
     @State private var confirmWriteback = false
     @State private var confirmCleanup = false
+    @State private var visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
+    @State private var hoveredClusterId: Int?
 
-    public init(sessionId: String, router: CommandRouter, onBack: @escaping () -> Void = {}) {
-        _viewModel = State(initialValue: FaceKeywordingViewModel(sessionId: sessionId, router: router))
+    private struct StepItem {
+        let key: FaceKeywordingViewModel.Step
+        let label: String
+    }
+
+    private let stepItems: [StepItem] = [
+        StepItem(key: .analyze, label: "分析"),
+        StepItem(key: .review, label: "审核"),
+        StepItem(key: .writeback, label: "写回"),
+    ]
+
+    init(
+        sessionId: String,
+        router: CommandRouter,
+        onBack: @escaping () -> Void = {},
+        onOpenSimilarity: @escaping (String) -> Void = { _ in },
+        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
+        onOpenGallery: @escaping (String) -> Void = { _ in },
+        onOpenSettings: (() -> Void)? = nil,
+        initialRoleFilter: String? = nil
+    ) {
+        _viewModel = State(initialValue: FaceKeywordingViewModel(
+            sessionId: sessionId,
+            router: router,
+            initialRoleFilter: initialRoleFilter
+        ))
+        self.router = router
         self.onBack = onBack
+        self.onOpenSimilarity = onOpenSimilarity
+        self.onOpenTab = onOpenTab
+        self.onOpenGallery = onOpenGallery
+        self.onOpenSettings = onOpenSettings
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let error = viewModel.errorMessage { NativeBanner(text: error, color: .red) }
-            if let notice = viewModel.notice { NativeBanner(text: notice, color: .green) }
+            stepIndicator
+            if let error = viewModel.errorMessage { NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error) }
+            if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    analysisControls
-                    bindingControls
-                    writebackCard
-                    if let result = viewModel.analysisResult {
-                        Text("状态：\(result.status)，检测失败 \(result.detectionFailures)，编码失败 \(result.encodingFailures)")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    if viewModel.clusters.isEmpty {
-                        ContentUnavailableView("暂无人脸簇", systemImage: "person.crop.circle.badge.questionmark", description: Text("先运行人脸分析"))
-                    } else {
-                        ForEach(viewModel.clusters, id: \.id) { cluster in
-                            clusterCard(cluster)
-                        }
+                Group {
+                    switch viewModel.step {
+                    case .analyze:
+                        stepAnalyze.frame(maxWidth: 860, alignment: .leading)
+                    case .review:
+                        stepReview
+                    case .writeback:
+                        stepWriteback.frame(maxWidth: 800, alignment: .leading)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .top)
                 .padding(24)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .task { viewModel.load() }
+        .background(Color.gatherBackground)
+        .task {
+            viewModel.load()
+            visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
+            guard let event = notification.object as? GatherJobEvent else { return }
+            viewModel.applyJobEvent(event)
+        }
+        .onChange(of: viewModel.roleFilter) { _, _ in
+            visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
+        }
         .confirmationDialog("确认解除绑定？", isPresented: $confirmUnbind, titleVisibility: .visible) {
             Button("解除绑定", role: .destructive) {
                 if let cluster = unbindTarget { Task { await viewModel.unbind(cluster) } }
@@ -307,15 +661,6 @@ public struct FaceKeywordingView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("将移除 Gather 为该簇维护的角色关键字，照片文件不会删除。")
-        }
-        .confirmationDialog("确认移除人脸成员？", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("移除", role: .destructive) {
-                if let target = removeTarget { viewModel.removeMember(target.member, from: target.cluster) }
-                removeTarget = nil
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只从当前人脸簇移除成员，不删除照片。")
         }
         .confirmationDialog("确认写回人脸关键字？", isPresented: $confirmWriteback, titleVisibility: .visible) {
             Button("确认写回") { Task { await viewModel.writeback() } }
@@ -331,142 +676,811 @@ public struct FaceKeywordingView: View {
         }
     }
 
+    // MARK: - 外壳
+
     private var header: some View {
-        HStack {
-            Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("人脸与关键字").font(.system(size: 24, weight: .bold))
-                Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("人脸检测与聚类").font(.system(size: 24, weight: .bold))
+                    Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
+                }
+                Spacer()
+                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings ?? {})
+                Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }
             }
-            Spacer()
-            Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }
+            SessionTabBar(
+                selection: .tab(.faceKw),
+                onBrowse: { onOpenGallery(viewModel.sessionId) },
+                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
+                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
+            )
         }
         .padding(24)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color.gatherSurface)
     }
 
-    private var analysisControls: some View {
-        HStack(spacing: 12) {
-            Stepper("eps \(viewModel.eps, specifier: "%.2f")", value: $viewModel.eps, in: 0.1...2, step: 0.05)
-                .frame(width: 170)
-            Stepper("最小簇 \(viewModel.minSamples)", value: $viewModel.minSamples, in: 2...20)
-                .frame(width: 150)
-            Button(viewModel.isAnalyzing ? "分析中…" : "运行人脸分析", systemImage: "play.fill") {
-                Task { await viewModel.analyze() }
-            }
-            .disabled(viewModel.isAnalyzing)
-            Button("取消", systemImage: "stop.fill", action: viewModel.cancel)
-            Button("重新聚类", systemImage: "arrow.triangle.2.circlepath") {
-                Task { await viewModel.recluster() }
-            }
-            Spacer()
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-    }
-
-    private var bindingControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("簇绑定").font(.headline)
-            HStack {
-                TextField("角色名称（先选择一个簇）", text: $viewModel.roleName)
-                    .textFieldStyle(.roundedBorder)
-                TextField("关键字，用逗号分隔", text: $viewModel.keywords)
-                    .textFieldStyle(.roundedBorder)
-                TextField("合并到簇编号", text: $viewModel.mergeTarget)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 130)
-            }
-            Text("点击簇卡片后编辑角色和关键字；绑定、合并、移除成员都会立即刷新簇状态。")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-    }
-
-    @ViewBuilder
-    private var writebackCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("关键字写回").font(.headline)
-                Spacer()
-                Button("生成预览", systemImage: "eye") { Task { await viewModel.previewWriteback() } }
-                Button("确认写回", systemImage: "square.and.arrow.down") { confirmWriteback = true }
-                    .disabled(viewModel.preview?.items.isEmpty != false || viewModel.isWritingBack)
-            }
-            if let preview = viewModel.preview {
-                Text("将影响 \(preview.affectedPhotos) 张照片，共 \(preview.totalCount) 个写回项")
-                    .font(.callout)
-                ForEach(preview.items.prefix(8), id: \.photoId) { item in
-                    Text("\(URL(fileURLWithPath: item.photoPath).lastPathComponent)：\(item.keywords.joined(separator: ", "))")
-                        .font(.caption).lineLimit(1)
+    /// TS index.tsx steps：胶囊 34pt 高 / 999px 圆角 / → 分隔；已过步骤可回点，
+    /// 下一步仅 analysisStatus === 'done' 时可点（其余 opacity 0.55 禁用）。
+    private var stepIndicator: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(stepItems.enumerated()), id: \.offset) { index, item in
+                if index > 0 {
+                    Text("→").foregroundStyle(Color.gatherBorder)
                 }
-                if preview.items.count > 8 {
-                    Text("还有 \(preview.items.count - 8) 项…").font(.caption).foregroundStyle(.secondary)
-                }
-            } else {
-                Text("先生成预览，确认影响范围后再写回。").font(.caption).foregroundStyle(.secondary)
+                stepChip(item, index: index)
             }
-            if let result = viewModel.writebackResult {
-                Text("结果：总计 \(result.totalAffected) · 成功 \(result.written) · 失败 \(result.failed) · 跳过 \(result.skipped)")
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(Color.gatherSurface)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.gatherBorder).frame(height: 1)
+        }
+    }
+
+    private var currentStepIndex: Int {
+        switch viewModel.step {
+        case .analyze: return 0
+        case .review: return 1
+        case .writeback: return 2
+        }
+    }
+
+    private func stepChip(_ item: StepItem, index: Int) -> some View {
+        let isActive = index == currentStepIndex
+        let isPast = index < currentStepIndex
+        let isNext = index == currentStepIndex + 1
+        let isClickable = isPast || (isNext && viewModel.analysisDone)
+        let enabled = isClickable || isActive
+        return Button {
+            viewModel.setStep(item.key)
+        } label: {
+            Text(item.label)
+                .font(.system(size: 13))
+                .foregroundStyle(isActive ? Color.accentColor : (isPast ? Color.green : Color.secondary))
+                .fontWeight(isActive ? .bold : (isPast ? .semibold : .regular))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .frame(minHeight: 34)
+                .background(Capsule().fill(isActive ? Color.accentColor.opacity(0.12) : Color.gatherSurface))
+                .overlay(
+                    Capsule().strokeBorder(
+                        isActive ? Color.accentColor : (isPast ? Color.gatherBorder : Color.gatherBorder.opacity(0.6)),
+                        lineWidth: 1
+                    )
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.55)
+        .help(isActive ? "" : (isClickable ? "前往「\(item.label)」步骤" : (isNext ? "请先完成人脸分析" : "请先完成上一步")))
+    }
+
+    private var bindable: Bindable<FaceKeywordingViewModel> { Bindable(viewModel) }
+
+    // MARK: - Step 1 分析（TS StepAnalyze）
+
+    private var stepAnalyze: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            modelsGuidanceStrip
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Button("重试失败项") { Task { await viewModel.retryFailed() } }
-                        .disabled(result.failedItems.isEmpty)
-                    Button("Capture One 重新加载") { Task { await viewModel.reloadCaptureOne() } }
-                    Button("确认已同步") { Task { await viewModel.confirmSync() } }
-                    Button("清理备份", role: .destructive) { confirmCleanup = true }
+                    Text("匹配强度").font(.headline)
+                    Spacer()
+                    phaseCapsule
+                }
+                presetSelector
+                Text("建议从「均衡」开始，之后可在审核阶段拆分或合并人物。")
+                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("高级参数") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        // TS range slider（渐变轨道）+ 数字输入（SliderInput）。
+                        SliderInputView(title: "人脸相似度", value: bindable.eps, range: 0.3...0.95, step: 0.01)
+                            .disabled(viewModel.analysisPhase == .running)
+                        Text("eps 范围 0.30–0.95，数值越小分组越严格。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        SliderInputIntView(title: "最少出现次数", value: bindable.minSamples, range: 2...20)
+                            .disabled(viewModel.analysisPhase == .running)
+                        Text("每个簇最少包含的人脸数量（2–20）。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 4)
+                }
+                // TS error 块：error 色 12% 底，嵌在表单附近便于定位。
+                if let error = viewModel.errorMessage,
+                   (viewModel.analysisPhase == .failed || viewModel.analysisPhase == .cancelled) {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+                }
+                if viewModel.analysisPhase == .running { analysisProgress }
+                HStack(spacing: 12) {
+                    if viewModel.analysisPhase == .running {
+                        Button("取消", systemImage: "stop.fill") { viewModel.cancel() }
+                            .foregroundStyle(.red)
+                    } else if viewModel.analysisPhase == .done {
+                        Button("仅重新聚类", systemImage: "arrow.triangle.2.circlepath") {
+                            Task { await viewModel.recluster() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button("开始分析", systemImage: "play.fill") {
+                            Task { await viewModel.analyze() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                if let result = viewModel.analysisResult {
+                    Text("分析结果：\(result.status)，检测失败 \(result.detectionFailures) 张，编码失败 \(result.encodingFailures) 个人脸")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(18)
+            .nativeCard()
+        }
+    }
+
+    /// TS StepAnalyze.guidance：warning 色边框横幅 +「前往设置」按钮
+    /// （旧版导航 /settings；回调为 nil 时按钮禁用）。
+    @ViewBuilder
+    private var modelsGuidanceStrip: some View {
+        if viewModel.modelsMissing {
+            HStack(spacing: 12) {
+                Text("人脸推理当前使用系统内置引擎，建议前往设置确认模型状态。")
+                    .font(.callout)
+                Spacer()
+                Button("前往设置") { onOpenSettings?() }
+                    .disabled(onOpenSettings == nil)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange.opacity(0.6), lineWidth: 1))
+        }
+    }
+
+    private var phaseCapsule: some View {
+        Text(viewModel.analysisPhase.label)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(phaseColor)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(phaseColor.opacity(0.12)))
+    }
+
+    private var phaseColor: Color {
+        switch viewModel.analysisPhase {
+        case .idle: return .secondary
+        case .running: return .accentColor
+        case .done: return .green
+        case .failed: return .red
+        case .cancelled: return .orange
+        }
+    }
+
+    private var presetSelector: some View {
+        HStack(spacing: 8) {
+            ForEach(FaceKeywordingViewModel.presets) { preset in
+                presetButton(preset)
+            }
+        }
+    }
+
+    private func presetButton(_ preset: FaceKeywordingViewModel.Preset) -> some View {
+        let isActive = viewModel.activePreset == preset.name
+        let isRunning = viewModel.analysisPhase == .running
+        return Button {
+            viewModel.applyPreset(preset.name)
+        } label: {
+            Text(preset.title)
+                .font(.callout)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isActive ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(isActive ? Color.accentColor : Color.gatherBorder, lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRunning)
+        .opacity(isRunning ? 0.55 : 1)
+    }
+
+    /// TS AnalyzeProgress：相位文本 + (n/N) + 8px 圆角 track 主色填充（0.2s 过渡）。
+    private var analysisProgress: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(GatherLocalization.progressPhaseText(viewModel.progressPhase))
+                    .font(.callout)
+                Spacer()
+                if viewModel.progressTotal > 0 {
+                    Text("\(viewModel.progressCurrent)/\(viewModel.progressTotal)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if viewModel.progressTotal > 0 {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.gatherBorder.opacity(0.35))
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.accentColor)
+                            .frame(width: geo.size.width * min(1, progressRatio))
+                    }
+                }
+                .frame(height: 8)
+                .animation(.easeOut(duration: 0.2), value: progressRatio)
+            } else {
+                // TS AnalyzeProgress：total == 0（indeterminate）时相位文本
+                // 恒显示，轨道省略；补处理中文案对齐旧版（StepAnalyze.tsx:26-29）。
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("处理中…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
-    private func clusterCard(_ cluster: FaceClusterData) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button {
-                    viewModel.select(cluster)
-                } label: {
-                    Text("簇 #\(cluster.id) · \(cluster.size) 张")
-                        .font(.headline)
-                        .foregroundStyle(viewModel.selectedClusterId == cluster.id ? Color.accentColor : Color.primary)
+    private var progressRatio: Double {
+        guard viewModel.progressTotal > 0 else { return 0 }
+        return Double(viewModel.progressCurrent) / Double(viewModel.progressTotal)
+    }
+
+    // MARK: - Step 2 审核（TS StepReview）
+
+    private var stepReview: some View {
+        Group {
+            if viewModel.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("加载中…").foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                Text(cluster.status).font(.caption).foregroundStyle(.secondary)
-                if let binding = cluster.binding {
-                    Text("已绑定：\(binding.roleName)").font(.caption).foregroundStyle(.green)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .nativeCard()
+            } else if viewModel.clusters.isEmpty {
+                ContentUnavailableView(
+                    "暂无人脸簇",
+                    systemImage: "person.crop.circle.badge.questionmark",
+                    description: Text("先运行人脸分析")
+                )
+            } else {
+                HStack(alignment: .top, spacing: 18) {
+                    clusterPane
+                    detailPane
                 }
-                Spacer()
-                Button("绑定") { viewModel.bind(cluster) }
-                if cluster.binding != nil {
-                    Button("解除") { unbindTarget = cluster; confirmUnbind = true }
-                }
-                Button("合并") { viewModel.merge(cluster) }
             }
-            if !cluster.members.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 10) {
-                        ForEach(cluster.members, id: \.memberId) { member in
-                            VStack(alignment: .leading, spacing: 4) {
-                                ZStack(alignment: .topTrailing) {
-                                    PhotoThumbnailView(path: member.photoPath, size: 160, placeholderSize: CGSize(width: 120, height: 90))
-                                    Button {
-                                        removeTarget = (cluster, member)
-                                        confirmRemove = true
-                                    } label: {
-                                        Image(systemName: "minus.circle.fill").foregroundStyle(.white, .red)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .padding(4)
-                                }
-                                Text(member.filename).font(.caption).lineLimit(1).frame(width: 120, alignment: .leading)
-                            }
+        }
+    }
+
+    /// TS StepReview.clusterPane：标题 + 组数 + 角色过滤条 + 簇网格 + 加载更多。
+    private var clusterPane: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("人脸聚类").font(.system(size: 16, weight: .semibold))
+                Text("\(visibleClusters.count) 组").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                roleFilterBar
+            }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 132), spacing: 10)],
+                spacing: 10
+            ) {
+                ForEach(visibleClusters.prefix(visibleClusterCount), id: \.id) { cluster in
+                    clusterCard(cluster)
+                }
+            }
+            if visibleClusters.count > visibleClusterCount {
+                Button("加载更多（还有 \(visibleClusters.count - visibleClusterCount) 组）") {
+                    visibleClusterCount += FaceKeywordingViewModel.clusterPageSize
+                }
+                .buttonStyle(.bordered)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    private var visibleClusters: [FaceClusterData] {
+        guard let roleFilter = viewModel.roleFilter else { return viewModel.clusters }
+        return viewModel.clusters.filter { $0.binding?.roleName == roleFilter }
+    }
+
+    /// TS roleFilterBar（旧版 URL searchParam + 清除按钮）：本页用角色胶囊切换，
+    /// 再点当前角色胶囊即清除筛选。
+    private var roleFilterBar: some View {
+        let roles = Set(viewModel.clusters.compactMap { $0.binding?.roleName }).sorted()
+        return Group {
+            if roles.isEmpty {
+                EmptyView()
+            } else {
+                HStack(spacing: 6) {
+                    ForEach(roles, id: \.self) { role in
+                        Button {
+                            viewModel.roleFilter = (viewModel.roleFilter == role) ? nil : role
+                        } label: {
+                            Text(role)
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule().fill(viewModel.roleFilter == role ? Color.accentColor.opacity(0.15) : Color.clear)
+                                )
+                                .overlay(
+                                    Capsule().strokeBorder(
+                                        viewModel.roleFilter == role ? Color.accentColor : Color.gatherBorder,
+                                        lineWidth: 1
+                                    )
+                                )
                         }
+                        .buttonStyle(.plain)
+                        .help(viewModel.roleFilter == role ? "清除「\(role)」筛选" : "仅显示角色「\(role)」的簇")
                     }
                 }
             }
         }
+    }
+
+    /// TS ClusterCard：10px padding、radius-md、hover 主色描边 + translateY(-1)、
+    /// 选中主色边框 + 外发光；2x2 蒙太奇（前 4 成员，圆角 9）+ label + 成员数 +
+    /// 绑定角色 success 胶囊。
+    private func clusterCard(_ cluster: FaceClusterData) -> some View {
+        let isSelected = viewModel.selectedClusterId == cluster.id
+        let isHovered = hoveredClusterId == cluster.id
+        return Button {
+            viewModel.select(cluster)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                clusterMontage(cluster)
+                Text(cluster.label)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Text("\(cluster.size) 张")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                if let binding = cluster.binding {
+                    Text(binding.roleName)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.green)
+                        .lineLimit(1)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.green.opacity(0.14)))
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(cardBorder(isSelected: isSelected, isHovered: isHovered), lineWidth: isSelected ? 1.5 : 1)
+            )
+            .shadow(color: isSelected ? Color.accentColor.opacity(0.25) : .clear, radius: 3)
+            .offset(y: isHovered && !isSelected ? -1 : 0)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering {
+                hoveredClusterId = cluster.id
+            } else if hoveredClusterId == cluster.id {
+                hoveredClusterId = nil
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: isHovered)
+    }
+
+    private func cardBorder(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected { return Color.accentColor }
+        if isHovered { return Color.accentColor.opacity(0.45) }
+        return Color.gatherBorder
+    }
+
+    /// TS ClusterThumb：2x2 蒙太奇网格（前 4 成员，gap 2，圆角 9），
+    /// 空成员时显示簇大小。
+    private func clusterMontage(_ cluster: FaceClusterData) -> some View {
+        Group {
+            if cluster.members.isEmpty {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9).fill(Color(nsColor: .controlBackgroundColor))
+                    Text("\(cluster.size)")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            } else {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 2), GridItem(.flexible(), spacing: 2)],
+                    spacing: 2
+                ) {
+                    ForEach(cluster.members.prefix(4), id: \.memberId) { member in
+                        PhotoThumbnailView(path: member.photoPath, size: 128)
+                            .aspectRatio(1, contentMode: .fit)
+                            .clipped()
+                    }
+                }
+                .background(Color(nsColor: .controlBackgroundColor))
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    /// TS StepReview.detailPane：340px 固定栏（成员列表 + 编辑 + 合并面板）。
+    private var detailPane: some View {
+        Group {
+            if let cluster = viewModel.selectedCluster {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(cluster.label)
+                            .font(.system(size: 16, weight: .semibold))
+                        Spacer()
+                        Text("\(cluster.size) 名成员")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    memberList(cluster)
+                    // TS StepReview.tsx:216-218：审核动作失败的内联错误块
+                    // （绑定/移除/解除/合并），横幅错误保留。
+                    if let actionError = viewModel.reviewActionError {
+                        Text(actionError)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+                    }
+                    editor(cluster)
+                    mergePanel(cluster)
+                }
+            } else {
+                Text("点击左侧簇卡片查看成员与绑定编辑")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxHeight: .infinity)
+            }
+        }
+        .frame(width: 340)
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder, lineWidth: 1))
+    }
+
+    /// TS memberList：max-height 210px 滚动，每行 #idx + 文件名 + 置信度% +
+    /// 红色「移除」（TS StepReview.tsx:108-117：点击即移除，无确认）。
+    private func memberList(_ cluster: FaceClusterData) -> some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(Array(cluster.members.enumerated()), id: \.element.memberId) { index, member in
+                    HStack(spacing: 7) {
+                        Text("#\(index + 1)")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 30, alignment: .leading)
+                        Text(member.filename)
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(String(format: "%.0f%%", member.confidence * 100))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Button("移除") {
+                            viewModel.removeMember(member, from: cluster)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red)
+                        .help("从簇中移除成员 \(member.filename)")
+                    }
+                    .padding(.vertical, 5)
+                    Divider().opacity(0.5)
+                }
+            }
+        }
+        .frame(maxHeight: 210)
+    }
+
+    /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（window.confirm
+    /// → 本页 confirmationDialog）。
+    private func editor(_ cluster: FaceClusterData) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("角色名称").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            TextField("输入角色名称", text: bindable.roleName)
+                .textFieldStyle(.roundedBorder)
+            Text("关键字").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            TextField("关键字，用逗号分隔", text: bindable.keywords)
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 8) {
+                Button(cluster.binding != nil ? "更新绑定" : "绑定") {
+                    viewModel.bind(cluster)
+                }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+                if cluster.binding != nil {
+                    Button("解除绑定") {
+                        unbindTarget = cluster
+                        confirmUnbind = true
+                    }
+                    .buttonStyle(.bordered)
+                    .foregroundStyle(.red)
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+    }
+
+    /// TS mergePanel：select 下拉（过滤当前簇，选项 label (n 张)）+ 合并按钮，
+    /// 无目标时禁用。
+    private func mergePanel(_ cluster: FaceClusterData) -> some View {
+        let candidates = viewModel.clusters.filter { $0.id != cluster.id }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("合并到").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Picker("合并目标", selection: bindable.mergeTargetId) {
+                    Text("选择目标簇").tag(Int?.none)
+                    ForEach(candidates, id: \.id) { candidate in
+                        Text("\(candidate.label)（\(candidate.size) 张）")
+                            .tag(Int?.some(candidate.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+                Button("合并") {
+                    viewModel.merge(cluster)
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.mergeTargetId == nil)
+                .help("选择目标簇后合并当前簇到目标簇")
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+    }
+
+    // MARK: - Step 3 写回（TS StepWriteback）
+
+    private var stepWriteback: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("关键字写回")
+                .font(.system(size: 20, weight: .semibold))
+            writebackStats
+            boundPreview
+            if viewModel.preview != nil { xmpPreview }
+            HStack(spacing: 9) {
+                Button("生成预览", systemImage: "eye") { Task { await viewModel.previewWriteback() } }
+                    .disabled(!viewModel.analysisDone)
+                    .help(viewModel.analysisDone ? "" : "请先完成人脸分析")
+                // 确认写回：分析完成后恒可用；无预览时自动补一次预览再写回
+                // （TS handleExecute，StepWriteback.tsx:53-69, 195-203）。
+                Button("确认写回", systemImage: "square.and.arrow.down") { confirmWriteback = true }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!viewModel.canWriteback)
+                    .help(viewModel.analysisDone ? "" : "请先完成人脸分析")
+            }
+            if !viewModel.analysisDone {
+                Text("请先完成人脸分析，才能生成预览并写回。")
+                    .font(.caption).foregroundStyle(.red)
+            }
+            if let result = viewModel.writebackResult {
+                resultSection(result)
+            } else if viewModel.preview != nil {
+                // TS StepWriteback.tsx:205-226：预览生成后即显示操作行
+                // （重试失败项 / C1 重新加载 / 确认同步 / 清理），
+                // 写回报告统计卡仅在有写回结果后出现。
+                reportActionsRow
+                    .padding(18)
+                    .nativeCard()
+            }
+        }
+    }
+
+    /// TS stats：三统计卡（已绑定簇 accent / 受影响照片 / 未绑定跳过 warning），
+    /// 数值 24pt tabular-nums。
+    private var writebackStats: some View {
+        HStack(spacing: 10) {
+            statCard(value: viewModel.boundClusters.count, label: "已绑定簇", accent: true)
+            statCard(value: viewModel.totalAffected, label: "受影响照片", accent: false)
+            statCard(value: viewModel.unboundClusters.count, label: "未绑定并跳过", warning: true)
+        }
+    }
+
+    private func statCard(value: Int, label: String, accent: Bool = false, warning: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(value)")
+                .font(.system(size: 24, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(accent ? Color.accentColor : (warning ? Color.orange : Color.primary))
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
+    }
+
+    /// TS preview 面板：绑定簇预览（roleName + keywords + 前 5 文件名），
+    /// 无绑定簇时显示空提示。
+    private var boundPreview: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if viewModel.boundClusters.isEmpty {
+                    Text("暂无已绑定簇，请先在审核步骤绑定角色。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(28)
+                } else {
+                    ForEach(viewModel.boundClusters, id: \.id) { cluster in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 7) {
+                                Text(cluster.binding?.roleName ?? "")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("（\(cluster.size) 张）")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let keywords = cluster.binding?.keywords, !keywords.isEmpty {
+                                    Text(keywords.joined(separator: ", "))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            ForEach(cluster.members.prefix(5), id: \.memberId) { member in
+                                Text(member.filename)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.leading, 10)
+                            }
+                            if cluster.members.count > 5 {
+                                Text("还有 \(cluster.members.count - 5) 名成员")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .opacity(0.7)
+                                    .padding(.leading, 10)
+                            }
+                        }
+                        .padding(.vertical, 9)
+                        Divider().opacity(0.5)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: 270)
+        .padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
+    }
+
+    /// TS xmpPreview：前 50 行三行明细（文件名 / before→after / 标记行），
+    /// max-height 240 滚动。
+    @ViewBuilder
+    private var xmpPreview: some View {
+        if let preview = viewModel.preview {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("XMP 写回预览 · 共 \(preview.totalCount) 项 · \(preview.affectedPhotos) 张照片受影响")
+                    .font(.callout)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(preview.items.prefix(50), id: \.xmpPath) { item in
+                            xmpPreviewRow(item)
+                            Divider().opacity(0.5)
+                        }
+                    }
+                }
+                .frame(maxHeight: 240)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
+                if preview.items.count > 50 {
+                    Text("还有 \(preview.items.count - 50) 项…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func xmpPreviewRow(_ item: FaceKwWritebackItem) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+            Text("\(xmpKeywordsText(item.preview?.before.keywords)) → \(xmpKeywordsText(item.preview?.after.keywords ?? item.keywords))")
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .foregroundStyle(.secondary)
+            Text(xmpMarkerText(item))
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private func xmpMarkerText(_ item: FaceKwWritebackItem) -> String {
+        var parts: [String] = []
+        if let preview = item.preview {
+            parts.append(preview.willCreate ? "新建 XMP" : "更新 XMP")
+            if preview.sharedPhotoCount > 1 { parts.append("\(preview.sharedPhotoCount) 张共享") }
+            if preview.externalChanged { parts.append("检测到外部冲突") }
+        }
+        parts.append("来源：人脸关键词")
+        return parts.joined(separator: " · ")
+    }
+
+    private func xmpKeywordsText(_ keywords: [String]?) -> String {
+        let joined = (keywords ?? []).joined(separator: "、")
+        return joined.isEmpty ? "无关键词" : joined
+    }
+
+    /// TS WritebackReport：已写入/失败/已跳过三色统计卡 + 失败项明细 +
+    /// 重试/确认同步/清理 + reload 行。
+    private func resultSection(_ result: FaceKwWritebackResult) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("写回报告").font(.headline)
+            WritebackReportCard(
+                written: result.written,
+                failed: result.failed,
+                skipped: result.skipped,
+                failedItems: result.failedItems.map { item in
+                    WritebackFailureItem(
+                        id: item.xmpPath,
+                        path: item.photoPath.isEmpty ? item.xmpPath : item.photoPath,
+                        message: item.errorMessage
+                    )
+                },
+                skippedColor: .orange
+            )
+            reportActionsRow
+        }
+        .padding(18)
         .nativeCard()
+    }
+
+    /// TS WritebackReport actions（StepWriteback.tsx:205-226）：预览生成后即
+    /// 可见，无需等待写回结果。重试失败项仅在存在失败项时显示；清理备份
+    /// 仅在确认同步后显示（旧版 onCleanup = syncConfirmed ? handleCleanup
+    /// : undefined，WritebackReport.tsx:86-95）。
+    private var reportActionsRow: some View {
+        HStack(spacing: 8) {
+            if let result = viewModel.writebackResult, !result.failedItems.isEmpty {
+                Button("重试失败项") { Task { await viewModel.retryFailed() } }
+                    .disabled(viewModel.isWritingBack)
+                    .help("没有失败项")
+            }
+            Button("Capture One 重新加载") { Task { await viewModel.reloadCaptureOne() } }
+                .disabled(viewModel.isWritingBack)
+            Button("确认同步") { Task { await viewModel.confirmSync() } }
+                .disabled(viewModel.isWritingBack)
+            if viewModel.isSyncConfirmed {
+                Button("清理备份", role: .destructive) { confirmCleanup = true }
+                    .disabled(viewModel.isWritingBack)
+                    .help("请先在 Capture One 中加载元数据并确认同步")
+            }
+        }
+    }
+}
+
+private extension FaceKeywordingViewModel.AnalysisPhase {
+    var label: String {
+        switch self {
+        case .idle: return "未开始"
+        case .running: return "分析中"
+        case .done: return "已完成"
+        case .failed: return "失败"
+        case .cancelled: return "已取消"
+        }
     }
 }

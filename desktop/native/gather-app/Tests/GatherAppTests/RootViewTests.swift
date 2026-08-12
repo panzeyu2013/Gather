@@ -13,12 +13,8 @@ struct RootNavigationTests {
 
     @Test func selectingNativePageHighlightsSidebar() {
         let navigation = RootNavigation()
-        navigation.selectWeb(.jobs)
-        #expect(navigation.destination == .page(.jobs))
-        #expect(navigation.isJobs)
-        #expect(navigation.selectedWebPage == .jobs)
-
         navigation.selectWeb(.settings)
+        #expect(navigation.destination == .page(.settings))
         #expect(navigation.isSettings)
         #expect(navigation.selectedWebPage == .settings)
     }
@@ -65,11 +61,7 @@ struct RootNavigationTests {
 
     @Test func sessionTabsMatchProductOrder() {
         #expect(SessionTab.allCases.map(\.rawValue) == ["control", "face-kw", "duplicates", "culling", "export"])
-        #expect(SessionTab.control.title == "控制中心")
-        #expect(SessionTab.faceKw.title == "人脸")
-        #expect(SessionTab.duplicates.title == "重复")
-        #expect(SessionTab.culling.title == "挑片")
-        #expect(SessionTab.export.title == "导出")
+        // 页签文案（中英双语）由 SessionTabBar.tabTitle 承载，SessionTab 不再持有 title。
     }
 
     @Test func selectingDashboardClearsAllNativeSelection() {
@@ -83,9 +75,9 @@ struct RootNavigationTests {
     }
 
     @Test func sidebarCasesRemainStable() {
-        #expect(RootNavigation.WebPage.allCases.map(\.rawValue) == ["persons", "jobs", "settings"])
+        // 产品决策：任务中心并入 Dashboard，删除独立 jobs 路由与侧栏项。
+        #expect(RootNavigation.WebPage.allCases.map(\.rawValue) == ["persons", "settings"])
         #expect(RootNavigation.WebPage.persons.title == "人脸库")
-        #expect(RootNavigation.WebPage.jobs.title == "任务中心")
         #expect(RootNavigation.WebPage.settings.title == "设置")
     }
 }

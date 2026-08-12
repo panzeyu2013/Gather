@@ -59,12 +59,20 @@ struct GatherApp: App {
             )
             let appDir = applicationSupport.appendingPathComponent("Gather", isDirectory: true)
             try FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+            // 审计 P2-安全：库内含照片路径 + 人脸特征，目录 755/SQLite 0644
+            // 过宽 → 收紧为仅当前用户（700/600）。
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: appDir.path)
             let dbURL = appDir.appendingPathComponent("gather.sqlite")
             let db = try DBConnection(path: dbURL.path)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
             try MigrationRunner(databaseFilePath: dbURL.path).migrate(db)
 
             let router = SessionCommandRouter.makeDefault(db: db)
             router.jobService.start()
+            // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
+            GatherEventCenter.shared.wire(jobService: router.jobService)
             Self.prepareNativeEmbeddingRerun(router: router, databasePath: dbURL.path)
             let provider = LiveDashboardDataProvider(
                 sessionService: router.sessionService,
@@ -78,8 +86,21 @@ struct GatherApp: App {
             let similarityProvider = LiveSimilarityDataProvider(router: router)
             let personsProvider = LivePersonsDataProvider(router: router)
             let captureOneBridge = CaptureOneBridge(router: router)
+            // Dashboard 新建工作区（Capture One 来源）经共享实例访问四层预检
+            // 与选中照片读取；菜单导入走 appDelegate.onCaptureOneImport。
+            CaptureOneBridge.shared = captureOneBridge
             appDelegate.onImportFiles = { files in
                 Self.importFiles(files, router: router)
+            }
+            appDelegate.onCaptureOneImportFiles = { files in
+                // 对齐旧版 App.tsx c1:plugin-import：C1 导入保留
+                // capture-one 来源标记与「C1 导入 M/D H:mm」命名。
+                Self.importFiles(
+                    files,
+                    router: router,
+                    source: "capture-one",
+                    sourceLabel: GatherLocalization.l("Capture One 文件", "Capture One files")
+                )
             }
             appDelegate.onCaptureOneImport = {
                 try await captureOneBridge.selectedPhotoPaths()
@@ -134,7 +155,20 @@ struct GatherApp: App {
     /// 文件打开、菜单导入和 deep-link 共用同一条原生导入路径：创建工作区、
     /// 写入已选照片、入队 metadata.scan。导入失败的文件保留在结果日志中，
     /// 不会因为单个损坏文件使整个工作区创建失败。
-    private static func importFiles(_ files: [String], router: SessionCommandRouter) {
+    ///
+    /// source/sourceLabel：C1 菜单导入传 "capture-one"/"Capture One 文件"
+    /// （对齐旧版 c1:plugin-import 的来源标记与失败提示文案）；其余为
+    /// "local"/"文件"。
+    ///
+    /// 成功建库后统一 post importCompleted（菜单/C1/deep-link 都走到这里），
+    /// userInfo 键名见 GatherAppDelegate 的 GatherAppImportUserInfoKey。
+    /// internal（非 private）：GatherAppDelegateTests 需要直调以断言通知内容。
+    static func importFiles(
+        _ files: [String],
+        router: SessionCommandRouter,
+        source: String = "local",
+        sourceLabel: String = ""
+    ) {
         let normalized = normalizeImportFilepaths(files)
         guard !normalized.isEmpty else { return }
         do {
@@ -146,8 +180,8 @@ struct GatherApp: App {
                 name = URL(fileURLWithPath: sourcePath).lastPathComponent
             }
             let session = try router.sessionService.createSession(
-                name: name.isEmpty ? "导入照片" : name,
-                source: "local",
+                name: name.isEmpty ? Self.defaultImportName(source: source) : name,
+                source: source,
                 sourcePath: sourcePath
             )
             let result = try router.sessionService.addPhotos(
@@ -164,8 +198,36 @@ struct GatherApp: App {
             if !result.failedFiles.isEmpty {
                 GatherLogger.log("import skipped \(result.failedFiles.count) files", level: .warn)
             }
+            let examples = result.failedFiles
+                .prefix(3)
+                .map { URL(fileURLWithPath: $0).lastPathComponent }
+                .joined(separator: "、")
+            NotificationCenter.default.post(
+                name: GatherAppNotification.importCompleted,
+                object: nil,
+                userInfo: [
+                    GatherAppImportUserInfoKey.sessionId: session.id,
+                    GatherAppImportUserInfoKey.failedCount: result.failedFiles.count,
+                    GatherAppImportUserInfoKey.addedCount: result.added,
+                    GatherAppImportUserInfoKey.sourceLabel: sourceLabel,
+                    GatherAppImportUserInfoKey.examples: examples,
+                ]
+            )
         } catch {
             GatherLogger.log("native import failed: \(error)", level: .error)
         }
+    }
+
+    /// 对齐旧版 app.c1ImportName：C1 导入无公共父目录时使用
+    /// 「C1 导入 M/D H:mm」（分钟补零）；其他来源回退「导入照片」。
+    private static func defaultImportName(source: String) -> String {
+        guard source == "capture-one" else { return "导入照片" }
+        let now = Date()
+        let calendar = Calendar.current
+        let month = calendar.component(.month, from: now)
+        let day = calendar.component(.day, from: now)
+        let hour = calendar.component(.hour, from: now)
+        let minute = calendar.component(.minute, from: now)
+        return "C1 导入 \(month)/\(day) \(hour):\(String(format: "%02d", minute))"
     }
 }

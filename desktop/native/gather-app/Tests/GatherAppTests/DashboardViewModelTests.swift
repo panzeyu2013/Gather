@@ -94,6 +94,7 @@ private final class StubDashboardProvider: DashboardDataProvider {
         status: AnalysisJobStatus = .queued,
         current: Int = 0,
         total: Int = 0,
+        progressMessage: String = "",
         updatedAt: String = "2026-01-01T00:00:00.000Z"
     ) -> AnalysisJobData {
         AnalysisJobData(
@@ -106,7 +107,7 @@ private final class StubDashboardProvider: DashboardDataProvider {
             priority: 0,
             progressCurrent: current,
             progressTotal: total,
-            progressMessage: "",
+            progressMessage: progressMessage,
             inputFingerprint: "",
             modelId: "",
             modelVersion: "",
@@ -361,6 +362,93 @@ struct DashboardViewModelTests {
         #expect(DashboardViewModel.progressPercent(of: zero) == 0)
     }
 
+    // ── 进度事件（TS jobs:progress 逐帧订阅）──
+
+    // 普通帧：仅 metadata.scan 更新 scanJobs 快照 + 任务中心行实时刷新，
+    // 不整页刷新（毫秒级「正在索引 N…」）。
+    @Test func applyProgressFrameUpdatesScanSnapshotAndJobRow() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.sessions = [StubDashboardProvider.session(id: "s1", name: "x")]
+        stub.jobs = [StubDashboardProvider.job(
+            id: "scan", type: .metadataScan, scopeId: "s1",
+            status: .running, current: 2, total: 10
+        )]
+        await viewModel.loadAll()
+        #expect(viewModel.photoCountLabel(for: stub.sessions[0]) == "正在索引 2…")
+
+        let frame = StubDashboardProvider.job(
+            id: "scan", type: .metadataScan, scopeId: "s1",
+            status: .running, current: 6, total: 10,
+            progressMessage: "index.scanning"
+        )
+        viewModel.applyJobEvent(GatherJobEvent(
+            job: frame,
+            update: JobProgressUpdate(current: 6, total: 10, phase: "index.scanning")
+        ))
+
+        #expect(viewModel.scanJobs["s1"]?.status == "running")
+        #expect(viewModel.scanJobs["s1"]?.current == 6)
+        #expect(viewModel.scanJobs["s1"]?.total == 10)
+        #expect(viewModel.photoCountLabel(for: stub.sessions[0]) == "正在索引 6…")
+        // 任务中心行进度实时同步（不必等 2s 轮询）。
+        #expect(viewModel.jobs.first(where: { $0.id == "scan" })?.progressCurrent == 6)
+    }
+
+    // 终态帧：failed → 快照保留为 failed（卡片「索引失败 + 重试」）。
+    @Test func applyTerminalFailedEventKeepsFailedSnapshot() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.sessions = [StubDashboardProvider.session(id: "s1", name: "x")]
+        stub.jobs = [StubDashboardProvider.job(
+            id: "scan", type: .metadataScan, scopeId: "s1",
+            status: .running, current: 4, total: 10
+        )]
+        await viewModel.loadAll()
+
+        let terminal = StubDashboardProvider.job(
+            id: "scan", type: .metadataScan, scopeId: "s1",
+            status: .failed, current: 4, total: 10
+        )
+        let event = GatherJobEvent(job: terminal, update: JobProgressUpdate(message: "failed"))
+        #expect(event.isTerminal)
+        viewModel.applyJobEvent(event)
+        // 同步断言：快照立即置为 failed；终态后的整页刷新由内部 Task 完成。
+        #expect(viewModel.scanJobs["s1"]?.status == "failed")
+        #expect(viewModel.photoCountLabel(for: stub.sessions[0]) == "索引失败")
+    }
+
+    // 终态帧：cancelled → 快照删除（卡片回到截断 ≥ 计数，对齐 TS 终态分支）。
+    @Test func applyTerminalCancelledEventDropsSnapshot() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.sessions = [StubDashboardProvider.session(id: "s1", name: "x")]
+        stub.jobs = [StubDashboardProvider.job(
+            id: "scan", type: .metadataScan, scopeId: "s1",
+            status: .running, current: 3, total: 10
+        )]
+        await viewModel.loadAll()
+
+        let terminal = StubDashboardProvider.job(
+            id: "scan", type: .metadataScan, scopeId: "s1",
+            status: .cancelled, current: 3, total: 10
+        )
+        viewModel.applyJobEvent(GatherJobEvent(job: terminal, update: JobProgressUpdate(message: "cancelled")))
+        #expect(viewModel.scanJobs["s1"] == nil)
+    }
+
+    // 非 metadata.scan 帧：不产生 scan 快照，但任务中心行仍实时更新。
+    @Test func applyProgressFrameIgnoresNonScanSnapshots() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.jobs = [StubDashboardProvider.job(id: "t1", scopeId: "s1", status: .running, current: 1, total: 5)]
+        await viewModel.loadAll()
+
+        let frame = StubDashboardProvider.job(
+            id: "t1", scopeId: "s1", status: .running,
+            current: 4, total: 5, progressMessage: "index.scanning"
+        )
+        viewModel.applyJobEvent(GatherJobEvent(job: frame, update: JobProgressUpdate(current: 4, total: 5)))
+        #expect(viewModel.scanJobs.isEmpty)
+        #expect(viewModel.jobs.first(where: { $0.id == "t1" })?.progressCurrent == 4)
+    }
+
     // ── 动作委托 ──
 
     @Test func createDeleteCancelRetryClearDelegateToProvider() async throws {
@@ -402,14 +490,20 @@ struct DashboardViewModelTests {
         #expect(viewModel.phase == .failed("DB 不可用"))
     }
 
-    @Test func jobListFailureShowsActionErrorAfterLoaded() async {
+    @Test func jobListFailureShowsJobsErrorState() async {
         let (viewModel, stub) = makeStubVM()
         stub.sessions = [StubDashboardProvider.session(id: "s1")]
         stub.jobListError = "任务读取失败"
         await viewModel.loadAll()
-        // 首屏阶段失败（sessions 已加载但 jobs 失败 → 文案取 jobs 错误）。
+        // sessions 已加载但 jobs 失败 → 任务中心错误态（区别于「暂无后台任务」空态）。
         #expect(viewModel.phase == .loaded)
-        #expect(viewModel.actionError == "任务读取失败")
+        #expect(viewModel.jobsError == "任务读取失败")
+        #expect(viewModel.actionError == nil)
+
+        // 重试成功 → 错误态清除，回到正常列表。
+        stub.jobListError = nil
+        await viewModel.refreshJobs()
+        #expect(viewModel.jobsError == nil)
     }
 
     @Test func createFailureSetsCreateError() async {

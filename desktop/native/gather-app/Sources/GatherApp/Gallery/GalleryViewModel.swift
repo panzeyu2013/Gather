@@ -92,6 +92,23 @@ public protocol GalleryDataProvider {
         limit: Int,
         expandVariants: Bool
     ) throws -> (rows: [GalleryPhotoData], cursor: Int64?)
+    /// 工作区索引状态（workspace.status；indexing 字段由主进程按
+    /// metadata.scan job 派生，供索引头推导）。测试 stub 未实现时返回 nil。
+    func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus?
+    /// 重新入队索引扫描（TS indexerApi.scan / SessionDetail handleRetryIndex）。
+    func retryIndex(sessionId: String) async throws
+}
+
+public extension GalleryDataProvider {
+    /// 网格缩略图目标解码尺寸（TS Gallery.tsx:50-55：settings thumbnail_size
+    /// 分桶 → ≤320→256、≤1280→1024、>1280→2048）。测试 stub 未实现时取默认。
+    func thumbnailSize() -> Int { 1024 }
+
+    func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus? { nil }
+
+    func retryIndex(sessionId: String) async throws {
+        throw NativeCommandError.failed("INDEX_SCAN_NOT_SUPPORTED")
+    }
 }
 
 /// 真实实现：同进程直连 SessionCommandRouter（photo.list_page 的资产分组/
@@ -124,6 +141,37 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
         let cursor = object["cursor"]?.numberValue.map(Int64.init)
         return (rows, cursor)
     }
+
+    /// TS: Gallery.tsx:50-55 —— settings thumbnail_size（默认 1024）分桶映射。
+    public func thumbnailSize() -> Int {
+        let raw = (try? router.execute("settings.get", params: ["key": .string("thumbnail_size")]))?.stringValue ?? ""
+        return Self.thumbnailBucket(Int(raw) ?? 1024)
+    }
+
+    /// TS: thumbnail_size → 解码尺寸：≤320→256、≤1280→1024、>1280→2048。
+    public static func thumbnailBucket(_ value: Int) -> Int {
+        switch value {
+        case ...320: return 256
+        case 321...1280: return 1024
+        default: return 2048
+        }
+    }
+
+    /// TS: workspace.status —— indexing job 派生（quque/running/cancelling →
+    /// active；succeeded → stage indexed；failed → failed）。
+    public func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus? {
+        try router.execute("workspace.status", params: [
+            "sessionId": .string(sessionId),
+        ]).decoded(as: WorkspaceStatus.self)
+    }
+
+    /// TS: indexerApi.scan —— 建 metadata.scan job 即返回（走 async 通道）。
+    public func retryIndex(sessionId: String) async throws {
+        _ = try await NativeCommandClient(router: router).executeAsync(
+            "index.scan",
+            params: ["sessionId": .string(sessionId)]
+        )
+    }
 }
 
 /// TS: Gallery.tsx FILTER_OPTIONS（hasFace/noFace 客户端过滤）。
@@ -131,6 +179,26 @@ public enum GalleryFilter: String, CaseIterable, Sendable {
     case all
     case hasFace
     case noFace
+}
+
+/// TS: indexProgress.ts IndexHeaderCopy（kind/text/percent 三元组）。
+public struct GalleryIndexHeaderCopy: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case scanning
+        case error
+        case count
+    }
+
+    public let kind: Kind
+    public let text: String
+    /// 确定性进度 0-100（文案内联「（x%）」）；扫描中无数值时为 nil。
+    public let percent: Int?
+
+    public init(kind: Kind, text: String, percent: Int?) {
+        self.kind = kind
+        self.text = text
+        self.percent = percent
+    }
 }
 
 /// 工作区图库视图模型：photo.list_page 键集分页 + 客户端搜索/人脸过滤。
@@ -147,11 +215,23 @@ public final class GalleryViewModel {
     public static let pageSize = 200
     public static let chainFetchLimit = 1_000
 
+    /// 索引状态轮询间隔：扫描活跃 3s（进度跟手），空闲 15s 兜底
+    /// （对齐 SessionControlView.pollInterval 模式）。
+    static let activeStatusPollInterval: Duration = .seconds(3)
+    static let idleStatusPollInterval: Duration = .seconds(15)
+    /// jobs:progress 帧去抖窗口（事件风暴只刷新一次状态）。
+    static let progressFrameDebounceSeconds: TimeInterval = 1
+
     public let sessionId: String
     private let provider: GalleryDataProvider
     private let debounceDelay: Duration
     private var debounceTask: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
+    private var eventRefreshTask: Task<Void, Never>?
+    /// 索引状态轮询任务（视图可见时启动；opacity 常驻架构下由视图门控）。
+    private var statusPollTask: Task<Void, Never>?
+    /// 距上次 workspace.status 刷新时刻（progress 帧去抖）。
+    private var lastStatusRefreshAt = Date.distantPast
     private var pages: [[GalleryPhotoData]] = []
     private var pageCursors: [Int64?] = []
     /// 提交后的搜索词（TS useDeferredValue 语义）。
@@ -165,6 +245,10 @@ public final class GalleryViewModel {
     private(set) public var isFetchingNextPage = false
     private(set) public var actionError: String?
     private(set) public var selectedIds: Set<String> = []
+    /// 网格缩略图解码尺寸（load() 时经 provider 读取 settings thumbnail_size 分桶）。
+    private(set) public var thumbnailSize = 1024
+    /// 工作区索引状态（workspace.status；索引头数据源，轮询 + 事件驱动）。
+    private(set) public var workspaceStatus: WorkspaceStatus?
     /// 搜索输入框实时值（视图绑定；经 searchChanged 提交）。
     public var search = ""
     /// 客户端过滤（对齐 TS FILTER_OPTIONS）。
@@ -176,6 +260,11 @@ public final class GalleryViewModel {
         self.sessionId = sessionId
         self.provider = provider
         self.debounceDelay = debounceDelay
+        // RootView 用 opacity 常驻视图：切换 session 时 VM 被替换但视图身份不变，
+        // .task(id:) 重启可能晚于本实例生效 —— init 立即补载，保证新 VM 不滞留 loading。
+        Task { [weak self] in
+            await self?.loadIfNeeded()
+        }
     }
 
     // MARK: 派生（TS loadedPhotos / searchActive / filtered）
@@ -208,6 +297,48 @@ public final class GalleryViewModel {
         pageCursors.last ?? nil != nil
     }
 
+    // MARK: 索引头推导（TS indexProgress.ts deriveIndexHeaderCopy:32-63 +
+    //         workspace-view.ts deriveWorkspaceHeaderCopy:289-322）
+
+    /// 索引头文案纯推导（可单测；nonisolated：不依赖任何实例状态）：
+    /// 扫描活跃/失败期间绝不把阶段计数当权威数据展示；photoCount==0 且无
+    /// 扫描任务时整行不渲染（返回 nil，对齐旧版 render null，而非「暂无照片」）。
+    /// - 扫描中（active/created 窗口）且有数值：「正在索引 N / M（x%）」，
+    ///   percent = min(100, round(N/M*100)) 自算并内联进文案；
+    /// - 扫描中无数值：「扫描中…」（无进度条）；
+    /// - 失败：「索引失败」（视图附「重试」按钮）；
+    /// - 索引成功（stage == .indexed）或从未扫描：「已索引 N 张照片」；
+    ///   截断导入在精确总数落定前保留「已索引 ≥N 张照片」。
+    nonisolated public static func indexHeaderCopy(
+        status: WorkspaceStatus?,
+        photoCount: Int,
+        truncatedImport: Bool
+    ) -> GalleryIndexHeaderCopy? {
+        if let status, status.stage == .created || status.indexing.status == .active {
+            if status.indexing.total > 0, status.indexing.done > 0 {
+                // TS: percent = Math.min(100, Math.round(current/total*100))。
+                let percent = min(100, Int((Double(status.indexing.done) / Double(status.indexing.total) * 100).rounded()))
+                return GalleryIndexHeaderCopy(
+                    kind: .scanning,
+                    text: "正在索引 \(status.indexing.done) / \(status.indexing.total)（\(percent)%）",
+                    percent: percent
+                )
+            }
+            return GalleryIndexHeaderCopy(kind: .scanning, text: "扫描中…", percent: nil)
+        }
+        if let status, status.indexing.status == .failed {
+            return GalleryIndexHeaderCopy(kind: .error, text: "索引失败", percent: nil)
+        }
+        // 无 job / 已成功（stage == .indexed）：photoCount==0 → 不渲染。
+        if photoCount == 0 { return nil }
+        if truncatedImport, status?.stage != .indexed {
+            return GalleryIndexHeaderCopy(kind: .count, text: "已索引 ≥\(photoCount) 张照片", percent: nil)
+        }
+        return GalleryIndexHeaderCopy(kind: .count, text: "已索引 \(photoCount) 张照片", percent: nil)
+    }
+
+    // MARK: 索引状态数据源（workspace.status 轮询 + jobs:progress 事件）
+
     // MARK: 加载
 
     func load() async {
@@ -217,12 +348,24 @@ public final class GalleryViewModel {
         } catch {
             actionError = Self.message(for: error)
         }
+        thumbnailSize = provider.thumbnailSize()
+        await refreshWorkspaceStatus()
         await reload()
+    }
+
+    /// 补载入口（.task(id:)/onChange/init 共用）：仅当从未成功加载时取首页，
+    /// 避免同一次会话切换的多路触发重复取页；失败态不自动重试（由视图「重试」按钮 load()）。
+    func loadIfNeeded() async {
+        guard pages.isEmpty, phase == .loading else { return }
+        await load()
     }
 
     /// 重置并取第一页（TS queryKey ['photos', sessionId, expandVariants] 变更）。
     private func reload() async {
+        // 取消在途链式拉取（chain-fetch 循环每次迭代检查取消），防止与
+        // 重置后的首页竞态（isFetchingNextPage 早退导致 phase 滞留 loading）。
         fetchTask?.cancel()
+        fetchTask = nil
         pages = []
         pageCursors = []
         committedSearch = search.trimmingCharacters(in: .whitespaces)
@@ -231,6 +374,8 @@ public final class GalleryViewModel {
         searchActiveWas = false
         phase = .loading
         await fetchNextPage(isFirst: true)
+        // 兜底：即使在途取页早退（guard 拦截），reload 完成后也不滞留 loading。
+        if phase == .loading { phase = .loaded }
     }
 
     // MARK: 变更提交
@@ -275,6 +420,54 @@ public final class GalleryViewModel {
         }
     }
 
+    /// 视图可见时启动索引状态轮询（活跃 3s / 空闲 15s；任务随 VM 释放）。
+    public func startIndexStatusPolling() {
+        guard statusPollTask == nil else { return }
+        statusPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.refreshWorkspaceStatus()
+                let interval: Duration = self.workspaceStatus?.indexing.status == .active
+                    ? Self.activeStatusPollInterval : Self.idleStatusPollInterval
+                try? await Task.sleep(for: interval)
+            }
+        }
+    }
+
+    /// 视图隐藏时停止轮询（opacity 常驻架构：避免后台空转）。
+    public func stopIndexStatusPolling() {
+        statusPollTask?.cancel()
+        statusPollTask = nil
+    }
+
+    /// jobs:progress 帧（metadata.scan）：1s 去抖后刷新索引状态，进度更跟手。
+    public func handleIndexJobProgress(_ event: GatherJobEvent) {
+        guard event.job.type == .metadataScan, event.job.scopeId == sessionId else { return }
+        guard Date().timeIntervalSince(lastStatusRefreshAt) >= Self.progressFrameDebounceSeconds else { return }
+        Task { await refreshWorkspaceStatus() }
+    }
+
+    /// 重取工作区索引状态（best-effort：失败保留旧值，不打断浏览）。
+    func refreshWorkspaceStatus() async {
+        lastStatusRefreshAt = Date()
+        do {
+            workspaceStatus = try provider.workspaceStatus(sessionId)
+        } catch {
+            // 索引头为辅助信息：瞬时失败静默保留旧状态，不整页报错。
+        }
+    }
+
+    /// TS handleRetryIndex：重新入队 metadata.scan；入队后立即刷新状态
+    ///（JobService 同步建行 → workspace.status 即报 active → 头显「扫描中…」）。
+    public func retryIndex() async {
+        do {
+            try await provider.retryIndex(sessionId: sessionId)
+        } catch {
+            actionError = Self.message(for: error)
+        }
+        await refreshWorkspaceStatus()
+    }
+
     // MARK: 滚动加载（TS sentinel + chain-fetch effect）
 
     /// 视图滚近末尾时调用：非搜索态取下一页；搜索/筛选态链式拉满。
@@ -291,9 +484,17 @@ public final class GalleryViewModel {
 
     private func chainFetchIfActive() async {
         guard searchActive, hasNextPage, !isFetchingNextPage else { return }
-        while searchActive && hasNextPage && !isFetchingNextPage {
-            _ = await fetchNextPage(isFirst: false)
+        // 链式拉取挂到 fetchTask：reload/事件刷新可取消在途循环（弱引用防环）。
+        fetchTask?.cancel()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            while self.searchActive && self.hasNextPage && !self.isFetchingNextPage {
+                do { try Task.checkCancellation() } catch { return }
+                _ = await self.fetchNextPage(isFirst: false)
+            }
         }
+        fetchTask = task
+        try? await task.value
     }
 
     /// 取下一页（键集游标）；返回是否还有更多页。
@@ -345,9 +546,65 @@ public final class GalleryViewModel {
 
     static func message(for error: Error) -> String {
         if let sessionError = error as? SessionServiceError {
-            return sessionError.gatherCode.rawValue
+            return GatherLocalization.errorText(sessionError.gatherCode.rawValue)
         }
         let nsError = error as NSError
         return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+    }
+
+    // MARK: 终态事件刷新（对齐 TS 事件失效语义）
+
+    /// 终态事件驱动的按需刷新：500ms 合并连续终态帧（索引结束多帧风暴
+    /// 只触发一次重载），替代“打开即快照”的过期展示。
+    public func scheduleEventRefresh() {
+        eventRefreshTask?.cancel()
+        eventRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await self?.refreshOnEvent()
+        }
+    }
+
+    /// 重取会话与当前查询（react-query invalidate 语义：终态事件后页面
+    /// 立即反映照片补齐/元数据变化）。
+    /// P15：不重置页码——从首页重新拉取直至重新覆盖原已加载数量，网格与
+    /// 滚动位置就地更新（页面保持 loaded，全程不闪 loading），不再回卷首页。
+    func refreshOnEvent() async {
+        do {
+            session = try provider.getSession(sessionId)
+        } catch {
+            actionError = Self.message(for: error)
+        }
+        await refreshWorkspaceStatus()
+        let targetCount = loadedPhotos.count
+        fetchTask?.cancel()
+        var nextPages: [[GalleryPhotoData]] = []
+        var nextCursors: [Int64?] = []
+        do {
+            var cursor: Int64?
+            repeat {
+                let result = try provider.photoPage(
+                    sessionId: sessionId,
+                    afterFirstRowid: cursor,
+                    limit: searchActive ? Self.chainFetchLimit : Self.pageSize,
+                    expandVariants: committedExpandVariants
+                )
+                nextPages.append(result.rows)
+                nextCursors.append(result.cursor)
+                cursor = result.cursor
+                // 逐页让出主线程，避免大深度重取一帧卡死。
+                await Task.yield()
+            } while cursor != nil && nextPages.reduce(0, { $0 + $1.count }) < targetCount
+            pages = nextPages
+            pageCursors = nextCursors
+        } catch {
+            // 重取失败：保留旧网格（就地语义），仅提示错误。
+            actionError = Self.message(for: error)
+        }
+        // 搜索/筛选态链式拉满保证过滤结果的全局完整性（对齐 commitSearch）。
+        if searchActive {
+            await chainFetchIfActive()
+        }
+        if phase == .loading { phase = .loaded }
     }
 }

@@ -313,6 +313,7 @@ public final class LibraryViewModel {
     private let debounceDelay: Duration
     private var debounceTask: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
+    private var eventRefreshTask: Task<Void, Never>?
     private var committed: LibraryFilterState = LibraryFilterState()
     /// 当前已提交的 criteriaKey（TS criteriaKey = JSON.stringify(criteria)）。
     private var criteriaKey = ""
@@ -562,9 +563,10 @@ public final class LibraryViewModel {
     }
 
     /// TS: toolbar range —— 第 min(page*PAGE+1, max(1,total)) – min((page+1)*PAGE, total) 张。
+    /// total==0 时旧版输出「第 1–0 张」（start 下界 1）；此处把 start 下界改为 0，
+    /// 统一输出「第 0–0 张」，其余分支与旧版逐字一致。
     public var rangeText: String {
-        guard total > 0 else { return "第 0–0 张" }
-        let start = min(page * Self.pageSize + 1, max(1, total))
+        let start = min(page * Self.pageSize + 1, max(0, total))
         let end = min((page + 1) * Self.pageSize, total)
         return "第 \(start)–\(end) 张"
     }
@@ -603,11 +605,34 @@ public final class LibraryViewModel {
         }
     }
 
+    // MARK: 终态事件刷新（对齐 TS 事件失效语义）
+
+    /// 终态事件驱动的按需刷新：任意终态事件重载支持数据（相册/关联候选/
+    /// 孤立 XMP/离线卷）与当前页照片列表；500ms 合并连续终态帧，避免风暴。
+    public func scheduleEventRefresh() {
+        eventRefreshTask?.cancel()
+        eventRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await self?.refreshOnEvent()
+        }
+    }
+
+    /// 就地刷新当前页（react-query invalidate 语义：不跳页、不闪 loading）。
+    func refreshOnEvent() async {
+        reloadSupport()
+        fetchTask?.cancel()
+        fetchTask = Task { [weak self] in
+            guard let self else { return }
+            await self.fetchPage(self.page, isFirst: false)
+        }
+    }
+
     // MARK: 错误 message（对齐 DashboardViewModel.message）
 
     static func message(for error: Error) -> String {
         if let sessionError = error as? SessionServiceError {
-            return sessionError.gatherCode.rawValue
+            return GatherLocalization.errorText(sessionError.gatherCode.rawValue)
         }
         let nsError = error as NSError
         return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription

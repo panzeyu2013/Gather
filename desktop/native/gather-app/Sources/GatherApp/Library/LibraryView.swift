@@ -19,7 +19,7 @@ struct LibraryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let error = viewModel.actionError {
-                Text("查询失败：\(error)")
+                Text("操作失败：\(error)")
                     .font(.callout)
                     .foregroundStyle(.red)
                     .padding(.horizontal, 24)
@@ -33,9 +33,13 @@ struct LibraryView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color.gatherBackground)
         .task {
             await viewModel.load()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobTerminal)) { _ in
+            // 任意终态事件都重载支持数据/照片列表（索引/分析结束即反映）。
+            viewModel.scheduleEventRefresh()
         }
     }
 
@@ -161,7 +165,7 @@ struct LibraryView: View {
             .padding(.vertical, 10)
         }
         .frame(maxHeight: 190)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color.gatherBackground)
     }
 
     private var smartAlbumsCard: some View {
@@ -172,7 +176,7 @@ struct LibraryView: View {
             )) {
                 Text("全部照片").tag("")
                 ForEach(viewModel.albums, id: \.id) { album in
-                    Text(album.validationError == nil ? album.name : "⚠️ (album.name)")
+                    Text(album.validationError == nil ? album.name : "⚠️ \(album.name)")
                         .tag(album.id)
                         .help(album.validationError ?? "")
                 }
@@ -224,13 +228,14 @@ struct LibraryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(Array(viewModel.assetCandidates.prefix(4)), id: \.id) { candidate in
+                // TS Library/index.tsx:348 —— 候选直出（卡片内可滚动，无分页门控）。
+                ForEach(viewModel.assetCandidates, id: \.id) { candidate in
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(Self.basename(candidate.leftPath)) ↔ \(Self.basename(candidate.rightPath))")
                             .font(.caption)
                             .lineLimit(1)
                             .help("\(candidate.leftPath)\n\(candidate.rightPath)")
-                        Text("\(candidate.status.rawValue) · 置信度 \(Int(candidate.confidence * 100))%")
+                        Text("\(Self.candidateStatusText(candidate.status)) · 置信度 \(Int(candidate.confidence * 100))%")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         HStack(spacing: 6) {
@@ -248,14 +253,9 @@ struct LibraryView: View {
                             }
                         }
                     }
-                    if candidate.id != viewModel.assetCandidates.prefix(4).last?.id {
+                    if candidate.id != viewModel.assetCandidates.last?.id {
                         Divider()
                     }
-                }
-                if viewModel.assetCandidates.count > 4 {
-                    Text("还有 (viewModel.assetCandidates.count - 4) 个候选")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -268,13 +268,16 @@ struct LibraryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(Array(viewModel.metadataOrphans.prefix(4)), id: \.xmpPath) { orphan in
+                // TS Library/index.tsx:377 —— 孤立 XMP 直出（卡片内可滚动，无分页门控）。
+                ForEach(viewModel.metadataOrphans, id: \.xmpPath) { orphan in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(Self.basename(orphan.xmpPath))
                             .font(.caption)
                             .lineLimit(1)
                             .help(orphan.xmpPath)
-                        Text(orphan.errorMessage.isEmpty ? orphan.status : "\(orphan.status) · \(orphan.errorMessage)")
+                        // TS index.tsx:380 —— translateErrorCode 语义：错误码经
+                        // GatherLocalization.errorText 翻译（未知码回退通用文案）。
+                        Text(orphan.errorMessage.isEmpty ? orphan.status : "\(orphan.status) · \(GatherLocalization.errorText(orphan.errorMessage))")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
@@ -295,7 +298,7 @@ struct LibraryView: View {
                             .disabled(viewModel.isSupportBusy)
                         }
                     }
-                    if orphan.xmpPath != viewModel.metadataOrphans.prefix(4).last?.xmpPath {
+                    if orphan.xmpPath != viewModel.metadataOrphans.last?.xmpPath {
                         Divider()
                     }
                 }
@@ -340,7 +343,12 @@ struct LibraryView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: systemImage)
                 .font(.headline)
-            content()
+            // 面板高度固定（maxHeight 190）：「查看全部」展开后内容超限，
+            // 卡片内纵向滚动，避免大列表被裁切不可达。
+            ScrollView(.vertical, showsIndicators: false) {
+                content()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(10)
         .frame(maxHeight: .infinity, alignment: .topLeading)
@@ -348,6 +356,15 @@ struct LibraryView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
+    }
+
+    /// 对齐 TS Library/index.tsx:353-355：已关联/已拒绝/待确认·N%。
+    private static func candidateStatusText(_ status: AssetLinkCandidateStatus) -> String {
+        switch status {
+        case .accepted: return "已关联"
+        case .rejected: return "已拒绝"
+        case .pending: return "待确认"
+        }
     }
 
     private static func basename(_ path: String) -> String {
@@ -462,6 +479,8 @@ private struct LibraryCardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 ZStack(alignment: .topTrailing) {
                     PhotoThumbnailView(path: photo.filepath, size: 512)
+                        // 占位/加载中/失败三态同尺寸（防跳动）：固定高 110 并撑满卡宽。
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .frame(height: 110)
                         .clipped()
                         .background(Color(nsColor: .controlBackgroundColor))

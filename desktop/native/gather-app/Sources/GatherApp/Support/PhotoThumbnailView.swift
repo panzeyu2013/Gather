@@ -59,35 +59,47 @@ public struct PhotoThumbnailView: View {
             }
         }
         .frame(width: placeholderSize?.width, height: placeholderSize?.height)
-        .task(id: path) {
+        .task(id: cacheKey) {
             await load()
         }
     }
 
     private func load() async {
-        failed = false
-        if let cached = PhotoThumbnailCache.image(for: cacheKey) {
+        // 任务启动时的 key：写回前与当前属性比对，丢弃过期任务的解码结果。
+        let key = cacheKey
+        if let cached = PhotoThumbnailCache.image(for: key) {
             image = cached
+            failed = false
             return
         }
+        // cacheKey 已变（复用单元格/列表回收）：清掉旧图，避免闪烁错图。
+        image = nil
+        failed = false
         loading = true
-        defer { loading = false }
+        // RAW 解码（100-800ms）移出主线程：RAWDecoder 为无状态静态方法，
+        // 可安全在后台调用；完成后回主线程设置 image。
+        let path = path
+        let size = size
+        let preview = preview
         do {
-            let decoded: RAWDecodeResult
-            if preview {
-                decoded = try RAWDecoder.getPreview(path: path, maxDimension: size)
-            } else {
-                decoded = try RAWDecoder.getThumbnail(path: path, size: size)
-            }
-            guard let nsImage = NSImage(data: decoded.buffer) else {
+            let data = try await Task.detached(priority: .utility) {
+                try PhotoThumbnailDecoder.decode(path: path, size: size, preview: preview)
+            }.value
+            // Task.detached 不继承取消：key 已变时丢弃旧结果（短暂错图修复）。
+            guard key == cacheKey else { return }
+            guard let nsImage = NSImage(data: data) else {
                 failed = true
+                loading = false
                 return
             }
-            PhotoThumbnailCache.setImage(nsImage, for: cacheKey)
+            PhotoThumbnailCache.setImage(nsImage, for: key)
             image = nsImage
         } catch {
+            // 过期任务的失败同样不应污染新 key 的状态。
+            guard key == cacheKey else { return }
             failed = true
         }
+        loading = false
     }
 
     private var cacheKey: String {
@@ -95,9 +107,34 @@ public struct PhotoThumbnailView: View {
     }
 }
 
+/// 后台解码闸门：并发上限 4（对齐 TS thumbnail_concurrency 默认值）。
+/// 解码在线程池执行，信号量钳制并发；NSCache 读写由 PhotoThumbnailCache 加锁。
+public enum PhotoThumbnailDecoder {
+    private static let semaphore = DispatchSemaphore(value: 4)
+
+    public static func decode(path: String, size: Int, preview: Bool) throws -> Data {
+        semaphore.wait()
+        defer { semaphore.signal() }
+        let decoded: RAWDecodeResult
+        if preview {
+            decoded = try RAWDecoder.getPreview(path: path, maxDimension: size)
+        } else {
+            decoded = try RAWDecoder.getThumbnail(path: path, size: size)
+        }
+        return decoded.buffer
+    }
+}
+
 /// 缩略图加载缓存（进程内，键 = 模式 + path + size）。
 public enum PhotoThumbnailCache {
-    private static let cache = NSCache<NSString, NSImage>()
+    /// 审计 P1-性能：2048px preview ≈16MB/张，浏览 1 万张可致 GB 级内存。
+    /// 按解码尺寸计入 cost：256 桶 ≈1MB、1024 ≈4MB、2048 ≈16MB（粗估
+    /// NSImage 位深/缩放开销），全缓存上限 512MB 后按 LRU 淘汰。
+    private static let cache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.totalCostLimit = 512 * 1024 * 1024
+        return cache
+    }()
     private static let lock = NSLock()
 
     public static func image(for key: String) -> NSImage? {
@@ -109,6 +146,9 @@ public enum PhotoThumbnailCache {
     public static func setImage(_ image: NSImage, for key: String) {
         lock.lock()
         defer { lock.unlock() }
-        cache.setObject(image, forKey: key as NSString)
+        let size = image.size.width * image.size.height
+        // 粗估：RGBA 4B/像素 + 20% 元数据开销；小图下限 256KB 防过度淘汰。
+        let cost = max(256 * 1024, Int(size * 4 * 1.2))
+        cache.setObject(image, forKey: key as NSString, cost: cost)
     }
 }

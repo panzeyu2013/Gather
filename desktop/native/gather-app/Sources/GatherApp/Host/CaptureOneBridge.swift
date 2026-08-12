@@ -43,7 +43,37 @@ public enum CaptureOneBridgeError: Error, Equatable, CustomStringConvertible, Se
     }
 }
 
+/// TS: C1HealthLite —— 四层预检布尔位 + 超时标记（c1-preflight.ts 形状）。
+public struct C1PreflightStatus: Equatable, Sendable {
+    public var reachable: Bool
+    public var appRunning: Bool
+    public var automationAuthorized: Bool
+    public var documentOpen: Bool
+    /// 探针超时（Apple Events -1712 / 探针被杀）：此时不得声称自动化已授权。
+    public var timedOut: Bool
+    public var appName: String?
+
+    public init(
+        reachable: Bool,
+        appRunning: Bool,
+        automationAuthorized: Bool,
+        documentOpen: Bool,
+        timedOut: Bool,
+        appName: String? = nil
+    ) {
+        self.reachable = reachable
+        self.appRunning = appRunning
+        self.automationAuthorized = automationAuthorized
+        self.documentOpen = documentOpen
+        self.timedOut = timedOut
+        self.appName = appName
+    }
+}
+
 public final class CaptureOneBridge: @unchecked Sendable {
+    /// 页面（Dashboard 新建工作区）未显式注入桥时取全局实例；bootstrap 注册。
+    public static var shared: CaptureOneBridge?
+
     private let recordReloadAck: (String) throws -> Void
 
     public init(recordReloadAck: @escaping (String) throws -> Void = { _ in }) {
@@ -84,11 +114,63 @@ public final class CaptureOneBridge: @unchecked Sendable {
         }
     }
 
+    /// TS: c1Health（c1-health.ts）—— 一次完成四层预检，失败即回退不抛异常：
+    /// 1) reachable + appRunning（System Events 进程探测）；
+    /// 2) documentOpen + automationAuthorized（向 Capture One 发 Apple Event，
+    ///    超时/拒绝归到 automationAuthorized=false，其余应用侧错误视为
+    ///    事件已送达 → automationAuthorized=true 且 documentOpen=false）。
+    public func preflight() async -> C1PreflightStatus {
+        var status = C1PreflightStatus(
+            reachable: false,
+            appRunning: false,
+            automationAuthorized: false,
+            documentOpen: false,
+            timedOut: false
+        )
+        let probeOutput: String
+        do {
+            probeOutput = try await runAppleScript(Self.processProbeScript, timeout: Self.preflightProbeTimeout)
+        } catch let error as CaptureOneBridgeError {
+            if error == .timedOut { status.timedOut = true }
+            return status
+        } catch {
+            return status
+        }
+        status.reachable = true
+        let names = probeOutput
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let first = names.first, Self.isSafeApplicationName(first) else { return status }
+        status.appRunning = true
+        status.appName = first
+        do {
+            _ = try await runAppleScript(Self.documentProbeScript(appName: first), timeout: Self.preflightProbeTimeout)
+            status.automationAuthorized = true
+            status.documentOpen = true
+        } catch let error as CaptureOneBridgeError {
+            switch error {
+            case .timedOut:
+                // 应用挂起或 TCC 弹窗待决：自动化通道不可用，绝不断言已授权。
+                status.timedOut = true
+                status.automationAuthorized = false
+            case .notAuthorized:
+                status.automationAuthorized = false
+            default:
+                // 事件已送达应用（TCC 已通过）：失败原因是缺文档或应用侧错误。
+                status.automationAuthorized = true
+                status.documentOpen = false
+            }
+        } catch {
+            status.automationAuthorized = true
+            status.documentOpen = false
+        }
+        return status
+    }
+
     private func captureOneApplicationName() async throws -> String {
         do {
-            let output = try await runAppleScript(
-                "tell application \"System Events\" to get name of every process whose name contains \"Capture One\""
-            )
+            let output = try await runAppleScript(Self.processProbeScript)
             guard let name = output
                 .split(separator: ",")
                 .map({ String($0).trimmingCharacters(in: .whitespacesAndNewlines) })
@@ -159,6 +241,22 @@ public final class CaptureOneBridge: @unchecked Sendable {
             return .timedOut
         }
         return .scriptFailed(message.isEmpty ? "osascript failed" : message)
+    }
+
+    /// 预检探针是诊断而非用户操作：保持快速（TS PROBE_TIMEOUT_MS = 3000）。
+    private static let preflightProbeTimeout: TimeInterval = 3
+
+    /// 与 TS PROCESS_PROBE_SCRIPT 同一形状的 System Events 进程探测脚本。
+    private static let processProbeScript =
+        "tell application \"System Events\" to get name of every process whose name contains \"Capture One\""
+
+    /// TS buildDocumentProbeScript：发 Apple Event 同时探测自动化权限与文档。
+    private static func documentProbeScript(appName: String) -> String {
+        """
+        tell application "\(appName)"
+          get name of current document
+        end tell
+        """
     }
 
     private static func isSafeApplicationName(_ name: String) -> Bool {
