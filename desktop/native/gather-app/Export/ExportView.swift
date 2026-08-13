@@ -75,11 +75,11 @@ public final class ExportViewModel {
         name = name.replacingOccurrences(of: "{counter}", with: "0001")
         name = name.replacingOccurrences(of: "{original}", with: "IMG_1234")
         // 会话名可取则用之；取不到（session.get 失败）保持「工作区」。
-        name = name.replacingOccurrences(of: "{session}", with: sessionName ?? "工作区")
+        name = name.replacingOccurrences(of: "{session}", with: sessionName ?? GatherLocalization.l("工作区"))
         switch format {
         case .jpeg: name += ".jpg"
         case .tiff: name += ".tiff"
-        case .original: name += ".扩展名"
+        case .original: name += GatherLocalization.l(".扩展名")
         }
         return name
     }
@@ -119,7 +119,7 @@ public final class ExportViewModel {
             exportProgress = nil
             currentFileName = nil
             if event.job.status == .succeeded {
-                notice = "导出任务已完成"
+                notice = GatherLocalization.l("导出任务已完成")
             }
         }
     }
@@ -136,8 +136,8 @@ public final class ExportViewModel {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "选择导出目录"
-        panel.message = "请勿选择工作区导入目录或其子目录，否则导出的文件会被重新导入当前工作区"
+        panel.prompt = GatherLocalization.l("选择导出目录")
+        panel.message = GatherLocalization.l("请勿选择工作区导入目录或其子目录，否则导出的文件会被重新导入当前工作区")
         if panel.runModal() == .OK, let url = panel.url {
             destination = url.path
             errorMessage = nil
@@ -145,12 +145,19 @@ public final class ExportViewModel {
         }
     }
 
+    /// 拖放设置导出目录（与 chooseDestination 一致：写入并清除行内/横幅错误）。
+    public func setDestinationPath(_ path: String) {
+        destination = path
+        errorMessage = nil
+        fieldError = nil
+    }
+
     public func previewExport() async {
         await run(isPreviewing: true) {
             let data = try await self.client.executeAsync("export.preview", params: try self.parameters())
             self.preview = try data.decoded(as: ExportPreview.self)
             self.result = nil
-            self.notice = "预览已更新"
+            self.notice = GatherLocalization.l("预览已更新")
         }
     }
 
@@ -164,7 +171,7 @@ public final class ExportViewModel {
             params["confirmed"] = .bool(true)
             let data = try await self.client.executeAsync("export.execute", params: params)
             self.result = try data.decoded(as: ExportResult.self)
-            self.notice = "导出任务已完成"
+            self.notice = GatherLocalization.l("导出任务已完成")
         }
         exportProgress = nil
         currentFileName = nil
@@ -177,7 +184,7 @@ public final class ExportViewModel {
             _ = try client.execute("export.cancel", params: [
                 "sessionId": .string(sessionId),
             ])
-            notice = "已请求取消导出"
+            notice = GatherLocalization.l("已请求取消导出")
             fieldError = nil
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -192,7 +199,7 @@ public final class ExportViewModel {
                 "reportType": .string("session_summary"),
                 "format": .string(format.rawValue),
             ]).decoded(as: ReportData.self)
-            notice = "报告已生成：\(report?.path ?? "")"
+            notice = String(format: GatherLocalization.l("报告已生成：%@"), report?.path ?? "")
             fieldError = nil
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -338,17 +345,11 @@ private struct ProgressBar: View {
     let fraction: Double
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.gatherBorder.opacity(0.7))
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(GatherTheme.primary)
-                    .frame(width: geometry.size.width * min(max(fraction, 0), 1))
-            }
-        }
-        .frame(height: 8)
-        .animation(.easeOut(duration: 0.3), value: fraction)
+        GatherProgressBar(
+            fraction: fraction,
+            track: Color.gatherBorder.opacity(0.7),
+            accessibilityText: GatherLocalization.l("导出进度")
+        )
     }
 }
 
@@ -387,7 +388,11 @@ public struct ExportView: View {
             actionBar
                 .padding(.horizontal, 24)
                 .padding(.bottom, 10)
-            if let error = viewModel.errorMessage { NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error) }
+            // 行内字段错误已就近定位（fieldError），横幅仅展示行内不可见的一般错误，
+            // 避免同源重复提示。
+            if let error = viewModel.errorMessage, viewModel.fieldError == nil {
+                NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
+            }
             if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -410,12 +415,11 @@ public struct ExportView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
+                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("批量导出").font(.system(size: 24, weight: .bold))
-                    Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
-                    Text("按统一格式、命名规则和目标目录导出当前工作区中的照片。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(GatherLocalization.l("批量导出")).font(.largeTitle.weight(.bold))
+                    Text(String(format: GatherLocalization.l("工作区 %@ · 按统一格式、命名规则导出照片及元数据"), String(viewModel.sessionId.prefix(8))))
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
@@ -438,32 +442,32 @@ public struct ExportView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(formatSummary)
                     .font(.callout.weight(.semibold))
-                Text(viewModel.destination.isEmpty ? "未选择导出目录" : viewModel.destination)
-                    .font(.caption)
+                Text(viewModel.destination.isEmpty ? GatherLocalization.l("未选择导出目录") : viewModel.destination)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             .frame(maxWidth: 300, alignment: .leading)
             Spacer()
-            Button(viewModel.isPreviewing ? "正在计算…" : "预览", systemImage: "eye") {
+            Button(viewModel.isPreviewing ? GatherLocalization.l("正在计算…") : GatherLocalization.l("预览"), systemImage: "eye") {
                 Task { await viewModel.previewExport() }
             }
             .disabled(viewModel.isWorking || viewModel.destinationIsEmpty)
             // 对齐旧版 export.tsx:192：仅导出进行中禁用，预览不互斥（旧版可并发）。
-            Button(viewModel.isExporting ? "正在导出…" : "开始导出", systemImage: "square.and.arrow.up.fill") {
+            Button(viewModel.isExporting ? GatherLocalization.l("正在导出…") : GatherLocalization.l("开始导出"), systemImage: "square.and.arrow.up.fill") {
                 Task { await viewModel.executeExport() }
             }
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.isExporting || viewModel.destinationIsEmpty)
             // 对齐旧版 export.tsx:195：取消仅在导出进行中可用（预览期间禁用）。
-            Button("取消导出", systemImage: "stop.circle") {
+            Button(GatherLocalization.l("取消导出"), systemImage: "stop.circle") {
                 viewModel.cancelExport()
             }
             .disabled(!viewModel.isExporting)
         }
         .padding(12)
-        .background(.ultraThinMaterial)
+        .background(Color.gatherSurface.opacity(0.92))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
@@ -473,10 +477,16 @@ public struct ExportView: View {
 
     private var formatSummary: String {
         switch viewModel.format {
-        case .original: return "原图"
+        case .original: return GatherLocalization.l("原图")
         case .jpeg: return "JPEG"
         case .tiff: return "TIFF"
         }
+    }
+
+    /// 拖放目录判定：Finder 拖入的目录 URL 通常带尾斜杠；无尾斜杠时回退资源值探测。
+    private static func isDirectoryURL(_ url: URL) -> Bool {
+        if url.hasDirectoryPath { return true }
+        return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
     }
 
     /// 导出中实时进度（TS export.tsx:334-346）：8px 自绘进度条 + 百分比 +
@@ -487,7 +497,7 @@ public struct ExportView: View {
         if let progress = viewModel.exportProgress {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("正在导出照片…").font(.headline)
+                    Text(GatherLocalization.l("正在导出照片…")).font(.headline)
                     Spacer()
                     if let percent = viewModel.progressPercent {
                         Text("\(percent)%")
@@ -498,17 +508,17 @@ public struct ExportView: View {
                 ProgressBar(
                     fraction: Double(progress.current) / Double(max(1, progress.total))
                 )
-                Text("第 \(progress.current)/\(progress.total) 张\(currentFileSuffix)")
-                    .font(.caption.monospacedDigit())
+                Text(String(format: GatherLocalization.l("第 %lld/%lld 张%@"), progress.current, progress.total, currentFileSuffix))
+                    .font(.footnote.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            .nativeCard()
+            .gatherCard()
         } else if viewModel.isExporting {
             VStack(alignment: .leading, spacing: 8) {
-                Text("正在准备导出…").font(.headline)
-                ProgressView()
+                Text(GatherLocalization.l("正在准备导出…")).font(.headline)
+                ProgressBar(fraction: 0)
             }
-            .nativeCard()
+            .gatherCard()
         }
     }
 
@@ -519,32 +529,39 @@ public struct ExportView: View {
 
     private var optionsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("导出选项").font(.title3.weight(.semibold))
+            Text(GatherLocalization.l("导出选项")).font(.title3.weight(.semibold))
             HStack {
-                Picker("格式", selection: $viewModel.format) {
-                    Text("原图").tag(ExportFormat.original)
-                    Text("JPEG").tag(ExportFormat.jpeg)
-                    Text("TIFF").tag(ExportFormat.tiff)
+                HStack(spacing: 6) {
+                    Text(GatherLocalization.l("格式")).font(.callout).frame(width: 60, alignment: .trailing)
+                    Picker(GatherLocalization.l("格式"), selection: $viewModel.format) {
+                        Text(GatherLocalization.l("原图")).tag(ExportFormat.original)
+                        Text("JPEG").tag(ExportFormat.jpeg)
+                        Text("TIFF").tag(ExportFormat.tiff)
+                    }
+                    .frame(width: 180)
                 }
-                .frame(width: 180)
-                Picker("变体", selection: $viewModel.variantPolicy) {
-                    Text("首选").tag(ExportVariantPolicy.preferred)
-                    Text("RAW").tag(ExportVariantPolicy.raw)
-                    Text("JPEG").tag(ExportVariantPolicy.jpeg)
-                    Text("全部").tag(ExportVariantPolicy.all)
+                HStack(spacing: 6) {
+                    Text(GatherLocalization.l("变体")).font(.callout).frame(width: 60, alignment: .trailing)
+                    Picker(GatherLocalization.l("变体"), selection: $viewModel.variantPolicy) {
+                        Text(GatherLocalization.l("首选")).tag(ExportVariantPolicy.preferred)
+                        Text("RAW").tag(ExportVariantPolicy.raw)
+                        Text("JPEG").tag(ExportVariantPolicy.jpeg)
+                        Text(GatherLocalization.l("全部")).tag(ExportVariantPolicy.all)
+                    }
+                    .frame(width: 180)
                 }
-                .frame(width: 180)
             }
             if viewModel.format == .jpeg {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("JPEG 质量")
+                        Text(GatherLocalization.l("JPEG 质量"))
                         Slider(value: Binding(
                             get: { Double(viewModel.quality) ?? 85 },
                             set: { viewModel.quality = String(Int($0)) }
                         ), in: 1...100, step: 1)
-                        Text("质量： \(viewModel.quality)")
-                            .font(.caption.monospacedDigit())
+                        .accessibilityLabel(GatherLocalization.l("JPEG 质量"))
+                        Text(String(format: GatherLocalization.l("质量： %@"), viewModel.quality))
+                            .font(.footnote.monospacedDigit())
                             .frame(width: 70)
                     }
                     fieldError(.quality)
@@ -553,9 +570,10 @@ public struct ExportView: View {
             if viewModel.transformsAllowed {
                 VStack(alignment: .leading, spacing: 4) {
                     // 对齐旧版 export.tsx:251：placeholder「不限制」、min=1（提交时钳制）。
-                    TextField("不限制", text: $viewModel.maxDimension)
+                    TextField(GatherLocalization.l("不限制"), text: $viewModel.maxDimension)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 180)
+                        .accessibilityLabel(GatherLocalization.l("最长边"))
                         .focused($maxDimensionFocused)
                         .onSubmit { viewModel.commitMaxDimension() }
                         .onChange(of: maxDimensionFocused) { _, isFocused in
@@ -565,47 +583,57 @@ public struct ExportView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                TextField("命名模式（{date}/{time}/{counter}/{original}/{session}）", text: $viewModel.namingPattern)
+                TextField(GatherLocalization.l("命名模式（{date}/{time}/{counter}/{original}/{session}）"), text: $viewModel.namingPattern)
                     .textFieldStyle(.roundedBorder)
-                Text("示例：\(viewModel.namingPreview)")
-                    .font(.caption.monospaced())
+                    .accessibilityLabel(GatherLocalization.l("命名模式"))
+                Text(String(format: GatherLocalization.l("示例：%@"), viewModel.namingPreview))
+                    .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
             }
             if viewModel.format == .tiff {
-                Picker("TIFF 压缩", selection: $viewModel.tiffCompression) {
-                    Text("无压缩").tag(ExportTiffCompression.none)
+                Picker(GatherLocalization.l("TIFF 压缩"), selection: $viewModel.tiffCompression) {
+                    Text(GatherLocalization.l("无压缩")).tag(ExportTiffCompression.none)
                     Text("LZW").tag(ExportTiffCompression.lzw)
                     Text("Deflate").tag(ExportTiffCompression.deflate)
                 }
                 .frame(width: 220)
             }
-            Toggle("复制 XMP 侧车文件", isOn: $viewModel.includeXmp)
+            Toggle(GatherLocalization.l("复制 XMP 侧车文件"), isOn: $viewModel.includeXmp)
             if viewModel.transformsAllowed {
-                Toggle("添加文字水印", isOn: $viewModel.watermarkEnabled)
+                Toggle(GatherLocalization.l("添加文字水印"), isOn: $viewModel.watermarkEnabled)
                 if viewModel.watermarkEnabled {
                     HStack {
-                        TextField("水印文字", text: $viewModel.watermarkText)
+                        TextField(GatherLocalization.l("水印文字"), text: $viewModel.watermarkText)
                             .textFieldStyle(.roundedBorder)
-                        Picker("位置", selection: $viewModel.watermarkPosition) {
-                            Text("居中").tag(ExportWatermarkPosition.center)
-                            Text("右下").tag(ExportWatermarkPosition.bottomRight)
-                            Text("左下").tag(ExportWatermarkPosition.bottomLeft)
-                        }
-                        .frame(width: 140)
-                        TextField("字号", text: $viewModel.watermarkFontSize)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 70)
-                            .focused($watermarkFontSizeFocused)
-                            .onSubmit { viewModel.commitWatermarkFontSize() }
-                            .onChange(of: watermarkFontSizeFocused) { _, isFocused in
-                                if !isFocused { viewModel.commitWatermarkFontSize() }
+                            .accessibilityLabel(GatherLocalization.l("水印文字"))
+                        HStack(spacing: 6) {
+                            Text(GatherLocalization.l("位置")).font(.callout)
+                            Picker(GatherLocalization.l("位置"), selection: $viewModel.watermarkPosition) {
+                                Text(GatherLocalization.l("居中")).tag(ExportWatermarkPosition.center)
+                                Text(GatherLocalization.l("右下")).tag(ExportWatermarkPosition.bottomRight)
+                                Text(GatherLocalization.l("左下")).tag(ExportWatermarkPosition.bottomLeft)
                             }
+                            .frame(width: 140)
+                        }
+                        HStack(spacing: 6) {
+                            Text(GatherLocalization.l("字号")).font(.callout)
+                            TextField(GatherLocalization.l("字号"), text: $viewModel.watermarkFontSize)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 70)
+                                .accessibilityLabel(GatherLocalization.l("字号"))
+                                .focused($watermarkFontSizeFocused)
+                                .onSubmit { viewModel.commitWatermarkFontSize() }
+                                .onChange(of: watermarkFontSizeFocused) { _, isFocused in
+                                    if !isFocused { viewModel.commitWatermarkFontSize() }
+                                }
+                        }
                     }
                     HStack {
-                        Text("透明度")
+                        Text(GatherLocalization.l("透明度"))
                         Slider(value: $viewModel.watermarkOpacity, in: 0.1...1, step: 0.1)
+                            .accessibilityLabel(GatherLocalization.l("透明度"))
                         Text("\(Int(viewModel.watermarkOpacity * 100))%")
-                            .font(.caption.monospacedDigit())
+                            .font(.footnote.monospacedDigit())
                             .frame(width: 42)
                     }
                     fieldError(.watermark)
@@ -613,17 +641,23 @@ public struct ExportView: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    TextField("导出目录（不要选择导入目录）", text: $viewModel.destination)
+                    TextField(GatherLocalization.l("导出目录（不要选择导入目录）"), text: $viewModel.destination)
                         .textFieldStyle(.roundedBorder)
-                    Button("选择…", action: viewModel.chooseDestination)
+                        .accessibilityLabel(GatherLocalization.l("导出目录"))
+                        .dropDestination(for: URL.self) { urls, _ in
+                            guard let url = urls.first(where: { Self.isDirectoryURL($0) }) else { return false }
+                            viewModel.setDestinationPath(url.path)
+                            return true
+                        }
+                    Button(GatherLocalization.l("选择…"), action: viewModel.chooseDestination)
                 }
                 // 对齐旧版 export.folderHint 警告（TS L301-303）。
-                Text("请选择导出文件夹。不要选择工作区导入目录，否则导出的文件会被重新导入当前工作区。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(GatherLocalization.l("请选择导出文件夹。不要选择工作区导入目录，否则导出的文件会被重新导入当前工作区。"))
+                    .font(.footnote).foregroundStyle(.secondary)
                 fieldError(.destination)
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     /// 行内错误（旧版 export.module.css .error 行内红字）；Banner 保留，
@@ -632,8 +666,8 @@ public struct ExportView: View {
     private func fieldError(_ field: ExportViewModel.ExportFieldError) -> some View {
         if viewModel.fieldError == field, let message = viewModel.errorMessage {
             Text(message)
-                .font(.caption)
-                .foregroundStyle(.red)
+                .font(.footnote)
+                .foregroundStyle(GatherTheme.error)
         }
     }
 
@@ -641,30 +675,31 @@ public struct ExportView: View {
     private var previewCard: some View {
         if let preview = viewModel.preview {
             VStack(alignment: .leading, spacing: 10) {
-                Text("预览").font(.title3.weight(.semibold))
+                Text(GatherLocalization.l("预览")).font(.title3.weight(.semibold))
                 HStack(spacing: 22) {
-                    LabeledContent("文件", value: "\(preview.totalFiles)")
-                    LabeledContent("大小", value: ByteCountFormatter.string(fromByteCount: Int64(preview.totalSizeBytes), countStyle: .file))
+                    LabeledContent(GatherLocalization.l("文件"), value: "\(preview.totalFiles)")
+                    LabeledContent(GatherLocalization.l("大小"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.totalSizeBytes), countStyle: .file))
                     // TS export.tsx:320-325：freeSpaceBytes<0 时隐藏该行且无警告。
                     if preview.freeSpaceBytes >= 0 {
-                        LabeledContent("可用空间", value: ByteCountFormatter.string(fromByteCount: Int64(preview.freeSpaceBytes), countStyle: .file))
+                        LabeledContent(GatherLocalization.l("可用空间"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.freeSpaceBytes), countStyle: .file))
                     }
                 }
                 if viewModel.spaceInsufficient {
-                    Text("导出文件所需空间超过磁盘可用空间，请更换目标目录")
+                    Text(GatherLocalization.l("导出文件所需空间超过磁盘可用空间，请更换目标目录"))
                         .font(.callout)
-                        .foregroundStyle(.red)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(GatherTheme.warning)
                 }
                 ForEach(preview.files.prefix(8), id: \.photoId) { file in
                     Text("\(file.filename) · \(ByteCountFormatter.string(fromByteCount: Int64(file.fileSize), countStyle: .file))")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 if preview.files.count > 8 {
-                    Text("还有 \(preview.files.count - 8) 个文件…").font(.caption).foregroundStyle(.secondary)
+                    Text(String(format: GatherLocalization.l("还有 %lld 个文件…"), preview.files.count - 8)).font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            .nativeCard()
+            .gatherCard()
         }
     }
 
@@ -672,22 +707,27 @@ public struct ExportView: View {
     private var resultCard: some View {
         if let result = viewModel.result {
             VStack(alignment: .leading, spacing: 10) {
-                Text("结果").font(.title3.weight(.semibold))
-                Text("导出完成：成功 \(result.exported)，失败 \(result.failed)，跳过 \(result.skipped)")
-                    .foregroundStyle(result.failed > 0 ? .red : .green)
+                Text(GatherLocalization.l("结果")).font(.title3.weight(.semibold))
+                Text(String(format: GatherLocalization.l("导出完成：成功 %lld，失败 %lld，跳过 %lld"), result.exported, result.failed, result.skipped))
+                    .foregroundStyle(result.failed > 0 ? GatherTheme.error : GatherTheme.success)
                 // 对齐 TS export.tsx:91：错误明细最多 3 条。
                 ForEach(result.errors.prefix(3), id: \.self) { error in
-                    Text(ExportViewModel.translateErrorLine(error)).font(.caption).foregroundStyle(.red)
+                    Text(ExportViewModel.translateErrorLine(error)).font(.footnote).foregroundStyle(GatherTheme.error)
                 }
-                HStack {
-                    Button("生成 CSV 报告") { viewModel.generateReport(format: .csv) }
-                    Button("生成 Markdown 报告") { viewModel.generateReport(format: .md) }
-                    if let report = viewModel.report {
-                        Text(report.path).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
+                HStack(spacing: 8) {
+                    Button(GatherLocalization.l("生成 CSV 报告")) { viewModel.generateReport(format: .csv) }
+                    Button(GatherLocalization.l("生成 Markdown 报告")) { viewModel.generateReport(format: .md) }
+                }
+                if let report = viewModel.report {
+                    Text(report.path)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
                 }
             }
-            .nativeCard()
+            .gatherCard()
         }
     }
 }

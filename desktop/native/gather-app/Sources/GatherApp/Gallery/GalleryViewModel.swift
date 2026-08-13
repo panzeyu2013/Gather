@@ -86,15 +86,16 @@ public struct GalleryVariantData: Codable, Equatable, Sendable {
 public protocol GalleryDataProvider {
     func getSession(_ sessionId: String) throws -> SessionData?
     /// TS: sessionApi.getPhotosPage → { rows, cursor }。
+    /// async：分页投影经 executeAsync 后台执行（避免 @MainActor 主线程阻塞）。
     func photoPage(
         sessionId: String,
         afterFirstRowid: Int64?,
         limit: Int,
         expandVariants: Bool
-    ) throws -> (rows: [GalleryPhotoData], cursor: Int64?)
+    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?)
     /// 工作区索引状态（workspace.status；indexing 字段由主进程按
     /// metadata.scan job 派生，供索引头推导）。测试 stub 未实现时返回 nil。
-    func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus?
+    func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus?
     /// 重新入队索引扫描（TS indexerApi.scan / SessionDetail handleRetryIndex）。
     func retryIndex(sessionId: String) async throws
 }
@@ -104,7 +105,7 @@ public extension GalleryDataProvider {
     /// 分桶 → ≤320→256、≤1280→1024、>1280→2048）。测试 stub 未实现时取默认。
     func thumbnailSize() -> Int { 1024 }
 
-    func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus? { nil }
+    func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus? { nil }
 
     func retryIndex(sessionId: String) async throws {
         throw NativeCommandError.failed("INDEX_SCAN_NOT_SUPPORTED")
@@ -129,8 +130,8 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
         afterFirstRowid: Int64?,
         limit: Int,
         expandVariants: Bool
-    ) throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        let response = try router.execute("photo.list_page", params: [
+    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
+        let response = try await NativeCommandClient(router: router).executeAsync("photo.list_page", params: [
             "sessionId": .string(sessionId),
             "afterFirstRowid": afterFirstRowid.map { .number(Double($0)) } ?? .null,
             "limit": .number(Double(limit)),
@@ -159,8 +160,8 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
 
     /// TS: workspace.status —— indexing job 派生（quque/running/cancelling →
     /// active；succeeded → stage indexed；failed → failed）。
-    public func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus? {
-        try router.execute("workspace.status", params: [
+    public func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus? {
+        try await NativeCommandClient(router: router).executeAsync("workspace.status", params: [
             "sessionId": .string(sessionId),
         ]).decoded(as: WorkspaceStatus.self)
     }
@@ -227,6 +228,8 @@ public final class GalleryViewModel {
     private let debounceDelay: Duration
     private var debounceTask: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
+    /// 显式 load 的串行化任务（见 load()）。
+    private var loadTask: Task<Void, Never>?
     private var eventRefreshTask: Task<Void, Never>?
     /// 索引状态轮询任务（视图可见时启动；opacity 常驻架构下由视图门控）。
     private var statusPollTask: Task<Void, Never>?
@@ -320,21 +323,21 @@ public final class GalleryViewModel {
                 let percent = min(100, Int((Double(status.indexing.done) / Double(status.indexing.total) * 100).rounded()))
                 return GalleryIndexHeaderCopy(
                     kind: .scanning,
-                    text: "正在索引 \(status.indexing.done) / \(status.indexing.total)（\(percent)%）",
+                    text: String(format: GatherLocalization.l("正在索引 %lld / %lld（%lld%%）"), status.indexing.done, status.indexing.total, percent),
                     percent: percent
                 )
             }
-            return GalleryIndexHeaderCopy(kind: .scanning, text: "扫描中…", percent: nil)
+            return GalleryIndexHeaderCopy(kind: .scanning, text: GatherLocalization.l("扫描中…"), percent: nil)
         }
         if let status, status.indexing.status == .failed {
-            return GalleryIndexHeaderCopy(kind: .error, text: "索引失败", percent: nil)
+            return GalleryIndexHeaderCopy(kind: .error, text: GatherLocalization.l("索引失败"), percent: nil)
         }
         // 无 job / 已成功（stage == .indexed）：photoCount==0 → 不渲染。
         if photoCount == 0 { return nil }
         if truncatedImport, status?.stage != .indexed {
-            return GalleryIndexHeaderCopy(kind: .count, text: "已索引 ≥\(photoCount) 张照片", percent: nil)
+            return GalleryIndexHeaderCopy(kind: .count, text: String(format: GatherLocalization.l("已索引 ≥%lld 张照片"), photoCount), percent: nil)
         }
-        return GalleryIndexHeaderCopy(kind: .count, text: "已索引 \(photoCount) 张照片", percent: nil)
+        return GalleryIndexHeaderCopy(kind: .count, text: String(format: GatherLocalization.l("已索引 %lld 张照片"), photoCount), percent: nil)
     }
 
     // MARK: 索引状态数据源（workspace.status 轮询 + jobs:progress 事件）
@@ -342,6 +345,23 @@ public final class GalleryViewModel {
     // MARK: 加载
 
     func load() async {
+        // 单飞加载：init 自动补载与显式 load（重试/深链）并发时合并为同一轮，
+        // 后者直接等待前者结果，避免两轮加载互相覆盖（fetchNextPage 的
+        // isFetchingNextPage 早退会把 phase 兜底成 loaded）。
+        if let existing = loadTask {
+            await existing.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performLoad()
+        }
+        loadTask = task
+        await task.value
+        loadTask = nil
+    }
+
+    private func performLoad() async {
         phase = .loading
         do {
             session = try provider.getSession(sessionId)
@@ -451,7 +471,7 @@ public final class GalleryViewModel {
     func refreshWorkspaceStatus() async {
         lastStatusRefreshAt = Date()
         do {
-            workspaceStatus = try provider.workspaceStatus(sessionId)
+            workspaceStatus = try await provider.workspaceStatus(sessionId)
         } catch {
             // 索引头为辅助信息：瞬时失败静默保留旧状态，不整页报错。
         }
@@ -508,7 +528,7 @@ public final class GalleryViewModel {
             // TS Gallery.tsx:69-71 —— limit 由 searchActive 决定（搜索态 1000
             // 减短链式拉取的往返次数，非搜索态 200）。
             let limit = searchActive ? Self.chainFetchLimit : Self.pageSize
-                let result = try provider.photoPage(
+                let result = try await provider.photoPage(
                 sessionId: sessionId,
                 afterFirstRowid: cursor,
                 limit: limit,
@@ -583,7 +603,7 @@ public final class GalleryViewModel {
         do {
             var cursor: Int64?
             repeat {
-                let result = try provider.photoPage(
+                let result = try await provider.photoPage(
                     sessionId: sessionId,
                     afterFirstRowid: cursor,
                     limit: searchActive ? Self.chainFetchLimit : Self.pageSize,

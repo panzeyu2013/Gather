@@ -17,14 +17,14 @@ struct SessionTabBar: View {
     let onSimilarity: () -> Void
     let onSelectTab: (SessionTab) -> Void
 
-    @State private var hoveredTitle: String?
+    @State private var hoveredKey: String?
 
     var body: some View {
         HStack(spacing: 2) {
-            tabButton(title: GatherLocalization.l("浏览", "Browse"), selected: selection == .browse, action: onBrowse)
-            tabButton(title: GatherLocalization.l("相似度", "Similarity"), selected: selection == .similarity, action: onSimilarity)
+            tabButton(key: "browse", title: GatherLocalization.l("浏览"), selected: selection == .browse, action: onBrowse)
+            tabButton(key: "similarity", title: GatherLocalization.l("相似度"), selected: selection == .similarity, action: onSimilarity)
             ForEach(SessionTab.allCases) { tab in
-                tabButton(title: tabTitle(tab), selected: selection == .tab(tab)) {
+                tabButton(key: tab.rawValue, title: tabTitle(tab), selected: selection == .tab(tab)) {
                     onSelectTab(tab)
                 }
             }
@@ -35,15 +35,16 @@ struct SessionTabBar: View {
 
     private func tabTitle(_ tab: SessionTab) -> String {
         switch tab {
-        case .control: return GatherLocalization.l("控制中心", "Control Center")
-        case .faceKw: return GatherLocalization.l("人脸", "Faces")
-        case .duplicates: return GatherLocalization.l("重复", "Duplicates")
-        case .culling: return GatherLocalization.l("挑片", "Culling")
-        case .export: return GatherLocalization.l("导出", "Export")
+        case .control: return GatherLocalization.l("控制中心")
+        case .faceKw: return GatherLocalization.l("人脸")
+        case .duplicates: return GatherLocalization.l("重复")
+        case .culling: return GatherLocalization.l("挑片")
+        case .export: return GatherLocalization.l("导出")
         }
     }
 
     private func tabButton(
+        key: String,
         title: String,
         selected: Bool,
         action: @escaping () -> Void
@@ -61,14 +62,23 @@ struct SessionTabBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(hoveredTitle == title && !selected
-                      ? GatherTheme.primarySoft.opacity(0.45)
+                .fill(hoveredKey == key && !selected
+                      ? GatherTheme.primary.opacity(0.08)
                       : Color.clear)
         )
+        .overlay(alignment: .bottom) {
+            if selected {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(GatherTheme.primary)
+                    .frame(height: 2)
+            }
+        }
         .onHover { hovering in
-            hoveredTitle = hovering ? title : nil
+            hoveredKey = hovering ? key : (hoveredKey == key ? nil : hoveredKey)
         }
     }
 }

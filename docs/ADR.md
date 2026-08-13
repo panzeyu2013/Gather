@@ -1,9 +1,27 @@
-# Gather Architecture Decision Records
+# Gather 架构决策记录
 
 > 本文件保存从已归档执行计划（CORE_RELIABILITY_EXECUTION_PLAN /
 > CULLING_WORKBENCH_DESIGN_AND_EXECUTION，已于 `9226061` 删除）中恢复的
 > **仍具规范性的决策与门禁**。实现细节以代码为准，本文只记录"为什么"与
 > "何时允许改变"。
+> 2026-08-12 修订：合并 Electron→原生迁移（原 `NATIVE-DEVELOPMENT-ANALYSIS.md`
+> 已归档删除）后，**本文件底部新增 ADR-021~026**：性能架构决议（已实现）与
+> 四项遗留方案、人脸推理演进。原 ADR-001~020 中引用的 Electron 时代实现路径
+> 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
+> `desktop/native/gather-core` / `gather-app` 代码为准）。
+
+**原实现路径 → 原生实现位置对照**
+
+| ADR | Electron 时代路径（已删除） | 原生实现（迁移后） |
+|---|---|---|
+| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherCore/Database/Migrations.swift`、`Schema.swift`；快照校验 `Tests/GatherCoreTests/Database/MigrationTests.swift`（`docs/fixtures/schema.snapshot.json` 41 表） |
+| 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherCore/Database/ImageCache.swift` |
+| 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherCore/Services/WorkspaceStatusService.swift` |
+| 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherCore/Services/SessionService.swift` |
+| 015 | `services/capture-one/sync-state.ts` | `gather-core/Sources/GatherCore/Services/CaptureOneSyncState.swift` |
+| 016/019/020 | `renderer/locales/`（i18next）、`main/menu.ts`、`main/locale.ts` | `gather-app/Sources/GatherApp/Support/GatherLocalization.swift` + `Resources/{en,zh-Hans}.lproj`；`Host/GatherAppDelegate.swift`（`installMenu` 两语言重建，`languageChanged` 驱动） |
+| 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `GatherLocalization.errorText`（156 项映射） |
+| 018 | `renderer/components/Dialog/Dialog.tsx` | 历史记录：自研 APG 焦点管理仅存在于 Electron 版；原生版由系统 sheet/`confirmationDialog` 天然覆盖（见 DEVELOPMENT.md HIG 约定），"拒绝 roving tabindex"的结论对原生列表仍成立 |
 
 ---
 
@@ -41,8 +59,6 @@
 
 ## ADR-005 数据库迁移不变量与备份/恢复策略
 
-已实现于 `desktop/src/main/db/migrations.ts`：
-
 - 迁移前：检查可用磁盘空间（`max(64 MB, 源大小×2)`）→ `wal_checkpoint(TRUNCATE)` →
   用 **SQLite backup API**（非直接复制活动 db）创建带 schema version 与时间戳的备份 →
   校验备份可打开（`integrity_check`）。
@@ -53,18 +69,18 @@
 ## ADR-006 Schema 快照位置与用途
 
 - 当前 schema 快照：`docs/fixtures/schema.snapshot.json`（记录表名集合）。
-- 由 `tests/unit/services/core-reliability-baseline.test.ts` 校验 `SCHEMA_SQL` 与其一致；
-  任何表级 schema 变更必须同步更新该快照。
-- 每次迁移运行末尾无条件执行 `INDEX_SQL`；索引的"单一规范定义"由
-  `tests/unit/shared/architecture-invariants.test.ts` 强制（迁移块内不得重复索引 DDL）。
+- 由 `Tests/GatherCoreTests/Database/MigrationTests.swift` 校验空库迁移后与其一致
+  （41 表全对）；任何表级 schema 变更必须同步更新该快照。
+- 索引的"单一规范定义"由迁移实现强制（迁移块内不得重复索引 DDL）。
 
 ---
 
 ## ADR-007 磁盘缓存元数据：SQLite + 惰性淘汰
 
 - 缩略图磁盘缓存元数据（hash → lastAccess/createdAt/accessCount/fileSize）持久化在
-  `cache-meta.db`（better-sqlite3 + WAL），替代全量 `JSON.stringify(cache-meta.json)`：
-  热路径 `onAccess`/`onSet` 纯内存 + debounce 批量 upsert，主线程无同步序列化。
+  `cache-meta.db`（better-sqlite3 + WAL，原生为 SQLite.swift 等价实现），替代全量
+  `JSON.stringify(cache-meta.json)`：热路径 `onAccess`/`onSet` 纯内存 + debounce 批量
+  upsert，主线程无同步序列化。
 - 淘汰候选由每策略 SQLite 索引排序窗口提供（`ORDER BY <policy> ASC, hash ASC LIMIT k`，
   O(log n + k)），再与脏集合（值尚未落盘、可能与持久化行不一致的条目）合并、按内存
   当前值重排取 k 个——与全量扫描严格等价，但主线程不再 O(n) 遍历；淘汰前先等待在途
@@ -72,8 +88,8 @@
   （LRU=lastAccess / FIFO=createdAt / LFU=accessCount）。
 - 降级不变量：DB 损坏 → 改名 `.corrupt-<ts>` 重建空库；仍失败（只读目录）→
   `:memory:` 纯内存模式；`waitUntilReady` 永不 reject；退出前 `flush()` 落盘。
-- 实现以 `desktop/src/main/services/image/disk-cache.ts` 为准；修改持久化格式必须
-  保留损坏/只读降级与重启对账（`readdir` 差集 + 仅对孤儿文件 stat）语义。
+- 实现以 `gather-core/Sources/GatherCore/Database/ImageCache.swift` 为准；修改持久化
+  格式必须保留损坏/只读降级与重启对账（`readdir` 差集 + 仅对孤儿文件 stat）语义。
 
 ## ADR-008 Culling 分页按逻辑资产分组（不变量）
 
@@ -81,8 +97,8 @@
   组内 `MIN(rowid)` 作 keyset 游标、组内全行一次加载——RAW/JPEG 变体**永不跨页**，
   跨页遍历每个资产恰好出现一次（回退为按物理行分页将再次引入重复条目，禁止）。
 - `total` 一律按逻辑资产计数；过滤谓词下推到**首选变体**（RAW 扩展名优先，否则
-  `rowid` 最小者，与 `assembleAssets` 的 JS 首选逻辑共用同一扩展名常量）。
-- 游标对渲染层**不透明**：renderer 只回传 `nextRowId`，不得解析其含义。
+  `rowid` 最小者）。
+- 游标对渲染层**不透明**：UI 只回传 `nextRowId`，不得解析其含义。
 - 与 ADR-001/002 的 Asset 语义联动：任一物理行匹配谓词即入页会导致 total 虚高与
   空页（仅非首选 JPEG 命中时），故 SQL 谓词必须限定首选行。
 
@@ -92,8 +108,8 @@
   （T±4/T±8）的档位行；档位行在 `stats_json` 内标记 `"precomputed": true`。
 - **"最新结果"的判定**（`getLatest`、culling 相似组 SQL、质量相对排名）必须排除
   `precomputed` 行——否则档位插入顺序（主行先、档位后）会让 `MAX(id)` 选中档位，
-  造成相似组浏览与相对排名错乱。该不变量由 `reuse-and-tiers.test.ts` 与
-  `culling-page.test.ts` 强制。
+  造成相似组浏览与相对排名错乱。该不变量由 `reuse-and-tiers` 与 `culling-page`
+  测试强制。
 - 写回/预览默认按主档解析；渲染端展示档位时按展示阈值解析（`threshold` 参数），
   档位不存在则报错要求重新聚类。
 
@@ -110,178 +126,124 @@
 
 ## ADR-011 增量 ANN 索引：HNSW 组件（里程碑 V）
 
-- 新增 `face-kw/hnsw-index.ts`（`CosineHnswIndex`）：内存 HNSW（M=16/Mmax0=32/
-  efConstruction=32/efSearch=32），向量行主序共享 Float32Array + 逐节点分层邻接表，
-  距离为余弦点积（单位向量前提）。与 LSH（`lsh-index.ts`）互补：LSH 全量
-  `build()`（O(n·bits·dim)），适合一次性构建；HNSW 增量 `insert()` 只触达邻域，
-  适合"新增少量照片"的持续更新场景。
+- 内存 HNSW（M=16/Mmax0=32/efConstruction=32/efSearch=32），向量行主序共享
+  Float32Array + 逐节点分层邻接表，距离为余弦点积（单位向量前提）。与 LSH 互补：
+  LSH 全量 `build()`（O(n·bits·dim)），适合一次性构建；HNSW 增量 `insert()` 只触达
+  邻域，适合"新增少量照片"的持续更新场景。
 - 连接与裁剪使用论文 Algorithm 4 的多样性启发式（候选按距离序 + 与已选邻居的
   相似度拒绝），防止增量插入把簇间桥剪光导致图退化；候选到中心点的距离在排序前
   一次性缓存，成对相似度按需计算。
-- 质量门禁（`hnsw-recall.test.ts`）：保留集查询（与索引同分布但未索引的
-  512 维 8 簇合成数据）recall@1 ≥ 0.9（查询 ≈0.3ms/次，构建 ≈3.5ms/向量——
-  全量构建应由后台任务承载，不承诺构建延迟；M=16/mMax0=64 下增量插入召回波动
-  实测 −0.008）。
-- 边界：本期只交付"索引 + 查询"组件；向量持久化与模型版本指纹沿用
-  `face_observations`/`analysis_signature` 既有机制，消费方接线（聚类候选生成、
-  跨 session 重识别）在 Phase 2/3 排期，不在此引入向量数据库选型。
+- 质量门禁（`hnsw-recall` 测试）：保留集查询（与索引同分布但未索引的 512 维 8 簇
+  合成数据）recall@1 ≥ 0.9（查询 ≈0.3ms/次，构建 ≈3.5ms/向量——全量构建应由后台
+  任务承载，不承诺构建延迟；M=16/mMax0=64 下增量插入召回波动实测 −0.008）。
+- 原生实现：`gather-core/Sources/GatherCore/Face/VectorIndex.swift`
+  （CosineHnswIndex + CosineLshIndex，topK 逐位一致/recall ≥ TS 对账门禁）。
 
 ---
 
 ## ADR-012 分析过期检测：`analysis_runs` + `sessions.index_seq`
 
-已实现于 `desktop/src/main/db/migrations.ts`（v30）与
-`services/workspace/workspace-status.service.ts`：
-
 - 过期判定 `stale = 最近一次 ok run 的 index_seq < session.index_seq`；`index_seq`
-  只在索引提交点自增（`index.service.ts` 扫描事务后），相似度/人脸分析开始时读
-  事务快照写入 run 记录（`analysis_runs`）。
+  只在索引提交点自增（扫描事务后），相似度/人脸分析开始时读事务快照写入 run 记录
+  （`analysis_runs`）。
 - **不采用照片数 COUNT 比较**：删除照片时 COUNT 变小但分析结果并未过期，会产生
-  假阳性重算；`index_seq` 只随索引提交自增，语义精确（design_improvements.md
-  1.4.2 判定记录 ✅ 落地）。
+  假阳性重算；`index_seq` 只随索引提交自增，语义精确。
 - 只取最近一次 `status='ok'` 的 run 参与判定，失败/取消的 run 不掩盖过期。
 - 并发约束：`index_seq` 自增走单事务；分析读取用事务快照。
-- 后果：新增照片 → Inbox 出现 `analysis_stale`；删图不误报；阶段判定
-  `indexed` 以索引 job 成功记录为准。
+- 后果：新增照片 → Inbox 出现 `analysis_stale`；删图不误报；阶段判定 `indexed`
+  以索引 job 成功记录为准。
 
 ## ADR-013 WorkspaceStatusService：只读聚合 + 离线复核 TTL
 
-已实现于 `desktop/src/main/services/workspace/workspace-status.service.ts`，
-IPC `workspace.status`：
-
 - 不引入新权威数据源：全部计数从 photos / analysis_runs / metadata_outbox /
-  jobs 派生，是 CQRS 式只读模型（1.3 第一性原理落地）。
+  jobs 派生，是 CQRS 式只读模型。
 - 推荐动作 = **固定优先级序列表 + 布尔门控**（scan_incomplete → xmp_conflict →
-  analysis_stale → job_failed → 推进流程），拒绝规则引擎（1.4.3 ✂️ 落地）。
+  analysis_stale → job_failed → 推进流程），拒绝规则引擎。
 - 离线照片复核 **TTL ≥ 5 分钟**（`OFFLINE_PHOTOS_TTL_MS = 5 * 60_000`）：
   `photos.status='missing'` 是惰性检测，Inbox 刷新不得全盘 stat，否则退化为
-  性能陷阱（1.4.5 ➕ 落地）。
+  性能陷阱。
 - 刷新策略：轮询兜底 30s（索引活跃期 3s）+ 复用现有推送事件（`jobs:progress`
   终态、`culling:sync-status`），不新增 push 通道。
 - 后果：离线计数最多滞后 TTL 5 分钟；Inbox 查询为常量级开销。
 
 ## ADR-014 一跳化导入：路径数组不跨 IPC
 
-已实现于 `session.create_from_directory`（`desktop/src/main/ipc/session.ipc.ts`
-+ `services/session/session.service.ts`）：
-
-- 50k 上限是**内存/IPC 载荷约束而非产品上限**（结构化克隆 5 万条路径的开销）；
-  主进程内流式遍历 + 分批落库后，上限在数据层消失，仅保留为 UI 计数预览上限
-  （3.2 根因修复落地）。
+- 50k 上限是**内存/IPC 载荷约束而非产品上限**；主进程内流式遍历 + 分批落库后，
+  上限在数据层消失，仅保留为 UI 计数预览上限。
 - `app:scan-directory` 保留仅用于 UI 计数预览，返回
   `ScanResult { files, truncated, scannedTotal, limit }`（`scannedTotal` 持续
   累加、`truncated = scannedTotal > files.length`），截断标记落
-  `sessions.truncated_import`（迁移 v29）。
-- 后果：`session.create`（文件列表，兼容）与 `session.create_from_directory`
-  （路径一跳）双入口并存；UI 计数预览仍受 50k 约束，数据导入不受。
+  `sessions.truncated_import`。
+- 原生形态：`session.create_from_directory` 路径一跳，`IndexerService` 流式 walk +
+  分批落库，去重键 `metadata.scan:<sessionId>`；截断导入 UI 显示 "≥" 前缀与
+  "扫描中…" 直至索引终态帧。
 
 ## ADR-015 CaptureOneSyncState：会话级聚合 + `reload_acked_at` 重启重推导
 
-已实现于 `desktop/src/main/services/capture-one/sync-state.ts`；
-`sessions.reload_acked_at` 为迁移 v31：
-
 - 机器状态在内存、易失：重启后从 **outbox 行状态 + `reload_acked_at` 重推导**，
-  行是持久真相源、机器状态是派生值，不落库整个状态机（2.3.3 ➕ 落地）。
+  行是持久真相源、机器状态是派生值，不落库整个状态机。
 - 会话级聚合规则确定性：`conflict > failed > syncing(pending/writing) >
-  safeToCleanup`；未知状态按保守处理，绝不声称 safeToCleanup（2.3.2 ➕ 落地）。
+  safeToCleanup`；未知状态按保守处理，绝不声称 safeToCleanup。
 - `reload_acked_at` **只在 reloadMetadata() 成功后写入**，保持"失败即回退、
   不清理"策略；`safeToCleanup` 门控（reload 成功 + 延迟窗口）与 XMP 双写领域
-  模型同构（2.3.1 ✅ 落地）。
-- 协调器每次 emitSummary 后重推导会话状态并记录状态转换日志（`main/index.ts`
-  事件接线、`sync-state.ts` 转换日志），状态机转换全部可观测。
+  模型同构。
+- 协调器每次 emitSummary 后重推导会话状态并记录状态转换日志，状态机转换全部可观测。
 - 后果：重启后跨会话恢复 `safeToCleanup` 而不误清理；清理动作永远不早于 C1
   确认读取。
 
-## ADR-016 i18n：i18next + 类型化 key + 主进程只抛错误码
+## ADR-016 i18n：类型化 key + 主进程只抛错误码
 
-已实现于 `desktop/src/renderer/locales/`（i18next + react-i18next，
-`TranslationKey` 由 zh-CN.json 推导）；P1 页面级迁移完成（697 处 `t()`、
-1063 key/语言，术语表冻结于 docs/i18n-glossary.md）：
+> 原生版由 `GatherLocalization` + `.lproj` 表承接（见 DEVELOPMENT.md 本地化体系），
+> 本条目记录当时的边界决策，语义沿用。
 
-- 边界分工：主进程**只抛错误码**（`GATHER_ERROR_CODES`，
-  packages/shared/src/errors.ts）与**阶段码**（`progress.*`），渲染层统一映射
-  文案（`translateError` / `translatePhase`）；事件推送负载同样代码化
-  （4.4.2 ➕ 落地），禁止主进程返回拼接文案。
-- 拒绝 AST codemod（生成的无上下文 key 仍需全量人工复查，省不了审校时间）与
-  saveMissing/locize（无在线后端需求，会污染资源文件）——4.3/4.4.3 ✂️ 落地。
-- 语言来源：`navigator.language` 检测（zh → zh-CN，其余 en），fallback 到 en。
-- 后果：新增文案必须同时落两语言文件并过术语表；主进程文案以错误码形式跨 IPC。
-- P2：eslint 无硬编码守护（`gather/no-hardcoded-text`，见 ADR-019）与 Electron
-  菜单本地化（`main/menu.ts`）已落地；语言切换 UI（设置覆盖 + 菜单重建）
-  已落地，见 ADR-020。
+- 边界分工：核心层**只抛错误码**与**阶段码**（`progress.*`），界面层统一映射文案
+  （`errorText` / `progressPhaseText`），事件推送负载同样代码化，禁止核心层返回
+  拼接文案。
+- 语言来源：系统语言 zh 前缀 → zh-CN，其余 en；设置覆盖 > 启动开关 > 系统语言。
+- 后果：新增文案必须走本地化层并同步两语言表；核心层文案以错误码形式跨路由。
 
 ## ADR-017 错误码化的表面边界与文档例外
 
-- 错误码化覆盖两个表面：IPC 返回值（`C1_NOT_RUNNING` / `C1_NO_DOCUMENT` /
-  `C1_NOT_AUTHORIZED` / `C1_SCRIPT_FAILED` / `SCAN_INVALID_DIR` /
-  `SCAN_READ_FAILED`）与事件负载阶段码（`progress.<phase>` 键）。
-- 已记录例外：导出报告（`desktop/src/main/services/export/report.service.ts`
-  生成的 markdown 文档，如"# 人物""# 关键词"）是**文档内容而非 UI 文案**，
-  不纳入 i18n 与错误码体系；UI 文案（按钮、标签、toast、错误提示）一律走 i18n。
-- 后果："主进程无自然语言文案"有明确判据（文档内容豁免）；新增错误先加码、
-  再在渲染层补映射，不得回退到拼接文案。
+- 错误码化覆盖两个表面：命令返回值（`C1_*` / `SCAN_*` / `SIM_*` / `FKW_*` /
+  `XMP_*` / `WRITEBACK_*` / `CULLING_*` / `EXPORT_*` 等）与事件负载阶段码
+  （`progress.<phase>` 键）。
+- 已记录例外：导出报告（`ExportService` 生成的 markdown 文档，如"# 人物"
+  "# 关键词"）是**文档内容而非 UI 文案**，不纳入本地化与错误码体系；UI 文案
+  （按钮、标签、toast、错误提示）一律走本地化层。
+- 后果："核心层无自然语言文案"有明确判据（文档内容豁免）；新增错误先加码、
+  再在界面层补映射，不得回退到拼接文案。
 
-## ADR-018 Dialog 无障碍：自研 APG 焦点管理（portal + inert），拒绝 roving tabindex
+## ADR-018 Dialog 无障碍：自研 APG 焦点管理（历史记录）
 
-已实现于 `desktop/src/renderer/components/Dialog/Dialog.tsx`：
-
-- 自研实现对齐 W3C APG Dialog 模式：打开时记录触发元素并按内容聚焦
-  （`initialFocus` 支持不可逆操作聚焦"最不具破坏性动作"）、Tab 循环焦点陷阱、
-  关闭后焦点恢复、`aria-labelledby` 引用可见标题、`descriptionId` 仅在简单描述
-  时提供；portal 挂载 + 打开时给背景容器加 `inert`（5.1 ✅ 落地）。
-- **拒绝 roving tabindex（APG grid 模式）**：相似组是 ≤100 项的静态列表，自然
-  Tab 顺序即可访问；grid 的复杂度远超收益，仅列表虚拟化/超数百项再引入
-  （5.2 ✂️ 落地）。组头改为语义化 button + 并列 checkbox，`aria-expanded`
-  表达展开态。
-- 原生 `<dialog>.showModal()` 作为可选替代评估后未采纳，保持条件渲染 + 自研
-  （5.1 P1 可选项）。
-- 回归：jest-axe 组件测试（`tests/unit/renderer/a11y-dialog.test.tsx` /
-  `a11y-similarity.test.tsx` / `a11y-dashboard.test.tsx`，含焦点陷阱边界用例）；
-  对比度修复仅改全局 token（docs/a11y-audit.md §1.2）。
+> Electron 时代在 `Dialog.tsx` 自研对齐 W3C APG Dialog 模式（portal + inert、
+> Tab 焦点陷阱、焦点恢复）；原生迁移后弹层统一使用系统 sheet/`confirmationDialog`，
+> 焦点管理由系统天然覆盖，本条保留为决策背景。
+> **拒绝 roving tabindex（APG grid 模式）**的结论仍然有效：相似组是 ≤100 项的
+> 静态列表，自然 Tab 顺序即可访问；grid 的复杂度远超收益，仅列表虚拟化/超数百项
+> 再引入。组头使用语义化 button + 并列 checkbox，`aria-expanded` 表达展开态
+> （SwiftUI 等价：`Button` + `Toggle` + `.accessibilityAddTraits(.isSelected)`）。
 
 ## ADR-019 Electron 菜单本地化：主进程 label 映射 + locale 解析链
 
-已实现于 `desktop/src/main/menu.ts`（P2，工作区落地未提交）：
+- 菜单模板持有两套 label 映射（zh-CN/en），按当前 locale 重建；核心进程仍不持有
+  通知类自然语言文案，错误码边界不变（与 ADR-016 一致）。
+- 原生实现：`GatherAppDelegate.installMenu`（`GatherAppDelegate.swift:170-257`）
+  经 `GatherLocalization.l` 构建菜单；`settings.set_language` → `languageChanged`
+  通知 → `rebuildMenu()` 即时重建，菜单与界面由同一有效语言驱动，永不撕裂。
+- 后果：新增菜单项须经本地化层登记；错误文案仍由界面层映射。
 
-- 菜单模板在**主进程**持有两套 label 映射（zh-CN/en），按当前 locale 重建并
-  `Menu.setApplicationMenu`；主进程仍不持有通知类自然语言文案，错误码边界不变
-  （与 ADR-016 一致）。
-- locale 解析链：`--lang`（Chromium/Electron 开关）优先，否则 `app.getLocale()`；
-  非 zh 前缀一律回退 en。Electron/Chromium 同样消费 `--lang`，应用菜单与
-  Chromium 内部对话框语言保持一致。
-- 未来语言切换：更新 locale 后调用 `rebuildMenu()` 即可，无其他接线；当前
-  **有意不提供语言切换 UI**（menu.ts 注释，P1 scope）。
-  **（已被 ADR-020 取代：语言切换 UI 已随 i18n P2 收尾落地，见 Settings
-  选择器 + `settings.set_language` + `setAppLocale`，本句作废。）**
-- 静态守护：eslint 规则 `gather/no-hardcoded-text`
-  （`desktop/eslint/no-hardcoded-text.cjs`）禁止渲染层 JSX 文本节点与
-  `aria-label` 出现非 i18n 字符串。
-- 后果：新增菜单项须同时落两语言 label 映射与术语表；渲染层文案仍走 i18next。
+## ADR-020 语言来源优先级 + 菜单重建接线
 
-## ADR-020 语言来源优先级 + 菜单重建接线（i18n P2 收尾）
-
-已实现于 `desktop/src/main/locale.ts`、`desktop/src/main/menu.ts`、
-`desktop/src/main/ipc/settings.ipc.ts` 与 `desktop/src/renderer/locales/`：
-
-- 语言优先级（design_improvements.md 4.2）：持久化设置 `ui_language`
-  （app_settings）覆盖 > `--lang` 启动开关 > `app.getLocale()`；非 zh 前缀
-  一律回退 en。纯函数 `resolveEffectiveLocale(langSwitch, systemLocale,
-  uiLanguage)`（`main/locale.ts`，无 electron 依赖，单元测试覆盖整条链）。
-  非法覆盖值按未设置处理，不污染解析链。
-- 语言切换 = 单命令双动作：`settings.set_language` 校验值（仅
-  zh-CN/en）、持久化 `ui_language`，并调用 `menu.ts` 新增的 `setAppLocale()`
-  立即重建菜单（`rebuildMenu()` 原导出不变）；渲染层随后 `initI18n(language)`
-  使 UI 文案即时切换。菜单与渲染层由同一有效 locale 驱动，永不撕裂。
-- 渲染层启动 bootstrap（`main.tsx`）：`app:get-app-locale`（新直连 IPC，
-  c1:health 同风格）→ `initI18n(effective)` → 首次 render；IPC 失败回退
-  `detectLanguage()`（navigator 检测，模块级默认不变，纯函数 t() 仍可用）。
-  首帧渲染前 i18n 已落定，避免 locale flash。
-- 语言选项标签（中文 / English）为固定品牌名，两语言文件同值，不随语言
-  本地化：选项本身命名的是该语言，本地化会自指（"中文"→"Chinese" 反而
-  更长），故有意固定。
-- 后果：新增语言选项须同步维护 `AppLocale` 联合类型、preload 白名单与
-  两语言文件；错误文案仍由渲染层映射（ADR-016/017 边界不变），主进程
-  只负责 locale 决议与菜单 label。
+- 语言优先级：持久化设置 `ui_language` 覆盖 > `--lang` 启动开关 > 系统语言；
+  非 zh 前缀一律回退 en。非法覆盖值按未设置处理，不污染解析链。
+- 语言切换 = 单命令双动作：`settings.set_language` 校验值（仅 zh-CN/en）、
+  持久化 `ui_language`，并触发 `languageChanged` 通知：`GatherAppDelegate` 重建
+  菜单（`installMenu`），`RootView` 经 `.id(languageVersion)` 重建外壳双语文案
+  （整树重建的取舍见 ADR-025）。
+- 语言选项标签（中文 / English）为固定品牌名，两语言文件同值，不随语言本地化：
+  选项本身命名的是该语言，本地化会自指，故有意固定。
+- 后果：新增语言选项须同步维护语言联合类型、校验与两语言表；错误文案仍由界面
+  层映射（ADR-016/017 边界不变）。
 
 ---
 
@@ -289,7 +251,218 @@ IPC `workspace.status`：
 
 1. **Asset 主读 Cutover**：必须在 dual-read/shadow-read 经历**至少一个完整稳定版本且
    不一致率为 0** 后执行；当前保留兼容桥符合 ADR-001~004 的迁移策略。
-2. **Capture One 人工 Load-Metadata 矩阵**：自动测试已通过 ExifTool 验证 Rating、
-   Label、Urgency、Subject 与未知字段保留；`tests/e2e/face-workflow.spec.ts` 现可本地
-   自动跑通 RAW 人脸全流程并校验 XMP 写回内容（素材见 `tests/fixtures/local-fixtures.md`）。
-   但真实用户 Catalog 的人工 Load Metadata 矩阵仍须在正式发布前由测试人员执行。
+2. **Capture One 人工 Load-Metadata 矩阵**：自动化测试已通过 ExifTool 验证 Rating、
+   Label、Urgency、Subject 与未知字段保留；RAW 人脸全流程与 XMP 写回内容校验可在
+   本地自动跑通。但真实用户 Catalog 的人工 Load Metadata 矩阵仍须在正式发布前由
+   测试人员执行。
+
+---
+
+# 原生迁移后的新增决策
+
+## ADR-021 性能架构决议：挑片乐观更新、C1 状态胶囊单例化、Dashboard 增量轮询（已完成实现）
+
+### 动机
+
+原生版首轮审计暴露三类性能/体感问题：挑片快捷键连击与自动前进会因整页刷新丢失
+位置；C1 状态胶囊在多个工作区页重复实现且生命周期管理易漏（轮询泄漏）；Dashboard
+每 tick 对每个会话 N+1 查询且空闲期滞后 30s。以下三项决议已在 2026-08-12 完成并
+闭环。
+
+### 方案
+
+1. **挑片乐观更新**（`gather-app/Culling/CullingView.swift:599-649`）：
+   决策命令（`culling.update` / `batch_update` / `decide_group`）为同进程直连的
+   同步短事务，毫秒级落库；成功后**立即整页刷新**而非等待推送事件。乐观语义
+   体现在：自动前进目标 `nextPhotoId` 在刷新前预置到 `currentPhotoId`（刷新期间
+   位置不丢）；`commit` 以 `isLoading` 门控拒绝重入（连击不再排队风暴）；
+   刷新后选择集按 `loadedPhotoIds` 交集保留（`loadPage`，`CullingView.swift:428-448`）。
+2. **C1 状态胶囊单例化**（`Support/C1StatusCapsule.swift`）：
+   `C1StatusCapsuleHost` 为自包含宿主，页面只需传入 sessionId + router：内部订阅
+   进程级 `C1StatusService`（`C1StatusCapsule.swift:11-98`）——按 sessionId 分键
+   缓存状态、活跃订阅计数门控**单一 12s 轮询任务**（多页常驻不再每实例空转）；
+   sessionId 变化时切换订阅（opacity 常驻页切换会话不显示旧状态）、
+   `isActive=false` 时取消订阅（隐藏页不轮询）；`culling:sync-status` 事件
+   即时刷新 + 轮询兜底。Gallery / Culling / ControlCenter / Similarity 等全部
+   工作区页统一复用。
+3. **Dashboard 增量轮询**（`Dashboard/DashboardViewModel.swift`）：
+   双档轮询——有 queued/running 任务时**增量刷新**：jobs 每 2s 单查询（进度跟手）、
+   sessions + N×workspace.status 降到 15s 档；空闲 30s 全量兜底（`autoRefreshTick`）；
+   `applyJobEvent` 订阅 `jobs:progress`（视图层 1s 节流）逐帧**局部 patch** 任务
+   中心行与索引卡片快照（毫秒级进度，替代整页拉取），仅终态帧整页刷新让权威计数
+   落定。事件与轮询双通道，事件丢失不致静默。
+
+### 风险与边界
+
+- 挑片刷新仍为整页（500 条/页 + 辅助查询），大库下每次决策有固定成本；接受当前
+  规模，若 10 万级滚动出现卡顿再引入局部 patch。
+- 胶囊为进程级单例服务：会话状态在服务端聚合，按 sessionId 分键缓存；路由由首个
+  订阅页面注入（各页共享同一 SessionCommandRouter 实例），一致性由服务端兜底；
+  `statuses` 缓存随订阅生命周期刷新，隐藏页不触发任何查询。
+- 轮询档位参数是运维性常量，改档位须同步 Dashboard 与控制中心，避免轮询风暴。
+
+## ADR-022 遗留方案 1：侧栏/页签迁移 NavigationSplitView（暂缓）
+
+### 动机
+
+- 系统折叠语义：`NavigationSplitView` 提供侧栏收合（toolbar 按钮）、窗口缩放
+  自适应与状态恢复，自绘侧栏需手工维护；
+- ⌘1-9 窗口/栏切换快捷键与拖拽语义由系统导航组件天然支持；
+- 系统侧栏在 macOS 26 下获得一致的折叠动画与 VoiceOver 导航体验。
+
+### 现状
+
+`RootView.swift:432-570`（`SidebarView`）自绘 **200pt 固定宽度**侧栏
+（`frame(width: 200)`），配合 HStack + opacity 常驻页面切换；⌘0/菜单"隐藏侧栏"
+经 `menuToggleSidebar` 通知手工切换（`GatherAppDelegate.swift:292-296`）。
+
+### 方案（分期）
+
+1. **P1**：以 `NavigationSplitView` 替换 HStack 外壳，`SidebarView` 内容原样
+   放入 `sidebar` 列，页面区放入 `detail`；`RootNavigation` 保持不变，仅改装配层。
+2. **P2**：工作区页签（`Support/SessionTabBar.swift`）保持自绘——split view 的
+   列模型不适合密集页签，页签仍由 `sessionTabDestination` 驱动。
+3. **P3**：验证 ⌘1-9、侧栏收合状态恢复、`gather://` 深链落点与拖拽导入。
+
+### 风险
+
+- **opacity 常驻与导航重建的冲突**：`NavigationSplitView` 的 detail 切换可能重建
+  页面，破坏当前"常驻保状态"语义（滚动/选择/轮询），迁移需同步改造
+  `isVisible` 门控；这是暂缓的主因。
+- 回归面大：RootView 全部导航/窗口标题/无障碍逻辑都耦合当前装配方式。
+- 收合状态持久化后，"隐藏侧栏"菜单项与系统状态的同步需要新接线。
+
+## ADR-023 遗留方案 2：applicationShouldTerminate 优雅停机（暂缓）
+
+### 动机
+
+退出时若正在执行 `export.execute`（逐文件写盘）或 XMP 写回中途，进程终止可能留下
+半写文件。现有 outbox/checkpoint 保证重启后可恢复，但缺少"退出前确认+让活跃任务
+收尾"的用户可见闭环。
+
+### 现状
+
+`GatherAppDelegate.swift`（`:110-335`）**无 jobService 引用**：装配只发生在
+`GatherApp.swift:73-80`（`router.jobService.start()`、`GatherEventCenter.wire`、
+`DashboardViewModel` 注入）；退出路径 `NSApp.terminate`（`GatherAppDelegate.swift:332-334`）
+直接终止，无拦截。
+
+### 方案
+
+1. `GatherApp` 装配时把 `jobService`（或 router）注入 `GatherAppDelegate`。
+2. 实现 `applicationShouldTerminate`：有活跃任务（running export/写回）时弹
+   `NSAlert` 确认（"正在导出 N 张照片，确定退出？"），确认后
+   `jobService.cancelScope` 逐范围取消并 `reply(toApplicationShouldTerminate: .terminateLater)`，
+   短窗口（秒级）等待 drain 后 `reply(.terminateNow)`。
+3. 无活跃任务时直接 `.terminateNow`，不改变现有退出路径。
+
+### 风险
+
+- 过度拦截破坏退出体验：必须只拦截 running 的导出/写回类任务，索引/分析类取消
+  即弃；误拦由测试覆盖（注入 fake JobService 矩阵）。
+- 写回已有 outbox 恢复，停机拦截是体验优化而非正确性修复——排期应低于
+  数据正确性项；`reply(toApplicationShouldTerminate:)` 的双阶段时序需真机验证。
+
+## ADR-024 遗留方案 3：相似度 recluster 任务化（暂缓）
+
+### 动机
+
+阈值重聚类在 2 万+ 条目下聚类耗时可观，当前实现**同步阻塞且无进度、无取消、
+无任务记录**：失败只能看到错误码，无法重试，也与 `sim.analyze` 的任务化体验
+不一致。
+
+### 现状
+
+`sim.recluster` 路由直接 `Task { await similarityService.recluster(...) }`
+（`SessionCommandRouter.swift:1731-1760`），不创建 JobService job；recluster
+复用已有 hash（`SimilarityService.swift:572-609`），只做聚类 + 档位预计算，不重算
+哈希。
+
+### 方案
+
+- 复用 `sim.analyze` 的任务化链路：`executeAsync` 建 job（类型 `similarity.analyze`
+  或独立 `similarity.recluster`）→ executor 内调用 `recluster` → checkpoint/
+  dedupeKey/进度复用，UI 经现有 `jobs.list` 轮询展示相位与取消。
+- 与 analyze 的互斥沿用 `analysis_status` 保护（analyze 占用时 recluster 报
+  `SIM_ANALYSIS_RUNNING`）。
+- 进度语义：recluster 无哈希阶段，相位单一（`similarity.cluster` → 档位预计算），
+  进度可作不定进度或按聚类步长回传。
+
+### 风险
+
+- 任务化后"阈值切换即时生效"的既有体验（现有 UI 可能同步等待结果）需改异步
+  采纳，涉及 Similarity 页面状态机改动。
+- 与档位预计算并发写 `similarity_results` 的替换语义已有单写者约束，接线时不得
+  绕过。
+
+## ADR-025 遗留方案 4：语言切换整树重建取舍（暂缓，记录取舍）
+
+### 现状
+
+语言切换经 `.id(languageVersion)` 整树重建（`RootView.swift:242-248`）：
+`languageChanged` 通知 → `setAppLanguage` → `languageVersion += 1`，整棵视图树
+按新语言重渲染。**正确但重置页面本地状态**（滚动位置、选择集、展开态、轮询
+相位显示）。
+
+### 候选
+
+`@Observable LanguageStore` + 文本级刷新：让文案经可观察语言对象读取，切换时仅
+重渲染依赖文本的视图，页面状态保留。
+
+### 暂缓理由
+
+- 切换是低频一次性设置操作（Settings 选择器），重置的页面状态都有持久化源或
+  可重新加载，代价可控；
+- 文本级刷新需全量审计 `GatherLocalization.l` 调用点与 `String(format:)` 参数
+  插值在视图缓存中的传播路径，成本高、收益低；
+- 菜单重建（`installMenu`）与外壳文案是切换的两个显式副作用，当前单命令双动作
+  已保证菜单/界面不撕裂。
+- **重复加载防线**：`.id` 重建会重跑 opacity 常驻页的 `.task`——DashboardView /
+  LibraryView 已加「已加载不重复查询」守卫（仅 `phase == .loading` 时执行
+  `loadAll()`/`load()`；视图模型是 RootView 的 `@State`，重建后数据仍在）；
+  Gallery/Similarity 已有 `loadIfNeeded`（`pages.isEmpty && phase == .loading`）
+  守卫。PersonsView 的 `.task` 无守卫（语言切换会重复查询，已报告未改，超出
+  审计文件范围）。
+- **复审条件**：若未来引入常驻语言切换 UI（如 ⌘ 菜单快捷切换）或跨会话语言
+  热切换需求，再按此方案重审。
+
+## ADR-026 人脸推理演进：Vision 原生 + ONNX 质量门回退（已实现）
+
+### 现状（已实现）
+
+- **全 Vision 原生管线**：检测 `VNDetectFaceRectanglesRequest`，编码
+  `VNGenerateImageFeaturePrintRequest` rev2（**768 维**）——`gather-core/
+  Sources/GatherCore/Face/{Detector,Encoder,Inference}.swift`。
+- 无模型资产、无下载/更新链路，`FaceProvider` 仅保留 `.vision/.cpu` 枚举语义
+  （`Provider.swift:21-40`）；ONNX（SCRFD + ArcFace，512 维）时代模型文件与
+  downloader/validator 已删除。
+- **ONNX 为质量门回退**：`fallbackToOnnxEnabled` 开关（`Provider.swift:46-60`）
+  在 0.3c 质量对账（ARI/NMI）未过时打开，供上层决定是否仍走旧 ONNX 管线；
+  当前真实数据集质量门按范围外跳过，故开关保持关闭。
+- 首次启动按数据库写入 768 维 marker 并为既有工作区装配带 dedupe/checkpoint 的
+  `face.analyze` 重跑任务（`GatherApp.prepareNativeEmbeddingRerun`），特征空间
+  迁移不静默。
+
+### 事实依据
+
+- macOS 26 SDK 公开 API **无 `VNGenerateFaceEmbeddingsRequest`**（tbd/头文件/
+  swiftinterface 均无），人脸区域裁剪 + `VNGenerateImageFeaturePrintRequest`
+  rev2 是系统唯一公开的通用特征编码路径；**Vision 不提供公开的 face-embedding
+  API**，768 维为系统固定输出维度。
+- 768 维与 ONNX 512 维特征空间不兼容 → 特征迁移必须全量重算，已由重跑任务装配
+  承接（模型版本指纹沿用 `analysis_signature` 机制）。
+
+### 可选演进
+
+1. **ONNX → CoreML 折算**：若真实数据质量门证明 Vision 检测/编码不达标，可将
+   原 ONNX 模型转 CoreML 作为一等提供方（而非外部回退），获得 ANE 加速；
+2. **移除回退**：若质量门通过（或确认 Vision 质量可接受），删除
+   `fallbackToOnnxEnabled` 开关与相关兼容代码，收敛为纯 Vision 单提供方。
+
+### 风险
+
+- 768 维 embedding 的内存/存储成本高于 512 维（约 +50% 向量表），10 万张脸量级
+  需按基准复核；HNSW/LSH 索引维度参数已兼容任意维（对账门禁用 512 维合成数据，
+  768 维 recall 需补基准）。
+- 回退开关长期悬置会累积死代码与双路径测试成本：质量门是发布前置，建议随发布
+  门禁一并裁决（保留或移除）。

@@ -1,5 +1,6 @@
 // desktop/native/gather-core/Sources/GatherCore/Database/DB.swift
-// 数据库层基座（1.2）：系统 SQLite3 C API 的薄包装，Linux/macOS 双平台可用。
+// 数据库层基座（1.2）：系统 SQLite3 C API 的薄包装（Package 目标平台为 macOS 14+，
+// 仅作本地 SQLite 绑定、不依赖平台专属 API）。
 // 决策（2026-08-09）：计划书原拟 SQLite.swift，但其全部版本携带 Apple 专属
 // SQLCipher 二进制 target，Linux SwiftPM 无法解析，故改用 `import CSQLite` 自包装，
 // 保持零外部依赖，API 语义对齐 better-sqlite3（TS 侧 db/database.ts 的对应物）。

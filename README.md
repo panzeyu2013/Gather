@@ -8,7 +8,7 @@ Gather turns folders and Capture One selections into focused workspaces for
 browsing, culling, similarity review, face keywording, and reliable metadata
 writeback.
 
-[简体中文](docs/README_CN.md) · [Features](#core-workflows) · [Quick start](#quick-start)
+[简体中文](docs/README.md) · [Features](#core-workflows) · [Quick start](#quick-start)
 
 [![CI](https://github.com/panzeyu2013/Gather/actions/workflows/ci.yml/badge.svg)](https://github.com/panzeyu2013/Gather/actions/workflows/ci.yml)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-252525?logo=apple)
@@ -92,16 +92,15 @@ operations retain explicit confirmation checks, photo paths are resolved from
 database-owned assets, and metadata outbox rows support retries and conflict
 handling.
 
-See [Architecture Decisions](docs/ADR.md), [Testing guide](docs/TEST.md), and
-[Native development analysis](docs/NATIVE-DEVELOPMENT-ANALYSIS.md).
+See [Architecture Decisions](docs/ADR.md), [Development guide](docs/DEVELOPMENT.md)
+(tests and IPC contract), and [Roadmap](docs/ROADMAP.md).
 
 ## Documentation
 
 - [Development and contributing guide](docs/DEVELOPMENT.md)
-- [Testing guide](docs/TEST.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decisions](docs/ADR.md)
-- [Native development analysis](docs/NATIVE-DEVELOPMENT-ANALYSIS.md)
+- [简体中文文档](docs/README.md)
 
 ## Contributing
 

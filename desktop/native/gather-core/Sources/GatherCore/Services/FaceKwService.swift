@@ -902,6 +902,12 @@ public final class FaceKwService {
 
     // ─────────────────────────── 绑定 / 合并 / 成员 ───────────────────────────
 
+    /// 批量照片的人脸观测计数（photo.id → 数量），供宿主 photo 列表分页附带
+    /// faceCount（TS photo.ipc.ts assemblePhotos 的人脸计数小查询下沉）。
+    public func faceCounts(sessionId: String, photoIds: [String]) throws -> [String: Int] {
+        try faceRepo.countsByPhoto(sessionId: sessionId, photoIds: photoIds)
+    }
+
     /// TS: bindCluster（fkw.bind）。绑定后把角色桥接进人物库（best-effort）。
     public func bindCluster(sessionId: String, clusterId: Int64, roleName: String, keywords: [String]) throws {
         let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)

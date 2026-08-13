@@ -19,6 +19,8 @@ struct GatherApp: App {
     @State private var galleryProvider: LiveGalleryDataProvider?
     @State private var similarityProvider: LiveSimilarityDataProvider?
     @State private var personsProvider: LivePersonsDataProvider?
+    /// bootstrap 失败态：展示错误并提供重试（不再永久停留「初始化中…」）。
+    @State private var bootstrapError: String?
 
     var body: some Scene {
         WindowGroup {
@@ -32,9 +34,21 @@ struct GatherApp: App {
                         similarityProvider: similarityProvider,
                         personsProvider: personsProvider
                     )
+                } else if let bootstrapError {
+                    GatherEmptyState(
+                        icon: "exclamationmark.triangle",
+                        title: GatherLocalization.l("初始化失败"),
+                        message: bootstrapError
+                    ) {
+                        Button(GatherLocalization.l("重试")) {
+                            Task { await bootstrap() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .frame(minWidth: 1100, minHeight: 720)
                 } else {
-                    Text("初始化中…")
-                        .frame(minWidth: 1200, minHeight: 800)
+                    Text(GatherLocalization.l("初始化中…"))
+                        .frame(minWidth: 1100, minHeight: 720)
                 }
             }
             .task {
@@ -50,6 +64,7 @@ struct GatherApp: App {
     /// 启动装配：打开/迁移数据库 → 构建服务 → 创建原生路由。
     private func bootstrap() async {
         guard router == nil else { return }
+        await MainActor.run { bootstrapError = nil }
         do {
             let applicationSupport = try FileManager.default.url(
                 for: .applicationSupportDirectory,
@@ -99,11 +114,15 @@ struct GatherApp: App {
                     files,
                     router: router,
                     source: "capture-one",
-                    sourceLabel: GatherLocalization.l("Capture One 文件", "Capture One files")
+                    sourceLabel: GatherLocalization.l("Capture One 文件")
                 )
             }
             appDelegate.onCaptureOneImport = {
                 try await captureOneBridge.selectedPhotoPaths()
+            }
+            // ADR-023：退出前优雅停机（排空写回 + 关闭 SQLite）。
+            appDelegate.onPrepareForTermination = {
+                await router.prepareForTermination()
             }
             await MainActor.run {
                 self.router = router
@@ -112,9 +131,14 @@ struct GatherApp: App {
                 self.galleryProvider = galleryProvider
                 self.similarityProvider = similarityProvider
                 self.personsProvider = personsProvider
+                self.bootstrapError = nil
             }
         } catch {
             GatherLogger.log("bootstrap failed: \(error)", level: .error)
+            let message = NativeCommandClient.message(for: error)
+            await MainActor.run {
+                self.bootstrapError = message
+            }
         }
     }
 
@@ -221,13 +245,13 @@ struct GatherApp: App {
     /// 对齐旧版 app.c1ImportName：C1 导入无公共父目录时使用
     /// 「C1 导入 M/D H:mm」（分钟补零）；其他来源回退「导入照片」。
     private static func defaultImportName(source: String) -> String {
-        guard source == "capture-one" else { return "导入照片" }
+        guard source == "capture-one" else { return GatherLocalization.l("导入照片") }
         let now = Date()
         let calendar = Calendar.current
         let month = calendar.component(.month, from: now)
         let day = calendar.component(.day, from: now)
         let hour = calendar.component(.hour, from: now)
         let minute = calendar.component(.minute, from: now)
-        return "C1 导入 \(month)/\(day) \(hour):\(String(format: "%02d", minute))"
+        return String(format: GatherLocalization.l("C1 导入 %@"), "\(month)/\(day) \(hour):\(String(format: "%02d", minute))")
     }
 }

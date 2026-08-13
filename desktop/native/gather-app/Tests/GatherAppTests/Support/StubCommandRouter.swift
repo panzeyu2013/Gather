@@ -30,6 +30,6 @@ final class StubCommandRouter: CommandRouter, @unchecked Sendable {
         completion: @escaping (WebResponse) -> Void
     ) {
         let table = asyncResponses ?? responses
-        completion(WebResponse(id: command, ok: true, data: table[command] ?? .null))
+        completion(WebResponse(ok: true, data: table[command] ?? .null))
     }
 }

@@ -10,6 +10,20 @@ import SwiftUI
 import AppKit
 import GatherCore
 
+private let avatarInitialOnAccent = Color(nsColor: NSColor(name: nil) { appearance in
+    let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    return isDark
+        ? NSColor(srgbRed: 61 / 255, green: 56 / 255, blue: 51 / 255, alpha: 1)
+        : NSColor.white
+})
+
+private let avatarInitialOnSoft = Color(nsColor: NSColor(name: nil) { appearance in
+    let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    return isDark
+        ? NSColor.white
+        : NSColor(srgbRed: 61 / 255, green: 56 / 255, blue: 51 / 255, alpha: 1)
+})
+
 struct PersonsView: View {
     @Bindable var viewModel: PersonsViewModel
     let onReview: (String) -> Void
@@ -30,8 +44,8 @@ struct PersonsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = viewModel.actionError {
-                NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error)
+            if let error = viewModel.actionError, !showCreate {
+                NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
             }
             HStack(spacing: 0) {
                 listPane
@@ -54,7 +68,7 @@ struct PersonsView: View {
     private var listPane: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("人脸库").font(.system(size: 24, weight: .bold))
+                Text(GatherLocalization.l("人脸库")).font(.largeTitle.weight(.bold))
                 Spacer()
                 // 对齐 TS Persons/index.tsx：搜索与新建按钮仅在有人物时展示，
                 // 空态由 emptyState 提供新建 CTA。
@@ -62,13 +76,13 @@ struct PersonsView: View {
                     Button { showCreate = true } label: {
                         Image(systemName: "plus")
                     }
-                    .help("新建人物")
+                    .help(GatherLocalization.l("新建人物"))
                 }
             }
             .padding(16)
 
             if !viewModel.persons.isEmpty {
-                TextField("搜索姓名…", text: $viewModel.searchText)
+                TextField(GatherLocalization.l("搜索姓名…"), text: $viewModel.searchText)
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 10)
@@ -76,7 +90,7 @@ struct PersonsView: View {
 
             listContent
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color.gatherBackgroundSecondary)
     }
 
     @ViewBuilder
@@ -86,7 +100,7 @@ struct PersonsView: View {
             // 对齐 TS persons.loading = "加载中..."；省略号按全站风格统一为 "…"。
             VStack(spacing: 10) {
                 ProgressView()
-                Text("加载中…")
+                Text(GatherLocalization.l("加载中…"))
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,12 +108,12 @@ struct PersonsView: View {
             VStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 28))
-                    .foregroundStyle(.orange)
-                Text("加载失败：\(error)")
+                    .foregroundStyle(GatherTheme.warning)
+                Text(String(format: GatherLocalization.l("加载失败：%@"), error))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button("重试") { Task { await viewModel.load() } }
+                Button(GatherLocalization.l("重试")) { Task { await viewModel.load() } }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(24)
@@ -116,6 +130,13 @@ struct PersonsView: View {
                         PersonListRow(person: person, selected: viewModel.selected?.id == person.id)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(GatherLocalization.l("打开")) {
+                            viewModel.select(person.id)
+                        }
+                    }
+                    .accessibilityLabel(person.name)
+                    .accessibilityAddTraits(viewModel.selected?.id == person.id ? [.isSelected] : [])
                 }
                 .listStyle(.sidebar)
             }
@@ -124,15 +145,12 @@ struct PersonsView: View {
 
     /// 对齐 TS persons.emptyTitle / persons.emptyHint / persons.new。
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "person.2")
-                .font(.system(size: 34))
-                .foregroundStyle(.secondary)
-            Text("暂无人物").font(.headline)
-            Text("新建人物以开始建立人脸库")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("新建人物") { showCreate = true }
+        GatherEmptyState(
+            icon: "person.2",
+            title: GatherLocalization.l("暂无人物"),
+            message: GatherLocalization.l("新建人物以开始建立人脸库")
+        ) {
+            Button(GatherLocalization.l("新建人物")) { showCreate = true }
                 .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -141,15 +159,11 @@ struct PersonsView: View {
 
     /// 对齐 TS persons.noMatch / persons.noMatchHint。
     private var noMatchState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 28))
-                .foregroundStyle(.secondary)
-            Text("未找到匹配的人物").font(.headline)
-            Text("尝试其他关键词")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
+        GatherEmptyState(
+            icon: "magnifyingglass",
+            title: GatherLocalization.l("未找到匹配的人物"),
+            message: GatherLocalization.l("尝试其他关键词")
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
     }
@@ -166,11 +180,11 @@ struct PersonsView: View {
         } else {
             VStack(spacing: 12) {
                 Image(systemName: "person.2")
-                    .font(.system(size: 38))
+                    .font(.system(size: 40))
                     .foregroundStyle(.secondary)
-                Text("选择一个人物")
+                Text(GatherLocalization.l("选择一个人物"))
                     .foregroundStyle(.secondary)
-                Button("新建人物") { showCreate = true }
+                Button(GatherLocalization.l("新建人物")) { showCreate = true }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -189,16 +203,16 @@ private struct PersonListRow: View {
                 .clipShape(Circle())
             VStack(alignment: .leading, spacing: 3) {
                 Text(person.name).lineLimit(1)
-                Text("\(person.photoCount) 张照片 · \(person.sessionCount) 个工作区")
-                    .font(.caption)
+                Text(String(format: GatherLocalization.l("%lld 张照片 · %lld 个工作区"), person.photoCount, person.sessionCount))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Spacer()
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
         .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder
@@ -209,8 +223,10 @@ private struct PersonListRow: View {
             Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
         } else {
             ZStack {
-                Color.secondary.opacity(0.12)
-                Text(String(person.name.prefix(1))).font(.headline)
+                GatherTheme.primarySoft
+                Text(String(person.name.prefix(1)))
+                    .font(.headline)
+                    .foregroundStyle(avatarInitialOnSoft)
             }
         }
     }
@@ -233,7 +249,7 @@ private struct PersonDetailView: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.left")
-                    Text("返回人脸库")
+                    Text(GatherLocalization.l("返回人脸库"))
                 }
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -245,46 +261,49 @@ private struct PersonDetailView: View {
             HStack(alignment: .center, spacing: 16) {
                 avatar
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("人物详情").font(.caption).foregroundStyle(.secondary)
+                    Text(GatherLocalization.l("人物详情")).font(.footnote).foregroundStyle(.secondary)
                     Text(person.name).font(.largeTitle.weight(.bold))
-                    Text("\(person.totalPhotoCount) 张照片 · \(person.sessionCount) 个工作区")
+                    Text(String(format: GatherLocalization.l("%lld 张照片 · %lld 个工作区"), person.totalPhotoCount, person.sessionCount))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("删除", role: .destructive) { showDelete = true }
+                Button(GatherLocalization.l("删除"), role: .destructive) { showDelete = true }
             }
             .padding(24)
 
             Form {
-                Section("基本信息") {
-                    TextField("名称", text: $name)
-                    TextField("备注", text: $notes, axis: .vertical)
+                Section(GatherLocalization.l("基本信息")) {
+                    TextField(GatherLocalization.l("名称"), text: $name)
+                    TextField(GatherLocalization.l("备注"), text: $notes, axis: .vertical)
                         .lineLimit(2...5)
                     HStack {
                         Spacer()
-                        Button("保存") {
+                        Button(GatherLocalization.l("保存")) {
                             Task {
                                 let ok = await viewModel.saveSelected(name: name, notes: notes)
                                 if ok {
-                                    GatherToastCenter.shared.show(type: .success, message: "人物信息已保存")
+                                    GatherToastCenter.shared.show(type: .success, message: GatherLocalization.l("人物信息已保存"))
                                 } else {
-                                    GatherToastCenter.shared.show(type: .error, message: viewModel.actionError ?? "保存失败")
+                                    // 错误已由就近 toast 呈现；清空 actionError，
+                                    // 避免页面级 NativeBanner 同源重复提示。
+                                    GatherToastCenter.shared.show(type: .error, message: viewModel.actionError ?? GatherLocalization.l("保存失败"))
+                                    viewModel.clearActionError()
                                 }
                             }
                         }
                         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-                Section("人脸匹配") {
+                Section(GatherLocalization.l("人脸匹配")) {
                     if person.keywords.isEmpty {
-                        Text("尚未设置人物关键字").foregroundStyle(.secondary)
+                        Text(GatherLocalization.l("尚未设置人物关键字")).foregroundStyle(.secondary)
                     } else {
                         Text(person.keywords.joined(separator: ", "))
                             .font(.callout)
                     }
-                    LabeledContent("匹配阈值", value: String(format: "%.2f", person.matchThreshold))
+                    LabeledContent(GatherLocalization.l("匹配阈值"), value: String(format: "%.2f", person.matchThreshold))
                     if !person.photos.isEmpty {
-                        Button("在当前工作区复核人脸") {
+                        Button(GatherLocalization.l("在当前工作区复核人脸")) {
                             // 对齐旧版 PersonDetail.tsx:158-162：携带
                             // ?role=encodeURIComponent(person.name) 预筛选；
                             // 未注入 onReviewFaceRole 时回退旧行为。
@@ -298,17 +317,21 @@ private struct PersonDetailView: View {
                         }
                     }
                 }
-                Section("记录") {
-                    LabeledContent("创建时间", value: Self.dateText(person.createdAt))
-                    LabeledContent("更新时间", value: Self.dateText(person.updatedAt))
+                Section(GatherLocalization.l("记录")) {
+                    LabeledContent(GatherLocalization.l("创建时间"), value: Self.dateText(person.createdAt))
+                    LabeledContent(GatherLocalization.l("更新时间"), value: Self.dateText(person.updatedAt))
                 }
             }
             .formStyle(.grouped)
 
             Divider()
-            Text("关联照片").font(.headline).padding(.horizontal, 24).padding(.top, 16)
+                .padding(.horizontal, 24)
+            Text(GatherLocalization.l("关联照片")).font(.headline)
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
             if person.photos.isEmpty {
-                Text("暂无关联照片").foregroundStyle(.secondary).padding(24)
+                Text(GatherLocalization.l("暂无关联照片")).foregroundStyle(.secondary).padding(24)
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
@@ -316,8 +339,8 @@ private struct PersonDetailView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 PhotoThumbnailView(path: photo.filepath, size: 240, placeholderSize: CGSize(width: 150, height: 110))
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
-                                Text(photo.filename).font(.caption).lineLimit(1)
-                                Text(photo.sessionName).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                Text(photo.filename).font(.footnote).lineLimit(1)
+                                Text(photo.sessionName).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                     }
@@ -333,20 +356,23 @@ private struct PersonDetailView: View {
             name = person.name
             notes = person.notes
         }
-        .confirmationDialog("删除人物？", isPresented: $showDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
+        .alert(GatherLocalization.l("删除人物？"), isPresented: $showDelete) {
+            Button(GatherLocalization.l("删除"), role: .destructive) {
                 Task {
                     let ok = await viewModel.deleteSelected()
                     if ok {
-                        GatherToastCenter.shared.show(type: .success, message: "人物已删除")
+                        GatherToastCenter.shared.show(type: .success, message: GatherLocalization.l("人物已删除"))
                     } else {
-                        GatherToastCenter.shared.show(type: .error, message: viewModel.actionError ?? "删除失败")
+                        // 错误已由就近 toast 呈现；清空 actionError，
+                        // 避免页面级 NativeBanner 同源重复提示。
+                        GatherToastCenter.shared.show(type: .error, message: viewModel.actionError ?? GatherLocalization.l("删除失败"))
+                        viewModel.clearActionError()
                     }
                 }
             }
-            Button("取消", role: .cancel) {}
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text("确定要删除「\(person.name)」吗？此操作将从人脸库中移除该人物及其所有关联的人脸数据。")
+            Text(String(format: GatherLocalization.l("确定要删除「%@」吗？此操作将从人脸库中移除该人物及其所有关联的人脸数据。"), person.name))
         }
     }
 
@@ -367,9 +393,9 @@ private struct PersonDetailView: View {
             ZStack {
                 Circle().fill(Color.accentColor)
                 Text(String(person.name.prefix(1)))
-                    .font(.system(size: 36, weight: .bold))
-                    // 暗色模式 primary 为亮橙，白字对比不足 → 深棕。
-                    .foregroundStyle(Color(red: 61 / 255, green: 56 / 255, blue: 51 / 255))
+                    .font(.largeTitle.weight(.bold))
+                    // 首字对比色随外观切换：浅色白字，暗色主色为亮橙 → 深棕字。
+                    .foregroundStyle(avatarInitialOnAccent)
             }
             .frame(width: 80, height: 80)
         }
@@ -409,20 +435,20 @@ private struct CreatePersonSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("新建人物").font(.title2.weight(.semibold))
-            TextField("输入人物姓名", text: $name)
+            Text(GatherLocalization.l("新建人物")).font(.title2.weight(.semibold))
+            TextField(GatherLocalization.l("输入人物姓名"), text: $name)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { submit() }
             // 创建失败时 sheet 保持打开并在下方展示错误。
             if let errorText = viewModel.actionError, !errorText.isEmpty {
-                Text("操作失败：\(errorText)")
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                Text(String(format: GatherLocalization.l("操作失败：%@"), errorText))
+                    .font(.footnote)
+                    .foregroundStyle(GatherTheme.error)
             }
             HStack {
                 Spacer()
-                Button("取消", role: .cancel) { dismiss() }
-                Button("创建") { submit() }
+                Button(GatherLocalization.l("取消"), role: .cancel) { dismiss() }
+                Button(GatherLocalization.l("创建")) { submit() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -436,10 +462,10 @@ private struct CreatePersonSheet: View {
         guard !value.isEmpty else { return }
         Task {
             if await onCreate(value) {
-                GatherToastCenter.shared.show(type: .success, message: "人物已创建")
+                GatherToastCenter.shared.show(type: .success, message: GatherLocalization.l("人物已创建"))
                 dismiss()
             } else {
-                GatherToastCenter.shared.show(type: .error, message: viewModel.actionError ?? "创建失败")
+                GatherToastCenter.shared.show(type: .error, message: viewModel.actionError ?? GatherLocalization.l("创建失败"))
             }
         }
     }

@@ -31,9 +31,9 @@ public final class CullingViewModel {
 
         var title: String {
             switch self {
-            case .all: return "全部照片"
-            case .filtered: return "按筛选"
-            case .similarityGroup: return "相似度分组"
+            case .all: return GatherLocalization.l("全部照片")
+            case .filtered: return GatherLocalization.l("按筛选")
+            case .similarityGroup: return GatherLocalization.l("相似度分组")
             }
         }
     }
@@ -128,6 +128,8 @@ public final class CullingViewModel {
     private(set) public var similarityGroups: [CullingGroup] = []
     public var scopeMode: ScopeMode = .all
     public private(set) var selectedSimilarityGroupId = ""
+    private var pageVersion = 0
+    private var refreshTask: Task<Void, Never>?
 
     public init(sessionId: String, router: CommandRouter) {
         self.sessionId = sessionId
@@ -215,7 +217,7 @@ public final class CullingViewModel {
             ])
             let job = try data.decoded(as: AnalysisJobData.self)
             qualityJob = job
-            notice = "技术质量分析已排队"
+            notice = GatherLocalization.l("技术质量分析已排队")
             while !Task.isCancelled && isActive {
                 do {
                     try await Task.sleep(for: .milliseconds(500))
@@ -230,15 +232,30 @@ public final class CullingViewModel {
                 case .queued, .running, .cancelling:
                     continue
                 case .succeeded:
-                    notice = "技术质量分析已完成"
+                    notice = GatherLocalization.l("技术质量分析已完成")
                     loadPage(reset: true)
                     return
-                case .failed, .cancelled, .interrupted:
+                case .failed, .interrupted:
                     errorMessage = GatherLocalization.jobErrorMessage(latest.errorMessage)
+                    loadPage(reset: true)
+                    return
+                case .cancelled:
+                    notice = GatherLocalization.l("质量分析已取消")
                     loadPage(reset: true)
                     return
                 }
             }
+        } catch {
+            errorMessage = NativeCommandClient.message(for: error)
+        }
+    }
+
+    /// 取消技术质量分析任务（jobs.cancel 通道）。
+    public func cancelQualityAnalysis() {
+        guard let job = qualityJob else { return }
+        do {
+            _ = try client.execute("jobs.cancel", params: ["jobId": .string(job.id)])
+            notice = GatherLocalization.l("已请求取消质量分析")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -268,7 +285,7 @@ public final class CullingViewModel {
             ])
             navigationGroups = try data.decoded(as: [NavigationGroup].self)
             normalizeNavigationSelection()
-            notice = dryRun ? "已生成导航组预览，未写入工作区" : "导航组已分析并保存"
+            notice = dryRun ? GatherLocalization.l("已生成导航组预览，未写入工作区") : GatherLocalization.l("导航组已分析并保存")
             errorMessage = nil
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -290,7 +307,7 @@ public final class CullingViewModel {
 
     public func splitNavigation(beforePhotoId: String) {
         guard !selectedNavigationGroupId.isEmpty, !beforePhotoId.isEmpty else {
-            errorMessage = "请选择导航组和拆分位置"
+            errorMessage = GatherLocalization.l("请选择导航组和拆分位置")
             return
         }
         do {
@@ -300,7 +317,7 @@ public final class CullingViewModel {
                 "beforePhotoId": .string(beforePhotoId),
             ]).decoded(as: [NavigationGroup].self)
             normalizeNavigationSelection()
-            notice = "导航组已拆分"
+            notice = GatherLocalization.l("导航组已拆分")
             errorMessage = nil
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -309,7 +326,7 @@ public final class CullingViewModel {
 
     public func mergeSelectedNavigationGroups() {
         guard selectedNavigationGroupIds.count >= 2 else {
-            errorMessage = "请选择至少两个导航组"
+            errorMessage = GatherLocalization.l("请选择至少两个导航组")
             return
         }
         do {
@@ -319,7 +336,7 @@ public final class CullingViewModel {
             ]).decoded(as: [NavigationGroup].self)
             selectedNavigationGroupIds = []
             normalizeNavigationSelection()
-            notice = "导航组已合并"
+            notice = GatherLocalization.l("导航组已合并")
             errorMessage = nil
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -331,7 +348,7 @@ public final class CullingViewModel {
         guard let current = currentPhotoId, !current.isEmpty,
               let group = navigationGroups.first(where: { $0.id == selectedNavigationGroupId }),
               let index = group.photoIds.firstIndex(of: current), index > 0 else {
-            errorMessage = "请先定位到组内非首张照片"
+            errorMessage = GatherLocalization.l("请先定位到组内非首张照片")
             return
         }
         splitNavigation(beforePhotoId: current)
@@ -340,7 +357,7 @@ public final class CullingViewModel {
     /// 对齐旧版 keepInGroupRejectRest 的工具列入口：按相似组 id 定位组并决策。
     public func keepInGroupRejectRest(_ groupId: String, keepPhotoIds: [String], shouldAdvance: Bool = true) {
         guard let group = similarityGroups.first(where: { $0.groupId == groupId }) else {
-            errorMessage = "相似组已变化，请刷新后重试"
+            errorMessage = GatherLocalization.l("相似组已变化，请刷新后重试")
             return
         }
         decideSimilarityGroup(group, keepPhotoIds: keepPhotoIds, shouldAdvance: shouldAdvance)
@@ -360,7 +377,7 @@ public final class CullingViewModel {
         guard let selected = navigationGroups.first(where: { $0.id == selectedNavigationGroupId }),
               let index = navigationGroups.firstIndex(where: { $0.id == selected.id }),
               let previous = navigationGroups[..<index].reversed().first(where: { $0.type == selected.type }) else {
-            errorMessage = "没有可合并的前一个同类组"
+            errorMessage = GatherLocalization.l("没有可合并的前一个同类组")
             return
         }
         selectedNavigationGroupIds = [previous.id, selected.id]
@@ -381,6 +398,203 @@ public final class CullingViewModel {
     public func loadMore() {
         guard !isLoading, page?.nextRowId != nil else { return }
         loadPage(reset: false)
+    }
+
+    private struct RefreshSnapshot: Sendable {
+        var page: CullingPage?
+        var summary: CullingSummary?
+        var groups: [CullingGroup]?
+        var syncStatus: MetadataSyncSummary?
+        var history: [CullingHistoryOperation]?
+        var conflicts: [MetadataConflict]?
+        var pageError: String?
+        var auxError: String?
+    }
+
+    private func applyDecisionStates(_ states: [AssetCullingState]) {
+        guard let page else { return }
+        let byId = Dictionary(uniqueKeysWithValues: states.map { ($0.photoId, $0) })
+        var assets = page.assets
+        for index in assets.indices where byId[assets[index].photo.id] != nil {
+            assets[index].state = byId[assets[index].photo.id]!
+        }
+        pageVersion += 1
+        self.page = CullingPage(assets: assets, nextRowId: page.nextRowId, total: page.total)
+    }
+
+    private func markHistoryOperation(_ id: Int, undone: Bool) {
+        guard let index = history.firstIndex(where: { $0.id == id }) else { return }
+        let operation = history[index]
+        history[index] = CullingHistoryOperation(
+            id: operation.id,
+            sessionId: operation.sessionId,
+            entries: operation.entries,
+            undone: undone,
+            createdAt: operation.createdAt
+        )
+    }
+
+    private func prependHistoryOperation(
+        id: Int,
+        photoIds: [String],
+        beforeByPhoto: [String: CullingStateSnapshot],
+        afterByPhoto: [String: CullingStateSnapshot],
+        revisionsByPhoto: [String: Int],
+        fields: [CullingUpdatePatchField]
+    ) {
+        let entries: [CullingHistoryEntry] = photoIds.compactMap { photoId in
+            guard let before = beforeByPhoto[photoId], let after = afterByPhoto[photoId] else { return nil }
+            return CullingHistoryEntry(
+                photoId: photoId,
+                before: before,
+                after: after,
+                expectedRevision: revisionsByPhoto[photoId] ?? 0,
+                fields: fields
+            )
+        }
+        guard !entries.isEmpty else { return }
+        history.insert(CullingHistoryOperation(
+            id: id,
+            sessionId: sessionId,
+            entries: entries,
+            undone: false,
+            createdAt: Date().ISO8601Format()
+        ), at: 0)
+    }
+
+    private func patchFields(_ patch: CullingUpdatePatch) -> [CullingUpdatePatchField] {
+        var fields: [CullingUpdatePatchField] = []
+        if patch.rating != nil { fields.append(.rating) }
+        if patch.pickState != nil { fields.append(.pickState) }
+        if patch.colorLabel != nil { fields.append(.colorLabel) }
+        return fields
+    }
+
+    private func snapshot(of state: AssetCullingState) -> CullingStateSnapshot {
+        CullingStateSnapshot(pickState: state.pickState, rating: state.rating, colorLabel: state.colorLabel)
+    }
+
+    private func refreshSilently() {
+        refreshTask?.cancel()
+        guard page != nil else { return }
+        let version = pageVersion
+        let client = self.client
+        let sessionId = self.sessionId
+        let scope: CullingScope
+        switch scopeMode {
+        case .all: scope = .all
+        case .filtered: scope = .filtered
+        case .similarityGroup: scope = .similarityGroup
+        }
+        let filters = filtersForCurrentState()
+        let groupId = selectedSimilarityGroupId
+        refreshTask = Task.detached { [client, sessionId, scope, filters, groupId, version] in
+            let snapshot = Self.fetchSnapshot(
+                client: client,
+                sessionId: sessionId,
+                scope: scope,
+                filters: filters,
+                groupId: groupId
+            )
+            let cancelled = Task.isCancelled
+            await MainActor.run {
+                guard !cancelled else { return }
+                self.applySnapshot(snapshot, version: version)
+            }
+        }
+    }
+
+    private func applySnapshot(_ snapshot: RefreshSnapshot, version: Int) {
+        guard version == pageVersion else { return }
+        lastSyncError = snapshot.auxError ?? snapshot.pageError
+        if let page = snapshot.page {
+            selectedPhotoIds.formIntersection(loadedPhotoIds)
+            loadedPhotoIds = Set(page.assets.map(\.photo.id))
+            self.page = page
+            if let current = currentPhotoId, !page.assets.contains(where: { $0.photo.id == current }) {
+                currentPhotoId = page.assets.first?.photo.id
+            }
+            if currentPhotoId == nil {
+                currentPhotoId = page.assets.first?.photo.id
+            }
+            errorMessage = nil
+        }
+        if let summary = snapshot.summary { self.summary = summary }
+        if let groups = snapshot.groups { similarityGroups = groups }
+        if !similarityGroups.contains(where: { $0.groupId == selectedSimilarityGroupId }) {
+            selectedSimilarityGroupId = ""
+        }
+        if let syncStatus = snapshot.syncStatus { self.syncStatus = syncStatus }
+        if let history = snapshot.history { self.history = history }
+        if let conflicts = snapshot.conflicts { self.conflicts = conflicts }
+    }
+
+    nonisolated private static func fetchSnapshot(
+        client: NativeCommandClient,
+        sessionId: String,
+        scope: CullingScope,
+        filters: CullingFilters?,
+        groupId: String
+    ) -> RefreshSnapshot {
+        var snapshot = RefreshSnapshot()
+        var params: [String: JSONValue] = [
+            "sessionId": .string(sessionId),
+            "scope": .string(scope.rawValue),
+            "limit": .number(500),
+        ]
+        if scope == .filtered, let filters {
+            params["filters"] = try? JSONValue(from: filters)
+        }
+        if scope == .similarityGroup, !groupId.isEmpty {
+            params["groupId"] = .string(groupId)
+        }
+        do {
+            snapshot.page = try client.execute("culling.list_page", params: params).decoded(as: CullingPage.self)
+        } catch {
+            snapshot.pageError = NativeCommandClient.message(for: error)
+        }
+        guard !Task.isCancelled else { return snapshot }
+        do {
+            snapshot.summary = try client.execute("culling.summary", params: [
+                "sessionId": .string(sessionId),
+            ]).decoded(as: CullingSummary.self)
+        } catch {
+            snapshot.auxError = snapshot.auxError ?? NativeCommandClient.message(for: error)
+        }
+        guard !Task.isCancelled else { return snapshot }
+        do {
+            snapshot.groups = try client.execute("culling.groups", params: [
+                "sessionId": .string(sessionId),
+            ]).decoded(as: [CullingGroup].self)
+        } catch {
+            snapshot.auxError = snapshot.auxError ?? NativeCommandClient.message(for: error)
+        }
+        guard !Task.isCancelled else { return snapshot }
+        do {
+            snapshot.syncStatus = try client.execute("culling.sync_status", params: [
+                "sessionId": .string(sessionId),
+            ]).decoded(as: MetadataSyncSummary.self)
+        } catch {
+            snapshot.auxError = snapshot.auxError ?? NativeCommandClient.message(for: error)
+        }
+        guard !Task.isCancelled else { return snapshot }
+        do {
+            snapshot.history = try client.execute("culling.history", params: [
+                "sessionId": .string(sessionId),
+                "limit": .number(100),
+            ]).decoded(as: [CullingHistoryOperation].self)
+        } catch {
+            snapshot.auxError = snapshot.auxError ?? NativeCommandClient.message(for: error)
+        }
+        guard !Task.isCancelled else { return snapshot }
+        do {
+            snapshot.conflicts = try client.execute("metadata.conflicts", params: [
+                "sessionId": .string(sessionId),
+            ]).decoded(as: [MetadataConflict].self)
+        } catch {
+            snapshot.auxError = snapshot.auxError ?? NativeCommandClient.message(for: error)
+        }
+        return snapshot
     }
 
     private func loadPage(reset: Bool) {
@@ -411,6 +625,7 @@ public final class CullingViewModel {
             }
             let nextPage = try client.execute("culling.list_page", params: params).decoded(as: CullingPage.self)
             let newIds = Set(nextPage.assets.map { $0.photo.id })
+            pageVersion += 1
             if reset || page == nil {
                 // 对齐 TS：update/batchUpdate/undo/redo 后整页刷新不清空选择，
                 // 仅在选择已失效（不在本次会话已加载的照片全集）时清空对应条目。
@@ -527,7 +742,7 @@ public final class CullingViewModel {
         guard !keepPhotoIds.isEmpty,
               keepPhotoIds.count < group.images.count,
               Set(keepPhotoIds).isSubset(of: validIds) else {
-            errorMessage = "请选择当前相似度组中 1 至 \(max(1, group.images.count - 1)) 张照片"
+            errorMessage = String(format: GatherLocalization.l("请选择当前相似度组中 1 至 %lld 张照片"), max(1, group.images.count - 1))
             return
         }
         do {
@@ -536,7 +751,7 @@ public final class CullingViewModel {
                 "groupId": .string(group.groupId),
                 "keepPhotoIds": .array(keepPhotoIds.map(JSONValue.string)),
             ])
-            notice = "已更新相似度组挑片决策"
+            notice = GatherLocalization.l("已更新相似度组挑片决策")
             loadPage(reset: true)
             if shouldAdvance && autoAdvance {
                 jumpToNextGroup(after: group)
@@ -584,34 +799,81 @@ public final class CullingViewModel {
     /// 单张更新；nextPhotoId 非空时在刷新前预置当前照片（自动前进目标）。
     public func update(_ asset: CullingAsset, patch: CullingUpdatePatch, nextPhotoId: String? = nil) {
         do {
-            _ = try client.execute("culling.update", params: [
+            let data = try client.execute("culling.update", params: [
                 "sessionId": .string(sessionId),
                 "photoId": .string(asset.photo.id),
                 "expectedRevision": .number(Double(asset.state.revision)),
                 "patch": try JSONValue(from: patch),
             ])
+            let result = try data.decoded(as: CullingUpdateResult.self)
+            let before = page?.assets
+                .first(where: { $0.photo.id == asset.photo.id })
+                .map { snapshot(of: $0.state) }
+            applyDecisionStates(result.states)
+            if let id = result.historyOperationId, let before {
+                let afterByPhoto = Dictionary(
+                    uniqueKeysWithValues: result.states.map { ($0.photoId, snapshot(of: $0)) }
+                )
+                let revisionsByPhoto = Dictionary(
+                    uniqueKeysWithValues: result.states.map { ($0.photoId, $0.revision) }
+                )
+                prependHistoryOperation(
+                    id: id,
+                    photoIds: [asset.photo.id],
+                    beforeByPhoto: [asset.photo.id: before],
+                    afterByPhoto: afterByPhoto,
+                    revisionsByPhoto: revisionsByPhoto,
+                    fields: patchFields(patch)
+                )
+            }
             if let nextPhotoId { currentPhotoId = nextPhotoId }
-            loadPage(reset: true)
+            refreshSilently()
         } catch {
+            pageVersion += 1
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
     public func batchUpdate(patch: CullingUpdatePatch) {
         guard !selectedPhotoIds.isEmpty else {
-            errorMessage = "请选择至少一张照片"
+            errorMessage = GatherLocalization.l("请选择至少一张照片")
             return
         }
         do {
-            _ = try client.execute("culling.batch_update", params: [
+            let data = try client.execute("culling.batch_update", params: [
                 "sessionId": .string(sessionId),
                 "photoIds": .array(selectedPhotoIds.sorted().map(JSONValue.string)),
                 "patch": try JSONValue(from: patch),
             ])
-            notice = "已更新 \(selectedPhotoIds.count) 张照片"
-            // 刷新后仅清空失效选择，批量操作后选择保持（任务 6 要求）。
-            loadPage(reset: true)
+            let results = try data.decoded(as: [CullingUpdateResult].self)
+            let beforeByPhoto = Dictionary(
+                uniqueKeysWithValues: (page?.assets ?? []).compactMap { asset in
+                    selectedPhotoIds.contains(asset.photo.id)
+                        ? (asset.photo.id, snapshot(of: asset.state))
+                        : nil
+                }
+            )
+            applyDecisionStates(results.flatMap { $0.states })
+            let afterByPhoto = Dictionary(
+                uniqueKeysWithValues: results.flatMap(\.states).map { ($0.photoId, snapshot(of: $0)) }
+            )
+            let revisionsByPhoto = Dictionary(
+                uniqueKeysWithValues: results.flatMap(\.states).map { ($0.photoId, $0.revision) }
+            )
+            if let id = results.first?.historyOperationId {
+                prependHistoryOperation(
+                    id: id,
+                    photoIds: Array(beforeByPhoto.keys),
+                    beforeByPhoto: beforeByPhoto,
+                    afterByPhoto: afterByPhoto,
+                    revisionsByPhoto: revisionsByPhoto,
+                    fields: patchFields(patch)
+                )
+            }
+            notice = String(format: GatherLocalization.l("已更新 %lld 张照片"), selectedPhotoIds.count)
+            refreshSilently()
         } catch {
+            pageVersion += 1
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
@@ -669,7 +931,7 @@ public final class CullingViewModel {
 
     public func undo() {
         guard let operation = history.first(where: { !$0.undone }) else {
-            notice = "没有可撤销的挑片操作"
+            notice = GatherLocalization.l("没有可撤销的挑片操作")
             return
         }
         applyHistory(operation, direction: .undo)
@@ -677,7 +939,7 @@ public final class CullingViewModel {
 
     public func redo() {
         guard let operation = history.first(where: { $0.undone }) else {
-            notice = "没有可重做的挑片操作"
+            notice = GatherLocalization.l("没有可重做的挑片操作")
             return
         }
         applyHistory(operation, direction: .redo)
@@ -698,15 +960,19 @@ public final class CullingViewModel {
                     "patch": try JSONValue(from: patch),
                 ])
             }
-            _ = try client.execute("culling.apply_history", params: [
+            let data = try client.execute("culling.apply_history", params: [
                 "sessionId": .string(sessionId),
                 "entries": .array(entries),
                 "historyOperationId": .number(Double(operation.id)),
                 "direction": .string(direction.rawValue),
             ])
-            notice = direction == .undo ? "已撤销上一次挑片操作" : "已重做挑片操作"
-            loadPage(reset: true)
+            let results = try data.decoded(as: [CullingUpdateResult].self)
+            applyDecisionStates(results.flatMap { $0.states })
+            markHistoryOperation(operation.id, undone: direction == .undo)
+            notice = direction == .undo ? GatherLocalization.l("已撤销上一次挑片操作") : GatherLocalization.l("已重做挑片操作")
+            refreshSilently()
         } catch {
+            pageVersion += 1
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
@@ -720,10 +986,10 @@ public final class CullingViewModel {
             ])
             do {
                 syncStatus = try data.decoded(as: MetadataSyncSummary.self)
-                notice = "已写回 \(targetLabel(target))；请让 Capture One 重新加载元数据后确认同步"
+                notice = String(format: GatherLocalization.l("已写回 %@；请让 Capture One 重新加载元数据后确认同步"), targetLabel(target))
             } catch {
                 syncStatus = nil
-                notice = "已写回 \(targetLabel(target))，但同步状态读取失败，请刷新页面确认"
+                notice = String(format: GatherLocalization.l("已写回 %@，但同步状态读取失败，请刷新页面确认"), targetLabel(target))
             }
             loadPage(reset: true)
         } catch {
@@ -738,10 +1004,10 @@ public final class CullingViewModel {
             ])
             do {
                 syncStatus = try data.decoded(as: MetadataSyncSummary.self)
-                notice = retry ? "已重试同步队列" : "已刷新同步队列"
+                notice = retry ? GatherLocalization.l("已重试同步队列") : GatherLocalization.l("已刷新同步队列")
             } catch {
                 syncStatus = nil
-                notice = retry ? "已重试同步队列，但同步状态读取失败" : "已刷新同步队列，但同步状态读取失败"
+                notice = retry ? GatherLocalization.l("已重试同步队列，但同步状态读取失败") : GatherLocalization.l("已刷新同步队列，但同步状态读取失败")
             }
             loadPage(reset: true)
         } catch {
@@ -757,10 +1023,10 @@ public final class CullingViewModel {
             ])
             do {
                 syncStatus = try data.decoded(as: MetadataSyncSummary.self)
-                notice = "已重试失败写回项"
+                notice = GatherLocalization.l("已重试失败写回项")
             } catch {
                 syncStatus = nil
-                notice = "已重试失败写回项，但同步状态读取失败"
+                notice = GatherLocalization.l("已重试失败写回项，但同步状态读取失败")
             }
             loadPage(reset: true)
         } catch {
@@ -772,7 +1038,7 @@ public final class CullingViewModel {
         do {
             try await captureOne.reloadMetadata(sessionId: sessionId)
             reloadAcked = true
-            notice = "Capture One 已重新加载元数据，现在可以确认同步"
+            notice = GatherLocalization.l("Capture One 已重新加载元数据，现在可以确认同步")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -781,7 +1047,7 @@ public final class CullingViewModel {
     public func confirmSync() {
         do {
             _ = try client.execute("culling.confirm_sync", params: ["sessionId": .string(sessionId)])
-            notice = "已确认 Capture One 同步"
+            notice = GatherLocalization.l("已确认 Capture One 同步")
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -794,7 +1060,7 @@ public final class CullingViewModel {
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            notice = "已完成元数据同步"
+            notice = GatherLocalization.l("已完成元数据同步")
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -807,7 +1073,7 @@ public final class CullingViewModel {
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            notice = "已清理可安全删除的备份"
+            notice = GatherLocalization.l("已清理可安全删除的备份")
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -820,7 +1086,7 @@ public final class CullingViewModel {
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            notice = "已重置挑片状态"
+            notice = GatherLocalization.l("已重置挑片状态")
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -838,7 +1104,7 @@ public final class CullingViewModel {
                 "choices": .object(rawChoices),
                 "confirmed": .bool(true),
             ])
-            notice = "已处理元数据冲突"
+            notice = GatherLocalization.l("已处理元数据冲突")
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -851,9 +1117,9 @@ public final class CullingViewModel {
 
     private func targetLabel(_ target: CullingWritebackTarget) -> String {
         switch target {
-        case .rating: return "评分"
-        case .colorLabel: return "颜色标签"
-        case .keyword: return "关键字"
+        case .rating: return GatherLocalization.l("评分")
+        case .colorLabel: return GatherLocalization.l("颜色标签")
+        case .keyword: return GatherLocalization.l("关键字")
         }
     }
 }
@@ -894,14 +1160,14 @@ public struct CullingView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let error = viewModel.errorMessage { NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error) }
+            if let error = viewModel.errorMessage { NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error) }
             if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
             if viewModel.sessionId.isEmpty {
-                emptyGuide("请先打开一个工作区，再进入挑片页。")
+                emptyGuide(GatherLocalization.l("请先打开一个工作区，再进入挑片页。"))
             } else if viewModel.page == nil && viewModel.errorMessage == nil {
                 HStack {
                     Spacer()
-                    ProgressView("正在载入挑片工作台…")
+                    ProgressView(GatherLocalization.l("正在载入挑片工作台…"))
                         .controlSize(.large)
                         .padding(.vertical, 60)
                     Spacer()
@@ -910,7 +1176,7 @@ public struct CullingView: View {
                 // TS Culling.tsx:1157-1173：空列表时保留工具/筛选栏 + 空态文案。
                 VStack(spacing: 0) {
                     toolbarRow
-                    emptyGuide("当前范围没有照片。切换到\u{201c}全部照片\u{201d}或清除筛选条件。")
+                    emptyGuide(GatherLocalization.l("当前范围没有照片。切换到\u{201c}全部照片\u{201d}或清除筛选条件。"))
                 }
             } else {
                 workbench
@@ -934,33 +1200,39 @@ public struct CullingView: View {
             guard (notification.object as? String) == viewModel.sessionId else { return }
             viewModel.refreshSyncStatus()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .gatherMenuUndo)) { _ in
+            viewModel.undo()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .gatherMenuRedo)) { _ in
+            viewModel.redo()
+        }
         // 对齐旧版 UX：写回/组决策等高频操作无确认弹窗（由 API 层 confirmed:true 承担）；
         // 仅保留两个破坏性操作的确认（重置挑片 / 清理备份）。
-        .confirmationDialog("确认重置挑片状态？", isPresented: $confirmReset, titleVisibility: .visible) {
-            Button("重置", role: .destructive) { viewModel.reset() }
-            Button("取消", role: .cancel) {}
+        .alert(GatherLocalization.l("确认重置挑片状态？"), isPresented: $confirmReset) {
+            Button(GatherLocalization.l("重置"), role: .destructive) { viewModel.reset() }
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text("重置只清除 Gather 中的挑片决策，不删除照片文件。")
+            Text(GatherLocalization.l("重置只清除 Gather 中的挑片决策，不删除照片文件。"))
         }
-        .confirmationDialog("确认清理写回备份？", isPresented: $confirmCleanup, titleVisibility: .visible) {
-            Button("清理", role: .destructive) { Task { await viewModel.cleanup() } }
-            Button("取消", role: .cancel) {}
+        .alert(GatherLocalization.l("确认清理写回备份？"), isPresented: $confirmCleanup) {
+            Button(GatherLocalization.l("清理"), role: .destructive) { Task { await viewModel.cleanup() } }
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text("仅在 Capture One 已重新加载并确认同步后清理备份。")
+            Text(GatherLocalization.l("仅在 Capture One 已重新加载并确认同步后清理备份。"))
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain).nonFocusable()
+                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain).nonFocusable()
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("挑片与写回").font(.system(size: 24, weight: .bold))
-                    Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
+                    Text(GatherLocalization.l("挑片与写回")).font(.largeTitle.weight(.bold))
+                    Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
                 }
                 Spacer()
                 C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
-                Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }.nonFocusable()
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }.nonFocusable()
             }
             SessionTabBar(
                 selection: .tab(.culling),
@@ -979,164 +1251,251 @@ public struct CullingView: View {
     private var workbench: some View {
         VStack(spacing: 0) {
             toolbarRow
-            HStack(spacing: 0) {
-                toolsColumn
-                    .frame(width: 214)
-                VStack(spacing: 0) {
-                    // 查看器：id 随 对比/人脸对齐/当前照片 变化，复用旧版
-                    // resetTransform 语义（对比模式切换、翻页、缩略图跳转均复位缩放）。
-                    CullingWorkbenchViewer(
-                        viewModel: viewModel,
-                        compareCount: compareCount,
-                        faceAlign: faceAlign
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .id("culling-viewer-\(compareCount)-\(faceAlign)-\(viewModel.currentPhotoId ?? "nil")")
-                    infoBar
+            GeometryReader { geometry in
+                // 三栏宽度自适应（布局验收 P1 修复）：窄窗口下工具列/胶片条
+                // 按比例收缩，保证查看器最小可用宽度；宽窗口维持旧版 214/196。
+                // 下限 190/180：不破坏胶片条 180pt 缩略图与工具列按钮的最小宽度。
+                let toolsWidth = min(214, max(190, geometry.size.width * 0.17))
+                let stripWidth = min(196, max(180, geometry.size.width * 0.15))
+                HStack(spacing: 0) {
+                    toolsColumn
+                        .frame(width: toolsWidth)
+                    VStack(spacing: 0) {
+                        // 查看器：id 随 对比/人脸对齐/当前照片 变化，复用旧版
+                        // resetTransform 语义（对比模式切换、翻页、缩略图跳转均复位缩放）。
+                        CullingWorkbenchViewer(
+                            viewModel: viewModel,
+                            compareCount: compareCount,
+                            faceAlign: faceAlign
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .id("culling-viewer-\(compareCount)-\(faceAlign)-\(viewModel.currentPhotoId ?? "nil")")
+                        infoBar
+                    }
+                    filmstrip
+                        .frame(width: stripWidth)
                 }
-                filmstrip
-                    .frame(width: 196)
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            // 浮动冲突面板（对齐旧版 .conflictPanel 定位：右下、infoBar 之上）。
-            conflictPanel
-                .padding(.trailing, 14)
-                .padding(.bottom, 52)
+            // 浮动冲突面板（对齐旧版 .conflictPanel 定位：右下、infoBar 之上；
+            // 宽度不超过 540，且不超过窗口可用宽 - 32）。
+            GeometryReader { geometry in
+                conflictPanel
+                    .frame(width: min(540, geometry.size.width - 32))
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 52)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            }
         }
     }
 
     // MARK: 顶部工具栏（对齐旧版 Culling.tsx:1177-1309 的 toolbar：
     // 范围分段 + 筛选控件 + 视图操作区）。
+    // 布局验收 P0 修复：拆为两行——第一行固定可见（撤销/重做 + 范围 +
+    // 自动前进 + 对比 + 质量分析，高频操作不再被横向滚动隐藏）；第二行
+    // 可横向滚动（筛选控件 + 导航分组操作，低频）。
 
     private var toolbarRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Picker("范围", selection: scopeBinding) {
-                    ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
-                        Text(scope.title).tag(scope)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 240)
-                .nonFocusable()
+                undoRedoButtons
 
                 Divider().frame(height: 18)
 
-                Toggle("仅未处理", isOn: unreviewedOnlyBinding)
+                labeledPicker(GatherLocalization.l("范围")) {
+                    Picker(GatherLocalization.l("范围"), selection: scopeBinding) {
+                        ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
+                            Text(scope.title).tag(scope)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 240)
+                    .nonFocusable()
+                }
+
+                Toggle(GatherLocalization.l("自动前进"), isOn: autoAdvanceBinding)
                     .toggleStyle(.checkbox)
                     .nonFocusable()
-                Picker("状态", selection: pickStateBinding) {
-                    Text("全部状态").tag(PickState?.none)
-                    ForEach(PickState.allCases, id: \.self) { state in
-                        Text(pickStateTitle(state)).tag(PickState?.some(state))
+
+                labeledPicker(GatherLocalization.l("对比")) {
+                    Picker(GatherLocalization.l("对比"), selection: $compareCount) {
+                        Text(GatherLocalization.l("单图")).tag(1)
+                        Text(GatherLocalization.l("2 图")).tag(2)
+                        Text(GatherLocalization.l("4 图")).tag(4)
                     }
-                }
-                .frame(width: 100)
-                .nonFocusable()
-                Picker("星级", selection: ratingBinding) {
-                    Text("全部星级").tag(Int?.none)
-                    ForEach(0...5, id: \.self) { rating in
-                        Text(rating == 0 ? "未评级" : "\(rating) 星").tag(Int?.some(rating))
-                    }
-                }
-                .frame(width: 95)
-                .nonFocusable()
-                Picker("颜色", selection: colorFilterBinding) {
-                    Text("全部颜色").tag(CaptureOneColorLabel?.none)
-                    ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
-                        Text(Self.colorLabelTitle(label)).tag(CaptureOneColorLabel?.some(label))
-                    }
-                }
-                .frame(width: 95)
-                .nonFocusable()
-                Picker("质量", selection: qualityStatusBinding) {
-                    Text("全部分析状态").tag(CullingFilterQualityStatus?.none)
-                    Text("已分析").tag(CullingFilterQualityStatus?.some(.analysed))
-                    Text("未分析").tag(CullingFilterQualityStatus?.some(.unanalysed))
-                    Text("分析失败").tag(CullingFilterQualityStatus?.some(.failed))
-                }
-                .frame(width: 115)
-                .nonFocusable()
-                Toggle("仅 XMP 冲突", isOn: conflictOnlyBinding)
-                    .toggleStyle(.checkbox)
+                    .pickerStyle(.segmented)
+                    .frame(width: 150)
                     .nonFocusable()
-                Button("重置") { viewModel.resetFilters() }.nonFocusable()
+                }
 
                 Spacer(minLength: 12)
 
-                Button("保存 Burst/Scene 分组") {
-                    Task { await viewModel.analyzeNavigation(dryRun: false) }
-                }
-                .disabled(viewModel.isNavigationBusy)
-                .nonFocusable()
-                Button("预览分组") {
-                    Task { await viewModel.analyzeNavigation(dryRun: true) }
-                }
-                .disabled(viewModel.isNavigationBusy)
-                .nonFocusable()
-                Button(viewModel.isQualityBusy ? "质量分析中…" : "分析技术质量") {
-                    Task { await viewModel.analyzeQuality() }
-                }
-                .disabled(viewModel.isQualityBusy)
-                .nonFocusable()
-
-                if !viewModel.navigationGroups.isEmpty {
-                    Picker("导航组 (\(viewModel.navigationGroups.count))", selection: navigationGroupBinding) {
-                        ForEach(viewModel.navigationGroups, id: \.id) { group in
-                            let leadLabel = group.leadPhotoId
-                                .flatMap { lead in group.photoIds.firstIndex(of: lead) }
-                                .map { " · 推荐 \($0 + 1)" } ?? ""
-                            Text("\(group.type == .burst ? "Burst" : "Scene") · \(group.photoIds.count) 张\(leadLabel)").tag(group.id)
-                        }
-                    }
-                    .frame(width: 190)
-                    .nonFocusable()
-                    Button("从当前照片拆分") {
-                        viewModel.splitCurrentFromNavigationGroup()
-                    }
-                    .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
-                    .nonFocusable()
-                    Button("与前组合并") {
-                        viewModel.mergeCurrentWithPreviousSameType()
-                    }
-                    .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
-                    .nonFocusable()
-                }
-
-                Toggle("自动前进", isOn: autoAdvanceBinding)
-                    .toggleStyle(.checkbox)
-                    .nonFocusable()
-
-                Picker("对比", selection: $compareCount) {
-                    Text("单图").tag(1)
-                    Text("2 图").tag(2)
-                    Text("4 图").tag(4)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
-                .nonFocusable()
-
-                Toggle("人脸对齐", isOn: $faceAlign)
-                    .toggleStyle(.checkbox)
-                    .nonFocusable()
-
-                Button("↶") { viewModel.undo() }
-                    .keyboardShortcut("z", modifiers: .command)
-                    .disabled(viewModel.history.first(where: { !$0.undone }) == nil || isBusy)
-                    .help("撤销（⌘Z）")
-                    .nonFocusable()
-                Button("↷") { viewModel.redo() }
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(viewModel.history.first(where: { $0.undone }) == nil || isBusy)
-                    .help("重做（⇧⌘Z）")
-                    .nonFocusable()
+                qualityAnalysisBlock
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 24)
             .padding(.vertical, 6)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    Toggle(GatherLocalization.l("仅未处理"), isOn: unreviewedOnlyBinding)
+                        .toggleStyle(.checkbox)
+                        .nonFocusable()
+                    labeledPicker(GatherLocalization.l("状态")) {
+                        Picker(GatherLocalization.l("状态"), selection: pickStateBinding) {
+                            Text(GatherLocalization.l("全部状态")).tag(PickState?.none)
+                            ForEach(PickState.allCases, id: \.self) { state in
+                                Text(pickStateTitle(state)).tag(PickState?.some(state))
+                            }
+                        }
+                        .fixedSize()
+                        .nonFocusable()
+                    }
+                    labeledPicker(GatherLocalization.l("星级")) {
+                        Picker(GatherLocalization.l("星级"), selection: ratingBinding) {
+                            Text(GatherLocalization.l("全部星级")).tag(Int?.none)
+                            ForEach(0...5, id: \.self) { rating in
+                                Text(rating == 0 ? GatherLocalization.l("未评级") : String(format: GatherLocalization.l("%lld 星"), rating)).tag(Int?.some(rating))
+                            }
+                        }
+                        .fixedSize()
+                        .nonFocusable()
+                    }
+                    labeledPicker(GatherLocalization.l("颜色")) {
+                        Picker(GatherLocalization.l("颜色"), selection: colorFilterBinding) {
+                            Text(GatherLocalization.l("全部颜色")).tag(CaptureOneColorLabel?.none)
+                            ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
+                                Text(Self.colorLabelTitle(label)).tag(CaptureOneColorLabel?.some(label))
+                            }
+                        }
+                        .fixedSize()
+                        .nonFocusable()
+                    }
+                    labeledPicker(GatherLocalization.l("质量")) {
+                        Picker(GatherLocalization.l("质量"), selection: qualityStatusBinding) {
+                            Text(GatherLocalization.l("全部分析状态")).tag(CullingFilterQualityStatus?.none)
+                            Text(GatherLocalization.l("已分析")).tag(CullingFilterQualityStatus?.some(.analysed))
+                            Text(GatherLocalization.l("未分析")).tag(CullingFilterQualityStatus?.some(.unanalysed))
+                            Text(GatherLocalization.l("分析失败")).tag(CullingFilterQualityStatus?.some(.failed))
+                        }
+                        .fixedSize()
+                        .nonFocusable()
+                    }
+                    Toggle(GatherLocalization.l("仅 XMP 冲突"), isOn: conflictOnlyBinding)
+                        .toggleStyle(.checkbox)
+                        .nonFocusable()
+                    Button(GatherLocalization.l("重置")) { viewModel.resetFilters() }.nonFocusable()
+
+                    Divider().frame(height: 18)
+
+                    Toggle(GatherLocalization.l("人脸对齐"), isOn: $faceAlign)
+                        .toggleStyle(.checkbox)
+                        .nonFocusable()
+
+                    Button(GatherLocalization.l("保存 Burst/Scene 分组")) {
+                        Task { await viewModel.analyzeNavigation(dryRun: false) }
+                    }
+                    .disabled(viewModel.isNavigationBusy)
+                    .nonFocusable()
+                    Button(GatherLocalization.l("预览分组")) {
+                        Task { await viewModel.analyzeNavigation(dryRun: true) }
+                    }
+                    .disabled(viewModel.isNavigationBusy)
+                    .nonFocusable()
+
+                    if !viewModel.navigationGroups.isEmpty {
+                        labeledPicker(String(format: GatherLocalization.l("导航组 (%lld)"), viewModel.navigationGroups.count)) {
+                            Picker(String(format: GatherLocalization.l("导航组 (%lld)"), viewModel.navigationGroups.count), selection: navigationGroupBinding) {
+                                ForEach(viewModel.navigationGroups, id: \.id) { group in
+                                    let leadLabel = group.leadPhotoId
+                                        .flatMap { lead in group.photoIds.firstIndex(of: lead) }
+                                        .map { String(format: GatherLocalization.l(" · 推荐 %lld"), $0 + 1) } ?? ""
+                                    Text(String(format: GatherLocalization.l("%@ · %lld 张%@"), group.type == .burst ? "Burst" : "Scene", group.photoIds.count, leadLabel)).tag(group.id)
+                                }
+                            }
+                            .fixedSize()
+                            .nonFocusable()
+                        }
+                        Button(GatherLocalization.l("从当前照片拆分")) {
+                            viewModel.splitCurrentFromNavigationGroup()
+                        }
+                        .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
+                        .nonFocusable()
+                        Button(GatherLocalization.l("与前组合并")) {
+                            viewModel.mergeCurrentWithPreviousSameType()
+                        }
+                        .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
+                        .nonFocusable()
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 6)
+            }
         }
         .background(Color.gatherSurface)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var undoRedoButtons: some View {
+                HStack(spacing: 4) {
+            Button { viewModel.undo() } label: {
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .labelStyle(.iconOnly)
+            .disabled(viewModel.history.first(where: { !$0.undone }) == nil || isBusy)
+            .help(GatherLocalization.l("撤销（⌘Z）"))
+            .nonFocusable()
+            Button { viewModel.redo() } label: {
+                Image(systemName: "arrow.uturn.forward")
+            }
+            .labelStyle(.iconOnly)
+            .disabled(viewModel.history.first(where: { $0.undone }) == nil || isBusy)
+            .help(GatherLocalization.l("重做（⇧⌘Z）"))
+            .nonFocusable()
+        }
+    }
+
+    private var qualityAnalysisBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(viewModel.isQualityBusy ? GatherLocalization.l("质量分析中…") : GatherLocalization.l("分析技术质量")) {
+                Task { await viewModel.analyzeQuality() }
+            }
+            .disabled(viewModel.isQualityBusy)
+            .nonFocusable()
+            if let job = viewModel.qualityJob, job.progressTotal > 0,
+               job.status == .queued || job.status == .running || job.status == .cancelling {
+                ProgressView(
+                    value: Double(min(job.progressCurrent, job.progressTotal)),
+                    total: Double(job.progressTotal)
+                )
+                .progressViewStyle(.linear)
+                .controlSize(.mini)
+                .frame(width: 150)
+                HStack(spacing: 6) {
+                    Text("\(qualityProgressPercent(job))% \(GatherLocalization.progressPhaseText(job.progressMessage))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Button(GatherLocalization.l("取消")) {
+                        viewModel.cancelQualityAnalysis()
+                    }
+                    .font(.caption2)
+                    .nonFocusable()
+                }
+            }
+        }
+    }
+
+    private func labeledPicker<PickerView: View>(
+        _ title: String,
+        @ViewBuilder picker: () -> PickerView
+    ) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            picker().labelsHidden()
+        }
     }
 
     // MARK: 工具列（grid-column 1：决策条 / 星级 / 颜色 / 相似组决策 / 选择管理）。
@@ -1144,8 +1503,8 @@ public struct CullingView: View {
     private var toolsColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("挑片工具")
-                    .font(.system(size: 11, weight: .semibold))
+                Text(GatherLocalization.l("挑片工具"))
+                    .font(.footnote.weight(.semibold))
                     .kerning(0.4)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
@@ -1154,16 +1513,16 @@ public struct CullingView: View {
 
                 // 决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）。
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.selectedPhotoIds.isEmpty ? "当前照片" : "批量 \(viewModel.selectedPhotoIds.count) 张")
+                    Text(viewModel.selectedPhotoIds.isEmpty ? GatherLocalization.l("当前照片") : String(format: GatherLocalization.l("批量 %lld 张"), viewModel.selectedPhotoIds.count))
                         .controlLabelStyle()
                     HStack(spacing: 6) {
-                        decisionButton(icon: "✓", iconColor: Color(hex: 0x63c977), title: "保留", shortcut: "P") {
+                        decisionButton(icon: "checkmark", iconColor: GatherTheme.success, title: GatherLocalization.l("保留"), shortcut: "P") {
                             viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
                         }
-                        decisionButton(icon: "×", iconColor: Color(hex: 0xe46c68), title: "淘汰", shortcut: "X") {
+                        decisionButton(icon: "xmark", iconColor: GatherTheme.error, title: GatherLocalization.l("淘汰"), shortcut: "X") {
                             viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
                         }
-                        decisionButton(icon: "○", iconColor: .secondary, title: "未处理", shortcut: "U") {
+                        decisionButton(icon: "circle", iconColor: .secondary, title: GatherLocalization.l("未处理"), shortcut: "U") {
                             viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
                         }
                     }
@@ -1172,22 +1531,28 @@ public struct CullingView: View {
 
                 // 星级（对齐旧版 ratingButton 0-5 数字+星，当前照片星级高亮）。
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("星级").controlLabelStyle()
+                    Text(GatherLocalization.l("星级")).controlLabelStyle()
                     HStack(spacing: 6) {
                         ForEach(0...5, id: \.self) { rating in
                             let isCurrent = (viewModel.currentAsset?.state.rating ?? 0) == Double(rating)
                             Button(rating == 0 ? "0" : "\(rating)★") {
                                 viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating)))
                             }
-                            .buttonStyle(.bordered)
-                            .font(.system(size: 11))
-                            .frame(width: 28, height: 28)
-                            .background(isCurrent ? GatherTheme.primarySoft : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                            .buttonStyle(.plain)
+                            .font(.footnote)
+                            .frame(width: 26, height: 26)
+                            .background(
+                                RoundedRectangle(cornerRadius: GatherTheme.Radius.sm)
+                                    .fill(isCurrent ? GatherTheme.primarySoft : Color.clear)
+                            )
                             .overlay(
-                                RoundedRectangle(cornerRadius: 7)
-                                    .stroke(isCurrent ? GatherTheme.primary : Color.clear, lineWidth: 1)
+                                RoundedRectangle(cornerRadius: GatherTheme.Radius.sm)
+                                    .stroke(isCurrent ? GatherTheme.primary : Color.gatherBorder, lineWidth: 1)
                             )
                             .disabled(isBusy)
+                            .help(String(format: GatherLocalization.l("评分 %lld"), rating))
+                            .accessibilityLabel(String(format: GatherLocalization.l("评分 %lld"), rating))
+                            .accessibilityAddTraits(isCurrent ? .isSelected : [])
                             .nonFocusable()
                         }
                     }
@@ -1196,8 +1561,8 @@ public struct CullingView: View {
 
                 // 颜色（对齐旧版 colorButton 圆形色钮 + 选中外环）。
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("颜色").controlLabelStyle()
-                    HStack(spacing: 6) {
+                    Text(GatherLocalization.l("颜色")).controlLabelStyle()
+                    HStack(spacing: 4) {
                         ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
                             let isCurrent = viewModel.currentAsset?.state.colorLabel == label
                             Button {
@@ -1205,7 +1570,7 @@ public struct CullingView: View {
                             } label: {
                                 Circle()
                                     .fill(Self.colorDot(label))
-                                    .frame(width: 24, height: 24)
+                                    .frame(width: 18, height: 18)
                                     .overlay(
                                         Circle().stroke(Color.black.opacity(0.35), lineWidth: 2)
                                     )
@@ -1217,6 +1582,8 @@ public struct CullingView: View {
                                     .padding(-3)
                             )
                             .help(Self.colorLabelTitle(label))
+                            .accessibilityLabel(Self.colorLabelTitle(label))
+                            .accessibilityAddTraits(isCurrent ? .isSelected : [])
                             .disabled(isBusy)
                             .nonFocusable()
                         }
@@ -1230,8 +1597,8 @@ public struct CullingView: View {
                     let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
                     let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < currentGroupAssets.count
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("相似组 · \(currentGroupAssets.count) 张").controlLabelStyle()
-                        Button("保留当前 1 张") {
+                        Text(String(format: GatherLocalization.l("相似组 · %lld 张"), currentGroupAssets.count)).controlLabelStyle()
+                        Button(GatherLocalization.l("保留当前 1 张")) {
                             viewModel.keepInGroupRejectRest(
                                 current.similarityGroupId ?? "",
                                 keepPhotoIds: [current.photo.id]
@@ -1240,7 +1607,7 @@ public struct CullingView: View {
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy)
                         .nonFocusable()
-                        Button(selectedInGroup.isEmpty ? "保留已选 K 张" : "保留已选 \(selectedInGroup.count) 张") {
+                        Button(selectedInGroup.isEmpty ? GatherLocalization.l("保留已选 K 张") : String(format: GatherLocalization.l("保留已选 %lld 张"), selectedInGroup.count)) {
                             viewModel.keepInGroupRejectRest(
                                 current.similarityGroupId ?? "",
                                 keepPhotoIds: selectedInGroup.sorted()
@@ -1248,10 +1615,10 @@ public struct CullingView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .disabled(!keepValid || isBusy)
-                        .help(keepValid ? "" : "按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片")
                         .nonFocusable()
-                        Text("其余照片自动淘汰")
-                            .font(.system(size: 9))
+                        .help(keepValid ? "" : GatherLocalization.l("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
+                        Text(GatherLocalization.l("其余照片自动淘汰"))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)
                     }
@@ -1260,10 +1627,10 @@ public struct CullingView: View {
                 }
 
                 if !viewModel.selectedPhotoIds.isEmpty {
-                    Button("取消选择") { viewModel.clearSelection() }
+                    Button(GatherLocalization.l("取消选择")) { viewModel.clearSelection() }
                         .frame(maxWidth: .infinity)
-                        .nonFocusable()
                         .padding(.top, 10)
+                        .nonFocusable()
                 }
 
                 Spacer(minLength: 12)
@@ -1271,13 +1638,14 @@ public struct CullingView: View {
                 // 附加统计（对齐 summaryCard 的增强项：已评分/已标记）。
                 if let summary = viewModel.summary {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("评分 \(summary.rated)").controlLabelStyle()
-                        Text("标记 \(summary.labeled)").controlLabelStyle()
+                        Text(String(format: GatherLocalization.l("评分 %lld"), summary.rated)).controlLabelStyle()
+                        Text(String(format: GatherLocalization.l("标记 %lld"), summary.labeled)).controlLabelStyle()
                     }
                     .controlGroupStyle()
                 }
             }
-            .padding(10)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 10)
         }
         .background(Color.gatherSurface)
         .overlay(alignment: .trailing) { Divider() }
@@ -1290,25 +1658,14 @@ public struct CullingView: View {
         shortcut: String,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Text(icon)
-                    .font(.system(size: 14))
-                    .foregroundStyle(iconColor)
-                Text(shortcut)
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 40)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(Color.clear)
-        .overlay(Rectangle().stroke(Color(nsColor: .separatorColor), lineWidth: 0.5))
-        .disabled(isBusy)
-        .help(title)
-        .accessibilityLabel("\(title) \(shortcut)")
+        DecisionButtonView(
+            icon: icon,
+            iconColor: iconColor,
+            title: title,
+            shortcut: shortcut,
+            isBusy: isBusy,
+            action: action
+        )
         .nonFocusable()
     }
 
@@ -1318,75 +1675,87 @@ public struct CullingView: View {
         HStack(spacing: 12) {
             if let page = viewModel.page {
                 Text("\(currentIndex + 1) / \(viewModel.page?.total ?? page.assets.count)")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(Color.gatherTextPrimary)
             }
             if let summary = viewModel.summary {
-                Text("保留 \(summary.kept)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(hex: 0x4a8b55))
-                Text("淘汰 \(summary.rejected)")
-                    .font(.system(size: 11))
+                Text(String(format: GatherLocalization.l("保留 %lld"), summary.kept))
+                    .font(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(GatherTheme.success)
+                Text(String(format: GatherLocalization.l("淘汰 %lld"), summary.rejected))
+                    .font(.footnote)
+                    .monospacedDigit()
                     .foregroundStyle(GatherTheme.error)
-                Text("未处理 \(summary.pending)")
-                    .font(.system(size: 11))
+                Text(String(format: GatherLocalization.l("未处理 %lld"), summary.pending))
+                    .font(.footnote)
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
             // linkedNotice：同名 RAW/JPEG 共享 XMP 提示（对齐旧版 Culling.tsx:1393-1397）。
             if let current = viewModel.currentAsset, current.linkedVariantCount > 1 {
-                Text("同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 \(current.linkedVariantCount) 个条目")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(hex: 0x9c5e28))
+                Text(String(format: GatherLocalization.l("同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 %lld 个条目"), current.linkedVariantCount))
+                    .font(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(GatherTheme.error)
                     .lineLimit(1)
             }
             Spacer()
             if let sync = viewModel.syncStatus {
                 Text(syncStatusText(sync))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(sync.failed + sync.conflict > 0 ? GatherTheme.error : Color(hex: 0x4a8b55))
+                    .font(.footnote.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(sync.failed + sync.conflict > 0 ? GatherTheme.error : GatherTheme.success)
             }
-            // 常驻引导行（对齐旧版 culling.syncHint：先在 Capture One 中 Load Metadata）。
-            if (viewModel.syncStatus?.written ?? 0) > 0 {
-                Text("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .opacity(0.8)
+            if let syncError = viewModel.lastSyncError {
+                Text(syncError)
+                    .font(.footnote)
+                    .foregroundStyle(GatherTheme.error)
                     .lineLimit(1)
+                    .help(syncError)
+                Button(GatherLocalization.l("重试")) { viewModel.load() }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .tint(GatherTheme.error)
+                    .nonFocusable()
             }
-            Button("立即写入 XMP") { Task { await viewModel.flush() } }
-                .disabled(isBusy)
+            Menu {
+                Button(GatherLocalization.l("立即写入 XMP")) { Task { await viewModel.flush() } }
+                    .disabled(isBusy)
+                if (viewModel.syncStatus?.written ?? 0) > 0 {
+                    Button(GatherLocalization.l("在 Capture One 中加载元数据")) { Task { await viewModel.reloadCaptureOne() } }
+                        .disabled(!viewModel.canLoadMetadata || isBusy)
+                        .help(syncLoadHint)
+                    Button(GatherLocalization.l("已在 Capture One 加载")) { viewModel.confirmSync() }
+                        .disabled(!viewModel.canConfirmSync || isBusy)
+                        .help(syncConfirmHint)
+                }
+                if (viewModel.syncStatus?.failed ?? 0) > 0 {
+                    Button(GatherLocalization.l("重试失败项")) { Task { await viewModel.retryFailedWriteback() } }
+                        .disabled(isBusy)
+                }
+                if (viewModel.syncStatus?.synced ?? 0) > 0 {
+                    Button(GatherLocalization.l("保留 XMP 并结束")) { Task { await viewModel.finalizeSync() } }
+                        .disabled(isBusy)
+                    Button(GatherLocalization.l("恢复原 XMP"), role: .destructive) { confirmCleanup = true }
+                        .disabled(!viewModel.canCleanup)
+                        .help(syncCleanupHint)
+                }
+            } label: {
+                Label(GatherLocalization.l("同步…"), systemImage: "arrow.triangle.2.circlepath")
+            }
+            .controlSize(.small)
+            .nonFocusable()
+            .help(GatherLocalization.l("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步"))
+            Button(GatherLocalization.l("重置挑片"), role: .destructive) { confirmReset = true }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(GatherTheme.error)
                 .nonFocusable()
-            if (viewModel.syncStatus?.written ?? 0) > 0 {
-                Button("在 Capture One 中加载元数据") { Task { await viewModel.reloadCaptureOne() } }
-                    .disabled(!viewModel.canLoadMetadata || isBusy)
-                    .help(syncLoadHint)
-                    .nonFocusable()
-            }
-            if (viewModel.syncStatus?.failed ?? 0) > 0 {
-                Button("重试失败项") { Task { await viewModel.retryFailedWriteback() } }
-                    .disabled(isBusy)
-                    .nonFocusable()
-            }
-            if (viewModel.syncStatus?.written ?? 0) > 0 {
-                Button("已在 Capture One 加载") { viewModel.confirmSync() }
-                    .disabled(!viewModel.canConfirmSync || isBusy)
-                    .help(syncConfirmHint)
-                    .nonFocusable()
-            }
-            if (viewModel.syncStatus?.synced ?? 0) > 0 {
-                Button("保留 XMP 并结束") { Task { await viewModel.finalizeSync() } }
-                    .disabled(isBusy)
-                    .nonFocusable()
-                Button("恢复原 XMP", role: .destructive) { confirmCleanup = true }
-                    .disabled(!viewModel.canCleanup)
-                    .help(syncCleanupHint)
-                    .nonFocusable()
-            }
-            Button("重置挑片", role: .destructive) { confirmReset = true }.nonFocusable()
         }
-        .font(.system(size: 11))
-        .padding(.horizontal, 10)
+        .font(.footnote)
+        .padding(.horizontal, 24)
         .frame(minHeight: 36)
         .background(Color.gatherSurface)
         .overlay(alignment: .top) { Divider() }
@@ -1396,30 +1765,35 @@ public struct CullingView: View {
         viewModel.isLoading || viewModel.isNavigationBusy || viewModel.isQualityBusy
     }
 
+    private func qualityProgressPercent(_ job: AnalysisJobData) -> Int {
+        guard job.progressTotal > 0 else { return 0 }
+        return min(100, max(0, Int((Double(job.progressCurrent) / Double(job.progressTotal) * 100).rounded())))
+    }
+
     /// 逐按钮禁用 hint（对齐旧版 c1-sync-controls.ts 的独立 title 提示粒度）。
     private var syncLoadHint: String {
         switch viewModel.syncFlowState() {
-        case .synced: return "已完成同步，无需再次加载元数据"
-        case .failed: return "存在写入失败项，请先重试"
-        case .conflict: return "存在 XMP 冲突，请先裁决"
-        default: return "没有可加载的已写入元数据"
+        case .synced: return GatherLocalization.l("已完成同步，无需再次加载元数据")
+        case .failed: return GatherLocalization.l("存在写入失败项，请先重试")
+        case .conflict: return GatherLocalization.l("存在 XMP 冲突，请先裁决")
+        default: return GatherLocalization.l("没有可加载的已写入元数据")
         }
     }
 
     private var syncConfirmHint: String {
         switch viewModel.syncFlowState() {
-        case .synced: return "已完成同步"
+        case .synced: return GatherLocalization.l("已完成同步")
         default:
             return viewModel.reloadAcked
-                ? "请先等待写入完成或处理失败项"
-                : "请先在 Capture One 中加载元数据，再确认同步"
+                ? GatherLocalization.l("请先等待写入完成或处理失败项")
+                : GatherLocalization.l("请先在 Capture One 中加载元数据，再确认同步")
         }
     }
 
     private var syncCleanupHint: String {
         viewModel.syncFlowState() == .synced
-            ? "已完成清理"
-            : "请先加载元数据并确认同步，再执行清理"
+            ? GatherLocalization.l("已完成清理")
+            : GatherLocalization.l("请先加载元数据并确认同步，再执行清理")
     }
 
     // MARK: 胶片条（grid-column 3：122pt 缩略图 + 色标线 + 星级 + 决策圆点 + 文件名）。
@@ -1427,14 +1801,14 @@ public struct CullingView: View {
     private var filmstrip: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("胶片")
-                    .font(.system(size: 11, weight: .semibold))
+                Text(GatherLocalization.l("胶片"))
+                    .font(.footnote.weight(.semibold))
                     .kerning(0.4)
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let page = viewModel.page {
                     Text("\(page.assets.count)\(page.total > page.assets.count ? " / \(page.total)" : "")")
-                        .font(.system(size: 11))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -1458,11 +1832,11 @@ public struct CullingView: View {
                                 }
                         }
                         if viewModel.page?.nextRowId != nil {
-                            Button(viewModel.isLoading ? "加载中…" : "加载更多") {
+                            Button(viewModel.isLoading ? GatherLocalization.l("加载中…") : GatherLocalization.l("加载更多")) {
                                 viewModel.loadMore()
                             }
                             .disabled(viewModel.isLoading)
-                            .font(.system(size: 11))
+                            .font(.footnote)
                             .frame(maxWidth: .infinity)
                             .nonFocusable()
                         }
@@ -1501,10 +1875,10 @@ public struct CullingView: View {
         if let conflict = viewModel.conflicts.first {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("XMP 字段冲突").font(.headline)
+                    Text(GatherLocalization.l("XMP 字段冲突")).font(.headline)
                     Spacer()
                     Text(URL(fileURLWithPath: conflict.xmpPath).lastPathComponent)
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .help(conflict.xmpPath)
@@ -1513,25 +1887,29 @@ public struct CullingView: View {
                     let key = "\(conflict.xmpPath)|\(field.field.rawValue)"
                     HStack(spacing: 8) {
                         Text(metadataFieldTitle(field.field))
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.callout.weight(.semibold))
                             .frame(width: 44, alignment: .leading)
-                        Text("Gather：\(valueLabel(field.local))")
-                            .font(.system(size: 12))
+                        Text(String(format: GatherLocalization.l("Gather：%@"), valueLabel(field.local)))
+                            .font(.callout)
                             .lineLimit(1)
                             .help(valueLabel(field.local))
-                        Text("外部：\(valueLabel(field.remote))")
-                            .font(.system(size: 12))
+                        Text(String(format: GatherLocalization.l("外部：%@"), valueLabel(field.remote)))
+                            .font(.callout)
                             .lineLimit(1)
                             .help(valueLabel(field.remote))
-                        Picker("处理", selection: Binding(
+                        Text(GatherLocalization.l("处理"))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Picker(GatherLocalization.l("处理"), selection: Binding(
                             get: { conflictChoices[key] ?? .keepLocal },
                             set: { conflictChoices[key] = $0 }
                         )) {
-                            Text("保留 Gather").tag(MetadataConflictChoice.keepLocal)
-                            Text("采用外部值").tag(MetadataConflictChoice.useRemote)
+                            Text(GatherLocalization.l("保留 Gather")).tag(MetadataConflictChoice.keepLocal)
+                            Text(GatherLocalization.l("采用外部值")).tag(MetadataConflictChoice.useRemote)
                         }
                         .pickerStyle(.menu)
-                        .frame(width: 110)
+                        .labelsHidden()
+                        .fixedSize()
                         .nonFocusable()
                     }
                     .padding(8)
@@ -1539,37 +1917,39 @@ public struct CullingView: View {
                 }
                 HStack {
                     Text(viewModel.conflicts.count > 1
-                        ? "还有 \(viewModel.conflicts.count - 1) 个冲突"
-                        : "这是最后一个冲突")
-                        .font(.caption)
+                        ? String(format: GatherLocalization.l("还有 %lld 个冲突"), viewModel.conflicts.count - 1)
+                        : GatherLocalization.l("这是最后一个冲突"))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("应用并继续写入") {
+                    Button(GatherLocalization.l("应用并继续写入")) {
                         let choices = Dictionary(uniqueKeysWithValues: conflict.fields.map { field in
                             (field.field, conflictChoices["\(conflict.xmpPath)|\(field.field.rawValue)"] ?? .keepLocal)
                         })
                         viewModel.resolve(conflict, choices: choices)
                     }
-                    .font(.caption)
+                    .font(.footnote)
                     .nonFocusable()
                 }
             }
             .padding(12)
-            .frame(width: 540)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Color.gatherSurface))
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.gatherSurface))
             .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(Color(hex: 0xc7614f).opacity(0.55), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(GatherTheme.error.opacity(0.55), lineWidth: 1)
             )
-            .shadow(color: Color(red: 0.24, green: 0.14, blue: 0.11).opacity(0.2), radius: 16, y: 8)
+            .shadow(color: GatherTheme.shadowMd, radius: 12, y: 6)
         }
     }
 
     // MARK: 键盘快捷键（对齐 Culling.tsx:1109-1149 window keydown handler）。
     // 0-5 评分、P/空格 保留、X 淘汰、U 未处理（不前进）、←/→ 翻页；
-    // Cmd+Z / Shift+Cmd+Z 由工具栏按钮的 keyboardShortcut 承担。
+    // Cmd+Z / Shift+Cmd+Z 由宿主菜单 post gatherMenuUndo/gatherMenuRedo 通知驱动。
     private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
         guard !viewModel.isLoading, !viewModel.isNavigationBusy, !viewModel.isQualityBusy else {
+            return .ignored
+        }
+        guard press.modifiers.isEmpty else {
             return .ignored
         }
         if press.key == .leftArrow {
@@ -1580,6 +1960,7 @@ public struct CullingView: View {
             viewModel.advanceCurrent()
             return .handled
         }
+        guard press.phase == .down else { return .ignored }
         let character = press.characters.lowercased()
         if character == " " || character == "p" {
             viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
@@ -1601,17 +1982,8 @@ public struct CullingView: View {
     }
 
     private func emptyGuide(_ text: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "photo.on.rectangle.angled")
-                .font(.system(size: 34))
-                .foregroundStyle(.secondary)
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 48)
+        GatherEmptyState(icon: "photo.on.rectangle.angled", message: text)
+            .padding(.vertical, 48)
     }
 
     /// 颜色标签色点（供胶片条/工具列/筛选卡共用）。
@@ -1631,46 +2003,46 @@ public struct CullingView: View {
     /// 颜色标签中文文案（对齐 LibraryView.swift LibraryColorOption.label 表）。
     fileprivate static func colorLabelTitle(_ label: CaptureOneColorLabel) -> String {
         switch label {
-        case .none: return "无"
-        case .red: return "红"
-        case .orange: return "橙"
-        case .yellow: return "黄"
-        case .green: return "绿"
-        case .blue: return "蓝"
-        case .pink: return "粉"
-        case .purple: return "紫"
+        case .none: return GatherLocalization.l("无")
+        case .red: return GatherLocalization.l("红")
+        case .orange: return GatherLocalization.l("橙")
+        case .yellow: return GatherLocalization.l("黄")
+        case .green: return GatherLocalization.l("绿")
+        case .blue: return GatherLocalization.l("蓝")
+        case .pink: return GatherLocalization.l("粉")
+        case .purple: return GatherLocalization.l("紫")
         }
     }
 
     private func metadataFieldTitle(_ field: MetadataField) -> String {
         switch field {
-        case .rating: return "星级"
-        case .label: return "颜色"
-        case .keywords: return "关键词"
+        case .rating: return GatherLocalization.l("星级")
+        case .label: return GatherLocalization.l("颜色")
+        case .keywords: return GatherLocalization.l("关键词")
         }
     }
 
     private func valueLabel(_ value: GatherCore.JSONValue) -> String {
         switch value {
-        case .null: return "空"
-        case .bool(let value): return value ? "是" : "否"
+        case .null: return GatherLocalization.l("空")
+        case .bool(let value): return value ? GatherLocalization.l("是") : GatherLocalization.l("否")
         case .number(let value): return String(value)
-        case .string(let value): return value.isEmpty ? "空" : value
+        case .string(let value): return value.isEmpty ? GatherLocalization.l("空") : value
         case .array(let values): return values.map(valueLabel).joined(separator: ", ")
-        case .object: return "对象"
+        case .object: return GatherLocalization.l("对象")
         }
     }
 
     /// 对齐旧版 syncLabel 六档文案：已同步 / N 个冲突 / N 个失败 /
     /// N 待写入 / N 已写入 / N 已载入。
     private func syncStatusText(_ sync: MetadataSyncSummary) -> String {
-        if sync.items.isEmpty { return "XMP 已同步" }
-        if sync.conflict > 0 { return "\(sync.conflict) 个 XMP 冲突" }
-        if sync.failed > 0 { return "\(sync.failed) 个 XMP 写入失败" }
-        if sync.pending + sync.writing > 0 { return "\(sync.pending + sync.writing) 个 XMP 等待写入" }
-        if sync.written > 0 { return "\(sync.written) 个 XMP 已写入，等待 Capture One 加载" }
-        if sync.synced > 0 { return "\(sync.synced) 个 XMP 已确认加载" }
-        return "XMP 已同步"
+        if sync.items.isEmpty { return GatherLocalization.l("XMP 已同步") }
+        if sync.conflict > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 冲突"), sync.conflict) }
+        if sync.failed > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 写入失败"), sync.failed) }
+        if sync.pending + sync.writing > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 等待写入"), sync.pending + sync.writing) }
+        if sync.written > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 已写入，等待 Capture One 加载"), sync.written) }
+        if sync.synced > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 已确认加载"), sync.synced) }
+        return GatherLocalization.l("XMP 已同步")
     }
 
     // MARK: 筛选/范围绑定（组合筛选状态，任意变化触发整页刷新）
@@ -1739,6 +2111,48 @@ public struct CullingView: View {
     }
 }
 
+/// 决策按钮：SF Symbol 图标 + 快捷键字母，自绘卡片描边，hover 高亮。
+private struct DecisionButtonView: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let shortcut: String
+    let isBusy: Bool
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .foregroundStyle(iconColor)
+                Text(shortcut)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 40)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.md)
+                .fill(isHovering ? GatherTheme.primarySoft.opacity(0.4) : Color.gatherSurface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.md)
+                .stroke(Color.gatherBorder, lineWidth: 1)
+        )
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .disabled(isBusy)
+        .help(title)
+        .accessibilityLabel("\(title) \(shortcut)")
+    }
+}
+
 /// 胶片缩略图：122pt 方图 + 4pt 色标线 + 左上星级 + 右上决策圆点 + 底部文件名。
 /// 点击选择当前照片；⌘/Ctrl/Shift 点击切换多选（对齐旧版 Culling.tsx:1509-1530）。
 private struct CullingFilmThumbView: View {
@@ -1754,8 +2168,8 @@ private struct CullingFilmThumbView: View {
     }
 
     private var borderColor: Color {
-        if isCurrent { return Color(hex: 0xdc8058) }
-        if isSelected { return Color(hex: 0xe9c366) }
+        if isCurrent { return GatherTheme.primary }
+        if isSelected { return GatherTheme.warning }
         return .clear
     }
 
@@ -1771,9 +2185,9 @@ private struct CullingFilmThumbView: View {
                 PhotoThumbnailView(
                     path: asset.photo.filepath,
                     size: 256,
-                    placeholderSize: CGSize(width: 196, height: 122)
+                    placeholderSize: CGSize(width: 180, height: 122)
                 )
-                .frame(width: 196, height: 122)
+                .frame(width: 180, height: 122)
                 .clipped()
                 if asset.state.colorLabel != .none {
                     Rectangle()
@@ -1782,35 +2196,77 @@ private struct CullingFilmThumbView: View {
                 }
                 if asset.state.rating > 0 {
                     Text("\(Int(asset.state.rating))★")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color(hex: 0xffd966))
+                        .font(.footnote)
+                        .foregroundStyle(GatherTheme.warning)
                         .shadow(color: .black.opacity(0.6), radius: 2, y: 1)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding(4)
                 }
                 if asset.state.pickState != .unreviewed {
                     Circle()
-                        .fill(asset.state.pickState == .picked ? Color(hex: 0x8ee59b) : Color(hex: 0xffb1b1))
+                        .fill(asset.state.pickState == .picked ? GatherTheme.success : GatherTheme.error)
                         .frame(width: 9, height: 9)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .padding(4)
                 }
                 Text(asset.photo.filename)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color(hex: 0xeee9e5))
+                    .font(.footnote)
+                    .foregroundStyle(GatherTheme.viewerTextPrimary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background(Color(hex: 0x0d0c0b).opacity(0.7))
+                    .background(GatherTheme.viewerBackground.opacity(0.7))
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button(GatherLocalization.l("保留")) {
+                viewModel.update(
+                    asset,
+                    patch: CullingUpdatePatch(pickState: .picked),
+                    nextPhotoId: viewModel.autoAdvance ? viewModel.nextPhotoId(after: asset.photo.id) : nil
+                )
+            }
+            Button(GatherLocalization.l("淘汰")) {
+                viewModel.update(
+                    asset,
+                    patch: CullingUpdatePatch(pickState: .rejected),
+                    nextPhotoId: viewModel.autoAdvance ? viewModel.nextPhotoId(after: asset.photo.id) : nil
+                )
+            }
+            Button(GatherLocalization.l("未处理")) {
+                viewModel.update(asset, patch: CullingUpdatePatch(pickState: .unreviewed))
+            }
+            if let url = Self.finderURL(for: asset.photo.filepath) {
+                Divider()
+                Button(GatherLocalization.l("在 Finder 中显示")) {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+        }
         .frame(height: 122)
+        .nonFocusable()
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(borderColor, lineWidth: 2))
         .opacity(isCurrent || isSelected ? 1 : 0.78)
         .help(asset.photo.filename)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(thumbAccessibilityLabel)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// 右键「在 Finder 中显示」的 URL：路径为空时返回 nil（跳过该项）。
+    private static func finderURL(for path: String) -> URL? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed)
+    }
+
+    private var thumbAccessibilityLabel: String {
+        let ratingText = asset.state.rating > 0
+            ? String(format: GatherLocalization.l("%lld 星"), Int(asset.state.rating))
+            : GatherLocalization.l("未评级")
+        return "\(asset.photo.filename)，\(ratingText)，\(pickStateTitle(asset.state.pickState))"
     }
 }
 
@@ -1885,17 +2341,34 @@ private struct CullingWorkbenchViewer: View {
                 imageFrame = newFrame
             }
         }
-        .background(Color(hex: 0x202020))
+        .background(GatherTheme.viewerChrome)
         .clipped()
         .overlay(alignment: .top) {
             // 缩放提示（对齐旧版 zoomHint：居中毛玻璃胶囊，百分比 + 操作提示）。
-            Text("\(Int(effectiveScale * 100))% 滚轮缩放 · 拖动平移 · 双击复位")
-                .font(.system(size: 10))
-                .foregroundStyle(Color(hex: 0xaaaaaa))
+            Text(String(format: GatherLocalization.l("%lld%% 滚轮缩放 · 拖动平移 · 双击复位 · ⌘+/⌘− 缩放"), Int(effectiveScale * 100)))
+                .font(.footnote)
+                .foregroundStyle(Color.white.opacity(0.75))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
-                .background(Capsule().fill(Color(hex: 0x191919).opacity(0.75)))
+                .background(Capsule().fill(GatherTheme.viewerSurface.opacity(0.75)))
                 .padding(.top, 8)
+        }
+        .overlay(alignment: .topLeading) {
+            HStack(spacing: 0) {
+                Button("") { zoomOut() }
+                    .keyboardShortcut("-", modifiers: .command)
+                Button("") { resetTransform() }
+                    .keyboardShortcut("0", modifiers: .command)
+                Button("") { zoomIn() }
+                    .keyboardShortcut("=", modifiers: .command)
+                Button("") { zoomIn() }
+                    .keyboardShortcut("+", modifiers: .command)
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .allowsHitTesting(false)
+            .focusable(false)
+            .accessibilityHidden(true)
         }
         .background(WindowBridge { window in
             viewerWindow = window
@@ -1922,7 +2395,9 @@ private struct CullingWorkbenchViewer: View {
                 )
                 : .zero
             ZStack(alignment: .bottom) {
-                PhotoThumbnailView(path: asset.photo.filepath, size: 2560, preview: true)
+                // 整图适配（对齐旧版 .viewerImage object-fit: contain）：窄容器
+                // 时整体缩放而非裁切，缩放级作用于完整画面。
+                PhotoThumbnailView(path: asset.photo.filepath, size: 2560, preview: true, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .scaleEffect(faceAlign && face != nil ? max(2, scale) : scale)
                     .offset(x: offset.width + alignOffset.width, y: offset.height + alignOffset.height)
@@ -1947,51 +2422,49 @@ private struct CullingWorkbenchViewer: View {
                     Text(asset.photo.filename).lineLimit(1)
                     Spacer()
                     Text(sourceLabel(asset))
-                        .foregroundStyle(Color(hex: 0xaeb4bc))
+                        .foregroundStyle(Color.white.opacity(0.7))
                         .lineLimit(1)
                     Spacer()
-                    Text(asset.state.rating > 0 ? "\(Int(asset.state.rating))★" : "未评级")
+                    Text(asset.state.rating > 0 ? "\(Int(asset.state.rating))★" : GatherLocalization.l("未评级"))
                 }
-                .font(.system(size: 11))
-                .foregroundStyle(Color(hex: 0xdddddd))
+                .font(.footnote)
+                .foregroundStyle(Color.white.opacity(0.85))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity)
-                .background(Color(hex: 0x191919).opacity(0.9))
+                .background(GatherTheme.viewerSurface.opacity(0.9))
                 // 右上保留/淘汰徽标。
                 if asset.state.pickState != .unreviewed {
-                    Text(asset.state.pickState == .picked ? "保留" : "淘汰")
-                        .font(.system(size: 12))
-                        .foregroundStyle(asset.state.pickState == .picked ? Color(hex: 0x8ee59b) : Color(hex: 0xffb1b1))
+                    Text(asset.state.pickState == .picked ? GatherLocalization.l("保留") : GatherLocalization.l("淘汰"))
+                        .font(.footnote)
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(Capsule().fill(
-                            asset.state.pickState == .picked
-                                ? Color(red: 36.0 / 255, green: 117.0 / 255, blue: 52.0 / 255).opacity(0.85)
-                                : Color(red: 145.0 / 255, green: 40.0 / 255, blue: 40.0 / 255).opacity(0.85)
+                            asset.state.pickState == .picked ? GatherTheme.success : GatherTheme.error
                         ))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .padding(10)
                 }
                 // 左上无脸徽标（仅人脸对齐开启且该照片无检测结果时）。
                 if faceAlign && face == nil {
-                    Text("未检测到人脸")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color(hex: 0xf5c16c))
+                    Text(GatherLocalization.l("未检测到人脸"))
+                        .font(.footnote)
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.black.opacity(0.65)))
+                        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.65)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding(10)
                 }
                 // 右下质量徽标（对齐旧版 qualityBadge + warnings ⚠）。
                 if let quality = asset.quality {
                     Text(qualityBadgeText(quality))
-                        .font(.system(size: 11))
+                        .font(.footnote)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.68)))
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.65)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         .padding(8)
                         .help(qualityHelpText(quality))
@@ -1999,10 +2472,10 @@ private struct CullingWorkbenchViewer: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
-            .background(Color(hex: 0x080808))
+            .background(GatherTheme.viewerBackground)
             .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(hoveredCellId == cell.id ? GatherTheme.primary.opacity(0.65) : Color(white: 0.07), lineWidth: 1)
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.sm)
+                    .stroke(hoveredCellId == cell.id ? GatherTheme.primary.opacity(0.65) : Color(white: 0.16), lineWidth: 1)
             )
             .onHover { hovering in
                 hoveredCellId = hovering ? cell.id : nil
@@ -2044,35 +2517,47 @@ private struct CullingWorkbenchViewer: View {
     /// 来源标签（对齐 TS sourceLabel：template/face-keyword/similarity/AI/导入/人工）。
     private func sourceLabel(_ asset: CullingAsset) -> String {
         switch asset.metadataSource {
-        case .template: return "模板元数据"
-        case .faceKeyword: return "人脸关键词"
-        case .similarity: return "相似组关键词"
+        case .template: return GatherLocalization.l("模板元数据")
+        case .faceKeyword: return GatherLocalization.l("人脸关键词")
+        case .similarity: return GatherLocalization.l("相似组关键词")
         case .manual, .culling: break
         case .none: break
         }
-        if asset.quality?.status == .succeeded { return "AI 技术分析" }
-        if asset.state.source == .imported { return "导入元数据" }
-        return "人工调整"
+        if asset.quality?.status == .succeeded { return GatherLocalization.l("AI 技术分析") }
+        if asset.state.source == .imported { return GatherLocalization.l("导入元数据") }
+        return GatherLocalization.l("人工调整")
     }
 
     private func qualityBadgeText(_ quality: CullingQuality) -> String {
-        if quality.status == .failed { return "分析失败" + (quality.warnings.isEmpty ? "" : " ⚠") }
-        return "质量 \(Int(quality.score * 100))" + (quality.warnings.isEmpty ? "" : " ⚠")
+        if quality.status == .failed { return GatherLocalization.l("分析失败") + (quality.warnings.isEmpty ? "" : " ⚠") }
+        return String(format: GatherLocalization.l("质量 %lld"), Int(quality.score * 100)) + (quality.warnings.isEmpty ? "" : " ⚠")
     }
 
     private func qualityHelpText(_ quality: CullingQuality) -> String {
         if quality.status == .failed {
-            return quality.errorMessage ?? "质量分析失败"
+            return quality.errorMessage ?? GatherLocalization.l("质量分析失败")
         }
         let sharpness = Int((quality.subjectSharpness ?? quality.sharpness) * 100)
         let exposure = Int(quality.exposure * 100)
-        return "AI 技术分析：清晰度 \(sharpness)%，曝光 \(exposure)%"
+        return String(format: GatherLocalization.l("AI 技术分析：清晰度 %lld%%，曝光 %lld%%"), sharpness, exposure)
     }
 
     private func resetTransform() {
         scale = 1
         gestureScale = 1
         offset = .zero
+    }
+
+    private func zoomIn() {
+        let next = min(8, max(1, scale * 1.15))
+        scale = next
+        gestureScale = next
+    }
+
+    private func zoomOut() {
+        let next = min(8, max(1, scale * (1 / 1.15)))
+        scale = next
+        gestureScale = next
     }
 
     // MARK: 滚轮缩放（对齐旧版 onWheel：向上 1.15、向下 0.87，范围 1..8）
@@ -2120,19 +2605,24 @@ private struct WindowBridge: NSViewRepresentable {
     }
 }
 
+extension Notification.Name {
+    static let gatherMenuUndo = Notification.Name("gather.menu.undo")
+    static let gatherMenuRedo = Notification.Name("gather.menu.redo")
+}
+
 /// 挑片状态中文文案（供主页面与胶片条共用）。
 fileprivate func pickStateTitle(_ state: PickState) -> String {
     switch state {
-    case .unreviewed: return "未处理"
-    case .picked: return "保留"
-    case .rejected: return "淘汰"
+    case .unreviewed: return GatherLocalization.l("未处理")
+    case .picked: return GatherLocalization.l("保留")
+    case .rejected: return GatherLocalization.l("淘汰")
     }
 }
 
 /// 工具列/胶片条控制组标签样式（对齐旧版 .controlLabel：10px/600/字距 0.04em）。
 private extension View {
     func controlLabelStyle() -> some View {
-        font(.system(size: 10, weight: .semibold))
+        font(.footnote.weight(.semibold))
             .kerning(0.4)
             .foregroundStyle(.secondary)
     }
@@ -2147,9 +2637,9 @@ private extension View {
     }
 }
 
-/// 键盘焦点屏蔽：挑片页主视图持有 onKeyPress 键盘焦点；页内控件
-/// 一律不可聚焦，避免点击按钮后焦点被抢走导致快捷键失效
-/// （文本输入控件不存在，焦点天然不会落在输入框上）。
+/// 键盘焦点屏蔽：挑片页主视图持有 onKeyPress 键盘焦点；页内控件一律
+/// 不可聚焦，避免点击按钮/勾选框后焦点被抢走导致快捷键（P/X/U/空格/←→）
+/// 失效（旧版 window keydown 全局监听无此问题，原生侧以此保持等价）。
 private extension View {
     func nonFocusable() -> some View {
         focusable(false)

@@ -45,7 +45,7 @@ private final class StubGalleryProvider: GalleryDataProvider {
         return session
     }
 
-    func photoPage(sessionId: String, afterFirstRowid: Int64?, limit: Int, expandVariants: Bool) throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
+    func photoPage(sessionId: String, afterFirstRowid: Int64?, limit: Int, expandVariants: Bool) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
         if let pageError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: pageError])
         }
@@ -57,7 +57,7 @@ private final class StubGalleryProvider: GalleryDataProvider {
         return (slice, end < rows.count ? Int64(end) : nil)
     }
 
-    func workspaceStatus(_ sessionId: String) throws -> WorkspaceStatus? {
+    func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus? {
         if let workspaceStatusError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: workspaceStatusError])
         }
@@ -270,12 +270,12 @@ struct GalleryViewModelTests {
 
         viewModel.filter = .hasFace
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(10))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.filteredPhotos.map(\.id) == ["with"])
 
         viewModel.filter = .noFace
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(10))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.filteredPhotos.map(\.id) == ["without"])
     }
 
@@ -288,7 +288,7 @@ struct GalleryViewModelTests {
 
         viewModel.expandVariants = true
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(10))
+        try? await Task.sleep(for: .milliseconds(200))
 
         #expect(stub.pageCalls.last?.expandVariants == true)
         #expect(stub.pageCalls.last?.afterFirstRowid == nil)
@@ -359,7 +359,7 @@ struct GalleryViewModelTests {
         // 展开：3 行（变体逐行展示）。
         collapsed.expandVariants = true
         collapsed.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(collapsed.loadedPhotos.count == 3)
     }
 
@@ -410,7 +410,7 @@ struct GalleryViewModelTests {
 
         viewModel.filter = .hasFace
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.filteredPhotos.map(\.id) == ["faced"])
     }
 

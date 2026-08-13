@@ -61,22 +61,22 @@ public final class SessionControlViewModel {
     }
 
     public func scanIndex() async {
-        await enqueue("index.scan", message: "索引扫描已入队")
+        await enqueue("index.scan", message: GatherLocalization.l("索引扫描已入队"))
     }
 
     public func analyzeQuality() async {
-        await enqueue("quality.analyze", message: "技术质量分析已入队")
+        await enqueue("quality.analyze", message: GatherLocalization.l("技术质量分析已入队"))
     }
 
     /// 索引失败重试：重新入队 metadata.scan（对齐 TS retryIndex → indexerApi.scan）。
     public func retryIndex() async {
-        await enqueue("index.scan", message: "索引扫描已入队")
+        await enqueue("index.scan", message: GatherLocalization.l("索引扫描已入队"))
     }
 
     public func retry(jobId: String) {
         do {
             _ = try client.execute("jobs.retry", params: ["jobId": .string(jobId)])
-            notice = "已重试任务"
+            notice = GatherLocalization.l("已重试任务")
             load()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -106,11 +106,11 @@ public final class SessionControlViewModel {
             }
         }
         if retried > 0 {
-            notice = "已重试 \(retried) 个失败任务"
+            notice = String(format: GatherLocalization.l("已重试 %lld 个失败任务"), retried)
             load()
         }
         if retried == 0 {
-            errorMessage = firstFailure ?? "重试任务失败"
+            errorMessage = firstFailure ?? GatherLocalization.l("重试任务失败")
         }
     }
 
@@ -195,6 +195,7 @@ public struct SessionControlView: View {
     private let onOpenGallery: (String) -> Void
     private let onOpenSettings: () -> Void
     @State private var scrollToStagesRequested = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// TS: MAX_FAILED_JOB_ROWS —— 失败任务最多显示 3 行。
     private static let maxFailedJobRows = 3
@@ -226,21 +227,21 @@ public struct SessionControlView: View {
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 0) {
                 header
-                if let error = viewModel.errorMessage { NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error) }
+                if let error = viewModel.errorMessage { NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error) }
                 if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
                 ScrollView {
                     if viewModel.isLoading {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("加载中…").foregroundStyle(.secondary)
+                            Text(GatherLocalization.l("加载中…")).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(24)
                     } else if viewModel.workspaceStatus == nil && viewModel.errorMessage == nil {
                         VStack(spacing: 10) {
-                            Image(systemName: "tray").font(.system(size: 34)).foregroundStyle(.secondary)
-                            Text("暂无工作区状态").foregroundStyle(.secondary)
-                            Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }
+                            Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(.secondary)
+                            Text(GatherLocalization.l("暂无工作区状态")).foregroundStyle(.secondary)
+                            Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(40)
@@ -260,7 +261,11 @@ public struct SessionControlView: View {
             .background(Color.gatherBackground)
             .onChange(of: scrollToStagesRequested) { _, requested in
                 guard requested else { return }
-                withAnimation { proxy.scrollTo("stages", anchor: .top) }
+                if reduceMotion {
+                    proxy.scrollTo("stages", anchor: .top)
+                } else {
+                    withAnimation { proxy.scrollTo("stages", anchor: .top) }
+                }
                 scrollToStagesRequested = false
             }
         }
@@ -294,10 +299,10 @@ public struct SessionControlView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
+                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(viewModel.session?.name ?? "工作区控制中心").font(.system(size: 24, weight: .bold))
-                    Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
+                    Text(viewModel.session?.name ?? GatherLocalization.l("工作区控制中心")).font(.largeTitle.weight(.bold))
+                    Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
                 }
                 Spacer()
                 C1StatusCapsuleHost(
@@ -305,7 +310,7 @@ public struct SessionControlView: View {
                     router: router,
                     onOpenSettings: onOpenSettings
                 )
-                Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
             }
             SessionTabBar(
                 selection: .tab(.control),
@@ -328,16 +333,16 @@ public struct SessionControlView: View {
                 case .scanning:
                     Text(copy.text).font(.callout)
                     if let percent = copy.percent, copy.total > 0 {
-                        Text("已索引 \(Int(percent.rounded()))%").font(.caption).foregroundStyle(.secondary)
+                        Text(String(format: GatherLocalization.l("已索引 %lld%%"), Int(percent.rounded()))).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
                         ProgressView(value: Double(copy.done), total: Double(copy.total))
                             .frame(maxWidth: 220)
                     } else {
                         ProgressView().controlSize(.small)
                     }
                 case .error:
-                    Text(copy.text).font(.callout).foregroundStyle(.red)
-                    Button("重试") { Task { await viewModel.retryIndex() } }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
+                    Text(copy.text).font(.callout).foregroundStyle(GatherTheme.error)
+                    Button(GatherLocalization.l("重试")) { Task { await viewModel.retryIndex() } }
+                        .buttonStyle(.bordered).controlSize(.small)
                 case .count:
                     Text(copy.text).font(.callout).foregroundStyle(.secondary)
                 }
@@ -354,33 +359,33 @@ public struct SessionControlView: View {
             if status.indexing.total > 0 {
                 return IndexHeaderCopy(
                     mode: .scanning,
-                    text: "正在索引 \(status.indexing.done) / \(status.indexing.total)",
+                    text: String(format: GatherLocalization.l("正在索引 %lld / %lld"), status.indexing.done, status.indexing.total),
                     // 对齐 index-progress.test.ts：percent 钳制 0...100（防御服务端越界）。
                     percent: min(max(status.indexing.percent, 0), 100),
                     done: status.indexing.done,
                     total: status.indexing.total
                 )
             }
-            return IndexHeaderCopy(mode: .scanning, text: "扫描中…", percent: nil, done: 0, total: 0)
+            return IndexHeaderCopy(mode: .scanning, text: GatherLocalization.l("扫描中…"), percent: nil, done: 0, total: 0)
         }
         if status.indexing.status == .failed {
-            return IndexHeaderCopy(mode: .error, text: "索引失败", percent: nil, done: 0, total: 0)
+            return IndexHeaderCopy(mode: .error, text: GatherLocalization.l("索引失败"), percent: nil, done: 0, total: 0)
         }
         let photoCount = session?.photoCount ?? 0
         if photoCount == 0 {
-            return IndexHeaderCopy(mode: .count, text: "暂无照片", percent: nil, done: 0, total: 0)
+            return IndexHeaderCopy(mode: .count, text: GatherLocalization.l("暂无照片"), percent: nil, done: 0, total: 0)
         }
         if (session?.truncatedImport ?? false) && status.stage != .indexed {
-            return IndexHeaderCopy(mode: .count, text: "已索引 ≥\(photoCount) 张照片", percent: nil, done: 0, total: 0)
+            return IndexHeaderCopy(mode: .count, text: String(format: GatherLocalization.l("已索引 ≥%lld 张照片"), photoCount), percent: nil, done: 0, total: 0)
         }
-        return IndexHeaderCopy(mode: .count, text: "已索引 \(photoCount) 张照片", percent: nil, done: 0, total: 0)
+        return IndexHeaderCopy(mode: .count, text: String(format: GatherLocalization.l("已索引 %lld 张照片"), photoCount), percent: nil, done: 0, total: 0)
     }
 
     // MARK: 三硬阶段进度条（对齐 deriveStageMarks + index.tsx stageBar）
 
     private var stagesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("阶段进度").font(.title3.weight(.semibold))
+            Text(GatherLocalization.l("阶段进度")).font(.title3.weight(.semibold))
             if let status = viewModel.workspaceStatus {
                 HStack(spacing: 10) {
                     ForEach(Array(stageMarks(status.stage).enumerated()), id: \.element.id) { index, mark in
@@ -391,13 +396,13 @@ public struct SessionControlView: View {
                 }
                 if status.softFlags.culled || status.softFlags.exported {
                     HStack(spacing: 8) {
-                        if status.softFlags.culled { softFlagBadge("已挑片") }
-                        if status.softFlags.exported { softFlagBadge("已导出") }
+                        if status.softFlags.culled { softFlagBadge(GatherLocalization.l("已挑片")) }
+                        if status.softFlags.exported { softFlagBadge(GatherLocalization.l("已导出")) }
                     }
                 }
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     /// 阶段标记（internal：WorkspaceStageMarksTests 直测 deriveStageMarks）。
@@ -413,9 +418,9 @@ public struct SessionControlView: View {
     func stageMarks(_ stage: WorkspaceStage) -> [StageMark] {
         let order = ["imported", "indexed", "analyzed"]
         let labels: [String: String] = [
-            "imported": "已导入",
-            "indexed": "已索引",
-            "analyzed": "已分析",
+            "imported": GatherLocalization.l("已导入"),
+            "indexed": GatherLocalization.l("已索引"),
+            "analyzed": GatherLocalization.l("已分析"),
         ]
         let reachedIndex = stage == .created ? -1 : (order.firstIndex(of: stage.rawValue) ?? -1)
         return order.enumerated().map { index, id in
@@ -448,7 +453,7 @@ public struct SessionControlView: View {
             .background(Circle().fill(GatherTheme.primary.opacity(mark.current ? 0.15 : 0)))
             .overlay(Circle().stroke(GatherTheme.primary.opacity(mark.current ? 0.65 : 0), lineWidth: 1.5))
             Text(mark.label)
-                .font(.caption)
+                .font(.footnote)
                 .fontWeight(mark.current ? .semibold : .regular)
                 .foregroundStyle(mark.current ? Color.gatherPrimary : (mark.reached ? .primary : .secondary))
         }
@@ -463,11 +468,11 @@ public struct SessionControlView: View {
 
     private func softFlagBadge(_ title: String) -> some View {
         Text(title)
-            .font(.caption)
+            .font(.footnote)
             .padding(.horizontal, 8)
-            .padding(.vertical, 3)
+            .padding(.vertical, 4)
             .background(Capsule().fill(GatherTheme.primary.opacity(0.1)))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(GatherTheme.primary)
     }
 
     // MARK: Action Inbox（对齐 deriveInboxItems：固定优先级序列表）
@@ -475,15 +480,16 @@ public struct SessionControlView: View {
     private var inboxCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("待处理事项").font(.title3.weight(.semibold))
-                Text("按优先级排序").font(.caption).foregroundStyle(.secondary)
+                Text(GatherLocalization.l("待处理事项")).font(.title3.weight(.semibold))
+                Text(GatherLocalization.l("按优先级排序")).font(.footnote).foregroundStyle(.secondary)
             }
             if let status = viewModel.workspaceStatus {
                 let items = inboxItems(status, truncatedImport: viewModel.session?.truncatedImport ?? false)
+                    .filter { $0.kind != .scanIncomplete }
                 if items.isEmpty {
                     HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text("全部正常").foregroundStyle(.secondary)
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(GatherTheme.success)
+                        Text(GatherLocalization.l("全部正常")).foregroundStyle(.secondary)
                     }
                 } else {
                     ForEach(items) { item in
@@ -492,7 +498,7 @@ public struct SessionControlView: View {
                 }
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     private func inboxRow(_ item: InboxItem) -> some View {
@@ -502,7 +508,7 @@ public struct SessionControlView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.label)
                 if let detail = item.detail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                    Text(detail).font(.footnote).foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -524,28 +530,28 @@ public struct SessionControlView: View {
         if scanIncomplete {
             items.append(InboxItem(
                 id: "scan_incomplete", kind: .scanIncomplete,
-                label: "索引未完成，照片数量暂不精确", detail: nil,
-                actionLabel: "查看进度", action: .showStages
+                label: GatherLocalization.l("索引未完成，照片数量暂不精确"), detail: nil,
+                actionLabel: GatherLocalization.l("查看进度"), action: .showStages
             ))
         }
 
         if status.xmp.conflict > 0 {
             items.append(InboxItem(
                 id: "xmp_conflict", kind: .xmpConflict,
-                label: "\(status.xmp.conflict) 个 XMP 冲突待裁决", detail: nil,
-                actionLabel: "逐条裁决", action: .navigateTab(.culling)
+                label: String(format: GatherLocalization.l("%lld 个 XMP 冲突待裁决"), status.xmp.conflict), detail: nil,
+                actionLabel: GatherLocalization.l("逐条裁决"), action: .navigateTab(.culling)
             ))
         }
 
         if !status.staleAnalyses.isEmpty {
             let faceOnly = status.staleAnalyses.allSatisfy { $0.kind == .face }
             let names = status.staleAnalyses
-                .map { $0.kind == .similarity ? "相似度" : "人脸" }
+                .map { $0.kind == .similarity ? GatherLocalization.l("相似度") : GatherLocalization.l("人脸") }
                 .joined(separator: "、")
             items.append(InboxItem(
                 id: "analysis_stale", kind: .analysisStale,
-                label: "\(names)分析已过期，新增照片未参与分析", detail: nil,
-                actionLabel: "重新分析",
+                label: String(format: GatherLocalization.l("%@分析已过期，新增照片未参与分析"), names), detail: nil,
+                actionLabel: GatherLocalization.l("重新分析"),
                 action: faceOnly ? .navigateTab(.faceKw) : .navigateSimilarity
             ))
         }
@@ -553,16 +559,16 @@ public struct SessionControlView: View {
         if status.xmp.pending > 0 {
             items.append(InboxItem(
                 id: "xmp_pending", kind: .xmpPending,
-                label: "\(status.xmp.pending) 个 XMP 待写入", detail: nil,
-                actionLabel: "检查", action: .navigateTab(.culling)
+                label: String(format: GatherLocalization.l("%lld 个 XMP 待写入"), status.xmp.pending), detail: nil,
+                actionLabel: GatherLocalization.l("检查"), action: .navigateTab(.culling)
             ))
         }
 
         if status.offlinePhotos > 0 {
             items.append(InboxItem(
                 id: "offline_photos", kind: .offlinePhotos,
-                label: "\(status.offlinePhotos) 张照片离线（源文件不可读）", detail: nil,
-                actionLabel: "查看", action: .navigateGallery
+                label: String(format: GatherLocalization.l("%lld 张照片离线（源文件不可读）"), status.offlinePhotos), detail: nil,
+                actionLabel: GatherLocalization.l("查看"), action: .navigateGallery
             ))
         }
 
@@ -572,16 +578,16 @@ public struct SessionControlView: View {
             let detail = GatherLocalization.errorMessages[job.code]
             items.append(InboxItem(
                 id: "job_failed-\(index)", kind: .jobFailed,
-                label: "\(Self.jobTypeLabel(job.type))任务失败", detail: detail,
-                actionLabel: "重试", action: .retryJob(job.id)
+                label: String(format: GatherLocalization.l("%@任务失败"), Self.jobTypeLabel(job.type)), detail: detail,
+                actionLabel: GatherLocalization.l("重试"), action: .retryJob(job.id)
             ))
         }
 
         if status.softFlags.culled && !status.softFlags.exported {
             items.append(InboxItem(
                 id: "export_pending", kind: .exportPending,
-                label: "已挑片但尚未导出", detail: nil,
-                actionLabel: "去导出", action: .navigateTab(.export)
+                label: GatherLocalization.l("已挑片但尚未导出"), detail: nil,
+                actionLabel: GatherLocalization.l("去导出"), action: .navigateTab(.export)
             ))
         }
 
@@ -591,15 +597,15 @@ public struct SessionControlView: View {
     /// JOB_TYPE_KEYS（workspace-view.ts L43-53）：未知类型回退原始字符串。
     private static func jobTypeLabel(_ type: String) -> String {
         switch type {
-        case "metadata.scan": "索引"
-        case "similarity.analyze": "相似度分析"
-        case "fkw.analyze", "face.analyze": "人脸分析"
-        case "dup.scan", "duplicate.scan": "重复扫描"
-        case "export.execute": "导出"
-        case "quality.analyze", "quality.score": "技术分析"
-        case "navigation.analyze": "导航分析"
-        case "culling.writeback": "挑片写回"
-        case "sim.writeback": "相似组写回"
+        case "metadata.scan": GatherLocalization.l("索引")
+        case "similarity.analyze": GatherLocalization.l("相似度分析")
+        case "fkw.analyze", "face.analyze": GatherLocalization.l("人脸分析")
+        case "dup.scan", "duplicate.scan": GatherLocalization.l("重复扫描")
+        case "export.execute": GatherLocalization.l("导出")
+        case "quality.analyze", "quality.score": GatherLocalization.l("技术分析")
+        case "navigation.analyze": GatherLocalization.l("导航分析")
+        case "culling.writeback": GatherLocalization.l("挑片写回")
+        case "sim.writeback": GatherLocalization.l("相似组写回")
         default: type
         }
     }
@@ -607,11 +613,11 @@ public struct SessionControlView: View {
     private func inboxIcon(_ kind: InboxKind) -> (name: String, color: Color) {
         switch kind {
         case .scanIncomplete: return ("magnifyingglass", GatherTheme.primary)
-        case .xmpConflict: return ("exclamationmark.triangle.fill", .red)
-        case .analysisStale: return ("clock.arrow.circlepath", .orange)
+        case .xmpConflict: return ("exclamationmark.triangle.fill", GatherTheme.error)
+        case .analysisStale: return ("clock.arrow.circlepath", GatherTheme.warning)
         case .xmpPending: return ("arrow.up.doc", GatherTheme.primary)
         case .offlinePhotos: return ("photo", .secondary)
-        case .jobFailed: return ("xmark.circle.fill", .red)
+        case .jobFailed: return ("xmark.circle.fill", GatherTheme.error)
         case .exportPending: return ("square.and.arrow.up", GatherTheme.primary)
         }
     }
@@ -624,8 +630,8 @@ public struct SessionControlView: View {
                 let view = recommendedNextView(status)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
-                        Image(systemName: "lightbulb").foregroundStyle(.orange)
-                        Text("推荐下一步").font(.headline)
+                        Image(systemName: "lightbulb").foregroundStyle(GatherTheme.warning)
+                        Text(GatherLocalization.l("推荐下一步")).font(.title3.weight(.semibold))
                     }
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 3) {
@@ -635,13 +641,13 @@ public struct SessionControlView: View {
                         Spacer()
                         if let action = view.action {
                             Button(view.actionLabel) { perform(action) }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(.borderedProminent).controlSize(.small)
                         }
                     }
                 }
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     /// deriveRecommendedNextView（workspace-view.ts L210-276）：6 种 action 映射为
@@ -650,46 +656,46 @@ public struct SessionControlView: View {
     private func recommendedNextView(_ status: WorkspaceStatus) -> RecommendedNextView {
         guard let next = status.recommendedNext else {
             return RecommendedNextView(
-                title: "一切正常", detail: "工作区状态良好，无待办事项",
+                title: GatherLocalization.l("一切正常"), detail: GatherLocalization.l("工作区状态良好，无待办事项"),
                 actionLabel: "", action: nil
             )
         }
         switch next.action {
         case "scan_incomplete":
             return RecommendedNextView(
-                title: "等待索引完成", detail: "后台索引正在进行，完成后照片数量将精确显示",
-                actionLabel: "查看进度", action: .showStages
+                title: GatherLocalization.l("等待索引完成"), detail: GatherLocalization.l("后台索引正在进行，完成后照片数量将精确显示"),
+                actionLabel: GatherLocalization.l("查看进度"), action: .showStages
             )
         case "resolve_conflicts":
             return RecommendedNextView(
-                title: "裁决 XMP 冲突", detail: "冲突会阻塞写回同步，先逐条裁决再继续",
-                actionLabel: "逐条裁决", action: .navigateTab(.culling)
+                title: GatherLocalization.l("裁决 XMP 冲突"), detail: GatherLocalization.l("冲突会阻塞写回同步，先逐条裁决再继续"),
+                actionLabel: GatherLocalization.l("逐条裁决"), action: .navigateTab(.culling)
             )
         case "re_analyze":
             let faceOnly = status.staleAnalyses.allSatisfy { $0.kind == .face }
             return RecommendedNextView(
-                title: "重新分析相似度", detail: "新增照片未参与分组，重新分析可合并剩余重复项",
-                actionLabel: "重新分析",
+                title: GatherLocalization.l("重新分析相似度"), detail: GatherLocalization.l("新增照片未参与分组，重新分析可合并剩余重复项"),
+                actionLabel: GatherLocalization.l("重新分析"),
                 action: faceOnly ? .navigateTab(.faceKw) : .navigateSimilarity
             )
         case "retry_jobs":
             return RecommendedNextView(
-                title: "重试失败任务", detail: "存在失败的后台任务，先重试再继续",
-                actionLabel: "重试失败任务", action: .retryFailedJobs
+                title: GatherLocalization.l("重试失败任务"), detail: GatherLocalization.l("存在失败的后台任务，先重试再继续"),
+                actionLabel: GatherLocalization.l("重试失败任务"), action: .retryFailedJobs
             )
         case "start_culling":
             return RecommendedNextView(
-                title: "开始挑片", detail: "工作区已就绪，从挑片开始整理",
-                actionLabel: "去挑片", action: .navigateTab(.culling)
+                title: GatherLocalization.l("开始挑片"), detail: GatherLocalization.l("工作区已就绪，从挑片开始整理"),
+                actionLabel: GatherLocalization.l("去挑片"), action: .navigateTab(.culling)
             )
         case "export":
             return RecommendedNextView(
-                title: "导出成品", detail: "挑片已完成，导出最终成品",
-                actionLabel: "去导出", action: .navigateTab(.export)
+                title: GatherLocalization.l("导出成品"), detail: GatherLocalization.l("挑片已完成，导出最终成品"),
+                actionLabel: GatherLocalization.l("去导出"), action: .navigateTab(.export)
             )
         default:
             return RecommendedNextView(
-                title: "一切正常", detail: "工作区状态良好，无待办事项",
+                title: GatherLocalization.l("一切正常"), detail: GatherLocalization.l("工作区状态良好，无待办事项"),
                 actionLabel: "", action: nil
             )
         }
@@ -723,85 +729,88 @@ public struct SessionControlView: View {
 
     private var actionCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("分析与索引").font(.title3.weight(.semibold))
-            Text("后台任务可在任务中心查看、取消或重试。").foregroundStyle(.secondary)
+            Text(GatherLocalization.l("分析与索引")).font(.title3.weight(.semibold))
+            Text(GatherLocalization.l("后台任务可在任务中心查看、取消或重试。")).foregroundStyle(.secondary)
             HStack {
-                Button("扫描索引", systemImage: "magnifyingglass") { Task { await viewModel.scanIndex() } }
-                Button("分析质量", systemImage: "wand.and.stars") { Task { await viewModel.analyzeQuality() } }
-                Button("打开挑片") { onOpenTab(viewModel.sessionId, .culling) }
-                Button("打开人脸") { onOpenTab(viewModel.sessionId, .faceKw) }
+                Button(GatherLocalization.l("扫描索引"), systemImage: "magnifyingglass") { Task { await viewModel.scanIndex() } }
+                Button(GatherLocalization.l("分析质量"), systemImage: "wand.and.stars") { Task { await viewModel.analyzeQuality() } }
+                Button(GatherLocalization.l("打开挑片")) { onOpenTab(viewModel.sessionId, .culling) }
+                Button(GatherLocalization.l("打开人脸")) { onOpenTab(viewModel.sessionId, .faceKw) }
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     // MARK: 元数据同步（保留计数 + 中文状态说明）
 
     private var syncCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("元数据同步").font(.title3.weight(.semibold))
+            Text(GatherLocalization.l("元数据同步")).font(.title3.weight(.semibold))
             if let sync = viewModel.syncStatus {
                 HStack(spacing: 16) {
-                    syncCount("待处理", sync.pending)
-                    syncCount("写入中", sync.writing)
-                    syncCount("已写入", sync.written)
-                    syncCount("失败", sync.failed, emphasized: sync.failed > 0)
-                    syncCount("冲突", sync.conflict, emphasized: sync.conflict > 0)
+                    syncCount(GatherLocalization.l("待处理"), sync.pending)
+                    syncCount(GatherLocalization.l("写入中"), sync.writing)
+                    syncCount(GatherLocalization.l("已写入"), sync.written)
+                    syncCount(GatherLocalization.l("失败"), sync.failed, emphasized: sync.failed > 0)
+                    syncCount(GatherLocalization.l("冲突"), sync.conflict, emphasized: sync.conflict > 0)
                     Spacer()
                 }
                 Text(syncStatusText(sync))
-                    .font(.caption)
-                    .foregroundStyle(sync.failed + sync.conflict > 0 ? .red : .secondary)
+                    .font(.footnote)
+                    .foregroundStyle(sync.failed + sync.conflict > 0 ? GatherTheme.error : Color.secondary)
             } else {
-                Text("暂无同步状态").foregroundStyle(.secondary)
+                Text(GatherLocalization.l("暂无同步状态")).foregroundStyle(.secondary)
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     private func syncCount(_ title: String, _ value: Int, emphasized: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(title).font(.footnote).foregroundStyle(.secondary)
             Text("\(value)")
                 .font(.callout.weight(.semibold).monospaced())
-                .foregroundStyle(emphasized ? .red : .primary)
+                .foregroundStyle(emphasized ? GatherTheme.error : .primary)
         }
     }
 
     private func syncStatusText(_ sync: MetadataSyncSummary) -> String {
-        if sync.failed + sync.conflict > 0 { return "存在失败或冲突的写入项，请先处理后再继续" }
-        if sync.pending + sync.writing > 0 { return "正在等待 Capture One 确认写入…" }
-        return "元数据已全部同步"
+        if sync.failed + sync.conflict > 0 { return GatherLocalization.l("存在失败或冲突的写入项，请先处理后再继续") }
+        if sync.pending + sync.writing > 0 { return GatherLocalization.l("正在等待 Capture One 确认写入…") }
+        return GatherLocalization.l("元数据已全部同步")
     }
 
     // MARK: 当前任务（本地化状态/类型/进度文案）
 
     private var jobsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("当前任务").font(.title3.weight(.semibold))
+            Text(GatherLocalization.l("当前任务")).font(.title3.weight(.semibold))
             if viewModel.jobs.isEmpty {
-                Text("暂无工作区任务").foregroundStyle(.secondary)
+                Text(GatherLocalization.l("暂无工作区任务")).foregroundStyle(.secondary)
             } else {
                 ForEach(viewModel.jobs, id: \.id) { job in
                     HStack(spacing: 8) {
                         Image(systemName: job.status == .succeeded ? "checkmark.circle.fill" : "circle.dotted")
-                            .foregroundStyle(job.status == .failed ? .red : GatherTheme.primary)
+                            .foregroundStyle(job.status == .failed
+                                ? GatherTheme.error
+                                : (job.status == .succeeded ? GatherTheme.success : GatherTheme.primary))
                         Text(GatherLocalization.jobTypeText(job.type.rawValue))
                         Text(GatherLocalization.jobStatusText(job.status.rawValue))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(.secondary)
                         Spacer()
                         if job.progressTotal > 0 {
                             Text(GatherLocalization.progressPhaseText(job.progressMessage))
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text("\(job.progressCurrent)/\(job.progressTotal)").font(.caption.monospaced())
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Text("\(job.progressCurrent)/\(job.progressTotal)").font(.footnote.monospaced())
                         }
                         if [.failed, .interrupted, .cancelled].contains(job.status) {
-                            Button("重试") { viewModel.retry(job) }
+                            Button(GatherLocalization.l("重试")) { viewModel.retry(job) }
+                                .buttonStyle(.bordered).controlSize(.small)
                         }
                     }
                 }
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 }

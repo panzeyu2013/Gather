@@ -19,13 +19,16 @@ struct DashboardView: View {
     @State private var selectMode = false
     @State private var selectedIds: Set<String> = []
     @State private var showBatchDeleteConfirm = false
+    /// jobs:progress 进度帧节流窗口（事件风暴只按窗口合并一次 UI 更新）。
+    private static let jobProgressThrottleInterval: TimeInterval = 1
+    @State private var lastJobProgressAppliedAt = Date.distantPast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let error = viewModel.actionError {
-                Text("操作失败：\(error)")
+                Text(String(format: GatherLocalization.l("操作失败：%@"), error))
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(GatherTheme.error)
                     .padding(.horizontal, 24)
                     .padding(.top, 12)
             }
@@ -34,12 +37,17 @@ struct DashboardView: View {
                     header
                     switch viewModel.phase {
                     case .loading:
-                        ProgressView("加载工作区中…")
+                        ProgressView(GatherLocalization.l("加载工作区中…"))
                             .frame(maxWidth: .infinity, minHeight: 240)
                     case .failed(let message):
-                        Text("加载工作区失败：\(message)")
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, minHeight: 240)
+                        VStack(spacing: 10) {
+                            Text(String(format: GatherLocalization.l("加载工作区失败：%@"), message))
+                                .foregroundStyle(GatherTheme.error)
+                            Button(GatherLocalization.l("重试")) {
+                                Task { await viewModel.loadAll() }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 240)
                     case .loaded:
                         summaryBar
                         sessionSection
@@ -57,11 +65,20 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.gatherBackground)
         .task {
-            await viewModel.loadAll()
+            if viewModel.phase == .loading {
+                await viewModel.loadAll()
+            }
             viewModel.startAutoRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
             guard let event = notification.object as? GatherJobEvent else { return }
+            // 进度帧节流：1s 窗口内合并（对齐 GalleryViewModel 的
+            // progressFrameDebounce 先例），避免高频帧反复重排整行 UI；
+            // 终态帧始终透传（权威计数/整页刷新不受影响）。
+            if !event.isTerminal {
+                guard Date().timeIntervalSince(lastJobProgressAppliedAt) >= Self.jobProgressThrottleInterval else { return }
+                lastJobProgressAppliedAt = Date()
+            }
             viewModel.applyJobEvent(event)
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuNewWorkspace)) { _ in
@@ -85,31 +102,29 @@ struct DashboardView: View {
                 onOpenSession(sessionId)
             }
         }
-        .confirmationDialog(
-            "删除工作区",
+        .alert(
+            GatherLocalization.l("删除工作区"),
             isPresented: Binding(
                 get: { deleteTarget != nil },
                 set: { if !$0 { deleteTarget = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
-            Button("删除", role: .destructive) {
+            Button(GatherLocalization.l("删除"), role: .destructive) {
                 if let target = deleteTarget {
                     Task { await viewModel.deleteSession(target.id) }
                 }
                 deleteTarget = nil
             }
-            Button("取消", role: .cancel) { deleteTarget = nil }
+            Button(GatherLocalization.l("取消"), role: .cancel) { deleteTarget = nil }
         } message: {
             // TS dashboard.deleteWorkspaceMessage 逐字对齐。
-            Text("确定要删除 \"\(deleteTarget?.name ?? "")\" 吗？这将移除该工作区中的所有照片和结果。")
+            Text(String(format: GatherLocalization.l("确定要删除 \"%@\" 吗？这将移除该工作区中的所有照片和结果。"), deleteTarget?.name ?? ""))
         }
-        .confirmationDialog(
-            "批量删除工作区",
-            isPresented: $showBatchDeleteConfirm,
-            titleVisibility: .visible
+        .alert(
+            GatherLocalization.l("批量删除工作区"),
+            isPresented: $showBatchDeleteConfirm
         ) {
-            Button("删除全部", role: .destructive) {
+            Button(GatherLocalization.l("删除全部"), role: .destructive) {
                 let ids = Array(selectedIds)
                 Task {
                     if await viewModel.deleteSessions(ids) {
@@ -117,9 +132,9 @@ struct DashboardView: View {
                     }
                 }
             }
-            Button("取消", role: .cancel) { showBatchDeleteConfirm = false }
+            Button(GatherLocalization.l("取消"), role: .cancel) { showBatchDeleteConfirm = false }
         } message: {
-            Text("确定要删除选中的 \(selectedIds.count) 个工作区吗？这将移除这些工作区中的所有照片和结果，不可恢复。")
+            Text(String(format: GatherLocalization.l("确定要删除选中的 %lld 个工作区吗？这将移除这些工作区中的所有照片和结果，不可恢复。"), selectedIds.count))
         }
     }
 
@@ -129,8 +144,8 @@ struct DashboardView: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Gather")
-                    .font(.system(size: 24, weight: .bold))
-                Text("整理、挑选并同步你的摄影工作区")
+                    .font(.largeTitle.weight(.bold))
+                Text(GatherLocalization.l("整理、挑选并同步你的摄影工作区"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -139,22 +154,28 @@ struct DashboardView: View {
                 if selectMode {
                     // TS selectAll checkbox：支持半选（indeterminate）。
                     Button(action: toggleSelectAll) {
-                        Label("全选", systemImage: selectAllIcon)
+                        Label(GatherLocalization.l("全选"), systemImage: selectAllIcon)
                     }
                     if !selectedIds.isEmpty {
-                        Button("删除 \(selectedIds.count) 个", role: .destructive) {
+                        Button(String(format: GatherLocalization.l("删除 %lld 个"), selectedIds.count), role: .destructive) {
                             showBatchDeleteConfirm = true
                         }
                     }
-                    Button("取消", action: exitSelectMode)
+                    Button(GatherLocalization.l("取消"), action: exitSelectMode)
                 } else {
-                    Button("多选") { selectMode = true }
+                    Button(GatherLocalization.l("多选")) { selectMode = true }
                 }
             }
             Button {
+                Task { await viewModel.refreshAll() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help(GatherLocalization.l("刷新"))
+            Button {
                 showNewSheet = true
             } label: {
-                Label("新建工作区", systemImage: "plus")
+                Label(GatherLocalization.l("新建工作区"), systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
         }
@@ -194,45 +215,43 @@ struct DashboardView: View {
     private var summaryBar: some View {
         let summary = viewModel.summary()
         return HStack(spacing: 0) {
-            statItem("工作区", summary.sessionCount)
-            statItem("照片", summary.photoCount)
-            statItem("待同步写回", summary.pendingXmp)
-            statItem("冲突", summary.conflictXmp)
-            statItem("离线照片", summary.offlinePhotos)
+            statItem(GatherLocalization.l("工作区"), summary.sessionCount)
+            summarySeparator
+            statItem(GatherLocalization.l("照片"), summary.photoCount)
+            summarySeparator
+            statItem(GatherLocalization.l("待同步写回"), summary.pendingXmp)
+            summarySeparator
+            statItem(GatherLocalization.l("冲突"), summary.conflictXmp)
+            summarySeparator
+            statItem(GatherLocalization.l("离线照片"), summary.offlinePhotos)
         }
         .padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 1))
+    }
+
+    private var summarySeparator: some View {
+        Rectangle()
+            .fill(GatherTheme.border.opacity(0.5))
+            .frame(width: 1, height: 28)
     }
 
     private func statItem(_ title: String, _ value: Int) -> some View {
-        VStack(spacing: 2) {
-            Text("\(value)")
-                .font(.system(size: 18, weight: .semibold))
-                .monospacedDigit()
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
+        GatherStatCard(value: value, label: title, style: .plain)
     }
 
     // MARK: 工作区卡片列表（TS Dashboard 卡片区）
 
     private var sessionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("工作区")
+            Text(GatherLocalization.l("工作区"))
                 .font(.title3.bold())
             if viewModel.sessions.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
-                    Text("暂无工作区")
-                        .font(.headline)
-                    Text("创建新的工作区以开始整理照片")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+                GatherEmptyState(
+                    icon: "photo.on.rectangle.angled",
+                    title: GatherLocalization.l("暂无工作区"),
+                    message: GatherLocalization.l("创建新的工作区以开始整理照片")
+                )
                 .frame(maxWidth: .infinity, minHeight: 180)
             } else {
                 LazyVStack(spacing: 10) {
@@ -261,14 +280,14 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("任务中心")
+                    Text(GatherLocalization.l("任务中心"))
                         .font(.title3.bold())
-                    Text("后台任务 · 持久化分析任务、进度和失败恢复")
-                        .font(.caption)
+                    Text(GatherLocalization.l("后台任务 · 持久化分析任务、进度和失败恢复"))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("清理已完成") {
+                Button(GatherLocalization.l("清理已完成")) {
                     Task { await viewModel.clearCompletedJobs() }
                 }
                 .disabled(!viewModel.hasClearableJobs)
@@ -278,7 +297,7 @@ struct DashboardView: View {
             } else if viewModel.jobs.isEmpty {
                 jobsEmptyState
             } else {
-                Text("进行中与需要处理")
+                Text(GatherLocalization.l("进行中与需要处理"))
                     .font(.subheadline.weight(.semibold))
                 if viewModel.attentionJobs.isEmpty {
                     quietState
@@ -298,11 +317,11 @@ struct DashboardView: View {
                         showHistory.toggle()
                     } label: {
                         HStack {
-                            Text("已完成历史")
+                            Text(GatherLocalization.l("已完成历史"))
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
-                            Text(showHistory ? "收起历史" : "展开 \(viewModel.historyJobs.count) 项")
-                                .font(.caption)
+                            Text(showHistory ? GatherLocalization.l("收起历史") : String(format: GatherLocalization.l("展开 %lld 项"), viewModel.historyJobs.count))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                         .contentShape(Rectangle())
@@ -328,7 +347,7 @@ struct DashboardView: View {
                 .foregroundStyle(GatherTheme.primary)
                 .frame(width: 60, height: 60)
                 .background(RoundedRectangle(cornerRadius: 20).fill(GatherTheme.primarySoft))
-            Text("暂无后台任务")
+            Text(GatherLocalization.l("暂无后台任务"))
                 .font(.headline)
                 .foregroundStyle(.secondary)
         }
@@ -352,11 +371,11 @@ struct DashboardView: View {
                 .foregroundStyle(GatherTheme.error)
                 .frame(width: 60, height: 60)
                 .background(RoundedRectangle(cornerRadius: 20).fill(GatherTheme.error.opacity(0.1)))
-            Text("任务加载失败：\(error)")
+            Text(String(format: GatherLocalization.l("任务加载失败：%@"), error))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("重试") {
+            Button(GatherLocalization.l("重试")) {
                 Task { await viewModel.refreshJobs() }
             }
             .buttonStyle(.bordered)
@@ -374,7 +393,7 @@ struct DashboardView: View {
 
     /// TS Jobs 页 quietState（jobs.noAttention）：success 色 dashed 块。
     private var quietState: some View {
-        Text("当前没有运行中或失败的任务")
+        Text(GatherLocalization.l("当前没有运行中或失败的任务"))
             .font(.callout)
             .foregroundStyle(GatherTheme.success)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -409,6 +428,7 @@ private struct SessionCardView: View {
 
     /// TS card hover（Dashboard.module.css .card:hover）：border→primary +
     /// shadow-md + translateY(-1px)，0.15s。
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
 
     /// TS 卡片布局：.cardOpen 是整卡按钮（flex:1 内容区），.cardActions 是
@@ -436,29 +456,29 @@ private struct SessionCardView: View {
                                 .font(.callout)
                             if let status {
                                 if status.xmp.pending > 0 {
-                                    Text("待同步写回 \(status.xmp.pending)")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
+                                    Text(String(format: GatherLocalization.l("待同步写回 %lld"), status.xmp.pending))
+                                        .font(.footnote)
+                                        .foregroundStyle(GatherTheme.warning)
                                 }
                                 if status.xmp.conflict > 0 {
-                                    Text("冲突 \(status.xmp.conflict)")
-                                        .font(.caption)
-                                        .foregroundStyle(.red)
+                                    Text(String(format: GatherLocalization.l("冲突 %lld"), status.xmp.conflict))
+                                        .font(.footnote)
+                                        .foregroundStyle(GatherTheme.error)
                                 }
                                 if !status.failedJobs.isEmpty {
-                                    Text("失败任务 \(status.failedJobs.count)")
-                                        .font(.caption)
-                                        .foregroundStyle(.red)
+                                    Text(String(format: GatherLocalization.l("失败任务 %lld"), status.failedJobs.count))
+                                        .font(.footnote)
+                                        .foregroundStyle(GatherTheme.error)
                                 }
                                 if status.offlinePhotos > 0 {
-                                    Text("离线 \(status.offlinePhotos)")
-                                        .font(.caption)
+                                    Text(String(format: GatherLocalization.l("离线 %lld"), status.offlinePhotos))
+                                        .font(.footnote)
                                         .foregroundStyle(.secondary)
                                 }
                             }
                         }
                         Text(Self.dateText(session.createdAt))
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 12)
@@ -466,45 +486,55 @@ private struct SessionCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(selectMode ? session.name : "打开 \(session.name)")
+            .accessibilityLabel(selectMode ? session.name : String(format: GatherLocalization.l("打开 %@"), session.name))
+            .accessibilityAddTraits(selectMode && isSelected ? [.isSelected] : [])
+            .accessibilityValue(selectMode ? (isSelected ? GatherLocalization.l("已选") : GatherLocalization.l("未选")) : "")
             if !selectMode {
                 HStack(spacing: 8) {
                     // TS retryScan：索引失败卡片显示“重试”，重新入队 metadata.scan。
                     if deriveCardIndexKind(scanJob) == .failed {
-                        Button("重试", action: onRetryScan)
+                        Button(GatherLocalization.l("重试"), action: onRetryScan)
                             .buttonStyle(.bordered)
                     }
-                    Button("进入", action: onOpen)
+                    Button(GatherLocalization.l("进入"), action: onOpen)
                         .buttonStyle(.bordered)
                     Menu {
-                        Button("删除", role: .destructive, action: onDelete)
+                        Button(GatherLocalization.l("删除"), role: .destructive, action: onDelete)
                     } label: {
-                        Label("操作", systemImage: "ellipsis.circle")
+                        Label(GatherLocalization.l("操作"), systemImage: "ellipsis.circle")
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                 }
             }
         }
-        .gatherCard()
-        .shadow(
-            color: hovered ? GatherTheme.shadowMd : Color.clear,
-            radius: hovered ? 16 : 0,
-            y: hovered ? 6 : 0
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.gatherSurface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(
                     selectMode
-                        ? (isSelected ? Color.accentColor : Color.clear)
-                        : (hovered ? GatherTheme.primary : Color.clear),
-                    lineWidth: 1.5
+                        ? (isSelected ? Color.accentColor : Color.gatherBorder.opacity(0.6))
+                        : (hovered ? GatherTheme.primary : Color.gatherBorder.opacity(0.6)),
+                    lineWidth: hovered || (selectMode && isSelected) ? 1.5 : 1
                 )
         )
+        .shadow(
+            color: hovered ? GatherTheme.shadowMd : Color.clear,
+            radius: hovered ? 16 : 0,
+            y: hovered ? 6 : 0
+        )
         .offset(y: hovered ? -1 : 0)
-        .animation(.easeOut(duration: 0.15), value: hovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hovered)
         .onHover { hovering in
             hovered = hovering
+        }
+        .contextMenu {
+            Button(GatherLocalization.l("打开"), action: onOpen)
+            Button(GatherLocalization.l("删除"), role: .destructive, action: onDelete)
         }
     }
 
@@ -518,11 +548,11 @@ private struct SessionCardView: View {
         case .photosLoaded:
             return .photosLoaded()
         case .analyzing:
-            return .running("分析中")
+            return .running(GatherLocalization.l("分析中"))
         case .review:
             return .review()
         case .completed:
-            return .done("已完成")
+            return .done(GatherLocalization.l("已完成"))
         }
     }
 
@@ -571,22 +601,23 @@ private struct JobRowView: View {
         )
     }
 
-    /// 非 compact 行：TS Jobs.module.css .row 四列（身份 220 / 状态 90 /
-    /// 进度 flexible / 操作 80）。
+    /// 非 compact 行：TS Jobs.module.css .row 四列（身份 flexible≥180 /
+    /// 状态 90 / 进度 flexible / 操作 80）。身份列改弹性下限（布局验收
+    /// P2）：窄窗口收缩、宽窗口舒展，英文类型文案不截断。
     private var fullBody: some View {
         HStack(spacing: 16) {
             identityColumn
-                .frame(width: 220, alignment: .leading)
+                .frame(minWidth: 180, idealWidth: 220, maxWidth: .infinity, alignment: .leading)
             statusBadge
                 .frame(width: 90, alignment: .leading)
             progressBar
                 .frame(maxWidth: .infinity)
             HStack(spacing: 8) {
                 if job.status == .queued || job.status == .running {
-                    Button("取消", action: onCancel)
+                    Button(GatherLocalization.l("取消"), action: onCancel)
                 }
                 if job.status == .failed || job.status == .interrupted || job.status == .cancelled {
-                    Button("重试", action: onRetry)
+                    Button(GatherLocalization.l("重试"), action: onRetry)
                 }
             }
             .frame(width: 80, alignment: .trailing)
@@ -615,20 +646,20 @@ private struct JobRowView: View {
             Text(Self.typeLabel(job.type))
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
-            Text("工作区 · \(job.scopeId.prefix(8))")
-                .font(.caption)
+            Text(String(format: GatherLocalization.l("工作区 · %@"), String(job.scopeId.prefix(8))))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .help(job.scopeId)
             if !compact {
-                Text("尝试 \(job.attemptCount) 次")
-                    .font(.caption)
+                Text(String(format: GatherLocalization.l("尝试 %lld 次"), job.attemptCount))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             if !job.errorMessage.isEmpty {
                 Text(GatherLocalization.jobErrorMessage(job.errorMessage))
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                    .font(.footnote)
+                    .foregroundStyle(GatherTheme.error)
                     .lineLimit(1)
                     .help(job.errorMessage)
             }
@@ -643,39 +674,28 @@ private struct JobRowView: View {
     /// TS Jobs.module.css .progress：高 28、圆角 10、带边框、主色填充、
     /// 文字内嵌 `{pct}% {phase}`（pct = Math.round(current/total*100)）。
     private var progressBar: some View {
-        let pct = Double(DashboardViewModel.progressPercent(of: job)) / 100
-        return GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(GatherTheme.backgroundSecondary)
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(GatherTheme.primary.opacity(0.18))
-                    .frame(width: max(0, geo.size.width * pct))
-                Text("\(DashboardViewModel.progressPercent(of: job))% \(GatherLocalization.progressPhaseText(job.progressMessage))")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.gatherTextPrimary)
-                    .lineLimit(1)
-                    .padding(.leading, 9)
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(GatherTheme.primary.opacity(0.35), lineWidth: 1)
-            )
-        }
-        .frame(height: 28)
+        GatherProgressBar(
+            fraction: Double(DashboardViewModel.progressPercent(of: job)) / 100,
+            fill: GatherTheme.primary.opacity(0.18),
+            track: GatherTheme.backgroundSecondary,
+            border: GatherTheme.primary.opacity(0.35),
+            height: 28,
+            cornerRadius: 10,
+            label: "\(DashboardViewModel.progressPercent(of: job))% \(GatherLocalization.progressPhaseText(job.progressMessage))"
+        )
     }
 
     /// TS JOB_TYPE_KEYS（jobs.type.* 中文键值）。
     static func typeLabel(_ type: AnalysisJobType) -> String {
         switch type {
-        case .metadataScan: return "照片索引与元数据"
-        case .checksumBackfill: return "文件校验和补全"
-        case .similarityAnalyze: return "相似照片分析"
-        case .faceAnalyze: return "人脸分析"
-        case .duplicateScan: return "重复照片扫描"
-        case .qualityScore: return "技术质量分析"
-        case .exportExecute: return "照片导出"
-        case .thumbnailBuild: return "缩略图生成"
+        case .metadataScan: return GatherLocalization.l("照片索引与元数据")
+        case .checksumBackfill: return GatherLocalization.l("文件校验和补全")
+        case .similarityAnalyze: return GatherLocalization.l("相似照片分析")
+        case .faceAnalyze: return GatherLocalization.l("人脸分析")
+        case .duplicateScan: return GatherLocalization.l("重复照片扫描")
+        case .qualityScore: return GatherLocalization.l("技术质量分析")
+        case .exportExecute: return GatherLocalization.l("照片导出")
+        case .thumbnailBuild: return GatherLocalization.l("缩略图生成")
         }
     }
 }
@@ -707,15 +727,15 @@ private struct NewSessionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("新建工作区")
+            Text(GatherLocalization.l("新建工作区"))
                 .font(.title3.bold())
             TextField(
-                source == .local ? "选择文件夹后自动生成" : "留空则使用照片所在文件夹名称",
+                source == .local ? GatherLocalization.l("选择文件夹后自动生成") : GatherLocalization.l("留空则使用照片所在文件夹名称"),
                 text: $name
             )
             .textFieldStyle(.roundedBorder)
             .onChange(of: name) { _, _ in nameEdited = true }
-            Picker("导入来源", selection: $source) {
+            Picker(GatherLocalization.l("导入来源"), selection: $source) {
                 ForEach(DashboardViewModel.SessionSource.allCases) { option in
                     Text(option.label).tag(option)
                 }
@@ -729,15 +749,15 @@ private struct NewSessionSheet: View {
             if let error = viewModel.createError {
                 Text(error)
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(GatherTheme.error)
             }
-            Text("创建后会立即启动照片索引；索引进度和失败重试可在任务中心查看。")
-                .font(.caption)
+            Text(GatherLocalization.l("创建后会立即启动照片索引；索引进度和失败重试可在任务中心查看。"))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
-                Button("创建", action: create)
+                Button(GatherLocalization.l("取消")) { dismiss() }
+                Button(GatherLocalization.l("创建"), action: create)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canCreate || viewModel.isCreating)
             }
@@ -775,7 +795,7 @@ private struct NewSessionSheet: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "请选择包含照片的文件夹"
+        panel.message = GatherLocalization.l("请选择包含照片的文件夹")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         folderPath = url.path
         if !nameEdited {
@@ -785,18 +805,32 @@ private struct NewSessionSheet: View {
 
     private var folderRow: some View {
         HStack(spacing: 8) {
-            TextField("文件夹位置", text: $folderPath)
+            TextField(GatherLocalization.l("文件夹位置"), text: $folderPath)
                 .textFieldStyle(.roundedBorder)
                 .disabled(true)
-            Button("选择文件夹", action: chooseFolder)
+            Button(GatherLocalization.l("选择文件夹"), action: chooseFolder)
         }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first(where: { Self.isDirectoryURL($0) }) else { return false }
+            folderPath = url.path
+            if !nameEdited {
+                name = url.lastPathComponent
+            }
+            return true
+        }
+    }
+
+    /// 拖放目录判定：Finder 拖入的目录 URL 通常带尾斜杠；无尾斜杠时回退资源值探测。
+    private static func isDirectoryURL(_ url: URL) -> Bool {
+        if url.hasDirectoryPath { return true }
+        return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
     }
 
     /// TS Dialog c1Preflight 区块：检查清单（✓/✗）+ 通过/引导文案。
     @ViewBuilder
     private var c1PreflightSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Capture One 连接预检")
+            Text(GatherLocalization.l("Capture One 连接预检"))
                 .font(.subheadline.weight(.semibold))
             switch viewModel.c1Preflight {
             case .idle:
@@ -805,7 +839,7 @@ private struct NewSessionSheet: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("正在检查 Capture One 连接…")
+                    Text(GatherLocalization.l("正在检查 Capture One 连接…"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -814,20 +848,20 @@ private struct NewSessionSheet: View {
                     ForEach(result.checks) { check in
                         HStack(spacing: 6) {
                             Image(systemName: check.passed ? "checkmark" : "xmark")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(check.passed ? Color.green : Color.red)
+                                .font(.footnote.weight(.bold))
+                                .foregroundStyle(check.passed ? GatherTheme.success : GatherTheme.error)
                             Text(check.label)
                                 .font(.callout)
                         }
                     }
                     if result.passed {
-                        Text("预检通过：导入时读取 Capture One 当前选中的照片。")
-                            .font(.caption)
+                        Text(GatherLocalization.l("预检通过：导入时读取 Capture One 当前选中的照片。"))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else if let guidance = result.guidance {
                         // 旧版 c1-preflight.ts：预检失败引导为红色（error 语义）。
                         Text(guidance)
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(GatherTheme.error)
                     }
                 }
@@ -835,7 +869,7 @@ private struct NewSessionSheet: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherSurface))
     }
 
     /// TS handleCreate：本地 → createFromDirectory；Capture One → 预检门控后

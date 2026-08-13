@@ -245,6 +245,26 @@ public final class AssetRepo {
 
     // ─────────────────────────── 候选 ───────────────────────────
 
+    /// 批量照片的 asset_members 角色映射（photo.id → member_role；未关联为 "unknown"）。
+    /// 供 photo 列表分页按逻辑资产分组挑选 raw/camera_jpeg 代表（TS photo.ipc.ts
+    /// assemblePhotos 的两次小查询之一，原在宿主路由内联 SQL，下沉回 Repo）。
+    public func memberRoles(sessionId: String, photoIds: [String]) throws -> [String: String] {
+        guard !photoIds.isEmpty else { return [:] }
+        let placeholders = photoIds.map { _ in "?" }.joined(separator: ", ")
+        let rows = try connection.prepare("""
+            SELECT p.id AS photo_id, am.member_role
+            FROM photos p
+            LEFT JOIN asset_members am ON am.file_id = p.asset_file_id
+            WHERE p.session_id = ? AND p.id IN (\(placeholders))
+        """).query([.text(sessionId)] + photoIds.map(DBValue.text))
+        var roles: [String: String] = [:]
+        for row in rows {
+            guard let photoId = row[0].textValue else { continue }
+            roles[photoId] = row[1].textValue ?? "unknown"
+        }
+        return roles
+    }
+
     public func listCandidates(sessionId: String? = nil) throws -> [AssetLinkCandidateData] {
         let sessionClause = sessionId.map { _ in
             """

@@ -1,6 +1,7 @@
 // 共享徽标组件：对齐旧版 Badge.tsx 的胶囊形态（12px/999px 圆角、状态色），
 // 提供任务/状态枚举 → 颜色的统一映射，消除各页"状态色全变 accent"的分裂。
 import SwiftUI
+import AppKit
 import GatherCore
 
 public enum GatherBadgeTone {
@@ -46,7 +47,7 @@ public struct GatherBadge: View {
     public var body: some View {
         if let pastel {
             Text(text)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .textCase(.uppercase)
                 .kerning(0.5)
                 .foregroundStyle(pastel.foreground)
@@ -59,7 +60,7 @@ public struct GatherBadge: View {
                 .accessibilityLabel(text)
         } else {
             Text(text)
-                .font(.system(size: 11, weight: .medium))
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(tone.color)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 2)
@@ -85,33 +86,49 @@ public extension Color {
         self.init(red: red, green: green, blue: blue)
     }
 
-    // photosLoaded 青（.photosLoaded #e0f7fa / #00695c）
-    static let badgePhotosLoadedBg = Color(hex: 0xE0F7FA)
-    static let badgePhotosLoadedText = Color(hex: 0x00695C)
-    // review 靛蓝（.review #e8eaf6 / #283593）
-    static let badgeReviewBg = Color(hex: 0xE8EAF6)
-    static let badgeReviewText = Color(hex: 0x283593)
-    // running/analyzing 蓝（.running/.analyzing #e3f2fd / #1565c0）
-    static let badgeRunningBg = Color(hex: 0xE3F2FD)
-    static let badgeRunningText = Color(hex: 0x1565C0)
-    // done/completed 绿（.done/.completed #e8f5e9 / #2e7d32）
-    static let badgeDoneBg = Color(hex: 0xE8F5E9)
-    static let badgeDoneText = Color(hex: 0x2E7D32)
-    // failed 红（.failed #ffebee / #c62828）
-    static let badgeFailedBg = Color(hex: 0xFFEBEE)
-    static let badgeFailedText = Color(hex: 0xC62828)
-    // cancelled 橙（.cancelled #fff3e0 / #e65100）
-    static let badgeCancelledBg = Color(hex: 0xFFF3E0)
-    static let badgeCancelledText = Color(hex: 0xE65100)
-    // partial 琥珀（.partial #fff8e1 / #f57f17）
-    static let badgePartialBg = Color(hex: 0xFFF8E1)
-    static let badgePartialText = Color(hex: 0xF57F17)
-    // cleaned 紫（.cleaned #f3e5f5 / #6a1b9a）
-    static let badgeCleanedBg = Color(hex: 0xF3E5F5)
-    static let badgeCleanedText = Color(hex: 0x6A1B9A)
+    private static func badgeDynamic(light: UInt32, dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(hexValue: isDark ? dark : light)
+        })
+    }
+
+    // photosLoaded 青（浅色取旧版 #e0f7fa / #00695c；深色为深底浅字）
+    static let badgePhotosLoadedBg = Color.badgeDynamic(light: 0xE0F7FA, dark: 0x14332F)
+    static let badgePhotosLoadedText = Color.badgeDynamic(light: 0x00695C, dark: 0x8FE0D8)
+    // review 靛蓝（浅色 #e8eaf6 / #283593；深色深底浅字）
+    static let badgeReviewBg = Color.badgeDynamic(light: 0xE8EAF6, dark: 0x2A2D4A)
+    static let badgeReviewText = Color.badgeDynamic(light: 0x283593, dark: 0xB4BBF2)
+    // running/analyzing 蓝（浅色 #e3f2fd / #1565c0；深色深底浅字）
+    static let badgeRunningBg = Color.badgeDynamic(light: 0xE3F2FD, dark: 0x1B2D42)
+    static let badgeRunningText = Color.badgeDynamic(light: 0x1565C0, dark: 0x9CC8EE)
+    // done/completed 绿（浅色 #e8f5e9 / #2e7d32；深色深底浅字）
+    static let badgeDoneBg = Color.badgeDynamic(light: 0xE8F5E9, dark: 0x1F3423)
+    static let badgeDoneText = Color.badgeDynamic(light: 0x2E7D32, dark: 0x9AD9A0)
+    // failed 红（浅色 #ffebee / #c62828；深色深底浅字）
+    static let badgeFailedBg = Color.badgeDynamic(light: 0xFFEBEE, dark: 0x40242A)
+    static let badgeFailedText = Color.badgeDynamic(light: 0xC62828, dark: 0xF2A6A6)
+    // cancelled 橙（浅色 #fff3e0 / #e65100；深色深底浅字）
+    static let badgeCancelledBg = Color.badgeDynamic(light: 0xFFF3E0, dark: 0x3D2A18)
+    static let badgeCancelledText = Color.badgeDynamic(light: 0xE65100, dark: 0xF0BC8A)
+    // partial 琥珀（浅色 #fff8e1 / #f57f17；深色深底浅字）
+    static let badgePartialBg = Color.badgeDynamic(light: 0xFFF8E1, dark: 0x3B3215)
+    static let badgePartialText = Color.badgeDynamic(light: 0xF57F17, dark: 0xF0D488)
+    // cleaned 紫（浅色 #f3e5f5 / #6a1b9a；深色深底浅字）
+    static let badgeCleanedBg = Color.badgeDynamic(light: 0xF3E5F5, dark: 0x33203B)
+    static let badgeCleanedText = Color.badgeDynamic(light: 0x6A1B9A, dark: 0xD4A8EA)
     // draft 灰（.draft 取旧版 --color-bg-secondary / --color-text-secondary）
-    static let badgeDraftBg = Color(hex: 0xEDE6DC)
-    static let badgeDraftText = Color(hex: 0x6B655D)
+    static let badgeDraftBg = GatherTheme.backgroundSecondary
+    static let badgeDraftText = GatherTheme.textPrimary
+}
+
+private extension NSColor {
+    convenience init(hexValue: UInt32) {
+        let red = Double((hexValue >> 16) & 0xFF) / 255
+        let green = Double((hexValue >> 8) & 0xFF) / 255
+        let blue = Double(hexValue & 0xFF) / 255
+        self.init(srgbRed: red, green: green, blue: blue, alpha: 1)
+    }
 }
 
 // MARK: - 旧版 Badge.tsx STATUS_COLORS 状态工厂（工作区卡片状态徽标；
@@ -119,39 +136,39 @@ public extension Color {
 
 public extension GatherBadge {
     static func photosLoaded() -> Self {
-        Self("已导入", foreground: .badgePhotosLoadedText, background: .badgePhotosLoadedBg)
+        Self(GatherLocalization.l("已导入"), foreground: .badgePhotosLoadedText, background: .badgePhotosLoadedBg)
     }
 
     static func review() -> Self {
-        Self("待审核", foreground: .badgeReviewText, background: .badgeReviewBg)
+        Self(GatherLocalization.l("待审核"), foreground: .badgeReviewText, background: .badgeReviewBg)
     }
 
-    static func running(_ label: String = "运行中") -> Self {
+    static func running(_ label: String = GatherLocalization.l("运行中")) -> Self {
         Self(label, foreground: .badgeRunningText, background: .badgeRunningBg)
     }
 
-    static func done(_ label: String = "完成") -> Self {
+    static func done(_ label: String = GatherLocalization.l("完成")) -> Self {
         Self(label, foreground: .badgeDoneText, background: .badgeDoneBg)
     }
 
-    static func failed(_ label: String = "失败") -> Self {
+    static func failed(_ label: String = GatherLocalization.l("失败")) -> Self {
         Self(label, foreground: .badgeFailedText, background: .badgeFailedBg)
     }
 
     static func cancelled() -> Self {
-        Self("已取消", foreground: .badgeCancelledText, background: .badgeCancelledBg)
+        Self(GatherLocalization.l("已取消"), foreground: .badgeCancelledText, background: .badgeCancelledBg)
     }
 
     static func draft() -> Self {
-        Self("草稿", foreground: .badgeDraftText, background: .badgeDraftBg)
+        Self(GatherLocalization.l("草稿"), foreground: .badgeDraftText, background: .badgeDraftBg)
     }
 
     static func partial() -> Self {
-        Self("部分完成", foreground: .badgePartialText, background: .badgePartialBg)
+        Self(GatherLocalization.l("部分完成"), foreground: .badgePartialText, background: .badgePartialBg)
     }
 
     static func cleaned() -> Self {
-        Self("已清理", foreground: .badgeCleanedText, background: .badgeCleanedBg)
+        Self(GatherLocalization.l("已清理"), foreground: .badgeCleanedText, background: .badgeCleanedBg)
     }
 }
 
@@ -160,19 +177,19 @@ public extension GatherBadge {
     init(status: AnalysisJobStatus) {
         switch status {
         case .queued:
-            self.init("排队中", tone: .info)
+            self.init(GatherLocalization.l("排队中"), tone: .info)
         case .running:
-            self.init("运行中", tone: .accent)
+            self.init(GatherLocalization.l("运行中"), tone: .accent)
         case .succeeded:
-            self.init("已完成", tone: .success)
+            self.init(GatherLocalization.l("已完成"), tone: .success)
         case .failed:
-            self.init("失败", tone: .error)
+            self.init(GatherLocalization.l("失败"), tone: .error)
         case .cancelled:
-            self.init("已取消", tone: .neutral)
+            self.init(GatherLocalization.l("已取消"), tone: .neutral)
         case .interrupted:
-            self.init("已中断", tone: .warning)
+            self.init(GatherLocalization.l("已中断"), tone: .warning)
         case .cancelling:
-            self.init("取消中", tone: .warning)
+            self.init(GatherLocalization.l("取消中"), tone: .warning)
         }
     }
 }

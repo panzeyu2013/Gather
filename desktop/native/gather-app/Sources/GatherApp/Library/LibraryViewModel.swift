@@ -92,12 +92,13 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
 public protocol LibraryDataProvider {
     func listSessions() throws -> [SessionData]
     /// TS: filterApi.photosGlobal → { photos, total }。
+    /// async：分页大查询经 executeAsync 走后台线程（避免 @MainActor 主线程阻塞）。
     func globalPhotos(
         criteria: FilterGroup,
         sessionId: String?,
         limit: Int,
         offset: Int
-    ) throws -> (photos: [GlobalPhotoResult], total: Int)
+    ) async throws -> (photos: [GlobalPhotoResult], total: Int)
 
     /// TS: albumApi.list / getPhotos / create / update / delete。
     /// 默认实现保留测试 stub 与最小第三方 provider 的兼容性；真实 provider
@@ -107,7 +108,7 @@ public protocol LibraryDataProvider {
         albumId: String,
         limit: Int,
         offset: Int
-    ) throws -> (photos: [GlobalPhotoResult], total: Int)
+    ) async throws -> (photos: [GlobalPhotoResult], total: Int)
     func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData
     func updateAlbum(albumId: String, criteria: FilterGroup) throws
     func deleteAlbum(albumId: String) throws
@@ -133,7 +134,7 @@ public extension LibraryDataProvider {
         albumId: String,
         limit: Int,
         offset: Int
-    ) throws -> (photos: [GlobalPhotoResult], total: Int) {
+    ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
         ([], 0)
     }
 
@@ -175,9 +176,11 @@ public extension LibraryDataProvider {
 /// 以路由为唯一事实源，避免复制资产装配逻辑）。
 public final class LiveLibraryDataProvider: LibraryDataProvider {
     private let router: SessionCommandRouter
+    private let client: NativeCommandClient
 
     public init(router: SessionCommandRouter) {
         self.router = router
+        self.client = NativeCommandClient(router: router)
     }
 
     public func listSessions() throws -> [SessionData] {
@@ -189,8 +192,8 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         sessionId: String?,
         limit: Int,
         offset: Int
-    ) throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let response = try router.execute("filter.photos_global", params: [
+    ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
+        let response = try await client.executeAsync("filter.photos_global", params: [
             "criteria": try JSONValue(from: criteria),
             "sessionId": sessionId.map { .string($0) } ?? .null,
             "limit": .number(Double(limit)),
@@ -211,8 +214,8 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         albumId: String,
         limit: Int,
         offset: Int
-    ) throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let response = try router.execute("album.get_photos", params: [
+    ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
+        let response = try await client.executeAsync("album.get_photos", params: [
             "albumId": .string(albumId),
             "limit": .number(Double(limit)),
             "offset": .number(Double(offset)),
@@ -442,7 +445,7 @@ public final class LibraryViewModel {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "选择新目录"
+        panel.prompt = GatherLocalization.l("选择新目录")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         await performSupportMutation {
             _ = try self.provider.relinkAssetRoot(oldRoot: oldRoot, newRoot: url.path)
@@ -568,7 +571,7 @@ public final class LibraryViewModel {
     public var rangeText: String {
         let start = min(page * Self.pageSize + 1, max(0, total))
         let end = min((page + 1) * Self.pageSize, total)
-        return "第 \(start)–\(end) 张"
+        return String(format: GatherLocalization.l("第 %lld–%lld 张"), start, end)
     }
 
     // MARK: 取数
@@ -579,13 +582,13 @@ public final class LibraryViewModel {
         do {
             let result: (photos: [GlobalPhotoResult], total: Int)
             if let selectedAlbumId {
-                result = try provider.albumPhotos(
+                result = try await provider.albumPhotos(
                     albumId: selectedAlbumId,
                     limit: Self.pageSize,
                     offset: target * Self.pageSize
                 )
             } else {
-                result = try provider.globalPhotos(
+                result = try await provider.globalPhotos(
                     criteria: buildLibraryCriteria(committed),
                     sessionId: sessionFilter.isEmpty ? nil : sessionFilter,
                     limit: Self.pageSize,

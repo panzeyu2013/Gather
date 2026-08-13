@@ -69,7 +69,7 @@ private final class EmptyDataCommandRouter: CommandRouter, @unchecked Sendable {
         params: [String: GatherCore.JSONValue],
         completion: @escaping (WebResponse) -> Void
     ) {
-        completion(WebResponse(id: command, ok: true, data: nil))
+        completion(WebResponse(ok: true, data: nil))
     }
 }
 
@@ -93,6 +93,6 @@ private final class FailingCommandRouter: CommandRouter, @unchecked Sendable {
         params: [String: GatherCore.JSONValue],
         completion: @escaping (WebResponse) -> Void
     ) {
-        completion(WebResponse(id: command, ok: false, error: error))
+        completion(WebResponse(ok: false, error: error))
     }
 }

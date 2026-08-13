@@ -16,8 +16,8 @@ final class RootNavigation {
 
         var title: String {
             switch self {
-            case .persons: return GatherLocalization.l("人脸库", "Persons")
-            case .settings: return GatherLocalization.l("设置", "Settings")
+            case .persons: return GatherLocalization.l("人脸库")
+            case .settings: return GatherLocalization.l("设置")
             }
         }
     }
@@ -103,10 +103,17 @@ struct RootView: View {
     @State private var similarityViewModel: SimilarityViewModel?
     @State private var personsViewModel: PersonsViewModel?
     @State private var sidebarVisible = true
+    /// 侧栏宽度（布局验收 P2：拖拽手柄可调，160–320）。
+    @State private var sidebarWidth: CGFloat = 200
+    /// 拖拽开始时的侧栏宽度基准（手势期间 translation 增量累加用）。
+    @State private var sidebarDragStartWidth: CGFloat?
     /// 人脸审核深链的角色预筛选（Persons 详情「复核人脸」注入；切换目的地后清空）。
     @State private var faceKwInitialRole: String?
     /// 界面语言版本号：languageChanged 通知递增，驱动外壳层双语文案重渲染。
     @State private var languageVersion = 0
+    /// 窗口标题：有会话时取会话名，否则保持「Gather」。
+    @State private var windowTitle = "Gather"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @MainActor
     init(
@@ -150,7 +157,10 @@ struct RootView: View {
     var body: some View {
         HStack(spacing: 0) {
             if sidebarVisible {
-                SidebarView(navigation: navigation)
+                SidebarView(navigation: navigation, width: sidebarWidth)
+                    .transition(reduceMotion ? .opacity : .move(edge: .leading))
+                // 拖拽调宽手柄（6pt 热区；吸附左右光标，160–320 钳制）。
+                sidebarResizeHandle
             }
             ZStack {
                 DashboardView(viewModel: viewModel) { sessionId in
@@ -223,9 +233,16 @@ struct RootView: View {
 
                 sessionTabView
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: navigation.destination)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .dropDestination(for: URL.self) { urls, _ in
+                guard let url = urls.first(where: { Self.isDirectoryURL($0) }) else { return false }
+                NotificationCenter.default.post(name: GatherAppNotification.menuImportFolder, object: url)
+                return true
+            }
         }
         .frame(minWidth: 1100, minHeight: 720)
+        .navigationTitle(windowTitle)
         .tint(GatherTheme.primary)
         .background(Color.gatherBackground)
         .id(languageVersion)
@@ -237,7 +254,9 @@ struct RootView: View {
             languageVersion += 1
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuToggleSidebar)) { _ in
-            sidebarVisible.toggle()
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                sidebarVisible.toggle()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuNewWorkspace)) { _ in
             navigation.selectDashboard()
@@ -246,6 +265,9 @@ struct RootView: View {
             // 对齐 Cmd+N 的"先切页再开 sheet"：切到工作台后
             // DashboardView 自己的订阅才会打开导入 sheet。
             navigation.selectDashboard()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuOpenSettings)) { _ in
+            navigation.selectWeb(.settings)
         }
         // 菜单/深链/C1 导入完成：跳转到新工作区并提示失败文件数。
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.importCompleted)) { notification in
@@ -258,14 +280,14 @@ struct RootView: View {
                 // 「N 张照片已导入；来源读取失败：示例文件、… 等 N 个」。
                 let addedCount = (userInfo[GatherAppImportUserInfoKey.addedCount] as? Int) ?? 0
                 let sourceLabel = (userInfo[GatherAppImportUserInfoKey.sourceLabel] as? String)
-                    ?? GatherLocalization.l("文件", "files")
+                    ?? GatherLocalization.l("文件")
                 let examples = (userInfo[GatherAppImportUserInfoKey.examples] as? String) ?? ""
                 let remaining = failedCount > 3
-                    ? GatherLocalization.l(" 等 \(failedCount) 个", " and \(failedCount) more")
+                    ? String(format: GatherLocalization.l(" 等 %d 个"), failedCount)
                     : ""
                 GatherToastCenter.shared.show(
                     type: .warning,
-                    message: "\(addedCount) 张照片已导入；\(sourceLabel)读取失败：\(examples)\(remaining)"
+                    message: String(format: GatherLocalization.l("%lld 张照片已导入；%@读取失败：%@%@"), addedCount, sourceLabel, examples, remaining)
                 )
             }
             // 深链/导入完成语义对齐旧版 App.tsx:34-64：落点浏览页（图库），
@@ -279,7 +301,9 @@ struct RootView: View {
         .overlay(alignment: .topTrailing) {
             ToastView()
         }
+        .onAppear { refreshWindowTitle() }
         .onChange(of: navigation.destination) { previous, destination in
+            refreshWindowTitle()
             // 人脸审核深链角色预筛选为一次性播种：离开人脸页即清空，
             // 避免后续普通进入带出旧角色。
             if case .sessionTab(_, .faceKw) = destination {} else {
@@ -326,6 +350,49 @@ struct RootView: View {
                 }
             }
         }
+    }
+
+    private var sidebarResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 6)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if sidebarDragStartWidth == nil { sidebarDragStartWidth = sidebarWidth }
+                        let base = sidebarDragStartWidth ?? 200
+                        sidebarWidth = min(320, max(160, base + value.translation.width))
+                    }
+                    .onEnded { _ in
+                        sidebarDragStartWidth = nil
+                        NSCursor.pop()
+                    }
+            )
+            .accessibilityLabel(GatherLocalization.l("调整侧栏宽度"))
+    }
+
+    /// 拖放目录判定：Finder 拖入的目录 URL 通常带尾斜杠；无尾斜杠时回退资源值探测。
+    private static func isDirectoryURL(_ url: URL) -> Bool {
+        if url.hasDirectoryPath { return true }
+        return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+    }
+
+    /// 窗口标题跟随当前会话：有会话时用会话名，无会话（或无名称）保持「Gather」。
+    private func refreshWindowTitle() {
+        guard let sessionId = navigation.currentSessionId else {
+            windowTitle = "Gather"
+            return
+        }
+        let sessions = (try? provider.listSessions()) ?? []
+        windowTitle = sessions.first(where: { $0.id == sessionId })?.name ?? "Gather"
     }
 
     @ViewBuilder
@@ -397,6 +464,8 @@ struct RootView: View {
 
 private struct SidebarView: View {
     @Bindable var navigation: RootNavigation
+    /// 侧栏宽度（由 RootView 拖拽手柄控制，160–320）。
+    let width: CGFloat
 
     /// 当前 hover 项标识（对齐旧版 hover primary 5% 背景 + 文字加深）。
     @State private var hoveredItem: String?
@@ -406,8 +475,8 @@ private struct SidebarView: View {
             HStack(spacing: 8) {
                 Text("G")
                     .font(.system(size: 16, weight: .bold))
-                    // 暗色模式 primary 为亮橙 #D98964，白字对比不足 → 深棕。
-                    .foregroundStyle(Color(red: 61 / 255, green: 56 / 255, blue: 51 / 255))
+                    // Logo 文字取主题文字色（浅色深棕 / 深色米白自动适配）。
+                    .foregroundStyle(Color.gatherTextPrimary)
                     .frame(width: 26, height: 26)
                     .background(
                         RoundedRectangle(cornerRadius: 8)
@@ -427,7 +496,7 @@ private struct SidebarView: View {
             VStack(spacing: 2) {
                 sidebarButton(
                     id: "dashboard",
-                    title: GatherLocalization.l("工作台", "Dashboard"),
+                    title: GatherLocalization.l("工作台"),
                     systemImage: "house",
                     isActive: navigation.isDashboard
                 ) {
@@ -436,7 +505,7 @@ private struct SidebarView: View {
                 if let sessionId = navigation.currentSessionId {
                     sidebarButton(
                         id: "session-\(sessionId)",
-                        title: GatherLocalization.l("当前会话", "Current Session"),
+                        title: GatherLocalization.l("当前会话"),
                         systemImage: "square.grid.2x2",
                         isActive: navigation.sessionTabDestination?.tab == .control
                             && navigation.gallerySessionId == nil
@@ -446,7 +515,7 @@ private struct SidebarView: View {
                 }
                 sidebarButton(
                     id: "library",
-                    title: GatherLocalization.l("全局图库", "Library"),
+                    title: GatherLocalization.l("全局图库"),
                     systemImage: "books.vertical",
                     isActive: navigation.isLibrary
                 ) {
@@ -466,7 +535,7 @@ private struct SidebarView: View {
             .padding(.top, 4)
             Spacer()
         }
-        .frame(width: 200)
+        .frame(width: width)
         .background(Color.gatherSurface)
         .overlay(alignment: .trailing) {
             Rectangle().fill(Color.gatherBorder.opacity(0.7)).frame(width: 1)
@@ -489,7 +558,7 @@ private struct SidebarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .foregroundStyle(textColor(isActive: isActive))
-            .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+            .font(.body.weight(isActive ? .semibold : .regular))
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(backgroundColor(isActive: isActive, id: id))
@@ -497,6 +566,7 @@ private struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .padding(.horizontal, 10)
         .onHover { hovering in
             hoveredItem = hovering ? id : (hoveredItem == id ? nil : hoveredItem)
@@ -522,7 +592,7 @@ private struct SidebarView: View {
 
     private func backgroundColor(isActive: Bool, id: String) -> Color {
         if isActive { return GatherTheme.primarySoft }
-        if hoveredItem == id { return GatherTheme.primarySoft.opacity(0.4) }
+        if hoveredItem == id { return GatherTheme.primary.opacity(0.08) }
         return Color.clear
     }
 
@@ -550,8 +620,16 @@ public struct NativeBanner: View {
             .font(.callout)
             .foregroundStyle(color)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(color.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.gatherBorder, lineWidth: 1)
+            )
             .padding(.horizontal, 24)
-            .padding(.vertical, 9)
-            .background(color.opacity(0.1))
+            .padding(.vertical, 8)
     }
 }

@@ -1,182 +1,122 @@
 # Gather 产品与技术 Roadmap
 
-> 版本：v2（2026-08-05）；v2.1（2026-08-08）补录 DESIGN_IMPROVEMENTS.md
-> 五项产品短板的实施状态，见 §3.5。
-> v2 修订：按执行层评审补齐「当前实现状态 / 真实基线 / 质量指标 / 依赖关系」，
-> 明确区分「已完成」「已实现未接通」「未验证假设」，验收拆为 Release 门与 Stretch 门。
-> 配套文档：[原生开发分析](NATIVE-DEVELOPMENT-ANALYSIS.md)、[ADR](ADR.md)。
+> 版本：v3（2026-08-12）。v3 修订：**原生迁移（Swift/SwiftUI）已全部完成**
+> （原 NATIVE-DEVELOPMENT-ANALYSIS.md 的 Phase 0-4 台账已归档，本文档不再引用）；
+> 本节按「已完成 / 待做」两态标注，删除已过时的 Electron 时代任务（如 Rust core
+> 立项、WKWebView 桥、TS 对账），保留仍未兑现的产品与规模化承诺。
+> 配套文档：[README.md](README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[ADR.md](ADR.md)。
 
 ---
 
 ## 一、用户痛点与优先级映射
 
-| # | 用户痛点（典型表述） | 根因（代码级） | 优先级 |
-|---|---|---|---|
-| 1 | "导入 1 万张要等一晚上" | 新文件全量 SHA-256（P1-2）；遍历串行（P2-4） | **P0** |
-| 2 | "相似度分析跑一半报超时失败" | 聚类 Worker 60s 硬超时（P0-1） | **P0** |
-| 3 | "人脸分析要几个小时，还只能用 CPU" | 串行管线 + 检测固定 CPU（P0-2） | **P0** |
-| 4 | "几万张脸时聚类跑不动" | DBSCAN O(n²) + 全量重建（P0-3） | **P0** |
-| 5 | "找相似只能找到连拍，换角度/换光线就找不到了" | dHash 感知哈希的天花板 | **P1** |
-| 6 | "调阈值就卡，每次都要重新算一遍" | 聚类算法退化 + 全量重跑（P1-1） | **P1** |
-| 7 | "翻片时一阵一阵地卡" | 磁盘缓存元数据全量序列化/排序（P1-3） | **P1** |
-| 8 | "大工作区打开挑片页要等很久" | `culling.list` 全会话加载（P1-4） | **P1** |
-| 9 | "在 Capture One 里改一张，Gather 的相似组/人脸结果就全没了" | 失效策略整 session 全删（P2-3） | **P2** |
-| 10 | "绑定的角色换个 session 又要重新认" | 人脸库重识别无 ANN 索引（P2-5） | **P2** |
-| 11 | "只有 Mac 能用" | 平台单一（见原生开发分析） | **P2（决策）** |
+| # | 用户痛点（典型表述） | 根因 | 优先级 | 当前状态 |
+|---|---|---|---|---|
+| 1 | "导入 1 万张要等一晚上" | 全量哈希 + 串行遍历 | **P0** | ✅ 已完成（懒校验 + 并行遍历 + 任务化，见 §四） |
+| 2 | "相似度分析跑一半报超时失败" | 聚类无进展超时/无进度 | **P0** | ✅ 已完成（JobService executor + 心跳看门狗 + 取消） |
+| 3 | "人脸分析要几个小时，还只能用 CPU" | 串行管线 | **P0** | ✅ 已完成（Vision 原生 + 后台任务 + 取消） |
+| 4 | "几万张脸时聚类跑不动" | DBSCAN O(n²) | **P0** | ✅ 已完成（LSH 候选 + 连续内存 + 对账门禁） |
+| 5 | "找相似只能找到连拍" | dHash 感知哈希天花板 | **P1** | ⏳ 未做（决策 A：embedding，待 2.1 标注评估） |
+| 6 | "调阈值就卡，每次都要重新算" | 全量重跑 | **P1** | ✅ 已完成（邻域阈值档预计算，T±4/T±8） |
+| 7 | "翻片时一阵一阵地卡" | 缓存元数据全量序列化 | **P1** | ✅ 已完成（SQLite + 惰性淘汰，ADR-007） |
+| 8 | "大工作区打开挑片页要等很久" | 全会话加载 | **P1** | ✅ 已完成（逻辑资产分页，ADR-008） |
+| 9 | "在 Capture One 里改一张，结果就全没了" | 失效策略整 session 全删 | **P2** | ◐ 部分（输入级失效完成；增量聚类 1.3 未做） |
+| 10 | "绑定的角色换个 session 又要重新认" | 重识别无 ANN 索引 | **P2** | ✅ 已完成（HNSW/LSH 索引 + face-matcher 接线） |
+| 11 | "只有 Mac 能用" | 平台单一 | **P2（决策）** | ✅ 已决策：macOS 独占原生；Windows 保持决策门（4.3） |
 
-> P0/P1/P2 指"修复优先级"：P0 决定大图库是否可用，
-> P1 决定日常体验，P2 决定长期竞争力。
+> P0/P1/P2 指"修复优先级"：P0 决定大图库是否可用，P1 决定日常体验，
+> P2 决定长期竞争力。
 
 ---
 
 ## 二、关键技术决策与利弊分析
 
-### 决策 A：相似度从 dHash 升级为 Embedding（语义向量）
+### 决策 A：相似度从 dHash 升级为 Embedding（语义向量）——未立项
 
-**方案**：保留 dHash 作为"精确相似/重复"的第一层（快、省、可解释），新增
-Embedding 层（如 DINOv2 / CLIP-ViT 类 ONNX 模型）提供"语义相似"；双特征融合。
+保留 dHash 作为"精确相似/重复"的第一层（快、省、可解释），新增 Embedding 层
+（DINOv2 / CLIP-ViT 类模型）提供"语义相似"；双特征融合。
 
-**优势**
-1. **跨越构图差异**：同一场景不同机位/焦段/光照/裁切可归组。这是待验证的核心假设——
-   「连拍备份是伪需求，同场景多角度才是真实语义」目前只是假设，未经标注数据证实
-   （见 §八 评估计划），在证实前 embedding 只作为实验方向，不承诺具体成组行为；
-2. **统一基础设施**：人脸编码已是 embedding，图片 embedding 与其共用向量存储、
-   ANN 索引、增量管线（决策 D），一份基建两处受益；
-3. **可扩展的检索**：embedding 天然支持"以图搜图"，未来可加"按语义标签搜索"；
-4. **对曝光/色调鲁棒**：dHash 对亮度变化极敏感，embedding 基本不受影响；
-5. **批量关键词候选**：CLIP 类模型可做图文关联，为"相似组自动命名关键词"铺路。
+- 价值假设："连拍备份是伪需求，同场景多角度才是真实语义"仍**未经标注数据证实**
+  （§八 评估计划），在证实前 embedding 只作为实验方向，不承诺具体成组行为；
+- 计算成本高 1-2 个数量级，需 GPU（CoreML/ANE）；余弦阈值不可解释需重设计 UI；
+- 结果漂移需模型版本指纹（`analysis_signature` 机制可复用，原生已沿用）；
+- **结论**：值得升级，但必须先验证产品语义（§八）再建管线；技术上
+  "dHash 打底 + embedding 分层"双模式，与增量索引（决策 B）、向量设施（决策 D）
+  同步落地。
 
-**弱点 / 风险**
-1. **计算成本**：embedding 推理比 dHash 贵 1-2 个数量级（单张 50-200ms CPU）；
-   必须走 GPU（macOS CoreML/ANE、Windows DirectML）才有好体验；
-2. **不可解释的阈值**：汉明距离（0-64）用户可理解，余弦相似度（0-1）难以调参，
-   需要重新设计 UI 语义（"相似程度：低/中/高"）；
-3. **结果漂移**：模型升级 → 特征空间变化 → 历史结果失效；必须引入模型版本指纹
-   （`asset_analysis` 已有 model_version 机制可复用）并支持按版本冻结/重算；
-4. **存储与内存**：512 维 float32 = 2KB/张；10 万张 = 200MB 内存索引 + 磁盘向量表，
-   需要 ANN（HNSW）而非暴力扫描；
-5. **"精确重复"场景反而退化**：语义模型会把相似场景合并，精确备份查找必须保留
-   dHash/checksum 层做交集（双模融合，阈值两套）；
-6. **模型与依赖**：需下载 90-350MB 模型（已有 model-downloader 基建），离线用户
-   受影响；许可证需合规（DINOv2/CLIP 均开源可商用）。
+### 决策 B：增量索引与规模化——大部分落地
 
-**结论**：值得升级，但必须"先验证产品语义（§八）→ 再建完整推理管线"；技术上必须
-"dHash 打底 + embedding 分层"双模式，且与增量索引（决策 B）、向量设施（决策 D）
-同步落地——否则 60s 超时与 O(n²) 聚类会直接放大 embedding 的代价。
+- ✅ 文件级指纹、checksum 懒校验、后台补齐（1.1）；
+- ✅ 输入级失效（hash/观测/分析态按照片失效）+ 绑定成员迁移（1.2 部分）；
+- ✅ 阈值档预计算（1.4）；
+- ✅ 目录并行遍历 + 进度/暂停（1.5）；
+- ⏳ **增量聚类 + 簇版本化 + 定期全局收敛（1.3）**与**增量 vs 全量对账矩阵（1.6）**
+  未做：当前聚类仍为"全量重聚类"（重分析按签名复用只重算变更照片），新增照片的
+  邻域局部聚类与全局一致性对账是规模化（10 万+）的前提；
+- 文件系统监控已原生化：FSEvents 递归 watcher + 750ms 去抖 + 15s 轮询对账 +
+  丢事件矩阵（`Watch/Coordinator.swift`，随机 200 次增删改对账连续全绿）。
 
-### 决策 B：增量索引与规模化
+### 决策 C：平台扩展——已落定为 macOS 独占原生
 
-**方案**：从"整 session 全量扫描 + 全量重聚类"迁移到"文件级指纹 → 增量扫描 →
-邻域局部聚类 → 定期全局收敛"；列表服务端分页；checksum 懒校验。
+- 原生迁移已完成（Swift/SwiftUI，Electron 已移除，2026-08-11）；
+- Windows 支持保持**独立决策门**（4.3），由社区/商业需求驱动，不阻塞其他决策；
+- 原"内核原生化（Rust core，Electron 外壳）"项已过时删除——Swift 原生已取代。
 
-**好处**
-1. **大库可用性**：日常操作从"小时级全量"降为"秒级增量"（只看变更文件）；
-2. **首次导入体验**：先出结果（缩略图/维度/EXIF），checksum 后台渐进补齐，
-   导入完成时间可感知地缩短（1.1 已实现）；
-3. **增量聚类**：新增几张照片只扩展相关簇，全局簇定期收敛；阈值滑块改为
-   服务端预计算多阈值结果，客户端即时切换（1.4 已实现）；
-4. **失效粒度细化**：单文件变更只失效其邻域（替代整 session 全删，痛点 9；
-   当前仍为 session 级 DELETE，见 1.2）；
-5. **可持续观测**：规模基准（§六 四套基准）可量化每次改进，防止回归。
+### 决策 D：通用向量存储与 ANN 基础设施——已完成
 
-**缺点 / 风险**
-1. **双路径一致性**：增量路径与全量路径必须产出相同结果，需要"增量 vs 全量对账"
-   测试矩阵（重命名/移动/删除/恢复的边案例极多，仓库已有 relink 机制但增量下
-   更复杂）；
-2. **事件可靠性**：文件系统 watcher 会丢事件 → 需要周期性全量对账兜底
-   （现有 `watcherNeedsFullScan` 机制的推广），否则静默漏图；
-3. **局部聚类的一致性代价**：局部扩展可能与后续全局聚类产生不一致（成员漂移），
-   需要版本化簇 + 明确的收敛策略，实现复杂度显著上升；
-4. **存储与迁移成本**：指纹表、向量表、簇版本表持续增长；SQLite 单写者下，
-   后台扫描与写回队列可能锁竞争（WAL 缓解但需监控）；
-5. **退化场景**："一次性灌入 1 万张新图"时增量退化为全量——需要预热路径与
-   进度可控的后台任务（analysis_jobs 已有）承载。
-
-**结论**：这是规模化（10 万+ 张）的前提条件，与决策 A 强耦合，必须一起做。
-
-### 决策 C：平台扩展（先读 [原生开发分析](NATIVE-DEVELOPMENT-ANALYSIS.md)）
-
-**结论摘要**：当前 Electron 架构下"内核原生化 + 双平台"是成本收益最优路径；
-Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已可行）应作为
-独立 Phase 由社区/商业需求驱动，不阻塞上述两个决策。
-
-### 决策 D：通用向量存储与 ANN 基础设施
-
-**方案**：将「向量表 + HNSW/ANN 索引 + 模型版本指纹」从 Phase 2 中独立为基础设施
-里程碑（§四「里程碑 V」）。图片 embedding（决策 A）与人脸重识别（Phase 3）都依赖它。
-
-**理由**
-1. 解决原依赖图矛盾：此前文档同时写"Phase 3 依赖 Phase 1 的向量设施"与
-   "Phase 2 依赖 Phase 1 的向量存储"，但向量存储与 HNSW 被放在 2.2——两个消费方
-   依赖的东西不能挂靠在任一消费方的内部；
-2. 人脸"10 万张脸 O(n²)"（0.3b）是第一个真实调用方，先用它验证 ANN 的质量与
-   召回，再用于图片 embedding，降低一次引入两份风险；
-3. 模型升级/结果版本化（2.4）需要指纹与版本表，属于同一设施。
-
-**边界**：本期只做「索引 + 查询 + 版本化」，不引入向量数据库选型决策
-（先 SQLite 持久化 + 内存 HNSW），避免新增运维复杂度。
+- 组件（HNSW 增量插入 + angular LSH + 多样性启发式连接）原生实现于
+  `Face/VectorIndex.swift`，topK 逐位一致/recall ≥ TS 对账门禁；
+- 消费方已接线：`Face/Matcher.swift`（跨 session 重识别，痛点 10 闭环）；
+- 边界仍有效：SQLite 持久化 + 内存索引，不引入向量数据库选型。
 
 ---
 
-## 三、当前实现状态与基线（2026-08-05 快照）
+## 三、当前实现状态与基线（2026-08-12 快照）
 
-> 本节防止 roadmap 把「已完成」「已实现未接通」「未验证」混为一谈。
-> 状态为快照时刻结论，随代码演进更新。
-
-### 3.1 已完成（代码在主干，有单测覆盖）
+### 3.1 已完成（原生代码在主干，有单测覆盖）
 
 | 项 | 位置 | 说明 |
 |---|---|---|
-| 磁盘缓存 SQLite 化 | `services/image/disk-cache.ts` | better-sqlite3 + WAL，替代全量序列化/排序 |
-| Culling 分页 | `culling.service.ts` pagePhotosQuery | 首屏只取当前页；富字段懒加载；旧 `culling.list` 入口保留 |
-| checksum 后台补齐 | `index.service.ts` lazy_checksum | 索引先跳过哈希，后台 checksum backfill 任务补齐 |
-| 阈值预计算多档 | `cluster-engine.ts` + similarity-result 多阈值 tier | 相邻阈值档位预计算，滑块切换不全量重跑 |
-| 聚类 Worker 流式进度/取消/异常收敛 | `analysis-worker-client.ts` | 进度回传、AbortSignal、timeout/exit 兜底；动态超时已接通（face 分支按 512 维 flops 显式估算、上限 60min），超时为"无进展超时"——progress 心跳重置定时器，卡死才终止；BFS 扩展阶段按 `max(64, n/2000)` 步长回传心跳（进度单调不回退），单一大簇不会因无心跳被误杀 |
-| 人脸解码/推理滑动窗口流水线 | `face-kw.service.ts` | `face_decode_concurrency` 4-8；推理为批量请求（decodeWindow 张/批、单帧失败不影响整批）；`face_inference_parallel_workers`（默认 1）可启用双推理 worker 分片并行（线程预算均分、后续 worker init 失败自动降级回单 worker）；decode/infer 分阶段耗时有 profiling 日志 |
-| 人脸 DBSCAN 连续 Float32Array | `face-clusterer.ts` | 消除逐点分配与复制，降低内存峰值 |
-| 相似 hash 复用批量查询 | `similarity.service.ts` reuseSimilarityHashes | 按 asset_file_id 去重分块 `IN` 查询，消除逐照片 N+1（P1-5） |
+| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（边界扫描门禁）；gather-core 772 测试 / 102 suites，gather-app 172 / 19 suites（2026-08-13 台账，含写回协调器/写回服务直测） |
+| 命令面 118/118 | `gather-app/Host/SessionCommandRouter.swift` | 同步 103 + 异步 33 case（18 双注册），destructive 确认 37+ 处 |
+| 磁盘缓存 SQLite 化 | `gather-core/Database/ImageCache.swift` | WAL + 惰性淘汰 + 损坏/只读降级（ADR-007） |
+| Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
+| 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
+| 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 未任务化（ADR-024） |
+| 相似 hash 批量复用 | `SimilarityService` | 分块 `IN` 查询，消除 N+1 |
+| Vision 人脸管线 | `gather-core/Face/` | 检测 + 768 维特征编码 + Inference 调度；ONNX 仅质量门回退（ADR-026） |
+| 聚类/向量对账 | `Face/Clusterer` / `VectorIndex` | 8 case DBSCAN+LSH 对账；topK 逐位一致 |
+| 文件监控 | `Watch/Coordinator.swift` | FSEvents + 去抖 + 全量兜底 + 丢事件矩阵 |
+| 写回可靠性 | `WritebackService` + `MetadataSyncCoordinator` + `CaptureOneSyncState` | 冲突检测/备份/重试/确认/清理状态机（ADR-015） |
+| 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
+| 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
+| 本地化 | `GatherLocalization` + `.lproj` | 156 项错误码 + 任务/相位文案；菜单即时重建（ADR-016/019/020） |
+| 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
+| 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 
 ### 3.2 已实现但未接通（落差）
 
-（当前无：动态超时估算已接通并纳入 §3.1「聚类 Worker」行；HNSW 索引组件已实现但消费方未接线，见里程碑 V.1。）
+- **真实人脸质量门**（真实数据集 ARI/NMI、推理质量标注验收）：代码链路完整，
+  质量门未执行（范围外），ONNX 回退开关按 ADR-026 悬置；
+- **Capture One 人工 Load-Metadata 矩阵**：发布前由测试人员执行（ADR 发布门禁 2）。
 
-### 3.3 已实测基线（unit 级，非应用级）
+### 3.3 已实测基线
 
 | 项 | 结果 |
 |---|---|
-| 类型检查 | 通过 |
-| 相关单测 | 6 个文件 36 项全部通过 |
-| 20k dHash 聚类（unit） | ≈0.94s |
-| 稠密阈值聚类（unit） | ≈1.70s |
+| 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、HNSW、LSH） |
+| 聚类对账 | 25k 合成 8 簇 eps=0.6：ARI=1.0000 / NMI=1.0000 / 加速 3.1x（unit 级） |
+| HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008 |
+| 迁移/快照 | 空库迁移后与 `docs/fixtures/schema.snapshot.json` 41 表全对 |
 
-> 以上只证明单元层面的改进，不能替代 §六 的应用级验收。
+> 以上只证明单元/组件层面，不能替代真实素材的应用级验收（Stretch 门）。
 
 ### 3.4 尚未验证（应用级缺口）
 
-- 真实 RAW/JPEG 混合导入的端到端耗时与峰值内存；
+- 真实 RAW/JPEG 混合导入的端到端耗时与峰值内存（实材归因，范围外）；
 - 10 万规模下聚类/检索/缓存的真实表现（Stretch 门）；
-- 人脸推理与聚类在真实照片集上的吞吐与质量；
-- 增量 vs 全量的结果一致性（对账矩阵未建立）。
-
-### 3.5 产品短板改进批次（DESIGN_IMPROVEMENTS.md 五项，2026-08 快照）
-
-> 五项短板（任务中心 / C1 状态机 / 扫描透明 / i18n / 无障碍）的提案见
-> docs/DESIGN_IMPROVEMENTS.md，决策背景见 ADR-012~018；验收标准见该稿第 7 章。
-
-| 工作流 | 状态 | 关键落点（实现位置，非承诺） |
-|---|---|---|
-| 问题一：Workspace Control Center + Action Inbox | **已完成** | `analysis_runs` + `sessions.index_seq`（migrations v30）；`services/workspace/workspace-status.service.ts`（只读聚合、推荐动作固定优先级序列表、离线复核 TTL 5 分钟）；IPC `workspace.status` + `hooks/useWorkspaceStatus.ts`；`renderer/pages/SessionDetail/ControlCenter/`（阶段条 + Action Inbox + 推荐动作）；`indexer` 提交点自增 `index_seq`，相似度/人脸入口写 run |
-| 问题二：C1 预检 + 同步状态机 | **已完成** | `main/services/capture-one/`（`c1:health` 四层预检 + `CaptureOneSyncState`）；`sessions.reload_acked_at`（migrations v31）重启重推导；协调器事件接线 + 状态转换日志（`main/index.ts`、`sync-state.ts`）；Dashboard 导入预检（`utils/c1-preflight.ts`）、头部 `C1StatusCapsule`、Settings `C1HealthPanel`；相似页 Load/Cleanup 按钮由状态机驱动（`utils/c1-sync-controls.ts`） |
-| 问题三：扫描透明 + 一跳化导入 | **已完成** | `ScanResult{scannedTotal,truncated,limit}`（`app:scan-directory`）+ `sessions.truncated_import`（migrations v29）；`session.create_from_directory` 主进程流式落库（路径数组不再跨 IPC）；Dashboard "≥"/"扫描中…"文案规范（`Dashboard/index.tsx`）；工作区头部索引进度（`SessionDetail/indexProgress.ts`，精确值仅索引成功后呈现） |
-| 问题四：i18n | **P1 已完成 / P2 已完成（工作区落地，未提交）；语言切换 UI 已落地（本复核期间合入工作区，未提交）** | i18next + 类型化 key（`renderer/locales/`，1063 key/语言、697 处 `t()`）；错误码 `GATHER_ERROR_CODES` + 事件负载阶段码 `progress.*`，渲染层 `translateError`/`translatePhase` 映射；术语表冻结（docs/i18n-glossary.md）。**P2**：eslint 无硬编码守护（`eslint/no-hardcoded-text.cjs`，eslint.config.js 的 `gather/no-hardcoded-text` 规则）、Electron 菜单本地化（`main/menu.ts`：两语言 label 映射 + `--lang` → `app.getLocale()` → en 回退，接入 `main/index.ts`，硬编码 `appMenuTemplate` 已移除）。**语言切换**：Settings 语言选择器（`Settings/index.tsx:111,184,546-551`）→ `settings.set_language` IPC（`settings.ipc.ts:33-40`，持久化 `ui_language` + `setAppLocale` 重建菜单）→ 渲染层 `initI18n` 即时切换。链路单测：settings-language.test.ts（持久化/重启）+ menu-localization.test.ts（菜单构建与切换重建） |
-| 问题五：无障碍 | **P0 已完成 / P1 完成（工作区落地，未提交）；VoiceOver 手工走查待执行** | Dialog 焦点管理（`components/Dialog/Dialog.tsx`：portal + inert + `initialFocus`/`descriptionId` + 焦点恢复）；相似组按钮化语义（`aria-expanded` + 并列 checkbox，拒绝 roving tabindex）；jest-axe 回归（`tests/unit/renderer/a11y-*.test.tsx` 8 用例全绿，F-1/F-2 修复后零违规断言）；对比度修复（global.css 色板 token，见 docs/a11y-audit.md §1.2）。**F-1/F-2/F-3 已修复**（本复核期间合入工作区）：Dashboard 导入来源 select、Similarity 阈值/最小组大小滑块均补 `label htmlFor`+`id` 程序化关联，关键词输入框补 aria-label；`--color-warning-text` token（#9c5e28）已加入并用于警告文本（Culling/Settings/StepWriteback module.css），`--color-warning` 保留作背景/边框 |
-
-**剩余 / 下一步**
-
-1. **i18n 收尾**：已完成——语言切换 UI 已落地（Settings 选择器 + `settings.set_language` IPC + `setAppLocale` 菜单重建 + `initI18n` 即时切换）；链路单测已补（settings-language.test.ts 持久化/重启 + menu-localization.test.ts 菜单构建与切换重建）；
-2. **主进程残留错误码化清理**：已完成——`metadata-sync-coordinator.ts` 中文状态文案与 `throw new Error('XMP 已被其他软件修改…')` 已全部转为 `XMP_*` 错误码（如 `XMP_EXTERNALLY_MODIFIED`），主进程 CJK 仅剩文档内容例外（ADR-017）与菜单 label 表；观察项：`sync-state.ts:150,152` console.log 中文为开发日志；
-3. **无障碍 P1 收尾**：F-1（select 标签）/F-2（滑块标签）/F-3（placeholder-only 输入 aria-label）已修复，`--color-warning-text` token 已落地（本复核期间合入工作区），jest-axe 8 用例全绿；剩余唯一项：**VoiceOver 关键流程手工走查**（docs/a11y-audit.md §4，清单 4.1–4.4 未勾选，人工执行）；
-4. **验收复核**：DESIGN_IMPROVEMENTS.md 第 7 章已复核对勾（2026-08-08，19/20 项通过，唯一未勾选项为 VoiceOver 人工走查；证据指针见 §7）。复核环境：typecheck ✅、lint ✅、vitest 91 文件 558 用例 ✅。注意：本工作区为多人并行（语言切换/无障碍修复在复核期间实时合入，中间态曾出现 typecheck 红 3 处与 a11y 用例红 3 处，均已被并行工作流闭合；最终态全绿）。
+- 人脸推理与聚类在真实照片集上的吞吐与质量（范围外，见 3.2）；
+- 增量 vs 全量的结果一致性（对账矩阵 1.6 未建）。
 
 ---
 
@@ -184,123 +124,108 @@ Windows 支持（sharp 全平台、ONNX DirectML、C1 Windows 插件 API 均已�
 
 ### 验收双档位
 
-- **Release 门（2 万照片）**：每个 Phase 的硬性通过条件，未通过不得进入下一 Phase；
-- **Stretch 门（10 万规模）**：不得崩溃、耗时记录在案；允许近似算法，但必须附质量
-  对账（见 0.3c）。不因追求 10 万档理想指标延迟可交付的止血版本。
+- **Release 门（2 万照片）**：每个 Phase 的硬性通过条件；
+- **Stretch 门（10 万规模）**：不得崩溃、耗时记录在案；允许近似算法，但必须附
+  质量对账。不因追求 10 万档理想指标延迟可交付的止血版本。
 
-### Phase 0：性能止血（目标：Release 门 2 万+ 张可用；Stretch 门 10 万不崩溃）
+### Phase 0：性能止血 —— ✅ 全部完成
 
-> 对应 P0 全部 + P1-3/P1-4。
-
-| 任务 | 状态 | 验收标准 |
-|---|---|---|
-| 0.1 聚类超时治理：接通动态超时估算 + 分段流式聚类 + 进度回传 | **已完成**：进度/取消/exit 兜底、动态超时（face 分支按 512 维 flops 显式估算，上限 60min）已接通；超时为"无进展超时"——progress 心跳重置定时器，worker 持续回传进度不会被误杀，卡死（无进度）仍被终止；BFS 扩展阶段心跳已补齐，单一大簇不会误杀 | Release：接通估算后 2 万条目不再超时、可取消、进度可见；Stretch：5 万条目在估算超时内完成 |
-| 0.2 人脸管线并行化：decode/inference 滑动窗口并发 4-8，接入后台任务 | **已完成**：滑动窗口流水线（face_decode_concurrency 4-8）+ 检测器 GPU 自动尝试与 warmup 降级（见 3.1） | Release：1 万张人脸分析 ≤ 30 分钟（M 系 CPU），期间 UI 可操作 |
-| 0.3 DBSCAN 降复杂度 | 部分完成：见下 | — |
-| 0.3a 连续 Float32Array、减少复制与内存峰值 | **已完成** | Stretch：10 万张脸内存 ≤ 1.5GB |
-| 0.3b 分桶/ANN 候选生成，真正降低候选数量（O(n²) → 近线性） | **已完成**：angular LSH（16bit×6 表×多探针 2）+ 精确验证；n>20k 启用 | Stretch：10 万张脸聚类 ≤ 5 分钟 |
-| 0.3c 与精确 DBSCAN 的质量对账 | **已完成**（`face-clusterer-lsh.test.ts` 门禁）：25k 合成 8 簇 eps=0.6 实测 ARI=1.0000/NMI=1.0000/加速 3.1x；邻域召回 0.6-0.8 弱档 0.50-0.68 如实记录 | 近似 vs 精确：ARI/NMI ≥ 0.95，簇成员漂移率与过度合并率有记录；无质量对账不得宣称"达标" |
-| 0.4 磁盘缓存元数据改造（SQLite/WAL + 惰性淘汰） | **已完成** | Stretch：10 万条目缓存下滚动无 >50ms 主线程卡顿 |
-| 0.5 `culling.list` 分页 + 富字段懒加载 | **已完成**（旧入口保留） | Release：1 万张列表首屏 ≤ 200ms，滚动不触发全量重取；新分页入口进入基准（§六） |
+| 任务 | 状态 |
+|---|---|
+| 0.1 聚类超时治理（动态超时 + 流式进度 + 心跳看门狗） | ✅ 已完成 |
+| 0.2 人脸管线并行化（滑动窗口并发 + 后台任务） | ✅ 已完成（Vision 原生，含取消） |
+| 0.3 DBSCAN 降复杂度（Float32Array + LSH 候选 + 质量对账） | ✅ 已完成 |
+| 0.4 磁盘缓存元数据改造（SQLite/WAL + 惰性淘汰） | ✅ 已完成 |
+| 0.5 culling 分页 + 富字段懒加载 | ✅ 已完成 |
 
 ### Phase 1：增量索引与规模化（决策 B）
 
 | 任务 | 状态 | 验收标准 |
 |---|---|---|
-| 1.1 checksum 懒校验 + "跳过 checksum"设置 | **已完成** | 首次导入 5000 张 RAW ≤ 3 分钟（不含哈希），哈希后台补齐 |
-| 1.2 文件级失效粒度（替代 session 级全删） | **部分完成**：输入级按照片失效（hash/观测/分析态/asset_analysis/metadata cache）+ navigation_groups 按成员剪除；ENOENT（文件已删除）照片的陈旧观测与分析态在分析前清理，不再参与聚类；重聚类后用户绑定的角色按成员重叠迁移到新簇（不再静默丢失）；全局聚类结果保持 session 级删除（无增量聚类设施前不能局部失效，重分析按签名复用只重算变更照片） | 单文件变更只清其邻域结果，其余结果保持有效 |
-| 1.3 增量聚类 + 簇版本化 + 定期全局收敛 | 待做 | 新增 100 张后相似组在 10s 内局部更新；全局一致性由对账矩阵保证 |
-| 1.4 阈值预计算多档结果 | **已完成** | 阈值滑块切换 ≤ 500ms，无需重跑分析 |
-| 1.5 目录遍历并行化 + 扫描进度/暂停 | **已完成**：有界通道生产者-消费者并行遍历（WALK_CONCURRENCY=6，容量 256），遍历与扫描重叠 | 10 万文件树首次扫描 ≤ 2 分钟（不含哈希） |
-| 1.6 增量 vs 全量对账测试矩阵 | 待做 | 随机增删改/重命名 200 次，增量结果与全量一致 |
+| 1.1 checksum 懒校验 + "跳过 checksum"设置 | ✅ 已完成 | 首次导入 5000 张 RAW ≤ 3 分钟（不含哈希） |
+| 1.2 文件级失效粒度 | ◐ 部分完成 | 输入级失效 + 绑定迁移已落地；全局聚类仍 session 级（无增量聚类设施前不能局部失效） |
+| 1.3 增量聚类 + 簇版本化 + 定期全局收敛 | ⏳ **待做** | 新增 100 张后相似组在 10s 内局部更新；全局一致性由对账矩阵保证 |
+| 1.4 阈值预计算多档结果 | ✅ 已完成 | 阈值滑块切换 ≤ 500ms，无需重跑分析 |
+| 1.5 目录遍历并行化 + 扫描进度/暂停 | ✅ 已完成 | 10 万文件树首次扫描 ≤ 2 分钟（不含哈希） |
+| 1.6 增量 vs 全量对账测试矩阵 | ⏳ **待做** | 随机增删改/重命名 200 次，增量结果与全量一致 |
 
-### 基础设施里程碑 V：通用向量存储 + ANN（决策 D）
+### 基础设施里程碑 V：通用向量存储 + ANN（决策 D）—— ✅ 已完成
 
-> 独立于 Phase 2/3 排期；Phase 2、Phase 3 均依赖它，排期应不晚于 2.2 与 3.2。
+| 任务 | 状态 |
+|---|---|
+| V.1 向量表（SQLite 持久化 + 内存 HNSW）+ 模型版本指纹 | ✅ 已完成（VectorIndex.swift；指纹沿用 `analysis_signature`） |
+| V.2 与精确暴力的质量对账工具 | ✅ 已完成（recall@1 ≥ 0.9 门禁） |
+| V.3 增量索引更新 | ✅ 已完成（insert 只触达邻域，无全量重建） |
 
-| 任务 | 状态 | 验收标准 |
-|---|---|---|
-| V.1 向量表（SQLite 持久化 + 内存 HNSW）+ 模型版本指纹 | **HNSW 索引组件已完成**（`face-kw/hnsw-index.ts`：CosineHnswIndex，增量插入 + 阈值/ top-k 查询，多样性启发式连接；向量持久化与模型指纹由 `face_observations`/`analysis_signature` 既有机制承载，消费方接线待 Phase 2/3） | 10 万向量近似近邻查询 ≤ 10ms，召回 ≥ 0.9 |
-| V.2 与精确暴力的质量对账工具 | **已完成**（`hnsw-recall.test.ts` 门禁：合成 8 簇 512 维，recall@1 ≥ 0.9，含增量插入后召回稳定性） | 召回/精度可复现测量，作为 0.3c 与 3.2 的公共工具 |
-| V.3 增量索引更新 | **已完成**：insert 只触达邻域，无全量重建；测试覆盖容量翻倍与增量插入后的召回保持 | 新向量插入不触发全量重建 |
-
-### Phase 2：相似度 Embedding 升级（决策 A，依赖 V）
+### Phase 2：相似度 Embedding 升级（决策 A，依赖 V + 1.3）—— ⏳ 未立项
 
 | 任务 | 验收标准 |
 |---|---|
 | 2.1 产品价值验证（前置，见 §八）：标注数据评估 | 三档阈值 precision/recall/过度合并率有数据；连拍/同场景假设被证实或证伪 |
-| 2.2 图片 embedding 模型（DINOv2 类）+ GPU 执行提供方 | 单张推理：CoreML/DML ≤ 30ms，CPU ≤ 150ms |
+| 2.2 图片 embedding 模型（DINOv2 类）+ GPU 执行提供方 | 单张推理：CoreML/ANE ≤ 30ms，CPU ≤ 150ms |
 | 2.3 双模融合：dHash 精确层 + embedding 语义层 | "连拍/备份"与"同场景多角度"分别成组，可分别调参 |
 | 2.4 模型版本指纹与结果版本化（复用 V.1） | 升级模型后旧结果可冻结/按版本重算，不静默漂移 |
 | 2.5 相似组 → 关键词候选（CLIP 图文关联，可选） | 自动生成组关键词候选，人工确认后写回 |
 
-### Phase 3：人脸增强（依赖 V）
+### Phase 3：人脸增强（依赖 V）—— ◐ 部分完成
 
-| 任务 | 验收标准 |
-|---|---|
-| 3.1 检测模型换固定输出尺度以启用 CoreML/ANE（Windows 用 DirectML） | **部分完成**：darwin auto 自动尝试 CoreML + warmup 降级 CPU（`face-inference-fallback.ts`）；换固定输出尺度模型本身待模型资源（实测加速待基准） |
-| 3.2 跨 session 重识别：绑定角色 → 全局人脸库自动匹配（HNSW，复用 V） | **已完成**（angular LSH 接入 `face-matcher.ts`，复用 0.3b 设施） |
-| 3.3 簇持久化与增量 | 再次分析只处理新增/变更照片，簇在 10s 内更新 |
+| 任务 | 状态 | 验收标准 |
+|---|---|---|
+| 3.1 检测模型换固定输出尺度以启用 CoreML/ANE | ✅ 已取代（Vision 原生，无模型资产；原 ONNX/CoreML 议题见 ADR-026） | 1 万张人脸分析 ≤ 30 分钟，期间 UI 可操作 |
+| 3.2 跨 session 重识别：绑定角色 → 全局人脸库自动匹配 | ✅ 已完成（LSH 接入 `Face/Matcher.swift`） | 同角色跨 session 自动匹配，无需重新标注 |
+| 3.3 簇持久化与增量 | ⏳ **待做**（同 1.3 的聚类设施） | 再次分析只处理新增/变更照片，簇在 10s 内更新 |
 
 ### Phase 4：体验、生态与平台（决策 C 的落地窗口）
 
-| 任务 | 优先级 |
-|---|---|
-| 4.1 Capture One 双向自动同步（插件扩展，减少手动 Load Metadata 环节） | 高 |
-| 4.2 模板/批量关键词的 UX 打磨（已有 TemplatePicker 基建） | 中 |
-| 4.3 Windows 支持评估与立项（sharp/DirectML/插件 API 均已可行） | 按需求 |
-| 4.4 内核原生化（Rust core，Electron 外壳）立项评估 | 按商业信号 |
+| 任务 | 优先级 | 状态 |
+|---|---|---|
+| 4.1 Capture One 双向自动同步（插件扩展，减少手动 Load Metadata 环节） | 高 | ⏳ 待做（单向往 Gather 已完整：同步状态机/C1 健康面板/胶囊） |
+| 4.2 模板/批量关键词的 UX 打磨（Template 服务已落地） | 中 | ⏳ 待做 |
+| 4.3 Windows 支持评估与立项 | 按需求 | 决策门，保持未承诺 |
+| 4.4 （原 Rust core 立项评估） | — | ✅ 已过时删除：Swift 原生迁移完成（2026-08-11） |
 
 ---
 
 ## 五、依赖关系与节奏
 
 ```
-Phase 0（止血：超时/聚类/缓存/分页）
-   └─> Phase 1（增量索引与失效：决策 B）──┬─> 里程碑 V（通用向量存储 + ANN）
-                                          │          ↙        ↘
-                                          │   Phase 2（embedding）  Phase 3（人脸重识别）
-   Phase 4（体验/平台）与 1-3 并行，依赖 Phase 0 的列表分页
+Phase 0（止血）✅ → Phase 1（增量索引）──┬─> 里程碑 V（向量 + ANN）✅
+                                          │         ↙       ↘
+                                          │  Phase 2（embedding）⏳  Phase 3（人脸重识别）◐
+   Phase 4（体验/平台）与 1-3 并行
 ```
 
-- Phase 0 是 Phase 1 的前置（超时与聚类算法先修，增量才安全）；
-- 里程碑 V 独立于 Phase 2/3：向量存储与 ANN 不再挂靠任一消费方内部；
-- Phase 2 依赖 V + 决策 B 的失效粒度（没有增量，embedding 全量重算不可接受）；
-- Phase 3 依赖 V（跨 session 重识别）与 1.2 的失效粒度；
-- 每个 Phase/里程碑结束须跑 §六 对应基准，结果记入 §七。
+- Phase 0 已闭环；里程碑 V 已闭环并被 Phase 3.2 消费；
+- Phase 2 依赖 V（✅）+ 决策 B 的失效粒度（1.3 ⏳，未做则 embedding 全量重算
+  不可接受）；
+- Phase 3.3 与 1.3 共享增量聚类设施，建议一起排期。
 
-### 近期执行顺序（0-3 个月）
+### 近期执行顺序
 
-1. **补基线**：把已完成的缓存/分页/checksum/阈值改造接入四套基准（§六）并记录数值；
-2. **接通动态超时**（0.1 闭环）：已完成——两个聚类入口传入 `estimateAnalysisTimeoutMs` 估算值，progress 心跳维护"无进展超时"（见 §3.1）；
-3. **数据正确性优先**：细粒度失效（1.2）已完成输入级失效、ENOENT 清理与绑定迁移；增量/全量对账（1.6）待增量聚类设施（1.3）落地；
-4. **里程碑 V 消费方接线**：HNSW 索引组件与召回门禁已完成（V.1-V.3），下一步以人脸 O(n²) 聚类候选生成为第一个真实调用方接线，并跑 10 万规模基准验证；
-5. **验证 embedding 产品价值**（2.1 标注评估），通过后再建设完整图片推理管线；
-6. Windows、Rust core（4.3/4.4）保持决策门，不进入近期承诺。
+1. **数据正确性优先**：增量聚类（1.3）+ 增量/全量对账矩阵（1.6）——规模化唯一
+   未闭环的正确性前提；
+2. **发布前置**：真实人脸质量门裁决（ADR-026 的回退开关保留/移除）+ C1 人工
+   Load-Metadata 矩阵（ADR 发布门禁）；
+3. **体验项**：recluster 任务化（ADR-024）、优雅停机（ADR-023）按发布窗口排期；
+4. **验证 embedding 产品价值**（2.1 标注评估），通过后再建设完整图片推理管线；
+5. Windows（4.3）保持决策门，不进入近期承诺。
 
 ---
 
 ## 六、验收与基准体系
 
-### 6.1 现状与缺口
-
-当前 `scripts/application-scale-benchmark.mjs`：
-
-- 默认规模上限 1 万张（`GATHER_BENCHMARK_SIZES` 可调）；
-- 使用同一张 160×90 纯色 JPEG，不代表真实 RAW/JPEG 混合；
-- 不运行人脸推理、人脸聚类与相似度分析；
-- 分页基准须切到 `culling.list_page`（旧 `culling.list` 仅作兼容入口，不用于验收）。
-
-**结论**：现状无法验收 roadmap 的任何核心项，须拆分为四套独立基准：
+原生迁移后基准由 `gather-core-benchmarks`（`desktop/native/gather-core/Sources/
+GatherCoreBenchmarks/`）承担：2 万/5 万两档全过（dHash、embedding、HNSW、LSH），
+合成数据驱动，随 `GATHER_TELEMETRY=1` 可输出 NDJSON 指标。
 
 | 基准 | 场景 | 关键指标 | 验收对象 |
 |---|---|---|---|
-| Import | 真实 RAW/JPEG 混合；冷缓存/热缓存两轮 | 总耗时、checksum 后台补齐进度、峰值内存 | 1.1、1.5 |
-| Culling | 首屏、连续滚动多页 | 首屏耗时、IPC 载荷、main/renderer long task（复用现有观测器）、新分页入口 | 0.4、0.5 |
-| Similarity | 2 万/5 万条目、高/中/低三档阈值 | 聚类耗时、取消与峰值内存、阈值切换耗时 | 0.1、0.3、1.4 |
-| Face | 1 千/1 万张脸 | 检测吞吐、聚类吞吐、聚类质量（0.3c 对账）、失败恢复 | 0.2、0.3、3.2 |
+| Import | 真实 RAW/JPEG 混合；冷缓存/热缓存两轮 | 总耗时、checksum 后台补齐进度、峰值内存 | 1.1、1.5（实材归因仍为范围外） |
+| Culling | 首屏、连续滚动多页 | 首屏耗时、命令载荷、决策乐观更新延迟 | 0.5、ADR-021 |
+| Similarity | 2 万/5 万条目、三档阈值 | 聚类耗时、取消、阈值切换耗时 | 0.1、0.3、1.4 |
+| Face | 1 千/1 万张脸 | 检测吞吐、聚类吞吐、质量对账、失败恢复 | 0.2、0.3、3.2 |
 
-> 每个 Phase 结束跑对应基准（而非只跑 `benchmark:application`），数值记入 §七。
+> 每个 Phase 结束跑对应基准（而非只跑组件基准），数值记入 §七。
 
 ---
 
@@ -308,16 +233,12 @@ Phase 0（止血：超时/聚类/缓存/分页）
 
 | 日期 | 级别 | 规模 | 项 | 数值 | 备注 |
 |---|---|---|---|---|---|
-| 2026-08-05 | unit | 20k | dHash 聚类 | ≈0.94s | 不替代应用级验收 |
-| 2026-08-05 | unit | — | 稠密阈值聚类 | ≈1.70s | 同上 |
-| 2026-08-05 | unit | — | 类型检查 / 单测 | 通过 / 36 项 | 同上 |
-| 2026-08-06 | unit | 20k | dHash 聚类（th=16，popcount+wave BFS） | ≈1.05s | `cluster-engine-perf.test.ts` 预算断言 <2s |
-| 2026-08-06 | unit | 20k | 稠密阈值聚类（th=30） | ≈1.18s | 同上 |
-| 2026-08-06 | unit | — | 全量单测 | 通过 / 292 项（57 文件） | 含分页/懒校验/超时心跳/堆淘汰回归 |
-| 2026-08-06 | unit | 2k | BFS 心跳回归（精确路径单一大簇） | 心跳帧 ≥30 次、单调 | `face-clusterer.test.ts` |
-| 2026-08-06 | unit | 1.5k | HNSW recall@1 门禁（保留集查询，合成 8 簇 512 维） | recall ≥ 0.9、查询 ≈0.3ms/次、增量插入召回波动 ≤ 0.05（实测 −0.008） | `hnsw-recall.test.ts`；构建约 3.5ms/向量，全量构建走后台任务承载 |
-| 2026-08-07 | unit | — | 全量单测 | 通过 / 342 项 | 含绑定迁移（photo_id 键 + 重叠降序认领）、HNSW 保留集召回门禁、双 worker 真并行、缓存启动对账只 stat 孤儿文件、outbox flaky 修复 |
-| （四套基准跑通后补录） | app | | | | |
+| 2026-08-06 | unit | 20k | dHash 聚类（th=16） | ≈1.05s | `cluster-engine-perf` 预算断言 <2s |
+| 2026-08-06 | unit | 1.5k | HNSW recall@1 门禁 | recall ≥ 0.9、查询 ≈0.3ms、波动 −0.008 | 合成 8 簇 512 维 |
+| 2026-08-09 | unit | 25k | LSH 聚类对账 | ARI=1.0000 / NMI=1.0000 / 3.1x | 合成 8 簇 eps=0.6 |
+| 2026-08-11 | app | 2 万/5 万 | 原生四套基准 | 两档全过 | `gather-core-benchmarks` |
+| 2026-08-12 | unit | — | 原生全量测试 | core 765 / app 92 全绿 | 迁移 + 对账收尾台账 |
+| 2026-08-13 | unit | — | 验收修复轮全量回归 | core 772 / app 172 全绿 | 深色徽标/awaitSync/键盘焦点 + 组件统一 + 写回直测 |
 
 ---
 
@@ -341,4 +262,6 @@ Phase 0（止血：超时/聚类/缓存/分页）
 
 - 不做 RAW 编辑、不做完整 DAM/目录迁移、不做地图/视频/移动端（短期）；
 - 不做语义搜索的自然语言 UI（除非 CLIP 候选落地）；
-- 不做云端同步（隐私定位不变，除非用户明确要求）。
+- 不做云端同步（隐私定位不变，除非用户明确要求）；
+- 不做 Windows 原生、Tauri/Qt/其他跨平台框架（决策门 4.3 未开）；
+- 不保留双栈并存（Electron 残留已清零，边界扫描门禁守护）。

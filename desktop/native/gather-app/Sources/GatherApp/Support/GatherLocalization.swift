@@ -170,24 +170,48 @@ public enum GatherLocalization {
     ]
 
     /// 对齐 TS translateErrorCode：未知/非错误码回退通用文案。
+    /// 支持参数化错误码（路由返回 "CODE::p1::p2" 形式）：按模板中
+    /// {{field}}/{{expected}}/{{current}} 占位符出现顺序依次插值。
     public static func errorText(_ code: String) -> String {
-        errorMessages[code] ?? "发生未知错误，请稍后重试"
+        guard let template = resolvedTemplate(for: code) else { return "发生未知错误，请稍后重试" }
+        return template
     }
 
-    /// 外壳层中英双语速记：en 界面返回英文、其余中文（页面深层文案暂缓双语）。
-    public static func l(_ zh: String, _ en: String) -> String {
-        appLanguage == "en" ? en : zh
+    /// 错误码 → 模板（含参数插值）；非错误码返回 nil（调用方决定回退）。
+    private static func resolvedTemplate(for code: String) -> String? {
+        let parts = code.components(separatedBy: "::")
+        guard let template = errorMessages[parts[0]] else { return nil }
+        var result = template
+        var paramIndex = 1
+        while let range = result.range(of: #"\{\{[a-zA-Z]+\}\}"#, options: .regularExpression) {
+            let replacement = paramIndex < parts.count ? parts[paramIndex] : ""
+            result.replaceSubrange(range, with: replacement)
+            paramIndex += 1
+        }
+        return result
+    }
+
+    /// 查 Apple 原生本地化表（.lproj/Localizable.strings，经 SPM 打进 Bundle.module）。
+    /// key 即中文文案：zh 表留空 → 未命中自动回退 key（默认中文）；
+    /// en 表提供英文翻译（en 界面命中返回英文，未翻译的 key 仍回退中文）。
+    public static func l(_ key: String) -> String {
+        let lang = appLanguage == "zh-CN" ? "zh-hans" : "en"
+        guard let url = Bundle.module.url(forResource: lang, withExtension: "lproj"),
+              let bundle = Bundle(url: url) else { return key }
+        let value = bundle.localizedString(forKey: key, value: nil, table: "Localizable")
+        return value == key ? key : value
     }
 
     /// 对齐 TS translateJobErrorMessage：任务错误消息仅错误码才展示对应文案，
     /// 其余（原始诊断/英文不变量）一律回退通用文案，原始细节保留给 tooltip。
     public static func jobErrorMessage(_ message: String?) -> String {
         guard let message, !message.isEmpty else { return "发生未知错误，请稍后重试" }
-        if errorMessages[message] != nil { return errorMessages[message]! }
+        if let translated = resolvedTemplate(for: message) { return translated }
         return "发生未知错误，请稍后重试"
     }
 
-    /// 翻译任意 Error/字符串：消息是错误码则翻译，否则原样返回。
+    /// 翻译任意 Error/字符串：消息是错误码则翻译（含参数化错误码插值），
+    /// 否则原样返回。
     public static func message(for error: Any) -> String {
         let raw: String
         switch error {
@@ -198,7 +222,7 @@ public enum GatherLocalization {
         case let s as String: raw = s
         default: raw = String(describing: error)
         }
-        return errorMessages[raw] ?? raw
+        return resolvedTemplate(for: raw) ?? raw
     }
 
     // MARK: - 任务状态（jobs.status.*）

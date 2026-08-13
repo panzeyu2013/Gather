@@ -6,6 +6,7 @@ import PackageDescription
 
 let package = Package(
     name: "gather-app",
+    defaultLocalization: "zh-Hans",
     platforms: [
         .macOS(.v14),
     ],
@@ -22,7 +23,7 @@ let package = Package(
                 .product(name: "GatherCore", package: "gather-core"),
             ],
             path: ".",
-            exclude: ["Tests", "Resources"],
+            exclude: ["Tests", "Resources/Info.plist"],
             sources: [
                 "Sources/GatherApp",
                 "Settings",
@@ -31,6 +32,9 @@ let package = Package(
                 "Culling",
                 "Export",
                 "ControlCenter",
+            ],
+            resources: [
+                .process("Resources"),
             ],
         ),
         .testTarget(

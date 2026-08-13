@@ -29,9 +29,10 @@ struct SimilarityView: View {
     private static let memberCellGap = 8.0
     private static let memberAreaPadding = 16.0
     private static let memberToggleHeight = 54.0
-    /// 展开成员单元格总高（估算用）：92 缩略图 + caption2 文件名 + 间距 + hover 内边距。
-    private static let memberCellHeight = 112.0
+    /// 展开成员单元格总高（估算用）：92 缩略图 + caption 文件名 + 间距 + hover 内边距。
+    private static let memberCellHeight = 114.0
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// 展开/「显示全部」状态（TS GroupGrid 持有：保持高度估算精确、
     /// 状态在卡片滚出后不丢失）。
     @State private var expandedIds: Set<Int> = []
@@ -49,7 +50,7 @@ struct SimilarityView: View {
                 // 加载/轮询失败时以重试错误态展示（TS index.tsx:994-999 全页
                 // 错误块），横幅留给操作类（分析/写回）错误，避免双提示。
                 if let error = viewModel.errorMessage, !isLoadError {
-                    NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error)
+                    NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -70,11 +71,18 @@ struct SimilarityView: View {
                             statsBar(result)
                             if result.groups.isEmpty {
                                 // TS GroupGrid: groups.length === 0 空态。
-                                Text("当前参数未找到相似分组。")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.vertical, 28)
-                                    .frame(maxWidth: .infinity)
+                                VStack(spacing: 10) {
+                                    Text(GatherLocalization.l("当前参数未找到相似分组。"))
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.top, 28)
+                                    Button(GatherLocalization.l("开始分析")) {
+                                        viewModel.startAnalyze()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .padding(.bottom, 28)
+                                }
+                                .frame(maxWidth: .infinity)
                             } else {
                                 groupGrid(result, availableHeight: geometry.size.height)
                             }
@@ -104,17 +112,17 @@ struct SimilarityView: View {
         .onChange(of: viewModel.writebackKeywords) { _, _ in
             viewModel.markWritebackDraftChanged()
         }
-        .confirmationDialog("确认同步 Capture One？", isPresented: $confirmSyncRequested, titleVisibility: .visible) {
-            Button("确认同步") { Task { await viewModel.confirmSync() } }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog(GatherLocalization.l("确认同步 Capture One？"), isPresented: $confirmSyncRequested, titleVisibility: .visible) {
+            Button(GatherLocalization.l("确认同步")) { Task { await viewModel.confirmSync() } }
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text("仅在 Capture One 已加载元数据并确认关键词进入目录后确认；确认后才可安全清理临时 XMP 变更。")
+            Text(GatherLocalization.l("仅在 Capture One 已加载元数据并确认关键词进入目录后确认；确认后才可安全清理临时 XMP 变更。"))
         }
-        .confirmationDialog("确认清理 XMP 临时变更？", isPresented: $confirmCleanupRequested, titleVisibility: .visible) {
-            Button("清理", role: .destructive) { Task { await viewModel.cleanupKeywordWriteback() } }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog(GatherLocalization.l("确认清理 XMP 临时变更？"), isPresented: $confirmCleanupRequested, titleVisibility: .visible) {
+            Button(GatherLocalization.l("清理"), role: .destructive) { Task { await viewModel.cleanupKeywordWriteback() } }
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text("清理会恢复或移除 sidecar 文件中的临时变更；请先确认同步完成。")
+            Text(GatherLocalization.l("清理会恢复或移除 sidecar 文件中的临时变更；请先确认同步完成。"))
         }
     }
 
@@ -122,12 +130,12 @@ struct SimilarityView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Button(action: onBack) {
-                    Label("返回图库", systemImage: "chevron.left")
+                    Label(GatherLocalization.l("返回图库"), systemImage: "chevron.left")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.gatherPrimary)
-                Text("相似度分析")
-                    .font(.system(size: 24, weight: .bold))
+                Text(GatherLocalization.l("相似度分析"))
+                    .font(.largeTitle.weight(.bold))
                 Spacer()
                 C1StatusCapsuleHost(
                     sessionId: viewModel.sessionId,
@@ -152,47 +160,47 @@ struct SimilarityView: View {
 
     private var analysisPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("分析控制")
+            Text(GatherLocalization.l("分析控制"))
                 .font(.title3.bold())
             HStack(alignment: .top, spacing: 16) {
-                Text("分组范围")
+                Text(GatherLocalization.l("分组范围"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .frame(width: 80, alignment: .leading)
+                    .frame(width: GatherTheme.formLabelWidth, alignment: .leading)
                     .padding(.top, 4)
                 modeButton(
-                    title: "顺序分组",
-                    hint: "只合并导入顺序中连续相似的照片，适合连拍挑片",
+                    title: GatherLocalization.l("顺序分组"),
+                    hint: GatherLocalization.l("只合并导入顺序中连续相似的照片，适合连拍挑片"),
                     isActive: viewModel.groupingMode == .sequential
                 ) {
                     viewModel.groupingMode = .sequential
                 }
                 modeButton(
-                    title: "全局分组",
-                    hint: "在整个工作区查找相似照片，允许跨拍摄顺序聚合",
+                    title: GatherLocalization.l("全局分组"),
+                    hint: GatherLocalization.l("在整个工作区查找相似照片，允许跨拍摄顺序聚合"),
                     isActive: viewModel.groupingMode == .global
                 ) {
                     viewModel.groupingMode = .global
                 }
             }
             HStack(spacing: 12) {
-                Text("匹配强度")
+                Text(GatherLocalization.l("匹配强度"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                presetButton("严格", isActive: viewModel.activePreset == "strict") { viewModel.applyPreset("strict") }
-                presetButton("均衡", isActive: viewModel.activePreset == "balanced") { viewModel.applyPreset("balanced") }
-                presetButton("宽松", isActive: viewModel.activePreset == "loose") { viewModel.applyPreset("loose") }
-                Text("建议从「均衡」开始；需要更精细控制时再展开高级参数。")
-                    .font(.caption)
+                presetButton(GatherLocalization.l("严格"), isActive: viewModel.activePreset == "strict") { viewModel.applyPreset("strict") }
+                presetButton(GatherLocalization.l("均衡"), isActive: viewModel.activePreset == "balanced") { viewModel.applyPreset("balanced") }
+                presetButton(GatherLocalization.l("宽松"), isActive: viewModel.activePreset == "loose") { viewModel.applyPreset("loose") }
+                Text(GatherLocalization.l("建议从「均衡」开始；需要更精细控制时再展开高级参数。"))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            DisclosureGroup("高级参数") {
+            DisclosureGroup(GatherLocalization.l("高级参数")) {
                 VStack(alignment: .leading, spacing: 10) {
                     // TS: threshold range 0–30 step 1（对齐 SliderInput.tsx 联动：
                     // 滑块拖动实时更新 + 数字框键入精确值 blur/回车钳制到范围）。
                     // 键入变更同样触发阈值档切换防抖（thresholdDraftChanged）。
                     SliderInputIntView(
-                        title: "相似度阈值",
+                        title: GatherLocalization.l("相似度阈值"),
                         value: Binding(
                             get: { viewModel.threshold },
                             set: { newValue in
@@ -204,11 +212,11 @@ struct SimilarityView: View {
                         ),
                         range: 0...30
                     )
-                    Text("0（严格）— 30（宽松）")
-                        .font(.caption)
+                    Text(GatherLocalization.l("0（严格）— 30（宽松）"))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                     SliderInputIntView(
-                        title: "最小组大小",
+                        title: GatherLocalization.l("最小组大小"),
                         value: $viewModel.minGroupSize,
                         range: 2...10
                     )
@@ -217,13 +225,13 @@ struct SimilarityView: View {
             }
             HStack(spacing: 12) {
                 // 开始分析：busy 时禁用并显示处理中文案。
-                Button(viewModel.isAnalyzing ? "处理中…" : "开始分析") {
+                Button(viewModel.isAnalyzing ? GatherLocalization.l("处理中…") : GatherLocalization.l("开始分析")) {
                     viewModel.startAnalyze()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.isAnalyzing)
                 if viewModel.result != nil {
-                    Button(viewModel.isReclustering ? "聚类中…" : "重新聚类") {
+                    Button(viewModel.isReclustering ? GatherLocalization.l("聚类中…") : GatherLocalization.l("重新聚类")) {
                         Task { await viewModel.recluster() }
                     }
                     .buttonStyle(.bordered)
@@ -239,32 +247,32 @@ struct SimilarityView: View {
     private var writebackPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("分组关键字写回")
+                Text(GatherLocalization.l("分组关键字写回"))
                     .font(.title3.bold())
                 Spacer()
-                Text("已选 \(viewModel.selectedGroupIds.count) 组")
-                    .font(.caption)
+                Text(String(format: GatherLocalization.l("已选 %lld 组"), viewModel.selectedGroupIds.count))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Text("选择相似分组，关键词会合并写入每张照片旁的 .xmp 文件，不修改原图。")
-                .font(.caption)
+            Text(GatherLocalization.l("选择相似分组，关键词会合并写入每张照片旁的 .xmp 文件，不修改原图。"))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                TextField("输入关键词，多个关键词用逗号分隔", text: $viewModel.writebackKeywords)
+                TextField(GatherLocalization.l("输入关键词，多个关键词用逗号分隔"), text: $viewModel.writebackKeywords)
                     .textFieldStyle(.roundedBorder)
-                Button("预览") {
-                    viewModel.previewKeywordWriteback()
+                Button(GatherLocalization.l("预览")) {
+                    Task { await viewModel.previewKeywordWriteback() }
                 }
                 .disabled(!viewModel.canPreviewWriteback)
                 // 写回：busy 时禁用并显示处理中文案。
-                Button(viewModel.isSyncBusy ? "处理中…" : "写入 XMP") {
+                Button(viewModel.isSyncBusy ? GatherLocalization.l("处理中…") : GatherLocalization.l("写入 XMP")) {
                     Task { await viewModel.executeKeywordWriteback() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .disabled(!viewModel.canPreviewWriteback)
             }
-            Text("写入后在 Capture One 中选择这些照片，执行「图像 → 加载元数据」；确认关键词已进入目录后，再点击「确认同步」和「清理」。")
-                .font(.caption)
+            Text(GatherLocalization.l("写入后在 Capture One 中选择这些照片，执行「图像 → 加载元数据」；确认关键词已进入目录后，再点击「确认同步」和「清理」。"))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             if let message = viewModel.writebackMessage {
                 Text(message)
@@ -273,8 +281,8 @@ struct SimilarityView: View {
             if let preview = viewModel.writebackPreview {
                 writebackPreviewList(preview)
             } else if viewModel.result != nil {
-                Text("选择分组并生成预览后才可以写回。")
-                    .font(.caption)
+                Text(GatherLocalization.l("选择分组并生成预览后才可以写回。"))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             if let result = viewModel.writebackResult {
@@ -288,17 +296,18 @@ struct SimilarityView: View {
     /// 共享数、外部冲突、来源；超过 50 条计数提示）。
     private func writebackPreviewList(_ preview: WritebackPreview) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("XMP 写回预览")
+            Text(GatherLocalization.l("XMP 写回预览"))
                 .font(.subheadline.weight(.semibold))
-            Text("预览完成：\(preview.affectedPhotos) 张照片将合并这些关键词。")
+            Text(String(format: GatherLocalization.l("预览完成：%lld 张照片将合并这些关键词。"), preview.affectedPhotos))
                 .font(.callout)
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 ForEach(preview.items.prefix(SimilarityViewModel.previewItemLimit), id: \.xmpPath) { item in
                     writebackPreviewRow(item)
+                    Divider().opacity(0.4)
                 }
                 if preview.items.count > SimilarityViewModel.previewItemLimit {
-                    Text("另有 \(preview.items.count - SimilarityViewModel.previewItemLimit) 项未展开")
-                        .font(.caption)
+                    Text(String(format: GatherLocalization.l("另有 %lld 项未展开"), preview.items.count - SimilarityViewModel.previewItemLimit))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -309,33 +318,35 @@ struct SimilarityView: View {
         let preview = item.preview
         let before = preview?.before.keywords ?? []
         let after = preview?.after.keywords ?? item.keywords
-        return VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: 4) {
             Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
-                .font(.caption.weight(.semibold))
+                .font(.footnote.weight(.semibold))
                 .lineLimit(1)
                 .help(item.xmpPath)
+                .textSelection(.enabled)
             Text("\(writebackKeywordsText(before)) → \(writebackKeywordsText(after))")
-                .font(.caption)
+                .font(.footnote)
                 .lineLimit(1)
+                .textSelection(.enabled)
             HStack(spacing: 0) {
-                Text(preview?.willCreate == true ? "新建 XMP" : "更新 XMP")
+                Text(preview?.willCreate == true ? GatherLocalization.l("新建 XMP") : GatherLocalization.l("更新 XMP"))
                 if (preview?.sharedPhotoCount ?? 1) > 1 {
-                    Text(" · \(preview?.sharedPhotoCount ?? 1) 张共享")
+                    Text(String(format: GatherLocalization.l(" · %lld 张共享"), preview?.sharedPhotoCount ?? 1))
                 }
                 if preview?.externalChanged == true {
-                    Text(" · 检测到外部冲突")
+                    Text(GatherLocalization.l(" · 检测到外部冲突"))
                 }
-                Text(" · 来源：相似组")
+                Text(GatherLocalization.l(" · 来源：相似组"))
             }
-            .font(.caption2)
+            .font(.footnote)
             .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func writebackKeywordsText(_ keywords: [String]) -> String {
-        keywords.isEmpty ? "无关键词" : keywords.joined(separator: "、")
+        keywords.isEmpty ? GatherLocalization.l("无关键词") : keywords.joined(separator: "、")
     }
 
     /// 写回结果（TS WritebackReport：三色统计卡 + 失败项列表 + 门控操作行）。
@@ -343,7 +354,7 @@ struct SimilarityView: View {
         let controls = viewModel.syncControls
         return VStack(alignment: .leading, spacing: 10) {
             // 同步状态文案（TS syncStatusCopy）。
-            Text("同步状态：\(controls.statusText)")
+            Text(String(format: GatherLocalization.l("同步状态：%@"), controls.statusText))
                 .font(.callout)
             WritebackReportCard(
                 written: result.written,
@@ -359,19 +370,19 @@ struct SimilarityView: View {
             )
             HStack(spacing: 12) {
                 if !result.failedItems.isEmpty {
-                    Button("重试失败项") {
+                    Button(GatherLocalization.l("重试失败项")) {
                         Task { await viewModel.retryKeywordWriteback() }
                     }
                     .disabled(viewModel.isSyncBusy)
                 }
                 // 确认同步：仅 c1Read + 已写入 + ack（或 safeToCleanup）可用。
-                Button("确认同步") {
+                Button(GatherLocalization.l("确认同步")) {
                     confirmSyncRequested = true
                 }
                 .disabled(viewModel.isSyncBusy || !controls.canConfirmSync)
                 .help(controls.confirmHint ?? "")
                 // 清理：仅 safeToCleanup 可用。
-                Button("清理", role: .destructive) {
+                Button(GatherLocalization.l("清理"), role: .destructive) {
                     confirmCleanupRequested = true
                 }
                 .disabled(viewModel.isSyncBusy || !controls.canCleanup)
@@ -379,15 +390,15 @@ struct SimilarityView: View {
             }
             // 两步流第一步：加载元数据（TS reloadRow + loadHint）。
             HStack(spacing: 12) {
-                Button("在 Capture One 中加载元数据") {
+                Button(GatherLocalization.l("在 Capture One 中加载元数据")) {
                     Task { await viewModel.loadMetadataInCaptureOne() }
                 }
                 .disabled(viewModel.isSyncBusy || !controls.canLoadMetadata)
                 .help(controls.loadHint ?? "")
                 Text(controls.canLoadMetadata
-                    ? "先在 Capture One 中 Load Metadata，再返回 Gather 确认同步"
+                    ? GatherLocalization.l("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步")
                     : (controls.loadHint ?? ""))
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
@@ -396,8 +407,9 @@ struct SimilarityView: View {
     private var loadingRow: some View {
         HStack(spacing: 8) {
             ProgressView()
+                .progressViewStyle(.linear)
                 .controlSize(.small)
-            Text("加载结果中…")
+            Text(GatherLocalization.l("加载结果中…"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -408,17 +420,17 @@ struct SimilarityView: View {
     /// （重跑 load()：重新查询结果并做挂载恢复）。
     private var errorState: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("错误：\(loadErrorMessage)")
+            Text(String(format: GatherLocalization.l("错误：%@"), loadErrorMessage))
                 .font(.callout)
-                .foregroundStyle(.red)
-            Button("重试") {
+                .foregroundStyle(GatherTheme.error)
+            Button(GatherLocalization.l("重试")) {
                 Task { await viewModel.load() }
             }
             .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.12)))
     }
 
     /// TS: error（useQuery 全页错误）→ phase == .error。
@@ -438,7 +450,7 @@ struct SimilarityView: View {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                 Text(hint)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             .padding(10)
@@ -454,6 +466,7 @@ struct SimilarityView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     private func presetButton(_ title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
@@ -473,6 +486,7 @@ struct SimilarityView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     // MARK: 进度（TS AnalysisProgress + cancel 按钮）
@@ -483,9 +497,10 @@ struct SimilarityView: View {
             if viewModel.progressTotal > 0 {
                 // TS ProgressBar：百分比文本（对齐旧版进度显示，P0）。
                 HStack(spacing: 8) {
-                    ProgressView(
-                        value: Double(viewModel.progressCurrent),
-                        total: Double(viewModel.progressTotal)
+                    GatherProgressBar(
+                        fraction: progressRatio,
+                        track: Color.gatherBorder.opacity(0.3),
+                        accessibilityText: GatherLocalization.l("分析进度")
                     )
                     Text("\(progressPercent)%")
                         .font(.callout.monospacedDigit())
@@ -497,7 +512,9 @@ struct SimilarityView: View {
                 // （progressBar.inProgress，对齐旧版 处理中…）。
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("处理中…")
+                        .progressViewStyle(.linear)
+                        .controlSize(.small)
+                    Text(GatherLocalization.l("处理中…"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -508,7 +525,7 @@ struct SimilarityView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 // 取消分析：busy 时禁用并显示处理中文案。
-                Button(viewModel.isCanceling ? "处理中…" : "取消分析") {
+                Button(viewModel.isCanceling ? GatherLocalization.l("处理中…") : GatherLocalization.l("取消分析")) {
                     Task { await viewModel.cancelAnalysis() }
                 }
                 .buttonStyle(.bordered)
@@ -525,14 +542,19 @@ struct SimilarityView: View {
         return min(100, max(0, Int(percent.rounded())))
     }
 
+    private var progressRatio: Double {
+        guard viewModel.progressTotal > 0 else { return 0 }
+        return Double(viewModel.progressCurrent) / Double(viewModel.progressTotal)
+    }
+
     // MARK: 统计条（TS stats）
 
     private func statsBar(_ result: SimilarityResult) -> some View {
         HStack(spacing: 20) {
-            statItem("\(result.stats.totalGroups) 个分组")
-            statItem("\(result.stats.totalUngrouped) 未分组")
-            statItem("阈值 \(Int(result.stats.threshold))")
-            statItem(result.stats.groupingMode == .sequential ? "顺序分组" : "全局分组")
+            statItem(String(format: GatherLocalization.l("%lld 个分组"), result.stats.totalGroups))
+            statItem(String(format: GatherLocalization.l("%lld 未分组"), result.stats.totalUngrouped))
+            statItem(String(format: GatherLocalization.l("阈值 %lld"), Int(result.stats.threshold)))
+            statItem(result.stats.groupingMode == .sequential ? GatherLocalization.l("顺序分组") : GatherLocalization.l("全局分组"))
             Spacer()
             // 全选分组（对齐 KeywordWritebackPanel 的 selectAll；写回面板已接线）。
             Toggle(isOn: Binding(
@@ -541,7 +563,7 @@ struct SimilarityView: View {
                 },
                 set: { viewModel.setAllGroupsSelected($0) }
             )) {
-                Text("全选分组")
+                Text(GatherLocalization.l("全选分组"))
                     .font(.callout)
             }
             .toggleStyle(.checkbox)
@@ -639,7 +661,11 @@ struct SimilarityView: View {
     ) -> Double {
         if !expanded { return Self.groupHeaderHeight }
         let memberWidth = max(0, cardWidth - 2 - Self.memberAreaPadding)
-        let perRow = max(1, Int((memberWidth + Self.memberCellGap) / (Self.memberCellMinWidth + Self.memberCellGap)))
+        var perRow = 1
+        while (memberWidth - Double(perRow - 1) * Self.memberCellGap) / Double(perRow) >= Self.memberCellMinWidth {
+            perRow += 1
+        }
+        perRow = max(1, perRow - 1)
         let visibleCount = showAllMembers
             ? group.images.count
             : min(Self.truncatedMemberLimit, group.images.count)
@@ -692,10 +718,12 @@ private struct GroupCardView: View {
     let onToggleShowAll: () -> Void
 
     private static let truncatedMemberLimit = 24
-    /// 代表缩略图 64pt（旧版 64px，圆角 10）。
+    /// 代表缩略图 64pt（旧版 64px，圆角 6 与 Persons 详情缩略图一致）。
     private static let representativeThumbSize = 64.0
 
     @State private var isHovered = false
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -703,6 +731,7 @@ private struct GroupCardView: View {
                 Toggle("", isOn: Binding(get: { selected }, set: { _ in onToggleSelected() }))
                     .toggleStyle(.checkbox)
                     .labelsHidden()
+                    .accessibilityLabel(group.label + "，" + String(format: GatherLocalization.l("选择分组 %lld 张"), group.count))
                 Button(action: onToggleExpanded) {
                     HStack(spacing: 8) {
                         PhotoThumbnailView(
@@ -712,13 +741,13 @@ private struct GroupCardView: View {
                         )
                         .frame(width: Self.representativeThumbSize, height: Self.representativeThumbSize)
                         .clipped()
-                        .cornerRadius(10)
+                        .cornerRadius(6)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(group.label)
                                 .font(.subheadline.weight(.semibold))
                                 .lineLimit(1)
-                            Text("\(group.count) 张照片")
-                                .font(.caption)
+                            Text(String(format: GatherLocalization.l("%lld 张照片"), group.count))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -733,9 +762,9 @@ private struct GroupCardView: View {
             // TS groupExpand:hover —— 主题色微变背景。
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered ? GatherTheme.primarySoft.opacity(0.45) : Color.clear)
+                    .fill(isHovered ? GatherTheme.primarySoft.opacity(0.3) : Color.clear)
             )
-            .animation(.easeOut(duration: 0.15), value: isHovered)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
 
             if expanded {
                 // TS groupMembers border-top 分隔。
@@ -744,7 +773,7 @@ private struct GroupCardView: View {
                     .frame(height: 1)
                 let visibleMembers = showAllMembers ? group.images : Array(group.images.prefix(Self.truncatedMemberLimit))
                 let hasMore = group.images.count > Self.truncatedMemberLimit
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92, maximum: 92), spacing: 8)], spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
                     ForEach(visibleMembers, id: \.path) { image in
                         MemberCellView(path: image.path)
                     }
@@ -752,12 +781,15 @@ private struct GroupCardView: View {
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
                 if hasMore {
-                    Button(showAllMembers ? "收起" : "显示全部（共 \(group.images.count) 张）") {
-                        onToggleShowAll()
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button(showAllMembers ? GatherLocalization.l("收起") : String(format: GatherLocalization.l("显示全部（共 %lld 张）"), group.images.count)) {
+                            onToggleShowAll()
+                        }
+                        .font(.callout)
+                        .padding(.vertical, 4)
+                        Spacer(minLength: 0)
                     }
-                    .font(.callout)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
                 }
             }
         }
@@ -784,7 +816,7 @@ private struct GroupCardView: View {
     }
 }
 
-// MARK: - 成员单元格（TS memberItem：92px 方形缩略图圆角 10 + 文件名 + hover）
+// MARK: - 成员单元格（TS memberItem：92px 方形缩略图圆角 6 + 文件名 + hover）
 
 private struct MemberCellView: View {
     let path: String
@@ -792,6 +824,8 @@ private struct MemberCellView: View {
     private static let thumbSize = 92.0
 
     @State private var isHovered = false
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 2) {
@@ -802,9 +836,9 @@ private struct MemberCellView: View {
             )
             .frame(width: Self.thumbSize, height: Self.thumbSize)
             .clipped()
-            .cornerRadius(10)
+            .cornerRadius(6)
             Text((path as NSString).lastPathComponent)
-                .font(.caption2)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
@@ -814,9 +848,22 @@ private struct MemberCellView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(isHovered ? GatherTheme.primarySoft.opacity(0.45) : Color.clear)
         )
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
+        .contextMenu {
+            if let url = Self.finderURL(for: path) {
+                Button(GatherLocalization.l("在 Finder 中显示")) {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+        }
         .onHover { hovering in
             isHovered = hovering
         }
+    }
+
+    /// 右键「在 Finder 中显示」的 URL：路径为空时返回 nil（跳过该项）。
+    private static func finderURL(for path: String) -> URL? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed)
     }
 }

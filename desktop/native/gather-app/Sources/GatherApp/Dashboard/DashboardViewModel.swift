@@ -208,13 +208,13 @@ struct C1PreflightResult: Equatable, Sendable {
     /// TS evaluateC1Preflight：检查清单固定四层（超时额外加一格）。
     static func build(from status: C1PreflightStatus) -> C1PreflightResult {
         var items: [(key: String, label: String, passed: Bool)] = [
-            ("reachable", "可连接 Capture One（AppleScript）", status.reachable),
-            ("appRunning", "Capture One 正在运行", status.appRunning),
-            ("documentOpen", "Capture One 已打开文档", status.documentOpen),
-            ("automationAuthorized", "自动化权限已授权", status.automationAuthorized),
+            ("reachable", GatherLocalization.l("可连接 Capture One（AppleScript）"), status.reachable),
+            ("appRunning", GatherLocalization.l("Capture One 正在运行"), status.appRunning),
+            ("documentOpen", GatherLocalization.l("Capture One 已打开文档"), status.documentOpen),
+            ("automationAuthorized", GatherLocalization.l("自动化权限已授权"), status.automationAuthorized),
         ]
         if status.timedOut {
-            items.append(("timeout", "检测超时", false))
+            items.append(("timeout", GatherLocalization.l("检测超时"), false))
         }
         let checks = items.map { C1PreflightCheckItem(key: $0.key, label: $0.label, passed: $0.passed) }
         let failedKeys = checks.filter { !$0.passed }.map(\.key)
@@ -241,19 +241,19 @@ struct C1PreflightResult: Equatable, Sendable {
     private static func guidance(for failedKeys: [String]) -> String? {
         if failedKeys.isEmpty { return nil }
         if failedKeys.contains("timeout") {
-            return "检测超时，请重试"
+            return GatherLocalization.l("检测超时，请重试")
         }
         if failedKeys.contains("reachable") {
-            return "无法通过 AppleScript 访问 Capture One。请确认系统环境正常，然后重新检查。"
+            return GatherLocalization.l("无法通过 AppleScript 访问 Capture One。请确认系统环境正常，然后重新检查。")
         }
         if failedKeys.contains("automationAuthorized") {
-            return "自动化权限未授权：请在 系统设置 → 隐私与安全性 → 自动化 中允许 Gather 控制 Capture One，然后重新检查。"
+            return GatherLocalization.l("自动化权限未授权：请在 系统设置 → 隐私与安全性 → 自动化 中允许 Gather 控制 Capture One，然后重新检查。")
         }
         if failedKeys.contains("appRunning") {
-            return "未检测到 Capture One 正在运行。请先启动 Capture One，然后重新检查。"
+            return GatherLocalization.l("未检测到 Capture One 正在运行。请先启动 Capture One，然后重新检查。")
         }
         if failedKeys.contains("documentOpen") {
-            return "Capture One 未打开任何文档。请先打开一个目录（Document），然后重新检查。"
+            return GatherLocalization.l("Capture One 未打开任何文档。请先打开一个目录（Document），然后重新检查。")
         }
         return nil
     }
@@ -279,7 +279,7 @@ final class DashboardViewModel {
 
         var label: String {
             switch self {
-            case .local: return "本地文件夹"
+            case .local: return GatherLocalization.l("本地文件夹")
             case .captureOne: return "Capture One"
             }
         }
@@ -295,6 +295,7 @@ final class DashboardViewModel {
     private let provider: DashboardDataProvider
     private var autoRefreshTask: Task<Void, Never>?
     private var lastFullRefreshAt = Date.distantPast
+    private var lastSessionsRefreshAt = Date.distantPast
     /// 页面可见性（RootView 驱动，审计 4 的可见性钩子）：opacity 常驻方案
     /// 下 onAppear/onDisappear 不触发，由导航切换显式置位；隐藏期间
     /// startAutoRefresh 拒绝启动轮询（DashboardView 的 .task 初次必执行，
@@ -330,6 +331,7 @@ final class DashboardViewModel {
     }
 
     func refreshSessions() async {
+        lastSessionsRefreshAt = Date()
         do {
             let sessions = try provider.listSessions()
             self.sessions = sessions
@@ -426,7 +428,7 @@ final class DashboardViewModel {
         createError = nil
         defer { isCreating = false }
         guard let bridge = captureOne ?? CaptureOneBridge.shared else {
-            createError = "Capture One 导入不可用，请稍后重试"
+            createError = GatherLocalization.l("Capture One 导入不可用，请稍后重试")
             return nil
         }
         let status = await bridge.preflight()
@@ -436,12 +438,12 @@ final class DashboardViewModel {
         do {
             let files = try await bridge.selectedPhotoPaths()
             if files.isEmpty {
-                createError = "请先在 Capture One 中选择至少一张照片"
+                createError = GatherLocalization.l("请先在 Capture One 中选择至少一张照片")
                 return nil
             }
             let sourcePath = commonParentDirectory(filepaths: files)
             let sessionName = name.isEmpty
-                ? (sourcePath.isEmpty ? "Capture One 导入" : TSPath.basename(sourcePath))
+                ? (sourcePath.isEmpty ? GatherLocalization.l("Capture One 导入") : TSPath.basename(sourcePath))
                 : name
             let outcome = try provider.createSessionFromFiles(
                 name: sessionName,
@@ -573,10 +575,19 @@ final class DashboardViewModel {
     }
 
     private func autoRefreshTick() async {
-        // 有 queued/running 任务时每 2s 全量刷新；否则 30s 兜底。
+        // 有 queued/running 任务时增量刷新：jobs 每 2s 单查询（进度跟手），
+        // sessions + N×workspace.status 降到 15s 档；无活跃任务 30s 全量兜底。
         let active = jobs.contains { $0.status == .queued || $0.status == .running }
+        if active {
+            await refreshJobs()
+            let due = Date().timeIntervalSince(lastSessionsRefreshAt) >= 15
+            if due {
+                await refreshSessions()
+            }
+            return
+        }
         let due = Date().timeIntervalSince(lastFullRefreshAt) >= 30
-        guard active || due else { return }
+        guard due else { return }
         lastFullRefreshAt = Date()
         await refreshAll()
     }
@@ -624,15 +635,15 @@ final class DashboardViewModel {
         let job = scanJobs[session.id]
         switch deriveCardIndexKind(job) {
         case .failed:
-            return "索引失败"
+            return GatherLocalization.l("索引失败")
         case .active:
-            if let job, job.current > 0 { return "正在索引 \(job.current)…" }
-            return "扫描中…"
+            if let job, job.current > 0 { return String(format: GatherLocalization.l("正在索引 %lld…"), job.current) }
+            return GatherLocalization.l("扫描中…")
         case .count:
             if session.truncatedImport && job?.status != "succeeded" {
-                return "≥\(session.photoCount) 张照片"
+                return String(format: GatherLocalization.l("≥%lld 张照片"), session.photoCount)
             }
-            return "\(session.photoCount) 张照片"
+            return String(format: GatherLocalization.l("%lld 张照片"), session.photoCount)
         }
     }
 
@@ -689,7 +700,7 @@ final class DashboardViewModel {
         if session.truncatedImport {
             GatherToastCenter.shared.show(
                 type: .warning,
-                message: "目录超过 50,000 张照片，已导入前 50,000 张，剩余照片将在后台索引中补齐"
+                message: GatherLocalization.l("目录超过 50,000 张照片，已导入前 50,000 张，剩余照片将在后台索引中补齐")
             )
         }
         if !failedFiles.isEmpty {
@@ -706,8 +717,8 @@ final class DashboardViewModel {
         let examples = failedFiles.prefix(3)
             .map { URL(fileURLWithPath: $0).lastPathComponent }
             .joined(separator: "、")
-        let remaining = failedFiles.count > 3 ? " 等 \(failedFiles.count) 个" : ""
-        return "\(added) 张照片已导入；文件读取失败：\(examples)\(remaining)"
+        let remaining = failedFiles.count > 3 ? String(format: GatherLocalization.l(" 等 %lld 个"), failedFiles.count) : ""
+        return String(format: GatherLocalization.l("%lld 张照片已导入；文件读取失败：%@%@"), added, examples, remaining)
     }
 
     /// C1 流程错误文案：错误码经 GatherLocalization.errorText 转引导文案。

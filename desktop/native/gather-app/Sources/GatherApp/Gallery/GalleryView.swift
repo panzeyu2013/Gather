@@ -31,11 +31,12 @@ struct GalleryView: View {
 
     /// TS: DENSITY_OPTIONS（行高密度）。
     private static let densityOptions: [(value: Double, label: String)] = [
-        (160, "小图"),
-        (220, "中图"),
-        (300, "大图"),
+        (160, GatherLocalization.l("小图")),
+        (220, GatherLocalization.l("中图")),
+        (300, GatherLocalization.l("大图")),
     ]
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var density = 220.0
     @State private var lightboxIndex: Int?
     /// 网格行布局缓存（避免 ScrollView 滚动时反复重算 justified 布局）。
@@ -46,9 +47,9 @@ struct GalleryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let error = viewModel.actionError {
-                Text("操作失败：\(error)")
+                Text(String(format: GatherLocalization.l("操作失败：%@"), error))
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(GatherTheme.error)
                     .padding(.horizontal, 24)
                     .padding(.top, 12)
             }
@@ -128,22 +129,28 @@ struct GalleryView: View {
         }
     }
 
+    /// 右键「在 Finder 中显示」的 URL：路径为空/不可用时返回 nil（跳过该项）。
+    private static func finderURL(for photo: GalleryPhotoData) -> URL? {
+        let path = photo.filepath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+    }
+
     // MARK: 会话头部（TS SessionDetail header：返回 + 身份 + 页签 + C1 胶囊）
 
     private var sessionHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Button(action: onBack) {
-                    Label("返回工作台", systemImage: "chevron.left")
+                    Label(GatherLocalization.l("返回工作台"), systemImage: "chevron.left")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.gatherPrimary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("当前工作区")
-                        .font(.caption)
+                    Text(GatherLocalization.l("当前工作区"))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Text(viewModel.session?.name ?? "加载中…")
-                        .font(.system(size: 20, weight: .bold))
+                    Text(viewModel.session?.name ?? GatherLocalization.l("加载中…"))
+                        .font(.largeTitle.weight(.bold))
                 }
                 Spacer()
                 // C1 状态胶囊（旧版 C1StatusCapsule：状态点 + 队列数 + 跳设置）。
@@ -154,7 +161,13 @@ struct GalleryView: View {
                     isActive: isActive
                 )
                 // TS index.tsx:135 —— 「设置」utility link（右邻 C1 胶囊）。
-                Button("设置") {
+                Button {
+                    Task { await viewModel.load() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help(GatherLocalization.l("刷新"))
+                Button(GatherLocalization.l("设置")) {
                     onOpenSettings()
                 }
                 .buttonStyle(.bordered)
@@ -192,16 +205,13 @@ struct GalleryView: View {
                     if let percent = copy.percent {
                         // TS ProgressBar 语义：8px 轨道 / 圆角 4 / 主色填充
                         // / 140pt 宽 / pct 文本右对齐。
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(GatherTheme.backgroundSecondary)
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(GatherTheme.primary)
-                                .frame(width: max(0, 140 * CGFloat(percent) / 100))
-                        }
-                        .frame(width: 140, height: 8)
+                        GatherProgressBar(
+                            fraction: Double(percent) / 100,
+                            width: 140,
+                            accessibilityText: copy.text
+                        )
                         Text("\(percent)%")
-                            .font(.caption)
+                            .font(.footnote)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                             .frame(minWidth: 36, alignment: .trailing)
@@ -209,10 +219,10 @@ struct GalleryView: View {
                 case .error:
                     Text(copy.text)
                         .font(.callout)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(GatherTheme.error)
                     // TS index.tsx:179-183 —— 旧版一体「索引失败，点击重试」
                     // 拆为「索引失败」+ 独立「重试」按钮。
-                    Button("重试") {
+                    Button(GatherLocalization.l("重试")) {
                         Task { await viewModel.retryIndex() }
                     }
                     .buttonStyle(.bordered)
@@ -226,6 +236,8 @@ struct GalleryView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 8)
+            .frame(minHeight: 26)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: copy.kind)
         }
     }
 
@@ -233,41 +245,46 @@ struct GalleryView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            TextField("搜索文件名…", text: $viewModel.search)
+            TextField(GatherLocalization.l("搜索文件名…"), text: $viewModel.search)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 220)
+                // 布局验收 P1 修复：固定 220 改弹性区间，窄窗口收缩、宽窗口舒展，
+                // 避免英文占位文案截断。
+                .frame(minWidth: 160, idealWidth: 240, maxWidth: 360)
+                .disabled(!isActive)
                 .onChange(of: viewModel.search) { _, _ in viewModel.searchChanged() }
-            Picker("全部", selection: $viewModel.filter) {
-                Text("全部").tag(GalleryFilter.all)
-                Text("有人脸").tag(GalleryFilter.hasFace)
-                Text("无人脸").tag(GalleryFilter.noFace)
+            Picker(GatherLocalization.l("全部"), selection: $viewModel.filter) {
+                Text(GatherLocalization.l("全部")).tag(GalleryFilter.all)
+                Text(GatherLocalization.l("有人脸")).tag(GalleryFilter.hasFace)
+                Text(GatherLocalization.l("无人脸")).tag(GalleryFilter.noFace)
             }
             .pickerStyle(.menu)
-            .frame(width: 120)
+            .frame(minWidth: 120)
             .onChange(of: viewModel.filter) { _, _ in viewModel.filterOrVariantChanged() }
-            Picker("中图", selection: $density) {
+            Picker(GatherLocalization.l("中图"), selection: $density) {
                 ForEach(Self.densityOptions, id: \.value) { option in
                     Text(option.label).tag(option.value)
                 }
             }
             .pickerStyle(.menu)
-            .frame(width: 100)
+            .frame(minWidth: 100)
             // TS Gallery.tsx:274-280 —— 变体展开胶囊按钮（aria-pressed 语义：
             // 激活 = primary soft 底 + 主色描边/文字，未激活 = 平底 + 边框）。
             Button {
                 viewModel.expandVariants.toggle()
                 viewModel.filterOrVariantChanged()
             } label: {
-                Text(viewModel.expandVariants ? "折叠 RAW/JPEG" : "展开所有变体")
+                Text(viewModel.expandVariants ? GatherLocalization.l("折叠 RAW/JPEG") : GatherLocalization.l("展开所有变体"))
                     .font(.callout)
                     .fontWeight(.semibold)
                     .foregroundStyle(viewModel.expandVariants ? GatherTheme.primary : Color.gatherTextPrimary)
-                    .padding(.horizontal, 17)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
                     .background(Capsule().fill(viewModel.expandVariants ? GatherTheme.primarySoft : GatherTheme.surface))
                     .overlay(Capsule().strokeBorder(viewModel.expandVariants ? GatherTheme.primary : GatherTheme.border))
             }
             .buttonStyle(.plain)
+            .accessibilityAddTraits(viewModel.expandVariants ? [.isSelected] : [])
+            .accessibilityLabel(GatherLocalization.l("展开所有变体"))
             Spacer()
             if viewModel.isFetchingNextPage {
                 ProgressView().controlSize(.small)
@@ -281,13 +298,13 @@ struct GalleryView: View {
 
     private var selectionBar: some View {
         HStack(spacing: 12) {
-            Text("选中 \(viewModel.selectedIds.count) 张照片")
+            Text(String(format: GatherLocalization.l("选中 %lld 张照片"), viewModel.selectedIds.count))
                 .font(.callout)
                 .foregroundStyle(.white)
             Spacer()
             // TS Gallery.module.css:64-74 —— clearBtn margin-left:auto +
             // rgba(255,255,255,.2) 胶囊、白字。
-            Button("取消选择") {
+            Button(GatherLocalization.l("取消选择")) {
                 viewModel.clearSelection()
             }
             .buttonStyle(.plain)
@@ -307,28 +324,34 @@ struct GalleryView: View {
     private var content: some View {
         switch viewModel.phase {
         case .loading:
-            ProgressView("加载照片中…")
+            ProgressView(GatherLocalization.l("加载照片中…"))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .failed(let message):
             VStack(spacing: 10) {
-                Text("加载照片失败：\(message)")
-                    .foregroundStyle(.red)
-                Button("重试") {
+                Text(String(format: GatherLocalization.l("加载照片失败：%@"), message))
+                    .foregroundStyle(GatherTheme.error)
+                Button(GatherLocalization.l("重试")) {
                     Task { await viewModel.load() }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .loaded:
             let filtered = viewModel.filteredPhotos
-            if filtered.isEmpty {
-                Text("暂无照片")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                GeometryReader { geometry in
-                    // 行区域实际内容宽度 = 全宽 − LazyVStack 水平 padding 16×2。
-                    let rows = layoutRows(filtered: filtered, width: max(1, geometry.size.width - 32))
+                if filtered.isEmpty {
+                    GatherEmptyState(
+                        icon: "photo.on.rectangle.angled",
+                        title: GatherLocalization.l("暂无照片"),
+                        message: GatherLocalization.l("索引完成后照片将显示在这里")
+                    ) {
+                        Button(GatherLocalization.l("前往控制中心")) {
+                            onOpenTab(viewModel.sessionId, .control)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
+                } else {
+                GeometryReader { geometry in                    // 行区域实际内容宽度 = 全宽 − LazyVStack 水平 padding 24×2。
+                    let rows = layoutRows(filtered: filtered, width: max(1, geometry.size.width - 48))
                     ScrollView {
                         LazyVStack(spacing: 8) {
                             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
@@ -342,7 +365,7 @@ struct GalleryView: View {
                                     Task { await viewModel.loadMoreIfNeeded() }
                                 }
                         }
-                        .padding(16)
+                        .padding(.horizontal, 24)
                     }
                 }
             }
@@ -389,6 +412,14 @@ struct GalleryView: View {
                         .frame(width: item.width, height: row.height)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        if viewModel.selectedIds.isEmpty, let url = GalleryView.finderURL(for: photo) {
+                            Button(GatherLocalization.l("在 Finder 中显示")) {
+                                NSWorkspace.shared.activateFileViewerSelecting([url])
+                            }
+                        }
+                    }
+                    .accessibilityAddTraits(viewModel.selectedIds.contains(photo.id) ? [.isSelected] : [])
                 }
             }
         }
@@ -422,27 +453,28 @@ private struct GalleryCellView: View {
                 // 占位尺寸固定（防解码完成前后跳动）：始终撑满单元格。
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
+                .brightness(isHovered ? 0.03 : 0)
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
+                HStack(spacing: 4) {
                     if photo.status == "missing" {
-                        Text("离线")
-                            .font(.caption2)
+                        Text(GatherLocalization.l("离线"))
+                            .font(.footnote)
                             .foregroundStyle(.white)
-                            .padding(.horizontal, 5)
+                            .padding(.horizontal, 6)
                             .padding(.vertical, 1)
                             .background(Capsule().fill(Color.red.opacity(0.85)))
                     }
                     if photo.variantCount > 1 {
-                        Text("RAW+JPEG · \(photo.variantCount)")
-                            .font(.caption2)
+                        Text(String(format: GatherLocalization.l("RAW+JPEG · %lld"), photo.variantCount))
+                            .font(.footnote)
                             .foregroundStyle(.white)
-                            .padding(.horizontal, 5)
+                            .padding(.horizontal, 6)
                             .padding(.vertical, 1)
                             .background(Capsule().fill(Color.black.opacity(0.55)))
                     }
                 }
                 Text(photo.filename)
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .padding(.horizontal, 6)
@@ -463,9 +495,10 @@ private struct GalleryCellView: View {
                 ZStack {
                     Circle().fill(GatherTheme.primary)
                     Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.footnote.weight(.bold))
                         .foregroundStyle(.white)
                 }
+                .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
                 .frame(width: 18, height: 18)
                 .padding(4)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -486,9 +519,9 @@ private struct GalleryCellView: View {
                 )
         )
         .contentShape(Rectangle())
-        // TS: .cell:hover —— box-shadow 0 3px 14px rgba(0,0,0,.45) + brightness(1.05)。
-        .shadow(color: isHovered ? Color.black.opacity(0.45) : Color.clear, radius: 14, y: 3)
-        .brightness(isHovered ? 0.05 : 0)
+        // TS: .cell:hover —— box-shadow 0 3px 14px rgba(0,0,0,.45) + brightness(1.05)
+        // 的暖色主题等价：shadowMd（radius 9 / y 3）+ 缩略图亮度 0.03。
+        .shadow(color: isHovered ? GatherTheme.shadowMd : Color.clear, radius: 9, y: 3)
         .onHover { isHovered = $0 }
     }
 }
@@ -541,19 +574,21 @@ private struct LightboxView: View {
 
     var body: some View {
         ZStack {
-            Color(nsColor: .windowBackgroundColor).opacity(0.98)
+            // 恒深色查看器背景（与挑片页查看器 GatherTheme.viewerBackground 统一）。
+            GatherTheme.viewerBackground
             if let photo = currentPhoto {
                 VStack(spacing: 12) {
                     HStack {
                         Text(photo.filename)
                             .font(.headline)
                             .lineLimit(1)
+                            .foregroundStyle(GatherTheme.viewerTextPrimary)
                         Spacer()
                         Text("\(currentIndex + 1) / \(photos.count)")
                             .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Button("关闭", action: onClose)
-                            .keyboardShortcut(.cancelAction)
+                            .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.65))
+                    Button(GatherLocalization.l("关闭"), action: onClose)
+                        .keyboardShortcut(.cancelAction)
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 14)
@@ -563,7 +598,8 @@ private struct LightboxView: View {
                             PhotoThumbnailView(
                                 path: photo.filepath,
                                 size: 2048,
-                                preview: true
+                                preview: true,
+                                contentMode: .fit
                             )
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .scaleEffect(scale)
@@ -605,11 +641,11 @@ private struct LightboxView: View {
                     .clipped()
 
                     HStack(spacing: 20) {
-                        metadataItem("尺寸", "\(photo.width) × \(photo.height)")
-                        metadataItem("状态", photo.status == "missing" ? "离线" : "在线")
-                        metadataItem("人脸", "\(photo.faceCount)")
+                        metadataItem(GatherLocalization.l("尺寸"), "\(photo.width) × \(photo.height)")
+                        metadataItem(GatherLocalization.l("状态"), photo.status == "missing" ? GatherLocalization.l("离线") : GatherLocalization.l("在线"))
+                        metadataItem(GatherLocalization.l("人脸"), "\(photo.faceCount)")
                         if photo.variantCount > 1 {
-                            metadataItem("变体", "\(photo.variantCount)")
+                            metadataItem(GatherLocalization.l("变体"), "\(photo.variantCount)")
                         }
                         Spacer()
                         Button {
@@ -617,14 +653,17 @@ private struct LightboxView: View {
                             gestureScale = scale
                             if scale <= 1 { offset = .zero }
                         } label: { Image(systemName: "minus.magnifyingglass") }
+                        .accessibilityLabel(GatherLocalization.l("缩小"))
                         Text("\(Int(scale * 100))%")
-                            .font(.caption.monospacedDigit())
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.8))
                             .frame(width: 44)
                         Button {
                             scale = min(5, scale + 0.25)
                             gestureScale = scale
                         } label: { Image(systemName: "plus.magnifyingglass") }
-                        Button("重置") {
+                        .accessibilityLabel(GatherLocalization.l("放大"))
+                        Button(GatherLocalization.l("重置")) {
                             resetTransform()
                         }
                         Button {
@@ -632,12 +671,14 @@ private struct LightboxView: View {
                         } label: {
                             Image(systemName: "chevron.left")
                         }
+                        .accessibilityLabel(GatherLocalization.l("上一张"))
                         .disabled(currentIndex == 0)
                         Button {
                             goNext()
                         } label: {
                             Image(systemName: "chevron.right")
                         }
+                        .accessibilityLabel(GatherLocalization.l("下一张"))
                         .disabled(currentIndex == photos.count - 1)
                     }
                     .padding(.horizontal, 20)
@@ -646,10 +687,10 @@ private struct LightboxView: View {
             } else {
                 // TS if (!photo) return null —— 照片已随刷新消失：占位 + 关闭。
                 VStack(spacing: 10) {
-                    Text("照片已不可用")
+                    Text(GatherLocalization.l("照片已不可用"))
                         .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Button("关闭", action: onClose)
+                        .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.65))
+                    Button(GatherLocalization.l("关闭"), action: onClose)
                 }
             }
         }
@@ -760,10 +801,11 @@ private struct LightboxView: View {
     private func metadataItem(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.footnote)
+                .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.65))
             Text(value)
                 .font(.callout)
+                .foregroundStyle(GatherTheme.viewerTextPrimary)
         }
     }
 }

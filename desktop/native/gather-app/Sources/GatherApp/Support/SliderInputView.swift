@@ -30,15 +30,20 @@ public struct SliderInputView: View {
         HStack(spacing: 10) {
             Text(title)
                 .font(.callout)
-                .frame(width: 110, alignment: .leading)
+                .lineLimit(1)
+                .frame(width: GatherTheme.formLabelWidth, alignment: .leading)
             Slider(value: $value, in: range, step: step ?? 0)
+                .accessibilityLabel(title)
+                .accessibilityValue(Text(format(value)))
                 .onChange(of: value) { _, newValue in
                     syncText(from: newValue)
                 }
             TextField(format(value), text: $text)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 72)
+                .frame(width: 80)
                 .multilineTextAlignment(.center)
+                .monospacedDigit()
+                .accessibilityLabel(title)
                 .focused($focused)
                 .onSubmit { commitText() }
                 .onChange(of: focused) { _, isFocused in
@@ -46,7 +51,7 @@ public struct SliderInputView: View {
                 }
                 .onAppear { syncText(from: value) }
         }
-        .help("\(title)：\(format(value))（范围 \(format(range.lowerBound))–\(format(range.upperBound))）")
+        .help(String(format: GatherLocalization.l("%@：%@（范围 %@–%@）"), title, format(value), format(range.lowerBound), format(range.upperBound)))
     }
 
     private func syncText(from newValue: Double) {
@@ -83,15 +88,18 @@ public struct SliderInputIntView: View {
         HStack(spacing: 10) {
             Text(title)
                 .font(.callout)
-                .frame(width: 110, alignment: .leading)
+                .frame(width: GatherTheme.formLabelWidth, alignment: .leading)
             Slider(value: Binding(
                 get: { Double(value) },
                 set: { value = Int($0.rounded()) }
             ), in: Double(range.lowerBound)...Double(range.upperBound), step: 1)
+                .accessibilityLabel(title)
+                .accessibilityValue(Text("\(value)"))
             TextField("\(value)", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 72)
                 .multilineTextAlignment(.center)
+                .accessibilityLabel(title)
                 .focused($focused)
                 .onSubmit { commitText() }
                 .onChange(of: focused) { _, isFocused in
@@ -102,7 +110,7 @@ public struct SliderInputIntView: View {
                     if text != "\(newValue)" { text = "\(newValue)" }
                 }
         }
-        .help("\(title)：\(value)（范围 \(range.lowerBound)–\(range.upperBound)）")
+        .help(String(format: GatherLocalization.l("%@：%lld（范围 %lld–%lld）"), title, value, range.lowerBound, range.upperBound))
     }
 
     private func commitText() {

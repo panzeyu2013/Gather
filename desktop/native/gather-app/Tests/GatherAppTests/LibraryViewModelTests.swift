@@ -26,12 +26,16 @@ private final class StubLibraryProvider: LibraryDataProvider {
         return sessions
     }
 
-    func globalPhotos(criteria: FilterGroup, sessionId: String?, limit: Int, offset: Int) throws -> (photos: [GlobalPhotoResult], total: Int) {
+    func globalPhotos(criteria: FilterGroup, sessionId: String?, limit: Int, offset: Int) async throws -> (photos: [GlobalPhotoResult], total: Int) {
         if let photosError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: photosError])
         }
         fetchCalls.append((criteria, sessionId, limit, offset))
         return (photos, total)
+    }
+
+    func albumPhotos(albumId: String, limit: Int, offset: Int) async throws -> (photos: [GlobalPhotoResult], total: Int) {
+        (photos, total)
     }
 
     static func session(_ id: String, name: String = "工作区") -> SessionData {
@@ -204,30 +208,30 @@ struct LibraryViewModelTests {
         #expect(viewModel.rangeText == "第 1–60 张")
 
         viewModel.nextPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.page == 1)
         #expect(stub.fetchCalls.last?.offset == LibraryViewModel.pageSize)
 
         viewModel.nextPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.page == 2)
         #expect(stub.fetchCalls.last?.offset == 2 * LibraryViewModel.pageSize)
 
         viewModel.nextPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         // 第 3 页 (offset 180 < 250) 允许。
         #expect(viewModel.page == 3)
         viewModel.nextPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         // 第 4 页 (offset 240)：TS 按钮禁用条件 (page+1)*PAGE >= total
         // → (3+1)*60=240 < 250 仍可进入；第 5 页 (300 >= 250) 才禁。
         #expect(viewModel.page == 4)
         viewModel.nextPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.page == 4, "超出 total 的页码不应前进")
 
         viewModel.prevPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.page == 3)
     }
 
@@ -242,7 +246,7 @@ struct LibraryViewModelTests {
 
         viewModel.filter.rating = "4"
         viewModel.onFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
 
         #expect(stub.fetchCalls.count == 2)
         let call = stub.fetchCalls[1]
@@ -288,12 +292,12 @@ struct LibraryViewModelTests {
         await viewModel.load()
 
         viewModel.nextPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.page == 1)
 
         viewModel.filter.label = "Red"
         viewModel.onFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.page == 0)
         #expect(stub.fetchCalls.last?.offset == 0)
     }
@@ -307,7 +311,7 @@ struct LibraryViewModelTests {
 
         viewModel.sessionFilter = "s2"
         viewModel.onSessionFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
 
         #expect(stub.fetchCalls.last?.sessionId == "s2")
         #expect(viewModel.page == 0)
@@ -325,12 +329,12 @@ struct LibraryViewModelTests {
         viewModel.filter.duplicates = "yes"
         viewModel.sessionFilter = "s1"
         viewModel.onFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.activeFilterCount == 3)
         #expect(viewModel.advancedFilterCount == 1)
 
         viewModel.clearFilters()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.activeFilterCount == 0)
         #expect(viewModel.filter == LibraryFilterState())
         #expect(viewModel.sessionFilter == "")
@@ -356,7 +360,7 @@ struct LibraryViewModelTests {
 
         stub.photosError = "PAGE_FAILED"
         viewModel.nextPage()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.phase == .loaded)
         #expect(viewModel.actionError == "PAGE_FAILED")
     }
@@ -381,7 +385,7 @@ struct LibraryViewModelTests {
         // rating ≥ 4 → p1（Red）、p3。
         viewModel.filter.rating = "4"
         viewModel.onFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.total == 2)
         #expect(Set(viewModel.photos.map(\.photoId)) == Set(["p1", "p3"]))
         #expect(viewModel.photos.first { $0.photoId == "p1" }?.label == "Red")
@@ -389,7 +393,7 @@ struct LibraryViewModelTests {
         // 会话筛选：仅 s1 → p1。
         viewModel.sessionFilter = "s1"
         viewModel.onSessionFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.total == 1)
         #expect(viewModel.photos.map(\.photoId) == ["p1"])
         #expect(viewModel.photos[0].sessionName == "甲")
@@ -408,14 +412,14 @@ struct LibraryViewModelTests {
 
         viewModel.filter.status = "missing"
         viewModel.onFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.total == 1)
         #expect(viewModel.photos.map(\.photoId) == ["p1"])
 
         viewModel.filter.status = ""
         viewModel.filter.keyword = "旅行"
         viewModel.onFilterChanged()
-        try? await Task.sleep(for: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.total == 1)
         #expect(viewModel.photos.first?.keywords == ["旅行", "风景"])
     }
@@ -437,7 +441,7 @@ struct LibraryViewModelTests {
 
     // Library 侧栏的真实路由对账：智能相册 CRUD/分页与资产、孤立 XMP、卷列表
     // 均必须可调用，不能只靠 UI stub 通过编译。
-    @Test func liveProviderSupportsLibrarySupportCommands() throws {
+    @Test func liveProviderSupportsLibrarySupportCommands() async throws {
         let (provider, db) = try makeLiveProvider()
         try insertSession(db, "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5)
@@ -449,7 +453,7 @@ struct LibraryViewModelTests {
         #expect(created.name == "高评分")
         #expect(try provider.listAlbums().contains(where: { $0.id == created.id }))
 
-        let page = try provider.albumPhotos(albumId: created.id, limit: 60, offset: 0)
+        let page = try await provider.albumPhotos(albumId: created.id, limit: 60, offset: 0)
         #expect(page.total == 1)
         #expect(page.photos.map(\.photoId) == ["p1"])
 

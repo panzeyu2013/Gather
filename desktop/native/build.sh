@@ -32,6 +32,15 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$APP_EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/Gather"
 cp "$APP_PACKAGE/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
+# SPM 资源 bundle（本地化表 .lproj 等）随可执行文件进入 app bundle，
+# Bundle.module 运行时按 Contents/Resources/gather-app_GatherApp.bundle 解析。
+RESOURCE_BUNDLE="$(find "$APP_PACKAGE/.build" -type d -name "gather-app_GatherApp.bundle" -path "*/$CONFIGURATION/*" -print -quit)"
+if [[ -n "$RESOURCE_BUNDLE" ]]; then
+  cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
+else
+  echo "warning: SPM resource bundle not found; localization tables will be missing" >&2
+fi
+
 # The Capture One plugin is optional at build time because its SDK is licensed
 # and is not part of this repository. When the SDK is present, build and embed
 # the plugin; otherwise leave an explicit, non-fatal release note.

@@ -12,13 +12,12 @@
 //   进程探测）作为 reachable/appRunning 层，本文件内 osascript 文档探测补
 //   documentOpen/automationAuthorized 层；✓/✗ 徽标、重新检测按钮（检测中禁用）、
 //   挂载时检测一次（对齐 TS checkHealth：仅挂载时 + 手动重检，12s 定时器只
-//   轮询 sync-state）。写回队列 6 格与最近同步时间依赖 c1:sync-state 命令，原生
-//   路由未接线 → 显示占位并说明（限制见任务报告）。
+//   轮询 sync-state）。写回队列 6 格与最近同步时间经 culling.sync_status
+//   （响应含 reloadAckedAt）接线，非占位。
 // - 模型路径编辑：detector_model_path/encoder_model_path 可编辑输入框 + 保存后
 //   重查 settings.get_ml_status。
-// - 语言切换：settings.set_language 持久化后本页文案跟随 ui_language。
-//   限制：应用菜单在 GatherAppDelegate.installMenu（private）内构建，本任务
-//   文件清单不含 GatherAppDelegate.swift，无法重建菜单，仅设置页内文案联动。
+// - 语言切换：settings.set_language 持久化后本页文案跟随 ui_language，并广播
+//   languageChanged 由 GatherAppDelegate 重建菜单（全站文案联动）。
 import SwiftUI
 import AppKit
 import GatherCore
@@ -148,7 +147,7 @@ public final class SettingsViewModel {
     // MARK: 模型下载（对齐旧版 installBanner + models.download_default）
 
     /// 安装流水线阶段（对齐旧版主进程 downloadDefaultModels 的 phase 语义：
-    /// 下载 → 解压；进度条文案按此切换「正在下载模型…/正在解压…」）。
+    /// 下载 → 解压；进度条文案按此切换「已下载 xx%（文件名）/正在解压…」）。
     public enum ModelInstallStep: Equatable {
         case downloading
         case extracting
@@ -184,6 +183,7 @@ public final class SettingsViewModel {
             backend = values["onnx_provider"] ?? "auto"
             edits = values
             seedSliderValues()
+            reconcileDownloadPhaseWithModelStatus()
             errorMessage = nil
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -212,7 +212,7 @@ public final class SettingsViewModel {
             _ = try client.execute("settings.set_language", params: ["language": .string(value)])
             language = value
             values["ui_language"] = value
-            notice = value == "en" ? "Language saved" : "语言已保存"
+            notice = value == "en" ? "Language saved" : GatherLocalization.l("语言已保存")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -229,7 +229,7 @@ public final class SettingsViewModel {
             backend = value
             values["onnx_provider"] = value
             modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
-            notice = text(PageCopy(zh: "推理后端已保存", en: "Inference backend saved"))
+            notice = GatherLocalization.l("推理后端已保存")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -240,10 +240,7 @@ public final class SettingsViewModel {
     public func saveField(_ field: SettingField) {
         let raw = (edits[field.key] ?? values[field.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
-            errorMessage = text(PageCopy(
-                zh: "「\(field.zhLabel)」不能为空",
-                en: "\(field.enLabel) must not be empty"
-            ))
+            errorMessage = String(format: GatherLocalization.l("「%@」不能为空"), field.zhLabel)
             return
         }
         switch field.type {
@@ -251,24 +248,15 @@ public final class SettingsViewModel {
             save(key: field.key, value: raw)
         case .number(let min, let max):
             guard let parsed = Double(raw), parsed.isFinite else {
-                errorMessage = text(PageCopy(
-                    zh: "「\(field.zhLabel)」必须是数字",
-                    en: "\(field.enLabel) must be a number"
-                ))
+                errorMessage = String(format: GatherLocalization.l("「%@」必须是数字"), field.zhLabel)
                 return
             }
             if let min, parsed < min {
-                errorMessage = text(PageCopy(
-                    zh: "「\(field.zhLabel)」不能小于 \(Self.numberText(min))",
-                    en: "\(field.enLabel) must not be below \(Self.numberText(min))"
-                ))
+                errorMessage = String(format: GatherLocalization.l("「%@」不能小于 %@"), field.zhLabel, Self.numberText(min))
                 return
             }
             if let max, parsed > max {
-                errorMessage = text(PageCopy(
-                    zh: "「\(field.zhLabel)」不能大于 \(Self.numberText(max))",
-                    en: "\(field.enLabel) must not exceed \(Self.numberText(max))"
-                ))
+                errorMessage = String(format: GatherLocalization.l("「%@」不能大于 %@"), field.zhLabel, Self.numberText(max))
                 return
             }
             save(key: field.key, value: raw)
@@ -286,7 +274,7 @@ public final class SettingsViewModel {
     public func saveModelPath(key: String) {
         let raw = (edits[key] ?? values[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
-            errorMessage = text(PageCopy(zh: "模型路径不能为空", en: "Model path must not be empty"))
+            errorMessage = GatherLocalization.l("模型路径不能为空")
             return
         }
         save(key: key, value: raw)
@@ -312,7 +300,7 @@ public final class SettingsViewModel {
             ])
             values[key] = value
             edits[key] = value
-            notice = text(PageCopy(zh: "已保存 \(key)", en: "Saved \(key)"))
+            notice = String(format: GatherLocalization.l("已保存 %@"), key)
             errorMessage = nil
             if key == "detector_model_path" || key == "encoder_model_path" || key == "onnx_provider" {
                 modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
@@ -326,7 +314,7 @@ public final class SettingsViewModel {
 
     public func openModelDirectory() {
         guard let path = modelStatus?.modelResourcesDir, !path.isEmpty else {
-            errorMessage = text(PageCopy(zh: "模型目录不可用", en: "Model directory is unavailable"))
+            errorMessage = GatherLocalization.l("模型目录不可用")
             return
         }
         NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
@@ -340,7 +328,7 @@ public final class SettingsViewModel {
             resolved = modelStatus?.encoderModel.resolvedPath
         }
         guard let resolved, !resolved.isEmpty else {
-            errorMessage = text(PageCopy(zh: "模型路径不可用", en: "Model path is unavailable"))
+            errorMessage = GatherLocalization.l("模型路径不可用")
             return
         }
         let parent = URL(fileURLWithPath: resolved).deletingLastPathComponent().path
@@ -354,7 +342,7 @@ public final class SettingsViewModel {
             backend = values["onnx_provider"] ?? "auto"
             edits = values
             seedSliderValues()
-            notice = text(PageCopy(zh: "设置已恢复默认值", en: "Settings restored to defaults"))
+            notice = GatherLocalization.l("设置已恢复默认值")
             modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -553,19 +541,16 @@ public final class SettingsViewModel {
 
     public func startModelDownload() async {
         guard !isDownloading else { return }
+        errorMessage = nil
         let configured = (values["model_download_url"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: configured.isEmpty ? ModelInstaller.packageURL : configured) else {
             downloadPhase = .error
-            errorMessage = text(PageCopy(zh: "模型下载地址无效", en: "Invalid model download URL"))
-            try? await Task.sleep(for: .seconds(3))
-            if downloadPhase == .error { downloadPhase = .idle }
+            errorMessage = GatherLocalization.l("模型下载地址无效")
             return
         }
         guard let modelsDir = modelStatus?.modelResourcesDir, !modelsDir.isEmpty else {
             downloadPhase = .error
-            errorMessage = text(PageCopy(zh: "模型目录不可用", en: "Model directory is unavailable"))
-            try? await Task.sleep(for: .seconds(3))
-            if downloadPhase == .error { downloadPhase = .idle }
+            errorMessage = GatherLocalization.l("模型目录不可用")
             return
         }
         downloadPhase = .downloading(filename: "buffalo_l.zip", percent: 0, step: .downloading)
@@ -575,19 +560,17 @@ public final class SettingsViewModel {
             }
             downloadPhase = .done
             modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
-            // 对齐旧版：完成态停留 2s 后回 idle（模型仍缺失则横幅保留）。
-            try? await Task.sleep(for: .seconds(2))
-            if downloadPhase == .done { downloadPhase = .idle }
+            reconcileDownloadPhaseWithModelStatus()
         } catch {
             downloadPhase = .error
-            errorMessage = text(PageCopy(
-                zh: "模型下载失败：\(error.localizedDescription)",
-                en: "Model download failed: \(error.localizedDescription)"
-            ))
-            // 对齐旧版：错误态停留 3s 后回 idle。
-            try? await Task.sleep(for: .seconds(3))
-            if downloadPhase == .error { downloadPhase = .idle }
+            errorMessage = String(format: GatherLocalization.l("模型下载失败：%@"), error.localizedDescription)
         }
+    }
+
+    private func reconcileDownloadPhaseWithModelStatus() {
+        guard downloadPhase == .done, let model = modelStatus,
+              !(model.detectorModel.exists && model.encoderModel.exists) else { return }
+        downloadPhase = .idle
     }
 
     // MARK: - 静态配置表（对齐 TS GROUPS / 滑杆段）
@@ -850,9 +833,9 @@ private enum ModelInstaller {
 
         var errorDescription: String? {
             switch self {
-            case .badStatus: "模型下载返回了非 2xx 状态码"
+            case .badStatus: GatherLocalization.l("模型下载返回了非 2xx 状态码")
             case .extractFailed: "MODEL_EXTRACT_FAILED"
-            case .toolFailed(let tool): "解压工具执行失败：\(tool)"
+            case .toolFailed(let tool): String(format: GatherLocalization.l("解压工具执行失败：%@"), tool)
             }
         }
     }
@@ -947,12 +930,13 @@ public struct SettingsView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let error = viewModel.errorMessage { NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error) }
+            if let error = viewModel.errorMessage { NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error) }
             if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     modelCard
                     c1HealthCard
+                    languageCard
                     faceAnalysisCard
                     groupsCard
                 }
@@ -972,167 +956,166 @@ public struct SettingsView: View {
                 viewModel.refreshSyncState()
             }
         }
-        .confirmationDialog(
-            viewModel.text(PageCopy(zh: "恢复所有设置默认值？", en: "Reset all settings to defaults?")),
-            isPresented: $confirmReset,
-            titleVisibility: .visible
-        ) {
-            Button(viewModel.text(PageCopy(zh: "恢复默认", en: "Reset")), role: .destructive) {
+        .alert(GatherLocalization.l("恢复所有设置默认值？"), isPresented: $confirmReset) {
+            Button(GatherLocalization.l("恢复默认"), role: .destructive) {
                 viewModel.reset()
             }
-            Button(viewModel.text(PageCopy(zh: "取消", en: "Cancel")), role: .cancel) {}
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text(viewModel.text(PageCopy(
-                zh: "模型路径、后端、缓存和写回参数都会恢复默认值。",
-                en: "Model paths, backend, cache and writeback settings will be restored to defaults."
-            )))
+            Text(GatherLocalization.l("模型路径、后端、缓存和写回参数都会恢复默认值。"))
         }
     }
 
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(viewModel.text(PageCopy(zh: "设置", en: "Settings")))
-                    .font(.system(size: 24, weight: .bold))
-                Text(viewModel.text(PageCopy(
-                    zh: "原生宿主配置、推理后端和模型状态",
-                    en: "Native host configuration, inference backend and model status"
-                )))
+                Text(GatherLocalization.l("设置"))
+                    .font(.largeTitle.weight(.bold))
+                Text(GatherLocalization.l("原生宿主配置、推理后端和模型状态"))
                 .foregroundStyle(.secondary)
             }
             Spacer()
-            Button(viewModel.text(PageCopy(zh: "刷新", en: "Refresh")), systemImage: "arrow.clockwise") {
+            Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") {
                 viewModel.load()
             }
-            Button(viewModel.text(PageCopy(zh: "恢复默认", en: "Reset to defaults")), systemImage: "arrow.counterclockwise") {
+            Button(GatherLocalization.l("恢复默认"), systemImage: "arrow.counterclockwise") {
                 confirmReset = true
             }
         }
         .padding(24)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color.gatherSurface)
     }
 
     // MARK: 模型与推理
 
     private var modelCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(viewModel.text(PageCopy(zh: "模型与推理", en: "Models & Inference")))
+        VStack(alignment: .leading, spacing: 12) {
+            Text(GatherLocalization.l("模型与推理"))
                 .font(.title3.weight(.semibold))
             if let model = viewModel.modelStatus {
-                LabeledContent(viewModel.text(PageCopy(zh: "平台", en: "Platform")), value: model.platform)
-                LabeledContent(viewModel.text(PageCopy(zh: "后端", en: "Backend")), value: model.autoBackendLabel)
-                LabeledContent(viewModel.text(PageCopy(zh: "Provider", en: "Provider")), value: model.provider)
-                // 对齐旧版 settings.modelInfoText 参数表（双尺度检测 / 预览 /
-                // 编码输入 / 特征维度），补齐原仅展示 Embedding 的缺口。
-                LabeledContent(
-                    viewModel.text(PageCopy(zh: "检测输入尺寸", en: "Detect input size")),
-                    value: "\(model.modelInfo.secondaryDetectInputSize)×\(model.modelInfo.secondaryDetectInputSize) + \(model.modelInfo.detectInputSize)×\(model.modelInfo.detectInputSize)"
-                )
-                LabeledContent(
-                    viewModel.text(PageCopy(zh: "分析预览最长边", en: "Preview max dimension")),
-                    value: "\(model.modelInfo.previewMaxDimension)px"
-                )
-                LabeledContent(
-                    viewModel.text(PageCopy(zh: "编码输入尺寸", en: "Encoder input size")),
-                    value: "\(model.modelInfo.encoderInputSize)×\(model.modelInfo.encoderInputSize)"
-                )
-                LabeledContent(
-                    viewModel.text(PageCopy(zh: "特征维度", en: "Embedding dimension")),
-                    value: "\(model.modelInfo.embeddingDim) 维"
-                )
-                modelStatusRow(
-                    label: PageCopy(zh: "检测模型", en: "Detector model"),
-                    presence: model.detectorModel
-                )
-                modelStatusRow(
-                    label: PageCopy(zh: "编码模型", en: "Encoder model"),
-                    presence: model.encoderModel
-                )
-                modelPathRow(key: "detector_model_path", label: PageCopy(zh: "检测模型路径", en: "Detector model path"))
-                modelPathRow(key: "encoder_model_path", label: PageCopy(zh: "编码模型路径", en: "Encoder model path"))
-                if !model.detectorModel.exists || !model.encoderModel.exists {
-                    installBanner(model)
+                VStack(alignment: .leading, spacing: 10) {
+                    // 对齐旧版「模型与运行」编排：状态行 → 路径行 → 安装横幅 →
+                    // 模型信息单行 → 后端。
+                    modelStatusRow(
+                        label: GatherLocalization.l("检测模型"),
+                        presence: model.detectorModel
+                    )
+                    modelStatusRow(
+                        label: GatherLocalization.l("编码模型"),
+                        presence: model.encoderModel
+                    )
                 }
-                Picker(viewModel.text(PageCopy(zh: "语言", en: "Language")), selection: Binding(
-                    get: { viewModel.language },
-                    set: { viewModel.setLanguage($0) }
-                )) {
-                    Text("简体中文").tag("zh-CN")
-                    Text("English").tag("en")
-                }
-                Picker(viewModel.text(PageCopy(zh: "推理后端", en: "Inference backend")), selection: Binding(
-                    get: { viewModel.backend },
-                    set: { viewModel.setBackend($0) }
-                )) {
-                    Text(viewModel.text(PageCopy(zh: "自动", en: "Auto"))).tag("auto")
-                    ForEach(model.availableBackends, id: \.value) { backend in
-                        Text(backend.label).tag(backend.value)
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    modelPathRow(key: "detector_model_path", label: GatherLocalization.l("检测模型路径"))
+                    modelPathRow(key: "encoder_model_path", label: GatherLocalization.l("编码模型路径"))
+                    if !model.detectorModel.exists || !model.encoderModel.exists {
+                        installBanner(model)
                     }
                 }
-                HStack {
-                    Text(viewModel.text(PageCopy(zh: "模型目录", en: "Model directory")))
-                        .foregroundStyle(.secondary)
-                    Text(model.modelResourcesDir).font(.caption.monospaced()).lineLimit(1)
-                    Spacer()
-                    Button(viewModel.text(PageCopy(zh: "打开", en: "Open"))) {
-                        viewModel.openModelDirectory()
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    // 对齐旧版 settings.modelInfoText 参数表（双尺度检测 / 预览 /
+                    // 编码输入 / 特征维度单行汇总）。
+                    LabeledContent(
+                        GatherLocalization.l("模型信息"),
+                        value: String(
+                            format: GatherLocalization.l("双尺度检测 %lld×%lld + %lld×%lld，分析预览最长边 %lldpx，编码输入 %lld×%lld，特征维度 %lld"),
+                            model.modelInfo.secondaryDetectInputSize,
+                            model.modelInfo.secondaryDetectInputSize,
+                            model.modelInfo.detectInputSize,
+                            model.modelInfo.detectInputSize,
+                            model.modelInfo.previewMaxDimension,
+                            model.modelInfo.encoderInputSize,
+                            model.modelInfo.encoderInputSize,
+                            model.modelInfo.embeddingDim
+                        )
+                    )
+                    LabeledContent(GatherLocalization.l("推理后端")) {
+                        Picker(GatherLocalization.l("推理后端"), selection: Binding(
+                            get: { viewModel.backend },
+                            set: { viewModel.setBackend($0) }
+                        )) {
+                            Text(GatherLocalization.l("自动")).tag("auto")
+                            ForEach(model.availableBackends, id: \.value) { backend in
+                                Text(backend.label).tag(backend.value)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 240)
+                    }
+                    LabeledContent(GatherLocalization.l("模型目录")) {
+                        HStack(spacing: 8) {
+                            Text(model.modelResourcesDir)
+                                .font(.system(.body, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Button(GatherLocalization.l("打开")) {
+                                viewModel.openModelDirectory()
+                            }
+                        }
                     }
                 }
             } else {
-                Text(viewModel.text(PageCopy(zh: "正在读取模型状态…", en: "Reading model status…")))
+                Text(GatherLocalization.l("正在读取模型状态…"))
                     .foregroundStyle(.secondary)
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
-    private func modelStatusRow(label: PageCopy, presence: MLModelPresence) -> some View {
+    private func modelStatusRow(label: String, presence: MLModelPresence) -> some View {
         HStack {
-            Text(viewModel.text(label))
+            Text(label)
             Spacer()
             if presence.exists {
-                Text("✓ " + viewModel.text(PageCopy(zh: "可用", en: "Available")))
-                    .foregroundStyle(.green)
+                Text("✓ " + GatherLocalization.l("可用"))
+                    .foregroundStyle(GatherTheme.success)
             } else {
-                Text("✗ " + viewModel.text(PageCopy(zh: "未找到", en: "Not found")))
-                    .foregroundStyle(.red)
+                Text("✗ " + GatherLocalization.l("未找到"))
+                    .foregroundStyle(GatherTheme.error)
             }
         }
     }
 
     /// 模型路径编辑（任务 7）：输入框 + 保存（保存后重查模型状态）+ 打开所在目录。
-    private func modelPathRow(key: String, label: PageCopy) -> some View {
-        HStack(spacing: 6) {
-            Text(viewModel.text(label))
-                .frame(width: 120, alignment: .leading)
-            // 空占位 TextField：用 label 作为 placeholder（补无障碍标签）。
-            TextField(viewModel.text(label), text: Binding(
-                get: { viewModel.edits[key] ?? viewModel.values[key] ?? "" },
-                set: { viewModel.edits[key] = $0 }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .font(.caption.monospaced())
-            Button(viewModel.text(PageCopy(zh: "保存", en: "Save"))) {
-                viewModel.saveModelPath(key: key)
+    private func modelPathRow(key: String, label: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.callout.weight(.medium))
             }
-            Button(viewModel.text(PageCopy(zh: "打开", en: "Open"))) {
-                viewModel.openModelPathDirectory(key: key)
+            Spacer(minLength: 16)
+            HStack(spacing: 6) {
+                // 空占位 TextField：用 label 作为 placeholder（补无障碍标签）。
+                TextField(label, text: Binding(
+                    get: { viewModel.edits[key] ?? viewModel.values[key] ?? "" },
+                    set: { viewModel.edits[key] = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 300)
+                Button(GatherLocalization.l("保存")) {
+                    viewModel.saveModelPath(key: key)
+                }
+                Button(GatherLocalization.l("打开")) {
+                    viewModel.openModelPathDirectory(key: key)
+                }
             }
+            .frame(maxWidth: 440, alignment: .trailing)
         }
+        .padding(.vertical, 4)
     }
 
     /// 对齐旧版 installBanner：模型缺失时显示文案 + 打开文件夹/下载按钮 +
     /// 下载进度（filename: percent）与完成/失败态。
     private func installBanner(_ model: MLStatusData) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(viewModel.text(PageCopy(
-                zh: "模型文件未找到。请将 ONNX 模型文件放入以下文件夹：",
-                en: "Model files not found. Put the ONNX model files in the following folder:"
-            )))
+            Text(GatherLocalization.l("模型文件未找到。请将 ONNX 模型文件放入以下文件夹："))
             .font(.callout)
-            Text(model.modelResourcesDir).font(.caption.monospaced())
+            Text(model.modelResourcesDir).font(.footnote.monospaced())
             HStack(spacing: 8) {
-                Button(viewModel.text(PageCopy(zh: "打开模型文件夹", en: "Open model folder"))) {
+                Button(GatherLocalization.l("打开模型文件夹")) {
                     viewModel.openModelDirectory()
                 }
                 Button(downloadButtonTitle) {
@@ -1143,39 +1126,34 @@ public struct SettingsView: View {
             switch viewModel.downloadPhase {
             case .downloading(let filename, let percent, let step):
                 ProgressView(value: min(1, max(0, percent / 100)))
-                // 对齐旧版 Settings/index.tsx:384-390：下载阶段显示相位文案
-                // （旧版 translatePhase），进度行保留 filename: percent。
-                Text(viewModel.text(step == .extracting
-                    ? PageCopy(zh: "正在解压…", en: "Extracting…")
-                    : PageCopy(zh: "正在下载模型…", en: "Downloading model…")))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("\(filename): \(Int(percent))%")
-                    .font(.caption)
+                Text(step == .extracting
+                    ? GatherLocalization.l("正在解压…")
+                    : String(format: GatherLocalization.l("已下载 %d%%（%@）"), Int(percent), filename))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             case .done:
-                Text(viewModel.text(PageCopy(zh: "人脸模型已安装", en: "Face models installed")))
-                    .font(.caption)
-                    .foregroundStyle(.green)
+                Text(GatherLocalization.l("人脸模型已安装"))
+                    .font(.footnote)
+                    .foregroundStyle(GatherTheme.success)
             default:
                 EmptyView()
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange.opacity(0.25), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GatherTheme.Radius.lg).fill(GatherTheme.warning.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: GatherTheme.Radius.lg).strokeBorder(GatherTheme.warning.opacity(0.35), lineWidth: 1))
     }
 
     private var downloadButtonTitle: String {
         switch viewModel.downloadPhase {
         case .downloading(_, _, _):
-            viewModel.text(PageCopy(zh: "下载中…", en: "Downloading…"))
+            GatherLocalization.l("下载中…")
         case .error:
-            viewModel.text(PageCopy(zh: "下载失败", en: "Download failed"))
+            GatherLocalization.l("下载失败")
         case .done:
-            viewModel.text(PageCopy(zh: "已安装", en: "Installed"))
+            GatherLocalization.l("已安装")
         case .idle:
-            viewModel.text(PageCopy(zh: "自动下载模型", en: "Download models automatically"))
+            GatherLocalization.l("自动下载模型")
         }
     }
 
@@ -1183,141 +1161,148 @@ public struct SettingsView: View {
 
     private var c1HealthCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(viewModel.text(PageCopy(zh: "Capture One 健康", en: "Capture One Health")))
+            Text(GatherLocalization.l("Capture One 健康"))
                 .font(.title3.weight(.semibold))
             HStack {
-                Text(viewModel.text(PageCopy(zh: "四层连接预检", en: "Four-layer connection preflight")))
+                Text(GatherLocalization.l("四层连接预检"))
                     .font(.callout.weight(.medium))
                 Spacer()
                 Button(viewModel.c1Checking
-                       ? viewModel.text(PageCopy(zh: "检测中…", en: "Checking…"))
-                       : viewModel.text(PageCopy(zh: "重新检测", en: "Re-check"))) {
+                       ? GatherLocalization.l("检测中…")
+                       : GatherLocalization.l("重新检测")) {
                     Task { await viewModel.checkC1Health() }
                 }
                 .disabled(viewModel.c1Checking)
             }
             if viewModel.c1HealthError {
-                Text(viewModel.text(PageCopy(
-                    zh: "预检失败：无法连接 Capture One 自动化通道",
-                    en: "Preflight failed: cannot reach the Capture One automation channel"
-                )))
-                .font(.caption)
+                Text(GatherLocalization.l("预检失败：无法连接 Capture One 自动化通道"))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             } else if let health = viewModel.c1Health {
-                checkRow(zh: "Capture One 可达", en: "Capture One reachable", passed: health.reachable)
-                checkRow(zh: "Capture One 运行中", en: "Capture One running", passed: health.appRunning)
-                checkRow(zh: "文档已打开", en: "Document open", passed: health.documentOpen)
-                checkRow(zh: "自动化权限已授权", en: "Automation authorized", passed: health.automationAuthorized)
+                checkRow(zh: GatherLocalization.l("Capture One 可达"), passed: health.reachable)
+                checkRow(zh: GatherLocalization.l("Capture One 运行中"), passed: health.appRunning)
+                checkRow(zh: GatherLocalization.l("文档已打开"), passed: health.documentOpen)
+                checkRow(zh: GatherLocalization.l("自动化权限已授权"), passed: health.automationAuthorized)
             } else {
-                Text(viewModel.text(PageCopy(zh: "正在检测…", en: "Detecting…")))
-                    .font(.caption)
+                Text(GatherLocalization.l("正在检测…"))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             Divider()
-            Text(viewModel.text(PageCopy(zh: "写回队列计数", en: "Writeback queue counts")))
+            Text(GatherLocalization.l("写回队列计数"))
                 .font(.callout.weight(.medium))
             if let sync = viewModel.syncStatus {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
-                    queueCell(zh: "待写入", en: "Pending", value: sync.pending)
-                    queueCell(zh: "写入中", en: "Writing", value: sync.writing)
-                    queueCell(zh: "已写入", en: "Written", value: sync.written)
-                    queueCell(zh: "已同步", en: "Synced", value: sync.synced)
-                    queueCell(zh: "失败", en: "Failed", value: sync.failed)
-                    queueCell(zh: "冲突", en: "Conflict", value: sync.conflict)
+                    queueCell(zh: GatherLocalization.l("待写入"), value: sync.pending)
+                    queueCell(zh: GatherLocalization.l("写入中"), value: sync.writing)
+                    queueCell(zh: GatherLocalization.l("已写入"), value: sync.written)
+                    queueCell(zh: GatherLocalization.l("已同步"), value: sync.synced)
+                    queueCell(zh: GatherLocalization.l("失败"), value: sync.failed)
+                    queueCell(zh: GatherLocalization.l("冲突"), value: sync.conflict)
                 }
             } else if viewModel.syncStateError {
-                Text(viewModel.text(PageCopy(
-                    zh: "同步状态读取失败",
-                    en: "Could not read sync state"
-                )))
-                .font(.caption)
+                Text(GatherLocalization.l("同步状态读取失败"))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             } else if viewModel.syncSessionId == nil {
-                Text(viewModel.text(PageCopy(
-                    zh: "无工作区，写回队列来自当前会话",
-                    en: "No workspace; the writeback queue comes from the current session"
-                )))
-                .font(.caption)
+                Text(GatherLocalization.l("无工作区，写回队列来自当前会话"))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             } else {
-                Text(viewModel.text(PageCopy(zh: "读取中", en: "Reading")))
-                    .font(.caption)
+                Text(GatherLocalization.l("读取中"))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             Divider()
             LabeledContent(
-                viewModel.text(PageCopy(zh: "最近一次命令耗时", en: "Last command latency")),
+                GatherLocalization.l("最近一次命令耗时"),
                 value: viewModel.c1Health.flatMap { $0.latencyMs }.map { "\($0) ms" } ?? "—"
             )
             LabeledContent(
-                viewModel.text(PageCopy(zh: "最近同步时间", en: "Last sync time")),
+                GatherLocalization.l("最近同步时间"),
                 value: viewModel.lastSyncDate.map(SettingsViewModel.dateText) ?? "—"
             )
         }
-        .nativeCard()
+        .gatherCard()
     }
 
-    private func checkRow(zh: String, en: String, passed: Bool) -> some View {
+    private func checkRow(zh: String, passed: Bool) -> some View {
         HStack(spacing: 8) {
             // 对齐 C1HealthPanel.module.css：16×16 圆形软底 ✓/✗ 徽标（主题色）。
             ZStack {
-                Circle().fill(passed ? Color.green.opacity(0.14) : Color.red.opacity(0.12))
+                Circle().fill(passed ? GatherTheme.success.opacity(0.14) : GatherTheme.error.opacity(0.12))
                 Text(passed ? "✓" : "✗")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(passed ? Color.green : Color.red)
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(passed ? GatherTheme.success : GatherTheme.error)
             }
             .frame(width: 16, height: 16)
-            Text(viewModel.text(PageCopy(zh: zh, en: en)))
+            Text(zh)
         }
     }
 
-    private func queueCell(zh: String, en: String, value: Int) -> some View {
-        VStack(spacing: 2) {
-            Text("\(value)").font(.callout.monospaced().weight(.medium))
-            Text(viewModel.text(PageCopy(zh: zh, en: en)))
-                .font(.caption2)
+    private func queueCell(zh: String, value: Int) -> some View {
+        GatherStatCard(value: value, label: zh, style: .compact)
+    }
+
+    // MARK: 语言（对齐旧版 settings.group.language 独立分区：label + 描述 + 选择器）
+
+    private var languageCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(GatherLocalization.l("语言"))
+                .font(.title3.weight(.semibold))
+            LabeledContent(GatherLocalization.l("界面语言")) {
+                Picker(GatherLocalization.l("界面语言"), selection: Binding(
+                    get: { viewModel.language },
+                    set: { viewModel.setLanguage($0) }
+                )) {
+                    Text(GatherLocalization.l("简体中文")).tag("zh-CN")
+                    Text("English").tag("en")
+                }
+                .labelsHidden()
+                .frame(width: 240)
+            }
+            Text(GatherLocalization.l("切换语言后菜单与全部页面文案立即更新，并持久化保存。"))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
+        .gatherCard()
     }
 
     // MARK: 人脸分析滑杆
 
     private var faceAnalysisCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(viewModel.text(PageCopy(zh: "人脸分析", en: "Face Analysis")))
+            Text(GatherLocalization.l("人脸分析"))
                 .font(.title3.weight(.semibold))
-            Text(viewModel.text(PageCopy(zh: "常规参数", en: "General")))
-                .font(.headline)
+            Text(GatherLocalization.l("常规参数"))
+                .font(.title3).fontWeight(.semibold)
             ForEach(SettingsViewModel.generalSliders) { slider in
                 sliderRow(slider)
             }
             Divider()
-            Text(viewModel.text(PageCopy(zh: "高级参数", en: "Advanced")))
-                .font(.headline)
+            Text(GatherLocalization.l("高级参数"))
+                .font(.title3).fontWeight(.semibold)
             ForEach(SettingsViewModel.advancedSliders) { slider in
                 sliderRow(slider)
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     private func sliderRow(_ slider: SliderSetting) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(viewModel.text(PageCopy(zh: slider.zhLabel, en: slider.enLabel)))
+                Text(GatherLocalization.l(slider.zhLabel))
                     .font(.callout.weight(.medium))
                 Spacer()
-                Text(viewModel.sliderValueText(slider))
+                Text(sliderValueWithUnit(slider))
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
             }
-            Text(viewModel.text(PageCopy(zh: slider.zhDesc, en: slider.enDesc)))
-                .font(.caption)
+            Text(GatherLocalization.l(slider.zhDesc))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             Slider(value: Binding(
                 get: { viewModel.sliderValue(for: slider.key, defaultValue: slider.defaultValue) },
@@ -1325,98 +1310,108 @@ public struct SettingsView: View {
             ), in: slider.min...slider.max, step: slider.step) { editing in
                 if !editing { viewModel.commitSlider(slider) }
             }
+            .accessibilityLabel(GatherLocalization.l(slider.zhLabel))
+            .accessibilityValue(Text(sliderValueWithUnit(slider)))
+        }
+    }
+
+    private func sliderValueWithUnit(_ slider: SliderSetting) -> String {
+        let value = viewModel.sliderValueText(slider)
+        switch slider.key {
+        case "max_detections", "default_min_samples":
+            return "\(value) 张"
+        case "onnx_threads":
+            return "\(value) 线程"
+        default:
+            return value
         }
     }
 
     // MARK: 分组设置（缓存/图片处理/数据库/C1 集成/元数据）
 
     private var groupsCard: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 26) {
             ForEach(SettingsViewModel.settingGroups) { group in
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(viewModel.text(PageCopy(zh: group.titleZh, en: group.titleEn)))
-                        .font(.headline)
+                    Text(GatherLocalization.l(group.titleZh))
+                        .font(.title3).fontWeight(.semibold)
                     ForEach(group.fields) { field in
                         fieldRow(field)
                     }
                 }
+                if group.id != SettingsViewModel.settingGroups.last?.id {
+                    Divider()
+                }
             }
         }
-        .nativeCard()
+        .gatherCard()
     }
 
     @ViewBuilder
     private func fieldRow(_ field: SettingField) -> some View {
+        let isPathField = field.key.contains("dir") || field.key.contains("path")
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(viewModel.text(PageCopy(zh: field.zhLabel, en: field.enLabel)))
+                Text(GatherLocalization.l(field.zhLabel))
                     .font(.callout.weight(.medium))
-                Text(viewModel.text(PageCopy(zh: field.zhDesc, en: field.enDesc)))
-                    .font(.caption)
+                Text(GatherLocalization.l(field.zhDesc))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 16)
-            switch field.type {
-            case .text:
-                HStack(spacing: 6) {
-                    TextField(viewModel.text(PageCopy(zh: field.zhLabel, en: field.enLabel)), text: Binding(
-                        get: { viewModel.edits[field.key] ?? viewModel.values[field.key] ?? "" },
-                        set: { viewModel.edits[field.key] = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 200)
-                    Button(viewModel.text(PageCopy(zh: "保存", en: "Save"))) {
-                        viewModel.saveField(field)
+            Group {
+                switch field.type {
+                case .text:
+                    HStack(spacing: 6) {
+                        TextField(GatherLocalization.l(field.zhLabel), text: Binding(
+                            get: { viewModel.edits[field.key] ?? viewModel.values[field.key] ?? "" },
+                            set: { viewModel.edits[field.key] = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: isPathField ? 300 : 220)
+                        Button(GatherLocalization.l("保存")) {
+                            viewModel.saveField(field)
+                        }
                     }
+                case .number:
+                    HStack(spacing: 6) {
+                        TextField(GatherLocalization.l(field.zhLabel), text: Binding(
+                            get: { viewModel.edits[field.key] ?? viewModel.values[field.key] ?? "" },
+                            set: { viewModel.edits[field.key] = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                        Button(GatherLocalization.l("保存")) {
+                            viewModel.saveField(field)
+                        }
+                    }
+                case .select(let options):
+                    // 对齐旧版 Settings/index.tsx:623：select 带 disabled 的
+                    // 「请选择」占位 option（value=""，映射 nil）。当前值缺失/未知
+                    // 时展示占位；占位不可重新选中（set(nil) 不落库），对齐旧版
+                    // disabled 语义，避免静默回退到第一个选项。
+                    Picker("", selection: Binding<String?>(
+                        get: {
+                            let current = viewModel.values[field.key] ?? ""
+                            return options.contains(where: { $0.value == current }) ? current : nil
+                        },
+                        set: { selected in
+                            guard let selected else { return }
+                            viewModel.saveSelect(field, value: selected)
+                        }
+                    )) {
+                        Text(GatherLocalization.l("请选择")).tag(String?.none)
+                        ForEach(options) { option in
+                            Text(GatherLocalization.l(option.labelZh))
+                                .tag(String?.some(option.value))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 240)
                 }
-            case .number:
-                HStack(spacing: 6) {
-                    TextField(viewModel.text(PageCopy(zh: field.zhLabel, en: field.enLabel)), text: Binding(
-                        get: { viewModel.edits[field.key] ?? viewModel.values[field.key] ?? "" },
-                        set: { viewModel.edits[field.key] = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 110)
-                    Button(viewModel.text(PageCopy(zh: "保存", en: "Save"))) {
-                        viewModel.saveField(field)
-                    }
-                }
-            case .select(let options):
-                // 对齐旧版 Settings/index.tsx:623：select 带 disabled 的
-                // 「请选择」占位 option（value=""，映射 nil）。当前值缺失/未知
-                // 时展示占位；占位不可重新选中（set(nil) 不落库），对齐旧版
-                // disabled 语义，避免静默回退到第一个选项。
-                Picker("", selection: Binding<String?>(
-                    get: {
-                        let current = viewModel.values[field.key] ?? ""
-                        return options.contains(where: { $0.value == current }) ? current : nil
-                    },
-                    set: { selected in
-                        guard let selected else { return }
-                        viewModel.saveSelect(field, value: selected)
-                    }
-                )) {
-                    Text(viewModel.text(PageCopy(zh: "请选择", en: "Choose"))).tag(String?.none)
-                    ForEach(options) { option in
-                        Text(viewModel.text(PageCopy(zh: option.labelZh, en: option.labelEn)))
-                            .tag(String?.some(option.value))
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 240)
             }
+            .frame(maxWidth: 440, alignment: .trailing)
         }
         .padding(.vertical, 4)
-    }
-}
-
-extension View {
-    func nativeCard() -> some View {
-        padding(18)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 1)
-            )
     }
 }

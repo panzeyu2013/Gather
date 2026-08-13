@@ -29,9 +29,9 @@
 //   XMP + 共享数 + 外部冲突 + 来源，前 50 行，max-height 240）+ 预览/执行 +
 //   写回报告（已写入/失败/已跳过三色统计卡 28pt + 失败项 + 重试/确认同步/清理 +
 //   reload 行；预览生成后即显示操作行）。
-// - 保留合理增益：3 个 confirmationDialog（解除绑定/确认写回/清理；移除成员
-//   对齐旧版即时执行）、ContentUnavailableView 空态、顶部错误/提示横幅、
-//   审核动作失败的内联错误块。
+// - 保留合理增益：2 个 confirmationDialog（确认写回/清理；解除绑定为可逆
+//   操作即时执行、移除成员对齐旧版即时执行）、GatherEmptyState 空态、
+//   顶部错误/提示横幅、审核动作失败的内联错误块。
 import Combine
 import SwiftUI
 import GatherCore
@@ -65,9 +65,9 @@ public final class FaceKeywordingViewModel {
 
     /// TS StepAnalyze applyPreset：strict 0.72/3、balanced 0.6/3、loose 0.5/2。
     public static let presets: [Preset] = [
-        Preset(name: "strict", title: "严格", eps: 0.72, minSamples: 3),
-        Preset(name: "balanced", title: "均衡", eps: 0.6, minSamples: 3),
-        Preset(name: "loose", title: "宽松", eps: 0.5, minSamples: 2),
+        Preset(name: "strict", title: GatherLocalization.l("严格"), eps: 0.72, minSamples: 3),
+        Preset(name: "balanced", title: GatherLocalization.l("均衡"), eps: 0.6, minSamples: 3),
+        Preset(name: "loose", title: GatherLocalization.l("宽松"), eps: 0.5, minSamples: 2),
     ]
     /// TS StepReview CLUSTER_PAGE_SIZE。
     public static let clusterPageSize = 100
@@ -223,22 +223,22 @@ public final class FaceKeywordingViewModel {
             analysisResult = try data.decoded(as: FaceAnalysisResult.self)
             if let result = analysisResult, result.status == "cancelled" {
                 analysisPhase = .cancelled
-                notice = "人脸分析已取消"
+                notice = GatherLocalization.l("人脸分析已取消")
                 return
             }
             if let result = analysisResult, result.status == "failed" {
                 analysisPhase = .failed
                 // 无内嵌前缀：横幅统一加「操作失败：」，避免双前缀。
-                errorMessage = "检测失败 \(result.detectionFailures) 张，编码失败 \(result.encodingFailures) 个人脸" + guidanceSuffix
+                errorMessage = String(format: GatherLocalization.l("检测失败 %lld 张，编码失败 %lld 个人脸"), result.detectionFailures, result.encodingFailures) + guidanceSuffix
                 return
             }
             finishAnalysis()
-            notice = "人脸分析完成"
+            notice = GatherLocalization.l("人脸分析完成")
             load()
         } catch {
             if Self.rawMessage(for: error).localizedCaseInsensitiveContains("cancelled") {
                 analysisPhase = .cancelled
-                notice = "人脸分析已取消"
+                notice = GatherLocalization.l("人脸分析已取消")
             } else {
                 analysisPhase = .failed
                 errorMessage = NativeCommandClient.message(for: error) + guidanceSuffix
@@ -249,7 +249,7 @@ public final class FaceKeywordingViewModel {
     public func cancel() {
         do {
             _ = try client.execute("fkw.cancel_analysis", params: ["sessionId": .string(sessionId)])
-            notice = "已请求取消人脸分析"
+            notice = GatherLocalization.l("已请求取消人脸分析")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -266,7 +266,7 @@ public final class FaceKeywordingViewModel {
                 "minSamples": .number(Double(minSamples)),
             ])
             finishAnalysis()
-            notice = "已重新聚类"
+            notice = GatherLocalization.l("已重新聚类")
             load()
         } catch {
             if Self.rawMessage(for: error).localizedCaseInsensitiveContains("cancelled") {
@@ -295,7 +295,7 @@ public final class FaceKeywordingViewModel {
                 "roleName": .string(role),
                 "keywords": .array(words.map(JSONValue.string)),
             ])
-            notice = "已绑定簇 #\(cluster.id)"
+            notice = String(format: GatherLocalization.l("已绑定簇 #%lld"), cluster.id)
             reviewActionError = nil
             load()
         } catch {
@@ -311,7 +311,7 @@ public final class FaceKeywordingViewModel {
                 "clusterId": .number(Double(cluster.id)),
                 "confirmed": .bool(true),
             ])
-            notice = "已解除簇 #\(cluster.id) 的绑定"
+            notice = String(format: GatherLocalization.l("已解除簇 #%lld 的绑定"), cluster.id)
             reviewActionError = nil
             load()
         } catch {
@@ -327,7 +327,7 @@ public final class FaceKeywordingViewModel {
                 "clusterId": .number(Double(cluster.id)),
                 "memberId": .number(Double(member.memberId)),
             ])
-            notice = "已从簇 #\(cluster.id) 移除成员"
+            notice = String(format: GatherLocalization.l("已从簇 #%lld 移除成员"), cluster.id)
             reviewActionError = nil
             load()
         } catch {
@@ -341,7 +341,7 @@ public final class FaceKeywordingViewModel {
         guard let target = mergeTargetId,
               target != cluster.id,
               clusters.contains(where: { $0.id == target }) else {
-            let text = "请选择有效的目标簇"
+            let text = GatherLocalization.l("请选择有效的目标簇")
             errorMessage = text
             reviewActionError = text
             return
@@ -352,7 +352,7 @@ public final class FaceKeywordingViewModel {
                 "source": .number(Double(cluster.id)),
                 "target": .number(Double(target)),
             ])
-            notice = "已将簇 #\(cluster.id) 合并到簇 #\(target)"
+            notice = String(format: GatherLocalization.l("已将簇 #%lld 合并到簇 #%lld"), cluster.id, target)
             mergeTargetId = nil
             reviewActionError = nil
             load()
@@ -367,7 +367,7 @@ public final class FaceKeywordingViewModel {
 
     public func previewWriteback() async {
         guard analysisDone else {
-            errorMessage = "请先完成人脸分析"
+            errorMessage = GatherLocalization.l("请先完成人脸分析")
             return
         }
         do {
@@ -383,7 +383,7 @@ public final class FaceKeywordingViewModel {
             ])
             preview = try data.decoded(as: FaceKwWritebackPreview.self)
             writebackResult = nil
-            notice = "写回预览已生成"
+            notice = GatherLocalization.l("写回预览已生成")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -393,7 +393,7 @@ public final class FaceKeywordingViewModel {
     /// 先自动生成一次预览，再按预览项执行写回（一键直写语义）。
     public func writeback() async {
         guard analysisDone else {
-            errorMessage = "请先完成人脸分析"
+            errorMessage = GatherLocalization.l("请先完成人脸分析")
             return
         }
         isWritingBack = true
@@ -417,7 +417,7 @@ public final class FaceKeywordingViewModel {
                 self.preview = preview
             }
             guard !preview.items.isEmpty else {
-                errorMessage = "预览没有可写回项"
+                errorMessage = GatherLocalization.l("预览没有可写回项")
                 return
             }
             let data = try await client.executeAsync("fkw.writeback", params: [
@@ -427,7 +427,7 @@ public final class FaceKeywordingViewModel {
             ])
             writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
             isSyncConfirmed = false
-            notice = "已写回 \(writebackResult?.written ?? 0) 项；请先让 Capture One 重新加载元数据"
+            notice = String(format: GatherLocalization.l("已写回 %lld 项；请先让 Capture One 重新加载元数据"), writebackResult?.written ?? 0)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -435,7 +435,7 @@ public final class FaceKeywordingViewModel {
 
     public func retryFailed() async {
         guard let items = writebackResult?.failedItems, !items.isEmpty else {
-            errorMessage = "没有可重试的失败项"
+            errorMessage = GatherLocalization.l("没有可重试的失败项")
             return
         }
         do {
@@ -446,7 +446,7 @@ public final class FaceKeywordingViewModel {
             ])
             writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
             isSyncConfirmed = false
-            notice = "已重试失败写回项"
+            notice = GatherLocalization.l("已重试失败写回项")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -455,7 +455,7 @@ public final class FaceKeywordingViewModel {
     public func reloadCaptureOne() async {
         do {
             try await captureOne.reloadMetadata(sessionId: sessionId)
-            notice = "Capture One 已重新加载元数据，现在可以确认同步"
+            notice = GatherLocalization.l("Capture One 已重新加载元数据，现在可以确认同步")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -465,7 +465,7 @@ public final class FaceKeywordingViewModel {
         do {
             _ = try await client.executeAsync("fkw.confirm_sync", params: ["sessionId": .string(sessionId)])
             isSyncConfirmed = true
-            notice = "已确认人脸关键字同步"
+            notice = GatherLocalization.l("已确认人脸关键字同步")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -477,7 +477,7 @@ public final class FaceKeywordingViewModel {
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            notice = "已清理人脸写回备份"
+            notice = GatherLocalization.l("已清理人脸写回备份")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -498,7 +498,7 @@ public final class FaceKeywordingViewModel {
                 load()
             case .cancelled:
                 analysisPhase = .cancelled
-                notice = "人脸分析已取消"
+                notice = GatherLocalization.l("人脸分析已取消")
             case .interrupted, .failed:
                 analysisPhase = .failed
                 errorMessage = GatherLocalization.jobErrorMessage(
@@ -515,7 +515,7 @@ public final class FaceKeywordingViewModel {
     }
 
     private var guidanceSuffix: String {
-        modelsMissing ? "\n人脸推理当前使用系统内置引擎" : ""
+        modelsMissing ? "\n" + GatherLocalization.l("人脸推理当前使用系统内置引擎") : ""
     }
 
     private func refreshModelsStatus() {
@@ -579,12 +579,11 @@ public struct FaceKeywordingView: View {
     private let onOpenGallery: (String) -> Void
     /// 前往设置回调：可选（RootView 由外部接线）；nil 时页面内按钮禁用。
     private let onOpenSettings: (() -> Void)?
-    @State private var unbindTarget: FaceClusterData?
-    @State private var confirmUnbind = false
     @State private var confirmWriteback = false
     @State private var confirmCleanup = false
     @State private var visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
     @State private var hoveredClusterId: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct StepItem {
         let key: FaceKeywordingViewModel.Step
@@ -592,9 +591,9 @@ public struct FaceKeywordingView: View {
     }
 
     private let stepItems: [StepItem] = [
-        StepItem(key: .analyze, label: "分析"),
-        StepItem(key: .review, label: "审核"),
-        StepItem(key: .writeback, label: "写回"),
+        StepItem(key: .analyze, label: GatherLocalization.l("分析")),
+        StepItem(key: .review, label: GatherLocalization.l("审核")),
+        StepItem(key: .writeback, label: GatherLocalization.l("写回")),
     ]
 
     init(
@@ -624,7 +623,11 @@ public struct FaceKeywordingView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             stepIndicator
-            if let error = viewModel.errorMessage { NativeBanner(text: "操作失败：\(error)", color: GatherTheme.error) }
+            // 审核动作错误经内联错误块就近展示（reviewActionError 与 errorMessage
+            // 同源），避免横幅双提示；其余操作错误仍走横幅。
+            if let error = viewModel.errorMessage, viewModel.reviewActionError == nil {
+                NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
+            }
             if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
             ScrollView {
                 Group {
@@ -653,26 +656,17 @@ public struct FaceKeywordingView: View {
         .onChange(of: viewModel.roleFilter) { _, _ in
             visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
         }
-        .confirmationDialog("确认解除绑定？", isPresented: $confirmUnbind, titleVisibility: .visible) {
-            Button("解除绑定", role: .destructive) {
-                if let cluster = unbindTarget { Task { await viewModel.unbind(cluster) } }
-                unbindTarget = nil
-            }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog(GatherLocalization.l("确认写回人脸关键字？"), isPresented: $confirmWriteback, titleVisibility: .visible) {
+            Button(GatherLocalization.l("确认写回")) { Task { await viewModel.writeback() } }
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text("将移除 Gather 为该簇维护的角色关键字，照片文件不会删除。")
+            Text(GatherLocalization.l("写回前请检查预览；写入后必须重新加载 Capture One，再确认同步。"))
         }
-        .confirmationDialog("确认写回人脸关键字？", isPresented: $confirmWriteback, titleVisibility: .visible) {
-            Button("确认写回") { Task { await viewModel.writeback() } }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog(GatherLocalization.l("确认清理人脸写回备份？"), isPresented: $confirmCleanup, titleVisibility: .visible) {
+            Button(GatherLocalization.l("清理"), role: .destructive) { Task { await viewModel.cleanup() } }
+            Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
-            Text("写回前请检查预览；写入后必须重新加载 Capture One，再确认同步。")
-        }
-        .confirmationDialog("确认清理人脸写回备份？", isPresented: $confirmCleanup, titleVisibility: .visible) {
-            Button("清理", role: .destructive) { Task { await viewModel.cleanup() } }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只应在 Capture One 已重载并确认同步后执行。")
+            Text(GatherLocalization.l("只应在 Capture One 已重载并确认同步后执行。"))
         }
     }
 
@@ -681,14 +675,14 @@ public struct FaceKeywordingView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Button("返回", systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
+                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("人脸检测与聚类").font(.system(size: 24, weight: .bold))
-                    Text("工作区 \(viewModel.sessionId.prefix(8))").foregroundStyle(.secondary)
+                    Text(GatherLocalization.l("人脸检测与聚类")).font(.largeTitle.weight(.bold))
+                    Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
                 }
                 Spacer()
                 C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings ?? {})
-                Button("刷新", systemImage: "arrow.clockwise") { viewModel.load() }
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
             }
             SessionTabBar(
                 selection: .tab(.faceKw),
@@ -698,7 +692,6 @@ public struct FaceKeywordingView: View {
             )
         }
         .padding(24)
-        .background(Color.gatherSurface)
     }
 
     /// TS index.tsx steps：胶囊 34pt 高 / 999px 圆角 / → 分隔；已过步骤可回点，
@@ -738,16 +731,16 @@ public struct FaceKeywordingView: View {
             viewModel.setStep(item.key)
         } label: {
             Text(item.label)
-                .font(.system(size: 13))
-                .foregroundStyle(isActive ? Color.accentColor : (isPast ? Color.green : Color.secondary))
+                .font(.body)
+                .foregroundStyle(isActive ? Color.accentColor : (isPast ? GatherTheme.success : Color.secondary))
                 .fontWeight(isActive ? .bold : (isPast ? .semibold : .regular))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
                 .frame(minHeight: 34)
-                .background(Capsule().fill(isActive ? Color.accentColor.opacity(0.12) : Color.gatherSurface))
+                .background(Capsule().fill(isActive ? GatherTheme.primarySoft : Color.gatherSurface))
                 .overlay(
                     Capsule().strokeBorder(
-                        isActive ? Color.accentColor : (isPast ? Color.gatherBorder : Color.gatherBorder.opacity(0.6)),
+                        isActive ? GatherTheme.primary : (isPast ? Color.gatherBorder : Color.gatherBorder.opacity(0.6)),
                         lineWidth: 1
                     )
                 )
@@ -756,7 +749,8 @@ public struct FaceKeywordingView: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.55)
-        .help(isActive ? "" : (isClickable ? "前往「\(item.label)」步骤" : (isNext ? "请先完成人脸分析" : "请先完成上一步")))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .help(isActive ? "" : (isClickable ? String(format: GatherLocalization.l("前往「%@」步骤"), item.label) : (isNext ? GatherLocalization.l("请先完成人脸分析") : GatherLocalization.l("请先完成上一步"))))
     }
 
     private var bindable: Bindable<FaceKeywordingViewModel> { Bindable(viewModel) }
@@ -768,24 +762,24 @@ public struct FaceKeywordingView: View {
             modelsGuidanceStrip
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("匹配强度").font(.headline)
+                    Text(GatherLocalization.l("匹配强度")).font(.headline)
                     Spacer()
                     phaseCapsule
                 }
                 presetSelector
-                Text("建议从「均衡」开始，之后可在审核阶段拆分或合并人物。")
-                    .font(.caption).foregroundStyle(.secondary)
-                DisclosureGroup("高级参数") {
+                Text(GatherLocalization.l("建议从「均衡」开始，之后可在审核阶段拆分或合并人物。"))
+                    .font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup(GatherLocalization.l("高级参数")) {
                     VStack(alignment: .leading, spacing: 14) {
                         // TS range slider（渐变轨道）+ 数字输入（SliderInput）。
-                        SliderInputView(title: "人脸相似度", value: bindable.eps, range: 0.3...0.95, step: 0.01)
+                        SliderInputView(title: GatherLocalization.l("人脸相似度"), value: bindable.eps, range: 0.3...0.95, step: 0.01)
                             .disabled(viewModel.analysisPhase == .running)
-                        Text("eps 范围 0.30–0.95，数值越小分组越严格。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        SliderInputIntView(title: "最少出现次数", value: bindable.minSamples, range: 2...20)
+                        Text(GatherLocalization.l("eps 范围 0.30–0.95，数值越小分组越严格。"))
+                            .font(.footnote).foregroundStyle(.secondary)
+                        SliderInputIntView(title: GatherLocalization.l("最少出现次数"), value: bindable.minSamples, range: 2...20)
                             .disabled(viewModel.analysisPhase == .running)
-                        Text("每个簇最少包含的人脸数量（2–20）。")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text(GatherLocalization.l("每个簇最少包含的人脸数量（2–20）。"))
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                     .padding(.top, 4)
                 }
@@ -794,35 +788,35 @@ public struct FaceKeywordingView: View {
                    (viewModel.analysisPhase == .failed || viewModel.analysisPhase == .cancelled) {
                     Text(error)
                         .font(.callout)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(GatherTheme.error)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+                        .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.12)))
                 }
                 if viewModel.analysisPhase == .running { analysisProgress }
                 HStack(spacing: 12) {
                     if viewModel.analysisPhase == .running {
-                        Button("取消", systemImage: "stop.fill") { viewModel.cancel() }
-                            .foregroundStyle(.red)
+                        Button(GatherLocalization.l("取消"), systemImage: "stop.fill") { viewModel.cancel() }
+                            .foregroundStyle(GatherTheme.error)
                     } else if viewModel.analysisPhase == .done {
-                        Button("仅重新聚类", systemImage: "arrow.triangle.2.circlepath") {
+                        Button(GatherLocalization.l("仅重新聚类"), systemImage: "arrow.triangle.2.circlepath") {
                             Task { await viewModel.recluster() }
                         }
                         .buttonStyle(.borderedProminent)
                     } else {
-                        Button("开始分析", systemImage: "play.fill") {
+                        Button(GatherLocalization.l("开始分析"), systemImage: "play.fill") {
                             Task { await viewModel.analyze() }
                         }
                         .buttonStyle(.borderedProminent)
                     }
                 }
                 if let result = viewModel.analysisResult {
-                    Text("分析结果：\(result.status)，检测失败 \(result.detectionFailures) 张，编码失败 \(result.encodingFailures) 个人脸")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(String(format: GatherLocalization.l("分析结果：%@，检测失败 %lld 张，编码失败 %lld 个人脸"), result.status, result.detectionFailures, result.encodingFailures))
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .padding(18)
-            .nativeCard()
+            .gatherCard()
         }
     }
 
@@ -832,23 +826,23 @@ public struct FaceKeywordingView: View {
     private var modelsGuidanceStrip: some View {
         if viewModel.modelsMissing {
             HStack(spacing: 12) {
-                Text("人脸推理当前使用系统内置引擎，建议前往设置确认模型状态。")
+                Text(GatherLocalization.l("人脸推理当前使用系统内置引擎，建议前往设置确认模型状态。"))
                     .font(.callout)
                 Spacer()
-                Button("前往设置") { onOpenSettings?() }
+                Button(GatherLocalization.l("前往设置")) { onOpenSettings?() }
                     .disabled(onOpenSettings == nil)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange.opacity(0.6), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.warning.opacity(0.1)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(GatherTheme.warning.opacity(0.6), lineWidth: 1))
         }
     }
 
     private var phaseCapsule: some View {
         Text(viewModel.analysisPhase.label)
-            .font(.caption.weight(.medium))
+            .font(.footnote.weight(.medium))
             .foregroundStyle(phaseColor)
             .padding(.horizontal, 9)
             .padding(.vertical, 3)
@@ -859,9 +853,9 @@ public struct FaceKeywordingView: View {
         switch viewModel.analysisPhase {
         case .idle: return .secondary
         case .running: return .accentColor
-        case .done: return .green
-        case .failed: return .red
-        case .cancelled: return .orange
+        case .done: return GatherTheme.success
+        case .failed: return GatherTheme.error
+        case .cancelled: return GatherTheme.warning
         }
     }
 
@@ -885,17 +879,18 @@ public struct FaceKeywordingView: View {
                 .padding(.vertical, 6)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(isActive ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor))
+                        .fill(isActive ? GatherTheme.primarySoft : Color.gatherBackgroundSecondary)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(isActive ? Color.accentColor : Color.gatherBorder, lineWidth: 1)
+                        .strokeBorder(isActive ? GatherTheme.primary : Color.gatherBorder, lineWidth: 1)
                 )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isRunning)
         .opacity(isRunning ? 0.55 : 1)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     /// TS AnalyzeProgress：相位文本 + (n/N) + 8px 圆角 track 主色填充（0.2s 过渡）。
@@ -907,28 +902,23 @@ public struct FaceKeywordingView: View {
                 Spacer()
                 if viewModel.progressTotal > 0 {
                     Text("\(viewModel.progressCurrent)/\(viewModel.progressTotal)")
-                        .font(.caption.monospacedDigit())
+                        .font(.footnote.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
             }
             if viewModel.progressTotal > 0 {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.gatherBorder.opacity(0.35))
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.accentColor)
-                            .frame(width: geo.size.width * min(1, progressRatio))
-                    }
-                }
-                .frame(height: 8)
-                .animation(.easeOut(duration: 0.2), value: progressRatio)
+                GatherProgressBar(
+                    fraction: progressRatio,
+                    fill: Color.accentColor,
+                    track: Color.gatherBorder.opacity(0.35),
+                    accessibilityText: GatherLocalization.l("分析进度")
+                )
             } else {
                 // TS AnalyzeProgress：total == 0（indeterminate）时相位文本
                 // 恒显示，轨道省略；补处理中文案对齐旧版（StepAnalyze.tsx:26-29）。
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("处理中…")
+                    Text(GatherLocalization.l("处理中…"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -948,21 +938,31 @@ public struct FaceKeywordingView: View {
             if viewModel.isLoading {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("加载中…").foregroundStyle(.secondary)
+                    Text(GatherLocalization.l("加载中…")).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
-                .nativeCard()
+                .gatherCard()
             } else if viewModel.clusters.isEmpty {
-                ContentUnavailableView(
-                    "暂无人脸簇",
-                    systemImage: "person.crop.circle.badge.questionmark",
-                    description: Text("先运行人脸分析")
-                )
+                GatherEmptyState(
+                    icon: "person.crop.circle.badge.questionmark",
+                    title: GatherLocalization.l("暂无人脸簇"),
+                    message: GatherLocalization.l("先运行人脸分析")
+                ) {
+                    Button(GatherLocalization.l("前往分析")) {
+                        viewModel.setStep(.analyze)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             } else {
-                HStack(alignment: .top, spacing: 18) {
-                    clusterPane
-                    detailPane
+                // 详情栏宽度自适应（布局验收 P2）：窄窗口收缩、宽窗口
+                // 上限 340，簇网格始终保有可用空间。
+                GeometryReader { geometry in
+                    HStack(alignment: .top, spacing: 18) {
+                        clusterPane
+                        detailPane
+                            .frame(width: min(340, max(280, geometry.size.width * 0.32)))
+                    }
                 }
             }
         }
@@ -972,8 +972,8 @@ public struct FaceKeywordingView: View {
     private var clusterPane: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("人脸聚类").font(.system(size: 16, weight: .semibold))
-                Text("\(visibleClusters.count) 组").font(.caption).foregroundStyle(.secondary)
+                Text(GatherLocalization.l("人脸聚类")).font(.title3.weight(.semibold))
+                Text(String(format: GatherLocalization.l("%lld 组"), visibleClusters.count)).font(.footnote).foregroundStyle(.secondary)
                 Spacer()
                 roleFilterBar
             }
@@ -986,11 +986,15 @@ public struct FaceKeywordingView: View {
                 }
             }
             if visibleClusters.count > visibleClusterCount {
-                Button("加载更多（还有 \(visibleClusters.count - visibleClusterCount) 组）") {
-                    visibleClusterCount += FaceKeywordingViewModel.clusterPageSize
+                HStack {
+                    Spacer(minLength: 0)
+                    Button(String(format: GatherLocalization.l("加载更多（还有 %lld 组）"), visibleClusters.count - visibleClusterCount)) {
+                        visibleClusterCount += FaceKeywordingViewModel.clusterPageSize
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.bordered)
-                .frame(maxWidth: .infinity)
                 .padding(.top, 4)
             }
         }
@@ -1015,30 +1019,31 @@ public struct FaceKeywordingView: View {
                             viewModel.roleFilter = (viewModel.roleFilter == role) ? nil : role
                         } label: {
                             Text(role)
-                                .font(.caption)
+                                .font(.footnote)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
                                 .background(
-                                    Capsule().fill(viewModel.roleFilter == role ? Color.accentColor.opacity(0.15) : Color.clear)
+                                    Capsule().fill(viewModel.roleFilter == role ? GatherTheme.primarySoft : Color.clear)
                                 )
                                 .overlay(
                                     Capsule().strokeBorder(
-                                        viewModel.roleFilter == role ? Color.accentColor : Color.gatherBorder,
+                                        viewModel.roleFilter == role ? GatherTheme.primary : Color.gatherBorder,
                                         lineWidth: 1
                                     )
                                 )
                         }
                         .buttonStyle(.plain)
-                        .help(viewModel.roleFilter == role ? "清除「\(role)」筛选" : "仅显示角色「\(role)」的簇")
+                        .accessibilityAddTraits(viewModel.roleFilter == role ? .isSelected : [])
+                        .help(viewModel.roleFilter == role ? String(format: GatherLocalization.l("清除「%@」筛选"), role) : String(format: GatherLocalization.l("仅显示角色「%@」的簇"), role))
                     }
                 }
             }
         }
     }
 
-    /// TS ClusterCard：10px padding、radius-md、hover 主色描边 + translateY(-1)、
-    /// 选中主色边框 + 外发光；2x2 蒙太奇（前 4 成员，圆角 9）+ label + 成员数 +
-    /// 绑定角色 success 胶囊。
+    /// TS ClusterCard：10px padding、radius-md、hover 主色描边 + 底色微变、
+    /// 选中主色边框 + 外发光 + 上浮；2x2 蒙太奇（前 4 成员，圆角 8）+ label +
+    /// 成员数 + 绑定角色 success 胶囊。
     private func clusterCard(_ cluster: FaceClusterData) -> some View {
         let isSelected = viewModel.selectedClusterId == cluster.id
         let isHovered = hoveredClusterId == cluster.id
@@ -1048,30 +1053,30 @@ public struct FaceKeywordingView: View {
             VStack(alignment: .leading, spacing: 4) {
                 clusterMontage(cluster)
                 Text(cluster.label)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .lineLimit(1)
-                Text("\(cluster.size) 张")
-                    .font(.system(size: 11))
+                Text(String(format: GatherLocalization.l("%lld 张"), cluster.size))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 if let binding = cluster.binding {
                     Text(binding.roleName)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.green)
+                        .font(.footnote)
+                        .foregroundStyle(GatherTheme.success)
                         .lineLimit(1)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.green.opacity(0.14)))
+                        .background(Capsule().fill(GatherTheme.success.opacity(0.14)))
                 }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
+            .background(RoundedRectangle(cornerRadius: 10).fill(isHovered ? GatherTheme.primarySoft.opacity(0.3) : Color.gatherSurface))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(cardBorder(isSelected: isSelected, isHovered: isHovered), lineWidth: isSelected ? 1.5 : 1)
             )
             .shadow(color: isSelected ? Color.accentColor.opacity(0.25) : .clear, radius: 3)
-            .offset(y: isHovered && !isSelected ? -1 : 0)
+            .offset(y: isSelected ? -1 : 0)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1082,7 +1087,7 @@ public struct FaceKeywordingView: View {
                 hoveredClusterId = nil
             }
         }
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
     }
 
     private func cardBorder(isSelected: Bool, isHovered: Bool) -> Color {
@@ -1091,15 +1096,15 @@ public struct FaceKeywordingView: View {
         return Color.gatherBorder
     }
 
-    /// TS ClusterThumb：2x2 蒙太奇网格（前 4 成员，gap 2，圆角 9），
+    /// TS ClusterThumb：2x2 蒙太奇网格（前 4 成员，gap 2，圆角 8），
     /// 空成员时显示簇大小。
     private func clusterMontage(_ cluster: FaceClusterData) -> some View {
         Group {
             if cluster.members.isEmpty {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 9).fill(Color(nsColor: .controlBackgroundColor))
+                    RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackgroundSecondary)
                     Text("\(cluster.size)")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.title.weight(.semibold))
                         .foregroundStyle(Color.accentColor)
                 }
             } else {
@@ -1113,24 +1118,25 @@ public struct FaceKeywordingView: View {
                             .clipped()
                     }
                 }
-                .background(Color(nsColor: .controlBackgroundColor))
+                .background(Color.gatherBackgroundSecondary)
             }
         }
         .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    /// TS StepReview.detailPane：340px 固定栏（成员列表 + 编辑 + 合并面板）。
+    /// TS StepReview.detailPane：详情栏（成员列表 + 编辑 + 合并面板）。
+    /// 宽度由调用方按可用宽自适应钳制（280–340），不再固定 340。
     private var detailPane: some View {
         Group {
             if let cluster = viewModel.selectedCluster {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(cluster.label)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.title3.weight(.semibold))
                         Spacer()
-                        Text("\(cluster.size) 名成员")
-                            .font(.caption)
+                        Text(String(format: GatherLocalization.l("%lld 名成员"), cluster.size))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                     memberList(cluster)
@@ -1139,25 +1145,25 @@ public struct FaceKeywordingView: View {
                     if let actionError = viewModel.reviewActionError {
                         Text(actionError)
                             .font(.callout)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(GatherTheme.error)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+                            .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.12)))
                     }
                     editor(cluster)
                     mergePanel(cluster)
                 }
             } else {
-                Text("点击左侧簇卡片查看成员与绑定编辑")
+                Text(GatherLocalization.l("点击左侧簇卡片查看成员与绑定编辑"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxHeight: .infinity)
             }
         }
-        .frame(width: 340)
+        .frame(maxWidth: .infinity)
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 1))
     }
 
     /// TS memberList：max-height 210px 滚动，每行 #idx + 文件名 + 置信度% +
@@ -1166,27 +1172,9 @@ public struct FaceKeywordingView: View {
         ScrollView {
             VStack(spacing: 0) {
                 ForEach(Array(cluster.members.enumerated()), id: \.element.memberId) { index, member in
-                    HStack(spacing: 7) {
-                        Text("#\(index + 1)")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 30, alignment: .leading)
-                        Text(member.filename)
-                            .font(.system(size: 12))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(String(format: "%.0f%%", member.confidence * 100))
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                        Button("移除") {
-                            viewModel.removeMember(member, from: cluster)
-                        }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.red)
-                        .help("从簇中移除成员 \(member.filename)")
+                    MemberRowView(index: index, member: member) {
+                        viewModel.removeMember(member, from: cluster)
                     }
-                    .padding(.vertical, 5)
                     Divider().opacity(0.5)
                 }
             }
@@ -1194,29 +1182,28 @@ public struct FaceKeywordingView: View {
         .frame(maxHeight: 210)
     }
 
-    /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（window.confirm
-    /// → 本页 confirmationDialog）。
+    /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（可逆操作，
+    /// 即时执行，成功经 notice 反馈）。
     private func editor(_ cluster: FaceClusterData) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("角色名称").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            TextField("输入角色名称", text: bindable.roleName)
+            Text(GatherLocalization.l("角色名称")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+            TextField(GatherLocalization.l("输入角色名称"), text: bindable.roleName)
                 .textFieldStyle(.roundedBorder)
-            Text("关键字").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            TextField("关键字，用逗号分隔", text: bindable.keywords)
+            Text(GatherLocalization.l("关键字")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+            TextField(GatherLocalization.l("关键字，用逗号分隔"), text: bindable.keywords)
                 .textFieldStyle(.roundedBorder)
             HStack(spacing: 8) {
-                Button(cluster.binding != nil ? "更新绑定" : "绑定") {
+                Button(cluster.binding != nil ? GatherLocalization.l("更新绑定") : GatherLocalization.l("绑定")) {
                     viewModel.bind(cluster)
                 }
                 .buttonStyle(.borderedProminent)
                 .frame(maxWidth: .infinity)
                 if cluster.binding != nil {
-                    Button("解除绑定") {
-                        unbindTarget = cluster
-                        confirmUnbind = true
+                    Button(GatherLocalization.l("解除绑定")) {
+                        Task { await viewModel.unbind(cluster) }
                     }
                     .buttonStyle(.bordered)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(GatherTheme.error)
                 }
             }
         }
@@ -1229,23 +1216,24 @@ public struct FaceKeywordingView: View {
     private func mergePanel(_ cluster: FaceClusterData) -> some View {
         let candidates = viewModel.clusters.filter { $0.id != cluster.id }
         return VStack(alignment: .leading, spacing: 8) {
-            Text("合并到").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(GatherLocalization.l("合并到")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
             HStack(spacing: 8) {
-                Picker("合并目标", selection: bindable.mergeTargetId) {
-                    Text("选择目标簇").tag(Int?.none)
+                Picker(GatherLocalization.l("合并目标"), selection: bindable.mergeTargetId) {
+                    Text(GatherLocalization.l("选择目标簇")).tag(Int?.none)
                     ForEach(candidates, id: \.id) { candidate in
-                        Text("\(candidate.label)（\(candidate.size) 张）")
+                        Text(String(format: GatherLocalization.l("%@（%lld 张）"), candidate.label, candidate.size))
                             .tag(Int?.some(candidate.id))
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel(GatherLocalization.l("合并目标"))
                 .frame(maxWidth: .infinity)
-                Button("合并") {
+                Button(GatherLocalization.l("合并")) {
                     viewModel.merge(cluster)
                 }
                 .buttonStyle(.bordered)
                 .disabled(viewModel.mergeTargetId == nil)
-                .help("选择目标簇后合并当前簇到目标簇")
+                .help(GatherLocalization.l("选择目标簇后合并当前簇到目标簇"))
             }
         }
         .padding(12)
@@ -1256,25 +1244,25 @@ public struct FaceKeywordingView: View {
 
     private var stepWriteback: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("关键字写回")
-                .font(.system(size: 20, weight: .semibold))
+            Text(GatherLocalization.l("关键字写回"))
+                .font(.title3.weight(.semibold))
             writebackStats
             boundPreview
             if viewModel.preview != nil { xmpPreview }
             HStack(spacing: 9) {
-                Button("生成预览", systemImage: "eye") { Task { await viewModel.previewWriteback() } }
+                Button(GatherLocalization.l("生成预览"), systemImage: "eye") { Task { await viewModel.previewWriteback() } }
                     .disabled(!viewModel.analysisDone)
-                    .help(viewModel.analysisDone ? "" : "请先完成人脸分析")
+                    .help(viewModel.analysisDone ? "" : GatherLocalization.l("请先完成人脸分析"))
                 // 确认写回：分析完成后恒可用；无预览时自动补一次预览再写回
                 // （TS handleExecute，StepWriteback.tsx:53-69, 195-203）。
-                Button("确认写回", systemImage: "square.and.arrow.down") { confirmWriteback = true }
+                Button(GatherLocalization.l("确认写回"), systemImage: "square.and.arrow.down") { confirmWriteback = true }
                     .buttonStyle(.borderedProminent)
                     .disabled(!viewModel.canWriteback)
-                    .help(viewModel.analysisDone ? "" : "请先完成人脸分析")
+                    .help(viewModel.analysisDone ? "" : GatherLocalization.l("请先完成人脸分析"))
             }
             if !viewModel.analysisDone {
-                Text("请先完成人脸分析，才能生成预览并写回。")
-                    .font(.caption).foregroundStyle(.red)
+                Text(GatherLocalization.l("请先完成人脸分析，才能生成预览并写回。"))
+                    .font(.footnote).foregroundStyle(GatherTheme.error)
             }
             if let result = viewModel.writebackResult {
                 resultSection(result)
@@ -1284,7 +1272,7 @@ public struct FaceKeywordingView: View {
                 // 写回报告统计卡仅在有写回结果后出现。
                 reportActionsRow
                     .padding(18)
-                    .nativeCard()
+                    .gatherCard()
             }
         }
     }
@@ -1293,24 +1281,10 @@ public struct FaceKeywordingView: View {
     /// 数值 24pt tabular-nums。
     private var writebackStats: some View {
         HStack(spacing: 10) {
-            statCard(value: viewModel.boundClusters.count, label: "已绑定簇", accent: true)
-            statCard(value: viewModel.totalAffected, label: "受影响照片", accent: false)
-            statCard(value: viewModel.unboundClusters.count, label: "未绑定并跳过", warning: true)
+            GatherStatCard(value: viewModel.boundClusters.count, label: GatherLocalization.l("已绑定簇"), color: Color.accentColor)
+            GatherStatCard(value: viewModel.totalAffected, label: GatherLocalization.l("受影响照片"))
+            GatherStatCard(value: viewModel.unboundClusters.count, label: GatherLocalization.l("未绑定并跳过"), color: GatherTheme.warning)
         }
-    }
-
-    private func statCard(value: Int, label: String, accent: Bool = false, warning: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("\(value)")
-                .font(.system(size: 24, weight: .bold))
-                .monospacedDigit()
-                .foregroundStyle(accent ? Color.accentColor : (warning ? Color.orange : Color.primary))
-            Text(label).font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
     }
 
     /// TS preview 面板：绑定簇预览（roleName + keywords + 前 5 文件名），
@@ -1319,7 +1293,7 @@ public struct FaceKeywordingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if viewModel.boundClusters.isEmpty {
-                    Text("暂无已绑定簇，请先在审核步骤绑定角色。")
+                    Text(GatherLocalization.l("暂无已绑定簇，请先在审核步骤绑定角色。"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -1329,25 +1303,25 @@ public struct FaceKeywordingView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 7) {
                                 Text(cluster.binding?.roleName ?? "")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("（\(cluster.size) 张）")
-                                    .font(.caption)
+                                    .font(.body.weight(.semibold))
+                                Text(String(format: GatherLocalization.l("（%lld 张）"), cluster.size))
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                                 if let keywords = cluster.binding?.keywords, !keywords.isEmpty {
                                     Text(keywords.joined(separator: ", "))
-                                        .font(.caption)
+                                        .font(.footnote)
                                         .foregroundStyle(.secondary)
                                 }
                             }
                             ForEach(cluster.members.prefix(5), id: \.memberId) { member in
                                 Text(member.filename)
-                                    .font(.caption)
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                                     .padding(.leading, 10)
                             }
                             if cluster.members.count > 5 {
-                                Text("还有 \(cluster.members.count - 5) 名成员")
-                                    .font(.caption)
+                                Text(String(format: GatherLocalization.l("还有 %lld 名成员"), cluster.members.count - 5))
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                                     .opacity(0.7)
                                     .padding(.leading, 10)
@@ -1361,7 +1335,7 @@ public struct FaceKeywordingView: View {
         }
         .frame(maxHeight: 270)
         .padding(.horizontal, 12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherBackgroundSecondary))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
     }
 
@@ -1371,7 +1345,7 @@ public struct FaceKeywordingView: View {
     private var xmpPreview: some View {
         if let preview = viewModel.preview {
             VStack(alignment: .leading, spacing: 8) {
-                Text("XMP 写回预览 · 共 \(preview.totalCount) 项 · \(preview.affectedPhotos) 张照片受影响")
+                Text(String(format: GatherLocalization.l("XMP 写回预览 · 共 %lld 项 · %lld 张照片受影响"), preview.totalCount, preview.affectedPhotos))
                     .font(.callout)
                 ScrollView {
                     VStack(spacing: 0) {
@@ -1382,10 +1356,10 @@ public struct FaceKeywordingView: View {
                     }
                 }
                 .frame(maxHeight: 240)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackgroundSecondary))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
                 if preview.items.count > 50 {
-                    Text("还有 \(preview.items.count - 50) 项…").font(.caption).foregroundStyle(.secondary)
+                    Text(String(format: GatherLocalization.l("还有 %lld 项…"), preview.items.count - 50)).font(.footnote).foregroundStyle(.secondary)
                 }
             }
         }
@@ -1394,15 +1368,15 @@ public struct FaceKeywordingView: View {
     private func xmpPreviewRow(_ item: FaceKwWritebackItem) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .lineLimit(1)
             Text("\(xmpKeywordsText(item.preview?.before.keywords)) → \(xmpKeywordsText(item.preview?.after.keywords ?? item.keywords))")
-                .font(.system(size: 12))
+                .font(.callout)
                 .lineLimit(1)
                 .foregroundStyle(.secondary)
             Text(xmpMarkerText(item))
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
@@ -1412,24 +1386,24 @@ public struct FaceKeywordingView: View {
     private func xmpMarkerText(_ item: FaceKwWritebackItem) -> String {
         var parts: [String] = []
         if let preview = item.preview {
-            parts.append(preview.willCreate ? "新建 XMP" : "更新 XMP")
-            if preview.sharedPhotoCount > 1 { parts.append("\(preview.sharedPhotoCount) 张共享") }
-            if preview.externalChanged { parts.append("检测到外部冲突") }
+            parts.append(preview.willCreate ? GatherLocalization.l("新建 XMP") : GatherLocalization.l("更新 XMP"))
+            if preview.sharedPhotoCount > 1 { parts.append(String(format: GatherLocalization.l("%lld 张共享"), preview.sharedPhotoCount)) }
+            if preview.externalChanged { parts.append(GatherLocalization.l("检测到外部冲突")) }
         }
-        parts.append("来源：人脸关键词")
+        parts.append(GatherLocalization.l("来源：人脸关键词"))
         return parts.joined(separator: " · ")
     }
 
     private func xmpKeywordsText(_ keywords: [String]?) -> String {
         let joined = (keywords ?? []).joined(separator: "、")
-        return joined.isEmpty ? "无关键词" : joined
+        return joined.isEmpty ? GatherLocalization.l("无关键词") : joined
     }
 
     /// TS WritebackReport：已写入/失败/已跳过三色统计卡 + 失败项明细 +
     /// 重试/确认同步/清理 + reload 行。
     private func resultSection(_ result: FaceKwWritebackResult) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("写回报告").font(.headline)
+            Text(GatherLocalization.l("写回报告")).font(.headline)
             WritebackReportCard(
                 written: result.written,
                 failed: result.failed,
@@ -1440,13 +1414,12 @@ public struct FaceKeywordingView: View {
                         path: item.photoPath.isEmpty ? item.xmpPath : item.photoPath,
                         message: item.errorMessage
                     )
-                },
-                skippedColor: .orange
+                }
             )
             reportActionsRow
         }
         .padding(18)
-        .nativeCard()
+        .gatherCard()
     }
 
     /// TS WritebackReport actions（StepWriteback.tsx:205-226）：预览生成后即
@@ -1456,19 +1429,58 @@ public struct FaceKeywordingView: View {
     private var reportActionsRow: some View {
         HStack(spacing: 8) {
             if let result = viewModel.writebackResult, !result.failedItems.isEmpty {
-                Button("重试失败项") { Task { await viewModel.retryFailed() } }
+                Button(GatherLocalization.l("重试失败项")) { Task { await viewModel.retryFailed() } }
                     .disabled(viewModel.isWritingBack)
-                    .help("没有失败项")
+                    .help(GatherLocalization.l("没有失败项"))
             }
-            Button("Capture One 重新加载") { Task { await viewModel.reloadCaptureOne() } }
+            Button(GatherLocalization.l("Capture One 重新加载")) { Task { await viewModel.reloadCaptureOne() } }
                 .disabled(viewModel.isWritingBack)
-            Button("确认同步") { Task { await viewModel.confirmSync() } }
+            Button(GatherLocalization.l("确认同步")) { Task { await viewModel.confirmSync() } }
                 .disabled(viewModel.isWritingBack)
             if viewModel.isSyncConfirmed {
-                Button("清理备份", role: .destructive) { confirmCleanup = true }
+                Button(GatherLocalization.l("清理备份"), role: .destructive) { confirmCleanup = true }
                     .disabled(viewModel.isWritingBack)
-                    .help("请先在 Capture One 中加载元数据并确认同步")
+                    .help(GatherLocalization.l("请先在 Capture One 中加载元数据并确认同步"))
             }
+        }
+    }
+}
+
+private struct MemberRowView: View {
+    let index: Int
+    let member: ClusterMember
+    let onRemove: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text("#\(index + 1)")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 36, alignment: .leading)
+            Text(member.filename)
+                .font(.callout)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(String(format: "%.0f%%", member.confidence * 100))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Button(role: .destructive) {
+                onRemove()
+            } label: {
+                Text(GatherLocalization.l("移除"))
+            }
+            .buttonStyle(.plain)
+            .font(.callout)
+            .foregroundStyle(GatherTheme.error)
+            .help(String(format: GatherLocalization.l("从簇中移除成员 %@"), member.filename))
+        }
+        .padding(.vertical, 6)
+        .background(isHovered ? GatherTheme.primarySoft.opacity(0.2) : Color.clear)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
         }
     }
 }
@@ -1476,11 +1488,11 @@ public struct FaceKeywordingView: View {
 private extension FaceKeywordingViewModel.AnalysisPhase {
     var label: String {
         switch self {
-        case .idle: return "未开始"
-        case .running: return "分析中"
-        case .done: return "已完成"
-        case .failed: return "失败"
-        case .cancelled: return "已取消"
+        case .idle: return GatherLocalization.l("未开始")
+        case .running: return GatherLocalization.l("分析中")
+        case .done: return GatherLocalization.l("已完成")
+        case .failed: return GatherLocalization.l("失败")
+        case .cancelled: return GatherLocalization.l("已取消")
         }
     }
 }

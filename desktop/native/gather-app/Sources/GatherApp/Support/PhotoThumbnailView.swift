@@ -15,16 +15,20 @@ public struct PhotoThumbnailView: View {
     var placeholderSize: CGSize?
     /// true 时走 gather-image://preview 语义（getPreview，大图预览）。
     var preview: Bool
+    /// 图片适配模式：默认 .fill（封面裁切，用于缩略图网格）；查看器传 .fit
+    /// （整图可见，对齐旧版 object-fit: contain 的查看器交互语义）。
+    var contentMode: ContentMode
 
     @State private var image: NSImage?
     @State private var failed = false
     @State private var loading = false
 
-    public init(path: String, size: Int = 512, placeholderSize: CGSize? = nil, preview: Bool = false) {
+    public init(path: String, size: Int = 512, placeholderSize: CGSize? = nil, preview: Bool = false, contentMode: ContentMode = .fill) {
         self.path = path
         self.size = size
         self.placeholderSize = placeholderSize
         self.preview = preview
+        self.contentMode = contentMode
     }
 
     public var body: some View {
@@ -33,16 +37,16 @@ public struct PhotoThumbnailView: View {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.medium)
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: contentMode)
             } else if failed {
                 // TS: thumbError —— 感叹号 + 文件名。
                 ZStack {
-                    Rectangle().fill(Color(nsColor: .controlBackgroundColor))
+                    Rectangle().fill(GatherTheme.backgroundSecondary)
                     VStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle")
                             .foregroundStyle(.secondary)
                         Text((path as NSString).lastPathComponent)
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .padding(.horizontal, 4)
@@ -50,7 +54,7 @@ public struct PhotoThumbnailView: View {
                 }
             } else {
                 Rectangle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .fill(GatherTheme.backgroundSecondary)
                     .overlay {
                         if loading {
                             ProgressView().controlSize(.small)

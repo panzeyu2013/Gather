@@ -261,6 +261,24 @@ public final class FaceRepo {
         return rows.map { FaceObservationRow(row: $0) }
     }
 
+    /// 批量照片的人脸观测计数（photo.id → 数量；无观测的照片不出现在结果中）。
+    /// 供 photo 列表分页附带 faceCount（TS photo.ipc.ts assemblePhotos 的两次
+    /// 小查询之一，原在宿主路由内联 SQL，下沉回 Repo）。
+    public func countsByPhoto(sessionId: String, photoIds: [String]) throws -> [String: Int] {
+        guard !photoIds.isEmpty else { return [:] }
+        let placeholders = photoIds.map { _ in "?" }.joined(separator: ", ")
+        let rows = try connection.prepare("""
+            SELECT photo_id, COUNT(*) AS cnt FROM face_observations
+            WHERE session_id = ? AND photo_id IN (\(placeholders)) GROUP BY photo_id
+        """).query([.text(sessionId)] + photoIds.map(DBValue.text))
+        var counts: [String: Int] = [:]
+        for row in rows {
+            guard let photoId = row[0].textValue else { continue }
+            counts[photoId] = Int(row[1].intValue ?? 0)
+        }
+        return counts
+    }
+
     public func getAnalysisStates(_ sessionId: String) throws -> [String: FaceAnalysisState] {
         let rows = try connection.prepare("""
             SELECT photo_id, source_file_size, source_file_mtime_ms, analysis_signature

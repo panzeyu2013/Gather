@@ -2,6 +2,7 @@
 // 全局 Toast 通知系统，对齐 Electron 版 ToastStore/Toast/ToastContainer：
 // 4 类型（info/success/warning/error）、5s 自动消失、右上角堆叠、× 手动关闭。
 
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -13,7 +14,7 @@ public enum ToastType: Sendable {
 
     var color: Color {
         switch self {
-        case .info: .accentColor
+        case .info: GatherTheme.info
         case .success: GatherTheme.success
         case .warning: GatherTheme.warning
         case .error: GatherTheme.error
@@ -34,11 +35,21 @@ public struct ToastItem: Identifiable {
     public let id: UUID
     public let type: ToastType
     public let message: String
+    public let actionTitle: String?
+    public let action: (() -> Void)?
 
-    public init(id: UUID = UUID(), type: ToastType, message: String) {
+    public init(
+        id: UUID = UUID(),
+        type: ToastType,
+        message: String,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) {
         self.id = id
         self.type = type
         self.message = message
+        self.actionTitle = actionTitle
+        self.action = action
     }
 }
 
@@ -52,8 +63,15 @@ public final class GatherToastCenter {
     private init() {}
 
     public func show(type: ToastType, message: String) {
-        let item = ToastItem(type: type, message: message)
-        toasts.append(item)
+        show(type: type, message: message, actionTitle: nil, action: nil)
+    }
+
+    public func show(type: ToastType, message: String, actionTitle: String?, action: (() -> Void)?) {
+        let item = ToastItem(type: type, message: message, actionTitle: actionTitle, action: action)
+        toasts.insert(item, at: 0)
+        let element = NSAccessibilityElement()
+        element.setAccessibilityLabel(message)
+        NSAccessibility.post(element: element, notification: .announcementRequested)
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
@@ -67,6 +85,8 @@ public final class GatherToastCenter {
 }
 
 public struct ToastView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     public init() {}
 
     public var body: some View {
@@ -79,15 +99,18 @@ public struct ToastView: View {
                     ToastRow(toast: toast) {
                         center.dismiss(id: toast.id)
                     }
+                    .contentShape(RoundedRectangle(cornerRadius: 10))
                     // 对齐旧版 Toast.module.css slideIn 0.2s ease-out：
-                    // 出现时 -8pt 上滑 + 淡入，消失时反向淡出。
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .offset(y: -8)),
-                        removal: .opacity
-                    ))
+                    // 出现时 -8pt 上滑 + 淡入，消失时 -8pt 下滑 + 淡出。
+                    .transition(reduceMotion
+                        ? .opacity
+                        : .asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: -8)),
+                            removal: .opacity.combined(with: .offset(y: 8))
+                        ))
                 }
             }
-            .animation(.easeOut(duration: 0.2), value: center.toasts.map(\.id))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: center.toasts.map(\.id))
             .padding(16)
             .allowsHitTesting(false)
             .accessibilityElement(children: .contain)
@@ -105,19 +128,28 @@ private struct ToastRow: View {
                 .foregroundStyle(toast.type.color)
                 .accessibilityHidden(true)
             Text(toast.message)
-                .font(.system(size: 13))
+                .font(.callout)
                 .lineLimit(3)
-                .frame(maxWidth: 300, alignment: .leading)
+                .frame(maxWidth: 360, alignment: .leading)
+            if let actionTitle = toast.actionTitle, let action = toast.action {
+                Button(actionTitle) {
+                    action()
+                    onDismiss()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .allowsHitTesting(true)
+            }
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .allowsHitTesting(true)
-            .accessibilityLabel(GatherLocalization.l("关闭", "Dismiss"))
+            .accessibilityLabel(GatherLocalization.l("关闭"))
             .accessibilityAddTraits(.isButton)
         }
         .padding(.horizontal, 14)
@@ -130,6 +162,6 @@ private struct ToastRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(toast.type.color.opacity(0.3), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .shadow(color: GatherTheme.shadowSm, radius: 8, y: 3)
     }
 }

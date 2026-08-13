@@ -6,7 +6,7 @@ import Testing
 import GatherCore
 @testable import GatherApp
 
-@Suite("GatherLocalization")
+@Suite("GatherLocalization", .serialized)
 struct GatherLocalizationTests {
     @Test("已知错误码返回中文文案")
     func knownCode() {
@@ -18,6 +18,14 @@ struct GatherLocalizationTests {
     @Test("未知错误码回退通用文案")
     func unknownCodeFallsBack() {
         #expect(GatherLocalization.errorText("NOT_A_REAL_CODE") == "发生未知错误，请稍后重试")
+    }
+
+    @Test("参数化错误码按模板插值（CODE::p1::p2）")
+    func parameterizedCodesInterpolate() {
+        #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN::rating") == "未知的筛选字段：rating")
+        #expect(GatherLocalization.errorText("CULLING_REVISION_CONFLICT::3::5") == "挑片版本冲突：期望 3，当前 5")
+        #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN") == "未知的筛选字段：")
+        #expect(GatherLocalization.message(for: RouterCommandError(message: "FILTER_FIELD_UNKNOWN::label")) == "未知的筛选字段：label")
     }
 
     @Test("jobErrorMessage 仅翻译错误码，诊断原文回退")
@@ -41,6 +49,24 @@ struct GatherLocalizationTests {
         #expect(GatherLocalization.progressPhaseText("similarity.cluster") == "正在聚类相似照片…")
         #expect(GatherLocalization.progressPhaseText(nil) == "正在处理…")
         #expect(GatherLocalization.progressPhaseText("no.such.phase") == "正在处理…")
+    }
+
+    @Test("l() 查 Apple 本地化表：zh 回退 key、en 返回翻译、未知 key 回退")
+    func localizedLookup() {
+        let original = GatherLocalization.appLanguage
+        defer { GatherLocalization.setAppLanguage(original) }
+
+        GatherLocalization.setAppLanguage("zh-CN")
+        #expect(GatherLocalization.l("挑片与写回") == "挑片与写回")
+        #expect(GatherLocalization.l("不存在的文案") == "不存在的文案")
+
+        GatherLocalization.setAppLanguage("en")
+        #expect(GatherLocalization.l("挑片与写回") == "Culling & Writeback")
+        #expect(GatherLocalization.l("人脸库") == "Face Library")
+        #expect(GatherLocalization.l("不存在的文案") == "不存在的文案")
+
+        #expect(GatherLocalization.l(" 等 %d 个") == " and %d more")
+        #expect(String(format: GatherLocalization.l("写回队列：%d 项"), 3) == "Writeback Queue: 3 Items")
     }
 }
 
@@ -154,9 +180,10 @@ struct GatherToastTests {
         center.show(type: .info, message: "b")
         #expect(center.toasts.count == 2)
         let first = center.toasts[0]
+        #expect(first.message == "b")
         center.dismiss(id: first.id)
         #expect(center.toasts.count == 1)
-        #expect(center.toasts[0].message == "b")
+        #expect(center.toasts[0].message == "a")
     }
 
     @MainActor
@@ -165,7 +192,7 @@ struct GatherToastTests {
         let center = freshCenter()
         center.show(type: .warning, message: "w")
         center.show(type: .success, message: "s")
-        #expect(center.toasts.map(\.type) == [.warning, .success])
+        #expect(center.toasts.map(\.type) == [.success, .warning])
         for toast in center.toasts { center.dismiss(id: toast.id) }
     }
 }

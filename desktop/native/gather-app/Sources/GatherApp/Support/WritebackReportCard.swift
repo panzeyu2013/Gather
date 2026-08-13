@@ -21,15 +21,15 @@ public struct WritebackReportCard: View {
     public let failed: Int
     public let skipped: Int
     public let failedItems: [WritebackFailureItem]
-    /// 已跳过卡的颜色（FaceKw=橙、Similarity=灰，按旧版各页原样）。
-    public var skippedColor: Color = .gray
+    /// 已跳过卡的颜色（统一为警告语义色）。
+    public var skippedColor: Color = GatherTheme.warning
 
     public init(
         written: Int,
         failed: Int,
         skipped: Int,
         failedItems: [WritebackFailureItem],
-        skippedColor: Color = .gray
+        skippedColor: Color = GatherTheme.warning
     ) {
         self.written = written
         self.failed = failed
@@ -41,49 +41,39 @@ public struct WritebackReportCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                statCard(value: written, label: "已写入", color: GatherTheme.success)
-                statCard(value: failed, label: "失败", color: GatherTheme.error)
-                statCard(value: skipped, label: "已跳过", color: skippedColor)
+                GatherStatCard(value: written, label: GatherLocalization.l("已写入"), color: GatherTheme.success)
+                GatherStatCard(value: failed, label: GatherLocalization.l("失败"), color: GatherTheme.error)
+                GatherStatCard(value: skipped, label: GatherLocalization.l("已跳过"), color: skippedColor)
             }
             if !failedItems.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("失败项（\(failedItems.count)）")
-                        .font(.caption.weight(.semibold))
+                    Text(String(format: GatherLocalization.l("失败项（%lld）"), failedItems.count))
+                        .font(.footnote.weight(.semibold))
                     ForEach(failedItems) { item in
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(item.path)
-                                .font(.caption)
+                                .font(.footnote)
                                 .lineLimit(1)
+                                .textSelection(.enabled)
                                 .help(item.path)
                             Spacer(minLength: 8)
                             if !item.message.isEmpty {
                                 Text(GatherLocalization.errorText(item.message))
-                                    .font(.caption)
+                                    .font(.footnote)
                                     .foregroundStyle(GatherTheme.error)
                                     .multilineTextAlignment(.trailing)
                             }
                         }
+                        if item.id != failedItems.last?.id {
+                            Rectangle()
+                                .fill(Color.gatherBorder.opacity(0.5))
+                                .frame(height: 1)
+                        }
                     }
                 }
                 .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.08)))
             }
         }
-    }
-
-    private func statCard(value: Int, label: String, color: Color) -> some View {
-        VStack(spacing: 2) {
-            Text("\(value)")
-                .font(.system(size: 28, weight: .bold))
-                .monospacedDigit()
-                .foregroundStyle(color)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.backgroundSecondary))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
     }
 }

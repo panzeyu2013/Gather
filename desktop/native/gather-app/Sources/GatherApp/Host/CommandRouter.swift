@@ -5,13 +5,11 @@ import Foundation
 import GatherCore
 
 public struct WebResponse: Codable, Equatable, Sendable {
-    public let id: String
     public let ok: Bool
     public let data: GatherCore.JSONValue?
     public let error: String?
 
-    public init(id: String, ok: Bool, data: GatherCore.JSONValue? = nil, error: String? = nil) {
-        self.id = id
+    public init(ok: Bool, data: GatherCore.JSONValue? = nil, error: String? = nil) {
         self.ok = ok
         self.data = data
         self.error = error

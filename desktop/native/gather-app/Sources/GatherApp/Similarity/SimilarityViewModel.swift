@@ -43,10 +43,10 @@ public protocol SimilarityDataProvider {
     ) async throws -> SimilarityResult
     /// 分析进度轮询（TS jobsApi.list 过滤 similarity.analyze + scopeId）。
     func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData]
-    func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) throws -> WritebackPreview
+    func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) async throws -> WritebackPreview
     func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult
     func retryFailedWriteback(sessionId: String) async throws -> WritebackResult
-    func confirmSync(sessionId: String) throws
+    func confirmSync(sessionId: String) async throws
     func cleanupWriteback(sessionId: String) async throws -> CleanupResult
 }
 
@@ -135,13 +135,24 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         }
     }
 
-    public func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) throws -> WritebackPreview {
+    public func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) async throws -> WritebackPreview {
         var params: [String: JSONValue] = [
             "sessionId": .string(sessionId),
             "assignments": try .array(assignments.map { try JSONValue(from: $0) }),
         ]
         if let threshold { params["threshold"] = .number(Double(threshold)) }
-        return try router.execute("sim.preview_writeback", params: params).decoded(as: WritebackPreview.self)
+        // 经 executeAsync：sim.preview_writeback 在同步 execute 中的 awaitSync
+        // 信号量桥会阻塞 @MainActor 调用线程（XMP/DB I/O 期间 UI 冻结）。
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WritebackPreview, Error>) in
+            router.executeAsync("sim.preview_writeback", params: params) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_PREVIEW_WRITEBACK_FAILED"))
+                    return
+                }
+                do { continuation.resume(returning: try data.decoded(as: WritebackPreview.self)) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
     }
 
     public func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult {
@@ -179,8 +190,17 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         }
     }
 
-    public func confirmSync(sessionId: String) throws {
-        _ = try router.execute("sim.confirm_sync", params: ["sessionId": .string(sessionId)])
+    public func confirmSync(sessionId: String) async throws {
+        // 经 executeAsync：同步 execute 的 awaitSync 桥会阻塞 @MainActor 调用线程。
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            router.executeAsync("sim.confirm_sync", params: ["sessionId": .string(sessionId)]) { response in
+                if response.ok {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_CONFIRM_SYNC_FAILED"))
+                }
+            }
+        }
     }
 
     public func cleanupWriteback(sessionId: String) async throws -> CleanupResult {
@@ -694,12 +714,12 @@ public final class SimilarityViewModel {
         syncView = nil
     }
 
-    public func previewKeywordWriteback() {
+    public func previewKeywordWriteback() async {
         guard canPreviewWriteback else {
             if selectedGroupIds.isEmpty {
-                errorMessage = "请选择至少一个相似度分组"
+                errorMessage = GatherLocalization.l("请选择至少一个相似度分组")
             } else if parsedWritebackKeywords.isEmpty {
-                errorMessage = "请输入要写回的关键字"
+                errorMessage = GatherLocalization.l("请输入要写回的关键字")
             }
             return
         }
@@ -707,17 +727,17 @@ public final class SimilarityViewModel {
         defer { isSyncBusy = false }
         do {
             let assignments = selectedGroupIds.sorted().map { SimilarityKeywordAssignment(groupId: $0, keywords: parsedWritebackKeywords) }
-            writebackPreview = try provider.previewWriteback(
+            writebackPreview = try await provider.previewWriteback(
                 sessionId: sessionId,
                 assignments: assignments,
                 threshold: writebackThreshold
             )
-            writebackMessage = "预览完成：\(writebackPreview?.affectedPhotos ?? 0) 张照片将合并这些关键词。"
+            writebackMessage = String(format: GatherLocalization.l("预览完成：%lld 张照片将合并这些关键词。"), writebackPreview?.affectedPhotos ?? 0)
             errorMessage = nil
         } catch {
             let text = Self.message(for: error)
             errorMessage = text
-            writebackMessage = "预览失败：\(text)"
+            writebackMessage = String(format: GatherLocalization.l("预览失败：%@"), text)
         }
     }
 
@@ -735,7 +755,7 @@ public final class SimilarityViewModel {
                 preview = existing
             } else {
                 let assignments = selectedGroupIds.sorted().map { SimilarityKeywordAssignment(groupId: $0, keywords: parsedWritebackKeywords) }
-                preview = try provider.previewWriteback(
+                preview = try await provider.previewWriteback(
                     sessionId: sessionId,
                     assignments: assignments,
                     threshold: writebackThreshold
@@ -744,19 +764,19 @@ public final class SimilarityViewModel {
             }
             let ids = preview.items.compactMap(\.id)
             guard !ids.isEmpty else {
-                writebackMessage = "预览没有可写回项"
+                writebackMessage = GatherLocalization.l("预览没有可写回项")
                 return
             }
             let nextResult = try await provider.writeback(sessionId: sessionId, itemIds: ids, threshold: writebackThreshold)
             writebackResult = nextResult
             // 新写入活动使会话 reload-ack 失效（DB clearReloadAck 语义）。
             reloadAcked = false
-            writebackMessage = "XMP 写入完成：成功 \(nextResult.written)，失败 \(nextResult.failed)，跳过 \(nextResult.skipped)。"
+            writebackMessage = String(format: GatherLocalization.l("XMP 写入完成：成功 %lld，失败 %lld，跳过 %lld。"), nextResult.written, nextResult.failed, nextResult.skipped)
             errorMessage = nil
         } catch {
             let text = Self.message(for: error)
             errorMessage = text
-            writebackMessage = "XMP 写入失败：\(text)"
+            writebackMessage = String(format: GatherLocalization.l("XMP 写入失败：%@"), text)
         }
     }
 
@@ -770,12 +790,12 @@ public final class SimilarityViewModel {
             let nextResult = try await provider.retryFailedWriteback(sessionId: sessionId)
             writebackResult = nextResult
             reloadAcked = false
-            writebackMessage = "重试完成：成功 \(nextResult.written)，失败 \(nextResult.failed)。"
+            writebackMessage = String(format: GatherLocalization.l("重试完成：成功 %lld，失败 %lld。"), nextResult.written, nextResult.failed)
             errorMessage = nil
         } catch {
             let text = Self.message(for: error)
             errorMessage = text
-            writebackMessage = "重试失败：\(text)"
+            writebackMessage = String(format: GatherLocalization.l("重试失败：%@"), text)
         }
     }
 
@@ -789,24 +809,24 @@ public final class SimilarityViewModel {
         do {
             try await captureOne.reloadMetadata(sessionId: sessionId)
             reloadAcked = true
-            writebackMessage = "已在 Capture One 中加载元数据，返回后请确认同步"
+            writebackMessage = GatherLocalization.l("已在 Capture One 中加载元数据，返回后请确认同步")
             errorMessage = nil
         } catch {
             errorMessage = Self.message(for: error)
-            writebackMessage = "加载元数据失败"
+            writebackMessage = GatherLocalization.l("加载元数据失败")
         }
     }
 
     /// 第二步：确认同步（服务端 requireReloadAck 兜底）。
     public func confirmSync() async {
         do {
-            try provider.confirmSync(sessionId: sessionId)
-            writebackMessage = "已确认 Capture One 完成「加载元数据」，现在可以安全清理临时 XMP 变更。"
+            try await provider.confirmSync(sessionId: sessionId)
+            writebackMessage = GatherLocalization.l("已确认 Capture One 完成「加载元数据」，现在可以安全清理临时 XMP 变更。")
             errorMessage = nil
         } catch {
             let text = Self.message(for: error)
             errorMessage = text
-            writebackMessage = "确认失败：\(text)"
+            writebackMessage = String(format: GatherLocalization.l("确认失败：%@"), text)
         }
         refreshSyncState()
     }
@@ -816,12 +836,12 @@ public final class SimilarityViewModel {
             let cleanup = try await provider.cleanupWriteback(sessionId: sessionId)
             writebackResult = nil
             writebackPreview = nil
-            writebackMessage = "清理完成：已恢复或移除 \(cleanup.deletedCount) 个 sidecar 文件。"
+            writebackMessage = String(format: GatherLocalization.l("清理完成：已恢复或移除 %lld 个 sidecar 文件。"), cleanup.deletedCount)
             errorMessage = nil
         } catch {
             let text = Self.message(for: error)
             errorMessage = text
-            writebackMessage = "清理失败：\(text)"
+            writebackMessage = String(format: GatherLocalization.l("清理失败：%@"), text)
         }
         refreshSyncState()
     }
@@ -869,44 +889,44 @@ public final class SimilarityViewModel {
         if canLoadMetadata {
             loadHint = nil
         } else if state == .synced {
-            loadHint = "已完成同步，无需再次加载元数据"
+            loadHint = GatherLocalization.l("已完成同步，无需再次加载元数据")
         } else if state == .failed {
-            loadHint = "存在写入失败项，请先重试"
+            loadHint = GatherLocalization.l("存在写入失败项，请先重试")
         } else if state == .conflict {
-            loadHint = "存在 XMP 冲突，请先裁决"
+            loadHint = GatherLocalization.l("存在 XMP 冲突，请先裁决")
         } else {
-            loadHint = "没有可加载的已写入元数据"
+            loadHint = GatherLocalization.l("没有可加载的已写入元数据")
         }
         let confirmHint: String?
         if canConfirmSync {
             confirmHint = nil
         } else if state == .synced {
-            confirmHint = "已完成同步"
+            confirmHint = GatherLocalization.l("已完成同步")
         } else if !acked {
-            confirmHint = "请先在 Capture One 中加载元数据，再确认同步"
+            confirmHint = GatherLocalization.l("请先在 Capture One 中加载元数据，再确认同步")
         } else {
-            confirmHint = "请先等待写入完成或处理失败项"
+            confirmHint = GatherLocalization.l("请先等待写入完成或处理失败项")
         }
         let cleanupHint: String?
         if canCleanup {
             cleanupHint = nil
         } else if state == .synced {
-            cleanupHint = "已完成清理"
+            cleanupHint = GatherLocalization.l("已完成清理")
         } else {
-            cleanupHint = "请先加载元数据并确认同步，再执行清理"
+            cleanupHint = GatherLocalization.l("请先加载元数据并确认同步，再执行清理")
         }
 
         let statusText: String
         switch state {
-        case .syncing: statusText = "同步中：Gather 正在写入 XMP…"
-        case .c1Read: statusText = "Gather 已写入，等待 C1 读取"
-        case .safeToCleanup: statusText = "C1 已读取，可安全清理"
-        case .synced: statusText = "已同步"
-        case .failed: statusText = "有写入失败项，请先重试"
-        case .conflict: statusText = "存在 XMP 冲突，请先裁决"
-        case .disconnected: statusText = "Capture One 未连接"
-        case .connected: statusText = "已连接 Capture One，暂无写入"
-        case nil: statusText = "同步状态加载中…"
+        case .syncing: statusText = GatherLocalization.l("同步中：Gather 正在写入 XMP…")
+        case .c1Read: statusText = GatherLocalization.l("Gather 已写入，等待 C1 读取")
+        case .safeToCleanup: statusText = GatherLocalization.l("C1 已读取，可安全清理")
+        case .synced: statusText = GatherLocalization.l("已同步")
+        case .failed: statusText = GatherLocalization.l("有写入失败项，请先重试")
+        case .conflict: statusText = GatherLocalization.l("存在 XMP 冲突，请先裁决")
+        case .disconnected: statusText = GatherLocalization.l("Capture One 未连接")
+        case .connected: statusText = GatherLocalization.l("已连接 Capture One，暂无写入")
+        case nil: statusText = GatherLocalization.l("同步状态加载中…")
         }
 
         return SimilaritySyncControls(
