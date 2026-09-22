@@ -1137,7 +1137,12 @@ public struct CullingView: View {
     @State private var conflictChoices: [String: MetadataConflictChoice] = [:]
     @State private var compareCount = 1
     @State private var faceAlign = false
-    @FocusState private var keyboardFocus: Bool
+    /// 窗口级 keyDown 监听（对齐旧版 window keydown 与 Gallery 灯箱模式）：
+    /// 快捷键不依赖 SwiftUI 焦点，任何控件抢焦点都不会让 P/X/U/空格/方向键失效。
+    @State private var keyDownMonitor: Any?
+    /// 承载本页的窗口（keyDown 监听命中判断用）。引用类型盒子保证监听闭包
+    /// 读到的始终是最新窗口（struct 捕获副本无法感知后续赋值）。
+    @State private var windowBox = WeakWindowBox()
 
     init(
         sessionId: String,
@@ -1183,18 +1188,22 @@ public struct CullingView: View {
             }
         }
         .background(Color.gatherBackground)
-        .focusable()
-        .focused($keyboardFocus)
-        .focusEffectDisabled()
-        .onKeyPress(phases: [.down, .repeat]) { handleKeyPress($0) }
+        .background(WindowBridge { window in
+            windowBox.window = window
+        })
         .task {
             viewModel.load()
-            keyboardFocus = true
         }
         // 可见性门控（审计 P1-并发）：条件渲染页离开即销毁，isActive=false
         // 让 analyzeQuality 轮询及时退出。
-        .onAppear { viewModel.isActive = true }
-        .onDisappear { viewModel.isActive = false }
+        .onAppear {
+            viewModel.isActive = true
+            installKeyDownMonitor()
+        }
+        .onDisappear {
+            viewModel.isActive = false
+            removeKeyDownMonitor()
+        }
         // 写回协调器 emitSummary 后刷新同步状态（TS useEvent('culling:sync-status')）。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
@@ -1261,15 +1270,16 @@ public struct CullingView: View {
                     toolsColumn
                         .frame(width: toolsWidth)
                     VStack(spacing: 0) {
-                        // 查看器：id 随 对比/人脸对齐/当前照片 变化，复用旧版
-                        // resetTransform 语义（对比模式切换、翻页、缩略图跳转均复位缩放）。
+                        // 查看器：对比/人脸对齐/翻页变化经 onChange 显式复位缩放
+                        // （复用旧版 resetTransform 语义）。不使用 .id() 重建——
+                        // 整树销毁会扰动窗口焦点/事件监听，导致快捷键与后续
+                        // 点击异常。
                         CullingWorkbenchViewer(
                             viewModel: viewModel,
                             compareCount: compareCount,
                             faceAlign: faceAlign
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .id("culling-viewer-\(compareCount)-\(faceAlign)-\(viewModel.currentPhotoId ?? "nil")")
                         infoBar
                     }
                     filmstrip
@@ -1945,40 +1955,61 @@ public struct CullingView: View {
     // MARK: 键盘快捷键（对齐 Culling.tsx:1109-1149 window keydown handler）。
     // 0-5 评分、P/空格 保留、X 淘汰、U 未处理（不前进）、←/→ 翻页；
     // Cmd+Z / Shift+Cmd+Z 由宿主菜单 post gatherMenuUndo/gatherMenuRedo 通知驱动。
-    private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
+    // 实现为窗口级 NSEvent 局部监听（Gallery 灯箱同款模式）：与 SwiftUI 焦点
+    // 系统解耦——点击勾选框/按钮/弹窗后快捷键依然生效，对齐旧版 window keydown。
+
+    private func installKeyDownMonitor() {
+        removeKeyDownMonitor()
+        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard let window = self.windowBox.window,
+                  event.window === window,
+                  window.isKeyWindow else { return event }
+            return self.handleKeyDown(event)
+        }
+    }
+
+    private func removeKeyDownMonitor() {
+        if let keyDownMonitor {
+            NSEvent.removeMonitor(keyDownMonitor)
+            self.keyDownMonitor = nil
+        }
+    }
+
+    /// 处理裸键快捷键；返回 nil 表示已消费该事件。
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
         guard !viewModel.isLoading, !viewModel.isNavigationBusy, !viewModel.isQualityBusy else {
-            return .ignored
+            return event
         }
-        guard press.modifiers.isEmpty else {
-            return .ignored
+        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        guard flags.isEmpty else {
+            return event
         }
-        if press.key == .leftArrow {
+        if event.keyCode == 123 {
             viewModel.retreatCurrent()
-            return .handled
+            return nil
         }
-        if press.key == .rightArrow {
+        if event.keyCode == 124 {
             viewModel.advanceCurrent()
-            return .handled
+            return nil
         }
-        guard press.phase == .down else { return .ignored }
-        let character = press.characters.lowercased()
+        let character = (event.charactersIgnoringModifiers ?? "").lowercased()
         if character == " " || character == "p" {
             viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
-            return .handled
+            return nil
         }
         if character == "x" {
             viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
-            return .handled
+            return nil
         }
         if character == "u" {
             viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
-            return .handled
+            return nil
         }
         if character.count == 1, let rating = Int(character), (0...5).contains(rating) {
             viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating)))
-            return .handled
+            return nil
         }
-        return .ignored
+        return event
     }
 
     private func emptyGuide(_ text: String) -> some View {
@@ -2379,6 +2410,17 @@ private struct CullingWorkbenchViewer: View {
         .onDisappear {
             stopWheelMonitor()
         }
+        // 复用旧版 resetTransform 语义：对比模式切换 / 人脸对齐开关 / 翻页
+        // 均显式复位缩放与位移（替代旧的 .id() 整树重建，避免焦点与监听扰动）。
+        .onChange(of: compareCount) { _, _ in
+            resetTransform()
+        }
+        .onChange(of: faceAlign) { _, _ in
+            resetTransform()
+        }
+        .onChange(of: viewModel.currentPhotoId) { _, _ in
+            resetTransform()
+        }
     }
 
     /// 对比单元格：黑底 + 缩放/平移手势 + 底部字幕条 + 徽标 + hover 主色描边 + 双击复位。
@@ -2397,26 +2439,14 @@ private struct CullingWorkbenchViewer: View {
             ZStack(alignment: .bottom) {
                 // 整图适配（对齐旧版 .viewerImage object-fit: contain）：窄容器
                 // 时整体缩放而非裁切，缩放级作用于完整画面。
+                // allowsHitTesting(false)：scaleEffect 放大后命中区域会外溢到
+                // 单元格之外（.clipped() 只裁剪渲染不裁剪命中），吞掉工具栏/
+                // 工具列/胶片条的点击——人脸对齐开启后必须把命中限定在单元格内。
                 PhotoThumbnailView(path: asset.photo.filepath, size: 2560, preview: true, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .scaleEffect(faceAlign && face != nil ? max(2, scale) : scale)
                     .offset(x: offset.width + alignOffset.width, y: offset.height + alignOffset.height)
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { value in
-                                scale = min(8, max(1, gestureScale * value))
-                            }
-                            .onEnded { _ in
-                                gestureScale = scale
-                            }
-                    )
-                    .simultaneousGesture(
-                        DragGesture()
-                            .onChanged { value in
-                                // 对齐旧版 onPointerDown：任意缩放级均可拖拽平移。
-                                offset = value.translation
-                            }
-                    )
+                    .allowsHitTesting(false)
                 // 底部字幕条（文件名 / 来源 / 星级）。
                 HStack(spacing: 8) {
                     Text(asset.photo.filename).lineLimit(1)
@@ -2471,6 +2501,7 @@ private struct CullingWorkbenchViewer: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
             .clipped()
             .background(GatherTheme.viewerBackground)
             .overlay(
@@ -2480,6 +2511,24 @@ private struct CullingWorkbenchViewer: View {
             .onHover { hovering in
                 hoveredCellId = hovering ? cell.id : nil
             }
+            // 手势挂在单元格容器上（图片已 allowsHitTesting(false)，命中限定在
+            // 单元格边界内；缩放/平移手势与双击复位语义不变）。
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        scale = min(8, max(1, gestureScale * value))
+                    }
+                    .onEnded { _ in
+                        gestureScale = scale
+                    }
+            )
+            .simultaneousGesture(
+                DragGesture()
+                    .onChanged { value in
+                        // 对齐旧版 onPointerDown：任意缩放级均可拖拽平移。
+                        offset = value.translation
+                    }
+            )
             .onTapGesture(count: 2) {
                 resetTransform()
             }
@@ -2590,6 +2639,11 @@ private struct CullingWorkbenchViewer: View {
     }
 }
 
+/// 弱引用窗口盒：keyDown 监听闭包经它读取最新窗口（避免 struct 捕获副本陈旧）。
+private final class WeakWindowBox {
+    weak var window: NSWindow?
+}
+
 /// 获取承载视图的 NSWindow（滚轮事件监听的窗口归属判断用）。
 private struct WindowBridge: NSViewRepresentable {
     let onResolve: (NSWindow?) -> Void
@@ -2638,8 +2692,8 @@ private extension View {
 }
 
 /// 键盘焦点屏蔽：挑片页主视图持有 onKeyPress 键盘焦点；页内控件一律
-/// 不可聚焦，避免点击按钮/勾选框后焦点被抢走导致快捷键（P/X/U/空格/←→）
-/// 失效（旧版 window keydown 全局监听无此问题，原生侧以此保持等价）。
+/// 不可聚焦，避免点击按钮/勾选框后焦点被抢走导致快捷键失效
+/// （文本输入控件不存在，焦点天然不会落在输入框上）。
 private extension View {
     func nonFocusable() -> some View {
         focusable(false)

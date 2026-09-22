@@ -595,6 +595,9 @@ private struct LightboxView: View {
 
                     GeometryReader { geometry in
                         ZStack {
+                            // allowsHitTesting(false)：scaleEffect 放大后命中区域
+                            // 外溢（.clipped() 不裁剪命中），会吞掉灯箱顶部/底部
+                            // 按钮的点击；手势统一挂在容器上。
                             PhotoThumbnailView(
                                 path: photo.filepath,
                                 size: 2048,
@@ -604,30 +607,35 @@ private struct LightboxView: View {
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .scaleEffect(scale)
                             .offset(offset)
-                            .gesture(
-                                MagnificationGesture()
-                                    .onChanged { value in
-                                        scale = min(5, max(0.5, gestureScale * value))
-                                    }
-                                    .onEnded { _ in
-                                        gestureScale = scale
-                                        if scale <= 1 { offset = .zero }
-                                    }
-                            )
-                            .simultaneousGesture(
-                                DragGesture()
-                                    .onChanged { value in
-                                        // TS: 缩放 ≤1 不可拖拽，>1 可平移。
-                                        guard scale > 1 else { return }
-                                        offset = value.translation
-                                    }
-                            )
-                            .onTapGesture(count: 2) {
-                                // 双击复位（原生侧增强，对齐「重置」按钮语义）。
-                                resetTransform()
-                            }
-                            // TS: wheel 事件 ±0.2/档、钳制 [0.5, 5]（passive:false +
-                            // preventDefault 语义：消费事件防止触发滚动）。
+                            .allowsHitTesting(false)
+                        }
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            MagnificationGesture()
+                                .onChanged { value in
+                                    scale = min(5, max(0.5, gestureScale * value))
+                                }
+                                .onEnded { _ in
+                                    gestureScale = scale
+                                    if scale <= 1 { offset = .zero }
+                                }
+                        )
+                        .simultaneousGesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    // TS: 缩放 ≤1 不可拖拽，>1 可平移。
+                                    guard scale > 1 else { return }
+                                    offset = value.translation
+                                }
+                        )
+                        .onTapGesture(count: 2) {
+                            // 双击复位（原生侧增强，对齐「重置」按钮语义）。
+                            resetTransform()
+                        }
+                        // TS: wheel 事件 ±0.2/档、钳制 [0.5, 5]（passive:false +
+                        // preventDefault 语义：消费事件防止触发滚动）。
+                        .overlay {
                             ScrollWheelCatcher { deltaY in
                                 guard deltaY != 0 else { return }
                                 let next = min(5, max(0.5, scale + (deltaY > 0 ? -0.2 : 0.2)))
