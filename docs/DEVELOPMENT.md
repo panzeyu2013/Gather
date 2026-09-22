@@ -287,6 +287,26 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
   `"precomputed": true`）；"最新结果"判定（`getLatest`、culling 相似组 SQL、
   质量相对排名）必须排除 precomputed 行（不变量由 `reuse-and-tiers` 测试强制）。
 
+### 增量聚类与簇版本（1.3）
+
+- 聚类状态持久化在 `similarity_cluster_state`（每张已哈希照片的分量归属
+  `component_index` + 已成组的 `group_seed`，NULL = 未成组）与
+  `similarity_cluster_meta`（参数指纹 / `version` / `incremental_updates`）。
+  `photo_id` 故意不加 `photos` 外键：照片删除后的残留行是增量 diff 的
+  "已移除"依据，由状态重写（replace）整体清理；级联删除会让移除事件不可见。
+- 增量路径的启用条件：分组模式为 `global`、状态参数指纹（阈值/组大小/模式）
+  与本次一致、且连续增量次数 < `similarity_cluster_convergence_interval`
+  （默认 10）。任一不满足即全量重聚类并清零计数（定期全局收敛）；
+  `sequential` 模式无增量设施，会清除状态强制下次全量。
+- 不变量：增量结果与 `ClusterEngine.clusterByHash` 全量结果在划分、组顺序
+  （种子升序）、代表图（组内首元素 = 种子）与未成组集合上一致；组内其余成员
+  为规范序（种子在前、其余按输入序），与全量的 BFS 发现序不承诺逐位相同。
+  由 `GatherCoreTests/Similarity/IncrementalClustererTests.swift` 的随机
+  200 步对账矩阵强制。
+- 复杂度：邻域探测 O(|added| × n)，受影响分量局部重算 O(k²)；未受影响分量
+  直接复用旧簇。若整库同属一个巨型分量，增量与全量同阶（无收益），后续可用
+  LSH 候选桶降到亚二次。
+
 ## 提交与 Pull Request
 
 提交信息建议遵循 Conventional Commits，例如：

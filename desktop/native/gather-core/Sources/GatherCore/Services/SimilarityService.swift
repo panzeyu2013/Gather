@@ -117,6 +117,7 @@ public final class SimilarityService {
     private let photoRepo: PhotoRepo
     private let sessionRepo: SessionRepo
     private let similarityResultRepo: SimilarityResultRepo
+    private let clusterStateRepo: SimilarityClusterStateRepo
     private let connection: DBConnection
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
@@ -153,6 +154,7 @@ public final class SimilarityService {
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
         similarityResultRepo: SimilarityResultRepo,
+        clusterStateRepo: SimilarityClusterStateRepo,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
@@ -170,6 +172,7 @@ public final class SimilarityService {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
         self.similarityResultRepo = similarityResultRepo
+        self.clusterStateRepo = clusterStateRepo
         self.connection = connection
         self.getNumber = getNumber
         self.thumbnailProvider = thumbnailProvider
@@ -357,9 +360,15 @@ public final class SimilarityService {
             if entries.isEmpty { throw SimilarityServiceError.noHashData }
 
             onProgress?(0, entries.count, "similarity.cluster")
-            let clustered = try clusterProvider(
-                entries, threshold, minGroupSize, HashGroupingMode(groupingMode),
-                { current, total in onProgress?(current, total, "similarity.cluster") }
+            // ROADMAP 1.3：参数匹配且未达收敛间隔时走邻域增量聚类，
+            // 否则全量重聚类（首次 / 参数变化 / 定期全局收敛）。
+            let clustered = try clusterEntries(
+                sessionId: sessionId,
+                entries: entries,
+                threshold: threshold,
+                minGroupSize: minGroupSize,
+                groupingMode: groupingMode,
+                onProgress: onProgress
             )
             if signal.aborted { throw JobCancelledError() }
 
@@ -599,7 +608,14 @@ public final class SimilarityService {
         }
         if entries.isEmpty { throw SimilarityServiceError.noHashRecluster }
 
-        let clustered = try clusterProvider(entries, threshold, minGroupSize, HashGroupingMode(groupingMode), nil)
+        let clustered = try clusterEntries(
+            sessionId: sessionId,
+            entries: entries,
+            threshold: threshold,
+            minGroupSize: minGroupSize,
+            groupingMode: groupingMode,
+            onProgress: nil
+        )
         let pathMap = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.filepath) })
         let built = buildStoredResult(
             rawGroups: clustered.groups,
@@ -638,6 +654,96 @@ public final class SimilarityService {
         }
 
         return built.result
+    }
+
+    // MARK: - 聚类决策（增量 / 全量）
+
+    /// 簇状态版本（ROADMAP 1.3）：该会话的增量聚类状态元数据；无状态返回 nil。
+    /// 供诊断与上层观测（版本号 / 连续增量次数 / 参数指纹）。
+    public func clusterVersion(sessionId: String) throws -> SimilarityClusterMetaRow? {
+        try clusterStateRepo.load(sessionId: sessionId)?.meta
+    }
+
+    /// 聚类决策：状态参数匹配且连续增量次数未达收敛间隔时，走 IncrementalClusterer
+    /// 的邻域局部更新；否则全量重聚类并重建状态。两条路径都落库簇状态与版本号。
+    /// 增量失败（状态损坏/非法哈希）退化为全量，不阻塞分析。
+    private func clusterEntries(
+        sessionId: String,
+        entries: [HashEntry],
+        threshold: Int,
+        minGroupSize: Int,
+        groupingMode: SimilarityGroupingMode,
+        onProgress: ProgressHandler?
+    ) throws -> ClusterResult {
+        let snapshot = try clusterStateRepo.load(sessionId: sessionId)
+        let convergenceInterval = max(1, Int(getNumber("similarity_cluster_convergence_interval", 10)))
+
+        if groupingMode == .global,
+           let snapshot,
+           snapshot.matches(
+                threshold: threshold,
+                minGroupSize: minGroupSize,
+                groupingMode: groupingMode.rawValue
+           ),
+           snapshot.meta.incrementalUpdates < convergenceInterval {
+            do {
+                let outcome = try IncrementalClusterer.update(
+                    state: snapshot.state,
+                    entries: entries,
+                    minGroupSize: minGroupSize,
+                    threshold: threshold
+                )
+                let result = IncrementalClusterer.result(
+                    state: outcome.state, entries: entries, minGroupSize: minGroupSize
+                )
+                try clusterStateRepo.replace(
+                    sessionId: sessionId,
+                    threshold: threshold,
+                    minGroupSize: minGroupSize,
+                    groupingMode: groupingMode.rawValue,
+                    version: snapshot.meta.version + 1,
+                    incrementalUpdates: snapshot.meta.incrementalUpdates + 1,
+                    state: outcome.state
+                )
+                let summary = outcome.summary
+                GatherLogger.log(
+                    "Similarity incremental clustering: added=\(summary.addedCount) removed=\(summary.removedCount) changed=\(summary.changedCount) recomputed=\(summary.recomputedComponentCount) reused=\(summary.reusedComponentCount) version=\(snapshot.meta.version + 1)",
+                    level: .info
+                )
+                return result
+            } catch {
+                GatherLogger.log("Similarity incremental clustering fell back to full: \(error)", level: .warn)
+            }
+        }
+
+        let clustered = try clusterProvider(
+            entries, threshold, minGroupSize, HashGroupingMode(groupingMode),
+            { current, total in onProgress?(current, total, "similarity.cluster") }
+        )
+        if groupingMode == .global {
+            do {
+                let state = try IncrementalClusterer.buildState(
+                    entries: entries, minGroupSize: minGroupSize, threshold: threshold
+                )
+                try clusterStateRepo.replace(
+                    sessionId: sessionId,
+                    threshold: threshold,
+                    minGroupSize: minGroupSize,
+                    groupingMode: groupingMode.rawValue,
+                    version: (snapshot?.meta.version ?? 0) + 1,
+                    incrementalUpdates: 0,
+                    state: state
+                )
+            } catch {
+                // 状态落库属于加速设施：失败不影响已算出的结果（下次全量重来）。
+                GatherLogger.log("Similarity cluster state persist failed: \(error)", level: .warn)
+                try? clusterStateRepo.delete(sessionId: sessionId)
+            }
+        } else {
+            // sequential 模式没有增量设施（前缀 run 语义），清状态强制下次全量。
+            try? clusterStateRepo.delete(sessionId: sessionId)
+        }
+        return clustered
     }
 
     // MARK: - 内部

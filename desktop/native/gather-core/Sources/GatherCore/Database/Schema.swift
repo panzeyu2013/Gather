@@ -299,6 +299,28 @@ public enum SchemaSQL {
       PRIMARY KEY (result_id, photo_id)
     );
 
+    CREATE TABLE IF NOT EXISTS similarity_cluster_state (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      -- 故意不加 photos 外键：照片删除后残留行是增量 diff 的"已移除"依据，
+      -- 由状态重写（replace）整体清理；级联删除会让移除事件不可见。
+      photo_id TEXT NOT NULL,
+      hash_hex TEXT NOT NULL,
+      component_index INTEGER NOT NULL,
+      group_seed TEXT,
+      PRIMARY KEY (session_id, photo_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS similarity_cluster_meta (
+      session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+      param_threshold INTEGER NOT NULL,
+      param_min_group_size INTEGER NOT NULL,
+      grouping_mode TEXT NOT NULL,
+      member_count INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 0,
+      incremental_updates INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS writeback_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       photo_id TEXT NOT NULL,
@@ -549,6 +571,7 @@ public enum SchemaSQL {
     CREATE INDEX IF NOT EXISTS idx_similarity_results_session ON similarity_results(session_id);
     CREATE INDEX IF NOT EXISTS idx_similarity_members_session_photo ON similarity_result_members(session_id, photo_id);
     CREATE INDEX IF NOT EXISTS idx_similarity_members_result_group ON similarity_result_members(result_id, group_index);
+    CREATE INDEX IF NOT EXISTS idx_similarity_cluster_state_component ON similarity_cluster_state(session_id, component_index);
     CREATE INDEX IF NOT EXISTS idx_writeback_items_session ON writeback_items(session_id);
     CREATE INDEX IF NOT EXISTS idx_writeback_items_photo ON writeback_items(photo_id);
     CREATE INDEX IF NOT EXISTS idx_persons_name ON persons(name);

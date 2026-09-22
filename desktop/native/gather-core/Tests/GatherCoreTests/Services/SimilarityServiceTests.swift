@@ -111,6 +111,7 @@ private func makeHarness(
         photoRepo: PhotoRepo(connection: db),
         sessionRepo: sessionRepo,
         similarityResultRepo: SimilarityResultRepo(connection: db),
+        clusterStateRepo: SimilarityClusterStateRepo(connection: db),
         connection: db,
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
         thumbnailProvider: thumbnail,
@@ -426,6 +427,7 @@ struct SimilarityGetResultTests {
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
             similarityResultRepo: resultRepo,
+            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db
         )
 
@@ -492,6 +494,7 @@ struct SimilarityGetResultTests {
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
             similarityResultRepo: SimilarityResultRepo(connection: db),
+            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db
         )
 
@@ -518,6 +521,7 @@ struct SimilarityGetResultTests {
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
             similarityResultRepo: resultRepo,
+            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db
         )
 
@@ -556,6 +560,7 @@ struct SimilarityGetResultTests {
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
             similarityResultRepo: resultRepo,
+            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db
         )
         #expect(try service.hasResult(sessionId: "session") == false)
@@ -678,6 +683,7 @@ struct SimilarityServiceRobustnessTests {
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
             similarityResultRepo: SimilarityResultRepo(connection: db),
+            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db
         )
 

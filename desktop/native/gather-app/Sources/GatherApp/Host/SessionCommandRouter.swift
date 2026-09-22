@@ -191,6 +191,7 @@ public final class SessionCommandRouter: CommandRouter {
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
             similarityResultRepo: similarityResultRepo,
+            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db,
             getNumber: { key, defaultValue in
                 settingsService.getNumber(key, defaultValue: defaultValue)

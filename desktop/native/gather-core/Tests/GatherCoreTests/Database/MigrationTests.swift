@@ -65,8 +65,8 @@ private func tempDir() throws -> String {
 struct MigrationTests {
     @Test func emptyDatabaseMatchesSnapshot() throws {
         let snapshot = try loadSnapshot()
-        #expect(snapshot.schemaVersion == 32)
-        #expect(snapshot.tables.count == 41)
+        #expect(snapshot.schemaVersion == 33)
+        #expect(snapshot.tables.count == 43)
 
         let db = try DBConnection(path: ":memory:")
         try MigrationRunner().migrate(db)
@@ -90,7 +90,7 @@ struct MigrationTests {
         try runner.migrate(db)
         defer { db.close() }
 
-        #expect(try schemaVersion(db) == 32)
+        #expect(try schemaVersion(db) == 33)
         #expect(try tableNames(db).count == loadSnapshot().tables.count)
     }
 
@@ -140,7 +140,7 @@ struct MigrationTests {
         try MigrationRunner().migrate(db)
         defer { db.close() }
 
-        #expect(try schemaVersion(db) == 32)
+        #expect(try schemaVersion(db) == 33)
         #expect(try !tableExists(db, "__face_cluster_members_old"))
         let cols = try tableColumnNames(db, "face_cluster_members")
         #expect(cols.contains("observation_id"))
@@ -153,7 +153,7 @@ struct MigrationTests {
         #expect(row?[3].textValue == "p1")
         #expect(row?[5].intValue == nil, "旧表无 observation_id 列，应回填 NULL")    }
 
-    @Test func midVersionJump30To32() throws {
+    @Test func midVersionJump30To33() throws {
         let db = try DBConnection(path: ":memory:")
         try db.exec("""
             CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
@@ -162,7 +162,7 @@ struct MigrationTests {
         try MigrationRunner().migrate(db)
         defer { db.close() }
 
-        #expect(try schemaVersion(db) == 32)
+        #expect(try schemaVersion(db) == 33)
         #expect(try tableColumnNames(db, "sessions").contains("reload_acked_at"))
         let applied = try db.prepare("SELECT applied_at FROM schema_version WHERE version = 31").get()
         #expect(applied?[0].textValue?.isEmpty == false)
@@ -181,7 +181,7 @@ struct MigrationTests {
         try MigrationRunner().migrate(db)
         defer { db.close() }
 
-        #expect(try schemaVersion(db) == 32)
+        #expect(try schemaVersion(db) == 33)
         #expect(try !indexExists(db, "idx_photos_session_filepath"),
             "存在重复 (session_id, filepath) 时不得创建唯一索引")
     }
@@ -238,7 +238,7 @@ struct MigrationTests {
         runner.afterMigrateHook = { throw DBError.message("Injected migration failure") }
         #expect(throws: DBError.self) { try runner.migrate(db) }
 
-        // 恢复后连接自动重开，迁移前数据完好、版本未动、v32 索引不存在。
+        // 恢复后连接自动重开，迁移前数据完好、版本未动、v33 表不存在。
         #expect(try schemaVersion(db) == 0)
         let marker = try db.prepare("SELECT v FROM marker WHERE id = 1").get()
         #expect(marker?[0].textValue == "pre")
@@ -246,7 +246,7 @@ struct MigrationTests {
 
         // 备份文件存在且通过 integrity_check；-wal/-shm 已清理。
         let backups = try FileManager.default.contentsOfDirectory(atPath: dir)
-            .filter { $0.hasPrefix("test.db.pre-v32-") && $0.hasSuffix(".bak") }
+            .filter { $0.hasPrefix("test.db.pre-v33-") && $0.hasSuffix(".bak") }
         #expect(backups.count == 1)
         let backup = try DBConnection(path: dir + "/" + backups[0])
         defer { backup.close() }
@@ -257,7 +257,7 @@ struct MigrationTests {
 
         // 恢复后的库必须可重新迁移（TS：失败后下一次启动照常重跑迁移）。
         try MigrationRunner(databaseFilePath: dbPath).migrate(db)
-        #expect(try schemaVersion(db) == 32)
+        #expect(try schemaVersion(db) == 33)
         #expect(try tableExists(db, "sessions"))
 
         db.close()
@@ -270,7 +270,7 @@ struct MigrationTests {
 
         // 预置 4 个旧备份（不同 mtime），迁移成功后应只剩最新 3 个。
         for i in 0..<4 {
-            let path = dir + "/gather.db.pre-v32-\(1700000000000 + Int64(i)).bak"
+            let path = dir + "/gather.db.pre-v33-\(1700000000000 + Int64(i)).bak"
             try Data("old".utf8).write(to: URL(fileURLWithPath: path))
         }
         let db = try DBConnection(path: dbPath)
@@ -278,7 +278,7 @@ struct MigrationTests {
         defer { db.close() }
 
         let remaining = try FileManager.default.contentsOfDirectory(atPath: dir)
-            .filter { $0.hasPrefix("gather.db.pre-v32-") && $0.hasSuffix(".bak") }
+            .filter { $0.hasPrefix("gather.db.pre-v33-") && $0.hasSuffix(".bak") }
         #expect(remaining.count == 3, "应只保留最新 3 个备份，实际: \(remaining)")
     }
 }

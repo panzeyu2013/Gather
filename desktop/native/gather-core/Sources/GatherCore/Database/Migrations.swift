@@ -11,7 +11,7 @@ import Foundation
 import CSQLite
 
 public struct MigrationRunner {
-    public static let currentSchemaVersion = 32
+    public static let currentSchemaVersion = 33
 
     /// 数据库文件路径（TS: app.getPath('userData')/gather.db）。为 nil 时跳过
     /// 备份/回滚（内存库或测试场景），迁移仍正常执行。
@@ -909,6 +909,49 @@ public struct MigrationRunner {
             currentVersion = 32
         }
 
+        // ── Version 33: 增量聚类状态与簇版本（ROADMAP 1.3）──
+        // similarity_cluster_state 保存每张已哈希照片的分量归属与组种子
+        // （group_seed NULL = 未成组），similarity_cluster_meta 保存参数指纹
+        // （阈值/组大小/分组模式）+ 版本号 + 连续增量次数（定期全局收敛计数）。
+        // 新库经 SchemaSQL.schemaSQL 直接建，存量库在此补建（IF NOT EXISTS 幂等）。
+        if currentVersion < 33 {
+            try db.transaction {
+                try db.exec("""
+                    CREATE TABLE IF NOT EXISTS similarity_cluster_state (
+                      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                      -- 故意不加 photos 外键：照片删除后的残留行是增量 diff 的
+                      -- "已移除"依据，由状态重写整体清理。
+                      photo_id TEXT NOT NULL,
+                      hash_hex TEXT NOT NULL,
+                      component_index INTEGER NOT NULL,
+                      group_seed TEXT,
+                      PRIMARY KEY (session_id, photo_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS similarity_cluster_meta (
+                      session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                      param_threshold INTEGER NOT NULL,
+                      param_min_group_size INTEGER NOT NULL,
+                      grouping_mode TEXT NOT NULL,
+                      member_count INTEGER NOT NULL DEFAULT 0,
+                      version INTEGER NOT NULL DEFAULT 0,
+                      incremental_updates INTEGER NOT NULL DEFAULT 0,
+                      updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_similarity_cluster_state_component
+                      ON similarity_cluster_state(session_id, component_index);
+                    """)
+                try assertColumns(db, "similarity_cluster_state", [
+                    "session_id", "photo_id", "hash_hex", "component_index", "group_seed",
+                ])
+                try assertColumns(db, "similarity_cluster_meta", [
+                    "session_id", "param_threshold", "param_min_group_size", "grouping_mode",
+                    "member_count", "version", "incremental_updates", "updated_at",
+                ])
+                try setSchemaVersion(db, 33)
+            }
+            currentVersion = 33
+        }
+
         if currentVersion != Self.currentSchemaVersion {
             throw DBError.message("Unexpected schema version \(currentVersion)")
         }
@@ -1291,6 +1334,8 @@ public struct MigrationRunner {
             ("culling_history", ["session_id", "operation_json"]),
             ("asset_backfill_state", ["session_id", "last_photo_rowid", "status"]),
             ("analysis_runs", ["session_id", "kind", "index_seq", "status"]),
+            ("similarity_cluster_state", ["session_id", "photo_id", "component_index", "group_seed"]),
+            ("similarity_cluster_meta", ["session_id", "version", "incremental_updates"]),
         ] {
             try assertColumns(db, table, columns)
         }

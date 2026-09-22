@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 32,
+  "schemaVersion": 33,
   "tables": [
     "analysis_jobs",
     "analysis_runs",
@@ -36,6 +36,8 @@
     "sidecar_binding_files",
     "sidecar_bindings",
     "sidecar_metadata_state",
+    "similarity_cluster_meta",
+    "similarity_cluster_state",
     "similarity_hashes",
     "similarity_result_members",
     "similarity_results",
