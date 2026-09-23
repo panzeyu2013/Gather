@@ -262,3 +262,8 @@ app 侧剩余 3 处（两次尝试都卡在这里，均已定位到行）：
 2. @@SimilarityService/DuplicateService/FaceKwService@@ 的 @@ProgressHandler = (Int, Int, String) -> Void@@ 是**同步类型**，而路由里传给它们的闭包已含 @@await context.updateProgress(...)@@ → 二选一：
    a) 类型改为 @@(Int, Int, String) async -> Void@@，并给 20+ 处 @@onProgress?(...)@@ 加 @@await@@（含 719/870 行嵌套闭包，级联较深）；
    b) **推荐**：保持 progress 回调同步，把 @@JobRunContext.updateProgress/flushProgress/updateCheckpoint@@ 改为「同步入队 + 后台 Task 落库」（现有节流字段 @@pendingProgress/lastProgressWriteAt@@ 已具备基础），这样 3 个服务的 handler 与路由闭包都不用动，只有 @@claim/heartbeat/finish/beginRun/get@@ 等返回值敏感的调用需要 async。
+
+**round 57 追加定位（app 侧还有 2 处直连 JobService 的调用点）**
+- `SimilarityViewModel.listSimilarityJobs(sessionId:)`（同步）直接调用 `router.jobService.list()`（已 async）→ 需异步化并同步更新其 provider 协议/实现与测试调用点。
+- `SimilarityViewModel` 的 `router.execute("sim.cancel_analysis")`（第 111 行附近）随该命令迁入 `executeAsync` 后需改为异步续体调用（否则运行时 NOT_IMPLEMENTED）。
+- 结论：本切片的 app 侧共 5 类改动点（makeDefault 参数 + AppContainer.jobs、3 个服务的 ProgressHandler 同步性、GatherApp importFiles 异步化与闭包 Task 包装、SimilarityViewModel 2 处直连调用）；core 侧转换链已验证可全绿（821/115）。
