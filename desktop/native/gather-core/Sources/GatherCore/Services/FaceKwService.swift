@@ -444,7 +444,7 @@ public final class FaceKwService {
 
     private let photoRepo: PhotoRepo
     private let sessionRepo: SessionRepo
-    private let faceRepo: FaceRepo
+    private let faceStore: any FaceStore
     private let personStore: any PersonStore
     private let connection: DBConnection
     /// TS: SettingsService.getNumber 注入。
@@ -488,7 +488,7 @@ public final class FaceKwService {
     public init(
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
-        faceRepo: FaceRepo,
+        faceStore: any FaceStore,
         personStore: any PersonStore,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
@@ -503,7 +503,7 @@ public final class FaceKwService {
     ) {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
-        self.faceRepo = faceRepo
+        self.faceStore = faceStore
         self.personStore = personStore
         self.connection = connection
         self.getNumber = getNumber
@@ -593,13 +593,13 @@ public final class FaceKwService {
                 previewMaxDimension: previewMaxDimension
             )
 
-            var cachedByPhoto: [String: [FaceObservationRow]] = [:]
-            for observation in try faceRepo.getObservations(sessionId) {
+            var cachedByPhoto: [String: [FaceObservationRecord]] = [:]
+            for observation in try await faceStore.observations(sessionId: sessionId) {
                 var values = cachedByPhoto[observation.photoId] ?? []
                 values.append(observation)
                 cachedByPhoto[observation.photoId] = values
             }
-            var analysisStates = try faceRepo.getAnalysisStates(sessionId)
+            var analysisStates = try await faceStore.analysisStates(sessionId: sessionId)
 
             let totalPhotos = snapshot.photos.count
             // 文件 stat：ENOENT 视为缺失（清观察，防陈旧聚类）；其他失败
@@ -619,8 +619,8 @@ public final class FaceKwService {
             }
             if !missingPhotoIds.isEmpty {
                 for photoId in missingPhotoIds {
-                    try faceRepo.deleteObservationsByPhoto(sessionId: sessionId, photoId: photoId)
-                    try faceRepo.deleteAnalysisStateByPhoto(sessionId: sessionId, photoId: photoId)
+                    try await faceStore.deleteObservationsByPhoto(sessionId: sessionId, photoId: photoId)
+                    try await faceStore.deleteAnalysisStateByPhoto(sessionId: sessionId, photoId: photoId)
                     analysisStates.removeValue(forKey: photoId)
                     cachedByPhoto.removeValue(forKey: photoId)
                 }
@@ -631,21 +631,21 @@ public final class FaceKwService {
             }
 
             // 跨会话复用查找：一次批量 IN 查询代替逐照片 SELECT（TS 同款）。
-            var reuseTargets: [FaceReuseTarget] = []
+            var reuseTargets: [FaceReuseTargetInput] = []
             for photo in snapshot.photos {
                 guard case .ok(let size, let mtimeMs)? = sourceStats[photo.id] else { continue }
                 if Self.isCacheValid(
                     analysisStates[photo.id], sourceSize: size, sourceMtimeMs: mtimeMs,
                     analysisSignature: analysisSignature
                 ) { continue }
-                reuseTargets.append(FaceReuseTarget(
+                reuseTargets.append(FaceReuseTargetInput(
                     photoId: photo.id,
                     assetFileId: photo.assetFileId,
                     sourceFileSize: size,
                     sourceFileMtimeMs: mtimeMs
                 ))
             }
-            let reuseResults = try faceRepo.reuseObservationsForAssetFile(
+            let reuseResults = try await faceStore.reuseObservations(
                 sessionId: sessionId,
                 targets: reuseTargets,
                 analysisSignature: analysisSignature
@@ -654,7 +654,7 @@ public final class FaceKwService {
             for target in reuseTargets {
                 guard let reused = reuseResults[target.photoId], reused.reused else { continue }
                 reusedAcrossSessions = true
-                analysisStates[target.photoId] = FaceAnalysisState(
+                analysisStates[target.photoId] = FaceAnalysisStateRecord(
                     sourceFileSize: target.sourceFileSize,
                     sourceFileMtimeMs: target.sourceFileMtimeMs,
                     analysisSignature: analysisSignature
@@ -662,7 +662,7 @@ public final class FaceKwService {
             }
             if reusedAcrossSessions {
                 cachedByPhoto.removeAll()
-                for observation in try faceRepo.getObservations(sessionId) {
+                for observation in try await faceStore.observations(sessionId: sessionId) {
                     var values = cachedByPhoto[observation.photoId] ?? []
                     values.append(observation)
                     cachedByPhoto[observation.photoId] = values
@@ -677,8 +677,9 @@ public final class FaceKwService {
                 )
             }
             let clusterSignature = "\(epsValue):\(Int(minPtsValue))"
-            let signatureMatches = (try? faceRepo.getClusterSignature(sessionId)) == clusterSignature
-            let hasClusters = try !faceRepo.getClusters(sessionId).isEmpty
+            let signatureMatches = (try? await faceStore.clusterSignature(sessionId: sessionId)) == clusterSignature
+            let existingClusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: false)
+            let hasClusters = !existingClusters.isEmpty
             if missingPhotoIds.isEmpty && photosNeedingAnalysis.isEmpty && signatureMatches && hasClusters {
                 onProgress?(totalPhotos, totalPhotos, "face.cached-clusters")
                 try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
@@ -716,7 +717,7 @@ public final class FaceKwService {
 
             // TS: applyInferenceResult（替换旧观察只在推理成功之后；失败批次
             // 不得摧毁该照片先前有效的检测）。
-            func applyInferenceResult(index: Int, item: FaceInferenceItem) {
+            func applyInferenceResult(index: Int, item: FaceInferenceItem) async {
                 let photo = snapshot.photos[index]
                 guard case .ok(let size, let mtimeMs)? = sourceStats[photo.id] else { return }
                 if item.error != nil {
@@ -739,12 +740,12 @@ public final class FaceKwService {
                             analysisSignature: analysisSignature
                         )
                     }
-                    _ = try faceRepo.replaceObservationsByPhoto(
+                    _ = try await faceStore.replaceObservationsByPhoto(
                         sessionId: sessionId, photoId: photo.id, observations: observations)
                     if !item.observations.isEmpty {
                         totalFaces += item.observations.count
                     }
-                    try faceRepo.upsertAnalysisState(
+                    try await faceStore.upsertAnalysisState(
                         sessionId: sessionId,
                         photoId: photo.id,
                         sourceFileSize: size,
@@ -775,7 +776,7 @@ public final class FaceKwService {
                     throw FaceKwServiceError.workersInitFailed
                 }
                 for b in 0..<indices.count {
-                    applyInferenceResult(index: indices[b], item: results[b])
+                    await applyInferenceResult(index: indices[b], item: results[b])
                 }
             }
 
@@ -836,7 +837,7 @@ public final class FaceKwService {
                 clearOnEmpty: !analysisFailed,
                 onProgress: { current, total in onProgress?(current, total, "face.cluster") }
             )
-            try faceRepo.upsertClusterSignature(sessionId: sessionId, signature: clusterSignature)
+            try await faceStore.upsertClusterSignature(sessionId: sessionId, signature: clusterSignature)
 
             if analysisFailed {
                 try sessionRepo.updateAnalysisStatus(id: sessionId, status: "failed")
@@ -862,19 +863,19 @@ public final class FaceKwService {
         guard try sessionRepo.get(id: sessionId) != nil else {
             throw FaceKwServiceError.sessionNotFound
         }
-        if try faceRepo.getObservations(sessionId).isEmpty {
+        if try await faceStore.observations(sessionId: sessionId).isEmpty {
             throw FaceKwServiceError.noObservations
         }
         let photos = PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId))
         try await clusterStoredObservations(
             sessionId: sessionId, photos: photos, eps: eps, minPts: Int(minPts),
             signal: nil, clearOnEmpty: true, onProgress: nil)
-        try faceRepo.upsertClusterSignature(sessionId: sessionId, signature: "\(eps):\(Int(minPts))")
+        try await faceStore.upsertClusterSignature(sessionId: sessionId, signature: "\(eps):\(Int(minPts))")
     }
 
     /// TS: getClusters（fkw.clusters）。成员截断至预览窗口，size 保持精确总数。
-    public func getClusters(sessionId: String) throws -> [FaceClusterData] {
-        let clusters = try faceRepo.getClusters(sessionId, includeMembers: true)
+    public func getClusters(sessionId: String) async throws -> [FaceClusterData] {
+        let clusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: true)
         return clusters.map { cluster in
             let previewMembers = Array((cluster.members ?? []).prefix(Self.maxPreviewMembers))
             return FaceClusterData(
@@ -904,13 +905,13 @@ public final class FaceKwService {
 
     /// 批量照片的人脸观测计数（photo.id → 数量），供宿主 photo 列表分页附带
     /// faceCount（TS photo.ipc.ts assemblePhotos 的人脸计数小查询下沉）。
-    public func faceCounts(sessionId: String, photoIds: [String]) throws -> [String: Int] {
-        try faceRepo.countsByPhoto(sessionId: sessionId, photoIds: photoIds)
+    public func faceCounts(sessionId: String, photoIds: [String]) async throws -> [String: Int] {
+        try await faceStore.countsByPhoto(sessionId: sessionId, photoIds: photoIds)
     }
 
     /// TS: bindCluster（fkw.bind）。绑定后把角色桥接进人物库（best-effort）。
     public func bindCluster(sessionId: String, clusterId: Int64, roleName: String, keywords: [String]) async throws {
-        let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
+        let clusterSessionId = try await faceStore.clusterSessionId(clusterId: clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
         let normalizedRoleName = roleName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -921,11 +922,11 @@ public final class FaceKwService {
         let dedupedKeywords = keywords
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
-        try faceRepo.updateBinding(clusterId: clusterId, roleName: normalizedRoleName, keywords: dedupedKeywords)
+        try await faceStore.updateBinding(clusterId: clusterId, roleName: normalizedRoleName, keywords: dedupedKeywords)
         // 角色桥接进人物库（「人脸库」页不孤立）：按角色名 upsert 人物并挂接
         // 集群照片。Best-effort —— 桥接失败不得使绑定本身失败。
         do {
-            let members = try faceRepo.getClusterMembers(clusterId)
+            let members = try await faceStore.clusterMembers(clusterId: clusterId)
             let personId = try await personStore.upsertByName(name: normalizedRoleName, keywords: dedupedKeywords)
             try await personStore.addPhotos(
                 personId: personId,
@@ -941,10 +942,10 @@ public final class FaceKwService {
 
     /// TS: unbindCluster（fkw.unbind 的服务层步骤；解除绑定并重算人物库）。
     public func unbindCluster(sessionId: String, clusterId: Int64) async throws {
-        let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
+        let clusterSessionId = try await faceStore.clusterSessionId(clusterId: clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
-        try faceRepo.deleteBinding(clusterId: clusterId)
+        try await faceStore.deleteBinding(clusterId: clusterId)
         // 不再被角色绑定覆盖的照片从人物库摘除。Best-effort。
         do {
             try await personStore.reconcileSession(sessionId: sessionId)
@@ -960,7 +961,7 @@ public final class FaceKwService {
         guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
         // getClusters(includeMembers=true) 是一次昂贵的批量读；结果同时用于
         // 目标查找与剩余已绑定集群的扫描（TS 注释 133-135）。
-        let clusters = try faceRepo.getClusters(sessionId, includeMembers: true)
+        let clusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: true)
         guard let cluster = clusters.first(where: { $0.id == clusterId }) else {
             throw FaceKwServiceError.clusterNotFound
         }
@@ -996,13 +997,13 @@ public final class FaceKwService {
     /// TS: mergeClusters（fkw.merge）。
     public func mergeClusters(sessionId: String, sourceId: Int64, targetId: Int64) async throws {
         if sourceId == targetId { throw FaceKwServiceError.selfMerge }
-        let sourceSessionId = try faceRepo.getClusterSessionId(sourceId)
-        let targetSessionId = try faceRepo.getClusterSessionId(targetId)
+        let sourceSessionId = try await faceStore.clusterSessionId(clusterId: sourceId)
+        let targetSessionId = try await faceStore.clusterSessionId(clusterId: targetId)
         guard let sourceSessionId, let targetSessionId else { throw FaceKwServiceError.clusterNotFound }
         if sourceSessionId != sessionId || targetSessionId != sessionId {
             throw FaceKwServiceError.clusterNotInSession
         }
-        try faceRepo.mergeClusters(sourceId: sourceId, targetId: targetId)
+        try await faceStore.mergeClusters(sourceId: sourceId, targetId: targetId)
         // 移入目标集群的照片归属目标角色；源角色失去它们。Best-effort。
         do {
             try await personStore.reconcileSession(sessionId: sessionId)
@@ -1013,10 +1014,10 @@ public final class FaceKwService {
 
     /// TS: removeMember（fkw.remove_member）。
     public func removeMember(sessionId: String, clusterId: Int64, memberId: Int64) async throws {
-        let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
+        let clusterSessionId = try await faceStore.clusterSessionId(clusterId: clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
-        if !(try faceRepo.removeMemberFromCluster(clusterId: clusterId, memberId: memberId)) {
+        if !(try await faceStore.removeMemberFromCluster(clusterId: clusterId, memberId: memberId)) {
             throw FaceKwServiceError.clusterMemberNotFound
         }
         // 被移除成员的照片不再被该集群的角色绑定覆盖。Best-effort。
@@ -1040,7 +1041,7 @@ public final class FaceKwService {
         options: FaceKwWritebackOptions?
     ) async throws -> FaceKwWritebackPreview {
         guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
-        let clusters = try faceRepo.getClusters(sessionId, includeMembers: true)
+        let clusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: true)
         let additions = Self.buildFaceKeywordAdditions(clusters)
         let boundPhotoIds = Set(additions.keys)
         return try await writebackProvider.preview(
@@ -1092,7 +1093,7 @@ public final class FaceKwService {
         clearOnEmpty: Bool,
         onProgress: ((Int, Int) -> Void)?
     ) async throws {
-        let observations = try faceRepo.getObservations(sessionId)
+        let observations = try await faceStore.observations(sessionId: sessionId)
         let observationById = Dictionary(uniqueKeysWithValues: observations.map { ($0.id, $0) })
         let photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.filepath) })
 
@@ -1133,15 +1134,15 @@ public final class FaceKwService {
         }
         if clusterInputs.isEmpty {
             // 分析成功但无脸时不应留下陈旧集群；全失败 run 则保留（TS 注释）。
-            if clearOnEmpty { try faceRepo.deleteClustersBySession(sessionId) }
+            if clearOnEmpty { try await faceStore.deleteClustersBySession(sessionId) }
             return
         }
 
         // 新结果就绪才替换旧集群（TS 注释 689-693）：用户绑定的角色经成员
         // 重叠迁移，否则重新聚类后绑定会静默消失。
-        let previousBindings = try faceRepo.getBindingsBySession(sessionId)
-        try faceRepo.deleteClustersBySession(sessionId)
-        let newClusterIds = try faceRepo.saveClusters(sessionId: sessionId, clusters: clusterInputs)
+        let previousBindings = try await faceStore.bindingsBySession(sessionId)
+        try await faceStore.deleteClustersBySession(sessionId)
+        let newClusterIds = try await faceStore.saveClusters(sessionId: sessionId, clusters: clusterInputs)
         if !previousBindings.isEmpty {
             let membersByCluster = newClusterIds.enumerated().map { index, clusterId in
                 (
@@ -1151,7 +1152,7 @@ public final class FaceKwService {
                     )
                 )
             }
-            migrateBindings(previousBindings, newMembers: membersByCluster)
+            await migrateBindings(previousBindings, newMembers: membersByCluster)
         }
     }
 
@@ -1161,7 +1162,7 @@ public final class FaceKwService {
     private func migrateBindings(
         _ previousBindings: [FaceBindingDetail],
         newMembers: [(clusterId: Int64, photoIds: Set<String>)]
-    ) {
+    ) async {
         var candidates: [(binding: FaceBindingDetail, clusterId: Int64, overlap: Int)] = []
         for binding in previousBindings {
             let memberPhotos = Set(binding.memberPhotoIds)
@@ -1184,7 +1185,7 @@ public final class FaceKwService {
             claimedClusters.insert(candidate.clusterId)
             migratedBindings.insert(candidate.binding.clusterId)
             do {
-                try faceRepo.updateBinding(
+                try await faceStore.updateBinding(
                     clusterId: candidate.clusterId,
                     roleName: candidate.binding.roleName,
                     keywords: candidate.binding.keywords
@@ -1223,7 +1224,7 @@ public final class FaceKwService {
     }
 
     /// TS: buildFaceKeywordAdditions（fkw.preview 的写回规划）。
-    public static func buildFaceKeywordAdditions(_ clusters: [FaceClusterRow]) -> [String: [String]] {
+    public static func buildFaceKeywordAdditions(_ clusters: [FaceClusterRecord]) -> [String: [String]] {
         var additions: [String: [String]] = [:]
         for cluster in clusters {
             guard let binding = cluster.binding else { continue }
@@ -1306,7 +1307,7 @@ public final class FaceKwService {
 
     /// TS: isCacheValid（观察/状态与文件状态、签名一致）。
     private static func isCacheValid(
-        _ state: FaceAnalysisState?,
+        _ state: FaceAnalysisStateRecord?,
         sourceSize: Int64,
         sourceMtimeMs: Double,
         analysisSignature: String

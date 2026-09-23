@@ -52,14 +52,14 @@ public final class SessionService {
 
     private let sessionRepo: SessionRepo
     private let photoRepo: PhotoRepo
-    private let faceRepo: FaceRepo
+    private let faceStore: any FaceStore
     private let assetRepo: AssetRepo?
     private let connection: DBConnection
 
     public init(
         sessionRepo: SessionRepo,
         photoRepo: PhotoRepo,
-        faceRepo: FaceRepo,
+        faceStore: any FaceStore,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         dimensionsProvider: @escaping (String) throws -> (width: Int, height: Int) = { _ in
@@ -69,7 +69,7 @@ public final class SessionService {
     ) {
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
-        self.faceRepo = faceRepo
+        self.faceStore = faceStore
         self.connection = connection
         self.getNumber = getNumber
         self.dimensionsProvider = dimensionsProvider
@@ -120,8 +120,11 @@ public final class SessionService {
         return try toSessionData(row)
     }
 
-    public func deleteSession(_ sessionId: String, confirmed: Bool) throws {
+    public func deleteSession(_ sessionId: String, confirmed: Bool) async throws {
         if !confirmed { throw SessionServiceError.deleteNotConfirmed }
+        // 人脸数据由 Store 连接清理（跨连接不共享事务）；其余依赖 + 会话行
+        // 仍在旧连接的单个事务内完成，删除顺序与 ON DELETE 约束保持一致。
+        try await deleteFaceData(sessionId)
         try connection.transaction {
             try deleteSessionDependencies(sessionId)
             let deleted = try sessionRepo.delete(id: sessionId)
@@ -136,8 +139,11 @@ public final class SessionService {
         }
     }
 
-    public func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws -> Int {
+    public func deleteSessions(_ sessionIds: [String], confirmed: Bool) async throws -> Int {
         if !confirmed { throw SessionServiceError.deleteNotConfirmed }
+        for id in sessionIds {
+            try await deleteFaceData(id)
+        }
         return try connection.transaction {
             for id in sessionIds {
                 try deleteSessionDependencies(id)
@@ -156,10 +162,14 @@ public final class SessionService {
 
     /// 按依赖顺序删除所有引用 photos(id)/face_observations(id) 且无
     /// ON DELETE 动作的行；foreign_keys = ON 下必须先于 photoRepo.deleteBySession。
+    /// face_cluster_members 引用 face_observations，簇必须先于观测删除（Store 连接）。
+    private func deleteFaceData(_ sessionId: String) async throws {
+        try await faceStore.deleteClustersBySession(sessionId)
+        try await faceStore.deleteObservationsBySession(sessionId)
+    }
+
+    /// 删除其余依赖行（旧连接事务内；顺序满足 ON DELETE 约束）。
     private func deleteSessionDependencies(_ sessionId: String) throws {
-        // face_cluster_members 引用 face_observations，簇必须先于观测删除。
-        try faceRepo.deleteClustersBySession(sessionId)
-        try faceRepo.deleteObservationsBySession(sessionId)
         // similarity_hashes 无级联引用 photos。
         try sessionRepo.deleteSimilarityDataBySession(sessionId: sessionId)
         _ = try connection.prepare("DELETE FROM person_embeddings WHERE session_id = ?").run([.text(sessionId)])

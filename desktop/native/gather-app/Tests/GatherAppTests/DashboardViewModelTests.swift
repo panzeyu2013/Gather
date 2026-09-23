@@ -141,14 +141,16 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
     try MigrationRunner().migrate(db)
     let sessionRepo = SessionRepo(connection: db)
     let photoRepo = PhotoRepo(connection: db)
+    let storeDatabase = try SQLiteDatabase(path: path)
+    let container = AppContainer(database: storeDatabase)
     let provider = LiveDashboardDataProvider(
         sessionService: SessionService(
             sessionRepo: sessionRepo,
             photoRepo: photoRepo,
-            faceRepo: FaceRepo(connection: db),
+            faceStore: container.faces,
             connection: db
         ),
-        workspace: GatherAPI(container: AppContainer(database: try SQLiteDatabase(path: path))).workspace,
+        workspace: GatherAPI(container: container).workspace,
         jobService: JobService(repo: AnalysisJobRepo(connection: db))
     )
     return (provider, db)

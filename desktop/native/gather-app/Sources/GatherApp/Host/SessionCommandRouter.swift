@@ -191,6 +191,7 @@ public final class SessionCommandRouter: CommandRouter {
         workspace: WorkspaceAPI,
         persons: PersonsAPI,
         personStore: any PersonStore,
+        faceStore: any FaceStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -275,7 +276,7 @@ public final class SessionCommandRouter: CommandRouter {
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
-            faceRepo: FaceRepo(connection: db),
+            faceStore: faceStore,
             personStore: personStore,
             connection: db,
             getNumber: { key, defaultValue in
@@ -309,7 +310,7 @@ public final class SessionCommandRouter: CommandRouter {
             sessionService: SessionService(
                 sessionRepo: sessionRepo,
                 photoRepo: photoRepo,
-                faceRepo: FaceRepo(connection: db),
+                faceStore: faceStore,
                 connection: db,
                 dimensionsProvider: { path in
                     let dims = try RAWDecoder.getDimensions(path: path)
@@ -594,16 +595,6 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return try GatherCore.JSONValue(from: session)
 
-        case "session.delete":
-            let id = try requiredString(params, "sessionId")
-            try sessionService.deleteSession(id, confirmed: confirmed(params))
-            return .null
-
-        case "session.delete_many":
-            let ids = try requiredStringArray(params, "sessionIds")
-            _ = try sessionService.deleteSessions(ids, confirmed: confirmed(params))
-            return .null
-
         case "session.update":
             let id = try requiredString(params, "sessionId")
             let name = try requiredString(params, "name")
@@ -646,22 +637,6 @@ public final class SessionCommandRouter: CommandRouter {
             })
 
         // TS 源: photo.ipc.ts:96-112（键集分页；PAGE_SIZE=200 / MAX=1000）。
-        case "photo.list_page":
-            let sessionId = try requiredString(params, "sessionId")
-            let limit = clampedLimit(params, default: 200, max: 1_000)
-            let afterFirstRowid: Int64?
-            if let raw = try optionalNumber(params, "afterFirstRowid"), raw.isFinite {
-                afterFirstRowid = Int64(raw)
-            } else {
-                afterFirstRowid = nil
-            }
-            let expandVariants = optionalBool(params, "expandVariants") ?? false
-            let page = try photoRepo.getAssetPage(sessionId: sessionId, afterFirstRowid: afterFirstRowid, limit: limit)
-            return .object([
-                "rows": .array(assemblePhotoRows(page.rows, sessionId: sessionId, expandVariants: expandVariants)),
-                "cursor": page.cursor.map { .number(Double($0)) } ?? .null,
-            ])
-
         // ── workspace（3.1 服务层）──
 
         case "jobs.list":
@@ -824,12 +799,6 @@ public final class SessionCommandRouter: CommandRouter {
             return .bool(true)
 
         // ── fkw.*（TS 源 face-kw.ipc.ts）──
-
-        case "fkw.clusters":
-            // face-kw.ipc.ts:98-105 —— ok(getClusters(sessionId))。
-            let sessionId = try requiredString(params, "sessionId")
-            let clusters = try faceKwService.getClusters(sessionId: sessionId)
-            return try GatherCore.JSONValue(from: clusters)
 
         case "fkw.preview":
             // face-kw.ipc.ts:196-214 —— 写回预览（options ?? {}）。
@@ -1865,7 +1834,9 @@ public final class SessionCommandRouter: CommandRouter {
                     ))
                 } catch {
                     // TS: 入队失败回滚会话行，工作区列表不出现半成品会话。
-                    try? sessionService.deleteSession(session.id, confirmed: true)
+                    // R1/R2：删除依赖 face Store（async），经 Task 排队后抛出原始错误。
+                    let rollbackId = session.id
+                    Task { try? await sessionService.deleteSession(rollbackId, confirmed: true) }
                     throw error
                 }
                 let data = try GatherCore.JSONValue(from: session)
@@ -2189,6 +2160,89 @@ public final class SessionCommandRouter: CommandRouter {
                         try await faceKwService.removeMember(
                             sessionId: sessionId, clusterId: Int64(clusterId), memberId: Int64(memberId))
                         completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // ── photo.list_page（R1/R2：faceCount 经 FaceStore，异步路径）──
+
+        case "photo.list_page":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let limit = clampedLimit(params, default: 200, max: 1_000)
+                let afterFirstRowid: Int64?
+                if let raw = try optionalNumber(params, "afterFirstRowid"), raw.isFinite {
+                    afterFirstRowid = Int64(raw)
+                } else {
+                    afterFirstRowid = nil
+                }
+                let expandVariants = optionalBool(params, "expandVariants") ?? false
+                Task {
+                    do {
+                        let page = try photoRepo.getAssetPage(
+                            sessionId: sessionId, afterFirstRowid: afterFirstRowid, limit: limit)
+                        let rows = await assemblePhotoRows(
+                            page.rows, sessionId: sessionId, expandVariants: expandVariants)
+                        completion(WebResponse(ok: true, data: .object([
+                            "rows": .array(rows),
+                            "cursor": page.cursor.map { .number(Double($0)) } ?? .null,
+                        ])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // ── fkw.clusters（R1/R2：经 FaceStore，异步路径）──
+
+        case "fkw.clusters":
+            do {
+                // face-kw.ipc.ts:98-105 —— ok(getClusters(sessionId))。
+                let sessionId = try requiredString(params, "sessionId")
+                Task {
+                    do {
+                        let clusters = try await faceKwService.getClusters(sessionId: sessionId)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: clusters)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // ── session.delete*（R1/R2：删除依赖 face Store，异步路径）──
+
+        case "session.delete":
+            do {
+                let id = try requiredString(params, "sessionId")
+                let confirmedValue = confirmed(params)
+                Task {
+                    do {
+                        try await sessionService.deleteSession(id, confirmed: confirmedValue)
+                        completion(WebResponse(ok: true, data: .null))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "session.delete_many":
+            do {
+                let ids = try requiredStringArray(params, "sessionIds")
+                let confirmedValue = confirmed(params)
+                Task {
+                    do {
+                        _ = try await sessionService.deleteSessions(ids, confirmed: confirmedValue)
+                        completion(WebResponse(ok: true, data: .null))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                     }
@@ -2810,13 +2864,13 @@ public final class SessionCommandRouter: CommandRouter {
         _ rows: [PhotoPageRow],
         sessionId: String,
         expandVariants: Bool
-    ) -> [GatherCore.JSONValue] {
+    ) async -> [GatherCore.JSONValue] {
         let ids = rows.map(\.id)
         guard !ids.isEmpty else { return [] }
 
         // 角色与脸数小查询下沉 Repo/Service（原内联 SQL，P1-2 修复）。
         let memberRoles = (try? assetRepo.memberRoles(sessionId: sessionId, photoIds: ids)) ?? [:]
-        let faceCounts = (try? faceKwService.faceCounts(sessionId: sessionId, photoIds: ids)) ?? [:]
+        let faceCounts = (try? await faceKwService.faceCounts(sessionId: sessionId, photoIds: ids)) ?? [:]
 
         func toPhotoData(_ row: PhotoPageRow, variants: [PhotoPageRow]) -> GatherCore.JSONValue {
             var object: [String: GatherCore.JSONValue] = [

@@ -18,12 +18,15 @@ private struct SessionHarness {
 private func makeHarness(
     dimensions: @escaping (String) throws -> (width: Int, height: Int) = { _ in (100, 80) }
 ) throws -> SessionHarness {
-    let db = try makeMigratedDB()
+    let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
     let sessionRepo = SessionRepo(connection: db)
     let service = SessionService(
         sessionRepo: sessionRepo,
         photoRepo: PhotoRepo(connection: db),
-        faceRepo: FaceRepo(connection: db),
+        faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
         dimensionsProvider: dimensions
     )
@@ -175,13 +178,16 @@ struct SessionServiceAddPhotosTests {
 @Suite("SessionService 删除与查询")
 struct SessionServiceDeleteAndQueryTests {
     @Test("deleteSession removes the session and orphans all unbound assets")
-    func deleteSessionOrphansAssets() throws {
-        let db = try makeMigratedDB()
+    func deleteSessionOrphansAssets() async throws {
+        let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
             photoRepo: PhotoRepo(connection: db),
-            faceRepo: FaceRepo(connection: db),
+            faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db
         )
         let session = try sessionRepo.create(name: "Del", source: "folder")
@@ -193,7 +199,7 @@ struct SessionServiceDeleteAndQueryTests {
         // 无会话引用的资产在删除时应被标记 orphan。
         try insertAsset(db, id: "af2")
 
-        try service.deleteSession(session.id, confirmed: true)
+        try await service.deleteSession(session.id, confirmed: true)
 
         #expect(try sessionRepo.get(id: session.id) == nil)
         #expect(try rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 0)
@@ -205,31 +211,37 @@ struct SessionServiceDeleteAndQueryTests {
     }
 
     @Test("deleteSession without confirmation throws and keeps the session")
-    func deleteRequiresConfirmation() throws {
-        let db = try makeMigratedDB()
+    func deleteRequiresConfirmation() async throws {
+        let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
             photoRepo: PhotoRepo(connection: db),
-            faceRepo: FaceRepo(connection: db),
+            faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db
         )
         let session = try sessionRepo.create(name: "Del", source: "folder")
 
-        #expect(throws: SessionServiceError.deleteNotConfirmed) {
-            try service.deleteSession(session.id, confirmed: false)
+        await #expect(throws: SessionServiceError.deleteNotConfirmed) {
+            try await service.deleteSession(session.id, confirmed: false)
         }
         #expect(try sessionRepo.get(id: session.id) != nil)
     }
 
     @Test("getSession derives and persists the source path from multiple photos")
     func getSessionDerivesSourcePath() throws {
-        let db = try makeMigratedDB()
+        let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
             photoRepo: PhotoRepo(connection: db),
-            faceRepo: FaceRepo(connection: db),
+            faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db
         )
         let session = try sessionRepo.create(name: "Derive", source: "folder")
@@ -320,12 +332,15 @@ struct SessionServiceErrorCodeTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let photoA = try writeTempFile(in: dir, name: "a.jpg")
 
-        let db = try makeMigratedDB()
+        let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
             photoRepo: PhotoRepo(connection: db),
-            faceRepo: FaceRepo(connection: db),
+            faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db,
             getNumber: { _, _ in .nan },
             dimensionsProvider: { _ in (100, 80) }

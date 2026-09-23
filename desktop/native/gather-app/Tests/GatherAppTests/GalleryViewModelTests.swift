@@ -99,11 +99,24 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (GalleryViewModel
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
 private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection) {
-    let db = try DBConnection(path: ":memory:")
+    // faceCount/相册/人物/工作区均已切到 Store 连接：两条连接须指向同一临时库文件。
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-gallery-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: path)
     try MigrationRunner().migrate(db)
-    let settings = try makeTestSettings()
+    let container = AppContainer(database: try SQLiteDatabase(path: path))
+    let api = GatherAPI(container: container)
     let router = SessionCommandRouter.makeDefault(
-        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore)
+        db: db,
+        settings: SettingsSnapshot(values: SettingsAPI.defaults),
+        settingsAPI: api.settings,
+        templates: api.templates,
+        albums: api.albums,
+        workspace: api.workspace,
+        persons: api.persons,
+        personStore: container.persons,
+        faceStore: container.faces
+    )
     return (LiveGalleryDataProvider(router: router), db)
 }
 

@@ -25,8 +25,8 @@ protocol DashboardDataProvider {
         filepaths: [String],
         sourcePath: String
     ) throws -> CreateSessionOutcome
-    func deleteSession(_ sessionId: String) throws
-    func deleteSessions(_ sessionIds: [String]) throws
+    func deleteSession(_ sessionId: String) async throws
+    func deleteSessions(_ sessionIds: [String]) async throws
     func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus?
     func listJobs() throws -> [AnalysisJobData]
     func cancelJob(_ jobId: String) throws -> Bool
@@ -52,9 +52,9 @@ extension DashboardDataProvider {
     }
 
     /// 默认实现（stub 用）：逐个删除。
-    func deleteSessions(_ sessionIds: [String]) throws {
+    func deleteSessions(_ sessionIds: [String]) async throws {
         for sessionId in sessionIds {
-            try deleteSession(sessionId)
+            try await deleteSession(sessionId)
         }
     }
 }
@@ -114,14 +114,14 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         return CreateSessionOutcome(session: session, failedFiles: result.failedFiles, added: result.added)
     }
 
-    func deleteSession(_ sessionId: String) throws {
+    func deleteSession(_ sessionId: String) async throws {
         // UI 层已确认（对齐 TS ConfirmDialog → sessionApi.delete 带 confirmed）。
-        try sessionService.deleteSession(sessionId, confirmed: true)
+        try await sessionService.deleteSession(sessionId, confirmed: true)
     }
 
-    func deleteSessions(_ sessionIds: [String]) throws {
+    func deleteSessions(_ sessionIds: [String]) async throws {
         // UI 层已确认（对齐 TS ConfirmDialog → sessionApi.deleteMany 带 confirmed）。
-        _ = try sessionService.deleteSessions(sessionIds, confirmed: true)
+        _ = try await sessionService.deleteSessions(sessionIds, confirmed: true)
     }
 
     func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? {
@@ -407,7 +407,7 @@ final class DashboardViewModel {
             } catch {
                 // TS session.ipc.ts L52-62：入队失败回滚已建 session，避免
                 // 工作区列表出现照片永不索引的半成品。
-                try? provider.deleteSession(session.id)
+                try? await provider.deleteSession(session.id)
                 throw error
             }
             setImportNotice(session: session)
@@ -456,7 +456,7 @@ final class DashboardViewModel {
             } catch {
                 // TS session.ipc.ts L52-62：入队失败回滚已建 session（含已
                 // 写入照片），避免半成品工作区残留在列表。
-                try? provider.deleteSession(outcome.session.id)
+                try? await provider.deleteSession(outcome.session.id)
                 throw error
             }
             setImportNotice(session: outcome.session, failedFiles: outcome.failedFiles, added: outcome.added)
@@ -504,7 +504,7 @@ final class DashboardViewModel {
     @discardableResult
     func deleteSession(_ sessionId: String) async -> Bool {
         do {
-            try provider.deleteSession(sessionId)
+            try await provider.deleteSession(sessionId)
             lastFullRefreshAt = .distantPast
             await refreshAll()
             return true
@@ -518,7 +518,7 @@ final class DashboardViewModel {
     @discardableResult
     func deleteSessions(_ sessionIds: [String]) async -> Bool {
         do {
-            try provider.deleteSessions(sessionIds)
+            try await provider.deleteSessions(sessionIds)
             lastFullRefreshAt = .distantPast
             await refreshAll()
             return true

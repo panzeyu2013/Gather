@@ -39,13 +39,14 @@
 | R1 收尾④：第三个删除切片（smart album） | ✅ | `SmartAlbumRepo` + `SmartAlbumRepoTests` 已删除；`GatherAPI.albums`（AlbumsAPI）落地；路由 `album.*`（create/list/get/update/delete/get_photos）迁入 `executeAsync`（保留 ALBUM_NOT_FOUND 与确认消息语义）；`LibraryViewModel` 相册路径改 async（provider 经 `executeAsync`，`reloadSupport` 改 async） |
 | R1 收尾⑤：第四个删除切片（workspace） | ✅ | `WorkspaceStatusService` + 26 个旧测试已删除；路由 `workspace.status` 迁入 `executeAsync`（经 WorkspaceAPI），`LiveDashboardDataProvider`/`DashboardViewModel` 改 async；关键语义端口至 WorkspaceAPITests（7 例） |
 | R1 收尾⑥：第五个删除切片（person） | ✅ | `FaceKwService` 的 4 个 person 路径方法改 async（经 `PersonStore`，best-effort 语义保持）；路由 `fkw.bind/unbind/merge/remove_member` 迁入 `executeAsync`（`fkw.unbind` 顺带移除 `awaitSync`）；`PersonRepo` + `PersonRepoTests` + FaceKw 测试文件内遗留的 PersonRepo 套件已删除（语义由 PersonStoreTests/PersonStoreDetailTests 覆盖）；FaceKw 测试改文件库双连接 |
-| R1 收尾⑦：第六个切片（face，进行中） | 🔶 | 由子代理执行 `FaceRepo → FaceStore` 全量替换（FaceKwService/router face.*、fkw.*/相关测试），完成后删除 `FaceRepo.swift` + `FaceRepoTests.swift`，主代理负责验证与提交 |
+| R1 收尾⑦：第六个删除切片（face） | ✅ | `FaceRepo` + `FaceRepoTests` 已删除；`FaceKwService` 全部 face 访问改经 `any FaceStore`（观察/复用/集群/绑定/缩略图，约 50 处），4 个 person 桥接方法 async；`SessionService` 人脸删除经 Store（跨连接拆分为 deleteFaceData + 旧连接事务）；路由 `fkw.clusters`/`photo.list_page`/`session.create_from_directory` 迁入 `executeAsync`；旧 FaceRepo 行类型迁移为 Store 记录（FaceObservationRecord/FaceClusterRecord/…），FaceObservationInput 迁入 Store；core 896/123、app 172/19 全绿 |
+| 删除切片台账 | ✅ 6/… | settings、template、smart album、workspace、person、face（6 个切片完成） |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
 | R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
-> 当前 core 全量：**909 tests / 124 suites 全绿**（person 旧 Repo 与其测试、FaceKw 内遗留 PersonRepo 套件同批删除）；app 172/19 全绿。Repositories 15→14 文件。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
+> 当前 core 全量：**896 tests / 123 suites 全绿**；app 172/19 全绿。度量：Repositories **14→13**、Repo tests 14→13、DB layer 17→16、Services 25、raw SQL outside Store 14。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
 > 旧层文件计数（本轮后）：`Database/Repositories` 12、`Database/Repositories` 测试 11、`Services` 26；门禁度量 raw SQL outside Store（仅统计 Services/）14 文件、Services 25 文件。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 

@@ -935,3 +935,43 @@ public struct FaceBindingDetail {
         self.memberPhotoIds = memberPhotoIds
     }
 }
+
+// MARK: - 观察输入（从 Database/Repositories/FaceRepo.swift 迁入，R1 单一来源）
+
+/// TS FaceObservationInput。
+public struct FaceObservationInput {
+    public let photoId: String
+    public let bboxX: Double
+    public let bboxY: Double
+    public let bboxW: Double
+    public let bboxH: Double
+    public let embedding: [Float]
+    public let confidence: Double
+    public var sourceFileSize: Int64?
+    public var sourceFileMtimeMs: Double?
+    public var analysisSignature: String?
+
+    public init(
+        photoId: String,
+        bboxX: Double,
+        bboxY: Double,
+        bboxW: Double,
+        bboxH: Double,
+        embedding: [Float],
+        confidence: Double,
+        sourceFileSize: Int64? = nil,
+        sourceFileMtimeMs: Double? = nil,
+        analysisSignature: String? = nil
+    ) {
+        self.photoId = photoId
+        self.bboxX = bboxX
+        self.bboxY = bboxY
+        self.bboxW = bboxW
+        self.bboxH = bboxH
+        self.embedding = embedding
+        self.confidence = confidence
+        self.sourceFileSize = sourceFileSize
+        self.sourceFileMtimeMs = sourceFileMtimeMs
+        self.analysisSignature = analysisSignature
+    }
+}

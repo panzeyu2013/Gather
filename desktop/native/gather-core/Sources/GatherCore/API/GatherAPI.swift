@@ -15,6 +15,7 @@ public struct AppContainer: Sendable {
     public let writeback: any WritebackStore
     public let workspace: any WorkspaceStore
     public let persons: any PersonStore
+    public let faces: any FaceStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
@@ -26,6 +27,7 @@ public struct AppContainer: Sendable {
         self.writeback = SQLiteWritebackStore(database: database)
         self.workspace = SQLiteWorkspaceStore(database: database)
         self.persons = SQLitePersonStore(database: database)
+        self.faces = SQLiteFaceStore(database: database)
     }
 
     /// 打开（必要时迁移到当前版本）指定路径的库。
