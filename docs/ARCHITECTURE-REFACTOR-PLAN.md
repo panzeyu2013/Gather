@@ -31,9 +31,10 @@
 | 新旧迁移器等价性验证 | ✅ | `StoreMigratorTests` 4 用例：空库双跑结构+数据摘要一致；**真实库 fixture（v32）双跑后结构与数据完全一致**；幂等；`afterMigrateHook` 抛错后回滚到 v32 且结构与原库一致 |
 | Store 实现（10/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback（完整：outbox + writeback_items）（端口自对应 Repo 测试）：111 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)` 与 `sqlValue`；Culling 类型化错误；Similarity 缓存独立 actor；Metadata/SmartAlbum/WritebackItemInput DTO 迁入 Store（attributes 改 `[String: JSONValue]`） |
 | Store 实现（11/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback / Asset（只读 + relink/候选/对账 + backfill 全量）已完成：131 用例全绿；`AssetStoreError` 取代字符串错误；relink 回调 sink 改为返回值；`StoreSupport`/`PhotoFormats` 为共享单一来源 |
-| 其余 Store（Face/Person/Duplicate/Template/Navigation；SchemaVersion 由 StoreMigrator 承担，不再单列 Store） | 待办 | R1 后续 |
+| PersonStore（进行中：核心） | 🔶 | `persons/person_photos` 的 list/listWithCounts（缩略图子查询 + 计数聚合）/get/create/upsertByName（关键词合并）/addPhoto(s)/getPhotos(分页与会话过滤)/removePhoto/计数已落地；merge/嵌入存取/`reconcileSession`/getPhotosWithDetails 下一轮 |
+| 其余 Store（Face/Duplicate/Template/Navigation；SchemaVersion 由 StoreMigrator 承担，不再单列 Store） | 待办 | R1 后续 |
 
-> 当前 core 全量：**932 tests / 122 suites 全绿**（789 oracle + 143 新增）。
+> 当前 core 全量：**940 tests / 123 suites 全绿**（789 oracle + 151 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
