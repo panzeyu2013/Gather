@@ -43,18 +43,8 @@ extension TemplateServiceError {
     }
 }
 
-/// TS: TemplateService.update 的 fields（Partial<{ name, description, config }>）。
-public struct TemplateUpdateFields: Equatable, Sendable {
-    public var name: String?
-    public var description: String?
-    public var config: WorkflowTemplateConfig?
-
-    public init(name: String? = nil, description: String? = nil, config: WorkflowTemplateConfig? = nil) {
-        self.name = name
-        self.description = description
-        self.config = config
-    }
-}
+// TemplateUpdateFields 已迁至 Store/TemplateStore.swift（R1 单一来源）；
+// 本服务的 DB 写路径将在 R1 调用点迁移时改为 TemplateStore。
 
 /// TS: TemplateService（desktop/src/main/services/template/template.service.ts）。
 public final class TemplateService {
