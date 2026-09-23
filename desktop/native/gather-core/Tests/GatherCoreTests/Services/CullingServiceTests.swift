@@ -51,11 +51,11 @@ private final class FakeSyncPort: CullingSyncPort {
 /// 行真实写入，让 syncStatus 断言反映写后行——测试显式开启）。
 private final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable {
     var queued: [(sessionId: String, photoId: String, values: [String: JSONValue], source: MetadataMutationSource, schedule: Bool)] = []
-    let outboxRepo: MetadataOutboxRepo?
+    let writebackStore: (any WritebackStore)?
     let connection: DBConnection?
 
-    init(outboxRepo: MetadataOutboxRepo? = nil, connection: DBConnection? = nil) {
-        self.outboxRepo = outboxRepo
+    init(writebackStore: (any WritebackStore)? = nil, connection: DBConnection? = nil) {
+        self.writebackStore = writebackStore
         self.connection = connection
     }
 
@@ -65,7 +65,7 @@ private final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable 
         values: [String: JSONValue],
         source: MetadataMutationSource,
         schedule: Bool
-    ) throws -> MetadataMutationResult {
+    ) async throws -> MetadataMutationResult {
         queued.append((sessionId, photoId, values, source, schedule))
         var xmpPath = ""
         var photoPath = ""
@@ -76,13 +76,13 @@ private final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable 
             photoPath = row?[0].textValue ?? ""
             xmpPath = TSPath.xmpSidecarPath(photoPath)
         }
-        if let outboxRepo, !xmpPath.isEmpty {
+        if let writebackStore, !xmpPath.isEmpty {
             var patch = values
             patch["source"] = .string(source.rawValue)
             let dirtyFields = values.keys
                 .filter { ["rating", "label", "keywords"].contains($0) }
                 .compactMap { MetadataField(rawValue: $0) }
-            let row = try outboxRepo.mergePatch(
+            let row = try await writebackStore.mergeOutboxPatch(
                 xmpPath: xmpPath,
                 sessionId: sessionId,
                 photoPath: photoPath,
@@ -177,7 +177,7 @@ private struct CullingHarness {
     let photoRepo: PhotoRepo
     let similarityStore: SQLiteSimilarityStore
     let metadataStore: SQLiteMetadataStore
-    let outboxRepo: MetadataOutboxRepo
+    let writebackStore: SQLiteWritebackStore
     let cullingStore: SQLiteCullingStore
     let sync: FakeSyncPort
     let mutations: FakeMutationPort
@@ -219,9 +219,8 @@ private func makeHarness(
     try MigrationRunner().migrate(db)
     try insertSession(db, "session")
     let sync = FakeSyncPort()
-    let outboxRepo = MetadataOutboxRepo(connection: db)
     let mutations = FakeMutationPort(
-        outboxRepo: writeOutbox ? outboxRepo : nil,
+        writebackStore: writeOutbox ? SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)) : nil,
         connection: writeOutbox ? db : nil
     )
     let writeback = FakeWritebackPort()
@@ -244,7 +243,7 @@ private func makeHarness(
         photoRepo: PhotoRepo(connection: db),
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         metadataStore: storeMetadata,
-        outboxRepo: outboxRepo,
+        writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
         cullingStore: cullingStore,
         sync: sync, mutations: mutations, writeback: writeback
     )

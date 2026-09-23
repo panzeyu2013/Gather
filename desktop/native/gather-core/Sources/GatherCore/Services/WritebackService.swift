@@ -357,7 +357,7 @@ public final class WritebackService {
                         if let rating = attributes.rating { writeAttrs["rating"] = .number(rating) }
                         if let label = attributes.label { writeAttrs["label"] = .string(label) }
                     }
-                    _ = try self.metadataMutations.queuePhotoValues(
+                    _ = try await self.metadataMutations.queuePhotoValues(
                         sessionId: sessionId,
                         photoId: dbRow.photoId,
                         values: writeAttrs,

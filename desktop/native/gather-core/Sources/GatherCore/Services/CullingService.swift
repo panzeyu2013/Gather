@@ -222,6 +222,29 @@ extension CullingPhotoRow {
     }
 }
 
+/// 决策事务提交后入队的 outbox 值直写（queuePhotoValues 只能 async，事务内收集）。
+public struct CullingOutboxWrite: Sendable {
+    public let sessionId: String
+    public let photoId: String
+    public let values: [String: JSONValue]
+    public let source: MetadataMutationSource
+    public let schedule: Bool
+
+    public init(
+        sessionId: String,
+        photoId: String,
+        values: [String: JSONValue],
+        source: MetadataMutationSource,
+        schedule: Bool
+    ) {
+        self.sessionId = sessionId
+        self.photoId = photoId
+        self.values = values
+        self.source = source
+        self.schedule = schedule
+    }
+}
+
 /// 决策事务提交后要落库的决策行写入（决策表在 Store 连接上，跨连接不共享事务）。
 public struct CullingDecisionWrite: Sendable {
     public let sessionId: String
@@ -258,6 +281,8 @@ public final class CullingHistorySink: @unchecked Sendable {
     public private(set) var cachePatches: [CullingCachePatch] = []
     /// 事务内收集、提交后落库的决策行写入。
     public private(set) var decisionWrites: [CullingDecisionWrite] = []
+    /// 事务内收集、提交后入队的 outbox 值直写（queuePhotoValues 后置）。
+    public private(set) var outboxWrites: [CullingOutboxWrite] = []
 
     public init() {}
 
@@ -267,6 +292,10 @@ public final class CullingHistorySink: @unchecked Sendable {
 
     func appendDecisionWrite(_ write: CullingDecisionWrite) {
         decisionWrites.append(write)
+    }
+
+    func appendOutboxWrite(_ write: CullingOutboxWrite) {
+        outboxWrites.append(write)
     }
 
     func append(_ newEntries: [CullingHistoryEntry]) {
@@ -408,6 +437,7 @@ public final class CullingService {
                 decisionRows: decisionRows
             )
         )
+        try await commitOutboxWrites(sink.outboxWrites)
         result.historyOperationId = try await commitHistory(
             sink.entries, sessionId: sessionId,
             cachePatches: sink.cachePatches, decisionWrites: sink.decisionWrites)
@@ -435,6 +465,19 @@ public final class CullingService {
         try await commitDecisionWrites(decisionWrites)
         guard let cullingStore, !entries.isEmpty else { return nil }
         return try await cullingStore.appendHistory(sessionId: sessionId, entries: entries).id
+    }
+
+    /// 事务外入队 outbox 值直写（queuePhotoValues 后置；schedule 语义保持不变）。
+    public func commitOutboxWrites(_ writes: [CullingOutboxWrite]) async throws {
+        for write in writes {
+            _ = try await metadataMutations.queuePhotoValues(
+                sessionId: write.sessionId,
+                photoId: write.photoId,
+                values: write.values,
+                source: write.source,
+                schedule: write.schedule
+            )
+        }
     }
 
     /// 事务外落库决策行写入（决策表在 Store 连接上）。
@@ -688,13 +731,9 @@ public final class CullingService {
                 )
             }
             if !metadataPatch.isEmpty {
-                _ = try metadataMutations.queuePhotoValues(
-                    sessionId: sessionId,
-                    photoId: photoId,
-                    values: metadataPatch,
-                    source: .culling,
-                    schedule: false
-                )
+                context?.historySink?.appendOutboxWrite(CullingOutboxWrite(
+                    sessionId: sessionId, photoId: photoId,
+                    values: metadataPatch, source: .culling, schedule: false))
             }
             if !historyEntries.isEmpty {
                 // Store 写入无法进同步事务：调用方经 context.historySink 收集后
@@ -801,6 +840,7 @@ public final class CullingService {
         // 历史行失败仅丢失 undo 能力，不影响决策结果。
         try await commitCachePatches(historySink.cachePatches)
         try await commitDecisionWrites(historySink.decisionWrites)
+        try await commitOutboxWrites(historySink.outboxWrites)
         if !historySink.entries.isEmpty {
             if let operationId = try await cullingStore?.appendHistory(
                 sessionId: sessionId, entries: historySink.entries
@@ -985,18 +1025,15 @@ public final class CullingService {
                 ))
             }
             for (photoId, values) in xmpPatches.values {
-                _ = try metadataMutations.queuePhotoValues(
-                    sessionId: sessionId,
-                    photoId: photoId,
-                    values: values,
-                    source: .culling,
-                    schedule: false
-                )
+                writeSink.appendOutboxWrite(CullingOutboxWrite(
+                    sessionId: sessionId, photoId: photoId,
+                    values: values, source: .culling, schedule: false))
             }
         }
         // 历史/缓存列在 Store 连接上（跨连接不共享事务）；决策已原子落地。
         try await commitCachePatches(writeSink.cachePatches)
         try await commitDecisionWrites(writeSink.decisionWrites)
+        try await commitOutboxWrites(writeSink.outboxWrites)
         if let operationId = historyOperationId, let direction {
             try await cullingStore?.setHistoryUndone(
                 sessionId: sessionId,

@@ -87,7 +87,6 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     /// TS: waitForIdle 的默认超时（5000ms）。
     public static let defaultWaitTimeoutMs = 5_000
 
-    private let outboxRepo: MetadataOutboxRepo
     private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
     private let getNumber: (String, Double) -> Double
@@ -124,14 +123,12 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     private let slotGate = SlotGate(max: MetadataSyncCoordinator.maxConcurrency)
 
     public init(
-        outboxRepo: MetadataOutboxRepo,
         writebackStore: any WritebackStore,
         xmp: any XMPProvider,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         skipReloadAck: Bool = false
     ) {
-        self.outboxRepo = outboxRepo
         self.writebackStore = writebackStore
         self.xmp = xmp
         self.connection = connection

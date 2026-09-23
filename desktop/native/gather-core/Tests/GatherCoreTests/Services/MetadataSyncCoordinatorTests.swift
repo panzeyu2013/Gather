@@ -86,7 +86,7 @@ private struct CoordinatorFixture {
     let sessionId: String
     let photoPath: String
     let xmpPath: String
-    let outbox: MetadataOutboxRepo
+    let outbox: SQLiteWritebackStore
     let provider: FakeFSXMPProvider
     let coordinator: MetadataSyncCoordinator
 
@@ -108,10 +108,9 @@ private struct CoordinatorFixture {
         try original.write(to: URL(fileURLWithPath: xmpPath))
         _ = try db.prepare("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
             .run([.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
-        let outbox = MetadataOutboxRepo(connection: db)
+        let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
         let provider = FakeFSXMPProvider()
         let coordinator = MetadataSyncCoordinator(
-            outboxRepo: outbox,
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             connection: db,
@@ -136,14 +135,14 @@ private struct CoordinatorFixture {
 /// 轮询等待 outbox 行到达目标状态（waitForIdle 在行尚未进入 writing 时立即返回）。
 @discardableResult
 private func waitForStatus(
-    _ repo: MetadataOutboxRepo,
+    _ repo: SQLiteWritebackStore,
     xmpPath: String,
     status: String,
     timeoutMs: Int = 5000
 ) async -> Bool {
     let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
     while Date() < deadline {
-        if (try? repo.get(xmpPath))?.status == status { return true }
+        if (try? await repo.outboxEntry(xmpPath: xmpPath))?.status == status { return true }
         try? await Task.sleep(nanoseconds: 50_000_000)
     }
     return false
@@ -158,7 +157,7 @@ struct MetadataSyncCoordinatorTests {
         let fx = try CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
-        try fx.outbox.mergePatch(
+        try await fx.outbox.mergeOutboxPatch(
             xmpPath: fx.xmpPath,
             sessionId: fx.sessionId,
             photoPath: fx.photoPath,
@@ -168,7 +167,7 @@ struct MetadataSyncCoordinatorTests {
         fx.coordinator.schedule(xmpPath: fx.xmpPath, delayMs: 0)
 
         #expect(await waitForStatus(fx.outbox, xmpPath: fx.xmpPath, status: "written"))
-        let row = try fx.outbox.get(fx.xmpPath)
+        let row = try await fx.outbox.outboxEntry(xmpPath: fx.xmpPath)
         #expect(row != nil)
         #expect(row!.baseFingerprint.isEmpty == false)
         #expect(row!.backupPath.isEmpty == false)
@@ -191,7 +190,7 @@ struct MetadataSyncCoordinatorTests {
         let fx = try CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
-        try fx.outbox.mergePatch(
+        try await fx.outbox.mergeOutboxPatch(
             xmpPath: fx.xmpPath,
             sessionId: fx.sessionId,
             photoPath: fx.photoPath,
@@ -206,7 +205,7 @@ struct MetadataSyncCoordinatorTests {
             photoPath: fx.photoPath,
             attributes: MetadataWriteAttributes(keywords: ["external"], rating: 5)
         )
-        try fx.outbox.mergePatch(
+        try await fx.outbox.mergeOutboxPatch(
             xmpPath: fx.xmpPath,
             sessionId: fx.sessionId,
             photoPath: fx.photoPath,
@@ -216,7 +215,7 @@ struct MetadataSyncCoordinatorTests {
         fx.coordinator.schedule(xmpPath: fx.xmpPath, delayMs: 0)
         #expect(await waitForStatus(fx.outbox, xmpPath: fx.xmpPath, status: "conflict"))
 
-        let row = try fx.outbox.get(fx.xmpPath)
+        let row = try await fx.outbox.outboxEntry(xmpPath: fx.xmpPath)
         #expect(row?.status == "conflict")
         #expect(row?.errorMessage == "XMP_EXTERNAL_EDIT_CONFLICT")
         // 外部内容未被覆盖。
@@ -231,7 +230,7 @@ struct MetadataSyncCoordinatorTests {
         let fx = try CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
-        try fx.outbox.mergePatch(
+        try await fx.outbox.mergeOutboxPatch(
             xmpPath: fx.xmpPath,
             sessionId: fx.sessionId,
             photoPath: fx.photoPath,
@@ -258,7 +257,7 @@ struct MetadataSyncCoordinatorTests {
         #expect(result.deletedCount == 1)
         #expect(result.errors.isEmpty)
         // outbox 行已删除；侧车恢复为原始内容。
-        #expect(try fx.outbox.get(fx.xmpPath) == nil)
+        #expect(try await fx.outbox.outboxEntry(xmpPath: fx.xmpPath) == nil)
         let restored = try await fx.provider.readAttributes(photoPath: fx.photoPath)
         #expect(restored.keywords == ["original"])
         #expect(restored.rating == nil)
@@ -271,7 +270,7 @@ struct MetadataSyncCoordinatorTests {
         let fx = try CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
-        try fx.outbox.mergePatch(
+        try await fx.outbox.mergeOutboxPatch(
             xmpPath: fx.xmpPath,
             sessionId: fx.sessionId,
             photoPath: fx.photoPath,
@@ -285,7 +284,7 @@ struct MetadataSyncCoordinatorTests {
         _ = try await fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
 
         // 备份文件被外部删除。
-        let row = try fx.outbox.get(fx.xmpPath)
+        let row = try await fx.outbox.outboxEntry(xmpPath: fx.xmpPath)
         try await fx.provider.removeFile(row!.backupPath)
 
         let result = try await fx.coordinator.cleanup(sessionId: fx.sessionId, sourceModule: "manual")
@@ -293,7 +292,7 @@ struct MetadataSyncCoordinatorTests {
         #expect(result.errors.count == 1)
         #expect(result.errors[0].contains("XMP_BACKUP_MISSING"))
         // 行保持 synced、侧车未被删除（可修复备份后重试清理）。
-        #expect(try fx.outbox.get(fx.xmpPath)?.status == "synced")
+        #expect(try await fx.outbox.outboxEntry(xmpPath: fx.xmpPath)?.status == "synced")
         #expect(fx.provider.fileExists(fx.xmpPath))
 
         await fx.coordinator.shutdown()
@@ -306,7 +305,7 @@ struct MetadataSyncCoordinatorTests {
 /// 复刻 queuePhotoValues 的 mergePatch 语义（source 注入 + dirty 过滤）。
 private struct StubMutationPort: MetadataMutationPort {
     let db: DBConnection
-    let outbox: MetadataOutboxRepo
+    let outbox: SQLiteWritebackStore
 
     func queuePhotoValues(
         sessionId: String,
@@ -314,7 +313,7 @@ private struct StubMutationPort: MetadataMutationPort {
         values: [String: JSONValue],
         source: MetadataMutationSource,
         schedule: Bool
-    ) throws -> MetadataMutationResult {
+    ) async throws -> MetadataMutationResult {
         let row = try db.prepare(
             "SELECT filepath FROM photos WHERE id = ? AND session_id = ?"
         ).get([.text(photoId), .text(sessionId)])
@@ -325,7 +324,7 @@ private struct StubMutationPort: MetadataMutationPort {
             .compactMap { MetadataField(rawValue: $0) }
         var patch = values
         patch["source"] = .string(source.rawValue)
-        let merged = try outbox.mergePatch(
+        let merged = try await outbox.mergeOutboxPatch(
             xmpPath: xmpPath,
             sessionId: sessionId,
             photoPath: photoPath,
@@ -347,7 +346,7 @@ private struct StubMutationPort: MetadataMutationPort {
         patch: MetadataPatch,
         source: MetadataMutationSource
     ) async throws -> MetadataMutationResult {
-        try queuePhotoValues(
+        try await queuePhotoValues(
             sessionId: sessionId, photoId: photoId, values: [:], source: source, schedule: false)
     }
 }
@@ -375,9 +374,8 @@ struct WritebackServiceTests {
         ).run([.text(photoId), .text(sessionId), .text(photoPath), .text(nowISOString()), .text(nowISOString())])
 
         let provider = FakeFSXMPProvider()
-        let outbox = MetadataOutboxRepo(connection: db)
+        let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
         let coordinator = MetadataSyncCoordinator(
-            outboxRepo: outbox,
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             connection: db,
@@ -412,7 +410,7 @@ struct WritebackServiceTests {
         // 侧车真实写入关键词；outbox 行 written；writeback_items 状态落盘。
         let written = try await provider.readAttributes(photoPath: photoPath)
         #expect(written.keywords == ["groupA", "portrait"])
-        #expect(try outbox.get(TSPath.xmpSidecarPath(photoPath))?.status == "written")
+        #expect(try await outbox.outboxEntry(xmpPath: TSPath.xmpSidecarPath(photoPath))?.status == "written")
         let items = try await service.getItems(sessionId: sessionId, module: "similarity")
         #expect(items.count == 1)
         #expect(items.first?.xmpStatus == "written")
@@ -441,9 +439,9 @@ struct WritebackServiceTests {
             "INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at) VALUES (?, ?, ?, 'photo.cr3', ?, ?)"
         ).run([.text(photoId), .text(sessionId), .text(photoPath), .text(nowISOString()), .text(nowISOString())])
 
-        let outbox = MetadataOutboxRepo(connection: db)
+        let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
         // face_kw 模块的 written 行（另一模块未确认的工作）。
-        _ = try outbox.mergePatch(
+        _ = try await outbox.mergeOutboxPatch(
             xmpPath: TSPath.xmpSidecarPath(photoPath),
             sessionId: sessionId,
             photoPath: photoPath,
@@ -453,7 +451,7 @@ struct WritebackServiceTests {
             ]),
             dirtyFields: ["keywords"]
         )
-        try outbox.markWritten(
+        try await outbox.markOutboxWritten(
             xmpPath: TSPath.xmpSidecarPath(photoPath),
             revision: 1,
             fingerprint: "fp",
@@ -463,7 +461,6 @@ struct WritebackServiceTests {
 
         let provider = FakeFSXMPProvider()
         let coordinator = MetadataSyncCoordinator(
-            outboxRepo: outbox,
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             connection: db,

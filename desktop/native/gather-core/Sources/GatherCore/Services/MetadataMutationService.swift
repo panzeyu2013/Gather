@@ -26,7 +26,7 @@ public protocol MetadataMutationPort: Sendable {
         values: [String: JSONValue],
         source: MetadataMutationSource,
         schedule: Bool
-    ) throws -> MetadataMutationResult
+    ) async throws -> MetadataMutationResult
     /// TS: queueMutation。
     func queueMutation(
         sessionId: String,
@@ -47,18 +47,18 @@ public final class MetadataMutationService: MetadataMutationPort {
     private var mutationQueues: [String: TaskBox] = [:]
     private let queueLock = NSLock()
 
-    private let outboxRepo: MetadataOutboxRepo
+    private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
     private let sync: MetadataSyncCoordinator
     private let assetResolver: PhotoAssetResolver
 
     public init(
-        outboxRepo: MetadataOutboxRepo,
+        writebackStore: any WritebackStore,
         xmp: any XMPProvider,
         sync: MetadataSyncCoordinator,
         assetResolver: PhotoAssetResolver
     ) {
-        self.outboxRepo = outboxRepo
+        self.writebackStore = writebackStore
         self.xmp = xmp
         self.sync = sync
         self.assetResolver = assetResolver
@@ -71,7 +71,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         values: [String: JSONValue],
         source: MetadataMutationSource,
         schedule: Bool = true
-    ) throws -> MetadataMutationResult {
+    ) async throws -> MetadataMutationResult {
         let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
         let dirtyFields = values.keys
             .filter { ["rating", "label", "keywords"].contains($0) }
@@ -81,7 +81,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         }
         var patch = values
         patch["source"] = .string(source.rawValue)
-        let row = try outboxRepo.mergePatch(
+        let row = try await writebackStore.mergeOutboxPatch(
             xmpPath: resolved.xmpPath,
             sessionId: sessionId,
             photoPath: resolved.filepath,
@@ -126,7 +126,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         // TS: `await previous`（前一回合抛错时本回合直接继承）。
         try await previous?.value
         let current = try await xmp.readAttributes(photoPath: resolved.filepath)
-        let pending = parsePendingKeywords(try? outboxRepo.get(xmpPath)?.patchJSON)
+        let pending = parsePendingKeywords(try? await writebackStore.outboxEntry(xmpPath: xmpPath)?.patchJSON)
         let currentKeywords = current.keywords ?? []
         let existingKeywords: [String]
         if let pending {
@@ -155,7 +155,7 @@ public final class MetadataMutationService: MetadataMutationPort {
                 values["keywords"] = .array(keywords.values.map { .string($0) })
             }
         }
-        return try queuePhotoValues(
+        return try await queuePhotoValues(
             sessionId: sessionId,
             photoId: photoId,
             values: values,

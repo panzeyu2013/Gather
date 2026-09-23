@@ -47,15 +47,15 @@
 | R1 收尾⑫：第十一个删除切片（similarity） | ✅ | `SimilarityResultRepo`/`SimilarityClusterStateRepo` + 旧测试已删除；`SimilarityService` 全面改经 `any SimilarityStore`（结果/成员/簇快照读，replace/replaceForThreshold/replaceClusterState/delete 写），`hasResult/getResult/clusterVersion/clusterEntries` 异步化；`CullingService` 相似度读改经 store，`getSessionLookup/ensureUpdateExtras/getUpdateContext/refreshSessionUpdateContext` 异步化，`updateState` 同步核心不再发起异步刷新（新鲜读兜底由 update/batchUpdate 预读）；`SimilarityViewModel` 的 sim.result 走 executeAsync；路由 sim.result/sim.writeback 迁入 `executeAsync` |
 | R1 收尾⑬：第十二个删除切片（writeback items） | ✅ | `WritebackRepo` + 旧测试已删除；`WritebackService` 全部写回行读写改经 `any WritebackStore`（saveWritebackItems/writebackItems/updateWritebackStatus/failedWritebackCount/updateWriteback*…），`assertNoActiveOtherModule/persistAttributes/persistKeywords/getItems` 异步化并同步更新 `CullingWritebackPort`；`MetadataSyncCoordinator` 改经 store；路由 sim.writeback_items 迁入 `executeAsync`、makeDefault 注入 writebackStore |
 | R1 收尾⑭：剩余旧 Repo 盘点（度量化） | ✅ | 门禁新增 5 项「调用文件数」度量（16 项 tracked）：Repositories 6 文件 = Session(8 调用方)/AnalysisJob(3)/MetadataOutbox(3)/Photo(8)/Asset(1)/RepositorySupport；以及 DB 层 9 文件（DB/ImageCache/Migrations + 上述 6）。已按体量+调用方排定后续切片顺序 |
-| R1 收尾⑮-⑱：MetadataOutboxRepo 第 4 步 | 🔄 | round 46：`CullingService` 3 处（updateState 事务后状态改由 `update()` 经 store 回读刷新；applyHistory/buildRichLookup/loadOutboxByPaths 全量走 store）、`CaptureOneSyncState` 去掉 outbox 依赖；`WritebackStore` 新增 `outboxEntries(sessionId:xmpPaths:)`（raw SQL 收口）。**唯一阻塞**：`MetadataMutationService.queuePhotoValues` 是 `MetadataMutationPort` 的**同步**方法（CullingService 事务内调用），无法 await store → 该 2 处仍需旧 Repo；待 R2 把决策事务与 outbox 写入解耦（提交后落库）后删除 Repo |
-| 删除切片台账 | ✅ 12/… 🔄1 | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback（12 完成）；metadata-outbox（进行中） |
+| R1 收尾⑮-⑲：第十三个删除切片（metadata outbox） | ✅ | `MetadataOutboxRepo`（451 行）+ 旧测试已删除。关键突破：`queuePhotoValues` 端口异步化，`CullingService` 事务内改为收集 `CullingOutboxWrite`、提交后 `commitOutboxWrites` 经 store 落库（与 history/cache/decision 同一后置提交通道）；`CaptureOneSyncState`/`MetadataSyncCoordinator` 去依赖；`WritebackStore` 新增 `outboxEntries(sessionId:xmpPaths:)`。core 836/116、app 172/19 全绿 |
+| 删除切片台账 | ✅ 13/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
 | R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
-> 度量：Repositories **6**、Repo tests **7**、DB layer **9**、Services 25、raw SQL outside Store 14；
+> 度量：Repositories **5**、Repo tests **6**、DB layer **8**、Services 25、raw SQL outside Store 14；
 > 调用方密度：SessionRepo **8** 文件、PhotoRepo **8**、AnalysisJobRepo **3**、MetadataOutboxRepo **3**、AssetRepo **1**。
 > 后续切片顺序（按调用方×事务耦合）：①MetadataOutboxRepo（消费集中，多为 async）②AnalysisJobRepo ③SessionRepo ④PhotoRepo ⑤AssetRepo+RepositorySupport+DB 层收尾。已知计时 flake：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`（均单独运行通过）。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
 > 旧层文件计数（本轮后）：`Database/Repositories` 12、`Database/Repositories` 测试 11、`Services` 26；门禁度量 raw SQL outside Store（仅统计 Services/）14 文件、Services 25 文件。
