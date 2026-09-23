@@ -63,22 +63,22 @@ public final class JobRunContext {
     private let cancelCheckIntervalMs: Int64 = 500
     private let progressWriteIntervalMs: Int64 = 250
 
-    private let repo: AnalysisJobRepo
+    private let jobStore: any JobStore
     private let jobId: String
     private let leaseOwner: String
-    private let updateProgress: (String, String, JobProgressUpdate) throws -> Bool
+    private let updateProgress: (String, String, JobProgressUpdate) async throws -> Bool
     private let progressSink: ((AnalysisJobData, JobProgressUpdate) -> Void)?
 
     init(
         signal: JobAbortSignal,
-        repo: AnalysisJobRepo,
+        jobStore: any JobStore,
         jobId: String,
         leaseOwner: String,
-        updateProgress: @escaping (String, String, JobProgressUpdate) throws -> Bool,
+        updateProgress: @escaping (String, String, JobProgressUpdate) async throws -> Bool,
         progressSink: ((AnalysisJobData, JobProgressUpdate) -> Void)?
     ) {
         self.signal = signal
-        self.repo = repo
+        self.jobStore = jobStore
         self.jobId = jobId
         self.leaseOwner = leaseOwner
         self.updateProgress = updateProgress
@@ -86,7 +86,7 @@ public final class JobRunContext {
     }
 
     /// 进度上报：250ms 节流合并；current >= total 视为完成立即落库。
-    public func updateProgress(_ update: JobProgressUpdate) {
+    public func updateProgress(_ update: JobProgressUpdate) async {
         let now = Self.nowMs()
         lock.lock()
         let merged = merge(pendingProgress ?? JobProgressUpdate(), update)
@@ -97,21 +97,21 @@ public final class JobRunContext {
         let shouldFlush = completed || now - lastProgressWriteAt >= progressWriteIntervalMs
         lock.unlock()
         if shouldFlush {
-            flushProgress()
+            await flushProgressInternal()
         }
     }
 
     /// checkpoint 落库：先 flush 旧进度，写 checkpoint，再 flush（TS 语义）。
-    public func updateCheckpoint(_ checkpoint: [String: JSONValue]) {
-        flushProgress()
+    public func updateCheckpoint(_ checkpoint: [String: JSONValue]) async {
+        await flushProgress()
         lock.lock()
         pendingProgress = JobProgressUpdate(checkpoint: checkpoint)
         lock.unlock()
-        flushProgress()
+        await flushProgress()
     }
 
     /// 取消检查：信号同步检查 + DB 'cancelling' 状态节流检查（每 50 次或 500ms）。
-    public func throwIfCancelled(forceDbCheck: Bool = false) throws {
+    public func throwIfCancelled(forceDbCheck: Bool = false) async throws {
         if signal.aborted { throw JobCancelledError() }
         let now = Self.nowMs()
         lock.lock()
@@ -124,18 +124,18 @@ public final class JobRunContext {
         lock.lock()
         lastCancelDbCheckAt = now
         lock.unlock()
-        if let latest = try? repo.get(jobId),
+        if let latest = try? await jobStore.get(jobId),
            latest.status == .cancelling || latest.status == .cancelled {
             throw JobCancelledError()
         }
     }
 
     /// runInternal 成功/失败路径的收尾 flush（对齐 TS context.flushProgress 调用点）。
-    func flushProgress() {
-        flushProgressInternal()
+    func flushProgress() async {
+        await flushProgressInternal()
     }
 
-    private func flushProgressInternal() {
+    private func flushProgressInternal() async {
         lock.lock()
         guard let update = pendingProgress else {
             lock.unlock()
@@ -146,9 +146,9 @@ public final class JobRunContext {
         let jobId = self.jobId
         let leaseOwner = self.leaseOwner
         lock.unlock()
-        let ok = (try? updateProgress(jobId, leaseOwner, update)) ?? false
+        let ok = (try? await updateProgress(jobId, leaseOwner, update)) ?? false
         if !ok { signal.abort() }
-        if let latest = try? repo.get(jobId) {
+        if let latest = try? await jobStore.get(jobId) {
             progressSink?(latest, update)
         }
     }
@@ -201,7 +201,7 @@ public final class JobService {
     public static let clearCompletedStageEvidenceTypes: [AnalysisJobType] = [.metadataScan, .exportExecute]
 
     private let lock = NSLock()
-    private let repo: AnalysisJobRepo
+    private let jobStore: any JobStore
     public let leaseOwner: String
     /// 心跳间隔（默认 5000 对齐 TS；测试可注入短间隔）。
     public let heartbeatIntervalMs: Int64
@@ -218,8 +218,8 @@ public final class JobService {
     private var stopped = true
     private var progressSink: JobProgressSink?
 
-    public init(repo: AnalysisJobRepo, heartbeatIntervalMs: Int64 = JobService.heartbeatIntervalMs) {
-        self.repo = repo
+    public init(jobStore: any JobStore, heartbeatIntervalMs: Int64 = JobService.heartbeatIntervalMs) {
+        self.jobStore = jobStore
         self.heartbeatIntervalMs = heartbeatIntervalMs
         self.leaseOwner = "main-\(ProcessInfo.processInfo.processIdentifier)"
     }
@@ -240,8 +240,9 @@ public final class JobService {
         }
         stopped = false
         lock.unlock()
-        try? repo.recoverStale()
-        _ = try? repo.resumeInterrupted(types: autoResumeTypes.sorted { $0.rawValue < $1.rawValue })
+        Task { [weak self] in _ = try? await self?.jobStore.recoverStale() }
+        let resumeTypes = autoResumeTypes.sorted { $0.rawValue < $1.rawValue }
+        Task { [weak self] in _ = try? await self?.jobStore.resumeInterrupted(types: resumeTypes) }
         scheduleDrain()
         lock.lock()
         guard watchdog == nil else {
@@ -252,7 +253,7 @@ public final class JobService {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(JobService.watchdogIntervalMs))
                 guard let self else { break }
-                try? self.repo.recoverStale()
+                try? await self.jobStore.recoverStale()
                 self.scheduleDrain()
             }
         }
@@ -302,7 +303,7 @@ public final class JobService {
         let shouldResume = running && autoResumeTypes.contains(type)
         lock.unlock()
         if shouldResume {
-            _ = try? repo.resumeInterrupted(types: [type])
+            Task { [weak self] in _ = try? await self?.jobStore.resumeInterrupted(types: [type]) }
         }
         if running {
             scheduleDrain()
@@ -312,39 +313,39 @@ public final class JobService {
     // ── 任务 API（直通 repo）──
 
     @discardableResult
-    public func create(_ params: JobCreateParams) throws -> AnalysisJobData {
-        let job = try repo.create(params)
+    public func create(_ params: JobCreateParams) async throws -> AnalysisJobData {
+        let job = try await jobStore.create(params)
         scheduleDrain()
         return job
     }
 
-    public func list(status: AnalysisJobStatus? = nil) throws -> [AnalysisJobData] {
-        try repo.list(status: status)
+    public func list(status: AnalysisJobStatus? = nil) async throws -> [AnalysisJobData] {
+        try await jobStore.list(status: status)
     }
 
     @discardableResult
-    public func cancel(_ id: String) throws -> Bool {
-        let wasQueued = try repo.get(id)?.status == .queued
-        let cancelled = try repo.requestCancel(id)
+    public func cancel(_ id: String) async throws -> Bool {
+        let wasQueued = try await jobStore.get(id)?.status == .queued
+        let cancelled = try await jobStore.requestCancel(id)
         if cancelled {
             controller(for: id)?.abort()
             if wasQueued {
                 // queued 取消不经过 runInternal，不会产生终态进度帧；补发
                 // 以让依赖 jobs:progress 的客户端离开「扫描中…」（TS 注释）。
                 completeResult(id: id, completed: .error(JobCancelledError()))
-                emitTerminal(id: id, status: .cancelled)
+                await emitTerminal(id: id, status: .cancelled)
             }
         }
         return cancelled
     }
 
     @discardableResult
-    public func cancelScope(type: AnalysisJobType, scopeId: String) throws -> Int {
+    public func cancelScope(type: AnalysisJobType, scopeId: String) async throws -> Int {
         var cancelledCount = 0
-        for job in try repo.list() {
+        for job in try await jobStore.list() {
             if job.type == type && job.scopeId == scopeId &&
                [.queued, .running, .cancelling].contains(job.status),
-               try cancel(job.id) {
+               try await cancel(job.id) {
                 cancelledCount += 1
             }
         }
@@ -352,8 +353,8 @@ public final class JobService {
     }
 
     @discardableResult
-    public func retry(_ id: String) throws -> Bool {
-        let retried = try repo.retry(id)
+    public func retry(_ id: String) async throws -> Bool {
+        let retried = try await jobStore.retry(id)
         if retried {
             lock.lock()
             completedResults.removeValue(forKey: id)
@@ -364,27 +365,27 @@ public final class JobService {
     }
 
     @discardableResult
-    public func clearCompleted() throws -> Int {
-        try repo.clearCompleted(excludeTypes: JobService.clearCompletedStageEvidenceTypes)
+    public func clearCompleted() async throws -> Int {
+        try await jobStore.clearCompleted(excludeTypes: JobService.clearCompletedStageEvidenceTypes)
     }
 
-    public func claim(id: String, leaseOwner: String) throws -> Bool {
-        try repo.claim(id: id, leaseOwner: leaseOwner)
-    }
-
-    @discardableResult
-    public func heartbeat(id: String, leaseOwner: String) throws -> Bool {
-        try repo.heartbeat(id: id, leaseOwner: leaseOwner)
+    public func claim(id: String, leaseOwner: String) async throws -> Bool {
+        try await jobStore.claim(id: id, leaseOwner: leaseOwner)
     }
 
     @discardableResult
-    public func updateProgress(id: String, leaseOwner: String, update: JobProgressUpdate) throws -> Bool {
-        try repo.updateProgress(id: id, leaseOwner: leaseOwner, update: update)
+    public func heartbeat(id: String, leaseOwner: String) async throws -> Bool {
+        try await jobStore.heartbeat(id: id, leaseOwner: leaseOwner)
     }
 
     @discardableResult
-    public func finish(id: String, leaseOwner: String, status: AnalysisJobStatus, error: (code: String, message: String)? = nil) throws -> Bool {
-        try repo.finish(id: id, leaseOwner: leaseOwner, status: status, error: error)
+    public func updateProgress(id: String, leaseOwner: String, update: JobProgressUpdate) async throws -> Bool {
+        try await jobStore.updateProgress(id: id, leaseOwner: leaseOwner, update: update)
+    }
+
+    @discardableResult
+    public func finish(id: String, leaseOwner: String, status: AnalysisJobStatus, error: (code: String, message: String)? = nil) async throws -> Bool {
+        try await jobStore.finish(id: id, leaseOwner: leaseOwner, status: status, error: error)
     }
 
     // ── 结果等待 ──
@@ -396,7 +397,7 @@ public final class JobService {
             return completed.value as? T
         }
 
-        guard let persisted = try repo.get(jobId) else {
+        guard let persisted = try await jobStore.get(jobId) else {
             throw JobServiceError.jobNotFound(jobId)
         }
         if persisted.status == .succeeded {
@@ -478,14 +479,14 @@ public final class JobService {
     ) async throws -> T {
         // 同步前缀（claim + controller 注册）——与 TS 语义一致：JS 的 async
         // 函数在首个 await 前同步执行，drain 的并发上限依赖 controller 立即注册。
-        let controller = try beginRun(job: job, leaseOwner: leaseOwner)
+        let controller = try await beginRun(job: job, leaseOwner: leaseOwner)
         return try await execute(job: job, leaseOwner: leaseOwner, controller: controller, work: work)
     }
 
     /// 同步执行 run 的前缀：claim 租约 + 注册取消控制器。
     /// claim 失败抛 notClaimable（调用方决定是否继续调度）。
-    private func beginRun(job: AnalysisJobData, leaseOwner: String) throws -> JobAbortSignal {
-        guard try claim(id: job.id, leaseOwner: leaseOwner) else {
+    private func beginRun(job: AnalysisJobData, leaseOwner: String) async throws -> JobAbortSignal {
+        guard try await claim(id: job.id, leaseOwner: leaseOwner) else {
             throw JobServiceError.notClaimable(job.id)
         }
         let controller = JobAbortSignal()
@@ -503,7 +504,7 @@ public final class JobService {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(self?.heartbeatIntervalMs ?? JobService.heartbeatIntervalMs))
                 guard let self else { break }
-                let ok = (try? self.heartbeat(id: job.id, leaseOwner: leaseOwner)) ?? false
+                let ok = (try? await self.heartbeat(id: job.id, leaseOwner: leaseOwner)) ?? false
                 if !ok {
                     controller.abort()
                     break
@@ -513,11 +514,11 @@ public final class JobService {
 
         let context = JobRunContext(
             signal: controller,
-            repo: repo,
+            jobStore: jobStore,
             jobId: job.id,
             leaseOwner: leaseOwner,
             updateProgress: { id, owner, update in
-                try self.updateProgress(id: id, leaseOwner: owner, update: update)
+                try await self.updateProgress(id: id, leaseOwner: owner, update: update)
             },
             progressSink: { job, update in
                 self.emitProgress(job: job, update: update)
@@ -525,25 +526,25 @@ public final class JobService {
 
         do {
             let result = try await work(context)
-            context.flushProgress()
-            try context.throwIfCancelled(forceDbCheck: true)
-            guard try finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded) else {
+            await context.flushProgress()
+            try await context.throwIfCancelled(forceDbCheck: true)
+            guard try await finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded) else {
                 throw JobServiceError.leaseLost(job.id)
             }
-            emitTerminal(id: job.id, status: .succeeded)
+            await emitTerminal(id: job.id, status: .succeeded)
             heartbeat.cancel()
             removeController(jobId: job.id)
             return result
         } catch {
-            context.flushProgress()
+            await context.flushProgress()
             heartbeat.cancel()
             removeController(jobId: job.id)
             let cancelled = error is JobCancelledError || controller.aborted
-            let latest = try? repo.get(job.id)
+            let latest = try? await jobStore.get(job.id)
             let interruptedByShutdown = cancelled && isStopped && latest?.status == .running
             if interruptedByShutdown {
-                _ = try? repo.interrupt(id: job.id, leaseOwner: leaseOwner)
-                emitTerminal(id: job.id, status: .interrupted)
+                _ = try? await jobStore.interrupt(id: job.id, leaseOwner: leaseOwner)
+                await emitTerminal(id: job.id, status: .interrupted)
             } else {
                 let message = String(describing: error)
                 let code: String
@@ -552,11 +553,11 @@ public final class JobService {
                 } else {
                     code = Self.isGatherErrorCode(message) ? message : "worker_error"
                 }
-                _ = try? finish(
+                _ = try? await finish(
                     id: job.id, leaseOwner: leaseOwner,
                     status: cancelled ? .cancelled : .failed,
                     error: cancelled ? nil : (code, message))
-                emitTerminal(id: job.id, status: cancelled ? .cancelled : .failed)
+                await emitTerminal(id: job.id, status: cancelled ? .cancelled : .failed)
             }
             throw error
         }
@@ -611,8 +612,8 @@ public final class JobService {
     }
 
     /// 推送终态进度帧：恢复期客户端依赖事件而非轮询（TS 注释 234-248）。
-    private func emitTerminal(id: String, status: AnalysisJobStatus) {
-        guard let latest = try? repo.get(id) else { return }
+    private func emitTerminal(id: String, status: AnalysisJobStatus) async {
+        guard let latest = try? await jobStore.get(id) else { return }
         emitProgress(job: latest, update: JobProgressUpdate(current: 1, total: 1, message: status.rawValue))
     }
 
@@ -631,7 +632,7 @@ public final class JobService {
             do {
                 try await self.drain()
             } catch {
-                // repo.list 可抛（如关机时 DB 关闭）；fire-and-forget 调用方
+                // jobStore.list 可抛（如关机时 DB 关闭）；fire-and-forget 调用方
                 // 不应产生未处理错误（TS 注释 368-374 语义）。
                 print("Background job drain failed: \(error)")
             }
@@ -663,7 +664,7 @@ public final class JobService {
 
         let queued: [AnalysisJobData]
         do {
-            queued = try repo.list(status: .queued)
+            queued = try await jobStore.list(status: .queued)
         } catch {
             return
         }
@@ -677,7 +678,7 @@ public final class JobService {
             // 同步前缀：claim + controller 注册立即生效，并发上限精确。
             let controller: JobAbortSignal
             do {
-                controller = try beginRun(job: job, leaseOwner: leaseOwner)
+                controller = try await beginRun(job: job, leaseOwner: leaseOwner)
             } catch {
                 // claim 失败（跨进程竞态等）按 TS drain 的 catch 路径分发结果；
                 // 排队取消已登记 JobCancelledError 时跳过覆盖（等待者必须收到

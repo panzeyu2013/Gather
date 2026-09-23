@@ -11,6 +11,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempJobStore() async throws -> any JobStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "jobs")
+    return SQLiteJobStore(database: database)
+}
+
+
 // MARK: - 支撑
 
 /// 照片 + 资产文件行种子（photos.asset_file_id 外键）。
@@ -69,6 +75,7 @@ private func checkerboardPreview8x8() -> [UInt8] {
 
 private struct QualityHarness {
     let db: DBConnection
+    let jobStore: any JobStore
     let service: QualityService
     let sessionId: String
 }
@@ -87,7 +94,10 @@ private func makeHarness(
         imageProvider: imageProvider,
         statProvider: statProvider
     )
-    return QualityHarness(db: db, service: service, sessionId: session.id)
+    let jobStore = try SQLiteJobStore(database: try SQLiteDatabase(
+        path: FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-quality-\(UUID().uuidString).sqlite").path))
+    return QualityHarness(db: db, jobStore: jobStore, service: service, sessionId: session.id)
 }
 
 // MARK: - 技术质量指标（TS quality-service.test.ts 逐条对应）
@@ -301,20 +311,20 @@ struct QualityAnalyzeTests {
             let filepath = try writeTempFile(in: dir, name: "p\(i).jpg")
             try seedPhotoWithAssetFile(harness.db, photoId: "p\(i)", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-\(i)")
         }
-        let repo = AnalysisJobRepo(connection: harness.db)
-        let job = try repo.create(JobCreateParams(
+        let jobStore = try await makeTempJobStore()
+        let job = try await jobStore.create(JobCreateParams(
             type: .qualityScore, scopeType: "session", scopeId: harness.sessionId, dedupeKey: "d"
         ))
         // 模拟 JobService.execute 的接线：claim 租约 + 真实 updateProgress
         // 落库（TS 执行器语义），否则 checkpoint 不会持久化到 analysis_jobs。
-        _ = try repo.claim(id: job.id, leaseOwner: "test")
+        _ = try await jobStore.claim(id: job.id, leaseOwner: "test")
         let context = JobRunContext(
             signal: JobAbortSignal(),
-            repo: repo,
+            jobStore: jobStore,
             jobId: job.id,
             leaseOwner: "test",
             updateProgress: { id, owner, update in
-                try repo.updateProgress(id: id, leaseOwner: owner, update: update)
+                try await jobStore.updateProgress(id: id, leaseOwner: owner, update: update)
             },
             progressSink: nil
         )
@@ -325,7 +335,7 @@ struct QualityAnalyzeTests {
             sessionId: harness.sessionId, photoIds: ["p0", "p1", "p2"], context: context)
 
         #expect(results.count == 3)
-        let checkpoint = try AnalysisJobRepo(connection: harness.db).get(job.id)!.checkpoint
+        let checkpoint = try try await jobStore.get(job.id)!.checkpoint
         #expect(checkpoint["nextPhotoIndex"]?.numberValue == 3)
         let photoIds = checkpoint["photoIds"]?.arrayElements?.compactMap(\.stringValue) ?? []
         #expect(Set(photoIds) == ["p0", "p1", "p2"])
@@ -338,15 +348,15 @@ struct QualityAnalyzeTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
         try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
-        let repo = AnalysisJobRepo(connection: harness.db)
-        let job = try repo.create(JobCreateParams(
+        let jobStore = try await makeTempJobStore()
+        let job = try await jobStore.create(JobCreateParams(
             type: .qualityScore, scopeType: "session", scopeId: harness.sessionId, dedupeKey: "d"
         ))
         let signal = JobAbortSignal()
         signal.abort()
         let context = JobRunContext(
             signal: signal,
-            repo: repo,
+            jobStore: jobStore,
             jobId: job.id,
             leaseOwner: "test",
             updateProgress: { _, _, _ in true },

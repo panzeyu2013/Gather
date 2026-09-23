@@ -177,14 +177,14 @@ public final class QualityService {
         // 可能倒退）；末帧（current === total）在循环外只发一次。
         let progressLock = NSLock()
         var completed = 0
-        let reportProgress: (Int) -> Void = { current in
+        let reportProgress: (Int) async -> Void = { current in
             // TS: checkpoint 为 { photoIds, nextPhotoIndex }；photoIds 为
             // undefined 时 JSON.stringify 丢弃该键（Swift 侧同样省略）。
             var checkpoint: [String: JSONValue] = ["nextPhotoIndex": .number(Double(current))]
             if let photoIds {
                 checkpoint["photoIds"] = .array(photoIds.map { .string($0) })
             }
-            context?.updateProgress(JobProgressUpdate(
+            await context?.updateProgress(JobProgressUpdate(
                 current: current,
                 total: photos.count,
                 message: "quality.scoring",
@@ -193,7 +193,7 @@ public final class QualityService {
         }
 
         let outcomes = try await mapConcurrent(photos, concurrency: Self.analyzeConcurrency) { photo -> AnalyzeOutcome in
-            try context?.throwIfCancelled()
+            try await context?.throwIfCancelled()
             let assetFileId = photo.assetFileId
             var result: QualityResult
             var insert: QualityInsert?
@@ -329,12 +329,12 @@ public final class QualityService {
             let current = completed
             progressLock.unlock()
             if current < photos.count && current % Self.analyzeConcurrency == 0 {
-                reportProgress(current)
+                await reportProgress(current)
             }
             return AnalyzeOutcome(result: result, insert: insert)
         }
 
-        if !photos.isEmpty { reportProgress(photos.count) }
+        if !photos.isEmpty { await reportProgress(photos.count) }
 
         // 全部 INSERT 单事务串行提交（并行计算阶段不碰写）。
         if outcomes.contains(where: { $0.insert != nil }) {

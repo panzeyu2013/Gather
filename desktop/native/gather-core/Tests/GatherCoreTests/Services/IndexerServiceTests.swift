@@ -13,6 +13,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempJobStore() async throws -> any JobStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "jobs")
+    return SQLiteJobStore(database: database)
+}
+
+
 // MARK: - 支撑
 
 private func sha256Hex(_ content: String) -> String {
@@ -333,13 +339,13 @@ struct CancelledScanIndexSeqTests {
             },
             getSetting: { _, defaultValue in defaultValue }
         )
-        let repo = AnalysisJobRepo(connection: db)
-        let job = try repo.create(JobCreateParams(
+        let jobStore = try await makeTempJobStore()
+        let job = try await jobStore.create(JobCreateParams(
             type: .metadataScan, scopeType: "session", scopeId: session.id, dedupeKey: "d"
         ))
         let context = JobRunContext(
             signal: signal,
-            repo: repo,
+            jobStore: jobStore,
             jobId: job.id,
             leaseOwner: "test",
             updateProgress: { _, _, _ in true },
@@ -700,14 +706,14 @@ struct ChecksumBackfillTests {
             try Data("content-\(i)".utf8).write(to: URL(fileURLWithPath: path))
             try insertPhotoRow(harness.db, id: "p\(i)", sessionId: harness.sessionId, filepath: path, assetFileId: nil)
         }
-        let repo = AnalysisJobRepo(connection: harness.db)
-        let job = try repo.create(JobCreateParams(
+        let jobStore = try await makeTempJobStore()
+        let job = try await jobStore.create(JobCreateParams(
             type: .checksumBackfill, scopeType: "session", scopeId: harness.sessionId, dedupeKey: "d"
         ))
         let signal = JobAbortSignal()
         let context = JobRunContext(
             signal: signal,
-            repo: repo,
+            jobStore: jobStore,
             jobId: job.id,
             leaseOwner: "test",
             updateProgress: { _, _, _ in true },

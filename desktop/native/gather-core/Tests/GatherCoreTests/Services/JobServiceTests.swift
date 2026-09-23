@@ -7,18 +7,28 @@ import Testing
 import Foundation
 @testable import GatherCore
 
+private func makeTempJobStore() async throws -> any JobStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "jobs")
+    return SQLiteJobStore(database: database)
+}
+
+
 /// 测试环境：内存 DB + 迁移 + repo + JobService（短心跳注入）。
 private final class Env {
     let connection: DBConnection
-    let repo: AnalysisJobRepo
+    let dbPath: String
+    let jobStore: any JobStore
     let service: JobService
     var progressFrames: [(jobId: String, update: JobProgressUpdate)] = []
 
     init(heartbeatMs: Int64 = 1_000) throws {
-        connection = try DBConnection(path: ":memory:")
+        // Store 连接与旧 DBConnection 各持一条连接：临时文件库（内存库不可共享）。
+        dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-jobs-\(UUID().uuidString).sqlite").path
+        connection = try DBConnection(path: dbPath)
         try MigrationRunner().migrate(connection)
-        repo = AnalysisJobRepo(connection: connection)
-        service = JobService(repo: repo, heartbeatIntervalMs: heartbeatMs)
+        jobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: dbPath))
+        service = JobService(jobStore: jobStore, heartbeatIntervalMs: heartbeatMs)
     }
 
     func makeParams(type: AnalysisJobType, scopeId: String = "s1", priority: Int? = nil) -> JobCreateParams {
@@ -61,28 +71,28 @@ private final class Gate: @unchecked Sendable {
 
 struct JobServiceTests {
     /// 轮询等待条件（全量并发跑时 Task 调度延迟，固定 sleep 不可靠）。
-    private func waitUntil(timeoutMs: Int64 = 4_000, _ condition: () -> Bool) async {
+    private func waitUntil(timeoutMs: Int64 = 4_000, _ condition: @escaping () async -> Bool) async {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
         while Date() < deadline {
-            if condition() { return }
+            if await condition() { return }
             try? await Task.sleep(for: .milliseconds(50))
         }
     }
 
     @Test func createRunsViaDrainAndSucceeds() async throws {
         let env = try Env()
-        env.service.registerExecutor(type: .metadataScan) { _, context in
-            context.updateProgress(JobProgressUpdate(current: 1, total: 2, message: "scanning"))
+        await env.service.registerExecutor(type: .metadataScan) { _, context in
+            await context.updateProgress(JobProgressUpdate(current: 1, total: 2, message: "scanning"))
             return "ok"
         }
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
-        let job = try env.service.create(env.makeParams(type: .metadataScan))
+        let job = try await env.service.create(env.makeParams(type: .metadataScan))
         let result: String? = try await env.service.waitForResult(jobId: job.id)
         #expect(result == "ok")
 
-        let persisted = try env.repo.get(job.id)
+        let persisted = try try await env.jobStore.get(job.id)
         #expect(persisted?.status == .succeeded)
         #expect(persisted?.progressCurrent == 1)
         #expect(persisted?.progressTotal == 2)
@@ -91,19 +101,19 @@ struct JobServiceTests {
     @Test func cancelsRunningJob() async throws {
         let env = try Env(heartbeatMs: 100)
         let gate = Gate()
-        env.service.registerExecutor(type: .similarityAnalyze) { _, _ in
+        await env.service.registerExecutor(type: .similarityAnalyze) { _, _ in
             await gate.wait()
             return nil
         }
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
-        let job = try env.service.create(env.makeParams(type: .similarityAnalyze))
+        let job = try await env.service.create(env.makeParams(type: .similarityAnalyze))
         // 等任务进入运行态（Task 调度可能有延迟）。
-        await waitUntil { (try? env.repo.get(job.id)?.status == .running) ?? false }
-        #expect(try env.repo.get(job.id)?.status == .running)
+        await waitUntil { (try? try await env.jobStore.get(job.id)?.status == .running) ?? false }
+        #expect(try try await env.jobStore.get(job.id)?.status == .running)
 
-        let cancelled = try env.service.cancel(job.id)
+        let cancelled = try await env.service.cancel(job.id)
         #expect(cancelled)
         gate.open()
 
@@ -113,31 +123,31 @@ struct JobServiceTests {
         } catch is JobCancelledError {
             // 预期
         }
-        #expect(try env.repo.get(job.id)?.status == .cancelled)
+        #expect(try try await env.jobStore.get(job.id)?.status == .cancelled)
     }
 
     @Test func cancelsQueuedJobAndEmitsTerminalFrame() async throws {
         let env = try Env(heartbeatMs: 100)
         let gate = Gate()
         // 前两个任务占满并发（上限 2），第三个排队。
-        env.service.registerExecutor(type: .faceAnalyze) { _, _ in
+        await env.service.registerExecutor(type: .faceAnalyze) { _, _ in
             await gate.wait()
             return nil
         }
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
-        let first = try env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s1"))
-        let second = try env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s2"))
-        let third = try env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s3"))
+        let first = try await env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s1"))
+        let second = try await env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s2"))
+        let third = try await env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s3"))
         // 前两个任务占满并发（上限 2）后第三个排队。
-        await waitUntil { (try? env.repo.get(third.id)?.status == .queued) ?? false }
-        #expect(try env.repo.get(third.id)?.status == .queued, "并发上限 2：第三个任务应排队")
+        await waitUntil { (try? try await env.jobStore.get(third.id)?.status == .queued) ?? false }
+        #expect(try try await env.jobStore.get(third.id)?.status == .queued, "并发上限 2：第三个任务应排队")
 
         env.service.setProgressSink { job, update in
             env.progressFrames.append((job.id, update))
         }
-        let cancelled = try env.service.cancel(third.id)
+        let cancelled = try await env.service.cancel(third.id)
         #expect(cancelled)
 
         // queued 取消补发终态帧。
@@ -159,49 +169,49 @@ struct JobServiceTests {
 
     @Test func retryRequeuesFailedJob() async throws {
         let env = try Env()
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
         // 无 executor → drain 不会拾取；先置为 failed 再 retry → queued。
-        let job = try env.service.create(env.makeParams(type: .duplicateScan))
-        let claimed = try env.repo.claim(id: job.id, leaseOwner: env.service.leaseOwner)
+        let job = try await env.service.create(env.makeParams(type: .duplicateScan))
+        let claimed = try await env.jobStore.claim(id: job.id, leaseOwner: env.service.leaseOwner)
         #expect(claimed)
-        _ = try env.repo.finish(id: job.id, leaseOwner: env.service.leaseOwner, status: .failed, error: ("worker_error", "boom"))
-        #expect(try env.repo.get(job.id)?.status == .failed)
-        let retried = try env.service.retry(job.id)
+        _ = try await env.jobStore.finish(id: job.id, leaseOwner: env.service.leaseOwner, status: .failed, error: ("worker_error", "boom"))
+        #expect(try try await env.jobStore.get(job.id)?.status == .failed)
+        let retried = try await env.service.retry(job.id)
         #expect(retried)
-        #expect(try env.repo.get(job.id)?.status == .queued)
+        #expect(try try await env.jobStore.get(job.id)?.status == .queued)
     }
 
-    @Test func clearCompletedKeepsStageEvidence() throws {
+    @Test func clearCompletedKeepsStageEvidence() async throws {
         let env = try Env()
         // 直接造终态行（claim + finish）：metadata.scan 与 export.execute 应被保留。
-        let scan = try env.service.create(env.makeParams(type: .metadataScan))
-        _ = try env.repo.claim(id: scan.id, leaseOwner: env.service.leaseOwner)
-        _ = try env.repo.finish(id: scan.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
-        let export = try env.service.create(env.makeParams(type: .exportExecute, scopeId: "s2"))
-        _ = try env.repo.claim(id: export.id, leaseOwner: env.service.leaseOwner)
-        _ = try env.repo.finish(id: export.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
-        let dup = try env.service.create(env.makeParams(type: .duplicateScan, scopeId: "s3"))
-        _ = try env.repo.claim(id: dup.id, leaseOwner: env.service.leaseOwner)
-        _ = try env.repo.finish(id: dup.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
+        let scan = try await env.service.create(env.makeParams(type: .metadataScan))
+        _ = try await env.jobStore.claim(id: scan.id, leaseOwner: env.service.leaseOwner)
+        _ = try await env.jobStore.finish(id: scan.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
+        let export = try await env.service.create(env.makeParams(type: .exportExecute, scopeId: "s2"))
+        _ = try await env.jobStore.claim(id: export.id, leaseOwner: env.service.leaseOwner)
+        _ = try await env.jobStore.finish(id: export.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
+        let dup = try await env.service.create(env.makeParams(type: .duplicateScan, scopeId: "s3"))
+        _ = try await env.jobStore.claim(id: dup.id, leaseOwner: env.service.leaseOwner)
+        _ = try await env.jobStore.finish(id: dup.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
 
-        let cleared = try env.service.clearCompleted()
+        let cleared = try await env.service.clearCompleted()
         #expect(cleared == 1, "仅非阶段证据的终态行被清理，实际 \(cleared)")
-        #expect(try env.repo.get(scan.id) != nil, "metadata.scan 阶段证据应保留")
-        #expect(try env.repo.get(export.id) != nil, "export.execute 阶段证据应保留")
-        #expect(try env.repo.get(dup.id) == nil)
+        #expect(try try await env.jobStore.get(scan.id) != nil, "metadata.scan 阶段证据应保留")
+        #expect(try try await env.jobStore.get(export.id) != nil, "export.execute 阶段证据应保留")
+        #expect(try try await env.jobStore.get(dup.id) == nil)
     }
 
     @Test func waitForResultHandlesPersistedTerminalStates() async throws {
         let env = try Env()
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
         // 失败终态 → 抛错。
-        let failed = try env.service.create(env.makeParams(type: .qualityScore))
-        _ = try env.repo.claim(id: failed.id, leaseOwner: env.service.leaseOwner)
-        _ = try env.repo.finish(
+        let failed = try await env.service.create(env.makeParams(type: .qualityScore))
+        _ = try await env.jobStore.claim(id: failed.id, leaseOwner: env.service.leaseOwner)
+        _ = try await env.jobStore.finish(
             id: failed.id, leaseOwner: env.service.leaseOwner, status: .failed,
             error: ("SCAN_READ_FAILED", "boom"))
         do {
@@ -213,9 +223,9 @@ struct JobServiceTests {
         }
 
         // 取消终态 → JobCancelledError。
-        let cancelled = try env.service.create(env.makeParams(type: .qualityScore, scopeId: "s2"))
-        _ = try env.repo.claim(id: cancelled.id, leaseOwner: env.service.leaseOwner)
-        _ = try env.repo.finish(id: cancelled.id, leaseOwner: env.service.leaseOwner, status: .cancelled, error: nil)
+        let cancelled = try await env.service.create(env.makeParams(type: .qualityScore, scopeId: "s2"))
+        _ = try await env.jobStore.claim(id: cancelled.id, leaseOwner: env.service.leaseOwner)
+        _ = try await env.jobStore.finish(id: cancelled.id, leaseOwner: env.service.leaseOwner, status: .cancelled, error: nil)
         do {
             let _: String? = try await env.service.waitForResult(jobId: cancelled.id, timeoutMs: 500)
             Issue.record("取消终态应抛 JobCancelledError")
@@ -224,9 +234,9 @@ struct JobServiceTests {
         }
 
         // succeeded 且无内存结果 → nil。
-        let done = try env.service.create(env.makeParams(type: .qualityScore, scopeId: "s3"))
-        _ = try env.repo.claim(id: done.id, leaseOwner: env.service.leaseOwner)
-        _ = try env.repo.finish(id: done.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
+        let done = try await env.service.create(env.makeParams(type: .qualityScore, scopeId: "s3"))
+        _ = try await env.jobStore.claim(id: done.id, leaseOwner: env.service.leaseOwner)
+        _ = try await env.jobStore.finish(id: done.id, leaseOwner: env.service.leaseOwner, status: .succeeded, error: nil)
         let value: String? = try await env.service.waitForResult(jobId: done.id, timeoutMs: 500)
         #expect(value == nil)
 
@@ -241,11 +251,11 @@ struct JobServiceTests {
 
     @Test func waitForResultTimesOutForPendingJob() async throws {
         let env = try Env()
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
         // 无 executor，job 一直 queued → waitForResult 超时。
-        let job = try env.service.create(env.makeParams(type: .thumbnailBuild))
+        let job = try await env.service.create(env.makeParams(type: .thumbnailBuild))
         do {
             let _: String? = try await env.service.waitForResult(jobId: job.id, timeoutMs: 200)
             Issue.record("应超时")
@@ -262,7 +272,7 @@ struct JobServiceTests {
     /// 必须立即返回而非等待超时。
     @Test func waitForResultReturnsImmediatelyForCompletedButUntakenResult() async throws {
         let env = try Env()
-        let job = try env.service.create(env.makeParams(type: .duplicateScan))
+        let job = try await env.service.create(env.makeParams(type: .duplicateScan))
         // 任务已完成（完成结果已登记、尚未被任何 waitForResult 取走）。
         env.service.completeResultForTesting(id: job.id, value: "early-result")
 
@@ -277,12 +287,12 @@ struct JobServiceTests {
     /// 修复后已登记结果存在时跳过覆盖。此用例直接驱动该分支做确定性验证。
     @Test func claimFailureDoesNotOverwriteQueuedCancellationResult() async throws {
         let env = try Env()
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
         // 排队任务取消：cancel 同步登记 JobCancelledError。
-        let job = try env.service.create(env.makeParams(type: .duplicateScan))
-        #expect(try env.service.cancel(job.id))
+        let job = try await env.service.create(env.makeParams(type: .duplicateScan))
+        #expect(try await env.service.cancel(job.id))
         // drain 的 claim 失败分支：任务在 list 快照与 claim 之间被取消。
         env.service.handleClaimFailure(id: job.id, error: JobServiceError.notClaimable(job.id))
 
@@ -296,7 +306,7 @@ struct JobServiceTests {
         }
 
         // 对照组：无已登记结果时 claim 失败照常分发 notClaimable。
-        let other = try env.service.create(env.makeParams(type: .duplicateScan, scopeId: "s2"))
+        let other = try await env.service.create(env.makeParams(type: .duplicateScan, scopeId: "s2"))
         env.service.handleClaimFailure(id: other.id, error: JobServiceError.notClaimable(other.id))
         do {
             let _: String? = try await env.service.waitForResult(jobId: other.id, timeoutMs: 500)
@@ -312,23 +322,23 @@ struct JobServiceTests {
         env.service.setProgressSink { _, update in
             updates.append(update)
         }
-        env.service.registerExecutor(type: .thumbnailBuild) { _, context in
+        await env.service.registerExecutor(type: .thumbnailBuild) { _, context in
             // 快速连续 5 次更新：250ms 节流窗口内应合并（期间不落库）。
             for i in 1...5 {
-                context.updateProgress(JobProgressUpdate(current: i, total: 10))
+                await context.updateProgress(JobProgressUpdate(current: i, total: 10))
             }
             // checkpoint：先 flush 再写再 flush。
-            context.updateCheckpoint(["phase": .string("t1")])
-            try context.throwIfCancelled()
+            await context.updateCheckpoint(["phase": .string("t1")])
+            try await context.throwIfCancelled()
             return nil
         }
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
-        let job = try env.service.create(env.makeParams(type: .thumbnailBuild))
+        let job = try await env.service.create(env.makeParams(type: .thumbnailBuild))
         let _: Void? = try await env.service.waitForResult(jobId: job.id, timeoutMs: 2_000)
 
-        let persisted = try env.repo.get(job.id)
+        let persisted = try try await env.jobStore.get(job.id)
         #expect(persisted?.progressCurrent == 5)
         #expect(persisted?.checkpoint["phase"] == .string("t1"))
         // 节流合并：sink 收到的更新应少于逐次上报数（5 次合并 + checkpoint 1 次 + 终态 1 次）。
@@ -342,7 +352,7 @@ struct JobServiceTests {
         let gate = Gate()
         var observedAbort: Bool?
         let boxLock = NSLock()
-        env.service.registerExecutor(type: .duplicateScan) { _, context in
+        await env.service.registerExecutor(type: .duplicateScan) { _, context in
             await gate.wait()
             // 等心跳周期：lease 丢失后心跳失败 → abort 传播到 signal。
             try? await Task.sleep(for: .milliseconds(150))
@@ -351,12 +361,12 @@ struct JobServiceTests {
             boxLock.unlock()
             return nil
         }
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
-        let job = try env.service.create(env.makeParams(type: .duplicateScan))
-        await waitUntil { (try? env.repo.get(job.id)?.status == .running) ?? false }
-        #expect(try env.repo.get(job.id)?.status == .running)
+        let job = try await env.service.create(env.makeParams(type: .duplicateScan))
+        await waitUntil { (try? try await env.jobStore.get(job.id)?.status == .running) ?? false }
+        #expect(try try await env.jobStore.get(job.id)?.status == .running)
 
         // 模拟跨进程租约丢失：另一进程直接改写 lease_owner（claim 只对
         // queued 生效，running 行无法再 claim——与 TS 行为一致）。
@@ -381,7 +391,7 @@ struct JobServiceTests {
 
         // TS 语义：租约丢失后 finish 写不进 DB（WHERE lease_owner 不匹配），
         // 行保持 running 直至 recoverStale（30s 租约超时）恢复 queued。
-        let status = try env.repo.get(job.id)?.status
+        let status = try try await env.jobStore.get(job.id)?.status
         #expect(status == .running, "租约丢失场景 DB 状态应保持 running（TS 语义），实际 \(status?.rawValue ?? "nil")")
     }
 
@@ -391,7 +401,7 @@ struct JobServiceTests {
         var running = 0
         let runningLock = NSLock()
         var maxRunning = 0
-        env.service.registerExecutor(type: .faceAnalyze) { _, _ in
+        await env.service.registerExecutor(type: .faceAnalyze) { _, _ in
             runningLock.lock()
             running += 1
             if running > maxRunning { maxRunning = running }
@@ -402,12 +412,12 @@ struct JobServiceTests {
             runningLock.unlock()
             return nil
         }
-        env.service.start()
+        await env.service.start()
         defer { Task { await env.service.stop() } }
 
-        let j1 = try env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s1"))
-        let j2 = try env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s2"))
-        let j3 = try env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s3"))
+        let j1 = try await env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s1"))
+        let j2 = try await env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s2"))
+        let j3 = try await env.service.create(env.makeParams(type: .faceAnalyze, scopeId: "s3"))
         // 等待两个 executor 进入（并发峰值达到上限）。
         await waitUntil { maxRunning >= 2 }
 
@@ -422,14 +432,14 @@ struct JobServiceTests {
     @Test func stoppedServiceDoesNotDrain() async throws {
         let env = try Env()
         var executed = false
-        env.service.registerExecutor(type: .checksumBackfill) { _, _ in
+        await env.service.registerExecutor(type: .checksumBackfill) { _, _ in
             executed = true
             return nil
         }
         // 未 start() → stopped，create 不触发 drain。
-        let job = try env.service.create(env.makeParams(type: .checksumBackfill))
+        let job = try await env.service.create(env.makeParams(type: .checksumBackfill))
         try await Task.sleep(for: .milliseconds(200))
         #expect(!executed)
-        #expect(try env.repo.get(job.id)?.status == .queued)
+        #expect(try try await env.jobStore.get(job.id)?.status == .queued)
     }
 }

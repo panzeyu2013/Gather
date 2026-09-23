@@ -86,9 +86,13 @@ struct GatherAppDelegateTests {
 
         let db = try DBConnection(path: ":memory:")
         try MigrationRunner().migrate(db)
+        let tempStorePath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-delegate-\(UUID().uuidString).sqlite").path
+        try MigrationRunner().migrate(try DBConnection(path: tempStorePath))
+        let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
         let settings = try makeTestSettings()
         let router = SessionCommandRouter.makeDefault(
-            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore)
+            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore)
 
         final class Box: @unchecked Sendable {
             var userInfo: [AnyHashable: Any]?
@@ -103,7 +107,7 @@ struct GatherAppDelegateTests {
         }
         defer { NotificationCenter.default.removeObserver(token) }
 
-        GatherApp.importFiles([good.path, broken.path], router: router)
+        await GatherApp.importFiles([good.path, broken.path], router: router)
 
         let userInfo = try #require(box.userInfo)
         let sessionId = try #require(userInfo[GatherAppImportUserInfoKey.sessionId] as? String)

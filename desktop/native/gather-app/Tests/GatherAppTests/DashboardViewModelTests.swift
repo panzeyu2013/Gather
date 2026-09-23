@@ -133,7 +133,7 @@ private func makeStubVM() -> (DashboardViewModel, StubDashboardProvider) {
 
 // MARK: - 真实服务集成（临时 SQLite）
 
-private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnection) {
+private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnection, SQLiteJobStore) {
     // workspace.status 已切到 WorkspaceAPI（Store 连接）：两条连接指向同一临时库文件。
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-dashboard-\(UUID().uuidString).sqlite").path
@@ -143,6 +143,7 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
     let photoRepo = PhotoRepo(connection: db)
     let storeDatabase = try SQLiteDatabase(path: path)
     let container = AppContainer(database: storeDatabase)
+    let jobStore = SQLiteJobStore(database: storeDatabase)
     let provider = LiveDashboardDataProvider(
         sessionService: SessionService(
             sessionRepo: sessionRepo,
@@ -151,9 +152,9 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
             connection: db
         ),
         workspace: GatherAPI(container: container).workspace,
-        jobService: JobService(repo: AnalysisJobRepo(connection: db))
+        jobService: JobService(jobStore: jobStore)
     )
-    return (provider, db)
+    return (provider, db, jobStore)
 }
 
 private func insertSession(_ db: DBConnection, _ id: String, name: String = "工作区") throws {
@@ -198,7 +199,7 @@ struct DashboardViewModelTests {
 
     // 真实库：sessions + photos + outbox → 概览计数正确（workspace status 加载）。
     @Test func loadAllAggregatesWorkspaceStatus() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db, jobStore) = try makeLiveProvider()
         try insertSession(db, "s1", name: "甲")
         try insertSession(db, "s2", name: "乙")
         try insertPhoto(db, id: "p1", sessionId: "s1")
@@ -228,7 +229,7 @@ struct DashboardViewModelTests {
 
     // 真实库：jobs.list 加载 → attention/history 分组 + scanJobs 种子。
     @Test func loadJobsGroupsAttentionAndHistory() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db, jobStore) = try makeLiveProvider()
         try insertSession(db, "s1")
         try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "j2", type: "metadata.scan", scopeId: "s1", status: "running", updatedAt: "2026-01-01T00:00:01.000Z")
@@ -272,7 +273,7 @@ struct DashboardViewModelTests {
 
     // 真实库：jobs cancel → DB 状态翻转；retry → 回 queued。
     @Test func cancelAndRetryMutateRealDB() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db, jobStore) = try makeLiveProvider()
         try insertSession(db, "s1")
         try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
 
@@ -280,17 +281,17 @@ struct DashboardViewModelTests {
         await viewModel.loadAll()
 
         await viewModel.cancelJob("j1")
-        #expect(try AnalysisJobRepo(connection: db).get("j1")?.status == .cancelled)
+        #expect(try await jobStore.get("j1")?.status == .cancelled)
 
         await viewModel.retryJob("j1")
-        #expect(try AnalysisJobRepo(connection: db).get("j1")?.status == .queued)
+        #expect(try await jobStore.get("j1")?.status == .queued)
         // 动作后列表已刷新（status 同步到内存）。
         #expect(viewModel.jobs.first(where: { $0.id == "j1" })?.status == .queued)
     }
 
     // 真实库：clear_completed 只清非阶段证据行（metadata.scan 保留）。
     @Test func clearCompletedKeepsStageEvidenceRows() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db, jobStore) = try makeLiveProvider()
         try insertSession(db, "s1")
         try insertJob(db, id: "scan1", type: "metadata.scan", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "t1", type: "thumbnail.build", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
@@ -300,7 +301,7 @@ struct DashboardViewModelTests {
         #expect(viewModel.hasClearableJobs == true)
 
         await viewModel.clearCompletedJobs()
-        let remaining = try provider.listJobs()
+        let remaining = try await provider.listJobs()
         #expect(remaining.map(\.id) == ["scan1"])
         #expect(viewModel.hasClearableJobs == false)
     }
@@ -517,7 +518,7 @@ struct DashboardViewModelTests {
 
     @Test func workspaceStatusMissingSessionIsSkipped() async throws {
         // 真实库：无该 session → getStatus 返回 nil，不抛错、不进 statuses。
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db, jobStore) = try makeLiveProvider()
         try insertSession(db, "s1")
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()

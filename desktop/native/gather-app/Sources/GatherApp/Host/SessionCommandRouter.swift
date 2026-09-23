@@ -196,6 +196,7 @@ public final class SessionCommandRouter: CommandRouter {
         cullingStore: any CullingStore,
         similarityStore: any SimilarityStore,
         writebackStore: any WritebackStore,
+        jobStore: any JobStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -266,7 +267,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataStore: metadataStore,
             assetResolver: assetResolver
         )
-        let jobService = JobService(repo: AnalysisJobRepo(connection: db))
+        let jobService = JobService(jobStore: jobStore)
         let exportService = ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
@@ -382,8 +383,8 @@ public final class SessionCommandRouter: CommandRouter {
                 minGroupSize: checkpoint["minGroupSize"]?.numberValue,
                 groupingMode: checkpoint["groupingMode"]?.stringValue == "sequential" ? .sequential : .global,
                 onProgress: { current, total, phase in
-                    context.updateProgress(JobProgressUpdate(
-                        current: current, total: total, phase: phase, checkpoint: checkpoint))
+                    Task { await context.updateProgress(JobProgressUpdate(
+                        current: current, total: total, phase: phase, checkpoint: checkpoint)) }
                 }
             )
             return true
@@ -397,8 +398,8 @@ public final class SessionCommandRouter: CommandRouter {
                 visualThreshold: job.checkpoint["visualThreshold"]?.numberValue.map(Int.init),
                 signal: context.signal,
                 onProgress: { current, total, phase in
-                    context.updateProgress(JobProgressUpdate(
-                        current: current, total: total, phase: phase, checkpoint: job.checkpoint))
+                    Task { await context.updateProgress(JobProgressUpdate(
+                        current: current, total: total, phase: phase, checkpoint: job.checkpoint)) }
                 }
             )
             return result
@@ -419,8 +420,8 @@ public final class SessionCommandRouter: CommandRouter {
                 eps: checkpoint["eps"]?.numberValue,
                 minPts: checkpoint["minSamples"]?.numberValue,
                 onProgress: { current, total, phase in
-                    context.updateProgress(JobProgressUpdate(
-                        current: current, total: total, phase: phase, checkpoint: checkpoint))
+                    Task { await context.updateProgress(JobProgressUpdate(
+                        current: current, total: total, phase: phase, checkpoint: checkpoint)) }
                 }
             )
             return result
@@ -445,21 +446,21 @@ public final class SessionCommandRouter: CommandRouter {
                 sessionId: job.scopeId,
                 context: context
             )
-            try context.throwIfCancelled()
+            try await context.throwIfCancelled()
             let photoIds = try photoRepo.getBySessionProjection(sessionId: job.scopeId)
                 .filter { $0.status != "missing" }
                 .map(\.id)
-            context.updateProgress(JobProgressUpdate(
+            await context.updateProgress(JobProgressUpdate(
                 current: 0, total: photoIds.count, phase: "index.metadata-read"
             ))
             _ = try await metadataService.getMetadata(photoIds: photoIds)
             _ = try assetRepo.reconcileRawJpegLinks(job.scopeId)
-            context.updateCheckpoint(["result": try JSONValue(from: result)])
-            context.updateProgress(JobProgressUpdate(
+            await context.updateCheckpoint(["result": try JSONValue(from: result)])
+            await context.updateProgress(JobProgressUpdate(
                 current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
             ))
             if (try indexerService.pendingChecksums(sessionId: job.scopeId)) > 0 {
-                _ = try jobService.create(JobCreateParams(
+                _ = try await jobService.create(JobCreateParams(
                     type: .checksumBackfill,
                     scopeType: "session",
                     scopeId: job.scopeId,
@@ -489,14 +490,13 @@ public final class SessionCommandRouter: CommandRouter {
                 size: size,
                 signal: context.signal,
                 onProgress: { current, total in
-                    context.updateProgress(JobProgressUpdate(
+                    Task { await context.updateProgress(JobProgressUpdate(
                         current: current, total: total, phase: "thumbnail.building",
                         checkpoint: [
                             "paths": .array(paths.map(JSONValue.string)),
                             "size": .number(Double(size)),
                             "nextPathIndex": .number(Double(current)),
-                        ]
-                    ))
+                        ])) }
                 }
             )
         }
@@ -525,25 +525,24 @@ public final class SessionCommandRouter: CommandRouter {
                 sessionId: job.scopeId,
                 options: options,
                 onProgress: { progress in
-                    context.updateProgress(JobProgressUpdate(
+                    Task { await context.updateProgress(JobProgressUpdate(
                         current: progress.current,
                         total: progress.total,
                         message: progress.status == "error" ? (progress.errorMessage ?? "export.error") : "export.processing",
-                        checkpoint: checkpoint()
-                    ))
+                        checkpoint: checkpoint())) }
                 },
                 resume: NativeExportResumeState(
                     destinations: destinations,
                     completedPhotoIds: completedIds,
                     onPlanned: { photoId, destinationName in destinations[photoId] = destinationName },
-                    onPlanReady: { context.updateCheckpoint(checkpoint()) },
+                    onPlanReady: { Task { await context.updateCheckpoint(checkpoint()) } },
                     onCompleted: { photoId in
                         if completedIds.insert(photoId).inserted { completedSnapshot.append(photoId) }
-                        context.updateProgress(JobProgressUpdate(checkpoint: checkpoint()))
+                        Task { await context.updateProgress(JobProgressUpdate(checkpoint: checkpoint())) }
                     }
                 )
             )
-            context.updateCheckpoint(checkpoint())
+            await context.updateCheckpoint(checkpoint())
             return result
         }
     }
@@ -634,30 +633,6 @@ public final class SessionCommandRouter: CommandRouter {
         // TS 源: photo.ipc.ts:96-112（键集分页；PAGE_SIZE=200 / MAX=1000）。
         // ── workspace（3.1 服务层）──
 
-        case "jobs.list":
-            let jobs = try jobService.list()
-            return try GatherCore.JSONValue(from: jobs)
-
-        // TS 源: jobs.ipc.ts:11 —— ok(jobs.cancel(jobId))。
-        case "jobs.cancel":
-            let jobId = try requiredString(params, "jobId")
-            return .bool(try jobService.cancel(jobId))
-
-        // TS 源: jobs.ipc.ts:12 —— ok(jobs.retry(jobId))。
-        case "jobs.retry":
-            let jobId = try requiredString(params, "jobId")
-            return .bool(try jobService.retry(jobId))
-
-        // TS 源: jobs.ipc.ts:13-19 —— destructive（confirmed 由命令边界校验；
-        // 直连路由时二次兜底，对齐 TS JOBS_CLEAR_CONFIRM_REQUIRED）。
-        case "jobs.clear_completed":
-            guard confirmed(params) else {
-                throw BridgeError.badParams("JOBS_CLEAR_CONFIRM_REQUIRED")
-            }
-            return .number(Double(try jobService.clearCompleted()))
-
-        // ── settings.*（3.6 服务层；TS 源 settings.ipc.ts）──
-
         case "settings.get_all":
             // settings.ipc.ts:11 —— ok(svc.getAll())：Record<string, string>。
             return .object(settings.values.mapValues(GatherCore.JSONValue.string))
@@ -743,8 +718,11 @@ public final class SessionCommandRouter: CommandRouter {
             // similarity.ipc.ts:146-157 —— jobs.cancelScope + cancel(markStatus:false)，
             // 同步返回 ok(true)。
             let sessionId = try requiredString(params, "sessionId")
-            _ = try jobService.cancelScope(type: .similarityAnalyze, scopeId: sessionId)
-            try similarityService.cancel(sessionId: sessionId, markStatus: false)
+            // cancel 为异步语义：立即返回 ok(true)，取消在后台完成（对齐 TS）。
+            Task { [jobService, similarityService] in
+                _ = try? await jobService.cancelScope(type: .similarityAnalyze, scopeId: sessionId)
+                try? similarityService.cancel(sessionId: sessionId, markStatus: false)
+            }
             return .bool(true)
 
         // ── assets.*（3.2 服务层；TS 源 assets.ipc.ts:9-14）──
@@ -841,8 +819,10 @@ public final class SessionCommandRouter: CommandRouter {
         case "fkw.cancel_analysis":
             // face-kw.ipc.ts:72-80 —— jobs.cancelScope + cancel，返回 {done:true}。
             let sessionId = try requiredString(params, "sessionId")
-            _ = try jobService.cancelScope(type: .faceAnalyze, scopeId: sessionId)
-            faceKwService.cancel(sessionId: sessionId)
+            Task { [jobService, faceKwService] in
+                _ = try? await jobService.cancelScope(type: .faceAnalyze, scopeId: sessionId)
+                faceKwService.cancel(sessionId: sessionId)
+            }
             return .object(["done": .bool(true)])
 
         case "quality.get":
@@ -984,24 +964,6 @@ public final class SessionCommandRouter: CommandRouter {
             try imagePreloadService.prioritizeThumbnail(path: path, size: size)
             return .null
 
-        case "image.preload_thumbnails":
-            let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
-            guard !paths.isEmpty else { return .null }
-            let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
-            let fingerprint = paths.joined(separator: "\u{0}")
-            let job = try jobService.create(JobCreateParams(
-                type: .thumbnailBuild,
-                scopeType: "paths",
-                scopeId: paths[0],
-                dedupeKey: "thumbnail.build:\(size):\(fingerprint)",
-                priority: -1,
-                checkpoint: [
-                    "paths": .array(paths.map(JSONValue.string)),
-                    "size": .number(Double(size)),
-                ]
-            ))
-            return .string(job.id)
-
         case "image.preload_previews":
             let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
             let maxDimension = Int((try? optionalNumber(params, "maxDimension")) ?? 2048)
@@ -1033,8 +995,10 @@ public final class SessionCommandRouter: CommandRouter {
 
         case "export.cancel":
             let sessionId = try requiredString(params, "sessionId")
-            _ = try jobService.cancelScope(type: .exportExecute, scopeId: sessionId)
-            exportService.cancel(sessionId: sessionId)
+            Task { [jobService] in
+                _ = try? await jobService.cancelScope(type: .exportExecute, scopeId: sessionId)
+                exportService.cancel(sessionId: sessionId)
+            }
             return .bool(true)
 
         case "export.report":
@@ -1097,6 +1061,85 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "image.preload_thumbnails":
+            Task {
+                do {
+                    let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
+                    guard !paths.isEmpty else { completion(WebResponse(ok: true, data: .null)); return }
+                    let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
+                    let fingerprint = paths.joined(separator: "\u{0}")
+                    let job = try await jobService.create(JobCreateParams(
+                        type: .thumbnailBuild,
+                        scopeType: "paths",
+                        scopeId: paths[0],
+                        dedupeKey: "thumbnail.build:\(size):\(fingerprint)",
+                        priority: -1,
+                        checkpoint: [
+                            "paths": .array(paths.map(JSONValue.string)),
+                            "size": .number(Double(size)),
+                        ]
+                    ))
+                    completion(WebResponse(ok: true, data: .string(job.id))); return
+
+
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
+        // ── jobs.*（Store 化后并入异步路由）──
+        case "jobs.list":
+            Task {
+                do {
+                    let jobs = try await jobService.list()
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: jobs)))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "jobs.cancel":
+            guard let jobId = try? requiredString(params, "jobId") else {
+                completion(WebResponse(ok: false, error: "MISSING_PARAM:jobId"))
+                return
+            }
+            Task {
+                do {
+                    completion(WebResponse(ok: true, data: .bool(try await jobService.cancel(jobId))))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "jobs.retry":
+            guard let jobId = try? requiredString(params, "jobId") else {
+                completion(WebResponse(ok: false, error: "MISSING_PARAM:jobId"))
+                return
+            }
+            Task {
+                do {
+                    completion(WebResponse(ok: true, data: .bool(try await jobService.retry(jobId))))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "jobs.clear_completed":
+            guard confirmed(params) else {
+                completion(WebResponse(ok: false, error: "JOBS_CLEAR_CONFIRM_REQUIRED"))
+                return
+            }
+            Task {
+                do {
+                    completion(WebResponse(ok: true, data: .number(Double(try await jobService.clearCompleted()))))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
         // TS 源: navigation.ipc.ts:6-15 —— async wrapper 内同步执行 analyze；
         // Swift 同步直连（与 TS 一致：主进程事件循环内同步 CPU + 同步 SQLite）。
         case "navigation.analyze":
@@ -1176,7 +1219,7 @@ public final class SessionCommandRouter: CommandRouter {
                     // TS: threshold ?? 'default'（undefined 时不输出数值）。
                     let dedupeThreshold = threshold.map { String($0) } ?? "default"
                     let dedupeMinGroupSize = minGroupSize.map { String($0) } ?? "default"
-                    let job = try jobService.create(JobCreateParams(
+                    let job = try await jobService.create(JobCreateParams(
                         type: .similarityAnalyze,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1204,7 +1247,7 @@ public final class SessionCommandRouter: CommandRouter {
             let visualThreshold = try? optionalNumber(params, "visualThreshold")
             Task {
                 do {
-                    let job = try jobService.create(JobCreateParams(
+                    let job = try await jobService.create(JobCreateParams(
                         type: .duplicateScan,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1243,7 +1286,7 @@ public final class SessionCommandRouter: CommandRouter {
                         eps: eps ?? settings.number("default_eps", default: 0.6),
                         minPts: minSamples ?? settings.number("default_min_samples", default: 2)
                     )
-                    let job = try jobService.create(JobCreateParams(
+                    let job = try await jobService.create(JobCreateParams(
                         type: .faceAnalyze,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1507,17 +1550,19 @@ public final class SessionCommandRouter: CommandRouter {
                 completion(WebResponse(ok: false, error: "MISSING_PARAM:sessionId"))
                 return
             }
-            do {
-                let job = try jobService.create(JobCreateParams(
-                    type: .metadataScan,
-                    scopeType: "session",
-                    scopeId: sessionId,
-                    dedupeKey: "metadata.scan:\(sessionId)"
-                ))
-                let data = try GatherCore.JSONValue(from: job)
-                completion(WebResponse(ok: true, data: data))
-            } catch {
-                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            Task {
+                do {
+                    let job = try await jobService.create(JobCreateParams(
+                        type: .metadataScan,
+                        scopeType: "session",
+                        scopeId: sessionId,
+                        dedupeKey: "metadata.scan:\(sessionId)"
+                    ))
+                    let data = try GatherCore.JSONValue(from: job)
+                    completion(WebResponse(ok: true, data: data))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
             }
 
         // TS 源: quality.ipc.ts:13-24 —— 建 quality.score job 即返回。
@@ -1532,20 +1577,22 @@ public final class SessionCommandRouter: CommandRouter {
                 completion(WebResponse(ok: false, error: "INVALID_PARAM:photoIds"))
                 return
             }
-            do {
-                let job = try jobService.create(JobCreateParams(
-                    type: .qualityScore,
-                    scopeType: "session",
-                    scopeId: sessionId,
-                    dedupeKey: "quality.score:\(sessionId):\(photoIds?.sorted().joined(separator: ",") ?? "all")",
-                    checkpoint: [
-                        "photoIds": photoIds.map { .array($0.map(JSONValue.string)) } ?? .null,
-                    ]
-                ))
-                let data = try GatherCore.JSONValue(from: job)
-                completion(WebResponse(ok: true, data: data))
-            } catch {
-                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            Task {
+                do {
+                    let job = try await jobService.create(JobCreateParams(
+                        type: .qualityScore,
+                        scopeType: "session",
+                        scopeId: sessionId,
+                        dedupeKey: "quality.score:\(sessionId):\(photoIds?.sorted().joined(separator: ",") ?? "all")",
+                        checkpoint: [
+                            "photoIds": photoIds.map { .array($0.map(JSONValue.string)) } ?? .null,
+                        ]
+                    ))
+                    let data = try GatherCore.JSONValue(from: job)
+                    completion(WebResponse(ok: true, data: data))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
             }
 
         // TS 源: session.ipc.ts:36-59 —— 一跳导入：建会话 + metadata.scan job
@@ -1556,29 +1603,30 @@ public final class SessionCommandRouter: CommandRouter {
                 completion(WebResponse(ok: false, error: "MISSING_PARAM:sourcePath"))
                 return
             }
-            do {
-                let session = try sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
+            Task {
                 do {
-                    _ = try jobService.create(JobCreateParams(
-                        type: .metadataScan,
-                        scopeType: "session",
-                        scopeId: session.id,
-                        dedupeKey: "metadata.scan:\(session.id)"
-                    ))
+                    let session = try sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
+                    do {
+                        _ = try await jobService.create(JobCreateParams(
+                            type: .metadataScan,
+                            scopeType: "session",
+                            scopeId: session.id,
+                            dedupeKey: "metadata.scan:\(session.id)"
+                        ))
+                    } catch {
+                        // TS: 入队失败回滚会话行，工作区列表不出现半成品会话。
+                        // R1/R2：删除依赖 face Store（async），经 Task 排队后抛出原始错误。
+                        let rollbackId = session.id
+                        Task { try? await sessionService.deleteSession(rollbackId, confirmed: true) }
+                        throw error
+                    }
+                    let data = try GatherCore.JSONValue(from: session)
+                    completion(WebResponse(ok: true, data: data))
                 } catch {
-                    // TS: 入队失败回滚会话行，工作区列表不出现半成品会话。
-                    // R1/R2：删除依赖 face Store（async），经 Task 排队后抛出原始错误。
-                    let rollbackId = session.id
-                    Task { try? await sessionService.deleteSession(rollbackId, confirmed: true) }
-                    throw error
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                 }
-                let data = try GatherCore.JSONValue(from: session)
-                completion(WebResponse(ok: true, data: data))
-            } catch {
-                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
             }
 
-        // TS 源: metadata.ipc.ts:58-74 —— destructive；choices 逐字段校验。
         case "metadata.resolve_conflict":
             guard confirmed(params) else {
                 completion(WebResponse(ok: false, error: "METADATA_RESOLVE_CONFLICT_CONFIRM_REQUIRED"))
@@ -1741,7 +1789,7 @@ public final class SessionCommandRouter: CommandRouter {
                     // makeDefault 的 router 可被 CLI/测试直接调用；start 是幂等的，
                     // 这里确保 export.execute 不会因宿主忘记启动 job service 而永久 queued。
                     self.jobService.start()
-                    let job = try self.jobService.create(JobCreateParams(
+                    let job = try await self.jobService.create(JobCreateParams(
                         type: .exportExecute,
                         scopeType: "session",
                         scopeId: sessionId,

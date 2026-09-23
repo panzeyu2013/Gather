@@ -270,7 +270,7 @@ public final class IndexerService {
 
         /// TS: scanBatch —— 一批文件的 stat/尺寸/checksum（并发 4）+ 单事务提交。
         let scanBatch: ([String]) async throws -> Void = { filepaths in
-            try context?.throwIfCancelled()
+            try await context?.throwIfCancelled()
             // 懒校验模式：新/变文件只记尺寸，checksum 交给后台 checksum.backfill。
             let lazyChecksum = self.getSetting("lazy_checksum", "true") != "false"
             let results = try await mapConcurrent(filepaths, concurrency: Self.scanBatchConcurrency) { filepath -> BatchOutcome in
@@ -518,9 +518,9 @@ public final class IndexerService {
                     case .unreadableDirectory(let directory):
                         failed.append(directory)
                     case .file(let filepath):
-                        try context?.throwIfCancelled()
+                        try await context?.throwIfCancelled()
                         discovered += 1
-                        context?.updateProgress(JobProgressUpdate(
+                        await context?.updateProgress(JobProgressUpdate(
                             current: discovered, total: 0, phase: "index.scanning"
                         ))
                         pending.append(filepath)
@@ -574,7 +574,7 @@ public final class IndexerService {
                       """).run([.text(nowISOString())] + chunk.map { .text($0) })
                 }
             }
-            context?.updateProgress(JobProgressUpdate(current: discovered, total: discovered, phase: "index.done"))
+            await context?.updateProgress(JobProgressUpdate(current: discovered, total: discovered, phase: "index.done"))
             return IndexScanResult(
                 sessionId: sessionId,
                 discovered: discovered,
@@ -623,18 +623,18 @@ public final class IndexerService {
         // Keyset 游标：首趟全扫，后续从最后 rowid 继续。
         var afterRowId: Int64?
         for _ in 0... {
-            try context?.throwIfCancelled()
+            try await context?.throwIfCancelled()
             let (pending, lastRowId) = try loadPendingBackfill(
                 sessionId: sessionId, afterRowId: afterRowId, failedPhotoIds: failedPhotoIds
             )
             if let lastRowId { afterRowId = lastRowId }
             if pending.isEmpty { break }
-            context?.updateProgress(JobProgressUpdate(
+            await context?.updateProgress(JobProgressUpdate(
                 current: 0, total: pending.count, phase: "index.checksum"
             ))
             var passBackfilled = 0
             for offset in stride(from: 0, to: pending.count, by: Self.checksumBackfillBatch) {
-                try context?.throwIfCancelled()
+                try await context?.throwIfCancelled()
                 let batch = Array(pending[offset..<min(offset + Self.checksumBackfillBatch, pending.count)])
                 // 哈希阶段只读；全部写入进入单事务。
                 let results = try await mapConcurrent(
@@ -690,7 +690,7 @@ public final class IndexerService {
                         processed += 1
                     }
                 }
-                context?.updateProgress(JobProgressUpdate(current: processed, total: pending.count))
+                await context?.updateProgress(JobProgressUpdate(current: processed, total: pending.count))
             }
             // 全部 pending 要么已失败要么重试只会重复失败：停止而非空转。
             if passBackfilled == 0 { break }

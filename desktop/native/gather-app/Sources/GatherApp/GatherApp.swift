@@ -104,7 +104,8 @@ struct GatherApp: App {
                 metadataStore: api.container.metadata,
                 cullingStore: api.container.culling,
                 similarityStore: api.container.similarity,
-                writebackStore: api.container.writeback
+                writebackStore: api.container.writeback,
+                jobStore: api.container.jobs
             )
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
@@ -127,17 +128,19 @@ struct GatherApp: App {
             // 与选中照片读取；菜单导入走 appDelegate.onCaptureOneImport。
             CaptureOneBridge.shared = captureOneBridge
             appDelegate.onImportFiles = { files in
-                Self.importFiles(files, router: router)
+                Task { await Self.importFiles(files, router: router) }
             }
             appDelegate.onCaptureOneImportFiles = { files in
                 // 对齐旧版 App.tsx c1:plugin-import：C1 导入保留
                 // capture-one 来源标记与「C1 导入 M/D H:mm」命名。
-                Self.importFiles(
-                    files,
-                    router: router,
-                    source: "capture-one",
-                    sourceLabel: GatherLocalization.l("Capture One 文件")
-                )
+                Task {
+                    await Self.importFiles(
+                        files,
+                        router: router,
+                        source: "capture-one",
+                        sourceLabel: GatherLocalization.l("Capture One 文件")
+                    )
+                }
             }
             appDelegate.onCaptureOneImport = {
                 try await captureOneBridge.selectedPhotoPaths()
@@ -183,7 +186,7 @@ struct GatherApp: App {
             // R5：设置写路径经 SettingsAPI（异步、白名单校验）。
             try await settingsAPI.set("embedding_dim", value: "768")
             for session in try router.sessionService.listSessions() where session.photoCount > 0 {
-                _ = try router.jobService.create(JobCreateParams(
+                _ = try await router.jobService.create(JobCreateParams(
                     type: .faceAnalyze,
                     scopeType: "session",
                     scopeId: session.id,
@@ -216,7 +219,7 @@ struct GatherApp: App {
         router: SessionCommandRouter,
         source: String = "local",
         sourceLabel: String = ""
-    ) {
+    ) async {
         let normalized = normalizeImportFilepaths(files)
         guard !normalized.isEmpty else { return }
         do {
@@ -237,7 +240,7 @@ struct GatherApp: App {
                 filepaths: normalized,
                 source: "import"
             )
-            _ = try router.jobService.create(JobCreateParams(
+            _ = try await router.jobService.create(JobCreateParams(
                 type: .metadataScan,
                 scopeType: "session",
                 scopeId: session.id,

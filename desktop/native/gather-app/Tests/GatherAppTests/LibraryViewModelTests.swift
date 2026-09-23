@@ -67,9 +67,13 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (LibraryViewModel
 private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection) {
     let db = try DBConnection(path: ":memory:")
     try MigrationRunner().migrate(db)
+    let tempStorePath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-library-\(UUID().uuidString).sqlite").path
+    try MigrationRunner().migrate(try DBConnection(path: tempStorePath))
+    let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
     let settings = try makeTestSettings()
     let router = SessionCommandRouter.makeDefault(
-        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore)
+        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore)
     return (LiveLibraryDataProvider(router: router), db)
 }
 

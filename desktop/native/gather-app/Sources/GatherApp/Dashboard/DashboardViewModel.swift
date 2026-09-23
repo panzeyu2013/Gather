@@ -28,17 +28,17 @@ protocol DashboardDataProvider {
     func deleteSession(_ sessionId: String) async throws
     func deleteSessions(_ sessionIds: [String]) async throws
     func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus?
-    func listJobs() throws -> [AnalysisJobData]
-    func cancelJob(_ jobId: String) throws -> Bool
-    func retryJob(_ jobId: String) throws -> Bool
-    func clearCompletedJobs() throws -> Int
-    func enqueueIndexScan(sessionId: String) throws
+    func listJobs() async throws -> [AnalysisJobData]
+    func cancelJob(_ jobId: String) async throws -> Bool
+    func retryJob(_ jobId: String) async throws -> Bool
+    func clearCompletedJobs() async throws -> Int
+    func enqueueIndexScan(sessionId: String) async throws
 }
 
 extension DashboardDataProvider {
     /// 测试 provider 不需要启动后台 worker；真实 provider 在这里接入
     /// metadata.scan，保证“创建工作区”是创建 + 索引的一跳流程。
-    func enqueueIndexScan(sessionId: String) throws {}
+    func enqueueIndexScan(sessionId: String) async throws {}
 
     /// 默认实现（stub 用）：退化为 createSession，无失败文件统计。
     func createSessionFromFiles(
@@ -128,24 +128,24 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         try await workspace.status(sessionId: sessionId)
     }
 
-    func listJobs() throws -> [AnalysisJobData] {
-        try jobService.list()
+    func listJobs() async throws -> [AnalysisJobData] {
+        try await jobService.list()
     }
 
-    func cancelJob(_ jobId: String) throws -> Bool {
-        try jobService.cancel(jobId)
+    func cancelJob(_ jobId: String) async throws -> Bool {
+        try await jobService.cancel(jobId)
     }
 
-    func retryJob(_ jobId: String) throws -> Bool {
-        try jobService.retry(jobId)
+    func retryJob(_ jobId: String) async throws -> Bool {
+        try await jobService.retry(jobId)
     }
 
-    func clearCompletedJobs() throws -> Int {
-        try jobService.clearCompleted()
+    func clearCompletedJobs() async throws -> Int {
+        try await jobService.clearCompleted()
     }
 
-    func enqueueIndexScan(sessionId: String) throws {
-        _ = try jobService.create(JobCreateParams(
+    func enqueueIndexScan(sessionId: String) async throws {
+        _ = try await jobService.create(JobCreateParams(
             type: .metadataScan,
             scopeType: "session",
             scopeId: sessionId,
@@ -355,7 +355,7 @@ final class DashboardViewModel {
 
     func refreshJobs() async {
         do {
-            let jobs = try provider.listJobs()
+            let jobs = try await provider.listJobs()
             self.jobs = jobs
             self.scanJobs = Self.seedScanJobs(from: jobs)
             self.jobsError = nil
@@ -403,7 +403,7 @@ final class DashboardViewModel {
         do {
             let session = try provider.createSession(name: name, source: "local", sourcePath: sourcePath)
             do {
-                try provider.enqueueIndexScan(sessionId: session.id)
+                try await provider.enqueueIndexScan(sessionId: session.id)
             } catch {
                 // TS session.ipc.ts L52-62：入队失败回滚已建 session，避免
                 // 工作区列表出现照片永不索引的半成品。
@@ -452,7 +452,7 @@ final class DashboardViewModel {
                 sourcePath: sourcePath
             )
             do {
-                try provider.enqueueIndexScan(sessionId: outcome.session.id)
+                try await provider.enqueueIndexScan(sessionId: outcome.session.id)
             } catch {
                 // TS session.ipc.ts L52-62：入队失败回滚已建 session（含已
                 // 写入照片），避免半成品工作区残留在列表。
@@ -490,7 +490,7 @@ final class DashboardViewModel {
     /// TS retryScan L361-371）。
     func retryScan(sessionId: String) async {
         do {
-            try provider.enqueueIndexScan(sessionId: sessionId)
+            try await provider.enqueueIndexScan(sessionId: sessionId)
             scanJobs[sessionId] = DashboardScanJob(status: "queued", current: 0, total: 0)
             await refreshJobs()
         } catch {
@@ -530,7 +530,7 @@ final class DashboardViewModel {
 
     func cancelJob(_ jobId: String) async {
         do {
-            _ = try provider.cancelJob(jobId)
+            _ = try await provider.cancelJob(jobId)
             await refreshJobs()
         } catch {
             actionError = Self.message(for: error)
@@ -539,7 +539,7 @@ final class DashboardViewModel {
 
     func retryJob(_ jobId: String) async {
         do {
-            _ = try provider.retryJob(jobId)
+            _ = try await provider.retryJob(jobId)
             await refreshJobs()
         } catch {
             actionError = Self.message(for: error)
@@ -548,7 +548,7 @@ final class DashboardViewModel {
 
     func clearCompletedJobs() async {
         do {
-            _ = try provider.clearCompletedJobs()
+            _ = try await provider.clearCompletedJobs()
             await refreshJobs()
         } catch {
             actionError = Self.message(for: error)

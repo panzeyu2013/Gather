@@ -42,7 +42,7 @@ public protocol SimilarityDataProvider {
         groupingMode: SimilarityGroupingMode
     ) async throws -> SimilarityResult
     /// 分析进度轮询（TS jobsApi.list 过滤 similarity.analyze + scopeId）。
-    func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData]
+    func listSimilarityJobs(sessionId: String) async throws -> [AnalysisJobData]
     func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) async throws -> WritebackPreview
     func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult
     func retryFailedWriteback(sessionId: String) async throws -> WritebackResult
@@ -138,8 +138,8 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         }
     }
 
-    public func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData] {
-        try router.jobService.list().filter {
+    public func listSimilarityJobs(sessionId: String) async throws -> [AnalysisJobData] {
+        try await router.jobService.list().filter {
             $0.type == .similarityAnalyze && $0.scopeType == "session" && $0.scopeId == sessionId
         }
     }
@@ -393,7 +393,7 @@ public final class SimilarityViewModel {
         // 恢复分析中状态与进度（轮询代替 jobs:progress 推送）；列表查询
         // 失败不静默吞错，写入 errorMessage 可见（审计 7a）。
         do {
-            if let job = Self.activeSimilarityJob(from: try provider.listSimilarityJobs(sessionId: sessionId)) {
+            if let job = Self.activeSimilarityJob(from: try await provider.listSimilarityJobs(sessionId: sessionId)) {
                 isAnalyzing = true
                 updateProgress(from: job)
                 startProgressPolling()
@@ -612,7 +612,7 @@ public final class SimilarityViewModel {
         var failedRounds = 0
         while !Task.isCancelled {
             do {
-                let jobs = try provider.listSimilarityJobs(sessionId: sessionId)
+                let jobs = try await provider.listSimilarityJobs(sessionId: sessionId)
                 failedRounds = 0
                 if let job = Self.activeSimilarityJob(from: jobs) {
                     idleRounds = 0
