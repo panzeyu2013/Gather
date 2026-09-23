@@ -29,10 +29,10 @@
 | 修复真实漂移（门禁抓出） | ✅ | ① `face_clusters` 补 `synced_to_library`/`match_confidence`（旧库仅由 v1 ALTER 添加，schemaSQL 缺失）；② `metadata_outbox.source_module` 列序对齐到 ALTER 追加位置（兼容旧 Repo 的位置解码） |
 | StoreMigrator（33 步注册表） | ✅ | `Store/StoreMigrator.swift`：旧 `if` 链 33 个版本块逐字转为 `[MigrationStep]`；ADR-005 备份（空间检查/checkpoint/backup API/integrity_check/失败恢复/keep=3 淘汰）+ 迁移后 FK 与列不变量；版本号仍在步骤事务内写入 |
 | 新旧迁移器等价性验证 | ✅ | `StoreMigratorTests` 4 用例：空库双跑结构+数据摘要一致；**真实库 fixture（v32）双跑后结构与数据完全一致**；幂等；`afterMigrateHook` 抛错后回滚到 v32 且结构与原库一致 |
-| Store 实现（6/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata（端口自对应 Repo 测试）：61 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)` 与 `sqlValue`；Culling 用类型化错误；Similarity 缓存改为独立 actor；`MetadataCacheInput` DTO 迁入 Store |
-| 其余 Store（Asset/Writeback/Job/Face/Person/Duplicate/SmartAlbum/Template/Navigation） | 待办 | R1 后续 |
+| Store 实现（7/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job（端口自对应 Repo 测试）：76 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)` 与 `sqlValue`；Culling 类型化错误；Similarity 缓存独立 actor；`MetadataCacheInput` DTO 迁入 Store；JobStore 直接返回领域 DTO `AnalysisJobData`（含 checkpoint JSON 解析与 UNIQUE 去重复用） |
+| 其余 Store（Asset/Writeback/Face/Person/Duplicate/SmartAlbum/Template/Navigation） | 待办 | R1 后续 |
 
-> 当前 core 全量：**867 tests / 115 suites 全绿**（789 oracle + 78 新增）。
+> 当前 core 全量：**882 tests / 116 suites 全绿**（789 oracle + 93 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
