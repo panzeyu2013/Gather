@@ -104,3 +104,11 @@ func storeDataDigest(_ database: SQLiteDatabase, excluding excluded: Set<String>
     }
     return storeFNV1a64(lines.joined(separator: "\n"))
 }
+
+/// R1 Store 测试标准基座：迁移到最新版本的临时库。
+func makeMigratedStoreDatabase(label: String = "store") async throws -> (SQLiteDatabase, String) {
+    let path = storeTempPath(label)
+    let database = try SQLiteDatabase(path: path)
+    try await StoreMigrator(databaseFilePath: nil).migrate(database)
+    return (database, path)
+}

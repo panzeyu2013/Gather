@@ -29,9 +29,10 @@
 | 修复真实漂移（门禁抓出） | ✅ | ① `face_clusters` 补 `synced_to_library`/`match_confidence`（旧库仅由 v1 ALTER 添加，schemaSQL 缺失）；② `metadata_outbox.source_module` 列序对齐到 ALTER 追加位置（兼容旧 Repo 的位置解码） |
 | StoreMigrator（33 步注册表） | ✅ | `Store/StoreMigrator.swift`：旧 `if` 链 33 个版本块逐字转为 `[MigrationStep]`；ADR-005 备份（空间检查/checkpoint/backup API/integrity_check/失败恢复/keep=3 淘汰）+ 迁移后 FK 与列不变量；版本号仍在步骤事务内写入 |
 | 新旧迁移器等价性验证 | ✅ | `StoreMigratorTests` 4 用例：空库双跑结构+数据摘要一致；**真实库 fixture（v32）双跑后结构与数据完全一致**；幂等；`afterMigrateHook` 抛错后回滚到 v32 且结构与原库一致 |
-| 16 个 Store 实现 + 调用点迁移 + 删旧层 | 待办 | R1 后续 |
+| Store 实现（3/16） | ✅ | `SettingsStore` / `SessionStore` / `PhotoStore`（端口自对应 Repo 测试）：23 用例全绿；`PhotoFormats` 统一 rawExtensions/pageColumns（旧 `PhotoRepo` 三个常量改为转调）；`PhotoAddInput/PhotoAddResult` DTO 迁入 Store |
+| 其余 Store（Asset/Culling/Similarity/Metadata/Writeback/Job/Face/Person/Duplicate/SmartAlbum/Template/Navigation） | 待办 | R1 后续 |
 
-> 当前 core 全量：**806 tests / 109 suites 全绿**（789 oracle + 17 新增）。
+> 当前 core 全量：**829 tests / 112 suites 全绿**（789 oracle + 40 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
