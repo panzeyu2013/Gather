@@ -234,3 +234,8 @@ public protocol PhotoStore: Sendable {
 4. 删除 Repo 与旧测试，同步 `makeDefault` 装配与测试 harness（文件库双连接），跑 core+app 全量 + 门禁。
 
 **风险提示**：协调器的 `drain()/withSlot` 结构与 `start()` 同步初始化强耦合，第 2 步需保证 `start()` 的调用方（`SessionCommandRouter.makeDefault` 内）也在 async 上下文；建议把 `start()` 改为 `startAsync()` 或在其内部用 Task 启动，不引入 awaitSync 桥。
+
+**round 43 实测结论（执行方式修正）**：对协调器做「全局正则替换 + 统一补 await」不可行——该文件存在嵌套闭包/局部函数（`nextIndex`/`markFailed`/`release` 等），
+按行号推断函数边界不可靠，且同步/异步调用点交错，一次替换会同时踩中 6 个同步函数。**正确做法**：按函数名逐个替换（每次替换后单独 build），顺序为
+`processRow → cleanup → finalizeSession → resolveOrphan → resolveConflict → retrySession → processUntilCurrent → ensureBaseline → getConflicts → flushSession → waitForIdle`，
+再处理 `start/getSummary/listOrphans/confirmSync/clearReloadAckForXmpPath/emitPathSummaries`（同步 → async + 路由迁 `executeAsync`），最后删 Repo。
