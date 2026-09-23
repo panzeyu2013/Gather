@@ -101,7 +101,7 @@ public final class QualityService {
     /// stat 提供者（TS: node:fs/promises stat）。
     public typealias StatProvider = (String) throws -> (size: Int64, mtimeMs: Double)
 
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let connection: DBConnection
     private let imageProvider: ImageMetricsProvider
     private let statProvider: StatProvider
@@ -109,13 +109,13 @@ public final class QualityService {
     private let invalidateCullingLookup: ((String) -> Void)?
 
     public init(
-        photoRepo: PhotoRepo,
+        photoStore: any PhotoStore,
         connection: DBConnection,
         imageProvider: @escaping ImageMetricsProvider = QualityService.defaultImageProvider,
         statProvider: @escaping StatProvider = QualityService.defaultStat,
         invalidateCullingLookup: ((String) -> Void)? = nil
     ) {
-        self.photoRepo = photoRepo
+        self.photoStore = photoStore
         self.connection = connection
         self.imageProvider = imageProvider
         self.statProvider = statProvider
@@ -164,9 +164,9 @@ public final class QualityService {
         photoIds: [String]? = nil,
         context: JobRunContext? = nil
     ) async throws -> [QualityResult] {
-        let sessionPhotos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+        let sessionPhotos = try await photoStore.getBySessionProjection(sessionId: sessionId)
         let requested = photoIds.map(Set.init)
-        let photos: [PhotoProjectionRow] = requested
+        let photos: [PhotoProjection] = requested
             .map { set in sessionPhotos.filter { set.contains($0.id) } }
             ?? PhotoAssets.collapse(sessionPhotos)
         // 批量预载：每照片一次 IN 查询替代逐照片缓存/人脸查询（TS 同款）。
@@ -371,8 +371,8 @@ public final class QualityService {
     }
 
     /// TS: get —— 每照片最新一条 technical_quality 结果（IN 分块 + latest-map）。
-    public func get(sessionId: String, photoIds: [String]? = nil) throws -> [QualityResult] {
-        let projection = try photoRepo.getBySessionProjection(sessionId: sessionId)
+    public func get(sessionId: String, photoIds: [String]? = nil) async throws -> [QualityResult] {
+        let projection = try await photoStore.getBySessionProjection(sessionId: sessionId)
         let sessionIds = Set(projection.map(\.id))
         let ids: [String] = photoIds
             .map { Array(Set($0)).filter { sessionIds.contains($0) } }
@@ -413,7 +413,7 @@ public final class QualityService {
 
     /// TS: getCachedBatch —— 每照片同一 model/version 的全部存储结果
     /// （updated_at DESC；指纹精确匹配在 stat 后做）。
-    private func getCachedBatch(_ photos: [PhotoProjectionRow]) throws -> [String: [(fingerprint: String, result: QualityResult)]] {
+    private func getCachedBatch(_ photos: [PhotoProjection]) throws -> [String: [(fingerprint: String, result: QualityResult)]] {
         var rowsByPhoto: [String: [(fingerprint: String, result: QualityResult)]] = [:]
         let ids = photos.map(\.id)
         for chunk in chunkIds(ids) {
@@ -440,7 +440,7 @@ public final class QualityService {
     }
 
     /// TS: getFacesBatch —— 每照片最大人脸观测（bbox 面积降序首行）。
-    private func getFacesBatch(sessionId: String, photos: [PhotoProjectionRow]) throws -> [String: FaceBox] {
+    private func getFacesBatch(sessionId: String, photos: [PhotoProjection]) throws -> [String: FaceBox] {
         var faces: [String: FaceBox] = [:]
         let ids = photos.map(\.id)
         for chunk in chunkIds(ids) {

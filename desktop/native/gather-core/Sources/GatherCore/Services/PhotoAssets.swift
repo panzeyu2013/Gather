@@ -45,3 +45,4 @@ public protocol PhotoAssetCandidate {
 }
 
 extension PhotoProjectionRow: PhotoAssetCandidate {}
+extension PhotoProjection: PhotoAssetCandidate {}

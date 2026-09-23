@@ -272,7 +272,7 @@ public final class SessionCommandRouter: CommandRouter {
         let exportService = ExportService(photoStore: photoStore, sessionRepo: sessionRepo, connection: db)
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
-            photoRepo: photoRepo,
+            photoStore: photoStore,
             sessionRepo: sessionRepo,
             faceStore: faceStore,
             personStore: personStore,
@@ -339,7 +339,7 @@ public final class SessionCommandRouter: CommandRouter {
             persons: persons,
             templates: templates,
             qualityService: QualityService(
-                photoRepo: photoRepo,
+                photoStore: photoStore,
                 connection: db,
                 imageProvider: QualityService.defaultImageProvider,
                 statProvider: QualityService.defaultStat
@@ -820,14 +820,6 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return .object(["done": .bool(true)])
 
-        case "quality.get":
-            // quality.ipc.ts:25-30 —— photoIds 可选（validateStringArray 语义）。
-            let sessionId = try requiredString(params, "sessionId")
-            let photoIds = try optionalStringArray(params, "photoIds")
-            let results = try qualityService.get(sessionId: sessionId, photoIds: photoIds)
-            return try GatherCore.JSONValue(from: results)
-
-        // ── metadata.*（TS 源 metadata.ipc.ts）──
 
         case "metadata.get":
             // metadata.ipc.ts:11-18 —— ok(Object.fromEntries(map))。
@@ -1018,6 +1010,23 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "quality.get":
+            Task {
+                do {
+                // quality.ipc.ts:25-30 —— photoIds 可选（validateStringArray 语义）。
+                let sessionId = try requiredString(params, "sessionId")
+                let photoIds = try optionalStringArray(params, "photoIds")
+                let results = try await qualityService.get(sessionId: sessionId, photoIds: photoIds)
+                completion(WebResponse(ok: true, data: try await GatherCore.JSONValue(from: results))); return
+
+            // ── metadata.*（TS 源 metadata.ipc.ts）──
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
 
         case "export.preview":
             Task {

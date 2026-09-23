@@ -135,7 +135,7 @@ private func makeFaceKwHarness(
         if i == 1 { photoPath = path }
     }
     let service = FaceKwService(
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         sessionRepo: sessionRepo,
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
         personStore: SQLitePersonStore(database: try SQLiteDatabase(path: dbPath)),
@@ -517,7 +517,7 @@ struct FaceKwAnalyzeFlowTests {
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Empty", source: "folder")
         let service = FaceKwService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: sessionRepo,
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             personStore: try makeTestPersonStore(),
@@ -577,7 +577,7 @@ struct FaceKwBindingMigrationTests {
             try await faceStore.updateBinding(clusterId: binding.clusterId, roleName: binding.roleName, keywords: binding.keywords)
         }
         let service = FaceKwService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
@@ -682,7 +682,7 @@ struct FaceKwGetClustersTests {
         try await faceStore.updateBinding(clusterId: 1, roleName: "Alice", keywords: ["kw1", "kw2"])
 
         let service = FaceKwService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
@@ -745,7 +745,7 @@ struct FaceKwClusterCommandTests {
         let faceStore = SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath))
         try seedCluster(db, id: 1, sessionId: sessionA.id, memberCount: 0)
         let service = FaceKwService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: sessionRepo,
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),

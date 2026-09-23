@@ -442,7 +442,7 @@ public final class FaceKwService {
     /// TS: MAX_PREVIEW_MEMBERS（getClusters 的成员截断窗口）。
     private static let maxPreviewMembers = 4
 
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let sessionRepo: SessionRepo
     private let faceStore: any FaceStore
     private let personStore: any PersonStore
@@ -486,7 +486,7 @@ public final class FaceKwService {
     }
 
     public init(
-        photoRepo: PhotoRepo,
+        photoStore: any PhotoStore,
         sessionRepo: SessionRepo,
         faceStore: any FaceStore,
         personStore: any PersonStore,
@@ -501,7 +501,7 @@ public final class FaceKwService {
         },
         writebackProvider: FaceWritebackProvider? = nil
     ) {
-        self.photoRepo = photoRepo
+        self.photoStore = photoStore
         self.sessionRepo = sessionRepo
         self.faceStore = faceStore
         self.personStore = personStore
@@ -558,11 +558,13 @@ public final class FaceKwService {
             // 线程池，该设置在此保留读取语义（见文件头差异说明）但不消费。
             let encoderInputSize = Int(getNumber("encoder_input_size", 112))
             let embeddingDim = Int(getNumber("embedding_dim", 512))
-            // 照片与 index_seq 快照共享一个读事务（design §8）。
-            let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try connection.transaction {
-                (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
-                 try sessionRepo.getIndexSeq(id: sessionId))
+            // 照片快照在 Store 连接读取；index_seq 走旧连接读事务（design §8）。
+            let photosSnapshot: [PhotoProjection] = PhotoAssets.collapse(
+                try await photoStore.getBySessionProjection(sessionId: sessionId))
+            let indexSeqSnapshot: Int = try connection.transaction {
+                try sessionRepo.getIndexSeq(id: sessionId)
             }
+            let snapshot: (photos: [PhotoProjection], indexSeq: Int) = (photosSnapshot, indexSeqSnapshot)
             if snapshot.photos.isEmpty { throw FaceKwServiceError.noPhotos }
             if signal.aborted { throw JobCancelledError() }
             runId = try startAnalysisRun(
@@ -866,7 +868,7 @@ public final class FaceKwService {
         if try await faceStore.observations(sessionId: sessionId).isEmpty {
             throw FaceKwServiceError.noObservations
         }
-        let photos = PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId))
+        let photos = PhotoAssets.collapse(try await photoStore.getBySessionProjection(sessionId: sessionId))
         try await clusterStoredObservations(
             sessionId: sessionId, photos: photos, eps: eps, minPts: Int(minPts),
             signal: nil, clearOnEmpty: true, onProgress: nil)
@@ -1086,7 +1088,7 @@ public final class FaceKwService {
     /// clearOnEmpty=false 时（全失败 run）保留旧集群与角色绑定。
     private func clusterStoredObservations(
         sessionId: String,
-        photos: [PhotoProjectionRow],
+        photos: [PhotoProjection],
         eps: Double,
         minPts: Int,
         signal: JobAbortSignal?,
@@ -1346,7 +1348,7 @@ public final class FaceKwService {
     }
 
     /// TS: batchAsync(fs.promises.stat, 32) —— ENOENT 与其他 stat 失败区分。
-    private static func statPhotos(_ photos: [PhotoProjectionRow]) async -> [String: SourceStat] {
+    private static func statPhotos(_ photos: [PhotoProjection]) async -> [String: SourceStat] {
         var result: [String: SourceStat] = [:]
         for chunkStart in stride(from: 0, to: photos.count, by: 32) {
             let chunk = Array(photos[chunkStart..<min(chunkStart + 32, photos.count)])

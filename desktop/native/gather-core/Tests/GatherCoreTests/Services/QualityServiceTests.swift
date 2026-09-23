@@ -11,6 +11,23 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+/// 临时文件库 + 同库 PhotoStore（store 读必须与旧连接同文件）。
+private struct QualityEnv {
+    let db: DBConnection
+    let photoStore: any PhotoStore
+}
+
+private func makeQualityEnv() throws -> QualityEnv {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-quality-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: path)
+    try MigrationRunner().migrate(db)
+    return QualityEnv(db: db, photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: path)))
+}
+
+
+
+
 private func makeTempPhotoStore() async throws -> any PhotoStore {
     let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
     return SQLitePhotoStore(database: database)
@@ -92,10 +109,11 @@ private func makeHarness(
     },
     statProvider: @escaping QualityService.StatProvider = QualityService.defaultStat
 ) throws -> QualityHarness {
-    let db = try makeMigratedDB()
+    let env = try makeQualityEnv()
+        let db = env.db
     let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
     let service = QualityService(
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: env.photoStore,
         connection: db,
         imageProvider: imageProvider,
         statProvider: statProvider
@@ -172,7 +190,7 @@ struct QualityAnalyzeTests {
         #expect(result.relativeRank == nil)
 
         // 单事务落库：asset_analysis 行可被 get() 读回。
-        let stored = try harness.service.get(sessionId: harness.sessionId)
+        let stored = try await harness.service.get(sessionId: harness.sessionId)
         #expect(stored.count == 1)
         #expect(stored[0].photoId == "p1")
         #expect(stored[0].qualityScore == 0.25)
@@ -223,7 +241,7 @@ struct QualityAnalyzeTests {
 
         #expect(results.count == 1)
         #expect(results[0].photoId == "p1")
-        let stored = try harness.service.get(sessionId: harness.sessionId)
+        let stored = try await harness.service.get(sessionId: harness.sessionId)
         // 子集分析只落库 p1（p2 无任何分析行）。
         #expect(Set(stored.map(\.photoId)) == ["p1"])
     }
@@ -380,8 +398,9 @@ struct QualityAnalyzeTests {
 @Suite("QualityService get")
 struct QualityGetTests {
     @Test("returns the latest stored row per photo and dedupes requested ids")
-    func latestPerPhoto() throws {
-        let db = try makeMigratedDB()
+    func latestPerPhoto() async throws {
+        let env = try makeQualityEnv()
+        let db = env.db
         let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
         try insertAssetFile(db, id: "af-1", normalizedPath: "/vault/a.jpg")
         try insertAssetFile(db, id: "af-2", normalizedPath: "/vault/b.jpg")
@@ -390,7 +409,7 @@ struct QualityGetTests {
             VALUES ('p1', ?, '/vault/a.jpg', 'a.jpg', '', 'ready', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
                    ('p2', ?, '/vault/b.jpg', 'b.jpg', '', 'ready', 'af-2', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
           """).run([.text(session.id), .text(session.id)])
-        let service = QualityService(photoRepo: PhotoRepo(connection: db), connection: db)
+        let service = QualityService(photoStore: env.photoStore, connection: db)
         // p1 两条历史行（旧 updatedAt 的旧分）；p2 一条。
         let insertStmt = try db.prepare("""
             INSERT INTO asset_analysis (photo_id, asset_file_id, analysis_type, result_json, warnings_json, model_id, model_version, input_fingerprint, created_at, updated_at)
@@ -414,24 +433,25 @@ struct QualityGetTests {
         try insert("p1", 0.9, "2026-01-02T00:00:00.000Z")
         try insert("p2", 0.5, "2026-01-01T00:00:00.000Z")
 
-        let results = try service.get(sessionId: session.id)
+        let results = try await service.get(sessionId: session.id)
 
         #expect(results.count == 2)
         let p1 = try #require(results.first { $0.photoId == "p1" })
         #expect(p1.qualityScore == 0.9)
         // 未在会话中的 id 被过滤；重复 id 去重。
-        let subset = try service.get(sessionId: session.id, photoIds: ["p1", "p1", "nope"])
+        let subset = try await service.get(sessionId: session.id, photoIds: ["p1", "p1", "nope"])
         #expect(subset.count == 1)
         #expect(subset[0].photoId == "p1")
     }
 
     @Test("returns empty for a session without stored results")
-    func emptyWhenNoResults() throws {
-        let db = try makeMigratedDB()
+    func emptyWhenNoResults() async throws {
+        let env = try makeQualityEnv()
+        let db = env.db
         let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
-        let service = QualityService(photoRepo: PhotoRepo(connection: db), connection: db)
-        #expect(try service.get(sessionId: session.id).isEmpty)
-        #expect(try service.get(sessionId: "unknown").isEmpty)
+        let service = QualityService(photoStore: env.photoStore, connection: db)
+        #expect(try await service.get(sessionId: session.id).isEmpty)
+        #expect(try await service.get(sessionId: "unknown").isEmpty)
     }
 }
 
@@ -440,8 +460,9 @@ struct QualityGetTests {
 @Suite("QualityService relative ranks")
 struct QualityRelativeRankTests {
     @Test("assigns relative ranks only inside persisted similarity groups")
-    func ranksInsideGroupsOnly() throws {
-        let db = try makeMigratedDB()
+    func ranksInsideGroupsOnly() async throws {
+        let env = try makeQualityEnv()
+        let db = env.db
         let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
         let now = "2026-07-30T10:00:00.000Z"
         for (id, path) in [("p1", "/photos/p1.JPG"), ("p2", "/photos/p2.JPG"), ("p3", "/photos/p3.JPG")] {
@@ -483,8 +504,8 @@ struct QualityRelativeRankTests {
             ])
         }
 
-        let service = QualityService(photoRepo: PhotoRepo(connection: db), connection: db)
-        let results = try service.get(sessionId: session.id)
+        let service = QualityService(photoStore: env.photoStore, connection: db)
+        let results = try await service.get(sessionId: session.id)
 
         #expect(results.first { $0.photoId == "p2" }?.relativeRank == 1)
         #expect(results.first { $0.photoId == "p1" }?.relativeRank == 2)
