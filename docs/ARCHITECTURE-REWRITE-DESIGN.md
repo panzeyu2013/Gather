@@ -250,3 +250,15 @@ public protocol PhotoStore: Sendable {
 1. 先换 `JobScheduler` 与 JobService 内部**异步**路径（recoverStale/resumeInterrupted/claim/heartbeat/complete/updateProgress）。
 2. 再把 `create/cancel/retry/list/clearCompleted` 异步化，路由 `jobs.*` case 迁入 `executeAsync`（沿用既有 Task+completion 模板）；注意 `GatherApp.swift` 里 `router.jobService.start()` 的启动调用也需 async 或 Task 包装。
 3. 删除 Repo 与旧测试，装配改经 `api.container.jobs`（若 AppContainer 未暴露则补），度量 Repositories **5→4**、Repo tests **6→5**、DB layer **8→7**。
+
+**round 55/56 实测（AnalysisJobRepo 切片，两次尝试）**
+
+已在本会话中**逐条验证**的事实（core 侧两次跑通并全绿 **821 tests / 115 suites**，含 @@AnalysisJobRepo.swift@@(290) 与旧测试删除）：
+- @@JobService@@/@@JobScheduler@@ 改经 @@JobStore@@ 完全可行：@@JobRunContext@@ 持 store；@@claim/heartbeat/finish/beginRun/create/list/cancel/cancelScope/retry/clearCompleted/throwIfCancelled/flushProgress/updateCheckpoint/emitTerminal@@ 异步化；@@start@@/@@registerExecutor@@ 保持同步，其 store 调用经 @@Task@@ 脱离。
+- 测试基座：@@makeTempJobStore()@@ 必须用 @@makeMigratedStoreDatabase(label:)@@（StoreMigrator 迁移），**不能**用 @@MigrationRunner@@（旧迁移不建 @@analysis_jobs@@）。
+
+app 侧剩余 3 处（两次尝试都卡在这里，均已定位到行）：
+1. @@SessionCommandRouter.makeDefault@@ 只有 @@db: DBConnection@@，无 @@SQLiteDatabase@@/路径 → 正确做法是像 @@writebackStore@@ 一样**新增 @@jobStore: any JobStore@@ 参数**，由 @@AppContainer@@ 暴露 @@jobs@@ 并传入（同时更新 GatherApp 与测试调用点）。
+2. @@SimilarityService/DuplicateService/FaceKwService@@ 的 @@ProgressHandler = (Int, Int, String) -> Void@@ 是**同步类型**，而路由里传给它们的闭包已含 @@await context.updateProgress(...)@@ → 二选一：
+   a) 类型改为 @@(Int, Int, String) async -> Void@@，并给 20+ 处 @@onProgress?(...)@@ 加 @@await@@（含 719/870 行嵌套闭包，级联较深）；
+   b) **推荐**：保持 progress 回调同步，把 @@JobRunContext.updateProgress/flushProgress/updateCheckpoint@@ 改为「同步入队 + 后台 Task 落库」（现有节流字段 @@pendingProgress/lastProgressWriteAt@@ 已具备基础），这样 3 个服务的 handler 与路由闭包都不用动，只有 @@claim/heartbeat/finish/beginRun/get@@ 等返回值敏感的调用需要 async。
