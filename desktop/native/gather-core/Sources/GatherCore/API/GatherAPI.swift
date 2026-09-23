@@ -11,6 +11,9 @@ public struct AppContainer: Sendable {
     public let sessions: any SessionStore
     public let templates: any TemplateStore
     public let albums: any SmartAlbumStore
+    public let photos: any PhotoStore
+    public let writeback: any WritebackStore
+    public let workspace: any WorkspaceStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
@@ -18,6 +21,9 @@ public struct AppContainer: Sendable {
         self.sessions = SQLiteSessionStore(database: database)
         self.templates = SQLiteTemplateStore(database: database)
         self.albums = SQLiteSmartAlbumStore(database: database)
+        self.photos = SQLitePhotoStore(database: database)
+        self.writeback = SQLiteWritebackStore(database: database)
+        self.workspace = SQLiteWorkspaceStore(database: database)
     }
 
     /// 打开（必要时迁移到当前版本）指定路径的库。
@@ -38,6 +44,7 @@ public struct GatherAPI: Sendable {
     public let sessions: SessionsAPI
     public let templates: TemplatesAPI
     public let albums: AlbumsAPI
+    public let workspace: WorkspaceAPI
 
     public init(container: AppContainer) {
         self.container = container
@@ -45,6 +52,12 @@ public struct GatherAPI: Sendable {
         self.sessions = SessionsAPI(store: container.sessions)
         self.templates = TemplatesAPI(templates: container.templates, sessions: container.sessions)
         self.albums = AlbumsAPI(store: container.albums)
+        self.workspace = WorkspaceAPI(
+            workspace: container.workspace,
+            sessions: container.sessions,
+            photos: container.photos,
+            writeback: container.writeback
+        )
     }
 
     public static func open(path: String) async throws -> GatherAPI {
@@ -201,6 +214,160 @@ public extension SettingsAPI {
     /// 读取全量设置（默认值打底 + 已落库值）生成快照。
     func snapshot() async -> SettingsSnapshot {
         SettingsSnapshot(values: await all())
+    }
+}
+
+/// 工作区状态命名空间：只读聚合 + offlinePhotos 内存 TTL 缓存
+/// （取代 WorkspaceStatusService 的派生逻辑）。
+public actor WorkspaceAPI {
+    /// 契约（design_improvements.md 1.4.5）：photos.status='missing' 是惰性检测的，
+    /// 离线照片计数按 sessionId 缓存至少 5 分钟，TTL 内不再查库。
+    public static let offlinePhotosTTLMs = 5 * 60_000
+
+    /// TS: ACTIVE_JOB_STATUSES（'queued' | 'running' | 'cancelling'）。
+    private static let activeJobStatuses: Set<String> = ["queued", "running", "cancelling"]
+
+    private let workspace: any WorkspaceStore
+    private let sessions: any SessionStore
+    private let photos: any PhotoStore
+    private let writeback: any WritebackStore
+    private let clock: @Sendable () -> Int
+    private var offlinePhotosCache: [String: (count: Int, cachedAt: Int)] = [:]
+
+    public init(
+        workspace: any WorkspaceStore,
+        sessions: any SessionStore,
+        photos: any PhotoStore,
+        writeback: any WritebackStore,
+        clock: @escaping @Sendable () -> Int = { Int(Date().timeIntervalSince1970 * 1000) }
+    ) {
+        self.workspace = workspace
+        self.sessions = sessions
+        self.photos = photos
+        self.writeback = writeback
+        self.clock = clock
+    }
+
+    /// 聚合整个工作区状态；session 不存在时返回 nil（IPC 层转 err）。
+    public func status(sessionId: String) async throws -> WorkspaceStatus? {
+        guard let session = try await sessions.get(id: sessionId) else { return nil }
+
+        let photoCount = try await photos.countBySession(sessionId: sessionId)
+        let scanJob = try await workspace.latestScanJob(sessionId: sessionId)
+        let indexed = scanJob?.status == "succeeded"
+        let indexingActive = scanJob.map { Self.activeJobStatuses.contains($0.status) } ?? false
+        let scanFailed = scanJob?.status == "failed"
+
+        let indexSeq = session.indexSeq
+        let similarityRun = try await workspace.latestOkRun(sessionId: sessionId, kind: "similarity")
+        let faceRun = try await workspace.latestOkRun(sessionId: sessionId, kind: "face")
+
+        // 1.4.2 过期判定：last_ok_run.index_seq < session.index_seq
+        var staleAnalyses: [WorkspaceStaleAnalysis] = []
+        if let similarityRun, similarityRun.indexSeq < indexSeq {
+            staleAnalyses.append(WorkspaceStaleAnalysis(kind: .similarity, lastRunAt: similarityRun.finishedAt))
+        }
+        if let faceRun, faceRun.indexSeq < indexSeq {
+            staleAnalyses.append(WorkspaceStaleAnalysis(kind: .face, lastRunAt: faceRun.finishedAt))
+        }
+
+        let total = scanJob?.progressTotal ?? 0
+        let done = scanJob?.progressCurrent ?? 0
+        let percent: Double
+        if let scanJob, scanJob.progressTotal > 0 {
+            percent = (Double(scanJob.progressCurrent) / Double(scanJob.progressTotal) * 100).rounded()
+        } else {
+            percent = 0
+        }
+        let indexingStatus: WorkspaceIndexingStatus = indexingActive ? .active : (scanFailed ? .failed : .idle)
+        let indexing = WorkspaceIndexingProgress(total: total, done: done, percent: percent, status: indexingStatus)
+
+        let (pending, failed, conflict) = try await summaryCounts(sessionId)
+        let softFlags = WorkspaceSoftFlags(
+            culled: try await workspace.hasWrittenBackCulling(sessionId: sessionId),
+            exported: try await workspace.hasSuccessfulExport(sessionId: sessionId)
+        )
+        let failedJobs = try await workspace.failedJobs(sessionId: sessionId)
+
+        return WorkspaceStatus(
+            sessionId: sessionId,
+            stage: Self.deriveStage(
+                photoCount: photoCount, indexed: indexed, similarityRun: similarityRun, indexSeq: indexSeq),
+            softFlags: softFlags,
+            indexing: indexing,
+            staleAnalyses: staleAnalyses,
+            xmp: WorkspaceXmpCounts(pending: pending + failed, conflict: conflict),
+            offlinePhotos: try await offlinePhotosCount(sessionId),
+            failedJobs: failedJobs.map {
+                WorkspaceFailedJob(id: $0.id, type: $0.type, code: $0.code, message: $0.message)
+            },
+            recommendedNext: Self.deriveRecommendedNext(
+                indexingActive: indexingActive,
+                scanStatus: scanJob?.status,
+                conflictCount: conflict,
+                staleCount: staleAnalyses.count,
+                failedCount: failedJobs.count,
+                softFlags: softFlags
+            ),
+            generatedAt: nowISOString()
+        )
+    }
+
+    // MARK: 派生（纯函数）
+
+    /// TS: deriveStage —— 三硬阶段取已满足的最高阶段；analyzed 要求相似度 run 未过期。
+    static func deriveStage(
+        photoCount: Int,
+        indexed: Bool,
+        similarityRun: WorkspaceAnalysisRun?,
+        indexSeq: Int
+    ) -> WorkspaceStage {
+        if let similarityRun, similarityRun.indexSeq >= indexSeq { return .analyzed }
+        if indexed { return .indexed }
+        if photoCount > 0 { return .imported }
+        return .created
+    }
+
+    /// TS: deriveRecommendedNext —— 固定优先级序列表 + 布尔门控。
+    static func deriveRecommendedNext(
+        indexingActive: Bool,
+        scanStatus: String?,
+        conflictCount: Int,
+        staleCount: Int,
+        failedCount: Int,
+        softFlags: WorkspaceSoftFlags
+    ) -> WorkspaceRecommendedNext? {
+        let scanIncomplete = indexingActive || scanStatus != "succeeded"
+        if scanIncomplete { return WorkspaceRecommendedNext(action: "scan_incomplete", target: "index") }
+        if conflictCount > 0 { return WorkspaceRecommendedNext(action: "resolve_conflicts", target: "metadata") }
+        if staleCount > 0 { return WorkspaceRecommendedNext(action: "re_analyze", target: "similarity") }
+        if failedCount > 0 { return WorkspaceRecommendedNext(action: "retry_jobs", target: "jobs") }
+        if !softFlags.culled { return WorkspaceRecommendedNext(action: "start_culling", target: "culling") }
+        if !softFlags.exported { return WorkspaceRecommendedNext(action: "export", target: "export") }
+        return nil
+    }
+
+    /// 对齐 metadata-sync-coordinator.getSummary 的计数投影：分组计数为主，
+    /// 缺失的状态键回退到逐行过滤。
+    private func summaryCounts(_ sessionId: String) async throws -> (pending: Int, failed: Int, conflict: Int) {
+        let counts = try await writeback.outboxCounts(sessionId: sessionId)
+        let items = try await writeback.outboxSummaries(sessionId: sessionId)
+        func count(_ status: String) -> Int {
+            if let value = counts[status] { return Int(value) }
+            return items.filter { $0.status == status }.count
+        }
+        return (count("pending"), count("failed"), count("conflict"))
+    }
+
+    /// TS: getOfflinePhotosCount —— TTL 缓存 + COUNT(missing) 兜底。
+    private func offlinePhotosCount(_ sessionId: String) async throws -> Int {
+        let now = clock()
+        if let cached = offlinePhotosCache[sessionId], now - cached.cachedAt < Self.offlinePhotosTTLMs {
+            return cached.count
+        }
+        let count = try await workspace.offlinePhotoCount(sessionId: sessionId)
+        offlinePhotosCache[sessionId] = (count, now)
+        return count
     }
 }
 
