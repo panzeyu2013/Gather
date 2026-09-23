@@ -641,3 +641,53 @@ public extension SQLitePersonStore {
         floats.withUnsafeBytes { Data($0) }
     }
 }
+
+// MARK: - 共享 DTO（从 Database/Repositories/PersonRepo.swift 迁入）
+
+/// addPhotos 的单条输入（TS: { photoId, faceBbox, confidence }）。
+public struct PersonPhotoInput {
+    public let photoId: String
+    public let faceBbox: [Double]
+    public let confidence: Double
+
+    public init(photoId: String, faceBbox: [Double], confidence: Double) {
+        self.photoId = photoId
+        self.faceBbox = faceBbox
+        self.confidence = confidence
+    }
+}
+
+/// saveEmbeddings 的单条输入（TS: SaveEmbeddingInput，embedding 为 Float32 数组）。
+public struct SaveEmbeddingInput {
+    public let personId: String
+    public let embedding: [Float]
+    public let photoId: String
+    public let sessionId: String
+    public let faceObservationId: Int64?
+    public let faceBbox: [Double]
+    public let quality: Double
+
+    public init(personId: String, embedding: [Float], photoId: String, sessionId: String, faceObservationId: Int64?, faceBbox: [Double], quality: Double) {
+        self.personId = personId
+        self.embedding = embedding
+        self.photoId = photoId
+        self.sessionId = sessionId
+        self.faceObservationId = faceObservationId
+        self.faceBbox = faceBbox
+        self.quality = quality
+    }
+}
+
+public struct PersonUpdateFields {
+    public let name: String?
+    public let keywords: [String]?
+    public let notes: String?
+    public let matchThreshold: Double?
+
+    public init(name: String? = nil, keywords: [String]? = nil, notes: String? = nil, matchThreshold: Double? = nil) {
+        self.name = name
+        self.keywords = keywords
+        self.notes = notes
+        self.matchThreshold = matchThreshold
+    }
+}

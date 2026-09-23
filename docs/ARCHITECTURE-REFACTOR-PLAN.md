@@ -38,11 +38,12 @@
 | R1 收尾③：第二个删除切片（template） | ✅ | `TemplateService` + `TemplateServiceTests` 已删除；`GatherAPI.templates`（CRUD + `applyUpdates` 领域校验）与 `TemplateError` 落地；路由 5 个 template.* 命令迁入 `executeAsync`（经 TemplatesAPI/SettingsAPI）；app 启动改由 `AppContainer`/`GatherAPI` 装配；测试端口至 TemplatesAPITests（2 例）+ TemplateStoreTests（5 例） |
 | R1 收尾④：第三个删除切片（smart album） | ✅ | `SmartAlbumRepo` + `SmartAlbumRepoTests` 已删除；`GatherAPI.albums`（AlbumsAPI）落地；路由 `album.*`（create/list/get/update/delete/get_photos）迁入 `executeAsync`（保留 ALBUM_NOT_FOUND 与确认消息语义）；`LibraryViewModel` 相册路径改 async（provider 经 `executeAsync`，`reloadSupport` 改 async） |
 | R1 收尾⑤：第四个删除切片（workspace） | ✅ | `WorkspaceStatusService` + 26 个旧测试已删除；路由 `workspace.status` 迁入 `executeAsync`（经 WorkspaceAPI），`LiveDashboardDataProvider`/`DashboardViewModel` 改 async；关键语义端口至 WorkspaceAPITests（7 例） |
-| R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
+| R1 收尾⑥：person 新层（待切换） | 🔶 | `PersonsAPI`（list/get/create/update/delete/merge/removePhoto/searchPhotos + PersonData/PersonPhotoItem 投影）已落地；路由 8 个 `person.*` 命令迁入 `executeAsync`；app `PersonsDataProvider` → async（provider 经 executeAsync、`select` async）；共享 DTO（`PersonPhotoInput/SaveEmbeddingInput/PersonUpdateFields`）迁入 PersonStore；仅剩 `FaceKwService` 的 5 处 personRepo 调用（下轮 async 化后同批删除 PersonRepo + 旧测试） |
+| R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
 | R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
-> 当前 core 全量：**928 tests / 126 suites 全绿**（workspace 26 个旧测试删除，端口覆盖 WorkspaceAPITests 7 例）（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
+> 当前 core 全量：**928 tests / 126 suites 全绿**（person 切片本轮为新增 API 层，未删测试）（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
 > 旧层文件计数（本轮后）：`Database/Repositories` 12、`Database/Repositories` 测试 11、`Services` 26；门禁度量 raw SQL outside Store（仅统计 Services/）14 文件、Services 25 文件。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 

@@ -125,14 +125,14 @@ struct PersonsView: View {
             } else {
                 List(viewModel.filteredPersons, id: \.id) { person in
                     Button {
-                        viewModel.select(person.id)
+                        Task { await viewModel.select(person.id) }
                     } label: {
                         PersonListRow(person: person, selected: viewModel.selected?.id == person.id)
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button(GatherLocalization.l("打开")) {
-                            viewModel.select(person.id)
+                            Task { await viewModel.select(person.id) }
                         }
                     }
                     .accessibilityLabel(person.name)

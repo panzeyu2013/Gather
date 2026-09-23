@@ -88,7 +88,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let db: DBConnection
     /// 3.0 接线扩展：人脸关键字 / 人物库 / 模板 / 质量 / 索引 / 元数据 / 写回 / 智能相册。
     private let faceKwService: FaceKwService
-    private let personRepo: PersonRepo
+    private let persons: PersonsAPI
     private let templates: TemplatesAPI
     private let qualityService: QualityService
     private let indexerService: IndexerService
@@ -116,7 +116,7 @@ public final class SessionCommandRouter: CommandRouter {
         duplicateService: DuplicateService,
         assetRepo: AssetRepo,
         faceKwService: FaceKwService,
-        personRepo: PersonRepo,
+        persons: PersonsAPI,
         templates: TemplatesAPI,
         qualityService: QualityService,
         indexerService: IndexerService,
@@ -142,7 +142,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.duplicateService = duplicateService
         self.assetRepo = assetRepo
         self.faceKwService = faceKwService
-        self.personRepo = personRepo
+        self.persons = persons
         self.templates = templates
         self.qualityService = qualityService
         self.indexerService = indexerService
@@ -189,6 +189,7 @@ public final class SessionCommandRouter: CommandRouter {
         templates: TemplatesAPI,
         albums: AlbumsAPI,
         workspace: WorkspaceAPI,
+        persons: PersonsAPI,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -337,7 +338,7 @@ public final class SessionCommandRouter: CommandRouter {
             ),
             assetRepo: assetRepo,
             faceKwService: resolvedFaceKwService,
-            personRepo: personRepo,
+            persons: persons,
             templates: templates,
             qualityService: QualityService(
                 photoRepo: photoRepo,
@@ -934,93 +935,6 @@ public final class SessionCommandRouter: CommandRouter {
             _ = try jobService.cancelScope(type: .faceAnalyze, scopeId: sessionId)
             faceKwService.cancel(sessionId: sessionId)
             return .object(["done": .bool(true)])
-
-        // ── person.*（TS 源 person.ipc.ts）──
-
-        case "person.list":
-            // person.ipc.ts:31-56 —— listWithCounts → PersonData[]。
-            let rows = try personRepo.listWithCounts()
-            return try .array(rows.map { try GatherCore.JSONValue(from: personData(row: $0)) })
-
-        case "person.get":
-            // person.ipc.ts:58-79 —— PERSON_NOT_FOUND；detail = data + photos。
-            let personId = try requiredString(params, "personId")
-            guard let row = try personRepo.get(id: personId) else {
-                throw BridgeError.notFound("PERSON_NOT_FOUND")
-            }
-            let photos = try personRepo.getPhotosWithDetails(personId: personId)
-            let detail = PersonDetailData(
-                id: row.id,
-                name: row.name,
-                keywords: parseKeywordsJSON(row.keywords),
-                thumbnailBase64: row.thumbnailBase64,
-                thumbnailPath: row.thumbnailPath,
-                notes: row.notes,
-                matchThreshold: row.matchThreshold,
-                photoCount: try personRepo.countPhotos(personId: personId),
-                sessionCount: try personRepo.getSessionCount(personId: personId),
-                createdAt: row.createdAt,
-                updatedAt: row.updatedAt,
-                photos: photos.photos.map(personPhotoItem),
-                totalPhotoCount: photos.total
-            )
-            return try GatherCore.JSONValue(from: detail)
-
-        case "person.create":
-            // person.ipc.ts:81-89 —— name 必填；keywords 可选。
-            let name = try validatedString(params, "name")
-            let keywords = try optionalStringArray(params, "keywords")
-            let id = try personRepo.create(name: name, keywords: keywords)
-            return .object(["id": .string(id)])
-
-        case "person.update":
-            // person.ipc.ts:91-103 —— 仅更新传入的字段。
-            let personId = try requiredString(params, "personId")
-            let fields = try parsePersonUpdateFields(params)
-            try personRepo.update(id: personId, fields: fields)
-            return .object(["done": .bool(true)])
-
-        case "person.delete":
-            // person.ipc.ts:105-115 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("PERSON_DELETE_CONFIRM_REQUIRED")
-            }
-            let personId = try requiredString(params, "personId")
-            try personRepo.delete(id: personId)
-            return .object(["done": .bool(true)])
-
-        case "person.merge":
-            // person.ipc.ts:117-128 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("PERSON_MERGE_CONFIRM_REQUIRED")
-            }
-            let sourceId = try requiredString(params, "sourceId")
-            let targetId = try requiredString(params, "targetId")
-            try personRepo.merge(sourceId: sourceId, targetId: targetId)
-            return .object(["done": .bool(true)])
-
-        case "person.remove_photo":
-            // person.ipc.ts:130-141 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED")
-            }
-            let personId = try requiredString(params, "personId")
-            let photoId = try requiredString(params, "photoId")
-            try personRepo.removePhoto(personId: personId, photoId: photoId)
-            return .object(["done": .bool(true)])
-
-        case "person.search_photos":
-            // person.ipc.ts:143-165 —— { photos, total }；sessionIds/limit/offset 可选。
-            let personId = try requiredString(params, "personId")
-            let sessionIds = try optionalStringArray(params, "sessionIds")
-            let limit = try optionalNumber(params, "limit").map { Int($0) }
-            let offset = try optionalNumber(params, "offset").map { Int($0) }
-            let result = try personRepo.getPhotosWithDetails(
-                personId: personId, sessionIds: sessionIds, limit: limit, offset: offset)
-            return .object([
-                "photos": try .array(result.photos.map { try GatherCore.JSONValue(from: personPhotoItem($0)) }),
-                "total": .number(Double(result.total)),
-            ])
 
         case "quality.get":
             // quality.ipc.ts:25-30 —— photoIds 可选（validateStringArray 语义）。
@@ -2239,6 +2153,155 @@ public final class SessionCommandRouter: CommandRouter {
                 completion(WebResponse(ok: false, error: Self.errorMessage(error)))
             }
 
+        // ── person.*（R1/R5：经 PersonsAPI，异步路径）──
+
+        case "person.list":
+            Task {
+                do {
+                    // person.ipc.ts:31-56 —— listWithCounts → PersonData[]。
+                    let list = try await persons.list()
+                    completion(WebResponse(
+                        ok: true,
+                        data: .array(try list.map { try GatherCore.JSONValue(from: $0) })))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "person.get":
+            do {
+                // person.ipc.ts:58-79 —— PERSON_NOT_FOUND；detail = data + photos。
+                let personId = try requiredString(params, "personId")
+                Task {
+                    do {
+                        guard let detail = try await persons.get(id: personId) else {
+                            throw BridgeError.notFound("PERSON_NOT_FOUND")
+                        }
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: detail)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "person.create":
+            do {
+                // person.ipc.ts:81-89 —— name 必填；keywords 可选。
+                let name = try validatedString(params, "name")
+                let keywords = try optionalStringArray(params, "keywords")
+                Task {
+                    do {
+                        let id = try await persons.create(name: name, keywords: keywords)
+                        completion(WebResponse(ok: true, data: .object(["id": .string(id)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "person.update":
+            do {
+                // person.ipc.ts:91-103 —— 仅更新传入的字段。
+                let personId = try requiredString(params, "personId")
+                let fields = try parsePersonUpdateFields(params)
+                Task {
+                    do {
+                        try await persons.update(id: personId, fields: fields)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "person.delete":
+            do {
+                // person.ipc.ts:105-115 —— destructive。
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("PERSON_DELETE_CONFIRM_REQUIRED")
+                }
+                let personId = try requiredString(params, "personId")
+                Task {
+                    do {
+                        try await persons.delete(id: personId)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "person.merge":
+            do {
+                // person.ipc.ts:117-128 —— destructive。
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("PERSON_MERGE_CONFIRM_REQUIRED")
+                }
+                let sourceId = try requiredString(params, "sourceId")
+                let targetId = try requiredString(params, "targetId")
+                Task {
+                    do {
+                        try await persons.merge(sourceId: sourceId, targetId: targetId)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "person.remove_photo":
+            do {
+                // person.ipc.ts:130-141 —— destructive。
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED")
+                }
+                let personId = try requiredString(params, "personId")
+                let photoId = try requiredString(params, "photoId")
+                Task {
+                    do {
+                        try await persons.removePhoto(personId: personId, photoId: photoId)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "person.search_photos":
+            do {
+                // person.ipc.ts:143-165 —— { photos, total }；sessionIds/limit/offset 可选。
+                let personId = try requiredString(params, "personId")
+                let sessionIds = try optionalStringArray(params, "sessionIds")
+                let limit = try optionalNumber(params, "limit").map { Int($0) }
+                let offset = try optionalNumber(params, "offset").map { Int($0) }
+                Task {
+                    do {
+                        let result = try await persons.searchPhotos(
+                            personId: personId, sessionIds: sessionIds, limit: limit, offset: offset)
+                        completion(WebResponse(ok: true, data: .object([
+                            "photos": try .array(result.photos.map { try GatherCore.JSONValue(from: $0) }),
+                            "total": .number(Double(result.total)),
+                        ])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
         case "workspace.status":
             do {
                 // Protocol WorkspaceStatusParams.sessionId 非可选；调用方均显式传
@@ -2918,37 +2981,7 @@ public final class SessionCommandRouter: CommandRouter {
         return parsed.arrayElements?.compactMap(\.stringValue) ?? []
     }
 
-    /// TS person.ipc.ts makeToPersonData。
-    private func personData(row: PersonWithCountsRow) throws -> PersonData {
-        PersonData(
-            id: row.person.id,
-            name: row.person.name,
-            keywords: parseKeywordsJSON(row.person.keywords),
-            thumbnailBase64: row.person.thumbnailBase64,
-            thumbnailPath: row.person.thumbnailPath,
-            notes: row.person.notes,
-            matchThreshold: row.person.matchThreshold,
-            photoCount: row.photoCount,
-            sessionCount: row.sessionCount,
-            createdAt: row.person.createdAt,
-            updatedAt: row.person.updatedAt
-        )
-    }
 
-    /// TS person.ipc.ts 的 PersonPhotoItem 映射（faceBbox JSON.parse 兜底 []）。
-    private func personPhotoItem(_ detail: PersonPhotoDetail) -> PersonPhotoItem {
-        let bbox = (try? GatherCore.JSONValue.parse(detail.photo.faceBbox))?
-            .arrayElements?.compactMap(\.numberValue) ?? []
-        return PersonPhotoItem(
-            photoId: detail.photo.photoId,
-            sessionId: detail.photo.sessionId,
-            sessionName: detail.sessionName,
-            filename: detail.filename,
-            filepath: detail.filepath,
-            faceBbox: bbox,
-            confidence: detail.photo.confidence
-        )
-    }
 
     /// TS person.ipc.ts update 的 fields 解析（仅传入字段参与更新）。
     private func parsePersonUpdateFields(_ params: [String: GatherCore.JSONValue]) throws -> PersonUpdateFields {

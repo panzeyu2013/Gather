@@ -5,46 +5,49 @@ import Foundation
 import GatherCore
 
 public protocol PersonsDataProvider {
-    func list() throws -> [PersonData]
-    func get(_ personId: String) throws -> PersonDetailData
-    func create(name: String) throws -> String
-    func update(personId: String, name: String, notes: String) throws
-    func delete(personId: String) throws
+    func list() async throws -> [PersonData]
+    func get(_ personId: String) async throws -> PersonDetailData
+    func create(name: String) async throws -> String
+    func update(personId: String, name: String, notes: String) async throws
+    func delete(personId: String) async throws
 }
 
 public final class LivePersonsDataProvider: PersonsDataProvider {
     private let router: SessionCommandRouter
+    private let client: NativeCommandClient
 
     public init(router: SessionCommandRouter) {
         self.router = router
+        self.client = NativeCommandClient(router: router)
     }
 
-    public func list() throws -> [PersonData] {
-        try router.execute("person.list", params: [:]).decoded(as: [PersonData].self)
+    public func list() async throws -> [PersonData] {
+        try await client.executeAsync("person.list", params: [:]).decoded(as: [PersonData].self)
     }
 
-    public func get(_ personId: String) throws -> PersonDetailData {
-        try router.execute("person.get", params: ["personId": .string(personId)]).decoded(as: PersonDetailData.self)
+    public func get(_ personId: String) async throws -> PersonDetailData {
+        try await client.executeAsync("person.get", params: ["personId": .string(personId)])
+            .decoded(as: PersonDetailData.self)
     }
 
-    public func create(name: String) throws -> String {
-        let response = try router.execute("person.create", params: ["name": .string(name)])
+    public func create(name: String) async throws -> String {
+        let response = try await client.executeAsync("person.create", params: ["name": .string(name)])
         guard let id = response.objectValue?["id"]?.stringValue else {
             throw RouterCommandError(message: "PERSON_CREATE_EMPTY_RESPONSE")
         }
         return id
     }
 
-    public func update(personId: String, name: String, notes: String) throws {
-        _ = try router.execute("person.update", params: [
+    public func update(personId: String, name: String, notes: String) async throws {
+        _ = try await client.executeAsync("person.update", params: [
             "personId": .string(personId),
             "name": .string(name),
             "notes": .string(notes),
         ])
     }
 
-    public func delete(personId: String) throws {
-        _ = try router.execute("person.delete", params: [
+    public func delete(personId: String) async throws {
+        _ = try await client.executeAsync("person.delete", params: [
             "personId": .string(personId),
             "confirmed": .bool(true),
         ])
@@ -85,21 +88,21 @@ public final class PersonsViewModel {
     public func load() async {
         phase = .loading
         do {
-            persons = try provider.list()
+            persons = try await provider.list()
             phase = .loaded
             if let selectedId = selected?.id, persons.contains(where: { $0.id == selectedId }) {
-                select(selectedId)
+                await select(selectedId)
             } else if selected == nil, let first = persons.first {
-                select(first.id)
+                await select(first.id)
             }
         } catch {
             phase = .failed(Self.message(error))
         }
     }
 
-    public func select(_ personId: String) {
+    public func select(_ personId: String) async {
         do {
-            selected = try provider.get(personId)
+            selected = try await provider.get(personId)
             actionError = nil
         } catch {
             actionError = Self.message(error)
@@ -109,7 +112,7 @@ public final class PersonsViewModel {
     @discardableResult
     public func create(name: String) async -> Bool {
         do {
-            let id = try provider.create(name: name.trimmingCharacters(in: .whitespacesAndNewlines))
+            let id = try await provider.create(name: name.trimmingCharacters(in: .whitespacesAndNewlines))
             try await reloadAndSelect(id)
             return true
         } catch {
@@ -128,7 +131,7 @@ public final class PersonsViewModel {
     public func saveSelected(name: String, notes: String) async -> Bool {
         guard let personId = selected?.id else { return false }
         do {
-            try provider.update(personId: personId, name: name, notes: notes)
+            try await provider.update(personId: personId, name: name, notes: notes)
             try await reloadAndSelect(personId)
             return true
         } catch {
@@ -141,7 +144,7 @@ public final class PersonsViewModel {
     public func deleteSelected() async -> Bool {
         guard let personId = selected?.id else { return false }
         do {
-            try provider.delete(personId: personId)
+            try await provider.delete(personId: personId)
             selected = nil
             try await reloadAndSelect(nil)
             return true
@@ -152,14 +155,14 @@ public final class PersonsViewModel {
     }
 
     private func reloadAndSelect(_ personId: String?) async throws {
-        persons = try provider.list()
+        persons = try await provider.list()
         if let personId, persons.contains(where: { $0.id == personId }) {
-            selected = try provider.get(personId)
+            selected = try await provider.get(personId)
             actionError = nil
         } else if let first = persons.first {
             // 主列表成功但详情加载失败时写入 actionError，不静默置 nil。
             do {
-                selected = try provider.get(first.id)
+                selected = try await provider.get(first.id)
                 actionError = nil
             } catch {
                 selected = nil

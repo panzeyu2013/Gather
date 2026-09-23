@@ -14,6 +14,7 @@ public struct AppContainer: Sendable {
     public let photos: any PhotoStore
     public let writeback: any WritebackStore
     public let workspace: any WorkspaceStore
+    public let persons: any PersonStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
@@ -24,6 +25,7 @@ public struct AppContainer: Sendable {
         self.photos = SQLitePhotoStore(database: database)
         self.writeback = SQLiteWritebackStore(database: database)
         self.workspace = SQLiteWorkspaceStore(database: database)
+        self.persons = SQLitePersonStore(database: database)
     }
 
     /// 打开（必要时迁移到当前版本）指定路径的库。
@@ -45,6 +47,7 @@ public struct GatherAPI: Sendable {
     public let templates: TemplatesAPI
     public let albums: AlbumsAPI
     public let workspace: WorkspaceAPI
+    public let persons: PersonsAPI
 
     public init(container: AppContainer) {
         self.container = container
@@ -58,6 +61,7 @@ public struct GatherAPI: Sendable {
             photos: container.photos,
             writeback: container.writeback
         )
+        self.persons = PersonsAPI(store: container.persons)
     }
 
     public static func open(path: String) async throws -> GatherAPI {
@@ -214,6 +218,102 @@ public extension SettingsAPI {
     /// 读取全量设置（默认值打底 + 已落库值）生成快照。
     func snapshot() async -> SettingsSnapshot {
         SettingsSnapshot(values: await all())
+    }
+}
+
+/// 人物命名空间：person.* 命令的领域投影（Store 记录 → Protocol DTO）。
+public struct PersonsAPI: Sendable {
+    private let store: any PersonStore
+
+    init(store: any PersonStore) {
+        self.store = store
+    }
+
+    public func list() async throws -> [PersonData] {
+        try await store.listWithCounts().map(Self.personData)
+    }
+
+    public func get(id: String) async throws -> PersonDetailData? {
+        guard let row = try await store.get(id: id) else { return nil }
+        let photos = try await store.getPhotosWithDetails(
+            personId: id, sessionIds: nil, limit: nil, offset: nil)
+        return PersonDetailData(
+            id: row.id,
+            name: row.name,
+            keywords: row.keywordList,
+            thumbnailBase64: row.thumbnailBase64,
+            thumbnailPath: row.thumbnailPath,
+            notes: row.notes,
+            matchThreshold: row.matchThreshold,
+            photoCount: try await store.countPhotos(personId: id),
+            sessionCount: try await store.sessionCount(personId: id),
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            photos: photos.photos.map(Self.personPhotoItem),
+            totalPhotoCount: photos.total
+        )
+    }
+
+    public func create(name: String, keywords: [String]?) async throws -> String {
+        try await store.create(name: name, keywords: keywords)
+    }
+
+    public func update(id: String, fields: PersonUpdateFields) async throws {
+        try await store.update(id: id, fields: fields)
+    }
+
+    public func delete(id: String) async throws {
+        try await store.deletePerson(id: id)
+    }
+
+    public func merge(sourceId: String, targetId: String) async throws {
+        try await store.merge(sourceId: sourceId, targetId: targetId)
+    }
+
+    public func removePhoto(personId: String, photoId: String) async throws {
+        try await store.removePhoto(personId: personId, photoId: photoId)
+    }
+
+    public func searchPhotos(
+        personId: String,
+        sessionIds: [String]?,
+        limit: Int?,
+        offset: Int?
+    ) async throws -> (photos: [PersonPhotoItem], total: Int) {
+        let result = try await store.getPhotosWithDetails(
+            personId: personId, sessionIds: sessionIds, limit: limit, offset: offset)
+        return (result.photos.map(Self.personPhotoItem), result.total)
+    }
+
+    // MARK: 映射（TS person.ipc.ts makeToPersonData / PersonPhotoItem）
+
+    static func personData(_ row: PersonWithCounts) -> PersonData {
+        PersonData(
+            id: row.person.id,
+            name: row.person.name,
+            keywords: row.person.keywordList,
+            thumbnailBase64: row.person.thumbnailBase64,
+            thumbnailPath: row.person.thumbnailPath,
+            notes: row.person.notes,
+            matchThreshold: row.person.matchThreshold,
+            photoCount: row.photoCount,
+            sessionCount: row.sessionCount,
+            createdAt: row.person.createdAt,
+            updatedAt: row.person.updatedAt
+        )
+    }
+
+    /// faceBbox JSON.parse 兜底 []（与 TS 一致）。
+    static func personPhotoItem(_ detail: PersonPhotoDetailRecord) -> PersonPhotoItem {
+        PersonPhotoItem(
+            photoId: detail.photo.photoId,
+            sessionId: detail.photo.sessionId,
+            sessionName: detail.sessionName,
+            filename: detail.filename,
+            filepath: detail.filepath,
+            faceBbox: SQLitePersonStore.decodeBbox(detail.photo.faceBbox),
+            confidence: detail.photo.confidence
+        )
     }
 }
 

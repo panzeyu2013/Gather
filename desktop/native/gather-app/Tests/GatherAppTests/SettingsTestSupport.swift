@@ -1,5 +1,5 @@
 // Tests/GatherAppTests/SettingsTestSupport.swift
-// R1/R5：路由测试的设置/模板/相册/工作区依赖（迁移后的库 + 类型化 API 与默认值快照）。
+// R1/R5：路由测试的设置/模板/相册/工作区/人物依赖（迁移后的库 + 类型化 API 与默认值快照）。
 import Foundation
 import GatherCore
 
@@ -13,7 +13,8 @@ func makeTestSettings(
     api: SettingsAPI,
     templates: TemplatesAPI,
     albums: AlbumsAPI,
-    workspace: WorkspaceAPI
+    workspace: WorkspaceAPI,
+    persons: PersonsAPI
 ) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-app-settings-\(UUID().uuidString).sqlite").path
@@ -26,6 +27,7 @@ func makeTestSettings(
         api.settings,
         api.templates,
         api.albums,
-        api.workspace
+        api.workspace,
+        api.persons
     )
 }
