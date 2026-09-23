@@ -195,6 +195,7 @@ public final class SessionCommandRouter: CommandRouter {
         metadataStore: any MetadataStore,
         cullingStore: any CullingStore,
         similarityStore: any SimilarityStore,
+        writebackStore: any WritebackStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -222,13 +223,12 @@ public final class SessionCommandRouter: CommandRouter {
         // 正式 exiftool/XML-DOM 桥落位前用 SidecarXMPProvider 保证端到端可用）。
         let xmp = xmpProvider ?? SidecarXMPProvider()
         let outboxRepo = MetadataOutboxRepo(connection: db)
-        let writebackRepo = WritebackRepo(connection: db)
         let assetResolver = PhotoAssetResolver(connection: db, getSetting: { key, defaultValue in
             settings.value(key, default: defaultValue)
         })
         let metadataSyncCoordinator = MetadataSyncCoordinator(
             outboxRepo: outboxRepo,
-            writebackRepo: writebackRepo,
+            writebackStore: writebackStore,
             xmp: xmp,
             connection: db,
             getNumber: { key, defaultValue in
@@ -246,7 +246,7 @@ public final class SessionCommandRouter: CommandRouter {
         )
         // UI 对齐（§十一 11.9-1）：写回协调器 emitSummary 后广播 c1-sync-status
         // 事件，驱动 Culling/ControlCenter/Similarity 的同步状态即时刷新。
-        metadataSyncCoordinator.eventSink = { summary in
+        metadataSyncCoordinator.eventSink = { (summary: MetadataSyncSummary) in
             Task { @MainActor in
                 GatherEventCenter.shared.postC1SyncStatusChange(sessionId: summary.sessionId)
             }
@@ -259,7 +259,7 @@ public final class SessionCommandRouter: CommandRouter {
             assetResolver: assetResolver
         )
         let writebackService = WritebackService(
-            writebackRepo: writebackRepo,
+            writebackStore: writebackStore,
             xmp: xmp,
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
@@ -926,10 +926,6 @@ public final class SessionCommandRouter: CommandRouter {
                 try await self.buildSimilarityKeywordPreview(
                     sessionId: sessionId, assignments: assignments, threshold: threshold)
             }
-
-        case "sim.writeback_items":
-            let sessionId = try requiredString(params, "sessionId")
-            return try GatherCore.JSONValue(from: writebackService.getItems(sessionId: sessionId, module: "similarity"))
 
         case "sim.confirm_sync":
             // similarity.ipc.ts:257-263 —— ok(true)。
@@ -2012,7 +2008,7 @@ public final class SessionCommandRouter: CommandRouter {
                            !(try await similarityService.hasResult(sessionId: sessionId, threshold: threshold)) {
                             throw BridgeError.badParams("SIM_THRESHOLD_NO_RESULTS")
                         }
-                        let pendingItems = try writebackService.getItems(
+                        let pendingItems = try await writebackService.getItems(
                             sessionId: sessionId, module: "similarity", status: "pending")
                             .filter { item in item.id.map { idSet.contains($0) } ?? false }
                         guard pendingItems.count == idSet.count else {
@@ -2021,6 +2017,22 @@ public final class SessionCommandRouter: CommandRouter {
                         let result = try await writebackService.execute(
                             sessionId: sessionId, module: "similarity", items: pendingItems)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "sim.writeback_items":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                Task {
+                    do {
+                        let items = try await writebackService.getItems(
+                            sessionId: sessionId, module: "similarity")
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: items)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                     }
@@ -3407,7 +3419,7 @@ public final class SessionCommandRouter: CommandRouter {
                 )
                 return merged
             }
-        try writebackService.persistKeywords(items: selectedItems)
+        try await writebackService.persistKeywords(items: selectedItems)
         return .object([
             "items": try .array(selectedItems.map { try GatherCore.JSONValue(from: $0) }),
             "totalCount": .number(Double(selectedItems.count)),

@@ -53,7 +53,7 @@ public func mutationSource(_ module: String) -> MetadataMutationSource {
 
 /// TS: WritebackService。
 public final class WritebackService {
-    private let writebackRepo: WritebackRepo
+    private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
     private let photoRepo: PhotoRepo
     private let sessionRepo: SessionRepo
@@ -65,7 +65,7 @@ public final class WritebackService {
     private let assetResolver: PhotoAssetResolver?
 
     public init(
-        writebackRepo: WritebackRepo,
+        writebackStore: any WritebackStore,
         xmp: any XMPProvider,
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
@@ -75,7 +75,7 @@ public final class WritebackService {
         metadataStore: (any MetadataStore)? = nil,
         assetResolver: PhotoAssetResolver? = nil
     ) {
-        self.writebackRepo = writebackRepo
+        self.writebackStore = writebackStore
         self.xmp = xmp
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
@@ -91,14 +91,14 @@ public final class WritebackService {
     /// TS: assertNoActiveOtherModule —— outbox 是单写回状态机：另一模块的
     /// written/synced 工作必须先确认并清理。outbox 行按 mutation-source 名存储，
     /// 与写入时的同一映射比较。
-    private func assertNoActiveOtherModule(sessionId: String, module: String) throws {
+    private func assertNoActiveOtherModule(sessionId: String, module: String) async throws {
         if let outboxRepo, try outboxRepo.hasActiveOtherModule(sessionId: sessionId, module: mutationSource(module).rawValue) {
             throw WritebackServiceError.otherModuleActive
         }
         // 未注入 outbox 仓库的调用方遗留兜底：镜像 outbox 门控——交互式 culling
         // 同步是连续的，绝不阻塞批量写回，故 culling 行在此同样排除（outbox 侧
         // 检查已排除）。
-        let activeOtherModule = try writebackRepo.getItems(sessionId: sessionId).first { item in
+        let activeOtherModule = try await writebackStore.writebackItems(sessionId: sessionId, module: nil, status: nil).first { item in
             item.module != module
                 && item.module != "culling"
                 && (item.xmpStatus == "written" || item.xmpStatus == "synced")
@@ -114,7 +114,7 @@ public final class WritebackService {
     /// 实时路径，否则落在同一侧车的并发项互相竞态。
     private func resolveExecuteXmpPath(
         sessionId: String,
-        dbRow: WritebackItemRow,
+        dbRow: WritebackItemRecord,
         resolvedByPhoto: [String: String]? = nil
     ) -> String {
         if let assetResolver {
@@ -134,7 +134,7 @@ public final class WritebackService {
     /// 5 路 JOIN）；解析器服务不到的照片缺席，回退存储路径。
     private func preloadResolvedXmpPaths(
         sessionId: String,
-        rows: [WritebackItemRow]
+        rows: [WritebackItemRecord]
     ) throws -> [String: String]? {
         guard let assetResolver else { return nil }
         let resolved = try assetResolver.resolveMany(
@@ -192,7 +192,7 @@ public final class WritebackService {
         photoIds: Set<String>? = nil,
         keywordAdditions: [String: [String]]? = nil
     ) async throws -> WritebackPreview {
-        try assertNoActiveOtherModule(sessionId: sessionId, module: module)
+        try await assertNoActiveOtherModule(sessionId: sessionId, module: module)
 
         // culling 是连续同步模块：其 pending outbox 行可能携带用户交互式的
         // rating/label 编辑，与关键词 preview 无关——删除它们会静默丢失工作。
@@ -260,11 +260,11 @@ public final class WritebackService {
             ))
         }
 
-        try writebackRepo.saveItems(sessionId: sessionId, module: module, items: items)
-        let failedCount = try writebackRepo.getFailedCount(sessionId: sessionId, module: module)
+        try await writebackStore.saveWritebackItems(sessionId: sessionId, module: module, items: items)
+        let failedCount = try await writebackStore.failedWritebackCount(sessionId: sessionId, module: module)
         try sessionRepo.updateFailedWritebackCount(id: sessionId, count: failedCount)
         try sessionRepo.updateWritebackStatus(id: sessionId, status: failedCount > 0 ? "partial" : "idle")
-        let savedRows = try writebackRepo.getItems(sessionId: sessionId, module: module, status: "pending")
+        let savedRows = try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: "pending")
 
         let previewItems = try savedRows.map { row -> WritebackItem in
             var item = try rowToItem(row)
@@ -281,13 +281,13 @@ public final class WritebackService {
     /// TS: execute —— 两阶段：先全部 prepare（合并关键词、入队变更）再一次性
     /// flushSession（旧实现逐项 flush 会把整个会话队列重写 O(items) 次）。
     public func execute(sessionId: String, module: String, items: [WritebackItem]) async throws -> WritebackResult {
-        try assertNoActiveOtherModule(sessionId: sessionId, module: module)
+        try await assertNoActiveOtherModule(sessionId: sessionId, module: module)
         var written = 0
         var failed = 0
         var skipped = 0
         var errors: [String] = []
         var failedItems: [WritebackItem] = []
-        let persistedRows = try writebackRepo.getItems(sessionId: sessionId, module: module)
+        let persistedRows = try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: nil)
         let rowById = Dictionary(uniqueKeysWithValues: persistedRows.map { (Int($0.id), $0) })
         let resolvedXmpByPhoto = try preloadResolvedXmpPaths(sessionId: sessionId, rows: persistedRows)
 
@@ -330,7 +330,7 @@ public final class WritebackService {
                 }
                 guard !photoPath.isEmpty else {
                     let message = "Missing photo path for writeback item"
-                    try self.writebackRepo.updateStatus(itemId: Int64(itemId), status: "failed", error: message)
+                    try await self.writebackStore.updateWritebackStatus(itemId: Int64(itemId), status: "failed", error: message)
                     errors.append("\(itemId): \(message)")
                     var failedItem = item
                     failedItem.photoPath = ""
@@ -378,7 +378,7 @@ public final class WritebackService {
                     ))
                 } catch {
                     let message = String(describing: error)
-                    try self.writebackRepo.updateStatus(itemId: Int64(itemId), status: "failed", error: message)
+                    try await self.writebackStore.updateWritebackStatus(itemId: Int64(itemId), status: "failed", error: message)
                     errors.append("\(photoPath): \(message)")
                     failedItems.append(persistedItem)
                     failed += 1
@@ -394,7 +394,7 @@ public final class WritebackService {
             } catch {
                 let message = String(describing: error)
                 for entry in prepared {
-                    try writebackRepo.updateStatus(itemId: entry.itemId, status: "failed", error: message)
+                    try await writebackStore.updateWritebackStatus(itemId: entry.itemId, status: "failed", error: message)
                     errors.append("\(entry.photoPath): \(message)")
                     failedItems.append(entry.persistedItem)
                     failed += 1
@@ -415,7 +415,7 @@ public final class WritebackService {
                 let resolvedXmpPath = resolveExecuteXmpPath(sessionId: sessionId, dbRow: entry.dbRow, resolvedByPhoto: resolvedXmpByPhoto)
                 let syncItem = summaryByPath[entry.dbRow.xmpPath] ?? summaryByPath[resolvedXmpPath]
                 if let syncItem, syncItem.status == .written || syncItem.status == .synced {
-                    try writebackRepo.updateStatus(itemId: entry.itemId, status: "written")
+                    try await writebackStore.updateWritebackStatus(itemId: entry.itemId, status: "written", error: nil)
                     let attrs = entry.writeAttrs
                     if let rating = attrs["rating"]?.numberValue {
                         try? await metadataStore?.updateRating(photoId: entry.dbRow.photoId, rating: Int64(rating))
@@ -442,7 +442,7 @@ public final class WritebackService {
                     let message = syncItem?.errorMessage.isEmpty == false
                         ? syncItem!.errorMessage
                         : "XMP write ended in \(syncItem?.status.rawValue ?? "unknown") state"
-                    try writebackRepo.updateStatus(itemId: entry.itemId, status: "failed", error: message)
+                    try await writebackStore.updateWritebackStatus(itemId: entry.itemId, status: "failed", error: message)
                     errors.append("\(entry.photoPath): \(message)")
                     failedItems.append(entry.persistedItem)
                     failed += 1
@@ -450,7 +450,7 @@ public final class WritebackService {
             }
         }
 
-        let failedCount = try writebackRepo.getFailedCount(sessionId: sessionId, module: module)
+        let failedCount = try await writebackStore.failedWritebackCount(sessionId: sessionId, module: module)
         try sessionRepo.updateWritebackStatus(id: sessionId, status: failedCount > 0 ? "partial" : "done")
         try sessionRepo.updateFailedWritebackCount(id: sessionId, count: failedCount)
 
@@ -513,7 +513,7 @@ public final class WritebackService {
 
     /// TS: retryFailed。
     public func retryFailed(sessionId: String, module: String) async throws -> WritebackResult {
-        let failedRows = try writebackRepo.getItems(sessionId: sessionId, module: module, status: "failed")
+        let failedRows = try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: "failed")
         let items = try failedRows.map { try rowToItem($0) }
         if items.isEmpty {
             return WritebackResult(
@@ -529,59 +529,64 @@ public final class WritebackService {
     /// mutation-source 名（否则 face_kw 行永远到不了 synced，之后的每次清理
     /// 与其它模块的写回都会被永久阻塞）。
     public func confirmSync(sessionId: String, module: String) async throws {
-        if try writebackRepo.getFailedCount(sessionId: sessionId, module: module) > 0 {
+        if try await writebackStore.failedWritebackCount(sessionId: sessionId, module: module) > 0 {
             throw WritebackServiceError.failuresPending
         }
         _ = try metadataSync.confirmSync(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
-        try writebackRepo.markWrittenAsSynced(sessionId: sessionId, module: module)
+        try await writebackStore.markWritebackWrittenAsSynced(sessionId: sessionId, module: module)
         try sessionRepo.updateWritebackStatus(
             id: sessionId,
-            status: try writebackRepo.getFailedCount(sessionId: sessionId) > 0 ? "partial" : "done"
+            status: try await writebackStore.failedWritebackCount(sessionId: sessionId, module: nil) > 0
+                ? "partial" : "done"
         )
     }
 
     /// TS: persistAttributes / persistKeywords。
-    public func persistAttributes(items: [WritebackItem]) throws {
-        let entries = items.compactMap { item -> (id: Int64, attributes: [String: Any])? in
+    public func persistAttributes(items: [WritebackItem]) async throws {
+        let entries = items.compactMap { item -> (id: Int64, attributes: [String: JSONValue])? in
             guard let id = item.id, let attributes = item.attributes else { return nil }
             var dict: [String: JSONValue] = [:]
             if let keywords = attributes.keywords { dict["keywords"] = .array(keywords.map { .string($0) }) }
             if let rating = attributes.rating { dict["rating"] = .number(rating) }
             if let label = attributes.label { dict["label"] = .string(label) }
-            return (Int64(id), jsonObject(dict))
+            return (Int64(id), dict)
         }
-        try writebackRepo.updateAttributesMany(items: entries)
+        try await writebackStore.updateWritebackAttributes(entries.map {
+            WritebackAttributesUpdate(id: $0.id, attributes: $0.attributes)
+        })
     }
 
-    public func persistKeywords(items: [WritebackItem]) throws {
+    public func persistKeywords(items: [WritebackItem]) async throws {
         let entries = items.compactMap { item -> (id: Int64, keywords: [String])? in
             guard let id = item.id else { return nil }
             return (Int64(id), item.keywords)
         }
-        try writebackRepo.updateKeywordsMany(items: entries)
+        try await writebackStore.updateWritebackKeywords(entries.map {
+            WritebackKeywordsUpdate(id: $0.id, keywords: $0.keywords)
+        })
     }
 
-    public func getItems(sessionId: String, module: String, status: String? = nil) throws -> [WritebackItem] {
-        try writebackRepo.getItems(sessionId: sessionId, module: module, status: status).map { try rowToItem($0) }
+    public func getItems(sessionId: String, module: String, status: String? = nil) async throws -> [WritebackItem] {
+        try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: status).map { try rowToItem($0) }
     }
 
     /// TS: cleanup —— 只删除已确认的 synced 行：confirm 后的重新 preview 会
     /// 创建新一轮 pending 行（其 outbox 项仍在存活）——在这里清掉会让后台协调器
     /// 以无 UI 记录的方式把未确认关键词写进 XMP。
     public func cleanup(sessionId: String, module: String) async throws -> CleanupResult {
-        let allItems = try writebackRepo.getItems(sessionId: sessionId, module: module)
+        let allItems = try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: nil)
         let syncedItems = allItems.filter { $0.xmpStatus == "synced" }
         if syncedItems.isEmpty && !allItems.isEmpty {
             throw WritebackServiceError.cleanupRequiresLoaded
         }
         let result = try await metadataSync.cleanup(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
         if !result.errors.isEmpty { return result }
-        try writebackRepo.deleteItemsByIds(
+        try await writebackStore.deleteWritebackItems(
             sessionId: sessionId,
             module: module,
             ids: syncedItems.map(\.id)
         )
-        let remainingItems = try writebackRepo.getItems(sessionId: sessionId)
+        let remainingItems = try await writebackStore.writebackItems(sessionId: sessionId, module: nil, status: nil)
         try sessionRepo.updateWritebackStatus(
             id: sessionId,
             status: remainingItems.isEmpty
@@ -594,7 +599,7 @@ public final class WritebackService {
     // MARK: - 行映射
 
     /// TS: rowToItem。
-    private func rowToItem(_ row: WritebackItemRow) throws -> WritebackItem {
+    private func rowToItem(_ row: WritebackItemRecord) throws -> WritebackItem {
         var attributes: WritebackAttributes? = nil
         if !row.attributesJson.isEmpty {
             if let parsed = try? JSONValue.parse(row.attributesJson), case .object(let dict) = parsed {
@@ -626,7 +631,7 @@ public final class WritebackService {
 /// Phase 1 的 prepare 结果（TS 内联对象）。
 private struct PreparedEntry {
     let itemId: Int64
-    let dbRow: WritebackItemRow
+    let dbRow: WritebackItemRecord
     let persistedItem: WritebackItem
     let photoPath: String
     let writeAttrs: [String: JSONValue]

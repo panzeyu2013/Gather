@@ -19,7 +19,8 @@ func makeTestSettings(
     faceStore: any FaceStore,
     metadataStore: any MetadataStore,
     cullingStore: any CullingStore,
-    similarityStore: any SimilarityStore
+    similarityStore: any SimilarityStore,
+    writebackStore: any WritebackStore
 ) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-app-settings-\(UUID().uuidString).sqlite").path
@@ -38,6 +39,7 @@ func makeTestSettings(
         api.container.faces,
         api.container.metadata,
         api.container.culling,
-        api.container.similarity
+        api.container.similarity,
+        api.container.writeback
     )
 }

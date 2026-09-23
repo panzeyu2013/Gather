@@ -125,10 +125,10 @@ public protocol CullingWritebackPort {
         photoIds: Set<String>?,
         keywordAdditions: [String: [String]]?
     ) async throws -> WritebackPreview
-    func persistAttributes(items: [WritebackItem]) throws
+    func persistAttributes(items: [WritebackItem]) async throws
     func execute(sessionId: String, module: String, items: [WritebackItem]) async throws -> WritebackResult
     func retryFailed(sessionId: String, module: String) async throws -> WritebackResult
-    func getItems(sessionId: String, module: String, status: String?) throws -> [WritebackItem]
+    func getItems(sessionId: String, module: String, status: String?) async throws -> [WritebackItem]
     func confirmSync(sessionId: String, module: String) async throws
     func cleanup(sessionId: String, module: String) async throws -> CleanupResult
 }
@@ -1283,7 +1283,7 @@ public final class CullingService {
                 matchingItems[index].attributes = attributes
             }
         }
-        try writeback.persistAttributes(items: matchingItems)
+        try await writeback.persistAttributes(items: matchingItems)
         return try await writeback.execute(sessionId: sessionId, module: "culling", items: matchingItems)
     }
 
@@ -1297,7 +1297,7 @@ public final class CullingService {
     /// TS: culling.confirm_sync —— 协调器确认 + 写回项存在时的写回确认。
     public func confirmSync(sessionId: String) async throws {
         _ = try metadataSync.confirmSync(sessionId: sessionId, sourceModule: "culling")
-        if try writeback.getItems(sessionId: sessionId, module: "culling", status: nil).count > 0 {
+        if try await writeback.getItems(sessionId: sessionId, module: "culling", status: nil).count > 0 {
             try await writeback.confirmSync(sessionId: sessionId, module: "culling")
         }
     }

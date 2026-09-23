@@ -88,7 +88,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     public static let defaultWaitTimeoutMs = 5_000
 
     private let outboxRepo: MetadataOutboxRepo
-    private let writebackRepo: WritebackRepo
+    private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
     private let getNumber: (String, Double) -> Double
     private let connection: DBConnection
@@ -125,14 +125,14 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     public init(
         outboxRepo: MetadataOutboxRepo,
-        writebackRepo: WritebackRepo,
+        writebackStore: any WritebackStore,
         xmp: any XMPProvider,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         skipReloadAck: Bool = false
     ) {
         self.outboxRepo = outboxRepo
-        self.writebackRepo = writebackRepo
+        self.writebackStore = writebackStore
         self.xmp = xmp
         self.connection = connection
         self.getNumber = getNumber
@@ -267,7 +267,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         }
         let acceptRemote = dirtyFields.isEmpty
         if acceptRemote {
-            _ = try writebackRepo.discardPendingByXmpPath(xmpPath: xmpPath)
+            _ = try await writebackStore.discardWritebackPending(xmpPath: xmpPath)
             // 保持 metadata 缓存与 culling 决策与用户选择保留的值一致，
             // 否则 UI 会一直显示本地 rating/label/keywords。
             syncAcceptedRemoteValues(photoPath: row.photoPath, remote: current)

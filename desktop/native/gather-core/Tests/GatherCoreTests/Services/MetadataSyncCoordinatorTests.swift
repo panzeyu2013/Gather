@@ -91,7 +91,10 @@ private struct CoordinatorFixture {
     let coordinator: MetadataSyncCoordinator
 
     init() throws {
-        let db = try DBConnection(path: ":memory:")
+        // 写回行读写经 Store 连接（独立连接）：两条连接须指向同一临时库文件。
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-mdc-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
         try MigrationRunner().migrate(db)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-sync-tests-\(UUID().uuidString)", isDirectory: true)
@@ -109,7 +112,7 @@ private struct CoordinatorFixture {
         let provider = FakeFSXMPProvider()
         let coordinator = MetadataSyncCoordinator(
             outboxRepo: outbox,
-            writebackRepo: WritebackRepo(connection: db),
+            writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             connection: db,
             getNumber: { _, defaultValue in defaultValue },
@@ -352,7 +355,9 @@ private struct StubMutationPort: MetadataMutationPort {
 @Suite(.serialized)
 struct WritebackServiceTests {
     @Test func previewThenExecuteWritesSidecarAndReportsResult() async throws {
-        let db = try DBConnection(path: ":memory:")
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-wb-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
         try MigrationRunner().migrate(db)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-writeback-tests-\(UUID().uuidString)", isDirectory: true)
@@ -373,14 +378,14 @@ struct WritebackServiceTests {
         let outbox = MetadataOutboxRepo(connection: db)
         let coordinator = MetadataSyncCoordinator(
             outboxRepo: outbox,
-            writebackRepo: WritebackRepo(connection: db),
+            writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             connection: db,
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
         let service = WritebackService(
-            writebackRepo: WritebackRepo(connection: db),
+            writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
@@ -409,7 +414,7 @@ struct WritebackServiceTests {
         let written = try await provider.readAttributes(photoPath: photoPath)
         #expect(written.keywords == ["groupA", "portrait"])
         #expect(try outbox.get(TSPath.xmpSidecarPath(photoPath))?.status == "written")
-        let items = try service.getItems(sessionId: sessionId, module: "similarity")
+        let items = try await service.getItems(sessionId: sessionId, module: "similarity")
         #expect(items.count == 1)
         #expect(items.first?.xmpStatus == "written")
 
@@ -418,7 +423,9 @@ struct WritebackServiceTests {
 
     /// 另一模块存在未确认写回时，preview 必须被互斥门拦截。
     @Test func previewBlockedByOtherModuleActive() async throws {
-        let db = try DBConnection(path: ":memory:")
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-wb-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
         try MigrationRunner().migrate(db)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-writeback-tests-\(UUID().uuidString)", isDirectory: true)
@@ -458,14 +465,14 @@ struct WritebackServiceTests {
         let provider = FakeFSXMPProvider()
         let coordinator = MetadataSyncCoordinator(
             outboxRepo: outbox,
-            writebackRepo: WritebackRepo(connection: db),
+            writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             connection: db,
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
         let service = WritebackService(
-            writebackRepo: WritebackRepo(connection: db),
+            writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),

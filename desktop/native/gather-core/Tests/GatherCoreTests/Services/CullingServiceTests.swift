@@ -138,7 +138,7 @@ private final class FakeWritebackPort: CullingWritebackPort {
         return WritebackPreview(items: previewItems, totalCount: previewItems.count, affectedPhotos: previewItems.count)
     }
 
-    func persistAttributes(items: [WritebackItem]) throws {
+    func persistAttributes(items: [WritebackItem]) async throws {
         persistCalls.append(items)
     }
 
@@ -152,7 +152,7 @@ private final class FakeWritebackPort: CullingWritebackPort {
         return executeResult
     }
 
-    func getItems(sessionId: String, module: String, status: String?) throws -> [WritebackItem] {
+    func getItems(sessionId: String, module: String, status: String?) async throws -> [WritebackItem] {
         getItemsCalls.append((sessionId, module))
         return getItemsResult
     }
