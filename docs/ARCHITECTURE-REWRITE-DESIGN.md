@@ -166,7 +166,7 @@ public protocol PhotoStore: Sendable {
    - 双跑等价性：空库与真实库 fixture（v32）在新旧执行器下结构指纹 + 数据摘要完全一致；hook 抛错后回滚到原版本；
    - 旧 MigrationRunner 仍在生产路径上（app 尚未切到 SQLiteDatabase），R1 收尾时一并删除。
 4. Store 逐个实现（顺序：Settings → Session → Photo → Asset → Culling → Similarity → Metadata → Writeback → Job → Face → Person → Duplicate → SmartAlbum → Template → Navigation），每个 Store 迁移旧 Repo 测试为 Store 测试；
-   - 进度：Settings / Session / Photo / Culling 已完成（40 个端口测试全绿）；PhotoFormats 已收敛为格式常量单一来源；CullingStore 用 CullingStoreError 取代旧字符串错误；
+   - 进度：Settings / Session / Photo / Culling / Similarity 已完成（50 个测试全绿）；PhotoFormats 已收敛为格式常量单一来源；CullingStore 用 CullingStoreError 取代旧字符串错误；SimilarityStore 把成员映射缓存移到独立 actor（Store 本身保持无状态 Sendable）；
 5. 调用点迁移：Services 从旧 Repo/DBConnection 切到 Store 协议（此步不改变 Service 的并发模型）；
 6. 删除：Database/DB.swift、Schema.swift、Migrations.swift、ImageCache.swift、Repositories/**；check-no-legacy.sh 的 raw-SQL 规则转 enforced；
 7. 验证：core 全量测试 + v32 真实库升级/读写一致性 + build.sh。

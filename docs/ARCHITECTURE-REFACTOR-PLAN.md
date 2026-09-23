@@ -29,10 +29,10 @@
 | 修复真实漂移（门禁抓出） | ✅ | ① `face_clusters` 补 `synced_to_library`/`match_confidence`（旧库仅由 v1 ALTER 添加，schemaSQL 缺失）；② `metadata_outbox.source_module` 列序对齐到 ALTER 追加位置（兼容旧 Repo 的位置解码） |
 | StoreMigrator（33 步注册表） | ✅ | `Store/StoreMigrator.swift`：旧 `if` 链 33 个版本块逐字转为 `[MigrationStep]`；ADR-005 备份（空间检查/checkpoint/backup API/integrity_check/失败恢复/keep=3 淘汰）+ 迁移后 FK 与列不变量；版本号仍在步骤事务内写入 |
 | 新旧迁移器等价性验证 | ✅ | `StoreMigratorTests` 4 用例：空库双跑结构+数据摘要一致；**真实库 fixture（v32）双跑后结构与数据完全一致**；幂等；`afterMigrateHook` 抛错后回滚到 v32 且结构与原库一致 |
-| Store 实现（4/16） | ✅ | `SettingsStore` / `SessionStore` / `PhotoStore` / `CullingStore`（端口自对应 Repo 测试）：40 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)`；`CullingStoreError` 取代字符串错误（undoNotLatest/redoOutOfOrder/historyStale/historyCorrupt） |
-| 其余 Store（Asset/Similarity/Metadata/Writeback/Job/Face/Person/Duplicate/SmartAlbum/Template/Navigation） | 待办 | R1 后续 |
+| Store 实现（5/16） | ✅ | Settings / Session / Photo / Culling / Similarity（端口自对应 Repo 测试）：50 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)`；Culling 用类型化错误；Similarity 成员映射缓存改为独立 actor（容量 32、会话级失效），聚类状态新增 Store 级直测 |
+| 其余 Store（Asset/Metadata/Writeback/Job/Face/Person/Duplicate/SmartAlbum/Template/Navigation） | 待办 | R1 后续 |
 
-> 当前 core 全量：**846 tests / 113 suites 全绿**（789 oracle + 57 新增）。
+> 当前 core 全量：**856 tests / 114 suites 全绿**（789 oracle + 67 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
