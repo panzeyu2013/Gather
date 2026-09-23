@@ -11,3 +11,9 @@ public extension Array {
         }
     }
 }
+
+// 可空值 → SQLiteValue（SQL 绑定用；旧 optDB 的 SQLiteValue 对应物）。
+public func sqlValue(_ value: Int64?) -> SQLiteValue { value.map { .int($0) } ?? .null }
+public func sqlValue(_ value: Double?) -> SQLiteValue { value.map { .real($0) } ?? .null }
+public func sqlValue(_ value: String?) -> SQLiteValue { value.map { .text($0) } ?? .null }
+

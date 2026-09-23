@@ -57,67 +57,7 @@ public struct MetadataCacheRow {
     }
 }
 
-/// TS MetadataCacheInput。
-public struct MetadataCacheInput {
-    public var sessionId: String?
-    public var dateTaken: String?
-    public var cameraMake: String?
-    public var cameraModel: String?
-    public var lensModel: String?
-    public var focalLength: Double?
-    public var fNumber: Double?
-    public var exposureTime: String?
-    public var iso: Int64?
-    public var rating: Int64?
-    public var label: String?
-    public var gpsLatitude: Double?
-    public var gpsLongitude: Double?
-    public var width: Int64?
-    public var height: Int64?
-    public var fileSize: Int64?
-    public var fileMtime: String?
-    public var keywords: [String]?
-
-    public init(
-        sessionId: String? = nil,
-        dateTaken: String? = nil,
-        cameraMake: String? = nil,
-        cameraModel: String? = nil,
-        lensModel: String? = nil,
-        focalLength: Double? = nil,
-        fNumber: Double? = nil,
-        exposureTime: String? = nil,
-        iso: Int64? = nil,
-        rating: Int64? = nil,
-        label: String? = nil,
-        gpsLatitude: Double? = nil,
-        gpsLongitude: Double? = nil,
-        width: Int64? = nil,
-        height: Int64? = nil,
-        fileSize: Int64? = nil,
-        fileMtime: String? = nil,
-        keywords: [String]? = nil
-    ) {
-        self.sessionId = sessionId
-        self.dateTaken = dateTaken
-        self.cameraMake = cameraMake
-        self.cameraModel = cameraModel
-        self.lensModel = lensModel
-        self.focalLength = focalLength
-        self.fNumber = fNumber
-        self.exposureTime = exposureTime
-        self.iso = iso
-        self.rating = rating
-        self.label = label
-        self.gpsLatitude = gpsLatitude
-        self.gpsLongitude = gpsLongitude
-        self.width = width
-        self.height = height
-        self.fileSize = fileSize
-        self.fileMtime = fileMtime
-        self.keywords = keywords
-    }
-}
+// MetadataCacheInput 已迁至 Store/MetadataStore.swift（R1 单一来源）。
 
 /// photo_metadata_cache 仓库（TS MetadataCacheRepository）。
 public final class MetadataCacheRepo {
