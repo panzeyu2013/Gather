@@ -324,3 +324,28 @@ R0 ──> R1 ──┬─> R2 ──> R5 ──> R6 ──> R7 ──> R8
 4. 采集 R0.4 基线数据并保存为 CI artifact；
 5. 开始 R1：先写 `SQLiteDatabase` actor 与 `MigrationRegistry`，再逐个 Store 迁移旧 Repo 测试。
 
+
+## 会话交接摘要（round 52 写入，供后续会话直接续跑）
+
+**状态**：HEAD `7a507e3`（+本轮），工作区干净。core **836/116**、app **172/19** 全绿；门禁 4 条强制规则 + 16 项 ratchet 度量全绿。
+
+**R1 已完成 13 个删除切片**（每个都是「Store 落地 → 调用点 async 化 → 同批删除旧实现 + 旧测试 → 度量/baseline 更新」）：
+settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox。
+
+**R1 剩余（5 个 Repo + 3 个 DB 层文件）**，按建议顺序：
+1. `AnalysisJobRepo`（290，仅 `JobService.swift` 消费；阻塞：create/cancel/retry/list/clearCompleted 被路由同步 case 调用）→ `JobStore`
+2. `SessionRepo`（166，8 个调用方文件、3 个同步事务）→ `SessionStore`
+3. `PhotoRepo`（312，8 个调用方文件）→ `PhotoStore`
+4. `AssetRepo`（1175，1 个调用方 IndexerService）→ `AssetStore`
+5. 最后才能删 `RepositorySupport.swift`（224）与 `Database/{DB,ImageCache,Migrations}.swift` → R1 完成态
+
+**每切片的固定套路（本会话已验证 13 次）**
+1) 先加 Store 侧缺失 API（raw SQL 只能出现在 `Store/`）；2) 逐个函数（不要全局正则！协调器那次教训）改调用点并即时 `swift build`；3) 同步事务内的写 → 收集进 sink（history/cache/decision/outbox 四类已有先例）→ 提交后 `commitXxx` 经 store 落库；4) 同步读 → 异步化 + 路由 case 迁 `executeAsync`；5) 删 Repo/旧测试 + 装配/harness（文件库双连接）；6) `./scripts/check-no-legacy.sh` + 更新 `legacy-baseline.txt`；7) core+app 全量测试；8) 提交。
+
+**关键命令**
+- core：`cd desktop/native/gather-core && CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test`
+- app：同上，目录换 `desktop/native/gather-app`
+- 门禁：`./scripts/check-no-legacy.sh`（含 ratchet，旧层回涨即失败）
+- 已知计时 flake（单独跑通过）：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`
+
+**R2-R8 尚未开始**：删除 `Services/`（当前 25 文件）→ JobRunner → MetadataWriter → 类型化 async API（删 `SessionCommandRouter`，当前 17 文件引用）→ UI 重写（Shell + 11 Feature）→ 死代码裁决 → 文档/门禁收尾。
