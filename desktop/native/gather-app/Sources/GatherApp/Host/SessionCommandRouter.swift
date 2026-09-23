@@ -269,7 +269,7 @@ public final class SessionCommandRouter: CommandRouter {
             assetResolver: assetResolver
         )
         let jobService = JobService(jobStore: jobStore)
-        let exportService = ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
+        let exportService = ExportService(photoStore: photoStore, sessionRepo: sessionRepo, connection: db)
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoRepo: photoRepo,
@@ -522,7 +522,7 @@ public final class SessionCommandRouter: CommandRouter {
                 ]
             }
             context.signal.addHandler { exportService.cancel(sessionId: job.scopeId) }
-            let result = try exportService.execute(
+            let result = try await exportService.execute(
                 sessionId: job.scopeId,
                 options: options,
                 onProgress: { progress in
@@ -949,10 +949,6 @@ public final class SessionCommandRouter: CommandRouter {
             let dims = try RAWDecoder.getDimensions(path: path)
             return .object(["width": .number(Double(dims.width)), "height": .number(Double(dims.height))])
 
-        case "export.preview":
-            let sessionId = try requiredString(params, "sessionId")
-            let options = try decodeExportOptions(params["options"] ?? .object([:]))
-            return try GatherCore.JSONValue(from: exportService.preview(sessionId: sessionId, options: options))
 
         case "export.cancel":
             let sessionId = try requiredString(params, "sessionId")
@@ -1022,6 +1018,19 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "export.preview":
+            Task {
+                do {
+                let sessionId = try requiredString(params, "sessionId")
+                let options = try decodeExportOptions(params["options"] ?? .object([:]))
+                completion(WebResponse(ok: true, data: try await GatherCore.JSONValue(from: exportService.preview(sessionId: sessionId, options: options)))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
 
         case "assets.candidates":
             Task {
@@ -1804,7 +1813,7 @@ public final class SessionCommandRouter: CommandRouter {
             Task {
                 do {
                     let options = try self.decodeExportOptions(params["options"] ?? .object([:]))
-                    let preview = try self.exportService.preview(sessionId: sessionId, options: options)
+                    let preview = try await self.exportService.preview(sessionId: sessionId, options: options)
                     completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: preview)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))

@@ -122,14 +122,14 @@ public enum ExportServiceError: Error, Equatable, CustomStringConvertible, Local
 
 /// 导出服务：原图安全复制、JPEG/TIFF 转码、断点续作和报告。
 public final class ExportService {
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let sessionRepo: SessionRepo
     private let connection: DBConnection
     private let cancelLock = NSLock()
     private var cancelledSessions = Set<String>()
 
-    public init(photoRepo: PhotoRepo, sessionRepo: SessionRepo, connection: DBConnection) {
-        self.photoRepo = photoRepo
+    public init(photoStore: any PhotoStore, sessionRepo: SessionRepo, connection: DBConnection) {
+        self.photoStore = photoStore
         self.sessionRepo = sessionRepo
         self.connection = connection
     }
@@ -140,10 +140,10 @@ public final class ExportService {
         cancelLock.unlock()
     }
 
-    public func preview(sessionId: String, options: ExportOptions) throws -> ExportPreview {
+    public func preview(sessionId: String, options: ExportOptions) async throws -> ExportPreview {
         try validate(options)
         try assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
-        let files = try filteredPhotos(sessionId: sessionId, options: options).map { photo in
+        let files = try await filteredPhotos(sessionId: sessionId, options: options).map { photo in
             let size = (try? FileManager.default.attributesOfItem(atPath: photo.filepath)[.size] as? NSNumber)
                 .map { Int($0.int64Value) } ?? 0
             return ExportPreviewFile(photoId: photo.id, filename: photo.filename, fileSize: size)
@@ -162,19 +162,19 @@ public final class ExportService {
         options: ExportOptions,
         onProgress: ((NativeExportProgress) -> Void)? = nil,
         resume: NativeExportResumeState? = nil
-    ) throws -> ExportResult {
+    ) async throws -> ExportResult {
         try validate(options)
         try assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
         setCancelled(sessionId, value: false)
 
-        let photos = try filteredPhotos(sessionId: sessionId, options: options)
+        let photos = try await filteredPhotos(sessionId: sessionId, options: options)
         let sessionName = try sessionRepo.get(id: sessionId)?.name ?? sessionId
         let destination = URL(fileURLWithPath: options.destination).standardizedFileURL
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 
         var state = resume ?? NativeExportResumeState()
         var usedNames = Set<String>()
-        var plans: [(photo: PhotoProjectionRow, name: String, url: URL)] = []
+        var plans: [(photo: PhotoProjection, name: String, url: URL)] = []
 
         for (index, photo) in photos.enumerated() {
             var name = state.destinations[photo.id]
@@ -393,8 +393,8 @@ public final class ExportService {
         }
     }
 
-    private func filteredPhotos(sessionId: String, options: ExportOptions) throws -> [PhotoProjectionRow] {
-        let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+    private func filteredPhotos(sessionId: String, options: ExportOptions) async throws -> [PhotoProjection] {
+        let photos = try await photoStore.getBySessionProjection(sessionId: sessionId)
         guard options.scope == .session else { throw ExportServiceError.scopeUnsupported }
         let scoped = photos.filter { $0.status != "removed" }
         let policy = options.variantPolicy ?? .preferred
@@ -402,11 +402,11 @@ public final class ExportService {
 
         let raw: Set<String> = [".3fr", ".arw", ".cr2", ".cr3", ".dng", ".fff", ".gpr", ".iiq", ".mos", ".nef", ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f"]
         let jpeg: Set<String> = [".jpg", ".jpeg"]
-        var groups: [String: [PhotoProjectionRow]] = [:]
+        var groups: [String: [PhotoProjection]] = [:]
         for photo in scoped { groups[photo.assetId ?? photo.id, default: []].append(photo) }
         return groups.values.compactMap { variants in
-            let isRaw: (PhotoProjectionRow) -> Bool = { raw.contains(URL(fileURLWithPath: $0.filename).pathExtension.lowercased().isEmpty ? "" : ".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
-            let isJPEG: (PhotoProjectionRow) -> Bool = { jpeg.contains(".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
+            let isRaw: (PhotoProjection) -> Bool = { raw.contains(URL(fileURLWithPath: $0.filename).pathExtension.lowercased().isEmpty ? "" : ".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
+            let isJPEG: (PhotoProjection) -> Bool = { jpeg.contains(".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
             switch policy {
             case .raw: return variants.first(where: isRaw)
             case .jpeg: return variants.first(where: isJPEG)
@@ -416,7 +416,7 @@ public final class ExportService {
         }
     }
 
-    private func resolveName(photo: PhotoProjectionRow, options: ExportOptions, counter: Int, sessionName: String) -> String {
+    private func resolveName(photo: PhotoProjection, options: ExportOptions, counter: Int, sessionName: String) -> String {
         let filename = URL(fileURLWithPath: photo.filename).lastPathComponent
         let ext = URL(fileURLWithPath: filename).pathExtension
         let base = sanitize(URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent)

@@ -12,11 +12,22 @@ private func makeTempPhotoStore() async throws -> any PhotoStore {
 }
 
 
-private func makeExportDatabase() throws -> DBConnection {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
-    return db
+private struct ExportTestEnv {
+    let db: DBConnection
+    let photoStore: any PhotoStore
 }
+
+private func makeExportDatabase() async throws -> ExportTestEnv {
+    // 临时文件库：ExportService 的 photoStore 需与旧连接同库读取照片行。
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-export-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: path)
+    try MigrationRunner().migrate(db)
+    let store = try SQLitePhotoStore(database: try SQLiteDatabase(path: path))
+    return ExportTestEnv(db: db, photoStore: store)
+}
+
+
 
 private func seedExportPhoto(
     _ db: DBConnection,
@@ -37,8 +48,9 @@ private func seedExportPhoto(
 
 @Suite("ExportService")
 struct ExportServiceTests {
-    @Test func copiesOriginalSidecarAndResumesFromCheckpoint() throws {
-        let db = try makeExportDatabase()
+    @Test func copiesOriginalSidecarAndResumesFromCheckpoint() async throws {
+        let env = try await makeExportDatabase()
+        let db = env.db
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-export-source-" + UUID().uuidString, isDirectory: true)
         let destination = FileManager.default.temporaryDirectory
@@ -62,7 +74,7 @@ struct ExportServiceTests {
         )
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: env.photoStore,
             sessionRepo: SessionRepo(connection: db),
             connection: db
         )
@@ -75,10 +87,10 @@ struct ExportServiceTests {
             destination: destination.path
         )
 
-        let preview = try service.preview(sessionId: session.id, options: options)
+        let preview = try await service.preview(sessionId: session.id, options: options)
         #expect(preview.totalFiles == 1)
         #expect(preview.files.first?.filename == "family.jpg")
-        let first = try service.execute(sessionId: session.id, options: options)
+        let first = try await service.execute(sessionId: session.id, options: options)
         #expect(first == ExportResult(totalFiles: 1, exported: 1, failed: 0, skipped: 0, errors: []))
 
         let output = destination.appendingPathComponent("family.jpg")
@@ -93,9 +105,9 @@ struct ExportServiceTests {
             includeXmp: false,
             destination: legacyDestination.path
         )
-        #expect(try service.preview(sessionId: session.id, options: legacyOptions).files.first?.filename == "family.jpg")
+        #expect(try await service.preview(sessionId: session.id, options: legacyOptions).files.first?.filename == "family.jpg")
 
-        let resumed = try service.execute(
+        let resumed = try await service.execute(
             sessionId: session.id,
             options: options,
             resume: NativeExportResumeState(
@@ -107,8 +119,9 @@ struct ExportServiceTests {
         #expect(resumed.failed == 0)
     }
 
-    @Test func rejectsExportIntoSourceDirectory() throws {
-        let db = try makeExportDatabase()
+    @Test func rejectsExportIntoSourceDirectory() async throws {
+        let env = try await makeExportDatabase()
+        let db = env.db
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-export-source-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -120,7 +133,7 @@ struct ExportServiceTests {
         )
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: env.photoStore,
             sessionRepo: SessionRepo(connection: db),
             connection: db
         )
@@ -131,14 +144,15 @@ struct ExportServiceTests {
             includeXmp: false,
             destination: source.appendingPathComponent("exports").path
         )
-        #expect(throws: ExportServiceError.destinationInsideSession) {
-            try service.preview(sessionId: session.id, options: options)
+        await #expect(throws: ExportServiceError.destinationInsideSession) {
+            try await service.preview(sessionId: session.id, options: options)
         }
     }
 
 #if canImport(ImageIO)
-    @Test func convertsJpegThroughImageIO() throws {
-        let db = try makeExportDatabase()
+    @Test func convertsJpegThroughImageIO() async throws {
+        let env = try await makeExportDatabase()
+        let db = env.db
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-export-source-" + UUID().uuidString, isDirectory: true)
         let destination = FileManager.default.temporaryDirectory
@@ -176,7 +190,7 @@ struct ExportServiceTests {
         )
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: env.photoStore,
             sessionRepo: SessionRepo(connection: db),
             connection: db
         )
@@ -189,7 +203,7 @@ struct ExportServiceTests {
             includeXmp: false,
             destination: destination.path
         )
-        let result = try service.execute(sessionId: session.id, options: options)
+        let result = try await service.execute(sessionId: session.id, options: options)
         #expect(result.exported == 1)
         let output = destination.appendingPathComponent("photo.jpg")
         #expect(FileManager.default.fileExists(atPath: output.path))
@@ -201,8 +215,9 @@ struct ExportServiceTests {
     /// 修复前用 DateFormatter.localizedString(.medium)：12h locale 产出
     /// "3-45-30 PM"（空格 + AM/PM），与 ExportView 预览的 HH-mm-ss 不符。
     /// 修复后固定 HH-mm-ss（24h 制），任何 locale 下输出一致。
-    @Test func timePlaceholderUsesFixed24HourFormat() throws {
-        let db = try makeExportDatabase()
+    @Test func timePlaceholderUsesFixed24HourFormat() async throws {
+        let env = try await makeExportDatabase()
+        let db = env.db
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-export-source-" + UUID().uuidString, isDirectory: true)
         let destination = FileManager.default.temporaryDirectory
@@ -219,7 +234,7 @@ struct ExportServiceTests {
         )
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: env.photoStore,
             sessionRepo: SessionRepo(connection: db),
             connection: db
         )
@@ -232,7 +247,7 @@ struct ExportServiceTests {
             destination: destination.path
         )
 
-        let result = try service.execute(sessionId: session.id, options: options)
+        let result = try await service.execute(sessionId: session.id, options: options)
         #expect(result.exported == 1)
         let files = try FileManager.default.contentsOfDirectory(atPath: destination.path)
         #expect(files.count == 1)
