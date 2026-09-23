@@ -53,7 +53,7 @@ public final class SessionService {
     private let sessionRepo: SessionRepo
     private let photoRepo: PhotoRepo
     private let faceStore: any FaceStore
-    private let assetRepo: AssetRepo?
+    private let assetStore: any AssetStore?
     private let connection: DBConnection
 
     public init(
@@ -65,7 +65,7 @@ public final class SessionService {
         dimensionsProvider: @escaping (String) throws -> (width: Int, height: Int) = { _ in
             throw SessionServiceError.sourceNotDir
         },
-        assetRepo: AssetRepo? = nil
+        assetStore: (any AssetStore)? = nil
     ) {
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
@@ -73,7 +73,7 @@ public final class SessionService {
         self.connection = connection
         self.getNumber = getNumber
         self.dimensionsProvider = dimensionsProvider
-        self.assetRepo = assetRepo
+        self.assetStore = assetStore
     }
 
     public func createSession(name: String, source: String, sourcePath: String = "", truncatedImport: Bool = false) throws -> SessionData {
@@ -223,7 +223,10 @@ public final class SessionService {
         }
 
         let result = try photoRepo.addPhotos(sessionId: sessionId, filepaths: entries, source)
-        _ = try assetRepo?.backfillSession(sessionId)
+        // asset 回填经 Task 触发（Store 写为 async；照片行已在旧连接落库）。
+        if let assetStore {
+            Task { _ = try? await assetStore.backfillSession(sessionId) }
+        }
         let totalCount = try photoRepo.countBySession(sessionId: sessionId)
         try connection.transaction {
             try sessionRepo.updatePhotoCount(id: sessionId, count: totalCount)

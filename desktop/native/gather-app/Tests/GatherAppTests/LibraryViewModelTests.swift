@@ -9,6 +9,14 @@ import Testing
 @testable import GatherApp
 @testable import GatherCore
 
+private func makeTempAssetStore() async throws -> any GatherCore.AssetStore {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-assets-\(UUID().uuidString).sqlite").path
+    try MigrationRunner().migrate(try DBConnection(path: path))
+    return try GatherCore.SQLiteAssetStore(database: try GatherCore.SQLiteDatabase(path: path))
+}
+
+
 // MARK: - Stub（错误态与调用记录）
 
 private final class StubLibraryProvider: LibraryDataProvider {
@@ -64,7 +72,7 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (LibraryViewModel
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
-private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection) {
+private func makeLiveProvider() async throws -> (LiveLibraryDataProvider, DBConnection) {
     let db = try DBConnection(path: ":memory:")
     try MigrationRunner().migrate(db)
     let tempStorePath = FileManager.default.temporaryDirectory
@@ -73,7 +81,7 @@ private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection
     let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
     let settings = try makeTestSettings()
     let router = SessionCommandRouter.makeDefault(
-        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore)
+        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore())
     return (LiveLibraryDataProvider(router: router), db)
 }
 
@@ -376,7 +384,7 @@ struct LibraryViewModelTests {
 
     // 真实库：photos_global 按 rating/label 筛选 + total + 会话名聚合。
     @Test func liveProviderFiltersAndCountsGlobally() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1", name: "甲")
         try insertSession(db, "s2", name: "乙")
         try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5, label: "Red")
@@ -408,7 +416,7 @@ struct LibraryViewModelTests {
 
     // 真实库：status 筛选（missing 离线）与 keywords contains_any。
     @Test func liveProviderFiltersByStatusAndKeywords() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1", status: "missing", keywords: "[\"旅行\",\"风景\"]")
         try insertPhoto(db, id: "p2", sessionId: "s1", keywords: "[]")
@@ -433,7 +441,7 @@ struct LibraryViewModelTests {
 
     // 真实库：photo.list 会话下拉数据 + 分页 total 与 photos 一致性。
     @Test func liveProviderPaginationCountsTotal() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         for index in 0..<5 {
             try insertPhoto(db, id: "p\(index)", sessionId: "s1", rating: index % 3)
@@ -449,7 +457,7 @@ struct LibraryViewModelTests {
     // Library 侧栏的真实路由对账：智能相册 CRUD/分页与资产、孤立 XMP、卷列表
     // 均必须可调用，不能只靠 UI stub 通过编译。
     @Test func liveProviderSupportsLibrarySupportCommands() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5)
 
@@ -468,8 +476,8 @@ struct LibraryViewModelTests {
         try await provider.deleteAlbum(albumId: created.id)
         #expect(try await provider.listAlbums().contains(where: { $0.id == created.id }) == false)
 
-        _ = try provider.listAssetCandidates()
+        _ = try await provider.listAssetCandidates()
         _ = try await provider.listMetadataOrphans()
-        _ = try provider.listAssetVolumes()
+        _ = try await provider.listAssetVolumes()
     }
 }

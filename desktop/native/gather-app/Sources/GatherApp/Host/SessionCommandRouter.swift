@@ -82,7 +82,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let navigationService: NavigationService
     private let similarityService: SimilarityService
     private let duplicateService: DuplicateService
-    private let assetRepo: AssetRepo
+    private let assetStore: any AssetStore
     /// 连接引用：仅用于零散 Repo 按需构造（SessionRepo reloadAckedAt 等），
     /// 领域查询一律经注入的 Repo/Service，不在此内联 SQL。
     private let db: DBConnection
@@ -114,7 +114,7 @@ public final class SessionCommandRouter: CommandRouter {
         navigationService: NavigationService,
         similarityService: SimilarityService,
         duplicateService: DuplicateService,
-        assetRepo: AssetRepo,
+        assetStore: any AssetStore,
         faceKwService: FaceKwService,
         persons: PersonsAPI,
         templates: TemplatesAPI,
@@ -140,7 +140,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.navigationService = navigationService
         self.similarityService = similarityService
         self.duplicateService = duplicateService
-        self.assetRepo = assetRepo
+        self.assetStore = assetStore
         self.faceKwService = faceKwService
         self.persons = persons
         self.templates = templates
@@ -197,6 +197,7 @@ public final class SessionCommandRouter: CommandRouter {
         similarityStore: any SimilarityStore,
         writebackStore: any WritebackStore,
         jobStore: any JobStore,
+        assetStore: any AssetStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -218,7 +219,6 @@ public final class SessionCommandRouter: CommandRouter {
                 RAWDecoder.pixels9x8(path: path, maxPixel: size)
             }
         )
-        let assetRepo = AssetRepo(connection: db)
         // 元数据写回链（TS di/init.ts 组合根）：XMP provider → 协调器 →
         // 变更服务 → 元数据服务 / 写回服务（XMPProvider 为宿主接缝，3.4
         // 正式 exiftool/XML-DOM 桥落位前用 SidecarXMPProvider 保证端到端可用）。
@@ -312,7 +312,7 @@ public final class SessionCommandRouter: CommandRouter {
                     let dims = try RAWDecoder.getDimensions(path: path)
                     return (dims.width, dims.height)
                 },
-                assetRepo: assetRepo
+                assetStore: assetStore
             ),
             workspace: workspace,
             jobService: jobService,
@@ -333,7 +333,7 @@ public final class SessionCommandRouter: CommandRouter {
                         mode: mode, onProgress: onProgress)
                 }
             ),
-            assetRepo: assetRepo,
+            assetStore: assetStore,
             faceKwService: resolvedFaceKwService,
             persons: persons,
             templates: templates,
@@ -347,7 +347,7 @@ public final class SessionCommandRouter: CommandRouter {
                 connection: db,
                 sessionRepo: sessionRepo,
                 photoRepo: photoRepo,
-                assetRepo: assetRepo,
+                assetStore: assetStore,
                 getDimensions: { path in
                     try RAWDecoder.getDimensions(path: path)
                 },
@@ -441,7 +441,7 @@ public final class SessionCommandRouter: CommandRouter {
         // TS 源: indexer.ipc.ts:26-67 —— metadata.scan executor：扫描 →
         // 元数据提取 → 资产链接对账 → checkpoint 落结果（恢复语义），
         // 剩余待回填 checksum 时入队 checksum.backfill。
-        jobService.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoRepo, assetRepo, jobService] job, context in
+        jobService.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoRepo, assetStore, jobService] job, context in
             let result = try await indexerService.scanSession(
                 sessionId: job.scopeId,
                 context: context
@@ -454,7 +454,7 @@ public final class SessionCommandRouter: CommandRouter {
                 current: 0, total: photoIds.count, phase: "index.metadata-read"
             ))
             _ = try await metadataService.getMetadata(photoIds: photoIds)
-            _ = try assetRepo.reconcileRawJpegLinks(job.scopeId)
+            _ = try await assetStore.reconcileRawJpegLinks(sessionId: job.scopeId)
             await context.updateCheckpoint(["result": try JSONValue(from: result)])
             await context.updateProgress(JobProgressUpdate(
                 current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
@@ -727,13 +727,7 @@ public final class SessionCommandRouter: CommandRouter {
 
         // ── assets.*（3.2 服务层；TS 源 assets.ipc.ts:9-14）──
 
-        case "assets.candidates":
-            let sessionId = try optionalString(params, "sessionId")
-            return try GatherCore.JSONValue(from: assetRepo.listCandidates(sessionId: sessionId))
 
-        // ── dup.*（3.6 服务层；TS 源 duplicate.ipc.ts）──
-
-        // TS: duplicate.ipc.ts:46-55 —— ok(getGroups(sessionId))。
         case "dup.groups":
             let sessionId = try requiredString(params, "sessionId")
             return try GatherCore.JSONValue(from: duplicateService.getGroups(sessionId: sessionId))
@@ -919,43 +913,9 @@ public final class SessionCommandRouter: CommandRouter {
 
         // ── assets.*（TS 源 assets.ipc.ts）──
 
-        case "assets.accept_candidate":
-            // assets.ipc.ts:15-19 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("ASSET_LINK_ACCEPT_CONFIRM_REQUIRED")
-            }
-            let candidateId = try requiredString(params, "candidateId")
-            // 仓库层 DBError.message → BridgeError（命令边界仅对 BridgeError
-            // 走 message 透传；NSError 桥接会丢失消息）。
-            try mapRepoError { try assetRepo.acceptCandidate(candidateId) }
-            return .bool(true)
-
-        case "assets.reject_candidate":
-            // assets.ipc.ts:20-24 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("ASSET_LINK_REJECT_CONFIRM_REQUIRED")
-            }
-            let candidateId = try requiredString(params, "candidateId")
-            try mapRepoError { try assetRepo.rejectCandidate(candidateId) }
-            return .bool(true)
-
-        case "assets.volumes":
-            // assets.ipc.ts:25-27 —— ok(listVolumes())。
-            return try GatherCore.JSONValue(from: assetRepo.listVolumes())
-
-        case "assets.relink_root":
-            // assets.ipc.ts:28-34 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("ASSET_RELINK_CONFIRM_REQUIRED")
-            }
-            let oldRoot = try requiredString(params, "oldRoot")
-            let newRoot = try requiredString(params, "newRoot")
-            return .number(Double(try mapRepoError {
-                try assetRepo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
-            }))
 
 
-        // ── image / face ──
+
 
         case "image.prioritize_thumbnail":
             let path = try requiredString(params, "path")
@@ -1061,6 +1021,82 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "assets.candidates":
+            Task {
+                do {
+                let sessionId = try optionalString(params, "sessionId")
+                completion(WebResponse(ok: true, data: try await GatherCore.JSONValue(from: assetStore.listCandidates(sessionId: sessionId)))); return
+
+            // ── dup.*（3.6 服务层；TS 源 duplicate.ipc.ts）──
+
+            // TS: duplicate.ipc.ts:46-55 —— ok(getGroups(sessionId))。
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "assets.accept_candidate":
+            Task {
+                do {
+                // assets.ipc.ts:15-19 —— destructive。
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("ASSET_LINK_ACCEPT_CONFIRM_REQUIRED")
+                }
+                let candidateId = try requiredString(params, "candidateId")
+                // 仓库层 DBError.message → BridgeError（命令边界仅对 BridgeError
+                // 走 message 透传；NSError 桥接会丢失消息）。
+                _ = try await mapRepoErrorAsync { try await assetStore.acceptCandidate(candidateId) }
+                completion(WebResponse(ok: true, data: .bool(true))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "assets.reject_candidate":
+            Task {
+                do {
+                // assets.ipc.ts:20-24 —— destructive。
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("ASSET_LINK_REJECT_CONFIRM_REQUIRED")
+                }
+                let candidateId = try requiredString(params, "candidateId")
+                _ = try await mapRepoErrorAsync { try await assetStore.rejectCandidate(candidateId) }
+                completion(WebResponse(ok: true, data: .bool(true))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "assets.volumes":
+            Task {
+                do {
+                // assets.ipc.ts:25-27 —— ok(listVolumes())。
+                completion(WebResponse(ok: true, data: try await GatherCore.JSONValue(from: assetStore.listVolumes()))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "assets.relink_root":
+            Task {
+                do {
+                // assets.ipc.ts:28-34 —— destructive。
+                guard confirmed(params) else {
+                    completion(WebResponse(ok: false, error: "ASSET_RELINK_CONFIRM_REQUIRED")); return
+                }
+                let oldRoot = try requiredString(params, "oldRoot")
+                let newRoot = try requiredString(params, "newRoot")
+                let relinkResult = try await mapRepoErrorAsync {
+                    try await assetStore.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
+                }
+                completion(WebResponse(ok: true, data: .number(Double(relinkResult.relocatedFiles)))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
 
         case "image.preload_thumbnails":
             Task {
@@ -3067,7 +3103,7 @@ public final class SessionCommandRouter: CommandRouter {
         guard !ids.isEmpty else { return [] }
 
         // 角色与脸数小查询下沉 Repo/Service（原内联 SQL，P1-2 修复）。
-        let memberRoles = (try? assetRepo.memberRoles(sessionId: sessionId, photoIds: ids)) ?? [:]
+        let memberRoles = (try? await assetStore.memberRoles(sessionId: sessionId, photoIds: ids)) ?? [:]
         let faceCounts = (try? await faceKwService.faceCounts(sessionId: sessionId, photoIds: ids)) ?? [:]
 
         func toPhotoData(_ row: PhotoPageRow, variants: [PhotoPageRow]) -> GatherCore.JSONValue {
@@ -3208,6 +3244,17 @@ public final class SessionCommandRouter: CommandRouter {
 
     /// 仓库层 DBError.message → BridgeError（命令边界只对 BridgeError 做
     /// message 透传，NSError 桥接会把 DBError 描述丢给系统错误文案）。
+    private func mapRepoErrorAsync<T>(_ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as DBError {
+            if case .message(let message) = error {
+                throw BridgeError.badParams(message)
+            }
+            throw error
+        }
+    }
+
     private func mapRepoError<T>(_ body: () throws -> T) throws -> T {
         do {
             return try body()

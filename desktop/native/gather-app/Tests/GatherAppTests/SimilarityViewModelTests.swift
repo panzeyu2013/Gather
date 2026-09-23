@@ -203,7 +203,8 @@ private func makeLiveProvider() throws -> (LiveSimilarityDataProvider, DBConnect
         cullingStore: container.culling,
         similarityStore: container.similarity,
         writebackStore: container.writeback,
-        jobStore: container.jobs
+        jobStore: container.jobs,
+        assetStore: container.assets
     )
     // JobService 需 start() 后 drain 才运行（TS index.ts:476 主进程启动语义；
     // 否则 sim.analyze job 永不执行，waitForResult 挂满超时）。

@@ -114,10 +114,10 @@ public protocol LibraryDataProvider {
     func deleteAlbum(albumId: String) async throws
 
     /// TS: assetApi.candidates / acceptCandidate / rejectCandidate / volumes / relinkRoot。
-    func listAssetCandidates() throws -> [AssetLinkCandidateData]
-    func updateAssetCandidate(candidateId: String, accept: Bool) throws
-    func listAssetVolumes() throws -> [AssetVolumeData]
-    func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int
+    func listAssetCandidates() async throws -> [AssetLinkCandidateData]
+    func updateAssetCandidate(candidateId: String, accept: Bool) async throws
+    func listAssetVolumes() async throws -> [AssetVolumeData]
+    func relinkAssetRoot(oldRoot: String, newRoot: String) async throws -> Int
 
     /// TS: metadataApi.orphans / resolveOrphan。
     func listMetadataOrphans() async throws -> [MetadataOrphan]
@@ -150,15 +150,15 @@ public extension LibraryDataProvider {
         throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
     }
 
-    func listAssetCandidates() throws -> [AssetLinkCandidateData] { [] }
+    func listAssetCandidates() async throws -> [AssetLinkCandidateData] { [] }
 
-    func updateAssetCandidate(candidateId: String, accept: Bool) throws {
+    func updateAssetCandidate(candidateId: String, accept: Bool) async throws {
         throw NativeCommandError.failed("ASSET_LINK_NOT_SUPPORTED")
     }
 
-    func listAssetVolumes() throws -> [AssetVolumeData] { [] }
+    func listAssetVolumes() async throws -> [AssetVolumeData] { [] }
 
-    func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int {
+    func relinkAssetRoot(oldRoot: String, newRoot: String) async throws -> Int {
         throw NativeCommandError.failed("ASSET_RELINK_NOT_SUPPORTED")
     }
 
@@ -248,12 +248,28 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         ])
     }
 
-    public func listAssetCandidates() throws -> [AssetLinkCandidateData] {
-        let response = try router.execute("assets.candidates", params: [:])
-        return try response.decoded(as: [AssetLinkCandidateData].self)
+    /// 异步命令桥：executeAsync + 续体（assets.* 已迁异步路由）。
+    private func asyncCommand(
+        _ command: String,
+        params: [String: GatherCore.JSONValue]
+    ) async throws -> GatherCore.JSONValue {
+        try await withCheckedThrowingContinuation { continuation in
+            router.executeAsync(command, params: params) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: NativeCommandError.failed(response.error ?? command))
+                    return
+                }
+                continuation.resume(returning: data)
+            }
+        }
     }
 
-    public func updateAssetCandidate(candidateId: String, accept: Bool) throws {
+    public func listAssetCandidates() async throws -> [AssetLinkCandidateData] {
+        let data = try await asyncCommand("assets.candidates", params: [:])
+        return try data.decoded(as: [AssetLinkCandidateData].self)
+    }
+
+    public func updateAssetCandidate(candidateId: String, accept: Bool) async throws {
         _ = try router.execute(
             accept ? "assets.accept_candidate" : "assets.reject_candidate",
             params: [
@@ -263,13 +279,13 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         )
     }
 
-    public func listAssetVolumes() throws -> [AssetVolumeData] {
-        let response = try router.execute("assets.volumes", params: [:])
+    public func listAssetVolumes() async throws -> [AssetVolumeData] {
+        let response = try await asyncCommand("assets.volumes", params: [:])
         return try response.decoded(as: [AssetVolumeData].self)
     }
 
-    public func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int {
-        let response = try router.execute("assets.relink_root", params: [
+    public func relinkAssetRoot(oldRoot: String, newRoot: String) async throws -> Int {
+        let response = try await asyncCommand("assets.relink_root", params: [
             "oldRoot": .string(oldRoot),
             "newRoot": .string(newRoot),
             "confirmed": .bool(true),
@@ -377,11 +393,11 @@ public final class LibraryViewModel {
     public func reloadSupport() async {
         do { albums = try await provider.listAlbums() }
         catch { actionError = Self.message(for: error) }
-        do { assetCandidates = try provider.listAssetCandidates() }
+        do { assetCandidates = try await provider.listAssetCandidates() }
         catch { actionError = Self.message(for: error) }
         do { metadataOrphans = try await provider.listMetadataOrphans() }
         catch { actionError = Self.message(for: error) }
-        do { assetVolumes = try provider.listAssetVolumes() }
+        do { assetVolumes = try await provider.listAssetVolumes() }
         catch { actionError = Self.message(for: error) }
     }
 
@@ -432,9 +448,9 @@ public final class LibraryViewModel {
 
     public func updateCandidate(_ candidate: AssetLinkCandidateData, accept: Bool) async {
         await performSupportMutation {
-            try self.provider.updateAssetCandidate(candidateId: candidate.id, accept: accept)
-            self.assetCandidates = try self.provider.listAssetCandidates()
-            self.assetVolumes = try self.provider.listAssetVolumes()
+            try await self.provider.updateAssetCandidate(candidateId: candidate.id, accept: accept)
+            self.assetCandidates = try await self.provider.listAssetCandidates()
+            self.assetVolumes = try await self.provider.listAssetVolumes()
             await self.reload()
         }
     }
@@ -457,8 +473,8 @@ public final class LibraryViewModel {
         panel.prompt = GatherLocalization.l("选择新目录")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         await performSupportMutation {
-            _ = try self.provider.relinkAssetRoot(oldRoot: oldRoot, newRoot: url.path)
-            self.assetVolumes = try self.provider.listAssetVolumes()
+            _ = try await self.provider.relinkAssetRoot(oldRoot: oldRoot, newRoot: url.path)
+            self.assetVolumes = try await self.provider.listAssetVolumes()
             await self.reload()
         }
     }

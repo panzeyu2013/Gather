@@ -13,6 +13,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempAssetStore() async throws -> any AssetStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "assets")
+    return SQLiteAssetStore(database: database)
+}
+
+
 private func makeTempJobStore() async throws -> any JobStore {
     let (database, _) = try await makeMigratedStoreDatabase(label: "jobs")
     return SQLiteJobStore(database: database)
@@ -36,15 +42,20 @@ private func makeHarness(
     root: String,
     lazyChecksum: String = "true",
     getDimensions: @escaping IndexerService.DimensionsProvider = { _ in (100, 80) }
-) throws -> IndexerHarness {
-    let db = try makeMigratedDB()
+) async throws -> IndexerHarness {
+    // 同一临时文件库：旧连接 + Store 连接（asset 回填外键需要 sessions 行）。
+    let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-indexer-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
+    let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
     let indexer = IndexerService(
         connection: db,
         sessionRepo: sessionRepo,
         photoRepo: PhotoRepo(connection: db),
-        assetRepo: AssetRepo(connection: db),
+        assetStore: assetStore,
         getDimensions: getDimensions,
         getSetting: { key, defaultValue in
             key == "lazy_checksum" ? lazyChecksum : defaultValue
@@ -143,7 +154,7 @@ struct IndexSeqTests {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try Data("content".utf8).write(to: URL(fileURLWithPath: root + "/new.jpg"))
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
@@ -164,7 +175,7 @@ struct IndexSeqTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         let photoPath = root + "/photo.jpg"
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         // 无 asset_files 行：扫描把照片自身的 checksum 基线视为不可用 → 判定变化。
         try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
 
@@ -185,7 +196,7 @@ struct IndexSeqTests {
         try Data(content.utf8).write(to: URL(fileURLWithPath: newPath))
         let fileStat = try IndexerService.defaultStat(newPath)
         let hash = sha256Hex(content)
-        let harness = try makeHarness(root: root, lazyChecksum: "false")
+        let harness = try await makeHarness(root: root, lazyChecksum: "false")
         // asset_files 行指向旧路径，但 volume/identity 与真实文件匹配
         // （relinkMovedFile 按 inode 找到它）。
         try insertAssetFileRow(
@@ -214,7 +225,7 @@ struct IndexSeqTests {
         let photoPath = root + "/photo.jpg"
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         let fileStat = try IndexerService.defaultStat(photoPath)
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         try insertAssetFileRow(harness.db, id: "af-1", filepath: photoPath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: "checksum-1")
         try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: "af-1")
 
@@ -234,7 +245,7 @@ struct IndexSeqTests {
         // 照片行存在但文件已删除。
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         try FileManager.default.removeItem(atPath: photoPath)
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
@@ -251,7 +262,7 @@ struct IndexSeqTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         let photoPath = root + "/photo.jpg"
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         // 照片从未回填到 asset_files：扫描没有 asset_files 基线可比较。
         try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
 
@@ -273,7 +284,7 @@ struct IndexSeqTests {
         let photoPath = root + "/photo.jpg"
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         let originalStat = try IndexerService.defaultStat(photoPath)
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
         // 模拟上次扫描提交的索引基线（无 asset_files 行，照片行自带基线）。
         _ = try harness.db.prepare("""
@@ -306,7 +317,11 @@ struct CancelledScanIndexSeqTests {
         for i in 0..<33 {
             try Data("content-\(i)".utf8).write(to: URL(fileURLWithPath: root + "/p\(i).jpg"))
         }
-        let db = try makeMigratedDB()
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-indexer-cancel-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
+        try MigrationRunner().migrate(db)
+        let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
         // 预置已完成的 sim/fkw 分析（快照 index_seq=0）：扫描必须推进会话
@@ -329,7 +344,7 @@ struct CancelledScanIndexSeqTests {
             connection: db,
             sessionRepo: sessionRepo,
             photoRepo: PhotoRepo(connection: db),
-            assetRepo: AssetRepo(connection: db),
+            assetStore: assetStore,
             getDimensions: { path in
                 if path == lastBatchPath {
                     signal.abort()
@@ -407,7 +422,7 @@ struct LazyChecksumTests {
     func lazySkipsHashing() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
-        let harness = try makeHarness(root: fixture.root, lazyChecksum: "true")
+        let harness = try await makeHarness(root: fixture.root, lazyChecksum: "true")
         try seedExistingPhotos(harness, fixture)
         let changedStat = try IndexerService.defaultStat(fixture.changedPath)
 
@@ -434,7 +449,7 @@ struct LazyChecksumTests {
     func nonLazyHashes() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
-        let harness = try makeHarness(root: fixture.root, lazyChecksum: "false")
+        let harness = try await makeHarness(root: fixture.root, lazyChecksum: "false")
         try seedExistingPhotos(harness, fixture)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
@@ -470,7 +485,7 @@ struct GhostPhotoTests {
         let okPath = root + "/ok.jpg"
         try Data("ghost-content".utf8).write(to: URL(fileURLWithPath: ghostPath))
         try Data("ok-content".utf8).write(to: URL(fileURLWithPath: okPath))
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         let ghostStat = try IndexerService.defaultStat(ghostPath)
         let okStat = try IndexerService.defaultStat(okPath)
         try insertAssetFileRow(harness.db, id: "file-ghost", filepath: ghostPath, fileSize: ghostStat.size, fileMtimeMs: ghostStat.mtimeMs, checksum: "c-ghost")
@@ -497,7 +512,7 @@ struct GhostPhotoTests {
         // 文件已物理移动：磁盘上只有新路径。
         try Data("relinked-content".utf8).write(to: URL(fileURLWithPath: newPath))
         try Data("ghost-content".utf8).write(to: URL(fileURLWithPath: ghostPath))
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         let newStat = try IndexerService.defaultStat(newPath)
         let ghostStat = try IndexerService.defaultStat(ghostPath)
         // 旧资产行按真实 inode 匹配新路径文件（relink 依据）。
@@ -533,7 +548,7 @@ struct ChecksumBackfillTests {
         try Data(content.utf8).write(to: URL(fileURLWithPath: filePath))
         let fileStat = try IndexerService.defaultStat(filePath)
         let checksum = sha256Hex(content)
-        let harness = try makeHarness(root: root, lazyChecksum: "true")
+        let harness = try await makeHarness(root: root, lazyChecksum: "true")
         // 懒首扫遗留状态：photos.checksum 空、asset_files.checksum 空。
         try insertFullAssetChain(
             harness.db, assetFileId: "af-1", assetId: "asset-1", sessionId: harness.sessionId,
@@ -572,7 +587,7 @@ struct ChecksumBackfillTests {
         let content = "good-content"
         try Data(content.utf8).write(to: URL(fileURLWithPath: goodPath))
         let badPath = root + "/deleted.jpg"
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         try insertPhotoRow(harness.db, id: "good", sessionId: harness.sessionId, filepath: goodPath, assetFileId: nil)
         try insertPhotoRow(harness.db, id: "bad", sessionId: harness.sessionId, filepath: badPath, assetFileId: nil)
 
@@ -590,7 +605,7 @@ struct ChecksumBackfillTests {
     func stopsOnZeroSuccess() async throws {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         try insertPhotoRow(harness.db, id: "bad-1", sessionId: harness.sessionId, filepath: root + "/gone-1.jpg", assetFileId: nil)
         try insertPhotoRow(harness.db, id: "bad-2", sessionId: harness.sessionId, filepath: root + "/gone-2.jpg", assetFileId: nil)
 
@@ -610,7 +625,7 @@ struct ChecksumBackfillTests {
         try Data(content.utf8).write(to: URL(fileURLWithPath: filePath))
         let fileStat = try IndexerService.defaultStat(filePath)
         let checksum = sha256Hex(content)
-        let harness = try makeHarness(root: root, lazyChecksum: "true")
+        let harness = try await makeHarness(root: root, lazyChecksum: "true")
         // 竞态状态：backfill 已提交 photos.checksum，但扫描的 asset_files 快照
         // 仍为空 checksum（文件本身未变化）。
         try insertFullAssetChain(
@@ -639,7 +654,7 @@ struct ChecksumBackfillTests {
         let filePath = root + "/photo.jpg"
         try Data("content".utf8).write(to: URL(fileURLWithPath: filePath))
         let fileStat = try IndexerService.defaultStat(filePath)
-        let harness = try makeHarness(root: root, lazyChecksum: "true")
+        let harness = try await makeHarness(root: root, lazyChecksum: "true")
         try insertFullAssetChain(
             harness.db, assetFileId: "af-1", assetId: "asset-1", sessionId: harness.sessionId,
             filepath: filePath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: ""
@@ -667,7 +682,7 @@ struct ChecksumBackfillTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         let pendingPath = root + "/pending.jpg"
         try Data("race-content".utf8).write(to: URL(fileURLWithPath: pendingPath))
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         try insertFullAssetChain(
             harness.db, assetFileId: "af-1", assetId: "asset-1", sessionId: harness.sessionId,
             filepath: pendingPath, fileSize: 0, fileMtimeMs: 0, checksum: ""
@@ -699,7 +714,7 @@ struct ChecksumBackfillTests {
     func cancelsBetweenBatches() async throws {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let harness = try makeHarness(root: root)
+        let harness = try await makeHarness(root: root)
         // 33 张照片：首批 32 张完成后仍剩 pending → 下一趟循环抛取消。
         for i in 0..<33 {
             let path = root + "/p\(i).jpg"

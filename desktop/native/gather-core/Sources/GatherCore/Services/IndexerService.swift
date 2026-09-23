@@ -80,7 +80,7 @@ public final class IndexerService {
     private let connection: DBConnection
     private let sessionRepo: SessionRepo
     private let photoRepo: PhotoRepo
-    private let assetRepo: AssetRepo
+    private let assetStore: any AssetStore
     private let getDimensions: DimensionsProvider
     private let getSetting: SettingReader
 
@@ -94,14 +94,14 @@ public final class IndexerService {
         connection: DBConnection,
         sessionRepo: SessionRepo,
         photoRepo: PhotoRepo,
-        assetRepo: AssetRepo,
+        assetStore: any AssetStore,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
         getSetting: @escaping SettingReader = { _, defaultValue in defaultValue }
     ) {
         self.connection = connection
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
-        self.assetRepo = assetRepo
+        self.assetStore = assetStore
         self.getDimensions = getDimensions
         self.getSetting = getSetting
     }
@@ -341,6 +341,22 @@ public final class IndexerService {
             var newEntries: [NewEntry] = []
             // 本批路径/内容变化的照片：会话级失效（簇删除、导航组剪枝）每批一次。
             var batchAffectedPhotoIds = Set<String>()
+            // Store 连接不参与旧事务：relink 探测先行（每文件一次），结果带入事务。
+            var relinkResults: [String: AssetRelinkFileResult?] = [:]
+            var relinkFailed = Set<String>()
+            for outcome in results {
+                if case .new(let filepath, _, _, let checksum, let fileSize, let fileMtimeMs, let fileIdentity) = outcome.item {
+                    do {
+                        relinkResults[filepath] = try await self.assetStore.relinkMovedFile(
+                            newPath: filepath, checksum: checksum, fileSize: fileSize,
+                            fileMtimeMs: fileMtimeMs, fileIdentity: fileIdentity
+                        )
+                    } catch {
+                        if error is DBError { throw error }
+                        relinkFailed.insert(filepath)
+                    }
+                }
+            }
             // 全部写在一个事务内（曾为每文件一事务 ≈ 每批 32 次 fsync）。
             try self.connection.transaction {
                 for outcome in results {
@@ -356,19 +372,13 @@ public final class IndexerService {
                         skipped += 1
                     case .new(let filepath, let width, let height, let checksum, let fileSize, let fileMtimeMs, let fileIdentity):
                         discoveredSet.insert(outcome.normalized)
-                        let relocated: RelinkMovedFileResult?
-                        do {
-                            relocated = try self.assetRepo.relinkMovedFile(
-                                newPath: filepath, checksum: checksum, fileSize: fileSize,
-                                fileMtimeMs: fileMtimeMs, fileIdentity: fileIdentity
-                            )
-                        } catch {
+                        if relinkFailed.contains(filepath) {
                             // 单文件可恢复失败（XMP 写入中、sidecar 冲突等守卫）
                             // 不整批回滚；真实数据库错误才中止批事务。
-                            if error is DBError { throw error }
                             failed.append(filepath)
                             continue
                         }
+                        let relocated: AssetRelinkFileResult? = relinkResults[filepath] ?? nil
                         if let relocated, !relocated.photoIds.isEmpty {
                             for photoId in relocated.photoIds {
                                 batchAffectedPhotoIds.insert(photoId)
@@ -546,7 +556,7 @@ public final class IndexerService {
                 }
             }
             try self.photoRepo.markMissing(photoIds: missing.map(\.id))
-            _ = try self.assetRepo.backfillSession(sessionId)
+            _ = try await self.assetStore.backfillSession(sessionId)
             // index_seq 是分析过期游标：仅在真实变更（新增/内容变/重链接/新增缺失）
             // 时 bump；空转扫描不得把分析标脏。
             let committedChanges = added > 0

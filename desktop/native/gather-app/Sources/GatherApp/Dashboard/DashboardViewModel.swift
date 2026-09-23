@@ -24,7 +24,7 @@ protocol DashboardDataProvider {
         source: String,
         filepaths: [String],
         sourcePath: String
-    ) throws -> CreateSessionOutcome
+    ) async throws -> CreateSessionOutcome
     func deleteSession(_ sessionId: String) async throws
     func deleteSessions(_ sessionIds: [String]) async throws
     func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus?
@@ -46,7 +46,7 @@ extension DashboardDataProvider {
         source: String,
         filepaths: [String],
         sourcePath: String
-    ) throws -> CreateSessionOutcome {
+    ) async throws -> CreateSessionOutcome {
         let session = try createSession(name: name, source: source, sourcePath: sourcePath)
         return CreateSessionOutcome(session: session, failedFiles: [], added: 0)
     }
@@ -99,7 +99,7 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         source: String,
         filepaths: [String],
         sourcePath: String
-    ) throws -> CreateSessionOutcome {
+    ) async throws -> CreateSessionOutcome {
         // TS session.create handler：sourcePath 落库前 sanitize —— 单文件/根
         // 目录等会扩大索引范围的来源一律清空，防索引器递归无关目录。
         let sanitizedSourcePath = sanitizeSessionSourcePath(sourcePath: sourcePath, filepaths: filepaths)
@@ -445,7 +445,7 @@ final class DashboardViewModel {
             let sessionName = name.isEmpty
                 ? (sourcePath.isEmpty ? GatherLocalization.l("Capture One 导入") : TSPath.basename(sourcePath))
                 : name
-            let outcome = try provider.createSessionFromFiles(
+            let outcome = try await provider.createSessionFromFiles(
                 name: sessionName,
                 source: SessionSource.captureOne.rawValue,
                 filepaths: files,

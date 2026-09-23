@@ -120,7 +120,8 @@ private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection
         cullingStore: container.culling,
         similarityStore: container.similarity,
         writebackStore: container.writeback,
-        jobStore: container.jobs
+        jobStore: container.jobs,
+        assetStore: container.assets
     )
     return (LiveGalleryDataProvider(router: router), db)
 }

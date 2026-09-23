@@ -6,6 +6,14 @@ import UniformTypeIdentifiers
 @testable import GatherApp
 @testable import GatherCore
 
+private func makeTempAssetStore() async throws -> any GatherCore.AssetStore {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-assets-\(UUID().uuidString).sqlite").path
+    try MigrationRunner().migrate(try DBConnection(path: path))
+    return try GatherCore.SQLiteAssetStore(database: try GatherCore.SQLiteDatabase(path: path))
+}
+
+
 @Suite("GatherAppDelegate")
 @MainActor
 struct GatherAppDelegateTests {
@@ -92,7 +100,7 @@ struct GatherAppDelegateTests {
         let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
         let settings = try makeTestSettings()
         let router = SessionCommandRouter.makeDefault(
-            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore)
+            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore())
 
         final class Box: @unchecked Sendable {
             var userInfo: [AnyHashable: Any]?
