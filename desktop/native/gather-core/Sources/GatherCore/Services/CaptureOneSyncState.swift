@@ -142,7 +142,7 @@ public final class CaptureOneSyncState {
 /// （osascript 桥是 3.4 页面阶段的宿主职责）；本层只定义调用点与契约形状。
 public protocol C1BridgeProvider: Sendable {
     /// TS: reloadMetadata() 成功路径 —— 写入 reload_acked_at。
-    func recordReloadAck(sessionId: String) throws
+    func recordReloadAck(sessionId: String) async throws
     /// TS: CaptureOneSyncState.deriveSessionState。
     func deriveSessionState(sessionId: String) throws -> CaptureOneSessionState
     /// TS: c1:sync-state IPC 载荷。
@@ -152,16 +152,16 @@ public protocol C1BridgeProvider: Sendable {
 /// C1BridgeProvider 的 GatherCore 内置参考实现（宿主可直接使用，或自行实现
 /// 协议接入自己的 osascript 桥）。
 public struct DefaultC1BridgeProvider: C1BridgeProvider {
-    private let sessionRepo: SessionRepo
+    private let sessionStore: any SessionStore
     private let syncState: CaptureOneSyncState
 
-    public init(sessionRepo: SessionRepo, syncState: CaptureOneSyncState) {
-        self.sessionRepo = sessionRepo
+    public init(sessionStore: any SessionStore, syncState: CaptureOneSyncState) {
+        self.sessionStore = sessionStore
         self.syncState = syncState
     }
 
-    public func recordReloadAck(sessionId: String) throws {
-        _ = try sessionRepo.setReloadAckedAt(sessionId: sessionId, iso: nowISOString())
+    public func recordReloadAck(sessionId: String) async throws {
+        _ = try await sessionStore.setReloadAckedAt(sessionId: sessionId, iso: nowISOString())
     }
 
     public func deriveSessionState(sessionId: String) throws -> CaptureOneSessionState {

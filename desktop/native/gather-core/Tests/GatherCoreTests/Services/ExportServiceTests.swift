@@ -15,6 +15,7 @@ private func makeTempPhotoStore() async throws -> any PhotoStore {
 private struct ExportTestEnv {
     let db: DBConnection
     let photoStore: any PhotoStore
+    let sessionStore: any SessionStore
 }
 
 private func makeExportDatabase() async throws -> ExportTestEnv {
@@ -24,7 +25,7 @@ private func makeExportDatabase() async throws -> ExportTestEnv {
     let db = try DBConnection(path: path)
     try MigrationRunner().migrate(db)
     let store = try SQLitePhotoStore(database: try SQLiteDatabase(path: path))
-    return ExportTestEnv(db: db, photoStore: store)
+    return ExportTestEnv(db: db, photoStore: store, sessionStore: SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }
 
 
@@ -75,7 +76,7 @@ struct ExportServiceTests {
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: env.sessionStore,
             connection: db
         )
         let options = ExportOptions(
@@ -134,7 +135,7 @@ struct ExportServiceTests {
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: env.sessionStore,
             connection: db
         )
         let options = ExportOptions(
@@ -191,7 +192,7 @@ struct ExportServiceTests {
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: env.sessionStore,
             connection: db
         )
         let options = ExportOptions(
@@ -235,7 +236,7 @@ struct ExportServiceTests {
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: env.sessionStore,
             connection: db
         )
         let options = ExportOptions(

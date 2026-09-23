@@ -123,14 +123,14 @@ public enum ExportServiceError: Error, Equatable, CustomStringConvertible, Local
 /// 导出服务：原图安全复制、JPEG/TIFF 转码、断点续作和报告。
 public final class ExportService {
     private let photoStore: any PhotoStore
-    private let sessionRepo: SessionRepo
+    private let sessionStore: any SessionStore
     private let connection: DBConnection
     private let cancelLock = NSLock()
     private var cancelledSessions = Set<String>()
 
-    public init(photoStore: any PhotoStore, sessionRepo: SessionRepo, connection: DBConnection) {
+    public init(photoStore: any PhotoStore, sessionStore: any SessionStore, connection: DBConnection) {
         self.photoStore = photoStore
-        self.sessionRepo = sessionRepo
+        self.sessionStore = sessionStore
         self.connection = connection
     }
 
@@ -142,7 +142,7 @@ public final class ExportService {
 
     public func preview(sessionId: String, options: ExportOptions) async throws -> ExportPreview {
         try validate(options)
-        try assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
+        try await assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
         let files = try await filteredPhotos(sessionId: sessionId, options: options).map { photo in
             let size = (try? FileManager.default.attributesOfItem(atPath: photo.filepath)[.size] as? NSNumber)
                 .map { Int($0.int64Value) } ?? 0
@@ -164,11 +164,11 @@ public final class ExportService {
         resume: NativeExportResumeState? = nil
     ) async throws -> ExportResult {
         try validate(options)
-        try assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
+        try await assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
         setCancelled(sessionId, value: false)
 
         let photos = try await filteredPhotos(sessionId: sessionId, options: options)
-        let sessionName = try sessionRepo.get(id: sessionId)?.name ?? sessionId
+        let sessionName = try await sessionStore.get(id: sessionId)?.name ?? sessionId
         let destination = URL(fileURLWithPath: options.destination).standardizedFileURL
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 
@@ -383,8 +383,8 @@ public final class ExportService {
         }
     }
 
-    private func assertDestinationOutsideSource(sessionId: String, destination: String) throws {
-        guard let session = try sessionRepo.get(id: sessionId) else { throw ExportServiceError.sessionNotFound }
+    private func assertDestinationOutsideSource(sessionId: String, destination: String) async throws {
+        guard let session = try await sessionStore.get(id: sessionId) else { throw ExportServiceError.sessionNotFound }
         guard !session.sourcePath.isEmpty else { return }
         let dest = canonicalPath(destination)
         let source = canonicalPath(session.sourcePath)

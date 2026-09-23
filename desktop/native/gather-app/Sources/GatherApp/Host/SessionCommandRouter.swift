@@ -199,6 +199,7 @@ public final class SessionCommandRouter: CommandRouter {
         jobStore: any JobStore,
         assetStore: any AssetStore,
         photoStore: any PhotoStore,
+        sessionStore: any SessionStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -268,7 +269,7 @@ public final class SessionCommandRouter: CommandRouter {
             assetResolver: assetResolver
         )
         let jobService = JobService(jobStore: jobStore)
-        let exportService = ExportService(photoStore: photoStore, sessionRepo: sessionRepo, connection: db)
+        let exportService = ExportService(photoStore: photoStore, sessionStore: sessionStore, connection: db)
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoStore: photoStore,

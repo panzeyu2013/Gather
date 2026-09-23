@@ -74,9 +74,9 @@ public final class CaptureOneBridge: @unchecked Sendable {
     /// 页面（Dashboard 新建工作区）未显式注入桥时取全局实例；bootstrap 注册。
     public static var shared: CaptureOneBridge?
 
-    private let recordReloadAck: (String) throws -> Void
+    private let recordReloadAck: (String) async throws -> Void
 
-    public init(recordReloadAck: @escaping (String) throws -> Void = { _ in }) {
+    public init(recordReloadAck: @escaping (String) async throws -> Void = { _ in }) {
         self.recordReloadAck = recordReloadAck
     }
 
@@ -101,7 +101,7 @@ public final class CaptureOneBridge: @unchecked Sendable {
         _ = try await runAppleScript(Self.reloadMetadataScript(appName: appName))
         // C1 需要一个短暂窗口读取 XMP；只有脚本成功才写入 durable ack。
         try await Task.sleep(for: .milliseconds(500))
-        try recordReloadAck(sessionId)
+        try await recordReloadAck(sessionId)
     }
 
     public func checkHealth() async -> Result<String, CaptureOneBridgeError> {

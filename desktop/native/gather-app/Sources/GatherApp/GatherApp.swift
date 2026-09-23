@@ -107,7 +107,8 @@ struct GatherApp: App {
                 writebackStore: api.container.writeback,
                 jobStore: api.container.jobs,
                 assetStore: api.container.assets,
-                photoStore: api.container.photos
+                photoStore: api.container.photos,
+                sessionStore: api.container.sessions
             )
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
