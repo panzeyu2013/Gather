@@ -10,12 +10,14 @@ public struct AppContainer: Sendable {
     public let settings: any SettingsStore
     public let sessions: any SessionStore
     public let templates: any TemplateStore
+    public let albums: any SmartAlbumStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
         self.settings = SQLiteSettingsStore(database: database)
         self.sessions = SQLiteSessionStore(database: database)
         self.templates = SQLiteTemplateStore(database: database)
+        self.albums = SQLiteSmartAlbumStore(database: database)
     }
 
     /// 打开（必要时迁移到当前版本）指定路径的库。
@@ -35,12 +37,14 @@ public struct GatherAPI: Sendable {
     public let settings: SettingsAPI
     public let sessions: SessionsAPI
     public let templates: TemplatesAPI
+    public let albums: AlbumsAPI
 
     public init(container: AppContainer) {
         self.container = container
         self.settings = SettingsAPI(store: container.settings)
         self.sessions = SessionsAPI(store: container.sessions)
         self.templates = TemplatesAPI(templates: container.templates, sessions: container.sessions)
+        self.albums = AlbumsAPI(store: container.albums)
     }
 
     public static func open(path: String) async throws -> GatherAPI {
@@ -197,6 +201,35 @@ public extension SettingsAPI {
     /// 读取全量设置（默认值打底 + 已落库值）生成快照。
     func snapshot() async -> SettingsSnapshot {
         SettingsSnapshot(values: await all())
+    }
+}
+
+/// 智能相册命名空间（album.* 命令的持久化面）。
+public struct AlbumsAPI: Sendable {
+    private let store: any SmartAlbumStore
+
+    init(store: any SmartAlbumStore) {
+        self.store = store
+    }
+
+    public func list() async throws -> [SmartAlbumRecord] {
+        try await store.list()
+    }
+
+    public func get(id: String) async throws -> SmartAlbumRecord? {
+        try await store.get(id: id)
+    }
+
+    public func create(data: SmartAlbumCreateData) async throws -> SmartAlbumRecord {
+        try await store.create(data: data)
+    }
+
+    public func update(id: String, data: SmartAlbumUpdateData) async throws {
+        try await store.update(id: id, data: data)
+    }
+
+    public func delete(id: String) async throws {
+        try await store.delete(id: id)
     }
 }
 

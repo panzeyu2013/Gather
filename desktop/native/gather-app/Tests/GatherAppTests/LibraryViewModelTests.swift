@@ -69,7 +69,7 @@ private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection
     try MigrationRunner().migrate(db)
     let settings = try makeTestSettings()
     let router = SessionCommandRouter.makeDefault(
-        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates)
+        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums)
     return (LiveLibraryDataProvider(router: router), db)
 }
 
@@ -452,17 +452,17 @@ struct LibraryViewModelTests {
         let criteria = FilterGroup(logic: .and, conditions: [
             .rule(FilterRule(field: "rating", operator: .gte, value: .number(4))),
         ])
-        let created = try provider.createAlbum(name: "高评分", criteria: criteria)
+        let created = try await provider.createAlbum(name: "高评分", criteria: criteria)
         #expect(created.name == "高评分")
-        #expect(try provider.listAlbums().contains(where: { $0.id == created.id }))
+        #expect(try await provider.listAlbums().contains(where: { $0.id == created.id }))
 
         let page = try await provider.albumPhotos(albumId: created.id, limit: 60, offset: 0)
         #expect(page.total == 1)
         #expect(page.photos.map(\.photoId) == ["p1"])
 
-        try provider.updateAlbum(albumId: created.id, criteria: FilterGroup(logic: .and, conditions: []))
-        try provider.deleteAlbum(albumId: created.id)
-        #expect(try provider.listAlbums().contains(where: { $0.id == created.id }) == false)
+        try await provider.updateAlbum(albumId: created.id, criteria: FilterGroup(logic: .and, conditions: []))
+        try await provider.deleteAlbum(albumId: created.id)
+        #expect(try await provider.listAlbums().contains(where: { $0.id == created.id }) == false)
 
         _ = try provider.listAssetCandidates()
         _ = try provider.listMetadataOrphans()

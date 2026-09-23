@@ -96,7 +96,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let metadataSyncCoordinator: MetadataSyncCoordinator
     private let metadataMutationService: MetadataMutationService
     private let writebackService: WritebackService
-    private let smartAlbumRepo: SmartAlbumRepo
+    private let albums: AlbumsAPI
     /// 3.4 Culling 模块（sync/writeback 端口注入真实协调器与写回服务）。
     private let cullingService: CullingService
     public let exportService: ExportService
@@ -124,7 +124,7 @@ public final class SessionCommandRouter: CommandRouter {
         metadataSyncCoordinator: MetadataSyncCoordinator,
         metadataMutationService: MetadataMutationService,
         writebackService: WritebackService,
-        smartAlbumRepo: SmartAlbumRepo,
+        albums: AlbumsAPI,
         cullingService: CullingService,
         exportService: ExportService,
         imagePreloadService: ImagePreloadService
@@ -150,7 +150,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.metadataSyncCoordinator = metadataSyncCoordinator
         self.metadataMutationService = metadataMutationService
         self.writebackService = writebackService
-        self.smartAlbumRepo = smartAlbumRepo
+        self.albums = albums
         self.cullingService = cullingService
         self.exportService = exportService
         self.imagePreloadService = imagePreloadService
@@ -187,6 +187,7 @@ public final class SessionCommandRouter: CommandRouter {
         settings: SettingsSnapshot,
         settingsAPI: SettingsAPI,
         templates: TemplatesAPI,
+        albums: AlbumsAPI,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -364,7 +365,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataSyncCoordinator: metadataSyncCoordinator,
             metadataMutationService: metadataMutationService,
             writebackService: writebackService,
-            smartAlbumRepo: SmartAlbumRepo(connection: db),
+            albums: albums,
             cullingService: cullingService,
             exportService: exportService,
             imagePreloadService: imagePreloadService
@@ -1215,100 +1216,6 @@ public final class SessionCommandRouter: CommandRouter {
                 try assetRepo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
             }))
 
-        // ── album.*（TS 源 filter.ipc.ts registerAlbumHandlers）──
-
-        case "album.create":
-            // filter.ipc.ts:111-146 —— criteria 经 buildWhereClause 校验后落库。
-            let name = try validatedString(params, "name")
-            let criteria = try parseFilterCriteria(params)
-            _ = try filterEngine.buildWhereClause(criteria)
-            let sortBy = try optionalString(params, "sortBy")
-            let sortOrder = try optionalString(params, "sortOrder")
-            let description = try optionalString(params, "description")
-            let icon = try optionalString(params, "icon")
-            let row = try smartAlbumRepo.create(data: SmartAlbumCreateData(
-                name: name, description: description, filterCriteria: criteria,
-                sortBy: sortBy, sortOrder: sortOrder, icon: icon))
-            let detail = try albumDetailData(row: row)
-            return try GatherCore.JSONValue(from: detail)
-
-        case "album.list":
-            // filter.ipc.ts:148-186 —— 损坏 criteria 的行带 validationError 保留。
-            let rows = try smartAlbumRepo.list()
-            let albums: [SmartAlbumData] = rows.map { row in
-                do {
-                    let criteria = try decodeJSON(FilterGroup.self, from: JSONValue.parse(row.filterCriteria))
-                    _ = try filterEngine.buildWhereClause(criteria)
-                    return SmartAlbumData(
-                        id: row.id, schemaVersion: row.schemaVersion, name: row.name,
-                        description: row.description, filterCriteria: criteria,
-                        sortBy: row.sortBy, sortOrder: row.sortOrder, icon: row.icon,
-                        createdAt: row.createdAt, updatedAt: row.updatedAt)
-                } catch {
-                    return SmartAlbumData(
-                        id: row.id, schemaVersion: row.schemaVersion, name: row.name,
-                        description: row.description,
-                        filterCriteria: FilterGroup(logic: .and, conditions: []),
-                        sortBy: row.sortBy, sortOrder: row.sortOrder, icon: row.icon,
-                        createdAt: row.createdAt, updatedAt: row.updatedAt,
-                        validationError: Self.errorMessage(error))
-                }
-            }
-            return try GatherCore.JSONValue(from: albums)
-
-        case "album.get":
-            // filter.ipc.ts:188-210 —— ALBUM_NOT_FOUND。
-            let albumId = try requiredString(params, "albumId")
-            guard let row = try smartAlbumRepo.get(id: albumId) else {
-                throw BridgeError.notFound("ALBUM_NOT_FOUND")
-            }
-            return try GatherCore.JSONValue(from: albumDetailData(row: row))
-
-        case "album.update":
-            // filter.ipc.ts:212-230 —— 仅更新传入字段；criteria 传入时校验。
-            let albumId = try requiredString(params, "albumId")
-            let name = try optionalString(params, "name")
-            let description = try optionalString(params, "description")
-            var criteria: FilterGroup?
-            if let rawCriteria = params["criteria"] {
-                guard rawCriteria.isObject else { throw BridgeError.badParams("Filter criteria is invalid") }
-                criteria = try parseFilterCriteria(params)
-                _ = try filterEngine.buildWhereClause(criteria!)
-            }
-            let sortBy = try optionalString(params, "sortBy")
-            let sortOrder = try optionalString(params, "sortOrder")
-            let icon = try optionalString(params, "icon")
-            try smartAlbumRepo.update(id: albumId, data: SmartAlbumUpdateData(
-                name: name, description: description, filterCriteria: criteria,
-                sortBy: sortBy, sortOrder: sortOrder, icon: icon))
-            return .object(["done": .bool(true)])
-
-        case "album.delete":
-            // filter.ipc.ts:232-242 —— destructive（TS 消息非 GatherErrorCode）。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("album.delete requires confirmation")
-            }
-            let albumId = try requiredString(params, "albumId")
-            try smartAlbumRepo.delete(id: albumId)
-            return .object(["done": .bool(true)])
-
-        case "album.get_photos":
-            // filter.ipc.ts:244-266 —— ALBUM_NOT_FOUND；limit 1..500 缺省 100。
-            let albumId = try requiredString(params, "albumId")
-            guard let row = try smartAlbumRepo.get(id: albumId) else {
-                throw BridgeError.notFound("ALBUM_NOT_FOUND")
-            }
-            let criteria = try decodeJSON(FilterGroup.self, from: JSONValue.parse(row.filterCriteria))
-            let limit = clampedLimit(params, default: 100, max: 500)
-            let offset = clampedOffset(params)
-            let photos = try filterEngine.filterGlobally(
-                criteria: criteria, sortBy: row.sortBy, sortOrder: row.sortOrder,
-                limit: limit, offset: offset)
-            let total = try filterEngine.countGlobally(criteria: criteria)
-            return .object([
-                "photos": try .array(photos.map { try GatherCore.JSONValue(from: $0) }),
-                "total": .number(Double(total)),
-            ])
 
         // ── image / face ──
 
@@ -2348,6 +2255,160 @@ public final class SessionCommandRouter: CommandRouter {
                 completion(WebResponse(ok: false, error: Self.errorMessage(error)))
             }
 
+        // ── album.*（R1：经 AlbumsAPI，异步路径）──
+
+        case "album.create":
+            do {
+                // filter.ipc.ts:111-146 —— criteria 经 buildWhereClause 校验后落库。
+                let name = try validatedString(params, "name")
+                let criteria = try parseFilterCriteria(params)
+                _ = try filterEngine.buildWhereClause(criteria)
+                let sortBy = try optionalString(params, "sortBy")
+                let sortOrder = try optionalString(params, "sortOrder")
+                let description = try optionalString(params, "description")
+                let icon = try optionalString(params, "icon")
+                Task {
+                    do {
+                        let record = try await albums.create(data: SmartAlbumCreateData(
+                            name: name, description: description, filterCriteria: criteria,
+                            sortBy: sortBy, sortOrder: sortOrder, icon: icon))
+                        let detail = try albumDetailData(row: record)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: detail)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "album.list":
+            Task {
+                do {
+                    // filter.ipc.ts:148-186 —— 损坏 criteria 的行带 validationError 保留。
+                    let records = try await albums.list()
+                    let list: [SmartAlbumData] = records.map { record in
+                        do {
+                            let criteria = try decodeJSON(
+                                FilterGroup.self, from: GatherCore.JSONValue.parse(record.filterCriteria))
+                            _ = try filterEngine.buildWhereClause(criteria)
+                            return SmartAlbumData(
+                                id: record.id, schemaVersion: record.schemaVersion, name: record.name,
+                                description: record.description, filterCriteria: criteria,
+                                sortBy: record.sortBy, sortOrder: record.sortOrder, icon: record.icon,
+                                createdAt: record.createdAt, updatedAt: record.updatedAt)
+                        } catch {
+                            return SmartAlbumData(
+                                id: record.id, schemaVersion: record.schemaVersion, name: record.name,
+                                description: record.description,
+                                filterCriteria: FilterGroup(logic: .and, conditions: []),
+                                sortBy: record.sortBy, sortOrder: record.sortOrder, icon: record.icon,
+                                createdAt: record.createdAt, updatedAt: record.updatedAt,
+                                validationError: Self.errorMessage(error))
+                        }
+                    }
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: list)))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "album.get":
+            do {
+                // filter.ipc.ts:188-210 —— ALBUM_NOT_FOUND。
+                let albumId = try requiredString(params, "albumId")
+                Task {
+                    do {
+                        guard let record = try await albums.get(id: albumId) else {
+                            throw BridgeError.notFound("ALBUM_NOT_FOUND")
+                        }
+                        completion(WebResponse(
+                            ok: true, data: try GatherCore.JSONValue(from: albumDetailData(row: record))))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "album.update":
+            do {
+                // filter.ipc.ts:212-230 —— 仅更新传入字段；criteria 传入时校验。
+                let albumId = try requiredString(params, "albumId")
+                let name = try optionalString(params, "name")
+                let description = try optionalString(params, "description")
+                var criteria: FilterGroup?
+                if let rawCriteria = params["criteria"] {
+                    guard rawCriteria.isObject else { throw BridgeError.badParams("Filter criteria is invalid") }
+                    criteria = try parseFilterCriteria(params)
+                    _ = try filterEngine.buildWhereClause(criteria!)
+                }
+                let sortBy = try optionalString(params, "sortBy")
+                let sortOrder = try optionalString(params, "sortOrder")
+                let icon = try optionalString(params, "icon")
+                Task {
+                    do {
+                        try await albums.update(id: albumId, data: SmartAlbumUpdateData(
+                            name: name, description: description, filterCriteria: criteria,
+                            sortBy: sortBy, sortOrder: sortOrder, icon: icon))
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "album.delete":
+            do {
+                // filter.ipc.ts:232-244 —— destructive。
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("album.delete requires confirmation")
+                }
+                let albumId = try requiredString(params, "albumId")
+                Task {
+                    do {
+                        try await albums.delete(id: albumId)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "album.get_photos":
+            do {
+                // filter.ipc.ts:244-266 —— ALBUM_NOT_FOUND；limit 1..500 缺省 100。
+                let albumId = try requiredString(params, "albumId")
+                Task {
+                    do {
+                        guard let record = try await albums.get(id: albumId) else {
+                            throw BridgeError.notFound("ALBUM_NOT_FOUND")
+                        }
+                        let criteria = try decodeJSON(
+                            FilterGroup.self, from: GatherCore.JSONValue.parse(record.filterCriteria))
+                        let limit = clampedLimit(params, default: 100, max: 500)
+                        let offset = clampedOffset(params)
+                        let photos = try filterEngine.filterGlobally(
+                            criteria: criteria, sortBy: record.sortBy, sortOrder: record.sortOrder,
+                            limit: limit, offset: offset)
+                        let total = try filterEngine.countGlobally(criteria: criteria)
+                        completion(WebResponse(ok: true, data: .object([
+                            "photos": try .array(photos.map { try GatherCore.JSONValue(from: $0) }),
+                            "total": .number(Double(total)),
+                        ])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
         // ── template.*（R1/R5：经 TemplatesAPI + SettingsAPI，异步路径）──
 
         case "template.create":
@@ -3089,7 +3150,7 @@ public final class SessionCommandRouter: CommandRouter {
     }
 
     /// TS filter.ipc.ts SmartAlbumDetailData（album.create / album.get）。
-    private func albumDetailData(row: SmartAlbumRow) throws -> SmartAlbumDetailData {
+    private func albumDetailData(row: SmartAlbumRecord) throws -> SmartAlbumDetailData {
         let criteria = try decodeJSON(FilterGroup.self, from: GatherCore.JSONValue.parse(row.filterCriteria))
         return SmartAlbumDetailData(
             id: row.id,

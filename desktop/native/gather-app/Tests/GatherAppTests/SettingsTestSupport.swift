@@ -1,5 +1,5 @@
 // Tests/GatherAppTests/SettingsTestSupport.swift
-// R1/R5：路由测试的设置/模板依赖（迁移后的库 + 类型化 API 与默认值快照）。
+// R1/R5：路由测试的设置/模板/相册依赖（迁移后的库 + 类型化 API 与默认值快照）。
 import Foundation
 import GatherCore
 
@@ -8,12 +8,17 @@ import GatherCore
 func makeTestSettings(
     file: StaticString = #filePath,
     line: UInt = #line
-) throws -> (snapshot: SettingsSnapshot, api: SettingsAPI, templates: TemplatesAPI) {
+) throws -> (
+    snapshot: SettingsSnapshot,
+    api: SettingsAPI,
+    templates: TemplatesAPI,
+    albums: AlbumsAPI
+) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-app-settings-\(UUID().uuidString).sqlite").path
     let bootstrap = try DBConnection(path: path)
     try MigrationRunner().migrate(bootstrap)
     let database = try SQLiteDatabase(path: path)
     let api = GatherAPI(container: AppContainer(database: database))
-    return (SettingsSnapshot(values: SettingsAPI.defaults), api.settings, api.templates)
+    return (SettingsSnapshot(values: SettingsAPI.defaults), api.settings, api.templates, api.albums)
 }

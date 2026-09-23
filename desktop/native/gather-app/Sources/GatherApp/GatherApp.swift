@@ -95,7 +95,8 @@ struct GatherApp: App {
                 db: db,
                 settings: settingsSnapshot,
                 settingsAPI: api.settings,
-                templates: api.templates
+                templates: api.templates,
+                albums: api.albums
             )
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。

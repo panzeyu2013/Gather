@@ -103,15 +103,15 @@ public protocol LibraryDataProvider {
     /// TS: albumApi.list / getPhotos / create / update / delete。
     /// 默认实现保留测试 stub 与最小第三方 provider 的兼容性；真实 provider
     /// 必须覆盖这些方法，避免 Library 页面静默丢失智能相册能力。
-    func listAlbums() throws -> [SmartAlbumData]
+    func listAlbums() async throws -> [SmartAlbumData]
     func albumPhotos(
         albumId: String,
         limit: Int,
         offset: Int
     ) async throws -> (photos: [GlobalPhotoResult], total: Int)
-    func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData
-    func updateAlbum(albumId: String, criteria: FilterGroup) throws
-    func deleteAlbum(albumId: String) throws
+    func createAlbum(name: String, criteria: FilterGroup) async throws -> SmartAlbumData
+    func updateAlbum(albumId: String, criteria: FilterGroup) async throws
+    func deleteAlbum(albumId: String) async throws
 
     /// TS: assetApi.candidates / acceptCandidate / rejectCandidate / volumes / relinkRoot。
     func listAssetCandidates() throws -> [AssetLinkCandidateData]
@@ -128,7 +128,7 @@ public protocol LibraryDataProvider {
 }
 
 public extension LibraryDataProvider {
-    func listAlbums() throws -> [SmartAlbumData] { [] }
+    func listAlbums() async throws -> [SmartAlbumData] { [] }
 
     func albumPhotos(
         albumId: String,
@@ -138,15 +138,15 @@ public extension LibraryDataProvider {
         ([], 0)
     }
 
-    func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData {
+    func createAlbum(name: String, criteria: FilterGroup) async throws -> SmartAlbumData {
         throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
     }
 
-    func updateAlbum(albumId: String, criteria: FilterGroup) throws {
+    func updateAlbum(albumId: String, criteria: FilterGroup) async throws {
         throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
     }
 
-    func deleteAlbum(albumId: String) throws {
+    func deleteAlbum(albumId: String) async throws {
         throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
     }
 
@@ -205,8 +205,8 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         return (photos, total)
     }
 
-    public func listAlbums() throws -> [SmartAlbumData] {
-        let response = try router.execute("album.list", params: [:])
+    public func listAlbums() async throws -> [SmartAlbumData] {
+        let response = try await client.executeAsync("album.list", params: [:])
         return try response.decoded(as: [SmartAlbumData].self)
     }
 
@@ -226,23 +226,23 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         return (photos, total)
     }
 
-    public func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData {
-        let response = try router.execute("album.create", params: [
+    public func createAlbum(name: String, criteria: FilterGroup) async throws -> SmartAlbumData {
+        let response = try await client.executeAsync("album.create", params: [
             "name": .string(name),
             "criteria": try JSONValue(from: criteria),
         ])
         return try response.decoded(as: SmartAlbumData.self)
     }
 
-    public func updateAlbum(albumId: String, criteria: FilterGroup) throws {
-        _ = try router.execute("album.update", params: [
+    public func updateAlbum(albumId: String, criteria: FilterGroup) async throws {
+        _ = try await client.executeAsync("album.update", params: [
             "albumId": .string(albumId),
             "criteria": try JSONValue(from: criteria),
         ])
     }
 
-    public func deleteAlbum(albumId: String) throws {
-        _ = try router.execute("album.delete", params: [
+    public func deleteAlbum(albumId: String) async throws {
+        _ = try await client.executeAsync("album.delete", params: [
             "albumId": .string(albumId),
             "confirmed": .bool(true),
         ])
@@ -351,7 +351,7 @@ public final class LibraryViewModel {
     func load() async {
         phase = .loading
         await reloadSessions()
-        reloadSupport()
+        await reloadSupport()
         await reload()
     }
 
@@ -365,8 +365,8 @@ public final class LibraryViewModel {
 
     /// 加载 Library 页面除照片分页外的三组支持数据。
     /// 任一组失败不会阻塞图库主查询，但会保留可见错误，避免静默降级。
-    public func reloadSupport() {
-        do { albums = try provider.listAlbums() }
+    public func reloadSupport() async {
+        do { albums = try await provider.listAlbums() }
         catch { actionError = Self.message(for: error) }
         do { assetCandidates = try provider.listAssetCandidates() }
         catch { actionError = Self.message(for: error) }
@@ -391,22 +391,22 @@ public final class LibraryViewModel {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         await performSupportMutation {
-            _ = try self.provider.createAlbum(
+            _ = try await self.provider.createAlbum(
                 name: trimmed,
                 criteria: buildLibraryCriteria(self.committed)
             )
-            self.albums = try self.provider.listAlbums()
+            self.albums = try await self.provider.listAlbums()
         }
     }
 
     public func updateSelectedAlbum() async {
         guard let albumId = selectedAlbumId else { return }
         await performSupportMutation {
-            try self.provider.updateAlbum(
+            try await self.provider.updateAlbum(
                 albumId: albumId,
                 criteria: buildLibraryCriteria(self.committed)
             )
-            self.albums = try self.provider.listAlbums()
+            self.albums = try await self.provider.listAlbums()
             await self.reload()
         }
     }
@@ -414,9 +414,9 @@ public final class LibraryViewModel {
     public func deleteSelectedAlbum() async {
         guard let albumId = selectedAlbumId else { return }
         await performSupportMutation {
-            try self.provider.deleteAlbum(albumId: albumId)
+            try await self.provider.deleteAlbum(albumId: albumId)
             self.selectedAlbumId = nil
-            self.albums = try self.provider.listAlbums()
+            self.albums = try await self.provider.listAlbums()
             await self.reload()
         }
     }
@@ -623,7 +623,7 @@ public final class LibraryViewModel {
 
     /// 就地刷新当前页（react-query invalidate 语义：不跳页、不闪 loading）。
     func refreshOnEvent() async {
-        reloadSupport()
+        await reloadSupport()
         fetchTask?.cancel()
         fetchTask = Task { [weak self] in
             guard let self else { return }
