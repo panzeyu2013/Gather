@@ -32,10 +32,11 @@
 | Store 实现（10/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback（完整：outbox + writeback_items）（端口自对应 Repo 测试）：111 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)` 与 `sqlValue`；Culling 类型化错误；Similarity 缓存独立 actor；Metadata/SmartAlbum/WritebackItemInput DTO 迁入 Store（attributes 改 `[String: JSONValue]`） |
 | Store 实现（11/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback / Asset（只读 + relink/候选/对账 + backfill 全量）已完成：131 用例全绿；`AssetStoreError` 取代字符串错误；relink 回调 sink 改为返回值；`StoreSupport`/`PhotoFormats` 为共享单一来源 |
 | Store 实现（12/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback / Asset / Person 已完成：158 用例全绿；PersonStore 含 merge（关键词并集 + 嵌入/照片迁移）、Float32 BLOB 嵌入往返与 OR-REPLACE、`reconcileSession`（角色绑定 → 桥接增删）、getPhotosWithDetails |
-| Store 实现（15/16） | ✅ | 上批 14 个 Store + NavigationStore（navigation_groups 查询/插入/删除/自动组替换 + 拍摄行查询：metadata/hash/最新 technical_quality 800 分块；分组与指纹仍在服务层） |
-| 其余 Store（Duplicate + Indexer/FilterEngine 读 SQL；SchemaVersion 由 StoreMigrator 承担，不再单列 Store） | 待办 | R1 后续 |
+| Store 实现（16/16） | ✅ | 15 个 Store + DuplicateStore（校验列/视觉 hash 落库、精确分组、分组重建幂等、决议与照片状态重算）；Store 层协议面完成 |
+| R1 收尾：调用点迁移 + 删除旧层 | 🔶 | Store 已覆盖 16 个聚合，但旧 `Database/Repositories/**`（Asset 83/Face 60/Person 37/…）与 `Services/**` 内联 SQL（Indexer 27/Duplicate 21/Culling 12/Navigation 9/Similarity 8/WorkspaceStatus 7/Session 7/Template 6…）仍在；下一步：逐子系统把调用点切到 Store 并在同一提交删除旧实现 + 旧测试 |
+| 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
-> 当前 core 全量：**970 tests / 128 suites 全绿**（789 oracle + 181 新增）。
+> 当前 core 全量：**975 tests / 129 suites 全绿**（789 oracle + 186 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
