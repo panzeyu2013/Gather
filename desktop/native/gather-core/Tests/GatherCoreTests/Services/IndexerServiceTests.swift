@@ -59,7 +59,7 @@ private func makeHarness(
     let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
     let indexer = IndexerService(
         connection: db,
-        sessionRepo: sessionRepo,
+        sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         assetStore: assetStore,
         getDimensions: getDimensions,
@@ -348,7 +348,7 @@ struct CancelledScanIndexSeqTests {
         let lastBatchPath = root + "/p8.jpg"
         let indexer = IndexerService(
             connection: db,
-            sessionRepo: sessionRepo,
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             assetStore: assetStore,
             getDimensions: { path in

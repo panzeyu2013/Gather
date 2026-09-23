@@ -262,7 +262,7 @@ public final class SessionCommandRouter: CommandRouter {
             writebackStore: writebackStore,
             xmp: xmp,
             photoStore: photoStore,
-            sessionRepo: sessionRepo,
+            sessionStore: sessionStore,
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,
             metadataStore: metadataStore,
@@ -345,7 +345,7 @@ public final class SessionCommandRouter: CommandRouter {
             ),
             indexerService: IndexerService(
                 connection: db,
-                sessionRepo: sessionRepo,
+                sessionStore: sessionStore,
                 photoStore: photoStore,
                 assetStore: assetStore,
                 getDimensions: { path in

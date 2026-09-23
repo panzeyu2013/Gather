@@ -78,7 +78,7 @@ public final class IndexerService {
     public typealias SettingReader = (String, String) -> String
 
     private let connection: DBConnection
-    private let sessionRepo: SessionRepo
+    private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
     private let assetStore: any AssetStore
     private let getDimensions: DimensionsProvider
@@ -92,14 +92,14 @@ public final class IndexerService {
 
     public init(
         connection: DBConnection,
-        sessionRepo: SessionRepo,
+        sessionStore: any SessionStore,
         photoStore: any PhotoStore,
         assetStore: any AssetStore,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
         getSetting: @escaping SettingReader = { _, defaultValue in defaultValue }
     ) {
         self.connection = connection
-        self.sessionRepo = sessionRepo
+        self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.assetStore = assetStore
         self.getDimensions = getDimensions
@@ -191,7 +191,7 @@ public final class IndexerService {
         requestedPaths: [String]? = nil,
         context: JobRunContext? = nil
     ) async throws -> IndexScanResult {
-        let session = try self.sessionRepo.get(id: sessionId)
+        let session = try await self.sessionStore.get(id: sessionId)
         guard let session else { throw IndexerServiceError.sessionNotFound }
         guard !session.sourcePath.isEmpty else { throw IndexerServiceError.noSourcePath }
         let excludedRoots = managedCacheRoots()
@@ -576,14 +576,13 @@ public final class IndexerService {
                 || !missing.isEmpty
             // Store 读在旧事务之外（跨连接不共享事务）。
             let finalCount = try await self.photoStore.countBySession(sessionId: sessionId)
-            try self.connection.transaction {
-                try self.sessionRepo.updatePhotoCount(id: sessionId, count: finalCount)
-                if committedChanges {
-                    _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)
-                }
+            // Store 写不参与旧事务：两处进度写直接经 Store 顺序执行。
+            try await self.sessionStore.updatePhotoCount(id: sessionId, count: finalCount)
+            if committedChanges {
+                try await self.sessionStore.bumpIndexSeq(id: sessionId)
             }
             if finalCount > 0 && session.status == "draft" {
-                try self.sessionRepo.updateStatus(id: sessionId, status: "photos_loaded")
+                try await self.sessionStore.updateStatus(id: sessionId, status: "photos_loaded")
             }
             if !missing.isEmpty {
                 let fileIds = missing.compactMap(\.assetFileId)
@@ -612,9 +611,7 @@ public final class IndexerService {
                 || !relinkedPhotoIds.isEmpty
                 || !missing.isEmpty
             if committedChanges {
-                try? self.connection.transaction {
-                    _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)
-                }
+                try? await self.sessionStore.bumpIndexSeq(id: sessionId)
             }
             throw error
         }

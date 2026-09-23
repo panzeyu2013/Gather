@@ -56,7 +56,7 @@ public final class WritebackService {
     private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
     private let photoStore: any PhotoStore
-    private let sessionRepo: SessionRepo
+    private let sessionStore: any SessionStore
     private let metadataSync: any MetadataSyncPort
     private let metadataMutations: any MetadataMutationPort
     /// metadata_keyword_origins 的唯一入口（Store；nil 时不记录/不撤销来源）。
@@ -67,7 +67,7 @@ public final class WritebackService {
         writebackStore: any WritebackStore,
         xmp: any XMPProvider,
         photoStore: any PhotoStore,
-        sessionRepo: SessionRepo,
+        sessionStore: any SessionStore,
         metadataSync: any MetadataSyncPort,
         metadataMutations: any MetadataMutationPort,
         metadataStore: (any MetadataStore)? = nil,
@@ -76,7 +76,7 @@ public final class WritebackService {
         self.writebackStore = writebackStore
         self.xmp = xmp
         self.photoStore = photoStore
-        self.sessionRepo = sessionRepo
+        self.sessionStore = sessionStore
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
         self.metadataStore = metadataStore
@@ -258,8 +258,8 @@ public final class WritebackService {
 
         try await writebackStore.saveWritebackItems(sessionId: sessionId, module: module, items: items)
         let failedCount = try await writebackStore.failedWritebackCount(sessionId: sessionId, module: module)
-        try sessionRepo.updateFailedWritebackCount(id: sessionId, count: failedCount)
-        try sessionRepo.updateWritebackStatus(id: sessionId, status: failedCount > 0 ? "partial" : "idle")
+        try await sessionStore.updateFailedWritebackCount(id: sessionId, count: failedCount)
+        try await sessionStore.updateWritebackStatus(id: sessionId, status: failedCount > 0 ? "partial" : "idle")
         let savedRows = try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: "pending")
 
         let previewItems = try savedRows.map { row -> WritebackItem in
@@ -447,8 +447,8 @@ public final class WritebackService {
         }
 
         let failedCount = try await writebackStore.failedWritebackCount(sessionId: sessionId, module: module)
-        try sessionRepo.updateWritebackStatus(id: sessionId, status: failedCount > 0 ? "partial" : "done")
-        try sessionRepo.updateFailedWritebackCount(id: sessionId, count: failedCount)
+        try await sessionStore.updateWritebackStatus(id: sessionId, status: failedCount > 0 ? "partial" : "done")
+        try await sessionStore.updateFailedWritebackCount(id: sessionId, count: failedCount)
 
         return WritebackResult(
             totalAffected: written + failed + skipped,
@@ -530,7 +530,7 @@ public final class WritebackService {
         }
         _ = try await metadataSync.confirmSync(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
         try await writebackStore.markWritebackWrittenAsSynced(sessionId: sessionId, module: module)
-        try sessionRepo.updateWritebackStatus(
+        try await sessionStore.updateWritebackStatus(
             id: sessionId,
             status: try await writebackStore.failedWritebackCount(sessionId: sessionId, module: nil) > 0
                 ? "partial" : "done"
@@ -583,7 +583,7 @@ public final class WritebackService {
             ids: syncedItems.map(\.id)
         )
         let remainingItems = try await writebackStore.writebackItems(sessionId: sessionId, module: nil, status: nil)
-        try sessionRepo.updateWritebackStatus(
+        try await sessionStore.updateWritebackStatus(
             id: sessionId,
             status: remainingItems.isEmpty
                 ? "cleaned"
