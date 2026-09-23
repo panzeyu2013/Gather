@@ -115,6 +115,74 @@ public protocol FaceStore: Sendable {
 
     // 缩略图目录
     func faceThumbnailDir() async throws -> String
+
+    // MARK: 聚类
+
+    func updateClusterThumbnail(clusterId: Int64, thumbnailPath: String) async throws
+    func saveClusters(sessionId: String, clusters: [FaceClusterInput]) async throws -> [Int64]
+    func clusters(sessionId: String, includeMembers: Bool) async throws -> [FaceClusterRecord]
+    func clusterThumbnailPath(clusterId: Int64) async throws -> String
+    func clusterSessionId(clusterId: Int64) async throws -> String?
+    func clusterMembers(clusterId: Int64) async throws -> [ClusterMemberLite]
+    func thumbnailPaths(sessionId: String) async throws -> [String]
+    func mergeClusters(sourceId: Int64, targetId: Int64) async throws
+    func restoreMerge(
+        sourceId: Int64,
+        targetId: Int64,
+        sessionId: String,
+        sourceMemberIds: [Int64],
+        sourceMemberCount: Int64,
+        sourceBinding: FaceBindingData?
+    ) async throws
+    func deleteClustersBySession(_ sessionId: String) async throws
+    func removeMemberFromCluster(clusterId: Int64, memberId: Int64) async throws -> Bool
+
+    // MARK: 绑定
+
+    func updateBinding(clusterId: Int64, roleName: String, keywords: [String]) async throws
+    func deleteBinding(clusterId: Int64) async throws
+    func restoreBinding(clusterId: Int64, sessionId: String, roleName: String, keywords: [String]) async throws
+    func bindingsBySession(_ sessionId: String) async throws -> [FaceBindingDetail]
+}
+
+public struct FaceClusterRecord: Decodable, Equatable, Sendable {
+    public let id: Int64
+    public let sessionId: String
+    public let label: String
+    public let memberCount: Int64
+    public let status: String
+    public let thumbnailBase64: String
+    public let thumbnailPath: String
+    public var members: [FaceClusterMemberRecord]?
+    public var binding: FaceBindingData?
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, status
+        case sessionId = "session_id"
+        case memberCount = "member_count"
+        case thumbnailBase64 = "thumbnail_base64"
+        case thumbnailPath = "thumbnail_path"
+    }
+}
+
+public struct FaceClusterMemberRecord: Decodable, Equatable, Sendable {
+    public let id: Int64
+    public let clusterId: Int64
+    public let sessionId: String
+    public let photoId: String
+    public let photoPath: String
+    public let bbox: String
+    public let confidence: Double
+    public let observationId: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case id, bbox, confidence
+        case clusterId = "cluster_id"
+        case sessionId = "session_id"
+        case photoId = "photo_id"
+        case photoPath = "photo_path"
+        case observationId = "observation_id"
+    }
 }
 
 public struct SQLiteFaceStore: FaceStore {
@@ -454,5 +522,416 @@ public struct SQLiteFaceStore: FaceStore {
     /// TS: Buffer.from(new Float32Array(embedding).buffer)。
     internal static func embeddingData(_ floats: [Float]) -> Data {
         floats.withUnsafeBytes { Data($0) }
+    }
+}
+
+// MARK: - 聚类与绑定实现
+
+public extension SQLiteFaceStore {
+    func updateClusterThumbnail(clusterId: Int64, thumbnailPath: String) async throws {
+        try await database.run(
+            "UPDATE face_clusters SET thumbnail_path = ? WHERE id = ?",
+            [.text(thumbnailPath), .int(clusterId)]
+        )
+    }
+
+    func saveClusters(sessionId: String, clusters: [FaceClusterInput]) async throws -> [Int64] {
+        var ids: [Int64] = []
+        try await database.transaction { db in
+            for cluster in clusters {
+                try db.run(
+                    """
+                    INSERT INTO face_clusters
+                      (session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
+                    VALUES (?, ?, ?, 'unbound', '', '')
+                    """,
+                    [.text(sessionId), .text(cluster.label), .int(Int64(cluster.members.count))]
+                )
+                let clusterId = db.lastInsertRowID
+                ids.append(clusterId)
+                for member in cluster.members {
+                    let bboxJSON = try JSONValue.stringify(
+                        JSONValue.array(member.bbox.map { JSONValue.real($0) })
+                    )
+                    try db.run(
+                        """
+                        INSERT INTO face_cluster_members
+                          (cluster_id, session_id, photo_id, bbox, confidence, observation_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            .int(clusterId), .text(sessionId), .text(member.photoId),
+                            .text(bboxJSON), .real(member.confidence),
+                            member.observationId.map { SQLiteValue.int($0) } ?? .null,
+                        ]
+                    )
+                }
+            }
+        }
+        return ids
+    }
+
+    func clusters(sessionId: String, includeMembers: Bool = false) async throws -> [FaceClusterRecord] {
+        let records = try await database.query(
+            "SELECT * FROM face_clusters WHERE session_id = ? AND member_count > 0 ORDER BY id",
+            [.text(sessionId)]
+        ).map { try $0.decode(FaceClusterRecord.self) }
+        if !includeMembers || records.isEmpty { return records }
+        let clusterIds = records.map(\.id)
+
+        var membersByCluster: [Int64: [FaceClusterMemberRecord]] = [:]
+        for chunk in clusterIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT fm.id, fm.cluster_id, fm.session_id, fm.photo_id,
+                       p.filepath AS photo_path, fm.bbox, fm.confidence, fm.observation_id
+                FROM face_cluster_members fm
+                JOIN photos p ON fm.photo_id = p.id
+                WHERE fm.cluster_id IN (\(placeholders))
+                ORDER BY fm.id
+                """,
+                chunk.map { .int($0) }
+            )
+            for row in rows {
+                let member = try row.decode(FaceClusterMemberRecord.self)
+                membersByCluster[member.clusterId, default: []].append(member)
+            }
+        }
+
+        var bindingByCluster: [Int64: (roleName: String, keywords: [String])] = [:]
+        for chunk in clusterIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                "SELECT cluster_id, role_name, keywords FROM role_bindings WHERE cluster_id IN (\(placeholders))",
+                chunk.map { .int($0) }
+            )
+            for row in rows {
+                guard let clusterId = row.int("cluster_id") else { continue }
+                bindingByCluster[clusterId] = (
+                    roleName: row.text("role_name") ?? "",
+                    keywords: ((try? JSONValue.parse(row.text("keywords") ?? "[]")) as JSONValue?)?.arrayValue ?? []
+                )
+            }
+        }
+
+        return records.map { record in
+            var cluster = record
+            cluster.members = membersByCluster[record.id] ?? []
+            if let binding = bindingByCluster[record.id] {
+                cluster.binding = FaceBindingData(
+                    clusterId: String(record.id),
+                    roleName: binding.roleName,
+                    keywords: binding.keywords
+                )
+            }
+            return cluster
+        }
+    }
+
+    func clusterThumbnailPath(clusterId: Int64) async throws -> String {
+        try await database.queryOne(
+            "SELECT thumbnail_path FROM face_clusters WHERE id = ?",
+            [.int(clusterId)]
+        )?.text("thumbnail_path") ?? ""
+    }
+
+    func clusterSessionId(clusterId: Int64) async throws -> String? {
+        try await database.queryOne(
+            "SELECT session_id FROM face_clusters WHERE id = ?",
+            [.int(clusterId)]
+        )?.text("session_id")
+    }
+
+    func clusterMembers(clusterId: Int64) async throws -> [ClusterMemberLite] {
+        try await database.query(
+            "SELECT photo_id, bbox, confidence FROM face_cluster_members WHERE cluster_id = ?",
+            [.int(clusterId)]
+        ).map {
+            ClusterMemberLite(
+                photoId: $0.text("photo_id") ?? "",
+                bbox: Self.parseBbox($0.text("bbox") ?? ""),
+                confidence: $0.double("confidence") ?? 0
+            )
+        }
+    }
+
+    func thumbnailPaths(sessionId: String) async throws -> [String] {
+        try await database.query(
+            "SELECT thumbnail_path FROM face_clusters WHERE session_id = ? AND thumbnail_path != '' AND member_count > 0",
+            [.text(sessionId)]
+        ).compactMap { $0.text("thumbnail_path") }
+    }
+
+    func mergeClusters(sourceId: Int64, targetId: Int64) async throws {
+        let sourcePath = try await clusterThumbnailPath(clusterId: sourceId)
+        try await database.transaction { db in
+            let sourceMembers = try db.scalarInt(
+                "SELECT COUNT(*) AS count FROM face_cluster_members WHERE cluster_id = ?",
+                [.int(sourceId)]
+            ) ?? 0
+            try db.run(
+                "UPDATE face_cluster_members SET cluster_id = ? WHERE cluster_id = ?",
+                [.int(targetId), .int(sourceId)]
+            )
+            try db.run(
+                "UPDATE face_clusters SET member_count = member_count + ? WHERE id = ?",
+                [.int(sourceMembers), .int(targetId)]
+            )
+            try db.run("DELETE FROM role_bindings WHERE cluster_id = ?", [.int(sourceId)])
+            try db.run(
+                "UPDATE face_clusters SET member_count = 0, status = ? WHERE id = ?",
+                [.text("unbound"), .int(sourceId)]
+            )
+        }
+        deleteThumbnailFile(sourcePath)
+    }
+
+    func restoreMerge(
+        sourceId: Int64,
+        targetId: Int64,
+        sessionId: String,
+        sourceMemberIds: [Int64],
+        sourceMemberCount: Int64,
+        sourceBinding: FaceBindingData?
+    ) async throws {
+        try await database.transaction { db in
+            for memberId in sourceMemberIds {
+                try db.run(
+                    "UPDATE face_cluster_members SET cluster_id = ? WHERE id = ?",
+                    [.int(sourceId), .int(memberId)]
+                )
+            }
+            let targetCount = try db.scalarInt(
+                "SELECT COUNT(*) AS count FROM face_cluster_members WHERE cluster_id = ?",
+                [.int(targetId)]
+            ) ?? 0
+            try db.run(
+                "UPDATE face_clusters SET member_count = ? WHERE id = ?",
+                [.int(sourceMemberCount), .int(sourceId)]
+            )
+            try db.run(
+                "UPDATE face_clusters SET member_count = ?, status = ? WHERE id = ?",
+                [.int(max(0, targetCount)), .text("unbound"), .int(targetId)]
+            )
+            if let sourceBinding {
+                try db.run(
+                    """
+                    INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [
+                        .int(sourceId), .text(sessionId), .text(sourceBinding.roleName),
+                        .text(try JSONValue.stringify(
+                            JSONValue.array(sourceBinding.keywords.map { JSONValue.string($0) })
+                        )),
+                    ]
+                )
+                try db.run("UPDATE face_clusters SET status = 'bound' WHERE id = ?", [.int(sourceId)])
+            }
+        }
+    }
+
+    func deleteClustersBySession(_ sessionId: String) async throws {
+        let paths = try await thumbnailPaths(sessionId: sessionId)
+        try await database.transaction { db in
+            try db.run("DELETE FROM face_cluster_members WHERE session_id = ?", [.text(sessionId)])
+            try db.run("DELETE FROM role_bindings WHERE session_id = ?", [.text(sessionId)])
+            try db.run("DELETE FROM face_clusters WHERE session_id = ?", [.text(sessionId)])
+        }
+        for path in paths { deleteThumbnailFile(path) }
+    }
+
+    func removeMemberFromCluster(clusterId: Int64, memberId: Int64) async throws -> Bool {
+        let memberCount = try await database.scalarInt(
+            "SELECT COUNT(*) AS count FROM face_cluster_members WHERE cluster_id = ?",
+            [.int(clusterId)]
+        ) ?? 0
+        let thumbnailPathToDelete = memberCount == 1 ? try await clusterThumbnailPath(clusterId: clusterId) : ""
+
+        let deleted = try await database.transaction { db -> Bool in
+            let removed = try db.run(
+                "DELETE FROM face_cluster_members WHERE cluster_id = ? AND id = ?",
+                [.int(clusterId), .int(memberId)]
+            )
+            if removed == 0 { return false }
+            let remaining = try db.scalarInt(
+                "SELECT COUNT(*) AS count FROM face_cluster_members WHERE cluster_id = ?",
+                [.int(clusterId)]
+            ) ?? 0
+            if remaining == 0 {
+                try db.run("DELETE FROM role_bindings WHERE cluster_id = ?", [.int(clusterId)])
+                try db.run("DELETE FROM face_clusters WHERE id = ?", [.int(clusterId)])
+            } else {
+                try db.run(
+                    "UPDATE face_clusters SET member_count = ? WHERE id = ?",
+                    [.int(remaining), .int(clusterId)]
+                )
+            }
+            return true
+        }
+        if deleted { deleteThumbnailFile(thumbnailPathToDelete) }
+        return deleted
+    }
+
+    // MARK: 绑定
+
+    func updateBinding(clusterId: Int64, roleName: String, keywords: [String]) async throws {
+        let keywordsJSON = try JSONValue.stringify(JSONValue.array(keywords.map { JSONValue.string($0) }))
+        try await database.transaction { db in
+            let existing = try db.queryOne("SELECT id FROM role_bindings WHERE cluster_id = ?", [.int(clusterId)])
+            if existing != nil {
+                try db.run(
+                    "UPDATE role_bindings SET role_name = ?, keywords = ? WHERE cluster_id = ?",
+                    [.text(roleName), .text(keywordsJSON), .int(clusterId)]
+                )
+            } else {
+                let sessionId = try db.queryOne("SELECT session_id FROM face_clusters WHERE id = ?", [.int(clusterId)])?
+                    .text("session_id") ?? ""
+                try db.run(
+                    "INSERT INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)",
+                    [.int(clusterId), .text(sessionId), .text(roleName), .text(keywordsJSON)]
+                )
+            }
+            try db.run("UPDATE face_clusters SET status = 'bound' WHERE id = ?", [.int(clusterId)])
+        }
+    }
+
+    func deleteBinding(clusterId: Int64) async throws {
+        try await database.transaction { db in
+            try db.run("DELETE FROM role_bindings WHERE cluster_id = ?", [.int(clusterId)])
+            try db.run("UPDATE face_clusters SET status = 'unbound' WHERE id = ?", [.int(clusterId)])
+        }
+    }
+
+    func restoreBinding(clusterId: Int64, sessionId: String, roleName: String, keywords: [String]) async throws {
+        let keywordsJSON = try JSONValue.stringify(JSONValue.array(keywords.map { JSONValue.string($0) }))
+        try await database.transaction { db in
+            try db.run(
+                "INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)",
+                [.int(clusterId), .text(sessionId), .text(roleName), .text(keywordsJSON)]
+            )
+            try db.run("UPDATE face_clusters SET status = 'bound' WHERE id = ?", [.int(clusterId)])
+        }
+    }
+
+    func bindingsBySession(_ sessionId: String) async throws -> [FaceBindingDetail] {
+        let bindings = try await database.query(
+            "SELECT cluster_id, role_name, keywords FROM role_bindings WHERE session_id = ?",
+            [.text(sessionId)]
+        )
+        if bindings.isEmpty { return [] }
+        let clusterIds = bindings.compactMap { $0.int("cluster_id") }
+        var memberPhotoIdsByCluster: [Int64: [String]] = [:]
+        for chunk in clusterIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT DISTINCT cluster_id, photo_id FROM face_cluster_members
+                WHERE cluster_id IN (\(placeholders))
+                """,
+                chunk.map { .int($0) }
+            )
+            for row in rows {
+                guard let clusterId = row.int("cluster_id") else { continue }
+                memberPhotoIdsByCluster[clusterId, default: []].append(row.text("photo_id") ?? "")
+            }
+        }
+        return bindings.map { row in
+            let clusterId = row.int("cluster_id") ?? 0
+            return FaceBindingDetail(
+                clusterId: clusterId,
+                roleName: row.text("role_name") ?? "",
+                keywords: ((try? JSONValue.parse(row.text("keywords") ?? "[]")) as JSONValue?)?.arrayValue ?? [],
+                memberPhotoIds: memberPhotoIdsByCluster[clusterId] ?? []
+            )
+        }
+    }
+
+    // MARK: 缩略图文件
+
+    private func deleteThumbnailFile(_ thumbnailPath: String) {
+        if thumbnailPath.isEmpty { return }
+        let fullPath = TSPath.join([resolveFaceThumbnailDir(), thumbnailPath])
+        try? FileManager.default.removeItem(atPath: fullPath)
+    }
+
+    internal static func parseBbox(_ raw: String) -> [Double] {
+        guard let value = try? JSONValue.parse(raw), case .array(let items) = value else { return [] }
+        return items.compactMap {
+            if case .number(let v) = $0 { return v }
+            return nil
+        }
+    }
+}
+
+// MARK: - 复用型 DTO（从 Database/Repositories/FaceRepo.swift 迁入，R1 单一来源）
+
+/// TS FaceClusterInput.members 元素。
+public struct FaceClusterMemberInput {
+    public let photoId: String
+    public let photoPath: String
+    public let bbox: [Double]
+    public let confidence: Double
+    public let observationId: Int64?
+
+    public init(photoId: String, photoPath: String, bbox: [Double], confidence: Double, observationId: Int64? = nil) {
+        self.photoId = photoId
+        self.photoPath = photoPath
+        self.bbox = bbox
+        self.confidence = confidence
+        self.observationId = observationId
+    }
+}
+
+/// TS FaceClusterInput。
+public struct FaceClusterInput {
+    public let label: String
+    public let members: [FaceClusterMemberInput]
+
+    public init(label: String, members: [FaceClusterMemberInput]) {
+        self.label = label
+        self.members = members
+    }
+}
+
+/// 绑定信息（TS FaceClusterRow.binding）。
+public struct FaceBindingData: Equatable, Sendable {
+    public let clusterId: String
+    public let roleName: String
+    public let keywords: [String]
+
+    public init(clusterId: String, roleName: String, keywords: [String]) {
+        self.clusterId = clusterId
+        self.roleName = roleName
+        self.keywords = keywords
+    }
+}
+
+/// getClusterMembers 的成员投影。
+public struct ClusterMemberLite {
+    public let photoId: String
+    public let bbox: [Double]
+    public let confidence: Double
+
+    public init(photoId: String, bbox: [Double], confidence: Double) {
+        self.photoId = photoId
+        self.bbox = bbox
+        self.confidence = confidence
+    }
+}
+
+/// getBindingsBySession 的绑定详情。
+public struct FaceBindingDetail {
+    public let clusterId: Int64
+    public let roleName: String
+    public let keywords: [String]
+    public let memberPhotoIds: [String]
+
+    public init(clusterId: Int64, roleName: String, keywords: [String], memberPhotoIds: [String]) {
+        self.clusterId = clusterId
+        self.roleName = roleName
+        self.keywords = keywords
+        self.memberPhotoIds = memberPhotoIds
     }
 }

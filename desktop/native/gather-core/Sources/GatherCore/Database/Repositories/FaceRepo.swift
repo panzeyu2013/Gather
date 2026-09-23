@@ -104,13 +104,6 @@ public struct RoleBindingRow {
     }
 }
 
-/// 绑定信息（TS FaceClusterRow.binding）。
-public struct FaceBindingData: Equatable, Sendable {
-    public let clusterId: String
-    public let roleName: String
-    public let keywords: [String]
-}
-
 /// TS FaceObservationInput。
 public struct FaceObservationInput {
     public let photoId: String
@@ -149,33 +142,8 @@ public struct FaceObservationInput {
     }
 }
 
-/// TS FaceClusterInput.members 元素。
-public struct FaceClusterMemberInput {
-    public let photoId: String
-    public let photoPath: String
-    public let bbox: [Double]
-    public let confidence: Double
-    public let observationId: Int64?
-
-    public init(photoId: String, photoPath: String, bbox: [Double], confidence: Double, observationId: Int64? = nil) {
-        self.photoId = photoId
-        self.photoPath = photoPath
-        self.bbox = bbox
-        self.confidence = confidence
-        self.observationId = observationId
-    }
-}
-
-/// TS FaceClusterInput。
-public struct FaceClusterInput {
-    public let label: String
-    public let members: [FaceClusterMemberInput]
-
-    public init(label: String, members: [FaceClusterMemberInput]) {
-        self.label = label
-        self.members = members
-    }
-}
+// 复用型 DTO（FaceClusterMemberInput / FaceClusterInput / FaceBindingData / ClusterMemberLite /
+// FaceBindingDetail）已迁至 Store/FaceStore.swift（R1 单一来源）。
 
 /// getAnalysisStates 的映射值。
 public struct FaceAnalysisState: Equatable, Sendable {
@@ -196,21 +164,6 @@ public struct FaceReuseTarget {
 public struct ReuseResult: Equatable, Sendable {
     public let reused: Bool
     public let faceCount: Int64
-}
-
-/// getClusterMembers 的成员投影。
-public struct ClusterMemberLite {
-    public let photoId: String
-    public let bbox: [Double]
-    public let confidence: Double
-}
-
-/// getBindingsBySession 的绑定详情。
-public struct FaceBindingDetail {
-    public let clusterId: Int64
-    public let roleName: String
-    public let keywords: [String]
-    public let memberPhotoIds: [String]
 }
 
 /// 人脸仓库（TS FaceRepository）。

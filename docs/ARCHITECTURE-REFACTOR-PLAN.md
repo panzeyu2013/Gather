@@ -32,10 +32,10 @@
 | Store 实现（10/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback（完整：outbox + writeback_items）（端口自对应 Repo 测试）：111 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)` 与 `sqlValue`；Culling 类型化错误；Similarity 缓存独立 actor；Metadata/SmartAlbum/WritebackItemInput DTO 迁入 Store（attributes 改 `[String: JSONValue]`） |
 | Store 实现（11/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback / Asset（只读 + relink/候选/对账 + backfill 全量）已完成：131 用例全绿；`AssetStoreError` 取代字符串错误；relink 回调 sink 改为返回值；`StoreSupport`/`PhotoFormats` 为共享单一来源 |
 | Store 实现（12/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback / Asset / Person 已完成：158 用例全绿；PersonStore 含 merge（关键词并集 + 嵌入/照片迁移）、Float32 BLOB 嵌入往返与 OR-REPLACE、`reconcileSession`（角色绑定 → 桥接增删）、getPhotosWithDetails |
-| FaceStore（进行中：观察/分析状态/复用） | 🔶 | 观察 CRUD/批量替换/计数、分析状态 upsert 与签名、`reuseObservations（批量 + 单照片 + 800 分块）`、缩略图目录已落地；聚类/绑定/merge 下一轮 |
+| Store 实现（13/16） | ✅ | FaceStore 已完整：观察/分析状态/复用 + 聚类（save/get/accessors/merge/restoreMerge/deleteClusters 含缩略图文件清理/成员移除）+ 绑定（update/delete/restore/list）；复用型 DTO 已从旧 Repo 迁入 Store |
 | 其余 Store（Duplicate/Template/Navigation；SchemaVersion 由 StoreMigrator 承担，不再单列 Store） | 待办 | R1 后续 |
 
-> 当前 core 全量：**953 tests / 125 suites 全绿**（789 oracle + 164 新增）。
+> 当前 core 全量：**960 tests / 126 suites 全绿**（789 oracle + 171 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
