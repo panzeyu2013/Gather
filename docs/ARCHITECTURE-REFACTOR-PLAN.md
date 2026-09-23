@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
+| R1 收尾㊲：DB.swift 迁移面测绘（下一步方案） | 🔎 | 最后一个 legacy 文件 DB.swift(352) 的消费者共 20 个 Sources 文件；调用形态集中于 connection.prepare(sql).query/get/run；Store 侧 SQLiteDatabase 已有 query/queryOne/scalarInt/run/execute（同步），缺串行化+异步包装层。关键阻塞：SessionCommandRouter.makeDefault(db:) 把 DBConnection 注入近 10 个构造点，单服务迁移需先把路由/AppContainer 改为持有同一库文件的 SQLiteDatabase。下一步：建立单一 database 持有者 → 逐服务切 database: 并 async 化（每批 2-3 个服务+双包测试）→ 删 DB.swift（DB layer 1→0）收官 R1 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
