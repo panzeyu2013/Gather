@@ -97,6 +97,17 @@ public actor SQLiteDatabase {
         self.path = path
         self.configuration = configuration
 
+        self.handle = try Self.openHandle(path: path, configuration: configuration)
+    }
+
+    /// 关闭后用同一路径/配置重新打开（迁移失败恢复备份后使用）。
+    public func reopen() throws {
+        close()
+        handle = try Self.openHandle(path: path, configuration: configuration)
+        closed = false
+    }
+
+    private static func openHandle(path: String, configuration: Configuration) throws -> OpaquePointer {
         var handle: OpaquePointer?
         var flags = configuration.readOnly
             ? SQLITE_OPEN_READONLY
@@ -108,15 +119,54 @@ public actor SQLiteDatabase {
             if let handle { sqlite3_close_v2(handle) }
             throw SQLiteFailure(phase: .open, code: rc, extended: rc, message: message)
         }
-        self.handle = opened
 
         sqlite3_busy_timeout(opened, configuration.busyTimeoutMs)
-        if !configuration.readOnly {
-            try Self.execRaw(opened, "PRAGMA journal_mode = \(configuration.journalMode)")
+        do {
+            if !configuration.readOnly {
+                try execRaw(opened, "PRAGMA journal_mode = \(configuration.journalMode)")
+            }
+            try execRaw(opened, "PRAGMA foreign_keys = \(configuration.foreignKeys ? "ON" : "OFF")")
+            if !configuration.readOnly {
+                try execRaw(opened, "PRAGMA synchronous = \(configuration.synchronous.rawValue)")
+            }
+        } catch {
+            sqlite3_close_v2(opened)
+            throw error
         }
-        try Self.execRaw(opened, "PRAGMA foreign_keys = \(configuration.foreignKeys ? "ON" : "OFF")")
-        if !configuration.readOnly {
-            try Self.execRaw(opened, "PRAGMA synchronous = \(configuration.synchronous.rawValue)")
+        return opened
+    }
+
+    /// WAL 截断检查点（迁移备份前调用）。
+    public func checkpointTruncate() throws {
+        try execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    }
+
+    /// SQLite backup API（非直接复制活动库），对应旧 DBConnection backup 语义。
+    public func backup(to destinationPath: String) throws {
+        guard !closed, let handle else {
+            throw SQLiteFailure(phase: .other, code: SQLITE_MISUSE, extended: SQLITE_MISUSE, message: "database is closed")
+        }
+        var destination: OpaquePointer?
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        guard sqlite3_open_v2(destinationPath, &destination, flags, nil) == SQLITE_OK, let destination else {
+            throw SQLiteFailure(phase: .other, code: SQLITE_CANTOPEN, extended: SQLITE_CANTOPEN, message: "无法创建迁移备份目标 \(destinationPath)")
+        }
+        defer { sqlite3_close_v2(destination) }
+
+        guard let backup = sqlite3_backup_init(destination, "main", handle, "main") else {
+            throw SQLiteFailure(phase: .other, code: SQLITE_ERROR, extended: SQLITE_ERROR, message: "sqlite3_backup_init 失败: \(String(cString: sqlite3_errmsg(destination)))")
+        }
+        defer { sqlite3_backup_finish(backup) }
+
+        var rc: Int32
+        repeat {
+            rc = sqlite3_backup_step(backup, 100)
+            if rc == SQLITE_BUSY || rc == SQLITE_LOCKED {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        } while rc == SQLITE_OK || rc == SQLITE_BUSY || rc == SQLITE_LOCKED
+        guard rc == SQLITE_DONE else {
+            throw SQLiteFailure(phase: .other, code: rc, extended: rc, message: "数据库备份失败: \(String(cString: sqlite3_errstr(rc)))")
         }
     }
 

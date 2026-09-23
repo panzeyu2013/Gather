@@ -27,10 +27,11 @@
 | DDL 迁入 Store（单一来源） | ✅ | `git mv Database/Schema.swift → Store/StoreSchema.swift`（SQL 逐字保留）；`Migrations.swift`/`MigrationTests.swift` 引用改 `StoreSchema.*` |
 | 结构漂移门禁 | ✅ | `StoreSchemaTests`：DDL 快路径与 33 步迁移链的列/类型/默认值/索引 SQL/外键指纹必须一致（当前 `d4b1fe3e5a9da77e`） |
 | 修复真实漂移（门禁抓出） | ✅ | ① `face_clusters` 补 `synced_to_library`/`match_confidence`（旧库仅由 v1 ALTER 添加，schemaSQL 缺失）；② `metadata_outbox.source_module` 列序对齐到 ALTER 追加位置（兼容旧 Repo 的位置解码） |
-| StoreMigrator（33 步注册表 + 备份/恢复/不变量） | 待办 | R1 下一步 |
+| StoreMigrator（33 步注册表） | ✅ | `Store/StoreMigrator.swift`：旧 `if` 链 33 个版本块逐字转为 `[MigrationStep]`；ADR-005 备份（空间检查/checkpoint/backup API/integrity_check/失败恢复/keep=3 淘汰）+ 迁移后 FK 与列不变量；版本号仍在步骤事务内写入 |
+| 新旧迁移器等价性验证 | ✅ | `StoreMigratorTests` 4 用例：空库双跑结构+数据摘要一致；**真实库 fixture（v32）双跑后结构与数据完全一致**；幂等；`afterMigrateHook` 抛错后回滚到 v32 且结构与原库一致 |
 | 16 个 Store 实现 + 调用点迁移 + 删旧层 | 待办 | R1 后续 |
 
-> 当前 core 全量：**802 tests / 108 suites 全绿**（789 oracle + 13 新增）。
+> 当前 core 全量：**806 tests / 109 suites 全绿**（789 oracle + 17 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---

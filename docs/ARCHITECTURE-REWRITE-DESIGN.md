@@ -162,7 +162,9 @@ public protocol PhotoStore: Sendable {
 1. ✅ 基座：SQLiteValue / SQLiteRow / SQLiteDatabase + 单测（11 tests，含多语句 DDL 修复）；
 2. ✅ StoreSchema：Schema.swift 以 git mv 迁入 Store（SQL 逐字保留）+ 结构漂移门禁（DDL 路径 vs 33 步迁移链，指纹一致）；
    - 门禁抓出并修复两处真实漂移：face_clusters 缺 synced_to_library/match_confidence；metadata_outbox.source_module 列序与 ALTER 追加位置不一致；
-3. StoreMigrator：把 Migrations.swift 的 33 步迁为 [MigrationStep]（历史 SQL 逐字保留，只改承载方式）+ 备份/恢复/不变量 + fixture v32→v33 升级测试；
+3. ✅ StoreMigrator：Migrations.swift 的 33 步迁为 [MigrationStep]（历史 SQL 逐字保留，只改承载方式）+ 备份/恢复/不变量；
+   - 双跑等价性：空库与真实库 fixture（v32）在新旧执行器下结构指纹 + 数据摘要完全一致；hook 抛错后回滚到原版本；
+   - 旧 MigrationRunner 仍在生产路径上（app 尚未切到 SQLiteDatabase），R1 收尾时一并删除。
 4. Store 逐个实现（顺序：Settings → Session → Photo → Asset → Culling → Similarity → Metadata → Writeback → Job → Face → Person → Duplicate → SmartAlbum → Template → Navigation），每个 Store 迁移旧 Repo 测试为 Store 测试；
 5. 调用点迁移：Services 从旧 Repo/DBConnection 切到 Store 协议（此步不改变 Service 的并发模型）；
 6. 删除：Database/DB.swift、Schema.swift、Migrations.swift、ImageCache.swift、Repositories/**；check-no-legacy.sh 的 raw-SQL 规则转 enforced；

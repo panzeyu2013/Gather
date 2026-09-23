@@ -6,6 +6,9 @@
 // - SCHEMA_SQL/INDEX_SQL 均为幂等 DDL（IF NOT EXISTS），迁移末尾无条件执行 INDEX_SQL（ADR-006）；
 // - 结构变化必须同时更新 StoreSchemaTests 的指纹常量。
 public enum StoreSchema {
+    /// 当前 schema 版本（旧 MigrationRunner.currentSchemaVersion 的等价物）。
+    public static let currentVersion = 33
+
     public static let schemaSQL = """
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,

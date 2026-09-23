@@ -27,6 +27,15 @@ public extension SQLiteRow {
     func blob(_ column: String) -> Data? { values[column]?.blobValue }
     func isNull(_ column: String) -> Bool { (values[column] ?? .null).isNull }
 
+    /// 位置取值：仅供 SQL 显式列出列且与下标强绑定的场景（如迁移内 PRAGMA 检查）。
+    func value(at index: Int) -> SQLiteValue? {
+        guard columnOrder.indices.contains(index) else { return nil }
+        return values[columnOrder[index]]
+    }
+
+    func text(at index: Int) -> String? { value(at: index)?.textValue }
+    func int(at index: Int) -> Int64? { value(at: index)?.intValue }
+
     /// 由某个非空列推导必填值；缺失或 NULL 时抛 SQLiteDecodingError.missingColumn。
     func requiredText(_ column: String) throws -> String {
         guard let value = values[column]?.textValue else {
