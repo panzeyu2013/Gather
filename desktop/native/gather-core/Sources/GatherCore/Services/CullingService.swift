@@ -315,34 +315,31 @@ public final class CullingService {
     private let photoRepo: PhotoRepo
     private let cullingDecisionRepo: CullingDecisionRepo
     private let similarityResultRepo: SimilarityResultRepo
-    private let metadataCacheRepo: MetadataCacheRepo
     private let metadataOutboxRepo: MetadataOutboxRepo
     private let connection: DBConnection
     private let metadataSync: any CullingSyncPort
     private let metadataMutations: any MetadataMutationPort
     private let writeback: any CullingWritebackPort
     private let cullingStore: (any CullingStore)?
-    private let metadataStore: (any MetadataStore)?
+    private let metadataStore: any MetadataStore
     private let getNumber: (String, Double) -> Double
 
     public init(
         photoRepo: PhotoRepo,
         cullingDecisionRepo: CullingDecisionRepo,
         similarityResultRepo: SimilarityResultRepo,
-        metadataCacheRepo: MetadataCacheRepo,
         metadataOutboxRepo: MetadataOutboxRepo,
         connection: DBConnection,
         metadataSync: any CullingSyncPort,
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
         cullingStore: (any CullingStore)? = nil,
-        metadataStore: (any MetadataStore)? = nil,
+        metadataStore: any MetadataStore,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue }
     ) {
         self.photoRepo = photoRepo
         self.cullingDecisionRepo = cullingDecisionRepo
         self.similarityResultRepo = similarityResultRepo
-        self.metadataCacheRepo = metadataCacheRepo
         self.metadataOutboxRepo = metadataOutboxRepo
         self.connection = connection
         self.metadataSync = metadataSync
@@ -363,7 +360,7 @@ public final class CullingService {
     ) async throws -> CullingUpdateResult {
         let base = try getUpdateContext(sessionId: sessionId)
         let sink = CullingHistorySink()
-        let singleCache = (try await metadataStore?.metadataBatch(photoIds: [photoId])) ?? []
+        let singleCache = try await metadataStore.metadataBatch(photoIds: [photoId])
         let cacheRows = Dictionary(uniqueKeysWithValues: singleCache.map { ($0.photoId, $0) })
         var result = try updateState(
             sessionId: sessionId,
@@ -397,7 +394,6 @@ public final class CullingService {
 
     /// 事务外写回元数据缓存列（rating/label 派生列）。
     public func commitCachePatches(_ patches: [CullingCachePatch]) async throws {
-        guard let metadataStore else { return }
         for patch in patches {
             if let rating = patch.rating {
                 try await metadataStore.updateRating(photoId: patch.photoId, rating: rating)
@@ -423,9 +419,9 @@ public final class CullingService {
         scope: CullingScope,
         filters: CullingFilters? = nil,
         requestedGroupId: String? = nil
-    ) throws -> [CullingAsset] {
+    ) async throws -> [CullingAsset] {
         let photos = try photoRepo.getBySession(sessionId: sessionId).map { CullingPhotoRow(row: $0) }
-        let lookup = try buildRichLookup(photos: photos, sessionId: sessionId, mode: .session)
+        let lookup = try await buildRichLookup(photos: photos, sessionId: sessionId, mode: .session)
         return filterVisible(
             assembleAssets(photos: photos, lookup: lookup),
             scope: scope,
@@ -442,7 +438,7 @@ public final class CullingService {
         requestedGroupId: String? = nil,
         afterRowId: Int64? = nil,
         limit: Int = 200
-    ) throws -> CullingPage {
+    ) async throws -> CullingPage {
         if let afterRowId, afterRowId < 1 {
             throw CullingServiceError.afterRowIdInvalid
         }
@@ -453,7 +449,7 @@ public final class CullingService {
             sessionId: sessionId, scope: scope, filters: filters,
             requestedGroupId: requestedGroupId, afterRowId: afterRowId, limit: limit
         )
-        let lookup = try buildRichLookup(photos: page.photos, sessionId: sessionId, mode: .page)
+        let lookup = try await buildRichLookup(photos: page.photos, sessionId: sessionId, mode: .page)
         let assets = filterVisible(
             assembleAssets(photos: page.photos, lookup: lookup),
             scope: scope, filters: filters, requestedGroupId: requestedGroupId
@@ -727,7 +723,7 @@ public final class CullingService {
                 .getByPhotoIds(sessionId: sessionId, photoIds: operationIds)
                 .map { ($0.photoId, $0) }
         )
-        let batchCache = (try await metadataStore?.metadataBatch(photoIds: operationIds)) ?? []
+        let batchCache = try await metadataStore.metadataBatch(photoIds: operationIds)
         let batchCacheRows = Dictionary(uniqueKeysWithValues: batchCache.map { ($0.photoId, $0) })
         try connection.transaction {
             for photoId in operationIds {
@@ -822,15 +818,10 @@ public final class CullingService {
                 .getByPhotoIds(sessionId: sessionId, photoIds: entries.map(\.photoId))
                 .map { ($0.photoId, $0) }
         )
-        let cacheRows: [String: MetadataCacheRecord]
-        if let metadataStore {
-            cacheRows = Dictionary(
-                uniqueKeysWithValues: try await metadataStore.metadataBatch(photoIds: entries.map(\.photoId))
-                    .map { ($0.photoId, $0) }
-            )
-        } else {
-            cacheRows = [:]
-        }
+        let cacheRows = Dictionary(
+            uniqueKeysWithValues: try await metadataStore.metadataBatch(photoIds: entries.map(\.photoId))
+                .map { ($0.photoId, $0) }
+        )
         for entry in entries {
             guard photoById[entry.photoId] != nil else {
                 throw CullingServiceError.photoNotInSession
@@ -1738,7 +1729,7 @@ public final class CullingService {
         photos: [CullingPhotoRow],
         sessionId: String,
         mode: LookupMode
-    ) throws -> CullingRichLookup {
+    ) async throws -> CullingRichLookup {
         let photoIds = photos.map(\.id)
         let decisions = Dictionary(
             uniqueKeysWithValues: try (mode == .session
@@ -1747,7 +1738,7 @@ public final class CullingService {
                 .map { ($0.photoId, $0) }
         )
         let cacheRows = Dictionary(
-            uniqueKeysWithValues: try metadataCacheRepo.getBatch(photoIds)
+            uniqueKeysWithValues: try await metadataStore.metadataBatch(photoIds: photoIds)
                 .map { ($0.photoId, $0) }
         )
         let outboxByPath: [String: MetadataOutboxRow]
@@ -2367,7 +2358,7 @@ private enum LookupMode {
 /// TS: CullingRichLookup。
 private struct CullingRichLookup {
     let decisions: [String: CullingDecisionRow]
-    let cacheRows: [String: MetadataCacheRow]
+    let cacheRows: [String: MetadataCacheRecord]
     let outboxByPath: [String: MetadataOutboxRow]
     let similarityMap: [String: String]
     let qualityByPhoto: [String: CullingQuality]

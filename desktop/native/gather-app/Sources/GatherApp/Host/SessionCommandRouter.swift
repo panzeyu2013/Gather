@@ -224,7 +224,6 @@ public final class SessionCommandRouter: CommandRouter {
         let xmp = xmpProvider ?? SidecarXMPProvider()
         let outboxRepo = MetadataOutboxRepo(connection: db)
         let writebackRepo = WritebackRepo(connection: db)
-        let metadataCacheRepo = MetadataCacheRepo(connection: db)
         let assetResolver = PhotoAssetResolver(connection: db, getSetting: { key, defaultValue in
             settings.value(key, default: defaultValue)
         })
@@ -295,7 +294,6 @@ public final class SessionCommandRouter: CommandRouter {
             photoRepo: photoRepo,
             cullingDecisionRepo: CullingDecisionRepo(connection: db),
             similarityResultRepo: similarityResultRepo,
-            metadataCacheRepo: metadataCacheRepo,
             metadataOutboxRepo: outboxRepo,
             connection: db,
             metadataSync: metadataSyncCoordinator,
@@ -1122,42 +1120,6 @@ public final class SessionCommandRouter: CommandRouter {
 
         // culling.ipc.ts:83-107 —— 资产分组 keyset 分页；scope 白名单 +
         // afterRowId/limit 校验（limit 缺省 200，上限 2000）。
-        case "culling.list_page":
-            let sessionId = try requiredString(params, "sessionId")
-            let scopeRaw = try requiredString(params, "scope")
-            guard let scope = CullingScope(rawValue: scopeRaw) else {
-                throw BridgeError.badParams("CULLING_INVALID_SCOPE")
-            }
-            let filters = try parseCullingFilters(params["filters"])
-            let groupId = try optionalString(params, "groupId")
-            // afterRowId 是上一页返回的 keyset 游标（仍是 photos.rowid 值）。
-            let afterRowId: Int64?
-            if let raw = params["afterRowId"] {
-                guard let value = raw.numberValue, value.isFinite,
-                      value.rounded() == value, value >= 1 else {
-                    throw BridgeError.badParams("afterRowId must be a positive integer")
-                }
-                afterRowId = Int64(value)
-            } else {
-                afterRowId = nil
-            }
-            let limit: Int
-            if let raw = params["limit"] {
-                guard let value = raw.numberValue, value.isFinite,
-                      value.rounded() == value,
-                      value >= 1, value <= Double(CullingService.pageLimitMax) else {
-                    throw BridgeError.badParams("limit must be an integer between 1 and 2000")
-                }
-                limit = Int(value)
-            } else {
-                limit = 200
-            }
-            let page = try cullingService.listPage(
-                sessionId: sessionId, scope: scope, filters: filters,
-                requestedGroupId: groupId, afterRowId: afterRowId, limit: limit)
-            return try GatherCore.JSONValue(from: page)
-
-        // culling.ipc.ts:109-116 —— 历史栈（limit 1..500 缺省 100）。
         case "culling.sync_status":
             let sessionId = try requiredString(params, "sessionId")
             let summary = try cullingService.syncStatus(sessionId: sessionId)
@@ -1169,28 +1131,6 @@ public final class SessionCommandRouter: CommandRouter {
             return .object(dict)
 
         // culling.ipc.ts:239-248 —— destructive（桥层 + 直连二次兜底）。
-        case "culling.finalize_sync":
-            guard confirmed(params) else {
-                throw BridgeError.badParams("CULLING_FINALIZE_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let summary = try awaitSync {
-                try await self.cullingService.finalizeSync(sessionId: sessionId, confirmed: true)
-            }
-            return try GatherCore.JSONValue(from: summary)
-
-        // culling.ipc.ts:250-257 —— 相似度分组（决策计数 + 成员轻投影）。
-        case "culling.groups":
-            let sessionId = try requiredString(params, "sessionId")
-            return try GatherCore.JSONValue(from: cullingService.getGroups(sessionId: sessionId))
-
-        // culling.ipc.ts:259-271 —— 旧版 renderer 单张决策；ok(true)。
-        // culling.ipc.ts:273-285 —— 旧版 renderer 批量决策；ok(true)。
-        case "culling.summary":
-            let sessionId = try requiredString(params, "sessionId")
-            return try GatherCore.JSONValue(from: cullingService.getSummary(sessionId: sessionId))
-
-        // culling.ipc.ts:349-358 —— destructive；重试失败写回项。
         case "culling.retry_failed_writeback":
             guard confirmed(params) else {
                 throw BridgeError.badParams("WRITEBACK_RETRY_CONFIRM_REQUIRED")
@@ -2058,6 +1998,105 @@ public final class SessionCommandRouter: CommandRouter {
                         _ = try await cullingService.decide(
                             sessionId: sessionId, photoId: photoId, decision: decision)
                         completion(WebResponse(ok: true, data: .bool(true)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // ── culling 读路径（R1/R2：richLookup 经 MetadataStore，异步路径）──
+
+        // culling.ipc.ts:83-107 —— 资产分组 keyset 分页；scope 白名单 +
+        // afterRowId/limit 校验（limit 缺省 200，上限 2000）。
+        case "culling.list_page":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let scopeRaw = try requiredString(params, "scope")
+                guard let scope = CullingScope(rawValue: scopeRaw) else {
+                    throw BridgeError.badParams("CULLING_INVALID_SCOPE")
+                }
+                let filters = try parseCullingFilters(params["filters"])
+                let groupId = try optionalString(params, "groupId")
+                let afterRowId: Int64?
+                if let raw = params["afterRowId"] {
+                    guard let value = raw.numberValue, value.isFinite,
+                          value.rounded() == value, value >= 1 else {
+                        throw BridgeError.badParams("afterRowId must be a positive integer")
+                    }
+                    afterRowId = Int64(value)
+                } else {
+                    afterRowId = nil
+                }
+                let limit: Int
+                if let raw = params["limit"] {
+                    guard let value = raw.numberValue, value.isFinite,
+                          value.rounded() == value,
+                          value >= 1, value <= Double(CullingService.pageLimitMax) else {
+                        throw BridgeError.badParams("limit must be an integer between 1 and 2000")
+                    }
+                    limit = Int(value)
+                } else {
+                    limit = 200
+                }
+                Task {
+                    do {
+                        let page = try await cullingService.listPage(
+                            sessionId: sessionId, scope: scope, filters: filters,
+                            requestedGroupId: groupId, afterRowId: afterRowId, limit: limit)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: page)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:250-257 —— 相似度分组（决策计数 + 成员轻投影）。
+        case "culling.groups":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                Task {
+                    do {
+                        let groups = try await cullingService.getGroups(sessionId: sessionId)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: groups)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "culling.summary":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                Task {
+                    do {
+                        let summary = try await cullingService.getSummary(sessionId: sessionId)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: summary)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:239-248 —— destructive（桥层 + 直连二次兜底）。
+        case "culling.finalize_sync":
+            guard confirmed(params) else {
+                completion(WebResponse(ok: false, error: "CULLING_FINALIZE_CONFIRM_REQUIRED"))
+                return
+            }
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                Task {
+                    do {
+                        let summary = try await cullingService.finalizeSync(sessionId: sessionId, confirmed: true)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: summary)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                     }

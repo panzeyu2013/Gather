@@ -42,15 +42,15 @@
 | R1 收尾⑦：第六个删除切片（face） | ✅ | `FaceRepo` + `FaceRepoTests` 已删除；`FaceKwService` 全部 face 访问改经 `any FaceStore`（观察/复用/集群/绑定/缩略图，约 50 处），4 个 person 桥接方法 async；`SessionService` 人脸删除经 Store（跨连接拆分为 deleteFaceData + 旧连接事务）；路由 `fkw.clusters`/`photo.list_page`/`session.create_from_directory` 迁入 `executeAsync`；旧 FaceRepo 行类型迁移为 Store 记录（FaceObservationRecord/FaceClusterRecord/…），FaceObservationInput 迁入 Store；core 896/123、app 172/19 全绿 |
 | R1 收尾⑧：第七个删除切片（keyword origins） | ✅ | `MetadataKeywordOriginRepo` + 旧测试已删除；`WritebackService` 的来源记录/撤销改经 `any MetadataStore`（markKeywordIntroduced/activeIntroducedKeywords/deactivateKeywordOrigins，既有 async 方法内）；`AppContainer` 增加 metadata store 并接入路由 |
 | R1 收尾⑨：第八个删除切片（culling history） | ✅ | `CullingHistoryRepo` + 旧测试已删除；`CullingService` 历史栈改经 `any CullingStore`；新增 async `update()`（事务内决策 + 事务外 `commitHistory`）与 async `decide()`，`batchUpdate/applyHistory/decideSimilarityGroup/batchDecide/getHistory` 异步化；历史写入从同步事务中移出（跨连接不共享事务，快照先原子落地、历史行失败仅丢 undo）；路由 7 个 culling.* 命令迁入 `executeAsync` |
-| R1 收尾⑩：MetadataCacheRepo（进行中，未删除） | 🔄 | `MetadataService`（6 处读/写 + 批量 upsert 走 `MetadataStore.upsertMetadataBatch`）、`WritebackService`（rating/label/keywords 写回）已迁完；`CullingService` 的异步路径（update/updateState 缓存补丁经 `commitCachePatches`、applyHistory 预读）已迁完；**剩余**：`CullingService` 同步 `list/listPage/richLookup` 路径（5 处 `getBatch`）需先异步化，之后删除 `MetadataCacheRepo` + 旧测试 + 路由 `metadataCacheRepo` 构造 |
-| 删除切片台账 | ✅ 8/… 🔄1 | settings、template、smart album、workspace、person、face、keyword-origins、culling-history（8 完成）；metadata-cache（进行中） |
+| R1 收尾⑩：第九个删除切片（metadata cache） | ✅ | `MetadataCacheRepo` + 旧测试已删除；`MetadataService`/`WritebackService`/`CullingService` 全部改经 `any MetadataStore`；`CullingService.list/listPage/buildRichLookup` 异步化（缓存基线经 `CullingUpdateContext.cacheRows` 传入，仍保持 `updateState` 同步）；路由 `culling.list_page/`groups/`summary/`finalize_sync` 迁入 `executeAsync`（顺带移除 finalize_sync 的 awaitSync 桥）；core 878/120、app 172/19 全绿 |
+| 删除切片台账 | ✅ 9/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
 | R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
-> 当前 core 全量：**885 tests / 121 suites 全绿**（MetadataCacheRepo 迁移中，两包编译与测试均绿）；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
-> 度量：Repositories **11**、Repo tests **11**、DB layer **14**、Services 25、raw SQL outside Store 14。已知计时 flake：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`（均单独运行通过）。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
+> 当前 core 全量：**878 tests / 120 suites 全绿**；app 172/19 全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
+> 度量：Repositories **10**、Repo tests **10**、DB layer **13**、Services 25、raw SQL outside Store 14。已知计时 flake：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`（均单独运行通过）。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
 > 旧层文件计数（本轮后）：`Database/Repositories` 12、`Database/Repositories` 测试 11、`Services` 26；门禁度量 raw SQL outside Store（仅统计 Services/）14 文件、Services 25 文件。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
