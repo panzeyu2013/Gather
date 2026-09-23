@@ -27,7 +27,7 @@ protocol DashboardDataProvider {
     ) throws -> CreateSessionOutcome
     func deleteSession(_ sessionId: String) throws
     func deleteSessions(_ sessionIds: [String]) throws
-    func workspaceStatus(sessionId: String) throws -> WorkspaceStatus?
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus?
     func listJobs() throws -> [AnalysisJobData]
     func cancelJob(_ jobId: String) throws -> Bool
     func retryJob(_ jobId: String) throws -> Bool
@@ -70,16 +70,16 @@ struct CreateSessionOutcome: Equatable, Sendable {
 /// makeDefault 共用装配，见 GatherApp.bootstrap）。
 final class LiveDashboardDataProvider: DashboardDataProvider {
     private let sessionService: SessionService
-    private let workspaceStatusService: WorkspaceStatusService
+    private let workspace: WorkspaceAPI
     private let jobService: JobService
 
     init(
         sessionService: SessionService,
-        workspaceStatusService: WorkspaceStatusService,
+        workspace: WorkspaceAPI,
         jobService: JobService
     ) {
         self.sessionService = sessionService
-        self.workspaceStatusService = workspaceStatusService
+        self.workspace = workspace
         self.jobService = jobService
     }
 
@@ -124,8 +124,8 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         _ = try sessionService.deleteSessions(sessionIds, confirmed: true)
     }
 
-    func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? {
-        try workspaceStatusService.getStatus(sessionId: sessionId)
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? {
+        try await workspace.status(sessionId: sessionId)
     }
 
     func listJobs() throws -> [AnalysisJobData] {
@@ -338,7 +338,7 @@ final class DashboardViewModel {
             // workspace.status：单 session 失败跳过，不影响整体刷新。
             var statuses: [String: WorkspaceStatus] = [:]
             for session in sessions {
-                if let status = try? provider.workspaceStatus(sessionId: session.id) {
+                if let status = try? await provider.workspaceStatus(sessionId: session.id) {
                     statuses[session.id] = status
                 }
             }

@@ -44,7 +44,7 @@ private final class StubDashboardProvider: DashboardDataProvider {
         deletedIds.append(sessionId)
     }
 
-    func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? {
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? {
         statuses[sessionId]
     }
 
@@ -134,7 +134,10 @@ private func makeStubVM() -> (DashboardViewModel, StubDashboardProvider) {
 // MARK: - 真实服务集成（临时 SQLite）
 
 private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnection) {
-    let db = try DBConnection(path: ":memory:")
+    // workspace.status 已切到 WorkspaceAPI（Store 连接）：两条连接指向同一临时库文件。
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-dashboard-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: path)
     try MigrationRunner().migrate(db)
     let sessionRepo = SessionRepo(connection: db)
     let photoRepo = PhotoRepo(connection: db)
@@ -145,12 +148,7 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
             faceRepo: FaceRepo(connection: db),
             connection: db
         ),
-        workspaceStatusService: WorkspaceStatusService(
-            connection: db,
-            sessionRepo: sessionRepo,
-            photoRepo: photoRepo,
-            outboxRepo: MetadataOutboxRepo(connection: db)
-        ),
+        workspace: GatherAPI(container: AppContainer(database: try SQLiteDatabase(path: path))).workspace,
         jobService: JobService(repo: AnalysisJobRepo(connection: db))
     )
     return (provider, db)

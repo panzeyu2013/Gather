@@ -96,7 +96,8 @@ struct GatherApp: App {
                 settings: settingsSnapshot,
                 settingsAPI: api.settings,
                 templates: api.templates,
-                albums: api.albums
+                albums: api.albums,
+                workspace: api.workspace
             )
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
@@ -105,7 +106,7 @@ struct GatherApp: App {
                 router: router, databasePath: dbURL.path, settingsAPI: api.settings)
             let provider = LiveDashboardDataProvider(
                 sessionService: router.sessionService,
-                workspaceStatusService: router.workspaceStatusService,
+                workspace: api.workspace,
                 jobService: router.jobService
             )
             // 3.2/3.3 页面 provider：经路由直连（photo.list_page/filter.*/sim.*

@@ -71,7 +71,7 @@ import GatherCore
 public final class SessionCommandRouter: CommandRouter {
     /// 公开服务访问器（3.1 起供 RootView/DashboardViewModel 同进程直连）。
     public let sessionService: SessionService
-    public let workspaceStatusService: WorkspaceStatusService
+    public let workspace: WorkspaceAPI
     public let jobService: JobService
     private let photoRepo: PhotoRepo
     /// 设置快照（同步读：服务与命令处理不再触碰设置存储）。
@@ -105,7 +105,7 @@ public final class SessionCommandRouter: CommandRouter {
     public init(
         db: DBConnection,
         sessionService: SessionService,
-        workspaceStatusService: WorkspaceStatusService,
+        workspace: WorkspaceAPI,
         jobService: JobService,
         photoRepo: PhotoRepo,
         settings: SettingsSnapshot,
@@ -131,7 +131,7 @@ public final class SessionCommandRouter: CommandRouter {
     ) {
         self.db = db
         self.sessionService = sessionService
-        self.workspaceStatusService = workspaceStatusService
+        self.workspace = workspace
         self.jobService = jobService
         self.photoRepo = photoRepo
         self.settings = settings
@@ -188,6 +188,7 @@ public final class SessionCommandRouter: CommandRouter {
         settingsAPI: SettingsAPI,
         templates: TemplatesAPI,
         albums: AlbumsAPI,
+        workspace: WorkspaceAPI,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -315,12 +316,7 @@ public final class SessionCommandRouter: CommandRouter {
                 },
                 assetRepo: assetRepo
             ),
-            workspaceStatusService: WorkspaceStatusService(
-                connection: db,
-                sessionRepo: sessionRepo,
-                photoRepo: photoRepo,
-                outboxRepo: outboxRepo
-            ),
+            workspace: workspace,
             jobService: jobService,
             photoRepo: photoRepo,
             settings: settings,
@@ -666,18 +662,6 @@ public final class SessionCommandRouter: CommandRouter {
             ])
 
         // ── workspace（3.1 服务层）──
-
-        case "workspace.status":
-            // Protocol WorkspaceStatusParams.sessionId 非可选；现有调用方
-            // （SessionControlView.load / 测试）均显式传 sessionId，故用
-            // requiredString（缺省 "" 会静默查全部会话）。
-            let sessionId = try requiredString(params, "sessionId")
-            guard let status = try workspaceStatusService.getStatus(sessionId: sessionId) else {
-                throw BridgeError.notFound("SESSION_NOT_FOUND")
-            }
-            return try GatherCore.JSONValue(from: status)
-
-        // ── jobs.*（3.1 服务层）──
 
         case "jobs.list":
             let jobs = try jobService.list()
@@ -2247,6 +2231,25 @@ public final class SessionCommandRouter: CommandRouter {
                         NotificationCenter.default.post(
                             name: GatherAppNotification.languageChanged, object: language)
                         completion(WebResponse(ok: true, data: .object(["language": .string(language)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "workspace.status":
+            do {
+                // Protocol WorkspaceStatusParams.sessionId 非可选；调用方均显式传
+                // sessionId，故用 requiredString（缺省 "" 会静默查全部会话）。
+                let sessionId = try requiredString(params, "sessionId")
+                Task {
+                    do {
+                        guard let status = try await workspace.status(sessionId: sessionId) else {
+                            throw BridgeError.notFound("SESSION_NOT_FOUND")
+                        }
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: status)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                     }
