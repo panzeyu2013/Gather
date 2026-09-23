@@ -96,6 +96,7 @@ private struct CoordinatorFixture {
     let provider: FakeFSXMPProvider
     let coordinator: MetadataSyncCoordinator
 
+    let sessionStore: any SessionStore
     init() throws {
         // 写回行读写经 Store 连接（独立连接）：两条连接须指向同一临时库文件。
         let dbPath = FileManager.default.temporaryDirectory
@@ -130,6 +131,7 @@ private struct CoordinatorFixture {
         self.xmpPath = xmpPath
         self.outbox = outbox
         self.provider = provider
+        self.sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         self.coordinator = coordinator
     }
 
@@ -254,7 +256,7 @@ struct MetadataSyncCoordinatorTests {
             #expect(error == .reloadNotAcked)
         }
 
-        _ = try SessionRepo(connection: fx.db).setReloadAckedAt(
+        _ = try await fx.sessionStore.setReloadAckedAt(
             sessionId: fx.sessionId, iso: nowISOString())
         let summary = try await fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
         #expect(summary.synced == 1)
@@ -285,7 +287,7 @@ struct MetadataSyncCoordinatorTests {
         )
         fx.coordinator.schedule(xmpPath: fx.xmpPath, delayMs: 0)
         #expect(await waitForStatus(fx.outbox, xmpPath: fx.xmpPath, status: "written"))
-        _ = try SessionRepo(connection: fx.db).setReloadAckedAt(
+        _ = try await fx.sessionStore.setReloadAckedAt(
             sessionId: fx.sessionId, iso: nowISOString())
         _ = try await fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
 

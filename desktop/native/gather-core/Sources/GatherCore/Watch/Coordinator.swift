@@ -36,7 +36,7 @@ import Glibc
 #endif
 
 /// 文件监控协调器：FSEvents 递归 watcher + 每 session 750ms 去抖 + 全量兜底。
-/// 用法：注入 sessionProvider（等价 sessionRepo.list() 过滤 source_path）与
+/// 用法：注入 sessionProvider（等价 sessionStore.list() 过滤 source_path）与
 /// scanHandler（等价 scanSession：requestedPaths=nil 即全量），setRecoveryScan
 /// Scheduler 等价 TS 的 setRecoveryScanScheduler。
 public final class WatchCoordinator {

@@ -70,8 +70,8 @@ struct ExportServiceTests {
         let payload = Data("original-bytes".utf8)
         try payload.write(to: input)
         try Data("<x:xmpmeta/>".utf8).write(to: xmp)
-        let session = try SessionRepo(connection: db).create(
-            name: "Family", source: "local", sourcePath: source.path
+        let session = try await env.sessionStore.create(
+            name: "Family", source: "local", sourcePath: source.path, truncatedImport: false
         )
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
@@ -129,9 +129,9 @@ struct ExportServiceTests {
         defer { try? FileManager.default.removeItem(at: source) }
         let input = source.appendingPathComponent("photo.jpg")
         try Data("photo".utf8).write(to: input)
-        let session = try SessionRepo(connection: db).create(
+        let session = try await env.sessionStore.create(
             name: "Source", source: "local", sourcePath: source.path
-        )
+        , truncatedImport: false)
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
@@ -186,9 +186,9 @@ struct ExportServiceTests {
         #expect(CGImageDestinationFinalize(imageDestination))
         try (data as Data).write(to: input)
 
-        let session = try SessionRepo(connection: db).create(
+        let session = try await env.sessionStore.create(
             name: "JPEG", source: "local", sourcePath: source.path
-        )
+        , truncatedImport: false)
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
@@ -230,9 +230,9 @@ struct ExportServiceTests {
         }
         let input = source.appendingPathComponent("photo.jpg")
         try Data("photo".utf8).write(to: input)
-        let session = try SessionRepo(connection: db).create(
+        let session = try await env.sessionStore.create(
             name: "Time", source: "local", sourcePath: source.path
-        )
+        , truncatedImport: false)
         try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,

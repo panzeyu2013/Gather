@@ -15,6 +15,7 @@ import Testing
 private struct QualityEnv {
     let db: DBConnection
     let photoStore: any PhotoStore
+    let sessionStore: any SessionStore
 }
 
 private func makeQualityEnv() throws -> QualityEnv {
@@ -22,7 +23,7 @@ private func makeQualityEnv() throws -> QualityEnv {
         .appendingPathComponent("gather-quality-\(UUID().uuidString).sqlite").path
     let db = try DBConnection(path: path)
     try MigrationRunner().migrate(db)
-    return QualityEnv(db: db, photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: path)))
+    return QualityEnv(db: db, photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: path)), sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }
 
 
@@ -108,10 +109,10 @@ private func makeHarness(
         ([UInt8](repeating: 128, count: 16), 4, 4)
     },
     statProvider: @escaping QualityService.StatProvider = QualityService.defaultStat
-) throws -> QualityHarness {
+) async throws -> QualityHarness {
     let env = try makeQualityEnv()
         let db = env.db
-    let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
+    let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
     let service = QualityService(
         photoStore: env.photoStore,
         connection: db,
@@ -162,7 +163,7 @@ struct QualityMetricsTests {
 struct QualityAnalyzeTests {
     @Test("scores, stores and returns results for a session photo")
     func scoresAndStores() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
@@ -200,7 +201,7 @@ struct QualityAnalyzeTests {
     func cacheHitSkipsDecode() async throws {
         let callLock = NSLock()
         var calls = 0
-        let harness = try makeHarness(imageProvider: { _, _ in
+        let harness = try await makeHarness(imageProvider: { _, _ in
             callLock.lock()
             calls += 1
             callLock.unlock()
@@ -229,7 +230,7 @@ struct QualityAnalyzeTests {
 
     @Test("analyzes only the requested photo subset")
     func subsetAnalysis() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let p1 = try writeTempFile(in: dir, name: "a.jpg")
@@ -248,7 +249,7 @@ struct QualityAnalyzeTests {
 
     @Test("returns a failed result with QUALITY_NO_ASSET_FILE and skips the insert")
     func noAssetFileFails() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
@@ -276,7 +277,7 @@ struct QualityAnalyzeTests {
         struct DecodeBoom: Error, CustomStringConvertible {
             var description: String { "decode exploded" }
         }
-        let harness = try makeHarness(imageProvider: { _, _ in throw DecodeBoom() })
+        let harness = try await makeHarness(imageProvider: { _, _ in throw DecodeBoom() })
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
@@ -296,7 +297,7 @@ struct QualityAnalyzeTests {
 
     @Test("computes subject/eye metrics from the largest face observation")
     func faceRegionMetrics() async throws {
-        let harness = try makeHarness(imageProvider: { _, _ in (checkerboardPreview8x8(), 8, 8) })
+        let harness = try await makeHarness(imageProvider: { _, _ in (checkerboardPreview8x8(), 8, 8) })
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
@@ -328,7 +329,7 @@ struct QualityAnalyzeTests {
 
     @Test("emits progress frames with the photoIds checkpoint")
     func progressFrames() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         for i in 0..<3 {
@@ -367,7 +368,7 @@ struct QualityAnalyzeTests {
 
     @Test("propagates cancellation through throwIfCancelled")
     func cancellation() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
@@ -401,7 +402,7 @@ struct QualityGetTests {
     func latestPerPhoto() async throws {
         let env = try makeQualityEnv()
         let db = env.db
-        let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
+        let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
         try insertAssetFile(db, id: "af-1", normalizedPath: "/vault/a.jpg")
         try insertAssetFile(db, id: "af-2", normalizedPath: "/vault/b.jpg")
         _ = try db.prepare("""
@@ -448,7 +449,7 @@ struct QualityGetTests {
     func emptyWhenNoResults() async throws {
         let env = try makeQualityEnv()
         let db = env.db
-        let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
+        let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
         let service = QualityService(photoStore: env.photoStore, connection: db)
         #expect(try await service.get(sessionId: session.id).isEmpty)
         #expect(try await service.get(sessionId: "unknown").isEmpty)
@@ -463,7 +464,7 @@ struct QualityRelativeRankTests {
     func ranksInsideGroupsOnly() async throws {
         let env = try makeQualityEnv()
         let db = env.db
-        let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
+        let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
         let now = "2026-07-30T10:00:00.000Z"
         for (id, path) in [("p1", "/photos/p1.JPG"), ("p2", "/photos/p2.JPG"), ("p3", "/photos/p3.JPG")] {
             try insertAssetFile(db, id: "af-\(id)", normalizedPath: path)

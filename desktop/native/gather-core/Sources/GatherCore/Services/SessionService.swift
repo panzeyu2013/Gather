@@ -50,14 +50,14 @@ public final class SessionService {
     /// TS: ImageService.getDimensions(filepath) → { width, height }，失败抛错。
     private let dimensionsProvider: (String) throws -> (width: Int, height: Int)
 
-    private let sessionRepo: SessionRepo
+    private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
     private let faceStore: any FaceStore
     private let assetStore: any AssetStore?
     private let connection: DBConnection
 
     public init(
-        sessionRepo: SessionRepo,
+        sessionStore: any SessionStore,
         photoStore: any PhotoStore,
         faceStore: any FaceStore,
         connection: DBConnection,
@@ -67,7 +67,7 @@ public final class SessionService {
         },
         assetStore: (any AssetStore)? = nil
     ) {
-        self.sessionRepo = sessionRepo
+        self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.faceStore = faceStore
         self.connection = connection
@@ -76,14 +76,14 @@ public final class SessionService {
         self.assetStore = assetStore
     }
 
-    public func createSession(name: String, source: String, sourcePath: String = "", truncatedImport: Bool = false) throws -> SessionData {
-        let row = try sessionRepo.create(name: name, source: source, sourcePath: sourcePath, truncatedImport: truncatedImport)
+    public func createSession(name: String, source: String, sourcePath: String = "", truncatedImport: Bool = false) async throws -> SessionData {
+        let row = try await sessionStore.create(name: name, source: source, sourcePath: sourcePath, truncatedImport: truncatedImport)
         return try toSessionData(row)
     }
 
     /// 一跳本地目录导入：校验真实非根目录并建 session 行（source_path + 'local'）。
     /// 照片不在此插入——调用方入队 metadata.scan 索引 job，进程内流式遍历填充。
-    public func createFromDirectory(name: String, sourcePath: String, truncatedImport: Bool = false) throws -> SessionData {
+    public func createFromDirectory(name: String, sourcePath: String, truncatedImport: Bool = false) async throws -> SessionData {
         try requireDirectory(sourcePath)
         let resolved = TSPath.resolve(sourcePath)
         if resolved == "/" {
@@ -92,15 +92,15 @@ public final class SessionService {
         // TS: (name ?? '').trim() —— 空白含换行等，用 whitespacesAndNewlines 对齐。
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionName = trimmedName.isEmpty ? TSPath.basename(resolved) : trimmedName
-        return try createSession(name: sessionName, source: "local", sourcePath: resolved, truncatedImport: truncatedImport)
+        return try await createSession(name: sessionName, source: "local", sourcePath: resolved, truncatedImport: truncatedImport)
     }
 
-    public func listSessions() throws -> [SessionData] {
-        try sessionRepo.list().map { try toSessionData($0) }
+    public func listSessions() async throws -> [SessionData] {
+        try await sessionStore.list().map { try toSessionData($0) }
     }
 
     public func getSession(_ sessionId: String) async throws -> SessionData? {
-        guard var row = try sessionRepo.get(id: sessionId) else { return nil }
+        guard var row = try await sessionStore.get(id: sessionId) else { return nil }
         if row.sourcePath.isEmpty {
             let photos = try await photoStore.getBySession(sessionId: sessionId)
             // 单张照片推父目录会让索引器递归监控整个文件夹；多目录选择时
@@ -109,10 +109,10 @@ public final class SessionService {
             if photos.count > 1 {
                 let sourcePath = commonParentDirectory(filepaths: photos.map(\.filepath))
                 if !sourcePath.isEmpty {
-                    _ = try sessionRepo.updateSourcePath(id: sessionId, sourcePath: sourcePath)
+                    _ = try await sessionStore.updateSourcePath(id: sessionId, sourcePath: sourcePath)
                     // 与 TS 差异（有意）：TS 改内存行返回旧 updatedAt；这里重取
                     // 返回持久化后的新 updatedAt，DB 结果一致。
-                    guard let updated = try sessionRepo.get(id: sessionId) else { return nil }
+                    guard let updated = try await sessionStore.get(id: sessionId) else { return nil }
                     row = updated
                 }
             }
@@ -127,9 +127,9 @@ public final class SessionService {
         try await deleteFaceData(sessionId)
         // Store 连接的照片行清理先于旧事务（foreign_keys = ON 下删除顺序要求）。
         try await deleteSessionDependencies(sessionId)
+        let deleted = try await sessionStore.delete(id: sessionId)
+        if !deleted { throw SessionServiceError.sessionNotFound }
         try connection.transaction {
-            let deleted = try sessionRepo.delete(id: sessionId)
-            if !deleted { throw SessionServiceError.sessionNotFound }
             _ = try connection.prepare("""
                 UPDATE assets SET status = 'orphan', updated_at = ?
                 WHERE status != 'orphan'
@@ -148,8 +148,8 @@ public final class SessionService {
         for id in sessionIds {
             try await deleteSessionDependencies(id)
         }
+        _ = try await sessionStore.deleteMany(ids: sessionIds)
         return try connection.transaction {
-            _ = try sessionRepo.deleteMany(ids: sessionIds)
             _ = try connection.prepare("""
                 UPDATE assets SET status = 'orphan', updated_at = ?
                 WHERE status != 'orphan'
@@ -172,7 +172,7 @@ public final class SessionService {
     /// 删除其余依赖行（旧连接事务内；顺序满足 ON DELETE 约束）。
     private func deleteSessionDependencies(_ sessionId: String) async throws {
         // similarity_hashes 无级联引用 photos。
-        try sessionRepo.deleteSimilarityDataBySession(sessionId: sessionId)
+        try await sessionStore.deleteSimilarityData(sessionId: sessionId)
         _ = try connection.prepare("DELETE FROM person_embeddings WHERE session_id = ?").run([.text(sessionId)])
         _ = try connection.prepare("DELETE FROM person_photos WHERE session_id = ?").run([.text(sessionId)])
         _ = try connection.prepare("DELETE FROM photo_metadata_cache WHERE session_id = ?").run([.text(sessionId)])
@@ -187,13 +187,13 @@ public final class SessionService {
     /// 批量加照片：分批读尺寸（import_concurrency，钳制 1..32），
     /// 落库 + 资产回填 + 照片计数 + index_seq 递增（新照片使旧分析失效）。
     public func addPhotos(sessionId: String, filepaths: [String], source: String) async throws -> SessionAddPhotoResult {
-        let session = try sessionRepo.get(id: sessionId)
+        let session = try await sessionStore.get(id: sessionId)
         if session == nil { throw SessionServiceError.sessionNotFound }
         let normalized = normalizeImportFilepaths(filepaths)
         if session!.sourcePath.isEmpty && normalized.count >= 2 {
             let sourcePath = commonParentDirectory(filepaths: normalized)
             if !sourcePath.isEmpty {
-                _ = try sessionRepo.updateSourcePath(id: sessionId, sourcePath: sourcePath)
+                _ = try await sessionStore.updateSourcePath(id: sessionId, sourcePath: sourcePath)
             }
         }
 
@@ -229,16 +229,13 @@ public final class SessionService {
             Task { _ = try? await assetStore.backfillSession(sessionId) }
         }
         let totalCount = try await photoStore.countBySession(sessionId: sessionId)
-        try connection.transaction {
-            try sessionRepo.updatePhotoCount(id: sessionId, count: totalCount)
-            // 新照片使先前任何分析失效：同一事务内 bump index_seq，
-            // 使最近一次 ok run 过期（1.4.2）。
-            if result.added > 0 {
-                _ = try sessionRepo.bumpIndexSeq(id: sessionId)
-            }
+        try await sessionStore.updatePhotoCount(id: sessionId, count: totalCount)
+        // 新照片使先前任何分析失效：bump index_seq 使最近一次 ok run 过期（1.4.2）。
+        if result.added > 0 {
+            _ = try await sessionStore.bumpIndexSeq(id: sessionId)
         }
         if totalCount > 0 && session!.status == "draft" {
-            try sessionRepo.updateStatus(id: sessionId, status: "photos_loaded")
+            try await sessionStore.updateStatus(id: sessionId, status: "photos_loaded")
         }
         // id 是索引器的内部接缝，不外泄到 IPC（shared AddPhotoResult 无此字段）。
         return SessionAddPhotoResult(
@@ -249,14 +246,14 @@ public final class SessionService {
         )
     }
 
-    public func updateSession(sessionId: String, name: String) throws -> SessionData {
-        let updated = try sessionRepo.updateName(id: sessionId, name: name)
+    public func updateSession(sessionId: String, name: String) async throws -> SessionData {
+        let updated = try await sessionStore.updateName(id: sessionId, name: name)
         if !updated { throw SessionServiceError.sessionNotFound }
-        guard let row = try sessionRepo.get(id: sessionId) else { throw SessionServiceError.sessionNotFound }
+        guard let row = try await sessionStore.get(id: sessionId) else { throw SessionServiceError.sessionNotFound }
         return try toSessionData(row)
     }
 
-    private func toSessionData(_ row: SessionRow) throws -> SessionData {
+    private func toSessionData(_ row: SessionRecord) throws -> SessionData {
         guard let status = SessionStatus(rawValue: row.status),
               let analysis = AnalysisStatus(rawValue: row.analysisStatus),
               let writeback = WritebackStatus(rawValue: row.writebackStatus) else {

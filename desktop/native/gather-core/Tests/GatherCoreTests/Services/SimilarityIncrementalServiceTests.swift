@@ -74,7 +74,6 @@ private func makeIncrementalHarness(settings: [String: Double] = [:]) throws -> 
     let db = try DBConnection(path: dbPath)
     try MigrationRunner().migrate(db)
     try insertSession(db, sessionId)
-    let sessionRepo = SessionRepo(connection: db)
     let counter = ClusterCallCounter()
     let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
     let service = SimilarityService(

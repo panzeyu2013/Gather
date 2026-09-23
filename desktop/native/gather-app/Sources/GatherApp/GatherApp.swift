@@ -188,7 +188,7 @@ struct GatherApp: App {
         do {
             // R5：设置写路径经 SettingsAPI（异步、白名单校验）。
             try await settingsAPI.set("embedding_dim", value: "768")
-            for session in try router.sessionService.listSessions() where session.photoCount > 0 {
+            for session in try await router.sessionService.listSessions() where session.photoCount > 0 {
                 _ = try await router.jobService.create(JobCreateParams(
                     type: .faceAnalyze,
                     scopeType: "session",
@@ -233,7 +233,7 @@ struct GatherApp: App {
             } else {
                 name = URL(fileURLWithPath: sourcePath).lastPathComponent
             }
-            let session = try router.sessionService.createSession(
+            let session = try await router.sessionService.createSession(
                 name: name.isEmpty ? Self.defaultImportName(source: source) : name,
                 source: source,
                 sourcePath: sourcePath

@@ -55,8 +55,8 @@ private func makeHarness(
     let db = try DBConnection(path: dbPath)
     try MigrationRunner().migrate(db)
     let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
-    let sessionRepo = SessionRepo(connection: db)
-    let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
+    let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
+    let session = try await sessionStore.create(name: "Index", source: "folder", sourcePath: root)
     let indexer = IndexerService(
         connection: db,
         sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
@@ -328,8 +328,8 @@ struct CancelledScanIndexSeqTests {
         let db = try DBConnection(path: dbPath)
         try MigrationRunner().migrate(db)
         let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
-        let sessionRepo = SessionRepo(connection: db)
-        let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
+        let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
+        let session = try await sessionStore.create(name: "Index", source: "folder", sourcePath: root)
         // 预置已完成的 sim/fkw 分析（快照 index_seq=0）：扫描必须推进会话
         // index_seq，否则这两条已完成分析永远看不到新照片。
         _ = try db.prepare("""

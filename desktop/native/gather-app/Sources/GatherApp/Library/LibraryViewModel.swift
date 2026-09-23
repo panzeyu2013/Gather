@@ -90,7 +90,7 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
 /// 真实路由（LiveLibraryDataProvider + 临时 SQLite）。
 public protocol LibraryDataProvider {
-    func listSessions() throws -> [SessionData]
+    func listSessions() async throws -> [SessionData]
     /// TS: filterApi.photosGlobal → { photos, total }。
     /// async：分页大查询经 executeAsync 走后台线程（避免 @MainActor 主线程阻塞）。
     func globalPhotos(
@@ -183,8 +183,8 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         self.client = NativeCommandClient(router: router)
     }
 
-    public func listSessions() throws -> [SessionData] {
-        try router.sessionService.listSessions()
+    public func listSessions() async throws -> [SessionData] {
+        try await router.sessionService.listSessions()
     }
 
     public func globalPhotos(
@@ -382,7 +382,7 @@ public final class LibraryViewModel {
 
     func reloadSessions() async {
         do {
-            sessions = try provider.listSessions()
+            sessions = try await provider.listSessions()
         } catch {
             actionError = Self.message(for: error)
         }

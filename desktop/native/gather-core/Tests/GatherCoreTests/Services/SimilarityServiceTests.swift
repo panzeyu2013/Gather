@@ -106,13 +106,13 @@ private func makeHarness(
             mode: mode, onProgress: onProgress)
     },
     settings: [String: Double] = [:]
-) throws -> SimilarityHarness {
+) async throws -> SimilarityHarness {
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
     let db = try DBConnection(path: dbPath)
     try MigrationRunner().migrate(db)
-    let sessionRepo = SessionRepo(connection: db)
-    let session = try sessionRepo.create(name: "Run", source: "folder")
+    let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
+    let session = try await sessionStore.create(name: "Run", source: "folder", sourcePath: "")
     let dir = try makeTempDir()
     let photoPath = try writeTempFile(in: dir, name: "photo.jpg")
     try insertPhoto(db, id: "photo-1", sessionId: session.id, filepath: photoPath)
@@ -397,7 +397,7 @@ struct SimilarityRunRecordTests {
         let row = try runRow(harness.db, harness.sessionId)!
         #expect(row[6].textValue == "failed")
         #expect(row[5].textValue != "")
-        let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
+        let session = try await harness.sessionStore.get(id: harness.sessionId)
         #expect(session?.analysisStatus == "failed")
     }
 
@@ -634,7 +634,7 @@ struct SimilarityCancellationTests {
         }
         #expect(runningSeen)
         try await harness.service.cancel(sessionId: harness.sessionId)
-        let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
+        let session = try await harness.sessionStore.get(id: harness.sessionId)
         #expect(session?.analysisStatus == "cancelled")
 
         // 首跑仍在飞：再次 analyze 必须拒绝。
@@ -648,7 +648,7 @@ struct SimilarityCancellationTests {
         // 早退路径：run 记录终态 failed（cancel 已写 cancelled），占用已释放。
         let row = try runRow(harness.db, harness.sessionId)!
         #expect(row[6].textValue == "failed")
-        let sessionAfter = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
+        let sessionAfter = try await harness.sessionStore.get(id: harness.sessionId)
         #expect(sessionAfter?.analysisStatus == "cancelled")
         // 占用已释放：第三次 analyze 可进入。
         let gate2 = AsyncGate()
@@ -665,12 +665,12 @@ struct SimilarityCancellationTests {
     @Test("cancel without an in-flight run does not flip the shared analysis status")
     func cancelWithoutRunKeepsStatus() async throws {
         let harness = try await makeHarness()
-        let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
+        let session = try await harness.sessionStore.get(id: harness.sessionId)
         #expect(session?.analysisStatus == "idle")
 
         try await harness.service.cancel(sessionId: harness.sessionId, markStatus: false)
 
-        let after = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
+        let after = try await harness.sessionStore.get(id: harness.sessionId)
         #expect(after?.analysisStatus == "idle")
     }
 }
@@ -700,7 +700,7 @@ struct SimilarityServiceRobustnessTests {
         // 占用已释放（controller 在 try 之前注册、校验失败不清理——TS 缺陷
         // 逐字保留？校验失败发生在 controller 注册之后，defer 尚未建立，
         // 因此 controller 保留。与 TS 一致，故这里不再断言可重入）。
-        let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
+        let session = try await harness.sessionStore.get(id: harness.sessionId)
         #expect(session?.analysisStatus == "idle")
     }
 

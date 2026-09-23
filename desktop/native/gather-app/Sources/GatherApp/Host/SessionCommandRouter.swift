@@ -82,6 +82,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let similarityService: SimilarityService
     private let duplicateService: DuplicateService
     private let assetStore: any AssetStore
+    private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
     /// 连接引用：仅用于零散 Repo 按需构造（SessionRepo reloadAckedAt 等），
     /// 领域查询一律经注入的 Repo/Service，不在此内联 SQL。
@@ -127,6 +128,7 @@ public final class SessionCommandRouter: CommandRouter {
         cullingService: CullingService,
         exportService: ExportService,
         photoStore: any PhotoStore,
+        sessionStore: any SessionStore,
         imagePreloadService: ImagePreloadService
     ) {
         self.db = db
@@ -140,6 +142,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.similarityService = similarityService
         self.duplicateService = duplicateService
         self.assetStore = assetStore
+        self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.faceKwService = faceKwService
         self.persons = persons
@@ -159,8 +162,8 @@ public final class SessionCommandRouter: CommandRouter {
 
     /// Capture One 脚本成功后由宿主调用，写入持久 reload ack；页面不得在
     /// AppleScript 失败时伪造该标记。
-    public func recordCaptureOneReloadAck(sessionId: String) throws {
-        _ = try SessionRepo(connection: db).setReloadAckedAt(
+    public func recordCaptureOneReloadAck(sessionId: String) async throws {
+        _ = try await sessionStore.setReloadAckedAt(
             sessionId: sessionId,
             iso: nowISOString()
         )
@@ -204,7 +207,6 @@ public final class SessionCommandRouter: CommandRouter {
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
     ) -> SessionCommandRouter {
-        let sessionRepo = SessionRepo(connection: db)
         let similarityService = SimilarityService(
             photoStore: photoStore,
             sessionStore: sessionStore,
@@ -305,7 +307,7 @@ public final class SessionCommandRouter: CommandRouter {
         return SessionCommandRouter(
             db: db,
             sessionService: SessionService(
-                sessionRepo: sessionRepo,
+                sessionStore: sessionStore,
                 photoStore: photoStore,
                 faceStore: faceStore,
                 connection: db,
@@ -363,6 +365,7 @@ public final class SessionCommandRouter: CommandRouter {
             cullingService: cullingService,
             exportService: exportService,
             photoStore: photoStore,
+            sessionStore: sessionStore,
             imagePreloadService: imagePreloadService
         )
     }
@@ -553,18 +556,6 @@ public final class SessionCommandRouter: CommandRouter {
     public func execute(_ command: String, params: [String: GatherCore.JSONValue]) throws -> GatherCore.JSONValue {
         switch command {
         // ── session.*（3.2 服务层）──
-
-        case "session.list":
-            let sessions = try sessionService.listSessions()
-            return try GatherCore.JSONValue(from: sessions)
-
-
-
-        case "session.update":
-            let id = try requiredString(params, "sessionId")
-            let name = try requiredString(params, "name")
-            let session = try sessionService.updateSession(sessionId: id, name: name)
-            return try GatherCore.JSONValue(from: session)
 
 
 
@@ -916,6 +907,32 @@ public final class SessionCommandRouter: CommandRouter {
     ) {
         switch command {
 
+        case "session.update":
+            Task {
+                do {
+                let id = try requiredString(params, "sessionId")
+                let name = try requiredString(params, "name")
+                let session = try await sessionService.updateSession(sessionId: id, name: name)
+                completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: session))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
+        case "session.list":
+            Task {
+                do {
+                let sessions = try await sessionService.listSessions()
+                completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: sessions))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
         case "image.get_dimensions":
             Task {
                 do {
@@ -1033,7 +1050,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let source = try optionalString(params, "source") ?? "manual"
                 let sourcePath = try optionalString(params, "sourcePath") ?? ""
                 let truncatedImport = optionalBool(params, "truncatedImport") ?? false
-                let session = try sessionService.createSession(
+                let session = try await sessionService.createSession(
                     name: name, source: source, sourcePath: sourcePath, truncatedImport: truncatedImport)
                 // TS 契约：filepaths 传入时创建即导入（addPhotos），返回
                 // {session, failedFiles, added, skipped}；照片落库后重取会话
@@ -1722,7 +1739,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let session = try sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
+                    let session = try await sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
                     do {
                         _ = try await jobService.create(JobCreateParams(
                             type: .metadataScan,

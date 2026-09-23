@@ -15,8 +15,8 @@ import GatherCore
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
 /// 真实服务（LiveDashboardDataProvider + 临时 SQLite）。
 protocol DashboardDataProvider {
-    func listSessions() throws -> [SessionData]
-    func createSession(name: String, source: String, sourcePath: String) throws -> SessionData
+    func listSessions() async throws -> [SessionData]
+    func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData
     /// TS session.create：以文件列表建库（Capture One 导入），返回含
     /// failedFiles 计数的结果，供截断导入横幅提示（TS Toast L208-219）。
     func createSessionFromFiles(
@@ -47,7 +47,7 @@ extension DashboardDataProvider {
         filepaths: [String],
         sourcePath: String
     ) async throws -> CreateSessionOutcome {
-        let session = try createSession(name: name, source: source, sourcePath: sourcePath)
+        let session = try await createSession(name: name, source: source, sourcePath: sourcePath)
         return CreateSessionOutcome(session: session, failedFiles: [], added: 0)
     }
 
@@ -83,12 +83,12 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         self.jobService = jobService
     }
 
-    func listSessions() throws -> [SessionData] {
-        try sessionService.listSessions()
+    func listSessions() async throws -> [SessionData] {
+        try await sessionService.listSessions()
     }
 
-    func createSession(name: String, source: String, sourcePath: String) throws -> SessionData {
-        try sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
+    func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData {
+        try await sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
     }
 
     /// TS session.create：文件列表建库 + addPhotos（source 透传，C1 为
@@ -103,7 +103,7 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         // TS session.create handler：sourcePath 落库前 sanitize —— 单文件/根
         // 目录等会扩大索引范围的来源一律清空，防索引器递归无关目录。
         let sanitizedSourcePath = sanitizeSessionSourcePath(sourcePath: sourcePath, filepaths: filepaths)
-        let created = try sessionService.createSession(name: name, source: source, sourcePath: sanitizedSourcePath)
+        let created = try await sessionService.createSession(name: name, source: source, sourcePath: sanitizedSourcePath)
         let result = try await sessionService.addPhotos(
             sessionId: created.id,
             filepaths: filepaths,
@@ -333,7 +333,7 @@ final class DashboardViewModel {
     func refreshSessions() async {
         lastSessionsRefreshAt = Date()
         do {
-            let sessions = try provider.listSessions()
+            let sessions = try await provider.listSessions()
             self.sessions = sessions
             // workspace.status：单 session 失败跳过，不影响整体刷新。
             var statuses: [String: WorkspaceStatus] = [:]
@@ -401,7 +401,7 @@ final class DashboardViewModel {
         createError = nil
         defer { isCreating = false }
         do {
-            let session = try provider.createSession(name: name, source: "local", sourcePath: sourcePath)
+            let session = try await provider.createSession(name: name, source: "local", sourcePath: sourcePath)
             do {
                 try await provider.enqueueIndexScan(sessionId: session.id)
             } catch {

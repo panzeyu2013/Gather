@@ -83,7 +83,7 @@ public final class CaptureOneBridge: @unchecked Sendable {
     public convenience init(router: CommandRouter) {
         self.init(recordReloadAck: { sessionId in
             guard let router = router as? SessionCommandRouter else { return }
-            try router.recordCaptureOneReloadAck(sessionId: sessionId)
+            try await router.recordCaptureOneReloadAck(sessionId: sessionId)
         })
     }
 

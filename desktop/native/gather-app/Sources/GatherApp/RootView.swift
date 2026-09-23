@@ -301,9 +301,9 @@ struct RootView: View {
         .overlay(alignment: .topTrailing) {
             ToastView()
         }
-        .onAppear { refreshWindowTitle() }
+        .onAppear { Task { await refreshWindowTitle() } }
         .onChange(of: navigation.destination) { previous, destination in
-            refreshWindowTitle()
+            Task { await refreshWindowTitle() }
             // 人脸审核深链角色预筛选为一次性播种：离开人脸页即清空，
             // 避免后续普通进入带出旧角色。
             if case .sessionTab(_, .faceKw) = destination {} else {
@@ -386,12 +386,12 @@ struct RootView: View {
     }
 
     /// 窗口标题跟随当前会话：有会话时用会话名，无会话（或无名称）保持「Gather」。
-    private func refreshWindowTitle() {
+    private func refreshWindowTitle() async {
         guard let sessionId = navigation.currentSessionId else {
             windowTitle = "Gather"
             return
         }
-        let sessions = (try? provider.listSessions()) ?? []
+        let sessions = (try? await provider.listSessions()) ?? []
         windowTitle = sessions.first(where: { $0.id == sessionId })?.name ?? "Gather"
     }
 
