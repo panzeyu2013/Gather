@@ -239,3 +239,14 @@ public protocol PhotoStore: Sendable {
 按行号推断函数边界不可靠，且同步/异步调用点交错，一次替换会同时踩中 6 个同步函数。**正确做法**：按函数名逐个替换（每次替换后单独 build），顺序为
 `processRow → cleanup → finalizeSession → resolveOrphan → resolveConflict → retrySession → processUntilCurrent → ensureBaseline → getConflicts → flushSession → waitForIdle`，
 再处理 `start/getSummary/listOrphans/confirmSync/clearReloadAckForXmpPath/emitPathSummaries`（同步 → async + 路由迁 `executeAsync`），最后删 Repo。
+
+## R1 收尾：AnalysisJobRepo → JobStore（迁移简报，round 50 盘点）
+
+**目标**：删除 `Database/Repositories/AnalysisJobRepo.swift`（290 行）+ 旧测试，jobs 行读写全部收敛到 `SQLiteJobStore`（34 个方法已覆盖 create/get/list/claim/heartbeat/complete/recoverStale/resumeInterrupted 等）。
+
+**调用点盘点**：仅 `Services/JobService.swift` 一处持有 `repo: AnalysisJobRepo`（JobService 与其内部 JobScheduler 各一份字段），共 ~15 处调用；装配点在 `SessionCommandRouter.makeDefault`。
+
+**阻塞点**：`JobService` 的 `create/cancel/retry/list/clearCompleted` 等被路由**同步** case 调用，而 Store 只能 async。执行顺序建议：
+1. 先换 `JobScheduler` 与 JobService 内部**异步**路径（recoverStale/resumeInterrupted/claim/heartbeat/complete/updateProgress）。
+2. 再把 `create/cancel/retry/list/clearCompleted` 异步化，路由 `jobs.*` case 迁入 `executeAsync`（沿用既有 Task+completion 模板）；注意 `GatherApp.swift` 里 `router.jobService.start()` 的启动调用也需 async 或 Task 包装。
+3. 删除 Repo 与旧测试，装配改经 `api.container.jobs`（若 AppContainer 未暴露则补），度量 Repositories **5→4**、Repo tests **6→5**、DB layer **8→7**。
