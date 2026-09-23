@@ -115,7 +115,8 @@ private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection
         workspace: api.workspace,
         persons: api.persons,
         personStore: container.persons,
-        faceStore: container.faces
+        faceStore: container.faces,
+        metadataStore: container.metadata
     )
     return (LiveGalleryDataProvider(router: router), db)
 }

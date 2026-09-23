@@ -388,7 +388,7 @@ struct WritebackServiceTests {
             metadataSync: coordinator,
             metadataMutations: StubMutationPort(db: db, outbox: outbox),
             outboxRepo: outbox,
-            keywordOrigins: nil,
+            metadataStore: nil,
             assetResolver: nil
         )
 
@@ -474,7 +474,7 @@ struct WritebackServiceTests {
             metadataSync: coordinator,
             metadataMutations: StubMutationPort(db: db, outbox: outbox),
             outboxRepo: outbox,
-            keywordOrigins: nil,
+            metadataStore: nil,
             assetResolver: nil
         )
 

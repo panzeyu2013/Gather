@@ -192,6 +192,7 @@ public final class SessionCommandRouter: CommandRouter {
         persons: PersonsAPI,
         personStore: any PersonStore,
         faceStore: any FaceStore,
+        metadataStore: any MetadataStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -267,7 +268,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,
             outboxRepo: outboxRepo,
-            keywordOrigins: MetadataKeywordOriginRepo(connection: db),
+            metadataStore: metadataStore,
             assetResolver: assetResolver
         )
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))

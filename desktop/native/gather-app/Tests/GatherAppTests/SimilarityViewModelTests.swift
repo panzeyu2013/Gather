@@ -186,7 +186,7 @@ private func makeLiveProvider() throws -> (LiveSimilarityDataProvider, DBConnect
     try MigrationRunner().migrate(db)
     let settings = try makeTestSettings()
     let router = SessionCommandRouter.makeDefault(
-        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore)
+        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore)
     // JobService 需 start() 后 drain 才运行（TS index.ts:476 主进程启动语义；
     // 否则 sim.analyze job 永不执行，waitForResult 挂满超时）。
     router.jobService.start()

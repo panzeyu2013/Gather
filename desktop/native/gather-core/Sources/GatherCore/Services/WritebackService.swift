@@ -61,7 +61,8 @@ public final class WritebackService {
     private let metadataSync: any MetadataSyncPort
     private let metadataMutations: any MetadataMutationPort
     private let outboxRepo: MetadataOutboxRepo?
-    private let keywordOrigins: MetadataKeywordOriginRepo?
+    /// metadata_keyword_origins 的唯一入口（Store；nil 时不记录/不撤销来源）。
+    private let metadataStore: (any MetadataStore)?
     private let assetResolver: PhotoAssetResolver?
 
     public init(
@@ -73,7 +74,7 @@ public final class WritebackService {
         metadataSync: any MetadataSyncPort,
         metadataMutations: any MetadataMutationPort,
         outboxRepo: MetadataOutboxRepo? = nil,
-        keywordOrigins: MetadataKeywordOriginRepo? = nil,
+        metadataStore: (any MetadataStore)? = nil,
         assetResolver: PhotoAssetResolver? = nil
     ) {
         self.writebackRepo = writebackRepo
@@ -84,7 +85,7 @@ public final class WritebackService {
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
         self.outboxRepo = outboxRepo
-        self.keywordOrigins = keywordOrigins
+        self.metadataStore = metadataStore
         self.assetResolver = assetResolver
     }
 
@@ -432,7 +433,7 @@ public final class WritebackService {
                             // 不在文件上的关键词即本模块引入的。
                             let existing = Set(entry.keywordsBeforeWrite)
                             let introduced = keywords.filter { !existing.contains($0) }
-                            try? keywordOrigins?.markIntroduced(
+                            try? await metadataStore?.markKeywordIntroduced(
                                 xmpPath: entry.dbRow.xmpPath,
                                 source: "face-keyword",
                                 keywords: introduced
@@ -474,7 +475,7 @@ public final class WritebackService {
         sessionId: String,
         entries: [(photoId: String, xmpPath: String, keywords: [String])]
     ) async throws -> [String] {
-        guard let keywordOrigins else { return [] }
+        guard let metadataStore else { return [] }
         var byPath: [String: (photoId: String, keywords: Set<String>)] = [:]
         for entry in entries {
             var current = byPath[entry.xmpPath] ?? (photoId: entry.photoId, keywords: Set<String>())
@@ -483,7 +484,7 @@ public final class WritebackService {
         }
         var queued: [(xmpPath: String, keywords: [String])] = []
         for (xmpPath, entry) in byPath {
-            let owned = try keywordOrigins.getActiveIntroduced(
+            let owned = try await metadataStore.activeIntroducedKeywords(
                 xmpPath: xmpPath,
                 source: "face-keyword",
                 keywords: Array(entry.keywords)
@@ -503,7 +504,7 @@ public final class WritebackService {
         for item in queued {
             let result = summary.items.first { $0.xmpPath == item.xmpPath }
             if let result, result.status == .written || result.status == .synced {
-                try keywordOrigins.deactivate(xmpPath: item.xmpPath, source: "face-keyword", keywords: item.keywords)
+                try await metadataStore.deactivateKeywordOrigins(xmpPath: item.xmpPath, source: "face-keyword", keywords: item.keywords)
                 removed.append(contentsOf: item.keywords)
             } else {
                 let message = result?.errorMessage.isEmpty == false ? result!.errorMessage : ""
