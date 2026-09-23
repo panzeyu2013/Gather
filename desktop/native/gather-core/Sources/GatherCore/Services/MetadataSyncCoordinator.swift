@@ -221,7 +221,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: getConflicts —— 每个冲突行读一次磁盘上的 sidecar，并发与写入管线一致。
     public func getConflicts(sessionId: String) async throws -> [MetadataConflict] {
-        let rows = try outboxRepo.getBySession(sessionId).filter { $0.status == "conflict" }
+        let rows = try await writebackStore.outboxEntries(sessionId: sessionId).filter { $0.status == "conflict" }
         return try await batchAsync(rows, concurrency: MetadataSyncCoordinator.maxConcurrency) { row in
             let current = try await self.xmp.readAttributes(photoPath: row.photoPath)
             let base = safeObject(row.baseValuesJSON)
@@ -245,7 +245,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         xmpPath: String,
         choices: [MetadataField: MetadataConflictChoice]
     ) async throws -> MetadataSyncSummary {
-        let row = try outboxRepo.getBySession(sessionId).first { $0.xmpPath == xmpPath }
+        let row = try await writebackStore.outboxEntries(sessionId: sessionId).first { $0.xmpPath == xmpPath }
         guard let row, row.status == "conflict" else { throw MetadataSyncError.conflictNotFound }
         let conflict = try await getConflicts(sessionId: sessionId).first { $0.xmpPath == xmpPath }
         guard let conflict, !conflict.fields.isEmpty else { throw MetadataSyncError.conflictDetailsUnavailable }
@@ -273,7 +273,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             syncAcceptedRemoteValues(photoPath: row.photoPath, remote: current)
         }
         let fingerprint = try await MetadataFingerprint.contentFingerprint(xmpPath)
-        try outboxRepo.resolveConflict(
+        try await writebackStore.resolveOutboxConflict(
             xmpPath: xmpPath,
             patch: patch,
             dirtyFields: dirtyFields.map(\.rawValue),
@@ -301,12 +301,12 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: resolveOrphan（'keep' | 'restore' | 'retry'）。
     public func resolveOrphan(xmpPath: String, action: MetadataOrphanAction) async throws -> [MetadataOrphan] {
-        let row = try outboxRepo.getOrphans().first { $0.xmpPath == xmpPath }
+        let row = try await writebackStore.orphanOutbox().first { $0.xmpPath == xmpPath }
         guard let row else { throw MetadataSyncError.orphanNotFound }
         if action == .retry {
             if row.status == "conflict" { throw MetadataSyncError.conflictResolutionRequired }
             if row.status == "failed" {
-                try outboxRepo.resetForRetry(xmpPath)
+                try await writebackStore.resetOutboxForRetry(xmpPath: xmpPath)
             } else if row.status != "pending" {
                 throw MetadataSyncError.orphanNotRetryable
             }
@@ -327,13 +327,13 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         } else if !row.backupPath.isEmpty && xmp.fileExists(row.backupPath) {
             try await xmp.removeFile(row.backupPath)
         }
-        try outboxRepo.delete(xmpPath)
+        try await writebackStore.deleteOutbox(xmpPath: xmpPath)
         return try listOrphans()
     }
 
     /// TS: flushSession —— 取消会话内全部计时器后并行跑 pending/writing/failed 行。
     public func flushSession(sessionId: String) async throws -> MetadataSyncSummary {
-        let paths = try outboxRepo.getBySession(sessionId)
+        let paths = try await writebackStore.outboxEntries(sessionId: sessionId)
             .filter { ["pending", "writing", "failed"].contains($0.status) }
             .map(\.xmpPath)
         cancelTimers(paths: paths)
@@ -350,8 +350,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: retrySession —— failed 行重置后整体 flush。
     public func retrySession(sessionId: String) async throws -> MetadataSyncSummary {
-        for row in try outboxRepo.getBySession(sessionId) where row.status == "failed" {
-            try outboxRepo.resetForRetry(row.xmpPath)
+        for row in try await writebackStore.outboxEntries(sessionId: sessionId) where row.status == "failed" {
+            try await writebackStore.resetOutboxForRetry(xmpPath: row.xmpPath)
             clearReloadAckForXmpPath(row.xmpPath)
         }
         return try await flushSession(sessionId: sessionId)
@@ -373,7 +373,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: cleanup —— 只恢复本模块写入的行（另一模块未确认的 XMP 不得被恢复）。
     public func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult {
-        let rows = try outboxRepo.getBySession(sessionId)
+        let rows = try await writebackStore.outboxEntries(sessionId: sessionId)
         let eligible = rows.filter { $0.status == "synced" && $0.sourceModule == sourceModule }
         if eligible.isEmpty && !rows.isEmpty {
             throw MetadataSyncError.cleanupRequiresLoaded
@@ -387,10 +387,10 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 // 快照后可能排入新变更：恢复/删除文件前等待在飞写入并复核行仍 synced，
                 // 以免并发编辑被静默还原。
                 try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
-                guard let latest = try self.outboxRepo.get(row.xmpPath), latest.status == "synced" else { return (false, nil) }
+                guard let latest = try await self.writebackStore.outboxEntry(xmpPath: row.xmpPath), latest.status == "synced" else { return (false, nil) }
                 let currentFingerprint = try await MetadataFingerprint.contentFingerprint(row.xmpPath)
                 if !latest.baseFingerprint.isEmpty && currentFingerprint != latest.baseFingerprint {
-                    try self.outboxRepo.markStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT")
+                    try await self.writebackStore.markOutboxStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT")
                     throw MetadataSyncError.externallyModified
                 }
                 if !latest.backupPath.isEmpty {
@@ -399,8 +399,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 } else if self.xmp.fileExists(latest.xmpPath) {
                     try await self.xmp.removeFile(latest.xmpPath)
                 }
-                try self.outboxRepo.markStatus(xmpPath: latest.xmpPath, status: "cleaned")
-                try self.outboxRepo.delete(latest.xmpPath)
+                try await self.writebackStore.markOutboxStatus(xmpPath: latest.xmpPath, status: "cleaned")
+                try await self.writebackStore.deleteOutbox(xmpPath: latest.xmpPath)
                 return (true, nil)
             } catch {
                 return (false, "\(row.xmpPath): \(String(describing: error))")
@@ -418,7 +418,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: finalizeSession —— 删除恢复备份并 revision 守卫地删除行。
     public func finalizeSession(sessionId: String) async throws -> MetadataSyncSummary {
-        let rows = try outboxRepo.getBySession(sessionId)
+        let rows = try await self.writebackStore.outboxEntries(sessionId: sessionId)
         let eligible = rows.filter { $0.status == "synced" }
         if eligible.isEmpty && !rows.isEmpty {
             throw MetadataSyncError.confirmRequiresSync
@@ -427,18 +427,18 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         // 避免 .gather-backup 永久泄漏）；无关行可并行。
         try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row in
             try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
-            guard let latest = try self.outboxRepo.get(row.xmpPath), latest.status == "synced" else { return }
+            guard let latest = try await self.writebackStore.outboxEntry(xmpPath: row.xmpPath), latest.status == "synced" else { return }
             let backupPath = latest.backupPath
             if !backupPath.isEmpty && self.xmp.fileExists(backupPath) {
                 try await self.xmp.removeFile(backupPath)
             }
             // revision 守卫删除：备份移除期间排入的变更会 bump revision，
             // 只删恰被 finalize 的行，新事务存活。
-            try self.outboxRepo.deleteByRevision(xmpPath: latest.xmpPath, revision: latest.revision)
+            try await self.writebackStore.deleteOutboxByRevision(xmpPath: latest.xmpPath, revision: latest.revision)
             // 存活的同路径行不得继续指向已删除的备份（后续写入会跳过新建备份、
             // cleanup 会因悬空路径失败），陈旧引用清除。
             if !backupPath.isEmpty {
-                try self.outboxRepo.clearBackupPath(xmpPath: latest.xmpPath, backupPath: backupPath)
+                try await self.writebackStore.clearOutboxBackupPath(xmpPath: latest.xmpPath, backupPath: backupPath)
             }
         }
         return try emitSummary(sessionId: sessionId)
@@ -478,7 +478,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         while true {
             let activeTask = activeTask(for: xmpPath)
             if let activeTask { await activeTask.value }
-            guard let row = try? outboxRepo.get(xmpPath), row.status == "writing" else { return }
+            guard let row = try? await writebackStore.outboxEntry(xmpPath: xmpPath), row.status == "writing" else { return }
             if Date() >= deadline {
                 GatherLogger.log("Timed out waiting for metadata writer: \(xmpPath)", level: .warn)
                 throw MetadataSyncError.writerTimeout
@@ -554,17 +554,17 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             }()
             if stoppedNow { return }
             await ensureBaseline(xmpPath)
-            guard let row = try? outboxRepo.get(xmpPath),
+            guard let row = try? await writebackStore.outboxEntry(xmpPath: xmpPath),
                   ["pending", "writing", "failed"].contains(row.status) else { return }
             let shouldContinue = await processRow(row)
             if !shouldContinue { return }
-            guard let latest = try? outboxRepo.get(xmpPath), latest.status == "pending" else { return }
+            guard let latest = try? await writebackStore.outboxEntry(xmpPath: xmpPath), latest.status == "pending" else { return }
         }
     }
 
     /// TS: processRow —— 单行处理：claim → 崩溃窗口补写/冲突检测 → 备份写回 → markWritten。
-    private func processRow(_ row: MetadataOutboxRow) async -> Bool {
-        guard (try? outboxRepo.claim(xmpPath: row.xmpPath, expectedRevision: row.revision)) ?? false else { return false }
+    private func processRow(_ row: OutboxRecord) async -> Bool {
+        guard (try? await writebackStore.claimOutbox(xmpPath: row.xmpPath, expectedRevision: row.revision)) ?? false else { return false }
         // 行现在处于 writing：队列与 claim 之间幸存的任何 reload-ack
         // （崩溃窗口）都必须在行可达 written 前失效。
         clearReloadAckForXmpPath(row.xmpPath)
@@ -577,7 +577,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             if !row.backupPath.isEmpty, !row.baseFingerprint.isEmpty, currentToken != row.baseFingerprint {
                 let current = try await xmp.readAttributes(photoPath: row.photoPath)
                 if attributesMatchPatch(current, safeObject(row.patchJSON)) {
-                    try outboxRepo.markWritten(
+                    try await writebackStore.markOutboxWritten(
                         xmpPath: row.xmpPath,
                         revision: row.revision,
                         fingerprint: currentToken,
@@ -589,7 +589,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 }
             }
             if !row.baseFingerprint.isEmpty, currentToken != row.baseFingerprint, try await hasDirtyFieldConflict(row) {
-                try outboxRepo.markStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
+                try await writebackStore.markOutboxStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
                 emitPathSummaries(row.xmpPath)
                 return false
             }
@@ -599,7 +599,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 backupPath = row.backupPath
             } else {
                 backupPath = try await xmp.backup(photoPath: row.photoPath)
-                try outboxRepo.setBackupPath(xmpPath: row.xmpPath, backupPath: backupPath)
+                try await writebackStore.setOutboxBackupPath(xmpPath: row.xmpPath, backupPath: backupPath)
             }
             let patch = safeObject(row.patchJSON)
             try await xmp.writeAttributes(photoPath: row.photoPath, attributes: MetadataWriteAttributes(
@@ -609,7 +609,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             ))
             let persistedValues = try await xmp.readAttributes(photoPath: row.photoPath)
             let writtenFingerprint = try await MetadataFingerprint.contentFingerprint(row.xmpPath)
-            try outboxRepo.markWritten(
+            try await writebackStore.markOutboxWritten(
                 xmpPath: row.xmpPath,
                 revision: row.revision,
                 fingerprint: writtenFingerprint,
@@ -620,8 +620,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             return true
         } catch {
             let message = String(describing: error)
-            try? outboxRepo.markStatus(xmpPath: row.xmpPath, status: "failed", errorMessage: message)
-            let latest = try? outboxRepo.get(row.xmpPath)
+            try? await writebackStore.markOutboxStatus(xmpPath: row.xmpPath, status: "failed", errorMessage: message)
+            let latest = try? await writebackStore.outboxEntry(xmpPath: row.xmpPath)
             if let latest, latest.attemptCount < MetadataSyncCoordinator.maxAutomaticAttempts {
                 let retryIndex = min(Int(latest.attemptCount) - 1, MetadataSyncCoordinator.retryDelaysMs.count - 1)
                 schedule(xmpPath: row.xmpPath, delayMs: MetadataSyncCoordinator.retryDelaysMs[max(0, retryIndex)])
@@ -632,7 +632,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     }
 
     /// TS: hasDirtyFieldConflict。
-    private func hasDirtyFieldConflict(_ row: MetadataOutboxRow) async throws -> Bool {
+    private func hasDirtyFieldConflict(_ row: OutboxRecord) async throws -> Bool {
         let current = try await xmp.readAttributes(photoPath: row.photoPath)
         let base = safeObject(row.baseValuesJSON)
         let dirtyFields = MetadataConflictFields.tryParseDirtyFields(row.dirtyFields)
@@ -649,7 +649,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             if let existing = baselineTasks[xmpPath] { return existing }
             let task = Task { [weak self] in
                 guard let self else { return }
-                guard let row = try? self.outboxRepo.get(xmpPath), row.baseFingerprint.isEmpty else { return }
+                guard let row = try? await writebackStore.outboxEntry(xmpPath: xmpPath), row.baseFingerprint.isEmpty else { return }
                 let baselineFingerprint = (try? await MetadataFingerprint.contentFingerprint(row.xmpPath)) ?? ""
                 var baselineValues = JSONValue.object([:])
                 do {
@@ -657,7 +657,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 } catch {
                     // 损坏的 sidecar 在此被指纹化并由 writer 拒绝。
                 }
-                try? self.outboxRepo.initializeBaseline(
+                try? await writebackStore.initializeOutboxBaseline(
                     xmpPath: xmpPath,
                     baselineFingerprint: baselineFingerprint.isEmpty ? "__missing__" : baselineFingerprint,
                     baselineValues: baselineValues
