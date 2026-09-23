@@ -391,7 +391,6 @@ struct WritebackServiceTests {
             sessionRepo: SessionRepo(connection: db),
             metadataSync: coordinator,
             metadataMutations: StubMutationPort(db: db, outbox: outbox),
-            outboxRepo: outbox,
             metadataStore: nil,
             assetResolver: nil
         )
@@ -478,7 +477,6 @@ struct WritebackServiceTests {
             sessionRepo: SessionRepo(connection: db),
             metadataSync: coordinator,
             metadataMutations: StubMutationPort(db: db, outbox: outbox),
-            outboxRepo: outbox,
             metadataStore: nil,
             assetResolver: nil
         )

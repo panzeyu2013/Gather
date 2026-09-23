@@ -13,6 +13,6 @@ legacy Repositories files (R1)=6
 legacy Repo test files (R1)=7
 legacy SessionRepo callers (R1)=8
 legacy AnalysisJobRepo callers (R1)=3
-legacy MetadataOutboxRepo callers=3
+legacy MetadataOutboxRepo callers=2
 legacy PhotoRepo callers (R1)=8
 legacy AssetRepo callers (R1)=1

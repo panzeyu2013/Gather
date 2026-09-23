@@ -59,7 +59,6 @@ public final class WritebackService {
     private let sessionRepo: SessionRepo
     private let metadataSync: any MetadataSyncPort
     private let metadataMutations: any MetadataMutationPort
-    private let outboxRepo: MetadataOutboxRepo?
     /// metadata_keyword_origins 的唯一入口（Store；nil 时不记录/不撤销来源）。
     private let metadataStore: (any MetadataStore)?
     private let assetResolver: PhotoAssetResolver?
@@ -71,7 +70,6 @@ public final class WritebackService {
         sessionRepo: SessionRepo,
         metadataSync: any MetadataSyncPort,
         metadataMutations: any MetadataMutationPort,
-        outboxRepo: MetadataOutboxRepo? = nil,
         metadataStore: (any MetadataStore)? = nil,
         assetResolver: PhotoAssetResolver? = nil
     ) {
@@ -81,7 +79,6 @@ public final class WritebackService {
         self.sessionRepo = sessionRepo
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
-        self.outboxRepo = outboxRepo
         self.metadataStore = metadataStore
         self.assetResolver = assetResolver
     }
@@ -92,7 +89,8 @@ public final class WritebackService {
     /// written/synced 工作必须先确认并清理。outbox 行按 mutation-source 名存储，
     /// 与写入时的同一映射比较。
     private func assertNoActiveOtherModule(sessionId: String, module: String) async throws {
-        if let outboxRepo, try outboxRepo.hasActiveOtherModule(sessionId: sessionId, module: mutationSource(module).rawValue) {
+        if try await writebackStore.hasActiveOtherModule(
+            sessionId: sessionId, module: mutationSource(module).rawValue) {
             throw WritebackServiceError.otherModuleActive
         }
         // 未注入 outbox 仓库的调用方遗留兜底：镜像 outbox 门控——交互式 culling
@@ -197,7 +195,7 @@ public final class WritebackService {
         // culling 是连续同步模块：其 pending outbox 行可能携带用户交互式的
         // rating/label 编辑，与关键词 preview 无关——删除它们会静默丢失工作。
         if module != "culling" {
-            try? outboxRepo?.discardModulePending(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
+            try? await writebackStore.discardModulePending(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
         }
 
         // 轻投影：preview 只需要照片身份与 filepath，重 JSON 列从不读取。
@@ -235,18 +233,16 @@ public final class WritebackService {
                 existingKeywords = read
             }
             let merged = orderedUnion(existingKeywords, additionsBySidecar[sidecarPath] ?? [])
+            // outbox 冲突状态在进入预览构造前解析（Store 读为 async）。
+            let externalChanged = (try? await writebackStore.outboxEntry(xmpPath: sidecarPath))
+                .map { $0.status == "conflict" } ?? false
             let preview = WritebackItemPreview(
                 dirtyFields: [.keywords],
                 before: WritebackAttributes(keywords: existingKeywords),
                 after: WritebackAttributes(keywords: merged),
                 source: module,
                 sharedPhotoCount: sharedCounts[sidecarPath] ?? 1,
-                externalChanged: {
-                    if let outboxRepo, let row = try? outboxRepo.get(sidecarPath) {
-                        return row.status == "conflict"
-                    }
-                    return false
-                }(),
+                externalChanged: externalChanged,
                 willCreate: !xmp.fileExists(sidecarPath)
             )
             previewsBySidecar[sidecarPath] = preview

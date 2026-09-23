@@ -265,7 +265,6 @@ public final class SessionCommandRouter: CommandRouter {
             sessionRepo: sessionRepo,
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,
-            outboxRepo: outboxRepo,
             metadataStore: metadataStore,
             assetResolver: assetResolver
         )
