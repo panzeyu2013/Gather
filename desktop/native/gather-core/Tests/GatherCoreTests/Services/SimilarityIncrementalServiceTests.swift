@@ -68,11 +68,10 @@ private func removePhoto(_ db: DBConnection, _ id: String) throws {
     _ = try db.prepare("DELETE FROM photos WHERE id = ?").run([.text(id)])
 }
 
-private func makeIncrementalHarness(settings: [String: Double] = [:]) throws -> IncrementalHarness {
+private func makeIncrementalHarness(settings: [String: Double] = [:]) async throws -> IncrementalHarness {
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
     try insertSession(db, sessionId)
     let counter = ClusterCallCounter()
     let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
@@ -113,7 +112,7 @@ private func analyze(_ harness: IncrementalHarness, threshold: Double = 10) asyn
 struct SimilarityIncrementalServiceTests {
     @Test("首次分析全量并落状态，新增照片后走增量且版本递增")
     func incrementalPathSkipsFullClustering() async throws {
-        let harness = try makeIncrementalHarness()
+        let harness = try await makeIncrementalHarness()
         try addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b1111))
@@ -146,7 +145,7 @@ struct SimilarityIncrementalServiceTests {
 
     @Test("移除照片走增量且分量正确收缩")
     func removalGoesThroughIncremental() async throws {
-        let harness = try makeIncrementalHarness()
+        let harness = try await makeIncrementalHarness()
         try addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b1111))
@@ -167,7 +166,7 @@ struct SimilarityIncrementalServiceTests {
 
     @Test("哈希变化按移除 + 新增重算邻域")
     func hashChangeGoesThroughIncremental() async throws {
-        let harness = try makeIncrementalHarness()
+        let harness = try await makeIncrementalHarness()
         try addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try addPhotoWithHash(harness.db, "p3", hash: hex(outlier))
@@ -186,7 +185,7 @@ struct SimilarityIncrementalServiceTests {
 
     @Test("连续增量达到收敛间隔后自动全量重聚类并清零计数")
     func convergenceIntervalTriggersFullRecluster() async throws {
-        let harness = try makeIncrementalHarness(settings: ["similarity_cluster_convergence_interval": 2])
+        let harness = try await makeIncrementalHarness(settings: ["similarity_cluster_convergence_interval": 2])
         try addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try await analyze(harness)
@@ -214,7 +213,7 @@ struct SimilarityIncrementalServiceTests {
 
     @Test("阈值变化走全量并重写状态参数指纹")
     func thresholdChangeForcesFullRecluster() async throws {
-        let harness = try makeIncrementalHarness()
+        let harness = try await makeIncrementalHarness()
         try addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11111))
         try await analyze(harness)
@@ -235,7 +234,7 @@ struct SimilarityIncrementalServiceTests {
 
     @Test("sequential 模式无增量设施：全量并清除状态")
     func sequentialModeClearsState() async throws {
-        let harness = try makeIncrementalHarness()
+        let harness = try await makeIncrementalHarness()
         try addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try await analyze(harness)
@@ -255,7 +254,7 @@ struct SimilarityIncrementalServiceTests {
 
     @Test("状态行与结果一致：全量重算的划分与增量结果相同")
     func stateMatchesStoredResult() async throws {
-        let harness = try makeIncrementalHarness()
+        let harness = try await makeIncrementalHarness()
         try addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try addPhotoWithHash(harness.db, "p3", hash: hex(outlier))

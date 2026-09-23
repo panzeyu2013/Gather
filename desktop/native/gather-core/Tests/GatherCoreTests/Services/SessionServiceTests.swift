@@ -26,8 +26,7 @@ private func makeHarness(
 ) async throws -> SessionHarness {
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
     let service = SessionService(
         sessionStore: sessionStore,
@@ -187,8 +186,7 @@ struct SessionServiceDeleteAndQueryTests {
     func deleteSessionOrphansAssets() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,
@@ -220,8 +218,7 @@ struct SessionServiceDeleteAndQueryTests {
     func deleteRequiresConfirmation() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,
@@ -241,8 +238,7 @@ struct SessionServiceDeleteAndQueryTests {
     func getSessionDerivesSourcePath() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,
@@ -340,8 +336,7 @@ struct SessionServiceErrorCodeTests {
 
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,

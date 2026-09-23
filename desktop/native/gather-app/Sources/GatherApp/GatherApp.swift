@@ -82,7 +82,6 @@ struct GatherApp: App {
             let db = try DBConnection(path: dbURL.path)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
-            try MigrationRunner(databaseFilePath: dbURL.path).migrate(db)
 
             // R1/R5：设置存储切到 Store + SettingsAPI（同一库文件的新连接，
             // 打开即确保迁移到当前版本；快照供同步世界读取，写路径走异步 API）。

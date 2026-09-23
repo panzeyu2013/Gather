@@ -109,8 +109,7 @@ private func makeHarness(
 ) async throws -> SimilarityHarness {
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
     let session = try await sessionStore.create(name: "Run", source: "folder", sourcePath: "")
     let dir = try makeTempDir()
@@ -225,8 +224,7 @@ struct ReuseSimilarityHashesTests {
     func reuseAcrossSessions() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         try addPhoto(db, "p1", "session", "asset-a")
         try addPhoto(db, "p2", "session", "asset-a")
         try addPhoto(db, "p3", "session", "asset-b")
@@ -259,8 +257,7 @@ struct ReuseSimilarityHashesTests {
     func skipsOwnHashAndMismatches() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         try addPhoto(db, "q1", "session", "asset-c")
         try addPhoto(db, "q2", "session", "asset-c")
         try addHash(db, "session", "q2", "q2ownhash", 200, 2000)
@@ -292,8 +289,7 @@ struct ReuseSimilarityHashesTests {
     func newestCandidateAcrossChunkBoundary() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         for i in 0..<404 {
             try addPhoto(db, "r\(i)", "session", "asset-\(i)")
         }
@@ -319,8 +315,7 @@ struct ReuseSimilarityHashesTests {
     func keepsExistingTargetsUntouched() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
         try addPhoto(db, "s1", "session", "asset-e")
         try addPhoto(db, "s2", "session", "asset-e")
         try addHash(db, "session", "s2", "s2hash", 400, 4000)
@@ -363,7 +358,7 @@ struct SimilarityRunRecordTests {
             return row[6].textValue == "running"
         }
         #expect(runningSeen)
-        let running = try runRow(harness.db, harness.sessionId)!
+        let running = try await runRow(harness.db, harness.sessionId)!
         #expect(running[0].textValue == "similarity")
         #expect(running[1].intValue == 1)
         #expect(running[2].intValue == 0)
@@ -378,7 +373,7 @@ struct SimilarityRunRecordTests {
         gate.release()
         try await task.value
 
-        let finalized = try runRow(harness.db, harness.sessionId)!
+        let finalized = try await runRow(harness.db, harness.sessionId)!
         #expect(finalized[6].textValue == "ok")
         #expect(finalized[5].textValue != "")
     }
@@ -394,7 +389,7 @@ struct SimilarityRunRecordTests {
             try await harness.service.analyze(sessionId: harness.sessionId)
         }
 
-        let row = try runRow(harness.db, harness.sessionId)!
+        let row = try await runRow(harness.db, harness.sessionId)!
         #expect(row[6].textValue == "failed")
         #expect(row[5].textValue != "")
         let session = try await harness.sessionStore.get(id: harness.sessionId)
@@ -408,7 +403,7 @@ struct SimilarityRunRecordTests {
 
         try await harness.service.analyze(sessionId: harness.sessionId)
 
-        let row = try runRow(harness.db, harness.sessionId)!
+        let row = try await runRow(harness.db, harness.sessionId)!
         #expect(row[2].intValue == 1)
         #expect(row[6].textValue == "ok")
     }
@@ -439,8 +434,7 @@ struct SimilarityGetResultTests {
     func assemblesGroupsFromMembers() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "a.raw", "session", "/shoot/a.RAW", "asset-a")
@@ -501,8 +495,7 @@ struct SimilarityGetResultTests {
     func legacyGroupsJsonPath() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         _ = try db.prepare("""
@@ -543,8 +536,7 @@ struct SimilarityGetResultTests {
     func resolvesThresholdTiers() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "p2", "session", "/shoot/p2.jpg", nil)
@@ -585,10 +577,8 @@ struct SimilarityGetResultTests {
     func hasResultExistence() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
-        try MigrationRunner().migrate(db)
         try seedSessionRow(db, "session")
         let service = SimilarityService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
@@ -646,7 +636,7 @@ struct SimilarityCancellationTests {
         try await task.value
 
         // 早退路径：run 记录终态 failed（cancel 已写 cancelled），占用已释放。
-        let row = try runRow(harness.db, harness.sessionId)!
+        let row = try await runRow(harness.db, harness.sessionId)!
         #expect(row[6].textValue == "failed")
         let sessionAfter = try await harness.sessionStore.get(id: harness.sessionId)
         #expect(sessionAfter?.analysisStatus == "cancelled")
@@ -708,8 +698,7 @@ struct SimilarityServiceRobustnessTests {
     func getResultThrowsOnCorruptStats() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         try seedSessionRow(db, "session")
         _ = try db.prepare("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)

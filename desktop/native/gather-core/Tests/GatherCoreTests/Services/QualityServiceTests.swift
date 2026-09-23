@@ -18,11 +18,10 @@ private struct QualityEnv {
     let sessionStore: any SessionStore
 }
 
-private func makeQualityEnv() throws -> QualityEnv {
+private func makeQualityEnv() async throws -> QualityEnv {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-quality-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: path)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: path)
     return QualityEnv(db: db, photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: path)), sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }
 
@@ -110,7 +109,7 @@ private func makeHarness(
     },
     statProvider: @escaping QualityService.StatProvider = QualityService.defaultStat
 ) async throws -> QualityHarness {
-    let env = try makeQualityEnv()
+    let env = try await makeQualityEnv()
         let db = env.db
     let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
     let service = QualityService(
@@ -400,7 +399,7 @@ struct QualityAnalyzeTests {
 struct QualityGetTests {
     @Test("returns the latest stored row per photo and dedupes requested ids")
     func latestPerPhoto() async throws {
-        let env = try makeQualityEnv()
+        let env = try await makeQualityEnv()
         let db = env.db
         let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
         try insertAssetFile(db, id: "af-1", normalizedPath: "/vault/a.jpg")
@@ -447,7 +446,7 @@ struct QualityGetTests {
 
     @Test("returns empty for a session without stored results")
     func emptyWhenNoResults() async throws {
-        let env = try makeQualityEnv()
+        let env = try await makeQualityEnv()
         let db = env.db
         let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
         let service = QualityService(photoStore: env.photoStore, connection: db)
@@ -462,7 +461,7 @@ struct QualityGetTests {
 struct QualityRelativeRankTests {
     @Test("assigns relative ranks only inside persisted similarity groups")
     func ranksInsideGroupsOnly() async throws {
-        let env = try makeQualityEnv()
+        let env = try await makeQualityEnv()
         let db = env.db
         let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
         let now = "2026-07-30T10:00:00.000Z"

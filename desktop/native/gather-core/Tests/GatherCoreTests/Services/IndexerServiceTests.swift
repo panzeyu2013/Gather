@@ -52,8 +52,7 @@ private func makeHarness(
     // 同一临时文件库：旧连接 + Store 连接（asset 回填外键需要 sessions 行）。
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-indexer-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
     let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
     let session = try await sessionStore.create(name: "Index", source: "folder", sourcePath: root)
@@ -147,7 +146,7 @@ private func photoChecksum(_ db: DBConnection, _ photoId: String) throws -> Stri
     try db.prepare("SELECT checksum FROM photos WHERE id = ?").get([.text(photoId)])?[0].textValue
 }
 
-private func assetFileChecksum(_ db: DBConnection, _ assetFileId: String) throws -> String? {
+private func assetFileChecksum(_ db: DBConnection, _ assetFileId: String) async throws -> String? {
     try db.prepare("SELECT checksum FROM asset_files WHERE id = ?").get([.text(assetFileId)])?[0].textValue
 }
 
@@ -325,8 +324,7 @@ struct CancelledScanIndexSeqTests {
         }
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-indexer-cancel-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let session = try await sessionStore.create(name: "Index", source: "folder", sourcePath: root)
@@ -581,7 +579,7 @@ struct ChecksumBackfillTests {
         #expect(scan.discovered == 1)
         #expect(scan.skipped == 1)
         #expect(try photoChecksum(harness.db, "photo-1") == checksum)
-        #expect(try assetFileChecksum(harness.db, "af-1") == checksum)
+        #expect(try await assetFileChecksum(harness.db, "af-1") == checksum)
         #expect(try await harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
     }
 
@@ -649,7 +647,7 @@ struct ChecksumBackfillTests {
         // 也不碰空的 asset_files.checksum（preserve 条件写）。
         #expect(scan.missing == 0)
         #expect(try photoChecksum(harness.db, "photo-1") == checksum)
-        #expect(try assetFileChecksum(harness.db, "af-1") == "")
+        #expect(try await assetFileChecksum(harness.db, "af-1") == "")
         #expect(try await harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
     }
 
@@ -677,7 +675,7 @@ struct ChecksumBackfillTests {
         // 而非被空串覆盖。
         #expect(scan.missing == 0)
         #expect(try photoChecksum(harness.db, "photo-1") == "H")
-        #expect(try assetFileChecksum(harness.db, "af-1") == "")
+        #expect(try await assetFileChecksum(harness.db, "af-1") == "")
         let width = try harness.db.prepare("SELECT width FROM photos WHERE id = 'photo-1'").get()
         #expect(width?[0].intValue == 100)
     }
@@ -713,7 +711,7 @@ struct ChecksumBackfillTests {
         #expect(result.skipped == 1)
         #expect(try photoChecksum(harness.db, "pending") == "concurrent-hash")
         // 守卫未过：资产行写入一并跳过（photos 与 asset_files 保持一致）。
-        #expect(try assetFileChecksum(harness.db, "af-1") == "")
+        #expect(try await assetFileChecksum(harness.db, "af-1") == "")
     }
 
     @Test("supports cancellation between batches")

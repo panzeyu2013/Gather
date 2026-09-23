@@ -217,12 +217,11 @@ private func latestResultId(_ harness: CullingHarness) async throws -> Int64 {
 private func makeHarness(
     writeOutbox: Bool = false,
     history: Bool = true
-) throws -> CullingHarness {
+) async throws -> CullingHarness {
     // 历史栈在 Store 连接上：临时文件库双连接（旧 DBConnection + SQLiteDatabase）。
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-culling-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
     try insertSession(db, "session")
     let sync = FakeSyncPort()
     let mutations = FakeMutationPort(
@@ -329,7 +328,7 @@ private func addDecision(
 struct CullingDecideTests {
     @Test("decide keep → decision=keep, pickState=picked, revision=1，历史记录 fields=[pickState]")
     func decideKeep() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
 
         try await harness.service.decide(sessionId: "session", photoId: "p1", decision: .keep)
@@ -349,7 +348,7 @@ struct CullingDecideTests {
 
     @Test("decide reject → pickState=rejected；decide pending → unreviewed")
     func decideRejectAndPending() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
 
         try await harness.service.decide(sessionId: "session", photoId: "p1", decision: .reject)
@@ -365,7 +364,7 @@ struct CullingDecideTests {
 
     @Test("updateState rating 直写 cache + queuePhotoValues(rating) + schedule + syncStatus pending")
     func updateRatingQueuesMetadata() async throws {
-        let harness = try makeHarness(writeOutbox: true)
+        let harness = try await makeHarness(writeOutbox: true)
         try addPhoto(harness.db, id: "p1")
 
         let result = try await harness.service.update(
@@ -391,7 +390,7 @@ struct CullingDecideTests {
 
     @Test("updateState colorLabel 入队 label；None → 空串（写盘标签语义）")
     func updateColorLabelMapsNoneToEmpty() async throws {
-        let harness = try makeHarness(writeOutbox: true)
+        let harness = try await makeHarness(writeOutbox: true)
         try addPhoto(harness.db, id: "p1")
 
         _ = try await harness.service.update(
@@ -412,7 +411,7 @@ struct CullingDecideTests {
 
     @Test("updateState 携带 cache 兜底：无决策行时 rating/label 来自 cache")
     func updateStateFallsBackToCache() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try await harness.metadataStore.updateRating(photoId: "p1", rating: 4)
         try await harness.metadataStore.updateLabel(photoId: "p1", label: "Green")
@@ -427,7 +426,7 @@ struct CullingDecideTests {
 
     @Test("revision 冲突抛 CULLING_REVISION_CONFLICT（expected/current 插值）")
     func revisionConflictThrows() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try await harness.service.decide(sessionId: "session", photoId: "p1", decision: .keep)
 
@@ -443,7 +442,7 @@ struct CullingDecideTests {
 
     @Test("空补丁抛 CULLING_PATCH_INVALID；非法 rating/pickState/colorLabel 抛逐字消息")
     func validatePatchErrors() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
 
         await #expect(throws: CullingServiceError.patchInvalid) {
@@ -473,7 +472,7 @@ struct CullingDecideTests {
 
     @Test("未知照片抛 CULLING_PHOTO_NOT_IN_SESSION（fresh-read 兜底后仍缺失）")
     func unknownPhotoThrows() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "known")
 
         await #expect(throws: CullingServiceError.photoNotInSession) {
@@ -489,7 +488,7 @@ struct CullingDecideTests {
 
     @Test("IPC 式更新：getUpdateContext 复用上下文，第二次点击以新 revision 通过")
     func ipcStyleUpdateWithContext() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         let context = try await harness.service.getUpdateContext(sessionId: "session")
 
@@ -516,7 +515,7 @@ struct CullingDecideTests {
 struct CullingBatchTests {
     @Test("batchDecide 全部入组：upsert 顺序按输入序，组 id 来自相似度成员表")
     func batchDecideWritesGroupIds() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)])
@@ -541,7 +540,7 @@ struct CullingBatchTests {
 
     @Test("共享 RAW/JPEG 元数据合并为一次 XMP 操作（upsert 两次、queuePhotoValues 一次、结果一条）")
     func coalescesSharedMetadata() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addVariantPair(harness.db, assetId: "asset-1")
 
         let results = try await harness.service.batchUpdate(
@@ -563,7 +562,7 @@ struct CullingBatchTests {
 
     @Test("同一资产的变体 pick 更新合并为一次操作（upsert 两次、结果一条）")
     func coalescesAssetPick() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addVariantPair(harness.db, assetId: "asset-1")
 
         let results = try await harness.service.batchUpdate(
@@ -583,7 +582,7 @@ struct CullingBatchTests {
 
     @Test("decideSimilarityGroup：K 保留 + 其余拒绝，整批单事务")
     func decideGroupKeepsKRejectsRest() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         for id in ["p1", "p2", "p3", "p4"] { try addPhoto(harness.db, id: id) }
         try await addSimilarityResult(
             harness,
@@ -607,7 +606,7 @@ struct CullingBatchTests {
 
     @Test("成员表为空时回退 groups_json 重建组索引")
     func groupIndexFallsBackToGroupsJson() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1", filepath: "/a.jpg")
         try addPhoto(harness.db, id: "p2", filepath: "/b.jpg")
         // 直接插 similarity_results 行：groups_json 有组、成员表为空。
@@ -630,7 +629,7 @@ struct CullingBatchTests {
 
     @Test("batchUpdate 拒绝陈旧照片 id：CULLING_PHOTOS_NOT_IN_SESSION")
     func batchRejectsStalePhotoIds() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "known")
 
         await #expect(throws: CullingServiceError.photosNotInSession) {
@@ -643,7 +642,7 @@ struct CullingBatchTests {
 
     @Test("batchUpdate 空选择抛 CULLING_EMPTY_SELECTION")
     func batchEmptySelectionThrows() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
 
         await #expect(throws: CullingServiceError.emptySelection) {
             try await harness.service.batchUpdate(
@@ -654,7 +653,7 @@ struct CullingBatchTests {
 
     @Test("batchUpdate 去重输入 id 并给所有结果附同一历史操作 id")
     func batchDedupesAndSharesOperationId() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
 
@@ -675,7 +674,7 @@ struct CullingBatchTests {
 struct CullingHistoryTests {
     @Test("undo 恢复 before 快照并标记 undone；redo 恢复 after 快照")
     func undoThenRedo() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
@@ -707,7 +706,7 @@ struct CullingHistoryTests {
 
     @Test("undo/redo 同步恢复 rating/label（cache 与 outbox 一并回滚）")
     func undoRestoresRatingAndLabel() async throws {
-        let harness = try makeHarness(writeOutbox: true)
+        let harness = try await makeHarness(writeOutbox: true)
         try addPhoto(harness.db, id: "p1")
         let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
@@ -736,7 +735,7 @@ struct CullingHistoryTests {
 
     @Test("未知操作抛 CULLING_HISTORY_NOT_FOUND；方向状态不符抛 ALREADY_UNDONE / NOT_UNDONE")
     func historyStateErrors() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
@@ -772,7 +771,7 @@ struct CullingHistoryTests {
 
     @Test("历史操作被外部编辑分叉时抛 CULLING_HISTORY_DIVERGED")
     func historyDiverged() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
@@ -803,7 +802,7 @@ struct CullingHistoryTests {
 
     @Test("applyHistory 显式条目（renderer 重建补丁）：expectedRevision 校验 + 落库")
     func applyExplicitEntries() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
 
         let results = try await harness.service.applyHistory(
@@ -839,7 +838,7 @@ struct CullingHistoryTests {
 
     @Test("applyHistory 拒绝重复照片：'History command contains duplicate photos'")
     func applyRejectsDuplicatePhotos() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
 
         await #expect(throws: CullingServiceError.historyDuplicatePhotos) {
@@ -855,7 +854,7 @@ struct CullingHistoryTests {
 
     @Test("历史栈顺序守卫（仓库层，与 TS culling-history-repository 一致）：undo/redo 只能沿栈顶")
     func historyStackOrder() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         let first = try await harness.service.update(
@@ -887,7 +886,7 @@ struct CullingHistoryTests {
 
     @Test("undo 后追加新操作丢弃 redo 分支（TS 语义：append 删除 undone=1 行）")
     func appendDropsRedoBranch() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try addPhoto(harness.db, id: "p3")
@@ -918,7 +917,7 @@ struct CullingHistoryTests {
 
     @Test("getHistory 返回历史栈（limit 透传仓库 clamp）")
     func getHistoryLists() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         _ = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
@@ -937,7 +936,7 @@ struct CullingHistoryTests {
 struct CullingSummaryResetTests {
     @Test("getSummary 计数 kept/rejected/pending/rated/labeled + totalGroups（stats_json）")
     func summaryCounts() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         for id in ["p1", "p2", "p3", "p4", "p5"] { try addPhoto(harness.db, id: id) }
         try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 5)
         try addDecision(harness.db, photoId: "p2", decision: "keep")
@@ -959,7 +958,7 @@ struct CullingSummaryResetTests {
 
     @Test("totalGroups 在 stats_json 缺 totalGroups 时回退 groups_json 长度")
     func summaryTotalGroupsFallback() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         _ = try harness.db.prepare("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
@@ -976,14 +975,14 @@ struct CullingSummaryResetTests {
 
     @Test("无相似度结果时 totalGroups 为 0")
     func summaryWithoutSimilarity() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         #expect(try await harness.service.getSummary(sessionId: "session").totalGroups == 0)
     }
 
     @Test("reset 清空整个会话；reset(组) 只清该组（含 confirmed 命令面）")
     func resetScopes() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try addDecision(harness.db, photoId: "p1", decision: "keep")
@@ -1007,7 +1006,7 @@ struct CullingSummaryResetTests {
 
     @Test("getGroups 计数 keep/reject/pending 并按 groupIndex 排序")
     func groupsCountsAndOrder() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         for id in ["p1", "p2", "p3", "p4", "p5", "p6"] { try addPhoto(harness.db, id: id) }
         try await addSimilarityResult(
             harness,
@@ -1034,14 +1033,14 @@ struct CullingSummaryResetTests {
 
     @Test("无相似度结果时 getGroups 返回空")
     func groupsWithoutResult() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         #expect(try await harness.service.getGroups(sessionId: "session").isEmpty)
     }
 
     @Test("decideSimilarityGroup 前置校验：无结果/组太小/keep 非法")
     func decideGroupValidation() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
 
         await #expect(throws: CullingServiceError.noSimilarity) {
@@ -1079,7 +1078,7 @@ struct CullingSummaryResetTests {
 struct CullingWritebackTests {
     @Test("writeback 未确认抛 WRITEBACK_CONFIRM_REQUIRED")
     func writebackRequiresConfirm() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         await #expect(throws: CullingServiceError.writebackConfirmRequired) {
             _ = try await harness.service.writeback(
                 sessionId: "session", target: .keyword, confirmed: false
@@ -1090,7 +1089,7 @@ struct CullingWritebackTests {
 
     @Test("writeback 无决策抛 CULLING_NO_DECISIONS")
     func writebackNoDecisions() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
 
         await #expect(throws: CullingServiceError.noDecisions) {
@@ -1102,7 +1101,7 @@ struct CullingWritebackTests {
 
     @Test("writeback keyword：preview 按决策 id 过滤、关键词合并、persist 与 execute 接同一批项")
     func writebackKeywordFlow() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try addDecision(harness.db, photoId: "p1", decision: "keep")
@@ -1152,7 +1151,7 @@ struct CullingWritebackTests {
 
     @Test("writeback rating/color_label 计划：keep→5/Green，reject→1/Red")
     func writebackRatingAndLabelPlans() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try addDecision(harness.db, photoId: "p1", decision: "keep")
@@ -1186,7 +1185,7 @@ struct CullingWritebackTests {
 
     @Test("confirmSync：协调器确认 + 写回项存在时写回确认")
     func confirmSyncDelegates() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         harness.writeback.getItemsResult = [
             WritebackItem(id: 1, photoId: "p1", photoPath: "/shoot/p1.jpg", sessionId: "session",
                 module: "culling", keywords: [], xmpPath: "/shoot/p1.xmp", backupPath: "",
@@ -1201,7 +1200,7 @@ struct CullingWritebackTests {
 
     @Test("confirmSync 无写回项时只确认协调器")
     func confirmSyncWithoutWritebackItems() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try await harness.service.confirmSync(sessionId: "session")
         #expect(harness.sync.confirmSyncCalls.map(\.sourceModule) == ["culling"])
         #expect(harness.writeback.confirmSyncCalls.isEmpty)
@@ -1209,7 +1208,7 @@ struct CullingWritebackTests {
 
     @Test("cleanup 未确认抛 WRITEBACK_CLEANUP_CONFIRM_REQUIRED；确认后合并两路结果")
     func cleanupMergesResults() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         await #expect(throws: CullingServiceError.writebackCleanupConfirmRequired) {
             _ = try await harness.service.cleanup(sessionId: "session", confirmed: false)
         }
@@ -1226,7 +1225,7 @@ struct CullingWritebackTests {
 
     @Test("finalizeSync 未确认抛 CULLING_FINALIZE_CONFIRM_REQUIRED；retryFailedWriteback 未确认抛 WRITEBACK_RETRY_CONFIRM_REQUIRED")
     func finalizeAndRetryConfirmations() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         await #expect(throws: CullingServiceError.finalizeConfirmRequired) {
             _ = try await harness.service.finalizeSync(sessionId: "session", confirmed: false)
         }
@@ -1240,7 +1239,7 @@ struct CullingWritebackTests {
 
     @Test("syncStatus 委托协调器 getSummary")
     func syncStatusDelegates() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         let summary = try await harness.service.syncStatus(sessionId: "session")
         #expect(summary.sessionId == "session")
     }
@@ -1253,7 +1252,7 @@ struct CullingWritebackTests {
 struct CullingPaginationTests {
     @Test("RAW/JPEG 变体永不分页，total 计逻辑资产")
     func neverSplitsVariantsAcrossPages() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addVariantPair(harness.db, assetId: "asset-1")
         try addPhoto(harness.db, id: "single1", filepath: "/shoot/B001.jpg")
         try addPhoto(harness.db, id: "single2", filepath: "/shoot/C001.jpg")
@@ -1298,7 +1297,7 @@ struct CullingPaginationTests {
 
     @Test("filtered 页只匹配首选 RAW 时资产保持完整")
     func filteredKeepsAssetCompleteWhenRawMatches() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addVariantPair(harness.db, assetId: "asset-1")
         try addDecision(harness.db, photoId: "asset-1-raw", decision: "keep")
 
@@ -1316,7 +1315,7 @@ struct CullingPaginationTests {
 
     @Test("非首选 JPEG 单独匹配时资产被排除（SQL 下推与 JS 安全网一致）")
     func excludesAssetWhenOnlyJpegMatches() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addVariantPair(harness.db, assetId: "asset-1")
         try addPhoto(harness.db, id: "single", filepath: "/shoot/B001.jpg")
         try addDecision(harness.db, photoId: "asset-1-jpg", decision: "keep")
@@ -1338,7 +1337,7 @@ struct CullingPaginationTests {
 
     @Test("首选 RAW 匹配时 JPEG 变体仍在页内（游标为组首 rowid）")
     func keepsAssetCompleteWithRawMatch() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         // JPEG 先插（rowid 1, pending），RAW 后插（rowid 2, keep）。
         try addVariantPair(harness.db, assetId: "asset-1")
         try addDecision(harness.db, photoId: "asset-1-raw", decision: "keep")
@@ -1357,7 +1356,7 @@ struct CullingPaginationTests {
 
     @Test("similarity_group 页：可解析组 id 下推 SQL 并计数组成员")
     func similarityGroupPagePushdown() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         for id in ["p1", "p2"] { try addPhoto(harness.db, id: id) }
         try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)])
         let groupId = "\(try await latestResultId(harness)):0"
@@ -1382,7 +1381,7 @@ struct CullingPaginationTests {
 
     @Test("similarity_group 页：不可解析组 id 回退 JS 相似度映射（total 按成员计数）")
     func similarityGroupUnparseableFallback() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)])
@@ -1396,7 +1395,7 @@ struct CullingPaginationTests {
 
     @Test("预计算阈值层被最新结果谓词排除（stats_json 标记）")
     func excludesPrecomputedTiers() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         _ = try await harness.similarityStore.replaceResult(
@@ -1419,7 +1418,7 @@ struct CullingPaginationTests {
 
     @Test("quality 过滤器：损坏 result_json 行被跳过而不是让整页查询失败")
     func qualityFilterJsonGuard() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try insertAssetFile(harness.db, id: "af-bad", normalizedPath: "/shoot/bad.jpg")
         try insertAssetFile(harness.db, id: "af-good", normalizedPath: "/shoot/good.jpg")
         try insertAssetFile(harness.db, id: "af-mixed", normalizedPath: "/shoot/mixed.jpg")
@@ -1464,7 +1463,7 @@ struct CullingPaginationTests {
 
     @Test("list() 全量装配：metadata JSON 解析 + session 级富化")
     func listAssemblesFullRows() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1", filepath: "/shoot/a.jpg")
         _ = try harness.db.prepare(
             "UPDATE photos SET metadata = '{\"make\":\"Nikon\"}' WHERE id = 'p1'"
@@ -1482,7 +1481,7 @@ struct CullingPaginationTests {
 
     @Test("list() filtered 经 matchesFilters 过滤；metadataConflictOnly 只在 JS 层应用")
     func listFilteredScope() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1", filepath: "/shoot/a.jpg")
         try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 5)
         try await harness.metadataStore.updateLabel(photoId: "p1", label: "Red")
@@ -1502,7 +1501,7 @@ struct CullingPaginationTests {
 
     @Test("listPage 参数校验：afterRowId 非正 / limit 越界抛逐字 IPC 消息")
     func listPageValidation() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         await #expect(throws: CullingServiceError.afterRowIdInvalid) {
             _ = try await harness.service.listPage(sessionId: "session", scope: .all, afterRowId: 0)
         }
@@ -1520,7 +1519,7 @@ struct CullingPaginationTests {
 struct CullingEnrichmentTests {
     @Test("面孔归一化：归一化 bbox 保留，预览像素坐标换算并 clamp，按面积降序")
     func faceNormalization() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1", width: 200, height: 100)
         _ = try harness.db.prepare("""
             INSERT INTO face_observations (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h,
@@ -1551,7 +1550,7 @@ struct CullingEnrichmentTests {
 
     @Test("质量相对排名：同组成功质量按分数降序 1 起排名")
     func qualityRelativeRank() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try insertAssetFile(harness.db, id: "af-1", normalizedPath: "/shoot/p1.jpg")
         try insertAssetFile(harness.db, id: "af-2", normalizedPath: "/shoot/p2.jpg")
         try addPhoto(harness.db, id: "p1", assetFileId: "af-1")
@@ -1580,7 +1579,7 @@ struct CullingEnrichmentTests {
 
     @Test("metadataSource 从 outbox patch 解析；conflict 状态驱动 metadataConflictOnly 过滤")
     func metadataSourceAndConflictFilter() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         _ = try harness.db.prepare("""
@@ -1616,7 +1615,7 @@ struct CullingEnrichmentTests {
 
     @Test("invalidateSessionLookup 使缓存失效：后台分析后再次 list 读到新数据")
     func invalidateSessionLookup() async throws {
-        let harness = try makeHarness()
+        let harness = try await makeHarness()
         try addPhoto(harness.db, id: "p1")
         _ = try await harness.service.list(sessionId: "session", scope: .all)
         // 模拟后台人脸分析写入后失效缓存。

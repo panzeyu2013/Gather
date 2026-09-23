@@ -133,12 +133,11 @@ private func makeStubVM() -> (DashboardViewModel, StubDashboardProvider) {
 
 // MARK: - 真实服务集成（临时 SQLite）
 
-private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnection, SQLiteJobStore) {
+private func makeLiveProvider() async throws -> (LiveDashboardDataProvider, DBConnection, SQLiteJobStore) {
     // workspace.status 已切到 WorkspaceAPI（Store 连接）：两条连接指向同一临时库文件。
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-dashboard-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: path)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: path)
     let storeDatabase = try SQLiteDatabase(path: path)
     let container = AppContainer(database: storeDatabase)
     let jobStore = SQLiteJobStore(database: storeDatabase)
@@ -197,7 +196,7 @@ struct DashboardViewModelTests {
 
     // 真实库：sessions + photos + outbox → 概览计数正确（workspace status 加载）。
     @Test func loadAllAggregatesWorkspaceStatus() async throws {
-        let (provider, db, jobStore) = try makeLiveProvider()
+        let (provider, db, jobStore) = try await makeLiveProvider()
         try insertSession(db, "s1", name: "甲")
         try insertSession(db, "s2", name: "乙")
         try insertPhoto(db, id: "p1", sessionId: "s1")
@@ -227,7 +226,7 @@ struct DashboardViewModelTests {
 
     // 真实库：jobs.list 加载 → attention/history 分组 + scanJobs 种子。
     @Test func loadJobsGroupsAttentionAndHistory() async throws {
-        let (provider, db, jobStore) = try makeLiveProvider()
+        let (provider, db, jobStore) = try await makeLiveProvider()
         try insertSession(db, "s1")
         try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "j2", type: "metadata.scan", scopeId: "s1", status: "running", updatedAt: "2026-01-01T00:00:01.000Z")
@@ -271,7 +270,7 @@ struct DashboardViewModelTests {
 
     // 真实库：jobs cancel → DB 状态翻转；retry → 回 queued。
     @Test func cancelAndRetryMutateRealDB() async throws {
-        let (provider, db, jobStore) = try makeLiveProvider()
+        let (provider, db, jobStore) = try await makeLiveProvider()
         try insertSession(db, "s1")
         try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
 
@@ -289,7 +288,7 @@ struct DashboardViewModelTests {
 
     // 真实库：clear_completed 只清非阶段证据行（metadata.scan 保留）。
     @Test func clearCompletedKeepsStageEvidenceRows() async throws {
-        let (provider, db, jobStore) = try makeLiveProvider()
+        let (provider, db, jobStore) = try await makeLiveProvider()
         try insertSession(db, "s1")
         try insertJob(db, id: "scan1", type: "metadata.scan", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "t1", type: "thumbnail.build", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
@@ -516,7 +515,7 @@ struct DashboardViewModelTests {
 
     @Test func workspaceStatusMissingSessionIsSkipped() async throws {
         // 真实库：无该 session → getStatus 返回 nil，不抛错、不进 statuses。
-        let (provider, db, jobStore) = try makeLiveProvider()
+        let (provider, db, jobStore) = try await makeLiveProvider()
         try insertSession(db, "s1")
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()

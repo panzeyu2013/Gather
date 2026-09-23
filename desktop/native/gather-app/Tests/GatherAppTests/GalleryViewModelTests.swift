@@ -98,12 +98,11 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (GalleryViewModel
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
-private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection) {
+private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, DBConnection) {
     // faceCount/相册/人物/工作区均已切到 Store 连接：两条连接须指向同一临时库文件。
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-gallery-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: path)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: path)
     let container = AppContainer(database: try SQLiteDatabase(path: path))
     let api = GatherAPI(container: container)
     let router = SessionCommandRouter.makeDefault(
@@ -360,7 +359,7 @@ struct GalleryViewModelTests {
 
     // 真实库：变体折叠（expandVariants=false 每资产一行，首选 raw）+ 展开。
     @Test func liveProviderFoldsAndExpandsVariants() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         try insertLinkedAsset(db, sessionId: "s1", rawId: "raw1", jpegId: "jpeg1")
         try insertPhoto(db, id: "solo", sessionId: "s1")
@@ -391,7 +390,7 @@ struct GalleryViewModelTests {
     // cursor 语义与 TS photo.repo.ts 一致：满页返回末组 rowid，空页 null；
     // getNextPageParam 在空页后停（TS Gallery.tsx:75 同）。
     @Test func liveProviderKeysetPagination() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         for index in 0..<450 {
             try insertPhoto(db, id: "p\(String(format: "%03d", index))", sessionId: "s1")
@@ -419,7 +418,7 @@ struct GalleryViewModelTests {
 
     // 真实库：faceCount 来自 face_observations 聚合（hasFace 过滤）。
     @Test func liveProviderFaceCountAggregates() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         try insertPhoto(db, id: "faced", sessionId: "s1")
         try insertPhoto(db, id: "plain", sessionId: "s1")

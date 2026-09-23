@@ -1,5 +1,5 @@
 // Tests/GatherCoreTests/Store/StoreMigratorTests.swift
-// R1：新 StoreMigrator 与旧 MigrationRunner 的双跑等价性 + 回滚/幂等。
+// R1：StoreMigrator 的幂等性/回滚/不变量校验（StoreMigrator 已随 Migrations.swift 退役）。
 import Foundation
 import Testing
 @testable import GatherCore
@@ -9,11 +9,6 @@ struct StoreMigratorTests {
     /// 本机真实库 fixture（含用户数据，不入库）；CI 上不存在则跳过依赖它的用例。
     private static let fixturePath = "/private/tmp/gather-fixture/gather-v33.sqlite"
 
-    private func runLegacy(_ path: String, fallbackDir: String?) throws {
-        let connection = try DBConnection(path: path)
-        try MigrationRunner(databaseFilePath: path, faceThumbnailFallbackDir: fallbackDir).migrate(connection)
-        connection.close()
-    }
 
     private func runNew(_ path: String, fallbackDir: String?) async throws {
         let database = try SQLiteDatabase(path: path)
@@ -25,35 +20,6 @@ struct StoreMigratorTests {
         try SQLiteDatabase(path: path, configuration: .init(readOnly: true))
     }
 
-    @Test func freshDatabaseMatchesLegacyMigrationRunner() async throws {
-        let legacyPath = storeTempPath("legacy-fresh")
-        let newPath = storeTempPath("new-fresh")
-        let thumbnailDir = storeTempDir("thumbs-fresh")
-        defer {
-            removeStoreFiles(legacyPath)
-            removeStoreFiles(newPath)
-            removeStoreDirectory(thumbnailDir)
-        }
-
-        try runLegacy(legacyPath, fallbackDir: thumbnailDir)
-        try await runNew(newPath, fallbackDir: thumbnailDir)
-
-        let legacy = try readOnly(legacyPath)
-        let migrated = try readOnly(newPath)
-        let legacySchema = try await storeSchemaFingerprint(legacy)
-        let newSchema = try await storeSchemaFingerprint(migrated)
-        let legacyData = try await storeDataDigest(legacy)
-        let newData = try await storeDataDigest(migrated)
-        let legacyVersion = try await legacy.scalarInt("SELECT MAX(version) FROM schema_version")
-        let newVersion = try await migrated.scalarInt("SELECT MAX(version) FROM schema_version")
-        await legacy.close()
-        await migrated.close()
-
-        #expect(newVersion == 33)
-        #expect(newSchema == legacySchema, "空库迁移后结构与旧执行器不一致")
-        #expect(newData == legacyData, "空库迁移后数据与旧执行器不一致")
-        #expect(legacyVersion == newVersion)
-    }
 
     @Test func realWorldFixtureUpgradesIdentically() async throws {
         guard FileManager.default.fileExists(atPath: Self.fixturePath) else { return }
@@ -72,8 +38,9 @@ struct StoreMigratorTests {
         }
         try FileManager.default.copyItem(atPath: Self.fixturePath, toPath: legacyPath)
         try FileManager.default.copyItem(atPath: Self.fixturePath, toPath: newPath)
-
-        try runLegacy(legacyPath, fallbackDir: legacyThumbs)
+        // StoreMigrator 已随 Migrations.swift 退役：真实库 fixture 现以
+        // 「同源双跑」验证升级的确定性与幂等（两次迁移结果必须逐字节一致）。
+        try await runNew(legacyPath, fallbackDir: legacyThumbs)
         try await runNew(newPath, fallbackDir: newThumbs)
 
         let legacy = try readOnly(legacyPath)

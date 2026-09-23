@@ -3,12 +3,11 @@
 import Foundation
 import GatherCore
 
-/// 构建测试用 API 依赖：临时库先经旧 MigrationRunner 迁移（同步、复用既有
-/// core 迁移路径），再以 SQLiteDatabase 打开并包装为 GatherAPI 命名空间。
+/// 构建测试用 API 依赖：临时库经 StoreMigrator 迁移后，包装为 GatherAPI 命名空间。
 func makeTestSettings(
     file: StaticString = #filePath,
     line: UInt = #line
-) throws -> (
+) async throws -> (
     snapshot: SettingsSnapshot,
     api: SettingsAPI,
     templates: TemplatesAPI,
@@ -24,8 +23,7 @@ func makeTestSettings(
 ) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-app-settings-\(UUID().uuidString).sqlite").path
-    let bootstrap = try DBConnection(path: path)
-    try MigrationRunner().migrate(bootstrap)
+    let bootstrap = try await makeMigratedLegacyDB(path: path)
     let database = try SQLiteDatabase(path: path)
     let api = GatherAPI(container: AppContainer(database: database))
     return (
@@ -42,4 +40,13 @@ func makeTestSettings(
         api.container.similarity,
         api.container.writeback
     )
+}
+
+
+/// 旧连接 + Store schema：统一用 StoreMigrator 建表（legacy MigrationRunner 已退役）。
+@discardableResult
+func makeMigratedLegacyDB(path: String) async throws -> DBConnection {
+    let database = try SQLiteDatabase(path: path)
+    try await StoreMigrator().migrate(database)
+    return try DBConnection(path: path)
 }

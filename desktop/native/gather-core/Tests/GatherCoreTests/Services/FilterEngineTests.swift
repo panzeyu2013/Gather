@@ -22,8 +22,8 @@ private struct Harness {
 }
 
 /// TS: 种子 session + 3 照片 + 元数据。
-private func makeHarness() throws -> Harness {
-    let db = try makeMigratedDB()
+private func makeHarness() async throws -> Harness {
+    let db = try await makeMigratedDB()
     let now = "2026-07-30T10:00:00.000Z"
     _ = try db.prepare("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status,
@@ -78,24 +78,24 @@ private func rule(_ field: String, _ operator: FilterOperator, _ value: JSONValu
 @Suite("FilterEngine")
 struct FilterEngineTests {
     // TS: "rejects legacy or forged regular-expression filters"。
-    @Test func rejectsRegexOperator() throws {
-        let harness = try makeHarness()
+    @Test func rejectsRegexOperator() async throws {
+        let harness = try await makeHarness()
         let engine = FilterEngine(connection: harness.db)
         // FilterOperator 无 regex case —— 用字段名伪造（契约层已拒）。
         #expect(FilterOperator.allCases.map(\.rawValue).contains("regex") == false)
     }
 
     // TS: 未知字段 → FILTER_FIELD_UNKNOWN。
-    @Test func unknownFieldThrows() throws {
-        let harness = try makeHarness()
+    @Test func unknownFieldThrows() async throws {
+        let harness = try await makeHarness()
         #expect(throws: (any Error).self) {
             _ = try harness.engine.buildWhereClause(group(rule("nope", .eq, .string("x"))))
         }
     }
 
     // TS: directory 仅 eq/starts_with，其余抛错。
-    @Test func directoryRejectsUnsupportedOperators() throws {
-        let harness = try makeHarness()
+    @Test func directoryRejectsUnsupportedOperators() async throws {
+        let harness = try await makeHarness()
         #expect(throws: (any Error).self) {
             _ = try harness.engine.buildWhereClause(group(rule("directory", .contains, .string("x"))))
         }
@@ -105,8 +105,8 @@ struct FilterEngineTests {
     }
 
     // TS: in 空数组 → 1=0。
-    @Test func emptyInIsFalse() throws {
-        let harness = try makeHarness()
+    @Test func emptyInIsFalse() async throws {
+        let harness = try await makeHarness()
         let result = try harness.engine.buildWhereClause(group(rule("status", .in, .array([]))))
         #expect(result.sql == "1=0")
     }
@@ -117,8 +117,8 @@ struct FilterEngineTests {
     }
 
     // TS: between 二元组。
-    @Test func betweenProducesTwoParams() throws {
-        let harness = try makeHarness()
+    @Test func betweenProducesTwoParams() async throws {
+        let harness = try await makeHarness()
         let result = try harness.engine.buildWhereClause(group(rule(
             "rating", .between, .array([.number(2), .number(4)])
         )))
@@ -127,8 +127,8 @@ struct FilterEngineTests {
     }
 
     // TS: 递归组（or 内嵌 and 组）。
-    @Test func nestedGroupParenthesized() throws {
-        let harness = try makeHarness()
+    @Test func nestedGroupParenthesized() async throws {
+        let harness = try await makeHarness()
         let inner = FilterGroup(logic: .and, conditions: [
             .rule(rule("rating", .gte, .number(3))),
             .rule(rule("status", .eq, .string("ready"))),
@@ -143,8 +143,8 @@ struct FilterEngineTests {
     }
 
     // TS: filterPhotos 基本过滤 + 排序 + limit。
-    @Test func filterPhotosBasic() throws {
-        let harness = try makeHarness()
+    @Test func filterPhotosBasic() async throws {
+        let harness = try await makeHarness()
         let photos = try harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("camera_make", .eq, .string("Canon"))),
@@ -158,8 +158,8 @@ struct FilterEngineTests {
     }
 
     // TS: filterPhotos limit/offset 引擎内不钳制（直接透传）。
-    @Test func filterPhotosPassesLimitThrough() throws {
-        let harness = try makeHarness()
+    @Test func filterPhotosPassesLimitThrough() async throws {
+        let harness = try await makeHarness()
         let photos = try harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: FilterGroup(logic: .and, conditions: []),
@@ -169,8 +169,8 @@ struct FilterEngineTests {
     }
 
     // TS: countPhotos 会话内计数。
-    @Test func countPhotosSessionScoped() throws {
-        let harness = try makeHarness()
+    @Test func countPhotosSessionScoped() async throws {
+        let harness = try await makeHarness()
         let count = try harness.engine.countPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("status", .eq, .string("pending")))
@@ -179,8 +179,8 @@ struct FilterEngineTests {
     }
 
     // TS: keywords contains_any（json_each）。
-    @Test func keywordsContainsAny() throws {
-        let harness = try makeHarness()
+    @Test func keywordsContainsAny() async throws {
+        let harness = try await makeHarness()
         let ids = try harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .containsAny, .array([.string("travel"), .string("bw")])))
@@ -191,8 +191,8 @@ struct FilterEngineTests {
     }
 
     // TS: keywords contains_all —— 同时含 travel 与 bw 的只有 p1。
-    @Test func keywordsContainsAll() throws {
-        let harness = try makeHarness()
+    @Test func keywordsContainsAll() async throws {
+        let harness = try await makeHarness()
         let ids = try harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .containsAll, .array([.string("travel"), .string("bw")])))
@@ -201,8 +201,8 @@ struct FilterEngineTests {
     }
 
     // TS: keywords eq —— 集合相等（无序）。
-    @Test func keywordsEqIgnoresOrder() throws {
-        let harness = try makeHarness()
+    @Test func keywordsEqIgnoresOrder() async throws {
+        let harness = try await makeHarness()
         let ids = try harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .eq, .array([.string("bw"), .string("travel")])))
@@ -211,8 +211,8 @@ struct FilterEngineTests {
     }
 
     // TS: keywords exists —— 非空数组。
-    @Test func keywordsExists() throws {
-        let harness = try makeHarness()
+    @Test func keywordsExists() async throws {
+        let harness = try await makeHarness()
         let ids = try harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .exists, .null))
@@ -221,8 +221,8 @@ struct FilterEngineTests {
     }
 
     // TS: suggest —— camera_make LIKE，<2 字符返回空。
-    @Test func suggestFiltersByCameraMake() throws {
-        let harness = try makeHarness()
+    @Test func suggestFiltersByCameraMake() async throws {
+        let harness = try await makeHarness()
         let short = try harness.engine.suggest(harness.sessionId, keyword: "c")
         #expect(short.isEmpty)
         let suggestions = try harness.engine.suggest(harness.sessionId, keyword: "Can")
@@ -231,8 +231,8 @@ struct FilterEngineTests {
     }
 
     // TS: has_duplicates —— 种子 duplicate_groups 行。
-    @Test func hasDuplicatesFilters() throws {
-        let harness = try makeHarness()
+    @Test func hasDuplicatesFilters() async throws {
+        let harness = try await makeHarness()
         let db = harness.db
         _ = try db.prepare("""
             INSERT INTO duplicate_groups (id, session_id, group_type, checksum,

@@ -2,7 +2,7 @@
 // R1：DDL 单一来源的结构漂移门禁。
 // 两条建库路径必须逐列一致：
 //   ① StoreSchema.ddl（新库快路径，R1 起为唯一 DDL 来源）
-//   ② StoreMigrator（新注册表；其与旧 MigrationRunner 的等价性由 StoreMigratorTests 双跑保证）
+//   ② StoreMigrator（正式注册表：DDL 直建与其迁移结果必须一致）
 // 指纹覆盖：表、列（类型/NOT NULL/默认值/主键）、索引 SQL、外键、foreign_key_check。
 import Foundation
 import Testing
@@ -30,11 +30,11 @@ struct StoreSchemaTests {
             await database.close()
         }
 
-        // ② 旧迁移链（R1 期间作为 oracle）。
+        // ② 正式迁移链（StoreMigrator）作为 oracle 对照 DDL 直建。
         do {
-            let connection = try DBConnection(path: legacyPath)
-            try MigrationRunner(databaseFilePath: nil).migrate(connection)
-            connection.close()
+            let database = try SQLiteDatabase(path: legacyPath)
+            try await StoreMigrator().migrate(database)
+            await database.close()
         }
 
         let ddlDatabase = try SQLiteDatabase(path: ddlPath, configuration: .init(readOnly: true))

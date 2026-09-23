@@ -113,8 +113,8 @@ private func makeDuplicateHarness(
             entries: entries, threshold: threshold, minGroupSize: minGroupSize,
             mode: mode, onProgress: onProgress)
     }
-) throws -> DuplicateHarness {
-    let db = try makeMigratedDB()
+) async throws -> DuplicateHarness {
+    let db = try await makeMigratedDB()
     try insertSession(db, "session")
     let dir = try makeTempDir()
     let service = DuplicateService(
@@ -234,7 +234,7 @@ struct DuplicatePureFunctionTests {
 struct DuplicateScanTests {
     @Test("同内容文件形成精确组（含 checksum 回写与 similarity_hashes 落库）")
     func exactDuplicatesFormExactGroup() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         try addPhoto(harness, id: "a1", name: "a1.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "a2", name: "a2.jpg", content: jpegFixtureBytes)
 
@@ -272,7 +272,7 @@ struct DuplicateScanTests {
 
     @Test("exact 重复的照片绝不进入视觉组")
     func exactDuplicatesExcludedFromVisualGroups() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         try addPhoto(harness, id: "c1", name: "c1.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "c2", name: "c2.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "d1", name: "d1.png", content: pngFixtureBytes)
@@ -288,7 +288,7 @@ struct DuplicateScanTests {
 
     @Test("内容不同但视觉 hash 相同的文件形成视觉组")
     func visualDuplicatesFormVisualGroup() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         try addPhoto(harness, id: "v1", name: "v1.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "v2", name: "v2.png", content: pngFixtureBytes)
 
@@ -307,7 +307,7 @@ struct DuplicateScanTests {
     @Test("corrupt 缩略图静默跳过，其余照片照常分组")
     func corruptThumbnailIsSkippedSilently() async throws {
         let calls = CallCounter()
-        let harness = try makeDuplicateHarness(thumbnail: { filepath, _ in
+        let harness = try await makeDuplicateHarness(thumbnail: { filepath, _ in
             calls.increment()
             return filepath.hasSuffix("c1.jpg") ? nil : uniformPixels
         })
@@ -332,7 +332,7 @@ struct DuplicateScanTests {
 
     @Test("checksum 与 size/mtime 一致时复用，不重新哈希")
     func matchingChecksumRowsAreNotRehashed() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         let pathA = try addPhoto(harness, id: "a", name: "a.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "b", name: "b.jpg", content: jpegFixtureBytes)
         let statA = tsStat(pathA)!
@@ -366,7 +366,7 @@ struct DuplicateScanTests {
     @Test("similarity_hashes 行在 size/mtime 一致时复用，provider 只为缺失照片调用")
     func matchingVisualHashRowsAreReused() async throws {
         let calls = CallCounter()
-        let harness = try makeDuplicateHarness(thumbnail: { _, _ in
+        let harness = try await makeDuplicateHarness(thumbnail: { _, _ in
             calls.increment()
             return uniformPixels
         })
@@ -391,7 +391,7 @@ struct DuplicateScanTests {
 
     @Test("扫描结果持久化，getGroups 按 group_type, id 读取一致")
     func scanResultsPersistAndReload() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         let pathE1 = try addPhoto(harness, id: "e1", name: "e1.jpg", content: jpegFixtureBytes)
         let pathE2 = try addPhoto(harness, id: "e2", name: "e2.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "v1", name: "v1.png", content: pngFixtureBytes)
@@ -413,7 +413,7 @@ struct DuplicateScanTests {
     func scanIsSingleFlight() async throws {
         let gate = AsyncGate()
         let calls = CallCounter()
-        let harness = try makeDuplicateHarness(thumbnail: { _, _ in
+        let harness = try await makeDuplicateHarness(thumbnail: { _, _ in
             calls.increment()
             await gate.wait()
             return uniformPixels
@@ -458,7 +458,7 @@ struct DuplicateScanTests {
     @Test("视觉 hash 计算期间取消：抛取消且不落任何库")
     func cancellationDuringVisualHashPersistsNothing() async throws {
         let signal = JobAbortSignal()
-        let harness = try makeDuplicateHarness(thumbnail: { _, _ in
+        let harness = try await makeDuplicateHarness(thumbnail: { _, _ in
             signal.abort()
             return nil
         })
@@ -486,7 +486,7 @@ struct DuplicateScanTests {
 
     @Test("进度回调三个阶段：duplicate.read / duplicate.hash / duplicate.done")
     func progressReportsThreePhases() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         try addPhoto(harness, id: "p1", name: "p1.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "p2", name: "p2.png", content: pngFixtureBytes)
 
@@ -507,7 +507,7 @@ struct DuplicateScanTests {
     @Test("二次扫描完全复用已落库的 checksum 与视觉 hash")
     func secondScanReusesPersistedData() async throws {
         let calls = CallCounter()
-        let harness = try makeDuplicateHarness(thumbnail: { _, _ in
+        let harness = try await makeDuplicateHarness(thumbnail: { _, _ in
             calls.increment()
             return uniformPixels
         })
@@ -552,7 +552,7 @@ struct DuplicateResolveTests {
 
     @Test("keep_one 保留分数最高（size*1000 + mtimeMs）的成员并重算照片状态")
     func resolveGroupKeepOneKeepsBestMember() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         let pathA = try addPhoto(harness, id: "a", name: "a.jpg", content: jpegFixtureBytes)
         let pathB = try addPhoto(harness, id: "b", name: "b.jpg", content: jpegFixtureBytes)
         // 同内容同 size，用 mtime 决出最优：b 更新 → 保留 b。
@@ -589,8 +589,8 @@ struct DuplicateResolveTests {
     }
 
     @Test("keep_one 分数公式：size 分量可压过 mtime 分量")
-    func resolveGroupKeepOneScoresBySizeThenMtime() throws {
-        let db = try makeMigratedDB()
+    func resolveGroupKeepOneScoresBySizeThenMtime() async throws {
+        let db = try await makeMigratedDB()
         try insertSession(db, "session")
         _ = try db.prepare("""
             INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at)
@@ -622,7 +622,7 @@ struct DuplicateResolveTests {
 
     @Test("keep_all 保留全部成员并复位照片状态")
     func resolveGroupKeepAllKeepsAllMembers() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         _ = try await scanExactPair(harness)
         let group = try harness.service.getGroups(sessionId: harness.sessionId)[0]
 
@@ -638,8 +638,8 @@ struct DuplicateResolveTests {
     }
 
     @Test("组不存在或无成员：抛错且 UPDATE 回滚")
-    func resolveGroupMissingOrEmptyThrowsAndRollsBack() throws {
-        let db = try makeMigratedDB()
+    func resolveGroupMissingOrEmptyThrowsAndRollsBack() async throws {
+        let db = try await makeMigratedDB()
         try insertSession(db, "session")
         // 有组但无成员：UPDATE resolution 必须先执行再抛错，事务回滚。
         _ = try db.prepare("""
@@ -664,7 +664,7 @@ struct DuplicateResolveTests {
 
     @Test("resolve_member：isKept=false 移除成员并写 keep_one，照片置 removed")
     func resolveMemberIsKeptFalseMarksRemoved() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         let result = try await scanExactPair(harness)
         let members = result.exactGroups[0].members
         let memberA = members.first { $0.photoId == "a" }!
@@ -687,7 +687,7 @@ struct DuplicateResolveTests {
 
     @Test("resolve_member：COALESCE 语义——已定的 resolution 不被覆盖")
     func resolveMemberCoalescesExistingResolution() async throws {
-        let harness = try makeDuplicateHarness()
+        let harness = try await makeDuplicateHarness()
         let result = try await scanExactPair(harness)
         let memberA = result.exactGroups[0].members.first { $0.photoId == "a" }!
         try harness.service.resolveMember(memberId: memberA.id, isKept: false)
@@ -707,8 +707,8 @@ struct DuplicateResolveTests {
     }
 
     @Test("resolve_member：成员不存在抛错")
-    func resolveMemberMissingMemberThrows() throws {
-        let db = try makeMigratedDB()
+    func resolveMemberMissingMemberThrows() async throws {
+        let db = try await makeMigratedDB()
         let service = DuplicateService(connection: db)
 
         #expect(throws: DuplicateServiceError.memberNotFound(9999)) {

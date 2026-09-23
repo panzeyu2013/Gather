@@ -12,8 +12,8 @@ private struct ResolverHarness {
     let settings: [String: String]
 }
 
-private func makeHarness(settings: [String: String] = [:]) throws -> ResolverHarness {
-    let db = try makeMigratedDB()
+private func makeHarness(settings: [String: String] = [:]) async throws -> ResolverHarness {
+    let db = try await makeMigratedDB()
     return ResolverHarness(db: db, settings: settings)
 }
 
@@ -67,8 +67,8 @@ private func seedBoundAsset(
 @Suite("PhotoAssetResolver.resolve")
 struct PhotoAssetResolverResolveTests {
     @Test("resolves to the legacy path by default when no asset linkage exists")
-    func legacyDefault() throws {
-        let harness = try makeHarness()
+    func legacyDefault() async throws {
+        let harness = try await makeHarness()
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/shoot/a.jpg")
         let resolver = makeResolver(harness)
 
@@ -84,8 +84,8 @@ struct PhotoAssetResolverResolveTests {
     }
 
     @Test("resolves to the asset path in asset mode with a binding xmp path")
-    func assetModeWithBinding() throws {
-        let harness = try makeHarness(settings: ["asset_read_mode": "asset"])
+    func assetModeWithBinding() async throws {
+        let harness = try await makeHarness(settings: ["asset_read_mode": "asset"])
         try seedBoundAsset(
             harness.db, photoId: "p1", sessionId: "s1",
             legacyPath: "/legacy/a.jpg", assetFileId: "af1",
@@ -102,8 +102,8 @@ struct PhotoAssetResolverResolveTests {
     }
 
     @Test("falls back to the legacy path in asset mode without a binding xmp path")
-    func assetModeWithoutBindingXmp() throws {
-        let harness = try makeHarness(settings: ["asset_read_mode": "asset"])
+    func assetModeWithoutBindingXmp() async throws {
+        let harness = try await makeHarness(settings: ["asset_read_mode": "asset"])
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/shoot/a.jpg")
         try insertAsset(harness.db, id: "af1")
         try insertAssetFile(harness.db, id: "af1", normalizedPath: "/vault/a.NEF")
@@ -121,8 +121,8 @@ struct PhotoAssetResolverResolveTests {
     }
 
     @Test("throws for a photo outside the session")
-    func photoNotInSession() throws {
-        let harness = try makeHarness()
+    func photoNotInSession() async throws {
+        let harness = try await makeHarness()
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/shoot/a.jpg")
         let resolver = makeResolver(harness)
 
@@ -132,8 +132,8 @@ struct PhotoAssetResolverResolveTests {
     }
 
     @Test("throws when asset mode demands a completed migration")
-    func assetModeIncompleteMigration() throws {
-        let harness = try makeHarness(settings: ["asset_read_mode": "asset"])
+    func assetModeIncompleteMigration() async throws {
+        let harness = try await makeHarness(settings: ["asset_read_mode": "asset"])
         // 照片无资产链接：迁移不完整。
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/shoot/a.jpg")
         let resolver = makeResolver(harness)
@@ -147,8 +147,8 @@ struct PhotoAssetResolverResolveTests {
 @Suite("PhotoAssetResolver.resolveMany")
 struct PhotoAssetResolverResolveManyTests {
     @Test("batches reads and skips unknown photos")
-    func batchesAndSkipsUnknown() throws {
-        let harness = try makeHarness(settings: ["asset_read_mode": "asset"])
+    func batchesAndSkipsUnknown() async throws {
+        let harness = try await makeHarness(settings: ["asset_read_mode": "asset"])
         try seedBoundAsset(
             harness.db, photoId: "p1", sessionId: "s1",
             legacyPath: "/legacy/a.jpg", assetFileId: "af1",
@@ -168,8 +168,8 @@ struct PhotoAssetResolverResolveManyTests {
     }
 
     @Test("dedupes by photo id keeping the newest binding")
-    func dedupesKeepingNewestBinding() throws {
-        let harness = try makeHarness(settings: ["asset_read_mode": "asset"])
+    func dedupesKeepingNewestBinding() async throws {
+        let harness = try await makeHarness(settings: ["asset_read_mode": "asset"])
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/legacy/a.jpg")
         try insertAsset(harness.db, id: "af1")
         try insertAssetFile(harness.db, id: "af1", normalizedPath: "/vault/a.NEF")
@@ -197,8 +197,8 @@ struct PhotoAssetResolverResolveManyTests {
     }
 
     @Test("returns empty for empty input")
-    func emptyInput() throws {
-        let harness = try makeHarness()
+    func emptyInput() async throws {
+        let harness = try await makeHarness()
         let resolver = makeResolver(harness)
         let resolved = try resolver.resolveMany(sessionId: "s1", photoIds: [])
         #expect(resolved.isEmpty)

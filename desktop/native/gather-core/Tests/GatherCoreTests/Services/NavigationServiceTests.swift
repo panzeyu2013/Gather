@@ -13,8 +13,8 @@ private struct Harness {
 }
 
 /// TS: navigation-service.test.ts fixture —— 3 照片 + 元数据 + 哈希。
-private func makeHarness() throws -> Harness {
-    let db = try makeMigratedDB()
+private func makeHarness() async throws -> Harness {
+    let db = try await makeMigratedDB()
     let now = "2026-07-30T10:00:00.000Z"
     _ = try db.prepare("""
         INSERT INTO sessions (
@@ -78,8 +78,8 @@ struct NavigationServiceTests {
     }
 
     // TS: "recomputes when thresholds change and explains the rating-only lead fallback"。
-    @Test func recomputesWhenThresholdsChange() throws {
-        let harness = try makeHarness()
+    @Test func recomputesWhenThresholdsChange() async throws {
+        let harness = try await makeHarness()
         let initial = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = initial.first { $0.type == .burst }
         let scene = initial.first { $0.type == .scene }
@@ -94,8 +94,8 @@ struct NavigationServiceTests {
     }
 
     // TS: "keeps manual overrides scoped to their own navigation type"。
-    @Test func manualOverridesScopedToOwnType() throws {
-        let harness = try makeHarness()
+    @Test func manualOverridesScopedToOwnType() async throws {
+        let harness = try await makeHarness()
         let groups = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = try #require(groups.first { $0.type == .burst })
         _ = try harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p2")
@@ -117,8 +117,8 @@ struct NavigationServiceTests {
     }
 
     // TS: "penalizes the current heuristic closed-eye warning when choosing a lead"。
-    @Test func closedEyeWarningPenalizedInLead() throws {
-        let harness = try makeHarness()
+    @Test func closedEyeWarningPenalizedInLead() async throws {
+        let harness = try await makeHarness()
         let db = harness.db
         let now = "2026-07-30T10:00:00.000Z"
         _ = try db.prepare("""
@@ -161,8 +161,8 @@ struct NavigationServiceTests {
     }
 
     // TS 补充：merge 错误码（≥2 组/同类型）。
-    @Test func mergeValidation() throws {
-        let harness = try makeHarness()
+    @Test func mergeValidation() async throws {
+        let harness = try await makeHarness()
         let groups = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = try #require(groups.first { $0.type == .burst })
         let scene = try #require(groups.first { $0.type == .scene })
@@ -182,8 +182,8 @@ struct NavigationServiceTests {
     }
 
     // TS 补充：split 越界 → NAV_SPLIT_OUT_OF_GROUP。
-    @Test func splitOutOfGroupThrows() throws {
-        let harness = try makeHarness()
+    @Test func splitOutOfGroupThrows() async throws {
+        let harness = try await makeHarness()
         let groups = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = try #require(groups.first { $0.type == .burst })
         #expect(throws: (any Error).self) {
@@ -199,8 +199,8 @@ struct NavigationServiceTests {
     }
 
     // TS: 缓存语义 —— 相同指纹直接返回缓存组（不重建，组 id 不变）。
-    @Test func fingerprintCacheReusesGroups() throws {
-        let harness = try makeHarness()
+    @Test func fingerprintCacheReusesGroups() async throws {
+        let harness = try await makeHarness()
         let first = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let firstBurst = try #require(first.first { $0.type == .burst })
         let second = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)

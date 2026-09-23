@@ -22,8 +22,7 @@ private func makeExportDatabase() async throws -> ExportTestEnv {
     // 临时文件库：ExportService 的 photoStore 需与旧连接同库读取照片行。
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-export-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: path)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: path)
     let store = try SQLitePhotoStore(database: try SQLiteDatabase(path: path))
     return ExportTestEnv(db: db, photoStore: store, sessionStore: SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }

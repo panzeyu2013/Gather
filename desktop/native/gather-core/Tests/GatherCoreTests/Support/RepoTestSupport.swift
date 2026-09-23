@@ -4,11 +4,21 @@
 import Foundation
 @testable import GatherCore
 
-/// 打开已迁移的内存库（外键开启、索引已建）。
-func makeMigratedDB() throws -> DBConnection {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
-    return db
+/// 旧连接 + Store schema：统一用 StoreMigrator 建表（legacy MigrationRunner 已退役）。
+@discardableResult
+func makeMigratedLegacyDB(path: String) async throws -> DBConnection {
+    let database = try SQLiteDatabase(path: path)
+    try await StoreMigrator().migrate(database)
+    return try DBConnection(path: path)
+}
+
+
+/// 打开已迁移的临时文件库（外键开启、索引已建）。
+/// 说明：Store 迁移器与旧连接无法共享 :memory: 实例，故改用唯一临时文件。
+func makeMigratedDB() async throws -> DBConnection {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-legacy-\(UUID().uuidString).sqlite").path
+    return try await makeMigratedLegacyDB(path: path)
 }
 
 func insertSession(_ db: DBConnection, _ id: String) throws {

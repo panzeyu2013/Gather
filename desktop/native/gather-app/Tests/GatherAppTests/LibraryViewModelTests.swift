@@ -12,7 +12,7 @@ import Testing
 private func makeTempSessionStore() async throws -> any GatherCore.SessionStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-sessions-\(UUID().uuidString).sqlite").path
-    try MigrationRunner().migrate(try DBConnection(path: path))
+    _ = try await makeMigratedLegacyDB(path: path)
     return try GatherCore.SQLiteSessionStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -20,7 +20,7 @@ private func makeTempSessionStore() async throws -> any GatherCore.SessionStore 
 private func makeTempPhotoStore() async throws -> any GatherCore.PhotoStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-photos-\(UUID().uuidString).sqlite").path
-    try MigrationRunner().migrate(try DBConnection(path: path))
+    _ = try await makeMigratedLegacyDB(path: path)
     return try GatherCore.SQLitePhotoStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -28,7 +28,7 @@ private func makeTempPhotoStore() async throws -> any GatherCore.PhotoStore {
 private func makeTempAssetStore() async throws -> any GatherCore.AssetStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-assets-\(UUID().uuidString).sqlite").path
-    try MigrationRunner().migrate(try DBConnection(path: path))
+    _ = try await makeMigratedLegacyDB(path: path)
     return try GatherCore.SQLiteAssetStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -92,11 +92,10 @@ private func makeLiveProvider() async throws -> (LiveLibraryDataProvider, DBConn
     // 同一临时文件库：SessionService/Store 读需与旧连接同库。
     let tempStorePath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-library-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: tempStorePath)
-    try MigrationRunner().migrate(db)
-    try MigrationRunner().migrate(try DBConnection(path: tempStorePath))
+    let db = try await makeMigratedLegacyDB(path: tempStorePath)
+    _ = try await makeMigratedLegacyDB(path: tempStorePath)
     let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
-    let settings = try makeTestSettings()
+    let settings = try await makeTestSettings()
     let router = SessionCommandRouter.makeDefault(
         db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try await makeTempPhotoStore(), sessionStore: try GatherCore.SQLiteSessionStore(database: try GatherCore.SQLiteDatabase(path: tempStorePath)))
     return (LiveLibraryDataProvider(router: router), db)

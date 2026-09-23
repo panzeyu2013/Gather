@@ -123,8 +123,7 @@ private func makeFaceKwHarness(
     // workspace 之外的 person 路径已切到 Store：文件库供两条连接共享。
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-fkw-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: dbPath)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: dbPath)
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
     let session = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "Run", source: "folder", sourcePath: "")
     let dir = try makeTempDir()
@@ -201,7 +200,7 @@ private func bind(_ harness: FaceKwHarness, clusterId: Int64, roleName: String, 
     try await harness.faceStore.updateBinding(clusterId: clusterId, roleName: roleName, keywords: keywords)
 }
 
-private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
+private func runRow(_ db: DBConnection, _ sessionId: String) async throws -> DBRow? {
     try db.prepare(
         "SELECT kind, photo_count, index_seq, params, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?"
     ).get([.text(sessionId)])
@@ -309,7 +308,7 @@ struct FaceKwRunRecordTests {
             eps: 0.6, minPts: 2)
 
         #expect(result.status == "done")
-        let row = try runRow(harness.db, harness.sessionId)!
+        let row = try await runRow(harness.db, harness.sessionId)!
         #expect(row[0].textValue == "face")
         #expect(row[1].intValue == 1)
         #expect(row[2].intValue == 0)
@@ -335,7 +334,7 @@ struct FaceKwRunRecordTests {
             sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
 
         #expect(result.status == "failed")
-        let row = try runRow(harness.db, harness.sessionId)!
+        let row = try await runRow(harness.db, harness.sessionId)!
         #expect(row[6].textValue == "failed")
         #expect(row[5].textValue != "")
         #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "failed")
@@ -379,7 +378,7 @@ struct FaceKwAnalyzeFlowTests {
         #expect(probe.value == false)  // 推理未被调用
         #expect(phases.contains("face.cached-clusters"))
         #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "done")
-        #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
+        #expect(try await runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
     }
 
     @Test("cancels an in-flight analysis and writes cancelled status")
@@ -405,7 +404,7 @@ struct FaceKwAnalyzeFlowTests {
         #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "cancelled")
         // 取消的 run 以 'failed' 终态（sessions.analysis_status 为 'cancelled'，
         // 与 TS 语义一致）。
-        #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "failed")
+        #expect(try await runRow(harness.db, harness.sessionId)?[6].textValue == "failed")
     }
 
     @Test("rejects a second analyze while one is running")
@@ -516,8 +515,7 @@ struct FaceKwAnalyzeFlowTests {
     func throwsNoPhotos() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let session = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "Empty", source: "folder")
         let service = FaceKwService(
@@ -560,8 +558,7 @@ struct FaceKwBindingMigrationTests {
     ) async throws -> (db: DBConnection, service: FaceKwService, faceStore: SQLiteFaceStore, sessionId: String) {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionId = "session-1"
         try insertSession(db, sessionId)
         for id in ["p1", "p2", "p3", "p4"] {
@@ -672,8 +669,7 @@ struct FaceKwGetClustersTests {
     func truncatesMembersAndMapsBinding() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionId = "session-1"
         try insertSession(db, sessionId)
         for i in 1...5 {
@@ -741,8 +737,7 @@ struct FaceKwClusterCommandTests {
     func bindClusterErrors() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let sessionA = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "A", source: "folder")
         let sessionB = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "B", source: "folder")

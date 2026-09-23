@@ -181,12 +181,11 @@ private func makeStubVM(
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
-private func makeLiveProvider() throws -> (LiveSimilarityDataProvider, DBConnection) {
+private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, DBConnection) {
     // 相似度结果/群组读经 Store 连接：两条连接须指向同一临时库文件。
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-vm-\(UUID().uuidString).sqlite").path
-    let db = try DBConnection(path: path)
-    try MigrationRunner().migrate(db)
+    let db = try await makeMigratedLegacyDB(path: path)
     let container = AppContainer(database: try SQLiteDatabase(path: path))
     let api = GatherAPI(container: container)
     let router = SessionCommandRouter.makeDefault(
@@ -509,7 +508,7 @@ struct SimilarityViewModelTests {
 
     // 真实库：sim.result 直读预置结果（groups_json 旧格式路径，无需成员表）。
     @Test func liveProviderReadsSeededResult() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         let groupsJSON = """
         {"groups":[{"id":1,"label":"Group 1","count":2,"images":[{"path":"/vault/a.NEF","representative":true},{"path":"/vault/b.JPG"}]}],"ungrouped":[{"path":"/vault/u.NEF"}]}
@@ -542,7 +541,7 @@ struct SimilarityViewModelTests {
     // 真实库全链路：sim.analyze（JobService executor）复用预置 hash →
     // 聚类 1 组 3 张 → 完成刷新结果。
     @Test func liveAnalyzeClustersSeededHashes() async throws {
-        let (provider, db) = try makeLiveProvider()
+        let (provider, db) = try await makeLiveProvider()
         try insertSession(db, "s1")
         // 三张同哈希照片（阈值 0 下 1 组 3 张）。
         for index in 0..<3 {

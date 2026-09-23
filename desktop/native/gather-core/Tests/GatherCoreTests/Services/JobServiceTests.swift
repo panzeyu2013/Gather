@@ -21,12 +21,11 @@ private final class Env {
     let service: JobService
     var progressFrames: [(jobId: String, update: JobProgressUpdate)] = []
 
-    init(heartbeatMs: Int64 = 1_000) throws {
+    init(heartbeatMs: Int64 = 1_000) async throws {
         // Store 连接与旧 DBConnection 各持一条连接：临时文件库（内存库不可共享）。
         dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-jobs-\(UUID().uuidString).sqlite").path
-        connection = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(connection)
+        connection = try await makeMigratedLegacyDB(path: dbPath)
         jobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: dbPath))
         service = JobService(jobStore: jobStore, heartbeatIntervalMs: heartbeatMs)
     }
@@ -80,7 +79,7 @@ struct JobServiceTests {
     }
 
     @Test func createRunsViaDrainAndSucceeds() async throws {
-        let env = try Env()
+        let env = try await Env()
         await env.service.registerExecutor(type: .metadataScan) { _, context in
             await context.updateProgress(JobProgressUpdate(current: 1, total: 2, message: "scanning"))
             return "ok"
@@ -99,7 +98,7 @@ struct JobServiceTests {
     }
 
     @Test func cancelsRunningJob() async throws {
-        let env = try Env(heartbeatMs: 100)
+        let env = try await Env(heartbeatMs: 100)
         let gate = Gate()
         await env.service.registerExecutor(type: .similarityAnalyze) { _, _ in
             await gate.wait()
@@ -127,7 +126,7 @@ struct JobServiceTests {
     }
 
     @Test func cancelsQueuedJobAndEmitsTerminalFrame() async throws {
-        let env = try Env(heartbeatMs: 100)
+        let env = try await Env(heartbeatMs: 100)
         let gate = Gate()
         // 前两个任务占满并发（上限 2），第三个排队。
         await env.service.registerExecutor(type: .faceAnalyze) { _, _ in
@@ -168,7 +167,7 @@ struct JobServiceTests {
     }
 
     @Test func retryRequeuesFailedJob() async throws {
-        let env = try Env()
+        let env = try await Env()
         await env.service.start()
         defer { Task { await env.service.stop() } }
 
@@ -184,7 +183,7 @@ struct JobServiceTests {
     }
 
     @Test func clearCompletedKeepsStageEvidence() async throws {
-        let env = try Env()
+        let env = try await Env()
         // 直接造终态行（claim + finish）：metadata.scan 与 export.execute 应被保留。
         let scan = try await env.service.create(env.makeParams(type: .metadataScan))
         _ = try await env.jobStore.claim(id: scan.id, leaseOwner: env.service.leaseOwner)
@@ -204,7 +203,7 @@ struct JobServiceTests {
     }
 
     @Test func waitForResultHandlesPersistedTerminalStates() async throws {
-        let env = try Env()
+        let env = try await Env()
         await env.service.start()
         defer { Task { await env.service.stop() } }
 
@@ -250,7 +249,7 @@ struct JobServiceTests {
     }
 
     @Test func waitForResultTimesOutForPendingJob() async throws {
-        let env = try Env()
+        let env = try await Env()
         await env.service.start()
         defer { Task { await env.service.stop() } }
 
@@ -271,7 +270,7 @@ struct JobServiceTests {
     /// 立即取回。此用例构造「任务已完成但结果未取」场景，waitForResult
     /// 必须立即返回而非等待超时。
     @Test func waitForResultReturnsImmediatelyForCompletedButUntakenResult() async throws {
-        let env = try Env()
+        let env = try await Env()
         let job = try await env.service.create(env.makeParams(type: .duplicateScan))
         // 任务已完成（完成结果已登记、尚未被任何 waitForResult 取走）。
         env.service.completeResultForTesting(id: job.id, value: "early-result")
@@ -286,7 +285,7 @@ struct JobServiceTests {
     /// completeResult(.error(notClaimable))），等待者会收到错误类型漂移。
     /// 修复后已登记结果存在时跳过覆盖。此用例直接驱动该分支做确定性验证。
     @Test func claimFailureDoesNotOverwriteQueuedCancellationResult() async throws {
-        let env = try Env()
+        let env = try await Env()
         await env.service.start()
         defer { Task { await env.service.stop() } }
 
@@ -317,7 +316,7 @@ struct JobServiceTests {
     }
 
     @Test func throttlesProgressAndFlushesCheckpoint() async throws {
-        let env = try Env()
+        let env = try await Env()
         var updates: [JobProgressUpdate] = []
         env.service.setProgressSink { _, update in
             updates.append(update)
@@ -348,7 +347,7 @@ struct JobServiceTests {
     }
 
     @Test func abortsWhenHeartbeatFails() async throws {
-        let env = try Env(heartbeatMs: 50)
+        let env = try await Env(heartbeatMs: 50)
         let gate = Gate()
         var observedAbort: Bool?
         let boxLock = NSLock()
@@ -396,7 +395,7 @@ struct JobServiceTests {
     }
 
     @Test func enforcesConcurrencyLimit() async throws {
-        let env = try Env(heartbeatMs: 100)
+        let env = try await Env(heartbeatMs: 100)
         let gate = Gate()
         var running = 0
         let runningLock = NSLock()
@@ -430,7 +429,7 @@ struct JobServiceTests {
     }
 
     @Test func stoppedServiceDoesNotDrain() async throws {
-        let env = try Env()
+        let env = try await Env()
         var executed = false
         await env.service.registerExecutor(type: .checksumBackfill) { _, _ in
             executed = true

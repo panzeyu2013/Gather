@@ -97,12 +97,11 @@ private struct CoordinatorFixture {
     let coordinator: MetadataSyncCoordinator
 
     let sessionStore: any SessionStore
-    init() throws {
+    init() async throws {
         // 写回行读写经 Store 连接（独立连接）：两条连接须指向同一临时库文件。
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-mdc-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-sync-tests-\(UUID().uuidString)", isDirectory: true)
             .path
@@ -162,7 +161,7 @@ private func waitForStatus(
 struct MetadataSyncCoordinatorTests {
     /// 1) 排程写回：备份原始侧车 → 写入新属性 → markWritten（指纹与基线落库）。
     @Test func scheduledWritebackBacksUpWritesAndMarksWritten() async throws {
-        let fx = try CoordinatorFixture()
+        let fx = try await CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
         try await fx.outbox.mergeOutboxPatch(
@@ -195,7 +194,7 @@ struct MetadataSyncCoordinatorTests {
 
     /// 2) 外部修改侧车后再次排程 → 冲突（XMP_EXTERNAL_EDIT_CONFLICT），不覆盖外部内容。
     @Test func externalEditRaisesConflict() async throws {
-        let fx = try CoordinatorFixture()
+        let fx = try await CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
         try await fx.outbox.mergeOutboxPatch(
@@ -235,7 +234,7 @@ struct MetadataSyncCoordinatorTests {
 
     /// 3) reload-ack 门控：确认同步后清理恢复原始侧车并删除 outbox 行。
     @Test func confirmAndCleanupRestoresBackup() async throws {
-        let fx = try CoordinatorFixture()
+        let fx = try await CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
         try await fx.outbox.mergeOutboxPatch(
@@ -275,7 +274,7 @@ struct MetadataSyncCoordinatorTests {
 
     /// 4) 备份缺失：cleanup 报 XMP_BACKUP_MISSING，行保持 synced（可重试）。
     @Test func cleanupReportsBackupMissingWithoutDeleting() async throws {
-        let fx = try CoordinatorFixture()
+        let fx = try await CoordinatorFixture()
         defer { fx.cleanupFiles() }
 
         try await fx.outbox.mergeOutboxPatch(
@@ -364,8 +363,7 @@ struct WritebackServiceTests {
     @Test func previewThenExecuteWritesSidecarAndReportsResult() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-wb-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-writeback-tests-\(UUID().uuidString)", isDirectory: true)
             .path
@@ -430,8 +428,7 @@ struct WritebackServiceTests {
     @Test func previewBlockedByOtherModuleActive() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-wb-\(UUID().uuidString).sqlite").path
-        let db = try DBConnection(path: dbPath)
-        try MigrationRunner().migrate(db)
+        let db = try await makeMigratedLegacyDB(path: dbPath)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-writeback-tests-\(UUID().uuidString)", isDirectory: true)
             .path
