@@ -56,6 +56,45 @@ public protocol AssetStore: Sendable {
     func acceptCandidate(_ candidateId: String) async throws
     func rejectCandidate(_ candidateId: String) async throws
     func reconcileRawJpegLinks(sessionId: String) async throws -> Int64
+
+    // MARK: 回填
+
+    func backfillSession(_ sessionId: String) async throws -> AssetBackfillResult
+}
+
+public struct AssetBackfillResult: Equatable, Sendable {
+    public let migrated: Int64
+    public let offline: Int64
+    public let candidates: Int64
+
+    public init(migrated: Int64, offline: Int64, candidates: Int64) {
+        self.migrated = migrated
+        self.offline = offline
+        self.candidates = candidates
+    }
+}
+
+public struct PhotoBackfillRecord: Decodable, Equatable, Sendable {
+    public let migrationRowid: Int64
+    public let id: String
+    public let sessionId: String
+    public let filepath: String
+    public let filename: String
+    public let checksum: String
+    public let status: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, filepath, filename, checksum, status
+        case migrationRowid = "migration_rowid"
+        case sessionId = "session_id"
+    }
+}
+
+struct AssetRawJpegFile: Equatable, Sendable {
+    let id: String
+    let filename: String
+    let normalizedPath: String
+    let fileExtension: String
 }
 
 public enum AssetStoreError: Error, Equatable, CustomStringConvertible, Sendable {
@@ -843,5 +882,411 @@ public extension SQLiteAssetStore {
                 [.text(sessionId), .text(membership), .text(sessionId), .text(membership)]
             )
         }
+    }
+}
+
+// MARK: - 回填实现
+
+public extension SQLiteAssetStore {
+    /// 增量回填：逐批（250）扫描未关联照片，写回 asset_files/asset_members/
+    /// session_assets/sidecar_bindings，末尾生成 RAW/JPEG 候选并收敛状态。
+    func backfillSession(_ sessionId: String) async throws -> AssetBackfillResult {
+        var migrated: Int64 = 0
+        var offline: Int64 = 0
+        let total = try await database.scalarInt(
+            "SELECT COUNT(*) AS count FROM photos WHERE session_id = ?",
+            [.text(sessionId)]
+        ) ?? 0
+        var cursor = try await database.scalarInt(
+            "SELECT last_photo_rowid FROM asset_backfill_state WHERE session_id = ?",
+            [.text(sessionId)]
+        ) ?? 0
+        try await database.run(
+            """
+            INSERT INTO asset_backfill_state (session_id, last_photo_rowid, total_photos, status, updated_at)
+            VALUES (?, ?, ?, 'running', ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+              total_photos = excluded.total_photos,
+              status = 'running',
+              updated_at = excluded.updated_at
+            """,
+            [.text(sessionId), .int(cursor), .int(total), .text(nowISOString())]
+        )
+
+        do {
+            while true {
+                let photos = try await database.query(
+                    """
+                    SELECT rowid AS migration_rowid, *
+                    FROM photos
+                    WHERE session_id = ? AND rowid > ?
+                      AND (asset_id IS NULL OR asset_file_id IS NULL)
+                    ORDER BY rowid
+                    LIMIT 250
+                    """,
+                    [.text(sessionId), .int(cursor)]
+                ).map { try $0.decode(PhotoBackfillRecord.self) }
+                if photos.isEmpty && cursor > 0 {
+                    let remaining = try await database.scalarInt(
+                        """
+                        SELECT COUNT(*) AS count FROM photos
+                        WHERE session_id = ? AND (asset_id IS NULL OR asset_file_id IS NULL)
+                        """,
+                        [.text(sessionId)]
+                    ) ?? 0
+                    if remaining > 0 {
+                        cursor = 0
+                        continue
+                    }
+                }
+                if photos.isEmpty { break }
+                let batch = try await database.transaction { db -> (migrated: Int64, offline: Int64, cursor: Int64) in
+                    var batchMigrated: Int64 = 0
+                    var batchOffline: Int64 = 0
+                    var batchCursor = cursor
+                    for photo in photos {
+                        let result = try Self.ensurePhoto(db, sessionId: sessionId, photo: photo)
+                        batchMigrated += result.migrated
+                        batchOffline += result.offline
+                        batchCursor = photo.migrationRowid
+                    }
+                    try db.run(
+                        """
+                        UPDATE asset_backfill_state
+                        SET last_photo_rowid = ?, migrated_photos = migrated_photos + ?,
+                            offline_files = offline_files + ?, updated_at = ?
+                        WHERE session_id = ?
+                        """,
+                        [
+                            .int(batchCursor), .int(batchMigrated), .int(batchOffline),
+                            .text(nowISOString()), .text(sessionId),
+                        ]
+                    )
+                    return (batchMigrated, batchOffline, batchCursor)
+                }
+                migrated += batch.migrated
+                offline += batch.offline
+                cursor = batch.cursor
+            }
+        } catch {
+            _ = try? await database.run(
+                "UPDATE asset_backfill_state SET status = 'failed', updated_at = ? WHERE session_id = ?",
+                [.text(nowISOString()), .text(sessionId)]
+            )
+            throw error
+        }
+
+        let candidates = try await createRawJpegCandidates(sessionId)
+        try await database.run(
+            """
+            UPDATE asset_backfill_state
+            SET candidate_links = candidate_links + ?, status = 'completed', updated_at = ?
+            WHERE session_id = ?
+            """,
+            [.int(candidates), .text(nowISOString()), .text(sessionId)]
+        )
+        return AssetBackfillResult(migrated: migrated, offline: offline, candidates: candidates)
+    }
+
+    // MARK: 私有：RAW/JPEG 候选
+
+    internal func createRawJpegCandidates(_ sessionId: String) async throws -> Int64 {
+        let files = try await database.query(
+            """
+            SELECT DISTINCT af.id, af.filename, af.normalized_path, af.extension
+            FROM asset_files af
+            JOIN asset_members am ON am.file_id = af.id
+            JOIN session_assets sa ON sa.asset_id = am.asset_id
+            WHERE sa.session_id = ?
+              AND af.extension IN ('.nef', '.arw', '.cr2', '.cr3', '.dng', '.raf', '.orf', '.rw2', '.pef', '.srw',
+                                   '.jpg', '.jpeg')
+            """,
+            [.text(sessionId)]
+        ).map {
+            AssetRawJpegFile(
+                id: $0.text("id") ?? "",
+                filename: $0.text("filename") ?? "",
+                normalizedPath: $0.text("normalized_path") ?? "",
+                fileExtension: $0.text("extension") ?? ""
+            )
+        }
+        var seen = Set<String>()
+        let fileIds = files.compactMap { file -> String? in
+            guard !seen.contains(file.id) else { return nil }
+            seen.insert(file.id)
+            return file.id
+        }
+        var existingPairs = Set<String>()
+        for chunk in fileIds.chunked(by: 500) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT left_file_id, right_file_id FROM asset_link_candidates
+                WHERE left_file_id IN (\(placeholders)) OR right_file_id IN (\(placeholders))
+                """,
+                chunk.map { .text($0) } + chunk.map { .text($0) }
+            )
+            for row in rows {
+                let left = row.text("left_file_id") ?? ""
+                let right = row.text("right_file_id") ?? ""
+                existingPairs.insert("\(left)\u{0}\(right)")
+                existingPairs.insert("\(right)\u{0}\(left)")
+            }
+        }
+
+        var candidatesByStem: [String: (raws: [AssetRawJpegFile], jpegs: [AssetRawJpegFile])] = [:]
+        for file in files {
+            let directory = TSPath.dirname(file.normalizedPath).lowercased()
+            let stem = TSPath.stem(file.filename).lowercased()
+            let key = "\(directory)\u{0}\(stem)"
+            var group = candidatesByStem[key] ?? (raws: [], jpegs: [])
+            if Self.mediaType(file.fileExtension) == "raw" {
+                group.raws.append(file)
+            } else if [".jpg", ".jpeg"].contains(file.fileExtension) {
+                group.jpegs.append(file)
+            }
+            candidatesByStem[key] = group
+        }
+
+        var created: Int64 = 0
+        try await database.transaction { db in
+            for (groupKey, group) in candidatesByStem {
+                let stem = String(groupKey.split(separator: "\u{0}", maxSplits: 1).last ?? "")
+                for raw in group.raws {
+                    for jpeg in group.jpegs {
+                        if existingPairs.contains("\(raw.id)\u{0}\(jpeg.id)") { continue }
+                        let timestamp = nowISOString()
+                        let unambiguous = group.raws.count == 1 && group.jpegs.count == 1
+                        let evidence = JSONValue.object([
+                            "basename": JSONValue.string(stem),
+                            "sameDirectory": JSONValue.bool(true),
+                            "sameSession": JSONValue.bool(true),
+                            "unambiguous": .bool(unambiguous),
+                            "requiresManualConfirmation": JSONValue.bool(true),
+                        ])
+                        try db.run(
+                            """
+                            INSERT INTO asset_link_candidates
+                              (id, left_file_id, right_file_id, relation_type, confidence,
+                               evidence_json, status, created_at, updated_at)
+                            VALUES (?, ?, ?, 'raw_jpeg', ?, ?, 'pending', ?, ?)
+                            """,
+                            [
+                                .text(newUUIDString()),
+                                .text(raw.id),
+                                .text(jpeg.id),
+                                .real(unambiguous ? 0.85 : 0.7),
+                                .text(try JSONValue.stringify(evidence)),
+                                .text(timestamp),
+                                .text(timestamp),
+                            ]
+                        )
+                        created += 1
+                    }
+                }
+            }
+        }
+        return created
+    }
+
+    // MARK: 私有：单照片回填
+
+    internal static func ensurePhoto(
+        _ db: isolated SQLiteDatabase,
+        sessionId: String,
+        photo: PhotoBackfillRecord
+    ) throws -> (migrated: Int64, offline: Int64) {
+        let absolute = TSPath.resolve(photo.filepath)
+        let normalizedPath = TSPath.normalize(absolute)
+        let extensionWithDot = TSPath.extname(absolute).lowercased()
+        var fileSize: Int64 = 0
+        var mtimeMs: Double = 0
+        var deviceId: Int64?
+        var fileIdentity = ""
+        var onlineStatus = "online"
+        if let info = tsStat(absolute) {
+            fileSize = info.size
+            mtimeMs = info.mtimeMs
+            deviceId = info.dev
+            fileIdentity = String(info.ino)
+        } else {
+            onlineStatus = "offline"
+        }
+        let timestamp = nowISOString()
+        let volumeId: String
+        if let deviceId {
+            volumeId = "dev:\(deviceId)"
+        } else if let rootStat = tsStat(TSPath.root(absolute)) {
+            volumeId = "dev:\(rootStat.dev)"
+        } else {
+            volumeId = "path:\(TSPath.root(absolute))"
+        }
+
+        var file: AssetFileRef?
+        if !fileIdentity.isEmpty {
+            file = try db.queryOne(
+                """
+                SELECT id, normalized_path FROM asset_files
+                WHERE volume_id = ? AND file_identity = ?
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                [.text(volumeId), .text(fileIdentity)]
+            ).map { AssetFileRef(id: $0.text("id") ?? "", normalizedPath: $0.text("normalized_path") ?? "") }
+        }
+        if file == nil {
+            file = try db.queryOne(
+                "SELECT id, normalized_path FROM asset_files WHERE normalized_path = ? ORDER BY updated_at DESC LIMIT 1",
+                [.text(normalizedPath)]
+            ).map { AssetFileRef(id: $0.text("id") ?? "", normalizedPath: $0.text("normalized_path") ?? "") }
+        }
+
+        let fileId: String
+        if let file {
+            let previousPath = file.normalizedPath
+            try db.run(
+                """
+                UPDATE asset_files
+                SET volume_id = ?, file_identity = CASE WHEN ? != '' THEN ? ELSE file_identity END,
+                    normalized_path = ?, filename = ?, extension = ?,
+                    file_size = ?, file_mtime_ms = ?,
+                    checksum = CASE WHEN ? != '' THEN ? ELSE checksum END, online_status = ?,
+                    last_seen_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                [
+                    .text(volumeId),
+                    .text(fileIdentity), .text(fileIdentity),
+                    .text(normalizedPath),
+                    .text(TSPath.basename(absolute)),
+                    .text(extensionWithDot),
+                    .int(fileSize),
+                    .real(mtimeMs),
+                    .text(photo.checksum), .text(photo.checksum),
+                    .text(onlineStatus),
+                    .text(timestamp),
+                    .text(timestamp),
+                    .text(file.id),
+                ]
+            )
+            if !previousPath.isEmpty && previousPath != normalizedPath && !tsExists(previousPath) {
+                try db.run(
+                    """
+                    UPDATE photos SET filepath = ?, filename = ?, status = 'pending', updated_at = ?
+                    WHERE asset_file_id = ?
+                    """,
+                    [
+                        .text(normalizedPath), .text(TSPath.basename(normalizedPath)),
+                        .text(timestamp), .text(file.id),
+                    ]
+                )
+            }
+            fileId = file.id
+        } else {
+            let newFileId = newUUIDString()
+            try db.run(
+                """
+                INSERT INTO asset_files (
+                  id, volume_id, file_identity, normalized_path, filename, extension, media_type,
+                  file_size, file_mtime_ms, checksum, online_status, last_seen_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    .text(newFileId), .text(volumeId), .text(fileIdentity), .text(normalizedPath),
+                    .text(TSPath.basename(absolute)), .text(extensionWithDot),
+                    .text(mediaType(extensionWithDot)),
+                    .int(fileSize), .real(mtimeMs), .text(photo.checksum), .text(onlineStatus),
+                    .text(timestamp), .text(timestamp), .text(timestamp),
+                ]
+            )
+            fileId = newFileId
+        }
+
+        var membership = try db.queryOne("SELECT asset_id FROM asset_members WHERE file_id = ?", [.text(fileId)])?
+            .text("asset_id")
+        if membership == nil {
+            let assetId = newUUIDString()
+            try db.run(
+                "INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                [
+                    .text(assetId), .text(""),
+                    .text(onlineStatus == "online" ? "active" : "offline_unverified"),
+                    .text(timestamp), .text(timestamp),
+                ]
+            )
+            try db.run(
+                "INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, binding_source) VALUES (?, ?, ?, 1, ?)",
+                [.text(assetId), .text(fileId), .text(memberRole(extensionWithDot)), .text("backfill")]
+            )
+            membership = assetId
+        }
+
+        let importOrder: Int64
+        if photo.migrationRowid != 0 {
+            importOrder = photo.migrationRowid
+        } else {
+            importOrder = try db.scalarInt("SELECT rowid FROM photos WHERE id = ?", [.text(photo.id)]) ?? 0
+        }
+        try db.run(
+            """
+            INSERT INTO session_assets (session_id, asset_id, display_file_id, import_order, added_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, asset_id) DO UPDATE SET display_file_id = excluded.display_file_id
+            """,
+            [
+                .text(sessionId), .text(membership ?? ""), .text(fileId),
+                .int(importOrder), .text(timestamp),
+            ]
+        )
+        try db.run(
+            "UPDATE assets SET status = ?, updated_at = ? WHERE id = ?",
+            [
+                .text(onlineStatus == "online" ? "active" : "offline_unverified"),
+                .text(timestamp), .text(membership ?? ""),
+            ]
+        )
+        try db.run(
+            "UPDATE photos SET asset_id = ?, asset_file_id = ? WHERE id = ?",
+            [.text(membership ?? ""), .text(fileId), .text(photo.id)]
+        )
+
+        let sidecarPath = TSPath.xmpSidecarPath(absolute)
+        let normalizedXmp = TSPath.normalize(sidecarPath)
+        try db.run(
+            """
+            INSERT INTO sidecar_bindings (id, xmp_path, normalized_xmp_path, binding_rule, created_at, updated_at)
+            VALUES (?, ?, ?, 'same_basename', ?, ?)
+            ON CONFLICT(normalized_xmp_path) DO UPDATE SET updated_at = excluded.updated_at
+            """,
+            [
+                .text(newUUIDString()), .text(sidecarPath), .text(normalizedXmp),
+                .text(timestamp), .text(timestamp),
+            ]
+        )
+        let bindingId = try db.queryOne(
+            "SELECT id FROM sidecar_bindings WHERE normalized_xmp_path = ?",
+            [.text(normalizedXmp)]
+        )?.text("id") ?? ""
+        try db.run(
+            "INSERT OR IGNORE INTO sidecar_binding_files (sidecar_binding_id, file_id) VALUES (?, ?)",
+            [.text(bindingId), .text(fileId)]
+        )
+
+        return (migrated: 1, offline: onlineStatus == "online" ? 0 : 1)
+    }
+
+    // MARK: 私有：扩展名分类
+
+    internal static func mediaType(_ extensionWithDot: String) -> String {
+        if [".jpg", ".jpeg", ".heic", ".heif", ".png", ".webp"].contains(extensionWithDot) { return "image" }
+        if [".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"].contains(extensionWithDot) { return "raw" }
+        if [".tif", ".tiff", ".psd"].contains(extensionWithDot) { return "image" }
+        return "unknown"
+    }
+
+    internal static func memberRole(_ extensionWithDot: String) -> String {
+        if mediaType(extensionWithDot) == "raw" { return "raw" }
+        if [".jpg", ".jpeg", ".heic", ".heif"].contains(extensionWithDot) { return "camera_jpeg" }
+        if [".tif", ".tiff"].contains(extensionWithDot) { return "rendered_tiff" }
+        return "unknown"
     }
 }
