@@ -292,7 +292,6 @@ public final class SessionCommandRouter: CommandRouter {
         // CullingWritebackPort 扩展即上述类型，见 CullingService.swift）。
         let cullingService = CullingService(
             photoRepo: photoRepo,
-            cullingDecisionRepo: CullingDecisionRepo(connection: db),
             similarityResultRepo: similarityResultRepo,
             metadataOutboxRepo: outboxRepo,
             connection: db,
@@ -1160,16 +1159,6 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return try GatherCore.JSONValue(from: result)
 
-        // culling.ipc.ts:336-347 —— destructive；groupId 可选（整会话或按组）。
-        case "culling.reset":
-            guard confirmed(params) else {
-                throw BridgeError.badParams("CULLING_RESET_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let groupId = try optionalString(params, "groupId")
-            try cullingService.resetCommand(sessionId: sessionId, groupId: groupId, confirmed: true)
-            return .bool(true)
-
         default:
             throw BridgeError.notImplemented(command)
         }
@@ -1997,6 +1986,28 @@ public final class SessionCommandRouter: CommandRouter {
                     do {
                         _ = try await cullingService.decide(
                             sessionId: sessionId, photoId: photoId, decision: decision)
+                        completion(WebResponse(ok: true, data: .bool(true)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:336-347 —— destructive；groupId 可选（整会话或按组）。
+        case "culling.reset":
+            guard confirmed(params) else {
+                completion(WebResponse(ok: false, error: "CULLING_RESET_CONFIRM_REQUIRED"))
+                return
+            }
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let groupId = try optionalString(params, "groupId")
+                Task {
+                    do {
+                        try await cullingService.resetCommand(
+                            sessionId: sessionId, groupId: groupId, confirmed: true)
                         completion(WebResponse(ok: true, data: .bool(true)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))

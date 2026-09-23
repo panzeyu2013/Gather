@@ -222,6 +222,21 @@ extension CullingPhotoRow {
     }
 }
 
+/// 决策事务提交后要落库的决策行写入（决策表在 Store 连接上，跨连接不共享事务）。
+public struct CullingDecisionWrite: Sendable {
+    public let sessionId: String
+    public let photoId: String
+    public let groupId: String
+    public let state: CullingDecisionState
+
+    public init(sessionId: String, photoId: String, groupId: String, state: CullingDecisionState) {
+        self.sessionId = sessionId
+        self.photoId = photoId
+        self.groupId = groupId
+        self.state = state
+    }
+}
+
 /// 决策事务提交后要写回元数据缓存列的补丁（派生数据，事务外经 MetadataStore 落库）。
 public struct CullingCachePatch: Sendable {
     public let photoId: String
@@ -241,11 +256,17 @@ public final class CullingHistorySink: @unchecked Sendable {
     public private(set) var entries: [CullingHistoryEntry] = []
     /// 事务内收集、提交后落库的元数据缓存补丁（rating/label 派生列）。
     public private(set) var cachePatches: [CullingCachePatch] = []
+    /// 事务内收集、提交后落库的决策行写入。
+    public private(set) var decisionWrites: [CullingDecisionWrite] = []
 
     public init() {}
 
     func appendCachePatch(_ patch: CullingCachePatch) {
         cachePatches.append(patch)
+    }
+
+    func appendDecisionWrite(_ write: CullingDecisionWrite) {
+        decisionWrites.append(write)
     }
 
     func append(_ newEntries: [CullingHistoryEntry]) {
@@ -265,6 +286,10 @@ public struct CullingUpdateContext {
     public var historySink: CullingHistorySink? // TS: historySink?
     /// 元数据缓存行（派生列基线）：调用方在事务外预读后传入。
     public var cacheRows: [String: MetadataCacheRecord]
+    /// 当前决策行（revision 基线）：调用方在事务外预读后传入。
+    public var currentDecision: CullingDecisionRecord?
+    /// 批量路径的决策行快照（photoId → 行）。
+    public var decisionRows: [String: CullingDecisionRecord]
 
     public init(
         photos: [CullingPhotoRow],
@@ -273,7 +298,9 @@ public struct CullingUpdateContext {
         groupMap: [String: String],
         linkedByXmp: [String: [CullingPhotoRow]],
         historySink: CullingHistorySink? = nil,
-        cacheRows: [String: MetadataCacheRecord] = [:]
+        cacheRows: [String: MetadataCacheRecord] = [:],
+        currentDecision: CullingDecisionRecord? = nil,
+        decisionRows: [String: CullingDecisionRecord] = [:]
     ) {
         self.photos = photos
         self.photoById = photoById
@@ -282,6 +309,8 @@ public struct CullingUpdateContext {
         self.linkedByXmp = linkedByXmp
         self.historySink = historySink
         self.cacheRows = cacheRows
+        self.currentDecision = currentDecision
+        self.decisionRows = decisionRows
     }
 }
 
@@ -313,7 +342,6 @@ public final class CullingService {
     // MARK: - 依赖
 
     private let photoRepo: PhotoRepo
-    private let cullingDecisionRepo: CullingDecisionRepo
     private let similarityResultRepo: SimilarityResultRepo
     private let metadataOutboxRepo: MetadataOutboxRepo
     private let connection: DBConnection
@@ -326,7 +354,6 @@ public final class CullingService {
 
     public init(
         photoRepo: PhotoRepo,
-        cullingDecisionRepo: CullingDecisionRepo,
         similarityResultRepo: SimilarityResultRepo,
         metadataOutboxRepo: MetadataOutboxRepo,
         connection: DBConnection,
@@ -338,7 +365,6 @@ public final class CullingService {
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue }
     ) {
         self.photoRepo = photoRepo
-        self.cullingDecisionRepo = cullingDecisionRepo
         self.similarityResultRepo = similarityResultRepo
         self.metadataOutboxRepo = metadataOutboxRepo
         self.connection = connection
@@ -362,6 +388,9 @@ public final class CullingService {
         let sink = CullingHistorySink()
         let singleCache = try await metadataStore.metadataBatch(photoIds: [photoId])
         let cacheRows = Dictionary(uniqueKeysWithValues: singleCache.map { ($0.photoId, $0) })
+        let currentDecision = try await cullingStore?.decision(sessionId: sessionId, photoId: photoId)
+        var decisionRows: [String: CullingDecisionRecord] = [:]
+        if let currentDecision { decisionRows[photoId] = currentDecision }
         var result = try updateState(
             sessionId: sessionId,
             photoId: photoId,
@@ -374,22 +403,42 @@ public final class CullingService {
                 groupMap: base.groupMap,
                 linkedByXmp: base.linkedByXmp,
                 historySink: sink,
-                cacheRows: cacheRows
+                cacheRows: cacheRows,
+                currentDecision: currentDecision,
+                decisionRows: decisionRows
             )
         )
         result.historyOperationId = try await commitHistory(
-            sink.entries, sessionId: sessionId, cachePatches: sink.cachePatches)
+            sink.entries, sessionId: sessionId,
+            cachePatches: sink.cachePatches, decisionWrites: sink.decisionWrites)
         return result
     }
 
     /// 把 updateState 收集到的历史条目落到 Store（必须在决策事务提交之后）。
     /// 返回操作 id；无 Store 或空条目时返回 nil（历史栈禁用语义）。
     public func commitHistory(
-        _ entries: [CullingHistoryEntry], sessionId: String, cachePatches: [CullingCachePatch] = []
+        _ entries: [CullingHistoryEntry],
+        sessionId: String,
+        cachePatches: [CullingCachePatch] = [],
+        decisionWrites: [CullingDecisionWrite] = []
     ) async throws -> Int? {
         try await commitCachePatches(cachePatches)
+        try await commitDecisionWrites(decisionWrites)
         guard let cullingStore, !entries.isEmpty else { return nil }
         return try await cullingStore.appendHistory(sessionId: sessionId, entries: entries).id
+    }
+
+    /// 事务外落库决策行写入（决策表在 Store 连接上）。
+    public func commitDecisionWrites(_ writes: [CullingDecisionWrite]) async throws {
+        guard let cullingStore else { return }
+        for write in writes {
+            try await cullingStore.upsertDecisionState(
+                sessionId: write.sessionId,
+                photoId: write.photoId,
+                groupId: write.groupId,
+                state: write.state
+            )
+        }
     }
 
     /// 事务外写回元数据缓存列（rating/label 派生列）。
@@ -516,7 +565,7 @@ public final class CullingService {
             target = refreshed
         }
 
-        let currentRow = try cullingDecisionRepo.getDecision(sessionId: sessionId, photoId: photoId)
+        let currentRow = context?.currentDecision
         let currentRevision = currentRow?.revision ?? 0
         if currentRevision != Int64(expectedRevision) {
             throw CullingServiceError.revisionConflict(
@@ -570,11 +619,7 @@ public final class CullingService {
         }
 
         try connection.transaction {
-            let existingRows = Dictionary(
-                uniqueKeysWithValues: try cullingDecisionRepo
-                    .getByPhotoIds(sessionId: sessionId, photoIds: affectedPhotos.map(\.id))
-                    .map { ($0.photoId, $0) }
-            )
+            let existingRows = context?.decisionRows ?? [:]
 
             for photo in affectedPhotos {
                 let existing = existingRows[photo.id]
@@ -592,17 +637,17 @@ public final class CullingService {
                 let nextColorLabel = patch.colorLabel ?? existingState.colorLabel
                 let nextRevision = existingState.revision + 1
 
-                try cullingDecisionRepo.upsertState(
+                context?.historySink?.appendDecisionWrite(CullingDecisionWrite(
                     sessionId: sessionId,
                     photoId: photo.id,
                     groupId: groupMap[photo.id] ?? "ungrouped",
-                    state: CullingDecisionStateInput(
+                    state: CullingDecisionState(
                         decision: pickStateToDecision(nextPickState).rawValue,
                         rating: Int64(nextRating),
                         colorLabel: nextColorLabel.rawValue,
                         revision: Int64(nextRevision)
                     )
-                )
+                ))
                 if patch.rating != nil {
                     context?.historySink?.appendCachePatch(
                         CullingCachePatch(photoId: photo.id, rating: Int64(nextRating)))
@@ -719,8 +764,7 @@ public final class CullingService {
         //（N+1 单行查询）。预读与事务在同一同步 tick 内，且每个照片每批最多写
         // 一次（操作 id 按逻辑资产/侧车唯一），故预读的 revision 不会过期。
         let currentRows = Dictionary(
-            uniqueKeysWithValues: try cullingDecisionRepo
-                .getByPhotoIds(sessionId: sessionId, photoIds: operationIds)
+            uniqueKeysWithValues: try await (cullingStore?.decisions(sessionId: sessionId, photoIds: operationIds) ?? [])
                 .map { ($0.photoId, $0) }
         )
         let batchCache = try await metadataStore.metadataBatch(photoIds: operationIds)
@@ -740,7 +784,9 @@ public final class CullingService {
                         groupMap: groupMap,
                         linkedByXmp: linkedByXmp,
                         historySink: historySink,
-                        cacheRows: batchCacheRows
+                        cacheRows: batchCacheRows,
+                        currentDecision: current,
+                        decisionRows: currentRows
                     )
                 ))
             }
@@ -748,6 +794,7 @@ public final class CullingService {
         // 历史栈在 Store 连接上（跨连接不共享事务）；快照已随事务原子落地，
         // 历史行失败仅丢失 undo 能力，不影响决策结果。
         try await commitCachePatches(historySink.cachePatches)
+        try await commitDecisionWrites(historySink.decisionWrites)
         if !historySink.entries.isEmpty {
             if let operationId = try await cullingStore?.appendHistory(
                 sessionId: sessionId, entries: historySink.entries
@@ -814,8 +861,8 @@ public final class CullingService {
         }
         let photoById = updateEntry.photoById
         let currentRows = Dictionary(
-            uniqueKeysWithValues: try cullingDecisionRepo
-                .getByPhotoIds(sessionId: sessionId, photoIds: entries.map(\.photoId))
+            uniqueKeysWithValues: try await (cullingStore?.decisions(
+                sessionId: sessionId, photoIds: entries.map(\.photoId)) ?? [])
                 .map { ($0.photoId, $0) }
         )
         let cacheRows = Dictionary(
@@ -887,17 +934,17 @@ public final class CullingService {
                     revision: before.revision + 1,
                     updatedAt: nowISOString()
                 )
-                try cullingDecisionRepo.upsertState(
+                writeSink.appendDecisionWrite(CullingDecisionWrite(
                     sessionId: sessionId,
                     photoId: entry.photoId,
                     groupId: groupMap[entry.photoId] ?? "ungrouped",
-                    state: CullingDecisionStateInput(
+                    state: CullingDecisionState(
                         decision: pickStateToDecision(after.pickState).rawValue,
                         rating: Int64(after.rating),
                         colorLabel: after.colorLabel.rawValue,
                         revision: Int64(after.revision)
                     )
-                )
+                ))
                 if entry.patch.rating != nil {
                     writeSink.appendCachePatch(
                         CullingCachePatch(photoId: entry.photoId, rating: Int64(after.rating)))
@@ -944,6 +991,7 @@ public final class CullingService {
         }
         // 历史/缓存列在 Store 连接上（跨连接不共享事务）；决策已原子落地。
         try await commitCachePatches(writeSink.cachePatches)
+        try await commitDecisionWrites(writeSink.decisionWrites)
         if let operationId = historyOperationId, let direction {
             try await cullingStore?.setHistoryUndone(
                 sessionId: sessionId,
@@ -1004,8 +1052,8 @@ public final class CullingService {
         }
         let keepIdSet = Set(keepIds)
         let currentRows = Dictionary(
-            uniqueKeysWithValues: try cullingDecisionRepo
-                .getByPhotoIds(sessionId: sessionId, photoIds: groupPhotoIds)
+            uniqueKeysWithValues: try await (cullingStore?.decisions(
+                sessionId: sessionId, photoIds: groupPhotoIds) ?? [])
                 .map { ($0.photoId, $0) }
         )
         return try await applyHistory(
@@ -1023,7 +1071,7 @@ public final class CullingService {
     }
 
     /// TS: getGroups —— 相似度分组（决策计数 + 成员轻投影）。
-    public func getGroups(sessionId: String) throws -> [CullingGroup] {
+    public func getGroups(sessionId: String) async throws -> [CullingGroup] {
         guard let resultRow = try similarityResultRepo.getLatest(sessionId: sessionId) else {
             return []
         }
@@ -1038,7 +1086,7 @@ public final class CullingService {
             membersByGroup[groupId, default: []].append(photo.id)
         }
         let decisions = Dictionary(
-            uniqueKeysWithValues: try cullingDecisionRepo.getBySession(sessionId)
+            uniqueKeysWithValues: try await (cullingStore?.decisionsFull(sessionId: sessionId) ?? [])
                 .map { ($0.photoId, $0.decision) }
         )
 
@@ -1085,7 +1133,7 @@ public final class CullingService {
     public func decide(
         sessionId: String, photoId: String, decision: LegacyCullingDecision
     ) async throws -> CullingUpdateResult {
-        let current = try cullingDecisionRepo.getDecision(sessionId: sessionId, photoId: photoId)
+        let current = try await cullingStore?.decision(sessionId: sessionId, photoId: photoId)
         return try await update(
             sessionId: sessionId,
             photoId: photoId,
@@ -1104,8 +1152,8 @@ public final class CullingService {
     }
 
     /// TS: getDecisions —— 写回计划的决策输入（photo_id, decision）。
-    public func getDecisions(sessionId: String) throws -> [CullingDecisionLiteRow] {
-        try cullingDecisionRepo.getDecisions(sessionId)
+    public func getDecisions(sessionId: String) async throws -> [CullingDecisionLite] {
+        try await cullingStore?.decisions(sessionId: sessionId) ?? []
     }
 
     /// TS: getHistory —— 历史栈（limit 缺省 100，仓库内 clamp 到 500）。
@@ -1114,11 +1162,11 @@ public final class CullingService {
     }
 
     /// TS: getSummary —— 徽标计数（决策 + 缓存 fallback + 相似度组数）。
-    public func getSummary(sessionId: String) throws -> CullingSummary {
+    public func getSummary(sessionId: String) async throws -> CullingSummary {
         // 轻投影：计数只需照片 id。
         let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
             .map { CullingPhotoRow(row: $0) }
-        let decisions = try cullingDecisionRepo.getBySession(sessionId)
+        let decisions = try await (cullingStore?.decisionsFull(sessionId: sessionId) ?? [])
         let decisionByPhoto = Dictionary(uniqueKeysWithValues: decisions.map { ($0.photoId, $0) })
         // 决策与缓存读每次调用保持新鲜：renderer 在每次 update/undo/redo 后重取
         // summary，徽标必须反映刚完成的写入，故每会话缓存永不在此复用。
@@ -1162,11 +1210,11 @@ public final class CullingService {
     }
 
     /// TS: reset —— 清空会话决策（可选按组）。
-    public func reset(sessionId: String, groupId: String? = nil) throws {
+    public func reset(sessionId: String, groupId: String? = nil) async throws {
         if let groupId {
-            try cullingDecisionRepo.deleteBySessionAndGroup(sessionId: sessionId, groupId: groupId)
+            try await cullingStore?.deleteDecisions(sessionId: sessionId, groupId: groupId)
         } else {
-            try cullingDecisionRepo.deleteBySession(sessionId)
+            try await cullingStore?.deleteDecisions(sessionId: sessionId)
         }
     }
 
@@ -1209,7 +1257,7 @@ public final class CullingService {
     ) async throws -> WritebackResult {
         guard confirmed else { throw CullingServiceError.writebackConfirmRequired }
         let plan = buildCullingWritebackPlan(
-            decisions: try getDecisions(sessionId: sessionId)
+            decisions: try await getDecisions(sessionId: sessionId)
                 .map { (photoId: $0.photoId, decision: $0.decision) },
             target: target
         )
@@ -1272,9 +1320,9 @@ public final class CullingService {
 
     /// TS: culling.reset（confirmed 必须为 true，否则
     /// CULLING_RESET_CONFIRM_REQUIRED）。
-    public func resetCommand(sessionId: String, groupId: String? = nil, confirmed: Bool) throws {
+    public func resetCommand(sessionId: String, groupId: String? = nil, confirmed: Bool) async throws {
         guard confirmed else { throw CullingServiceError.resetConfirmRequired }
-        try reset(sessionId: sessionId, groupId: groupId)
+        try await reset(sessionId: sessionId, groupId: groupId)
     }
 
     // MARK: - 分页（TS pagePhotosQuery / loadAssetRows / preferredRowPredicate /
@@ -1732,9 +1780,9 @@ public final class CullingService {
     ) async throws -> CullingRichLookup {
         let photoIds = photos.map(\.id)
         let decisions = Dictionary(
-            uniqueKeysWithValues: try (mode == .session
-                ? cullingDecisionRepo.getBySession(sessionId)
-                : cullingDecisionRepo.getByPhotoIds(sessionId: sessionId, photoIds: photoIds))
+            uniqueKeysWithValues: try await (mode == .session
+                ? (cullingStore?.decisionsFull(sessionId: sessionId) ?? [])
+                : (cullingStore?.decisions(sessionId: sessionId, photoIds: photoIds) ?? []))
                 .map { ($0.photoId, $0) }
         )
         let cacheRows = Dictionary(
@@ -2175,7 +2223,7 @@ public final class CullingService {
     /// TS: rowToState —— 决策行 + 缓存兜底 → AssetCullingState。
     private func rowToState(
         photoId: String,
-        row: CullingDecisionRow?,
+        row: CullingDecisionRecord?,
         fallbackRating: Int64,
         fallbackLabel: String
     ) -> AssetCullingState {
@@ -2207,7 +2255,7 @@ public final class CullingService {
 
     /// TS: rowToState 的 source 分支（决策行存在时取合法 decision_source，缺省
     /// manual；行缺失时为 imported）。
-    private func sourceFromDecisionRow(_ row: CullingDecisionRow?) -> CullingDecisionSource {
+    private func sourceFromDecisionRow(_ row: CullingDecisionRecord?) -> CullingDecisionSource {
         guard let row else { return .imported }
         return CullingDecisionSource(rawValue: row.decisionSource) ?? .manual
     }
@@ -2357,7 +2405,7 @@ private enum LookupMode {
 
 /// TS: CullingRichLookup。
 private struct CullingRichLookup {
-    let decisions: [String: CullingDecisionRow]
+    let decisions: [String: CullingDecisionRecord]
     let cacheRows: [String: MetadataCacheRecord]
     let outboxByPath: [String: MetadataOutboxRow]
     let similarityMap: [String: String]
