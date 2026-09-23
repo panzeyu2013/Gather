@@ -188,10 +188,21 @@ public struct CullingPhotoRow: Equatable, Sendable {
 }
 
 extension CullingPhotoRow {
-    init(row: PhotoRow) {
+    init(row: PhotoRecord) {
         self.init(
             id: row.id, sessionId: row.sessionId, filepath: row.filepath,
             filename: row.filename, checksum: row.checksum, status: row.status,
+            assetId: row.assetId, assetFileId: row.assetFileId,
+            width: row.width, height: row.height,
+            metadata: row.metadata, result: row.result,
+            createdAt: row.createdAt, updatedAt: row.updatedAt
+        )
+    }
+
+    init(row: PhotoPage) {
+        self.init(
+            id: row.id, sessionId: row.sessionId, filepath: row.filepath,
+            filename: row.filename, checksum: row.checksum ?? "", status: row.status,
             assetId: row.assetId, assetFileId: row.assetFileId,
             width: row.width, height: row.height,
             metadata: row.metadata, result: row.result,
@@ -210,16 +221,6 @@ extension CullingPhotoRow {
         )
     }
 
-    init(row: PhotoPageRow) {
-        self.init(
-            id: row.id, sessionId: row.sessionId, filepath: row.filepath,
-            filename: row.filename, checksum: row.checksum ?? "", status: row.status,
-            assetId: row.assetId, assetFileId: row.assetFileId,
-            width: row.width, height: row.height,
-            metadata: row.metadata, result: row.result,
-            createdAt: row.createdAt, updatedAt: row.updatedAt
-        )
-    }
 }
 
 /// 决策事务提交后入队的 outbox 值直写（queuePhotoValues 只能 async，事务内收集）。
@@ -353,7 +354,7 @@ public final class CullingService {
     ]
 
     /// TS: PREFERRED_RAW_EXTENSIONS（预编译小写 RAW 扩展名集合，O(1) 探测）。
-    private static let preferredRawExtensions: Set<String> = Set(PhotoRepo.rawExtensions)
+    private static let preferredRawExtensions: Set<String> = Set(PhotoFormats.rawExtensions)
 
     /// TS: LOOKUP_TTL_MS / LOOKUP_CACHE_MAX / UPDATE_TTL_MS / UPDATE_CACHE_MAX。
     private static let lookupTTLSeconds: TimeInterval = 5
@@ -370,7 +371,7 @@ public final class CullingService {
 
     // MARK: - 依赖
 
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let similarityStore: any SimilarityStore
     private let writebackStore: any WritebackStore
     private let connection: DBConnection
@@ -382,7 +383,7 @@ public final class CullingService {
     private let getNumber: (String, Double) -> Double
 
     public init(
-        photoRepo: PhotoRepo,
+        photoStore: any PhotoStore,
         similarityStore: any SimilarityStore,
         writebackStore: any WritebackStore,
         connection: DBConnection,
@@ -393,7 +394,7 @@ public final class CullingService {
         metadataStore: any MetadataStore,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue }
     ) {
-        self.photoRepo = photoRepo
+        self.photoStore = photoStore
         self.similarityStore = similarityStore
         self.writebackStore = writebackStore
         self.connection = connection
@@ -521,7 +522,7 @@ public final class CullingService {
         filters: CullingFilters? = nil,
         requestedGroupId: String? = nil
     ) async throws -> [CullingAsset] {
-        let photos = try photoRepo.getBySession(sessionId: sessionId).map { CullingPhotoRow(row: $0) }
+        let photos = try await photoStore.getBySession(sessionId: sessionId).map { CullingPhotoRow(row: $0) }
         let lookup = try await buildRichLookup(photos: photos, sessionId: sessionId, mode: .session)
         return filterVisible(
             assembleAssets(photos: photos, lookup: lookup),
@@ -546,7 +547,7 @@ public final class CullingService {
         guard limit >= 1, limit <= Self.pageLimitMax else {
             throw CullingServiceError.pageLimitInvalid
         }
-        let page = try pagePhotosQuery(
+        let page = try await pagePhotosQuery(
             sessionId: sessionId, scope: scope, filters: filters,
             requestedGroupId: requestedGroupId, afterRowId: afterRowId, limit: limit
         )
@@ -555,7 +556,7 @@ public final class CullingService {
             assembleAssets(photos: page.photos, lookup: lookup),
             scope: scope, filters: filters, requestedGroupId: requestedGroupId
         )
-        let total = try countForScope(
+        let total = try await countForScope(
             sessionId: sessionId, scope: scope, filters: filters,
             requestedGroupId: requestedGroupId, similarityMap: lookup.similarityMap
         )
@@ -571,7 +572,7 @@ public final class CullingService {
     /// TS: getUpdateContext —— 缓存的 `updateState` 上下文；IPC 更新 handler 复用
     /// 它，点击突发不再每次重读整个会话。
     public func getUpdateContext(sessionId: String) async throws -> CullingUpdateContext {
-        let entry = getSessionUpdateContext(sessionId: sessionId)
+        let entry = await prepareUpdateContext(sessionId: sessionId)
         try await ensureUpdateExtras(entry: entry, sessionId: sessionId)
         return CullingUpdateContext(
             photos: entry.photos,
@@ -776,7 +777,7 @@ public final class CullingService {
         }
         if uniqueIds.isEmpty { throw CullingServiceError.emptySelection }
         if uniqueIds.count > Self.batchMax { throw CullingServiceError.tooManyPhotoIds }
-        let entry = getSessionUpdateContext(sessionId: sessionId)
+        let entry = await prepareUpdateContext(sessionId: sessionId)
         // 先在缓存索引里校验照片 id（任何相似度读之前，见 ensureUpdateExtras）。
         // 缺失可能是索引器刚加的照片（TTL 缓存不可见），先试一次新鲜读再拒绝。
         if uniqueIds.contains(where: { entry.photoById[$0] == nil }) {
@@ -899,7 +900,7 @@ public final class CullingService {
             throw CullingServiceError.historyDuplicatePhotos
         }
         for entry in entries { try validatePatch(entry.patch) }
-        let updateEntry = getSessionUpdateContext(sessionId: sessionId)
+        let updateEntry = await prepareUpdateContext(sessionId: sessionId)
         // 与 updateState/batchUpdate 相同的 fresh-read 兜底：索引器刚加的照片
         // 可能缺席 TTL 缓存。
         if entries.contains(where: { updateEntry.photoById[$0.photoId] == nil }) {
@@ -1118,7 +1119,7 @@ public final class CullingService {
             return []
         }
         // 轻投影：只取 id/filepath/filename，重 JSON 列跳过。
-        let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+        let photos = try await photoStore.getBySessionProjection(sessionId: sessionId)
             .map { CullingPhotoRow(row: $0) }
         let photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
         let membership = try await similarityStore.photoGroupMap(sessionId: sessionId, resultId: resultRow.id)
@@ -1206,7 +1207,7 @@ public final class CullingService {
     /// TS: getSummary —— 徽标计数（决策 + 缓存 fallback + 相似度组数）。
     public func getSummary(sessionId: String) async throws -> CullingSummary {
         // 轻投影：计数只需照片 id。
-        let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+        let photos = try await photoStore.getBySessionProjection(sessionId: sessionId)
             .map { CullingPhotoRow(row: $0) }
         let decisions = try await (cullingStore?.decisionsFull(sessionId: sessionId) ?? [])
         let decisionByPhoto = Dictionary(uniqueKeysWithValues: decisions.map { ($0.photoId, $0) })
@@ -1383,7 +1384,7 @@ public final class CullingService {
         requestedGroupId: String?,
         afterRowId: Int64?,
         limit: Int
-    ) throws -> (photos: [CullingPhotoRow], cursor: Int64?) {
+    ) async throws -> (photos: [CullingPhotoRow], cursor: Int64?) {
         if scope == .filtered {
             let whereClause = buildFilteredWhere(sessionId: sessionId, filters: filters)
             let groups = try connection.prepare("""
@@ -1399,7 +1400,7 @@ public final class CullingService {
               """).query(whereClause.params + [.int(afterRowId ?? 0), .int(Int64(limit))])
             let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
             return (
-                photos: try loadAssetRows(sessionId: sessionId, groups: gids),
+                photos: try await loadAssetRows(sessionId: sessionId, groups: gids),
                 cursor: gids.last?.firstRowid
             )
         }
@@ -1420,12 +1421,12 @@ public final class CullingService {
                 )
                 let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
                 return (
-                    photos: try loadAssetRows(sessionId: sessionId, groups: gids),
+                    photos: try await loadAssetRows(sessionId: sessionId, groups: gids),
                     cursor: gids.last?.firstRowid
                 )
             }
         }
-        let page = try photoRepo.getAssetPage(sessionId: sessionId, afterFirstRowid: afterRowId, limit: limit)
+        let page = try await photoStore.getAssetPage(sessionId: sessionId, afterFirstRowid: afterRowId, limit: limit)
         return (photos: page.rows.map { CullingPhotoRow(row: $0) }, cursor: page.cursor)
     }
 
@@ -1433,21 +1434,12 @@ public final class CullingService {
     private func loadAssetRows(
         sessionId: String,
         groups: [(gid: String, firstRowid: Int64)]
-    ) throws -> [CullingPhotoRow] {
+    ) async throws -> [CullingPhotoRow] {
         if groups.isEmpty { return [] }
-        var rows: [CullingPhotoRow] = []
-        for chunkStart in stride(from: 0, to: groups.count, by: Self.chunkSize) {
-            let chunk = groups[chunkStart..<min(chunkStart + Self.chunkSize, groups.count)].map(\.gid)
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let chunkRows = try connection.prepare("""
-                SELECT \(PhotoRepo.photoPageColumns)
-                FROM photos p
-                WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders))
-                ORDER BY p.rowid
-              """).query([.text(sessionId)] + chunk.map { .text($0) })
-            rows.append(contentsOf: try chunkRows.map { try CullingPhotoRow(row: PhotoPageRow(row: $0)) })
-        }
-        return rows
+        // Store 全行读（PhotoRecord）后按 gid 过滤：替代旧连接内联分页 SQL。
+        let wanted = Set(groups.map(\.gid))
+        let all = try await photoStore.getBySession(sessionId: sessionId).map { CullingPhotoRow(row: $0) }
+        return all.filter { wanted.contains($0.assetId ?? $0.id) }
     }
 
     /// TS: preferredRowPredicate —— 每个资产组限定到首选行的 SQL 谓词：RAW 变体
@@ -1458,7 +1450,7 @@ public final class CullingService {
             "SELECT p2.id FROM photos p2" +
             " WHERE p2.session_id = p.session_id" +
             " AND COALESCE(NULLIF(p2.asset_id, ''), p2.id) = COALESCE(NULLIF(p.asset_id, ''), p.id)" +
-            " ORDER BY CASE WHEN \(PhotoRepo.rawExtensionLikeSQL) THEN 1 ELSE 0 END DESC, p2.rowid" +
+            " ORDER BY CASE WHEN \(PhotoFormats.rawExtensionLikeSQL) THEN 1 ELSE 0 END DESC, p2.rowid" +
             " LIMIT 1" +
         ")"
     }
@@ -1584,7 +1576,7 @@ public final class CullingService {
         filters: CullingFilters?,
         requestedGroupId: String?,
         similarityMap: [String: String]
-    ) throws -> Int {
+    ) async throws -> Int {
         if scope == .similarityGroup {
             let similarity = buildSimilarityClause(sessionId: sessionId, requestedGroupId: requestedGroupId)
             if let similarity {
@@ -1621,7 +1613,7 @@ public final class CullingService {
               """).get(whereClause.params)
             return Int(row?[0].intValue ?? 0)
         }
-        return try photoRepo.countAssetsBySession(sessionId: sessionId)
+        return try await photoStore.countAssetsBySession(sessionId: sessionId)
     }
 
     // MARK: - 富查询（TS buildRichLookup 及支撑）
@@ -2035,7 +2027,27 @@ public final class CullingService {
         if let cached = sessionUpdateCache[sessionId], cached.expiresAt > now {
             return cached
         }
-        let photos = loadSessionPhotos(sessionId: sessionId)
+        // Store 读为 async：同步路径（含事务内 updateState）只返回占位条目；
+        // 真实填充由异步入口 prepareUpdateContext 在事务外完成。
+        return SessionUpdateEntry(
+            photos: [],
+            photoById: [:],
+            photosByAssetId: [:],
+            groupMap: nil,
+            groupMapResultId: nil,
+            linkedByXmp: nil,
+            refreshed: true,
+            expiresAt: now.addingTimeInterval(Self.updateTTLSeconds)
+        )
+    }
+
+    /// 异步预热会话上下文：Store 读只在事务外发生（所有公开入口先调用）。
+    private func prepareUpdateContext(sessionId: String) async -> SessionUpdateEntry {
+        let now = Date()
+        if let cached = sessionUpdateCache[sessionId], cached.expiresAt > now {
+            return cached
+        }
+        let photos = await loadSessionPhotos(sessionId: sessionId)
         let entry = SessionUpdateEntry(
             photos: photos,
             photoById: Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) }),
@@ -2057,7 +2069,7 @@ public final class CullingService {
     /// 一起失效，下个 ensureUpdateExtras 对新生行重建。
     private func refreshSessionUpdateContext(sessionId: String, entry: SessionUpdateEntry) async {
         if entry.refreshed { return }
-        let photos = loadSessionPhotos(sessionId: sessionId)
+        let photos = await loadSessionPhotos(sessionId: sessionId)
         entry.photos = photos
         entry.photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
         entry.photosByAssetId = buildPhotosByAssetIndex(photos)
@@ -2104,9 +2116,8 @@ public final class CullingService {
 
     /// TS: loadSessionPhotos —— 热路径用轻投影；全行兜底保持只暴露 getBySession
     /// 的测试替身可用（TS 注释语义；Swift 侧仓库恒有投影，直接使用）。
-    private func loadSessionPhotos(sessionId: String) -> [CullingPhotoRow] {
-        (try? photoRepo.getBySessionProjection(sessionId: sessionId))?.map { CullingPhotoRow(row: $0) }
-            ?? ((try? photoRepo.getBySession(sessionId: sessionId))?.map { CullingPhotoRow(row: $0) } ?? [])
+    private func loadSessionPhotos(sessionId: String) async -> [CullingPhotoRow] {
+        (try? await photoStore.getBySessionProjection(sessionId: sessionId))?.map { CullingPhotoRow(row: $0) } ?? []
     }
 
     // MARK: - 会话查找缓存（TS getSessionLookup / prune / getLatestSimilarityMap /

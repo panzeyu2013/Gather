@@ -180,7 +180,7 @@ private struct CullingHarness {
     let db: DBConnection
     let sessionId: String
     let service: CullingService
-    let photoRepo: PhotoRepo
+    let photoStore: any PhotoStore
     let similarityStore: SQLiteSimilarityStore
     let metadataStore: SQLiteMetadataStore
     let writebackStore: SQLiteWritebackStore
@@ -233,7 +233,7 @@ private func makeHarness(
     let cullingStore = SQLiteCullingStore(database: try SQLiteDatabase(path: dbPath))
     let storeMetadata = SQLiteMetadataStore(database: try SQLiteDatabase(path: dbPath))
     let service = CullingService(
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
@@ -246,7 +246,7 @@ private func makeHarness(
     )
     return CullingHarness(
         db: db, sessionId: "session", service: service,
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         metadataStore: storeMetadata,
         writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),

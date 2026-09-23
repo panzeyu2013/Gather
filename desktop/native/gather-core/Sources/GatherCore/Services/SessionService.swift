@@ -162,7 +162,7 @@ public final class SessionService {
     }
 
     /// 按依赖顺序删除所有引用 photos(id)/face_observations(id) 且无
-    /// ON DELETE 动作的行；foreign_keys = ON 下必须先于 photoRepo.deleteBySession。
+    /// ON DELETE 动作的行；foreign_keys = ON 下必须先于 photoStore.deleteBySession。
     /// face_cluster_members 引用 face_observations，簇必须先于观测删除（Store 连接）。
     private func deleteFaceData(_ sessionId: String) async throws {
         try await faceStore.deleteClustersBySession(sessionId)

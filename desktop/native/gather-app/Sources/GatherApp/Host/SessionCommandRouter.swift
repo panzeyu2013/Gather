@@ -73,7 +73,6 @@ public final class SessionCommandRouter: CommandRouter {
     public let sessionService: SessionService
     public let workspace: WorkspaceAPI
     public let jobService: JobService
-    private let photoRepo: PhotoRepo
     /// 设置快照（同步读：服务与命令处理不再触碰设置存储）。
     private let settings: SettingsSnapshot
     /// 设置写路径（异步唯一入口；R5：取代 SettingsService）。
@@ -83,6 +82,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let similarityService: SimilarityService
     private let duplicateService: DuplicateService
     private let assetStore: any AssetStore
+    private let photoStore: any PhotoStore
     /// 连接引用：仅用于零散 Repo 按需构造（SessionRepo reloadAckedAt 等），
     /// 领域查询一律经注入的 Repo/Service，不在此内联 SQL。
     private let db: DBConnection
@@ -107,7 +107,6 @@ public final class SessionCommandRouter: CommandRouter {
         sessionService: SessionService,
         workspace: WorkspaceAPI,
         jobService: JobService,
-        photoRepo: PhotoRepo,
         settings: SettingsSnapshot,
         settingsAPI: SettingsAPI,
         filterEngine: FilterEngine,
@@ -127,13 +126,13 @@ public final class SessionCommandRouter: CommandRouter {
         albums: AlbumsAPI,
         cullingService: CullingService,
         exportService: ExportService,
+        photoStore: any PhotoStore,
         imagePreloadService: ImagePreloadService
     ) {
         self.db = db
         self.sessionService = sessionService
         self.workspace = workspace
         self.jobService = jobService
-        self.photoRepo = photoRepo
         self.settings = settings
         self.settingsAPI = settingsAPI
         self.filterEngine = filterEngine
@@ -141,6 +140,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.similarityService = similarityService
         self.duplicateService = duplicateService
         self.assetStore = assetStore
+        self.photoStore = photoStore
         self.faceKwService = faceKwService
         self.persons = persons
         self.templates = templates
@@ -204,7 +204,6 @@ public final class SessionCommandRouter: CommandRouter {
         faceKwService: FaceKwService? = nil
     ) -> SessionCommandRouter {
         let sessionRepo = SessionRepo(connection: db)
-        let photoRepo = PhotoRepo(connection: db)
         let similarityService = SimilarityService(
             photoStore: photoStore,
             sessionRepo: sessionRepo,
@@ -289,7 +288,7 @@ public final class SessionCommandRouter: CommandRouter {
         // MetadataSyncCoordinator / WritebackService（CullingSyncPort /
         // CullingWritebackPort 扩展即上述类型，见 CullingService.swift）。
         let cullingService = CullingService(
-            photoRepo: photoRepo,
+            photoStore: photoStore,
             similarityStore: similarityStore,
             writebackStore: writebackStore,
             connection: db,
@@ -317,7 +316,6 @@ public final class SessionCommandRouter: CommandRouter {
             ),
             workspace: workspace,
             jobService: jobService,
-            photoRepo: photoRepo,
             settings: settings,
             settingsAPI: settingsAPI,
             filterEngine: FilterEngine(connection: db),
@@ -363,6 +361,7 @@ public final class SessionCommandRouter: CommandRouter {
             albums: albums,
             cullingService: cullingService,
             exportService: exportService,
+            photoStore: photoStore,
             imagePreloadService: imagePreloadService
         )
     }
@@ -442,13 +441,13 @@ public final class SessionCommandRouter: CommandRouter {
         // TS 源: indexer.ipc.ts:26-67 —— metadata.scan executor：扫描 →
         // 元数据提取 → 资产链接对账 → checkpoint 落结果（恢复语义），
         // 剩余待回填 checksum 时入队 checksum.backfill。
-        jobService.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoRepo, assetStore, jobService] job, context in
+        jobService.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoStore, assetStore, jobService] job, context in
             let result = try await indexerService.scanSession(
                 sessionId: job.scopeId,
                 context: context
             )
             try await context.throwIfCancelled()
-            let photoIds = try photoRepo.getBySessionProjection(sessionId: job.scopeId)
+            let photoIds = try await photoStore.getBySessionProjection(sessionId: job.scopeId)
                 .filter { $0.status != "missing" }
                 .map(\.id)
             await context.updateProgress(JobProgressUpdate(
@@ -567,29 +566,6 @@ public final class SessionCommandRouter: CommandRouter {
             return try GatherCore.JSONValue(from: session)
 
 
-        case "photo.list":
-            let sessionId = try requiredString(params, "sessionId")
-            let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
-            // 轻投影列（列名与 TS PhotoProjection 逐字一致，见 PhotoRepo.swift）。
-            return .array(photos.map { row in
-                .object([
-                    "id": .string(row.id),
-                    "session_id": .string(row.sessionId),
-                    "filepath": .string(row.filepath),
-                    "filename": .string(row.filename),
-                    "checksum": .string(row.checksum),
-                    "checksum_file_size": .number(Double(row.checksumFileSize)),
-                    "checksum_file_mtime_ms": .number(row.checksumFileMtimeMs),
-                    "status": .string(row.status),
-                    "width": .number(Double(row.width)),
-                    "height": .number(Double(row.height)),
-                    "created_at": .string(row.createdAt),
-                    "updated_at": .string(row.updatedAt),
-                ])
-            })
-
-        // TS 源: photo.ipc.ts:96-112（键集分页；PAGE_SIZE=200 / MAX=1000）。
-        // ── workspace（3.1 服务层）──
 
         case "settings.get_all":
             // settings.ipc.ts:11 —— ok(svc.getAll())：Record<string, string>。
@@ -867,36 +843,7 @@ public final class SessionCommandRouter: CommandRouter {
 
 
 
-        case "image.prioritize_thumbnail":
-            let path = try requiredString(params, "path")
-            try requirePhotoPath(path)
-            let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
-            try imagePreloadService.prioritizeThumbnail(path: path, size: size)
-            return .null
 
-        case "image.preload_previews":
-            let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
-            let maxDimension = Int((try? optionalNumber(params, "maxDimension")) ?? 2048)
-            imagePreloadService.preloadPreviews(paths: paths, maxDimension: maxDimension)
-            return .null
-
-        case "image.get_dimensions":
-            if let paths = params["paths"]?.arrayElements?.compactMap(\.stringValue) {
-                var results: [String: GatherCore.JSONValue] = [:]
-                for path in try allowedPhotoPaths(paths) {
-                    if let dims = try? RAWDecoder.getDimensions(path: path) {
-                        results[path] = .object([
-                            "width": .number(Double(dims.width)),
-                            "height": .number(Double(dims.height)),
-                        ])
-                    }
-                }
-                return .object(results)
-            }
-            let path = try requiredString(params, "path")
-            try requirePhotoPath(path)
-            let dims = try RAWDecoder.getDimensions(path: path)
-            return .object(["width": .number(Double(dims.width)), "height": .number(Double(dims.height))])
 
 
         case "export.cancel":
@@ -967,6 +914,93 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "image.get_dimensions":
+            Task {
+                do {
+                if let paths = params["paths"]?.arrayElements?.compactMap(\.stringValue) {
+                    var results: [String: GatherCore.JSONValue] = [:]
+                    for path in try await allowedPhotoPaths(paths) {
+                        if let dims = try? RAWDecoder.getDimensions(path: path) {
+                            results[path] = .object([
+                                "width": .number(Double(dims.width)),
+                                "height": .number(Double(dims.height)),
+                            ])
+                        }
+                    }
+                    completion(WebResponse(ok: true, data: .object(results))); return
+                }
+                let path = try requiredString(params, "path")
+                try await requirePhotoPath(path)
+                let dims = try RAWDecoder.getDimensions(path: path)
+                completion(WebResponse(ok: true, data: .object([
+                    "width": .number(Double(dims.width)), "height": .number(Double(dims.height)),
+                ]))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
+        case "image.preload_previews":
+            Task {
+                do {
+                let paths = try await allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
+                let maxDimension = Int((try? optionalNumber(params, "maxDimension")) ?? 2048)
+                imagePreloadService.preloadPreviews(paths: paths, maxDimension: maxDimension)
+                completion(WebResponse(ok: true, data: .null)); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
+        case "image.prioritize_thumbnail":
+            Task {
+                do {
+                let path = try requiredString(params, "path")
+                try await requirePhotoPath(path)
+                let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
+                try imagePreloadService.prioritizeThumbnail(path: path, size: size)
+                completion(WebResponse(ok: true, data: .null)); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
+        case "photo.list":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    let photos = try await photoStore.getBySessionProjection(sessionId: sessionId)
+                    // 轻投影列（列名与 TS PhotoProjection 逐字一致）。
+                    let payload: [GatherCore.JSONValue] = photos.map { row in
+                        .object([
+                            "id": .string(row.id),
+                            "session_id": .string(row.sessionId),
+                            "filepath": .string(row.filepath),
+                            "filename": .string(row.filename),
+                            "checksum": .string(row.checksum),
+                            "checksum_file_size": .number(Double(row.checksumFileSize)),
+                            "checksum_file_mtime_ms": .number(row.checksumFileMtimeMs),
+                            "status": .string(row.status),
+                            "width": .number(Double(row.width)),
+                            "height": .number(Double(row.height)),
+                            "created_at": .string(row.createdAt),
+                            "updated_at": .string(row.updatedAt),
+                        ])
+                    }
+                    completion(WebResponse(ok: true, data: .array(payload))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
 
         case "session.add_photos":
             Task {
@@ -1147,7 +1181,7 @@ public final class SessionCommandRouter: CommandRouter {
         case "image.preload_thumbnails":
             Task {
                 do {
-                    let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
+                    let paths = try await allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
                     guard !paths.isEmpty else { completion(WebResponse(ok: true, data: .null)); return }
                     let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
                     let fingerprint = paths.joined(separator: "\u{0}")
@@ -2463,7 +2497,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let expandVariants = optionalBool(params, "expandVariants") ?? false
                 Task {
                     do {
-                        let page = try photoRepo.getAssetPage(
+                        let page = try await photoStore.getAssetPage(
                             sessionId: sessionId, afterFirstRowid: afterFirstRowid, limit: limit)
                         let rows = await assemblePhotoRows(
                             page.rows, sessionId: sessionId, expandVariants: expandVariants)
@@ -3002,20 +3036,20 @@ public final class SessionCommandRouter: CommandRouter {
     }
 
     /// Image commands receive user-controlled input. Keep the native decode
-    /// boundary tied to photoRepo.containsFilepath so callers cannot use
+    /// boundary tied to photoStore.containsFilepath so callers cannot use
     /// dimensions/preload as an arbitrary file oracle.
-    private func requirePhotoPath(_ path: String) throws {
+    private func requirePhotoPath(_ path: String) async throws {
         guard !path.isEmpty, path.count <= 4096,
-              try photoRepo.containsFilepath(filepath: path) else {
+              try await photoStore.containsFilepath(filepath: path) else {
             throw BridgeError.notFound("PHOTO_NOT_FOUND")
         }
     }
 
-    private func allowedPhotoPaths(_ paths: [String]) throws -> [String] {
+    private func allowedPhotoPaths(_ paths: [String]) async throws -> [String] {
         var seen = Set<String>()
         var allowed: [String] = []
         for path in paths where !path.isEmpty && path.count <= 4096 && seen.insert(path).inserted {
-            if try photoRepo.containsFilepath(filepath: path) { allowed.append(path) }
+            if try await photoStore.containsFilepath(filepath: path) { allowed.append(path) }
         }
         return allowed
     }
@@ -3141,7 +3175,7 @@ public final class SessionCommandRouter: CommandRouter {
     /// expandVariants=false 时每组取 raw → camera_jpeg → 首行，并带成员角色与
     /// 人脸计数（三次小查询，页级成本）。
     private func assemblePhotoRows(
-        _ rows: [PhotoPageRow],
+        _ rows: [PhotoPage],
         sessionId: String,
         expandVariants: Bool
     ) async -> [GatherCore.JSONValue] {
@@ -3152,7 +3186,7 @@ public final class SessionCommandRouter: CommandRouter {
         let memberRoles = (try? await assetStore.memberRoles(sessionId: sessionId, photoIds: ids)) ?? [:]
         let faceCounts = (try? await faceKwService.faceCounts(sessionId: sessionId, photoIds: ids)) ?? [:]
 
-        func toPhotoData(_ row: PhotoPageRow, variants: [PhotoPageRow]) -> GatherCore.JSONValue {
+        func toPhotoData(_ row: PhotoPage, variants: [PhotoPage]) -> GatherCore.JSONValue {
             var object: [String: GatherCore.JSONValue] = [
                 "id": .string(row.id),
                 "sessionId": .string(row.sessionId),
@@ -3185,7 +3219,7 @@ public final class SessionCommandRouter: CommandRouter {
             return .object(object)
         }
 
-        var groups: [String: [PhotoPageRow]] = [:]
+        var groups: [String: [PhotoPage]] = [:]
         var order: [String] = []
         for row in rows {
             let key = row.assetId ?? "photo:\(row.id)"
