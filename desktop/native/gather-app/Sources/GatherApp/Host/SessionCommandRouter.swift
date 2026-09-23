@@ -198,6 +198,7 @@ public final class SessionCommandRouter: CommandRouter {
         writebackStore: any WritebackStore,
         jobStore: any JobStore,
         assetStore: any AssetStore,
+        photoStore: any PhotoStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -260,7 +261,7 @@ public final class SessionCommandRouter: CommandRouter {
         let writebackService = WritebackService(
             writebackStore: writebackStore,
             xmp: xmp,
-            photoRepo: photoRepo,
+            photoStore: photoStore,
             sessionRepo: sessionRepo,
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,

@@ -6,6 +6,12 @@ import CoreGraphics
 #endif
 @testable import GatherCore
 
+private func makeTempPhotoStore() async throws -> any PhotoStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
+    return SQLitePhotoStore(database: database)
+}
+
+
 private func makeExportDatabase() throws -> DBConnection {
     let db = try DBConnection(path: ":memory:")
     try MigrationRunner().migrate(db)

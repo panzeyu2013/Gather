@@ -55,7 +55,7 @@ public func mutationSource(_ module: String) -> MetadataMutationSource {
 public final class WritebackService {
     private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let sessionRepo: SessionRepo
     private let metadataSync: any MetadataSyncPort
     private let metadataMutations: any MetadataMutationPort
@@ -66,7 +66,7 @@ public final class WritebackService {
     public init(
         writebackStore: any WritebackStore,
         xmp: any XMPProvider,
-        photoRepo: PhotoRepo,
+        photoStore: any PhotoStore,
         sessionRepo: SessionRepo,
         metadataSync: any MetadataSyncPort,
         metadataMutations: any MetadataMutationPort,
@@ -75,7 +75,7 @@ public final class WritebackService {
     ) {
         self.writebackStore = writebackStore
         self.xmp = xmp
-        self.photoRepo = photoRepo
+        self.photoStore = photoStore
         self.sessionRepo = sessionRepo
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
@@ -199,7 +199,7 @@ public final class WritebackService {
         }
 
         // 轻投影：preview 只需要照片身份与 filepath，重 JSON 列从不读取。
-        let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+        let photos = try await photoStore.getBySessionProjection(sessionId: sessionId)
         let filtered = photoIds.map { ids in photos.filter { ids.contains($0.id) } } ?? photos
 
         // 与 execute 完全相同的资产解析：asset_read_mode='asset' 且 relink 后，

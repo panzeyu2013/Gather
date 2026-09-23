@@ -11,6 +11,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempPhotoStore() async throws -> any PhotoStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
+    return SQLitePhotoStore(database: database)
+}
+
+
 // MARK: - 支撑
 
 /// 9x8 均匀灰度像素网格（DHash 输出 64 个 0）。

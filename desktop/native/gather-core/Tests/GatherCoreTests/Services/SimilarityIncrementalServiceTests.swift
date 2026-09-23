@@ -10,6 +10,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempPhotoStore() async throws -> any PhotoStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
+    return SQLitePhotoStore(database: database)
+}
+
+
 /// 统计全量聚类调用次数（增量路径不得触发）。
 private final class ClusterCallCounter {
     private let lock = NSLock()

@@ -11,6 +11,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempPhotoStore() async throws -> any PhotoStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
+    return SQLitePhotoStore(database: database)
+}
+
+
 private func makeTempJobStore() async throws -> any JobStore {
     let (database, _) = try await makeMigratedStoreDatabase(label: "jobs")
     return SQLiteJobStore(database: database)

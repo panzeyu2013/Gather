@@ -21,6 +21,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempPhotoStore() async throws -> any PhotoStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
+    return SQLitePhotoStore(database: database)
+}
+
+
 // MARK: - 支撑
 
 /// 幂等等待门（swift-testing 并行下 Task 调度延迟明显，避免固定 sleep）。

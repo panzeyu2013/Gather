@@ -10,6 +10,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempPhotoStore() async throws -> any PhotoStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
+    return SQLitePhotoStore(database: database)
+}
+
+
 // MARK: - 测试基建
 
 /// 真实文件系统 XMP 假件：侧车内容即属性 JSON，备份为真实文件拷贝，
@@ -385,7 +391,7 @@ struct WritebackServiceTests {
         let service = WritebackService(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             metadataSync: coordinator,
             metadataMutations: StubMutationPort(db: db, outbox: outbox),
@@ -470,7 +476,7 @@ struct WritebackServiceTests {
         let service = WritebackService(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             metadataSync: coordinator,
             metadataMutations: StubMutationPort(db: db, outbox: outbox),

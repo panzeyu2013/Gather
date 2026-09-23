@@ -14,6 +14,12 @@ import Foundation
 import Testing
 @testable import GatherCore
 
+private func makeTempPhotoStore() async throws -> any PhotoStore {
+    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
+    return SQLitePhotoStore(database: database)
+}
+
+
 // MARK: - Fake 端口
 
 /// TS: metadataSync 替身（schedule/getSummary/flushSession/retrySession/
