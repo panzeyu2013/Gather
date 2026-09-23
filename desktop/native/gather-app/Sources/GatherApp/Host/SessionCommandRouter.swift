@@ -306,7 +306,7 @@ public final class SessionCommandRouter: CommandRouter {
             db: db,
             sessionService: SessionService(
                 sessionRepo: sessionRepo,
-                photoRepo: photoRepo,
+                photoStore: photoStore,
                 faceStore: faceStore,
                 connection: db,
                 dimensionsProvider: { path in
@@ -558,37 +558,7 @@ public final class SessionCommandRouter: CommandRouter {
             let sessions = try sessionService.listSessions()
             return try GatherCore.JSONValue(from: sessions)
 
-        case "session.get":
-            let id = try requiredString(params, "sessionId")
-            guard let session = try sessionService.getSession(id) else {
-                throw BridgeError.notFound("SESSION_NOT_FOUND")
-            }
-            return try GatherCore.JSONValue(from: session)
 
-        case "session.create":
-            // TS session.ipc.ts createSessionParams：source 缺省 "manual"（非 "folder"）。
-            let name = try requiredString(params, "name")
-            let source = try optionalString(params, "source") ?? "manual"
-            let sourcePath = try optionalString(params, "sourcePath") ?? ""
-            let truncatedImport = optionalBool(params, "truncatedImport") ?? false
-            let session = try sessionService.createSession(
-                name: name, source: source, sourcePath: sourcePath, truncatedImport: truncatedImport)
-            // TS 契约：filepaths 传入时创建即导入（addPhotos），返回
-            // {session, failedFiles, added, skipped}；照片落库后重取会话
-            // （status/photoCount 已更新），对齐 DashboardViewModel
-            // LiveDashboardDataProvider.createSessionFromFiles。
-            if let filepaths = try optionalStringArray(params, "filepaths"), !filepaths.isEmpty {
-                let result = try sessionService.addPhotos(
-                    sessionId: session.id, filepaths: filepaths, source: source)
-                let refreshed = try sessionService.getSession(session.id) ?? session
-                return .object([
-                    "session": try GatherCore.JSONValue(from: refreshed),
-                    "failedFiles": .array(result.failedFiles.map(GatherCore.JSONValue.string)),
-                    "added": .number(Double(result.added)),
-                    "skipped": .number(Double(result.skipped)),
-                ])
-            }
-            return try GatherCore.JSONValue(from: session)
 
         case "session.update":
             let id = try requiredString(params, "sessionId")
@@ -596,19 +566,6 @@ public final class SessionCommandRouter: CommandRouter {
             let session = try sessionService.updateSession(sessionId: id, name: name)
             return try GatherCore.JSONValue(from: session)
 
-        case "session.add_photos":
-            let id = try requiredString(params, "sessionId")
-            let filepaths = try requiredStringArray(params, "filepaths")
-            let source = try optionalString(params, "source") ?? "import"
-            let result = try sessionService.addPhotos(sessionId: id, filepaths: filepaths, source: source)
-            return .object([
-                "added": .number(Double(result.added)),
-                "skipped": .number(Double(result.skipped)),
-                "total": .number(Double(result.total)),
-                "failedFiles": .array(result.failedFiles.map(GatherCore.JSONValue.string)),
-            ])
-
-        // ── photo.*（3.2 服务层）──
 
         case "photo.list":
             let sessionId = try requiredString(params, "sessionId")
@@ -1010,6 +967,76 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "session.add_photos":
+            Task {
+                do {
+                let id = try requiredString(params, "sessionId")
+                let filepaths = try requiredStringArray(params, "filepaths")
+                let source = try optionalString(params, "source") ?? "import"
+                let result = try await sessionService.addPhotos(sessionId: id, filepaths: filepaths, source: source)
+                completion(WebResponse(ok: true, data: .object([
+                    "added": .number(Double(result.added)),
+                    "skipped": .number(Double(result.skipped)),
+                    "total": .number(Double(result.total)),
+                    "failedFiles": .array(result.failedFiles.map(GatherCore.JSONValue.string)),
+                ]))); return
+
+            // ── photo.*（3.2 服务层）──
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
+        case "session.create":
+            Task {
+                do {
+                // TS session.ipc.ts createSessionParams：source 缺省 "manual"（非 "folder"）。
+                let name = try requiredString(params, "name")
+                let source = try optionalString(params, "source") ?? "manual"
+                let sourcePath = try optionalString(params, "sourcePath") ?? ""
+                let truncatedImport = optionalBool(params, "truncatedImport") ?? false
+                let session = try sessionService.createSession(
+                    name: name, source: source, sourcePath: sourcePath, truncatedImport: truncatedImport)
+                // TS 契约：filepaths 传入时创建即导入（addPhotos），返回
+                // {session, failedFiles, added, skipped}；照片落库后重取会话
+                // （status/photoCount 已更新），对齐 DashboardViewModel
+                // LiveDashboardDataProvider.createSessionFromFiles。
+                if let filepaths = try optionalStringArray(params, "filepaths"), !filepaths.isEmpty {
+                    let result = try await sessionService.addPhotos(
+                        sessionId: session.id, filepaths: filepaths, source: source)
+                    let refreshed = try await sessionService.getSession(session.id) ?? session
+                    completion(WebResponse(ok: true, data: .object([
+                        "session": try GatherCore.JSONValue(from: refreshed),
+                        "failedFiles": .array(result.failedFiles.map(GatherCore.JSONValue.string)),
+                        "added": .number(Double(result.added)),
+                        "skipped": .number(Double(result.skipped)),
+                    ]))); return
+                }
+                completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: session))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+
+        case "session.get":
+            Task {
+                do {
+                let id = try requiredString(params, "sessionId")
+                guard let session = try await sessionService.getSession(id) else {
+                    throw BridgeError.notFound("SESSION_NOT_FOUND")
+                }
+                completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: session))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
 
         case "quality.get":
             Task {

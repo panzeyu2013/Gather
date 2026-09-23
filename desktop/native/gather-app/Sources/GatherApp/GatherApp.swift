@@ -237,7 +237,7 @@ struct GatherApp: App {
                 source: source,
                 sourcePath: sourcePath
             )
-            let result = try router.sessionService.addPhotos(
+            let result = try await router.sessionService.addPhotos(
                 sessionId: session.id,
                 filepaths: normalized,
                 source: "import"

@@ -84,7 +84,7 @@ public struct GalleryVariantData: Codable, Equatable, Sendable {
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
 /// 真实路由（LiveGalleryDataProvider + 临时 SQLite）。
 public protocol GalleryDataProvider {
-    func getSession(_ sessionId: String) throws -> SessionData?
+    func getSession(_ sessionId: String) async throws -> SessionData?
     /// TS: sessionApi.getPhotosPage → { rows, cursor }。
     /// async：分页投影经 executeAsync 后台执行（避免 @MainActor 主线程阻塞）。
     func photoPage(
@@ -121,8 +121,8 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
         self.router = router
     }
 
-    public func getSession(_ sessionId: String) throws -> SessionData? {
-        try router.sessionService.getSession(sessionId)
+    public func getSession(_ sessionId: String) async throws -> SessionData? {
+        try await router.sessionService.getSession(sessionId)
     }
 
     public func photoPage(
@@ -364,7 +364,7 @@ public final class GalleryViewModel {
     private func performLoad() async {
         phase = .loading
         do {
-            session = try provider.getSession(sessionId)
+            session = try await provider.getSession(sessionId)
         } catch {
             actionError = Self.message(for: error)
         }
@@ -591,7 +591,7 @@ public final class GalleryViewModel {
     /// 滚动位置就地更新（页面保持 loaded，全程不闪 loading），不再回卷首页。
     func refreshOnEvent() async {
         do {
-            session = try provider.getSession(sessionId)
+            session = try await provider.getSession(sessionId)
         } catch {
             actionError = Self.message(for: error)
         }

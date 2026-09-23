@@ -51,14 +51,14 @@ public final class SessionService {
     private let dimensionsProvider: (String) throws -> (width: Int, height: Int)
 
     private let sessionRepo: SessionRepo
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let faceStore: any FaceStore
     private let assetStore: any AssetStore?
     private let connection: DBConnection
 
     public init(
         sessionRepo: SessionRepo,
-        photoRepo: PhotoRepo,
+        photoStore: any PhotoStore,
         faceStore: any FaceStore,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
@@ -68,7 +68,7 @@ public final class SessionService {
         assetStore: (any AssetStore)? = nil
     ) {
         self.sessionRepo = sessionRepo
-        self.photoRepo = photoRepo
+        self.photoStore = photoStore
         self.faceStore = faceStore
         self.connection = connection
         self.getNumber = getNumber
@@ -99,10 +99,10 @@ public final class SessionService {
         try sessionRepo.list().map { try toSessionData($0) }
     }
 
-    public func getSession(_ sessionId: String) throws -> SessionData? {
+    public func getSession(_ sessionId: String) async throws -> SessionData? {
         guard var row = try sessionRepo.get(id: sessionId) else { return nil }
         if row.sourcePath.isEmpty {
-            let photos = try photoRepo.getBySession(sessionId: sessionId)
+            let photos = try await photoStore.getBySession(sessionId: sessionId)
             // 单张照片推父目录会让索引器递归监控整个文件夹；多目录选择时
             // commonParentDirectory 同样拒绝文件系统根——绝不拿第一张照片的
             // 目录充数，否则会导入用户未选择的文件。
@@ -125,8 +125,9 @@ public final class SessionService {
         // 人脸数据由 Store 连接清理（跨连接不共享事务）；其余依赖 + 会话行
         // 仍在旧连接的单个事务内完成，删除顺序与 ON DELETE 约束保持一致。
         try await deleteFaceData(sessionId)
+        // Store 连接的照片行清理先于旧事务（foreign_keys = ON 下删除顺序要求）。
+        try await deleteSessionDependencies(sessionId)
         try connection.transaction {
-            try deleteSessionDependencies(sessionId)
             let deleted = try sessionRepo.delete(id: sessionId)
             if !deleted { throw SessionServiceError.sessionNotFound }
             _ = try connection.prepare("""
@@ -144,10 +145,10 @@ public final class SessionService {
         for id in sessionIds {
             try await deleteFaceData(id)
         }
+        for id in sessionIds {
+            try await deleteSessionDependencies(id)
+        }
         return try connection.transaction {
-            for id in sessionIds {
-                try deleteSessionDependencies(id)
-            }
             _ = try sessionRepo.deleteMany(ids: sessionIds)
             _ = try connection.prepare("""
                 UPDATE assets SET status = 'orphan', updated_at = ?
@@ -169,7 +170,7 @@ public final class SessionService {
     }
 
     /// 删除其余依赖行（旧连接事务内；顺序满足 ON DELETE 约束）。
-    private func deleteSessionDependencies(_ sessionId: String) throws {
+    private func deleteSessionDependencies(_ sessionId: String) async throws {
         // similarity_hashes 无级联引用 photos。
         try sessionRepo.deleteSimilarityDataBySession(sessionId: sessionId)
         _ = try connection.prepare("DELETE FROM person_embeddings WHERE session_id = ?").run([.text(sessionId)])
@@ -180,12 +181,12 @@ public final class SessionService {
         // 任务中心会一直看到幽灵任务）。
         _ = try connection.prepare("DELETE FROM analysis_jobs WHERE scope_type = 'session' AND scope_id = ?")
             .run([.text(sessionId)])
-        try photoRepo.deleteBySession(sessionId: sessionId)
+        try await photoStore.deleteBySession(sessionId: sessionId)
     }
 
     /// 批量加照片：分批读尺寸（import_concurrency，钳制 1..32），
     /// 落库 + 资产回填 + 照片计数 + index_seq 递增（新照片使旧分析失效）。
-    public func addPhotos(sessionId: String, filepaths: [String], source: String) throws -> SessionAddPhotoResult {
+    public func addPhotos(sessionId: String, filepaths: [String], source: String) async throws -> SessionAddPhotoResult {
         let session = try sessionRepo.get(id: sessionId)
         if session == nil { throw SessionServiceError.sessionNotFound }
         let normalized = normalizeImportFilepaths(filepaths)
@@ -222,12 +223,12 @@ public final class SessionService {
             }
         }
 
-        let result = try photoRepo.addPhotos(sessionId: sessionId, filepaths: entries, source)
+        let result = try await photoStore.addPhotos(sessionId: sessionId, inputs: entries, source: source)
         // asset 回填经 Task 触发（Store 写为 async；照片行已在旧连接落库）。
         if let assetStore {
             Task { _ = try? await assetStore.backfillSession(sessionId) }
         }
-        let totalCount = try photoRepo.countBySession(sessionId: sessionId)
+        let totalCount = try await photoStore.countBySession(sessionId: sessionId)
         try connection.transaction {
             try sessionRepo.updatePhotoCount(id: sessionId, count: totalCount)
             // 新照片使先前任何分析失效：同一事务内 bump index_seq，

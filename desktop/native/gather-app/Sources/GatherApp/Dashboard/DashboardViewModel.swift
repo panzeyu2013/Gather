@@ -104,13 +104,13 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         // 目录等会扩大索引范围的来源一律清空，防索引器递归无关目录。
         let sanitizedSourcePath = sanitizeSessionSourcePath(sourcePath: sourcePath, filepaths: filepaths)
         let created = try sessionService.createSession(name: name, source: source, sourcePath: sanitizedSourcePath)
-        let result = try sessionService.addPhotos(
+        let result = try await sessionService.addPhotos(
             sessionId: created.id,
             filepaths: filepaths,
             source: source
         )
         // TS 在 addPhotos 后重取 session（状态/photoCount 已更新）。
-        let session = try sessionService.getSession(created.id) ?? created
+        let session = try await sessionService.getSession(created.id) ?? created
         return CreateSessionOutcome(session: session, failedFiles: result.failedFiles, added: result.added)
     }
 

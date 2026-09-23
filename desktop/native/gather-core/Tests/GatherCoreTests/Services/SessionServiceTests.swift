@@ -31,7 +31,7 @@ private func makeHarness(
     let sessionRepo = SessionRepo(connection: db)
     let service = SessionService(
         sessionRepo: sessionRepo,
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
         dimensionsProvider: dimensions
@@ -53,7 +53,7 @@ private func addOkAnalysisRun(_ db: DBConnection, _ sessionId: String, indexSeq:
 @Suite("SessionService.createFromDirectory (one-hop import)")
 struct SessionServiceCreateFromDirectoryTests {
     @Test("creates a local session row with source_path and inserts no photos")
-    func createsLocalSessionRow() throws {
+    func createsLocalSessionRow() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         try writeTempFile(in: dir, name: "a.jpg")
@@ -68,12 +68,12 @@ struct SessionServiceCreateFromDirectoryTests {
         #expect(session.photoCount == 0)
         #expect(session.truncatedImport == false)
         // 照片不在创建时插入——metadata.scan 索引 job 后台填充。
-        #expect(try harness.service.getSession(session.id)?.photoCount == 0)
+        #expect(try await harness.service.getSession(session.id)?.photoCount == 0)
         #expect(try harness.service.listSessions().count == 1)
     }
 
     @Test("derives the session name from the directory basename when name is empty")
-    func derivesNameFromBasename() throws {
+    func derivesNameFromBasename() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         try writeTempFile(in: dir, name: "a.jpg")
@@ -85,7 +85,7 @@ struct SessionServiceCreateFromDirectoryTests {
     }
 
     @Test("rejects a non-directory path")
-    func rejectsNonDirectory() throws {
+    func rejectsNonDirectory() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filePath = try writeTempFile(in: dir, name: "a.jpg")
@@ -97,7 +97,7 @@ struct SessionServiceCreateFromDirectoryTests {
     }
 
     @Test("rejects a filesystem root as the source path")
-    func rejectsFilesystemRoot() throws {
+    func rejectsFilesystemRoot() async throws {
         let harness = try makeHarness()
         #expect(throws: SessionServiceError.sourceRootForbidden) {
             try harness.service.createFromDirectory(name: "X", sourcePath: "/")
@@ -108,7 +108,7 @@ struct SessionServiceCreateFromDirectoryTests {
 @Suite("SessionService.addPhotos")
 struct SessionServiceAddPhotosTests {
     @Test("bumps index_seq when photos are added so a previous ok run goes stale")
-    func bumpsIndexSeqOnAdd() throws {
+    func bumpsIndexSeqOnAdd() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let photoA = try writeTempFile(in: dir, name: "a.jpg")
@@ -119,7 +119,7 @@ struct SessionServiceAddPhotosTests {
         // 先前 ok run 快照了加照片前的游标。
         try addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
 
-        let result = try harness.service.addPhotos(sessionId: session.id, filepaths: [photoA, photoB], source: "manual")
+        let result = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA, photoB], source: "manual")
 
         #expect(result.added == 2)
         // 1.4.2: last_ok_run.index_seq (0) < session.index_seq (1) => stale。
@@ -131,7 +131,7 @@ struct SessionServiceAddPhotosTests {
     }
 
     @Test("does NOT bump index_seq when no photos were actually added")
-    func noBumpOnEmptyAdd() throws {
+    func noBumpOnEmptyAdd() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let photoA = try writeTempFile(in: dir, name: "a.jpg")
@@ -140,18 +140,18 @@ struct SessionServiceAddPhotosTests {
         let session = try harness.sessionRepo.create(name: "Add", source: "folder", sourcePath: dir)
         try addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
 
-        let first = try harness.service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
+        let first = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
         #expect(first.added == 1)
         #expect(try harness.sessionRepo.getIndexSeq(id: session.id) == 1)
 
         // 重复路径插入零行：游标不得移动。
-        let second = try harness.service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
+        let second = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
         #expect(second.added == 0)
         #expect(try harness.sessionRepo.getIndexSeq(id: session.id) == 1)
     }
 
     @Test("reports failed files and promotes draft sessions to photos_loaded")
-    func failedFilesAndStatusPromotion() throws {
+    func failedFilesAndStatusPromotion() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let goodA = try writeTempFile(in: dir, name: "a.jpg")
@@ -166,7 +166,7 @@ struct SessionServiceAddPhotosTests {
         let session = try harness.sessionRepo.create(name: "Add", source: "folder")
         #expect(session.status == "draft")
 
-        let result = try harness.service.addPhotos(
+        let result = try await harness.service.addPhotos(
             sessionId: session.id,
             filepaths: [goodA, goodB, dir + "/broken.jpg"],
             source: "manual"
@@ -192,7 +192,7 @@ struct SessionServiceDeleteAndQueryTests {
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db
         )
@@ -225,7 +225,7 @@ struct SessionServiceDeleteAndQueryTests {
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db
         )
@@ -238,7 +238,7 @@ struct SessionServiceDeleteAndQueryTests {
     }
 
     @Test("getSession derives and persists the source path from multiple photos")
-    func getSessionDerivesSourcePath() throws {
+    func getSessionDerivesSourcePath() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
     let db = try DBConnection(path: dbPath)
@@ -246,7 +246,7 @@ struct SessionServiceDeleteAndQueryTests {
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db
         )
@@ -260,7 +260,7 @@ struct SessionServiceDeleteAndQueryTests {
         try insertPhoto(db, id: "p1", sessionId: session.id, filepath: subA + "/a.jpg")
         try insertPhoto(db, id: "p2", sessionId: session.id, filepath: subB + "/b.jpg")
 
-        let data = try service.getSession(session.id)
+        let data = try await service.getSession(session.id)
 
         #expect(data?.sourcePath == TSPath.resolve(dir))
         // 已持久化，再次读取不靠内存。
@@ -271,7 +271,7 @@ struct SessionServiceDeleteAndQueryTests {
 @Suite("SessionService 路径工具（纯函数）")
 struct SessionPathUtilityTests {
     @Test("commonParentDirectory returns the common parent and rejects the root")
-    func commonParentDirectoryBehavior() throws {
+    func commonParentDirectoryBehavior() async throws {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let a = root + "/shoot-a/IMG_0001.CR2"
@@ -296,7 +296,7 @@ struct SessionPathUtilityTests {
     }
 
     @Test("sanitizeSessionSourcePath only accepts the real common parent of 2+ photos")
-    func sanitizeSessionSourcePathBehavior() throws {
+    func sanitizeSessionSourcePathBehavior() async throws {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let a = root + "/x/IMG_0001.CR2"
@@ -333,7 +333,7 @@ struct SessionServiceErrorCodeTests {
     }
 
     @Test("addPhotos survives a corrupt import_concurrency setting like TS")
-    func addPhotosWithNanConcurrency() throws {
+    func addPhotosWithNanConcurrency() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let photoA = try writeTempFile(in: dir, name: "a.jpg")
@@ -345,7 +345,7 @@ struct SessionServiceErrorCodeTests {
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             connection: db,
             getNumber: { _, _ in .nan },
@@ -354,7 +354,7 @@ struct SessionServiceErrorCodeTests {
         let session = try sessionRepo.create(name: "Add", source: "folder")
 
         // TS：batchSize=NaN 时循环零批次执行，不崩溃、不报错。
-        let result = try service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
+        let result = try await service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
 
         #expect(result.added == 0)
         #expect(result.failedFiles.isEmpty)

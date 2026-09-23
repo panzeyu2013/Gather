@@ -100,15 +100,16 @@ struct GatherAppDelegateTests {
         let broken = directory.appendingPathComponent("broken.txt")
         try Data("not-an-image".utf8).write(to: broken)
 
-        let db = try DBConnection(path: ":memory:")
-        try MigrationRunner().migrate(db)
+        // 同一临时文件库：SessionService 的照片写入走 Store 连接，需与旧连接同库。
         let tempStorePath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-delegate-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: tempStorePath)
+        try MigrationRunner().migrate(db)
         try MigrationRunner().migrate(try DBConnection(path: tempStorePath))
         let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
         let settings = try makeTestSettings()
         let router = SessionCommandRouter.makeDefault(
-            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try await makeTempPhotoStore())
+            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: tempStorePath)))
 
         final class Box: @unchecked Sendable {
             var userInfo: [AnyHashable: Any]?
