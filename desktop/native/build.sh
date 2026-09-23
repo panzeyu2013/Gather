@@ -20,9 +20,13 @@ fi
 swift build --package-path "$CORE_PACKAGE" -c "$CONFIGURATION"
 swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION"
 
-APP_EXECUTABLE="$(find "$APP_PACKAGE/.build" -type f -path "*/$CONFIGURATION/gather-app" -perm -111 -print -quit)"
-if [[ -z "$APP_EXECUTABLE" ]]; then
-  echo "native executable not found under $APP_PACKAGE/.build" >&2
+# Use SwiftPM's own bin path: the legacy .build/<config> layout is replaced by
+# .build/out/Products/<Config> on newer toolchains (Xcode 16+/26/27), and
+# build configuration names are capitalized there.
+BIN_DIR="$(swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION" --show-bin-path)"
+APP_EXECUTABLE="$BIN_DIR/gather-app"
+if [[ ! -x "$APP_EXECUTABLE" ]]; then
+  echo "native executable not found at $APP_EXECUTABLE" >&2
   exit 1
 fi
 
@@ -34,7 +38,7 @@ cp "$APP_PACKAGE/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
 # SPM 资源 bundle（本地化表 .lproj 等）随可执行文件进入 app bundle，
 # Bundle.module 运行时按 Contents/Resources/gather-app_GatherApp.bundle 解析。
-RESOURCE_BUNDLE="$(find "$APP_PACKAGE/.build" -type d -name "gather-app_GatherApp.bundle" -path "*/$CONFIGURATION/*" -print -quit)"
+RESOURCE_BUNDLE="$BIN_DIR/gather-app_GatherApp.bundle"
 if [[ -n "$RESOURCE_BUNDLE" ]]; then
   cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
 else

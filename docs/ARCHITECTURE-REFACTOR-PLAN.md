@@ -15,8 +15,9 @@
 | R0.1 CSQLite 构建修复 | ✅ | `desktop/native/gather-core/Sources/CSQLite/placeholder.c` |
 | R0.2 CI 加固 | ✅ | `.github/workflows/ci.yml`：boundary job（ubuntu）+ SwiftPM 缓存 + `timeout-minutes` + `concurrency` + `permissions` + `macos-latest` 工具链漂移任务 |
 | R0.3 legacy 扫描 | ✅ | `scripts/check-no-legacy.sh`：4 条 enforced（无 Legacy/Compat/Adapter、无 WebKit/Electron、app 层无 JSONSerialization）+ 8 条 tracked 进度指标 |
-| R0.4 基线采集 | 进行中 | core/app 测试与 `build.sh` 运行中，结果记录到本节 |
-| R0.5 真实库 fixture | 待办 | 需要一个真实 `gather.sqlite` 副本（用户提供或从本机 app support 复制） |
+| R0.4 基线采集 | ✅ | core：**789 tests / 106 suites 全绿**（test run 16.1s，Xcode 27.0 / Swift 6.4）；app：**172 tests / 19 suites 全绿**（5.3s）；`build.sh` 组装出 `release/Gather.app`（21.7MB 可执行 + 资源 bundle） |
+| R0.2b 打包脚本修复 | ✅ | `build.sh` 原用 `find ... -path "*/release/gather-app"`，在新 SwiftPM 布局（`.build/out/Products/Release`）下找不到产物；改用 `swift build --show-bin-path` |
+| R0.5 真实库 fixture | ✅ | 本机真实库副本：`/private/tmp/gather-fixture/gather-v33.sqlite`（schema_version **32**、42 表、1 session / 1 photo / 2 faces，sha256 前缀 `c76a5a2a`）——用于 R1「旧库 → 新 Store」升级与读写一致性验证（不入库，含用户数据） |
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
