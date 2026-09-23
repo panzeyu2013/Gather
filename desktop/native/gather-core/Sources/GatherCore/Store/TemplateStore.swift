@@ -28,6 +28,17 @@ public struct TemplateUpdateFields: Equatable, Sendable {
     }
 }
 
+/// 模板应用后待写入的设置项。
+public struct TemplateSettingUpdate: Equatable, Sendable {
+    public let key: String
+    public let value: String
+
+    public init(key: String, value: String) {
+        self.key = key
+        self.value = value
+    }
+}
+
 public protocol TemplateStore: Sendable {
     func list() async throws -> [TemplateData]
     func get(id: String) async throws -> TemplateData?

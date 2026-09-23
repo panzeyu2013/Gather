@@ -118,5 +118,9 @@ struct GatherAPITests {
             "UPDATE app_settings SET value = '0.1' WHERE key = 'default_eps'"
         )
         #expect(await api.settings.value("default_eps") == "0.7")
+
+        // 同一 store 上的新 API 实例重新装载 → 看到库中值（旧 SettingsService 语义）。
+        let fresh = SettingsAPI(store: api.container.settings)
+        #expect(await fresh.value("default_eps") == "0.1")
     }
 }

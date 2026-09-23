@@ -11,21 +11,19 @@ import Testing
 private struct TemplateHarness {
     let db: DBConnection
     let service: TemplateService
-    let settings: SettingsService
     let sessionId: String
 }
 
 private func makeTemplateHarness(sessionStatus: String = "draft") throws -> TemplateHarness {
     let db = try makeMigratedDB()
-    let settings = SettingsService(repo: SettingsRepo(connection: db))
-    let service = TemplateService(connection: db, settings: settings)
+    let service = TemplateService(connection: db)
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "T", source: "folder")
     if sessionStatus != "draft" {
         _ = try db.prepare("UPDATE sessions SET status = ? WHERE id = ?")
             .run([.text(sessionStatus), .text(session.id)])
     }
-    return TemplateHarness(db: db, service: service, settings: settings, sessionId: session.id)
+    return TemplateHarness(db: db, service: service, sessionId: session.id)
 }
 
 private func makeConfig() -> WorkflowTemplateConfig {
@@ -131,19 +129,22 @@ struct TemplateCrudTests {
 
 @Suite("TemplateService apply")
 struct TemplateApplyTests {
-    @Test("apply writes the template settings through SettingsService")
-    func applyWritesSettings() throws {
+    @Test("settingsUpdates returns the template settings in fixed key order")
+    func settingsUpdatesReturnTemplateConfig() throws {
         let harness = try makeTemplateHarness()
         let config = makeConfig()
         let template = try harness.service.create(name: "T", description: "", config: config)
 
-        try harness.service.apply(templateId: template.id, sessionId: harness.sessionId)
+        let updates = try harness.service.settingsUpdates(templateId: template.id, sessionId: harness.sessionId)
 
-        #expect(harness.settings.get("default_threshold") == "0.8")
-        #expect(harness.settings.get("default_min_group_size") == "3")
-        #expect(harness.settings.get("default_eps") == "0.5")
-        #expect(harness.settings.get("default_min_samples") == "2")
-        #expect(harness.settings.get("detect_confidence") == "0.7")
+        // R5：服务只产出待写入项，落库由调用方经 SettingsAPI 完成。
+        #expect(updates == [
+            TemplateSettingUpdate(key: "default_threshold", value: "0.8"),
+            TemplateSettingUpdate(key: "default_min_group_size", value: "3"),
+            TemplateSettingUpdate(key: "default_eps", value: "0.5"),
+            TemplateSettingUpdate(key: "default_min_samples", value: "2"),
+            TemplateSettingUpdate(key: "detect_confidence", value: "0.7"),
+        ])
     }
 
     @Test("apply accepts draft and photos_loaded sessions")
@@ -151,13 +152,13 @@ struct TemplateApplyTests {
         let draft = try makeTemplateHarness(sessionStatus: "draft")
         let template = try draft.service.create(name: "T", description: "", config: makeConfig())
         #expect(throws: Never.self) {
-            try draft.service.apply(templateId: template.id, sessionId: draft.sessionId)
+            _ = try draft.service.settingsUpdates(templateId: template.id, sessionId: draft.sessionId)
         }
 
         let loaded = try makeTemplateHarness(sessionStatus: "photos_loaded")
         let template2 = try loaded.service.create(name: "T", description: "", config: makeConfig())
         #expect(throws: Never.self) {
-            try loaded.service.apply(templateId: template2.id, sessionId: loaded.sessionId)
+            _ = try loaded.service.settingsUpdates(templateId: template2.id, sessionId: loaded.sessionId)
         }
     }
 
@@ -167,7 +168,7 @@ struct TemplateApplyTests {
         let template = try harness.service.create(name: "T", description: "", config: makeConfig())
 
         #expect(throws: TemplateServiceError.invalidSessionStatus("indexed")) {
-            try harness.service.apply(templateId: template.id, sessionId: harness.sessionId)
+            _ = try harness.service.settingsUpdates(templateId: template.id, sessionId: harness.sessionId)
         }
         // TS: `Cannot apply template to session with status "${status}". Expected draft or photos_loaded.`
         #expect(
@@ -181,10 +182,10 @@ struct TemplateApplyTests {
         let harness = try makeTemplateHarness()
         let template = try harness.service.create(name: "T", description: "", config: makeConfig())
         #expect(throws: TemplateServiceError.templateNotFound) {
-            try harness.service.apply(templateId: "nope", sessionId: harness.sessionId)
+            _ = try harness.service.settingsUpdates(templateId: "nope", sessionId: harness.sessionId)
         }
         #expect(throws: TemplateServiceError.sessionNotFound) {
-            try harness.service.apply(templateId: template.id, sessionId: "nope")
+            _ = try harness.service.settingsUpdates(templateId: template.id, sessionId: "nope")
         }
         #expect(String(describing: TemplateServiceError.sessionNotFound) == "SESSION_NOT_FOUND")
     }

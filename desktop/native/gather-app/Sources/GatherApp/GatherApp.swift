@@ -84,11 +84,23 @@ struct GatherApp: App {
                 [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
             try MigrationRunner(databaseFilePath: dbURL.path).migrate(db)
 
-            let router = SessionCommandRouter.makeDefault(db: db)
+            // R1/R5：设置存储切到 Store + SettingsAPI（同一库文件的新连接，
+            // 打开即确保迁移到当前版本；快照供同步世界读取，写路径走异步 API）。
+            let storeDatabase = try SQLiteDatabase(path: dbURL.path)
+            try await StoreMigrator().migrate(storeDatabase)
+            let settingsAPI = SettingsAPI(store: SQLiteSettingsStore(database: storeDatabase))
+            let settingsSnapshot = await settingsAPI.snapshot()
+
+            let router = SessionCommandRouter.makeDefault(
+                db: db,
+                settings: settingsSnapshot,
+                settingsAPI: settingsAPI
+            )
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
             GatherEventCenter.shared.wire(jobService: router.jobService)
-            Self.prepareNativeEmbeddingRerun(router: router, databasePath: dbURL.path)
+            await Self.prepareNativeEmbeddingRerun(
+                router: router, databasePath: dbURL.path, settingsAPI: settingsAPI)
             let provider = LiveDashboardDataProvider(
                 sessionService: router.sessionService,
                 workspaceStatusService: router.workspaceStatusService,
@@ -147,17 +159,19 @@ struct GatherApp: App {
     /// embedding_dim，并为已有工作区排入 face.analyze；JobService 的
     /// dedupe/checkpoint 保证重启可续。真实照片集的 ARI/NMI 仍需发布前离线
     /// 验收，不在启动阶段伪造通过。
-    private static func prepareNativeEmbeddingRerun(router: SessionCommandRouter, databasePath: String) {
+    private static func prepareNativeEmbeddingRerun(
+        router: SessionCommandRouter,
+        databasePath: String,
+        settingsAPI: SettingsAPI
+    ) async {
         let marker = "vision-feature-print-rev2-768-v1"
         // Scope the marker to the database. A global UserDefaults marker would
         // incorrectly skip the migration when a second library is opened.
         let markerKey = "gather.nativeEmbeddingVersion.\(databasePath)"
         guard UserDefaults.standard.string(forKey: markerKey) != marker else { return }
         do {
-            _ = try router.execute("settings.set", params: [
-                "key": .string("embedding_dim"),
-                "value": .string("768"),
-            ])
+            // R5：设置写路径经 SettingsAPI（异步、白名单校验）。
+            try await settingsAPI.set("embedding_dim", value: "768")
             for session in try router.sessionService.listSessions() where session.photoCount > 0 {
                 _ = try router.jobService.create(JobCreateParams(
                     type: .faceAnalyze,

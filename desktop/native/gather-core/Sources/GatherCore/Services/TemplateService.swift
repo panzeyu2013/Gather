@@ -49,11 +49,8 @@ extension TemplateServiceError {
 /// TS: TemplateService（desktop/src/main/services/template/template.service.ts）。
 public final class TemplateService {
     private let connection: DBConnection
-    private let settings: SettingsService
-
-    public init(connection: DBConnection, settings: SettingsService) {
+    public init(connection: DBConnection) {
         self.connection = connection
-        self.settings = settings
     }
 
     /// TS: list —— ORDER BY updated_at DESC。
@@ -127,8 +124,9 @@ public final class TemplateService {
         _ = try connection.prepare("DELETE FROM workflow_templates WHERE id = ?").run([.text(id)])
     }
 
-    /// TS: apply —— 模板配置经 SettingsService 落库（内存缓存同步 + 白名单）。
-    public func apply(templateId: String, sessionId: String) throws {
+    /// TS: apply —— 校验模板与会话状态后，返回待写入的设置项（键序固定）。
+    /// 设置落库由调用方经 SettingsAPI 完成（R5：服务不再直连设置存储）。
+    public func settingsUpdates(templateId: String, sessionId: String) throws -> [TemplateSettingUpdate] {
         guard let template = try get(id: templateId) else {
             throw TemplateServiceError.templateNotFound
         }
@@ -143,13 +141,13 @@ public final class TemplateService {
         }
 
         let config = template.config
-        // 经 SettingsService.set 而非直接 INSERT：内存缓存同步 + 已知键白名单
-        //（TS 注释；未知键抛 SettingsError.unknownKey）。
-        try settings.set("default_threshold", value: String(config.similarity.threshold))
-        try settings.set("default_min_group_size", value: String(config.similarity.minGroupSize))
-        try settings.set("default_eps", value: String(config.face.eps))
-        try settings.set("default_min_samples", value: String(config.face.minSamples))
-        try settings.set("detect_confidence", value: String(config.face.detectorConfidence))
+        return [
+            TemplateSettingUpdate(key: "default_threshold", value: String(config.similarity.threshold)),
+            TemplateSettingUpdate(key: "default_min_group_size", value: String(config.similarity.minGroupSize)),
+            TemplateSettingUpdate(key: "default_eps", value: String(config.face.eps)),
+            TemplateSettingUpdate(key: "default_min_samples", value: String(config.face.minSamples)),
+            TemplateSettingUpdate(key: "detect_confidence", value: String(config.face.detectorConfidence)),
+        ]
     }
 
     // MARK: - 内部

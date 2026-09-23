@@ -67,7 +67,10 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (LibraryViewModel
 private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection) {
     let db = try DBConnection(path: ":memory:")
     try MigrationRunner().migrate(db)
-    return (LiveLibraryDataProvider(router: SessionCommandRouter.makeDefault(db: db)), db)
+    let settings = try makeTestSettings()
+    let router = SessionCommandRouter.makeDefault(
+        db: db, settings: settings.snapshot, settingsAPI: settings.api)
+    return (LiveLibraryDataProvider(router: router), db)
 }
 
 private func insertSession(_ db: DBConnection, _ id: String, name: String = "工作区") throws {

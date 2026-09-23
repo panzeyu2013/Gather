@@ -184,7 +184,9 @@ private func makeStubVM(
 private func makeLiveProvider() throws -> (LiveSimilarityDataProvider, DBConnection) {
     let db = try DBConnection(path: ":memory:")
     try MigrationRunner().migrate(db)
-    let router = SessionCommandRouter.makeDefault(db: db)
+    let settings = try makeTestSettings()
+    let router = SessionCommandRouter.makeDefault(
+        db: db, settings: settings.snapshot, settingsAPI: settings.api)
     // JobService 需 start() 后 drain 才运行（TS index.ts:476 主进程启动语义；
     // 否则 sim.analyze job 永不执行，waitForResult 挂满超时）。
     router.jobService.start()

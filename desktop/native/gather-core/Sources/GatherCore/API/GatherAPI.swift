@@ -168,6 +168,34 @@ public actor SettingsAPI {
     }
 }
 
+/// 设置快照：供同步世界（现有服务/路由）以值语义读取设置，
+/// 取代 SettingsService 的内存缓存（异步写入仍走 SettingsAPI）。
+public struct SettingsSnapshot: Sendable {
+    public let values: [String: String]
+
+    public init(values: [String: String]) {
+        self.values = values
+    }
+
+    /// TS: get(key, defaultValue?) —— 未命中 → defaultValue ?? ''。
+    public func value(_ key: String, default defaultValue: String? = nil) -> String {
+        values[key] ?? defaultValue ?? ""
+    }
+
+    /// TS: getNumber(key, defaultValue) —— parseFloat，NaN 回退默认值。
+    public func number(_ key: String, default defaultValue: Double) -> Double {
+        guard let raw = values[key], let parsed = Double(raw), !parsed.isNaN else { return defaultValue }
+        return parsed
+    }
+}
+
+public extension SettingsAPI {
+    /// 读取全量设置（默认值打底 + 已落库值）生成快照。
+    func snapshot() async -> SettingsSnapshot {
+        SettingsSnapshot(values: await all())
+    }
+}
+
 /// 会话命名空间。
 public struct SessionsAPI: Sendable {
     private let store: any SessionStore

@@ -74,7 +74,10 @@ public final class SessionCommandRouter: CommandRouter {
     public let workspaceStatusService: WorkspaceStatusService
     public let jobService: JobService
     private let photoRepo: PhotoRepo
-    private let settingsService: SettingsService
+    /// 设置快照（同步读：服务与命令处理不再触碰设置存储）。
+    private let settings: SettingsSnapshot
+    /// 设置写路径（异步唯一入口；R5：取代 SettingsService）。
+    private let settingsAPI: SettingsAPI
     private let filterEngine: FilterEngine
     private let navigationService: NavigationService
     private let similarityService: SimilarityService
@@ -105,7 +108,8 @@ public final class SessionCommandRouter: CommandRouter {
         workspaceStatusService: WorkspaceStatusService,
         jobService: JobService,
         photoRepo: PhotoRepo,
-        settingsService: SettingsService,
+        settings: SettingsSnapshot,
+        settingsAPI: SettingsAPI,
         filterEngine: FilterEngine,
         navigationService: NavigationService,
         similarityService: SimilarityService,
@@ -130,7 +134,8 @@ public final class SessionCommandRouter: CommandRouter {
         self.workspaceStatusService = workspaceStatusService
         self.jobService = jobService
         self.photoRepo = photoRepo
-        self.settingsService = settingsService
+        self.settings = settings
+        self.settingsAPI = settingsAPI
         self.filterEngine = filterEngine
         self.navigationService = navigationService
         self.similarityService = similarityService
@@ -179,13 +184,14 @@ public final class SessionCommandRouter: CommandRouter {
     ///   假推理/解码（对齐 gather-core FaceKeywordingServiceTests 模式）。
     public static func makeDefault(
         db: DBConnection,
+        settings: SettingsSnapshot,
+        settingsAPI: SettingsAPI,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
     ) -> SessionCommandRouter {
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
-        let settingsService = SettingsService(repo: SettingsRepo(connection: db))
         let similarityResultRepo = SimilarityResultRepo(connection: db)
         let similarityService = SimilarityService(
             photoRepo: photoRepo,
@@ -194,7 +200,7 @@ public final class SessionCommandRouter: CommandRouter {
             clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db,
             getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
+                settings.number(key, default: defaultValue)
             },
             // 修复（审计 P0-1）：此前未注入 thumbnailProvider（默认恒 nil），
             // 相似度分析全部哈希计算失败 → SIM_NO_HASH_DATA。与
@@ -212,7 +218,7 @@ public final class SessionCommandRouter: CommandRouter {
         let writebackRepo = WritebackRepo(connection: db)
         let metadataCacheRepo = MetadataCacheRepo(connection: db)
         let assetResolver = PhotoAssetResolver(connection: db, getSetting: { key, defaultValue in
-            settingsService.get(key, defaultValue: defaultValue)
+            settings.value(key, default: defaultValue)
         })
         let metadataSyncCoordinator = MetadataSyncCoordinator(
             outboxRepo: outboxRepo,
@@ -223,7 +229,7 @@ public final class SessionCommandRouter: CommandRouter {
                 if key == "metadata_write_debounce_ms", let metadataWriteDebounceMs {
                     return metadataWriteDebounceMs
                 }
-                return settingsService.getNumber(key, defaultValue: defaultValue)
+                return settings.number(key, default: defaultValue)
             }
         )
         let metadataMutationService = MetadataMutationService(
@@ -269,10 +275,10 @@ public final class SessionCommandRouter: CommandRouter {
             personRepo: personRepo,
             connection: db,
             getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
+                settings.number(key, default: defaultValue)
             },
             getString: { key, defaultValue in
-                settingsService.get(key, defaultValue: defaultValue)
+                settings.value(key, default: defaultValue)
             },
             writebackProvider: FaceKwWritebackBridge(writebackService: writebackService)
         )
@@ -291,7 +297,7 @@ public final class SessionCommandRouter: CommandRouter {
             writeback: writebackService,
             cullingHistoryRepo: CullingHistoryRepo(connection: db),
             getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
+                settings.number(key, default: defaultValue)
             }
         )
         return SessionCommandRouter(
@@ -315,7 +321,8 @@ public final class SessionCommandRouter: CommandRouter {
             ),
             jobService: jobService,
             photoRepo: photoRepo,
-            settingsService: settingsService,
+            settings: settings,
+            settingsAPI: settingsAPI,
             filterEngine: FilterEngine(connection: db),
             navigationService: NavigationService(connection: db),
             similarityService: similarityService,
@@ -333,7 +340,7 @@ public final class SessionCommandRouter: CommandRouter {
             assetRepo: assetRepo,
             faceKwService: resolvedFaceKwService,
             personRepo: personRepo,
-            templateService: TemplateService(connection: db, settings: settingsService),
+            templateService: TemplateService(connection: db),
             qualityService: QualityService(
                 photoRepo: photoRepo,
                 connection: db,
@@ -349,7 +356,7 @@ public final class SessionCommandRouter: CommandRouter {
                     try RAWDecoder.getDimensions(path: path)
                 },
                 getSetting: { key, defaultValue in
-                    settingsService.get(key, defaultValue: defaultValue)
+                    settings.value(key, default: defaultValue)
                 }
             ),
             metadataService: metadataService,
@@ -696,37 +703,12 @@ public final class SessionCommandRouter: CommandRouter {
 
         case "settings.get_all":
             // settings.ipc.ts:11 —— ok(svc.getAll())：Record<string, string>。
-            return .object(settingsService.getAll().mapValues(GatherCore.JSONValue.string))
+            return .object(settings.values.mapValues(GatherCore.JSONValue.string))
 
         case "settings.get":
             // settings.ipc.ts:13-16 —— key 校验后 ok(svc.get(key))。
             let key = try validatedString(params, "key", maxLength: 256)
-            return .string(settingsService.get(key))
-
-        case "settings.set":
-            // settings.ipc.ts:18-23 —— ok({ done: true })；value 允许空串。
-            let key = try validatedString(params, "key", maxLength: 256)
-            let value = try validatedString(params, "value", maxLength: 4096, allowEmpty: true)
-            try settingsService.set(key, value: value)
-            return .object(["done": .bool(true)])
-
-        case "settings.reset":
-            // settings.ipc.ts:25-32 —— 重置后返回全部设置；菜单由原生
-            // AppDelegate 管理，不在设置服务内重建。
-            try settingsService.reset()
-            return .object(settingsService.getAll().mapValues(GatherCore.JSONValue.string))
-
-        case "settings.set_language":
-            // settings.ipc.ts:38-46 —— 非 'zh-CN'/'en' 抛 SETTINGS_LANGUAGE_INVALID。
-            guard let language = try optionalString(params, "language"),
-                  language == "zh-CN" || language == "en"
-            else {
-                throw BridgeError.badParams("SETTINGS_LANGUAGE_INVALID")
-            }
-            try settingsService.set("ui_language", value: language)
-            // 菜单文案跟随语言重建（对齐旧版 setAppLocale 即时 rebuild）。
-            NotificationCenter.default.post(name: GatherAppNotification.languageChanged, object: language)
-            return .object(["language": .string(language)])
+            return .string(settings.value(key))
 
         case "settings.get_ml_status":
             // settings.ipc.ts:48-79 —— 形状见 Protocol/Settings.swift MLStatusData。
@@ -1105,16 +1087,6 @@ public final class SessionCommandRouter: CommandRouter {
             try templateService.delete(id: templateId)
             return .object(["done": .bool(true)])
 
-        case "template.apply":
-            // template.ipc.ts:62-71 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("TEMPLATE_APPLY_CONFIRM_REQUIRED")
-            }
-            let templateId = try requiredString(params, "templateId")
-            let sessionId = try requiredString(params, "sessionId")
-            try templateService.apply(templateId: templateId, sessionId: sessionId)
-            return .object(["done": .bool(true)])
-
         // ── quality.*（TS 源 quality.ipc.ts）──
 
         case "quality.get":
@@ -1395,14 +1367,14 @@ public final class SessionCommandRouter: CommandRouter {
         case "image.prioritize_thumbnail":
             let path = try requiredString(params, "path")
             try requirePhotoPath(path)
-            let size = Int((try? optionalNumber(params, "size")) ?? settingsService.getNumber("thumbnail_size", defaultValue: 1024))
+            let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
             try imagePreloadService.prioritizeThumbnail(path: path, size: size)
             return .null
 
         case "image.preload_thumbnails":
             let paths = try allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
             guard !paths.isEmpty else { return .null }
-            let size = Int((try? optionalNumber(params, "size")) ?? settingsService.getNumber("thumbnail_size", defaultValue: 1024))
+            let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
             let fingerprint = paths.joined(separator: "\u{0}")
             let job = try jobService.create(JobCreateParams(
                 type: .thumbnailBuild,
@@ -1748,9 +1720,9 @@ public final class SessionCommandRouter: CommandRouter {
             Task {
                 do {
                     let threshold = (try? optionalNumber(params, "threshold"))
-                        ?? settingsService.getNumber("default_threshold", defaultValue: 10)
+                        ?? settings.number("default_threshold", default: 10)
                     let minGroupSize = (try? optionalNumber(params, "minGroupSize"))
-                        ?? settingsService.getNumber("default_min_group_size", defaultValue: 2)
+                        ?? settings.number("default_min_group_size", default: 2)
                     let groupingMode: SimilarityGroupingMode
                     if let raw = try? optionalString(params, "groupingMode"), raw == "sequential" {
                         groupingMode = .sequential
@@ -1789,8 +1761,8 @@ public final class SessionCommandRouter: CommandRouter {
             Task {
                 do {
                     try validateSimilarityParameters(
-                        threshold: threshold ?? settingsService.getNumber("default_threshold", defaultValue: 10),
-                        minGroupSize: minGroupSize ?? settingsService.getNumber("default_min_group_size", defaultValue: 2)
+                        threshold: threshold ?? settings.number("default_threshold", default: 10),
+                        minGroupSize: minGroupSize ?? settings.number("default_min_group_size", default: 2)
                     )
                     // TS: threshold ?? 'default'（undefined 时不输出数值）。
                     let dedupeThreshold = threshold.map { String($0) } ?? "default"
@@ -1853,14 +1825,14 @@ public final class SessionCommandRouter: CommandRouter {
             let eps = try? optionalNumber(params, "eps")
             let minSamples = try? optionalNumber(params, "minSamples")
             let detectorPath = (try? optionalString(params, "detectorPath"))
-                ?? settingsService.get("detector_model_path", defaultValue: "models/face_detector.onnx")
+                ?? settings.value("detector_model_path", default: "models/face_detector.onnx")
             let encoderPath = (try? optionalString(params, "encoderPath"))
-                ?? settingsService.get("encoder_model_path", defaultValue: "models/face_encoder.onnx")
+                ?? settings.value("encoder_model_path", default: "models/face_encoder.onnx")
             Task {
                 do {
                     try validateFaceClusteringParameters(
-                        eps: eps ?? settingsService.getNumber("default_eps", defaultValue: 0.6),
-                        minPts: minSamples ?? settingsService.getNumber("default_min_samples", defaultValue: 2)
+                        eps: eps ?? settings.number("default_eps", default: 0.6),
+                        minPts: minSamples ?? settings.number("default_min_samples", default: 2)
                     )
                     let job = try jobService.create(JobCreateParams(
                         type: .faceAnalyze,
@@ -1895,8 +1867,8 @@ public final class SessionCommandRouter: CommandRouter {
             let minSamples = try? optionalNumber(params, "minSamples")
             Task {
                 do {
-                    let epsValue = eps ?? settingsService.getNumber("default_eps", defaultValue: 0.6)
-                    let minSamplesValue = minSamples ?? settingsService.getNumber("default_min_samples", defaultValue: 2)
+                    let epsValue = eps ?? settings.number("default_eps", default: 0.6)
+                    let minSamplesValue = minSamples ?? settings.number("default_min_samples", default: 2)
                     try validateFaceClusteringParameters(eps: epsValue, minPts: minSamplesValue)
                     try await faceKwService.recluster(sessionId: sessionId, eps: epsValue, minPts: minSamplesValue)
                     completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
@@ -2375,6 +2347,83 @@ public final class SessionCommandRouter: CommandRouter {
                 }
             }
 
+        // ── settings.*（写路径：R5 起唯一经 SettingsAPI，异步落库）──
+
+        case "settings.set":
+            do {
+                let key = try validatedString(params, "key", maxLength: 256)
+                let value = try validatedString(params, "value", maxLength: 4096, allowEmpty: true)
+                Task {
+                    do {
+                        try await settingsAPI.set(key, value: value)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "settings.reset":
+            Task {
+                do {
+                    try await settingsAPI.reset()
+                    let snapshot = await settingsAPI.snapshot()
+                    completion(WebResponse(
+                        ok: true,
+                        data: .object(snapshot.values.mapValues { GatherCore.JSONValue.string($0) })
+                    ))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "settings.set_language":
+            do {
+                guard let language = try optionalString(params, "language"),
+                      language == "zh-CN" || language == "en"
+                else {
+                    throw BridgeError.badParams("SETTINGS_LANGUAGE_INVALID")
+                }
+                Task {
+                    do {
+                        try await settingsAPI.set("ui_language", value: language)
+                        NotificationCenter.default.post(
+                            name: GatherAppNotification.languageChanged, object: language)
+                        completion(WebResponse(ok: true, data: .object(["language": .string(language)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // ── template.*（apply 写设置：异步路径）──
+
+        case "template.apply":
+            do {
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("TEMPLATE_APPLY_CONFIRM_REQUIRED")
+                }
+                let templateId = try requiredString(params, "templateId")
+                let sessionId = try requiredString(params, "sessionId")
+                let updates = try templateService.settingsUpdates(templateId: templateId, sessionId: sessionId)
+                Task {
+                    do {
+                        for update in updates {
+                            try await settingsAPI.set(update.key, value: update.value)
+                        }
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
         default:
             // 未在异步 switch 特化的命令（纯读/同步服务）：后台队列执行同步
             // execute，命令实现保持单一事实源（P0-2 修复方向：不再要求新命令
@@ -2619,10 +2668,10 @@ public final class SessionCommandRouter: CommandRouter {
     /// - resolveModelPath 无 process.resourcesPath 候选（Swift 无等价物）
     /// - autoBackendLabel 内联 mainCopy 双语文案（locale-copy.ts:107/164）
     private func buildMLStatus() throws -> MLStatusData {
-        let provider = settingsService.get("onnx_provider", defaultValue: "auto")
+        let provider = settings.value("onnx_provider", default: "auto")
         let modelsDir = modelResourcesDir()
-        let detectorPath = settingsService.get("detector_model_path", defaultValue: "models/face_detector.onnx")
-        let encoderPath = settingsService.get("encoder_model_path", defaultValue: "models/face_encoder.onnx")
+        let detectorPath = settings.value("detector_model_path", default: "models/face_detector.onnx")
+        let encoderPath = settings.value("encoder_model_path", default: "models/face_encoder.onnx")
         let detectorResolved = resolveModelPath(detectorPath, modelsDir: modelsDir)
         let encoderResolved = resolveModelPath(encoderPath, modelsDir: modelsDir)
         return MLStatusData(
@@ -2647,11 +2696,11 @@ public final class SessionCommandRouter: CommandRouter {
                 exists: modelUsable(encoderResolved)
             ),
             modelInfo: MLModelInfo(
-                detectInputSize: Int(settingsService.getNumber("detect_input_size", defaultValue: 640)),
-                secondaryDetectInputSize: Int(settingsService.getNumber("detect_secondary_input_size", defaultValue: 128)),
-                previewMaxDimension: Int(settingsService.getNumber("face_preview_max_dimension", defaultValue: 2048)),
-                encoderInputSize: Int(settingsService.getNumber("encoder_input_size", defaultValue: 112)),
-                embeddingDim: Int(settingsService.getNumber("embedding_dim", defaultValue: 512))
+                detectInputSize: Int(settings.number("detect_input_size", default: 640)),
+                secondaryDetectInputSize: Int(settings.number("detect_secondary_input_size", default: 128)),
+                previewMaxDimension: Int(settings.number("face_preview_max_dimension", default: 2048)),
+                encoderInputSize: Int(settings.number("encoder_input_size", default: 112)),
+                embeddingDim: Int(settings.number("embedding_dim", default: 512))
             )
         )
     }
