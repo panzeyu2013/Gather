@@ -69,7 +69,7 @@ private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection
     try MigrationRunner().migrate(db)
     let settings = try makeTestSettings()
     let router = SessionCommandRouter.makeDefault(
-        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons)
+        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore)
     return (LiveLibraryDataProvider(router: router), db)
 }
 

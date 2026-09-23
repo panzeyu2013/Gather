@@ -445,7 +445,7 @@ public final class FaceKwService {
     private let photoRepo: PhotoRepo
     private let sessionRepo: SessionRepo
     private let faceRepo: FaceRepo
-    private let personRepo: PersonRepo
+    private let personStore: any PersonStore
     private let connection: DBConnection
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
@@ -489,7 +489,7 @@ public final class FaceKwService {
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
         faceRepo: FaceRepo,
-        personRepo: PersonRepo,
+        personStore: any PersonStore,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         getString: @escaping (String, String) -> String = { _, defaultValue in defaultValue },
@@ -504,7 +504,7 @@ public final class FaceKwService {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
         self.faceRepo = faceRepo
-        self.personRepo = personRepo
+        self.personStore = personStore
         self.connection = connection
         self.getNumber = getNumber
         self.getString = getString
@@ -909,7 +909,7 @@ public final class FaceKwService {
     }
 
     /// TS: bindCluster（fkw.bind）。绑定后把角色桥接进人物库（best-effort）。
-    public func bindCluster(sessionId: String, clusterId: Int64, roleName: String, keywords: [String]) throws {
+    public func bindCluster(sessionId: String, clusterId: Int64, roleName: String, keywords: [String]) async throws {
         let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
@@ -926,8 +926,8 @@ public final class FaceKwService {
         // 集群照片。Best-effort —— 桥接失败不得使绑定本身失败。
         do {
             let members = try faceRepo.getClusterMembers(clusterId)
-            let personId = try personRepo.upsertByName(name: normalizedRoleName, keywords: dedupedKeywords)
-            try personRepo.addPhotos(
+            let personId = try await personStore.upsertByName(name: normalizedRoleName, keywords: dedupedKeywords)
+            try await personStore.addPhotos(
                 personId: personId,
                 sessionId: sessionId,
                 photos: members.map { member in
@@ -940,14 +940,14 @@ public final class FaceKwService {
     }
 
     /// TS: unbindCluster（fkw.unbind 的服务层步骤；解除绑定并重算人物库）。
-    public func unbindCluster(sessionId: String, clusterId: Int64) throws {
+    public func unbindCluster(sessionId: String, clusterId: Int64) async throws {
         let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
         try faceRepo.deleteBinding(clusterId: clusterId)
         // 不再被角色绑定覆盖的照片从人物库摘除。Best-effort。
         do {
-            try personRepo.reconcileSession(sessionId: sessionId)
+            try await personStore.reconcileSession(sessionId: sessionId)
         } catch {
             GatherLogger.log("Failed to reconcile person library after unbind \(error)", level: .warn)
         }
@@ -989,12 +989,12 @@ public final class FaceKwService {
         }
         let removedKeywords = try await writebackProvider.removeOwnedFaceKeywords(
             sessionId: sessionId, entries: entries)
-        try unbindCluster(sessionId: sessionId, clusterId: clusterId)
+        try await unbindCluster(sessionId: sessionId, clusterId: clusterId)
         return FkwUnbindResult(done: true, removedKeywords: removedKeywords)
     }
 
     /// TS: mergeClusters（fkw.merge）。
-    public func mergeClusters(sessionId: String, sourceId: Int64, targetId: Int64) throws {
+    public func mergeClusters(sessionId: String, sourceId: Int64, targetId: Int64) async throws {
         if sourceId == targetId { throw FaceKwServiceError.selfMerge }
         let sourceSessionId = try faceRepo.getClusterSessionId(sourceId)
         let targetSessionId = try faceRepo.getClusterSessionId(targetId)
@@ -1005,14 +1005,14 @@ public final class FaceKwService {
         try faceRepo.mergeClusters(sourceId: sourceId, targetId: targetId)
         // 移入目标集群的照片归属目标角色；源角色失去它们。Best-effort。
         do {
-            try personRepo.reconcileSession(sessionId: sessionId)
+            try await personStore.reconcileSession(sessionId: sessionId)
         } catch {
             GatherLogger.log("Failed to reconcile person library after merge \(error)", level: .warn)
         }
     }
 
     /// TS: removeMember（fkw.remove_member）。
-    public func removeMember(sessionId: String, clusterId: Int64, memberId: Int64) throws {
+    public func removeMember(sessionId: String, clusterId: Int64, memberId: Int64) async throws {
         let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
@@ -1021,7 +1021,7 @@ public final class FaceKwService {
         }
         // 被移除成员的照片不再被该集群的角色绑定覆盖。Best-effort。
         do {
-            try personRepo.reconcileSession(sessionId: sessionId)
+            try await personStore.reconcileSession(sessionId: sessionId)
         } catch {
             GatherLogger.log("Failed to reconcile person library after member removal \(error)", level: .warn)
         }

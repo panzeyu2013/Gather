@@ -14,7 +14,8 @@ func makeTestSettings(
     templates: TemplatesAPI,
     albums: AlbumsAPI,
     workspace: WorkspaceAPI,
-    persons: PersonsAPI
+    persons: PersonsAPI,
+    personStore: any PersonStore
 ) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-app-settings-\(UUID().uuidString).sqlite").path
@@ -28,6 +29,7 @@ func makeTestSettings(
         api.templates,
         api.albums,
         api.workspace,
-        api.persons
+        api.persons,
+        api.container.persons
     )
 }

@@ -88,7 +88,7 @@ struct GatherAppDelegateTests {
         try MigrationRunner().migrate(db)
         let settings = try makeTestSettings()
         let router = SessionCommandRouter.makeDefault(
-            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons)
+            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore)
 
         final class Box: @unchecked Sendable {
             var userInfo: [AnyHashable: Any]?

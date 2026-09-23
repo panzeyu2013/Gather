@@ -190,6 +190,7 @@ public final class SessionCommandRouter: CommandRouter {
         albums: AlbumsAPI,
         workspace: WorkspaceAPI,
         persons: PersonsAPI,
+        personStore: any PersonStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -268,7 +269,6 @@ public final class SessionCommandRouter: CommandRouter {
             keywordOrigins: MetadataKeywordOriginRepo(connection: db),
             assetResolver: assetResolver
         )
-        let personRepo = PersonRepo(connection: db)
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
         let exportService = ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
         let imagePreloadService = ImagePreloadService()
@@ -276,7 +276,7 @@ public final class SessionCommandRouter: CommandRouter {
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
             faceRepo: FaceRepo(connection: db),
-            personRepo: personRepo,
+            personStore: personStore,
             connection: db,
             getNumber: { key, defaultValue in
                 settings.number(key, default: defaultValue)
@@ -830,52 +830,6 @@ public final class SessionCommandRouter: CommandRouter {
             let sessionId = try requiredString(params, "sessionId")
             let clusters = try faceKwService.getClusters(sessionId: sessionId)
             return try GatherCore.JSONValue(from: clusters)
-
-        case "fkw.bind":
-            // face-kw.ipc.ts:107-123 —— clusterId/roleName/keywords 校验后绑定。
-            let sessionId = try requiredString(params, "sessionId")
-            let clusterId = try requiredNumber(params, "clusterId")
-            let roleName = try requiredString(params, "roleName")
-            // TS FKW_KEYWORDS_INVALID：非数组或含非字符串元素即拒绝。
-            guard case .array(let keywordValues)? = params["keywords"],
-                  keywordValues.allSatisfy({ $0.stringValue != nil })
-            else {
-                throw BridgeError.badParams("FKW_KEYWORDS_INVALID")
-            }
-            let keywords = keywordValues.compactMap(\.stringValue)
-            try faceKwService.bindCluster(
-                sessionId: sessionId, clusterId: Int64(clusterId), roleName: roleName, keywords: keywords)
-            return .object(["done": .bool(true)])
-
-        case "fkw.unbind":
-            // face-kw.ipc.ts:125-172 —— destructive（confirmed 由命令边界
-            // 校验；直连路由时二次兜底）；removeOwnedFaceKeywords + 解除绑定。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("FKW_UNBIND_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let clusterId = try requiredNumber(params, "clusterId")
-            let result = try awaitSync {
-                try await self.faceKwService.unbind(
-                    sessionId: sessionId, clusterId: Int64(clusterId), confirmed: true)
-            }
-            return try GatherCore.JSONValue(from: result)
-
-        case "fkw.merge":
-            // face-kw.ipc.ts:174-183 —— 源/目标簇合并。
-            let sessionId = try requiredString(params, "sessionId")
-            let source = try requiredNumber(params, "source")
-            let target = try requiredNumber(params, "target")
-            try faceKwService.mergeClusters(sessionId: sessionId, sourceId: Int64(source), targetId: Int64(target))
-            return .object(["done": .bool(true)])
-
-        case "fkw.remove_member":
-            // face-kw.ipc.ts:185-194 —— 从簇中移除成员。
-            let sessionId = try requiredString(params, "sessionId")
-            let clusterId = try requiredNumber(params, "clusterId")
-            let memberId = try requiredNumber(params, "memberId")
-            try faceKwService.removeMember(sessionId: sessionId, clusterId: Int64(clusterId), memberId: Int64(memberId))
-            return .object(["done": .bool(true)])
 
         case "fkw.preview":
             // face-kw.ipc.ts:196-214 —— 写回预览（options ?? {}）。
@@ -2154,6 +2108,94 @@ public final class SessionCommandRouter: CommandRouter {
             }
 
         // ── person.*（R1/R5：经 PersonsAPI，异步路径）──
+
+        // ── fkw.*（R1/R5：经 PersonStore，异步路径）──
+
+        case "fkw.bind":
+            do {
+                // face-kw.ipc.ts:107-123 —— clusterId/roleName/keywords 校验后绑定。
+                let sessionId = try requiredString(params, "sessionId")
+                let clusterId = try requiredNumber(params, "clusterId")
+                let roleName = try requiredString(params, "roleName")
+                // TS FKW_KEYWORDS_INVALID：非数组或含非字符串元素即拒绝。
+                guard case .array(let keywordValues)? = params["keywords"],
+                      keywordValues.allSatisfy({ $0.stringValue != nil })
+                else {
+                    throw BridgeError.badParams("FKW_KEYWORDS_INVALID")
+                }
+                let keywords = keywordValues.compactMap(\.stringValue)
+                Task {
+                    do {
+                        try await faceKwService.bindCluster(
+                            sessionId: sessionId, clusterId: Int64(clusterId),
+                            roleName: roleName, keywords: keywords)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "fkw.unbind":
+            do {
+                // face-kw.ipc.ts:125-172 —— destructive；removeOwnedFaceKeywords + 解除绑定。
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("FKW_UNBIND_CONFIRM_REQUIRED")
+                }
+                let sessionId = try requiredString(params, "sessionId")
+                let clusterId = try requiredNumber(params, "clusterId")
+                Task {
+                    do {
+                        let result = try await faceKwService.unbind(
+                            sessionId: sessionId, clusterId: Int64(clusterId), confirmed: true)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "fkw.merge":
+            do {
+                // face-kw.ipc.ts:174-183 —— 源/目标簇合并。
+                let sessionId = try requiredString(params, "sessionId")
+                let source = try requiredNumber(params, "source")
+                let target = try requiredNumber(params, "target")
+                Task {
+                    do {
+                        try await faceKwService.mergeClusters(
+                            sessionId: sessionId, sourceId: Int64(source), targetId: Int64(target))
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "fkw.remove_member":
+            do {
+                // face-kw.ipc.ts:185-194 —— 从簇中移除成员。
+                let sessionId = try requiredString(params, "sessionId")
+                let clusterId = try requiredNumber(params, "clusterId")
+                let memberId = try requiredNumber(params, "memberId")
+                Task {
+                    do {
+                        try await faceKwService.removeMember(
+                            sessionId: sessionId, clusterId: Int64(clusterId), memberId: Int64(memberId))
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
 
         case "person.list":
             Task {
