@@ -15,75 +15,14 @@
 import Foundation
 
 public final class SettingsService {
-    /// TS: getDefaults() —— 40 键默认值表。
-    public static func getDefaults() -> [String: String] {
-        [
-            "detector_model_path": "models/face_detector.onnx",
-            "encoder_model_path": "models/face_encoder.onnx",
-            "onnx_provider": "auto",
-            "detect_confidence": "0.5",
-            "detect_input_size": "640",
-            "detect_secondary_input_size": "128",
-            "face_preview_max_dimension": "2048",
-            "encoder_input_size": "112",
-            "embedding_dim": "512",
-
-            "default_eps": "0.6",
-            "default_min_samples": "2",
-
-            "nms_threshold": "0.4",
-            "max_detections": "100",
-            "onnx_threads": "4",
-
-            "default_threshold": "10",
-            "default_min_group_size": "2",
-
-            "model_download_url": "",
-
-            "thumbnail_size": "1024",
-            "thumbnail_quality": "80",
-            "face_thumbnail_size": "320",
-            "face_thumbnail_quality": "70",
-            "face_thumbnail_dir": "",
-
-            "memory_cache_size": "10000",
-            "memory_cache_max_size_mb": "192",
-            "disk_cache_dir": "",
-            "disk_cache_max_size_gb": "1",
-            "disk_cache_eviction_policy": "lru",
-            // TS: Math.max(1, Math.min(4, os.cpus().length - 1))
-            "thumbnail_concurrency": "\(Self.thumbnailConcurrencyDefault)",
-            "face_decode_concurrency": "4",
-            "face_inference_parallel_workers": "1",
-
-            "db_cache_size_mb": "64",
-            // 与宿主 DB 打开默认值保持同步（TS 注释：main/index.ts 的
-            // settings.get('db_synchronous', 'normal')）。
-            "db_synchronous": "normal",
-
-            "c1_timeout_ms": "15000",
-            "c1_retries": "3",
-            "c1_reload_delay_ms": "500",
-
-            "metadata_write_mode": "sidecar",
-            "metadata_write_debounce_ms": "500",
-            "capture_one_color_compatibility": "label_and_urgency",
-
-            "ui_language": "",
-            "lazy_checksum": "true",
-        ]
-    }
+    /// TS: getDefaults() —— 40 键默认值表（单一来源：SettingsAPI.defaults）。
+    public static func getDefaults() -> [String: String] { SettingsAPI.defaults }
 
     /// TS: Math.max(1, Math.min(4, os.cpus().length - 1))。
-    public static var thumbnailConcurrencyDefault: Int {
-        let cores = ProcessInfo.processInfo.processorCount
-        return max(1, min(4, cores - 1))
-    }
+    public static var thumbnailConcurrencyDefault: Int { SettingsAPI.thumbnailConcurrencyDefault }
 
     /// TS: KNOWN_SETTING_KEYS = new Set(Object.keys(getDefaults()))。
-    public static var knownSettingKeys: Set<String> {
-        Set(getDefaults().keys)
-    }
+    public static var knownSettingKeys: Set<String> { SettingsAPI.knownSettingKeys }
 
     private let repo: SettingsRepo
     private var cache: [String: String] = [:]
@@ -145,17 +84,5 @@ public final class SettingsService {
         try repo.batchUpsert(entries: defaults.map { (key: $0.key, value: $0.value) })
         lock.lock(); defer { lock.unlock() }
         cache = defaults
-    }
-}
-
-/// 未知设置键错误（TS: Error(`Unknown setting key: ${key}`) 消息逐字一致，
-/// 宿主桥接层按 description 序列化）。
-public enum SettingsError: Error, CustomStringConvertible {
-    case unknownKey(String)
-
-    public var description: String {
-        switch self {
-        case .unknownKey(let key): return "Unknown setting key: \(key)"
-        }
     }
 }
