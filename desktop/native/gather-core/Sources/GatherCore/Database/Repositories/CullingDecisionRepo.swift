@@ -251,11 +251,4 @@ public final class CullingDecisionRepo {
     }
 }
 
-extension Array {
-    /// 与 TS 分批循环等价的切片（每批 `size` 个）。
-    func chunked(by size: Int) -> [[Element]] {
-        stride(from: 0, to: count, by: size).map {
-            Array(self[$0..<Swift.min($0 + size, count)])
-        }
-    }
-}
+// Array.chunked(by:) 已迁至 Store/StoreSupport.swift（R1 单一来源），全模块共用。
