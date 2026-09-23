@@ -30,41 +30,7 @@ public struct SmartAlbumRow: Equatable, Sendable {
     }
 }
 
-public struct SmartAlbumCreateData {
-    public let name: String
-    public let description: String?
-    public let filterCriteria: FilterGroup
-    public let sortBy: String?
-    public let sortOrder: String?
-    public let icon: String?
-
-    public init(name: String, description: String? = nil, filterCriteria: FilterGroup, sortBy: String? = nil, sortOrder: String? = nil, icon: String? = nil) {
-        self.name = name
-        self.description = description
-        self.filterCriteria = filterCriteria
-        self.sortBy = sortBy
-        self.sortOrder = sortOrder
-        self.icon = icon
-    }
-}
-
-public struct SmartAlbumUpdateData {
-    public let name: String?
-    public let description: String?
-    public let filterCriteria: FilterGroup?
-    public let sortBy: String?
-    public let sortOrder: String?
-    public let icon: String?
-
-    public init(name: String? = nil, description: String? = nil, filterCriteria: FilterGroup? = nil, sortBy: String? = nil, sortOrder: String? = nil, icon: String? = nil) {
-        self.name = name
-        self.description = description
-        self.filterCriteria = filterCriteria
-        self.sortBy = sortBy
-        self.sortOrder = sortOrder
-        self.icon = icon
-    }
-}
+// SmartAlbumCreateData / SmartAlbumUpdateData 已迁至 Store/SmartAlbumStore.swift（R1 单一来源）。
 
 // filterCriteria 的类型为 Protocol/Filter.swift 的 FilterGroup（TS 同源契约，
 // Codable 合成 JSON key 与 TS 逐字相同：logic / conditions / field / operator / value）。
@@ -97,7 +63,7 @@ public final class SmartAlbumRepo {
             .text(id),
             .text(data.name),
             .text(data.description ?? ""),
-            .text(filterCriteriaJSON(data.filterCriteria)),
+            .text(smartAlbumFilterCriteriaJSON(data.filterCriteria)),
             .text(data.sortBy ?? "date_taken"),
             .text(data.sortOrder ?? "desc"),
             .text(data.icon ?? "📁"),
@@ -122,7 +88,7 @@ public final class SmartAlbumRepo {
         }
         if let filterCriteria = data.filterCriteria {
             sets.append("filter_criteria = ?")
-            values.append(.text(filterCriteriaJSON(filterCriteria)))
+            values.append(.text(smartAlbumFilterCriteriaJSON(filterCriteria)))
         }
         if let sortBy = data.sortBy {
             sets.append("sort_by = ?")
@@ -151,12 +117,7 @@ public final class SmartAlbumRepo {
     }
 }
 
-/// TS: JSON.stringify(data.filterCriteria)。JSONEncoder 默认 camelCase key，
-/// 与 TS 对象序列化一致（field/operator/value/logic/conditions 原样存储）。
-private func filterCriteriaJSON(_ group: FilterGroup) -> String {
-    guard let data = try? JSONEncoder().encode(group) else { return "{}" }
-    return String(decoding: data, as: UTF8.self)
-}
+// filterCriteriaJSON 已迁至 Store/SmartAlbumStore.swift（smartAlbumFilterCriteriaJSON）。
 
 private func newUUID() -> String {
     UUID().uuidString.lowercased()
