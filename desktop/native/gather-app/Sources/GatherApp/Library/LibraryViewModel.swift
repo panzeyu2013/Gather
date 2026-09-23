@@ -120,7 +120,7 @@ public protocol LibraryDataProvider {
     func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int
 
     /// TS: metadataApi.orphans / resolveOrphan。
-    func listMetadataOrphans() throws -> [MetadataOrphan]
+    func listMetadataOrphans() async throws -> [MetadataOrphan]
     func resolveMetadataOrphan(
         xmpPath: String,
         action: MetadataOrphanAction
@@ -162,7 +162,7 @@ public extension LibraryDataProvider {
         throw NativeCommandError.failed("ASSET_RELINK_NOT_SUPPORTED")
     }
 
-    func listMetadataOrphans() throws -> [MetadataOrphan] { [] }
+    func listMetadataOrphans() async throws -> [MetadataOrphan] { [] }
 
     func resolveMetadataOrphan(
         xmpPath: String,
@@ -277,8 +277,17 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         return Int(response.numberValue ?? 0)
     }
 
-    public func listMetadataOrphans() throws -> [MetadataOrphan] {
-        let response = try router.execute("metadata.orphans", params: [:])
+    public func listMetadataOrphans() async throws -> [MetadataOrphan] {
+        // metadata.orphans 已迁入异步路由（orphanOutbox 为 Store 读）。
+        let response: GatherCore.JSONValue = try await withCheckedThrowingContinuation { continuation in
+            router.executeAsync("metadata.orphans", params: [:]) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "METADATA_ORPHANS_FAILED"))
+                    return
+                }
+                continuation.resume(returning: data)
+            }
+        }
         return try response.decoded(as: [MetadataOrphan].self)
     }
 
@@ -370,7 +379,7 @@ public final class LibraryViewModel {
         catch { actionError = Self.message(for: error) }
         do { assetCandidates = try provider.listAssetCandidates() }
         catch { actionError = Self.message(for: error) }
-        do { metadataOrphans = try provider.listMetadataOrphans() }
+        do { metadataOrphans = try await provider.listMetadataOrphans() }
         catch { actionError = Self.message(for: error) }
         do { assetVolumes = try provider.listAssetVolumes() }
         catch { actionError = Self.message(for: error) }

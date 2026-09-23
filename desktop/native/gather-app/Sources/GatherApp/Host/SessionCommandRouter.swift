@@ -911,12 +911,6 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return try GatherCore.JSONValue(from: conflicts)
 
-        case "metadata.orphans":
-            // metadata.ipc.ts:76-78 —— ok(listOrphans())。
-            return try GatherCore.JSONValue(from: metadataSyncCoordinator.listOrphans())
-
-        // ── sim.* 写回族（TS 源 similarity.ipc.ts:189-274）──
-
         case "sim.preview_writeback":
             let sessionId = try requiredString(params, "sessionId")
             let assignments = try validateSimilarityAssignments(params["assignments"])
@@ -1065,17 +1059,6 @@ public final class SessionCommandRouter: CommandRouter {
 
         // culling.ipc.ts:83-107 —— 资产分组 keyset 分页；scope 白名单 +
         // afterRowId/limit 校验（limit 缺省 200，上限 2000）。
-        case "culling.sync_status":
-            let sessionId = try requiredString(params, "sessionId")
-            let summary = try cullingService.syncStatus(sessionId: sessionId)
-            guard var object = try? JSONValue(from: summary), case .object(var dict) = object else {
-                return try GatherCore.JSONValue(from: summary)
-            }
-            let reloadAckedAt = try? SessionRepo(connection: db).get(id: sessionId)?.reloadAckedAt
-            dict["reloadAckedAt"] = reloadAckedAt.map(JSONValue.string) ?? .null
-            return .object(dict)
-
-        // culling.ipc.ts:239-248 —— destructive（桥层 + 直连二次兜底）。
         case "culling.retry_failed_writeback":
             guard confirmed(params) else {
                 throw BridgeError.badParams("WRITEBACK_RETRY_CONFIRM_REQUIRED")
@@ -2038,6 +2021,30 @@ public final class SessionCommandRouter: CommandRouter {
                 }
             } catch {
                 completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "culling.sync_status":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    let summary = try await cullingService.syncStatus(sessionId: sessionId)
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: summary)))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "metadata.orphans":
+            Task {
+                do {
+                    let orphans = try await metadataSyncCoordinator.listOrphans()
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: orphans)))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
             }
 
         // ── culling 读路径（R1/R2：richLookup 经 MetadataStore，异步路径）──

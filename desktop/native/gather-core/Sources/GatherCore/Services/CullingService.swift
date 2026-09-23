@@ -99,11 +99,11 @@ public enum CullingServiceError: Error, Equatable, CustomStringConvertible {
 /// MetadataSyncPort（同文件一致）同款处理。
 public protocol CullingSyncPort {
     func schedule(xmpPath: String)
-    func getSummary(sessionId: String) throws -> MetadataSyncSummary
+    func getSummary(sessionId: String) async throws -> MetadataSyncSummary
     func flushSession(sessionId: String) async throws -> MetadataSyncSummary
     func retrySession(sessionId: String) async throws -> MetadataSyncSummary
     func finalizeSession(sessionId: String) async throws -> MetadataSyncSummary
-    func confirmSync(sessionId: String, sourceModule: String) throws -> MetadataSyncSummary
+    func confirmSync(sessionId: String, sourceModule: String) async throws -> MetadataSyncSummary
     func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult
 }
 
@@ -1223,8 +1223,8 @@ public final class CullingService {
     // MARK: - IPC 命令面（culling.ipc.ts 逐命令对齐）
 
     /// TS: culling.sync_status → metadataSync.getSummary。
-    public func syncStatus(sessionId: String) throws -> MetadataSyncSummary {
-        try metadataSync.getSummary(sessionId: sessionId)
+    public func syncStatus(sessionId: String) async throws -> MetadataSyncSummary {
+        try await metadataSync.getSummary(sessionId: sessionId)
     }
 
     /// TS: culling.flush → metadataSync.flushSession。
@@ -1296,7 +1296,7 @@ public final class CullingService {
 
     /// TS: culling.confirm_sync —— 协调器确认 + 写回项存在时的写回确认。
     public func confirmSync(sessionId: String) async throws {
-        _ = try metadataSync.confirmSync(sessionId: sessionId, sourceModule: "culling")
+        _ = try await metadataSync.confirmSync(sessionId: sessionId, sourceModule: "culling")
         if try await writeback.getItems(sessionId: sessionId, module: "culling", status: nil).count > 0 {
             try await writeback.confirmSync(sessionId: sessionId, module: "culling")
         }

@@ -1236,7 +1236,7 @@ struct CullingWritebackTests {
     @Test("syncStatus 委托协调器 getSummary")
     func syncStatusDelegates() async throws {
         let harness = try makeHarness()
-        let summary = try harness.service.syncStatus(sessionId: "session")
+        let summary = try await harness.service.syncStatus(sessionId: "session")
         #expect(summary.sessionId == "session")
     }
 }

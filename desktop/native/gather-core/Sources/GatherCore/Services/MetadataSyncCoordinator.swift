@@ -65,7 +65,7 @@ public enum MetadataSyncError: Error, Equatable, CustomStringConvertible {
 public protocol MetadataSyncPort: Sendable {
     func waitForIdle(xmpPath: String, timeoutMs: Int) async throws
     func flushSession(sessionId: String) async throws -> MetadataSyncSummary
-    func confirmSync(sessionId: String, sourceModule: String) throws -> MetadataSyncSummary
+    func confirmSync(sessionId: String, sourceModule: String) async throws -> MetadataSyncSummary
     func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult
 }
 
@@ -142,7 +142,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     // MARK: - 公开 API（与 TS 方法一一对应）
 
     /// TS: start —— 恢复被中断的行并重新排程 recoverable active 行。
-    public func start(eventSink: ((MetadataSyncSummary) -> Void)? = nil) {
+    public func start(eventSink: ((MetadataSyncSummary) -> Void)? = nil) async {
         lock.lock()
         stopped = false
         lock.unlock()
@@ -150,8 +150,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         // Orphan（创建会话已删除的行）有意保留：它们是可通过全局恢复 UI 找回的
         // XMP 工作，不是垃圾；但绝不在此自动重试（已删会话的 pending 工作不得
         // 在后台无 UI 记录地写 XMP）。Orphan 只能经 resolveOrphan('retry') 显式重试。
-        try? outboxRepo.recoverInterrupted()
-        for row in (try? outboxRepo.getRecoverableActive()) ?? [] {
+        try? await writebackStore.recoverInterruptedOutbox()
+        for row in (try? await writebackStore.recoverableActiveOutbox()) ?? [] {
             schedule(xmpPath: row.xmpPath, delayMs: 0)
         }
     }
@@ -168,7 +168,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         // 会话上一次 reload ack 不再覆盖该文件。在行可能变为 written/synced 之前
         // 失效之，使渲染门控与 confirm/cleanup 守卫永远看不到陈旧 ack
         // （数据丢失修复：cleanup 不得恢复 C1 从未加载过的备份）。
-        clearReloadAckForXmpPath(xmpPath)
+        // ack 失效经 Task 排队（Store 读为 async）；先于写回完成前生效。
+        Task { await clearReloadAckForXmpPath(xmpPath) }
         // TS: void this.ensureBaseline(xmpPath) —— 基线快照立即（去抖窗口前）启动。
         Task { [weak self] in
             guard let self else { return }
@@ -189,8 +190,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     }
 
     /// TS: getSummary —— 轻投影 + 分组计数（countBySession 为主，逐行过滤兜底）。
-    public func getSummary(sessionId: String) throws -> MetadataSyncSummary {
-        let rows = try outboxRepo.getSummaryRowsBySession(sessionId)
+    public func getSummary(sessionId: String) async throws -> MetadataSyncSummary {
+        let rows = try await writebackStore.outboxSummaries(sessionId: sessionId)
         let items: [MetadataSyncItem] = rows.map { row in
             MetadataSyncItem(
                 xmpPath: row.xmpPath,
@@ -202,7 +203,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 updatedAt: row.updatedAt
             )
         }
-        let counts = try outboxRepo.countBySession(sessionId)
+        let counts = try await writebackStore.outboxCounts(sessionId: sessionId)
         func count(_ status: String) -> Int {
             if let c = counts[status] { return Int(c) }
             return items.filter { $0.status.rawValue == status }.count
@@ -282,12 +283,12 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             acceptRemote: acceptRemote
         )
         if !acceptRemote { schedule(xmpPath: xmpPath, delayMs: 0) }
-        return try emitSummary(sessionId: sessionId)
+        return try await emitSummary(sessionId: sessionId)
     }
 
     /// TS: listOrphans。
-    public func listOrphans() throws -> [MetadataOrphan] {
-        try outboxRepo.getOrphans().map { row in
+    public func listOrphans() async throws -> [MetadataOrphan] {
+        try await writebackStore.orphanOutbox().map { row in
             MetadataOrphan(
                 xmpPath: row.xmpPath,
                 photoPath: row.photoPath,
@@ -311,7 +312,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 throw MetadataSyncError.orphanNotRetryable
             }
             schedule(xmpPath: xmpPath, delayMs: 0)
-            return try listOrphans()
+            return try await listOrphans()
         }
         try await waitForIdle(xmpPath: xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
         if action == .restore {
@@ -328,7 +329,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             try await xmp.removeFile(row.backupPath)
         }
         try await writebackStore.deleteOutbox(xmpPath: xmpPath)
-        return try listOrphans()
+        return try await listOrphans()
     }
 
     /// TS: flushSession —— 取消会话内全部计时器后并行跑 pending/writing/failed 行。
@@ -345,21 +346,21 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             }
             await group.waitForAll()
         }
-        return try getSummary(sessionId: sessionId)
+        return try await getSummary(sessionId: sessionId)
     }
 
     /// TS: retrySession —— failed 行重置后整体 flush。
     public func retrySession(sessionId: String) async throws -> MetadataSyncSummary {
         for row in try await writebackStore.outboxEntries(sessionId: sessionId) where row.status == "failed" {
             try await writebackStore.resetOutboxForRetry(xmpPath: row.xmpPath)
-            clearReloadAckForXmpPath(row.xmpPath)
+            await clearReloadAckForXmpPath(row.xmpPath)
         }
         return try await flushSession(sessionId: sessionId)
     }
 
     /// TS: confirmSync —— 主侧守卫（reload-ack）通过后整会话置 synced。
-    public func confirmSync(sessionId: String, sourceModule: String) throws -> MetadataSyncSummary {
-        let summary = try getSummary(sessionId: sessionId)
+    public func confirmSync(sessionId: String, sourceModule: String) async throws -> MetadataSyncSummary {
+        let summary = try await getSummary(sessionId: sessionId)
         if summary.pending > 0 || summary.writing > 0 || summary.failed > 0 || summary.conflict > 0 {
             throw MetadataSyncError.confirmIncomplete
         }
@@ -367,8 +368,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         // （解锁 cleanup），因此 C1 必须已加载元数据——即必须存在 reload ack。
         // 缺失时 cleanup 可能恢复 C1 从未加载过的 XMP 备份。
         try requireReloadAck(sessionId)
-        try outboxRepo.markSessionSynced(sessionId: sessionId, sourceModule: sourceModule)
-        return try emitSummary(sessionId: sessionId)
+        try await writebackStore.markSessionSynced(sessionId: sessionId, sourceModule: sourceModule)
+        return try await emitSummary(sessionId: sessionId)
     }
 
     /// TS: cleanup —— 只恢复本模块写入的行（另一模块未确认的 XMP 不得被恢复）。
@@ -412,7 +413,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             if result.deleted { deletedCount += 1 }
             else if let error = result.error { errors.append(error) }
         }
-        _ = try? emitSummary(sessionId: sessionId)
+        _ = try? await emitSummary(sessionId: sessionId)
         return CleanupResult(deletedCount: deletedCount, errors: errors)
     }
 
@@ -441,7 +442,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 try await self.writebackStore.clearOutboxBackupPath(xmpPath: latest.xmpPath, backupPath: backupPath)
             }
         }
-        return try emitSummary(sessionId: sessionId)
+        return try await emitSummary(sessionId: sessionId)
     }
 
     /// TS: shutdown —— 停排程、取消计时器、等待全部在飞任务与槽位等待者排空。
@@ -567,7 +568,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         guard (try? await writebackStore.claimOutbox(xmpPath: row.xmpPath, expectedRevision: row.revision)) ?? false else { return false }
         // 行现在处于 writing：队列与 claim 之间幸存的任何 reload-ack
         // （崩溃窗口）都必须在行可达 written 前失效。
-        clearReloadAckForXmpPath(row.xmpPath)
+        await clearReloadAckForXmpPath(row.xmpPath)
 
         do {
             let currentFingerprint = try await MetadataFingerprint.contentFingerprint(row.xmpPath)
@@ -584,13 +585,13 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                         baseValues: current.asJSONValue,
                         backupPath: row.backupPath
                     )
-                    emitPathSummaries(row.xmpPath)
+                    await emitPathSummaries(row.xmpPath)
                     return true
                 }
             }
             if !row.baseFingerprint.isEmpty, currentToken != row.baseFingerprint, try await hasDirtyFieldConflict(row) {
                 try await writebackStore.markOutboxStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
-                emitPathSummaries(row.xmpPath)
+                await emitPathSummaries(row.xmpPath)
                 return false
             }
 
@@ -616,7 +617,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 baseValues: persistedValues.asJSONValue,
                 backupPath: backupPath
             )
-            emitPathSummaries(row.xmpPath)
+            await emitPathSummaries(row.xmpPath)
             return true
         } catch {
             let message = String(describing: error)
@@ -626,7 +627,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 let retryIndex = min(Int(latest.attemptCount) - 1, MetadataSyncCoordinator.retryDelaysMs.count - 1)
                 schedule(xmpPath: row.xmpPath, delayMs: MetadataSyncCoordinator.retryDelaysMs[max(0, retryIndex)])
             }
-            emitPathSummaries(row.xmpPath)
+            await emitPathSummaries(row.xmpPath)
             return false
         }
     }
@@ -672,8 +673,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         lock.unlock()
     }
 
-    private func emitSummary(sessionId: String) throws -> MetadataSyncSummary {
-        let summary = try getSummary(sessionId: sessionId)
+    private func emitSummary(sessionId: String) async throws -> MetadataSyncSummary {
+        let summary = try await getSummary(sessionId: sessionId)
         let sink = eventSinkLock.withLock { _eventSink }
         sink?(summary)
         return summary
@@ -687,8 +688,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         ).run([.text(nowISOString()), .text(sessionId)])
     }
 
-    private func clearReloadAckForXmpPath(_ xmpPath: String) {
-        let sessionIds = (try? outboxRepo.getSessionIds(xmpPath)) ?? []
+    private func clearReloadAckForXmpPath(_ xmpPath: String) async {
+        let sessionIds = (try? await writebackStore.outboxSessionIds(xmpPath: xmpPath)) ?? []
         for sessionId in sessionIds {
             try? clearReloadAck(sessionId)
         }
@@ -705,8 +706,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     }
 
     /// TS: emitPathSummaries —— 每行完成后的会话级合并推送（100ms 窗口 + 突发阈值）。
-    private func emitPathSummaries(_ xmpPath: String) {
-        let sessionIds = (try? outboxRepo.getSessionIds(xmpPath)) ?? []
+    private func emitPathSummaries(_ xmpPath: String) async {
+        let sessionIds = (try? await writebackStore.outboxSessionIds(xmpPath: xmpPath)) ?? []
         for sessionId in sessionIds {
             let decision = {
                 lock.lock()
@@ -722,14 +723,14 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                     try? await Task.sleep(nanoseconds: UInt64(MetadataSyncCoordinator.summaryEmitThrottleMs) * 1_000_000)
                     guard let self else { return }
                     if !self.consumeEmitTimer(sessionId) {
-                        _ = try? self.emitSummary(sessionId: sessionId)
+                        _ = try? await self.emitSummary(sessionId: sessionId)
                     }
                 }
                 summaryEmitTimers[sessionId] = task
                 return (burst: false, stoppedNow: stopped)
             }()
             if decision.burst, !decision.stoppedNow {
-                _ = try? emitSummary(sessionId: sessionId)
+                _ = try? await emitSummary(sessionId: sessionId)
             }
         }
     }

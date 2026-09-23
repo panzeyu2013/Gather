@@ -243,7 +243,7 @@ struct MetadataSyncCoordinatorTests {
 
         // 未 ack 前 confirm 必须被拒绝（数据丢失门）。
         do {
-            _ = try fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
+            _ = try await fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
             Issue.record("expected reloadNotAcked")
         } catch let error as MetadataSyncError {
             #expect(error == .reloadNotAcked)
@@ -251,7 +251,7 @@ struct MetadataSyncCoordinatorTests {
 
         _ = try SessionRepo(connection: fx.db).setReloadAckedAt(
             sessionId: fx.sessionId, iso: nowISOString())
-        let summary = try fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
+        let summary = try await fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
         #expect(summary.synced == 1)
 
         let result = try await fx.coordinator.cleanup(sessionId: fx.sessionId, sourceModule: "manual")
@@ -282,7 +282,7 @@ struct MetadataSyncCoordinatorTests {
         #expect(await waitForStatus(fx.outbox, xmpPath: fx.xmpPath, status: "written"))
         _ = try SessionRepo(connection: fx.db).setReloadAckedAt(
             sessionId: fx.sessionId, iso: nowISOString())
-        _ = try fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
+        _ = try await fx.coordinator.confirmSync(sessionId: fx.sessionId, sourceModule: "manual")
 
         // 备份文件被外部删除。
         let row = try fx.outbox.get(fx.xmpPath)

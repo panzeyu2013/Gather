@@ -465,7 +465,7 @@ struct LibraryViewModelTests {
         #expect(try await provider.listAlbums().contains(where: { $0.id == created.id }) == false)
 
         _ = try provider.listAssetCandidates()
-        _ = try provider.listMetadataOrphans()
+        _ = try await provider.listMetadataOrphans()
         _ = try provider.listAssetVolumes()
     }
 }

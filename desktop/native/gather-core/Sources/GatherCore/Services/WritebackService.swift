@@ -528,7 +528,7 @@ public final class WritebackService {
         if try await writebackStore.failedWritebackCount(sessionId: sessionId, module: module) > 0 {
             throw WritebackServiceError.failuresPending
         }
-        _ = try metadataSync.confirmSync(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
+        _ = try await metadataSync.confirmSync(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
         try await writebackStore.markWritebackWrittenAsSynced(sessionId: sessionId, module: module)
         try sessionRepo.updateWritebackStatus(
             id: sessionId,
