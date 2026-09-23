@@ -30,10 +30,10 @@
 | StoreMigrator（33 步注册表） | ✅ | `Store/StoreMigrator.swift`：旧 `if` 链 33 个版本块逐字转为 `[MigrationStep]`；ADR-005 备份（空间检查/checkpoint/backup API/integrity_check/失败恢复/keep=3 淘汰）+ 迁移后 FK 与列不变量；版本号仍在步骤事务内写入 |
 | 新旧迁移器等价性验证 | ✅ | `StoreMigratorTests` 4 用例：空库双跑结构+数据摘要一致；**真实库 fixture（v32）双跑后结构与数据完全一致**；幂等；`afterMigrateHook` 抛错后回滚到 v32 且结构与原库一致 |
 | Store 实现（10/16） | ✅ | Settings / Session / Photo / Culling / Similarity / Metadata / Job / SmartAlbum / Writeback（完整：outbox + writeback_items）（端口自对应 Repo 测试）：111 用例全绿；`PhotoFormats` 统一格式常量；`StoreSupport` 收纳 `Array.chunked(by:)` 与 `sqlValue`；Culling 类型化错误；Similarity 缓存独立 actor；Metadata/SmartAlbum/WritebackItemInput DTO 迁入 Store（attributes 改 `[String: JSONValue]`） |
-| AssetStore（进行中：只读面） | 🔶 | `Asset/asset_files/asset_members/asset_link_candidates` 只读查询（memberRoles/listCandidates/listVolumes/assetFile）已落地并测试；backfill/relink/reconcile 变更面下一轮并入同一 Store |
-| 其余 Store（Asset 变更面/Face/Person/Duplicate/Template/Navigation） | 待办 | R1 后续 |
+| AssetStore（进行中：只读面 + relink/候选/对账） | 🔶 | 只读查询 + `relinkRoot/relinkMovedFile`（含 `relocateMetadataState/relocateSidecarBinding`，回调 sink 改为返回 `relocatedOutboxPaths`）+ `acceptCandidate/rejectCandidate`（merge/split）+ `reconcileRawJpegLinks` 已落地；仅剩 `backfillSession/ensurePhoto/createRawJpegCandidates` 下一轮 |
+| 其余 Store（Asset backfill/Face/Person/Duplicate/Template/Navigation） | 待办 | R1 后续 |
 
-> 当前 core 全量：**920 tests / 120 suites 全绿**（789 oracle + 131 新增）。
+> 当前 core 全量：**928 tests / 121 suites 全绿**（789 oracle + 139 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
