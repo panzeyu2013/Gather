@@ -53,7 +53,7 @@
 | R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
-> 当前 core 全量：**849 tests / 117 suites 全绿**；app 172/19 全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
+> 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
 > 度量：Repositories **6**、Repo tests **7**、DB layer **9**、Services 25、raw SQL outside Store 14；
 > 调用方密度：SessionRepo **8** 文件、PhotoRepo **8**、AnalysisJobRepo **3**、MetadataOutboxRepo **3**、AssetRepo **1**。
 > 后续切片顺序（按调用方×事务耦合）：①MetadataOutboxRepo（消费集中，多为 async）②AnalysisJobRepo ③SessionRepo ④PhotoRepo ⑤AssetRepo+RepositorySupport+DB 层收尾。已知计时 flake：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`（均单独运行通过）。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。

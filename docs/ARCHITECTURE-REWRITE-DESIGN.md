@@ -212,3 +212,25 @@ public protocol PhotoStore: Sendable {
    `docs/ARCHITECTURE-REFACTOR-PLAN.md`（进度表 + 旧层文件计数）。
 
 已完成切片：settings、template、smart album、workspace、person（以及 face 正在推进）。
+
+
+## R1 收尾：MetadataOutboxRepo → WritebackStore（迁移简报，round 41 盘点）
+
+**目标**：删除 `Database/Repositories/MetadataOutboxRepo.swift`（451 行）+ `MetadataOutboxRepoTests`，outbox 行读写全部收敛到 `SQLiteWritebackStore` 的 outbox 半边（`mergeOutboxPatch` / `claimOutbox` / `markOutboxWritten` / `recoverableOutbox` / `orphanOutbox` / `markSessionSynced` / `discardModulePending` …，共 87 个方法中含完整 outbox 面）。
+
+**调用点盘点（`outboxRepo.` / `metadataOutboxRepo.`）**
+
+| 文件 | 调用数 | 备注 |
+| --- | --- | --- |
+| `Services/MetadataSyncCoordinator.swift` | 38 | 跨 17 个函数；**6 个同步函数是阻塞点**：`start` / `getSummary` / `listOrphans` / `confirmSync` / `clearReloadAckForXmpPath` / `emitPathSummaries`（其余 11 个已 async：processRow/cleanup/finalizeSession/resolveOrphan/resolveConflict/retrySession/processUntilCurrent/ensureBaseline/getConflicts/flushSession/waitForIdle） |
+| `Services/CullingService.swift` | 3 | 已在 async 方法内 |
+| `Services/WritebackService.swift` | 2 | 已在 async 方法内 |
+| `Services/MetadataMutationService.swift` | 2 | 已是 async 端口 |
+
+**执行顺序（建议）**
+1. 先换协调器 11 个 async 路径（纯 `try` → `try await + store 方法名` 映射）。
+2. 再处理 6 个同步函数：改为 async，并把路由 `metadata.*` / `culling.*` 对应 case 迁入 `executeAsync`（沿用既有 Task+completion 模板）。
+3. CullingService/WritebackService/MetadataMutationService 的 7 处收尾。
+4. 删除 Repo 与旧测试，同步 `makeDefault` 装配与测试 harness（文件库双连接），跑 core+app 全量 + 门禁。
+
+**风险提示**：协调器的 `drain()/withSlot` 结构与 `start()` 同步初始化强耦合，第 2 步需保证 `start()` 的调用方（`SessionCommandRouter.makeDefault` 内）也在 async 上下文；建议把 `start()` 改为 `startAsync()` 或在其内部用 Task 启动，不引入 awaitSync 桥。
