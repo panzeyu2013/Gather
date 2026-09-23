@@ -73,6 +73,7 @@ public struct OutboxSummary: Decodable, Equatable, Sendable {
 public protocol WritebackStore: Sendable {
     func outboxEntry(xmpPath: String) async throws -> OutboxRecord?
     func outboxEntries(sessionId: String) async throws -> [OutboxRecord]
+    func outboxEntries(sessionId: String, xmpPaths: [String]) async throws -> [OutboxRecord]
     func outboxSummaries(sessionId: String) async throws -> [OutboxSummary]
     func outboxSessionIds(xmpPath: String) async throws -> [String]
     func outboxCounts(sessionId: String) async throws -> [String: Int64]
@@ -168,6 +169,26 @@ public struct SQLiteWritebackStore: WritebackStore {
     public func outboxEntry(xmpPath: String) async throws -> OutboxRecord? {
         try await database.queryOne("SELECT * FROM metadata_outbox WHERE xmp_path = ?", [.text(xmpPath)])?
             .decode(OutboxRecord.self)
+    }
+
+    public func outboxEntries(sessionId: String, xmpPaths: [String]) async throws -> [OutboxRecord] {
+        let unique = Array(Set(xmpPaths))
+        guard !unique.isEmpty else { return [] }
+        var rows: [OutboxRecord] = []
+        for chunk in unique.chunked(by: 500) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let part = try await database.query(
+                """
+                SELECT o.*
+                FROM metadata_outbox o
+                JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
+                WHERE os.session_id = ? AND o.xmp_path IN (\(placeholders))
+                """,
+                [.text(sessionId)] + chunk.map { .text($0) }
+            ).map { try $0.decode(OutboxRecord.self) }
+            rows.append(contentsOf: part)
+        }
+        return rows
     }
 
     public func outboxEntries(sessionId: String) async throws -> [OutboxRecord] {

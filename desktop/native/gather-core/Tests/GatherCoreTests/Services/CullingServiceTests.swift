@@ -229,8 +229,8 @@ private func makeHarness(
     let storeMetadata = SQLiteMetadataStore(database: try SQLiteDatabase(path: dbPath))
     let service = CullingService(
         photoRepo: PhotoRepo(connection: db),
-        metadataOutboxRepo: outboxRepo,
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
+        writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
         metadataSync: sync,
         metadataMutations: mutations,

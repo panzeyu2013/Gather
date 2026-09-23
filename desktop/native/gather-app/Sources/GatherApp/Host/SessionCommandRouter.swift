@@ -290,8 +290,8 @@ public final class SessionCommandRouter: CommandRouter {
         // CullingWritebackPort 扩展即上述类型，见 CullingService.swift）。
         let cullingService = CullingService(
             photoRepo: photoRepo,
-            metadataOutboxRepo: outboxRepo,
             similarityStore: similarityStore,
+            writebackStore: writebackStore,
             connection: db,
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,

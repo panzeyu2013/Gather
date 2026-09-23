@@ -342,8 +342,8 @@ public final class CullingService {
     // MARK: - 依赖
 
     private let photoRepo: PhotoRepo
-    private let metadataOutboxRepo: MetadataOutboxRepo
     private let similarityStore: any SimilarityStore
+    private let writebackStore: any WritebackStore
     private let connection: DBConnection
     private let metadataSync: any CullingSyncPort
     private let metadataMutations: any MetadataMutationPort
@@ -354,8 +354,8 @@ public final class CullingService {
 
     public init(
         photoRepo: PhotoRepo,
-        metadataOutboxRepo: MetadataOutboxRepo,
         similarityStore: any SimilarityStore,
+        writebackStore: any WritebackStore,
         connection: DBConnection,
         metadataSync: any CullingSyncPort,
         metadataMutations: any MetadataMutationPort,
@@ -365,8 +365,8 @@ public final class CullingService {
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue }
     ) {
         self.photoRepo = photoRepo
-        self.metadataOutboxRepo = metadataOutboxRepo
         self.similarityStore = similarityStore
+        self.writebackStore = writebackStore
         self.connection = connection
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
@@ -411,7 +411,16 @@ public final class CullingService {
         result.historyOperationId = try await commitHistory(
             sink.entries, sessionId: sessionId,
             cachePatches: sink.cachePatches, decisionWrites: sink.decisionWrites)
+        // 提交后经 Store 回读 outbox 行刷新返回状态（事务内的行由 mutation 端口写入）。
+        if let row = try? await writebackStore.outboxEntry(xmpPath: result.xmpPath) {
+            result.syncStatus = MetadataSyncStatus(rawValue: row.status) ?? result.syncStatus
+        }
         return result
+    }
+
+    /// 事务后批量读 outbox 行（返回状态必须反映写后行）。
+    private func writebackStoreRows(_ sessionId: String) async throws -> [OutboxRecord] {
+        try await writebackStore.outboxEntries(sessionId: sessionId)
     }
 
     /// 把 updateState 收集到的历史条目落到 Store（必须在决策事务提交之后）。
@@ -698,12 +707,13 @@ public final class CullingService {
             metadataSync.schedule(xmpPath: targetXmpPath)
         }
 
-        let outboxRow = try metadataOutboxRepo.get(targetXmpPath)
+        // outbox 行由 queuePhotoValues 在事务内写入；行状态由异步入口在提交后
+        // 经 Store 刷新（此处只给保守默认值）。
         let syncStatus: MetadataSyncStatus
         if changesSharedMetadata {
-            syncStatus = MetadataSyncStatus(rawValue: outboxRow?.status ?? "") ?? .pending
+            syncStatus = .pending
         } else {
-            syncStatus = MetadataSyncStatus(rawValue: outboxRow?.status ?? "") ?? .clean
+            syncStatus = .clean
         }
         return CullingUpdateResult(
             states: resultStates,
@@ -900,8 +910,7 @@ public final class CullingService {
         // 行按 xmp 路径键控，事务内的 syncStatus 读取全部发生在
         // queuePhotoValues 写任何 outbox 行之前（写入在循环之后）。
         var outboxByPath = Dictionary(
-            uniqueKeysWithValues: try metadataOutboxRepo
-                .getBySession(sessionId)
+            uniqueKeysWithValues: try await writebackStore.outboxEntries(sessionId: sessionId)
                 .map { ($0.xmpPath, $0) }
         )
         func outboxStatus(_ xmpPath: String) -> MetadataSyncStatus {
@@ -1004,7 +1013,7 @@ public final class CullingService {
         }
         // queuePhotoValues 在事务内写 outbox（mergePatch 把状态 bump 到
         // 'pending'），预读快照再用一次批量读刷新——返回的状态必须反映写后行。
-        for row in try metadataOutboxRepo.getBySession(sessionId) {
+        for row in try await writebackStoreRows(sessionId) {
             outboxByPath[row.xmpPath] = row
         }
         for index in results.indices {
@@ -1597,19 +1606,8 @@ public final class CullingService {
     private func loadOutboxByPaths(
         sessionId: String,
         xmpPaths: [String]
-    ) throws -> [String: MetadataOutboxRow] {
-        let unique = Array(Set(xmpPaths))
-        var rows: [MetadataOutboxRow] = []
-        try withChunkedIds(unique) { chunk in
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            return try connection.prepare("""
-                SELECT o.*
-                FROM metadata_outbox o
-                JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
-                WHERE os.session_id = ? AND o.xmp_path IN (\(placeholders))
-              """).query([.text(sessionId)] + chunk.map { .text($0) })
-                .map { MetadataOutboxRow(row: $0) }
-        }
+    ) async throws -> [String: OutboxRecord] {
+        let rows = try await writebackStore.outboxEntries(sessionId: sessionId, xmpPaths: xmpPaths)
         return Dictionary(uniqueKeysWithValues: rows.map { ($0.xmpPath, $0) })
     }
 
@@ -1785,14 +1783,14 @@ public final class CullingService {
             uniqueKeysWithValues: try await metadataStore.metadataBatch(photoIds: photoIds)
                 .map { ($0.photoId, $0) }
         )
-        let outboxByPath: [String: MetadataOutboxRow]
+        let outboxByPath: [String: OutboxRecord]
         if mode == .session {
             outboxByPath = Dictionary(
-                uniqueKeysWithValues: try metadataOutboxRepo.getBySession(sessionId)
+                uniqueKeysWithValues: try await writebackStore.outboxEntries(sessionId: sessionId)
                     .map { ($0.xmpPath, $0) }
             )
         } else {
-            outboxByPath = try loadOutboxByPaths(
+            outboxByPath = try await loadOutboxByPaths(
                 sessionId: sessionId,
                 xmpPaths: photos.map { TSPath.xmpSidecarPath($0.filepath) }
             )
@@ -2403,7 +2401,7 @@ private enum LookupMode {
 private struct CullingRichLookup {
     let decisions: [String: CullingDecisionRecord]
     let cacheRows: [String: MetadataCacheRecord]
-    let outboxByPath: [String: MetadataOutboxRow]
+    let outboxByPath: [String: OutboxRecord]
     let similarityMap: [String: String]
     let qualityByPhoto: [String: CullingQuality]
     let facesByPhoto: [String: [[Double]]]

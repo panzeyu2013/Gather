@@ -81,11 +81,9 @@ public final class CaptureOneSyncState {
     /// TS: observedStates（Map<sessionId, CaptureOneSessionState>）。
     private var observedStates: [String: CaptureOneSessionState] = [:]
     private let connection: DBConnection
-    private let outboxRepo: MetadataOutboxRepo
 
-    public init(connection: DBConnection, outboxRepo: MetadataOutboxRepo) {
+    public init(connection: DBConnection) {
         self.connection = connection
-        self.outboxRepo = outboxRepo
     }
 
     /// TS: deriveSessionState —— 不存在的会话按 disconnected 处理（最保守）。
