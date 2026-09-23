@@ -83,6 +83,12 @@ tracked "batchAsync copies (R2)"                'func batchAsync'               
 tracked "legacy DB layer files (R1)"            '.'  "$CORE/Sources/GatherCore/Database" "*.swift"
 tracked "legacy Repositories files (R1)"        '.'  "$CORE/Sources/GatherCore/Database/Repositories" "*.swift"
 tracked "legacy Repo test files (R1)"           '.'  "$CORE/Tests/GatherCoreTests/Database" "*.swift"
+# 剩余旧 Repo 的调用文件数（R1 收尾排序用：越小越先切）。
+tracked "legacy SessionRepo callers (R1)"       'sessionRepo\.'        "$CORE/Sources"   "*.swift"
+tracked "legacy AnalysisJobRepo callers (R1)"   'AnalysisJobRepo'       "$CORE/Sources"   "*.swift"
+tracked "legacy MetadataOutboxRepo callers"     'outboxRepo\.'         "$CORE/Sources"   "*.swift"
+tracked "legacy PhotoRepo callers (R1)"         'photoRepo\.'          "$CORE/Sources"   "*.swift"
+tracked "legacy AssetRepo callers (R1)"         'assetRepo\.'          "$CORE/Sources"   "*.swift"
 
 # ---------------------------------------------------------------- ratchet
 # 旧层文件数只允许下降：baseline 是上限；上升即失败，下降时提示更新 baseline。
