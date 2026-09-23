@@ -2,26 +2,76 @@ name: Native CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, refactor]
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: native-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  gather-core:
-    runs-on: macos-14
+  boundary:
+    name: Legacy boundary scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: R0.3 legacy boundary scan
+        run: ./scripts/check-no-legacy.sh
+
+  gather-core:
+    name: gather-core tests
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            desktop/native/gather-core/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: core-${{ runner.os }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
+          restore-keys: core-${{ runner.os }}-
       - name: Core tests
         run: swift test --package-path desktop/native/gather-core
       - name: Vector reconciliation gate
         run: GATHER_RECONCILIATION_VECTOR=1 swift test --package-path desktop/native/gather-core --filter VectorIndexReconciliationTests
 
   gather-app:
+    name: gather-app tests + bundle
     runs-on: macos-14
     needs: gather-core
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            desktop/native/gather-app/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: app-${{ runner.os }}-${{ hashFiles('desktop/native/gather-app/Package.swift') }}
+          restore-keys: app-${{ runner.os }}-
       - name: App tests
         run: swift test --package-path desktop/native/gather-app
       - name: Native bundle build
         run: ./desktop/native/build.sh
+
+  toolchain-compat:
+    name: Newest toolchain build (drift guard)
+    runs-on: macos-latest
+    needs: boundary
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain version
+        run: swift --version && xcodebuild -version
+      - name: Core build on newest toolchain
+        run: swift build --package-path desktop/native/gather-core
+      - name: App build on newest toolchain
+        run: swift build --package-path desktop/native/gather-app
