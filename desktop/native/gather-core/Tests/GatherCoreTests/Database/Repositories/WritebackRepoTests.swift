@@ -22,7 +22,7 @@ private func insertPhoto(_ db: DBConnection, id: String, sessionId: String) thro
         .run([.text(id), .text(sessionId), .text("/\(id).jpg")])
 }
 
-private func item(_ photoId: String, xmpPath: String = "", attributes: [String: Any]? = nil) -> WritebackItemInput {
+private func item(_ photoId: String, xmpPath: String = "", attributes: [String: JSONValue]? = nil) -> WritebackItemInput {
     WritebackItemInput(
         photoId: photoId,
         photoPath: "/photos/\(photoId).jpg",
@@ -44,7 +44,7 @@ struct WritebackRepoTests {
         let repo = WritebackRepo(connection: db)
 
         try repo.saveItems(sessionId: "s1", module: "culling", items: [
-            item("p1", attributes: ["rating": 4, "label": "Pick"]),
+            item("p1", attributes: ["rating": JSONValue.int(4), "label": JSONValue.string("Pick")]),
             item("p2"),
         ])
 

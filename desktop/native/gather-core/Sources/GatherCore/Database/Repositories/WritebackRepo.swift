@@ -40,26 +40,7 @@ public struct WritebackItemRow: Equatable, Sendable {
     }
 }
 
-/// saveItems 的单条输入（TS: WritebackItemInput）。
-public struct WritebackItemInput {
-    public let photoId: String
-    public let photoPath: String
-    public let module: String
-    public let keywords: [String]
-    public let attributes: [String: Any]?
-    public let xmpPath: String
-    public let backupPath: String
-
-    public init(photoId: String, photoPath: String, module: String, keywords: [String], attributes: [String: Any]? = nil, xmpPath: String, backupPath: String) {
-        self.photoId = photoId
-        self.photoPath = photoPath
-        self.module = module
-        self.keywords = keywords
-        self.attributes = attributes
-        self.xmpPath = xmpPath
-        self.backupPath = backupPath
-    }
-}
+// WritebackItemInput 已迁至 Store/WritebackStore.swift（R1 单一来源，attributes 改为 [String: JSONValue]）。
 
 public final class WritebackRepo {
     private let connection: DBConnection
@@ -86,7 +67,7 @@ public final class WritebackRepo {
                     .text(sessionId),
                     .text(module),
                     .text(jsonString(item.keywords)),
-                    .text(jsonString(item.attributes ?? [:])),
+                    .text((try? JSONValue.stringify(JSONValue.object(item.attributes ?? [:]))) ?? "{}"),
                     .text(item.xmpPath),
                     .text(item.backupPath),
                     .text(now),
@@ -235,7 +216,8 @@ private func jsonString(_ keywords: [String]) -> String {
     return String(decoding: data, as: UTF8.self)
 }
 
-/// TS: JSON.stringify(attributes)（Record<string, unknown>）。
+/// TS: JSON.stringify(attributes)（Record<string, unknown>）——
+/// 旧 updateAttributes/updateAttributesMany 仍接受 [String: Any]（R1 收尾随本文件删除）。
 private func jsonString(_ attributes: [String: Any]) -> String {
     guard let data = try? JSONSerialization.data(withJSONObject: attributes) else { return "{}" }
     return String(decoding: data, as: UTF8.self)

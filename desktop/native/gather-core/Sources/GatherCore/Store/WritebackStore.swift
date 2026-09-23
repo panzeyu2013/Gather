@@ -113,11 +113,46 @@ public protocol WritebackStore: Sendable {
     func clearOutboxBackupPath(xmpPath: String, backupPath: String) async throws
     func deleteOutboxByRevision(xmpPath: String, revision: Int64) async throws
     func discardModulePending(sessionId: String, sourceModule: String) async throws
+
+    // MARK: writeback_items
+
+    func saveWritebackItems(sessionId: String, module: String, items: [WritebackItemInput]) async throws
+    func writebackItems(sessionId: String, module: String?, status: String?) async throws -> [WritebackItemRecord]
+    func writebackItem(itemId: Int64) async throws -> WritebackItemRecord?
+    func updateWritebackStatus(itemId: Int64, status: String, error: String?) async throws
+    func failedWritebackCount(sessionId: String, module: String?) async throws -> Int
+    func deleteWritebackItems(sessionId: String, module: String?) async throws
+    func deleteWritebackItems(sessionId: String, module: String, ids: [Int64]) async throws
+    func updateWritebackBackupPath(itemId: Int64, path: String) async throws
+    func updateWritebackAttributes(itemId: Int64, attributes: [String: JSONValue]) async throws
+    func updateWritebackKeywords(itemId: Int64, keywords: [String]) async throws
+    func updateWritebackAttributes(_ updates: [WritebackAttributesUpdate]) async throws
+    func updateWritebackKeywords(_ updates: [WritebackKeywordsUpdate]) async throws
+    func markWritebackWrittenAsSynced(sessionId: String, module: String) async throws
+    func updateWritebackStatusByXmpPath(sessionId: String, module: String, xmpPath: String, status: String) async throws
+    func hasActiveWriteback(xmpPath: String) async throws -> Bool
+    @discardableResult func discardWritebackPending(xmpPath: String) async throws -> Int
 }
 
 public extension WritebackStore {
     func markOutboxStatus(xmpPath: String, status: String) async throws {
         try await markOutboxStatus(xmpPath: xmpPath, status: status, errorMessage: "")
+    }
+
+    func writebackItems(sessionId: String) async throws -> [WritebackItemRecord] {
+        try await writebackItems(sessionId: sessionId, module: nil, status: nil)
+    }
+
+    func updateWritebackStatus(itemId: Int64, status: String) async throws {
+        try await updateWritebackStatus(itemId: itemId, status: status, error: nil)
+    }
+
+    func failedWritebackCount(sessionId: String) async throws -> Int {
+        try await failedWritebackCount(sessionId: sessionId, module: nil)
+    }
+
+    func deleteWritebackItems(sessionId: String) async throws {
+        try await deleteWritebackItems(sessionId: sessionId, module: nil)
     }
 }
 
@@ -516,5 +551,298 @@ public struct SQLiteWritebackStore: WritebackStore {
         var merged = baseDict
         for (key, value) in overlayDict { merged[key] = value }
         return .object(merged)
+    }
+}
+
+// MARK: - writeback_items
+
+/// saveWritebackItems 的单条输入（attributes 用 JSONValue 替代旧 [String: Any]，
+// 保持 Sendable 且序列化语义一致）。
+public struct WritebackItemInput: Sendable {
+    public let photoId: String
+    public let photoPath: String
+    public let module: String
+    public let keywords: [String]
+    public let attributes: [String: JSONValue]?
+    public let xmpPath: String
+    public let backupPath: String
+
+    public init(
+        photoId: String,
+        photoPath: String,
+        module: String,
+        keywords: [String],
+        attributes: [String: JSONValue]? = nil,
+        xmpPath: String,
+        backupPath: String
+    ) {
+        self.photoId = photoId
+        self.photoPath = photoPath
+        self.module = module
+        self.keywords = keywords
+        self.attributes = attributes
+        self.xmpPath = xmpPath
+        self.backupPath = backupPath
+    }
+}
+
+public struct WritebackAttributesUpdate: Sendable {
+    public let id: Int64
+    public let attributes: [String: JSONValue]
+
+    public init(id: Int64, attributes: [String: JSONValue]) {
+        self.id = id
+        self.attributes = attributes
+    }
+}
+
+public struct WritebackKeywordsUpdate: Sendable {
+    public let id: Int64
+    public let keywords: [String]
+
+    public init(id: Int64, keywords: [String]) {
+        self.id = id
+        self.keywords = keywords
+    }
+}
+
+public struct WritebackItemRecord: Decodable, Equatable, Sendable {
+    public let id: Int64
+    public let photoId: String
+    public let photoPath: String
+    public let sessionId: String
+    public let module: String
+    public let keywords: String
+    public let attributesJson: String
+    public let xmpPath: String
+    public let backupPath: String
+    public let xmpStatus: String
+    public let errorMessage: String
+    public let attemptCount: Int
+    public let lastAttemptAt: String
+
+    /// attributes_json → JSONValue（损坏数据返回 nil）。
+    public var attributes: JSONValue? {
+        try? JSONValue.parse(attributesJson)
+    }
+
+    /// keywords JSON → 字符串数组（损坏数据返回空数组）。
+    public var keywordList: [String] {
+        ((try? JSONValue.parse(keywords)) as JSONValue?)?.arrayValue ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, module, keywords
+        case photoId = "photo_id"
+        case photoPath = "photo_path"
+        case sessionId = "session_id"
+        case attributesJson = "attributes_json"
+        case xmpPath = "xmp_path"
+        case backupPath = "backup_path"
+        case xmpStatus = "xmp_status"
+        case errorMessage = "error_message"
+        case attemptCount = "attempt_count"
+        case lastAttemptAt = "last_attempt_at"
+    }
+}
+
+public extension SQLiteWritebackStore {
+    /// 先删掉该 (session, module) 下 pending/failed 的旧行，再批量插入。
+    func saveWritebackItems(sessionId: String, module: String, items: [WritebackItemInput]) async throws {
+        let now = nowISOString()
+        try await database.transaction { db in
+            try db.run(
+                "DELETE FROM writeback_items WHERE session_id = ? AND module = ? AND xmp_status IN ('pending', 'failed')",
+                [.text(sessionId), .text(module)]
+            )
+            for item in items {
+                try db.run(
+                    """
+                    INSERT INTO writeback_items
+                      (photo_id, photo_path, session_id, module, keywords, attributes_json,
+                       xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?)
+                    """,
+                    [
+                        .text(item.photoId),
+                        .text(item.photoPath),
+                        .text(sessionId),
+                        .text(module),
+                        .text(Self.keywordsJSON(item.keywords)),
+                        .text(Self.attributesJSON(item.attributes ?? [:])),
+                        .text(item.xmpPath),
+                        .text(item.backupPath),
+                        .text(now),
+                    ]
+                )
+            }
+        }
+    }
+
+    func writebackItems(sessionId: String, module: String? = nil, status: String? = nil) async throws -> [WritebackItemRecord] {
+        var sql = "SELECT * FROM writeback_items WHERE session_id = ?"
+        var values: [SQLiteValue] = [.text(sessionId)]
+        if let module, !module.isEmpty {
+            sql += " AND module = ?"
+            values.append(.text(module))
+        }
+        if let status, !status.isEmpty {
+            sql += " AND xmp_status = ?"
+            values.append(.text(status))
+        }
+        sql += " ORDER BY id ASC"
+        return try await database.query(sql, values).map { try $0.decode(WritebackItemRecord.self) }
+    }
+
+    func writebackItem(itemId: Int64) async throws -> WritebackItemRecord? {
+        try await database.queryOne("SELECT * FROM writeback_items WHERE id = ?", [.int(itemId)])?
+            .decode(WritebackItemRecord.self)
+    }
+
+    func updateWritebackStatus(itemId: Int64, status: String, error: String? = nil) async throws {
+        try await database.run(
+            """
+            UPDATE writeback_items
+            SET xmp_status = ?, error_message = ?, attempt_count = attempt_count + 1, last_attempt_at = ?
+            WHERE id = ?
+            """,
+            [.text(status), .text(error ?? ""), .text(nowISOString()), .int(itemId)]
+        )
+    }
+
+    func failedWritebackCount(sessionId: String, module: String? = nil) async throws -> Int {
+        var sql = "SELECT COUNT(*) AS count FROM writeback_items WHERE session_id = ? AND xmp_status = ?"
+        var values: [SQLiteValue] = [.text(sessionId), .text("failed")]
+        if let module, !module.isEmpty {
+            sql += " AND module = ?"
+            values.append(.text(module))
+        }
+        return Int(try await database.scalarInt(sql, values) ?? 0)
+    }
+
+    func deleteWritebackItems(sessionId: String, module: String? = nil) async throws {
+        if let module, !module.isEmpty {
+            try await database.run(
+                "DELETE FROM writeback_items WHERE session_id = ? AND module = ?",
+                [.text(sessionId), .text(module)]
+            )
+            return
+        }
+        try await database.run("DELETE FROM writeback_items WHERE session_id = ?", [.text(sessionId)])
+    }
+
+    /// 只删除指定 (session, module) 下状态为 synced 且 id 在列表中的行（400 分块）。
+    func deleteWritebackItems(sessionId: String, module: String, ids: [Int64]) async throws {
+        guard !ids.isEmpty else { return }
+        var doomed: [Int64] = []
+        for chunk in ids.chunked(by: 400) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT id FROM writeback_items
+                WHERE session_id = ? AND module = ? AND xmp_status = 'synced' AND id IN (\(placeholders))
+                """,
+                [.text(sessionId), .text(module)] + chunk.map { .int($0) }
+            )
+            doomed.append(contentsOf: rows.compactMap { $0.int("id") })
+        }
+        for chunk in doomed.chunked(by: 400) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            try await database.run(
+                "DELETE FROM writeback_items WHERE id IN (\(placeholders))",
+                chunk.map { .int($0) }
+            )
+        }
+    }
+
+    func updateWritebackBackupPath(itemId: Int64, path: String) async throws {
+        try await database.run(
+            "UPDATE writeback_items SET backup_path = ? WHERE id = ?",
+            [.text(path), .int(itemId)]
+        )
+    }
+
+    func updateWritebackAttributes(itemId: Int64, attributes: [String: JSONValue]) async throws {
+        try await database.run(
+            "UPDATE writeback_items SET attributes_json = ? WHERE id = ?",
+            [.text(Self.attributesJSON(attributes)), .int(itemId)]
+        )
+    }
+
+    func updateWritebackKeywords(itemId: Int64, keywords: [String]) async throws {
+        try await database.run(
+            "UPDATE writeback_items SET keywords = ? WHERE id = ?",
+            [.text(Self.keywordsJSON(keywords)), .int(itemId)]
+        )
+    }
+
+    func updateWritebackAttributes(_ updates: [WritebackAttributesUpdate]) async throws {
+        guard !updates.isEmpty else { return }
+        try await database.transaction { db in
+            for update in updates {
+                try db.run(
+                    "UPDATE writeback_items SET attributes_json = ? WHERE id = ?",
+                    [.text(Self.attributesJSON(update.attributes)), .int(update.id)]
+                )
+            }
+        }
+    }
+
+    func updateWritebackKeywords(_ updates: [WritebackKeywordsUpdate]) async throws {
+        guard !updates.isEmpty else { return }
+        try await database.transaction { db in
+            for update in updates {
+                try db.run(
+                    "UPDATE writeback_items SET keywords = ? WHERE id = ?",
+                    [.text(Self.keywordsJSON(update.keywords)), .int(update.id)]
+                )
+            }
+        }
+    }
+
+    func markWritebackWrittenAsSynced(sessionId: String, module: String) async throws {
+        try await database.run(
+            "UPDATE writeback_items SET xmp_status = 'synced' WHERE session_id = ? AND module = ? AND xmp_status = 'written'",
+            [.text(sessionId), .text(module)]
+        )
+    }
+
+    func updateWritebackStatusByXmpPath(
+        sessionId: String,
+        module: String,
+        xmpPath: String,
+        status: String
+    ) async throws {
+        try await database.run(
+            """
+            UPDATE writeback_items SET xmp_status = ?, error_message = ''
+            WHERE session_id = ? AND module = ? AND xmp_path = ?
+            """,
+            [.text(status), .text(sessionId), .text(module), .text(xmpPath)]
+        )
+    }
+
+    func hasActiveWriteback(xmpPath: String) async throws -> Bool {
+        try await database.queryOne(
+            "SELECT 1 FROM writeback_items WHERE xmp_path = ? AND xmp_status IN ('pending', 'writing', 'written', 'synced') LIMIT 1",
+            [.text(xmpPath)]
+        ) != nil
+    }
+
+    /// 返回删除行数（TS: run(...).changes）。
+    @discardableResult
+    func discardWritebackPending(xmpPath: String) async throws -> Int {
+        try await database.run(
+            "DELETE FROM writeback_items WHERE xmp_path = ? AND xmp_status IN ('pending', 'failed')",
+            [.text(xmpPath)]
+        )
+    }
+
+    private static func keywordsJSON(_ keywords: [String]) -> String {
+        (try? JSONValue.stringify(JSONValue.array(keywords.map { JSONValue.string($0) }))) ?? "[]"
+    }
+
+    private static func attributesJSON(_ attributes: [String: JSONValue]) -> String {
+        (try? JSONValue.stringify(JSONValue.object(attributes))) ?? "{}"
     }
 }
