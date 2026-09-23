@@ -79,7 +79,7 @@ public final class IndexerService {
 
     private let connection: DBConnection
     private let sessionRepo: SessionRepo
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let assetStore: any AssetStore
     private let getDimensions: DimensionsProvider
     private let getSetting: SettingReader
@@ -93,14 +93,14 @@ public final class IndexerService {
     public init(
         connection: DBConnection,
         sessionRepo: SessionRepo,
-        photoRepo: PhotoRepo,
+        photoStore: any PhotoStore,
         assetStore: any AssetStore,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
         getSetting: @escaping SettingReader = { _, defaultValue in defaultValue }
     ) {
         self.connection = connection
         self.sessionRepo = sessionRepo
-        self.photoRepo = photoRepo
+        self.photoStore = photoStore
         self.assetStore = assetStore
         self.getDimensions = getDimensions
         self.getSetting = getSetting
@@ -195,7 +195,11 @@ public final class IndexerService {
         guard let session else { throw IndexerServiceError.sessionNotFound }
         guard !session.sourcePath.isEmpty else { throw IndexerServiceError.noSourcePath }
         let excludedRoots = managedCacheRoots()
-        var existing = try self.photoRepo.getBySessionProjection(sessionId: sessionId)
+        var existing = try await self.photoStore.getBySessionProjection(sessionId: sessionId)
+        // Store 写不参与旧事务：批次内收集，扫描事务全部提交后统一应用（photoId 幂等）。
+        var pendingIndexedWrites: [(photoId: String, width: Int, height: Int, changed: Bool)] = []
+        var pendingChecksumWrites: [(photoId: String, checksum: String, fileSize: Int, fileMtimeMs: Double)] = []
+        var pendingInsertEntries: [NewEntry] = []
         // 生成缓存目录内的存量照片（缓存清扫）：事务内删除照片行 + 孤儿资产行。
         let generatedCachePhotos = existing.filter { photo in
             excludedRoots.contains { Self.isWithin(candidate: TSPath.resolve(photo.filepath), canonicalRoot: $0) }
@@ -383,13 +387,8 @@ public final class IndexerService {
                             for photoId in relocated.photoIds {
                                 batchAffectedPhotoIds.insert(photoId)
                                 relinkedPhotoIds.insert(photoId)
-                                try self.photoRepo.updateIndexedFile(
-                                    photoId: photoId, width: width, height: height, changed: true
-                                )
-                                try self.photoRepo.updateChecksum(
-                                    photoId: photoId, checksum: checksum,
-                                    fileSize: Int(fileSize), fileMtimeMs: fileMtimeMs
-                                )
+                                pendingIndexedWrites.append((photoId, width, height, true))
+                                pendingChecksumWrites.append((photoId, checksum, Int(fileSize), fileMtimeMs))
                             }
                             skipped += 1
                         } else {
@@ -405,15 +404,10 @@ public final class IndexerService {
                         if contentChanged {
                             updatedExistingPhotos += 1
                         }
-                        try self.photoRepo.updateIndexedFile(
-                            photoId: photoId, width: width, height: height, changed: contentChanged
-                        )
+                        pendingIndexedWrites.append((photoId, width, height, contentChanged))
                         // 懒模式 + 未变化 + 空快照 checksum：保留照片行已有值。
                         if !preserveChecksum {
-                            try self.photoRepo.updateChecksum(
-                                photoId: photoId, checksum: checksum,
-                                fileSize: Int(fileSize), fileMtimeMs: fileMtimeMs
-                            )
+                            pendingChecksumWrites.append((photoId, checksum, Int(fileSize), fileMtimeMs))
                         }
                         if let assetFileId {
                             let timestamp = nowISOString()
@@ -456,24 +450,41 @@ public final class IndexerService {
             }
             // 批提交成功后做一次失效（提交失败则回滚，analysis 输入保持有效）。
             try self.invalidatePathDependentAnalysis(photoIds: Array(batchAffectedPhotoIds))
-            if !newEntries.isEmpty {
-                let inserted = try self.photoRepo.addPhotos(
+            pendingInsertEntries.append(contentsOf: newEntries)
+            // 每批事务提交后立即应用本批 Store 写（photoId 幂等；取消/失败后
+            // 已提交批次保持可见，index_seq/计数语义与旧实现一致）。
+            for update in pendingIndexedWrites {
+                try await self.photoStore.updateIndexedFile(
+                    photoId: update.photoId, width: update.width, height: update.height, changed: update.changed
+                )
+            }
+            for update in pendingChecksumWrites {
+                try await self.photoStore.updateChecksum(
+                    photoId: update.photoId, checksum: update.checksum,
+                    fileSize: update.fileSize, fileMtimeMs: update.fileMtimeMs
+                )
+            }
+            if !pendingInsertEntries.isEmpty {
+                let inserted = try await self.photoStore.addPhotos(
                     sessionId: sessionId,
-                    filepaths: newEntries.map { PhotoAddInput(filepath: $0.filepath, width: $0.width, height: $0.height) },
-                    "index"
+                    inputs: pendingInsertEntries.map {
+                        PhotoAddInput(filepath: $0.filepath, width: $0.width, height: $0.height)
+                    },
+                    source: "index"
                 )
                 added += inserted.added
                 skipped += inserted.skipped
-                // addPhotos 返回每个新行的 id：checksum 无需重读整表写入
-                // （TS：曾在此 getBySessionProjection，首导入 O(n²)）。
-                for (index, entry) in newEntries.enumerated() {
+                for (index, entry) in pendingInsertEntries.enumerated() {
                     guard index < inserted.ids.count, !inserted.ids[index].isEmpty else { continue }
-                    try self.photoRepo.updateChecksum(
+                    try await self.photoStore.updateChecksum(
                         photoId: inserted.ids[index], checksum: entry.checksum,
                         fileSize: Int(entry.fileSize), fileMtimeMs: entry.fileMtimeMs
                     )
                 }
             }
+            pendingIndexedWrites.removeAll()
+            pendingChecksumWrites.removeAll()
+            pendingInsertEntries.removeAll()
         }
 
         // 扫描 + 终态提交整体受保护：批次提交后发生的取消/错误不得吞掉
@@ -555,7 +566,7 @@ public final class IndexerService {
                     missing.append(photo)
                 }
             }
-            try self.photoRepo.markMissing(photoIds: missing.map(\.id))
+            try await self.photoStore.markMissing(photoIds: missing.map(\.id))
             _ = try await self.assetStore.backfillSession(sessionId)
             // index_seq 是分析过期游标：仅在真实变更（新增/内容变/重链接/新增缺失）
             // 时 bump；空转扫描不得把分析标脏。
@@ -563,9 +574,9 @@ public final class IndexerService {
                 || updatedExistingPhotos > 0
                 || !relinkedPhotoIds.isEmpty
                 || !missing.isEmpty
-            var finalCount = 0
+            // Store 读在旧事务之外（跨连接不共享事务）。
+            let finalCount = try await self.photoStore.countBySession(sessionId: sessionId)
             try self.connection.transaction {
-                finalCount = try self.photoRepo.countBySession(sessionId: sessionId)
                 try self.sessionRepo.updatePhotoCount(id: sessionId, count: finalCount)
                 if committedChanges {
                     _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)
@@ -613,8 +624,8 @@ public final class IndexerService {
 
     /// TS: pendingChecksums —— 会话内仍缺 checksum 的照片数（调用方决定是否
     /// 创建 checksum.backfill 任务）。
-    public func pendingChecksums(sessionId: String) throws -> Int {
-        try self.photoRepo.getBySessionProjection(sessionId: sessionId)
+    public func pendingChecksums(sessionId: String) async throws -> Int {
+        try await self.photoStore.getBySessionProjection(sessionId: sessionId)
             .filter { $0.checksum.isEmpty && $0.status != "missing" }
             .count
     }
@@ -634,7 +645,7 @@ public final class IndexerService {
         var afterRowId: Int64?
         for _ in 0... {
             try await context?.throwIfCancelled()
-            let (pending, lastRowId) = try loadPendingBackfill(
+            let (pending, lastRowId) = try await loadPendingBackfill(
                 sessionId: sessionId, afterRowId: afterRowId, failedPhotoIds: failedPhotoIds
             )
             if let lastRowId { afterRowId = lastRowId }
@@ -649,7 +660,7 @@ public final class IndexerService {
                 // 哈希阶段只读；全部写入进入单事务。
                 let results = try await mapConcurrent(
                     batch, concurrency: Self.checksumBackfillConcurrency
-                ) { photo -> (photo: PhotoPageRow, checksum: String, size: Int64, mtimeMs: Double)? in
+                ) { photo -> (photo: PhotoPage, checksum: String, size: Int64, mtimeMs: Double)? in
                     do {
                         let source = try self.stat(photo.filepath)
                         let checksum = try self.fileHasher(photo.filepath)
@@ -713,12 +724,12 @@ public final class IndexerService {
         sessionId: String,
         afterRowId: Int64?,
         failedPhotoIds: Set<String>
-    ) throws -> (rows: [PhotoPageRow], lastRowId: Int64?) {
-        var rows: [PhotoPageRow] = []
+    ) async throws -> (rows: [PhotoPage], lastRowId: Int64?) {
+        var rows: [PhotoPage] = []
         var cursor: Int64? = afterRowId
         var lastRowId: Int64?
         for _ in 0... {
-            let page = try self.photoRepo.getBySessionPage(
+            let page = try await self.photoStore.getBySessionPage(
                 sessionId: sessionId, afterRowId: cursor, limit: Self.checksumBackfillPageSize
             )
             if page.isEmpty { break }

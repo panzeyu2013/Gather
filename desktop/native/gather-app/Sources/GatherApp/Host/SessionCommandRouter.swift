@@ -347,7 +347,7 @@ public final class SessionCommandRouter: CommandRouter {
             indexerService: IndexerService(
                 connection: db,
                 sessionRepo: sessionRepo,
-                photoRepo: photoRepo,
+                photoStore: photoStore,
                 assetStore: assetStore,
                 getDimensions: { path in
                     try RAWDecoder.getDimensions(path: path)
@@ -460,7 +460,7 @@ public final class SessionCommandRouter: CommandRouter {
             await context.updateProgress(JobProgressUpdate(
                 current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
             ))
-            if (try indexerService.pendingChecksums(sessionId: job.scopeId)) > 0 {
+            if (try await indexerService.pendingChecksums(sessionId: job.scopeId)) > 0 {
                 _ = try await jobService.create(JobCreateParams(
                     type: .checksumBackfill,
                     scopeType: "session",

@@ -60,7 +60,7 @@ private func makeHarness(
     let indexer = IndexerService(
         connection: db,
         sessionRepo: sessionRepo,
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         assetStore: assetStore,
         getDimensions: getDimensions,
         getSetting: { key, defaultValue in
@@ -349,7 +349,7 @@ struct CancelledScanIndexSeqTests {
         let indexer = IndexerService(
             connection: db,
             sessionRepo: sessionRepo,
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             assetStore: assetStore,
             getDimensions: { path in
                 if path == lastBatchPath {
@@ -582,7 +582,7 @@ struct ChecksumBackfillTests {
         #expect(scan.skipped == 1)
         #expect(try photoChecksum(harness.db, "photo-1") == checksum)
         #expect(try assetFileChecksum(harness.db, "af-1") == checksum)
-        #expect(try harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
+        #expect(try await harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
     }
 
     @Test("terminates when a photo cannot be read, leaving its checksum empty")
@@ -650,7 +650,7 @@ struct ChecksumBackfillTests {
         #expect(scan.missing == 0)
         #expect(try photoChecksum(harness.db, "photo-1") == checksum)
         #expect(try assetFileChecksum(harness.db, "af-1") == "")
-        #expect(try harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
+        #expect(try await harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
     }
 
     @Test("preserves the asset_files checksum via a conditional write when the snapshot lacks one")
