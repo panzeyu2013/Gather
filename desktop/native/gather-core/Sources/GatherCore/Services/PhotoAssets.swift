@@ -44,5 +44,4 @@ public protocol PhotoAssetCandidate {
     var filename: String { get }
 }
 
-extension PhotoProjectionRow: PhotoAssetCandidate {}
 extension PhotoProjection: PhotoAssetCandidate {}

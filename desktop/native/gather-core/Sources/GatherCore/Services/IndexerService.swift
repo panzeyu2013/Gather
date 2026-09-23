@@ -236,7 +236,7 @@ public final class IndexerService {
             existing = existing.filter { !removedIds.contains($0.id) }
         }
 
-        let existingByPath: [String: PhotoProjectionRow] = Dictionary(
+        let existingByPath: [String: PhotoProjection] = Dictionary(
             uniqueKeysWithValues: existing.map { (TSPath.normalize(TSPath.resolve($0.filepath)), $0) }
         )
         let fileRows = try self.connection.prepare("""
@@ -266,7 +266,7 @@ public final class IndexerService {
         var updatedExistingPhotos = 0
         // 提前声明：扫描中途取消/出错时 catch 路径需要判断是否发生过变更
         // （此时尚未做对账，保持空）。
-        var missing: [PhotoProjectionRow] = []
+        var missing: [PhotoProjection] = []
 
         /// TS: scanBatch —— 一批文件的 stat/尺寸/checksum（并发 4）+ 单事务提交。
         let scanBatch: ([String]) async throws -> Void = { filepaths in

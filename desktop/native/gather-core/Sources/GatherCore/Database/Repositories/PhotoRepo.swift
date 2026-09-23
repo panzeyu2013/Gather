@@ -46,44 +46,7 @@ public struct PhotoRow: Equatable, Sendable {
     }
 }
 
-/// 轻投影：除 metadata/result 外的全部列（TS: PhotoProjectionRow）。
-public struct PhotoProjectionRow: Equatable, Sendable {
-    public let id: String
-    public let sessionId: String
-    public let filepath: String
-    public let filename: String
-    public let checksum: String
-    public let checksumFileSize: Int
-    public let checksumFileMtimeMs: Double
-    public let status: String
-    public let assetId: String?
-    public let assetFileId: String?
-    public let width: Int
-    public let height: Int
-    public let createdAt: String
-    public let updatedAt: String
-
-    // SELECT 列序: id(0), session_id(1), filepath(2), filename(3), checksum(4),
-    // checksum_file_size(5), checksum_file_mtime_ms(6), status(7), asset_id(8),
-    // asset_file_id(9), width(10), height(11), created_at(12), updated_at(13)
-    init(row: DBRow) throws {
-        guard row.count >= 14 else { throw DBError.message("PhotoProjectionRow 列数不足: \(row.count)") }
-        id = row[0].textValue ?? ""
-        sessionId = row[1].textValue ?? ""
-        filepath = row[2].textValue ?? ""
-        filename = row[3].textValue ?? ""
-        checksum = row[4].textValue ?? ""
-        checksumFileSize = Int(row[5].intValue ?? 0)
-        checksumFileMtimeMs = row[6].doubleValue ?? 0
-        status = row[7].textValue ?? ""
-        assetId = row[8].textValue
-        assetFileId = row[9].textValue
-        width = Int(row[10].intValue ?? 0)
-        height = Int(row[11].intValue ?? 0)
-        createdAt = row[12].textValue ?? ""
-        updatedAt = row[13].textValue ?? ""
-    }
-}
+/// 轻投影：除 metadata/result 外的全部列（TS: PhotoProjection）。
 
 /// 分页轻投影（TS: PhotoPageRow）。PHOTO_PAGE_COLUMNS 只含 13 列；
 /// metadata/result/checksum_file_size/checksum_file_mtime_ms 为可选尾部列，
@@ -153,11 +116,33 @@ public final class PhotoRepo {
         return try rows.map { try PhotoRow(row: $0) }
     }
 
-    public func getBySessionProjection(sessionId: String) throws -> [PhotoProjectionRow] {
+    public func getBySessionProjection(sessionId: String) throws -> [PhotoProjection] {
         let rows = try connection.prepare(
             "SELECT id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, asset_id, asset_file_id, width, height, created_at, updated_at FROM photos WHERE session_id = ? ORDER BY rowid"
         ).query([.text(sessionId)])
-        return try rows.map { try PhotoProjectionRow(row: $0) }
+        // 旧连接行 → Store 投影（两类型 14 字段一一对应，键集分页改造后可互换）。
+        return rows.map { row in
+            func text(_ i: Int) -> String? {
+                if case .text(let v) = row[i] { return v }
+                return nil
+            }
+            func int(_ i: Int) -> Int64? {
+                if case .int(let v) = row[i] { return v }
+                return nil
+            }
+            func real(_ i: Int) -> Double? {
+                if case .real(let v) = row[i] { return v }
+                return nil
+            }
+            return PhotoProjection(
+                id: text(0) ?? "", sessionId: text(1) ?? "", filepath: text(2) ?? "",
+                filename: text(3) ?? "", checksum: text(4) ?? "",
+                checksumFileSize: Int(int(5) ?? 0), checksumFileMtimeMs: real(6) ?? 0,
+                status: text(7) ?? "", assetId: text(8), assetFileId: text(9),
+                width: Int(int(10) ?? 0), height: Int(int(11) ?? 0),
+                createdAt: text(12) ?? "", updatedAt: text(13) ?? ""
+            )
+        }
     }
 
     public func getBySessionPage(sessionId: String, afterRowId: Int64? = nil, limit: Int = 200) throws -> [PhotoPageRow] {

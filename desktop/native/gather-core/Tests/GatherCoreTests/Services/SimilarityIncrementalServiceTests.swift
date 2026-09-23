@@ -78,7 +78,7 @@ private func makeIncrementalHarness(settings: [String: Double] = [:]) throws -> 
     let counter = ClusterCallCounter()
     let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
     let service = SimilarityService(
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         sessionRepo: sessionRepo,
         similarityStore: similarityStore,
         connection: db,

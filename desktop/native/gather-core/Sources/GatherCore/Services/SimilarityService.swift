@@ -114,7 +114,7 @@ public final class SimilarityService {
     /// TS: onProgress(current, total, message)。
     public typealias ProgressHandler = (Int, Int, String) -> Void
 
-    private let photoRepo: PhotoRepo
+    private let photoStore: any PhotoStore
     private let sessionRepo: SessionRepo
     private let similarityStore: any SimilarityStore
     private let connection: DBConnection
@@ -150,7 +150,7 @@ public final class SimilarityService {
     }
 
     public init(
-        photoRepo: PhotoRepo,
+        photoStore: any PhotoStore,
         sessionRepo: SessionRepo,
         similarityStore: any SimilarityStore,
         connection: DBConnection,
@@ -167,7 +167,7 @@ public final class SimilarityService {
                 mode: mode, onProgress: onProgress)
         }
     ) {
-        self.photoRepo = photoRepo
+        self.photoStore = photoStore
         self.sessionRepo = sessionRepo
         self.similarityStore = similarityStore
         self.connection = connection
@@ -216,12 +216,14 @@ public final class SimilarityService {
         do {
             try sessionRepo.updateAnalysisStatus(id: sessionId, status: "running")
 
-            // 照片与 index_seq 快照共享一个读事务（design §8）：
+            // 照片快照在 Store 连接读取；index_seq 走旧连接读事务（design §8）：
             // 快照保证 run.index_seq 与本次分析的照片一致。
-            let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try connection.transaction {
-                (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
-                 try sessionRepo.getIndexSeq(id: sessionId))
+            let photosSnapshot: [PhotoProjection] = PhotoAssets.collapse(
+                try await photoStore.getBySessionProjection(sessionId: sessionId))
+            let indexSeqSnapshot: Int = try connection.transaction {
+                try sessionRepo.getIndexSeq(id: sessionId)
             }
+            let snapshot: (photos: [PhotoProjection], indexSeq: Int) = (photosSnapshot, indexSeqSnapshot)
             if snapshot.photos.isEmpty { throw SimilarityServiceError.noPhotos }
             runId = try startAnalysisRun(
                 sessionId: sessionId,
@@ -425,7 +427,7 @@ public final class SimilarityService {
     public static func reuseSimilarityHashes(
         connection: DBConnection,
         sessionId: String,
-        photos: [PhotoProjectionRow],
+        photos: [PhotoProjection],
         sourceStats: [String: (size: Int, mtimeMs: Double)],
         existingHashMap: inout [String: String]
     ) throws -> Int {
@@ -555,7 +557,7 @@ public final class SimilarityService {
         // 内容（折叠资产减已分组成员）；顺序跟随投影导入序。
         let memberPhotoIds = Set(members!.map(\.photoId))
         let ungrouped: [SimilarityImage] = PhotoAssets.collapse(
-            try photoRepo.getBySessionProjection(sessionId: sessionId)
+            try await photoStore.getBySessionProjection(sessionId: sessionId)
         )
         .filter { !memberPhotoIds.contains($0.id) }
         .map { SimilarityImage(path: $0.filepath) }
@@ -589,7 +591,7 @@ public final class SimilarityService {
         let existing = try await similarityStore.latestResult(sessionId: sessionId)
         if existing == nil { throw SimilarityServiceError.noResults }
 
-        let photos = PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId))
+        let photos = PhotoAssets.collapse(try await photoStore.getBySessionProjection(sessionId: sessionId))
         let hashRows = try connection.prepare(
             "SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?"
         ).query([.text(sessionId)])

@@ -135,7 +135,7 @@ public protocol CullingWritebackPort {
 
 extension WritebackService: CullingWritebackPort {}
 
-/// TS: CullingPhotoRow（PhotoRow | PhotoPageRow | PhotoProjectionRow 的并集）——
+/// TS: CullingPhotoRow（PhotoRow | PhotoPageRow | PhotoProjection 的并集）——
 /// culling 服务消费的最小行形状：重 JSON 列（metadata/result）为可选，三种投影
 /// 互换（TS 注释：heavy JSON columns 从不在此读取，故可互换）。
 public struct CullingPhotoRow: Equatable, Sendable {
@@ -199,7 +199,7 @@ extension CullingPhotoRow {
         )
     }
 
-    init(row: PhotoProjectionRow) {
+    init(row: PhotoProjection) {
         self.init(
             id: row.id, sessionId: row.sessionId, filepath: row.filepath,
             filename: row.filename, checksum: row.checksum, status: row.status,

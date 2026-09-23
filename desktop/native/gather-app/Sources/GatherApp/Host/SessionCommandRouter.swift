@@ -206,7 +206,7 @@ public final class SessionCommandRouter: CommandRouter {
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let similarityService = SimilarityService(
-            photoRepo: photoRepo,
+            photoStore: photoStore,
             sessionRepo: sessionRepo,
             similarityStore: similarityStore,
             connection: db,
@@ -613,7 +613,7 @@ public final class SessionCommandRouter: CommandRouter {
         case "photo.list":
             let sessionId = try requiredString(params, "sessionId")
             let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
-            // 轻投影列（列名与 TS PhotoProjectionRow 逐字一致，见 PhotoRepo.swift）。
+            // 轻投影列（列名与 TS PhotoProjection 逐字一致，见 PhotoRepo.swift）。
             return .array(photos.map { row in
                 .object([
                     "id": .string(row.id),

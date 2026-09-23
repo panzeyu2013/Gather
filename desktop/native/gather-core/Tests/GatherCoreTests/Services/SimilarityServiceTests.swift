@@ -118,7 +118,7 @@ private func makeHarness(
     try insertPhoto(db, id: "photo-1", sessionId: session.id, filepath: photoPath)
 
     let service = SimilarityService(
-        photoRepo: PhotoRepo(connection: db),
+        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         sessionRepo: sessionRepo,
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
@@ -438,7 +438,7 @@ struct SimilarityGetResultTests {
         try addPhoto(db, "c.jpg", "session", "/shoot/c.jpg", "asset-c")
 
         let service = SimilarityService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             similarityStore: similarityStore,
             connection: db
@@ -508,7 +508,7 @@ struct SimilarityGetResultTests {
             """),
         ])
         let service = SimilarityService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             similarityStore: similarityStore,
             connection: db
@@ -537,7 +537,7 @@ struct SimilarityGetResultTests {
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "p2", "session", "/shoot/p2.jpg", nil)
         let service = SimilarityService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             similarityStore: similarityStore,
             connection: db
@@ -578,7 +578,7 @@ struct SimilarityGetResultTests {
         let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try seedSessionRow(db, "session")
         let service = SimilarityService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             similarityStore: similarityStore,
             connection: db
@@ -704,7 +704,7 @@ struct SimilarityServiceRobustnessTests {
         _ = db
         let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         let service = SimilarityService(
-            photoRepo: PhotoRepo(connection: db),
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionRepo: SessionRepo(connection: db),
             similarityStore: similarityStore,
             connection: db
