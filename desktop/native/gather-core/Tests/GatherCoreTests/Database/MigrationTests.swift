@@ -171,7 +171,7 @@ struct MigrationTests {
     @Test func duplicatePhotoPathsSkipUniqueIndex() throws {
         let db = try DBConnection(path: ":memory:")
         // 与真实启动路径一致：先铺 SCHEMA_SQL（幂等），再灌入重复数据。
-        try db.exec(SchemaSQL.schemaSQL)
+        try db.exec(StoreSchema.schemaSQL)
         try db.exec("""
             INSERT INTO sessions (id, created_at, updated_at) VALUES ('s1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
             INSERT INTO photos (id, session_id, filepath, created_at, updated_at) VALUES

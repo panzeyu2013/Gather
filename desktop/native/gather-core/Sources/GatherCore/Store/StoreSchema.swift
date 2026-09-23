@@ -1,8 +1,11 @@
-// desktop/native/gather-core/Sources/GatherCore/Database/Schema.swift
-// Schema 常量（1.2）：从 TS 侧 desktop/src/main/db/schema.ts 逐条原样复刻，
-// 不做任何语义改写。SCHEMA_SQL/INDEX_SQL 均为幂等 DDL（IF NOT EXISTS），
-// 迁移末尾无条件执行 INDEX_SQL（ADR-006）。
-public enum SchemaSQL {
+// Store/StoreSchema.swift
+// R1：Schema DDL 的唯一来源（从 Database/Schema.swift 迁入，SQL 逐字保留）。
+//
+// 规则（docs/ARCHITECTURE-REWRITE-DESIGN.md §3.3）：
+// - 本文件是 CREATE TABLE / CREATE INDEX 的唯一出处，迁移步骤只做数据变换；
+// - SCHEMA_SQL/INDEX_SQL 均为幂等 DDL（IF NOT EXISTS），迁移末尾无条件执行 INDEX_SQL（ADR-006）；
+// - 结构变化必须同时更新 StoreSchemaTests 的指纹常量。
+public enum StoreSchema {
     public static let schemaSQL = """
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -249,7 +252,11 @@ public enum SchemaSQL {
       thumbnail_path TEXT NOT NULL DEFAULT '',
       matched_person_id TEXT REFERENCES persons(id),
       created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
+      updated_at TEXT NOT NULL DEFAULT '',
+      -- R1：这两列历史上只由 v1 ALTER 添加，schemaSQL 缺失导致新库/存量库结构漂移；
+      -- 追加在末尾以保持与存量库相同的列序（旧 Repo 仍按位置解码）。
+      synced_to_library INTEGER NOT NULL DEFAULT 0,
+      match_confidence REAL
     );
 
     CREATE TABLE IF NOT EXISTS face_cluster_members (
@@ -492,7 +499,6 @@ public enum SchemaSQL {
       photo_path TEXT NOT NULL,
       patch_json TEXT NOT NULL DEFAULT '{}',
       dirty_fields TEXT NOT NULL DEFAULT '[]',
-      source_module TEXT NOT NULL DEFAULT '',
       revision INTEGER NOT NULL DEFAULT 0,
       persisted_revision INTEGER NOT NULL DEFAULT 0,
       base_fingerprint TEXT NOT NULL DEFAULT '',
@@ -503,7 +509,9 @@ public enum SchemaSQL {
       ),
       attempt_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      -- R1：source_module 历史上由 ALTER 追加在末尾，此处保持相同列序（位置解码兼容）。
+      source_module TEXT NOT NULL DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS metadata_outbox_sessions (

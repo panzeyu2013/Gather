@@ -134,7 +134,7 @@ public struct MigrationRunner {
     // ─────────────────────────── 分步迁移（逐级 0→31） ───────────────────────────
 
     private func runMigrationsUnsafe(_ db: DBConnection) throws {
-        try db.exec(SchemaSQL.schemaSQL)
+        try db.exec(StoreSchema.schemaSQL)
 
         var currentVersion = try getSchemaVersion(db)
 
@@ -898,7 +898,7 @@ public struct MigrationRunner {
         // GROUP_CONCAT）与 Culling 首选行子查询。表达式必须与查询字面一致
         // （SQLite 表达式索引要求字面等价，NULLIF 包装否则不匹配 → 全扫）。
         // DROP+CREATE 保证表达式修正后已应用 v32 的库重跑安全。
-        // 新库经 SchemaSQL.indexSQL 直接建（snapshot 已含），存量库在此补。
+        // 新库经 StoreSchema.indexSQL 直接建（snapshot 已含），存量库在此补。
         if currentVersion < 32 {
             try db.exec("""
                 DROP INDEX IF EXISTS idx_photos_asset_group;
@@ -913,7 +913,7 @@ public struct MigrationRunner {
         // similarity_cluster_state 保存每张已哈希照片的分量归属与组种子
         // （group_seed NULL = 未成组），similarity_cluster_meta 保存参数指纹
         // （阈值/组大小/分组模式）+ 版本号 + 连续增量次数（定期全局收敛计数）。
-        // 新库经 SchemaSQL.schemaSQL 直接建，存量库在此补建（IF NOT EXISTS 幂等）。
+        // 新库经 StoreSchema.schemaSQL 直接建，存量库在此补建（IF NOT EXISTS 幂等）。
         if currentVersion < 33 {
             try db.transaction {
                 try db.exec("""
@@ -956,7 +956,7 @@ public struct MigrationRunner {
             throw DBError.message("Unexpected schema version \(currentVersion)")
         }
 
-        try db.exec(SchemaSQL.indexSQL)
+        try db.exec(StoreSchema.indexSQL)
         try ensurePhotoPathUniqueness(db)
         try migratePendingFaceThumbnails(db)
     }
@@ -1035,7 +1035,7 @@ public struct MigrationRunner {
             )
             return
         }
-        try db.exec(SchemaSQL.uniquePhotoPathIndexSQL)
+        try db.exec(StoreSchema.uniquePhotoPathIndexSQL)
     }
 
     // ─────────────────────── 人脸缩略图落盘 ───────────────────────

@@ -18,6 +18,19 @@
 | R0.4 基线采集 | ✅ | core：**789 tests / 106 suites 全绿**（test run 16.1s，Xcode 27.0 / Swift 6.4）；app：**172 tests / 19 suites 全绿**（5.3s）；`build.sh` 组装出 `release/Gather.app`（21.7MB 可执行 + 资源 bundle） |
 | R0.2b 打包脚本修复 | ✅ | `build.sh` 原用 `find ... -path "*/release/gather-app"`，在新 SwiftPM 布局（`.build/out/Products/Release`）下找不到产物；改用 `swift build --show-bin-path` |
 | R0.5 真实库 fixture | ✅ | 本机真实库副本：`/private/tmp/gather-fixture/gather-v33.sqlite`（schema_version **32**、42 表、1 session / 1 photo / 2 faces，sha256 前缀 `c76a5a2a`）——用于 R1「旧库 → 新 Store」升级与读写一致性验证（不入库，含用户数据） |
+
+**R1 进度**（本轮）：
+
+| 任务 | 状态 | 产物/证据 |
+|---|---|---|
+| 基座：SQLiteDatabase actor + 键行解码 | ✅ | `Store/SQLiteDatabase.swift`、`SQLiteValue.swift`、`SQLiteRow.swift`；13 个新测试（多语句 DDL、语句缓存 LRU、事务提交/回滚、嵌套 SAVEPOINT、UNIQUE 结构化错误、close 后拒绝、并发写串行化、busy 传播） |
+| DDL 迁入 Store（单一来源） | ✅ | `git mv Database/Schema.swift → Store/StoreSchema.swift`（SQL 逐字保留）；`Migrations.swift`/`MigrationTests.swift` 引用改 `StoreSchema.*` |
+| 结构漂移门禁 | ✅ | `StoreSchemaTests`：DDL 快路径与 33 步迁移链的列/类型/默认值/索引 SQL/外键指纹必须一致（当前 `d4b1fe3e5a9da77e`） |
+| 修复真实漂移（门禁抓出） | ✅ | ① `face_clusters` 补 `synced_to_library`/`match_confidence`（旧库仅由 v1 ALTER 添加，schemaSQL 缺失）；② `metadata_outbox.source_module` 列序对齐到 ALTER 追加位置（兼容旧 Repo 的位置解码） |
+| StoreMigrator（33 步注册表 + 备份/恢复/不变量） | 待办 | R1 下一步 |
+| 16 个 Store 实现 + 调用点迁移 + 删旧层 | 待办 | R1 后续 |
+
+> 当前 core 全量：**802 tests / 108 suites 全绿**（789 oracle + 13 新增）。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---
