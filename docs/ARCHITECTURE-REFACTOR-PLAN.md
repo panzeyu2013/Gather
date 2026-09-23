@@ -35,10 +35,11 @@
 | Store 实现（16/16） | ✅ | 15 个 Store + DuplicateStore（校验列/视觉 hash 落库、精确分组、分组重建幂等、决议与照片状态重算）；Store 层协议面完成 |
 | R1 收尾①：新组合根 + 类型化 API 基座 | ✅ | `AppContainer`（唯一 `SQLiteDatabase` + 各 Store + `open(path:)` 自动迁移）与 `GatherAPI`（`settings`/`sessions` 命名空间）落地；`SettingsAPI` 取代 SettingsService 的默认值表/白名单/缓存语义（服务静态成员改为委托，单一来源）；API 测试 6 用例（含 `GET api` 打开即迁移、缓存只读语义、跨实例持久化） |
 | R1 收尾②：第一个删除切片（settings） | ✅ | `SettingsService`/`SettingsRepo`/`SettingsServiceTests`/`SettingsRepoTests` 已删除；路由与 app 启动切到 `SettingsAPI`（写路径异步：`settings.set/reset/set_language/template.apply` 迁入 `executeAsync`）+ `SettingsSnapshot`（同步读）；`TemplateService` 改为返回 `TemplateSettingsUpdate`，不再依赖设置存储；app 测试以 `makeTestSettings` 构造依赖 |
-| R1 收尾③：其余切片 | 🔶 | 下一步按同一模板推进（候选：TemplateService/`workspace.*`/smart album 等低耦合切片），每个切片删除旧 Repo + 旧测试并更新 `check-no-legacy.sh` 度量 |
+| R1 收尾③：第二个删除切片（template） | ✅ | `TemplateService` + `TemplateServiceTests` 已删除；`GatherAPI.templates`（CRUD + `applyUpdates` 领域校验）与 `TemplateError` 落地；路由 5 个 template.* 命令迁入 `executeAsync`（经 TemplatesAPI/SettingsAPI）；app 启动改由 `AppContainer`/`GatherAPI` 装配；测试端口至 TemplatesAPITests（2 例）+ TemplateStoreTests（5 例） |
+| R1 收尾④：其余切片 | 🔶 | 下一步：`workspace.*`/smart album/`person.*` 等低耦合读路径切片；每片删除旧 Repo + 旧测试 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
-> 当前 core 全量：**965 tests / 128 suites 全绿**（settings 旧实现与其旧测试同批删除，端口覆盖见 GatherAPITests/SettingsStoreTests）；app 172/19 全绿。
+> 当前 core 全量：**956 tests / 127 suites 全绿**（settings/template 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests）；app 172/19 全绿。门禁度量：Services 27→26、raw SQL outside Store 16→15。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 
 ---

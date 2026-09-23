@@ -88,19 +88,20 @@ struct GatherApp: App {
             // 打开即确保迁移到当前版本；快照供同步世界读取，写路径走异步 API）。
             let storeDatabase = try SQLiteDatabase(path: dbURL.path)
             try await StoreMigrator().migrate(storeDatabase)
-            let settingsAPI = SettingsAPI(store: SQLiteSettingsStore(database: storeDatabase))
-            let settingsSnapshot = await settingsAPI.snapshot()
+            let api = GatherAPI(container: AppContainer(database: storeDatabase))
+            let settingsSnapshot = await api.settings.snapshot()
 
             let router = SessionCommandRouter.makeDefault(
                 db: db,
                 settings: settingsSnapshot,
-                settingsAPI: settingsAPI
+                settingsAPI: api.settings,
+                templates: api.templates
             )
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
             GatherEventCenter.shared.wire(jobService: router.jobService)
             await Self.prepareNativeEmbeddingRerun(
-                router: router, databasePath: dbURL.path, settingsAPI: settingsAPI)
+                router: router, databasePath: dbURL.path, settingsAPI: api.settings)
             let provider = LiveDashboardDataProvider(
                 sessionService: router.sessionService,
                 workspaceStatusService: router.workspaceStatusService,

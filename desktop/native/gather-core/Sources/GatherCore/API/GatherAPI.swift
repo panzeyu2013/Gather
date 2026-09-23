@@ -9,11 +9,13 @@ public struct AppContainer: Sendable {
     public let database: SQLiteDatabase
     public let settings: any SettingsStore
     public let sessions: any SessionStore
+    public let templates: any TemplateStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
         self.settings = SQLiteSettingsStore(database: database)
         self.sessions = SQLiteSessionStore(database: database)
+        self.templates = SQLiteTemplateStore(database: database)
     }
 
     /// 打开（必要时迁移到当前版本）指定路径的库。
@@ -32,11 +34,13 @@ public struct GatherAPI: Sendable {
     public let container: AppContainer
     public let settings: SettingsAPI
     public let sessions: SessionsAPI
+    public let templates: TemplatesAPI
 
     public init(container: AppContainer) {
         self.container = container
         self.settings = SettingsAPI(store: container.settings)
         self.sessions = SessionsAPI(store: container.sessions)
+        self.templates = TemplatesAPI(templates: container.templates, sessions: container.sessions)
     }
 
     public static func open(path: String) async throws -> GatherAPI {
@@ -193,6 +197,93 @@ public extension SettingsAPI {
     /// 读取全量设置（默认值打底 + 已落库值）生成快照。
     func snapshot() async -> SettingsSnapshot {
         SettingsSnapshot(values: await all())
+    }
+}
+
+/// 模板命名空间：CRUD + apply 的领域校验（设置落库由调用方经 SettingsAPI 完成）。
+public struct TemplatesAPI: Sendable {
+    private let templates: any TemplateStore
+    private let sessions: any SessionStore
+
+    init(templates: any TemplateStore, sessions: any SessionStore) {
+        self.templates = templates
+        self.sessions = sessions
+    }
+
+    public func list() async throws -> [TemplateData] {
+        try await templates.list()
+    }
+
+    public func get(id: String) async throws -> TemplateData? {
+        try await templates.get(id: id)
+    }
+
+    public func create(name: String, description: String, config: WorkflowTemplateConfig) async throws -> TemplateData {
+        try await templates.create(name: name, description: description, config: config)
+    }
+
+    public func update(id: String, fields: TemplateUpdateFields) async throws -> TemplateData? {
+        try await templates.update(id: id, fields: fields)
+    }
+
+    public func delete(id: String) async throws {
+        try await templates.delete(id: id)
+    }
+
+    /// TS: template.apply —— 校验模板与会话状态（draft/photos_loaded），
+    /// 返回待写入的设置项（键序固定）；落库由调用方经 SettingsAPI 逐项写入。
+    public func applyUpdates(templateId: String, sessionId: String) async throws -> [TemplateSettingUpdate] {
+        guard let template = try await templates.get(id: templateId) else {
+            throw TemplateError.templateNotFound
+        }
+        guard let session = try await sessions.get(id: sessionId) else {
+            throw TemplateError.sessionNotFound
+        }
+        let allowed = ["draft", "photos_loaded"]
+        guard allowed.contains(session.status) else {
+            throw TemplateError.invalidSessionStatus(session.status)
+        }
+
+        let config = template.config
+        return [
+            TemplateSettingUpdate(key: "default_threshold", value: String(config.similarity.threshold)),
+            TemplateSettingUpdate(key: "default_min_group_size", value: String(config.similarity.minGroupSize)),
+            TemplateSettingUpdate(key: "default_eps", value: String(config.face.eps)),
+            TemplateSettingUpdate(key: "default_min_samples", value: String(config.face.minSamples)),
+            TemplateSettingUpdate(key: "detect_confidence", value: String(config.face.detectorConfidence)),
+        ]
+    }
+}
+
+/// 模板领域错误（TS 消息逐字对齐；原 TemplateServiceError 迁入 API 层）。
+public enum TemplateError: Error, Equatable {
+    /// TS: Error('TEMPLATE_NOT_FOUND')
+    case templateNotFound
+    /// TS: Error('SESSION_NOT_FOUND')
+    case sessionNotFound
+    /// TS: 消息形如 Cannot apply template to session with status "<status>". Expected draft or photos_loaded.
+    case invalidSessionStatus(String)
+}
+
+extension TemplateError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .templateNotFound: "TEMPLATE_NOT_FOUND"
+        case .sessionNotFound: "SESSION_NOT_FOUND"
+        case .invalidSessionStatus(let status):
+            "Cannot apply template to session with status \"\(status)\". Expected draft or photos_loaded."
+        }
+    }
+}
+
+/// TS 错误码映射（invalidSessionStatus 为动态消息，无 GatherErrorCode 对应）。
+extension TemplateError {
+    public var gatherCode: GatherErrorCode? {
+        switch self {
+        case .templateNotFound: .TEMPLATE_NOT_FOUND
+        case .sessionNotFound: .SESSION_NOT_FOUND
+        case .invalidSessionStatus: nil
+        }
     }
 }
 

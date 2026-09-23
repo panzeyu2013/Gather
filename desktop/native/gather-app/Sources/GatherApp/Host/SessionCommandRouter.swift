@@ -89,7 +89,7 @@ public final class SessionCommandRouter: CommandRouter {
     /// 3.0 接线扩展：人脸关键字 / 人物库 / 模板 / 质量 / 索引 / 元数据 / 写回 / 智能相册。
     private let faceKwService: FaceKwService
     private let personRepo: PersonRepo
-    private let templateService: TemplateService
+    private let templates: TemplatesAPI
     private let qualityService: QualityService
     private let indexerService: IndexerService
     private let metadataService: MetadataService
@@ -117,7 +117,7 @@ public final class SessionCommandRouter: CommandRouter {
         assetRepo: AssetRepo,
         faceKwService: FaceKwService,
         personRepo: PersonRepo,
-        templateService: TemplateService,
+        templates: TemplatesAPI,
         qualityService: QualityService,
         indexerService: IndexerService,
         metadataService: MetadataService,
@@ -143,7 +143,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.assetRepo = assetRepo
         self.faceKwService = faceKwService
         self.personRepo = personRepo
-        self.templateService = templateService
+        self.templates = templates
         self.qualityService = qualityService
         self.indexerService = indexerService
         self.metadataService = metadataService
@@ -186,6 +186,7 @@ public final class SessionCommandRouter: CommandRouter {
         db: DBConnection,
         settings: SettingsSnapshot,
         settingsAPI: SettingsAPI,
+        templates: TemplatesAPI,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -340,7 +341,7 @@ public final class SessionCommandRouter: CommandRouter {
             assetRepo: assetRepo,
             faceKwService: resolvedFaceKwService,
             personRepo: personRepo,
-            templateService: TemplateService(connection: db),
+            templates: templates,
             qualityService: QualityService(
                 photoRepo: photoRepo,
                 connection: db,
@@ -1035,59 +1036,6 @@ public final class SessionCommandRouter: CommandRouter {
                 "photos": try .array(result.photos.map { try GatherCore.JSONValue(from: personPhotoItem($0)) }),
                 "total": .number(Double(result.total)),
             ])
-
-        // ── template.*（TS 源 template.ipc.ts）──
-
-        case "template.create":
-            // template.ipc.ts:7-18 —— config 非对象抛 TEMPLATE_CONFIG_INVALID。
-            let name = try validatedString(params, "name")
-            let description = try optionalString(params, "description") ?? ""
-            guard let configValue = params["config"], configValue.isObject else {
-                throw BridgeError.badParams("TEMPLATE_CONFIG_INVALID")
-            }
-            let config = try decodeJSON(WorkflowTemplateConfig.self, from: configValue)
-            let template = try templateService.create(name: name, description: description, config: config)
-            return try GatherCore.JSONValue(from: template)
-
-        case "template.list":
-            return try GatherCore.JSONValue(from: templateService.list())
-
-        case "template.get":
-            let templateId = try requiredString(params, "templateId")
-            guard let template = try templateService.get(id: templateId) else {
-                throw BridgeError.notFound("TEMPLATE_NOT_FOUND")
-            }
-            return try GatherCore.JSONValue(from: template)
-
-        case "template.update":
-            // template.ipc.ts:37-50 —— 仅更新传入字段；description 强制 String 化。
-            let templateId = try requiredString(params, "templateId")
-            var fields = TemplateUpdateFields()
-            if let name = try optionalString(params, "name") {
-                fields.name = name
-            }
-            if let description = params["description"] {
-                fields.description = description.stringValue ?? String(describing: description)
-            }
-            if let configValue = params["config"] {
-                guard configValue.isObject else {
-                    throw BridgeError.badParams("TEMPLATE_CONFIG_INVALID")
-                }
-                fields.config = try decodeJSON(WorkflowTemplateConfig.self, from: configValue)
-            }
-            let template = try templateService.update(id: templateId, fields: fields)
-            return try GatherCore.JSONValue(from: template)
-
-        case "template.delete":
-            // template.ipc.ts:52-60 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("TEMPLATE_DELETE_CONFIRM_REQUIRED")
-            }
-            let templateId = try requiredString(params, "templateId")
-            try templateService.delete(id: templateId)
-            return .object(["done": .bool(true)])
-
-        // ── quality.*（TS 源 quality.ipc.ts）──
 
         case "quality.get":
             // quality.ipc.ts:25-30 —— photoIds 可选（validateStringArray 语义）。
@@ -2400,7 +2348,105 @@ public final class SessionCommandRouter: CommandRouter {
                 completion(WebResponse(ok: false, error: Self.errorMessage(error)))
             }
 
-        // ── template.*（apply 写设置：异步路径）──
+        // ── template.*（R1/R5：经 TemplatesAPI + SettingsAPI，异步路径）──
+
+        case "template.create":
+            do {
+                // template.ipc.ts:7-18 —— config 非对象抛 TEMPLATE_CONFIG_INVALID。
+                let name = try validatedString(params, "name")
+                let description = try optionalString(params, "description") ?? ""
+                guard let configValue = params["config"], configValue.isObject else {
+                    throw BridgeError.badParams("TEMPLATE_CONFIG_INVALID")
+                }
+                let config = try decodeJSON(WorkflowTemplateConfig.self, from: configValue)
+                Task {
+                    do {
+                        let template = try await templates.create(
+                            name: name, description: description, config: config)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: template)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "template.list":
+            Task {
+                do {
+                    let list = try await templates.list()
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: list)))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "template.get":
+            do {
+                let templateId = try requiredString(params, "templateId")
+                Task {
+                    do {
+                        guard let template = try await templates.get(id: templateId) else {
+                            throw BridgeError.notFound("TEMPLATE_NOT_FOUND")
+                        }
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: template)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "template.update":
+            do {
+                // template.ipc.ts:37-50 —— 仅更新传入字段；description 强制 String 化。
+                let templateId = try requiredString(params, "templateId")
+                var fields = TemplateUpdateFields()
+                if let name = try optionalString(params, "name") {
+                    fields.name = name
+                }
+                if let description = params["description"] {
+                    fields.description = description.stringValue ?? String(describing: description)
+                }
+                if let configValue = params["config"] {
+                    guard configValue.isObject else {
+                        throw BridgeError.badParams("TEMPLATE_CONFIG_INVALID")
+                    }
+                    fields.config = try decodeJSON(WorkflowTemplateConfig.self, from: configValue)
+                }
+                Task {
+                    do {
+                        guard let template = try await templates.update(id: templateId, fields: fields) else {
+                            throw BridgeError.notFound("TEMPLATE_NOT_FOUND")
+                        }
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: template)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "template.delete":
+            do {
+                guard confirmed(params) else {
+                    throw BridgeError.badParams("TEMPLATE_DELETE_CONFIRM_REQUIRED")
+                }
+                let templateId = try requiredString(params, "templateId")
+                Task {
+                    do {
+                        try await templates.delete(id: templateId)
+                        completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
 
         case "template.apply":
             do {
@@ -2409,9 +2455,10 @@ public final class SessionCommandRouter: CommandRouter {
                 }
                 let templateId = try requiredString(params, "templateId")
                 let sessionId = try requiredString(params, "sessionId")
-                let updates = try templateService.settingsUpdates(templateId: templateId, sessionId: sessionId)
                 Task {
                     do {
+                        let updates = try await templates.applyUpdates(
+                            templateId: templateId, sessionId: sessionId)
                         for update in updates {
                             try await settingsAPI.set(update.key, value: update.value)
                         }
@@ -3094,7 +3141,7 @@ public final class SessionCommandRouter: CommandRouter {
             return duplicateError.description
         }
         if let faceKwError = error as? FaceKwServiceError { return faceKwError.description }
-        if let templateError = error as? TemplateServiceError { return templateError.description }
+        if let templateError = error as? TemplateError { return templateError.description }
         if let qualityError = error as? QualityServiceError { return qualityError.description }
         if let indexerError = error as? IndexerServiceError { return indexerError.description }
         if let writebackError = error as? WritebackServiceError { return writebackError.description }
