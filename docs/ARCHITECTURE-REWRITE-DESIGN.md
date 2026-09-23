@@ -192,3 +192,23 @@ public protocol PhotoStore: Sendable {
 2. asset_id='' 的规范化：迁移 v-next 是否把空串统一为 NULL（与 ExportService 分组缺陷同源）。
 3. synchronous 默认值：保持 FULL（本稿默认）还是切 NORMAL（性能/持久性取舍）。
 4. ImageCache 去留：旧磁盘缩略图缓存无生产调用；R1 删除还是由 Store 重新承载（对应 R7 裁决）。
+
+## R2 服务 → async Store 迁移模板（由 R1 五个删除切片固化）
+
+每个子系统按同一顺序推进，保证「同一合并单元内删除旧实现」：
+
+1. **Store 落地**：新 `Store/XxxStore.swift`（actor/无状态 Sendable struct + SQLiteDatabase），
+   从旧 Repo/Service 抽出 SQL，记录类型用 Decodable + snake_case CodingKeys；
+   旧 Repo 中仍被外部引用的纯 DTO 迁入 Store（单一来源）。
+2. **API 投影**：在 `API/GatherAPI.swift` 增加命名空间（如 `templates/albums/persons/workspace`），
+   把旧 Service 的领域编排与 Protocol DTO 投影搬进 API 层；错误类型随之迁入（如 TemplateError）。
+3. **调用点异步化**：
+   - 同步世界（router 的 `execute`、旧 Service 注入的闭包）改为 async；
+   - SessionCommandRouter：把命令 case 迁入 `executeAsync`，保留参数校验与错误映射；
+   - 顺带移除 `awaitSync` 桥（度量递减）。
+4. **同批删除**：旧 Repo/Service 与其旧测试在同一提交删除；若旧测试覆盖的语义未被端口测试覆盖，
+   先把等价断言补进新测试再删。若旧测试文件里混有别的子系统的遗留套件，一并按覆盖情况裁决。
+5. **度量与文档**：运行 `scripts/check-no-legacy.sh`，更新本文件与
+   `docs/ARCHITECTURE-REFACTOR-PLAN.md`（进度表 + 旧层文件计数）。
+
+已完成切片：settings、template、smart album、workspace、person（以及 face 正在推进）。

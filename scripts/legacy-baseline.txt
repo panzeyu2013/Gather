@@ -1,0 +1,13 @@
+# 旧层度量上限（ratchet）：只允许下降；下降后请同步本文件。
+# 由 scripts/check-no-legacy.sh 校验（count > baseline 即失败）。
+awaitSync semaphore bridge (R5)=2
+SessionCommandRouter (R5)=17
+Services layer (R2)=25
+StubCommandRouter (R5)=7
+raw SQL outside Store (R1)=14
+unchecked Sendable (R1/R2)=22
+dual-track l10n zhDesc/enDesc (R6)=1
+batchAsync copies (R2)=4
+legacy DB layer files (R1)=17
+legacy Repositories files (R1)=14
+legacy Repo test files (R1)=14

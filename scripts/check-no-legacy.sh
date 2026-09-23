@@ -12,6 +12,9 @@ fail=0
 enforced_rules=0
 tracked_rules=0
 
+METRICS_FILE="$(mktemp)"
+trap 'rm -f "$METRICS_FILE"' EXIT
+
 # count_matches <ere-pattern> <path> <include-glob>
 count_matches() {
   local pattern="$1" path="$2" include="$3"
@@ -46,6 +49,7 @@ tracked() {
   local n
   n=$(count_matches "$pattern" "$path" "$include")
   printf 'meter[tracked ] %-38s %s file(s)\n' "$name" "$n"
+  printf '%s\t%s\n' "$name" "$n" >> "$METRICS_FILE"
 }
 
 APP="desktop/native/gather-app"
@@ -76,6 +80,28 @@ tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepa
 tracked "unchecked Sendable (R1/R2)"            '@unchecked Sendable'              "$NATIVE" "*.swift"
 tracked "dual-track l10n zhDesc/enDesc (R6)"    'zhDesc|enDesc'                    "$APP"    "*.swift"
 tracked "batchAsync copies (R2)"                'func batchAsync'                  "$CORE"   "*.swift"
+tracked "legacy DB layer files (R1)"            '.'  "$CORE/Sources/GatherCore/Database" "*.swift"
+tracked "legacy Repositories files (R1)"        '.'  "$CORE/Sources/GatherCore/Database/Repositories" "*.swift"
+tracked "legacy Repo test files (R1)"           '.'  "$CORE/Tests/GatherCoreTests/Database" "*.swift"
+
+# ---------------------------------------------------------------- ratchet
+# 旧层文件数只允许下降：baseline 是上限；上升即失败，下降时提示更新 baseline。
+BASELINE="scripts/legacy-baseline.txt"
+if [[ -f "$BASELINE" ]]; then
+  while IFS=$'\t' read -r name count; do
+    [[ -z "$name" ]] && continue
+    limit=$(awk -F'=' -v key="$name" '$1 == key { print $2 }' "$BASELINE")
+    [[ -z "$limit" ]] && continue
+    if (( count > limit )); then
+      echo "LEGACY[ratchet] $name: $count > baseline $limit（旧层文件数不允许增长）" >&2
+      fail=1
+    elif (( count < limit )); then
+      echo "note [ratchet] $name: $count < baseline $limit（旧层已收缩，请同步 scripts/legacy-baseline.txt）"
+    fi
+  done < "$METRICS_FILE"
+else
+  echo "note [ratchet] 未找到 $BASELINE，仅打印度量"
+fi
 
 echo "----"
 echo "enforced rules: $enforced_rules, tracked metrics: $tracked_rules"

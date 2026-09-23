@@ -39,7 +39,8 @@
 | R1 收尾④：第三个删除切片（smart album） | ✅ | `SmartAlbumRepo` + `SmartAlbumRepoTests` 已删除；`GatherAPI.albums`（AlbumsAPI）落地；路由 `album.*`（create/list/get/update/delete/get_photos）迁入 `executeAsync`（保留 ALBUM_NOT_FOUND 与确认消息语义）；`LibraryViewModel` 相册路径改 async（provider 经 `executeAsync`，`reloadSupport` 改 async） |
 | R1 收尾⑤：第四个删除切片（workspace） | ✅ | `WorkspaceStatusService` + 26 个旧测试已删除；路由 `workspace.status` 迁入 `executeAsync`（经 WorkspaceAPI），`LiveDashboardDataProvider`/`DashboardViewModel` 改 async；关键语义端口至 WorkspaceAPITests（7 例） |
 | R1 收尾⑥：第五个删除切片（person） | ✅ | `FaceKwService` 的 4 个 person 路径方法改 async（经 `PersonStore`，best-effort 语义保持）；路由 `fkw.bind/unbind/merge/remove_member` 迁入 `executeAsync`（`fkw.unbind` 顺带移除 `awaitSync`）；`PersonRepo` + `PersonRepoTests` + FaceKw 测试文件内遗留的 PersonRepo 套件已删除（语义由 PersonStoreTests/PersonStoreDetailTests 覆盖）；FaceKw 测试改文件库双连接 |
-| R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 14 文件、Services 内联 SQL 14 文件 |
+| R1 收尾⑦：第六个切片（face，进行中） | 🔶 | 由子代理执行 `FaceRepo → FaceStore` 全量替换（FaceKwService/router face.*、fkw.*/相关测试），完成后删除 `FaceRepo.swift` + `FaceRepoTests.swift`，主代理负责验证与提交 |
+| 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
 | R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
