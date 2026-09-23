@@ -84,6 +84,7 @@ private func waitUntil(
 
 private struct SimilarityHarness {
     let db: DBConnection
+    let dbPath: String
     let service: SimilarityService
     let sessionRepo: SessionRepo
     let sessionId: String
@@ -100,7 +101,10 @@ private func makeHarness(
     },
     settings: [String: Double] = [:]
 ) throws -> SimilarityHarness {
-    let db = try makeMigratedDB()
+    let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "Run", source: "folder")
     let dir = try makeTempDir()
@@ -110,14 +114,15 @@ private func makeHarness(
     let service = SimilarityService(
         photoRepo: PhotoRepo(connection: db),
         sessionRepo: sessionRepo,
-        similarityResultRepo: SimilarityResultRepo(connection: db),
-        clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+        similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
         thumbnailProvider: thumbnail,
         clusterProvider: cluster
     )
-    return SimilarityHarness(db: db, service: service, sessionRepo: sessionRepo, sessionId: session.id, photoPath: photoPath)
+    return SimilarityHarness(
+        db: db, dbPath: dbPath, service: service,
+        sessionRepo: sessionRepo, sessionId: session.id, photoPath: photoPath)
 }
 
 private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
@@ -413,8 +418,12 @@ struct SimilarityGetResultTests {
     }
 
     @Test("assembles groups from the members table without parsing groups_json")
-    func assemblesGroupsFromMembers() throws {
-        let db = try makeMigratedDB()
+    func assemblesGroupsFromMembers() async throws {
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
+        try MigrationRunner().migrate(db)
+        let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "a.raw", "session", "/shoot/a.RAW", "asset-a")
         try addPhoto(db, "a.jpg", "session", "/shoot/a.jpg", "asset-a")
@@ -422,17 +431,15 @@ struct SimilarityGetResultTests {
         try addPhoto(db, "c.raw", "session", "/shoot/c.RAW", "asset-c")
         try addPhoto(db, "c.jpg", "session", "/shoot/c.jpg", "asset-c")
 
-        let resultRepo = SimilarityResultRepo(connection: db)
         let service = SimilarityService(
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
-            similarityResultRepo: resultRepo,
-            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+            similarityStore: similarityStore,
             connection: db
         )
 
         // 成员按序写入：组 0 成员在前，组 1 在后。
-        _ = try resultRepo.replace(
+        _ = try await similarityStore.replaceResult(
             sessionId: "session",
             // 垃圾 JSON 证明成员路径从不解析 groups_json。
             groupsJson: "NOT VALID JSON",
@@ -442,13 +449,13 @@ struct SimilarityGetResultTests {
             threshold: 10,
             minGroupSize: 2,
             memberships: [
-                (photoId: "p1", groupIndex: 0),
-                (photoId: "a.raw", groupIndex: 0),
-                (photoId: "s", groupIndex: 1),
+                SimilarityMembership(photoId: "p1", groupIndex: 0),
+                SimilarityMembership(photoId: "a.raw", groupIndex: 0),
+                SimilarityMembership(photoId: "s", groupIndex: 1),
             ]
         )
 
-        let result = try service.getResult(sessionId: "session")
+        let result = try await service.getResult(sessionId: "session")
 
         #expect(result != nil)
         #expect(result!.groups.map(\.id) == [1, 2])
@@ -473,8 +480,12 @@ struct SimilarityGetResultTests {
     }
 
     @Test("keeps the legacy groups_json path for rows without members")
-    func legacyGroupsJsonPath() throws {
-        let db = try makeMigratedDB()
+    func legacyGroupsJsonPath() async throws {
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
+        try MigrationRunner().migrate(db)
+        let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         _ = try db.prepare("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
@@ -493,12 +504,11 @@ struct SimilarityGetResultTests {
         let service = SimilarityService(
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
-            similarityResultRepo: SimilarityResultRepo(connection: db),
-            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+            similarityStore: similarityStore,
             connection: db
         )
 
-        let result = try service.getResult(sessionId: "session")
+        let result = try await service.getResult(sessionId: "session")
 
         // 旧行（无成员）逐字解析 groups_json。
         #expect(result != nil)
@@ -512,69 +522,73 @@ struct SimilarityGetResultTests {
     }
 
     @Test("resolves threshold tiers without regressing the default row")
-    func resolvesThresholdTiers() throws {
-        let db = try makeMigratedDB()
+    func resolvesThresholdTiers() async throws {
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
+        try MigrationRunner().migrate(db)
+        let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "p2", "session", "/shoot/p2.jpg", nil)
-        let resultRepo = SimilarityResultRepo(connection: db)
         let service = SimilarityService(
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
-            similarityResultRepo: resultRepo,
-            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+            similarityStore: similarityStore,
             connection: db
         )
 
-        _ = try resultRepo.replace(
+        _ = try await similarityStore.replaceResult(
             sessionId: "session", groupsJson: "{\"groups\":[]}",
             statsJson: "{\"totalGroups\":1,\"totalUngrouped\":1,\"threshold\":10,\"minGroupSize\":2,\"groupingMode\":\"global\"}",
             threshold: 10, minGroupSize: 2,
-            memberships: [(photoId: "p1", groupIndex: 0)]
+            memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0)]
         )
-        _ = try resultRepo.replaceForThreshold(
+        _ = try await similarityStore.replaceResultForThreshold(
             sessionId: "session", groupsJson: "{\"groups\":[]}",
             statsJson: "{\"totalGroups\":1,\"totalUngrouped\":1,\"threshold\":6,\"minGroupSize\":2,\"groupingMode\":\"global\",\"precomputed\":true}",
             threshold: 6, minGroupSize: 2,
-            memberships: [(photoId: "p2", groupIndex: 0)]
+            memberships: [SimilarityMembership(photoId: "p2", groupIndex: 0)]
         )
 
-        let main = try service.getResult(sessionId: "session")
+        let main = try await service.getResult(sessionId: "session")
         #expect(main?.stats.threshold == 10)
         #expect(main?.stats.precomputed == false)
         #expect(main?.groups[0].images.map(\.path) == ["/shoot/p1.jpg"])
 
-        let tier = try service.getResult(sessionId: "session", threshold: 6)
+        let tier = try await service.getResult(sessionId: "session", threshold: 6)
         #expect(tier?.stats.threshold == 6)
         #expect(tier?.stats.precomputed == true)
         #expect(tier?.groups[0].images.map(\.path) == ["/shoot/p2.jpg"])
 
-        #expect(try service.getResult(sessionId: "session", threshold: 99) == nil)
+        #expect(try await service.getResult(sessionId: "session", threshold: 99) == nil)
     }
 
     @Test("hasResult stays a cheap existence check")
-    func hasResultExistence() throws {
-        let db = try makeMigratedDB()
+    func hasResultExistence() async throws {
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
+        let db = try DBConnection(path: dbPath)
+        try MigrationRunner().migrate(db)
+        let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         try seedSessionRow(db, "session")
-        let resultRepo = SimilarityResultRepo(connection: db)
         let service = SimilarityService(
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
-            similarityResultRepo: resultRepo,
-            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+            similarityStore: similarityStore,
             connection: db
         )
-        #expect(try service.hasResult(sessionId: "session") == false)
-        _ = try resultRepo.replace(
+        #expect(try await service.hasResult(sessionId: "session") == false)
+        _ = try await similarityStore.replaceResult(
             sessionId: "session", groupsJson: "{\"groups\":[]}",
             statsJson: "{}", threshold: 10, minGroupSize: 2, memberships: []
         )
-        #expect(try service.hasResult(sessionId: "session") == true)
-        _ = try resultRepo.replaceForThreshold(
+        #expect(try await service.hasResult(sessionId: "session") == true)
+        _ = try await similarityStore.replaceResultForThreshold(
             sessionId: "session", groupsJson: "{\"groups\":[]}",
             statsJson: "{\"precomputed\":true}", threshold: 6, minGroupSize: 2, memberships: []
         )
-        #expect(try service.hasResult(sessionId: "session", threshold: 6) == true)
-        #expect(try service.hasResult(sessionId: "session", threshold: 7) == false)
+        #expect(try await service.hasResult(sessionId: "session", threshold: 6) == true)
+        #expect(try await service.hasResult(sessionId: "session", threshold: 7) == false)
     }
 }
 
@@ -672,30 +686,33 @@ struct SimilarityServiceRobustnessTests {
     }
 
     @Test("getResult throws on corrupt stored stats like TS JSON.parse")
-    func getResultThrowsOnCorruptStats() throws {
+    func getResultThrowsOnCorruptStats() async throws {
         let db = try makeMigratedDB()
         try seedSessionRow(db, "session")
         _ = try db.prepare("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
             VALUES ('session', '{"groups":[]}', 'NOT VALID JSON', 10, 2, '2025-01-01T00:00:00.000Z')
           """).run()
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-similarity-svc-\(UUID().uuidString).sqlite").path
+        _ = db
+        let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         let service = SimilarityService(
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: SessionRepo(connection: db),
-            similarityResultRepo: SimilarityResultRepo(connection: db),
-            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+            similarityStore: similarityStore,
             connection: db
         )
 
-        #expect(throws: (any Error).self) {
-            try service.getResult(sessionId: "session")
+        await #expect(throws: (any Error).self) {
+            try await service.getResult(sessionId: "session")
         }
     }
 
     @Test("recluster rejects non-integer thresholds like TS")
     func reclusterRejectsFractionalThreshold() async throws {
         let harness = try makeHarness()
-        _ = try SimilarityResultRepo(connection: harness.db).replace(
+        _ = try await SQLiteSimilarityStore(database: try SQLiteDatabase(path: harness.dbPath)).replaceResult(
             sessionId: harness.sessionId, groupsJson: "{\"groups\":[]}",
             statsJson: "{}", threshold: 10, minGroupSize: 2, memberships: []
         )

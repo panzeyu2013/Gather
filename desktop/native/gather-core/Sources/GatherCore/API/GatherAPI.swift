@@ -18,6 +18,7 @@ public struct AppContainer: Sendable {
     public let faces: any FaceStore
     public let metadata: any MetadataStore
     public let culling: any CullingStore
+    public let similarity: any SimilarityStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
@@ -32,6 +33,7 @@ public struct AppContainer: Sendable {
         self.faces = SQLiteFaceStore(database: database)
         self.metadata = SQLiteMetadataStore(database: database)
         self.culling = SQLiteCullingStore(database: database)
+        self.similarity = SQLiteSimilarityStore(database: database)
     }
 
     /// 打开（必要时迁移到当前版本）指定路径的库。

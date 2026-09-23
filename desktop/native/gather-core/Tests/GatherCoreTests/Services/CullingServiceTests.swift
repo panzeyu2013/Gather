@@ -175,7 +175,7 @@ private struct CullingHarness {
     let sessionId: String
     let service: CullingService
     let photoRepo: PhotoRepo
-    let similarityRepo: SimilarityResultRepo
+    let similarityStore: SQLiteSimilarityStore
     let metadataStore: SQLiteMetadataStore
     let outboxRepo: MetadataOutboxRepo
     let cullingStore: SQLiteCullingStore
@@ -201,8 +201,8 @@ private func requireCache(_ harness: CullingHarness, _ photoId: String) async th
 }
 
 /// 最新相似度结果行的真实 id（TS mock 常量 9 在真实库是自增 id）。
-private func latestResultId(_ harness: CullingHarness) throws -> Int64 {
-    let row = try harness.similarityRepo.getLatest(sessionId: "session")
+private func latestResultId(_ harness: CullingHarness) async throws -> Int64 {
+    let row = try await harness.similarityStore.latestResult(sessionId: "session")
     return try #require(row).id
 }
 
@@ -229,8 +229,8 @@ private func makeHarness(
     let storeMetadata = SQLiteMetadataStore(database: try SQLiteDatabase(path: dbPath))
     let service = CullingService(
         photoRepo: PhotoRepo(connection: db),
-        similarityResultRepo: SimilarityResultRepo(connection: db),
         metadataOutboxRepo: outboxRepo,
+        similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
         metadataSync: sync,
         metadataMutations: mutations,
@@ -242,7 +242,7 @@ private func makeHarness(
     return CullingHarness(
         db: db, sessionId: "session", service: service,
         photoRepo: PhotoRepo(connection: db),
-        similarityRepo: SimilarityResultRepo(connection: db),
+        similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         metadataStore: storeMetadata,
         outboxRepo: outboxRepo,
         cullingStore: cullingStore,
@@ -287,10 +287,10 @@ private func addVariantPair(_ db: DBConnection, assetId: String) throws {
 /// 相似度结果（成员表 + stats_json.totalGroups）。
 private func addSimilarityResult(
     _ harness: CullingHarness,
-    memberships: [(photoId: String, groupIndex: Int)],
+    memberships: [SimilarityMembership],
     totalGroups: Int = 1
-) throws {
-    _ = try harness.similarityRepo.replace(
+) async throws {
+    _ = try await harness.similarityStore.replaceResult(
         sessionId: harness.sessionId,
         groupsJson: "{\"groups\":[]}",
         statsJson: "{\"totalGroups\":\(totalGroups)}",
@@ -486,7 +486,7 @@ struct CullingDecideTests {
     func ipcStyleUpdateWithContext() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        let context = try harness.service.getUpdateContext(sessionId: "session")
+        let context = try await harness.service.getUpdateContext(sessionId: "session")
 
         let first = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
@@ -514,8 +514,8 @@ struct CullingBatchTests {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
-        try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0)])
-        let resultId = try latestResultId(harness)
+        try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)])
+        let resultId = try await latestResultId(harness)
         let groupId = "\(resultId):0"
 
         try await harness.service.batchDecide(sessionId: "session", photoIds: ["p1", "p2"], decision: .keep)
@@ -580,12 +580,12 @@ struct CullingBatchTests {
     func decideGroupKeepsKRejectsRest() async throws {
         let harness = try makeHarness()
         for id in ["p1", "p2", "p3", "p4"] { try addPhoto(harness.db, id: id) }
-        try addSimilarityResult(
+        try await addSimilarityResult(
             harness,
-            memberships: [("p1", 0), ("p2", 0), ("p3", 0), ("p4", 0)]
+            memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0), SimilarityMembership(photoId: "p3", groupIndex: 0), SimilarityMembership(photoId: "p4", groupIndex: 0)]
         )
 
-        let resultId = try latestResultId(harness)
+        let resultId = try await latestResultId(harness)
         let groupId = "\(resultId):0"
         let results = try await harness.service.decideSimilarityGroup(
             sessionId: "session", groupId: groupId, keepPhotoIds: ["p1", "p3"]
@@ -939,7 +939,7 @@ struct CullingSummaryResetTests {
         try addDecision(harness.db, photoId: "p3", decision: "reject")
         try await harness.metadataStore.updateRating(photoId: "p4", rating: 3)
         try await harness.metadataStore.updateLabel(photoId: "p4", label: "Red")
-        try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0)], totalGroups: 3)
+        try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0)], totalGroups: 3)
 
         let summary = try await harness.service.getSummary(sessionId: "session")
 
@@ -1004,14 +1004,14 @@ struct CullingSummaryResetTests {
     func groupsCountsAndOrder() async throws {
         let harness = try makeHarness()
         for id in ["p1", "p2", "p3", "p4", "p5", "p6"] { try addPhoto(harness.db, id: id) }
-        try addSimilarityResult(
+        try await addSimilarityResult(
             harness,
-            memberships: [("p1", 1), ("p2", 1), ("p3", 1), ("p4", 0), ("p5", 0)]
+            memberships: [SimilarityMembership(photoId: "p1", groupIndex: 1), SimilarityMembership(photoId: "p2", groupIndex: 1), SimilarityMembership(photoId: "p3", groupIndex: 1), SimilarityMembership(photoId: "p4", groupIndex: 0), SimilarityMembership(photoId: "p5", groupIndex: 0)]
         )
         try addDecision(harness.db, photoId: "p1", decision: "keep")
         try addDecision(harness.db, photoId: "p2", decision: "reject")
 
-        let resultId = try latestResultId(harness)
+        let resultId = try await latestResultId(harness)
         let groups = try await harness.service.getGroups(sessionId: "session")
 
         #expect(groups.count == 2)
@@ -1042,18 +1042,18 @@ struct CullingSummaryResetTests {
         await #expect(throws: CullingServiceError.noSimilarity) {
             try await harness.service.decideSimilarityGroup(sessionId: "session", groupId: "1:0", keepPhotoIds: ["p1"])
         }
-        try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0)])
-        let firstId = try latestResultId(harness)
+        try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0)])
+        let firstId = try await latestResultId(harness)
         await #expect(throws: CullingServiceError.groupTooSmall) {
             try await harness.service.decideSimilarityGroup(sessionId: "session", groupId: "\(firstId):0", keepPhotoIds: ["p1"])
         }
         try addPhoto(harness.db, id: "p2")
-        _ = try harness.similarityRepo.replace(
+        _ = try await harness.similarityStore.replaceResult(
             sessionId: "session", groupsJson: "{\"groups\":[]}", statsJson: "{}",
             threshold: 10, minGroupSize: 2,
-            memberships: [(photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0)]
+            memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)]
         )
-        let secondId = try latestResultId(harness)
+        let secondId = try await latestResultId(harness)
         let groupId = "\(secondId):0"
         // keep 数量非法（空/全量/组外照片）。
         await #expect(throws: CullingServiceError.keepNotInGroup) {
@@ -1354,8 +1354,8 @@ struct CullingPaginationTests {
     func similarityGroupPagePushdown() async throws {
         let harness = try makeHarness()
         for id in ["p1", "p2"] { try addPhoto(harness.db, id: id) }
-        try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0)])
-        let groupId = "\(try latestResultId(harness)):0"
+        try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)])
+        let groupId = "\(try await latestResultId(harness)):0"
         let dbgResult = try harness.db.prepare("SELECT id FROM similarity_results").query()
         let dbgMembers = try harness.db.prepare("SELECT result_id, photo_id, group_index FROM similarity_result_members").query()
         let dbgPhotos = try harness.db.prepare("SELECT id, rowid FROM photos").query()
@@ -1380,7 +1380,7 @@ struct CullingPaginationTests {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
-        try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0)])
+        try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)])
 
         let page = try await harness.service.listPage(
             sessionId: "session", scope: .similarityGroup, requestedGroupId: "stale-group-id"
@@ -1394,16 +1394,16 @@ struct CullingPaginationTests {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
-        _ = try harness.similarityRepo.replace(
+        _ = try await harness.similarityStore.replaceResult(
             sessionId: "session", groupsJson: "{\"groups\":[]}",
             statsJson: "{\"totalGroups\":1}", threshold: 10, minGroupSize: 2,
-            memberships: [(photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0)]
+            memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)]
         )
         // 阈值层后插：裸 MAX(id) 会选中它；谓词必须回退到主分析行成员。
-        _ = try harness.similarityRepo.replaceForThreshold(
+        _ = try await harness.similarityStore.replaceResultForThreshold(
             sessionId: "session", groupsJson: "{\"groups\":[]}",
             statsJson: "{\"totalGroups\":1,\"precomputed\":true}", threshold: 6, minGroupSize: 2,
-            memberships: [(photoId: "p2", groupIndex: 0)]
+            memberships: [SimilarityMembership(photoId: "p2", groupIndex: 0)]
         )
 
         let page = try await harness.service.listPage(sessionId: "session", scope: .similarityGroup)
@@ -1551,7 +1551,7 @@ struct CullingEnrichmentTests {
         try insertAssetFile(harness.db, id: "af-2", normalizedPath: "/shoot/p2.jpg")
         try addPhoto(harness.db, id: "p1", assetFileId: "af-1")
         try addPhoto(harness.db, id: "p2", assetFileId: "af-2")
-        try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0)])
+        try await addSimilarityResult(harness, memberships: [SimilarityMembership(photoId: "p1", groupIndex: 0), SimilarityMembership(photoId: "p2", groupIndex: 0)])
         func analysis(_ photoId: String, _ assetFileId: String, _ score: Double) throws {
             _ = try harness.db.prepare("""
                 INSERT INTO asset_analysis (photo_id, asset_file_id, analysis_type, result_json,
@@ -1570,7 +1570,7 @@ struct CullingEnrichmentTests {
         let byId = Dictionary(uniqueKeysWithValues: assets.map { ($0.photo.id, $0) })
         #expect(byId["p2"]?.quality?.relativeRank == 1)
         #expect(byId["p1"]?.quality?.relativeRank == 2)
-        #expect(byId["p1"]?.similarityGroupId == "\(try latestResultId(harness)):0")
+        #expect(byId["p1"]?.similarityGroupId == "\(try await latestResultId(harness)):0")
     }
 
     @Test("metadataSource 从 outbox patch 解析；conflict 状态驱动 metadataConflictOnly 过滤")

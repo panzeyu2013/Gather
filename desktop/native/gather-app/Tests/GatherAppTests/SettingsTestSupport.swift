@@ -18,7 +18,8 @@ func makeTestSettings(
     personStore: any PersonStore,
     faceStore: any FaceStore,
     metadataStore: any MetadataStore,
-    cullingStore: any CullingStore
+    cullingStore: any CullingStore,
+    similarityStore: any SimilarityStore
 ) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-app-settings-\(UUID().uuidString).sqlite").path
@@ -36,6 +37,7 @@ func makeTestSettings(
         api.container.persons,
         api.container.faces,
         api.container.metadata,
-        api.container.culling
+        api.container.culling,
+        api.container.similarity
     )
 }

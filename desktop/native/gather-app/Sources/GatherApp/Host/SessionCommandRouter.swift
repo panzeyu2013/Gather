@@ -194,18 +194,17 @@ public final class SessionCommandRouter: CommandRouter {
         faceStore: any FaceStore,
         metadataStore: any MetadataStore,
         cullingStore: any CullingStore,
+        similarityStore: any SimilarityStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
     ) -> SessionCommandRouter {
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
-        let similarityResultRepo = SimilarityResultRepo(connection: db)
         let similarityService = SimilarityService(
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
-            similarityResultRepo: similarityResultRepo,
-            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+            similarityStore: similarityStore,
             connection: db,
             getNumber: { key, defaultValue in
                 settings.number(key, default: defaultValue)
@@ -292,8 +291,8 @@ public final class SessionCommandRouter: CommandRouter {
         // CullingWritebackPort 扩展即上述类型，见 CullingService.swift）。
         let cullingService = CullingService(
             photoRepo: photoRepo,
-            similarityResultRepo: similarityResultRepo,
             metadataOutboxRepo: outboxRepo,
+            similarityStore: similarityStore,
             connection: db,
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,
@@ -743,15 +742,6 @@ public final class SessionCommandRouter: CommandRouter {
 
         // ── sim.*（3.3 服务层；TS 源 similarity.ipc.ts）──
 
-        case "sim.result":
-            // similarity.ipc.ts:159-167 —— 同步查询；无结果返回 null（TS ok(null)）。
-            let sessionId = try requiredString(params, "sessionId")
-            let threshold = try optionalNumber(params, "threshold").map(Int.init)
-            guard let result = try similarityService.getResult(sessionId: sessionId, threshold: threshold) else {
-                return .null
-            }
-            return try GatherCore.JSONValue(from: result)
-
         case "sim.cancel_analysis":
             // similarity.ipc.ts:146-157 —— jobs.cancelScope + cancel(markStatus:false)，
             // 同步返回 ok(true)。
@@ -937,48 +927,9 @@ public final class SessionCommandRouter: CommandRouter {
                     sessionId: sessionId, assignments: assignments, threshold: threshold)
             }
 
-        case "sim.writeback":
-            // similarity.ipc.ts:205-235 —— destructive；itemIds 必填非空。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("WRITEBACK_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let threshold = try optionalNumber(params, "threshold").map { Int($0) }
-            if let threshold, !(try similarityService.hasResult(sessionId: sessionId, threshold: threshold)) {
-                throw BridgeError.badParams("SIM_THRESHOLD_NO_RESULTS")
-            }
-            let itemIds: [Int] = params["itemIds"]?.arrayElements?
-                .compactMap(\.numberValue)
-                .filter { $0.rounded() == $0 }
-                .map { Int($0) } ?? []
-            guard !itemIds.isEmpty else {
-                throw BridgeError.badParams("SIM_PREVIEW_REQUIRED")
-            }
-            let idSet = Set(itemIds)
-            let pendingItems = try writebackService.getItems(sessionId: sessionId, module: "similarity", status: "pending")
-                .filter { item in item.id.map { idSet.contains($0) } ?? false }
-            guard pendingItems.count == idSet.count else {
-                throw BridgeError.badParams("SIM_PREVIEW_STALE")
-            }
-            let result = try awaitSync {
-                try await self.writebackService.execute(sessionId: sessionId, module: "similarity", items: pendingItems)
-            }
-            return try GatherCore.JSONValue(from: result)
-
         case "sim.writeback_items":
             let sessionId = try requiredString(params, "sessionId")
             return try GatherCore.JSONValue(from: writebackService.getItems(sessionId: sessionId, module: "similarity"))
-
-        case "sim.retry_failed_writeback":
-            // similarity.ipc.ts:246-254 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("WRITEBACK_RETRY_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let result = try awaitSync {
-                try await self.writebackService.retryFailed(sessionId: sessionId, module: "similarity")
-            }
-            return try GatherCore.JSONValue(from: result)
 
         case "sim.confirm_sync":
             // similarity.ipc.ts:257-263 —— ok(true)。
@@ -2009,6 +1960,67 @@ public final class SessionCommandRouter: CommandRouter {
                         try await cullingService.resetCommand(
                             sessionId: sessionId, groupId: groupId, confirmed: true)
                         completion(WebResponse(ok: true, data: .bool(true)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // similarity.ipc.ts:159-167 —— 同步查询；无结果返回 null（TS ok(null)）。
+        case "sim.result":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let threshold = try optionalNumber(params, "threshold").map(Int.init)
+                Task {
+                    do {
+                        guard let result = try await similarityService.getResult(
+                            sessionId: sessionId, threshold: threshold) else {
+                            completion(WebResponse(ok: true, data: .null))
+                            return
+                        }
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // similarity.ipc.ts:205-235 —— destructive；itemIds 必填非空。
+        case "sim.writeback":
+            guard confirmed(params) else {
+                completion(WebResponse(ok: false, error: "WRITEBACK_CONFIRM_REQUIRED"))
+                return
+            }
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let threshold = try optionalNumber(params, "threshold").map { Int($0) }
+                let itemIds: [Int] = params["itemIds"]?.arrayElements?
+                    .compactMap(\.numberValue)
+                    .filter { $0.rounded() == $0 }
+                    .map { Int($0) } ?? []
+                guard !itemIds.isEmpty else {
+                    throw BridgeError.badParams("SIM_PREVIEW_REQUIRED")
+                }
+                let idSet = Set(itemIds)
+                Task {
+                    do {
+                        if let threshold,
+                           !(try await similarityService.hasResult(sessionId: sessionId, threshold: threshold)) {
+                            throw BridgeError.badParams("SIM_THRESHOLD_NO_RESULTS")
+                        }
+                        let pendingItems = try writebackService.getItems(
+                            sessionId: sessionId, module: "similarity", status: "pending")
+                            .filter { item in item.id.map { idSet.contains($0) } ?? false }
+                        guard pendingItems.count == idSet.count else {
+                            throw BridgeError.badParams("SIM_PREVIEW_STALE")
+                        }
+                        let result = try await writebackService.execute(
+                            sessionId: sessionId, module: "similarity", items: pendingItems)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                     }
@@ -3376,7 +3388,7 @@ public final class SessionCommandRouter: CommandRouter {
         assignments: [SimilarityKeywordAssignment],
         threshold: Int?
     ) async throws -> GatherCore.JSONValue {
-        let result = try similarityService.getResult(sessionId: sessionId, threshold: threshold)
+        let result = try await similarityService.getResult(sessionId: sessionId, threshold: threshold)
         guard let result else {
             throw BridgeError.badParams(threshold == nil ? "SIM_ANALYSIS_MISSING" : "SIM_THRESHOLD_NO_RESULTS")
         }

@@ -44,14 +44,15 @@
 | R1 收尾⑨：第八个删除切片（culling history） | ✅ | `CullingHistoryRepo` + 旧测试已删除；`CullingService` 历史栈改经 `any CullingStore`；新增 async `update()`（事务内决策 + 事务外 `commitHistory`）与 async `decide()`，`batchUpdate/applyHistory/decideSimilarityGroup/batchDecide/getHistory` 异步化；历史写入从同步事务中移出（跨连接不共享事务，快照先原子落地、历史行失败仅丢 undo）；路由 7 个 culling.* 命令迁入 `executeAsync` |
 | R1 收尾⑩：第九个删除切片（metadata cache） | ✅ | `MetadataCacheRepo` + 旧测试已删除；`MetadataService`/`WritebackService`/`CullingService` 全部改经 `any MetadataStore`；`CullingService.list/listPage/buildRichLookup` 异步化（缓存基线经 `CullingUpdateContext.cacheRows` 传入，仍保持 `updateState` 同步）；路由 `culling.list_page/`groups/`summary/`finalize_sync` 迁入 `executeAsync`（顺带移除 finalize_sync 的 awaitSync 桥）；core 878/120、app 172/19 全绿 |
 | R1 收尾⑪：第十个删除切片（culling decisions） | ✅ | `CullingDecisionRepo` + 旧测试已删除；决策读写改经 `CullingStore`（严格同步事务拆分：`updateState` 只做事务内计算，当前行经 `CullingUpdateContext.currentDecision/decisionRows` 预读传入，写入经 `CullingDecisionWrite` 收集后由 `commitDecisionWrites` 事务后落库）；`getGroups/getDecisions/getSummary/reset/resetCommand` 异步化；路由 `culling.reset` 迁入 `executeAsync` |
-| 删除切片台账 | ✅ 10/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions |
+| R1 收尾⑫：第十一个删除切片（similarity） | ✅ | `SimilarityResultRepo`/`SimilarityClusterStateRepo` + 旧测试已删除；`SimilarityService` 全面改经 `any SimilarityStore`（结果/成员/簇快照读，replace/replaceForThreshold/replaceClusterState/delete 写），`hasResult/getResult/clusterVersion/clusterEntries` 异步化；`CullingService` 相似度读改经 store，`getSessionLookup/ensureUpdateExtras/getUpdateContext/refreshSessionUpdateContext` 异步化，`updateState` 同步核心不再发起异步刷新（新鲜读兜底由 update/batchUpdate 预读）；`SimilarityViewModel` 的 sim.result 走 executeAsync；路由 sim.result/sim.writeback 迁入 `executeAsync` |
+| 删除切片台账 | ✅ 11/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
 | R1 收尾⑥：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL；每片按「Store/API 落地 → 调用点切换 → 同批删除旧实现与旧测试」推进 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
-> 当前 core 全量：**868 tests / 119 suites 全绿**；app 172/19 全绿（GatherToast 计时用例全量并发下偶发，单跑通过）。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
-> 度量：Repositories **9**、Repo tests **9**、DB layer **12**、Services 25、raw SQL outside Store 14。已知计时 flake：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`（均单独运行通过）。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
+> 当前 core 全量：**861 tests / 118 suites 全绿**；app 172/19 全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
+> 度量：Repositories **7**、Repo tests **8**、DB layer **10**、Services 25、raw SQL outside Store 14。已知计时 flake：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`（均单独运行通过）。（settings/template/smart album 旧实现与旧测试同批删除，端口覆盖见 GatherAPITests/TemplatesAPITests/TemplateStoreTests/SmartAlbumStoreTests）；app 172/19 全绿。
 > 旧层文件计数（本轮后）：`Database/Repositories` 12、`Database/Repositories` 测试 11、`Services` 26；门禁度量 raw SQL outside Store（仅统计 Services/）14 文件、Services 25 文件。
 > 估算口径：人日；S ≤ 0.5d、M ≤ 2d、L > 2d；按 2-3 名工程师估。
 

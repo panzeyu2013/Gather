@@ -182,11 +182,27 @@ private func makeStubVM(
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
 private func makeLiveProvider() throws -> (LiveSimilarityDataProvider, DBConnection) {
-    let db = try DBConnection(path: ":memory:")
+    // 相似度结果/群组读经 Store 连接：两条连接须指向同一临时库文件。
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-similarity-vm-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: path)
     try MigrationRunner().migrate(db)
-    let settings = try makeTestSettings()
+    let container = AppContainer(database: try SQLiteDatabase(path: path))
+    let api = GatherAPI(container: container)
     let router = SessionCommandRouter.makeDefault(
-        db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore)
+        db: db,
+        settings: SettingsSnapshot(values: SettingsAPI.defaults),
+        settingsAPI: api.settings,
+        templates: api.templates,
+        albums: api.albums,
+        workspace: api.workspace,
+        persons: api.persons,
+        personStore: container.persons,
+        faceStore: container.faces,
+        metadataStore: container.metadata,
+        cullingStore: container.culling,
+        similarityStore: container.similarity
+    )
     // JobService 需 start() 后 drain 才运行（TS index.ts:476 主进程启动语义；
     // 否则 sim.analyze job 永不执行，waitForResult 挂满超时）。
     router.jobService.start()

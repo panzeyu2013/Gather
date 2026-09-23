@@ -116,8 +116,7 @@ public final class SimilarityService {
 
     private let photoRepo: PhotoRepo
     private let sessionRepo: SessionRepo
-    private let similarityResultRepo: SimilarityResultRepo
-    private let clusterStateRepo: SimilarityClusterStateRepo
+    private let similarityStore: any SimilarityStore
     private let connection: DBConnection
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
@@ -153,8 +152,7 @@ public final class SimilarityService {
     public init(
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
-        similarityResultRepo: SimilarityResultRepo,
-        clusterStateRepo: SimilarityClusterStateRepo,
+        similarityStore: any SimilarityStore,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
@@ -171,8 +169,7 @@ public final class SimilarityService {
     ) {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
-        self.similarityResultRepo = similarityResultRepo
-        self.clusterStateRepo = clusterStateRepo
+        self.similarityStore = similarityStore
         self.connection = connection
         self.getNumber = getNumber
         self.thumbnailProvider = thumbnailProvider
@@ -362,7 +359,7 @@ public final class SimilarityService {
             onProgress?(0, entries.count, "similarity.cluster")
             // ROADMAP 1.3：参数匹配且未达收敛间隔时走邻域增量聚类，
             // 否则全量重聚类（首次 / 参数变化 / 定期全局收敛）。
-            let clustered = try clusterEntries(
+            let clustered = try await clusterEntries(
                 sessionId: sessionId,
                 entries: entries,
                 threshold: threshold,
@@ -385,13 +382,13 @@ public final class SimilarityService {
                 precomputed: false
             )
 
-            _ = try similarityResultRepo.replace(
+            _ = try await similarityStore.replaceResult(
                 sessionId: sessionId,
                 groupsJson: built.groupsJson,
                 statsJson: built.statsJson,
                 threshold: threshold,
                 minGroupSize: minGroupSize,
-                memberships: built.memberships
+                memberships: built.memberships.map { SimilarityMembership(photoId: $0.photoId, groupIndex: $0.groupIndex) }
             )
 
             try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
@@ -503,24 +500,24 @@ public final class SimilarityService {
     }
 
     /// 便宜的存在性检查：只查一行索引，不触成员表/照片投影/结果 payload。
-    public func hasResult(sessionId: String, threshold: Int? = nil) throws -> Bool {
+    public func hasResult(sessionId: String, threshold: Int? = nil) async throws -> Bool {
         let row = threshold == nil
-            ? try similarityResultRepo.getLatest(sessionId: sessionId)
-            : try similarityResultRepo.getByThreshold(sessionId: sessionId, threshold: threshold!)
+            ? try await similarityStore.latestResult(sessionId: sessionId)
+            : try await similarityStore.result(sessionId: sessionId, threshold: threshold!)
         return row != nil
     }
 
-    public func getResult(sessionId: String, threshold: Int? = nil) throws -> SimilarityResult? {
+    public func getResult(sessionId: String, threshold: Int? = nil) async throws -> SimilarityResult? {
         let row = threshold == nil
-            ? try similarityResultRepo.getLatest(sessionId: sessionId)
-            : try similarityResultRepo.getByThreshold(sessionId: sessionId, threshold: threshold!)
+            ? try await similarityStore.latestResult(sessionId: sessionId)
+            : try await similarityStore.result(sessionId: sessionId, threshold: threshold!)
         guard let row else { return nil }
 
         let stats = try parseStoredStats(row.statsJson)
 
         // 成员表是组结构的权威来源；groups_json 仅为成员表出现前的旧行解析。
         // 畸形 JSON 抛错对齐 TS JSON.parse（不静默降级）。
-        let members = try similarityResultRepo.getGroupMembers(sessionId: sessionId, resultId: row.id)
+        let members = try await similarityStore.groupMembers(sessionId: sessionId, resultId: row.id)
         if members == nil {
             guard let data = row.groupsJson.data(using: .utf8) else {
                 throw SimilarityServiceError.noResults
@@ -589,7 +586,7 @@ public final class SimilarityService {
         let threshold = Int(threshold)
         let minGroupSize = Int(minGroupSize)
 
-        let existing = try similarityResultRepo.getLatest(sessionId: sessionId)
+        let existing = try await similarityStore.latestResult(sessionId: sessionId)
         if existing == nil { throw SimilarityServiceError.noResults }
 
         let photos = PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId))
@@ -608,7 +605,7 @@ public final class SimilarityService {
         }
         if entries.isEmpty { throw SimilarityServiceError.noHashRecluster }
 
-        let clustered = try clusterEntries(
+        let clustered = try await clusterEntries(
             sessionId: sessionId,
             entries: entries,
             threshold: threshold,
@@ -627,13 +624,13 @@ public final class SimilarityService {
             precomputed: false
         )
 
-        _ = try similarityResultRepo.replace(
+        _ = try await similarityStore.replaceResult(
             sessionId: sessionId,
             groupsJson: built.groupsJson,
             statsJson: built.statsJson,
             threshold: threshold,
             minGroupSize: minGroupSize,
-            memberships: built.memberships
+            memberships: built.memberships.map { SimilarityMembership(photoId: $0.photoId, groupIndex: $0.groupIndex) }
         )
 
         try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
@@ -660,8 +657,9 @@ public final class SimilarityService {
 
     /// 簇状态版本（ROADMAP 1.3）：该会话的增量聚类状态元数据；无状态返回 nil。
     /// 供诊断与上层观测（版本号 / 连续增量次数 / 参数指纹）。
-    public func clusterVersion(sessionId: String) throws -> SimilarityClusterMetaRow? {
-        try clusterStateRepo.load(sessionId: sessionId)?.meta
+    public func clusterVersion(sessionId: String) async throws -> SimilarityClusterMetaRecord? {
+        let snapshot = try await similarityStore.loadClusterSnapshot(sessionId: sessionId)
+        return snapshot?.meta
     }
 
     /// 聚类决策：状态参数匹配且连续增量次数未达收敛间隔时，走 IncrementalClusterer
@@ -674,8 +672,8 @@ public final class SimilarityService {
         minGroupSize: Int,
         groupingMode: SimilarityGroupingMode,
         onProgress: ProgressHandler?
-    ) throws -> ClusterResult {
-        let snapshot = try clusterStateRepo.load(sessionId: sessionId)
+    ) async throws -> ClusterResult {
+        let snapshot = try await similarityStore.loadClusterSnapshot(sessionId: sessionId)
         let convergenceInterval = max(1, Int(getNumber("similarity_cluster_convergence_interval", 10)))
 
         if groupingMode == .global,
@@ -696,7 +694,7 @@ public final class SimilarityService {
                 let result = IncrementalClusterer.result(
                     state: outcome.state, entries: entries, minGroupSize: minGroupSize
                 )
-                try clusterStateRepo.replace(
+                try await similarityStore.replaceClusterState(
                     sessionId: sessionId,
                     threshold: threshold,
                     minGroupSize: minGroupSize,
@@ -725,7 +723,7 @@ public final class SimilarityService {
                 let state = try IncrementalClusterer.buildState(
                     entries: entries, minGroupSize: minGroupSize, threshold: threshold
                 )
-                try clusterStateRepo.replace(
+                try await similarityStore.replaceClusterState(
                     sessionId: sessionId,
                     threshold: threshold,
                     minGroupSize: minGroupSize,
@@ -737,11 +735,11 @@ public final class SimilarityService {
             } catch {
                 // 状态落库属于加速设施：失败不影响已算出的结果（下次全量重来）。
                 GatherLogger.log("Similarity cluster state persist failed: \(error)", level: .warn)
-                try? clusterStateRepo.delete(sessionId: sessionId)
+                try? await similarityStore.deleteClusterState(sessionId: sessionId)
             }
         } else {
             // sequential 模式没有增量设施（前缀 run 语义），清状态强制下次全量。
-            try? clusterStateRepo.delete(sessionId: sessionId)
+            try? await similarityStore.deleteClusterState(sessionId: sessionId)
         }
         return clustered
     }
@@ -883,13 +881,13 @@ public final class SimilarityService {
                 precomputed: true,
                 compactGroupsJson: true
             )
-            _ = try similarityResultRepo.replaceForThreshold(
+            _ = try await similarityStore.replaceResultForThreshold(
                 sessionId: sessionId,
                 groupsJson: built.groupsJson,
                 statsJson: built.statsJson,
                 threshold: tier,
                 minGroupSize: minGroupSize,
-                memberships: built.memberships
+                memberships: built.memberships.map { SimilarityMembership(photoId: $0.photoId, groupIndex: $0.groupIndex) }
             )
         }
     }

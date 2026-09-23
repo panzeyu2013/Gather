@@ -24,7 +24,7 @@ import GatherCore
 /// 真实路由（LiveSimilarityDataProvider + 临时 SQLite）。
 public protocol SimilarityDataProvider {
     /// TS: similarityApi.getResult → sim.result（threshold 缺省 = 最近档）。
-    func getResult(sessionId: String, threshold: Int?) throws -> SimilarityResult?
+    func getResult(sessionId: String, threshold: Int?) async throws -> SimilarityResult?
     /// TS: similarityApi.analyze → sim.analyze（JobService 异步，完成即成功）。
     func analyze(
         sessionId: String,
@@ -66,11 +66,20 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         self.router = router
     }
 
-    public func getResult(sessionId: String, threshold: Int?) throws -> SimilarityResult? {
-        let response = try router.execute("sim.result", params: [
-            "sessionId": .string(sessionId),
-            "threshold": threshold.map { .number(Double($0)) } ?? .null,
-        ])
+    public func getResult(sessionId: String, threshold: Int?) async throws -> SimilarityResult? {
+        // sim.result 已迁入异步路由（结果读经 SimilarityStore）。
+        let response: GatherCore.JSONValue = try await withCheckedThrowingContinuation { continuation in
+            router.executeAsync("sim.result", params: [
+                "sessionId": .string(sessionId),
+                "threshold": threshold.map { .number(Double($0)) } ?? .null,
+            ]) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_RESULT_FAILED"))
+                    return
+                }
+                continuation.resume(returning: data)
+            }
+        }
         if response == .null { return nil }
         return try response.decoded(as: SimilarityResult.self)
     }
@@ -365,7 +374,7 @@ public final class SimilarityViewModel {
         defer { isLoading = false }
         await Task.yield()
         do {
-            if let result = try provider.getResult(sessionId: sessionId, threshold: nil) {
+            if let result = try await provider.getResult(sessionId: sessionId, threshold: nil) {
                 adoptResult(result, syncThreshold: true)
                 phase = .result
             } else {
@@ -397,7 +406,7 @@ public final class SimilarityViewModel {
     /// 结果查询刷新（分析完成后 / 重进页面）。
     private func refreshResult() async {
         do {
-            if let result = try provider.getResult(sessionId: sessionId, threshold: nil) {
+            if let result = try await provider.getResult(sessionId: sessionId, threshold: nil) {
                 adoptResult(result, syncThreshold: true)
                 phase = .result
             }
@@ -428,7 +437,7 @@ public final class SimilarityViewModel {
     private func adoptTier(requestID: Int) async {
         guard requestID == tierRequestID else { return }
         do {
-            guard let tier = try provider.getResult(sessionId: sessionId, threshold: threshold),
+            guard let tier = try await provider.getResult(sessionId: sessionId, threshold: threshold),
                   tier.stats.threshold == Double(threshold) else {
                 // 无预计算档（或请求过期）：保留草稿值（TS 注释同语义）。
                 return
@@ -574,7 +583,7 @@ public final class SimilarityViewModel {
                 return
             }
             do {
-                if let result = try provider.getResult(sessionId: sessionId, threshold: nil) {
+                if let result = try await provider.getResult(sessionId: sessionId, threshold: nil) {
                     adoptResult(result, syncThreshold: true)
                     phase = .result
                     stopResultPolling()

@@ -342,8 +342,8 @@ public final class CullingService {
     // MARK: - 依赖
 
     private let photoRepo: PhotoRepo
-    private let similarityResultRepo: SimilarityResultRepo
     private let metadataOutboxRepo: MetadataOutboxRepo
+    private let similarityStore: any SimilarityStore
     private let connection: DBConnection
     private let metadataSync: any CullingSyncPort
     private let metadataMutations: any MetadataMutationPort
@@ -354,8 +354,8 @@ public final class CullingService {
 
     public init(
         photoRepo: PhotoRepo,
-        similarityResultRepo: SimilarityResultRepo,
         metadataOutboxRepo: MetadataOutboxRepo,
+        similarityStore: any SimilarityStore,
         connection: DBConnection,
         metadataSync: any CullingSyncPort,
         metadataMutations: any MetadataMutationPort,
@@ -365,8 +365,8 @@ public final class CullingService {
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue }
     ) {
         self.photoRepo = photoRepo
-        self.similarityResultRepo = similarityResultRepo
         self.metadataOutboxRepo = metadataOutboxRepo
+        self.similarityStore = similarityStore
         self.connection = connection
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
@@ -384,7 +384,7 @@ public final class CullingService {
         expectedRevision: Int,
         patch: CullingUpdatePatch
     ) async throws -> CullingUpdateResult {
-        let base = try getUpdateContext(sessionId: sessionId)
+        let base = try await getUpdateContext(sessionId: sessionId)
         let sink = CullingHistorySink()
         let singleCache = try await metadataStore.metadataBatch(photoIds: [photoId])
         let cacheRows = Dictionary(uniqueKeysWithValues: singleCache.map { ($0.photoId, $0) })
@@ -518,9 +518,9 @@ public final class CullingService {
 
     /// TS: getUpdateContext —— 缓存的 `updateState` 上下文；IPC 更新 handler 复用
     /// 它，点击突发不再每次重读整个会话。
-    public func getUpdateContext(sessionId: String) throws -> CullingUpdateContext {
+    public func getUpdateContext(sessionId: String) async throws -> CullingUpdateContext {
         let entry = getSessionUpdateContext(sessionId: sessionId)
-        try ensureUpdateExtras(entry: entry, sessionId: sessionId)
+        try await ensureUpdateExtras(entry: entry, sessionId: sessionId)
         return CullingUpdateContext(
             photos: entry.photos,
             photoById: entry.photoById,
@@ -551,18 +551,9 @@ public final class CullingService {
         if let initial = photoById[photoId] ?? photos.first(where: { $0.id == photoId }) {
             target = initial
         } else {
-            // TTL 缓存的照片集合可能缺索引器刚加的照片，每次窗口先试一次新鲜读
-            //（见 refreshSessionUpdateContext）。陈旧的调用方上下文被丢弃。
-            refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
-            photos = entry.photos
-            photoById = entry.photoById
-            contextGroupMap = nil
-            contextLinkedByXmp = nil
-            contextPhotosByAssetId = nil
-            guard let refreshed = photoById[photoId] ?? photos.first(where: { $0.id == photoId }) else {
-                throw CullingServiceError.photoNotInSession
-            }
-            target = refreshed
+            // 新鲜读兜底由异步入口负责（update/batchUpdate 先 getUpdateContext /
+            // refreshSessionUpdateContext）；同步核心不再发起异步读，直接拒绝。
+            throw CullingServiceError.photoNotInSession
         }
 
         let currentRow = context?.currentDecision
@@ -578,7 +569,12 @@ public final class CullingService {
         // 完整的调用方上下文（IPC/batch）已过 ensureUpdateExtras；只有直连路径与
         // 新鲜读回退（丢弃了上下文映射）之后才需要按点击做版本检查。
         if contextGroupMap == nil {
-            try ensureUpdateExtras(entry: entry, sessionId: sessionId)
+            // 相似度组索引由异步入口 ensureUpdateExtras 预解析；同步核心只复用
+            // 已解析的缓存条目，不做异步读。
+            guard let resolved = entry.groupMap, entry.groupMapResultId != nil else {
+                throw CullingServiceError.photoNotInSession
+            }
+            contextGroupMap = resolved
         }
         let photosByAssetId = contextPhotosByAssetId ?? entry.photosByAssetId
         // 保序受影响集合：TS Map.set 保留首见位置（先资产变体，后共享侧车），
@@ -735,12 +731,12 @@ public final class CullingService {
         // 先在缓存索引里校验照片 id（任何相似度读之前，见 ensureUpdateExtras）。
         // 缺失可能是索引器刚加的照片（TTL 缓存不可见），先试一次新鲜读再拒绝。
         if uniqueIds.contains(where: { entry.photoById[$0] == nil }) {
-            refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
+            await refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
             if uniqueIds.contains(where: { entry.photoById[$0] == nil }) {
                 throw CullingServiceError.photosNotInSession
             }
         }
-        try ensureUpdateExtras(entry: entry, sessionId: sessionId)
+        try await ensureUpdateExtras(entry: entry, sessionId: sessionId)
         let photos = entry.photos
         let photoById = entry.photoById
         let groupMap = entry.groupMap!
@@ -857,7 +853,7 @@ public final class CullingService {
         // 与 updateState/batchUpdate 相同的 fresh-read 兜底：索引器刚加的照片
         // 可能缺席 TTL 缓存。
         if entries.contains(where: { updateEntry.photoById[$0.photoId] == nil }) {
-            refreshSessionUpdateContext(sessionId: sessionId, entry: updateEntry)
+            await refreshSessionUpdateContext(sessionId: sessionId, entry: updateEntry)
         }
         let photoById = updateEntry.photoById
         let currentRows = Dictionary(
@@ -897,7 +893,7 @@ public final class CullingService {
                 }
             }
         }
-        try ensureUpdateExtras(entry: updateEntry, sessionId: sessionId)
+        try await ensureUpdateExtras(entry: updateEntry, sessionId: sessionId)
         let groupMap = updateEntry.groupMap!
 
         // outbox 每会话读一次而非每条目两次（1 万次 undo 就是 2 万次单行查询）：
@@ -1025,14 +1021,14 @@ public final class CullingService {
         keepPhotoIds: [String]
     ) async throws -> [CullingUpdateResult] {
         guard keepPhotoIds.count <= Self.batchMax else { throw CullingServiceError.tooManyKeepPhotoIds }
-        guard let resultRow = try similarityResultRepo.getLatest(sessionId: sessionId) else {
+        guard let resultRow = try await similarityStore.latestResult(sessionId: sessionId) else {
             throw CullingServiceError.noSimilarity
         }
         // TS: `[...membership.entries()].filter(...)` —— Map 插入序即成员表行序；
         // Swift 侧经 getGroupMembers（ORDER BY m.rowid）保持同一顺序；组 id 与
         // 最新结果派生的完整 "resultId:index" 精确相等（旧结果的组 id 匹配不到）。
         let groupPhotoIds: [String]
-        if let members = try similarityResultRepo.getGroupMembers(sessionId: sessionId, resultId: resultRow.id) {
+        if let members = try await similarityStore.groupMembers(sessionId: sessionId, resultId: resultRow.id) {
             groupPhotoIds = members
                 .filter { "\(resultRow.id):\($0.groupIndex)" == groupId }
                 .map(\.photoId)
@@ -1072,14 +1068,14 @@ public final class CullingService {
 
     /// TS: getGroups —— 相似度分组（决策计数 + 成员轻投影）。
     public func getGroups(sessionId: String) async throws -> [CullingGroup] {
-        guard let resultRow = try similarityResultRepo.getLatest(sessionId: sessionId) else {
+        guard let resultRow = try await similarityStore.latestResult(sessionId: sessionId) else {
             return []
         }
         // 轻投影：只取 id/filepath/filename，重 JSON 列跳过。
         let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
             .map { CullingPhotoRow(row: $0) }
         let photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
-        let membership = try similarityResultRepo.getPhotoGroupMap(sessionId: sessionId, resultId: resultRow.id)
+        let membership = try await similarityStore.photoGroupMap(sessionId: sessionId, resultId: resultRow.id)
         var membersByGroup: [String: [String]] = [:]
         for photo in photos {
             guard let groupId = membership[photo.id] else { continue }
@@ -1189,7 +1185,7 @@ public final class CullingService {
         }
         // 组数来自会话查找条目（版本键控）：stats_json.totalGroups 是小组件对象，
         // 替代多 MB 的 groups_json 解析，结果按 (session, result id) 缓存。
-        let lookup = try getSessionLookup(sessionId: sessionId)
+        let lookup = try await getSessionLookup(sessionId: sessionId)
         var totalGroups = 0
         if lookup.resultRow != nil {
             if !lookup.groupCountResolved {
@@ -1801,10 +1797,10 @@ public final class CullingService {
                 xmpPaths: photos.map { TSPath.xmpSidecarPath($0.filepath) }
             )
         }
-        let similarityMap = try getLatestSimilarityMap(sessionId: sessionId)
+        let similarityMap = try await getLatestSimilarityMap(sessionId: sessionId)
         // 会话级分析表（质量/人脸/人物）只被后台分析重写，故会话模式复用
         // 版本键控缓存而不是每次调用全量重读；页模式保持每页范围查询。
-        let sessionLookup = try getSessionLookup(sessionId: sessionId)
+        let sessionLookup = try await getSessionLookup(sessionId: sessionId)
         var qualityByPhoto: [String: CullingQuality]
         let facesByPhoto: [String: [[Double]]]
         let analysisMaxByPhoto: [String: Double]
@@ -2024,7 +2020,7 @@ public final class CullingService {
     /// 索引器的增删对缓存不可见，窗口内先试一次新鲜读（新导入的照片绝不能被
     /// 拒，真删除的第二次检查仍会被拒）。组索引、xmp 联动与会话查找随照片集
     /// 一起失效，下个 ensureUpdateExtras 对新生行重建。
-    private func refreshSessionUpdateContext(sessionId: String, entry: SessionUpdateEntry) {
+    private func refreshSessionUpdateContext(sessionId: String, entry: SessionUpdateEntry) async {
         if entry.refreshed { return }
         let photos = loadSessionPhotos(sessionId: sessionId)
         entry.photos = photos
@@ -2044,8 +2040,8 @@ public final class CullingService {
     /// 与其一起重建（见 refreshSessionUpdateContext）。与照片加载分离，让调用方
     /// 能在任何相似度读之前校验照片 id，O(n) 侧车扫描每条目/每版本一次而非每次
     /// 点击一次。
-    private func ensureUpdateExtras(entry: SessionUpdateEntry, sessionId: String) throws {
-        let lookup = try getSessionLookup(sessionId: sessionId)
+    private func ensureUpdateExtras(entry: SessionUpdateEntry, sessionId: String) async throws {
+        let lookup = try await getSessionLookup(sessionId: sessionId)
         // TS: `groupMap !== undefined && groupMapResultId === lookup.resultRow?.id`
         // —— 已解析且版本一致时直接复用（含空索引：无相似度结果时 groupMapResultId
         // 与 resultRow?.id 同为 nil，同样视为已解析）。
@@ -2083,8 +2079,8 @@ public final class CullingService {
 
     /// TS: getSessionLookup —— 最新相似度结果行 + 由其派生的版本键控查询。
     /// 结果 id 即版本：替换即原子重建条目，一个结果的缓存行绝不与另一结果混杂。
-    private func getSessionLookup(sessionId: String) throws -> SessionLookupEntry {
-        let resultRow = try similarityResultRepo.getLatest(sessionId: sessionId)
+    private func getSessionLookup(sessionId: String) async throws -> SessionLookupEntry {
+        let resultRow = try await similarityStore.latestResult(sessionId: sessionId)
         let now = Date()
         if let cached = sessionLookupCache[sessionId],
            cached.resultRow?.id == resultRow?.id, cached.expiresAt > now {
@@ -2092,7 +2088,7 @@ public final class CullingService {
         }
         let similarityMap: [String: String]
         if let resultRow {
-            similarityMap = try similarityResultRepo.getPhotoGroupMap(
+            similarityMap = try await similarityStore.photoGroupMap(
                 sessionId: sessionId, resultId: resultRow.id
             )
         } else {
@@ -2127,8 +2123,8 @@ public final class CullingService {
     }
 
     /// TS: getLatestSimilarityMap。
-    private func getLatestSimilarityMap(sessionId: String) throws -> [String: String] {
-        try getSessionLookup(sessionId: sessionId).similarityMap
+    private func getLatestSimilarityMap(sessionId: String) async throws -> [String: String] {
+        try await getSessionLookup(sessionId: sessionId).similarityMap
     }
 
     /// TS: buildPhotoGroupIndex —— 每张照片的组索引，每（会话, 结果版本）解析
@@ -2205,7 +2201,7 @@ public final class CullingService {
     /// TS: parseTotalGroups —— 相似度结果行的组计数。当前管线把 totalGroups 写进
     /// 小的 stats_json 对象，多 MB 的 groups_json 只为旧行解析。损坏行退化为 0
     /// （与旧 groups_json 解析相同）。
-    private func parseTotalGroups(_ resultRow: SimilarityResultRow) -> Int {
+    private func parseTotalGroups(_ resultRow: SimilarityResultRecord) -> Int {
         if let parsed = try? JSONValue.parse(resultRow.statsJson),
            case .object(let dict) = parsed,
            case .number(let value) = dict["totalGroups"],
@@ -2418,7 +2414,7 @@ private struct CullingRichLookup {
 
 /// TS: SessionLookupEntry —— 版本键控缓存条目（可变，见 getSessionLookup）。
 private final class SessionLookupEntry {
-    var resultRow: SimilarityResultRow?
+    var resultRow: SimilarityResultRecord?
     var similarityMap: [String: String]
     var groupIndex: [String: String]
     var groupIndexResolved: Bool
@@ -2432,7 +2428,7 @@ private final class SessionLookupEntry {
     var expiresAt: Date
 
     init(
-        resultRow: SimilarityResultRow?,
+        resultRow: SimilarityResultRecord?,
         similarityMap: [String: String],
         groupIndex: [String: String],
         groupIndexResolved: Bool,
