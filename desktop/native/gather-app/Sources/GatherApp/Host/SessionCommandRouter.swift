@@ -193,6 +193,7 @@ public final class SessionCommandRouter: CommandRouter {
         personStore: any PersonStore,
         faceStore: any FaceStore,
         metadataStore: any MetadataStore,
+        cullingStore: any CullingStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
@@ -301,7 +302,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,
             writeback: writebackService,
-            cullingHistoryRepo: CullingHistoryRepo(connection: db),
+            cullingStore: cullingStore,
             getNumber: { key, defaultValue in
                 settings.number(key, default: defaultValue)
             }
@@ -1157,110 +1158,6 @@ public final class SessionCommandRouter: CommandRouter {
             return try GatherCore.JSONValue(from: page)
 
         // culling.ipc.ts:109-116 —— 历史栈（limit 1..500 缺省 100）。
-        case "culling.history":
-            let sessionId = try requiredString(params, "sessionId")
-            let limit: Int?
-            if let raw = params["limit"] {
-                guard let value = raw.numberValue, value.isFinite,
-                      value.rounded() == value, value >= 1, value <= 500 else {
-                    throw BridgeError.badParams("limit must be an integer between 1 and 500")
-                }
-                limit = Int(value)
-            } else {
-                limit = nil
-            }
-            let operations = try cullingService.getHistory(sessionId: sessionId, limit: limit ?? 100)
-            return try GatherCore.JSONValue(from: operations)
-
-        // culling.ipc.ts:118-152 —— undo/redo 显式条目；entries 非空数组（≤10000）。
-        case "culling.apply_history":
-            let sessionId = try requiredString(params, "sessionId")
-            guard let entryValues = params["entries"]?.arrayElements,
-                  !entryValues.isEmpty, entryValues.count <= CullingService.batchMax else {
-                throw BridgeError.badParams("entries must be a non-empty array with at most 10000 items")
-            }
-            let entries: [CullingHistoryApplyEntry] = try entryValues.enumerated().map { index, item in
-                guard let object = item.objectValue else {
-                    throw BridgeError.badParams("entries[\(index)] is invalid")
-                }
-                guard let patchValue = object["patch"] else {
-                    throw BridgeError.badParams("entries[\(index)].patch is invalid")
-                }
-                guard let expectedRevision = object["expectedRevision"]?.numberValue,
-                      expectedRevision.isFinite, expectedRevision.rounded() == expectedRevision,
-                      expectedRevision >= 0 else {
-                    throw BridgeError.badParams("entries[\(index)].expectedRevision is invalid")
-                }
-                guard let photoId = object["photoId"]?.stringValue else {
-                    throw BridgeError.badParams("MISSING_PARAM:entries[\(index)].photoId")
-                }
-                return CullingHistoryApplyEntry(
-                    photoId: photoId,
-                    expectedRevision: Int(expectedRevision),
-                    patch: try parseCullingUpdatePatch(patchValue)
-                )
-            }
-            guard let historyOperationId = params["historyOperationId"]?.numberValue,
-                  historyOperationId.isFinite, historyOperationId.rounded() == historyOperationId,
-                  historyOperationId >= 1 else {
-                throw BridgeError.badParams("historyOperationId must be a positive integer")
-            }
-            let directionRaw = try requiredString(params, "direction")
-            guard let direction = CullingHistoryDirection(rawValue: directionRaw) else {
-                throw BridgeError.badParams("direction must be undo or redo")
-            }
-            let results = try cullingService.applyHistory(
-                sessionId: sessionId,
-                requestedEntries: entries,
-                historyOperationId: Int(historyOperationId),
-                direction: direction)
-            return try GatherCore.JSONValue(from: results)
-
-        // culling.ipc.ts:154-177 —— 单张更新；复用缓存的会话级更新上下文
-        //（点击突发不再重读整个会话）。
-        case "culling.update":
-            let sessionId = try requiredString(params, "sessionId")
-            let photoId = try requiredString(params, "photoId")
-            guard let expectedRevision = params["expectedRevision"]?.numberValue,
-                  expectedRevision.isFinite, expectedRevision.rounded() == expectedRevision,
-                  expectedRevision >= 0 else {
-                throw BridgeError.badParams("expectedRevision must be a non-negative integer")
-            }
-            let patch = try parseCullingUpdatePatch(params["patch"])
-            let context = try cullingService.getUpdateContext(sessionId: sessionId)
-            let result = try cullingService.updateState(
-                sessionId: sessionId, photoId: photoId,
-                expectedRevision: Int(expectedRevision), patch: patch, context: context)
-            return try GatherCore.JSONValue(from: result)
-
-        // culling.ipc.ts:179-198 —— 批量更新（photoIds ≤10000，单事务）。
-        case "culling.batch_update":
-            let sessionId = try requiredString(params, "sessionId")
-            let photoIds = try requiredStringArray(params, "photoIds")
-            if photoIds.count > CullingService.batchMax {
-                throw BridgeError.badParams("Too many photoIds in one batch")
-            }
-            let patch = try parseCullingUpdatePatch(params["patch"])
-            let results = try cullingService.batchUpdate(
-                sessionId: sessionId, photoIds: photoIds, patch: patch)
-            return try GatherCore.JSONValue(from: results)
-
-        // culling.ipc.ts:200-213 —— 整组批量 keep/reject。
-        case "culling.decide_group":
-            let sessionId = try requiredString(params, "sessionId")
-            let groupId = try requiredString(params, "groupId")
-            let keepPhotoIds = try requiredStringArray(params, "keepPhotoIds")
-            if keepPhotoIds.count > CullingService.batchMax {
-                throw BridgeError.badParams("Too many keepPhotoIds")
-            }
-            let results = try cullingService.decideSimilarityGroup(
-                sessionId: sessionId, groupId: groupId, keepPhotoIds: keepPhotoIds)
-            return try GatherCore.JSONValue(from: results)
-
-        // culling.ipc.ts:215-221 —— ok(metadataSync.getSummary(sessionId))。
-        // 额外附回 reloadAckedAt（session.reload_acked_at）：旧版胶囊的"最近同步"
-        // 由 c1:sync-state 的 reloadAckedAt 提供；原生侧合并进同步摘要响应，
-        // 解码方忽略未知键不受影响。
         case "culling.sync_status":
             let sessionId = try requiredString(params, "sessionId")
             let summary = try cullingService.syncStatus(sessionId: sessionId)
@@ -1288,28 +1185,7 @@ public final class SessionCommandRouter: CommandRouter {
             return try GatherCore.JSONValue(from: cullingService.getGroups(sessionId: sessionId))
 
         // culling.ipc.ts:259-271 —— 旧版 renderer 单张决策；ok(true)。
-        case "culling.decide":
-            let sessionId = try requiredString(params, "sessionId")
-            let photoId = try requiredString(params, "photoId")
-            let decisionRaw = try requiredString(params, "decision")
-            guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
-                throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
-            }
-            try cullingService.decide(sessionId: sessionId, photoId: photoId, decision: decision)
-            return .bool(true)
-
         // culling.ipc.ts:273-285 —— 旧版 renderer 批量决策；ok(true)。
-        case "culling.batch_decide":
-            let sessionId = try requiredString(params, "sessionId")
-            let photoIds = try requiredStringArray(params, "photoIds")
-            let decisionRaw = try requiredString(params, "decision")
-            guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
-                throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
-            }
-            try cullingService.batchDecide(sessionId: sessionId, photoIds: photoIds, decision: decision)
-            return .bool(true)
-
-        // culling.ipc.ts:287-294 —— 徽标计数。
         case "culling.summary":
             let sessionId = try requiredString(params, "sessionId")
             return try GatherCore.JSONValue(from: cullingService.getSummary(sessionId: sessionId))
@@ -2161,6 +2037,201 @@ public final class SessionCommandRouter: CommandRouter {
                         try await faceKwService.removeMember(
                             sessionId: sessionId, clusterId: Int64(clusterId), memberId: Int64(memberId))
                         completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        case "culling.decide":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let photoId = try requiredString(params, "photoId")
+                let decisionRaw = try requiredString(params, "decision")
+                guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
+                    throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
+                }
+                Task {
+                    do {
+                        _ = try await cullingService.decide(
+                            sessionId: sessionId, photoId: photoId, decision: decision)
+                        completion(WebResponse(ok: true, data: .bool(true)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // ── culling.*（R1/R2：历史栈经 CullingStore，异步路径）──
+
+        case "culling.history":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let limit: Int?
+                if let raw = params["limit"] {
+                    guard let value = raw.numberValue, value.isFinite,
+                          value.rounded() == value, value >= 1, value <= 500 else {
+                        throw BridgeError.badParams("limit must be an integer between 1 and 500")
+                    }
+                    limit = Int(value)
+                } else {
+                    limit = nil
+                }
+                Task {
+                    do {
+                        let operations = try await cullingService.getHistory(
+                            sessionId: sessionId, limit: limit ?? 100)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: operations)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:118-152 —— undo/redo 显式条目；entries 非空数组（≤10000）。
+        case "culling.apply_history":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                guard let entryValues = params["entries"]?.arrayElements,
+                      !entryValues.isEmpty, entryValues.count <= CullingService.batchMax else {
+                    throw BridgeError.badParams("entries must be a non-empty array with at most 10000 items")
+                }
+                let entries: [CullingHistoryApplyEntry] = try entryValues.enumerated().map { index, item in
+                    guard let object = item.objectValue else {
+                        throw BridgeError.badParams("entries[\(index)] is invalid")
+                    }
+                    guard let patchValue = object["patch"] else {
+                        throw BridgeError.badParams("entries[\(index)].patch is invalid")
+                    }
+                    guard let expectedRevision = object["expectedRevision"]?.numberValue,
+                          expectedRevision.isFinite, expectedRevision.rounded() == expectedRevision,
+                          expectedRevision >= 0 else {
+                        throw BridgeError.badParams("entries[\(index)].expectedRevision is invalid")
+                    }
+                    guard let photoId = object["photoId"]?.stringValue else {
+                        throw BridgeError.badParams("MISSING_PARAM:entries[\(index)].photoId")
+                    }
+                    return CullingHistoryApplyEntry(
+                        photoId: photoId,
+                        expectedRevision: Int(expectedRevision),
+                        patch: try parseCullingUpdatePatch(patchValue)
+                    )
+                }
+                guard let historyOperationId = params["historyOperationId"]?.numberValue,
+                      historyOperationId.isFinite, historyOperationId.rounded() == historyOperationId,
+                      historyOperationId >= 1 else {
+                    throw BridgeError.badParams("historyOperationId must be a positive integer")
+                }
+                let directionRaw = try requiredString(params, "direction")
+                guard let direction = CullingHistoryDirection(rawValue: directionRaw) else {
+                    throw BridgeError.badParams("direction must be undo or redo")
+                }
+                Task {
+                    do {
+                        let results = try await cullingService.applyHistory(
+                            sessionId: sessionId,
+                            requestedEntries: entries,
+                            historyOperationId: Int(historyOperationId),
+                            direction: direction)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: results)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:154-177 —— 单张更新；复用缓存的会话级更新上下文
+        //（点击突发不再重读整个会话）。历史条目在决策事务后经 Store 提交。
+        case "culling.update":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let photoId = try requiredString(params, "photoId")
+                guard let expectedRevision = params["expectedRevision"]?.numberValue,
+                      expectedRevision.isFinite, expectedRevision.rounded() == expectedRevision,
+                      expectedRevision >= 0 else {
+                    throw BridgeError.badParams("expectedRevision must be a non-negative integer")
+                }
+                let patch = try parseCullingUpdatePatch(params["patch"])
+                Task {
+                    do {
+                        let result = try await cullingService.update(
+                            sessionId: sessionId, photoId: photoId,
+                            expectedRevision: Int(expectedRevision), patch: patch)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:179-198 —— 批量更新（photoIds ≤10000，单事务）。
+        case "culling.batch_update":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let photoIds = try requiredStringArray(params, "photoIds")
+                if photoIds.count > CullingService.batchMax {
+                    throw BridgeError.badParams("Too many photoIds in one batch")
+                }
+                let patch = try parseCullingUpdatePatch(params["patch"])
+                Task {
+                    do {
+                        let results = try await cullingService.batchUpdate(
+                            sessionId: sessionId, photoIds: photoIds, patch: patch)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: results)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:200-213 —— 整组批量 keep/reject。
+        case "culling.decide_group":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let groupId = try requiredString(params, "groupId")
+                let keepPhotoIds = try requiredStringArray(params, "keepPhotoIds")
+                if keepPhotoIds.count > CullingService.batchMax {
+                    throw BridgeError.badParams("Too many keepPhotoIds")
+                }
+                Task {
+                    do {
+                        let results = try await cullingService.decideSimilarityGroup(
+                            sessionId: sessionId, groupId: groupId, keepPhotoIds: keepPhotoIds)
+                        completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: results)))
+                    } catch {
+                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                    }
+                }
+            } catch {
+                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            }
+
+        // culling.ipc.ts:273-285 —— 旧版 renderer 批量决策；ok(true)。
+        case "culling.batch_decide":
+            do {
+                let sessionId = try requiredString(params, "sessionId")
+                let photoIds = try requiredStringArray(params, "photoIds")
+                let decisionRaw = try requiredString(params, "decision")
+                guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
+                    throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
+                }
+                Task {
+                    do {
+                        try await cullingService.batchDecide(
+                            sessionId: sessionId, photoIds: photoIds, decision: decision)
+                        completion(WebResponse(ok: true, data: .bool(true)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                     }

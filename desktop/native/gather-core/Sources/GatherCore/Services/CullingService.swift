@@ -17,7 +17,7 @@
 // - MetadataMutationPort = TS MetadataMutationService（queuePhotoValues）。
 // - getNumber = TS SettingsService.getNumber（detect_input_size /
 //   face_preview_max_dimension 兜底，测试注入）。
-// - cullingHistoryRepo 与 TS 一样是可选依赖（老装配缺省时历史栈禁用）。
+// - cullingStore 与 TS 一样是可选依赖（老装配缺省时历史栈禁用）。
 //
 // 错误消息与 TS 逐字一致：CullingServiceError.description 即 TS `new Error(code)`
 // 的 message；CULLING_REVISION_CONFLICT 带 expected/current 插值参数。
@@ -227,6 +227,8 @@ extension CullingPhotoRow {
 public final class CullingHistorySink: @unchecked Sendable {
     public private(set) var entries: [CullingHistoryEntry] = []
 
+    public init() {}
+
     func append(_ newEntries: [CullingHistoryEntry]) {
         entries.append(contentsOf: newEntries)
     }
@@ -296,7 +298,7 @@ public final class CullingService {
     private let metadataSync: any CullingSyncPort
     private let metadataMutations: any MetadataMutationPort
     private let writeback: any CullingWritebackPort
-    private let cullingHistoryRepo: CullingHistoryRepo?
+    private let cullingStore: (any CullingStore)?
     private let getNumber: (String, Double) -> Double
 
     public init(
@@ -309,7 +311,7 @@ public final class CullingService {
         metadataSync: any CullingSyncPort,
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
-        cullingHistoryRepo: CullingHistoryRepo? = nil,
+        cullingStore: (any CullingStore)? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue }
     ) {
         self.photoRepo = photoRepo
@@ -321,8 +323,45 @@ public final class CullingService {
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
         self.writeback = writeback
-        self.cullingHistoryRepo = cullingHistoryRepo
+        self.cullingStore = cullingStore
         self.getNumber = getNumber
+    }
+
+    /// 单张更新完整入口：事务内决策 + 事务外历史落库（路由/decide 使用）。
+    @discardableResult
+    public func update(
+        sessionId: String,
+        photoId: String,
+        expectedRevision: Int,
+        patch: CullingUpdatePatch
+    ) async throws -> CullingUpdateResult {
+        let base = try getUpdateContext(sessionId: sessionId)
+        let sink = CullingHistorySink()
+        var result = try updateState(
+            sessionId: sessionId,
+            photoId: photoId,
+            expectedRevision: expectedRevision,
+            patch: patch,
+            context: CullingUpdateContext(
+                photos: base.photos,
+                photoById: base.photoById,
+                photosByAssetId: base.photosByAssetId,
+                groupMap: base.groupMap,
+                linkedByXmp: base.linkedByXmp,
+                historySink: sink
+            )
+        )
+        result.historyOperationId = try await commitHistory(sink.entries, sessionId: sessionId)
+        return result
+    }
+
+    /// 把 updateState 收集到的历史条目落到 Store（必须在决策事务提交之后）。
+    /// 返回操作 id；无 Store 或空条目时返回 nil（历史栈禁用语义）。
+    public func commitHistory(
+        _ entries: [CullingHistoryEntry], sessionId: String
+    ) async throws -> Int? {
+        guard let cullingStore, !entries.isEmpty else { return nil }
+        return try await cullingStore.appendHistory(sessionId: sessionId, entries: entries).id
     }
 
     // MARK: - 会话查找缓存（TS SessionLookupEntry / SessionUpdateEntry）
@@ -570,13 +609,9 @@ public final class CullingService {
                 )
             }
             if !historyEntries.isEmpty {
-                if let sink = context?.historySink {
-                    sink.append(historyEntries)
-                } else if let cullingHistoryRepo {
-                    historyOperationId = try cullingHistoryRepo.append(
-                        sessionId: sessionId, entries: historyEntries
-                    ).id
-                }
+                // Store 写入无法进同步事务：调用方经 context.historySink 收集后
+                // 用 commitHistory 落库（batchUpdate / 路由 culling.update）。
+                context?.historySink?.append(historyEntries)
             }
         }
 
@@ -605,7 +640,7 @@ public final class CullingService {
         sessionId: String,
         photoIds: [String],
         patch: CullingUpdatePatch
-    ) throws -> [CullingUpdateResult] {
+    ) async throws -> [CullingUpdateResult] {
         try validatePatch(patch)
         var uniqueIds: [String] = []
         for photoId in photoIds where !uniqueIds.contains(photoId) {
@@ -668,13 +703,15 @@ public final class CullingService {
                     )
                 ))
             }
-            if !historySink.entries.isEmpty {
-                if let operationId = try cullingHistoryRepo?.append(
-                    sessionId: sessionId, entries: historySink.entries
-                ).id {
-                    for index in results.indices {
-                        results[index].historyOperationId = operationId
-                    }
+        }
+        // 历史栈在 Store 连接上（跨连接不共享事务）；快照已随事务原子落地，
+        // 历史行失败仅丢失 undo 能力，不影响决策结果。
+        if !historySink.entries.isEmpty {
+            if let operationId = try await cullingStore?.appendHistory(
+                sessionId: sessionId, entries: historySink.entries
+            ).id {
+                for index in results.indices {
+                    results[index].historyOperationId = operationId
                 }
             }
         }
@@ -691,12 +728,12 @@ public final class CullingService {
         requestedEntries: [CullingHistoryApplyEntry],
         historyOperationId: Int? = nil,
         direction: CullingHistoryDirection? = nil
-    ) throws -> [CullingUpdateResult] {
+    ) async throws -> [CullingUpdateResult] {
         var historyOperationId = historyOperationId
         var entries = requestedEntries
         var historicalFields: [String: [CullingUpdatePatchField]] = [:]
         if let historyOperationId, let direction {
-            guard let operation = try cullingHistoryRepo?.get(sessionId: sessionId, operationId: historyOperationId) else {
+            guard let operation = try await cullingStore?.historyOperation(sessionId: sessionId, operationId: historyOperationId) else {
                 throw CullingServiceError.historyNotFound
             }
             if operation.undone != (direction == .redo) {
@@ -756,7 +793,7 @@ public final class CullingService {
             }
         }
         if let historyOperationId, let direction {
-            let operation = try cullingHistoryRepo?.get(sessionId: sessionId, operationId: historyOperationId)
+            let operation = try await cullingStore?.historyOperation(sessionId: sessionId, operationId: historyOperationId)
             for historical in operation?.entries ?? [] {
                 let row = currentRows[historical.photoId]
                 let cache = cacheRows[historical.photoId]
@@ -860,17 +897,18 @@ public final class CullingService {
                     schedule: false
                 )
             }
-            if let historyOperationId, let direction {
-                try cullingHistoryRepo?.setUndone(
-                    sessionId: sessionId,
-                    operationId: historyOperationId,
-                    undone: direction == .undo
-                )
-            } else if let cullingHistoryRepo, !historyEntries.isEmpty {
-                historyOperationId = try cullingHistoryRepo.append(
-                    sessionId: sessionId, entries: historyEntries
-                ).id
-            }
+        }
+        // 历史栈在 Store 连接上（跨连接不共享事务）；决策/元数据已原子落地。
+        if let operationId = historyOperationId, let direction {
+            try await cullingStore?.setHistoryUndone(
+                sessionId: sessionId,
+                operationId: operationId,
+                undone: direction == .undo
+            )
+        } else if let cullingStore, !historyEntries.isEmpty {
+            historyOperationId = try await cullingStore.appendHistory(
+                sessionId: sessionId, entries: historyEntries
+            ).id
         }
         for xmpPath in xmpPatches.keys {
             metadataSync.schedule(xmpPath: xmpPath)
@@ -892,7 +930,7 @@ public final class CullingService {
         sessionId: String,
         groupId: String,
         keepPhotoIds: [String]
-    ) throws -> [CullingUpdateResult] {
+    ) async throws -> [CullingUpdateResult] {
         guard keepPhotoIds.count <= Self.batchMax else { throw CullingServiceError.tooManyKeepPhotoIds }
         guard let resultRow = try similarityResultRepo.getLatest(sessionId: sessionId) else {
             throw CullingServiceError.noSimilarity
@@ -925,7 +963,7 @@ public final class CullingService {
                 .getByPhotoIds(sessionId: sessionId, photoIds: groupPhotoIds)
                 .map { ($0.photoId, $0) }
         )
-        return try applyHistory(
+        return try await applyHistory(
             sessionId: sessionId,
             requestedEntries: groupPhotoIds.map { photoId in
                 CullingHistoryApplyEntry(
@@ -998,9 +1036,12 @@ public final class CullingService {
     }
 
     /// TS: decide —— 旧版 renderer 的单张决策命令。
-    public func decide(sessionId: String, photoId: String, decision: LegacyCullingDecision) throws {
+    @discardableResult
+    public func decide(
+        sessionId: String, photoId: String, decision: LegacyCullingDecision
+    ) async throws -> CullingUpdateResult {
         let current = try cullingDecisionRepo.getDecision(sessionId: sessionId, photoId: photoId)
-        try updateState(
+        return try await update(
             sessionId: sessionId,
             photoId: photoId,
             expectedRevision: Int(current?.revision ?? 0),
@@ -1009,8 +1050,8 @@ public final class CullingService {
     }
 
     /// TS: batchDecide —— 旧版 renderer 的批量决策命令。
-    public func batchDecide(sessionId: String, photoIds: [String], decision: LegacyCullingDecision) throws {
-        try batchUpdate(
+    public func batchDecide(sessionId: String, photoIds: [String], decision: LegacyCullingDecision) async throws {
+        try await batchUpdate(
             sessionId: sessionId,
             photoIds: photoIds,
             patch: CullingUpdatePatch(pickState: decisionToPickState(decision))
@@ -1023,8 +1064,8 @@ public final class CullingService {
     }
 
     /// TS: getHistory —— 历史栈（limit 缺省 100，仓库内 clamp 到 500）。
-    public func getHistory(sessionId: String, limit: Int = 100) throws -> [CullingHistoryOperation] {
-        try cullingHistoryRepo?.list(sessionId: sessionId, limit: limit) ?? []
+    public func getHistory(sessionId: String, limit: Int = 100) async throws -> [CullingHistoryOperation] {
+        try await cullingStore?.historyList(sessionId: sessionId, limit: limit) ?? []
     }
 
     /// TS: getSummary —— 徽标计数（决策 + 缓存 fallback + 相似度组数）。

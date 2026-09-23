@@ -101,7 +101,8 @@ struct GatherApp: App {
                 persons: api.persons,
                 personStore: api.container.persons,
                 faceStore: api.container.faces,
-                metadataStore: api.container.metadata
+                metadataStore: api.container.metadata,
+                cullingStore: api.container.culling
             )
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。

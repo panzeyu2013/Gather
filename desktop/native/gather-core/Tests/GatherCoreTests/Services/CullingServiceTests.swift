@@ -179,7 +179,7 @@ private struct CullingHarness {
     let similarityRepo: SimilarityResultRepo
     let cacheRepo: MetadataCacheRepo
     let outboxRepo: MetadataOutboxRepo
-    let historyRepo: CullingHistoryRepo
+    let cullingStore: SQLiteCullingStore
     let sync: FakeSyncPort
     let mutations: FakeMutationPort
     let writeback: FakeWritebackPort
@@ -213,7 +213,11 @@ private func makeHarness(
     writeOutbox: Bool = false,
     history: Bool = true
 ) throws -> CullingHarness {
-    let db = try makeMigratedDB()
+    // 历史栈在 Store 连接上：临时文件库双连接（旧 DBConnection + SQLiteDatabase）。
+    let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-culling-\(UUID().uuidString).sqlite").path
+    let db = try DBConnection(path: dbPath)
+    try MigrationRunner().migrate(db)
     try insertSession(db, "session")
     let sync = FakeSyncPort()
     let outboxRepo = MetadataOutboxRepo(connection: db)
@@ -222,7 +226,7 @@ private func makeHarness(
         connection: writeOutbox ? db : nil
     )
     let writeback = FakeWritebackPort()
-    let historyRepo = CullingHistoryRepo(connection: db)
+    let cullingStore = SQLiteCullingStore(database: try SQLiteDatabase(path: dbPath))
     let service = CullingService(
         photoRepo: PhotoRepo(connection: db),
         cullingDecisionRepo: CullingDecisionRepo(connection: db),
@@ -233,7 +237,7 @@ private func makeHarness(
         metadataSync: sync,
         metadataMutations: mutations,
         writeback: writeback,
-        cullingHistoryRepo: history ? historyRepo : nil,
+        cullingStore: history ? cullingStore : nil,
         getNumber: { _, defaultValue in defaultValue }
     )
     return CullingHarness(
@@ -243,7 +247,7 @@ private func makeHarness(
         similarityRepo: SimilarityResultRepo(connection: db),
         cacheRepo: MetadataCacheRepo(connection: db),
         outboxRepo: outboxRepo,
-        historyRepo: historyRepo,
+        cullingStore: cullingStore,
         sync: sync, mutations: mutations, writeback: writeback
     )
 }
@@ -321,17 +325,17 @@ private func addDecision(
 @Suite("CullingService decide 语义")
 struct CullingDecideTests {
     @Test("decide keep → decision=keep, pickState=picked, revision=1，历史记录 fields=[pickState]")
-    func decideKeep() throws {
+    func decideKeep() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
 
-        try harness.service.decide(sessionId: "session", photoId: "p1", decision: .keep)
+        try await harness.service.decide(sessionId: "session", photoId: "p1", decision: .keep)
 
         let row = try requireDecision(harness, "p1")
         #expect(row.decision == "keep")
         #expect(row.revision == 1)
         #expect(row.rating == 0)
-        let history = try harness.historyRepo.list(sessionId: "session")
+        let history = try await harness.cullingStore.historyList(sessionId: "session")
         #expect(history.count == 1)
         #expect(history[0].entries.count == 1)
         #expect(history[0].entries[0].fields == [.pickState])
@@ -341,14 +345,14 @@ struct CullingDecideTests {
     }
 
     @Test("decide reject → pickState=rejected；decide pending → unreviewed")
-    func decideRejectAndPending() throws {
+    func decideRejectAndPending() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
 
-        try harness.service.decide(sessionId: "session", photoId: "p1", decision: .reject)
+        try await harness.service.decide(sessionId: "session", photoId: "p1", decision: .reject)
         #expect(try harness.decision("p1")?.decision == "reject")
 
-        let state = try harness.service.updateState(
+        let state = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 1,
             patch: CullingUpdatePatch(pickState: .unreviewed)
         )
@@ -357,11 +361,11 @@ struct CullingDecideTests {
     }
 
     @Test("updateState rating 直写 cache + queuePhotoValues(rating) + schedule + syncStatus pending")
-    func updateRatingQueuesMetadata() throws {
+    func updateRatingQueuesMetadata() async throws {
         let harness = try makeHarness(writeOutbox: true)
         try addPhoto(harness.db, id: "p1")
 
-        let result = try harness.service.updateState(
+        let result = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(rating: 5)
         )
@@ -378,23 +382,23 @@ struct CullingDecideTests {
         #expect(queued.values["rating"] == .number(5))
         #expect(harness.sync.scheduled == ["/shoot/p1.xmp"])
         // 历史字段含 rating。
-        let history = try harness.historyRepo.list(sessionId: "session")
+        let history = try await harness.cullingStore.historyList(sessionId: "session")
         #expect(history[0].entries[0].fields == [.rating])
     }
 
     @Test("updateState colorLabel 入队 label；None → 空串（写盘标签语义）")
-    func updateColorLabelMapsNoneToEmpty() throws {
+    func updateColorLabelMapsNoneToEmpty() async throws {
         let harness = try makeHarness(writeOutbox: true)
         try addPhoto(harness.db, id: "p1")
 
-        _ = try harness.service.updateState(
+        _ = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(colorLabel: .red)
         )
         #expect(harness.mutations.queued[0].values["label"] == .string("Red"))
         #expect(try harness.cacheRepo.get("p1")?.label == "Red")
 
-        _ = try harness.service.updateState(
+        _ = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 1,
             patch: CullingUpdatePatch(colorLabel: CaptureOneColorLabel.none)
         )
@@ -404,13 +408,13 @@ struct CullingDecideTests {
     }
 
     @Test("updateState 携带 cache 兜底：无决策行时 rating/label 来自 cache")
-    func updateStateFallsBackToCache() throws {
+    func updateStateFallsBackToCache() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try harness.cacheRepo.updateRating(photoId: "p1", rating: 4)
         try harness.cacheRepo.updateLabel(photoId: "p1", label: "Green")
 
-        let state = try harness.service.updateState(
+        let state = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
@@ -419,13 +423,13 @@ struct CullingDecideTests {
     }
 
     @Test("revision 冲突抛 CULLING_REVISION_CONFLICT（expected/current 插值）")
-    func revisionConflictThrows() throws {
+    func revisionConflictThrows() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        try harness.service.decide(sessionId: "session", photoId: "p1", decision: .keep)
+        try await harness.service.decide(sessionId: "session", photoId: "p1", decision: .keep)
 
-        #expect(throws: CullingServiceError.revisionConflict(expected: 0, current: 1)) {
-            try harness.service.updateState(
+        await #expect(throws: CullingServiceError.revisionConflict(expected: 0, current: 1)) {
+            try await harness.service.update(
                 sessionId: "session", photoId: "p1", expectedRevision: 0,
                 patch: CullingUpdatePatch(pickState: .rejected)
             )
@@ -435,24 +439,24 @@ struct CullingDecideTests {
     }
 
     @Test("空补丁抛 CULLING_PATCH_INVALID；非法 rating/pickState/colorLabel 抛逐字消息")
-    func validatePatchErrors() throws {
+    func validatePatchErrors() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
 
-        #expect(throws: CullingServiceError.patchInvalid) {
-            try harness.service.updateState(
+        await #expect(throws: CullingServiceError.patchInvalid) {
+            try await harness.service.update(
                 sessionId: "session", photoId: "p1", expectedRevision: 0,
                 patch: CullingUpdatePatch()
             )
         }
-        #expect(throws: CullingServiceError.ratingOutOfRange) {
-            try harness.service.updateState(
+        await #expect(throws: CullingServiceError.ratingOutOfRange) {
+            try await harness.service.update(
                 sessionId: "session", photoId: "p1", expectedRevision: 0,
                 patch: CullingUpdatePatch(rating: 6)
             )
         }
-        #expect(throws: CullingServiceError.ratingOutOfRange) {
-            try harness.service.updateState(
+        await #expect(throws: CullingServiceError.ratingOutOfRange) {
+            try await harness.service.update(
                 sessionId: "session", photoId: "p1", expectedRevision: 0,
                 patch: CullingUpdatePatch(rating: -1)
             )
@@ -465,36 +469,37 @@ struct CullingDecideTests {
     }
 
     @Test("未知照片抛 CULLING_PHOTO_NOT_IN_SESSION（fresh-read 兜底后仍缺失）")
-    func unknownPhotoThrows() throws {
+    func unknownPhotoThrows() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "known")
 
-        #expect(throws: CullingServiceError.photoNotInSession) {
-            try harness.service.updateState(
+        await #expect(throws: CullingServiceError.photoNotInSession) {
+            try await harness.service.update(
                 sessionId: "session", photoId: "ghost", expectedRevision: 0,
                 patch: CullingUpdatePatch(pickState: .picked)
             )
         }
-        #expect(throws: CullingServiceError.photoNotInSession) {
-            try harness.service.decide(sessionId: "session", photoId: "ghost", decision: .keep)
+        await #expect(throws: CullingServiceError.photoNotInSession) {
+            try await harness.service.decide(sessionId: "session", photoId: "ghost", decision: .keep)
         }
     }
 
     @Test("IPC 式更新：getUpdateContext 复用上下文，第二次点击以新 revision 通过")
-    func ipcStyleUpdateWithContext() throws {
+    func ipcStyleUpdateWithContext() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         let context = try harness.service.getUpdateContext(sessionId: "session")
 
-        let first = try harness.service.updateState(
+        let first = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
-            patch: CullingUpdatePatch(pickState: .picked), context: context
+            patch: CullingUpdatePatch(pickState: .picked)
         )
-        // 点击突发：同一个上下文、新 revision（复用缓存上下文不重读会话）。
-        let second = try harness.service.updateState(
+        // 点击突发：复用同一上下文（getUpdateContext 不重读会话），新 revision 通过。
+        _ = context
+        let second = try await harness.service.update(
             sessionId: "session", photoId: "p1",
             expectedRevision: first.states[0].revision,
-            patch: CullingUpdatePatch(rating: 4), context: context
+            patch: CullingUpdatePatch(rating: 4)
         )
         #expect(second.states[0].rating == 4)
         #expect(second.states[0].pickState == .picked)
@@ -507,7 +512,7 @@ struct CullingDecideTests {
 @Suite("CullingService 批量决策")
 struct CullingBatchTests {
     @Test("batchDecide 全部入组：upsert 顺序按输入序，组 id 来自相似度成员表")
-    func batchDecideWritesGroupIds() throws {
+    func batchDecideWritesGroupIds() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
@@ -515,7 +520,7 @@ struct CullingBatchTests {
         let resultId = try latestResultId(harness)
         let groupId = "\(resultId):0"
 
-        try harness.service.batchDecide(sessionId: "session", photoIds: ["p1", "p2"], decision: .keep)
+        try await harness.service.batchDecide(sessionId: "session", photoIds: ["p1", "p2"], decision: .keep)
 
         let first = try requireDecision(harness, "p1")
         #expect(first.decision == "keep")
@@ -526,17 +531,17 @@ struct CullingBatchTests {
         #expect(second.groupId == groupId)
         #expect(second.revision == 1)
         // 单历史操作承载两条 entry。
-        let history = try harness.historyRepo.list(sessionId: "session")
+        let history = try await harness.cullingStore.historyList(sessionId: "session")
         #expect(history.count == 1)
         #expect(history[0].entries.map(\.photoId) == ["p1", "p2"])
     }
 
     @Test("共享 RAW/JPEG 元数据合并为一次 XMP 操作（upsert 两次、queuePhotoValues 一次、结果一条）")
-    func coalescesSharedMetadata() throws {
+    func coalescesSharedMetadata() async throws {
         let harness = try makeHarness()
         try addVariantPair(harness.db, assetId: "asset-1")
 
-        let results = try harness.service.batchUpdate(
+        let results = try await harness.service.batchUpdate(
             sessionId: "session", photoIds: ["asset-1-raw", "asset-1-jpg"],
             patch: CullingUpdatePatch(rating: 5)
         )
@@ -549,16 +554,16 @@ struct CullingBatchTests {
         #expect(try harness.decision("asset-1-jpg")?.rating == 5)
         #expect(harness.mutations.queued.count == 1)
         // rating 与 label 在同一历史操作内。
-        let history = try harness.historyRepo.list(sessionId: "session")
+        let history = try await harness.cullingStore.historyList(sessionId: "session")
         #expect(history[0].entries.count == 2)
     }
 
     @Test("同一资产的变体 pick 更新合并为一次操作（upsert 两次、结果一条）")
-    func coalescesAssetPick() throws {
+    func coalescesAssetPick() async throws {
         let harness = try makeHarness()
         try addVariantPair(harness.db, assetId: "asset-1")
 
-        let results = try harness.service.batchUpdate(
+        let results = try await harness.service.batchUpdate(
             sessionId: "session", photoIds: ["asset-1-raw", "asset-1-jpg"],
             patch: CullingUpdatePatch(pickState: .picked)
         )
@@ -574,7 +579,7 @@ struct CullingBatchTests {
     }
 
     @Test("decideSimilarityGroup：K 保留 + 其余拒绝，整批单事务")
-    func decideGroupKeepsKRejectsRest() throws {
+    func decideGroupKeepsKRejectsRest() async throws {
         let harness = try makeHarness()
         for id in ["p1", "p2", "p3", "p4"] { try addPhoto(harness.db, id: id) }
         try addSimilarityResult(
@@ -584,7 +589,7 @@ struct CullingBatchTests {
 
         let resultId = try latestResultId(harness)
         let groupId = "\(resultId):0"
-        let results = try harness.service.decideSimilarityGroup(
+        let results = try await harness.service.decideSimilarityGroup(
             sessionId: "session", groupId: groupId, keepPhotoIds: ["p1", "p3"]
         )
 
@@ -598,7 +603,7 @@ struct CullingBatchTests {
     }
 
     @Test("成员表为空时回退 groups_json 重建组索引")
-    func groupIndexFallsBackToGroupsJson() throws {
+    func groupIndexFallsBackToGroupsJson() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1", filepath: "/a.jpg")
         try addPhoto(harness.db, id: "p2", filepath: "/b.jpg")
@@ -612,7 +617,7 @@ struct CullingBatchTests {
             """),
         ])
 
-        try harness.service.batchDecide(sessionId: "session", photoIds: ["p1", "p2"], decision: .keep)
+        try await harness.service.batchDecide(sessionId: "session", photoIds: ["p1", "p2"], decision: .keep)
 
         // 组 id "resultId:index" 由 groups_json 路径重建。
         let row = try requireDecision(harness, "p1")
@@ -621,12 +626,12 @@ struct CullingBatchTests {
     }
 
     @Test("batchUpdate 拒绝陈旧照片 id：CULLING_PHOTOS_NOT_IN_SESSION")
-    func batchRejectsStalePhotoIds() throws {
+    func batchRejectsStalePhotoIds() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "known")
 
-        #expect(throws: CullingServiceError.photosNotInSession) {
-            try harness.service.batchUpdate(
+        await #expect(throws: CullingServiceError.photosNotInSession) {
+            try await harness.service.batchUpdate(
                 sessionId: "session", photoIds: ["known", "stale"],
                 patch: CullingUpdatePatch(rating: 5)
             )
@@ -634,23 +639,23 @@ struct CullingBatchTests {
     }
 
     @Test("batchUpdate 空选择抛 CULLING_EMPTY_SELECTION")
-    func batchEmptySelectionThrows() throws {
+    func batchEmptySelectionThrows() async throws {
         let harness = try makeHarness()
 
-        #expect(throws: CullingServiceError.emptySelection) {
-            try harness.service.batchUpdate(
+        await #expect(throws: CullingServiceError.emptySelection) {
+            try await harness.service.batchUpdate(
                 sessionId: "session", photoIds: [], patch: CullingUpdatePatch(rating: 5)
             )
         }
     }
 
     @Test("batchUpdate 去重输入 id 并给所有结果附同一历史操作 id")
-    func batchDedupesAndSharesOperationId() throws {
+    func batchDedupesAndSharesOperationId() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
 
-        let results = try harness.service.batchUpdate(
+        let results = try await harness.service.batchUpdate(
             sessionId: "session", photoIds: ["p1", "p1", "p2"],
             patch: CullingUpdatePatch(pickState: .picked)
         )
@@ -666,16 +671,16 @@ struct CullingBatchTests {
 @Suite("CullingService 历史栈 undo/redo")
 struct CullingHistoryTests {
     @Test("undo 恢复 before 快照并标记 undone；redo 恢复 after 快照")
-    func undoThenRedo() throws {
+    func undoThenRedo() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        let applied = try harness.service.updateState(
+        let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
         let operationId = try #require(applied.historyOperationId)
 
-        let undone = try harness.service.applyHistory(
+        let undone = try await harness.service.applyHistory(
             sessionId: "session", requestedEntries: [],
             historyOperationId: operationId, direction: .undo
         )
@@ -684,7 +689,7 @@ struct CullingHistoryTests {
         #expect(undone[0].historyOperationId == operationId)
         #expect(try harness.decision("p1")?.decision == "pending")
 
-        let redone = try harness.service.applyHistory(
+        let redone = try await harness.service.applyHistory(
             sessionId: "session", requestedEntries: [],
             historyOperationId: operationId, direction: .redo
         )
@@ -692,22 +697,22 @@ struct CullingHistoryTests {
         #expect(try harness.decision("p1")?.decision == "keep")
 
         // 历史栈顺序与 undone 标记。
-        let history = try harness.historyRepo.list(sessionId: "session")
+        let history = try await harness.cullingStore.historyList(sessionId: "session")
         #expect(history.count == 1)
         #expect(history[0].undone == false)
     }
 
     @Test("undo/redo 同步恢复 rating/label（cache 与 outbox 一并回滚）")
-    func undoRestoresRatingAndLabel() throws {
+    func undoRestoresRatingAndLabel() async throws {
         let harness = try makeHarness(writeOutbox: true)
         try addPhoto(harness.db, id: "p1")
-        let applied = try harness.service.updateState(
+        let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(rating: 5, colorLabel: .red)
         )
         let operationId = try #require(applied.historyOperationId)
 
-        _ = try harness.service.applyHistory(
+        _ = try await harness.service.applyHistory(
             sessionId: "session", requestedEntries: [],
             historyOperationId: operationId, direction: .undo
         )
@@ -718,7 +723,7 @@ struct CullingHistoryTests {
         #expect(harness.mutations.queued.count == 2)
         #expect(harness.sync.scheduled.count == 2)
 
-        _ = try harness.service.applyHistory(
+        _ = try await harness.service.applyHistory(
             sessionId: "session", requestedEntries: [],
             historyOperationId: operationId, direction: .redo
         )
@@ -727,35 +732,35 @@ struct CullingHistoryTests {
     }
 
     @Test("未知操作抛 CULLING_HISTORY_NOT_FOUND；方向状态不符抛 ALREADY_UNDONE / NOT_UNDONE")
-    func historyStateErrors() throws {
+    func historyStateErrors() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        let applied = try harness.service.updateState(
+        let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
         let operationId = try #require(applied.historyOperationId)
 
-        #expect(throws: CullingServiceError.historyNotFound) {
-            try harness.service.applyHistory(
+        await #expect(throws: CullingServiceError.historyNotFound) {
+            try await harness.service.applyHistory(
                 sessionId: "session", requestedEntries: [],
                 historyOperationId: 999, direction: .undo
             )
         }
         // 未 undo 就 redo → CULLING_HISTORY_NOT_UNDONE。
-        #expect(throws: CullingServiceError.historyNotUndone) {
-            try harness.service.applyHistory(
+        await #expect(throws: CullingServiceError.historyNotUndone) {
+            try await harness.service.applyHistory(
                 sessionId: "session", requestedEntries: [],
                 historyOperationId: operationId, direction: .redo
             )
         }
-        _ = try harness.service.applyHistory(
+        _ = try await harness.service.applyHistory(
             sessionId: "session", requestedEntries: [],
             historyOperationId: operationId, direction: .undo
         )
         // 已 undo 再 undo → CULLING_HISTORY_ALREADY_UNDONE。
-        #expect(throws: CullingServiceError.historyAlreadyUndone) {
-            try harness.service.applyHistory(
+        await #expect(throws: CullingServiceError.historyAlreadyUndone) {
+            try await harness.service.applyHistory(
                 sessionId: "session", requestedEntries: [],
                 historyOperationId: operationId, direction: .undo
             )
@@ -763,15 +768,15 @@ struct CullingHistoryTests {
     }
 
     @Test("历史操作被外部编辑分叉时抛 CULLING_HISTORY_DIVERGED")
-    func historyDiverged() throws {
+    func historyDiverged() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        let applied = try harness.service.updateState(
+        let applied = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
         let operationId = try #require(applied.historyOperationId)
-        _ = try harness.service.applyHistory(
+        _ = try await harness.service.applyHistory(
             sessionId: "session", requestedEntries: [],
             historyOperationId: operationId, direction: .undo
         )
@@ -785,8 +790,8 @@ struct CullingHistoryTests {
             )
         )
 
-        #expect(throws: CullingServiceError.historyDiverged) {
-            try harness.service.applyHistory(
+        await #expect(throws: CullingServiceError.historyDiverged) {
+            try await harness.service.applyHistory(
                 sessionId: "session", requestedEntries: [],
                 historyOperationId: operationId, direction: .redo
             )
@@ -794,11 +799,11 @@ struct CullingHistoryTests {
     }
 
     @Test("applyHistory 显式条目（renderer 重建补丁）：expectedRevision 校验 + 落库")
-    func applyExplicitEntries() throws {
+    func applyExplicitEntries() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
 
-        let results = try harness.service.applyHistory(
+        let results = try await harness.service.applyHistory(
             sessionId: "session",
             requestedEntries: [
                 CullingHistoryApplyEntry(
@@ -811,13 +816,13 @@ struct CullingHistoryTests {
         #expect(try harness.decision("p1")?.decision == "keep")
         #expect(try harness.decision("p1")?.rating == 3)
         // 新历史操作（undo 后追加即丢弃 redo 分支）。
-        let history = try harness.historyRepo.list(sessionId: "session")
+        let history = try await harness.cullingStore.historyList(sessionId: "session")
         #expect(history.count == 1)
         #expect(history[0].entries[0].fields == [.rating, .pickState])
 
         // expectedRevision 不符 → CULLING_REVISION_CONFLICT。
-        #expect(throws: CullingServiceError.revisionConflict(expected: 0, current: 1)) {
-            try harness.service.applyHistory(
+        await #expect(throws: CullingServiceError.revisionConflict(expected: 0, current: 1)) {
+            try await harness.service.applyHistory(
                 sessionId: "session",
                 requestedEntries: [
                     CullingHistoryApplyEntry(
@@ -830,12 +835,12 @@ struct CullingHistoryTests {
     }
 
     @Test("applyHistory 拒绝重复照片：'History command contains duplicate photos'")
-    func applyRejectsDuplicatePhotos() throws {
+    func applyRejectsDuplicatePhotos() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
 
-        #expect(throws: CullingServiceError.historyDuplicatePhotos) {
-            try harness.service.applyHistory(
+        await #expect(throws: CullingServiceError.historyDuplicatePhotos) {
+            try await harness.service.applyHistory(
                 sessionId: "session",
                 requestedEntries: [
                     CullingHistoryApplyEntry(photoId: "p1", expectedRevision: 0, patch: CullingUpdatePatch(pickState: .picked)),
@@ -846,15 +851,15 @@ struct CullingHistoryTests {
     }
 
     @Test("历史栈顺序守卫（仓库层，与 TS culling-history-repository 一致）：undo/redo 只能沿栈顶")
-    func historyStackOrder() throws {
+    func historyStackOrder() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
-        let first = try harness.service.updateState(
+        let first = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
-        let second = try harness.service.updateState(
+        let second = try await harness.service.update(
             sessionId: "session", photoId: "p2", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
@@ -862,62 +867,62 @@ struct CullingHistoryTests {
         let secondId = try #require(second.historyOperationId!)
 
         // 非栈顶 undo → CULLING_UNDO_NOT_LATEST（TS 逐字）。
-        #expect(throws: DBError.message("CULLING_UNDO_NOT_LATEST")) {
-            try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: true)
+        await await #expect(throws: CullingStoreError.undoNotLatest) {
+            try await harness.cullingStore.setHistoryUndone(sessionId: "session", operationId: firstId, undone: true)
         }
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: true)
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: true)
+        try await harness.cullingStore.setHistoryUndone(sessionId: "session", operationId: secondId, undone: true)
+        try await harness.cullingStore.setHistoryUndone(sessionId: "session", operationId: firstId, undone: true)
         // 非栈顶 redo → CULLING_REDO_OUT_OF_ORDER（TS 逐字）。
-        #expect(throws: DBError.message("CULLING_REDO_OUT_OF_ORDER")) {
-            try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: false)
+        await await #expect(throws: CullingStoreError.redoOutOfOrder) {
+            try await harness.cullingStore.setHistoryUndone(sessionId: "session", operationId: secondId, undone: false)
         }
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: false)
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: false)
+        try await harness.cullingStore.setHistoryUndone(sessionId: "session", operationId: firstId, undone: false)
+        try await harness.cullingStore.setHistoryUndone(sessionId: "session", operationId: secondId, undone: false)
 
-        #expect(try harness.historyRepo.list(sessionId: "session").map(\.undone) == [false, false])
+        #expect(try await harness.cullingStore.historyList(sessionId: "session").map(\.undone) == [false, false])
     }
 
     @Test("undo 后追加新操作丢弃 redo 分支（TS 语义：append 删除 undone=1 行）")
-    func appendDropsRedoBranch() throws {
+    func appendDropsRedoBranch() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try addPhoto(harness.db, id: "p3")
-        let first = try harness.service.updateState(
+        let first = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
-        let abandoned = try harness.service.updateState(
+        let abandoned = try await harness.service.update(
             sessionId: "session", photoId: "p2", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
-        _ = try harness.service.applyHistory(
+        _ = try await harness.service.applyHistory(
             sessionId: "session", requestedEntries: [],
             historyOperationId: abandoned.historyOperationId!, direction: .undo
         )
-        let replacement = try harness.service.updateState(
+        let replacement = try await harness.service.update(
             sessionId: "session", photoId: "p3", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
 
         // 被放弃的操作被删除；列表只剩 replacement 与 first。
-        #expect(try harness.historyRepo.get(
+        #expect(try await harness.cullingStore.historyOperation(
             sessionId: "session", operationId: abandoned.historyOperationId!
         ) == nil)
-        #expect(try harness.historyRepo.list(sessionId: "session").map(\.id)
+        #expect(try await harness.cullingStore.historyList(sessionId: "session").map(\.id)
             == [replacement.historyOperationId!, first.historyOperationId!])
     }
 
     @Test("getHistory 返回历史栈（limit 透传仓库 clamp）")
-    func getHistoryLists() throws {
+    func getHistoryLists() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        _ = try harness.service.updateState(
+        _ = try await harness.service.update(
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(pickState: .picked)
         )
 
-        let history = try harness.service.getHistory(sessionId: "session")
+        let history = try await harness.service.getHistory(sessionId: "session")
         #expect(history.count == 1)
         #expect(history[0].entries[0].photoId == "p1")
     }
@@ -967,14 +972,14 @@ struct CullingSummaryResetTests {
     }
 
     @Test("无相似度结果时 totalGroups 为 0")
-    func summaryWithoutSimilarity() throws {
+    func summaryWithoutSimilarity() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         #expect(try harness.service.getSummary(sessionId: "session").totalGroups == 0)
     }
 
     @Test("reset 清空整个会话；reset(组) 只清该组（含 confirmed 命令面）")
-    func resetScopes() throws {
+    func resetScopes() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
@@ -985,7 +990,7 @@ struct CullingSummaryResetTests {
             "UPDATE culling_decisions SET group_id = '7:0' WHERE photo_id = 'p2'"
         ).run()
 
-        #expect(throws: CullingServiceError.resetConfirmRequired) {
+        await #expect(throws: CullingServiceError.resetConfirmRequired) {
             try harness.service.resetCommand(sessionId: "session", confirmed: false)
         }
         try harness.service.resetCommand(sessionId: "session", groupId: "7:0", confirmed: true)
@@ -998,7 +1003,7 @@ struct CullingSummaryResetTests {
     }
 
     @Test("getGroups 计数 keep/reject/pending 并按 groupIndex 排序")
-    func groupsCountsAndOrder() throws {
+    func groupsCountsAndOrder() async throws {
         let harness = try makeHarness()
         for id in ["p1", "p2", "p3", "p4", "p5", "p6"] { try addPhoto(harness.db, id: id) }
         try addSimilarityResult(
@@ -1025,24 +1030,24 @@ struct CullingSummaryResetTests {
     }
 
     @Test("无相似度结果时 getGroups 返回空")
-    func groupsWithoutResult() throws {
+    func groupsWithoutResult() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         #expect(try harness.service.getGroups(sessionId: "session").isEmpty)
     }
 
     @Test("decideSimilarityGroup 前置校验：无结果/组太小/keep 非法")
-    func decideGroupValidation() throws {
+    func decideGroupValidation() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
 
-        #expect(throws: CullingServiceError.noSimilarity) {
-            try harness.service.decideSimilarityGroup(sessionId: "session", groupId: "1:0", keepPhotoIds: ["p1"])
+        await #expect(throws: CullingServiceError.noSimilarity) {
+            try await harness.service.decideSimilarityGroup(sessionId: "session", groupId: "1:0", keepPhotoIds: ["p1"])
         }
         try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0)])
         let firstId = try latestResultId(harness)
-        #expect(throws: CullingServiceError.groupTooSmall) {
-            try harness.service.decideSimilarityGroup(sessionId: "session", groupId: "\(firstId):0", keepPhotoIds: ["p1"])
+        await #expect(throws: CullingServiceError.groupTooSmall) {
+            try await harness.service.decideSimilarityGroup(sessionId: "session", groupId: "\(firstId):0", keepPhotoIds: ["p1"])
         }
         try addPhoto(harness.db, id: "p2")
         _ = try harness.similarityRepo.replace(
@@ -1053,14 +1058,14 @@ struct CullingSummaryResetTests {
         let secondId = try latestResultId(harness)
         let groupId = "\(secondId):0"
         // keep 数量非法（空/全量/组外照片）。
-        #expect(throws: CullingServiceError.keepNotInGroup) {
-            try harness.service.decideSimilarityGroup(sessionId: "session", groupId: groupId, keepPhotoIds: [])
+        await #expect(throws: CullingServiceError.keepNotInGroup) {
+            try await harness.service.decideSimilarityGroup(sessionId: "session", groupId: groupId, keepPhotoIds: [])
         }
-        #expect(throws: CullingServiceError.keepNotInGroup) {
-            try harness.service.decideSimilarityGroup(sessionId: "session", groupId: groupId, keepPhotoIds: ["p1", "p2"])
+        await #expect(throws: CullingServiceError.keepNotInGroup) {
+            try await harness.service.decideSimilarityGroup(sessionId: "session", groupId: groupId, keepPhotoIds: ["p1", "p2"])
         }
-        #expect(throws: CullingServiceError.keepNotInGroup) {
-            try harness.service.decideSimilarityGroup(sessionId: "session", groupId: groupId, keepPhotoIds: ["outside"])
+        await #expect(throws: CullingServiceError.keepNotInGroup) {
+            try await harness.service.decideSimilarityGroup(sessionId: "session", groupId: groupId, keepPhotoIds: ["outside"])
         }
     }
 }
@@ -1072,7 +1077,7 @@ struct CullingWritebackTests {
     @Test("writeback 未确认抛 WRITEBACK_CONFIRM_REQUIRED")
     func writebackRequiresConfirm() async throws {
         let harness = try makeHarness()
-        await #expect(throws: CullingServiceError.writebackConfirmRequired) {
+        await await #expect(throws: CullingServiceError.writebackConfirmRequired) {
             _ = try await harness.service.writeback(
                 sessionId: "session", target: .keyword, confirmed: false
             )
@@ -1085,7 +1090,7 @@ struct CullingWritebackTests {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
 
-        await #expect(throws: CullingServiceError.noDecisions) {
+        await await #expect(throws: CullingServiceError.noDecisions) {
             _ = try await harness.service.writeback(
                 sessionId: "session", target: .keyword, confirmed: true
             )
@@ -1202,7 +1207,7 @@ struct CullingWritebackTests {
     @Test("cleanup 未确认抛 WRITEBACK_CLEANUP_CONFIRM_REQUIRED；确认后合并两路结果")
     func cleanupMergesResults() async throws {
         let harness = try makeHarness()
-        await #expect(throws: CullingServiceError.writebackCleanupConfirmRequired) {
+        await await #expect(throws: CullingServiceError.writebackCleanupConfirmRequired) {
             _ = try await harness.service.cleanup(sessionId: "session", confirmed: false)
         }
         harness.sync.cleanupResult = CleanupResult(deletedCount: 2, errors: ["bg-error"])
@@ -1219,10 +1224,10 @@ struct CullingWritebackTests {
     @Test("finalizeSync 未确认抛 CULLING_FINALIZE_CONFIRM_REQUIRED；retryFailedWriteback 未确认抛 WRITEBACK_RETRY_CONFIRM_REQUIRED")
     func finalizeAndRetryConfirmations() async throws {
         let harness = try makeHarness()
-        await #expect(throws: CullingServiceError.finalizeConfirmRequired) {
+        await await #expect(throws: CullingServiceError.finalizeConfirmRequired) {
             _ = try await harness.service.finalizeSync(sessionId: "session", confirmed: false)
         }
-        await #expect(throws: CullingServiceError.writebackRetryConfirmRequired) {
+        await await #expect(throws: CullingServiceError.writebackRetryConfirmRequired) {
             _ = try await harness.service.retryFailedWriteback(sessionId: "session", confirmed: false)
         }
         _ = try await harness.service.finalizeSync(sessionId: "session", confirmed: true)
