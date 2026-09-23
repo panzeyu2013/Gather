@@ -254,7 +254,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
         }
         let metadataService = MetadataService(
-            metadataCacheRepo: metadataCacheRepo,
+            metadataStore: metadataStore,
             xmp: xmp,
             connection: db,
             mutations: metadataMutationService,
@@ -265,7 +265,6 @@ public final class SessionCommandRouter: CommandRouter {
             xmp: xmp,
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
-            metadataCacheRepo: metadataCacheRepo,
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,
             outboxRepo: outboxRepo,
@@ -303,6 +302,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataMutations: metadataMutationService,
             writeback: writebackService,
             cullingStore: cullingStore,
+            metadataStore: metadataStore,
             getNumber: { key, defaultValue in
                 settings.number(key, default: defaultValue)
             }

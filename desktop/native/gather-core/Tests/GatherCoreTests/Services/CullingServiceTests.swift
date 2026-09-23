@@ -238,6 +238,7 @@ private func makeHarness(
         metadataMutations: mutations,
         writeback: writeback,
         cullingStore: history ? cullingStore : nil,
+        metadataStore: SQLiteMetadataStore(database: try SQLiteDatabase(path: dbPath)),
         getNumber: { _, defaultValue in defaultValue }
     )
     return CullingHarness(

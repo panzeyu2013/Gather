@@ -119,6 +119,7 @@ public protocol MetadataStore: Sendable {
     // MARK: photo_metadata_cache
 
     func upsertMetadata(photoId: String, sessionId: String, data: MetadataCacheInput) async throws
+    func upsertMetadataBatch(_ entries: [(photoId: String, sessionId: String, data: MetadataCacheInput)]) async throws
     func metadata(photoId: String) async throws -> MetadataCacheRecord?
     func metadataBatch(photoIds: [String]) async throws -> [MetadataCacheRecord]
     func deleteMetadataBySession(_ sessionId: String) async throws
@@ -198,6 +199,16 @@ public struct SQLiteMetadataStore: MetadataStore {
                 .text(nowISOString()),
             ]
         )
+    }
+
+    public func upsertMetadataBatch(
+        _ entries: [(photoId: String, sessionId: String, data: MetadataCacheInput)]
+    ) async throws {
+        // 逐条 upsert（每条自带语句的事务）；缓存行是派生数据，
+        // 批中间失败重跑即可，不要求跨行原子。
+        for entry in entries {
+            try await upsertMetadata(photoId: entry.photoId, sessionId: entry.sessionId, data: entry.data)
+        }
     }
 
     public func metadata(photoId: String) async throws -> MetadataCacheRecord? {

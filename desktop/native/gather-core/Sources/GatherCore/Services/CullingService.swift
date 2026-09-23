@@ -222,12 +222,31 @@ extension CullingPhotoRow {
     }
 }
 
+/// 决策事务提交后要写回元数据缓存列的补丁（派生数据，事务外经 MetadataStore 落库）。
+public struct CullingCachePatch: Sendable {
+    public let photoId: String
+    public let rating: Int64?
+    public let label: String?
+
+    public init(photoId: String, rating: Int64? = nil, label: String? = nil) {
+        self.photoId = photoId
+        self.rating = rating
+        self.label = label
+    }
+}
+
 /// TS: CullingUpdateContext.historySink —— 批量/历史路径共用的追加缓冲区
 /// （batchUpdate 把局部数组经上下文传入 updateState，成功后再整体落库）。
 public final class CullingHistorySink: @unchecked Sendable {
     public private(set) var entries: [CullingHistoryEntry] = []
+    /// 事务内收集、提交后落库的元数据缓存补丁（rating/label 派生列）。
+    public private(set) var cachePatches: [CullingCachePatch] = []
 
     public init() {}
+
+    func appendCachePatch(_ patch: CullingCachePatch) {
+        cachePatches.append(patch)
+    }
 
     func append(_ newEntries: [CullingHistoryEntry]) {
         entries.append(contentsOf: newEntries)
@@ -244,6 +263,8 @@ public struct CullingUpdateContext {
     public var groupMap: [String: String]
     public var linkedByXmp: [String: [CullingPhotoRow]]
     public var historySink: CullingHistorySink? // TS: historySink?
+    /// 元数据缓存行（派生列基线）：调用方在事务外预读后传入。
+    public var cacheRows: [String: MetadataCacheRecord]
 
     public init(
         photos: [CullingPhotoRow],
@@ -251,7 +272,8 @@ public struct CullingUpdateContext {
         photosByAssetId: [String: [CullingPhotoRow]],
         groupMap: [String: String],
         linkedByXmp: [String: [CullingPhotoRow]],
-        historySink: CullingHistorySink? = nil
+        historySink: CullingHistorySink? = nil,
+        cacheRows: [String: MetadataCacheRecord] = [:]
     ) {
         self.photos = photos
         self.photoById = photoById
@@ -259,6 +281,7 @@ public struct CullingUpdateContext {
         self.groupMap = groupMap
         self.linkedByXmp = linkedByXmp
         self.historySink = historySink
+        self.cacheRows = cacheRows
     }
 }
 
@@ -299,6 +322,7 @@ public final class CullingService {
     private let metadataMutations: any MetadataMutationPort
     private let writeback: any CullingWritebackPort
     private let cullingStore: (any CullingStore)?
+    private let metadataStore: (any MetadataStore)?
     private let getNumber: (String, Double) -> Double
 
     public init(
@@ -312,6 +336,7 @@ public final class CullingService {
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
         cullingStore: (any CullingStore)? = nil,
+        metadataStore: (any MetadataStore)? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue }
     ) {
         self.photoRepo = photoRepo
@@ -324,6 +349,7 @@ public final class CullingService {
         self.metadataMutations = metadataMutations
         self.writeback = writeback
         self.cullingStore = cullingStore
+        self.metadataStore = metadataStore
         self.getNumber = getNumber
     }
 
@@ -337,6 +363,8 @@ public final class CullingService {
     ) async throws -> CullingUpdateResult {
         let base = try getUpdateContext(sessionId: sessionId)
         let sink = CullingHistorySink()
+        let singleCache = (try await metadataStore?.metadataBatch(photoIds: [photoId])) ?? []
+        let cacheRows = Dictionary(uniqueKeysWithValues: singleCache.map { ($0.photoId, $0) })
         var result = try updateState(
             sessionId: sessionId,
             photoId: photoId,
@@ -348,20 +376,36 @@ public final class CullingService {
                 photosByAssetId: base.photosByAssetId,
                 groupMap: base.groupMap,
                 linkedByXmp: base.linkedByXmp,
-                historySink: sink
+                historySink: sink,
+                cacheRows: cacheRows
             )
         )
-        result.historyOperationId = try await commitHistory(sink.entries, sessionId: sessionId)
+        result.historyOperationId = try await commitHistory(
+            sink.entries, sessionId: sessionId, cachePatches: sink.cachePatches)
         return result
     }
 
     /// 把 updateState 收集到的历史条目落到 Store（必须在决策事务提交之后）。
     /// 返回操作 id；无 Store 或空条目时返回 nil（历史栈禁用语义）。
     public func commitHistory(
-        _ entries: [CullingHistoryEntry], sessionId: String
+        _ entries: [CullingHistoryEntry], sessionId: String, cachePatches: [CullingCachePatch] = []
     ) async throws -> Int? {
+        try await commitCachePatches(cachePatches)
         guard let cullingStore, !entries.isEmpty else { return nil }
         return try await cullingStore.appendHistory(sessionId: sessionId, entries: entries).id
+    }
+
+    /// 事务外写回元数据缓存列（rating/label 派生列）。
+    public func commitCachePatches(_ patches: [CullingCachePatch]) async throws {
+        guard let metadataStore else { return }
+        for patch in patches {
+            if let rating = patch.rating {
+                try await metadataStore.updateRating(photoId: patch.photoId, rating: rating)
+            }
+            if let label = patch.label {
+                try await metadataStore.updateLabel(photoId: patch.photoId, label: label)
+            }
+        }
     }
 
     // MARK: - 会话查找缓存（TS SessionLookupEntry / SessionUpdateEntry）
@@ -522,6 +566,7 @@ public final class CullingService {
         var beforeStates: [AssetCullingState] = []
         var historyOperationId: Int?
         var metadataPatch: [String: JSONValue] = [:]
+        let cacheRows = context?.cacheRows ?? [:]
         if let rating = patch.rating { metadataPatch["rating"] = .number(rating) }
         if let colorLabel = patch.colorLabel {
             // TS: colorLabel === 'None' → ''（写盘标签语义）。
@@ -532,11 +577,6 @@ public final class CullingService {
             let existingRows = Dictionary(
                 uniqueKeysWithValues: try cullingDecisionRepo
                     .getByPhotoIds(sessionId: sessionId, photoIds: affectedPhotos.map(\.id))
-                    .map { ($0.photoId, $0) }
-            )
-            let cacheRows = Dictionary(
-                uniqueKeysWithValues: try metadataCacheRepo
-                    .getBatch(affectedPhotos.map(\.id))
                     .map { ($0.photoId, $0) }
             )
 
@@ -568,10 +608,12 @@ public final class CullingService {
                     )
                 )
                 if patch.rating != nil {
-                    try metadataCacheRepo.updateRating(photoId: photo.id, rating: Int64(nextRating))
+                    context?.historySink?.appendCachePatch(
+                        CullingCachePatch(photoId: photo.id, rating: Int64(nextRating)))
                 }
                 if patch.colorLabel != nil {
-                    try metadataCacheRepo.updateLabel(photoId: photo.id, label: nextColorLabel.rawValue)
+                    context?.historySink?.appendCachePatch(
+                        CullingCachePatch(photoId: photo.id, label: nextColorLabel.rawValue))
                 }
                 resultStates.append(AssetCullingState(
                     photoId: photo.id,
@@ -685,6 +727,8 @@ public final class CullingService {
                 .getByPhotoIds(sessionId: sessionId, photoIds: operationIds)
                 .map { ($0.photoId, $0) }
         )
+        let batchCache = (try await metadataStore?.metadataBatch(photoIds: operationIds)) ?? []
+        let batchCacheRows = Dictionary(uniqueKeysWithValues: batchCache.map { ($0.photoId, $0) })
         try connection.transaction {
             for photoId in operationIds {
                 let current = currentRows[photoId]
@@ -699,13 +743,15 @@ public final class CullingService {
                         photosByAssetId: entry.photosByAssetId,
                         groupMap: groupMap,
                         linkedByXmp: linkedByXmp,
-                        historySink: historySink
+                        historySink: historySink,
+                        cacheRows: batchCacheRows
                     )
                 ))
             }
         }
         // 历史栈在 Store 连接上（跨连接不共享事务）；快照已随事务原子落地，
         // 历史行失败仅丢失 undo 能力，不影响决策结果。
+        try await commitCachePatches(historySink.cachePatches)
         if !historySink.entries.isEmpty {
             if let operationId = try await cullingStore?.appendHistory(
                 sessionId: sessionId, entries: historySink.entries
@@ -776,11 +822,15 @@ public final class CullingService {
                 .getByPhotoIds(sessionId: sessionId, photoIds: entries.map(\.photoId))
                 .map { ($0.photoId, $0) }
         )
-        let cacheRows = Dictionary(
-            uniqueKeysWithValues: try metadataCacheRepo
-                .getBatch(entries.map(\.photoId))
-                .map { ($0.photoId, $0) }
-        )
+        let cacheRows: [String: MetadataCacheRecord]
+        if let metadataStore {
+            cacheRows = Dictionary(
+                uniqueKeysWithValues: try await metadataStore.metadataBatch(photoIds: entries.map(\.photoId))
+                    .map { ($0.photoId, $0) }
+            )
+        } else {
+            cacheRows = [:]
+        }
         for entry in entries {
             guard photoById[entry.photoId] != nil else {
                 throw CullingServiceError.photoNotInSession
@@ -827,6 +877,7 @@ public final class CullingService {
         var results: [CullingUpdateResult] = []
         var historyEntries: [CullingHistoryEntry] = []
         var xmpPatches: [String: (photoId: String, values: [String: JSONValue])] = [:]
+        let writeSink = CullingHistorySink()
         try connection.transaction {
             for entry in entries {
                 let photo = photoById[entry.photoId]!
@@ -857,10 +908,12 @@ public final class CullingService {
                     )
                 )
                 if entry.patch.rating != nil {
-                    try metadataCacheRepo.updateRating(photoId: entry.photoId, rating: Int64(after.rating))
+                    writeSink.appendCachePatch(
+                        CullingCachePatch(photoId: entry.photoId, rating: Int64(after.rating)))
                 }
                 if entry.patch.colorLabel != nil {
-                    try metadataCacheRepo.updateLabel(photoId: entry.photoId, label: after.colorLabel.rawValue)
+                    writeSink.appendCachePatch(
+                        CullingCachePatch(photoId: entry.photoId, label: after.colorLabel.rawValue))
                 }
                 let xmpPath = TSPath.xmpSidecarPath(photo.filepath)
                 var values = xmpPatches[xmpPath]?.values ?? [:]
@@ -898,7 +951,8 @@ public final class CullingService {
                 )
             }
         }
-        // 历史栈在 Store 连接上（跨连接不共享事务）；决策/元数据已原子落地。
+        // 历史/缓存列在 Store 连接上（跨连接不共享事务）；决策已原子落地。
+        try await commitCachePatches(writeSink.cachePatches)
         if let operationId = historyOperationId, let direction {
             try await cullingStore?.setHistoryUndone(
                 sessionId: sessionId,

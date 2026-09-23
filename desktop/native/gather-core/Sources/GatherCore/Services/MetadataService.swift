@@ -40,7 +40,7 @@ public struct MetadataPhotoLookup {
 
 /// TS: MetadataService。
 public final class MetadataService {
-    private let metadataCacheRepo: MetadataCacheRepo
+    private let metadataStore: any MetadataStore
     private let xmp: any XMPProvider
     private let connection: DBConnection
     private let mutations: any MetadataMutationPort
@@ -50,7 +50,7 @@ public final class MetadataService {
     private let embeddedReader: (any EmbeddedXMPReader)?
 
     public init(
-        metadataCacheRepo: MetadataCacheRepo,
+        metadataStore: any MetadataStore,
         xmp: any XMPProvider,
         connection: DBConnection,
         mutations: any MetadataMutationPort,
@@ -59,7 +59,7 @@ public final class MetadataService {
         dimensions: (any ImageDimensionsProvider)? = nil,
         embeddedReader: (any EmbeddedXMPReader)? = nil
     ) {
-        self.metadataCacheRepo = metadataCacheRepo
+        self.metadataStore = metadataStore
         self.xmp = xmp
         self.connection = connection
         self.mutations = mutations
@@ -72,7 +72,7 @@ public final class MetadataService {
     // MARK: - TS 顶层函数
 
     /// TS: cacheRowToTags。
-    private func cacheRowToTags(_ row: MetadataCacheRow) -> MetadataTags {
+    private func cacheRowToTags(_ row: MetadataCacheRecord) -> MetadataTags {
         let keywords = row.keywords
         return MetadataTags(
             fileSize: row.fileSize.map { Int($0) },
@@ -244,10 +244,10 @@ public final class MetadataService {
         photoId: String,
         filepath: String,
         attributes: inout MetadataWriteAttributes
-    ) {
+    ) async {
         if !attributes.isEmpty { return }
         if !xmp.fileExists(TSPath.xmpSidecarPath(filepath)) { return }
-        guard let previous = try? metadataCacheRepo.get(photoId) else { return }
+        guard let previous = try? await metadataStore.metadata(photoId: photoId) else { return }
         let previousKeywords = previous.keywords
         if !previousKeywords.isEmpty { attributes.keywords = previousKeywords }
         if previous.rating != 0 { attributes.rating = Double(previous.rating) }
@@ -268,7 +268,7 @@ public final class MetadataService {
                 fingerprints[photo.id] = fingerprint
             }
         }
-        let cached = try metadataCacheRepo.getBatch(photoIds).filter { row in
+        let cached = try await metadataStore.metadataBatch(photoIds: photoIds).filter { row in
             guard let fingerprint = fingerprints[row.photoId] else { return false }
             return row.fileSize == Int64(fingerprint.size) && row.fileMtime == fingerprint.value
         }
@@ -281,7 +281,7 @@ public final class MetadataService {
 
         if !missingIds.isEmpty {
             let photos = missingIds.compactMap { photoById[$0] }
-            // upsert 在并发提取期间缓冲、结束后单事务落库（metadataCacheRepo.upsert
+            // upsert 在并发提取期间缓冲、结束后批量落库（MetadataStore.upsertMetadataBatch
             // 是裸语句无内部事务，包裹安全）；每照片 try/catch 隔离提取失败。
             var pendingUpserts: [(photoId: String, sessionId: String, input: MetadataCacheInput)] = []
 
@@ -330,7 +330,7 @@ public final class MetadataService {
                                 parsed: exifData,
                                 isJpeg: isJpeg
                             )
-                            self.preserveValuesOnCorruptSidecar(
+                            await self.preserveValuesOnCorruptSidecar(
                                 photoId: photo.id,
                                 filepath: photo.filepath,
                                 attributes: &writerAttributes
@@ -370,7 +370,7 @@ public final class MetadataService {
                     )
 
                     var existingAttributes = try await self.readEffectiveAttributes(photoPath: photo.filepath)
-                    self.preserveValuesOnCorruptSidecar(
+                    await self.preserveValuesOnCorruptSidecar(
                         photoId: photo.id,
                         filepath: photo.filepath,
                         attributes: &existingAttributes
@@ -391,11 +391,8 @@ public final class MetadataService {
             }
 
             if !pendingUpserts.isEmpty {
-                try connection.transaction {
-                    for entry in pendingUpserts {
-                        try metadataCacheRepo.upsert(photoId: entry.photoId, sessionId: entry.sessionId, data: entry.input)
-                    }
-                }
+                try await metadataStore.upsertMetadataBatch(
+                    pendingUpserts.map { ($0.photoId, $0.sessionId, $0.input) })
             }
         }
 
@@ -410,7 +407,7 @@ public final class MetadataService {
         if !unsupported.isEmpty {
             throw MetadataServiceError.unsupportedFields(unsupported)
         }
-        let existing = try metadataCacheRepo.get(photoId)
+        let existing = try await metadataStore.metadata(photoId: photoId)
         let baseTags = existing.map { cacheRowToTags($0) } ?? MetadataTags()
         let merged = overlayTags(baseTags, overlay: overlay)
 
@@ -434,7 +431,7 @@ public final class MetadataService {
             )
         }
 
-        try metadataCacheRepo.upsert(photoId: photoId, sessionId: sessionId, data: cacheInput)
+        try await metadataStore.upsertMetadata(photoId: photoId, sessionId: sessionId, data: cacheInput)
         return merged
     }
 
@@ -538,7 +535,7 @@ public final class MetadataService {
                     height: metadata.height.map { Int64($0) },
                     fileSize: metadata.size.map { Int64($0) }
                 )
-                try self.metadataCacheRepo.upsert(photoId: photoId, sessionId: sessionId, data: input)
+                try await self.metadataStore.upsertMetadata(photoId: photoId, sessionId: sessionId, data: input)
             } catch {
                 GatherLogger.log("Failed to populate cache for photo \(photoId): \(error)", level: .warn)
             }

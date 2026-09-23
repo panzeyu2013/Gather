@@ -57,7 +57,6 @@ public final class WritebackService {
     private let xmp: any XMPProvider
     private let photoRepo: PhotoRepo
     private let sessionRepo: SessionRepo
-    private let metadataCacheRepo: MetadataCacheRepo
     private let metadataSync: any MetadataSyncPort
     private let metadataMutations: any MetadataMutationPort
     private let outboxRepo: MetadataOutboxRepo?
@@ -70,7 +69,6 @@ public final class WritebackService {
         xmp: any XMPProvider,
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
-        metadataCacheRepo: MetadataCacheRepo,
         metadataSync: any MetadataSyncPort,
         metadataMutations: any MetadataMutationPort,
         outboxRepo: MetadataOutboxRepo? = nil,
@@ -81,7 +79,6 @@ public final class WritebackService {
         self.xmp = xmp
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
-        self.metadataCacheRepo = metadataCacheRepo
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
         self.outboxRepo = outboxRepo
@@ -421,13 +418,13 @@ public final class WritebackService {
                     try writebackRepo.updateStatus(itemId: entry.itemId, status: "written")
                     let attrs = entry.writeAttrs
                     if let rating = attrs["rating"]?.numberValue {
-                        try? metadataCacheRepo.updateRating(photoId: entry.dbRow.photoId, rating: Int64(rating))
+                        try? await metadataStore?.updateRating(photoId: entry.dbRow.photoId, rating: Int64(rating))
                     }
                     if let label = attrs["label"]?.stringValue {
-                        try? metadataCacheRepo.updateLabel(photoId: entry.dbRow.photoId, label: label)
+                        try? await metadataStore?.updateLabel(photoId: entry.dbRow.photoId, label: label)
                     }
                     if let keywords = attrs["keywords"]?.arrayElements?.compactMap({ $0.stringValue }) {
-                        try? metadataCacheRepo.updateKeywords(photoId: entry.dbRow.photoId, keywords: keywords)
+                        try? await metadataStore?.updateKeywords(photoId: entry.dbRow.photoId, keywords: keywords)
                         if module == "face_kw" {
                             // keywordsBeforeWrite 是 phase 1 的写前快照：写入前
                             // 不在文件上的关键词即本模块引入的。
