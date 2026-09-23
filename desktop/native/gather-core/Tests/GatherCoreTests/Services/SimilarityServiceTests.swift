@@ -92,7 +92,7 @@ private struct SimilarityHarness {
     let db: DBConnection
     let dbPath: String
     let service: SimilarityService
-    let sessionRepo: SessionRepo
+    let sessionStore: any SessionStore
     let sessionId: String
     let photoPath: String
 }
@@ -119,7 +119,7 @@ private func makeHarness(
 
     let service = SimilarityService(
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-        sessionRepo: sessionRepo,
+        sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
@@ -128,7 +128,7 @@ private func makeHarness(
     )
     return SimilarityHarness(
         db: db, dbPath: dbPath, service: service,
-        sessionRepo: sessionRepo, sessionId: session.id, photoPath: photoPath)
+        sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)), sessionId: session.id, photoPath: photoPath)
 }
 
 private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
@@ -197,7 +197,7 @@ struct SimilarityControllerValidationTests {
         await #expect(throws: Never.self) {
             try await harness.service.analyze(sessionId: harness.sessionId, threshold: 10, minGroupSize: 2)
         }
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "done")
+        #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "done")
     }
 }
 
@@ -404,7 +404,7 @@ struct SimilarityRunRecordTests {
     @Test("records the index_seq snapshot from the session cursor")
     func recordsIndexSeqSnapshot() async throws {
         let harness = try await makeHarness()
-        _ = try harness.sessionRepo.bumpIndexSeq(id: harness.sessionId)
+        _ = try await harness.sessionStore.bumpIndexSeq(id: harness.sessionId)
 
         try await harness.service.analyze(sessionId: harness.sessionId)
 
@@ -451,7 +451,7 @@ struct SimilarityGetResultTests {
 
         let service = SimilarityService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
             connection: db
         )
@@ -521,7 +521,7 @@ struct SimilarityGetResultTests {
         ])
         let service = SimilarityService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
             connection: db
         )
@@ -550,7 +550,7 @@ struct SimilarityGetResultTests {
         try addPhoto(db, "p2", "session", "/shoot/p2.jpg", nil)
         let service = SimilarityService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
             connection: db
         )
@@ -592,7 +592,7 @@ struct SimilarityGetResultTests {
         try seedSessionRow(db, "session")
         let service = SimilarityService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
             connection: db
         )
@@ -633,7 +633,7 @@ struct SimilarityCancellationTests {
             return row[6].textValue == "running"
         }
         #expect(runningSeen)
-        try harness.service.cancel(sessionId: harness.sessionId)
+        try await harness.service.cancel(sessionId: harness.sessionId)
         let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
         #expect(session?.analysisStatus == "cancelled")
 
@@ -657,7 +657,7 @@ struct SimilarityCancellationTests {
             return uniformPixels
         })
         let task2 = Task { try await harness2.service.analyze(sessionId: harness2.sessionId) }
-        try harness2.service.cancel(sessionId: harness2.sessionId)
+        try await harness2.service.cancel(sessionId: harness2.sessionId)
         gate2.release()
         try await task2.value
     }
@@ -668,7 +668,7 @@ struct SimilarityCancellationTests {
         let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
         #expect(session?.analysisStatus == "idle")
 
-        try harness.service.cancel(sessionId: harness.sessionId, markStatus: false)
+        try await harness.service.cancel(sessionId: harness.sessionId, markStatus: false)
 
         let after = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
         #expect(after?.analysisStatus == "idle")
@@ -718,7 +718,7 @@ struct SimilarityServiceRobustnessTests {
         let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
         let service = SimilarityService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
             connection: db
         )

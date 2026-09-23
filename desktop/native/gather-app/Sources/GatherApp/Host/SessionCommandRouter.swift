@@ -207,7 +207,7 @@ public final class SessionCommandRouter: CommandRouter {
         let sessionRepo = SessionRepo(connection: db)
         let similarityService = SimilarityService(
             photoStore: photoStore,
-            sessionRepo: sessionRepo,
+            sessionStore: sessionStore,
             similarityStore: similarityStore,
             connection: db,
             getNumber: { key, defaultValue in
@@ -273,7 +273,7 @@ public final class SessionCommandRouter: CommandRouter {
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoStore: photoStore,
-            sessionRepo: sessionRepo,
+            sessionStore: sessionStore,
             faceStore: faceStore,
             personStore: personStore,
             connection: db,
@@ -375,7 +375,7 @@ public final class SessionCommandRouter: CommandRouter {
             // TS similarity.ipc.ts:100-121：abort 时同步取消相似度占用
             // （session 列仅在真正持有者取消时写入，见 SimilarityService.cancel）。
             if context.signal.aborted {
-                try? similarityService.cancel(sessionId: job.scopeId, markStatus: false)
+                try? await similarityService.cancel(sessionId: job.scopeId, markStatus: false)
             }
             let checkpoint = job.checkpoint
             try await similarityService.analyze(
@@ -656,7 +656,7 @@ public final class SessionCommandRouter: CommandRouter {
             // cancel 为异步语义：立即返回 ok(true)，取消在后台完成（对齐 TS）。
             Task { [jobService, similarityService] in
                 _ = try? await jobService.cancelScope(type: .similarityAnalyze, scopeId: sessionId)
-                try? similarityService.cancel(sessionId: sessionId, markStatus: false)
+                try? await similarityService.cancel(sessionId: sessionId, markStatus: false)
             }
             return .bool(true)
 

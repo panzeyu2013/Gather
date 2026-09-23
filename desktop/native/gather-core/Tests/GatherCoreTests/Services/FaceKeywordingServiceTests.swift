@@ -94,7 +94,7 @@ private func waitUntil(
 private struct FaceKwHarness {
     let db: DBConnection
     let service: FaceKwService
-    let sessionRepo: SessionRepo
+    let sessionStore: any SessionStore
     let faceStore: SQLiteFaceStore
     let personStore: SQLitePersonStore
     let sessionId: String
@@ -136,7 +136,7 @@ private func makeFaceKwHarness(
     }
     let service = FaceKwService(
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-        sessionRepo: sessionRepo,
+        sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
         personStore: SQLitePersonStore(database: try SQLiteDatabase(path: dbPath)),
         connection: db,
@@ -150,7 +150,7 @@ private func makeFaceKwHarness(
         writebackProvider: writeback
     )
     return FaceKwHarness(
-        db: db, service: service, sessionRepo: sessionRepo,
+        db: db, service: service, sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
         personStore: SQLitePersonStore(database: try SQLiteDatabase(path: dbPath)),
         sessionId: session.id, photoPath: photoPath
@@ -292,7 +292,7 @@ struct FaceKwObservationRetentionTests {
         #expect(observations[0].confidence == 0.95)
         let state = try await harness.faceStore.analysisStates(sessionId: harness.sessionId)
         #expect(state["photo-1"]?.analysisSignature == analysisSignatureForDefaults)
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "done")
+        #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "done")
     }
 }
 
@@ -338,7 +338,7 @@ struct FaceKwRunRecordTests {
         let row = try runRow(harness.db, harness.sessionId)!
         #expect(row[6].textValue == "failed")
         #expect(row[5].textValue != "")
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "failed")
+        #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "failed")
     }
 }
 
@@ -378,7 +378,7 @@ struct FaceKwAnalyzeFlowTests {
         #expect(result.status == "done")
         #expect(probe.value == false)  // 推理未被调用
         #expect(phases.contains("face.cached-clusters"))
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "done")
+        #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "done")
         #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
     }
 
@@ -402,7 +402,7 @@ struct FaceKwAnalyzeFlowTests {
 
         let result = try await task.value
         #expect(result.status == "cancelled")
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "cancelled")
+        #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "cancelled")
         // 取消的 run 以 'failed' 终态（sessions.analysis_status 为 'cancelled'，
         // 与 TS 语义一致）。
         #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "failed")
@@ -420,8 +420,12 @@ struct FaceKwAnalyzeFlowTests {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
-        _ = try waitUntil {
-            try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "running"
+        // 轮询等待 running（Store 读为 async，waitUntil 仅支持同步条件）。
+        let runningDeadline = Date().addingTimeInterval(5)
+        while Date() < runningDeadline {
+            let status = try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus
+            if status == "running" { break }
+            try? await Task.sleep(for: .milliseconds(20))
         }
 
         await #expect(throws: FaceKwServiceError.analysisRunning) {
@@ -518,7 +522,7 @@ struct FaceKwAnalyzeFlowTests {
         let session = try sessionRepo.create(name: "Empty", source: "folder")
         let service = FaceKwService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: sessionRepo,
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             personStore: try makeTestPersonStore(),
             connection: db,
@@ -578,7 +582,7 @@ struct FaceKwBindingMigrationTests {
         }
         let service = FaceKwService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
             connection: db,
@@ -683,7 +687,7 @@ struct FaceKwGetClustersTests {
 
         let service = FaceKwService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: SessionRepo(connection: db),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
             connection: db
@@ -746,7 +750,7 @@ struct FaceKwClusterCommandTests {
         try seedCluster(db, id: 1, sessionId: sessionA.id, memberCount: 0)
         let service = FaceKwService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-            sessionRepo: sessionRepo,
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
             connection: db
@@ -801,7 +805,7 @@ struct FaceKwClusterCommandTests {
         let harness = try makeFaceKwHarness()
         try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 0)
         try seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 0)
-        let otherSession = try harness.sessionRepo.create(name: "Other", source: "folder")
+        let otherSession = try await harness.sessionStore.create(name: "Other", source: "folder")
         _ = try harness.db.prepare("""
             INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
             VALUES (50, ?, 'x', 0, 'unbound', '', '')

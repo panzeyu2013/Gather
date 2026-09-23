@@ -443,7 +443,7 @@ public final class FaceKwService {
     private static let maxPreviewMembers = 4
 
     private let photoStore: any PhotoStore
-    private let sessionRepo: SessionRepo
+    private let sessionStore: any SessionStore
     private let faceStore: any FaceStore
     private let personStore: any PersonStore
     private let connection: DBConnection
@@ -487,7 +487,7 @@ public final class FaceKwService {
 
     public init(
         photoStore: any PhotoStore,
-        sessionRepo: SessionRepo,
+        sessionStore: any SessionStore,
         faceStore: any FaceStore,
         personStore: any PersonStore,
         connection: DBConnection,
@@ -502,7 +502,7 @@ public final class FaceKwService {
         writebackProvider: FaceWritebackProvider? = nil
     ) {
         self.photoStore = photoStore
-        self.sessionRepo = sessionRepo
+        self.sessionStore = sessionStore
         self.faceStore = faceStore
         self.personStore = personStore
         self.connection = connection
@@ -548,10 +548,10 @@ public final class FaceKwService {
         }
 
         do {
-            guard try sessionRepo.get(id: sessionId) != nil else {
+            guard try await sessionStore.get(id: sessionId) != nil else {
                 throw FaceKwServiceError.sessionNotFound
             }
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "running")
+            try await sessionStore.updateAnalysisStatus(id: sessionId, status: "running")
             onProgress?(0, 0, "face.init")
 
             // TS 的 onnx_threads 用于 worker 线程预算分摊；Vision 无 ONNX
@@ -561,9 +561,8 @@ public final class FaceKwService {
             // 照片快照在 Store 连接读取；index_seq 走旧连接读事务（design §8）。
             let photosSnapshot: [PhotoProjection] = PhotoAssets.collapse(
                 try await photoStore.getBySessionProjection(sessionId: sessionId))
-            let indexSeqSnapshot: Int = try connection.transaction {
-                try sessionRepo.getIndexSeq(id: sessionId)
-            }
+            // index_seq 单次 Store 读（旧读事务仅包这一行，无需保留）。
+            let indexSeqSnapshot: Int = try await sessionStore.indexSeq(id: sessionId)
             let snapshot: (photos: [PhotoProjection], indexSeq: Int) = (photosSnapshot, indexSeqSnapshot)
             if snapshot.photos.isEmpty { throw FaceKwServiceError.noPhotos }
             if signal.aborted { throw JobCancelledError() }
@@ -684,7 +683,7 @@ public final class FaceKwService {
             let hasClusters = !existingClusters.isEmpty
             if missingPhotoIds.isEmpty && photosNeedingAnalysis.isEmpty && signatureMatches && hasClusters {
                 onProgress?(totalPhotos, totalPhotos, "face.cached-clusters")
-                try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
+                try await sessionStore.updateAnalysisStatus(id: sessionId, status: "done")
                 runStatus = "ok"
                 return FaceAnalysisResult(status: "done", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
             }
@@ -842,19 +841,19 @@ public final class FaceKwService {
             try await faceStore.upsertClusterSignature(sessionId: sessionId, signature: clusterSignature)
 
             if analysisFailed {
-                try sessionRepo.updateAnalysisStatus(id: sessionId, status: "failed")
+                try await sessionStore.updateAnalysisStatus(id: sessionId, status: "failed")
                 return FaceAnalysisResult(status: "failed", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
             }
             onProgress?(0, 0, "face.done")
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
+            try await sessionStore.updateAnalysisStatus(id: sessionId, status: "done")
             runStatus = "ok"
             return FaceAnalysisResult(status: "done", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
         } catch {
             if error is JobCancelledError {
-                try? sessionRepo.updateAnalysisStatus(id: sessionId, status: "cancelled")
+                try? await sessionStore.updateAnalysisStatus(id: sessionId, status: "cancelled")
                 return FaceAnalysisResult(status: "cancelled", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
             }
-            try? sessionRepo.updateAnalysisStatus(id: sessionId, status: "failed")
+            try? await sessionStore.updateAnalysisStatus(id: sessionId, status: "failed")
             throw error
         }
     }
@@ -862,7 +861,7 @@ public final class FaceKwService {
     /// TS: recluster（fkw.recluster；仅重聚类，不重推理）。
     public func recluster(sessionId: String, eps: Double, minPts: Double) async throws {
         try validateFaceClusteringParameters(eps: eps, minPts: minPts)
-        guard try sessionRepo.get(id: sessionId) != nil else {
+        guard try await sessionStore.get(id: sessionId) != nil else {
             throw FaceKwServiceError.sessionNotFound
         }
         if try await faceStore.observations(sessionId: sessionId).isEmpty {

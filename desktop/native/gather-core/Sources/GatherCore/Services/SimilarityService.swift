@@ -115,7 +115,7 @@ public final class SimilarityService {
     public typealias ProgressHandler = (Int, Int, String) -> Void
 
     private let photoStore: any PhotoStore
-    private let sessionRepo: SessionRepo
+    private let sessionStore: any SessionStore
     private let similarityStore: any SimilarityStore
     private let connection: DBConnection
     /// TS: SettingsService.getNumber 注入。
@@ -151,7 +151,7 @@ public final class SimilarityService {
 
     public init(
         photoStore: any PhotoStore,
-        sessionRepo: SessionRepo,
+        sessionStore: any SessionStore,
         similarityStore: any SimilarityStore,
         connection: DBConnection,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
@@ -168,7 +168,7 @@ public final class SimilarityService {
         }
     ) {
         self.photoStore = photoStore
-        self.sessionRepo = sessionRepo
+        self.sessionStore = sessionStore
         self.similarityStore = similarityStore
         self.connection = connection
         self.getNumber = getNumber
@@ -214,15 +214,14 @@ public final class SimilarityService {
             removeControllerIfCurrent(signal, for: sessionId)
         }
         do {
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "running")
+            try await sessionStore.updateAnalysisStatus(id: sessionId, status: "running")
 
             // 照片快照在 Store 连接读取；index_seq 走旧连接读事务（design §8）：
             // 快照保证 run.index_seq 与本次分析的照片一致。
             let photosSnapshot: [PhotoProjection] = PhotoAssets.collapse(
                 try await photoStore.getBySessionProjection(sessionId: sessionId))
-            let indexSeqSnapshot: Int = try connection.transaction {
-                try sessionRepo.getIndexSeq(id: sessionId)
-            }
+            // index_seq 单次 Store 读（旧读事务仅包这一行，无需保留）。
+            let indexSeqSnapshot: Int = try await sessionStore.indexSeq(id: sessionId)
             let snapshot: (photos: [PhotoProjection], indexSeq: Int) = (photosSnapshot, indexSeqSnapshot)
             if snapshot.photos.isEmpty { throw SimilarityServiceError.noPhotos }
             runId = try startAnalysisRun(
@@ -393,7 +392,7 @@ public final class SimilarityService {
                 memberships: built.memberships.map { SimilarityMembership(photoId: $0.photoId, groupIndex: $0.groupIndex) }
             )
 
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
+            try await sessionStore.updateAnalysisStatus(id: sessionId, status: "done")
             runStatus = "ok"
 
             // 邻域阈值档 best-effort：同一批 hash 再聚几次很便宜，失败/取消
@@ -414,7 +413,7 @@ public final class SimilarityService {
                 GatherLogger.log("Similarity neighbor threshold precomputation failed: \(error)", level: .warn)
             }
         } catch {
-            try? sessionRepo.updateAnalysisStatus(
+            try? await sessionStore.updateAnalysisStatus(
                 id: sessionId,
                 status: signal.aborted ? "cancelled" : "failed"
             )
@@ -568,12 +567,12 @@ public final class SimilarityService {
     /// TS: cancel —— analysis_status 是与人脸分析共享的单列；只有本模块确有
     /// 在飞 run 时才写 'cancelled'（排队的 job 取消或人脸分析期间的取消
     /// 不得翻转人脸状态）。
-    public func cancel(sessionId: String, markStatus: Bool = false) throws {
+    public func cancel(sessionId: String, markStatus: Bool = false) async throws {
         let signal = controller(for: sessionId)
         let hadController = signal != nil
         signal?.abort()
         if hadController || markStatus {
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "cancelled")
+            try await sessionStore.updateAnalysisStatus(id: sessionId, status: "cancelled")
         }
     }
 
@@ -635,7 +634,7 @@ public final class SimilarityService {
             memberships: built.memberships.map { SimilarityMembership(photoId: $0.photoId, groupIndex: $0.groupIndex) }
         )
 
-        try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
+        try await sessionStore.updateAnalysisStatus(id: sessionId, status: "done")
 
         do {
             try await precomputeNeighborTiers(

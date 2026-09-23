@@ -37,7 +37,7 @@ private final class ClusterCallCounter {
 private struct IncrementalHarness {
     let db: DBConnection
     let service: SimilarityService
-    let sessionRepo: SessionRepo
+    let sessionStore: any SessionStore
     let similarityStore: SQLiteSimilarityStore
     let counter: ClusterCallCounter
     let sessionId: String
@@ -79,7 +79,7 @@ private func makeIncrementalHarness(settings: [String: Double] = [:]) throws -> 
     let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
     let service = SimilarityService(
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-        sessionRepo: sessionRepo,
+        sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: similarityStore,
         connection: db,
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
@@ -93,7 +93,7 @@ private func makeIncrementalHarness(settings: [String: Double] = [:]) throws -> 
         }
     )
     return IncrementalHarness(
-        db: db, service: service, sessionRepo: sessionRepo,
+        db: db, service: service, sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: similarityStore, counter: counter, sessionId: sessionId
     )
 }

@@ -40,7 +40,7 @@ private func sha256Hex(_ content: String) -> String {
 private struct IndexerHarness {
     let db: DBConnection
     let indexer: IndexerService
-    let sessionRepo: SessionRepo
+    let sessionStore: any SessionStore
     let sessionId: String
 }
 
@@ -67,7 +67,7 @@ private func makeHarness(
             key == "lazy_checksum" ? lazyChecksum : defaultValue
         }
     )
-    return IndexerHarness(db: db, indexer: indexer, sessionRepo: sessionRepo, sessionId: session.id)
+    return IndexerHarness(db: db, indexer: indexer, sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)), sessionId: session.id)
 }
 
 /// asset_files 行（含 volume/identity，供 relink 按真实 inode 匹配）。
@@ -170,7 +170,7 @@ struct IndexSeqTests {
         #expect(result.failed.isEmpty)
         // markMissing([]) 语义：无照片被标记缺失。
         #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE status = 'missing'") == 0)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 1)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
         // 新照片行已入库。
         #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(harness.sessionId)]) == 1)
     }
@@ -189,7 +189,7 @@ struct IndexSeqTests {
 
         #expect(result.discovered == 1)
         #expect(result.skipped == 0)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 1)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
     }
 
     @Test("bumps index_seq when a photo is relinked to a new path")
@@ -217,7 +217,7 @@ struct IndexSeqTests {
         #expect(result.discovered == 1)
         #expect(result.skipped == 1)
         #expect(result.missing == 0)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 1)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
         // 照片被重链接到新路径而非新增。
         #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(harness.sessionId)]) == 1)
         let row = try harness.db.prepare("SELECT filepath FROM photos WHERE id = 'relinked'").get()
@@ -240,7 +240,7 @@ struct IndexSeqTests {
         #expect(result.discovered == 1)
         #expect(result.skipped == 1)
         #expect(result.missing == 0)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 0)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 0)
     }
 
     @Test("bumps index_seq when a photo disappears from disk (missing reconcile)")
@@ -259,7 +259,7 @@ struct IndexSeqTests {
         #expect(result.discovered == 0)
         #expect(result.missing == 1)
         #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE status = 'missing'") == 1)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 1)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
     }
 
     @Test("does NOT bump index_seq on repeated scans when a photo has no asset_files row and the file is unchanged")
@@ -274,13 +274,13 @@ struct IndexSeqTests {
 
         // 首次观测提交尺寸/checksum stat，是真实变化。
         _ = try await harness.indexer.scanSession(sessionId: harness.sessionId)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 1)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
 
         // 重扫未变化文件只重写相同值：缺失 asset_files 行不得让每次重扫
         // 都变成 content change 无限 bump。
         let second = try await harness.indexer.scanSession(sessionId: harness.sessionId)
         #expect(second.missing == 0)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 1)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
     }
 
     @Test("bumps index_seq when an unbackfilled photo content actually changes")
@@ -305,7 +305,7 @@ struct IndexSeqTests {
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
         #expect(result.discovered == 1)
-        #expect(try harness.sessionRepo.getIndexSeq(id: harness.sessionId) == 1)
+        #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
     }
 }
 
@@ -380,7 +380,7 @@ struct CancelledScanIndexSeqTests {
         #expect(try rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 31)
         // 修复点：取消路径同样 bump —— 预置的已完成分析（index_seq=0）相对
         // 会话 index_seq（1）过期，新照片对分析可见。
-        #expect(try sessionRepo.getIndexSeq(id: session.id) == 1)
+        #expect(try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).indexSeq(id: session.id) == 1)
     }
 }
 
