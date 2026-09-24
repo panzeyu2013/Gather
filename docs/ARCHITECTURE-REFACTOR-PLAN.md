@@ -445,3 +445,24 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 
 **含义**：`fkw.unbind` 当前实际走的是旧实现（不校验 `clusterId`），R1 之后新增的严格校验版从未生效——这是真实的行为缺陷（潜在破坏性命令参数校验缺失）。
 **处置**：属 R5（删除路由、改类型化 API）时**必须显式裁决**：以 L2080 的严格语义（要求 clusterId + BridgeError）为准，并为该命令补回归测试；R7 复核是否还有其他 `case` 重复。**本轮不动**（避免在 W2 波次中改变行为）。
+### P1「静默降级」精确普查（主代理，供各 Runtime 重写作为验收清单）
+
+`Services/**` 共 **111 处 `try?`**：**12 处良性**（`Task.sleep` 取消、文件清理）／**99 处需复核**（吞掉 Store/SQL 错误）。
+
+| 文件 | 需复核 `try?` |
+|---|---|
+| MetadataSyncCoordinator.swift | 20 |
+| JobService.swift | 12 |
+| WritebackService.swift | 11 |
+| MetadataService.swift | 11 |
+| CullingService.swift | 9 |
+| SimilarityService.swift | 6 |
+| FaceKwService.swift | 6 |
+| ExportService.swift / QualityService.swift / MetadataConflictFields.swift / MetadataMutationService.swift / NavigationService.swift | 各 3 |
+
+典型吞错（MetadataSyncCoordinator）：`try? await writebackStore.recoverInterruptedOutbox()`（启动恢复失败被吞）、`(try? await …recoverableActiveOutbox()) ?? []`（读失败当空集）、`guard (try? await …claimOutbox(…))`（租约失败静默跳过）。
+
+**重写规则（写入各 Runtime 验收）**：
+1. Store/SQL 调用**禁止** `try?`：必须上抛（领域错误映射到既有错误码）或显式记录到 job 失败原因；
+2. 仅允许两类 `try?`：`Task.sleep`（取消语义）与文件系统尽力清理（且需注释说明）；
+3. 门禁后续可加跟踪度量：`Services/Runtime 中非良性 try?` 数，逐步归零（R2 出口）。
