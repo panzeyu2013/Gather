@@ -1,6 +1,6 @@
 // API/SessionCommands.swift
 // R5 类型化 async 域协议：session 域。
-// 旧实现来源：gather-app/Sources/GatherApp/Host/SessionCommandRouter.swift 的
+// 旧实现来源：gather-app/Sources/GatherApp/Host/路由层.swift 的
 // session.* 分支（每条方法的注释标注对应旧命令名）。
 // 约定：全部 async throws、参数与返回只用 Protocol/ 既有 DTO、无同步重载；
 // 破坏性命令的 confirmed 由入参 DTO 显式携带，由实现内部校验。

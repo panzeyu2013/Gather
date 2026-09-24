@@ -1,6 +1,6 @@
 // API/PhotoCommands.swift
 // R5 类型化 async 域协议：photo 域。
-// 旧实现来源：gather-app/Sources/GatherApp/Host/SessionCommandRouter.swift 的
+// 旧实现来源：gather-app/Sources/GatherApp/Host/路由层.swift 的
 // photo.list_page 分支。
 // 约定：方法 async throws、行元素只用 Protocol/ 既有 DTO；本轮不新造类型。
 // 缺口（W5-1 计划新增，见 docs/ARCHITECTURE-W5-DESIGN.md 第 2 节）：photo.list_page 的
