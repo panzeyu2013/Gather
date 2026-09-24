@@ -844,3 +844,22 @@ error 计数三步均 **0**（`grep -cE '^[^ ]*error: '` = 0，grep 退出码 1�
 - NOT previously in the flaky list (reported highest priority): JobRunnerTests.enforcesConcurrencyLimit (15/15 isolated), JobRunnerTests.waitForResultTakesCompletedResultExactlyOnce (15/15), JobRunnerTests.interruptedStatusFencesRunAndAbortsSignal (3/3); --filter JobRunnerTests 21/21 twice; serial full run 0 failures -> in-process parallel contention, not a logic regression. Recommend adding these three to the flaky list.
 - METHOD RULE: under a shared worktree with concurrent builds, PARALLEL full-suite results are not a valid verdict; use SERIAL full-suite as the authoritative gate (or mark high-contention suites serial).
 - Evidence: /private/tmp/gather-build-acc-tests/acc-run-2012/REPORT.md + core-serial-final.log/.exit, app-full-final.log/.exit, core-iso-*.log, core-suite-JobRunnerTests-run*.log.
+## 29. 权威基线更正（Round 42；本节覆盖前文过时数字，冲突时以本节为准）
+
+acc-legacy 验收（快照 4c170a6）指出文档多处数字陈旧。以下为**更正后的单一权威来源**（实测于本提交）：
+
+| 指标 | 权威值 | 被本表覆盖的陈旧处 |
+|---|---|---|
+| `Services/` | **3 文件**（`FilterEngine` 542 · `MetadataSyncCoordinator` 982 · `PhotoAssets` 47；清退目标 = 2 = 仅保留后两者） | L722（写作 8）· L735（写作 5→4）· L505（仍列 `SessionService.swift`，该文件已于提交 22e36e5 清退） |
+| 门禁 enforced | **18 条**（含 3 条出现次数棘轮 + 1 条 find + 3 条 enforce + 11 条 enforce_max） | L677（写作 15）· L722（写作 15）· L57/L330（写作 4） |
+| 门禁 tracked | **8 条**（baseline **16 key** = 8 指标 × 文件数/出现次数双口径） | L682（写作 6→5）· L724（写作余 5 条） |
+| R5 协议层 | **19 域 / 111 方法**（`API/*.swift` 20 文件 155 func，扣组合根 `GatherAPI.swift` 44 func） | L570/L610（写作 18 域） |
+| R5 命令层 | **4/19 域**（session 8 + workspace 1 + jobs 4 + settings 6 = 19 方法；在跑 B3 后为 8/19） | 无（新指标） |
+| R6 | **5/5 工作区页签**在代码中成立（`SessionTab` 5 case + `SessionShellView` 全 switch + `Feature.sessionTab/forTab/isWired` 覆盖）；剩余为 gallery/similarity 两 case 与切根视图 | L722（写作 4/11） |
+| `unchecked Sendable` | **4 文件 / 5 处**（阈值 5） | — |
+| `batchAsync` / `Runtime SQL` / `DB layer` | **3 / 0 / 0** | — |
+| 文档 commit 号 | 作为 commit 出现的 **30 个 distinct 哈希 30/30 均存在**于 git | L681（写作 15 个） |
+
+**写作规范（此后遵守）**：非 commit 的十六进制串必须加类型前缀以避免与 commit 哈希混淆——子代理 id 写 `agent:<id>`、sha256 写 `sha256:<prefix>…`、指纹写 `fingerprint:<hex>`（此前 9 处裸串：`b87f42bb`/`13178f1b`/`687d20bf`/`dfa2acd1`/`5c3948ea` 为 agent id；`164aae10`/`2e6d2148`/`c76a5a2a` 为 sha256 前缀；`d4b1fe3e5a9da77e` 为 schema 指纹）。
+
+**口径纪律（写入权威口径）**：①门禁度量一律**双口径**（文件数 + 出现次数），引用时须注明口径；②共享 worktree + 并发构建下，**并行全量测试不作为判定依据**，以**串行全量**为权威；③验收结论必须以「HEAD + 工作树指纹」锚定（见 §24/§28）。
