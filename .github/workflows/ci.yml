@@ -26,6 +26,7 @@ jobs:
   gather-core:
     name: gather-core tests
     runs-on: macos-14
+    needs: boundary
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +46,7 @@ jobs:
   gather-app:
     name: gather-app tests + bundle
     runs-on: macos-14
-    needs: gather-core
+    needs: [boundary, gather-core]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
