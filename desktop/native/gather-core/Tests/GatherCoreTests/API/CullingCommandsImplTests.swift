@@ -95,6 +95,11 @@ struct CullingCommandsImplTests {
             _ = try await h.impl.listPage(CullingListPageParams(
                 sessionId: h.base.sessionId, scope: .all, limit: 2001))
         }
+        await #expect(throws: CullingCommandsError.invalidRatingsFilter) {
+            _ = try await h.impl.listPage(CullingListPageParams(
+                sessionId: h.base.sessionId, scope: .filtered,
+                filters: CullingFilters(ratings: [7])))
+        }
         // groupId 透传到 requestedGroupId：不可解析组走相似度最新页且不报错。
         let page = try await h.impl.listPage(CullingListPageParams(
             sessionId: h.base.sessionId, scope: .similarityGroup, groupId: "9999:0"))
@@ -265,6 +270,11 @@ struct CullingCommandsImplTests {
                 sessionId: h.base.sessionId, photoId: "p1", expectedRevision: -1,
                 patch: CullingUpdatePatch(rating: 4)))
         }
+        await #expect(throws: CullingServiceError.patchInvalid) {
+            _ = try await h.impl.update(CullingUpdateParams(
+                sessionId: h.base.sessionId, photoId: "p1", expectedRevision: 0,
+                patch: CullingUpdatePatch()))
+        }
         await #expect(throws: CullingServiceError.photoNotInSession) {
             _ = try await h.impl.update(CullingUpdateParams(
                 sessionId: h.base.sessionId, photoId: "missing", expectedRevision: 0,
@@ -305,6 +315,11 @@ struct CullingCommandsImplTests {
                 sessionId: h.base.sessionId,
                 photoIds: (0...CullingQueryBuilder.batchMax).map { "p\($0)" },
                 patch: CullingUpdatePatch(pickState: .picked)))
+        }
+        await #expect(throws: CullingServiceError.ratingOutOfRange) {
+            _ = try await h.impl.batchUpdate(CullingBatchUpdateParams(
+                sessionId: h.base.sessionId, photoIds: ["p1"],
+                patch: CullingUpdatePatch(rating: 7)))
         }
         await #expect(throws: CullingServiceError.emptySelection) {
             _ = try await h.impl.batchUpdate(CullingBatchUpdateParams(
@@ -391,6 +406,13 @@ struct CullingCommandsImplTests {
             _ = try await h.impl.applyHistory(CullingHistoryApplyParams(
                 sessionId: h.base.sessionId,
                 entries: Array(repeating: entry, count: CullingQueryBuilder.batchMax + 1),
+                historyOperationId: 1, direction: .undo))
+        }
+        await #expect(throws: CullingServiceError.patchInvalid) {
+            _ = try await h.impl.applyHistory(CullingHistoryApplyParams(
+                sessionId: h.base.sessionId,
+                entries: [CullingHistoryApplyEntry(
+                    photoId: "p1", expectedRevision: 0, patch: CullingUpdatePatch())],
                 historyOperationId: 1, direction: .undo))
         }
         await #expect(throws: CullingCommandsError.invalidEntryExpectedRevision(0)) {

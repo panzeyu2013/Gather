@@ -34,6 +34,7 @@ public actor CullingCommandsImpl: CullingCommands {
     /// afterRowId 正整数、limit 1...2000（缺省 200）按旧分支保留，
     /// groupId 映射到运行时的 requestedGroupId。
     public func listPage(_ params: CullingListPageParams) async throws -> CullingPage {
+        let filters = try Self.validatedFilters(params.filters)
         let normalized = try CullingQueryBuilder.normalize(
             afterRowId: params.afterRowId.map(Int64.init),
             limit: params.limit ?? Self.pageLimitDefault
@@ -41,7 +42,7 @@ public actor CullingCommandsImpl: CullingCommands {
         return try await culling.listPage(
             sessionId: params.sessionId,
             scope: params.scope,
-            filters: params.filters,
+            filters: filters,
             requestedGroupId: params.groupId,
             afterRowId: normalized.afterRowId,
             limit: normalized.limit
@@ -83,6 +84,7 @@ public actor CullingCommandsImpl: CullingCommands {
         guard params.expectedRevision >= 0 else {
             throw CullingCommandsError.invalidExpectedRevision
         }
+        try CullingQueryBuilder.validatePatch(params.patch)
         return try await culling.update(
             sessionId: params.sessionId,
             photoId: params.photoId,
@@ -97,6 +99,7 @@ public actor CullingCommandsImpl: CullingCommands {
         guard params.photoIds.count <= CullingQueryBuilder.batchMax else {
             throw CullingServiceError.tooManyPhotoIds
         }
+        try CullingQueryBuilder.validatePatch(params.patch)
         return try await culling.batchUpdate(
             sessionId: params.sessionId,
             photoIds: params.photoIds,
@@ -123,8 +126,11 @@ public actor CullingCommandsImpl: CullingCommands {
         guard !params.entries.isEmpty, params.entries.count <= CullingQueryBuilder.batchMax else {
             throw CullingCommandsError.invalidEntries
         }
-        for (index, entry) in params.entries.enumerated() where entry.expectedRevision < 0 {
-            throw CullingCommandsError.invalidEntryExpectedRevision(index)
+        for (index, entry) in params.entries.enumerated() {
+            try CullingQueryBuilder.validatePatch(entry.patch)
+            guard entry.expectedRevision >= 0 else {
+                throw CullingCommandsError.invalidEntryExpectedRevision(index)
+            }
         }
         guard params.historyOperationId >= 1 else {
             throw CullingCommandsError.invalidHistoryOperationId
@@ -205,12 +211,26 @@ public actor CullingCommandsImpl: CullingCommands {
         try await culling.resetCommand(
             sessionId: params.sessionId, groupId: params.groupId, confirmed: true)
     }
+
+    // MARK: - 旧分支参数门控
+
+    /// 旧分支 filters 逐字段校验：pickStates / colorLabels / qualityStatus 由 DTO
+    /// 枚举承载，此处只保留 ratings 的有限整数 0...5 门控（旧错误消息逐字）。
+    private static func validatedFilters(_ filters: CullingFilters?) throws -> CullingFilters? {
+        guard let ratings = filters?.ratings else { return filters }
+        guard ratings.allSatisfy({ $0.isFinite && $0.rounded() == $0 && (0...5).contains($0) }) else {
+            throw CullingCommandsError.invalidRatingsFilter
+        }
+        return filters
+    }
 }
 
 /// culling 域命令边界错误（错误码字符串与旧宿主路由层分支逐字一致）。
 /// 确认类与游标/批量类错误复用运行时既有错误类型，此处只补旧分支独有的
 /// 消息形门控。
 public enum CullingCommandsError: Error, Equatable {
+    /// 旧参数校验拒绝：`ratings must contain integers from 0 to 5`。
+    case invalidRatingsFilter
     /// 旧参数校验拒绝：`limit must be an integer between 1 and 500`。
     case historyLimitInvalid
     /// 旧参数校验拒绝：`entries must be a non-empty array with at most 10000 items`。
@@ -226,6 +246,7 @@ public enum CullingCommandsError: Error, Equatable {
 extension CullingCommandsError: CustomStringConvertible {
     public var description: String {
         switch self {
+        case .invalidRatingsFilter: "ratings must contain integers from 0 to 5"
         case .historyLimitInvalid: "limit must be an integer between 1 and 500"
         case .invalidEntries: "entries must be a non-empty array with at most 10000 items"
         case .invalidEntryExpectedRevision(let index): "entries[\(index)].expectedRevision is invalid"
