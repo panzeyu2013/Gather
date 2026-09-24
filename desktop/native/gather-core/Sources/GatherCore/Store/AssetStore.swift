@@ -75,6 +75,10 @@ public protocol AssetStore: Sendable {
     func rejectCandidate(_ candidateId: String) async throws
     func reconcileRawJpegLinks(sessionId: String) async throws -> Int64
 
+    /// M4：批量把缺失文件的 asset_files 标记为 offline（旧 IndexerService 545-554；
+    /// 空参直接返回 0，返回受影响行数）。
+    func markAssetFilesOffline(ids: [String], updatedAt: Double) async throws -> Int
+
     // MARK: 回填
 
     func backfillSession(_ sessionId: String) async throws -> AssetBackfillResult
@@ -636,6 +640,25 @@ public extension SQLiteAssetStore {
             }
             return merged
         }
+    }
+
+    /// M4：SQL 逐字搬自 Services/IndexerService.swift 545-554（UPDATE asset_files
+    /// SET online_status='offline', updated_at=? WHERE id IN ...）；批量 IN 分片
+    /// 与参数顺序照旧（updatedAt 在前、id 依次在后），返回各分片受影响行数之和。
+    func markAssetFilesOffline(ids: [String], updatedAt: Double) async throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        var affected = 0
+        for chunk in ids.chunked(by: 400) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+            affected += try await database.run(
+                """
+                UPDATE asset_files SET online_status = 'offline', updated_at = ?
+                WHERE id IN (\(placeholders))
+                """,
+                [.real(updatedAt)] + chunk.map { .text($0) }
+            )
+        }
+        return affected
     }
 
     // MARK: 私有：事务内辅助
