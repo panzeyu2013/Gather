@@ -735,3 +735,19 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 | `c1ef014` | **R4 吸收 `WritebackService`（790 行）**：`Services/WritebackService.swift` 删除 → `Runtime/Metadata/WritebackRuntime.swift`（含 SQL 归位 Store）；**`Services` 5→4**；baseline 同步 5→4。**R5 命令层首个实现域落地**：新增 `Sources/GatherCore/API/Impl/`（方法体自路由对应 case 原样搬移、错误码与 JSON 形状不变）+ `Tests/GatherCoreTests/API/SessionCommandsImplTests.swift` 直测；**本步不改路由**（一次性剪除留待后续）。 | core `--build-tests` **exit=0 · Build complete · 0 error**（`pipefail` 复核）；门禁 **enforced 18 / tracked 8** + `legacy boundary check OK` |
 
 **验收切片专业处置留痕**：acc-build 检测到验收期间工作树被并发写入（20:06–20:12 多个文件变动 + 并行构建），主动实施「等待树静默（连续 45s 无变化，上限 420s）→ 记录编译前后快照哈希 → 再编译」并区分『工作树态』与『HEAD 态』结果——**该做法正确，编排侧已确认继续**（避免对移动靶产出不可复现的假阴性）。
+### 22. R5 命令层实施计划（`r5impl` 首域 session 完成后的批次划分，供后续轮次执行）
+
+**首域已落地**：`Sources/GatherCore/API/Impl/SessionCommandsImpl.swift`（113 行，`public actor SessionCommandsImpl: SessionCommands`，`init(service: SessionService, jobs: JobRunner)`）+ `Tests/.../API/SessionCommandsImplTests.swift`（149 行，7 用例全绿）。**选 actor 的理由**：协议要求 `Sendable`，而 `SessionService` 是非 Sendable 的 final class → **actor 隔离是免新增 `@unchecked Sendable` 的达标形态**（全文件 0 处）。覆盖 8/8 session 方法（create / create_from_directory / list / get / update / add_photos / delete / delete_many），含破坏性命令的 confirmed 门控（`SESSION_DELETE_NOT_CONFIRMED`）。**唯一有意差异**（已登记）：`create_from_directory` 入队失败时先 `await` 回滚会话行再抛原始错误（旧实现用后台 Task 立即抛错）——错误码与响应形状不变，回滚确定性更强且可直测。
+
+**剩余 18 域 / 103 方法**（实测计数）：Album6 · Assets5 · Culling17 · Duplicate4 · Export4 · Face14 · Filter3 · Index1 · Jobs4 · Metadata7 · Navigation4 · Person8 · Photo1 · Quality2 · Settings6 · Similarity10 · Template6 · Workspace1。
+
+**建议批次（与 W5-4a..4i 顺序一致）**：
+| 批次 | 域与方法数 | 备注 |
+|---|---|---|
+| B2 | Workspace1 + Jobs4 + Settings6 | `settings.get_ml_status` 现依赖 app 侧 `buildMLStatus()`（Vision/ML 配置）→ 建议注入 `MLStatusProvider` 闭包，否则该条暂留 |
+| B3 | Index1 + Photo1 + Quality2 + Navigation4 | 依赖少，快 |
+| B4 | Person8 + Template6 + Album6 + Assets5 + Duplicate4 | 中等 |
+| B5 | Metadata7 + Filter3 + Export4 | 中等 |
+| B6 | Similarity10 + Face14 + Culling17 | **最重最后** |
+
+**批次纪律（沿用本 session 实践）**：每批只用新文件（不改路由，避免与单写者冲突）→ 每批补直测 → 批次完成后编译 + filter + 门禁三验 → 全部批次完成后才**一次性剪 `Host` 路由**（3800 行）并归零 4 项度量（`SessionCommandRouter 17→0` · `awaitSync 2→0` · `StubCommandRouter 7→0` · `NativeCommandClient 6→0`）。
