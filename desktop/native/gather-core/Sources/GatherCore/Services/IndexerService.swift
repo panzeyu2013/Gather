@@ -454,7 +454,7 @@ public final class IndexerService {
 
         // 扫描 + 终态提交整体受保护：批次提交后发生的取消/错误不得吞掉
         // index_seq bump。index_seq 是分析过期游标（sessions.index_seq vs
-        // analysis_runs.index_seq）——批次已提交的新照片对已完成分析
+        // 分析 run 的 index_seq）——批次已提交的新照片对已完成分析
         // （sim/fkw）的可见性完全依赖它推进；任何终态只要发生过真实变更
         // 都必须 bump（TS「任何批次提交后都 bump」语义）。
         do {

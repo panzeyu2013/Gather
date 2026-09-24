@@ -346,7 +346,7 @@ public final class FaceKwService {
     private let sessionStore: any SessionStore
     private let faceStore: any FaceStore
     private let personStore: any PersonStore
-    /// R1：analysis_runs 写路径经 Store（SQL 见 Store/AnalysisRunStore.swift）。
+    /// R1：分析 run 的写路径经 Store（SQL 见 Store/AnalysisRunStore.swift）。
     private let analysisRunStore: any AnalysisRunStore
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
