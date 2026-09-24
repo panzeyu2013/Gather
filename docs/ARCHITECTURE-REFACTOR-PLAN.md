@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾㊹：DB.swift 退役第七切片——FaceKwService | ✅ | FaceKwService(1434) 去 DBConnection（仅 3 处连接点，主体是纯计算）：database: SQLiteDatabase；analysis_runs 插入改 database.run + database.lastInsertRowID；startAnalysisRun/finalizeAnalysisRun 异步化并传播调用点；路由 FaceKwService(database:) 注入。测试：FaceKeywordingServiceTests 两处构造改同库 + 保留其余。验证：双包库编译 0 error；FaceKeywording 全套 35/8 全绿；app 172/19 全绿。DB.swift 消费者 10→9 |
+| R1 收尾㊺：DuplicateService/CullingService 迁移方法修正（本轮未落地代码） | ⚠️ | 本轮尝试用多轮正则批量迁移 DuplicateService(738 行/23 连接点)：字段/构造/读路径/`PRAGMA`/事务骨架可自动改写，但「事务内 `prepare` 语句常量 + `stmt.run`」形态被多轮正则互相污染（产生 `"SQL".query(...)`、`_ = """...""".run`、缺括号等 5 处语法错误），已 `git checkout` 回退，仓库保持 HEAD 9d6fc51 绿。**修正后的方法**：对 >700 行、事务密集的服务改为**逐事务区域迁移**——每次只改一个事务（`database.transaction { db in ... db.run(sql, values) }`），改完即 `swift build` 验证，再进入下一区域；读路径单独一批。下一轮按此推进 DuplicateService（4 个事务 + 5 处读），随后 CullingService（3 个事务 + 13 处连接点） |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
