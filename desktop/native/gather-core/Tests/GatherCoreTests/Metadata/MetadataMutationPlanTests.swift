@@ -16,10 +16,25 @@ struct MetadataMutationPlanTests {
         let fromStrings = try normalizeKeywords([" b ", "a", "", "  ", "a", "b"])
         #expect(fromStrings == ["b", "a"])
 
-        let fromJSON = try normalizeKeywords([
+        let fromJSON = try normalizeKeywords(.array([
             .string(" b "), .number(1), .string("a"), .string(""), .string("a"),
-        ])
+        ]))
         #expect(fromJSON == ["b", "a"], "非字符串元素按 TS type guard 静默丢弃")
+
+        // TS value.trim() 覆盖换行/制表；Swift 旧实现仅去空格/制表。
+        let fromMultiline = try normalizeKeywords([" \n\t街头\r "])
+        #expect(fromMultiline == ["街头"], "trim 对齐 JS trim（whitespacesAndNewlines）")
+    }
+
+    @Test func normalizeKeywordsThrowsKeywordsInvalidForNonArrayUnknown() {
+        let nonArrays: [JSONValue] = [
+            .number(1), .string("a"), .null, .bool(true), .object(["k": .string("v")]),
+        ]
+        for value in nonArrays {
+            #expect(throws: MetadataContractError.keywordsInvalid) {
+                try normalizeKeywords(value)
+            }
+        }
     }
 
     // MARK: - validateMetadataPatch

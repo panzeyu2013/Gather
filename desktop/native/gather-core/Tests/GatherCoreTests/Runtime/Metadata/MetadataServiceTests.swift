@@ -99,6 +99,15 @@ private actor MetadataServiceFakeMutations: MetadataMutationPort {
     }
 }
 
+/// exif 分段按文件路径注入（对应 TS exifr.parse 分段输出）。
+private struct MetadataServiceFakeExif: ExifProvider {
+    let segmentsByPath: [String: MetadataParseSegments]
+
+    func parse(filePath: String, isJpeg: Bool) async throws -> MetadataParseSegments? {
+        segmentsByPath[filePath]
+    }
+}
+
 // MARK: - 基座
 
 private struct MetadataServiceHarness {
@@ -114,7 +123,8 @@ private struct MetadataServiceHarness {
 /// injectPhotoStore=false 走 database 兜底装配（路由层当前仍传 database 的路径）。
 private func makeMetadataServiceHarness(
     label: String,
-    injectPhotoStore: Bool = true
+    injectPhotoStore: Bool = true,
+    exif: (any ExifProvider)? = nil
 ) async throws -> MetadataServiceHarness {
     let (database, storePath) = try await makeMigratedStoreDatabase(label: label)
     try await insertSession(database, "s1")
@@ -129,6 +139,7 @@ private func makeMetadataServiceHarness(
             xmp: xmp,
             database: database,
             mutations: mutations,
+            exif: exif,
             photoStore: photoStore
         )
     } else {
@@ -136,7 +147,8 @@ private func makeMetadataServiceHarness(
             metadataStore: metadata,
             xmp: xmp,
             database: database,
-            mutations: mutations
+            mutations: mutations,
+            exif: exif
         )
     }
     return MetadataServiceHarness(
@@ -237,6 +249,40 @@ struct MetadataServiceTests {
         #expect(cached?.fileMtime != nil, "指纹 value 落库")
         let readPaths = await harness.xmp.readPaths
         #expect(readPaths == [filepath])
+    }
+
+    @Test func getMetadataStringifiesExifScalarNumbersWithJSStringSemantics() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let integerPath = try writeTempFile(
+            in: dir, name: "int.jpg", content: Data(repeating: 2, count: 40))
+        let fractionPath = try writeTempFile(
+            in: dir, name: "frac.jpg", content: Data(repeating: 3, count: 40))
+        let harness = try await makeMetadataServiceHarness(
+            label: "meta-service-exif-scalars",
+            exif: MetadataServiceFakeExif(segmentsByPath: [
+                integerPath: MetadataParseSegments(exif: .object([
+                    "ExposureTime": .number(10),
+                    "DateTimeOriginal": .number(7),
+                ])),
+                fractionPath: MetadataParseSegments(exif: .object([
+                    "ExposureTime": .number(0.005),
+                    "DateTimeOriginal": .number(2.5),
+                ])),
+            ])
+        )
+        try await insertPhoto(harness.database, id: "p1", sessionId: "s1", filepath: integerPath)
+        try await insertPhoto(harness.database, id: "p2", sessionId: "s1", filepath: fractionPath)
+
+        let result = try await harness.service.getMetadata(photoIds: ["p1", "p2"])
+        #expect(result["p1"]?.shutterSpeed == "10", "整数：JS String(number) 不带 .0 后缀")
+        #expect(result["p1"]?.dateTaken == "7")
+        #expect(result["p2"]?.shutterSpeed == "0.005", "非整数：保留 Double 形式")
+        #expect(result["p2"]?.dateTaken == "2.5")
+
+        let cached = try await harness.metadata.metadata(photoId: "p1")
+        #expect(cached?.exposureTime == "10")
+        #expect(cached?.dateTaken == "7")
     }
 
     @Test func setMetadataRejectsUnsupportedFieldsWithoutSideEffects() async throws {

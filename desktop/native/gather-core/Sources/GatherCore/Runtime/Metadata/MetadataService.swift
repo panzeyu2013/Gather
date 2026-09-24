@@ -135,8 +135,9 @@ public final class MetadataService {
 
     /// TS: `String(item)` —— JS Number 字符串化语义：整数值不带小数点
     /// （7 → "7"，-0 → "0"），NaN/±Infinity 同 JS 命名；非整数保留
-    /// Double 字符串形式（7.5 → "7.5"）。
-    private static func keywordString(_ number: Double) -> String {
+    /// Double 字符串形式（7.5 → "7.5"）。EXIF 标量字符串化（本文件 stringValue）
+    /// 复用同一口径，故为 fileprivate。
+    fileprivate static func keywordString(_ number: Double) -> String {
         if number.isNaN { return "NaN" }
         if number.isInfinite { return number < 0 ? "-Infinity" : "Infinity" }
         if let integer = Int64(exactly: number) { return String(integer) }
@@ -558,10 +559,12 @@ public final class MetadataService {
 }
 
 /// TS: `value ? String(value) : undefined`（exif 段标量字符串化）。
+/// 数字分支复用 keywordString —— JS `String(number)`，整数不带小数点，
+/// NaN/±Infinity 用 JS 命名，非整数保留 Double 形式。
 private func stringValue(_ value: JSONValue?) -> String? {
     guard let value else { return nil }
     if let string = value.stringValue { return string }
-    if let number = value.numberValue { return String(number) }
+    if let number = value.numberValue { return MetadataService.keywordString(number) }
     return nil
 }
 

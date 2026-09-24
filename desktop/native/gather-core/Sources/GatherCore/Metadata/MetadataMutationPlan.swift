@@ -33,24 +33,21 @@ private let metadataLabels: Set<String> = [
     "", "None", "Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple",
 ]
 
-/// TS: normalizeKeywords —— 非数组抛 METADATA_KEYWORDS_INVALID；
-/// 字符串化、trim、去空、按首次出现顺序去重。TS 的 filter(type guard)
-/// 静默丢弃非字符串元素，此处同样不抛错。
-public func normalizeKeywords(_ values: [JSONValue]) throws -> [String] {
-    // TS 入参是 unknown 的 values；此处接受 JSONValue 数组（宿主已按 unknown 语义传入）。
-    let strings = values.compactMap { $0.stringValue }
-    var seen = Set<String>()
-    return strings
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-        .filter { !$0.isEmpty }
-        .filter { seen.insert($0).inserted }
+/// TS: normalizeKeywords —— 入参是 unknown：非数组抛 METADATA_KEYWORDS_INVALID；
+/// 数组内按 type guard 静默丢弃非字符串元素（含数字），随后 trim（JS trim 覆盖
+/// 换行/制表等，用 whitespacesAndNewlines 对齐）、去空、按首次出现顺序去重。
+public func normalizeKeywords(_ value: JSONValue) throws -> [String] {
+    guard let values = value.arrayElements else {
+        throw MetadataContractError.keywordsInvalid
+    }
+    return try normalizeKeywords(values.compactMap { $0.stringValue })
 }
 
-/// TS: normalizeKeywords —— 字符串数组直传（queueMutation 的 patch.keywords 已是 string[]）。
+/// TS: normalizeKeywords 的数组分支（queueMutation 的 patch.keywords 已是 string[]）。
 public func normalizeKeywords(_ values: [String]) throws -> [String] {
     var seen = Set<String>()
     return values
-        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .filter { !$0.isEmpty }
         .filter { seen.insert($0).inserted }
 }
