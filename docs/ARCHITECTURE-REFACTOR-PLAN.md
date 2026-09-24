@@ -587,3 +587,29 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | round 111：Export 切换**发现隐藏前置**——`ExportReportSource` 无任何 conformer | 阻塞已定位 | `ExportRuntime.swift:206` 声明 `public protocol ExportReportSource { sessionSummaryRows/personRows/keywordRows/cullingDecisionRows }`，但**全仓无实现类型**（`grep ': ExportReportSource'` 0 命中）。该协议是 `Dependencies` 的**必填**参数（无默认值），故 Export 切换**不能只做 7 处装配替换**：必须先把旧 `ExportService.generateReport` 里的 4 条报告查询下沉为 **Store 方法**（遵守"Store 是唯一 SQL 所有者"的 R1 约束）并提供一个 `SQLiteExportReportSource(store:)` 实现，再装配。**动作**：①确认 `ExportService.swift` 中 4 条查询的现状 ②在 `Store/` 增加对应读方法（若已有可复用则复用）③新增 `Runtime/Export/SQLiteExportReportSource.swift` ④再执行 7 处替换与删旧。此发现再次说明：**切换前必须做"依赖闭合性"检查**（协议是否都有生产实现、是否有默认值），该检查已加入切换清单。 |
 | round 119：Export 装配替换首试回退（签名差异已取证） | 已回退 | 3 处替换后编译暴露差异：①`Dependencies.init` 的 `fileSystem` **无默认值**（只有 `imageConverter` 有），需显式传 `DiskExportFileSystem()` ②`ExportRuntime.cancel` 签名为 `cancel(_ sessionId:) async throws`（**无标签、async**），router 两处 `cancel(sessionId:)` 需改 `Task { try? await exportService.cancel(job.scopeId) }` ③`preview`/`report` 收**参数对象**（`ExportPreviewParams`/`ExportReportParams`）而非旧服务的散参，`execute` 签名待核。**已 `git checkout` 回退，HEAD 保持全绿**。下一步按此清单一次性完成替换并编译。 |
 | round 124：Export 装配替换第二批差异取证（3 处参数映射） | 已回退 | 第一批（字段/init 形参/构造含 `fileSystem: DiskExportFileSystem()` + `reportSource` + `cancel` 两处 Task 包装）替换成功后，剩余 **3 处参数映射**：①`export.preview`：旧传散参/String → `ExportRuntime.preview(_ params: ExportPreviewParams)` 需构造 `ExportPreviewParams` ②`export.execute`：app 侧 `NativeExportResumeState` → 运行时要求 `ExportResumeState`（**需写映射函数**：`destinations`/`completedPhotoIds` 字段对应）③`export.report`：`generateReport(...)` → `report(_ params: ExportReportParams)`。**已回退，HEAD 全绿**。下一步按此 3 处映射一次性完成，再删旧服务。 |
+## 14. 最终交接快照（round 128/128，HEAD `94fa495`，65 个绿态提交）
+
+### 已收官
+- **R1**：`DB.swift`（352 行）删除；Store 为唯一 SQL 所有者（`DB layer=0`、`raw SQL outside Store=0`）。
+- **R3**：`JobService`/`JobScheduler`/`AnalysisWorker`（1006 行）删除；`JobRunner` 为唯一作业层（语义迁移 +5 例；app 172/19 全绿）。
+- **R2 三域闭环**：Culling（`CullingService` 2550 行 + 57 用例删除；38 处 NOT_IMPLEMENTED 修复；149 tests/10 suites）· Similarity+Duplicate+Quality（2347 行 + 63 用例删除；16 路由 case 异步化）· Navigation（255 行 + 旧测试删除；**6/6 语义承接、零债务**；26 tests/5 suites）。
+- **R4-2**：5 个 Metadata 支撑文件 `git mv` 入 `Metadata/`（保留历史）+ 5 处死码删除 + 31 用例。
+- **R7 主要死码**：`image.*` 4 命令 + `ImagePreloadService`（82 行）+ `photo.list`（31 行）删除。
+
+### 关键资产（可直接续作）
+- **Runtime 层**：Culling · Similarity · Duplicate · Quality · Jobs · Navigation（Assembler+Runtime+Error）· **Export**（Assembler 283 行 + Runtime actor + `SQLiteExportReportSource`）· **MetadataWriter**（读面 5/5 + `providerSet` + `MetadataWriterError`）。
+- **Store 命令层**：`markOutboxStatus(expectedRevision:)` CAS · `mergeOutboxPatches`（单事务）· `reconcileWritebackProjection`（单写者投影）· `applyAcceptedRemoteValues`（单事务）· `recoverInterruptedOutbox` · `clearReloadAckedAtForXmpPaths` · `metadataTargets`/`photoLookups`/`photoIdsByFilepath` · `mergeMetadata`（仅非 nil 覆盖）· `ExportStore`（4 报告查询）。
+- **设计文档**：`W2B`/`W2C`/`W2D`/`W4`/`W5-DESIGN.md` + `Services/` 清退清单（11→3 路线）+ R7 裁决清单 + R8 门禁加固/出口定义 + 本文档 §10–§14。
+
+### 剩余路线（按序）
+1. **Export 切换收尾**：按 §（round 119/124 两批差异）8 步执行 → 删 `ExportService`（461 行）→ baseline `Services 11→10`。
+2. **W4 写面**：`MetadataWriter.schedule` 骨架 → CAS · 5 档退避 · `MutationTicket` FIFO → 写回面 → 吸收 `MetadataSyncCoordinator`/`WritebackService`/`MetadataService`/`MetadataMutationService`/`PhotoAssetResolver`（`Services` → 5）。
+3. **W2d 余 2 域**：Indexer 1160 · FaceKw 1436（各自一轮，Nav/Export 模板）。
+4. **R5**：typed API（111 命令 / 18 域子协议 / `SessionCommandRouter 17→0` / `awaitSync 2→0` / `StubCommandRouter 7→0`）。
+5. **R6**：UI 重写（Shell + 11 Feature）。6. **R8**：全部度量转 enforced + 出口核验。
+
+### 环境注意事项（本会话踩坑）
+- SwiftPM scratch **不共用**；每轮开始 `pkill -9 -f 'swift-build '`、`'swift-test '`、`swiftpm-testing-helper` 清理孤儿进程（曾致多轮「构建永不返回」）。
+- app 包特性目录在**包根**，提交用 `git add desktop/native/gather-app`（整包）。
+- 大文件禁用行级/括号级文本手术；改前改后均做**括号差自检**（必须 0）。
+- 取消/超时类测试**必须限时**，禁止无界轮询（曾致 swift-testing 挂起）。
