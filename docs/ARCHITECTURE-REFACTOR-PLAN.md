@@ -441,7 +441,7 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | 命令 | 存活实现（先出现） | 死代码（永不命中） | 语义差异 |
 |---|---|---|---|
 | `export.preview` | **L1161**：`Task { … requiredString 抛错 → catch → errorMessage }`（统一错误映射） | L1949：先 `guard let … else MISSING_PARAM:sessionId` 再 Task | 缺失参数时的错误码路径不同；L1949 还提前解 params |
-| `fkw.unbind` | **L1521**：先 `guard confirmed` → `FKW_UNBIND_CONFIRM_REQUIRED`，再要求 sessionId | L2080：`guard confirmed` → `throw BridgeError.badParams(...)`，且要求 `clusterId`（额外参数！） | **死掉的 L2080 才是要求 clusterId 的新版**，存活版不校验 clusterId |
+| `fkw.unbind` | **L1521**：先 `guard confirmed` → `FKW_UNBIND_CONFIRM_REQUIRED`，再要求 sessionId | L2080：`guard confirmed` → `throw BridgeError.badParams(...)`，且要求 `clusterId`（额外参数！） | **死掉的 L2080 才是要求 clusterId 的新版**，两分支都要求 clusterId，差异仅在非法/缺失时的错误码（已由 W5 设计证实，见 docs/ARCHITECTURE-W5-DESIGN.md） |
 
 **含义**：`fkw.unbind` 当前实际走的是旧实现（不校验 `clusterId`），R1 之后新增的严格校验版从未生效——这是真实的行为缺陷（潜在破坏性命令参数校验缺失）。
 **处置**：属 R5（删除路由、改类型化 API）时**必须显式裁决**：以 L2080 的严格语义（要求 clusterId + BridgeError）为准，并为该命令补回归测试；R7 复核是否还有其他 `case` 重复。**本轮不动**（避免在 W2 波次中改变行为）。
