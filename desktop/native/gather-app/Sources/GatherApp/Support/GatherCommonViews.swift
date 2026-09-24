@@ -1,6 +1,6 @@
 // 共享基础视图组件：统一各页自绘副本，消除实现分裂——
 // GatherStatCard（统计卡）、GatherProgressBar（进度条）、
-// GatherEmptyState（空态/无结果态）。
+// GatherEmptyState（空态/无结果态）、NativeBanner（横幅）。
 import SwiftUI
 
 // MARK: - 统计卡
@@ -215,5 +215,36 @@ public struct GatherEmptyState: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - 横幅
+
+/// 通用横幅（任务中心并入 Dashboard 后由根壳迁入共享组件）：文案 + 语义色。
+public struct NativeBanner: View {
+    let text: String
+    let color: Color
+
+    public init(text: String, color: Color) {
+        self.text = text
+        self.color = color
+    }
+
+    public var body: some View {
+        Text(text)
+            .font(.callout)
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(color.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.gatherBorder, lineWidth: 1)
+            )
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
     }
 }

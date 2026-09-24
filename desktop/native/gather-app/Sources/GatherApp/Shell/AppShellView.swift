@@ -126,34 +126,22 @@ public struct AppShellView: View {
     private let settingsRouter: CommandRouter?
     /// 人脸库需要的数据提供者（可选：未注入时该特性回退占位）。
     private let personsProvider: PersonsDataProvider?
-    /// 工作台需要的数据提供者（可选：未注入时该特性回退占位）。
-    private let dashboardProvider: DashboardDataProvider?
     /// 全局图库需要的数据提供者（可选：未注入时该特性回退占位）。
     private let libraryProvider: LibraryDataProvider?
     /// 会话工作区需要的依赖（可选：未注入时 5 个工作区页签回退占位）。
     private let sessionRouter: CommandRouter?
-    /// 浏览页需要的数据提供者（可选：未注入时该特性回退占位）。
-    private let galleryProvider: GalleryDataProvider?
     /// 浏览页需要宿主路由层的具体类型（可选：未注入时该特性回退占位）。
     private let galleryRouter: HostRouter?
-    /// 相似度页需要的数据提供者（可选：未注入时该特性回退占位）。
-    private let similarityProvider: SimilarityDataProvider?
     /// 壳层导航状态：当前会话与当前页签；未注入时内部新建（无选中会话）。
     private let navigation: AppNavigationState
     /// 打开工作区回调：工作台与全局图库共用，壳层只透传不解释。
     private let onOpenSession: (String) -> Void
-    /// 当前选中的特性：左侧列表点击切换，右侧渲染对应视图。
-    @State private var selectedFeature: Feature = .dashboard
-    /// 工作台视图模型：仅在注入数据提供者时创建，壳层不自行取数。
-    @State private var dashboardViewModel: DashboardViewModel?
+    /// 壳层职责协调器：菜单通知、窗口标题、拖放、语言版本、会话级视图模型。
+    @State private var coordinator: ShellCoordinator
     /// 全局图库视图模型：仅在注入数据提供者时创建，壳层不自行取数。
     @State private var libraryViewModel: LibraryViewModel?
     /// 人脸库视图模型：仅在注入数据提供者时创建，壳层不自行取数。
     @State private var personsViewModel: PersonsViewModel?
-    /// 浏览视图模型：会话级，依赖齐备且已选中会话时创建，否则回退占位。
-    @State private var galleryViewModel: GalleryViewModel?
-    /// 相似度视图模型：会话级，依赖齐备且已选中会话时创建，否则回退占位。
-    @State private var similarityViewModel: SimilarityViewModel?
 
     /// 依赖经 init 以可选形式传入；全部参数都有默认值，既有调用点不受影响。
     /// 注：工作台的数据提供者协议为模块内可见，public init 无法引用内部类型，
@@ -174,62 +162,63 @@ public struct AppShellView: View {
     ) {
         self.settingsRouter = settingsRouter
         self.personsProvider = personsProvider
-        self.dashboardProvider = dashboardProvider
         self.libraryProvider = libraryProvider
         self.sessionRouter = sessionRouter
-        self.galleryProvider = galleryProvider
         self.galleryRouter = galleryRouter
-        self.similarityProvider = similarityProvider
         let navigation = navigation ?? AppNavigationState()
         self.navigation = navigation
         self.onOpenSession = onOpenSession
-        if let dashboardProvider {
-            _dashboardViewModel = State(initialValue: DashboardViewModel(provider: dashboardProvider))
-        }
+        // 壳层职责（菜单/通知/标题/拖放/语言版本/会话级视图模型）集中在协调器。
+        _coordinator = State(initialValue: ShellCoordinator(
+            navigation: navigation,
+            dashboardProvider: dashboardProvider,
+            galleryProvider: galleryProvider,
+            isGalleryRouterWired: galleryRouter != nil,
+            similarityProvider: similarityProvider,
+            sessionRouter: sessionRouter
+        ))
         if let libraryProvider {
             _libraryViewModel = State(initialValue: LibraryViewModel(provider: libraryProvider))
         }
         if let personsProvider {
             _personsViewModel = State(initialValue: PersonsViewModel(provider: personsProvider))
         }
-        // 装配处预置了选中会话时（深链/恢复）：同步构造两个会话级视图模型；
-        // 未预置时等首次会话变化走 syncSessionScopedViewModels()。
-        if let sessionId = navigation.currentSessionId {
-            if let galleryProvider, galleryRouter != nil {
-                _galleryViewModel = State(initialValue: GalleryViewModel(
-                    sessionId: sessionId,
-                    provider: galleryProvider
-                ))
-            }
-            if let similarityProvider {
-                _similarityViewModel = State(initialValue: SimilarityViewModel(
-                    sessionId: sessionId,
-                    provider: similarityProvider,
-                    captureOne: Self.captureOneBridge(router: sessionRouter)
-                ))
-            }
-        }
     }
 
     public var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            featureList
-            Divider()
-            detailView(for: selectedFeature)
+            if coordinator.isSidebarVisible {
+                featureList
+                Divider()
+            }
+            detailView
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(20)
         .frame(minWidth: 720, minHeight: 480, alignment: .topLeading)
+        // 壳级职责（菜单/通知/标题/拖放/语言版本）随壳层常驻。
+        .navigationTitle(coordinator.windowTitle)
+        .id(coordinator.languageVersion)
+        .overlay(alignment: .topTrailing) {
+            ToastView()
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = ShellCoordinator.firstDirectoryURL(in: urls) else { return false }
+            NotificationCenter.default.post(name: GatherAppNotification.menuImportFolder, object: url)
+            return true
+        }
+        .task {
+            coordinator.startObserving()
+            await coordinator.refreshWindowTitle()
+        }
+        .onDisappear { coordinator.stopObserving() }
         // 装配处选中会话后：侧栏自动落到当前工作区页签（未选中时保持原选择）。
-        .onChange(of: navigation.currentSessionId) { _, newValue in
-            syncSessionScopedViewModels()
-            guard newValue != nil else { return }
-            selectedFeature = Feature.forTab(navigation.selectedTab)
+        .onChange(of: navigation.currentSessionId) { _, _ in
+            coordinator.navigationSessionDidChange()
         }
         // 外部（装配处/页签栏）切换页签时同步侧栏高亮。
-        .onChange(of: navigation.selectedTab) { _, newTab in
-            guard navigation.currentSessionId != nil else { return }
-            selectedFeature = Feature.forTab(newTab)
+        .onChange(of: navigation.selectedTab) { _, _ in
+            coordinator.navigationTabDidChange()
         }
     }
 
@@ -255,9 +244,9 @@ public struct AppShellView: View {
     }
 
     private func featureRow(_ feature: Feature) -> some View {
-        let isSelected = selectedFeature == feature
+        let isSelected = coordinator.selectedFeature == feature
         return Button {
-            selectFeature(feature)
+            coordinator.selectFeature(feature)
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(feature.displayName)
@@ -279,81 +268,13 @@ public struct AppShellView: View {
         .buttonStyle(.plain)
     }
 
-    /// 侧栏选择：同步当前特性与壳层导航状态的当前页签（非工作区特性不动页签）。
-    private func selectFeature(_ feature: Feature) {
-        selectedFeature = feature
-        if let tab = feature.sessionTab {
-            navigation.selectTab(tab)
-        }
-    }
-
-    /// 会话内页签跳转：同步侧栏高亮并转发壳层导航状态（页签栏与页内按钮共用）。
-    private func openSessionTab(_ sessionId: String, _ tab: SessionTab) {
-        selectedFeature = Feature.forTab(tab)
-        navigation.openTab(sessionId, tab)
-    }
-
-    /// 打开浏览页：切换侧栏选中项并转发宿主出口。
-    private func openGalleryFeature(_ sessionId: String) {
-        selectedFeature = .gallery
-        navigation.openGallery(sessionId)
-    }
-
-    /// 打开相似度页：切换侧栏选中项并转发宿主出口。
-    private func openSimilarityFeature(_ sessionId: String) {
-        selectedFeature = .similarity
-        navigation.openSimilarity(sessionId)
-    }
-
-    /// 打开设置页：切换侧栏选中项并转发宿主出口。
-    private func openSettingsFeature() {
-        selectedFeature = .settings
-        navigation.openSettings()
-    }
-
-    /// 返回工作台（浏览页的返回落点）。
-    private func openDashboardFeature() {
-        selectedFeature = .dashboard
-    }
-
-    /// 当前会话变化时重建浏览/相似度视图模型（同会话不重建，避免打断页内状态）。
-    private func syncSessionScopedViewModels() {
-        guard let sessionId = navigation.currentSessionId else {
-            galleryViewModel?.stopIndexStatusPolling()
-            similarityViewModel?.stopProgressPolling()
-            similarityViewModel?.stopResultPolling()
-            galleryViewModel = nil
-            similarityViewModel = nil
-            return
-        }
-        if galleryViewModel?.sessionId != sessionId, let galleryProvider, galleryRouter != nil {
-            galleryViewModel?.stopIndexStatusPolling()
-            galleryViewModel = GalleryViewModel(sessionId: sessionId, provider: galleryProvider)
-        }
-        if similarityViewModel?.sessionId != sessionId, let similarityProvider {
-            similarityViewModel?.stopProgressPolling()
-            similarityViewModel?.stopResultPolling()
-            similarityViewModel = SimilarityViewModel(
-                sessionId: sessionId,
-                provider: similarityProvider,
-                captureOne: Self.captureOneBridge(router: sessionRouter)
-            )
-        }
-    }
-
-    /// 相似度页的 Capture One 桥：注入了命令路由时用真实桥，否则用默认空实现。
-    private static func captureOneBridge(router: CommandRouter?) -> CaptureOneBridge {
-        guard let router else { return CaptureOneBridge() }
-        return CaptureOneBridge(router: router)
-    }
-
     /// 是否已接真实视图：11 个特性全部接线，依赖齐备（会话级另需已选中会话）。
     private func isWired(_ feature: Feature) -> Bool {
         switch feature {
-        case .dashboard: return dashboardViewModel != nil
+        case .dashboard: return coordinator.dashboardViewModel != nil
         case .library: return libraryViewModel != nil
-        case .gallery: return galleryViewModel != nil && galleryRouter != nil
-        case .similarity: return similarityViewModel != nil && sessionRouter != nil
+        case .gallery: return coordinator.galleryViewModel != nil && galleryRouter != nil
+        case .similarity: return coordinator.similarityViewModel != nil && sessionRouter != nil
         case .settings: return settingsRouter != nil
         case .persons: return personsViewModel != nil
         case .controlCenter, .faceKeywording, .duplicates, .culling, .export:
@@ -361,19 +282,31 @@ public struct AppShellView: View {
         }
     }
 
-    /// 右侧详情：11 个特性全部指向真实视图；浏览/相似度按当前会话构造的视图模型
-    /// 渲染，会话级页面依赖缺失或未选中会话时回退占位，保持可编译。
+    /// 右侧详情：工作台常驻（其菜单/进度订阅随壳层存活，隐藏期间停轮询），
+    /// 其余特性按当前选择 switch；浏览/相似度按当前会话构造的视图模型渲染，
+    /// 会话级页面依赖缺失或未选中会话时回退占位，保持可编译。
     @ViewBuilder
-    private func detailView(for feature: Feature) -> some View {
+    private var detailView: some View {
+        ZStack {
+            if let dashboardViewModel = coordinator.dashboardViewModel {
+                DashboardView(viewModel: dashboardViewModel, onOpenSession: onOpenSession)
+                    .opacity(coordinator.selectedFeature == .dashboard ? 1 : 0)
+                    .allowsHitTesting(coordinator.selectedFeature == .dashboard)
+                    .accessibilityHidden(coordinator.selectedFeature != .dashboard)
+            }
+            if coordinator.selectedFeature != .dashboard {
+                featureDetail(for: coordinator.selectedFeature)
+            }
+        }
+    }
+
+    /// 非工作台特性的详情：按特性渲染对应真实视图（依赖缺失回退占位）。
+    @ViewBuilder
+    private func featureDetail(for feature: Feature) -> some View {
         switch feature {
         case .dashboard:
-            if let dashboardViewModel {
-                DashboardView(viewModel: dashboardViewModel, onOpenSession: onOpenSession)
-                    // 本壳按特性切换视图（非常驻隐藏）：离开工作台停 2s 自动刷新。
-                    .onDisappear { dashboardViewModel.stopAutoRefresh() }
-            } else {
-                placeholderView(for: feature)
-            }
+            // 工作台由 detailView 常驻渲染，这里不重复。
+            EmptyView()
         case .library:
             if let libraryViewModel {
                 LibraryView(viewModel: libraryViewModel, onOpenSession: onOpenSession)
@@ -398,11 +331,11 @@ public struct AppShellView: View {
                     sessionId: sessionId,
                     tab: tab,
                     router: sessionRouter,
-                    onBack: { openGalleryFeature(sessionId) },
-                    onOpenTab: { openSessionTab($0, $1) },
-                    onOpenSimilarity: { openSimilarityFeature($0) },
-                    onOpenGallery: { openGalleryFeature($0) },
-                    onOpenSettings: { openSettingsFeature() }
+                    onBack: { coordinator.openGalleryFeature(sessionId) },
+                    onOpenTab: { coordinator.openSessionTab($0, $1) },
+                    onOpenSimilarity: { coordinator.openSimilarityFeature($0) },
+                    onOpenGallery: { coordinator.openGalleryFeature($0) },
+                    onOpenSettings: { coordinator.openSettingsFeature() }
                 )
                 // 会话或页签变化时强制造型重建：页签内状态以 init 时的会话初始化。
                 .id("session-shell-\(sessionId)-\(tab.rawValue)")
@@ -411,15 +344,15 @@ public struct AppShellView: View {
             }
         case .gallery:
             if let sessionId = navigation.currentSessionId,
-               let galleryViewModel,
+               let galleryViewModel = coordinator.galleryViewModel,
                let galleryRouter {
                 GalleryView(
                     viewModel: galleryViewModel,
                     router: galleryRouter,
-                    onBack: { openDashboardFeature() },
-                    onOpenSimilarity: { openSimilarityFeature($0) },
-                    onOpenTab: { openSessionTab($0, $1) },
-                    onOpenSettings: { openSettingsFeature() }
+                    onBack: { coordinator.openDashboardFeature() },
+                    onOpenSimilarity: { coordinator.openSimilarityFeature($0) },
+                    onOpenTab: { coordinator.openSessionTab($0, $1) },
+                    onOpenSettings: { coordinator.openSettingsFeature() }
                 )
                 // 会话变化时强制造型重建：视图模型以 init 时的会话初始化。
                 .id("gallery-\(sessionId)")
@@ -430,15 +363,15 @@ public struct AppShellView: View {
             }
         case .similarity:
             if let sessionId = navigation.currentSessionId,
-               let similarityViewModel,
+               let similarityViewModel = coordinator.similarityViewModel,
                let sessionRouter {
                 SimilarityView(
                     viewModel: similarityViewModel,
                     router: sessionRouter,
-                    onBack: { openGalleryFeature(sessionId) },
-                    onOpenGallery: { openGalleryFeature($0) },
-                    onOpenTab: { openSessionTab($0, $1) },
-                    onOpenSettings: { openSettingsFeature() }
+                    onBack: { coordinator.openGalleryFeature(sessionId) },
+                    onOpenGallery: { coordinator.openGalleryFeature($0) },
+                    onOpenTab: { coordinator.openSessionTab($0, $1) },
+                    onOpenSettings: { coordinator.openSettingsFeature() }
                 )
                 // 会话变化时强制造型重建：视图模型以 init 时的会话初始化。
                 .id("similarity-\(sessionId)")
