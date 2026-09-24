@@ -46,6 +46,23 @@ public struct FaceObservationLiteRecord: Equatable, Sendable {
     }
 }
 
+/// W2c：最大人脸轻投影（Quality 相对评分用：bbox + 分析签名，不含 embedding）。
+public struct FaceObservationBox: Equatable, Sendable {
+    public let x: Double
+    public let y: Double
+    public let w: Double
+    public let h: Double
+    public let analysisSignature: String
+
+    public init(x: Double, y: Double, w: Double, h: Double, analysisSignature: String) {
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.analysisSignature = analysisSignature
+    }
+}
+
 public struct FaceAnalysisStateRecord: Equatable, Sendable {
     public let sourceFileSize: Int64
     public let sourceFileMtimeMs: Double
@@ -91,6 +108,8 @@ public protocol FaceStore: Sendable {
     func countsByPhoto(sessionId: String, photoIds: [String]) async throws -> [String: Int]
     /// W2b：批量轻投影（bbox + analysis_signature，ORDER BY id）；photoIds 为空返回 []。
     func observationsLite(sessionId: String, photoIds: [String]) async throws -> [FaceObservationLiteRecord]
+    /// W2c：每照片最大人脸（bbox_w * bbox_h 降序首行）；photoIds 为空返回 [:]。
+    func largestFacePerPhoto(sessionId: String, photoIds: [String]) async throws -> [String: FaceObservationBox]
     func replaceObservationsByPhoto(
         sessionId: String,
         photoId: String,
@@ -286,6 +305,38 @@ public struct SQLiteFaceStore: FaceStore {
             })
         }
         return result
+    }
+
+    /// W2c：原 QualityService.getFacesBatch 的 SQL 下沉；每照片首行（面积最大）即答案。
+    public func largestFacePerPhoto(
+        sessionId: String,
+        photoIds: [String]
+    ) async throws -> [String: FaceObservationBox] {
+        guard !photoIds.isEmpty else { return [:] }
+        var faces: [String: FaceObservationBox] = [:]
+        for chunk in photoIds.chunked(by: 400) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
+                FROM face_observations
+                WHERE session_id = ? AND photo_id IN (\(placeholders))
+                ORDER BY bbox_w * bbox_h DESC
+                """,
+                [.text(sessionId)] + chunk.map { .text($0) }
+            )
+            for row in rows {
+                guard let photoId = row.text("photo_id"), faces[photoId] == nil else { continue }
+                faces[photoId] = FaceObservationBox(
+                    x: row.double("bbox_x") ?? 0,
+                    y: row.double("bbox_y") ?? 0,
+                    w: row.double("bbox_w") ?? 0,
+                    h: row.double("bbox_h") ?? 0,
+                    analysisSignature: row.text("analysis_signature") ?? ""
+                )
+            }
+        }
+        return faces
     }
 
     /// 原子替换照片的人脸观察：先删旧后插新，失败时旧数据不受影响。

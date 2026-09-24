@@ -15,6 +15,111 @@ public struct TechnicalQualityRow: Equatable, Sendable {
     }
 }
 
+/// W2c：analysis_runs 插入输入（params 为已序列化 JSON 文本；started_at/status
+/// 由 Store 固定为 now / 'running'，finished_at 为空串）。
+public struct AnalysisRunInsert: Equatable, Sendable {
+    public let sessionId: String
+    public let kind: String
+    public let photoCount: Int
+    public let indexSeq: Int
+    public let params: String
+
+    public init(sessionId: String, kind: String, photoCount: Int, indexSeq: Int, params: String) {
+        self.sessionId = sessionId
+        self.kind = kind
+        self.photoCount = photoCount
+        self.indexSeq = indexSeq
+        self.params = params
+    }
+}
+
+/// W2c：analysis_runs 行（状态语义沿用旧实现：只区分 ok/failed，取消在 catch 写 failed）。
+public struct AnalysisRunRecord: Decodable, Equatable, Sendable {
+    public let id: Int64
+    public let sessionId: String
+    public let kind: String
+    public let photoCount: Int
+    public let indexSeq: Int
+    public let startedAt: String
+    public let finishedAt: String
+    public let params: String
+    public let status: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, params, status
+        case sessionId = "session_id"
+        case photoCount = "photo_count"
+        case indexSeq = "index_seq"
+        case startedAt = "started_at"
+        case finishedAt = "finished_at"
+    }
+}
+
+/// W2c：technical_quality 结果行（JOIN photos：requested_photo_id 为请求的会话照片 id）。
+public struct QualityAnalysisRow: Equatable, Sendable {
+    public let requestedPhotoId: String
+    public let assetFileId: String
+    public let resultJson: String
+    public let warningsJson: String
+    public let modelId: String
+    public let modelVersion: String
+    public let inputFingerprint: String
+    public let updatedAt: String
+
+    public init(
+        requestedPhotoId: String,
+        assetFileId: String,
+        resultJson: String,
+        warningsJson: String,
+        modelId: String,
+        modelVersion: String,
+        inputFingerprint: String,
+        updatedAt: String
+    ) {
+        self.requestedPhotoId = requestedPhotoId
+        self.assetFileId = assetFileId
+        self.resultJson = resultJson
+        self.warningsJson = warningsJson
+        self.modelId = modelId
+        self.modelVersion = modelVersion
+        self.inputFingerprint = inputFingerprint
+        self.updatedAt = updatedAt
+    }
+}
+
+/// W2c：asset_analysis UPSERT 输入（result_json/warnings_json 已序列化；
+/// created_at 与 updated_at 同取 updatedAt，与旧写入逐字一致）。
+public struct QualityAnalysisUpsert: Equatable, Sendable {
+    public let photoId: String
+    public let assetFileId: String
+    public let resultJson: String
+    public let warningsJson: String
+    public let modelId: String
+    public let modelVersion: String
+    public let inputFingerprint: String
+    public let updatedAt: String
+
+    public init(
+        photoId: String,
+        assetFileId: String,
+        resultJson: String,
+        warningsJson: String,
+        modelId: String,
+        modelVersion: String,
+        inputFingerprint: String,
+        updatedAt: String
+    ) {
+        self.photoId = photoId
+        self.assetFileId = assetFileId
+        self.resultJson = resultJson
+        self.warningsJson = warningsJson
+        self.modelId = modelId
+        self.modelVersion = modelVersion
+        self.inputFingerprint = inputFingerprint
+        self.updatedAt = updatedAt
+    }
+}
+
 public protocol JobStore: Sendable {
     func create(_ params: JobCreateParams) async throws -> AnalysisJobData
     func get(_ id: String) async throws -> AnalysisJobData?
@@ -39,6 +144,30 @@ public protocol JobStore: Sendable {
     /// W2b：批量技术质量分析行（asset_analysis JOIN photos，ORDER BY updated_at DESC）；
     /// photoIds 为空返回 []。
     func technicalQualityRows(photoIds: [String]) async throws -> [TechnicalQualityRow]
+
+    // MARK: analysis_runs / asset_analysis（W2c）
+
+    /// 插入分析 run（status='running'，started_at=now，finished_at=''）；返回 runId。
+    /// 插入与 lastInsertRowID 读取在同一事务内，避免并发交错取错 id。
+    func insertAnalysisRun(_ insert: AnalysisRunInsert) async throws -> Int64
+    /// run 终态（status + finished_at=now）；未知 runId 返回 false。
+    @discardableResult
+    func finishAnalysisRun(runId: Int64, status: String) async throws -> Bool
+    /// 最近一次 run（ORDER BY id DESC，**不过滤 status**：1.4.2 过期判定所需的
+    /// ok 过滤由 WorkspaceStore.latestOkRun 负责）；无行返回 nil。
+    func latestAnalysisRun(sessionId: String, kind: String) async throws -> AnalysisRunRecord?
+    /// technical_quality 结果批量 UPSERT（单事务，INSERT OR REPLACE）；空参数为 no-op。
+    func upsertQualityResults(_ results: [QualityAnalysisUpsert]) async throws
+    /// 指定 model/version 的存储结果（JOIN photos 按 asset_file_id 共享，
+    /// ORDER BY updated_at DESC；内部 400 分块）；空参数返回 []。
+    func cachedQualityResults(
+        photoIds: [String],
+        modelId: String,
+        modelVersion: String
+    ) async throws -> [QualityAnalysisRow]
+    /// 每照片最新 technical_quality 行（同上 JOIN，ORDER BY updated_at DESC，
+    /// 首行即最新；内部 400 分块）；空参数返回 []。
+    func latestQualityResults(photoIds: [String]) async throws -> [QualityAnalysisRow]
 }
 
 public extension JobStore {
@@ -78,6 +207,9 @@ public struct SQLiteJobStore: JobStore {
             progress_total = 0, progress_message = '', finished_at = '', updated_at = ?
         WHERE id = ?
         """
+
+    /// TS 常量 IN_CHUNK_SIZE：asset_analysis 的 IN 分块（Quality 读路径）。
+    private static let qualityChunkSize = 400
 
     private let database: SQLiteDatabase
 
@@ -324,6 +456,126 @@ public struct SQLiteJobStore: JobStore {
             })
         }
         return result
+    }
+
+    // MARK: analysis_runs / asset_analysis（W2c：原 SimilarityService/QualityService 内联 SQL 下沉）
+
+    public func insertAnalysisRun(_ insert: AnalysisRunInsert) async throws -> Int64 {
+        try await database.transaction { db in
+            try db.run(
+                """
+                INSERT INTO analysis_runs
+                  (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
+                VALUES (?, ?, ?, ?, ?, '', ?, 'running')
+                """,
+                [
+                    .text(insert.sessionId), .text(insert.kind), .int(Int64(insert.photoCount)),
+                    .int(Int64(insert.indexSeq)), .text(nowISOString()), .text(insert.params),
+                ]
+            )
+            return db.lastInsertRowID
+        }
+    }
+
+    @discardableResult
+    public func finishAnalysisRun(runId: Int64, status: String) async throws -> Bool {
+        try await database.run(
+            "UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?",
+            [.text(status), .text(nowISOString()), .int(runId)]
+        ) == 1
+    }
+
+    public func latestAnalysisRun(sessionId: String, kind: String) async throws -> AnalysisRunRecord? {
+        try await database.queryOne(
+            """
+            SELECT * FROM analysis_runs
+            WHERE session_id = ? AND kind = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            [.text(sessionId), .text(kind)]
+        )?.decode(AnalysisRunRecord.self)
+    }
+
+    /// 单事务 UPSERT（任一行失败整批回滚）。
+    public func upsertQualityResults(_ results: [QualityAnalysisUpsert]) async throws {
+        guard !results.isEmpty else { return }
+        try await database.transaction { db in
+            for insert in results {
+                try db.run(
+                    """
+                    INSERT OR REPLACE INTO asset_analysis (
+                      photo_id, asset_file_id, analysis_type, result_json, warnings_json,
+                      model_id, model_version, input_fingerprint, created_at, updated_at
+                    ) VALUES (?, ?, 'technical_quality', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        .text(insert.photoId), .text(insert.assetFileId), .text(insert.resultJson),
+                        .text(insert.warningsJson), .text(insert.modelId), .text(insert.modelVersion),
+                        .text(insert.inputFingerprint), .text(insert.updatedAt), .text(insert.updatedAt),
+                    ]
+                )
+            }
+        }
+    }
+
+    public func cachedQualityResults(
+        photoIds: [String],
+        modelId: String,
+        modelVersion: String
+    ) async throws -> [QualityAnalysisRow] {
+        guard !photoIds.isEmpty else { return [] }
+        var results: [QualityAnalysisRow] = []
+        for chunk in photoIds.chunked(by: Self.qualityChunkSize) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT p.id AS requested_photo_id, aa.asset_file_id, aa.result_json, aa.warnings_json,
+                       aa.model_id, aa.model_version, aa.input_fingerprint, aa.updated_at
+                FROM asset_analysis aa
+                JOIN photos p ON p.asset_file_id = aa.asset_file_id
+                WHERE p.id IN (\(placeholders)) AND aa.analysis_type = 'technical_quality'
+                  AND aa.model_id = ? AND aa.model_version = ?
+                ORDER BY aa.updated_at DESC
+                """,
+                chunk.map { .text($0) } + [.text(modelId), .text(modelVersion)]
+            )
+            results.append(contentsOf: rows.map(Self.makeQualityRow))
+        }
+        return results
+    }
+
+    public func latestQualityResults(photoIds: [String]) async throws -> [QualityAnalysisRow] {
+        guard !photoIds.isEmpty else { return [] }
+        var results: [QualityAnalysisRow] = []
+        for chunk in photoIds.chunked(by: Self.qualityChunkSize) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT p.id AS requested_photo_id, aa.asset_file_id, aa.result_json, aa.warnings_json,
+                       aa.model_id, aa.model_version, aa.input_fingerprint, aa.updated_at
+                FROM photos p
+                JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
+                WHERE aa.analysis_type = 'technical_quality' AND p.id IN (\(placeholders))
+                ORDER BY aa.updated_at DESC
+                """,
+                chunk.map { .text($0) }
+            )
+            results.append(contentsOf: rows.map(Self.makeQualityRow))
+        }
+        return results
+    }
+
+    private static func makeQualityRow(_ row: SQLiteRow) -> QualityAnalysisRow {
+        QualityAnalysisRow(
+            requestedPhotoId: row.text("requested_photo_id") ?? "",
+            assetFileId: row.text("asset_file_id") ?? "",
+            resultJson: row.text("result_json") ?? "{}",
+            warningsJson: row.text("warnings_json") ?? "[]",
+            modelId: row.text("model_id") ?? "",
+            modelVersion: row.text("model_version") ?? "",
+            inputFingerprint: row.text("input_fingerprint") ?? "",
+            updatedAt: row.text("updated_at") ?? ""
+        )
     }
 
     /// 行 → 领域 DTO（checkpoint_json 解析失败回退空对象；未知枚举回退默认值）。

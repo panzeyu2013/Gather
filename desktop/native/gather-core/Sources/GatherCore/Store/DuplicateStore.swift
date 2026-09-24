@@ -133,6 +133,31 @@ public struct DuplicateGroupMemberRecord: Decodable, Equatable, Sendable {
     }
 }
 
+/// W2c：duplicate_group_members JOIN photos 的行（现有 members* 不含
+/// filepath/filename，无法装配 DuplicateGroupMember DTO）。
+public struct DuplicateGroupMemberPhotoRecord: Decodable, Equatable, Sendable {
+    public let id: Int
+    public let groupId: Int
+    public let photoId: String
+    public let sessionId: String
+    public let isKept: Bool
+    public let fileSize: Int64?
+    public let fileMtime: String?
+    public let resolution: String?
+    public let filepath: String
+    public let filename: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, resolution, filepath, filename
+        case groupId = "group_id"
+        case photoId = "photo_id"
+        case sessionId = "session_id"
+        case isKept = "is_kept"
+        case fileSize = "file_size"
+        case fileMtime = "file_mtime"
+    }
+}
+
 public protocol DuplicateStore: Sendable {
     func photos(sessionId: String) async throws -> [DuplicatePhotoRecord]
     func visualHashes(sessionId: String) async throws -> [DuplicateVisualHashRecord]
@@ -151,7 +176,12 @@ public protocol DuplicateStore: Sendable {
         createdAt: String
     ) async throws -> (exact: [Int], visual: [Int])
     func groups(sessionId: String) async throws -> [DuplicateGroupRecord]
+    /// W2c：按 id 批量读组（ORDER BY id）；空参数/无匹配返回 []。
+    func groups(ids: [Int]) async throws -> [DuplicateGroupRecord]
     func members(groupIds: [Int]) async throws -> [Int: [DuplicateGroupMemberRecord]]
+    /// W2c：按组批量读成员（JOIN photos 取 filepath/filename，ORDER BY dgm.id）；
+    /// 空参数返回 [:]。
+    func membersWithPhoto(groupIds: [Int]) async throws -> [Int: [DuplicateGroupMemberPhotoRecord]]
     func members(groupId: Int) async throws -> [DuplicateGroupMemberRecord]
     func applyResolution(groupId: Int, resolution: String, keptMemberIds: Set<Int>) async throws
     func resolveMember(memberId: Int, isKept: Bool) async throws -> String
@@ -336,6 +366,57 @@ public struct SQLiteDuplicateStore: DuplicateStore {
             "SELECT * FROM duplicate_groups WHERE session_id = ? ORDER BY group_type, id",
             [.text(sessionId)]
         ).map { try $0.decode(DuplicateGroupRecord.self) }
+    }
+
+    /// 组行批量读（按 id 升序；跨块拼接后统一排序去重）。
+    public func groups(ids: [Int]) async throws -> [DuplicateGroupRecord] {
+        guard !ids.isEmpty else { return [] }
+        var records: [DuplicateGroupRecord] = []
+        var seen = Set<Int>()
+        for chunk in ids.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                "SELECT * FROM duplicate_groups WHERE id IN (\(placeholders)) ORDER BY id",
+                chunk.map { .int(Int64($0)) }
+            )
+            for row in rows {
+                let record = try row.decode(DuplicateGroupRecord.self)
+                if seen.insert(record.id).inserted {
+                    records.append(record)
+                }
+            }
+        }
+        return records.sorted { $0.id < $1.id }
+    }
+
+    /// 成员行 + photos.filepath/filename（按 dgm.id 升序；每组成员独立排序）。
+    public func membersWithPhoto(groupIds: [Int]) async throws -> [Int: [DuplicateGroupMemberPhotoRecord]] {
+        guard !groupIds.isEmpty else { return [:] }
+        var result: [Int: [DuplicateGroupMemberPhotoRecord]] = [:]
+        for chunk in groupIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT dgm.*, p.filepath, p.filename
+                FROM duplicate_group_members dgm
+                JOIN photos p ON p.id = dgm.photo_id
+                WHERE dgm.group_id IN (\(placeholders))
+                ORDER BY dgm.id
+                """,
+                chunk.map { .int(Int64($0)) }
+            )
+            for row in rows {
+                let member = try row.decode(DuplicateGroupMemberPhotoRecord.self)
+                result[member.groupId, default: []].append(member)
+            }
+        }
+        for (groupId, members) in result {
+            var seen = Set<Int>()
+            result[groupId] = members
+                .filter { seen.insert($0.id).inserted }
+                .sorted { $0.id < $1.id }
+        }
+        return result
     }
 
     public func members(groupIds: [Int]) async throws -> [Int: [DuplicateGroupMemberRecord]] {

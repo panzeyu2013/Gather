@@ -84,6 +84,57 @@ public struct SimilarityMember: Decodable, Equatable, Sendable {
     }
 }
 
+/// W2c：similarity_hashes 行（analyze 复用判定的既有 hash；file_size/mtime 与当前
+/// 源文件 stat 比对后才可复用）。
+public struct SimilarityHashRecord: Decodable, Equatable, Sendable {
+    public let photoId: String
+    public let hashHex: String
+    public let fileSize: Int
+    public let fileMtimeMs: Double
+
+    enum CodingKeys: String, CodingKey {
+        case photoId = "photo_id"
+        case hashHex = "hash_hex"
+        case fileSize = "file_size"
+        case fileMtimeMs = "file_mtime_ms"
+    }
+}
+
+/// W2c：按 asset_file_id 批量读的复用候选行（JOIN photos 携带资产文件 id，
+/// 复用判定还需比较候选与目标照片的 size/mtime）。
+public struct SimilarityHashCandidate: Decodable, Equatable, Sendable {
+    public let id: Int64
+    public let photoId: String
+    public let hashHex: String
+    public let fileSize: Int
+    public let fileMtimeMs: Double
+    public let assetFileId: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case photoId = "photo_id"
+        case hashHex = "hash_hex"
+        case fileSize = "file_size"
+        case fileMtimeMs = "file_mtime_ms"
+        case assetFileId = "asset_file_id"
+    }
+}
+
+/// W2c：similarity_hashes UPSERT 行（入库前已算出 hash 的落库形态）。
+public struct SimilarityHashUpsert: Equatable, Sendable {
+    public let photoId: String
+    public let hashHex: String
+    public let fileSize: Int
+    public let fileMtimeMs: Double
+
+    public init(photoId: String, hashHex: String, fileSize: Int, fileMtimeMs: Double) {
+        self.photoId = photoId
+        self.hashHex = hashHex
+        self.fileSize = fileSize
+        self.fileMtimeMs = fileMtimeMs
+    }
+}
+
 public struct SimilarityClusterMetaRecord: Decodable, Equatable, Sendable {
     public let sessionId: String
     public let paramThreshold: Int
@@ -188,6 +239,16 @@ public protocol SimilarityStore: Sendable {
     func photoGroupMap(sessionId: String, resultId: Int64) async throws -> [String: String]
     func groupMembers(sessionId: String, resultId: Int64) async throws -> [SimilarityMember]?
 
+    // MARK: similarity_hashes（W2c）
+
+    /// 会话全部 hash 行（按 rowid 序）；空会话返回 []。
+    func hashes(sessionId: String) async throws -> [SimilarityHashRecord]
+    /// 按 asset_file_id 批量读复用候选（JOIN photos；内部 400 分块）；
+    /// assetFileIds 为空返回 []。
+    func hashCandidates(assetFileIds: [String]) async throws -> [SimilarityHashCandidate]
+    /// 批量 UPSERT（单事务，ON CONFLICT(session_id, photo_id)）；空参数为 no-op。
+    func upsertHashes(sessionId: String, hashes: [SimilarityHashUpsert]) async throws
+
     // MARK: similarity_cluster_state / meta
 
     func loadClusterSnapshot(sessionId: String) async throws -> SimilarityClusterSnapshotRecord?
@@ -206,6 +267,8 @@ public protocol SimilarityStore: Sendable {
 public struct SQLiteSimilarityStore: SimilarityStore {
     /// TS 常量 PRECOMPUTED_TIER_MARKER：预计算阈值行的 stats_json 标记。
     private static let precomputedTierMarker = "\"precomputed\":true"
+    /// TS 常量 REUSE_HASH_CHUNK_SIZE：按 asset_file_id 批量读的分块大小。
+    private static let hashCandidateChunkSize = 400
 
     private let database: SQLiteDatabase
     private let membersCache: SimilarityMembershipCache
@@ -356,6 +419,65 @@ public struct SQLiteSimilarityStore: SimilarityStore {
         )
         if rows.isEmpty { return nil }
         return try rows.map { try $0.decode(SimilarityMember.self) }
+    }
+
+    // MARK: similarity_hashes（W2c：原 SimilarityService/DuplicateService 内联 SQL 下沉）
+
+    /// 会话全部 hash 行（按 rowid 序；无行返回 []）。
+    public func hashes(sessionId: String) async throws -> [SimilarityHashRecord] {
+        try await database.query(
+            """
+            SELECT photo_id, hash_hex, file_size, file_mtime_ms
+            FROM similarity_hashes WHERE session_id = ? ORDER BY rowid
+            """,
+            [.text(sessionId)]
+        ).map { try $0.decode(SimilarityHashRecord.self) }
+    }
+
+    /// 复用候选：shared asset file 的全部 hash 行（按 hash id 升序，跨块拼接序确定）；
+    /// 每块 400 个 asset_file_id，规避 SQLite 变量上限。
+    public func hashCandidates(assetFileIds: [String]) async throws -> [SimilarityHashCandidate] {
+        guard !assetFileIds.isEmpty else { return [] }
+        var candidates: [SimilarityHashCandidate] = []
+        for chunk in assetFileIds.chunked(by: Self.hashCandidateChunkSize) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+            let rows = try await database.query(
+                """
+                SELECT h.id AS id, h.photo_id, h.hash_hex, h.file_size, h.file_mtime_ms, p.asset_file_id
+                FROM similarity_hashes h
+                JOIN photos p ON h.photo_id = p.id
+                WHERE p.asset_file_id IN (\(placeholders))
+                ORDER BY h.id
+                """,
+                chunk.map { .text($0) }
+            )
+            candidates.append(contentsOf: try rows.map { try $0.decode(SimilarityHashCandidate.self) })
+        }
+        return candidates
+    }
+
+    /// 批量 UPSERT（单事务：任一行失败整批回滚）。
+    public func upsertHashes(sessionId: String, hashes: [SimilarityHashUpsert]) async throws {
+        guard !hashes.isEmpty else { return }
+        try await database.transaction { db in
+            for hash in hashes {
+                try db.run(
+                    """
+                    INSERT INTO similarity_hashes
+                      (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, photo_id) DO UPDATE SET
+                      hash_hex = excluded.hash_hex,
+                      file_size = excluded.file_size,
+                      file_mtime_ms = excluded.file_mtime_ms
+                    """,
+                    [
+                        .text(sessionId), .text(hash.photoId), .text(hash.hashHex),
+                        .int(Int64(hash.fileSize)), .real(hash.fileMtimeMs),
+                    ]
+                )
+            }
+        }
     }
 
     // MARK: cluster state

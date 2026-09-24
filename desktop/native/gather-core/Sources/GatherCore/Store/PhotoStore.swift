@@ -126,6 +126,8 @@ public protocol PhotoStore: Sendable {
     func getAssetPage(sessionId: String, afterFirstRowid: Int64?, limit: Int) async throws -> (rows: [PhotoPage], cursor: Int64?)
     func countAssetsBySession(sessionId: String) async throws -> Int
     func containsFilepath(filepath: String) async throws -> Bool
+    /// W2c：会话照片 → asset_file_id 映射（跳过 NULL；空串保留，与旧内联查询一致）。
+    func assetFileIdsByPhoto(sessionId: String) async throws -> [String: String]
     func addPhotos(sessionId: String, inputs: [PhotoAddInput], source: String) async throws -> PhotoAddResult
     func deleteBySession(sessionId: String) async throws
     func updateIndexedFile(photoId: String, width: Int, height: Int, changed: Bool) async throws
@@ -244,6 +246,20 @@ public struct SQLitePhotoStore: PhotoStore {
 
     public func containsFilepath(filepath: String) async throws -> Bool {
         try await database.queryOne("SELECT 1 FROM photos WHERE filepath = ? LIMIT 1", [.text(filepath)]) != nil
+    }
+
+    /// W2c：原 SimilarityService.reuseSimilarityHashes 开头内联查询的 Store 化。
+    public func assetFileIdsByPhoto(sessionId: String) async throws -> [String: String] {
+        let rows = try await database.query(
+            "SELECT id, asset_file_id FROM photos WHERE session_id = ? AND asset_file_id IS NOT NULL",
+            [.text(sessionId)]
+        )
+        var assetFileByPhoto: [String: String] = [:]
+        for row in rows {
+            guard let id = row.text("id"), let assetFileId = row.text("asset_file_id") else { continue }
+            assetFileByPhoto[id] = assetFileId
+        }
+        return assetFileByPhoto
     }
 
     public func addPhotos(sessionId: String, inputs: [PhotoAddInput], source: String) async throws -> PhotoAddResult {
