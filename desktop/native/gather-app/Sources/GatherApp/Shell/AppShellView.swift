@@ -95,28 +95,28 @@ public struct AppShellView: View {
             case .export: return GatherLocalization.l("导出")
             }
         }
-    }
 
-    /// 工作区页签映射：5 个工作区特性各对应一个页签，其余特性返回 nil。
-    var sessionTab: SessionTab? {
-        switch self {
-        case .controlCenter: return .control
-        case .faceKeywording: return .faceKw
-        case .duplicates: return .duplicates
-        case .culling: return .culling
-        case .export: return .export
-        default: return nil
+        /// 工作区页签映射：5 个工作区特性各对应一个页签，其余特性返回 nil。
+        var sessionTab: SessionTab? {
+            switch self {
+            case .controlCenter: return .control
+            case .faceKeywording: return .faceKw
+            case .duplicates: return .duplicates
+            case .culling: return .culling
+            case .export: return .export
+            default: return nil
+            }
         }
-    }
 
-    /// 反向映射：页签 → 侧栏特性（页签切换时保持侧栏高亮一致）。
-    static func forTab(_ tab: SessionTab) -> Feature {
-        switch tab {
-        case .control: return .controlCenter
-        case .faceKw: return .faceKeywording
-        case .duplicates: return .duplicates
-        case .culling: return .culling
-        case .export: return .export
+        /// 反向映射：页签 → 侧栏特性（页签切换时保持侧栏高亮一致）。
+        static func forTab(_ tab: SessionTab) -> Feature {
+            switch tab {
+            case .control: return .controlCenter
+            case .faceKw: return .faceKeywording
+            case .duplicates: return .duplicates
+            case .culling: return .culling
+            case .export: return .export
+            }
         }
     }
 
