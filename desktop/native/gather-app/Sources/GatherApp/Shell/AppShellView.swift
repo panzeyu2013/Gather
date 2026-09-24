@@ -1,12 +1,16 @@
 // desktop/native/gather-app/Sources/GatherApp/Shell/AppShellView.swift
 // R6 步骤一：UI Shell 骨架（只新建 app 侧文件；不改 Host 路由层文件，不碰 core）。
+// R6 步骤二：接入选中的特性视图——左侧 Feature 列表选择，右侧按所选 case
+// 渲染；设置与人脸库两个 case 指向真实视图，其余仍为占位 Text。依赖由 init
+// 以可选形式注入，壳层不自行构造路由或数据层。
 //
 // 本步骤只建立壳层根视图骨架：按 app 目录名枚举 11 个特性，逐项输出占位
 // Text，并在每项上标注 R6 后续要替换成的特性视图。业务代码一律不改；
 // 现有根视图 RootView 本轮保持原样（替换点与迁移顺序见 R6 报告）。
 import SwiftUI
 
-/// 壳层根视图骨架：纵向列出 app 目录中的 11 个特性，每项为占位 Text。
+/// 壳层根视图骨架：左侧列出 app 目录中的 11 个特性，右侧渲染所选 Case；
+/// 当前仅「设置」与「人脸库」接真实视图，其余仍为占位 Text。
 public struct AppShellView: View {
     /// app 目录枚举出的 11 个特性（顺序即建议的 R6 迁移顺序）。
     public enum Feature: String, CaseIterable, Identifiable, Sendable {
@@ -87,38 +91,121 @@ public struct AppShellView: View {
         }
     }
 
-    public init() {}
+    /// 设置页需要的命令路由（可选：未注入时该特性回退占位）。
+    private let settingsRouter: CommandRouter?
+    /// 人脸库需要的数据提供者（可选：未注入时该特性回退占位）。
+    private let personsProvider: PersonsDataProvider?
+    /// 当前选中的特性：左侧列表点击切换，右侧渲染对应视图。
+    @State private var selectedFeature: Feature = .dashboard
+    /// 人脸库视图模型：仅在注入数据提供者时创建，壳层不自行取数。
+    @State private var personsViewModel: PersonsViewModel?
+
+    /// 依赖经 init 以可选形式传入；两个参数都有默认值，既有调用点不受影响。
+    @MainActor
+    public init(settingsRouter: CommandRouter? = nil, personsProvider: PersonsDataProvider? = nil) {
+        self.settingsRouter = settingsRouter
+        self.personsProvider = personsProvider
+        if let personsProvider {
+            _personsViewModel = State(initialValue: PersonsViewModel(provider: personsProvider))
+        }
+    }
 
     public var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            featureList
+            Divider()
+            detailView(for: selectedFeature)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(20)
+        .frame(minWidth: 720, minHeight: 480, alignment: .topLeading)
+    }
+
+    /// 左侧特性列表：点击切换当前特性，已接真实视图的项在右侧直接打开。
+    private var featureList: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Gather")
                 .font(.title2.weight(.semibold))
-            Text(GatherLocalization.l("壳层骨架：11 个特性占位，后续替换为原生视图"))
+            Text(GatherLocalization.l("壳层骨架：11 个特性，已接真实视图的项可直接打开"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Feature.allCases) { feature in
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            // 占位 Text：R6 后续替换为 feature.replacementViewName 指定的特性视图。
-                            Text(feature.displayName)
-                                .font(.body.weight(.medium))
-                            Text(feature.directoryName)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 12)
-                            Text(feature.replacementViewName)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 3)
+                        featureRow(feature)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(20)
-        .frame(minWidth: 720, minHeight: 480, alignment: .topLeading)
+        .frame(width: 320, alignment: .leading)
+    }
+
+    private func featureRow(_ feature: Feature) -> some View {
+        let isSelected = selectedFeature == feature
+        return Button {
+            selectedFeature = feature
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(feature.displayName)
+                    .font(.body.weight(isSelected ? .semibold : .medium))
+                Text(feature.directoryName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Text(isWired(feature) ? feature.replacementViewName : "-")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 是否已接真实视图：R6 步骤二仅「设置」与「人脸库」两项。
+    private func isWired(_ feature: Feature) -> Bool {
+        switch feature {
+        case .settings: return settingsRouter != nil
+        case .persons: return personsViewModel != nil
+        default: return false
+        }
+    }
+
+    /// 右侧详情：private switch 只把「设置」与「人脸库」指向真实视图，
+    /// 其余 case 仍为占位 Text；依赖缺失时同样回退占位，保持可编译。
+    @ViewBuilder
+    private func detailView(for feature: Feature) -> some View {
+        switch feature {
+        case .settings:
+            if let settingsRouter {
+                SettingsView(router: settingsRouter)
+            } else {
+                placeholderView(for: feature)
+            }
+        case .persons:
+            if let personsViewModel {
+                PersonsView(viewModel: personsViewModel)
+            } else {
+                placeholderView(for: feature)
+            }
+        default:
+            placeholderView(for: feature)
+        }
+    }
+
+    private func placeholderView(for feature: Feature) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(feature.displayName)
+                .font(.title3.weight(.semibold))
+            Text(String(format: GatherLocalization.l("占位：待接入 %@"), feature.replacementViewName))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(12)
     }
 }
