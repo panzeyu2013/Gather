@@ -485,3 +485,32 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | round 30：Culling 切换仍需时间；后续各域切换必须与路由改动串行 | 进行中 | `b87f42bb` 运行中（`Services/CullingService.swift` 2550 行的类型迁移+装配+路由+删旧+修测试+双包验证同批次进行）。**编排约束**：所有需要改 `SessionCommandRouter.swift` 的切换单元必须串行（同一文件），因此 W2c/W2d 切换将在 Culling 收口后依次派发；core 侧类型迁移可提前，但删旧服务必须与路由切换同批。 |
 
 | round 32：两个工作流在途（Culling 切换 `b87f42bb`、W4-1 Store `13178f1b`） | 进行中 | Culling：`Services/` 仍 22、`CullingService.swift`（2550 行）待删，新测试 `CullingRuntimeCancellationTests.swift` 已落盘；W4-1：Store CAS/批量命令与大体积事务（`mergeOutboxPatches`/`reconcileWritebackProjection`/`applyAcceptedRemoteValues`）编写中。两者文件集合不相交，HEAD 保持全绿。 |
+
+## 10. `Services/` 剩余清退清单（round 33 实测，基线 22 文件 / 13,005 行）
+
+| 文件 | 行数 | 归属 wave | 处置 |
+|---|---|---|---|
+| CullingService.swift | 2550 | **W2b** | 进行中：类型迁出 + 装配 `CullingRuntime` + 路由 → 删除 |
+| FaceKwService.swift | 1436 | **W2d** | `FaceRuntime` 切换后删除（设计已定） |
+| IndexerService.swift | 1160 | **W2d** | `IndexerRuntime` 切换后删除 |
+| MetadataSyncCoordinator.swift | 982 | **W4** | 并入 `MetadataWriter` 后删除（设计 §1.1） |
+| SimilarityService.swift | 968 | **W2c** | 类型迁 `Protocol/` → `SimilarityRuntime` 装配 → 删除 |
+| WritebackService.swift | 790 | **W4** | 并入 `MetadataWriter` 后删除 |
+| DuplicateService.swift | 744 | **W2c** | `DuplicateRuntime` 已就绪 → 切换后删除 |
+| QualityService.swift | 648 | **W2c** | `QualityRuntime` 已就绪 → 切换后删除 |
+| MetadataService.swift | 637 | **W4** | 并入 `MetadataWriter` 后删除 |
+| ExportService.swift | 617 | **W2d** | `ExportRuntime` 切换后删除 |
+| NavigationService.swift | 558 | **W2d** | `NavigationRuntime` 切换后删除 |
+| FilterEngine.swift | 542 | **保留（吸收进 Runtime/Filter）** | 纯函数引擎，迁入 `Runtime/Filter/` 或保留为 Store 相邻纯层（R7 裁决） |
+| SessionService.swift | 337 | **W2d/W5** | 迁 `SessionRuntime`；W5 路由删除时一并收口 |
+| MetadataMutationService.swift | 240 | **W4** | 并入 `MetadataWriter`（token FIFO 取代 Task 身份链） |
+| PhotoAssetResolver.swift | 168 | **W4** | 吸收为 `MetadataTarget` + `PhotoStore.metadataTargets` |
+| MetadataProviders.swift | 140 | **W4** | 迁 `Metadata/MetadataProviderContract.swift` |
+| MetadataContract.swift | 125 | **W4** | 迁 `Metadata/MetadataMutationPlan.swift`（同时删 3 个零调用函数） |
+| MetadataConflictFields.swift | 116 | **W4** | 迁 `Metadata/MetadataConflictRules.swift` |
+| ImagePreloadService.swift | 82 | **R7（W5 判定死代码）** | `image.*` 4 命令 0 调用；`thumbnail.build` executor 一并删（`AnalysisJobType.thumbnailBuild` 枚举值保留） |
+| CaptureOneSessionState.swift | 76 | **W4** | 迁 `Metadata/MetadataSessionState.swift`（删 `countOutboxStatuses` 死码） |
+| PhotoAssets.swift | 47 | **保留/迁 `Runtime/Support`** | RAW 优先级折叠纯函数（`PhotoAssets.collapse`，被 Assembler 使用） |
+| MetadataFingerprint.swift | 42 | **W4** | 迁 `Metadata/MetadataFileSystem.swift`（stat/read/hash 接缝化） |
+
+**清退节奏**：W2b（−1）→ W2c（−3）→ W2d（−4）→ W4（−9）→ R5（−1）→ R7（−1）= **Services 从 22 收到 3**（`FilterEngine`/`PhotoAssets`/可能的 `SettingsService`），届时「Services layer」度量转 enforced 0 语义（改名为 `Legacy services` 并删除）。
