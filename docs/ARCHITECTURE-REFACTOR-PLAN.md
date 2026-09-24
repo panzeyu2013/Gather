@@ -514,3 +514,4 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | MetadataFingerprint.swift | 42 | **W4** | 迁 `Metadata/MetadataFileSystem.swift`（stat/read/hash 接缝化） |
 
 **清退节奏**：W2b（−1）→ W2c（−3）→ W2d（−4）→ W4（−9）→ R5（−1）→ R7（−1）= **Services 从 22 收到 3**（`FilterEngine`/`PhotoAssets`/可能的 `SettingsService`），届时「Services layer」度量转 enforced 0 语义（改名为 `Legacy services` 并删除）。
+| round 35：两个工作流停止并重新派发（写优先） | 处置 | 观测到 `b87f42bb`（Culling 切换）与 `13178f1b`（W4-1 Store）连续多轮停留在穷尽式阅读、零文件落盘 → **已 interrupt 两者**，并按「写优先、禁止通读、单方法族 + 3 用例 + 实跑回报」重新派发 W4-1a（`687d20bf`：`markOutboxStatus(expectedRevision:)` CAS + `recoverInterruptedOutbox` + `OutboxStatus` 枚举）。Culling 切换待 W4-1a 模板验证后重新派发。 |
