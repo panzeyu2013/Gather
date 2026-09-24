@@ -475,3 +475,5 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | W3 切换轮派发 + W5 设计派发（round 17） | 进行中 | ①W3 切换：删除 `Services/{JobService,JobScheduler,AnalysisWorker}.swift` 与 `JobServiceTests`，`JobAbortSignal`/`JobCancelledError` 迁入 `Runtime/Jobs/JobRunner.swift`，路由切换 `jobService`→`jobRunner`（actor async 处 Task 包裹），baseline `Services layer` 25→22 ②W5 设计（只读）：命令清单→typed API、GatherAPI/GatherCoreAPI、GatherError 单点映射、调用方迁移顺序、重复 case 死分支裁决、验收（`SessionCommandRouter` 17→0、`awaitSync` 2→0、`StubCommandRouter` 7→0） |
 
 | W3 切换进行中（round 22 观测） | 进行中 | `Services/` **25→22**：`JobService.swift`/`JobScheduler.swift`/`AnalysisWorker.swift` 已删除；`Runtime/Jobs/JobRunner.swift` 已迁入 `JobAbortSignal`/`JobCancelledError`；`IndexerService.swift` 等引用已同步。当前 core 库编译 8 error（属主子代理 mid-edit），待其收口后由主代理验证双包并提交（含 `Services layer` baseline 同步 25→22 与路由 `jobService`→`jobRunner`）。 |
+
+| round 25 观测：W3 收官后 app 验证被 SimilarityRuntime 阻塞 | 进行中 | 提交 `215e8c7`（W3 收官，Services 25→22）后，app 测试因**未入库**的 `Runtime/Similarity/SimilarityRuntime.swift`（escaping closure 捕获 non-escaping `provider`/`thumbnail`，713/730/792）编译失败 → 已两次派单属主修复（要求同时验证 app 包）。HEAD 保持可编译（坏文件未入库）。待其修复即集成 4 个 Runtime 测试套件并跑双包全量。 |
