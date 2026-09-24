@@ -171,6 +171,11 @@ public actor MetadataWriter {
         writeBody = body
     }
 
+    /// 写体执行（actor 内）：存储属性不跨 actor 边界，跨边界只经本方法。
+    private func performWriteBody(xmpPath: String) async {
+        await writeBody(xmpPath)
+    }
+
     /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
     /// 取旧管线 MetadataSyncCoordinator.defaultWriteDebounceMs = 500（TS 设置
     /// metadata_write_debounce_ms 同值）；设置注入留待写面后续步骤。
@@ -188,6 +193,9 @@ public actor MetadataWriter {
 
     /// generation 单调 +1；同路径重复调用只保留最新 ticket —— 旧 ticket 到点即弃。
     private func enqueue(xmpPath: String, delayMs: Int?) async {
+        // mwwshut：关停后入队一律拒绝（入队 Task 可能晚于关停落到 actor），
+        // 保证 shutdown 返回后没有任务再触碰 Store。
+        guard !isShutDown else { return }
         let generation = (entries[xmpPath]?.generation ?? 0) + 1
         let ticket = UUID()
         entries[xmpPath] = ScheduleEntry(
@@ -241,8 +249,7 @@ public actor MetadataWriter {
         let task: Task<Void, Never> = Task { [weak self] in
             await previous?.value
             guard let self else { return }
-            let body = self.writeBody
-            await body(xmpPath)
+            await self.performWriteBody(xmpPath: xmpPath)
             await self.finishWrite(xmpPath: xmpPath, ticket: ticket)
         }
         mutationTails[xmpPath] = MutationTail(ticket: ticket, task: task)
