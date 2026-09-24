@@ -123,6 +123,11 @@ enforce_max "batchAsync copies (R2)"          'func batchAsync'                 
 
 # —— 出现次数粒度棘轮（R8 加固：审计指出的「文件数」粒度空隙）——
 enforce_max_occ "awaitSync occurrences (R5)" 'awaitSync' "$APP" "*.swift" 16
+
+# —— 路径无关的符号级棘轮（R8 加固：闭合审计限制②"真空通过"）——
+tracked "legacy DBConnection symbols (R1) [待处理]" 'DBConnection' "$CORE/Sources" "*.swift"
+tracked "legacy Repositories path refs (R1) [待处理]" 'Database/Repositories' "$CORE/Sources" "*.swift"
+tracked "legacy module bridge symbols (R5) [待处理]" 'NativeCommandClient' "$APP/Sources" "*.swift"
 enforce_max_occ "@unchecked Sendable occurrences (R1/R2)" '@unchecked Sendable' "$CORE/Sources" "*.swift" 5
 enforce_max_occ "batchAsync occurrences (R2)" 'func batchAsync' "$CORE" "*.swift" 3
 
