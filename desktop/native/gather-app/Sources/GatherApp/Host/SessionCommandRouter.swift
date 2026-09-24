@@ -86,7 +86,7 @@ public final class SessionCommandRouter: CommandRouter {
     /// 设置写路径（异步唯一入口；R5：取代 SettingsService）。
     private let settingsAPI: SettingsAPI
     private let filterEngine: FilterEngine
-    private let navigationService: NavigationService
+    private let navigationService: NavigationRuntime
     /// W2c：Similarity 域 Runtime（sim.analyze executor / recluster / result /
     /// cancel / preview_writeback 计划）。
     private let similarity: SimilarityRuntime
@@ -118,7 +118,7 @@ public final class SessionCommandRouter: CommandRouter {
         settings: SettingsSnapshot,
         settingsAPI: SettingsAPI,
         filterEngine: FilterEngine,
-        navigationService: NavigationService,
+        navigationService: NavigationRuntime,
         similarity: SimilarityRuntime,
         duplicate: DuplicateRuntime,
         assetStore: any AssetStore,
@@ -365,7 +365,7 @@ public final class SessionCommandRouter: CommandRouter {
             settings: settings,
             settingsAPI: settingsAPI,
             filterEngine: FilterEngine(database: database),
-            navigationService: NavigationService(database: database),
+            navigationService: NavigationRuntime(store: SQLiteNavigationStore(database: database)),
             similarity: similarity,
             duplicate: duplicate,
             assetStore: assetStore,
