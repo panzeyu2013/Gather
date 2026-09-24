@@ -272,7 +272,7 @@ public final class SessionCommandRouter: CommandRouter {
             assetResolver: assetResolver
         )
         let jobService = JobService(jobStore: jobStore)
-        let exportService = ExportService(photoStore: photoStore, sessionStore: sessionStore, connection: db)
+        let exportService = ExportService(photoStore: photoStore, sessionStore: sessionStore, database: database)
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoStore: photoStore,
@@ -801,12 +801,6 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return .bool(true)
 
-        case "export.report":
-            let sessionId = try requiredString(params, "sessionId")
-            let reportType = try optionalString(params, "reportType") ?? "session_summary"
-            let format = try optionalString(params, "format")
-            return try GatherCore.JSONValue(from: exportService.generateReport(
-                sessionId: sessionId, reportType: reportType, format: format))
 
         case "face.models_status":
             // 2.2 决议：Vision 无需模型资产 → 恒 vision provider、无需下载。
@@ -861,6 +855,21 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "export.report":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    let reportType = try optionalString(params, "reportType") ?? "session_summary"
+                    let format = try optionalString(params, "format")
+                    let report = try await exportService.generateReport(
+                        sessionId: sessionId, reportType: reportType, format: format)
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: report))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
 
         case "filter.photos":
             Task {

@@ -14,6 +14,7 @@ private func makeTempPhotoStore() async throws -> any PhotoStore {
 
 private struct ExportTestEnv {
     let db: DBConnection
+    let database: SQLiteDatabase
     let photoStore: any PhotoStore
     let sessionStore: any SessionStore
 }
@@ -24,7 +25,7 @@ private func makeExportDatabase() async throws -> ExportTestEnv {
         .appendingPathComponent("gather-export-\(UUID().uuidString).sqlite").path
     let db = try await makeMigratedLegacyDB(path: path)
     let store = try SQLitePhotoStore(database: try SQLiteDatabase(path: path))
-    return ExportTestEnv(db: db, photoStore: store, sessionStore: SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
+    return ExportTestEnv(db: db, database: try SQLiteDatabase(path: path), photoStore: store, sessionStore: SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }
 
 
@@ -76,7 +77,7 @@ struct ExportServiceTests {
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,
-            connection: db
+            database: env.database
         )
         let options = ExportOptions(
             scope: .session,
@@ -135,7 +136,7 @@ struct ExportServiceTests {
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,
-            connection: db
+            database: env.database
         )
         let options = ExportOptions(
             scope: .session,
@@ -192,7 +193,7 @@ struct ExportServiceTests {
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,
-            connection: db
+            database: env.database
         )
         let options = ExportOptions(
             scope: .session,
@@ -236,7 +237,7 @@ struct ExportServiceTests {
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,
-            connection: db
+            database: env.database
         )
         let options = ExportOptions(
             scope: .session,

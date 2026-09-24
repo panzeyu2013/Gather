@@ -124,14 +124,14 @@ public enum ExportServiceError: Error, Equatable, CustomStringConvertible, Local
 public final class ExportService {
     private let photoStore: any PhotoStore
     private let sessionStore: any SessionStore
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     private let cancelLock = NSLock()
     private var cancelledSessions = Set<String>()
 
-    public init(photoStore: any PhotoStore, sessionStore: any SessionStore, connection: DBConnection) {
+    public init(photoStore: any PhotoStore, sessionStore: any SessionStore, database: SQLiteDatabase) {
         self.photoStore = photoStore
         self.sessionStore = sessionStore
-        self.connection = connection
+        self.database = database
     }
 
     public func cancel(sessionId: String) {
@@ -275,17 +275,17 @@ public final class ExportService {
         sessionId: String,
         reportType: String,
         format: String? = nil
-    ) throws -> ReportData {
+    ) async throws -> ReportData {
         let requested = format == "md" ? ReportFormat.md : ReportFormat.csv
         switch reportType {
         case "session_summary":
-            let rows = try connection.prepare(
-                "SELECT filename, filepath, status FROM photos WHERE session_id = ? ORDER BY rowid"
-            ).query([.text(sessionId)])
+            let rows = try await database.query(
+                "SELECT filename, filepath, status FROM photos WHERE session_id = ? ORDER BY rowid",
+[.text(sessionId)])
             if requested == .csv {
                 var content = "filename,filepath,status\n"
                 content += rows.map {
-                    [($0[0].textValue ?? ""), ($0[1].textValue ?? ""), ($0[2].textValue ?? "")]
+                    [($0.values[$0.columnOrder[0]]?.textValue ?? ""), ($0.values[$0.columnOrder[1]]?.textValue ?? ""), ($0.values[$0.columnOrder[2]]?.textValue ?? "")]
                         .map(Self.csvField).joined(separator: ",")
                 }.joined(separator: "\n")
                 return ReportData(path: "", content: content, format: .csv)
@@ -294,41 +294,42 @@ public final class ExportService {
             content += "Total photos: \(rows.count)\n\n"
             content += "| # | Filename | Path | Status |\n|---:|---|---|---|\n"
             for (index, row) in rows.enumerated() {
-                content += "| \(index + 1) | \(Self.mdField(row[0].textValue ?? "")) | \(Self.mdField(row[1].textValue ?? "")) | \(Self.mdField(row[2].textValue ?? "")) |\n"
+                content += "| \(index + 1) | \(Self.mdField(row.values[row.columnOrder[0]]?.textValue ?? "")) | \(Self.mdField(row.values[row.columnOrder[1]]?.textValue ?? "")) | \(Self.mdField(row.values[row.columnOrder[2]]?.textValue ?? "")) |\n"
             }
             return ReportData(path: "", content: content, format: .md)
 
         case "person":
-            let rows = try connection.prepare(
+            let rows = try await database.query(
                 """
                 SELECT rb.role_name, rb.keywords, fc.label, fc.member_count
                 FROM role_bindings rb
                 JOIN face_clusters fc ON rb.cluster_id = fc.id
                 WHERE rb.session_id = ? ORDER BY rb.role_name
-                """
-            ).query([.text(sessionId)])
+                """,
+                [.text(sessionId)]
+            )
             var content = "# Person report\n\nBindings: \(rows.count)\n\n"
             content += "| Role | Keywords | Cluster | Members |\n|---|---|---|---:|\n"
             for row in rows {
-                let keywords = (try? JSONValue.parse(row[1].textValue ?? "[]"))?.arrayValue?.joined(separator: ", ") ?? ""
-                content += "| \(Self.mdField(row[0].textValue ?? "")) | \(Self.mdField(keywords)) | \(Self.mdField(row[2].textValue ?? "")) | \(row[3].intValue ?? 0) |\n"
+                let keywords = (try? JSONValue.parse(row.values[row.columnOrder[1]]?.textValue ?? "[]"))?.arrayValue?.joined(separator: ", ") ?? ""
+                content += "| \(Self.mdField(row.values[row.columnOrder[0]]?.textValue ?? "")) | \(Self.mdField(keywords)) | \(Self.mdField(row.values[row.columnOrder[2]]?.textValue ?? "")) | \(row.values[row.columnOrder[3]]?.intValue ?? 0) |\n"
             }
             return ReportData(path: "", content: content, format: .md)
 
         case "keyword":
-            let rows = try connection.prepare(
-                "SELECT DISTINCT keywords FROM role_bindings WHERE session_id = ? AND keywords != '[]'"
-            ).query([.text(sessionId)])
+            let rows = try await database.query(
+                "SELECT DISTINCT keywords FROM role_bindings WHERE session_id = ? AND keywords != '[]'",
+[.text(sessionId)])
             var keywords = Set<String>()
             for row in rows {
-                keywords.formUnion((try? JSONValue.parse(row[0].textValue ?? "[]"))?.arrayValue ?? [])
+                keywords.formUnion((try? JSONValue.parse(row.values[row.columnOrder[0]]?.textValue ?? "[]"))?.arrayValue ?? [])
             }
-            let culling = try connection.prepare(
-                "SELECT DISTINCT decision FROM culling_decisions WHERE session_id = ? AND decision != 'pending'"
-            ).query([.text(sessionId)])
+            let culling = try await database.query(
+                "SELECT DISTINCT decision FROM culling_decisions WHERE session_id = ? AND decision != 'pending'",
+[.text(sessionId)])
             for row in culling {
-                if row[0].textValue == "keep" { keywords.insert("culling:keep") }
-                if row[0].textValue == "reject" { keywords.insert("culling:reject") }
+                if row.values[row.columnOrder[0]]?.textValue == "keep" { keywords.insert("culling:keep") }
+                if row.values[row.columnOrder[0]]?.textValue == "reject" { keywords.insert("culling:reject") }
             }
             var content = "# Keyword report\n\n"
             content += keywords.sorted().map { "- \(Self.mdField($0))" }.joined(separator: "\n")

@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾㊴：DB.swift 退役第二切片——FilterEngine | ✅ | FilterEngine(541) 去 DBConnection：database: SQLiteDatabase，filterPhotos/filterGlobally/countGlobally/countPhotos/suggest 异步化，prepare().query/get → database.query/queryOne，参数类型 DBValue→SQLiteValue，行访问改 columnOrder（row.values[row.columnOrder[i]]）。路由：FilterEngine(database:) 注入 + filter.photos/filter.photos_global/filter.suggest 三用例从同步 execute 迁入 executeAsync（Task+completion 风格）、albumDetailData 异步化（countGlobally 调用）。测试：FilterEngineTests harness 改同库文件库 + 11 处 await。验证：双包库编译 0 error；FilterEngineTests 16/1 全绿；app 172/19 全绿。DB.swift 消费者 18→16 |
+| R1 收尾㊵：DB.swift 退役第三切片——ExportService + CaptureOne 死代码裁决 | ✅ | ①CaptureOneSyncState 类（74 行）生产零引用 → 删除；其仍被使用的 CaptureOneSessionState 枚举/辅助函数（countOutboxStatuses/aggregateSessionState）保留为 Services/CaptureOneSessionState.swift。②ExportService 去 DBConnection：database: SQLiteDatabase，generateReport 异步化，4 处 prepare().query → database.query，行访问改 columnOrder；export.report 用例从同步 execute 迁入 executeAsync；ExportTestEnv 增加 database 字段。验证：双包库编译 0 error；ExportServiceTests 4/1 全绿；app 172/19（2 个计时用例全量并行偶发，单独跑均通过）。DB.swift 消费者 16→14 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
