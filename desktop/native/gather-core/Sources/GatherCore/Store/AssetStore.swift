@@ -36,12 +36,30 @@ public struct AssetFileRecord: Decodable, Equatable, Sendable {
     }
 }
 
+/// asset_files 扫描基线（按会话批量读取；供 IndexerService 对账扫描使用）。
+/// 字典键为 asset_files.id，即 photos.asset_file_id —— 旧实现以
+/// `photo.assetFileId.flatMap { fileStats[$0] }` 取基线，join 键一致。
+public struct AssetFileScanBaseline: Sendable, Equatable {
+    public let fileSize: Int64
+    public let mtimeMs: Double
+    public let checksum: String?
+
+    public init(fileSize: Int64, mtimeMs: Double, checksum: String?) {
+        self.fileSize = fileSize
+        self.mtimeMs = mtimeMs
+        self.checksum = checksum
+    }
+}
+
 public protocol AssetStore: Sendable {
     /// 批量照片的 asset_members 角色映射（photo.id → member_role；未关联为 "unknown"）。
     func memberRoles(sessionId: String, photoIds: [String]) async throws -> [String: String]
     func listCandidates(sessionId: String?) async throws -> [AssetLinkCandidateData]
     func listVolumes() async throws -> [AssetVolumeData]
     func assetFile(id: String) async throws -> AssetFileRecord?
+
+    /// 按会话批量读取 asset_files 扫描基线（键为 asset_files.id = photos.asset_file_id）。
+    func assetFileStatsBySession(sessionId: String) async throws -> [String: AssetFileScanBaseline]
 
     // MARK: 变更面（relink / 候选 / 对账）
 
@@ -187,6 +205,30 @@ public struct SQLiteAssetStore: AssetStore {
             roles[photoId] = row.text("member_role") ?? "unknown"
         }
         return roles
+    }
+
+    public func assetFileStatsBySession(sessionId: String) async throws -> [String: AssetFileScanBaseline] {
+        // SQL 逐字搬自 Services/IndexerService.swift（旧扫描基线查询，列序/WHERE/参数顺序不变）。
+        // 键为 af.id（= photos.asset_file_id）；旧实现按 photo.assetFileId 查表取基线。
+        let rows = try await database.query(
+            """
+            SELECT af.id, af.file_size, af.file_mtime_ms, af.checksum
+            FROM asset_files af
+            JOIN photos p ON p.asset_file_id = af.id
+            WHERE p.session_id = ?
+          """,
+            [.text(sessionId)]
+        )
+        var baselines: [String: AssetFileScanBaseline] = [:]
+        for row in rows {
+            // checksum 列 NOT NULL DEFAULT ''；NULL 时保留 nil（旧实现折叠为 ""）。
+            baselines[row.text("id") ?? ""] = AssetFileScanBaseline(
+                fileSize: row.int("file_size") ?? 0,
+                mtimeMs: row.double("file_mtime_ms") ?? 0,
+                checksum: row.text("checksum")
+            )
+        }
+        return baselines
     }
 
     public func listCandidates(sessionId: String? = nil) async throws -> [AssetLinkCandidateData] {
