@@ -58,4 +58,10 @@
 ## 7. 待裁决（主代理）
 1. `culling.decide`/`culling.batch_decide` 删除（UI 0 调用）——建议删。
 2. `CullingView` 同步 `client.execute` 调 async case 已损坏（R1 起）——属 R6 修复范围，W2b 仅保持 router API 形状。
-3. 端口 Sendable 债务（`CullingSyncPort`/`CullingWritebackPort`/`MetadataMutationPort`）在 W2e/R4 收缩后再加 `: Sendable`。
+3. 端口 Sendable 债务（`CullingSyncPort`/`CullingWritebackPort`/`MetadataMutationPort`）在 W2e/R4 收缩后再加 `: Sendable`。\n
+
+## 8. 实施期命名与形状修正（round 9，子代理实测）
+
+1. **CullingRichLookup 暂时改名 CullingAssetLookup**：Services/CullingService.swift:2462 已有 file-private struct CullingRichLookup，同模块顶层类型不允许重名。Assembler 文件当前用 CullingAssetLookup（字段与设计一致）；**步骤 7 删除旧服务后必须机械改回**（或统一保留新名）。
+2. **CullingFilterSpec 实际为 struct**（在 Store/CullingQueryStore.swift）：字段 unreviewed / pickStates / ratings / colorLabels / quality，由 CullingFilterSpec(filters:) 做唯一映射；Assembler 的 specs(from:) 委托它，matches(_:specs:metadataConflictOnly:) 跨 spec/字段 AND。**LookupLoader/Runtime 不得再声明同名类型**。
+
