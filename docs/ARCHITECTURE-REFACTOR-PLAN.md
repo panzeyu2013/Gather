@@ -544,6 +544,8 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | `batchAsync copies` 3→0（统一 `ConcurrentMap.run`） | W2d/W4 后 | 计划 |
 | `unchecked Sendable` 5→0 | 随 `Services` 清退 | 计划 |
 
+**R8 步骤一（已实施）**：已达目标值的度量转 enforced 阈值规则（阈值=当前实测值，超过即 FAIL，不得回退）：`Runtime layer SQL`=0、`raw SQL outside Store`=0、`legacy DB layer files`=0、`unchecked Sendable`≤5、`batchAsync copies`≤3；其余 12 条度量仍由 `legacy-baseline.txt` ratchet 兜底（enforced 4→9 条）。
+
 **收尾定义（R8 出口）**：`./scripts/check-no-legacy.sh` 全绿且**全部度量转 enforced**；`Services/` 仅剩 `Runtime/Support`+`Runtime/Filter` 归属的纯函数；双包 0 error、app 测试不减、core 全量绿（已知 flake 隔离复跑通过）；文档（`ARCHITECTURE-W2B/W2C/W2D/W4/W5-DESIGN.md` + 计划进度行 + ADR）齐备。
 | round 58–59：R7 `ImagePreloadService` 删除尝试回退（教训） | 已回退 | 用脚本按行删除 4 个 `image.*` case + `thumbnailBuild` executor + 5 行字段/装配后，`SessionCommandRouter.swift` **大括号净差 −1**（executor 块内嵌套闭包的收尾判定错误）→ 潜在语法损坏。**已 `git checkout` 回退两文件，HEAD 保持全绿**。教训：**Swift 大文件（3800 行）禁用行级/括号级文本手术**，必须用「小步编辑 + 每次编译」或语法感知工具（如 `swift-format`/AST 级改写）；括号差检查应作为提交前强制门。 |
 
