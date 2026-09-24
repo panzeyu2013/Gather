@@ -79,7 +79,6 @@ struct GatherApp: App {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o700], ofItemAtPath: appDir.path)
             let dbURL = appDir.appendingPathComponent("gather.sqlite")
-            let db = try DBConnection(path: dbURL.path)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
 
@@ -91,7 +90,6 @@ struct GatherApp: App {
             let settingsSnapshot = await api.settings.snapshot()
 
             let router = SessionCommandRouter.makeDefault(
-                db: db,
                 database: storeDatabase,
                 settings: settingsSnapshot,
                 settingsAPI: api.settings,

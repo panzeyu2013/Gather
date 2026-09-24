@@ -15,7 +15,7 @@ private func makeTempJobStore() async throws -> any JobStore {
 
 /// 测试环境：内存 DB + 迁移 + repo + JobService（短心跳注入）。
 private final class Env {
-    let connection: DBConnection
+    let connection: SQLiteDatabase
     let dbPath: String
     let jobStore: any JobStore
     let service: JobService
@@ -25,7 +25,7 @@ private final class Env {
         // Store 连接与旧 DBConnection 各持一条连接：临时文件库（内存库不可共享）。
         dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-jobs-\(UUID().uuidString).sqlite").path
-        connection = try await makeMigratedLegacyDB(path: dbPath)
+        connection = try await makeMigratedStore(path: dbPath)
         jobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: dbPath))
         service = JobService(jobStore: jobStore, heartbeatIntervalMs: heartbeatMs)
     }
@@ -369,9 +369,7 @@ struct JobServiceTests {
 
         // 模拟跨进程租约丢失：另一进程直接改写 lease_owner（claim 只对
         // queued 生效，running 行无法再 claim——与 TS 行为一致）。
-        let updated = try env.connection.prepare(
-            "UPDATE analysis_jobs SET lease_owner = 'thief', updated_at = ? WHERE id = ?"
-        ).run([.text(Date().ISO8601Format()), .text(job.id)])
+        let updated = try await env.connection.run("UPDATE analysis_jobs SET lease_owner = 'thief', updated_at = ? WHERE id = ?", [.text(Date().ISO8601Format()), .text(job.id)])
         #expect(updated == 1, "模拟租约被夺应成功")
 
         gate.open()

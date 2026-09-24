@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 private func makeTempPhotoStore() async throws -> any GatherCore.PhotoStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-photos-\(UUID().uuidString).sqlite").path
-    _ = try await makeMigratedLegacyDB(path: path)
+    _ = try await makeMigratedStore(path: path)
     return try GatherCore.SQLitePhotoStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -17,7 +17,7 @@ private func makeTempPhotoStore() async throws -> any GatherCore.PhotoStore {
 private func makeTempAssetStore() async throws -> any GatherCore.AssetStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-assets-\(UUID().uuidString).sqlite").path
-    _ = try await makeMigratedLegacyDB(path: path)
+    _ = try await makeMigratedStore(path: path)
     return try GatherCore.SQLiteAssetStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -100,14 +100,13 @@ struct GatherAppDelegateTests {
         let broken = directory.appendingPathComponent("broken.txt")
         try Data("not-an-image".utf8).write(to: broken)
 
-        // 同一临时文件库：SessionService 的照片写入走 Store 连接，需与旧连接同库。
         let tempStorePath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-delegate-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: tempStorePath)
-        let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
+        let db = try await makeMigratedStore(path: tempStorePath)
+        let tempJobStore = try SQLiteJobStore(database: db)
         let settings = try await makeTestSettings()
         let router = SessionCommandRouter.makeDefault(
-            db: db, database: try SQLiteDatabase(path: tempStorePath), settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: tempStorePath)), sessionStore: try GatherCore.SQLiteSessionStore(database: try SQLiteDatabase(path: tempStorePath)))
+            database: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try SQLitePhotoStore(database: db), sessionStore: try GatherCore.SQLiteSessionStore(database: db))
 
         final class Box: @unchecked Sendable {
             var userInfo: [AnyHashable: Any]?

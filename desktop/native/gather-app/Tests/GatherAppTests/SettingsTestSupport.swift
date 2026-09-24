@@ -23,8 +23,7 @@ func makeTestSettings(
 ) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-app-settings-\(UUID().uuidString).sqlite").path
-    let bootstrap = try await makeMigratedLegacyDB(path: path)
-    let database = try SQLiteDatabase(path: path)
+    let database = try await makeMigratedStore(path: path)
     let api = GatherAPI(container: AppContainer(database: database))
     return (
         SettingsSnapshot(values: SettingsAPI.defaults),
@@ -43,10 +42,10 @@ func makeTestSettings(
 }
 
 
-/// 旧连接 + Store schema：统一用 StoreMigrator 建表（legacy MigrationRunner 已退役）。
+/// Store schema 临时库：SQLiteDatabase + StoreMigrator 建表（legacy 迁移器已退役）。
 @discardableResult
-func makeMigratedLegacyDB(path: String) async throws -> DBConnection {
+func makeMigratedStore(path: String) async throws -> SQLiteDatabase {
     let database = try SQLiteDatabase(path: path)
     try await StoreMigrator().migrate(database)
-    return try DBConnection(path: path)
+    return database
 }

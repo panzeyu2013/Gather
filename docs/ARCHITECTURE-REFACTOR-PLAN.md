@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾㊾：DB.swift 退役第十一切片——SessionService | ✅ | SessionService 残余连接点清零：database: SQLiteDatabase；deleteSession/deleteSessions 尾部孤儿资产事务改 database.transaction+db.run（deleteSessions 由 return transaction 改为 事务+return 计数）；deleteSessionDependencies 的 5 条 DELETE 改 database.run。测试：SessionServiceTests 四处构造改同库；app DashboardViewModelTests 的 SessionService 构造同步。验证：双包库编译 0 error；Session 相关 25/6 全绿；app 172/19 全绿。**剩余唯一 DBConnection 消费者：IndexerService（31 处）**；路由仅剩 1 处 connection: db |
+| R1 收官：删除 DB.swift——Store 成为唯一 SQL 所有者（wave W1） | OK | 生产侧：IndexerService(31 连接点/3 事务) 迁 SQLiteDatabase；删除 Database/DB.swift(352 行)；GatherApp/SessionCommandRouter 去 DBConnection 参数与 db 字段；错误映射 DBError→SQLiteFailure；RepositorySupport 删死代码 optDB。测试侧：core+app 测试层全量迁 SQLiteDatabase（makeMigratedStore 同连接、helper async、prepare 链→run/query/queryOne、columnOrder 行访问、新增测试专用 SQLiteRowTestAccess）。度量：DB layer 1→0、raw SQL outside Store 14→0、unchecked Sendable 22→21、AnalysisJobRepo callers 3→1（baseline 同步）。验证：双包库编译 0 error；core 758/110（3 个已知并发 flake，隔离复跑 48/12 全绿）；app 172/19 全绿。编排：3 个并行子代理（core 测试迁移/app 测试迁移/CullingRuntime 只读设计）+ 主代理 baseline/文档/R7 种子 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。
@@ -349,3 +349,88 @@ settings、template、smart album、workspace、person、face、keyword-origins�
 - 已知计时 flake（单独跑通过）：`JobSchedulerTests.admitsTasksWithinBudget`、`GatherToast.show 自动移除`
 
 **R2-R8 尚未开始**：删除 `Services/`（当前 25 文件）→ JobRunner → MetadataWriter → 类型化 async API（删 `SessionCommandRouter`，当前 17 文件引用）→ UI 重写（Shell + 11 Feature）→ 死代码裁决 → 文档/门禁收尾。
+
+## W2｜R2 Runtime actor 化（wave 编排，逐轮并行推进）
+
+W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不重叠的工作流（子代理）+ 主代理集成/验收/提交。
+
+| 子波 | 交付（新增 Runtime actor） | 同批删除 | 并行工作流划分 |
+|---|---|---|---|
+| W2a | `Runtime/Support/` 收敛：PhotoFormats 单一来源、时间/JSON/哈希/并发原语 | 各服务内重复常量 | ①Support 收敛 ②Culling QueryBuilder 骨架 ③调用点扫描报告 |
+| W2b | `CullingRuntime`（QueryBuilder/LookupLoader/Assembler/SessionCache 4 文件 + actor） | `Services/CullingService.swift`(2537) | ①QueryBuilder+Assembler ②LookupLoader+SessionCache ③路由/测试接线 |
+| W2c | `SimilarityRuntime` + `DuplicateRuntime` + `QualityRuntime` | 3 个服务文件 | ①Similarity ②Duplicate ③Quality ④测试迁移 |
+| W2d | `IndexerRuntime` + `ExportRuntime` + `NavigationRuntime` + `FaceRuntime` | 4 个服务文件 | ①Indexer ②Export ③Navigation ④Face+测试 |
+| W2e | `MetadataRuntime`（R4 前置：outbox 单一状态源） | `MetadataService`/`MetadataMutationService` | ①outbox 状态机 ②provider 接线 ③冲突/重试 |
+| W2f | `WorkspaceRuntime`/`SettingsRuntime`/`TemplateRuntime`/`PersonRuntime` + `AppContainer` 切换 | 余下服务文件 | ①Workspace+Settings ②Template+Person ③容器与路由收口 |
+
+**出口（W2 全波）**：`Services/` 目录删除（0 文件）；每个 Runtime 有独立测试；core/app 双包全绿；门禁全绿（`unchecked Sendable` 归零、`raw SQL outside Store` 保持 0）。
+
+**每轮硬性验收**：①子波内所有 Runtime 编译通过 ②对应旧服务文件同批删除 ③双包测试（含 flake 隔离复跑）④门禁 + 度量/baseline ⑤提交。
+### W2 起点清点（Sources/Services，14,011 行 / 28 文件）
+
+- 巨型（>1000 行，需拆文件）：`CullingService` 2550、`FaceKwService` 1436、`IndexerService` 1160。
+- 大型（600–1000）：`MetadataSyncCoordinator` 982、`SimilarityService` 968、`JobService` 822、`WritebackService` 790、`DuplicateService` 744、`QualityService` 648、`MetadataService` 637、`ExportService` 617。
+- 中型（<600）：`NavigationService` 558、`FilterEngine` 542、`SessionService` 337、`MetadataMutationService` 240、`PhotoAssetResolver` 168、`MetadataProviders` 140、`MetadataContract` 125、`MetadataConflictFields` 116。
+- **`@unchecked Sendable` 7 处**（actor 化直接目标）：CullingService、MetadataSyncCoordinator、JobService、DuplicateService、WritebackService、MetadataService、MetadataMutationService。
+- 度量 `raw SQL outside Store (R1)` 已到 **0**（所有服务经 Store 访问 SQL），`unchecked Sendable` 21（R2 目标归零）。
+## W3–W5 波次编排（预置）
+
+### W3｜R3 JobRunner（可与 W2 并行）
+| 工作流 | 交付 | 同批删除 |
+|---|---|---|
+| ①JobRunner actor | `Jobs/JobRunner`：单注册表、租约 fencing、取消宽限期、`stop()` 超时、checkpoint 编解码、去重键、结果原子 take | `Services/JobService.swift`(822)、`JobScheduler.swift`、`AnalysisWorker.swift` |
+| ②集成测试 | 崩溃恢复/取消/重试/去重 4 组测试 | 旧 JobService 测试 |
+| ③路由接线 | `jobs.*` 用例改走 JobRunner | `AnalysisWorker` 死路径 |
+
+### W4｜R4 MetadataWriter（可与 W2 并行）
+| 工作流 | 交付 | 同批删除 |
+|---|---|---|
+| ①MetadataWriter actor | `Metadata/MetadataWriter`：outbox 单一状态源、写入队列（token 身份）、5 档退避重试、启动即 `recoverInterrupted + reschedule` | `MetadataSyncCoordinator`(982)、`WritebackService`(790) |
+| ②provider 接线 | XMP/EXIF/尺寸 provider 一等注入 | `MetadataMutationService`(240)、`MetadataService`(637) |
+| ③测试 | 重启恢复/并发编辑/冲突裁决/清理状态机 | 旧 coordinator/writeback 测试 |
+
+### W5｜R5 类型化 async API
+| 工作流 | 交付 | 同批删除 |
+|---|---|---|
+| ①协议与 DTO | `GatherAPI` 协议 + 按域拆分的 `GatherCoreAPI` 实现 + `Protocol/` DTO + `GatherError` 单点映射 | — |
+| ②替换路由 | 全命令改 typed async（无 JSONValue 桥） | `Host/SessionCommandRouter.swift`、`Host/CommandRouter.swift`、`Support/NativeCommandClient.swift`、`Support/JSONValueDecoding.swift` |
+| ③UI 接线 | ViewModel provider 直连 typed API | 旧 WebResponse/completion 路径 |
+## W7｜R7 死代码裁决（候选种子，已核实）
+
+扫查方法：类型名在全仓 `--include=*.swift` 的文件级引用计数（排除仅自身声明），再逐个人工确认。
+
+| 候选 | 引用面 | 裁决建议 |
+|---|---|---|
+| `SQLiteDuplicateStore`（`Store/DuplicateStore.swift`） | 仅其自身测试 `DuplicateStoreTests.swift` | 生产零使用 → 删除 Store + 测试（或按 R2 DuplicateRuntime 需要重新接线） |
+| `FacePreprocessing`（`Face/Preprocessing.swift`） | 仅 `PreprocessReconciliationTests.swift` | 生产零使用 → 删除或并入 FaceRuntime |
+| `FaceDetector`（`Face/Detector.swift`） | 仅 `FaceInferenceTests.swift` | 同上（需先确认同文件内其它类型是否在用） |
+| `FaceInferenceError`（`Face/Inference.swift`） | 仅自身文件 | 删除或并入统一错误类型 |
+| `AnalysisWorkerError`（`Services/AnalysisWorker.swift`） | 仅自身文件 | 随 R3 删除 `AnalysisWorker` 一并消失 |
+
+注意：`SliderInputView`、`PhotoFormats` 等经核实**在用**（前者由 `FaceKeywordingView` 引用），不属死代码。
+### W2a 精确定位（主代理扫查，供并行工作流直接派活）
+
+**A1｜并发原语普查（`NSLock` 11 文件 → actor 化目标）**：`MetadataSyncCoordinator`、`IndexerService`、`ExportService`、`JobService`、`QualityService`、`SimilarityService`、`DuplicateService`、`WritebackService`、`MetadataService`、`FaceKwService`、`MetadataMutationService`。
+
+**A2｜`@unchecked Sendable` 精确位置（12 处，R2 目标归零）**：
+- `MetadataSyncCoordinator`：`BatchCursor`(911)、`SlotGate`(935)
+- `JobService`：`Waiter`(178)
+- `DuplicateService`：`ScanHandle`(101)、`BatchCursor`(688)
+- `WritebackService`：`WritebackBatchCursor`(707)
+- `CullingService`：`CullingHistorySink`(279，public)
+- `MetadataService`：`MetadataBatchCursor`(616)
+- `MetadataMutationService`：`TaskBox`(201)、`AsyncGate`(207)
+- 其余见 `grep -rn '@unchecked Sendable' Sources`（另有 2 处分布在其他文件）
+
+**A3｜重复常量收敛**：RAW 扩展名清单目前分散在 `Image/RAWDecoder.swift:55`、`Watch/Coordinator.swift:46`，与 `Support/PhotoFormats` 并存 → 统一到 `PhotoFormats` 单一来源（计划 §R1/R2 已列为重复 5 份之一）。
+
+**A4｜已收敛项（无需再动）**：时间/ISO（`isoString`/`nowISOString`/`tsDateParse`）与 JSON/路径（`JSONValue` 扩展、`TSPath`）已集中在 `Support/RepositorySupport.swift`；SHA256 在 `Support/SHA256.swift`。
+### W3 派活清单（主代理扫查，JobRunner 重写）
+
+- **删除目标**：`Services/JobService.swift`(822)、`Services/JobScheduler.swift`(106)、`Services/AnalysisWorker.swift`(78)、以及 `AnalysisWorkerError`（仅自身引用，已核实死代码）。
+- **Store 侧已就绪**（无需新 SQL）：`JobStore` 提供 `create/get/list/listByType/requestCancel/retry/recoverStale/resumeInterrupted/claim/heartbeat/updateProgress/finish/…`（全 async）。
+- **JobService 现有 public 面**（新 `Jobs/JobRunner` actor 需等价覆盖）：`start/stop/registerExecutor/create/list/cancel/cancelScope/retry/clearCompleted/claim/heartbeat/updateProgress/finish/waitForResult/run/setProgressSink/throwIfCancelled/updateCheckpoint/updateProgress`，错误类型 `JobCancelledError`/`JobServiceError`。
+- **必测语义**（计划 §R3）：崩溃恢复（`recoverStale`+`resumeInterrupted` 启动即跑）、租约 fencing（interrupted 触发 abort signal）、取消宽限期、`stop()` 超时兜底、checkpoint 编解码、去重键（export key 纳入目标摘要）、完成结果原子 take（`waitForResult`）。
+- **并行工作流划分**：①`JobRunner` actor 骨架 + 租约/fencing ②取消/宽限/`stop()` 超时 ③checkpoint/去重键/结果 take ④集成测试（4 组）⑤路由 `jobs.*` 接线与旧测试删除。
+### R7 追加候选（由 app 测试迁移子代理发现）
+- `Host/SessionCommandRouter.swift` 存在**重复 case 死分支**（HEAD 即存在）：`case "export.preview"`(L1949) 与 `case "fkw.unbind"`(L2080) 永不命中 → R5（删除该路由）或 R7 清理时一并删除，并核对两处语义差异是否需合并。

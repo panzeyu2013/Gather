@@ -92,7 +92,7 @@ private func waitUntil(
 }
 
 private struct FaceKwHarness {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let service: FaceKwService
     let sessionStore: any SessionStore
     let faceStore: SQLiteFaceStore
@@ -123,14 +123,14 @@ private func makeFaceKwHarness(
     // workspace 之外的 person 路径已切到 Store：文件库供两条连接共享。
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-fkw-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
+    let db = try await makeMigratedStore(path: dbPath)
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
     let session = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "Run", source: "folder", sourcePath: "")
     let dir = try makeTempDir()
     var photoPath = ""
     for i in 1...photoCount {
         let path = try writeTempFile(in: dir, name: "photo\(i).jpg")
-        try insertPhoto(db, id: "photo-\(i)", sessionId: session.id, filepath: path)
+        try await insertPhoto(db, id: "photo-\(i)", sessionId: session.id, filepath: path)
         if i == 1 { photoPath = path }
     }
     let service = FaceKwService(
@@ -170,25 +170,25 @@ private func defaultFakeInference() -> FaceKwService.FaceInferenceProvider {
 /// 建一个 face_clusters 行 + 成员（photoId 需已存在于 photos）。
 @discardableResult
 private func seedCluster(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: Int64,
     sessionId: String,
     label: String = "Person 1",
     memberCount: Int64? = nil,
     status: String = "unbound",
     members: [(photoId: String, bbox: [Double], confidence: Double)] = []
-) throws -> Int64 {
+) async throws -> Int64 {
     let count = memberCount ?? Int64(members.count)
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
         VALUES (?, ?, ?, ?, ?, '', '')
-      """).run([.int(id), .text(sessionId), .text(label), .int(count), .text(status)])
+      """, [.int(id), .text(sessionId), .text(label), .int(count), .text(status)])
     for member in members {
         let bboxJSON = try JSONValue.stringify(JSONValue.array(member.bbox.map { JSONValue.real($0) }))
-        _ = try db.prepare("""
+        _ = try await db.run("""
             INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence, observation_id)
             VALUES (?, ?, ?, ?, ?, NULL)
-          """).run([
+          """, [
             .int(id), .text(sessionId), .text(member.photoId), .text(bboxJSON), .real(member.confidence),
         ])
     }
@@ -200,10 +200,8 @@ private func bind(_ harness: FaceKwHarness, clusterId: Int64, roleName: String, 
     try await harness.faceStore.updateBinding(clusterId: clusterId, roleName: roleName, keywords: keywords)
 }
 
-private func runRow(_ db: DBConnection, _ sessionId: String) async throws -> DBRow? {
-    try db.prepare(
-        "SELECT kind, photo_count, index_seq, params, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?"
-    ).get([.text(sessionId)])
+private func runRow(_ db: SQLiteDatabase, _ sessionId: String) async throws -> SQLiteRow? {
+    try await db.queryOne("SELECT kind, photo_count, index_seq, params, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?", [.text(sessionId)])
 }
 
 private let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
@@ -309,14 +307,14 @@ struct FaceKwRunRecordTests {
 
         #expect(result.status == "done")
         let row = try await runRow(harness.db, harness.sessionId)!
-        #expect(row[0].textValue == "face")
-        #expect(row[1].intValue == 1)
-        #expect(row[2].intValue == 0)
-        #expect(row[3].textValue != "")
-        #expect(row[4].textValue != "")  // started_at
-        #expect(row[5].textValue != "")  // finished_at
-        #expect(row[6].textValue == "ok")
-        let params = try JSONValue.parse(row[3].textValue ?? "{}")
+        #expect(row.values[row.columnOrder[0]]?.textValue == "face")
+        #expect(row.values[row.columnOrder[1]]?.intValue == 1)
+        #expect(row.values[row.columnOrder[2]]?.intValue == 0)
+        #expect(row.values[row.columnOrder[3]]?.textValue != "")
+        #expect(row.values[row.columnOrder[4]]?.textValue != "")  // started_at
+        #expect(row.values[row.columnOrder[5]]?.textValue != "")  // finished_at
+        #expect(row.values[row.columnOrder[6]]?.textValue == "ok")
+        let params = try JSONValue.parse(row.values[row.columnOrder[3]]?.textValue ?? "{}")
         #expect(params["detectorPath"] == .string("det.onnx"))
         #expect(params["encoderPath"] == .string("enc.onnx"))
         #expect(params["eps"] == .number(0.6))
@@ -328,15 +326,15 @@ struct FaceKwRunRecordTests {
         let harness = try await makeFaceKwHarness()
         // 使 replaceObservationsByPhoto 的写入必然失败（embedding 列不存在）；
         // 读路径（getObservations / 状态）不受影响——等价 TS mock 抛错。
-        _ = try harness.db.prepare("ALTER TABLE face_observations DROP COLUMN embedding").run([])
+        _ = try await harness.db.run("ALTER TABLE face_observations DROP COLUMN embedding", [])
 
         let result = try await harness.service.analyze(
             sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
 
         #expect(result.status == "failed")
         let row = try await runRow(harness.db, harness.sessionId)!
-        #expect(row[6].textValue == "failed")
-        #expect(row[5].textValue != "")
+        #expect(row.values[row.columnOrder[6]]?.textValue == "failed")
+        #expect(row.values[row.columnOrder[5]]?.textValue != "")
         #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "failed")
     }
 }
@@ -366,7 +364,7 @@ struct FaceKwAnalyzeFlowTests {
             sourceFileSize: stat.size, sourceFileMtimeMs: stat.mtimeMs,
             analysisSignature: analysisSignatureForDefaults)
         try await harness.faceStore.upsertClusterSignature(sessionId: harness.sessionId, signature: "0.6:2")
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
         var phases: [String] = []
@@ -378,7 +376,7 @@ struct FaceKwAnalyzeFlowTests {
         #expect(probe.value == false)  // 推理未被调用
         #expect(phases.contains("face.cached-clusters"))
         #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "done")
-        #expect(try await runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
+        #expect(try await runRow(harness.db, harness.sessionId)?.text(at: 6) == "ok")
     }
 
     @Test("cancels an in-flight analysis and writes cancelled status")
@@ -404,7 +402,7 @@ struct FaceKwAnalyzeFlowTests {
         #expect(try await harness.sessionStore.get(id: harness.sessionId)?.analysisStatus == "cancelled")
         // 取消的 run 以 'failed' 终态（sessions.analysis_status 为 'cancelled'，
         // 与 TS 语义一致）。
-        #expect(try await runRow(harness.db, harness.sessionId)?[6].textValue == "failed")
+        #expect(try await runRow(harness.db, harness.sessionId)?.text(at: 6) == "failed")
     }
 
     @Test("rejects a second analyze while one is running")
@@ -465,7 +463,7 @@ struct FaceKwAnalyzeFlowTests {
         let harness = try await makeFaceKwHarness(inference: { images, _, _ in
             images.map { _ in FaceInferenceItem(observations: []) }
         })
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
         let result = try await harness.service.analyze(
@@ -486,7 +484,7 @@ struct FaceKwAnalyzeFlowTests {
                 photoId: "photo-1", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4,
                 embedding: [0, 0, 0], confidence: 0.9),
         ])
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try await bind(harness, clusterId: 1, roleName: "Alice", keywords: ["kw"])
 
@@ -515,7 +513,7 @@ struct FaceKwAnalyzeFlowTests {
     func throwsNoPhotos() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let session = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "Empty", source: "folder")
         let service = FaceKwService(
@@ -555,14 +553,14 @@ struct FaceKwBindingMigrationTests {
     private func makeMigrationHarness(
         bindings: [(clusterId: Int64, roleName: String, keywords: [String], photoIds: [String])],
         clusterResult: [[(observationId: Int, photoId: String)]]
-    ) async throws -> (db: DBConnection, service: FaceKwService, faceStore: SQLiteFaceStore, sessionId: String) {
+    ) async throws -> (db: SQLiteDatabase, service: FaceKwService, faceStore: SQLiteFaceStore, sessionId: String) {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let sessionId = "session-1"
-        try insertSession(db, sessionId)
+        try await insertSession(db, sessionId)
         for id in ["p1", "p2", "p3", "p4"] {
-            try insertPhoto(db, id: id, sessionId: sessionId, filepath: "/photos/\(id).jpg")
+            try await insertPhoto(db, id: id, sessionId: sessionId, filepath: "/photos/\(id).jpg")
         }
         let faceStore = SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath))
         let obs = try await faceStore.saveObservations(sessionId: sessionId, observations: [
@@ -571,7 +569,7 @@ struct FaceKwBindingMigrationTests {
         ])
         let observationIds = [Int(obs[0]), Int(obs[1])]
         for binding in bindings {
-            try seedCluster(
+            try await seedCluster(
                 db, id: binding.clusterId, sessionId: sessionId, label: "Person \(binding.clusterId)",
                 memberCount: Int64(binding.photoIds.count), status: "bound",
                 members: binding.photoIds.map { (photoId: $0, bbox: [1, 2, 3, 4], confidence: 0.9) })
@@ -669,14 +667,14 @@ struct FaceKwGetClustersTests {
     func truncatesMembersAndMapsBinding() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let sessionId = "session-1"
-        try insertSession(db, sessionId)
+        try await insertSession(db, sessionId)
         for i in 1...5 {
-            try insertPhoto(db, id: "photo-\(i)", sessionId: sessionId, filepath: "/photos/photo-\(i).jpg")
+            try await insertPhoto(db, id: "photo-\(i)", sessionId: sessionId, filepath: "/photos/photo-\(i).jpg")
         }
         let faceStore = SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath))
-        try seedCluster(
+        try await seedCluster(
             db, id: 1, sessionId: sessionId, label: "Person 1", memberCount: 5, status: "bound",
             members: (1...5).map { (photoId: "photo-\($0)", bbox: [Double($0), 2, 3, 4], confidence: 0.9) })
         try await faceStore.updateBinding(clusterId: 1, roleName: "Alice", keywords: ["kw1", "kw2"])
@@ -715,7 +713,7 @@ struct FaceKwClusterCommandTests {
     @Test("binds a cluster with normalized role and deduped keywords, bridging the person library")
     func bindNormalizesAndBridges() async throws {
         let harness = try await makeFaceKwHarness()
-        try seedCluster(harness.db, id: 7, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 7, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
         try await harness.service.bindCluster(
@@ -737,12 +735,12 @@ struct FaceKwClusterCommandTests {
     func bindClusterErrors() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let sessionA = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "A", source: "folder")
         let sessionB = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "B", source: "folder")
         let faceStore = SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath))
-        try seedCluster(db, id: 1, sessionId: sessionA.id, memberCount: 0)
+        try await seedCluster(db, id: 1, sessionId: sessionA.id, memberCount: 0)
         let service = FaceKwService(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
@@ -764,7 +762,7 @@ struct FaceKwClusterCommandTests {
     @Test("unbinds a cluster and reconciles the person library")
     func unbindsAndReconciles() async throws {
         let harness = try await makeFaceKwHarness()
-        try seedCluster(harness.db, id: 7, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 7, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try await bind(harness, clusterId: 7, roleName: "Alice", keywords: ["kw"])
         try await harness.service.bindCluster(sessionId: harness.sessionId, clusterId: 7, roleName: "Alice", keywords: ["kw"])
@@ -781,9 +779,9 @@ struct FaceKwClusterCommandTests {
     @Test("merges clusters moving members and dropping the source binding")
     func mergesClusters() async throws {
         let harness = try await makeFaceKwHarness(photoCount: 2)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
-        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-2", bbox: [5, 6, 7, 8], confidence: 0.8)])
         try await bind(harness, clusterId: 1, roleName: "Alice", keywords: [])
 
@@ -798,13 +796,13 @@ struct FaceKwClusterCommandTests {
     @Test("validates merge inputs")
     func mergeErrors() async throws {
         let harness = try await makeFaceKwHarness()
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 0)
-        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 0)
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 0)
+        try await seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 0)
         let otherSession = try await harness.sessionStore.create(name: "Other", source: "folder")
-        _ = try harness.db.prepare("""
+        _ = try await harness.db.run("""
             INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
             VALUES (50, ?, 'x', 0, 'unbound', '', '')
-          """).run([.text(otherSession.id)])
+          """, [.text(otherSession.id)])
         await #expect(throws: FaceKwServiceError.selfMerge) {
             try await harness.service.mergeClusters(sessionId: harness.sessionId, sourceId: 1, targetId: 1)
         }
@@ -819,7 +817,7 @@ struct FaceKwClusterCommandTests {
     @Test("removes a member and deletes the cluster when it was the last one")
     func removesMember() async throws {
         let harness = try await makeFaceKwHarness(photoCount: 2)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 2,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 2,
                         members: [
                             (photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9),
                             (photoId: "photo-2", bbox: [5, 6, 7, 8], confidence: 0.8),
@@ -835,7 +833,7 @@ struct FaceKwClusterCommandTests {
     @Test("validates removeMember inputs")
     func removeMemberErrors() async throws {
         let harness = try await makeFaceKwHarness()
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         await #expect(throws: FaceKwServiceError.clusterNotFound) {
             try await harness.service.removeMember(sessionId: harness.sessionId, clusterId: 99, memberId: 1)
@@ -987,7 +985,7 @@ struct FaceKwWritebackTests {
         let writeback = FakeWritebackProvider()
         writeback.removedKeywords = ["Alice", "kw1"]
         let harness = try await makeFaceKwHarness(writeback: writeback)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try await bind(harness, clusterId: 1, roleName: "Alice", keywords: ["kw1"])
 
@@ -1009,9 +1007,9 @@ struct FaceKwWritebackTests {
         let harness = try await makeFaceKwHarness(writeback: writeback)
         // 两个集群共享 photo-1：B（Bob）的绑定保护 "Bob"；A 的 Alice 关键词
         // 里也有 "Bob"——解除 A 时 "Bob" 必须被过滤。
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
-        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [5, 6, 7, 8], confidence: 0.8)])
         try await bind(harness, clusterId: 1, roleName: "Alice", keywords: ["Bob"])
         try await bind(harness, clusterId: 2, roleName: "Bob", keywords: [])
@@ -1028,7 +1026,7 @@ struct FaceKwWritebackTests {
         let writeback = FakeWritebackProvider()
         writeback.previewResult = FaceKwWritebackPreview(items: [], totalCount: 1, affectedPhotos: 1)
         let harness = try await makeFaceKwHarness(writeback: writeback)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try await bind(harness, clusterId: 1, roleName: "Alice", keywords: ["kw1", "kw1", "kw2"])
 

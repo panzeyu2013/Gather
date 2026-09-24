@@ -218,7 +218,3 @@ public func tsExists(_ path: String) -> Bool {
     FileManager.default.fileExists(atPath: path)
 }
 
-/// 可空值 → DBValue?（SQL 绑定用）。
-public func optDB(_ v: Int64?) -> DBValue? { v.map { .int($0) } }
-public func optDB(_ v: Double?) -> DBValue? { v.map { .real($0) } }
-public func optDB(_ v: String?) -> DBValue? { v.map { .text($0) } }

@@ -38,7 +38,7 @@ private func sha256Hex(_ content: String) -> String {
 }
 
 private struct IndexerHarness {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let indexer: IndexerService
     let sessionStore: any SessionStore
     let sessionId: String
@@ -52,12 +52,12 @@ private func makeHarness(
     // 同一临时文件库：旧连接 + Store 连接（asset 回填外键需要 sessions 行）。
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-indexer-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
+    let db = try await makeMigratedStore(path: dbPath)
     let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
     let session = try await sessionStore.create(name: "Index", source: "folder", sourcePath: root)
     let indexer = IndexerService(
-        connection: db,
+        database: db,
         sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         assetStore: assetStore,
@@ -71,7 +71,7 @@ private func makeHarness(
 
 /// asset_files 行（含 volume/identity，供 relink 按真实 inode 匹配）。
 private func insertAssetFileRow(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: String,
     filepath: String,
     fileSize: Int64,
@@ -79,14 +79,14 @@ private func insertAssetFileRow(
     checksum: String,
     volumeId: String = "dev:1",
     fileIdentity: String? = nil
-) throws {
+) async throws {
     // 默认 identity 按文件路径派生（UNIQUE(volume_id, file_identity)，不同
     // 文件不得共用；TS 源为 stat().ino）。
     let identity = fileIdentity ?? "ino-\(id)"
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO asset_files (id, volume_id, file_identity, normalized_path, filename, extension, media_type, file_size, file_mtime_ms, checksum, online_status, last_seen_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, '.jpg', 'image', ?, ?, ?, 'online', '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-      """).run([
+      """, [
         .text(id), .text(volumeId), .text(identity), .text(filepath),
         .text((filepath as NSString).lastPathComponent),
         .int(fileSize), .real(fileMtimeMs), .text(checksum),
@@ -95,7 +95,7 @@ private func insertAssetFileRow(
 
 /// photos 行（asset_file_id 可空）。
 private func insertPhotoRow(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: String,
     sessionId: String,
     filepath: String,
@@ -104,11 +104,11 @@ private func insertPhotoRow(
     status: String = "pending",
     checksumFileSize: Int = 0,
     checksumFileMtimeMs: Double = 0
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', NULL, ?, 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-      """).run([
+      """, [
         .text(id), .text(sessionId), .text(filepath),
         .text((filepath as NSString).lastPathComponent),
         .text(checksum), .int(Int64(checksumFileSize)), .real(checksumFileMtimeMs),
@@ -118,7 +118,7 @@ private func insertPhotoRow(
 
 /// 完整资产链（backfill 收敛用例需要 asset_members / session_assets）。
 private func insertFullAssetChain(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     assetFileId: String,
     assetId: String,
     sessionId: String,
@@ -126,28 +126,28 @@ private func insertFullAssetChain(
     fileSize: Int64,
     fileMtimeMs: Double,
     checksum: String
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
         VALUES (?, '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-      """).run([.text(assetId)])
-    try insertAssetFileRow(db, id: assetFileId, filepath: filepath, fileSize: fileSize, fileMtimeMs: fileMtimeMs, checksum: checksum)
-    _ = try db.prepare("""
+      """, [.text(assetId)])
+    try await insertAssetFileRow(db, id: assetFileId, filepath: filepath, fileSize: fileSize, fileMtimeMs: fileMtimeMs, checksum: checksum)
+    _ = try await db.run("""
         INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, binding_source)
         VALUES (?, ?, 'camera_jpeg', 1, 'import')
-      """).run([.text(assetId), .text(assetFileId)])
-    _ = try db.prepare("""
+      """, [.text(assetId), .text(assetFileId)])
+    _ = try await db.run("""
         INSERT INTO session_assets (session_id, asset_id, display_file_id, import_order, added_at)
         VALUES (?, ?, ?, 0, '2026-01-01T00:00:00.000Z')
-      """).run([.text(sessionId), .text(assetId), .text(assetFileId)])
+      """, [.text(sessionId), .text(assetId), .text(assetFileId)])
 }
 
-private func photoChecksum(_ db: DBConnection, _ photoId: String) throws -> String? {
-    try db.prepare("SELECT checksum FROM photos WHERE id = ?").get([.text(photoId)])?[0].textValue
+private func photoChecksum(_ db: SQLiteDatabase, _ photoId: String) async throws -> String? {
+    try await db.queryOne("SELECT checksum FROM photos WHERE id = ?", [.text(photoId)]).map { $0.values[$0.columnOrder[0]]?.textValue ?? "" }
 }
 
-private func assetFileChecksum(_ db: DBConnection, _ assetFileId: String) async throws -> String? {
-    try db.prepare("SELECT checksum FROM asset_files WHERE id = ?").get([.text(assetFileId)])?[0].textValue
+private func assetFileChecksum(_ db: SQLiteDatabase, _ assetFileId: String) async throws -> String? {
+    try await db.queryOne("SELECT checksum FROM asset_files WHERE id = ?", [.text(assetFileId)]).map { $0.values[$0.columnOrder[0]]?.textValue ?? "" }
 }
 
 // MARK: - index_seq 提交点（TS index-seq.test.ts 逐条对应）
@@ -168,10 +168,10 @@ struct IndexSeqTests {
         #expect(result.missing == 0)
         #expect(result.failed.isEmpty)
         // markMissing([]) 语义：无照片被标记缺失。
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE status = 'missing'") == 0)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE status = 'missing'") == 0)
         #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
         // 新照片行已入库。
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(harness.sessionId)]) == 1)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(harness.sessionId)]) == 1)
     }
 
     @Test("bumps index_seq when an existing photo content changed")
@@ -182,7 +182,7 @@ struct IndexSeqTests {
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         let harness = try await makeHarness(root: root)
         // 无 asset_files 行：扫描把照片自身的 checksum 基线视为不可用 → 判定变化。
-        try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
@@ -204,12 +204,12 @@ struct IndexSeqTests {
         let harness = try await makeHarness(root: root, lazyChecksum: "false")
         // asset_files 行指向旧路径，但 volume/identity 与真实文件匹配
         // （relinkMovedFile 按 inode 找到它）。
-        try insertAssetFileRow(
+        try await insertAssetFileRow(
             harness.db, id: "file-old", filepath: oldPath,
             fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: hash,
             volumeId: "dev:\(fileStat.dev)", fileIdentity: String(fileStat.ino)
         )
-        try insertPhotoRow(harness.db, id: "relinked", sessionId: harness.sessionId, filepath: oldPath, assetFileId: "file-old")
+        try await insertPhotoRow(harness.db, id: "relinked", sessionId: harness.sessionId, filepath: oldPath, assetFileId: "file-old")
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
@@ -218,9 +218,9 @@ struct IndexSeqTests {
         #expect(result.missing == 0)
         #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
         // 照片被重链接到新路径而非新增。
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(harness.sessionId)]) == 1)
-        let row = try harness.db.prepare("SELECT filepath FROM photos WHERE id = 'relinked'").get()
-        #expect(row?[0].textValue == newPath)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(harness.sessionId)]) == 1)
+        let row = try await harness.db.queryOne("SELECT filepath FROM photos WHERE id = 'relinked'")
+        #expect(row?.text(at: 0) == newPath)
     }
 
     @Test("does NOT bump index_seq when the scan changed nothing")
@@ -231,8 +231,8 @@ struct IndexSeqTests {
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         let fileStat = try IndexerService.defaultStat(photoPath)
         let harness = try await makeHarness(root: root)
-        try insertAssetFileRow(harness.db, id: "af-1", filepath: photoPath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: "checksum-1")
-        try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: "af-1")
+        try await insertAssetFileRow(harness.db, id: "af-1", filepath: photoPath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: "checksum-1")
+        try await insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: "af-1")
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
@@ -251,13 +251,13 @@ struct IndexSeqTests {
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         try FileManager.default.removeItem(atPath: photoPath)
         let harness = try await makeHarness(root: root)
-        try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
         #expect(result.discovered == 0)
         #expect(result.missing == 1)
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE status = 'missing'") == 1)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE status = 'missing'") == 1)
         #expect(try await harness.sessionStore.indexSeq(id: harness.sessionId) == 1)
     }
 
@@ -269,7 +269,7 @@ struct IndexSeqTests {
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         let harness = try await makeHarness(root: root)
         // 照片从未回填到 asset_files：扫描没有 asset_files 基线可比较。
-        try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
 
         // 首次观测提交尺寸/checksum stat，是真实变化。
         _ = try await harness.indexer.scanSession(sessionId: harness.sessionId)
@@ -290,12 +290,12 @@ struct IndexSeqTests {
         try Data("content".utf8).write(to: URL(fileURLWithPath: photoPath))
         let originalStat = try IndexerService.defaultStat(photoPath)
         let harness = try await makeHarness(root: root)
-        try insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "photo-1", sessionId: harness.sessionId, filepath: photoPath, assetFileId: nil)
         // 模拟上次扫描提交的索引基线（无 asset_files 行，照片行自带基线）。
-        _ = try harness.db.prepare("""
+        _ = try await harness.db.run("""
             UPDATE photos SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?
             WHERE id = 'photo-1'
-          """).run([
+          """, [
             .text("hash-1"), .int(originalStat.size), .real(originalStat.mtimeMs),
         ])
         // 磁盘文件与索引基线不同。
@@ -324,20 +324,20 @@ struct CancelledScanIndexSeqTests {
         }
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-indexer-cancel-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let assetStore = try SQLiteAssetStore(database: try SQLiteDatabase(path: dbPath))
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let session = try await sessionStore.create(name: "Index", source: "folder", sourcePath: root)
         // 预置已完成的 sim/fkw 分析（快照 index_seq=0）：扫描必须推进会话
         // index_seq，否则这两条已完成分析永远看不到新照片。
-        _ = try db.prepare("""
+        _ = try await db.run("""
             INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
             VALUES (?, 'similarity', 0, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{}', 'ok')
-          """).run([.text(session.id)])
-        _ = try db.prepare("""
+          """, [.text(session.id)])
+        _ = try await db.run("""
             INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
             VALUES (?, 'face_keywording', 0, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{}', 'ok')
-          """).run([.text(session.id)])
+          """, [.text(session.id)])
 
         // 首批 32 张的末位（p8.jpg）解码时 abort：批仍提交；扫描在 pull 循环
         // 的 throwIfCancelled 抛 JobCancelledError（修复前异常跳过终态块，
@@ -345,7 +345,7 @@ struct CancelledScanIndexSeqTests {
         let signal = JobAbortSignal()
         let lastBatchPath = root + "/p8.jpg"
         let indexer = IndexerService(
-            connection: db,
+            database: db,
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             assetStore: assetStore,
@@ -375,7 +375,7 @@ struct CancelledScanIndexSeqTests {
             try await indexer.scanSession(sessionId: session.id, context: context)
         }
         // 首批已提交（p8 转 failed，不入库）：新照片入库。
-        #expect(try rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 31)
+        #expect(try await rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 31)
         // 修复点：取消路径同样 bump —— 预置的已完成分析（index_seq=0）相对
         // 会话 index_seq（1）过期，新照片对分析可见。
         #expect(try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).indexSeq(id: session.id) == 1)
@@ -413,13 +413,13 @@ struct LazyChecksumTests {
         )
     }
 
-    private func seedExistingPhotos(_ harness: IndexerHarness, _ fixture: Fixture) throws {
+    private func seedExistingPhotos(_ harness: IndexerHarness, _ fixture: Fixture) async throws {
         let untouchedStat = try IndexerService.defaultStat(fixture.untouchedPath)
         // changed 的 asset_files 行基线是假的（大小/时间错位 → 内容判定变化）。
-        try insertAssetFileRow(harness.db, id: "file-changed", filepath: fixture.changedPath, fileSize: 1, fileMtimeMs: 1, checksum: "")
-        try insertAssetFileRow(harness.db, id: "file-untouched", filepath: fixture.untouchedPath, fileSize: untouchedStat.size, fileMtimeMs: untouchedStat.mtimeMs, checksum: "")
-        try insertPhotoRow(harness.db, id: "changed", sessionId: harness.sessionId, filepath: fixture.changedPath, assetFileId: "file-changed")
-        try insertPhotoRow(harness.db, id: "untouched", sessionId: harness.sessionId, filepath: fixture.untouchedPath, assetFileId: "file-untouched")
+        try await insertAssetFileRow(harness.db, id: "file-changed", filepath: fixture.changedPath, fileSize: 1, fileMtimeMs: 1, checksum: "")
+        try await insertAssetFileRow(harness.db, id: "file-untouched", filepath: fixture.untouchedPath, fileSize: untouchedStat.size, fileMtimeMs: untouchedStat.mtimeMs, checksum: "")
+        try await insertPhotoRow(harness.db, id: "changed", sessionId: harness.sessionId, filepath: fixture.changedPath, assetFileId: "file-changed")
+        try await insertPhotoRow(harness.db, id: "untouched", sessionId: harness.sessionId, filepath: fixture.untouchedPath, assetFileId: "file-untouched")
     }
 
     @Test("skips hashing and records an empty checksum when lazy_checksum is enabled")
@@ -427,7 +427,7 @@ struct LazyChecksumTests {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
         let harness = try await makeHarness(root: fixture.root, lazyChecksum: "true")
-        try seedExistingPhotos(harness, fixture)
+        try await seedExistingPhotos(harness, fixture)
         let changedStat = try IndexerService.defaultStat(fixture.changedPath)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
@@ -436,17 +436,17 @@ struct LazyChecksumTests {
         #expect(result.added == 1)
         #expect(result.missing == 0)
         // 新文件：空 checksum 入库。
-        let newRow = try harness.db.prepare("SELECT filepath, checksum FROM photos WHERE id = (SELECT id FROM photos WHERE filepath = ?)").get([.text(fixture.newPath)])
-        #expect(newRow?[1].textValue == "")
+        let newRow = try await harness.db.queryOne("SELECT filepath, checksum FROM photos WHERE id = (SELECT id FROM photos WHERE filepath = ?)", [.text(fixture.newPath)])
+        #expect(newRow?.text(at: 1) == "")
         // 内容变化的照片：写空 checksum + 新鲜 stat。
-        let changedRow = try harness.db.prepare("SELECT checksum, checksum_file_size, checksum_file_mtime_ms FROM photos WHERE id = 'changed'").get()
-        #expect(changedRow?[0].textValue == "")
-        #expect(changedRow?[1].intValue == changedStat.size)
-        #expect(abs((changedRow?[2].doubleValue ?? 0) - changedStat.mtimeMs) < 1)
+        let changedRow = try await harness.db.queryOne("SELECT checksum, checksum_file_size, checksum_file_mtime_ms FROM photos WHERE id = 'changed'")
+        #expect(changedRow?.text(at: 0) == "")
+        #expect(changedRow?.int(at: 1) == changedStat.size)
+        #expect(abs((changedRow?.double(at: 2) ?? 0) - changedStat.mtimeMs) < 1)
         // 未变化照片（快照 checksum 为空）：懒模式不得写入空值覆盖并发回填结果。
-        let untouchedRow = try harness.db.prepare("SELECT checksum, checksum_file_size FROM photos WHERE id = 'untouched'").get()
-        #expect(untouchedRow?[0].textValue == "")
-        #expect(untouchedRow?[1].intValue == 0)
+        let untouchedRow = try await harness.db.queryOne("SELECT checksum, checksum_file_size FROM photos WHERE id = 'untouched'")
+        #expect(untouchedRow?.text(at: 0) == "")
+        #expect(untouchedRow?.int(at: 1) == 0)
     }
 
     @Test("computes checksums synchronously when lazy_checksum is disabled")
@@ -454,15 +454,15 @@ struct LazyChecksumTests {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
         let harness = try await makeHarness(root: fixture.root, lazyChecksum: "false")
-        try seedExistingPhotos(harness, fixture)
+        try await seedExistingPhotos(harness, fixture)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
         #expect(result.added == 1)
-        let newRow = try harness.db.prepare("SELECT checksum FROM photos WHERE filepath = ?").get([.text(fixture.newPath)])
-        #expect(newRow?[0].textValue == sha256Hex(fixture.newContent))
-        #expect(try photoChecksum(harness.db, "changed") == sha256Hex(fixture.changedContent))
-        #expect(try photoChecksum(harness.db, "untouched") == sha256Hex(fixture.untouchedContent))
+        let newRow = try await harness.db.queryOne("SELECT checksum FROM photos WHERE filepath = ?", [.text(fixture.newPath)])
+        #expect(newRow?.text(at: 0) == sha256Hex(fixture.newContent))
+        #expect(try await photoChecksum(harness.db, "changed") == sha256Hex(fixture.changedContent))
+        #expect(try await photoChecksum(harness.db, "untouched") == sha256Hex(fixture.untouchedContent))
     }
 }
 
@@ -492,18 +492,18 @@ struct GhostPhotoTests {
         let harness = try await makeHarness(root: root)
         let ghostStat = try IndexerService.defaultStat(ghostPath)
         let okStat = try IndexerService.defaultStat(okPath)
-        try insertAssetFileRow(harness.db, id: "file-ghost", filepath: ghostPath, fileSize: ghostStat.size, fileMtimeMs: ghostStat.mtimeMs, checksum: "c-ghost")
-        try insertAssetFileRow(harness.db, id: "file-ok", filepath: okPath, fileSize: okStat.size, fileMtimeMs: okStat.mtimeMs, checksum: "c-ok")
-        try insertPhotoRow(harness.db, id: "ghost", sessionId: harness.sessionId, filepath: ghostPath, assetFileId: "file-ghost")
-        try insertPhotoRow(harness.db, id: "ok", sessionId: harness.sessionId, filepath: okPath, assetFileId: "file-ok")
+        try await insertAssetFileRow(harness.db, id: "file-ghost", filepath: ghostPath, fileSize: ghostStat.size, fileMtimeMs: ghostStat.mtimeMs, checksum: "c-ghost")
+        try await insertAssetFileRow(harness.db, id: "file-ok", filepath: okPath, fileSize: okStat.size, fileMtimeMs: okStat.mtimeMs, checksum: "c-ok")
+        try await insertPhotoRow(harness.db, id: "ghost", sessionId: harness.sessionId, filepath: ghostPath, assetFileId: "file-ghost")
+        try await insertPhotoRow(harness.db, id: "ok", sessionId: harness.sessionId, filepath: okPath, assetFileId: "file-ok")
         harness.indexer.stat = makeStatSeam(ghostPath: ghostPath)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
         #expect(result.missing == 1)
         #expect(result.failed.isEmpty)
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'ghost' AND status = 'missing'") == 1)
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'ok' AND status = 'missing'") == 0)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'ghost' AND status = 'missing'") == 1)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'ok' AND status = 'missing'") == 0)
     }
 
     @Test("does not mark a relinked photo as missing when it reappears at a new path")
@@ -520,22 +520,22 @@ struct GhostPhotoTests {
         let newStat = try IndexerService.defaultStat(newPath)
         let ghostStat = try IndexerService.defaultStat(ghostPath)
         // 旧资产行按真实 inode 匹配新路径文件（relink 依据）。
-        try insertAssetFileRow(
+        try await insertAssetFileRow(
             harness.db, id: "file-old", filepath: oldPath,
             fileSize: newStat.size, fileMtimeMs: newStat.mtimeMs, checksum: "c-old",
             volumeId: "dev:\(newStat.dev)", fileIdentity: String(newStat.ino)
         )
-        try insertAssetFileRow(harness.db, id: "file-ghost", filepath: ghostPath, fileSize: ghostStat.size, fileMtimeMs: ghostStat.mtimeMs, checksum: "c-ghost")
-        try insertPhotoRow(harness.db, id: "relinked", sessionId: harness.sessionId, filepath: oldPath, assetFileId: "file-old")
-        try insertPhotoRow(harness.db, id: "ghost", sessionId: harness.sessionId, filepath: ghostPath, assetFileId: "file-ghost")
+        try await insertAssetFileRow(harness.db, id: "file-ghost", filepath: ghostPath, fileSize: ghostStat.size, fileMtimeMs: ghostStat.mtimeMs, checksum: "c-ghost")
+        try await insertPhotoRow(harness.db, id: "relinked", sessionId: harness.sessionId, filepath: oldPath, assetFileId: "file-old")
+        try await insertPhotoRow(harness.db, id: "ghost", sessionId: harness.sessionId, filepath: ghostPath, assetFileId: "file-ghost")
         harness.indexer.stat = makeStatSeam(ghostPath: ghostPath)
 
         let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
         #expect(result.missing == 1)
         #expect(result.skipped == 1)
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'ghost' AND status = 'missing'") == 1)
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'relinked' AND status = 'missing'") == 0)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'ghost' AND status = 'missing'") == 1)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE id = 'relinked' AND status = 'missing'") == 0)
     }
 }
 
@@ -554,31 +554,29 @@ struct ChecksumBackfillTests {
         let checksum = sha256Hex(content)
         let harness = try await makeHarness(root: root, lazyChecksum: "true")
         // 懒首扫遗留状态：photos.checksum 空、asset_files.checksum 空。
-        try insertFullAssetChain(
+        try await insertFullAssetChain(
             harness.db, assetFileId: "af-1", assetId: "asset-1", sessionId: harness.sessionId,
             filepath: filePath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: ""
         )
-        _ = try harness.db.prepare("""
+        _ = try await harness.db.run("""
             INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
             VALUES ('photo-1', ?, ?, 'photo.jpg', '', 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-          """).run([.text(harness.sessionId), .text(filePath)])
+          """, [.text(harness.sessionId), .text(filePath)])
 
         let backfill = try await harness.indexer.backfillChecksums(sessionId: harness.sessionId)
         #expect(backfill.processed == 1)
         #expect(backfill.backfilled == 1)
         #expect(backfill.skipped == 0)
-        let assetFile = try harness.db.prepare(
-            "SELECT checksum, file_size, file_mtime_ms FROM asset_files WHERE id = 'af-1'"
-        ).get()
-        #expect(assetFile?[0].textValue == checksum)
-        #expect(assetFile?[1].intValue == fileStat.size)
-        #expect(abs((assetFile?[2].doubleValue ?? 0) - fileStat.mtimeMs) < 1)
+        let assetFile = try await harness.db.queryOne("SELECT checksum, file_size, file_mtime_ms FROM asset_files WHERE id = 'af-1'")
+        #expect(assetFile?.text(at: 0) == checksum)
+        #expect(assetFile?.int(at: 1) == fileStat.size)
+        #expect(abs((assetFile?.double(at: 2) ?? 0) - fileStat.mtimeMs) < 1)
 
         // 第二次全量扫描必须命中 unchanged 路径：不再写 checksum，无待回填。
         let scan = try await harness.indexer.scanSession(sessionId: harness.sessionId)
         #expect(scan.discovered == 1)
         #expect(scan.skipped == 1)
-        #expect(try photoChecksum(harness.db, "photo-1") == checksum)
+        #expect(try await photoChecksum(harness.db, "photo-1") == checksum)
         #expect(try await assetFileChecksum(harness.db, "af-1") == checksum)
         #expect(try await harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
     }
@@ -592,8 +590,8 @@ struct ChecksumBackfillTests {
         try Data(content.utf8).write(to: URL(fileURLWithPath: goodPath))
         let badPath = root + "/deleted.jpg"
         let harness = try await makeHarness(root: root)
-        try insertPhotoRow(harness.db, id: "good", sessionId: harness.sessionId, filepath: goodPath, assetFileId: nil)
-        try insertPhotoRow(harness.db, id: "bad", sessionId: harness.sessionId, filepath: badPath, assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "good", sessionId: harness.sessionId, filepath: goodPath, assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "bad", sessionId: harness.sessionId, filepath: badPath, assetFileId: nil)
 
         let result = try await harness.indexer.backfillChecksums(sessionId: harness.sessionId)
 
@@ -601,8 +599,8 @@ struct ChecksumBackfillTests {
         #expect(result.processed == 2)
         #expect(result.backfilled == 1)
         #expect(result.skipped == 1)
-        #expect(try photoChecksum(harness.db, "good") == sha256Hex(content))
-        #expect(try photoChecksum(harness.db, "bad") == "")
+        #expect(try await photoChecksum(harness.db, "good") == sha256Hex(content))
+        #expect(try await photoChecksum(harness.db, "bad") == "")
     }
 
     @Test("stops after a pass with zero successes instead of spinning")
@@ -610,8 +608,8 @@ struct ChecksumBackfillTests {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let harness = try await makeHarness(root: root)
-        try insertPhotoRow(harness.db, id: "bad-1", sessionId: harness.sessionId, filepath: root + "/gone-1.jpg", assetFileId: nil)
-        try insertPhotoRow(harness.db, id: "bad-2", sessionId: harness.sessionId, filepath: root + "/gone-2.jpg", assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "bad-1", sessionId: harness.sessionId, filepath: root + "/gone-1.jpg", assetFileId: nil)
+        try await insertPhotoRow(harness.db, id: "bad-2", sessionId: harness.sessionId, filepath: root + "/gone-2.jpg", assetFileId: nil)
 
         let result = try await harness.indexer.backfillChecksums(sessionId: harness.sessionId)
 
@@ -632,21 +630,21 @@ struct ChecksumBackfillTests {
         let harness = try await makeHarness(root: root, lazyChecksum: "true")
         // 竞态状态：backfill 已提交 photos.checksum，但扫描的 asset_files 快照
         // 仍为空 checksum（文件本身未变化）。
-        try insertFullAssetChain(
+        try await insertFullAssetChain(
             harness.db, assetFileId: "af-1", assetId: "asset-1", sessionId: harness.sessionId,
             filepath: filePath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: ""
         )
-        _ = try harness.db.prepare("""
+        _ = try await harness.db.run("""
             INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
             VALUES ('photo-1', ?, ?, 'photo.jpg', ?, 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-          """).run([.text(harness.sessionId), .text(filePath), .text(checksum)])
+          """, [.text(harness.sessionId), .text(filePath), .text(checksum)])
 
         let scan = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
         // 未变化文件必须保留已回填的 checksum：不写 photos.checksum，
         // 也不碰空的 asset_files.checksum（preserve 条件写）。
         #expect(scan.missing == 0)
-        #expect(try photoChecksum(harness.db, "photo-1") == checksum)
+        #expect(try await photoChecksum(harness.db, "photo-1") == checksum)
         #expect(try await assetFileChecksum(harness.db, "af-1") == "")
         #expect(try await harness.indexer.pendingChecksums(sessionId: harness.sessionId) == 0)
     }
@@ -659,25 +657,25 @@ struct ChecksumBackfillTests {
         try Data("content".utf8).write(to: URL(fileURLWithPath: filePath))
         let fileStat = try IndexerService.defaultStat(filePath)
         let harness = try await makeHarness(root: root, lazyChecksum: "true")
-        try insertFullAssetChain(
+        try await insertFullAssetChain(
             harness.db, assetFileId: "af-1", assetId: "asset-1", sessionId: harness.sessionId,
             filepath: filePath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: ""
         )
         // photos.checksum 已被回填，asset_files.checksum 仍为空。
-        _ = try harness.db.prepare("""
+        _ = try await harness.db.run("""
             INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
             VALUES ('photo-1', ?, ?, 'photo.jpg', 'H', 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-          """).run([.text(harness.sessionId), .text(filePath)])
+          """, [.text(harness.sessionId), .text(filePath)])
 
         let scan = try await harness.indexer.scanSession(sessionId: harness.sessionId)
 
         // SQL 层观察：existing 分支带 preserve 标志发送 —— checksum 列保留现值
         // 而非被空串覆盖。
         #expect(scan.missing == 0)
-        #expect(try photoChecksum(harness.db, "photo-1") == "H")
+        #expect(try await photoChecksum(harness.db, "photo-1") == "H")
         #expect(try await assetFileChecksum(harness.db, "af-1") == "")
-        let width = try harness.db.prepare("SELECT width FROM photos WHERE id = 'photo-1'").get()
-        #expect(width?[0].intValue == 100)
+        let width = try await harness.db.queryOne("SELECT width FROM photos WHERE id = 'photo-1'")
+        #expect(width?.int(at: 0) == 100)
     }
 
     @Test("skips the backfill write when a concurrent writer already filled the checksum")
@@ -687,20 +685,18 @@ struct ChecksumBackfillTests {
         let pendingPath = root + "/pending.jpg"
         try Data("race-content".utf8).write(to: URL(fileURLWithPath: pendingPath))
         let harness = try await makeHarness(root: root)
-        try insertFullAssetChain(
+        try await insertFullAssetChain(
             harness.db, assetFileId: "af-1", assetId: "asset-1", sessionId: harness.sessionId,
             filepath: pendingPath, fileSize: 0, fileMtimeMs: 0, checksum: ""
         )
-        _ = try harness.db.prepare("""
+        _ = try await harness.db.run("""
             INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
             VALUES ('pending', ?, ?, 'pending.jpg', '', 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-          """).run([.text(harness.sessionId), .text(pendingPath)])
+          """, [.text(harness.sessionId), .text(pendingPath)])
         // 并发写入者接缝：读取阶段（pending 已加载）之后、守卫 UPDATE 之前，
         // 另一写入者先填了 checksum —— 守卫（AND checksum = ''）必须拒绝覆盖。
         harness.indexer.fileHasher = { path in
-            _ = try harness.db.prepare(
-                "UPDATE photos SET checksum = 'concurrent-hash' WHERE id = 'pending'"
-            ).run()
+            _ = try await harness.db.run("UPDATE photos SET checksum = 'concurrent-hash' WHERE id = 'pending'")
             return try IndexerService.sha256File(path)
         }
 
@@ -709,7 +705,7 @@ struct ChecksumBackfillTests {
         #expect(result.processed == 1)
         #expect(result.backfilled == 0)
         #expect(result.skipped == 1)
-        #expect(try photoChecksum(harness.db, "pending") == "concurrent-hash")
+        #expect(try await photoChecksum(harness.db, "pending") == "concurrent-hash")
         // 守卫未过：资产行写入一并跳过（photos 与 asset_files 保持一致）。
         #expect(try await assetFileChecksum(harness.db, "af-1") == "")
     }
@@ -723,7 +719,7 @@ struct ChecksumBackfillTests {
         for i in 0..<33 {
             let path = root + "/p\(i).jpg"
             try Data("content-\(i)".utf8).write(to: URL(fileURLWithPath: path))
-            try insertPhotoRow(harness.db, id: "p\(i)", sessionId: harness.sessionId, filepath: path, assetFileId: nil)
+            try await insertPhotoRow(harness.db, id: "p\(i)", sessionId: harness.sessionId, filepath: path, assetFileId: nil)
         }
         let jobStore = try await makeTempJobStore()
         let job = try await jobStore.create(JobCreateParams(
@@ -748,6 +744,6 @@ struct ChecksumBackfillTests {
             try await harness.indexer.backfillChecksums(sessionId: harness.sessionId, context: context)
         }
         // 首批已提交：32 张照片被回填。
-        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE checksum != ''") == 32)
+        #expect(try await rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE checksum != ''") == 32)
     }
 }

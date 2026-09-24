@@ -98,16 +98,14 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (GalleryViewModel
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
-private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, DBConnection) {
-    // faceCount/相册/人物/工作区均已切到 Store 连接：两条连接须指向同一临时库文件。
+private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, SQLiteDatabase) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-gallery-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: path)
-    let container = AppContainer(database: try SQLiteDatabase(path: path))
+    let db = try await makeMigratedStore(path: path)
+    let container = AppContainer(database: db)
     let api = GatherAPI(container: container)
     let router = SessionCommandRouter.makeDefault(
-        db: db,
-        database: try SQLiteDatabase(path: path),
+        database: db,
         settings: SettingsSnapshot(values: SettingsAPI.defaults),
         settingsAPI: api.settings,
         templates: api.templates,
@@ -128,28 +126,28 @@ private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, DBConn
     return (LiveGalleryDataProvider(router: router), db)
 }
 
-private func insertSession(_ db: DBConnection, _ id: String) throws {
-    _ = try db.prepare("""
+private func insertSession(_ db: SQLiteDatabase, _ id: String) async throws {
+    _ = try await db.run("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
         VALUES (?, '工作区', 'photos_loaded', 'idle', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id)])
+    """, [.text(id)])
 }
 
 /// 照片行（asset_id/asset_file_id 可空；status 缺省 online）。
 private func insertPhoto(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: String,
     sessionId: String,
     filename: String? = nil,
     assetId: String? = nil,
     assetFileId: String? = nil,
     status: String = "online"
-) throws {
+) async throws {
     let filepath = "/vault/\(id)"
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
         VALUES (?, ?, ?, ?, '', ?, '{}', '{}', ?, ?, 100, 100, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([
+    """, [
         .text(id), .text(sessionId), .text(filepath), .text(filename ?? id),
         .text(status),
         assetId.map { .text($0) } ?? .null,
@@ -160,36 +158,36 @@ private func insertPhoto(
 /// 逻辑资产（RAW/JPEG 变体）种子：asset + asset_file×2 + member_role +
 /// photo 行。
 private func insertLinkedAsset(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     sessionId: String,
     rawId: String,
     jpegId: String,
     roleRaw: String = "raw",
     roleJpeg: String = "camera_jpeg"
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
         VALUES ('asset-\(rawId)', '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([])
+    """, [])
     for (fileId, filepath) in [("file-\(rawId)", "/vault/\(rawId).NEF"), ("file-\(jpegId)", "/vault/\(jpegId).JPG")] {
-        _ = try db.prepare("""
+        _ = try await db.run("""
             INSERT INTO asset_files (id, volume_id, file_identity, normalized_path, filename, extension, media_type, file_size, file_mtime_ms, checksum, online_status, created_at, updated_at)
             VALUES (?, 'dev:1', '', ?, ?, ?, 'image', 0, 0, '', 'online', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-        """).run([.text(fileId), .text(filepath), .text((filepath as NSString).lastPathComponent), .text((filepath as NSString).pathExtension)])
+        """, [.text(fileId), .text(filepath), .text((filepath as NSString).lastPathComponent), .text((filepath as NSString).pathExtension)])
     }
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, confidence, binding_source)
         VALUES ('asset-\(rawId)', 'file-\(rawId)', ?, 1, 1.0, 'import'), ('asset-\(rawId)', 'file-\(jpegId)', ?, 0, 1.0, 'import')
-    """).run([.text(roleRaw), .text(roleJpeg)])
-    try insertPhoto(db, id: rawId, sessionId: sessionId, filename: "\(rawId).NEF", assetId: "asset-\(rawId)", assetFileId: "file-\(rawId)")
-    try insertPhoto(db, id: jpegId, sessionId: sessionId, filename: "\(jpegId).JPG", assetId: "asset-\(rawId)", assetFileId: "file-\(jpegId)")
+    """, [.text(roleRaw), .text(roleJpeg)])
+    try await insertPhoto(db, id: rawId, sessionId: sessionId, filename: "\(rawId).NEF", assetId: "asset-\(rawId)", assetFileId: "file-\(rawId)")
+    try await insertPhoto(db, id: jpegId, sessionId: sessionId, filename: "\(jpegId).JPG", assetId: "asset-\(rawId)", assetFileId: "file-\(jpegId)")
 }
 
-private func insertFace(_ db: DBConnection, photoId: String, sessionId: String) throws {
-    _ = try db.prepare("""
+private func insertFace(_ db: SQLiteDatabase, photoId: String, sessionId: String) async throws {
+    _ = try await db.run("""
         INSERT INTO face_observations (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, created_at)
         VALUES (?, ?, 0, 0, 10, 10, x'00', '2026-01-01T00:00:00.000Z')
-    """).run([.text(photoId), .text(sessionId)])
+    """, [.text(photoId), .text(sessionId)])
 }
 
 // MARK: - 用例
@@ -361,9 +359,9 @@ struct GalleryViewModelTests {
     // 真实库：变体折叠（expandVariants=false 每资产一行，首选 raw）+ 展开。
     @Test func liveProviderFoldsAndExpandsVariants() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertLinkedAsset(db, sessionId: "s1", rawId: "raw1", jpegId: "jpeg1")
-        try insertPhoto(db, id: "solo", sessionId: "s1")
+        try await insertSession(db, "s1")
+        try await insertLinkedAsset(db, sessionId: "s1", rawId: "raw1", jpegId: "jpeg1")
+        try await insertPhoto(db, id: "solo", sessionId: "s1")
 
         let collapsed = GalleryViewModel(sessionId: "s1", provider: provider, debounceDelay: .milliseconds(5))
         await collapsed.load()
@@ -392,9 +390,9 @@ struct GalleryViewModelTests {
     // getNextPageParam 在空页后停（TS Gallery.tsx:75 同）。
     @Test func liveProviderKeysetPagination() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
+        try await insertSession(db, "s1")
         for index in 0..<450 {
-            try insertPhoto(db, id: "p\(String(format: "%03d", index))", sessionId: "s1")
+            try await insertPhoto(db, id: "p\(String(format: "%03d", index))", sessionId: "s1")
         }
 
         let viewModel = GalleryViewModel(sessionId: "s1", provider: provider, debounceDelay: .milliseconds(5))
@@ -420,10 +418,10 @@ struct GalleryViewModelTests {
     // 真实库：faceCount 来自 face_observations 聚合（hasFace 过滤）。
     @Test func liveProviderFaceCountAggregates() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertPhoto(db, id: "faced", sessionId: "s1")
-        try insertPhoto(db, id: "plain", sessionId: "s1")
-        try insertFace(db, photoId: "faced", sessionId: "s1")
+        try await insertSession(db, "s1")
+        try await insertPhoto(db, id: "faced", sessionId: "s1")
+        try await insertPhoto(db, id: "plain", sessionId: "s1")
+        try await insertFace(db, photoId: "faced", sessionId: "s1")
 
         let viewModel = GalleryViewModel(sessionId: "s1", provider: provider, debounceDelay: .milliseconds(5))
         await viewModel.load()

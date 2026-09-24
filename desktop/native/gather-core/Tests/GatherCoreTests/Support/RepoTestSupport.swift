@@ -4,68 +4,68 @@
 import Foundation
 @testable import GatherCore
 
-/// 旧连接 + Store schema：统一用 StoreMigrator 建表（legacy MigrationRunner 已退役）。
+/// Store 库 + Store schema：统一用 StoreMigrator 建表（legacy MigrationRunner 已退役）。
 @discardableResult
-func makeMigratedLegacyDB(path: String) async throws -> DBConnection {
+func makeMigratedStore(path: String) async throws -> SQLiteDatabase {
     let database = try SQLiteDatabase(path: path)
     try await StoreMigrator().migrate(database)
-    return try DBConnection(path: path)
+    return database
 }
 
 
 /// 打开已迁移的临时文件库（外键开启、索引已建）。
-/// 说明：Store 迁移器与旧连接无法共享 :memory: 实例，故改用唯一临时文件。
-func makeMigratedDB() async throws -> DBConnection {
+/// 说明：统一用唯一临时文件，避免 :memory: 实例无法共享。
+func makeMigratedStore() async throws -> SQLiteDatabase {
     let path = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-legacy-\(UUID().uuidString).sqlite").path
-    return try await makeMigratedLegacyDB(path: path)
+        .appendingPathComponent("gather-store-\(UUID().uuidString).sqlite").path
+    return try await makeMigratedStore(path: path)
 }
 
-func insertSession(_ db: DBConnection, _ id: String) throws {
-    _ = try db.prepare("""
+func insertSession(_ db: SQLiteDatabase, _ id: String) async throws {
+    _ = try await db.run("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
         VALUES (?, '', 'draft', 'idle', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id)])
+    """, [.text(id)])
 }
 
 func insertPhoto(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: String,
     sessionId: String,
     filepath: String? = nil,
     checksum: String = ""
-) throws {
+) async throws {
     // 默认路径按 id 区分，避免 idx_photos_session_filepath 唯一索引冲突
     let path = filepath ?? "/tmp/fixtures/\(id).jpg"
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(sessionId), .text(path), .text((path as NSString).lastPathComponent), .text(checksum)])
+    """, [.text(id), .text(sessionId), .text(path), .text((path as NSString).lastPathComponent), .text(checksum)])
 }
 
 func insertAssetFile(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: String,
     normalizedPath: String,
     checksum: String = "",
     volumeId: String = "dev:1",
     fileIdentity: String = ""
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO asset_files (id, volume_id, file_identity, normalized_path, filename, extension, media_type, file_size, file_mtime_ms, checksum, online_status, last_seen_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, '', 'unknown', 0, 0, ?, 'online', '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([
+    """, [
         .text(id), .text(volumeId), .text(fileIdentity), .text(normalizedPath),
         .text((normalizedPath as NSString).lastPathComponent), .text(checksum),
     ])
 }
 
 /// assets 行（session_assets.asset_id / photos.asset_id 外键）。
-func insertAsset(_ db: DBConnection, id: String, status: String = "active") throws {
-    _ = try db.prepare("""
+func insertAsset(_ db: SQLiteDatabase, id: String, status: String = "active") async throws {
+    _ = try await db.run("""
         INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
         VALUES (?, '', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(status)])
+    """, [.text(id), .text(status)])
 }
 
 /// 创建临时目录（测试结束由调用方删除）。
@@ -84,7 +84,7 @@ func writeTempFile(in dir: String, name: String, content: Data = Data("fake-imag
 }
 
 /// 简单断言辅助：DB 行数（COUNT 结果值）。
-func rowCount(_ db: DBConnection, _ sql: String, _ values: [DBValue?] = []) throws -> Int {
-    guard let row = try db.prepare(sql).get(values) else { return 0 }
-    return Int(row[0].intValue ?? 0)
+func rowCount(_ db: SQLiteDatabase, _ sql: String, _ values: [SQLiteValue] = []) async throws -> Int {
+    guard let row = try await db.queryOne(sql, values) else { return 0 }
+    return Int(row.values[row.columnOrder[0]]?.intValue ?? 0)
 }

@@ -133,20 +133,18 @@ private func makeStubVM() -> (DashboardViewModel, StubDashboardProvider) {
 
 // MARK: - 真实服务集成（临时 SQLite）
 
-private func makeLiveProvider() async throws -> (LiveDashboardDataProvider, DBConnection, SQLiteJobStore) {
-    // workspace.status 已切到 WorkspaceAPI（Store 连接）：两条连接指向同一临时库文件。
+private func makeLiveProvider() async throws -> (LiveDashboardDataProvider, SQLiteDatabase, SQLiteJobStore) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-dashboard-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: path)
-    let storeDatabase = try SQLiteDatabase(path: path)
-    let container = AppContainer(database: storeDatabase)
-    let jobStore = SQLiteJobStore(database: storeDatabase)
+    let db = try await makeMigratedStore(path: path)
+    let container = AppContainer(database: db)
+    let jobStore = SQLiteJobStore(database: db)
     let provider = LiveDashboardDataProvider(
         sessionService: SessionService(
             sessionStore: container.sessions,
-            photoStore: SQLitePhotoStore(database: storeDatabase),
+            photoStore: SQLitePhotoStore(database: db),
             faceStore: container.faces,
-            database: storeDatabase
+            database: db
         ),
         workspace: GatherAPI(container: container).workspace,
         jobService: JobService(jobStore: jobStore)
@@ -154,37 +152,37 @@ private func makeLiveProvider() async throws -> (LiveDashboardDataProvider, DBCo
     return (provider, db, jobStore)
 }
 
-private func insertSession(_ db: DBConnection, _ id: String, name: String = "工作区") throws {
-    _ = try db.prepare("""
+private func insertSession(_ db: SQLiteDatabase, _ id: String, name: String = "工作区") async throws {
+    _ = try await db.run("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
         VALUES (?, ?, 'photos_loaded', 'idle', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(name)])
+    """, [.text(id), .text(name)])
 }
 
-private func insertPhoto(_ db: DBConnection, id: String, sessionId: String) throws {
-    _ = try db.prepare("""
+private func insertPhoto(_ db: SQLiteDatabase, id: String, sessionId: String) async throws {
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, created_at, updated_at)
         VALUES (?, ?, ?, ?, '', 'pending', '{}', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg")])
+    """, [.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg")])
 }
 
 /// 种子 outbox 行（待同步写回计数，对齐 WorkspaceStatusServiceTests）。
-private func insertOutboxRow(_ db: DBConnection, sessionId: String, xmpPath: String, status: String) throws {
-    _ = try db.prepare("""
+private func insertOutboxRow(_ db: SQLiteDatabase, sessionId: String, xmpPath: String, status: String) async throws {
+    _ = try await db.run("""
         INSERT INTO metadata_outbox (xmp_path, photo_path, patch_json, dirty_fields, source_module, revision, persisted_revision, status, updated_at)
         VALUES (?, '/tmp/p.jpg', '{}', '[]', 'culling', 1, 0, ?, '2026-01-01T00:00:00.000Z')
-    """).run([.text(xmpPath), .text(status)])
-    _ = try db.prepare("""
+    """, [.text(xmpPath), .text(status)])
+    _ = try await db.run("""
         INSERT INTO metadata_outbox_sessions (xmp_path, session_id, confirmed_at, linked_at)
         VALUES (?, ?, '', '2026-01-01T00:00:00.000Z')
-    """).run([.text(xmpPath), .text(sessionId)])
+    """, [.text(xmpPath), .text(sessionId)])
 }
 
-private func insertJob(_ db: DBConnection, id: String, type: String, scopeId: String, status: String, updatedAt: String) throws {
-    _ = try db.prepare("""
+private func insertJob(_ db: SQLiteDatabase, id: String, type: String, scopeId: String, status: String, updatedAt: String) async throws {
+    _ = try await db.run("""
         INSERT INTO analysis_jobs (id, type, scope_type, scope_id, dedupe_key, status, priority, created_at, updated_at)
         VALUES (?, ?, 'session', ?, ?, ?, 0, ?, ?)
-    """).run([.text(id), .text(type), .text(scopeId), .text("\(type):\(scopeId)"), .text(status), .text(updatedAt), .text(updatedAt)])
+    """, [.text(id), .text(type), .text(scopeId), .text("\(type):\(scopeId)"), .text(status), .text(updatedAt), .text(updatedAt)])
 }
 
 // MARK: - 用例
@@ -197,16 +195,16 @@ struct DashboardViewModelTests {
     // 真实库：sessions + photos + outbox → 概览计数正确（workspace status 加载）。
     @Test func loadAllAggregatesWorkspaceStatus() async throws {
         let (provider, db, jobStore) = try await makeLiveProvider()
-        try insertSession(db, "s1", name: "甲")
-        try insertSession(db, "s2", name: "乙")
-        try insertPhoto(db, id: "p1", sessionId: "s1")
-        try insertPhoto(db, id: "p2", sessionId: "s1")
-        try insertPhoto(db, id: "p3", sessionId: "s2")
+        try await insertSession(db, "s1", name: "甲")
+        try await insertSession(db, "s2", name: "乙")
+        try await insertPhoto(db, id: "p1", sessionId: "s1")
+        try await insertPhoto(db, id: "p2", sessionId: "s1")
+        try await insertPhoto(db, id: "p3", sessionId: "s2")
         // photoCount 为 sessions 表存储列（真实流程由 addPhotos → updatePhotoCount 维护）。
-        _ = try db.prepare("UPDATE sessions SET photo_count = 2 WHERE id = 's1'").run([])
-        _ = try db.prepare("UPDATE sessions SET photo_count = 1 WHERE id = 's2'").run([])
-        try insertOutboxRow(db, sessionId: "s1", xmpPath: "a.xmp", status: "pending")
-        try insertOutboxRow(db, sessionId: "s1", xmpPath: "b.xmp", status: "conflict")
+        _ = try await db.run("UPDATE sessions SET photo_count = 2 WHERE id = 's1'", [])
+        _ = try await db.run("UPDATE sessions SET photo_count = 1 WHERE id = 's2'", [])
+        try await insertOutboxRow(db, sessionId: "s1", xmpPath: "a.xmp", status: "pending")
+        try await insertOutboxRow(db, sessionId: "s1", xmpPath: "b.xmp", status: "conflict")
 
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
@@ -227,10 +225,10 @@ struct DashboardViewModelTests {
     // 真实库：jobs.list 加载 → attention/history 分组 + scanJobs 种子。
     @Test func loadJobsGroupsAttentionAndHistory() async throws {
         let (provider, db, jobStore) = try await makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
-        try insertJob(db, id: "j2", type: "metadata.scan", scopeId: "s1", status: "running", updatedAt: "2026-01-01T00:00:01.000Z")
-        try insertJob(db, id: "j3", type: "export.execute", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:02.000Z")
+        try await insertSession(db, "s1")
+        try await insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
+        try await insertJob(db, id: "j2", type: "metadata.scan", scopeId: "s1", status: "running", updatedAt: "2026-01-01T00:00:01.000Z")
+        try await insertJob(db, id: "j3", type: "export.execute", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:02.000Z")
 
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
@@ -271,8 +269,8 @@ struct DashboardViewModelTests {
     // 真实库：jobs cancel → DB 状态翻转；retry → 回 queued。
     @Test func cancelAndRetryMutateRealDB() async throws {
         let (provider, db, jobStore) = try await makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
+        try await insertSession(db, "s1")
+        try await insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
 
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
@@ -289,9 +287,9 @@ struct DashboardViewModelTests {
     // 真实库：clear_completed 只清非阶段证据行（metadata.scan 保留）。
     @Test func clearCompletedKeepsStageEvidenceRows() async throws {
         let (provider, db, jobStore) = try await makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertJob(db, id: "scan1", type: "metadata.scan", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
-        try insertJob(db, id: "t1", type: "thumbnail.build", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
+        try await insertSession(db, "s1")
+        try await insertJob(db, id: "scan1", type: "metadata.scan", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
+        try await insertJob(db, id: "t1", type: "thumbnail.build", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
 
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
@@ -516,7 +514,7 @@ struct DashboardViewModelTests {
     @Test func workspaceStatusMissingSessionIsSkipped() async throws {
         // 真实库：无该 session → getStatus 返回 nil，不抛错、不进 statuses。
         let (provider, db, jobStore) = try await makeLiveProvider()
-        try insertSession(db, "s1")
+        try await insertSession(db, "s1")
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
         #expect(viewModel.phase == .loaded)

@@ -13,7 +13,7 @@ import Testing
 
 /// 临时文件库 + 同库 PhotoStore（store 读必须与旧连接同文件）。
 private struct QualityEnv {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let database: SQLiteDatabase
     let photoStore: any PhotoStore
     let sessionStore: any SessionStore
@@ -22,7 +22,7 @@ private struct QualityEnv {
 private func makeQualityEnv() async throws -> QualityEnv {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-quality-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: path)
+    let db = try await makeMigratedStore(path: path)
     return QualityEnv(db: db, database: try SQLiteDatabase(path: path), photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: path)), sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }
 
@@ -45,20 +45,20 @@ private func makeTempJobStore() async throws -> any JobStore {
 
 /// 照片 + 资产文件行种子（photos.asset_file_id 外键）。
 private func seedPhotoWithAssetFile(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     photoId: String,
     sessionId: String,
     filepath: String,
     assetFileId: String,
     width: Int = 100,
     height: Int = 80
-) throws {
-    try insertAssetFile(db, id: assetFileId, normalizedPath: filepath)
-    _ = try db.prepare("""
+) async throws {
+    try await insertAssetFile(db, id: assetFileId, normalizedPath: filepath)
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
           result, asset_id, asset_file_id, width, height, created_at, updated_at)
         VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', NULL, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-      """).run([
+      """, [
         .text(photoId), .text(sessionId), .text(filepath),
         .text((filepath as NSString).lastPathComponent), .text(assetFileId),
         .int(Int64(width)), .int(Int64(height)),
@@ -67,16 +67,16 @@ private func seedPhotoWithAssetFile(
 
 /// 无资产文件照片（analyze 必须产出 QUALITY_NO_ASSET_FILE failed 结果）。
 private func seedPhotoWithoutAssetFile(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     photoId: String,
     sessionId: String,
     filepath: String
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
           result, asset_id, asset_file_id, width, height, created_at, updated_at)
         VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', NULL, NULL, 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-      """).run([
+      """, [
         .text(photoId), .text(sessionId), .text(filepath),
         .text((filepath as NSString).lastPathComponent),
     ])
@@ -98,7 +98,7 @@ private func checkerboardPreview8x8() -> [UInt8] {
 }
 
 private struct QualityHarness {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let jobStore: any JobStore
     let service: QualityService
     let sessionId: String
@@ -167,7 +167,7 @@ struct QualityAnalyzeTests {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
-        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
+        try await seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
         let stat = try QualityService.defaultStat(filepath)
 
         let results = try await harness.service.analyze(sessionId: harness.sessionId)
@@ -210,7 +210,7 @@ struct QualityAnalyzeTests {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
-        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
+        try await seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
 
         let first = try await harness.service.analyze(sessionId: harness.sessionId)
         #expect(first[0].status == .succeeded)
@@ -224,7 +224,7 @@ struct QualityAnalyzeTests {
         let totalCalls = calls
         callLock.unlock()
         #expect(totalCalls == 1)
-        let rowCount = try rowCount(harness.db, "SELECT COUNT(*) FROM asset_analysis WHERE photo_id = 'p1'")
+        let rowCount = try await rowCount(harness.db, "SELECT COUNT(*) FROM asset_analysis WHERE photo_id = 'p1'")
         #expect(rowCount == 1)
     }
 
@@ -235,8 +235,8 @@ struct QualityAnalyzeTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let p1 = try writeTempFile(in: dir, name: "a.jpg")
         let p2 = try writeTempFile(in: dir, name: "b.jpg")
-        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: p1, assetFileId: "af-1")
-        try seedPhotoWithAssetFile(harness.db, photoId: "p2", sessionId: harness.sessionId, filepath: p2, assetFileId: "af-2")
+        try await seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: p1, assetFileId: "af-1")
+        try await seedPhotoWithAssetFile(harness.db, photoId: "p2", sessionId: harness.sessionId, filepath: p2, assetFileId: "af-2")
 
         let results = try await harness.service.analyze(sessionId: harness.sessionId, photoIds: ["p1"])
 
@@ -253,7 +253,7 @@ struct QualityAnalyzeTests {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
-        try seedPhotoWithoutAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath)
+        try await seedPhotoWithoutAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath)
 
         let results = try await harness.service.analyze(sessionId: harness.sessionId)
 
@@ -268,7 +268,7 @@ struct QualityAnalyzeTests {
         #expect(result.modelId == "technical-quality")
         #expect(result.updatedAt != "")
         // 无资产文件行：不落库。
-        let rowCount = try rowCount(harness.db, "SELECT COUNT(*) FROM asset_analysis")
+        let rowCount = try await rowCount(harness.db, "SELECT COUNT(*) FROM asset_analysis")
         #expect(rowCount == 0)
     }
 
@@ -281,7 +281,7 @@ struct QualityAnalyzeTests {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
-        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
+        try await seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
 
         let results = try await harness.service.analyze(sessionId: harness.sessionId)
 
@@ -289,10 +289,10 @@ struct QualityAnalyzeTests {
         #expect(results[0].errorMessage == "decode exploded")
         #expect(results[0].warnings == ["analysis_failed"])
         // failed 行带 "failed:<photo.updatedAt>" 指纹落库。
-        let row = try harness.db.prepare("""
+        let row = try await harness.db.queryOne("""
             SELECT input_fingerprint FROM asset_analysis WHERE photo_id = 'p1' AND analysis_type = 'technical_quality'
-          """).get()
-        #expect(row?[0].textValue?.hasPrefix("failed:") == true)
+          """)
+        #expect(row?.text(at: 0)?.hasPrefix("failed:") == true)
     }
 
     @Test("computes subject/eye metrics from the largest face observation")
@@ -301,13 +301,13 @@ struct QualityAnalyzeTests {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
-        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
+        try await seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
         // 源 100x80，analysis 签名 previewMaxDimension=50 → 分析尺寸 50x40；
         // bbox 覆盖分析图 (0,0,50,20) → 预览 8x8 的 (0,0,8,4) = 前 4 行棋盘格。
-        _ = try harness.db.prepare("""
+        _ = try await harness.db.run("""
             INSERT INTO face_observations (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence, analysis_signature, created_at)
             VALUES ('p1', ?, 0, 0, 50, 20, X'00', 0.9, '{"previewMaxDimension":50}', '2026-01-01T00:00:00.000Z')
-          """).run([.text(harness.sessionId)])
+          """, [.text(harness.sessionId)])
 
         let results = try await harness.service.analyze(sessionId: harness.sessionId)
 
@@ -334,7 +334,7 @@ struct QualityAnalyzeTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         for i in 0..<3 {
             let filepath = try writeTempFile(in: dir, name: "p\(i).jpg")
-            try seedPhotoWithAssetFile(harness.db, photoId: "p\(i)", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-\(i)")
+            try await seedPhotoWithAssetFile(harness.db, photoId: "p\(i)", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-\(i)")
         }
         let jobStore = try await makeTempJobStore()
         let job = try await jobStore.create(JobCreateParams(
@@ -372,7 +372,7 @@ struct QualityAnalyzeTests {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let filepath = try writeTempFile(in: dir, name: "photo.jpg")
-        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
+        try await seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
         let jobStore = try await makeTempJobStore()
         let job = try await jobStore.create(JobCreateParams(
             type: .qualityScore, scopeType: "session", scopeId: harness.sessionId, dedupeKey: "d"
@@ -403,20 +403,20 @@ struct QualityGetTests {
         let env = try await makeQualityEnv()
         let db = env.db
         let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
-        try insertAssetFile(db, id: "af-1", normalizedPath: "/vault/a.jpg")
-        try insertAssetFile(db, id: "af-2", normalizedPath: "/vault/b.jpg")
-        _ = try db.prepare("""
+        try await insertAssetFile(db, id: "af-1", normalizedPath: "/vault/a.jpg")
+        try await insertAssetFile(db, id: "af-2", normalizedPath: "/vault/b.jpg")
+        _ = try await db.run("""
             INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_file_id, width, height, created_at, updated_at)
             VALUES ('p1', ?, '/vault/a.jpg', 'a.jpg', '', 'ready', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
                    ('p2', ?, '/vault/b.jpg', 'b.jpg', '', 'ready', 'af-2', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-          """).run([.text(session.id), .text(session.id)])
+          """, [.text(session.id), .text(session.id)])
         let service = QualityService(photoStore: env.photoStore, database: env.database)
         // p1 两条历史行（旧 updatedAt 的旧分）；p2 一条。
-        let insertStmt = try db.prepare("""
+        let insertStmtSQL = """
             INSERT INTO asset_analysis (photo_id, asset_file_id, analysis_type, result_json, warnings_json, model_id, model_version, input_fingerprint, created_at, updated_at)
             VALUES (?, ?, 'technical_quality', ?, '[]', 'test', '1', ?, ?, ?)
-          """)
-        func insert(_ photoId: String, _ score: Double, _ updatedAt: String) throws {
+          """
+        func insert(_ photoId: String, _ score: Double, _ updatedAt: String) async throws {
             let fingerprint = "fp-\(photoId)-\(updatedAt)"
             let payload = try JSONEncoder().encode(QualityResult(
                 photoId: photoId, status: .succeeded, qualityScore: score,
@@ -424,15 +424,15 @@ struct QualityGetTests {
                 modelId: "test", modelVersion: "1", inputFingerprint: fingerprint,
                 updatedAt: updatedAt
             ))
-            _ = try insertStmt.run([
+            _ = try await db.run(insertStmtSQL, [
                 .text(photoId), .text(photoId == "p1" ? "af-1" : "af-2"),
                 .text(String(data: payload, encoding: .utf8) ?? "{}"),
                 .text(fingerprint), .text("2026-01-01T00:00:00.000Z"), .text(updatedAt),
             ])
         }
-        try insert("p1", 0.4, "2026-01-01T00:00:00.000Z")
-        try insert("p1", 0.9, "2026-01-02T00:00:00.000Z")
-        try insert("p2", 0.5, "2026-01-01T00:00:00.000Z")
+        try await insert("p1", 0.4, "2026-01-01T00:00:00.000Z")
+        try await insert("p1", 0.9, "2026-01-02T00:00:00.000Z")
+        try await insert("p2", 0.5, "2026-01-01T00:00:00.000Z")
 
         let results = try await service.get(sessionId: session.id)
 
@@ -467,30 +467,28 @@ struct QualityRelativeRankTests {
         let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
         let now = "2026-07-30T10:00:00.000Z"
         for (id, path) in [("p1", "/photos/p1.JPG"), ("p2", "/photos/p2.JPG"), ("p3", "/photos/p3.JPG")] {
-            try insertAssetFile(db, id: "af-\(id)", normalizedPath: path)
-            _ = try db.prepare("""
+            try await insertAssetFile(db, id: "af-\(id)", normalizedPath: path)
+            _ = try await db.run("""
                 INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_file_id, width, height, created_at, updated_at)
                 VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', ?, 100, 80, ?, ?)
-              """).run([
+              """, [
                 .text(id), .text(session.id), .text(path), .text(path.split(separator: "/").last.map(String.init) ?? id),
                 .text("af-\(id)"), .text(now), .text(now),
             ])
         }
-        _ = try db.prepare("""
+        _ = try await db.run("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
             VALUES (?, '[]', '{}', 8, 2, ?)
-          """).run([.text(session.id), .text(now)])
-        let resultId = db.lastInsertRowid
-        let insertMember = try db.prepare(
-            "INSERT INTO similarity_result_members (result_id, session_id, group_index, photo_id) VALUES (?, ?, 0, ?)"
-        )
-        _ = try insertMember.run([.int(resultId), .text(session.id), .text("p1")])
-        _ = try insertMember.run([.int(resultId), .text(session.id), .text("p2")])
+          """, [.text(session.id), .text(now)])
+        let resultId = await db.lastInsertRowID
+        let insertMemberSQL = "INSERT INTO similarity_result_members (result_id, session_id, group_index, photo_id) VALUES (?, ?, 0, ?)"
+        _ = try await db.run(insertMemberSQL, [.int(resultId), .text(session.id), .text("p1")])
+        _ = try await db.run(insertMemberSQL, [.int(resultId), .text(session.id), .text("p2")])
 
-        let insertAnalysis = try db.prepare("""
+        let insertAnalysisSQL = """
             INSERT INTO asset_analysis (photo_id, asset_file_id, analysis_type, result_json, warnings_json, model_id, model_version, input_fingerprint, created_at, updated_at)
             VALUES (?, ?, 'technical_quality', ?, '[]', 'test', '1', ?, ?, ?)
-          """)
+          """
         let scores: [(String, String, Double)] = [("p1", "af-p1", 0.4), ("p2", "af-p2", 0.9), ("p3", "af-p3", 1.0)]
         for (photoId, assetFileId, score) in scores {
             let payload = try JSONEncoder().encode(QualityResult(
@@ -498,7 +496,7 @@ struct QualityRelativeRankTests {
                 sharpness: score, exposure: 1, warnings: [],
                 modelId: "test", modelVersion: "1", inputFingerprint: "fp-\(photoId)", updatedAt: now
             ))
-            _ = try insertAnalysis.run([
+            _ = try await db.run(insertAnalysisSQL, [
                 .text(photoId), .text(assetFileId),
                 .text(String(data: payload, encoding: .utf8) ?? "{}"),
                 .text("fp-\(photoId)"), .text(now), .text(now),

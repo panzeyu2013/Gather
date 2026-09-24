@@ -77,7 +77,7 @@ public final class IndexerService {
     /// 设置读取（TS: settings.get(key, defaultValue)）。
     public typealias SettingReader = (String, String) -> String
 
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
     private let assetStore: any AssetStore
@@ -88,17 +88,17 @@ public final class IndexerService {
     /// stat 之间文件消失（ghost photo 竞态）。
     public var stat: (String) throws -> FileStat = IndexerService.defaultStat
     /// checksum 计算接缝（默认整文件 SHA256 hex；测试注入并发写入者）。
-    public var fileHasher: (String) throws -> String = IndexerService.sha256File
+    public var fileHasher: (String) async throws -> String = IndexerService.sha256File
 
     public init(
-        connection: DBConnection,
+        database: SQLiteDatabase,
         sessionStore: any SessionStore,
         photoStore: any PhotoStore,
         assetStore: any AssetStore,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
         getSetting: @escaping SettingReader = { _, defaultValue in defaultValue }
     ) {
-        self.connection = connection
+        self.database = database
         self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.assetStore = assetStore
@@ -207,33 +207,35 @@ public final class IndexerService {
         if !generatedCachePhotos.isEmpty {
             let photoIds = generatedCachePhotos.map(\.id)
             let fileIds = generatedCachePhotos.compactMap(\.assetFileId)
-            try self.connection.transaction {
+            try await self.database.transaction { db in
                 for chunk in chunked(photoIds) {
                     let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                    _ = try self.connection.prepare("DELETE FROM photos WHERE id IN (\(placeholders))")
-                        .run(chunk.map { .text($0) })
+                    _ = try db.run(
+                        "DELETE FROM photos WHERE id IN (\(placeholders))",
+                        chunk.map { .text($0) }
+                    )
                 }
-                _ = try self.connection.prepare("""
+                _ = try db.run("""
                     DELETE FROM session_assets
                     WHERE session_id = ? AND NOT EXISTS (
                       SELECT 1 FROM photos p
                       WHERE p.session_id = session_assets.session_id
                         AND p.asset_id = session_assets.asset_id
                     )
-                  """).run([.text(sessionId)])
+                  """, [.text(sessionId)])
                 if !fileIds.isEmpty {
                     for chunk in chunked(fileIds) {
                         let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                        _ = try self.connection.prepare("""
+                        _ = try db.run("""
                             DELETE FROM asset_files
                             WHERE id IN (\(placeholders))
                               AND NOT EXISTS (SELECT 1 FROM photos p WHERE p.asset_file_id = asset_files.id)
-                          """).run(chunk.map { .text($0) })
+                          """, chunk.map { .text($0) })
                     }
-                    _ = try self.connection.prepare("""
+                    _ = try db.run("""
                         DELETE FROM assets
                         WHERE NOT EXISTS (SELECT 1 FROM asset_members am WHERE am.asset_id = assets.id)
-                      """).run()
+                      """)
                 }
             }
             let removedIds = Set(photoIds)
@@ -243,20 +245,20 @@ public final class IndexerService {
         let existingByPath: [String: PhotoProjection] = Dictionary(
             uniqueKeysWithValues: existing.map { (TSPath.normalize(TSPath.resolve($0.filepath)), $0) }
         )
-        let fileRows = try self.connection.prepare("""
+        let fileRows = try await self.database.query("""
             SELECT af.id, af.file_size, af.file_mtime_ms, af.checksum
             FROM asset_files af
             JOIN photos p ON p.asset_file_id = af.id
             WHERE p.session_id = ?
-          """).query([.text(sessionId)])
+          """, [.text(sessionId)])
         var fileStats: [String: (id: String, fileSize: Int64, fileMtimeMs: Double, checksum: String)] = [:]
         for row in fileRows {
-            let id = row[0].textValue ?? ""
+            let id = row.values[row.columnOrder[0]]?.textValue ?? ""
             fileStats[id] = (
                 id: id,
-                fileSize: row[1].intValue ?? 0,
-                fileMtimeMs: row[2].doubleValue ?? 0,
-                checksum: row[3].textValue ?? ""
+                fileSize: row.values[row.columnOrder[1]]?.intValue ?? 0,
+                fileMtimeMs: row.values[row.columnOrder[2]]?.doubleValue ?? 0,
+                checksum: row.values[row.columnOrder[3]]?.textValue ?? ""
             )
         }
 
@@ -290,7 +292,7 @@ public final class IndexerService {
                 guard let photo = existingByPath[normalized] else {
                     do {
                         let dimensions = try self.getDimensions(filepath)
-                        let checksum = lazyChecksum ? "" : try self.fileHasher(filepath)
+                        let checksum = lazyChecksum ? "" : try await self.fileHasher(filepath)
                         return BatchOutcome(normalized: normalized, item: .new(
                             filepath: filepath, width: dimensions.width, height: dimensions.height,
                             checksum: checksum, fileSize: source.size, fileMtimeMs: source.mtimeMs,
@@ -321,7 +323,7 @@ public final class IndexerService {
                     let needsChecksum = contentChanged || (indexed?.checksum.isEmpty ?? true)
                     let checksum: String
                     if needsChecksum {
-                        checksum = lazyChecksum ? "" : try self.fileHasher(filepath)
+                        checksum = lazyChecksum ? "" : try await self.fileHasher(filepath)
                     } else {
                         checksum = indexed!.checksum
                     }
@@ -356,13 +358,13 @@ public final class IndexerService {
                             fileMtimeMs: fileMtimeMs, fileIdentity: fileIdentity
                         )
                     } catch {
-                        if error is DBError { throw error }
+                        if error is SQLiteFailure { throw error }
                         relinkFailed.insert(filepath)
                     }
                 }
             }
             // 全部写在一个事务内（曾为每文件一事务 ≈ 每批 32 次 fsync）。
-            try self.connection.transaction {
+            try await self.database.transaction { db in
                 for outcome in results {
                     switch outcome.item {
                     case .missing:
@@ -411,34 +413,36 @@ public final class IndexerService {
                         }
                         if let assetFileId {
                             let timestamp = nowISOString()
-                            _ = try self.connection.prepare("""
+                            _ = try db.run("""
                                 UPDATE asset_files
                                 SET volume_id = ?, file_identity = ?, file_size = ?, file_mtime_ms = ?,
                                     checksum = CASE WHEN ? = 1 THEN checksum ELSE ? END,
                                     online_status = 'online', last_seen_at = ?, updated_at = ?
                                 WHERE id = ?
-                              """).run([
+                              """, [
                                 .text(volumeId), .text(fileIdentity), .int(fileSize), .real(fileMtimeMs),
                                 .int(preserveChecksum ? 1 : 0), .text(checksum),
                                 .text(timestamp), .text(timestamp), .text(assetFileId),
                             ])
                             if contentChanged {
-                                let photoIds = try self.connection.prepare(
-                                    "SELECT id FROM photos WHERE asset_file_id = ?"
-                                ).query([.text(assetFileId)]).compactMap { $0[0].textValue }
+                                let photoIds = try db.query(
+                                    "SELECT id FROM photos WHERE asset_file_id = ?",
+                                    [.text(assetFileId)]
+                                ).compactMap { $0.values[$0.columnOrder[0]]?.textValue }
                                 for photoId in photoIds {
                                     batchAffectedPhotoIds.insert(photoId)
                                 }
                                 // 文件级清扫：先前照片删除留下的孤儿 analysis 行。
-                                _ = try self.connection.prepare(
-                                    "DELETE FROM asset_analysis WHERE asset_file_id = ?"
-                                ).run([.text(assetFileId)])
-                                _ = try self.connection.prepare("""
+                                _ = try db.run(
+                                    "DELETE FROM asset_analysis WHERE asset_file_id = ?",
+                                    [.text(assetFileId)]
+                                )
+                                _ = try db.run("""
                                     UPDATE photos
                                     SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
                                         width = ?, height = ?, updated_at = ?
                                     WHERE asset_file_id = ?
-                                  """).run([
+                                  """, [
                                     .text(checksum), .int(fileSize), .real(fileMtimeMs),
                                     .int(Int64(width)), .int(Int64(height)),
                                     .text(timestamp), .text(assetFileId),
@@ -449,7 +453,7 @@ public final class IndexerService {
                 }
             }
             // 批提交成功后做一次失效（提交失败则回滚，analysis 输入保持有效）。
-            try self.invalidatePathDependentAnalysis(photoIds: Array(batchAffectedPhotoIds))
+            try await self.invalidatePathDependentAnalysis(photoIds: Array(batchAffectedPhotoIds))
             pendingInsertEntries.append(contentsOf: newEntries)
             // 每批事务提交后立即应用本批 Store 写（photoId 幂等；取消/失败后
             // 已提交批次保持可见，index_seq/计数语义与旧实现一致）。
@@ -588,10 +592,10 @@ public final class IndexerService {
                 let fileIds = missing.compactMap(\.assetFileId)
                 for chunk in chunked(fileIds) {
                     let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                    _ = try self.connection.prepare("""
+                    _ = try await self.database.run("""
                         UPDATE asset_files SET online_status = 'offline', updated_at = ?
                         WHERE id IN (\(placeholders))
-                      """).run([.text(nowISOString())] + chunk.map { .text($0) })
+                      """, [.text(nowISOString())] + chunk.map { .text($0) })
                 }
             }
             await context?.updateProgress(JobProgressUpdate(current: discovered, total: discovered, phase: "index.done"))
@@ -660,7 +664,7 @@ public final class IndexerService {
                 ) { photo -> (photo: PhotoPage, checksum: String, size: Int64, mtimeMs: Double)? in
                     do {
                         let source = try self.stat(photo.filepath)
-                        let checksum = try self.fileHasher(photo.filepath)
+                        let checksum = try await self.fileHasher(photo.filepath)
                         return (photo, checksum, source.size, source.mtimeMs)
                     } catch {
                         // 已删除/不可读：本任务内放弃，循环得以终止；
@@ -668,7 +672,7 @@ public final class IndexerService {
                         return nil
                     }
                 }
-                try self.connection.transaction {
+                try await self.database.transaction { db in
                     for (index, result) in results.enumerated() {
                         guard let result else {
                             failedPhotoIds.insert(batch[index].id)
@@ -678,12 +682,12 @@ public final class IndexerService {
                         }
                         // 乐观填充：仅当照片 checksum 仍为空才写（并发扫描
                         // 刚写/清空的值不被覆盖）。
-                        let photoChanges = try self.connection.prepare("""
+                        let photoChanges = try db.run("""
                             UPDATE photos
                             SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
                                 updated_at = ?
                             WHERE id = ? AND checksum = ''
-                          """).run([
+                          """, [
                             .text(result.checksum), .int(result.size), .real(result.mtimeMs),
                             .text(nowISOString()), .text(result.photo.id),
                         ])
@@ -693,11 +697,11 @@ public final class IndexerService {
                             skipped += 1
                         } else {
                             if let assetFileId = result.photo.assetFileId {
-                                _ = try self.connection.prepare("""
+                                _ = try db.run("""
                                     UPDATE asset_files
                                     SET checksum = ?, file_size = ?, file_mtime_ms = ?, updated_at = ?
                                     WHERE id = ? AND checksum = ''
-                                  """).run([
+                                  """, [
                                     .text(result.checksum), .int(result.size), .real(result.mtimeMs),
                                     .text(nowISOString()), .text(assetFileId),
                                 ])
@@ -746,31 +750,36 @@ public final class IndexerService {
     // ─────────────────────────── 分析失效 ───────────────────────────
 
     /// TS: deletePhotoInputs —— 逐照片删除分析输入（photo_id 粒度）。
-    private func deletePhotoInputs(photoIds: [String]) throws {
+    private func deletePhotoInputs(_ db: isolated SQLiteDatabase, photoIds: [String]) throws {
         if photoIds.isEmpty { return }
         for chunk in chunked(photoIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            _ = try self.connection.prepare(
-                "DELETE FROM similarity_hashes WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM face_observations WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM face_analysis_state WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM asset_analysis WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM photo_metadata_cache WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
+            _ = try db.run(
+                "DELETE FROM similarity_hashes WHERE photo_id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            _ = try db.run(
+                "DELETE FROM face_observations WHERE photo_id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            _ = try db.run(
+                "DELETE FROM face_analysis_state WHERE photo_id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            _ = try db.run(
+                "DELETE FROM asset_analysis WHERE photo_id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            _ = try db.run(
+                "DELETE FROM photo_metadata_cache WHERE photo_id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
         }
     }
 
     /// TS: pruneAutomaticNavigationGroups —— 只删实际含受影响照片的自动导航组；
     /// JSON 不可读的组保留不删。
-    private func pruneAutomaticNavigationGroups(sessionId: String, photoIds: [String]) throws {
+    private func pruneAutomaticNavigationGroups(_ db: isolated SQLiteDatabase, sessionId: String, photoIds: [String]) throws {
         let affected = Set(photoIds)
         var groups: [(id: String, photoIdsJSON: String)] = []
         if !photoIds.isEmpty && photoIds.count <= Self.pruneLikePrefilterCap {
@@ -782,20 +791,20 @@ public final class IndexerService {
                     .replacingOccurrences(of: "_", with: "\\_")
                 return "%\"\(escaped)\"%"
             }
-            let rows = try self.connection.prepare("""
+            let rows = try db.query("""
                 SELECT id, photo_ids_json FROM navigation_groups
                 WHERE session_id = ? AND source = 'automatic' AND (\(conditions))
-              """).query([.text(sessionId)] + patterns.map { .text($0) })
+              """, [.text(sessionId)] + patterns.map { .text($0) })
             for row in rows {
-                groups.append((row[0].textValue ?? "", row[1].textValue ?? ""))
+                groups.append((row.values[row.columnOrder[0]]?.textValue ?? "", row.values[row.columnOrder[1]]?.textValue ?? ""))
             }
         } else {
-            let rows = try self.connection.prepare("""
+            let rows = try db.query("""
                 SELECT id, photo_ids_json FROM navigation_groups
                 WHERE session_id = ? AND source = 'automatic'
-              """).query([.text(sessionId)])
+              """, [.text(sessionId)])
             for row in rows {
-                groups.append((row[0].textValue ?? "", row[1].textValue ?? ""))
+                groups.append((row.values[row.columnOrder[0]]?.textValue ?? "", row.values[row.columnOrder[1]]?.textValue ?? ""))
             }
         }
         var doomed: [String] = []
@@ -810,64 +819,62 @@ public final class IndexerService {
         }
         for chunk in chunked(doomed) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            _ = try self.connection.prepare(
-                "DELETE FROM navigation_groups WHERE id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
+            _ = try db.run(
+                "DELETE FROM navigation_groups WHERE id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
         }
     }
 
     /// TS: deleteGlobalClusterResults —— 会话级相似度簇结果失效。
-    private func deleteGlobalClusterResults(sessionId: String) throws {
-        _ = try self.connection.prepare("DELETE FROM similarity_results WHERE session_id = ?")
-            .run([.text(sessionId)])
+    private func deleteGlobalClusterResults(_ db: isolated SQLiteDatabase, sessionId: String) throws {
+        _ = try db.run("DELETE FROM similarity_results WHERE session_id = ?", [.text(sessionId)])
     }
 
     /// TS: deleteFaceClusterResults —— 会话级人脸簇结果失效（成员先于观测删除）。
-    private func deleteFaceClusterResults(sessionId: String) throws {
-        _ = try self.connection.prepare("DELETE FROM face_cluster_state WHERE session_id = ?")
-            .run([.text(sessionId)])
-        _ = try self.connection.prepare("DELETE FROM face_cluster_members WHERE session_id = ?")
-            .run([.text(sessionId)])
-        _ = try self.connection.prepare("DELETE FROM role_bindings WHERE session_id = ?")
-            .run([.text(sessionId)])
-        _ = try self.connection.prepare("DELETE FROM face_clusters WHERE session_id = ?")
-            .run([.text(sessionId)])
+    private func deleteFaceClusterResults(_ db: isolated SQLiteDatabase, sessionId: String) throws {
+        _ = try db.run("DELETE FROM face_cluster_state WHERE session_id = ?", [.text(sessionId)])
+        _ = try db.run("DELETE FROM face_cluster_members WHERE session_id = ?", [.text(sessionId)])
+        _ = try db.run("DELETE FROM role_bindings WHERE session_id = ?", [.text(sessionId)])
+        _ = try db.run("DELETE FROM face_clusters WHERE session_id = ?", [.text(sessionId)])
     }
 
     /// TS: invalidatePathDependentAnalysis —— 路径/内容变化的照片：逐照片删输入、
     /// 按成员剪自动导航组、会话级丢簇结果；每批调用一次。
-    private func invalidatePathDependentAnalysis(photoIds: [String]) throws {
+    private func invalidatePathDependentAnalysis(photoIds: [String]) async throws {
         if photoIds.isEmpty { return }
         var affectedSessions = Set<String>()
         for chunk in chunked(photoIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try self.connection.prepare(
-                "SELECT DISTINCT session_id FROM photos WHERE id IN (\(placeholders))"
-            ).query(chunk.map { .text($0) })
+            let rows = try await self.database.query(
+                "SELECT DISTINCT session_id FROM photos WHERE id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
             for row in rows {
-                if let sessionId = row[0].textValue { affectedSessions.insert(sessionId) }
+                if let sessionId = row.values[row.columnOrder[0]]?.textValue { affectedSessions.insert(sessionId) }
             }
         }
         var photoIdsBySession: [String: [String]] = [:]
         for chunk in chunked(photoIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try self.connection.prepare(
-                "SELECT id, session_id FROM photos WHERE id IN (\(placeholders))"
-            ).query(chunk.map { .text($0) })
+            let rows = try await self.database.query(
+                "SELECT id, session_id FROM photos WHERE id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
             for row in rows {
-                guard let id = row[0].textValue, let sessionId = row[1].textValue else { continue }
+                guard let id = row.values[row.columnOrder[0]]?.textValue, let sessionId = row.values[row.columnOrder[1]]?.textValue else { continue }
                 photoIdsBySession[sessionId, default: []].append(id)
             }
         }
-        try self.connection.transaction {
+        try await self.database.transaction { db in
             // 会话级簇结果先行：成员行必须先于其引用的观测删除。
             for sessionId in affectedSessions {
-                try deleteFaceClusterResults(sessionId: sessionId)
-                try deleteGlobalClusterResults(sessionId: sessionId)
+                try deleteFaceClusterResults(db, sessionId: sessionId)
+                try deleteGlobalClusterResults(db, sessionId: sessionId)
             }
-            try deletePhotoInputs(photoIds: photoIds)
+            try deletePhotoInputs(db, photoIds: photoIds)
             for (sessionId, sessionPhotoIds) in photoIdsBySession {
-                try pruneAutomaticNavigationGroups(sessionId: sessionId, photoIds: sessionPhotoIds)
+                try pruneAutomaticNavigationGroups(db, sessionId: sessionId, photoIds: sessionPhotoIds)
             }
         }
     }

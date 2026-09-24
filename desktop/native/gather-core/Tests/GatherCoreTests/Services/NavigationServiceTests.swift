@@ -8,7 +8,7 @@ import Testing
 @testable import GatherCore
 
 private struct Harness {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let service: NavigationService
 }
 
@@ -17,46 +17,46 @@ private func makeHarness() async throws -> Harness {
     // 同一临时文件库：旧连接（种子）与 Store（NavigationService 读）必须同库。
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-navigation-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: path)
+    let db = try await makeMigratedStore(path: path)
     let now = "2026-07-30T10:00:00.000Z"
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO sessions (
           id, name, status, analysis_status, writeback_status, import_source,
           source_path, photo_count, failed_writeback_count, created_at, updated_at
         ) VALUES ('session', 'Navigation', 'photos_loaded', 'idle', 'idle',
           'folder', '/photos', 3, 0, ?, ?)
-      """).run([.text(now), .text(now)])
-    let insertPhoto = try db.prepare("""
+      """, [.text(now), .text(now)])
+    let insertPhotoSQL = """
         INSERT INTO photos (
           id, session_id, filepath, filename, checksum, status, metadata, result,
           width, height, created_at, updated_at
         ) VALUES (?, 'session', ?, ?, '', 'pending', '{}', '{}', 100, 80, ?, ?)
-      """)
-    let insertMetadata = try db.prepare("""
+      """
+    let insertMetadataSQL = """
         INSERT INTO photo_metadata_cache (
           photo_id, session_id, date_taken, camera_model, rating, keywords,
           cached_at, updated_at
         ) VALUES (?, 'session', ?, 'Camera A', ?, '[]', ?, ?)
-      """)
-    let insertHash = try db.prepare("""
+      """
+    let insertHashSQL = """
         INSERT INTO similarity_hashes (
           session_id, photo_id, hash_hex, file_size, file_mtime_ms
         ) VALUES ('session', ?, ?, 10, 1)
-      """)
+      """
     let captures: [(String, String, String, Double)] = [
         ("p1", "IMG_0001.JPG", "2026-07-30T10:00:00.000Z", 0),
         ("p2", "IMG_0002.JPG", "2026-07-30T10:00:01.000Z", 5),
         ("p3", "IMG_0003.JPG", "2026-07-30T10:00:20.000Z", 0),
     ]
     for (id, filename, capturedAt, rating) in captures {
-        _ = try insertPhoto.run([
+        _ = try await db.run(insertPhotoSQL, [
             .text(id), .text("/photos/\(filename)"), .text(filename),
             .text(now), .text(now),
         ])
-        _ = try insertMetadata.run([
+        _ = try await db.run(insertMetadataSQL, [
             .text(id), .text(capturedAt), .real(rating), .text(now), .text(now),
         ])
-        _ = try insertHash.run([.text(id), .text("0000000000000000")])
+        _ = try await db.run(insertHashSQL, [.text(id), .text("0000000000000000")])
     }
     return Harness(db: db, service: NavigationService(database: try SQLiteDatabase(path: path)))
 }
@@ -103,19 +103,19 @@ struct NavigationServiceTests {
         let burst = try #require(groups.first { $0.type == .burst })
         _ = try await harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p2")
 
-        _ = try harness.db.prepare(
+        _ = try await harness.db.run(
             "UPDATE similarity_hashes SET hash_hex = '0000000000000001' WHERE photo_id = 'p3'"
-        ).run([])
+        )
 
         let refreshed = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         #expect(refreshed.contains { group in
             group.type == .scene && group.photoIds.contains("p1") && group.photoIds.contains("p2")
         })
         // manual 组保留（split 产生 2 个 manual burst 组）。
-        let manualCount = try harness.db.prepare("""
+        let manualCount = try await harness.db.queryOne("""
             SELECT COUNT(*) AS count FROM navigation_groups
             WHERE session_id = 'session' AND group_type = 'burst' AND source = 'manual'
-        """).query().first?[0].intValue ?? 0
+        """)?.int(at: 0) ?? 0
         #expect(manualCount == 2)
     }
 
@@ -124,33 +124,33 @@ struct NavigationServiceTests {
         let harness = try await makeHarness()
         let db = harness.db
         let now = "2026-07-30T10:00:00.000Z"
-        _ = try db.prepare("""
+        _ = try await db.run("""
             INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
             VALUES ('asset-1', '', 'active', ?, ?), ('asset-2', '', 'active', ?, ?)
-          """).run([.text(now), .text(now), .text(now), .text(now)])
-        let insertFile = try db.prepare("""
+          """, [.text(now), .text(now), .text(now), .text(now)])
+        let insertFileSQL = """
             INSERT INTO asset_files (
               id, normalized_path, filename, extension, media_type,
               created_at, updated_at
             ) VALUES (?, ?, ?, '.JPG', 'image/jpeg', ?, ?)
-          """)
-        _ = try insertFile.run([.text("file-1"), .text("/photos/IMG_0001.JPG"), .text("IMG_0001.JPG"), .text(now), .text(now)])
-        _ = try insertFile.run([.text("file-2"), .text("/photos/IMG_0002.JPG"), .text("IMG_0002.JPG"), .text(now), .text(now)])
-        _ = try db.prepare("UPDATE photos SET asset_id = 'asset-1', asset_file_id = 'file-1' WHERE id = 'p1'").run()
-        _ = try db.prepare("UPDATE photos SET asset_id = 'asset-2', asset_file_id = 'file-2' WHERE id = 'p2'").run()
-        let insertAnalysis = try db.prepare("""
+          """
+        _ = try await db.run(insertFileSQL, [.text("file-1"), .text("/photos/IMG_0001.JPG"), .text("IMG_0001.JPG"), .text(now), .text(now)])
+        _ = try await db.run(insertFileSQL, [.text("file-2"), .text("/photos/IMG_0002.JPG"), .text("IMG_0002.JPG"), .text(now), .text(now)])
+        _ = try await db.run("UPDATE photos SET asset_id = 'asset-1', asset_file_id = 'file-1' WHERE id = 'p1'")
+        _ = try await db.run("UPDATE photos SET asset_id = 'asset-2', asset_file_id = 'file-2' WHERE id = 'p2'")
+        let insertAnalysisSQL = """
             INSERT INTO asset_analysis (
               photo_id, asset_file_id, analysis_type, result_json, warnings_json,
               model_id, model_version, input_fingerprint, created_at, updated_at
             ) VALUES (?, ?, 'technical_quality', ?, ?, 'test', '1', ?, ?, ?)
-          """)
-        _ = try insertAnalysis.run([
+          """
+        _ = try await db.run(insertAnalysisSQL, [
             .text("p1"), .text("file-1"),
             .text(#"{"status":"succeeded","qualityScore":0.9,"warnings":["closed_eye_risk_heuristic"]}"#),
             .text(#"["closed_eye_risk_heuristic"]"#),
             .text("p1"), .text(now), .text(now),
         ])
-        _ = try insertAnalysis.run([
+        _ = try await db.run(insertAnalysisSQL, [
             .text("p2"), .text("file-2"),
             .text(#"{"status":"succeeded","qualityScore":0.8,"warnings":[]}"#),
             .text("[]"),
@@ -194,10 +194,10 @@ struct NavigationServiceTests {
         }
         // 正常 split 产生两个 manual 组（list 过滤 <2 张的组，直接查库断言）。
         _ = try await harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p2")
-        let manualCount = try harness.db.prepare("""
+        let manualCount = try await harness.db.queryOne("""
             SELECT COUNT(*) AS count FROM navigation_groups
             WHERE session_id = 'session' AND group_type = 'burst' AND source = 'manual'
-        """).query().first?[0].intValue ?? 0
+        """)?.int(at: 0) ?? 0
         #expect(manualCount == 2)
     }
 

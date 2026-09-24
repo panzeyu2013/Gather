@@ -17,7 +17,7 @@ import Testing
 
 private struct Harness {
     let database: SQLiteDatabase
-    let db: DBConnection
+    let db: SQLiteDatabase
     let engine: FilterEngine
     let sessionId: String
 }
@@ -27,31 +27,31 @@ private func makeHarness() async throws -> Harness {
     // 同一临时文件库：旧连接（种子）与 Store（FilterEngine 读）必须同库。
     let harnessPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-filter-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: harnessPath)
+    let db = try await makeMigratedStore(path: harnessPath)
     let now = "2026-07-30T10:00:00.000Z"
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status,
           import_source, source_path, photo_count, failed_writeback_count, created_at, updated_at)
         VALUES ('session', 'Filter', 'photos_loaded', 'idle', 'idle',
           'folder', '/photos', 3, 0, ?, ?)
-      """).run([.text(now), .text(now)])
-    let insertPhoto = try db.prepare("""
+      """, [.text(now), .text(now)])
+    let insertPhotoSQL = """
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
           metadata, result, width, height, created_at, updated_at)
         VALUES (?, 'session', ?, ?, ?, ?, '{}', '{}', ?, ?, ?, ?)
-      """)
-    let insertMetadata = try db.prepare("""
+      """
+    let insertMetadataSQL = """
         INSERT INTO photo_metadata_cache (photo_id, session_id, date_taken,
           camera_make, camera_model, rating, keywords, cached_at, updated_at)
         VALUES (?, 'session', ?, ?, ?, ?, ?, ?, ?)
-      """)
+      """
     let photos: [(String, String, String, String, String, Int, Int)] = [
         ("p1", "/photos/IMG_0001.JPG", "IMG_0001.JPG", "abc", "pending", 100, 80),
         ("p2", "/photos/IMG_0002.JPG", "IMG_0002.JPG", "def", "ready", 200, 160),
         ("p3", "/photos/sub/IMG_0003.JPG", "IMG_0003.JPG", "ghi", "missing", 300, 240),
     ]
     for (id, filepath, filename, checksum, status, width, height) in photos {
-        _ = try insertPhoto.run([
+        _ = try await db.run(insertPhotoSQL, [
             .text(id), .text(filepath), .text(filename), .text(checksum), .text(status),
             .int(Int64(width)), .int(Int64(height)), .text(now), .text(now),
         ])
@@ -62,7 +62,7 @@ private func makeHarness() async throws -> Harness {
         ("p3", "2026-07-30T10:00:20.000Z", "Canon", "Canon EOS R5", 0, #"[]"#),
     ]
     for (id, dateTaken, make, model, rating, keywords) in metadata {
-        _ = try insertMetadata.run([
+        _ = try await db.run(insertMetadataSQL, [
             .text(id), .text(dateTaken), .text(make), .text(model),
             .int(Int64(rating)), .text(keywords), .text(now), .text(now),
         ])
@@ -238,15 +238,15 @@ struct FilterEngineTests {
     @Test func hasDuplicatesFilters() async throws {
         let harness = try await makeHarness()
         let db = harness.db
-        _ = try db.prepare("""
+        _ = try await db.run("""
             INSERT INTO duplicate_groups (id, session_id, group_type, checksum,
               member_count, created_at)
             VALUES (1, 'session', 'exact', 'k', 2, '2026-07-30T10:00:00.000Z')
-          """).run([])
-        _ = try db.prepare("""
+          """)
+        _ = try await db.run("""
             INSERT INTO duplicate_group_members (id, group_id, photo_id, session_id, is_kept, file_size, file_mtime)
             VALUES (1, 1, 'p1', 'session', 1, 100, '2026-07-30T10:00:00.000Z')
-          """).run([])
+          """)
 
         let withDup = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,

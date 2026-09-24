@@ -12,7 +12,7 @@ import Testing
 private func makeTempSessionStore() async throws -> any GatherCore.SessionStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-sessions-\(UUID().uuidString).sqlite").path
-    _ = try await makeMigratedLegacyDB(path: path)
+    _ = try await makeMigratedStore(path: path)
     return try GatherCore.SQLiteSessionStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -20,7 +20,7 @@ private func makeTempSessionStore() async throws -> any GatherCore.SessionStore 
 private func makeTempPhotoStore() async throws -> any GatherCore.PhotoStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-photos-\(UUID().uuidString).sqlite").path
-    _ = try await makeMigratedLegacyDB(path: path)
+    _ = try await makeMigratedStore(path: path)
     return try GatherCore.SQLitePhotoStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -28,7 +28,7 @@ private func makeTempPhotoStore() async throws -> any GatherCore.PhotoStore {
 private func makeTempAssetStore() async throws -> any GatherCore.AssetStore {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-assets-\(UUID().uuidString).sqlite").path
-    _ = try await makeMigratedLegacyDB(path: path)
+    _ = try await makeMigratedStore(path: path)
     return try GatherCore.SQLiteAssetStore(database: try GatherCore.SQLiteDatabase(path: path))
 }
 
@@ -88,28 +88,27 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (LibraryViewModel
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
-private func makeLiveProvider() async throws -> (LiveLibraryDataProvider, DBConnection) {
-    // 同一临时文件库：SessionService/Store 读需与旧连接同库。
+private func makeLiveProvider() async throws -> (LiveLibraryDataProvider, SQLiteDatabase) {
     let tempStorePath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-library-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: tempStorePath)
-    let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
+    let db = try await makeMigratedStore(path: tempStorePath)
+    let tempJobStore = try SQLiteJobStore(database: db)
     let settings = try await makeTestSettings()
     let router = SessionCommandRouter.makeDefault(
-        db: db, database: try SQLiteDatabase(path: tempStorePath), settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try await makeTempPhotoStore(), sessionStore: try GatherCore.SQLiteSessionStore(database: try GatherCore.SQLiteDatabase(path: tempStorePath)))
+        database: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try await makeTempPhotoStore(), sessionStore: try GatherCore.SQLiteSessionStore(database: try GatherCore.SQLiteDatabase(path: tempStorePath)))
     return (LiveLibraryDataProvider(router: router), db)
 }
 
-private func insertSession(_ db: DBConnection, _ id: String, name: String = "工作区") throws {
-    _ = try db.prepare("""
+private func insertSession(_ db: SQLiteDatabase, _ id: String, name: String = "工作区") async throws {
+    _ = try await db.run("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
         VALUES (?, ?, 'photos_loaded', 'idle', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(name)])
+    """, [.text(id), .text(name)])
 }
 
 /// 照片 + 可选元数据缓存行（rating/label/keywords/status）。
 private func insertPhoto(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: String,
     sessionId: String,
     status: String = "online",
@@ -117,15 +116,15 @@ private func insertPhoto(
     label: String = "",
     keywords: String = "[]",
     createdAt: String = "2026-01-01T00:00:00.000Z"
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, created_at, updated_at)
         VALUES (?, ?, ?, ?, '', ?, '{}', '{}', ?, ?)
-    """).run([.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg"), .text(status), .text(createdAt), .text(createdAt)])
-    _ = try db.prepare("""
+    """, [.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg"), .text(status), .text(createdAt), .text(createdAt)])
+    _ = try await db.run("""
         INSERT INTO photo_metadata_cache (photo_id, session_id, rating, label, keywords, cached_at)
         VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(sessionId), .int(Int64(rating)), .text(label), .text(keywords)])
+    """, [.text(id), .text(sessionId), .int(Int64(rating)), .text(label), .text(keywords)])
 }
 
 // MARK: - 用例
@@ -400,11 +399,11 @@ struct LibraryViewModelTests {
     // 真实库：photos_global 按 rating/label 筛选 + total + 会话名聚合。
     @Test func liveProviderFiltersAndCountsGlobally() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1", name: "甲")
-        try insertSession(db, "s2", name: "乙")
-        try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5, label: "Red")
-        try insertPhoto(db, id: "p2", sessionId: "s1", rating: 2)
-        try insertPhoto(db, id: "p3", sessionId: "s2", rating: 4)
+        try await insertSession(db, "s1", name: "甲")
+        try await insertSession(db, "s2", name: "乙")
+        try await insertPhoto(db, id: "p1", sessionId: "s1", rating: 5, label: "Red")
+        try await insertPhoto(db, id: "p2", sessionId: "s1", rating: 2)
+        try await insertPhoto(db, id: "p3", sessionId: "s2", rating: 4)
 
         let viewModel = LibraryViewModel(provider: provider, debounceDelay: .milliseconds(5))
         await viewModel.load()
@@ -432,9 +431,9 @@ struct LibraryViewModelTests {
     // 真实库：status 筛选（missing 离线）与 keywords contains_any。
     @Test func liveProviderFiltersByStatusAndKeywords() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertPhoto(db, id: "p1", sessionId: "s1", status: "missing", keywords: "[\"旅行\",\"风景\"]")
-        try insertPhoto(db, id: "p2", sessionId: "s1", keywords: "[]")
+        try await insertSession(db, "s1")
+        try await insertPhoto(db, id: "p1", sessionId: "s1", status: "missing", keywords: "[\"旅行\",\"风景\"]")
+        try await insertPhoto(db, id: "p2", sessionId: "s1", keywords: "[]")
 
         let viewModel = LibraryViewModel(provider: provider, debounceDelay: .milliseconds(5))
         await viewModel.load()
@@ -457,9 +456,9 @@ struct LibraryViewModelTests {
     // 真实库：photo.list 会话下拉数据 + 分页 total 与 photos 一致性。
     @Test func liveProviderPaginationCountsTotal() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
+        try await insertSession(db, "s1")
         for index in 0..<5 {
-            try insertPhoto(db, id: "p\(index)", sessionId: "s1", rating: index % 3)
+            try await insertPhoto(db, id: "p\(index)", sessionId: "s1", rating: index % 3)
         }
 
         let viewModel = LibraryViewModel(provider: provider, debounceDelay: .milliseconds(5))
@@ -473,8 +472,8 @@ struct LibraryViewModelTests {
     // 均必须可调用，不能只靠 UI stub 通过编译。
     @Test func liveProviderSupportsLibrarySupportCommands() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5)
+        try await insertSession(db, "s1")
+        try await insertPhoto(db, id: "p1", sessionId: "s1", rating: 5)
 
         let criteria = FilterGroup(logic: .and, conditions: [
             .rule(FilterRule(field: "rating", operator: .gte, value: .number(4))),

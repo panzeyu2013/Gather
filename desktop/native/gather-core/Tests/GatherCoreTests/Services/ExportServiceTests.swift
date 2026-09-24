@@ -13,7 +13,7 @@ private func makeTempPhotoStore() async throws -> any PhotoStore {
 
 
 private struct ExportTestEnv {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let database: SQLiteDatabase
     let photoStore: any PhotoStore
     let sessionStore: any SessionStore
@@ -23,7 +23,7 @@ private func makeExportDatabase() async throws -> ExportTestEnv {
     // 临时文件库：ExportService 的 photoStore 需与旧连接同库读取照片行。
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-export-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: path)
+    let db = try await makeMigratedStore(path: path)
     let store = try SQLitePhotoStore(database: try SQLiteDatabase(path: path))
     return ExportTestEnv(db: db, database: try SQLiteDatabase(path: path), photoStore: store, sessionStore: SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }
@@ -31,17 +31,17 @@ private func makeExportDatabase() async throws -> ExportTestEnv {
 
 
 private func seedExportPhoto(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     sessionId: String,
     photoId: String,
     filepath: String
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
           result, asset_id, asset_file_id, width, height, created_at, updated_at)
         VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', NULL, NULL, 32, 24,
           '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([
+    """, [
         .text(photoId), .text(sessionId), .text(filepath),
         .text(URL(fileURLWithPath: filepath).lastPathComponent),
     ])
@@ -73,7 +73,7 @@ struct ExportServiceTests {
         let session = try await env.sessionStore.create(
             name: "Family", source: "local", sourcePath: source.path, truncatedImport: false
         )
-        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        try await seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,
@@ -132,7 +132,7 @@ struct ExportServiceTests {
         let session = try await env.sessionStore.create(
             name: "Source", source: "local", sourcePath: source.path
         , truncatedImport: false)
-        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        try await seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,
@@ -189,7 +189,7 @@ struct ExportServiceTests {
         let session = try await env.sessionStore.create(
             name: "JPEG", source: "local", sourcePath: source.path
         , truncatedImport: false)
-        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        try await seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,
@@ -233,7 +233,7 @@ struct ExportServiceTests {
         let session = try await env.sessionStore.create(
             name: "Time", source: "local", sourcePath: source.path
         , truncatedImport: false)
-        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        try await seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
         let service = ExportService(
             photoStore: env.photoStore,
             sessionStore: env.sessionStore,

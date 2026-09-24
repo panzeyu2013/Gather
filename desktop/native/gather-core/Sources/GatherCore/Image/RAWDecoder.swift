@@ -50,14 +50,7 @@ public enum RAWDecoderError: Error, Equatable {
 /// CoreImage/ImageIO 解码器（替代 sharp + sips，含 RAW）。
 public enum RAWDecoder {
     /// sharp.supportedExtensions 全集（含 RAW）。
-    public static let supportedExtensions: Set<String> = [
-        ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp",
-        ".cr2", ".cr3", ".nef", ".nrw", ".arw",
-        ".raf", ".dng", ".orf", ".rw2", ".pef",
-        ".srw", ".srf", ".x3f", ".3fr", ".fff",
-        ".mef", ".mos", ".iiq", ".eip", ".erf",
-        ".kdc", ".mrw",
-    ]
+    public static let supportedExtensions: Set<String> = PhotoFormats.decoderSupportedExtensions
 
     public static func supports(_ ext: String) -> Bool {
         supportedExtensions.contains(ext.lowercased())

@@ -181,16 +181,14 @@ private func makeStubVM(
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
-private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, DBConnection) {
-    // 相似度结果/群组读经 Store 连接：两条连接须指向同一临时库文件。
+private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, SQLiteDatabase) {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-vm-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: path)
-    let container = AppContainer(database: try SQLiteDatabase(path: path))
+    let db = try await makeMigratedStore(path: path)
+    let container = AppContainer(database: db)
     let api = GatherAPI(container: container)
     let router = SessionCommandRouter.makeDefault(
-        db: db,
-        database: try SQLiteDatabase(path: path),
+        database: db,
         settings: SettingsSnapshot(values: SettingsAPI.defaults),
         settingsAPI: api.settings,
         templates: api.templates,
@@ -214,33 +212,33 @@ private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, DBC
     return (LiveSimilarityDataProvider(router: router), db)
 }
 
-private func insertSession(_ db: DBConnection, _ id: String) throws {
-    _ = try db.prepare("""
+private func insertSession(_ db: SQLiteDatabase, _ id: String) async throws {
+    _ = try await db.run("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
         VALUES (?, '工作区', 'photos_loaded', 'idle', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id)])
+    """, [.text(id)])
 }
 
 /// 照片（checksum_file_size > 0 → analyze 的 stat 兜底直接取索引统计，
 /// 无需真实文件）。
 private func insertPhoto(
-    _ db: DBConnection,
+    _ db: SQLiteDatabase,
     id: String,
     sessionId: String,
     filepath: String
-) throws {
-    _ = try db.prepare("""
+) async throws {
+    _ = try await db.run("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, metadata, result, created_at, updated_at)
         VALUES (?, ?, ?, ?, '', 100, 1000, 'online', '{}', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(sessionId), .text(filepath), .text((filepath as NSString).lastPathComponent)])
+    """, [.text(id), .text(sessionId), .text(filepath), .text((filepath as NSString).lastPathComponent)])
 }
 
 /// 预置相似度 hash（file_size/mtime 与索引统计一致 → analyze 直接复用）。
-private func insertHash(_ db: DBConnection, sessionId: String, photoId: String, hashHex: String) throws {
-    _ = try db.prepare("""
+private func insertHash(_ db: SQLiteDatabase, sessionId: String, photoId: String, hashHex: String) async throws {
+    _ = try await db.run("""
         INSERT INTO similarity_hashes (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
         VALUES (?, ?, ?, 100, 1000)
-    """).run([.text(sessionId), .text(photoId), .text(hashHex)])
+    """, [.text(sessionId), .text(photoId), .text(hashHex)])
 }
 
 // MARK: - 用例
@@ -510,17 +508,17 @@ struct SimilarityViewModelTests {
     // 真实库：sim.result 直读预置结果（groups_json 旧格式路径，无需成员表）。
     @Test func liveProviderReadsSeededResult() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
+        try await insertSession(db, "s1")
         let groupsJSON = """
         {"groups":[{"id":1,"label":"Group 1","count":2,"images":[{"path":"/vault/a.NEF","representative":true},{"path":"/vault/b.JPG"}]}],"ungrouped":[{"path":"/vault/u.NEF"}]}
         """
         let statsJSON = """
         {"totalGroups":1,"totalUngrouped":1,"threshold":10,"minGroupSize":2,"groupingMode":"global"}
         """
-        _ = try db.prepare("""
+        _ = try await db.run("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
             VALUES ('s1', ?, ?, 10, 2, '2026-01-01T00:00:00.000Z')
-        """).run([.text(groupsJSON), .text(statsJSON)])
+        """, [.text(groupsJSON), .text(statsJSON)])
 
         let viewModel = SimilarityViewModel(sessionId: "s1", provider: provider)
         await viewModel.load()
@@ -543,11 +541,11 @@ struct SimilarityViewModelTests {
     // 聚类 1 组 3 张 → 完成刷新结果。
     @Test func liveAnalyzeClustersSeededHashes() async throws {
         let (provider, db) = try await makeLiveProvider()
-        try insertSession(db, "s1")
+        try await insertSession(db, "s1")
         // 三张同哈希照片（阈值 0 下 1 组 3 张）。
         for index in 0..<3 {
-            try insertPhoto(db, id: "photo-\(index)", sessionId: "s1", filepath: "/vault/photo-\(index).NEF")
-            try insertHash(db, sessionId: "s1", photoId: "photo-\(index)", hashHex: "ab" + String(repeating: "0", count: 62))
+            try await insertPhoto(db, id: "photo-\(index)", sessionId: "s1", filepath: "/vault/photo-\(index).NEF")
+            try await insertHash(db, sessionId: "s1", photoId: "photo-\(index)", hashHex: "ab" + String(repeating: "0", count: 62))
         }
 
         let viewModel = SimilarityViewModel(

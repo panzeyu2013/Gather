@@ -41,11 +41,7 @@ import Glibc
 /// Scheduler 等价 TS 的 setRecoveryScanScheduler。
 public final class WatchCoordinator {
     /// TS: SUPPORTED（index.service.ts 顶部）。
-    private static let supportedExtensions: Set<String> = [
-        "jpg", "jpeg", "png", "webp", "heic", "heif",
-        "nef", "arw", "cr2", "cr3", "dng", "raf", "orf", "rw2", "pef", "srw",
-        "tif", "tiff", "psd",
-    ]
+    private static let supportedExtensions: Set<String> = PhotoFormats.watchingExtensions
 
     /// TS: 750ms 去抖窗口。
     public static let debounceMs = 750

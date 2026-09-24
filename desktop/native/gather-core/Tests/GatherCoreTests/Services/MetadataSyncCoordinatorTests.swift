@@ -87,7 +87,7 @@ private final class FakeFSXMPProvider: XMPProvider, @unchecked Sendable {
 }
 
 private struct CoordinatorFixture {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let dir: String
     let sessionId: String
     let photoPath: String
@@ -101,7 +101,7 @@ private struct CoordinatorFixture {
         // 写回行读写经 Store 连接（独立连接）：两条连接须指向同一临时库文件。
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-mdc-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-sync-tests-\(UUID().uuidString)", isDirectory: true)
             .path
@@ -112,8 +112,7 @@ private struct CoordinatorFixture {
         // 原始侧车：写回前已存在，cleanup 恢复语义才有可校验的原始内容。
         let original = try JSONEncoder().encode(MetadataWriteAttributes(keywords: ["original"]))
         try original.write(to: URL(fileURLWithPath: xmpPath))
-        _ = try db.prepare("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-            .run([.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
+        _ = try await db.run("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", [.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
         let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
         let provider = FakeFSXMPProvider()
         let coordinator = MetadataSyncCoordinator(
@@ -311,7 +310,7 @@ struct MetadataSyncCoordinatorTests {
 /// MetadataMutationPort 替身：无资产解析器环境下按 photoId 查 filepath，
 /// 复刻 queuePhotoValues 的 mergePatch 语义（source 注入 + dirty 过滤）。
 private struct StubMutationPort: MetadataMutationPort {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let outbox: SQLiteWritebackStore
 
     func queuePhotoValues(
@@ -321,10 +320,8 @@ private struct StubMutationPort: MetadataMutationPort {
         source: MetadataMutationSource,
         schedule: Bool
     ) async throws -> MetadataMutationResult {
-        let row = try db.prepare(
-            "SELECT filepath FROM photos WHERE id = ? AND session_id = ?"
-        ).get([.text(photoId), .text(sessionId)])
-        let photoPath = row?[0].textValue ?? photoId
+        let row = try await db.queryOne("SELECT filepath FROM photos WHERE id = ? AND session_id = ?", [.text(photoId), .text(sessionId)])
+        let photoPath = row?.text(at: 0) ?? photoId
         let xmpPath = TSPath.xmpSidecarPath(photoPath)
         let dirtyFields = values.keys
             .filter { ["rating", "label", "keywords"].contains($0) }
@@ -363,7 +360,7 @@ struct WritebackServiceTests {
     @Test func previewThenExecuteWritesSidecarAndReportsResult() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-wb-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-writeback-tests-\(UUID().uuidString)", isDirectory: true)
             .path
@@ -373,11 +370,8 @@ struct WritebackServiceTests {
         let sessionId = "s-\(UUID().uuidString)"
         let photoId = "p1"
         let photoPath = "\(dir)/photo.cr3"
-        _ = try db.prepare("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-            .run([.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
-        _ = try db.prepare(
-            "INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at) VALUES (?, ?, ?, 'photo.cr3', ?, ?)"
-        ).run([.text(photoId), .text(sessionId), .text(photoPath), .text(nowISOString()), .text(nowISOString())])
+        _ = try await db.run("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", [.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
+        _ = try await db.run("INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at) VALUES (?, ?, ?, 'photo.cr3', ?, ?)", [.text(photoId), .text(sessionId), .text(photoPath), .text(nowISOString()), .text(nowISOString())])
 
         let provider = FakeFSXMPProvider()
         let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
@@ -428,7 +422,7 @@ struct WritebackServiceTests {
     @Test func previewBlockedByOtherModuleActive() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-wb-\(UUID().uuidString).sqlite").path
-        let db = try await makeMigratedLegacyDB(path: dbPath)
+        let db = try await makeMigratedStore(path: dbPath)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-writeback-tests-\(UUID().uuidString)", isDirectory: true)
             .path
@@ -438,11 +432,8 @@ struct WritebackServiceTests {
         let sessionId = "s-\(UUID().uuidString)"
         let photoId = "p1"
         let photoPath = "\(dir)/photo.cr3"
-        _ = try db.prepare("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-            .run([.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
-        _ = try db.prepare(
-            "INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at) VALUES (?, ?, ?, 'photo.cr3', ?, ?)"
-        ).run([.text(photoId), .text(sessionId), .text(photoPath), .text(nowISOString()), .text(nowISOString())])
+        _ = try await db.run("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", [.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
+        _ = try await db.run("INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at) VALUES (?, ?, ?, 'photo.cr3', ?, ?)", [.text(photoId), .text(sessionId), .text(photoPath), .text(nowISOString()), .text(nowISOString())])
 
         let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
         // face_kw 模块的 written 行（另一模块未确认的工作）。

@@ -84,9 +84,6 @@ public final class SessionCommandRouter: CommandRouter {
     private let assetStore: any AssetStore
     private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
-    /// 连接引用：仅用于零散 Repo 按需构造（SessionRepo reloadAckedAt 等），
-    /// 领域查询一律经注入的 Repo/Service，不在此内联 SQL。
-    private let db: DBConnection
     /// 3.0 接线扩展：人脸关键字 / 人物库 / 模板 / 质量 / 索引 / 元数据 / 写回 / 智能相册。
     private let faceKwService: FaceKwService
     private let persons: PersonsAPI
@@ -104,7 +101,6 @@ public final class SessionCommandRouter: CommandRouter {
     private let imagePreloadService: ImagePreloadService
 
     public init(
-        db: DBConnection,
         sessionService: SessionService,
         workspace: WorkspaceAPI,
         jobService: JobService,
@@ -131,7 +127,6 @@ public final class SessionCommandRouter: CommandRouter {
         sessionStore: any SessionStore,
         imagePreloadService: ImagePreloadService
     ) {
-        self.db = db
         self.sessionService = sessionService
         self.workspace = workspace
         self.jobService = jobService
@@ -175,7 +170,7 @@ public final class SessionCommandRouter: CommandRouter {
     public func prepareForTermination() async {
         await jobService.stop()
         await metadataSyncCoordinator.shutdown()
-        db.close()
+        // Store 连接由组合根（GatherApp）负责关闭。
     }
 
     /// 便捷装配：单 DB 连接构建全部已移植服务。
@@ -186,7 +181,6 @@ public final class SessionCommandRouter: CommandRouter {
     /// - faceKwService：默认装配 Vision 推理 + RAWDecoder 解码；测试可注入
     ///   假推理/解码（对齐 gather-core FaceKeywordingServiceTests 模式）。
     public static func makeDefault(
-        db: DBConnection,
         database: SQLiteDatabase,
         settings: SettingsSnapshot,
         settingsAPI: SettingsAPI,
@@ -306,7 +300,6 @@ public final class SessionCommandRouter: CommandRouter {
             }
         )
         return SessionCommandRouter(
-            db: db,
             sessionService: SessionService(
                 sessionStore: sessionStore,
                 photoStore: photoStore,
@@ -347,7 +340,7 @@ public final class SessionCommandRouter: CommandRouter {
                 statProvider: QualityService.defaultStat
             ),
             indexerService: IndexerService(
-                connection: db,
+                database: database,
                 sessionStore: sessionStore,
                 photoStore: photoStore,
                 assetStore: assetStore,
@@ -1200,7 +1193,7 @@ public final class SessionCommandRouter: CommandRouter {
                     throw BridgeError.badParams("ASSET_LINK_ACCEPT_CONFIRM_REQUIRED")
                 }
                 let candidateId = try requiredString(params, "candidateId")
-                // 仓库层 DBError.message → BridgeError（命令边界仅对 BridgeError
+                // 仓库层 SQLiteFailure.message → BridgeError（命令边界仅对 BridgeError
                 // 走 message 透传；NSError 桥接会丢失消息）。
                 _ = try await mapRepoErrorAsync { try await assetStore.acceptCandidate(candidateId) }
                 completion(WebResponse(ok: true, data: .bool(true))); return
@@ -3400,27 +3393,21 @@ public final class SessionCommandRouter: CommandRouter {
 
     // MARK: async → sync 桥接
 
-    /// 仓库层 DBError.message → BridgeError（命令边界只对 BridgeError 做
+    /// 仓库层 SQLiteFailure.message → BridgeError（命令边界只对 BridgeError 做
     /// message 透传，NSError 桥接会把 DBError 描述丢给系统错误文案）。
     private func mapRepoErrorAsync<T>(_ body: () async throws -> T) async throws -> T {
         do {
             return try await body()
-        } catch let error as DBError {
-            if case .message(let message) = error {
-                throw BridgeError.badParams(message)
-            }
-            throw error
+        } catch let error as SQLiteFailure {
+            throw BridgeError.badParams(error.message)
         }
     }
 
     private func mapRepoError<T>(_ body: () throws -> T) throws -> T {
         do {
             return try body()
-        } catch let error as DBError {
-            if case .message(let message) = error {
-                throw BridgeError.badParams(message)
-            }
-            throw error
+        } catch let error as SQLiteFailure {
+            throw BridgeError.badParams(error.message)
         }
     }
 
@@ -3758,10 +3745,10 @@ public final class SessionCommandRouter: CommandRouter {
         }
         if let exportError = error as? ExportServiceError { return exportError.description }
         if let imageError = error as? ImagePreloadError { return imageError.description }
-        // 仓库层直接抛出的 DBError.message（TS 侧 throw new Error(code) 的
+        // 仓库层直接抛出的 SQLiteFailure.message（TS 侧 throw new Error(code) 的
         // 仓库等价物，如 ASSET_LINK_CANDIDATE_NOT_FOUND）逐字透传。
-        if let dbError = error as? DBError, case .message(let message) = dbError {
-            return message
+        if let sqliteError = error as? SQLiteFailure {
+            return sqliteError.message
         }
         // JobService.waitForResult 失败终态：message 即 TS errorMessage
         // （executor 抛错经 String(describing:) 记录，错误枚举 description 对齐 TS）。

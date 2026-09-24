@@ -15,7 +15,7 @@ private func makeTempPhotoStore() async throws -> any PhotoStore {
 
 
 private struct SessionHarness {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let service: SessionService
     let sessionStore: any SessionStore
     let tempDirs: [String]
@@ -26,7 +26,7 @@ private func makeHarness(
 ) async throws -> SessionHarness {
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
+    let db = try await makeMigratedStore(path: dbPath)
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
     let service = SessionService(
         sessionStore: sessionStore,
@@ -39,14 +39,14 @@ private func makeHarness(
 }
 
 /// TS: addOkAnalysisRun。
-private func addOkAnalysisRun(_ db: DBConnection, _ sessionId: String, indexSeq: Int) throws {
+private func addOkAnalysisRun(_ db: SQLiteDatabase, _ sessionId: String, indexSeq: Int) async throws {
     let timestamp = nowISOString()
-    _ = try db.prepare("""
+    _ = try await db.run("""
         INSERT INTO analysis_runs (
           session_id, kind, photo_count, index_seq, started_at, finished_at,
           params, status
         ) VALUES (?, 'similarity', 0, ?, ?, ?, '{}', 'ok')
-      """).run([.text(sessionId), .int(Int64(indexSeq)), .text(timestamp), .text(timestamp)])
+      """, [.text(sessionId), .int(Int64(indexSeq)), .text(timestamp), .text(timestamp)])
 }
 
 @Suite("SessionService.createFromDirectory (one-hop import)")
@@ -116,17 +116,15 @@ struct SessionServiceAddPhotosTests {
         let harness = try await makeHarness()
         let session = try await harness.sessionStore.create(name: "Add", source: "folder", sourcePath: dir, truncatedImport: false)
         // 先前 ok run 快照了加照片前的游标。
-        try addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
+        try await addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
 
         let result = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA, photoB], source: "manual")
 
         #expect(result.added == 2)
         // 1.4.2: last_ok_run.index_seq (0) < session.index_seq (1) => stale。
         #expect(try await harness.sessionStore.indexSeq(id: session.id) == 1)
-        let lastOkRun = try harness.db.prepare(
-            "SELECT index_seq FROM analysis_runs WHERE session_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1"
-        ).get([.text(session.id)])
-        #expect(Int(lastOkRun?[0].intValue ?? -1) < (try await harness.sessionStore.indexSeq(id: session.id)))
+        let lastOkRun = try await harness.db.queryOne("SELECT index_seq FROM analysis_runs WHERE session_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1", [.text(session.id)])
+        #expect(Int(lastOkRun?.int(at: 0) ?? -1) < (try await harness.sessionStore.indexSeq(id: session.id)))
     }
 
     @Test("does NOT bump index_seq when no photos were actually added")
@@ -137,7 +135,7 @@ struct SessionServiceAddPhotosTests {
 
         let harness = try await makeHarness()
         let session = try await harness.sessionStore.create(name: "Add", source: "folder", sourcePath: dir, truncatedImport: false)
-        try addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
+        try await addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
 
         let first = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
         #expect(first.added == 1)
@@ -186,7 +184,7 @@ struct SessionServiceDeleteAndQueryTests {
     func deleteSessionOrphansAssets() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
+    let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,
@@ -195,30 +193,28 @@ struct SessionServiceDeleteAndQueryTests {
             database: try SQLiteDatabase(path: dbPath)
         )
         let session = try await sessionStore.create(name: "Del", source: "folder", sourcePath: "", truncatedImport: false)
-        try insertPhoto(db, id: "p1", sessionId: session.id)
-        try insertAsset(db, id: "af1")
-        _ = try db.prepare(
-            "INSERT INTO session_assets (session_id, asset_id, added_at) VALUES (?, ?, '2026-01-01T00:00:00.000Z')"
-        ).run([.text(session.id), .text("af1")])
+        try await insertPhoto(db, id: "p1", sessionId: session.id)
+        try await insertAsset(db, id: "af1")
+        _ = try await db.run("INSERT INTO session_assets (session_id, asset_id, added_at) VALUES (?, ?, '2026-01-01T00:00:00.000Z')", [.text(session.id), .text("af1")])
         // 无会话引用的资产在删除时应被标记 orphan。
-        try insertAsset(db, id: "af2")
+        try await insertAsset(db, id: "af2")
 
         try await service.deleteSession(session.id, confirmed: true)
 
         #expect(try await sessionStore.get(id: session.id) == nil)
-        #expect(try rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 0)
+        #expect(try await rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 0)
         // session_assets 级联删除后，af1 失去全部会话引用，与 af2 一样成 orphan。
-        let orphanStatus = try db.prepare("SELECT status FROM assets WHERE id = 'af2'").get()
-        #expect(orphanStatus?[0].textValue == "orphan")
-        let boundStatus = try db.prepare("SELECT status FROM assets WHERE id = 'af1'").get()
-        #expect(boundStatus?[0].textValue == "orphan")
+        let orphanStatus = try await db.queryOne("SELECT status FROM assets WHERE id = 'af2'")
+        #expect(orphanStatus?.text(at: 0) == "orphan")
+        let boundStatus = try await db.queryOne("SELECT status FROM assets WHERE id = 'af1'")
+        #expect(boundStatus?.text(at: 0) == "orphan")
     }
 
     @Test("deleteSession without confirmation throws and keeps the session")
     func deleteRequiresConfirmation() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
+    let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,
@@ -238,7 +234,7 @@ struct SessionServiceDeleteAndQueryTests {
     func getSessionDerivesSourcePath() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
+    let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,
@@ -253,8 +249,8 @@ struct SessionServiceDeleteAndQueryTests {
         let subB = dir + "/sub-b"
         try FileManager.default.createDirectory(atPath: subA, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: subB, withIntermediateDirectories: true)
-        try insertPhoto(db, id: "p1", sessionId: session.id, filepath: subA + "/a.jpg")
-        try insertPhoto(db, id: "p2", sessionId: session.id, filepath: subB + "/b.jpg")
+        try await insertPhoto(db, id: "p1", sessionId: session.id, filepath: subA + "/a.jpg")
+        try await insertPhoto(db, id: "p2", sessionId: session.id, filepath: subB + "/b.jpg")
 
         let data = try await service.getSession(session.id)
 
@@ -336,7 +332,7 @@ struct SessionServiceErrorCodeTests {
 
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
+    let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let service = SessionService(
             sessionStore: sessionStore,

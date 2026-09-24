@@ -35,7 +35,7 @@ private final class ClusterCallCounter {
 }
 
 private struct IncrementalHarness {
-    let db: DBConnection
+    let db: SQLiteDatabase
     let service: SimilarityService
     let sessionStore: any SessionStore
     let similarityStore: SQLiteSimilarityStore
@@ -45,34 +45,31 @@ private struct IncrementalHarness {
 
 private let sessionId = "sim-incremental"
 
-private func addPhotoWithHash(_ db: DBConnection, _ id: String, hash: String) throws {
-    try insertPhoto(db, id: id, sessionId: sessionId)
+private func addPhotoWithHash(_ db: SQLiteDatabase, _ id: String, hash: String) async throws {
+    try await insertPhoto(db, id: id, sessionId: sessionId)
     // analyze 的文件统计优先取索引扫描结果：checksum 尺寸/mtime 与 hash 行一致时
     // 直接复用哈希，无需真实文件与缩略图解码。
-    _ = try db.prepare("UPDATE photos SET checksum_file_size = 100, checksum_file_mtime_ms = 1000 WHERE id = ?")
-        .run([.text(id)])
-    _ = try db.prepare("""
+    _ = try await db.run("UPDATE photos SET checksum_file_size = 100, checksum_file_mtime_ms = 1000 WHERE id = ?", [.text(id)])
+    _ = try await db.run("""
         INSERT INTO similarity_hashes (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
         VALUES (?, ?, ?, 100, 1000)
-      """).run([.text(sessionId), .text(id), .text(hash)])
+      """, [.text(sessionId), .text(id), .text(hash)])
 }
 
-private func updateHash(_ db: DBConnection, _ id: String, hash: String) throws {
-    _ = try db.prepare("UPDATE similarity_hashes SET hash_hex = ? WHERE session_id = ? AND photo_id = ?")
-        .run([.text(hash), .text(sessionId), .text(id)])
+private func updateHash(_ db: SQLiteDatabase, _ id: String, hash: String) async throws {
+    _ = try await db.run("UPDATE similarity_hashes SET hash_hex = ? WHERE session_id = ? AND photo_id = ?", [.text(hash), .text(sessionId), .text(id)])
 }
 
-private func removePhoto(_ db: DBConnection, _ id: String) throws {
-    _ = try db.prepare("DELETE FROM similarity_hashes WHERE session_id = ? AND photo_id = ?")
-        .run([.text(sessionId), .text(id)])
-    _ = try db.prepare("DELETE FROM photos WHERE id = ?").run([.text(id)])
+private func removePhoto(_ db: SQLiteDatabase, _ id: String) async throws {
+    _ = try await db.run("DELETE FROM similarity_hashes WHERE session_id = ? AND photo_id = ?", [.text(sessionId), .text(id)])
+    _ = try await db.run("DELETE FROM photos WHERE id = ?", [.text(id)])
 }
 
 private func makeIncrementalHarness(settings: [String: Double] = [:]) async throws -> IncrementalHarness {
     let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-similarity-\(UUID().uuidString).sqlite").path
-    let db = try await makeMigratedLegacyDB(path: dbPath)
-    try insertSession(db, sessionId)
+    let db = try await makeMigratedStore(path: dbPath)
+    try await insertSession(db, sessionId)
     let counter = ClusterCallCounter()
     let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
     let service = SimilarityService(
@@ -113,10 +110,10 @@ struct SimilarityIncrementalServiceTests {
     @Test("首次分析全量并落状态，新增照片后走增量且版本递增")
     func incrementalPathSkipsFullClustering() async throws {
         let harness = try await makeIncrementalHarness()
-        try addPhotoWithHash(harness.db, "p1", hash: hex(base))
-        try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
-        try addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b1111))
-        try addPhotoWithHash(harness.db, "p4", hash: hex(outlier))
+        try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
+        try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
+        try await addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b1111))
+        try await addPhotoWithHash(harness.db, "p4", hash: hex(outlier))
 
         try await analyze(harness)
         #expect(harness.counter.count == 1, "首次分析应全量聚类")
@@ -128,7 +125,7 @@ struct SimilarityIncrementalServiceTests {
         #expect(first.groupingMode == "global")
 
         // 新增第二张邻域照片：必须走增量（不调用全量聚类），版本 +1、增量计数 +1。
-        try addPhotoWithHash(harness.db, "p5", hash: hex(base ^ 0b111111))
+        try await addPhotoWithHash(harness.db, "p5", hash: hex(base ^ 0b111111))
         try await analyze(harness)
         #expect(harness.counter.count == 1, "增量路径不得调用全量聚类")
         let second = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
@@ -146,13 +143,13 @@ struct SimilarityIncrementalServiceTests {
     @Test("移除照片走增量且分量正确收缩")
     func removalGoesThroughIncremental() async throws {
         let harness = try await makeIncrementalHarness()
-        try addPhotoWithHash(harness.db, "p1", hash: hex(base))
-        try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
-        try addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b1111))
+        try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
+        try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
+        try await addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b1111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
 
-        try removePhoto(harness.db, "p1")
+        try await removePhoto(harness.db, "p1")
         try await analyze(harness)
         #expect(harness.counter.count == 1, "移除也走增量")
         let meta = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
@@ -167,13 +164,13 @@ struct SimilarityIncrementalServiceTests {
     @Test("哈希变化按移除 + 新增重算邻域")
     func hashChangeGoesThroughIncremental() async throws {
         let harness = try await makeIncrementalHarness()
-        try addPhotoWithHash(harness.db, "p1", hash: hex(base))
-        try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
-        try addPhotoWithHash(harness.db, "p3", hash: hex(outlier))
+        try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
+        try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
+        try await addPhotoWithHash(harness.db, "p3", hash: hex(outlier))
         try await analyze(harness)
 
         // p3 变成 base 邻域 → 组从 2 张变 3 张。
-        try updateHash(harness.db, "p3", hash: hex(base ^ 0b111))
+        try await updateHash(harness.db, "p3", hash: hex(base ^ 0b111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
         let result = try #require(try await harness.service.getResult(sessionId: harness.sessionId))
@@ -186,24 +183,24 @@ struct SimilarityIncrementalServiceTests {
     @Test("连续增量达到收敛间隔后自动全量重聚类并清零计数")
     func convergenceIntervalTriggersFullRecluster() async throws {
         let harness = try await makeIncrementalHarness(settings: ["similarity_cluster_convergence_interval": 2])
-        try addPhotoWithHash(harness.db, "p1", hash: hex(base))
-        try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
+        try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
+        try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
         await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.incrementalUpdates == 0)
 
-        try addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b111))
+        try await addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
         await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.incrementalUpdates == 1)
 
-        try addPhotoWithHash(harness.db, "p4", hash: hex(base ^ 0b1111))
+        try await addPhotoWithHash(harness.db, "p4", hash: hex(base ^ 0b1111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
         await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.incrementalUpdates == 2)
 
         // 第三次增量：达到间隔 → 全量收敛，计数清零、版本继续递增。
-        try addPhotoWithHash(harness.db, "p5", hash: hex(base ^ 0b11111))
+        try await addPhotoWithHash(harness.db, "p5", hash: hex(base ^ 0b11111))
         try await analyze(harness)
         #expect(harness.counter.count == 2, "达到收敛间隔应触发全量重聚类")
         let meta = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
@@ -214,8 +211,8 @@ struct SimilarityIncrementalServiceTests {
     @Test("阈值变化走全量并重写状态参数指纹")
     func thresholdChangeForcesFullRecluster() async throws {
         let harness = try await makeIncrementalHarness()
-        try addPhotoWithHash(harness.db, "p1", hash: hex(base))
-        try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11111))
+        try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
+        try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
         await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.paramThreshold == 10)
@@ -235,8 +232,8 @@ struct SimilarityIncrementalServiceTests {
     @Test("sequential 模式无增量设施：全量并清除状态")
     func sequentialModeClearsState() async throws {
         let harness = try await makeIncrementalHarness()
-        try addPhotoWithHash(harness.db, "p1", hash: hex(base))
-        try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
+        try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
+        try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try await analyze(harness)
         await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId) != nil)
 
@@ -255,12 +252,12 @@ struct SimilarityIncrementalServiceTests {
     @Test("状态行与结果一致：全量重算的划分与增量结果相同")
     func stateMatchesStoredResult() async throws {
         let harness = try await makeIncrementalHarness()
-        try addPhotoWithHash(harness.db, "p1", hash: hex(base))
-        try addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
-        try addPhotoWithHash(harness.db, "p3", hash: hex(outlier))
-        try addPhotoWithHash(harness.db, "p4", hash: hex(outlier ^ 0b1))
-        try addPhotoWithHash(harness.db, "p5", hash: hex(outlier ^ 0b11))
-        try addPhotoWithHash(harness.db, "p6", hash: hex(base ^ 0b1111))
+        try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
+        try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
+        try await addPhotoWithHash(harness.db, "p3", hash: hex(outlier))
+        try await addPhotoWithHash(harness.db, "p4", hash: hex(outlier ^ 0b1))
+        try await addPhotoWithHash(harness.db, "p5", hash: hex(outlier ^ 0b11))
+        try await addPhotoWithHash(harness.db, "p6", hash: hex(base ^ 0b1111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
 
