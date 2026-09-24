@@ -148,8 +148,8 @@ struct TemplateCommandsImplTests {
             try await impl.apply(TemplateApplyParams(
                 templateId: created.id, sessionId: "s1", confirmed: false))
         }
-        let before = await settings.value("default_threshold")
-        #expect(before == "10", "未确认时不得写入任何设置")
+        let before = await settings.all()
+        #expect(before["default_threshold"] == "10", "未确认时不得写入任何设置")
 
         try await impl.apply(TemplateApplyParams(
             templateId: created.id, sessionId: "s1", confirmed: true))

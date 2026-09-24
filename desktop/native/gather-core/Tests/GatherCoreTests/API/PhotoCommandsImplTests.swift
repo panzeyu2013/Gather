@@ -56,7 +56,14 @@ struct PhotoCommandsImplTests {
         role: String
     ) async throws {
         try await insertAssetFile(db, id: assetFileId, normalizedPath: "/vault/\(photoId).jpg")
-        try await insertAsset(db, id: assetId)
+        // 同一资产多个变体共享 assets 行：重复 seed 幂等（INSERT OR IGNORE）。
+        _ = try await db.run(
+            """
+            INSERT OR IGNORE INTO assets (id, capture_fingerprint, status, created_at, updated_at)
+            VALUES (?, '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            """,
+            [.text(assetId)]
+        )
         _ = try await db.run(
             "INSERT INTO asset_members (asset_id, file_id, member_role) VALUES (?, ?, ?)",
             [.text(assetId), .text(assetFileId), .text(role)]

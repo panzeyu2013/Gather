@@ -104,7 +104,8 @@ struct QualityCommandsImplTests {
         #expect(job.scopeId == harness.sessionId)
         #expect(job.dedupeKey == "quality.score:\(harness.sessionId):p1,p2")
         #expect(job.status == .queued)
-        #expect(job.checkpoint["photoIds"] == .array([.string("p1"), .string("p2")]))
+        // checkpoint 保持入参顺序（仅 dedupeKey 排序），与旧分支逐字一致。
+        #expect(job.checkpoint["photoIds"] == .array([.string("p2"), .string("p1")]))
     }
 
     @Test("analyze creates an all-photos job when photoIds is nil")
