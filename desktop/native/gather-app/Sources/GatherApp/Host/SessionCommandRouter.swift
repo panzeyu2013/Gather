@@ -326,7 +326,7 @@ public final class SessionCommandRouter: CommandRouter {
             navigationService: NavigationService(database: database),
             similarityService: similarityService,
             duplicateService: DuplicateService(
-                connection: db,
+                database: database,
                 thumbnailProvider: { path, size in
                     RAWDecoder.pixels9x8(path: path, maxPixel: size)
                 },
@@ -591,33 +591,11 @@ public final class SessionCommandRouter: CommandRouter {
         // ── assets.*（3.2 服务层；TS 源 assets.ipc.ts:9-14）──
 
 
-        case "dup.groups":
-            let sessionId = try requiredString(params, "sessionId")
-            return try GatherCore.JSONValue(from: duplicateService.getGroups(sessionId: sessionId))
 
         // TS: duplicate.ipc.ts:57-75 —— destructive（confirmed 由命令边界校验；
         // 直连路由时二次兜底）；resolution 仅 keep_one/keep_all（ADR-017）。
-        case "dup.resolve":
-            guard confirmed(params) else {
-                throw BridgeError.badParams("DUP_RESOLVE_CONFIRM_REQUIRED")
-            }
-            let groupId = try requiredNumber(params, "groupId")
-            let resolutionRaw = try requiredString(params, "resolution")
-            guard let resolution = DupResolution(rawValue: resolutionRaw) else {
-                throw BridgeError.badParams("Invalid resolution: must be keep_one or keep_all")
-            }
-            try duplicateService.resolveGroup(groupId: Int(groupId), resolution: resolution)
-            return .bool(true)
 
         // TS: duplicate.ipc.ts:77-92 —— destructive；isKept 缺省 true。
-        case "dup.resolve_member":
-            guard confirmed(params) else {
-                throw BridgeError.badParams("DUP_RESOLVE_MEMBER_CONFIRM_REQUIRED")
-            }
-            let memberId = try requiredNumber(params, "memberId")
-            let isKept = optionalBool(params, "isKept") ?? true
-            try duplicateService.resolveMember(memberId: Int(memberId), isKept: isKept)
-            return .bool(true)
 
         // ── fkw.*（TS 源 face-kw.ipc.ts）──
 
@@ -837,6 +815,43 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "dup.resolve_member":
+            guard confirmed(params) else {
+                completion(WebResponse(ok: false, error: "DUP_RESOLVE_MEMBER_CONFIRM_REQUIRED")); return
+            }
+            guard let memberId = try? requiredNumber(params, "memberId") else {
+                completion(WebResponse(ok: false, error: "MISSING_PARAM:memberId")); return
+            }
+            let isKept = optionalBool(params, "isKept") ?? true
+            Task {
+                do {
+                    try await duplicateService.resolveMember(memberId: Int(memberId), isKept: isKept)
+                    completion(WebResponse(ok: true, data: .bool(true))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+
+        case "dup.resolve":
+            guard confirmed(params) else {
+                completion(WebResponse(ok: false, error: "DUP_RESOLVE_CONFIRM_REQUIRED")); return
+            }
+            guard let groupId = try? requiredNumber(params, "groupId"),
+                  let resolutionRaw = try? requiredString(params, "resolution"),
+                  let resolution = DupResolution(rawValue: resolutionRaw) else {
+                completion(WebResponse(ok: false, error: "Invalid resolution: must be keep_one or keep_all")); return
+            }
+            Task {
+                do {
+                    try await duplicateService.resolveGroup(groupId: Int(groupId), resolution: resolution)
+                    completion(WebResponse(ok: true, data: .bool(true))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
 
         case "navigation.list":
             Task {
@@ -1640,7 +1655,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let data = try GatherCore.JSONValue(from: duplicateService.getGroups(sessionId: sessionId))
+                    let data = try GatherCore.JSONValue(from: await duplicateService.getGroups(sessionId: sessionId))
                     completion(WebResponse(ok: true, data: data))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))

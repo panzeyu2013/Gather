@@ -114,11 +114,13 @@ private func makeDuplicateHarness(
             mode: mode, onProgress: onProgress)
     }
 ) async throws -> DuplicateHarness {
-    let db = try await makeMigratedDB()
+    let dbPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-duplicate-\(UUID().uuidString).sqlite").path
+    let db = try await makeMigratedLegacyDB(path: dbPath)
     try insertSession(db, "session")
     let dir = try makeTempDir()
     let service = DuplicateService(
-        connection: db,
+        database: try SQLiteDatabase(path: dbPath),
         thumbnailProvider: thumbnail,
         clusterProvider: cluster
     )
@@ -398,7 +400,7 @@ struct DuplicateScanTests {
         try addPhoto(harness, id: "v2", name: "v2.txt", content: textFixtureBytes)
 
         let result = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
-        let groups = try harness.service.getGroups(sessionId: harness.sessionId)
+        let groups = try await harness.service.getGroups(sessionId: harness.sessionId)
 
         #expect(groups.map(\.groupType) == [.exact, .visual])
         #expect(groups[0] == result.exactGroups[0])
@@ -561,9 +563,9 @@ struct DuplicateResolveTests {
         let result = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
         let group = result.exactGroups[0]
 
-        try harness.service.resolveGroup(groupId: group.id, resolution: .keepOne)
+        try await harness.service.resolveGroup(groupId: group.id, resolution: .keepOne)
 
-        let members = try harness.service.getGroups(sessionId: harness.sessionId)[0].members
+        let members = try await harness.service.getGroups(sessionId: harness.sessionId)[0].members
         let byPhoto = Dictionary(uniqueKeysWithValues: members.map { ($0.photoId, $0) })
         #expect(byPhoto["a"]?.isKept == false)
         #expect(byPhoto["b"]?.isKept == true)
@@ -590,7 +592,9 @@ struct DuplicateResolveTests {
 
     @Test("keep_one 分数公式：size 分量可压过 mtime 分量")
     func resolveGroupKeepOneScoresBySizeThenMtime() async throws {
-        let db = try await makeMigratedDB()
+        let dupPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-dup-\(UUID().uuidString).sqlite").path
+        let db = try await makeMigratedLegacyDB(path: dupPath)
         try insertSession(db, "session")
         _ = try db.prepare("""
             INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at)
@@ -608,9 +612,9 @@ struct DuplicateResolveTests {
             VALUES (?, 'p1', 'session', 1, 100000000, '2024-01-01T00:00:00.000Z'),
                    (?, 'p2', 'session', 1, 500, '2025-01-01T00:00:00.000Z')
             """).run([.int(Int64(groupId)), .int(Int64(groupId))])
-        let service = DuplicateService(connection: db)
+        let service = DuplicateService(database: try SQLiteDatabase(path: dupPath))
 
-        try service.resolveGroup(groupId: groupId, resolution: .keepOne)
+        try await service.resolveGroup(groupId: groupId, resolution: .keepOne)
 
         let flags = try db.prepare(
             "SELECT photo_id, is_kept FROM duplicate_group_members WHERE group_id = ? ORDER BY id"
@@ -624,11 +628,11 @@ struct DuplicateResolveTests {
     func resolveGroupKeepAllKeepsAllMembers() async throws {
         let harness = try await makeDuplicateHarness()
         _ = try await scanExactPair(harness)
-        let group = try harness.service.getGroups(sessionId: harness.sessionId)[0]
+        let group = try await harness.service.getGroups(sessionId: harness.sessionId)[0]
 
-        try harness.service.resolveGroup(groupId: group.id, resolution: .keepAll)
+        try await harness.service.resolveGroup(groupId: group.id, resolution: .keepAll)
 
-        let members = try harness.service.getGroups(sessionId: harness.sessionId)[0].members
+        let members = try await harness.service.getGroups(sessionId: harness.sessionId)[0].members
         #expect(members.allSatisfy { $0.isKept })
         #expect(members.allSatisfy { $0.resolution == "keep_all" })
         let statuses = try harness.db.prepare(
@@ -639,7 +643,9 @@ struct DuplicateResolveTests {
 
     @Test("组不存在或无成员：抛错且 UPDATE 回滚")
     func resolveGroupMissingOrEmptyThrowsAndRollsBack() async throws {
-        let db = try await makeMigratedDB()
+        let dupPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-dup-\(UUID().uuidString).sqlite").path
+        let db = try await makeMigratedLegacyDB(path: dupPath)
         try insertSession(db, "session")
         // 有组但无成员：UPDATE resolution 必须先执行再抛错，事务回滚。
         _ = try db.prepare("""
@@ -647,13 +653,13 @@ struct DuplicateResolveTests {
             VALUES ('session', 'exact', 'abc', NULL, 0, NULL, '2026-01-01T00:00:00.000Z')
             """).run()
         let groupId = Int(db.lastInsertRowid)
-        let service = DuplicateService(connection: db)
+        let service = DuplicateService(database: try SQLiteDatabase(path: dupPath))
 
-        #expect(throws: DuplicateServiceError.groupNotFound(groupId)) {
-            try service.resolveGroup(groupId: groupId, resolution: .keepOne)
+        await #expect(throws: DuplicateServiceError.groupNotFound(groupId)) {
+            try await service.resolveGroup(groupId: groupId, resolution: .keepOne)
         }
-        #expect(throws: DuplicateServiceError.groupNotFound(9999)) {
-            try service.resolveGroup(groupId: 9999, resolution: .keepOne)
+        await #expect(throws: DuplicateServiceError.groupNotFound(9999)) {
+            try await service.resolveGroup(groupId: 9999, resolution: .keepOne)
         }
         // 事务回滚：resolution 保持 NULL。
         let resolution = try db.prepare(
@@ -669,9 +675,9 @@ struct DuplicateResolveTests {
         let members = result.exactGroups[0].members
         let memberA = members.first { $0.photoId == "a" }!
 
-        try harness.service.resolveMember(memberId: memberA.id, isKept: false)
+        try await harness.service.resolveMember(memberId: memberA.id, isKept: false)
 
-        let stored = try harness.service.getGroups(sessionId: harness.sessionId)[0].members
+        let stored = try await harness.service.getGroups(sessionId: harness.sessionId)[0].members
         let byPhoto = Dictionary(uniqueKeysWithValues: stored.map { ($0.photoId, $0) })
         #expect(byPhoto["a"]?.isKept == false)
         #expect(byPhoto["a"]?.resolution == "keep_one")
@@ -690,12 +696,12 @@ struct DuplicateResolveTests {
         let harness = try await makeDuplicateHarness()
         let result = try await scanExactPair(harness)
         let memberA = result.exactGroups[0].members.first { $0.photoId == "a" }!
-        try harness.service.resolveMember(memberId: memberA.id, isKept: false)
+        try await harness.service.resolveMember(memberId: memberA.id, isKept: false)
 
         // 重新保留：is_kept 恢复 1，resolution 保持 keep_one 不被覆盖。
-        try harness.service.resolveMember(memberId: memberA.id, isKept: true)
+        try await harness.service.resolveMember(memberId: memberA.id, isKept: true)
 
-        let stored = try harness.service.getGroups(sessionId: harness.sessionId)[0].members
+        let stored = try await harness.service.getGroups(sessionId: harness.sessionId)[0].members
         let byPhoto = Dictionary(uniqueKeysWithValues: stored.map { ($0.photoId, $0) })
         #expect(byPhoto["a"]?.isKept == true)
         #expect(byPhoto["a"]?.resolution == "keep_one")
@@ -708,11 +714,13 @@ struct DuplicateResolveTests {
 
     @Test("resolve_member：成员不存在抛错")
     func resolveMemberMissingMemberThrows() async throws {
-        let db = try await makeMigratedDB()
-        let service = DuplicateService(connection: db)
+        let dupPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-dup-\(UUID().uuidString).sqlite").path
+        let db = try await makeMigratedLegacyDB(path: dupPath)
+        let service = DuplicateService(database: try SQLiteDatabase(path: dupPath))
 
-        #expect(throws: DuplicateServiceError.memberNotFound(9999)) {
-            try service.resolveMember(memberId: 9999, isKept: false)
+        await #expect(throws: DuplicateServiceError.memberNotFound(9999)) {
+            try await service.resolveMember(memberId: 9999, isKept: false)
         }
     }
 }

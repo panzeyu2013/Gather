@@ -92,7 +92,7 @@ public final class DuplicateService {
     /// TS: onProgress(current, total, message)。
     public typealias ProgressHandler = (Int, Int, String) -> Void
 
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     private let thumbnailProvider: ThumbnailProvider
     private let clusterProvider: ClusterProvider
 
@@ -109,7 +109,7 @@ public final class DuplicateService {
     private var scanThreshold: Int?
 
     public init(
-        connection: DBConnection,
+        database: SQLiteDatabase,
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
         clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
             try ClusterEngine.clusterByHash(
@@ -117,7 +117,7 @@ public final class DuplicateService {
                 mode: mode, onProgress: onProgress)
         }
     ) {
-        self.connection = connection
+        self.database = database
         self.thumbnailProvider = thumbnailProvider
         self.clusterProvider = clusterProvider
     }
@@ -206,16 +206,16 @@ public final class DuplicateService {
         let threshold = visualThreshold ?? 4
         let now = nowISOString()
 
-        let allPhotos = try connection.prepare("""
+        let allPhotos = try await database.query("""
             SELECT id, filepath, checksum, checksum_file_size, checksum_file_mtime_ms
             FROM photos WHERE session_id IN (?)
-            """).query([.text(sessionId)]).map { row in
+            """, [.text(sessionId)]).map { row in
                 DuplicatePhotoRow(
-                    id: row[0].textValue ?? "",
-                    filepath: row[1].textValue ?? "",
-                    checksum: row[2].textValue ?? "",
-                    checksumFileSize: row[3].intValue ?? 0,
-                    checksumFileMtimeMs: row[4].doubleValue ?? 0
+                    id: row.values[row.columnOrder[0]]?.textValue ?? "",
+                    filepath: row.values[row.columnOrder[1]]?.textValue ?? "",
+                    checksum: row.values[row.columnOrder[2]]?.textValue ?? "",
+                    checksumFileSize: row.values[row.columnOrder[3]]?.intValue ?? 0,
+                    checksumFileMtimeMs: row.values[row.columnOrder[4]]?.doubleValue ?? 0
                 )
             }
         let photoById = Dictionary(uniqueKeysWithValues: allPhotos.map { ($0.id, $0) })
@@ -271,18 +271,18 @@ public final class DuplicateService {
 
         // TS:170-190 —— 视觉 hash 复用：similarity_hashes 行在 size/mtime 一致
         // 时直接采用，否则重新计算。
-        let existingVisualRows = try connection.prepare("""
+        let existingVisualRows = try await database.query("""
             SELECT photo_id, hash_hex, file_size, file_mtime_ms
             FROM similarity_hashes WHERE session_id IN (?)
-            """).query([.text(sessionId)])
+            """, [.text(sessionId)])
 
         var resolvedVisualHashes: [String: String] = [:]
         for row in existingVisualRows {
-            let photoId = row[0].textValue ?? ""
+            let photoId = row.values[row.columnOrder[0]]?.textValue ?? ""
             guard let meta = photoMeta[photoId],
-                  meta.size == (row[2].intValue ?? 0),
-                  abs(meta.mtimeMs - (row[3].doubleValue ?? 0)) < 1 else { continue }
-            resolvedVisualHashes[photoId] = row[1].textValue ?? ""
+                  meta.size == (row.values[row.columnOrder[2]]?.intValue ?? 0),
+                  abs(meta.mtimeMs - (row.values[row.columnOrder[3]]?.doubleValue ?? 0)) < 1 else { continue }
+            resolvedVisualHashes[photoId] = row.values[row.columnOrder[1]]?.textValue ?? ""
         }
         let visualMisses = allPhotos.filter { resolvedVisualHashes[$0.id] == nil }
         // TS:191 —— 计算前复查。
@@ -300,15 +300,15 @@ public final class DuplicateService {
         onProgress?(allPhotos.count * 3, allPhotos.count * 3, "duplicate.done")
 
         // TS:202-231 —— 分析数据落库（checksum 回写 + similarity_hashes UPSERT）。
-        try connection.transaction {
-            let updateChecksum = try connection.prepare("""
+        try await database.transaction { db in
+            let updateChecksumSQL = """
                 UPDATE photos
                 SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?
                 WHERE id = ?
-                """)
+                """
             for photo in allPhotos {
                 let meta = photoMeta[photo.id]
-                _ = try updateChecksum.run([
+                _ = try db.run(updateChecksumSQL, [
                     .text(resolvedChecksums[photo.id] ?? ""),
                     .int(meta?.size ?? 0),
                     .real(meta?.mtimeMs ?? 0),
@@ -317,7 +317,7 @@ public final class DuplicateService {
             }
             // 与 SimilarityService 相同的 UPSERT 写路径：唯一索引
             // idx_similarity_hashes_session_photo 是冲突目标。
-            let upsertHash = try connection.prepare("""
+            let upsertHashSQL = """
                 INSERT INTO similarity_hashes
                   (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
                 VALUES (?, ?, ?, ?, ?)
@@ -325,10 +325,10 @@ public final class DuplicateService {
                   hash_hex = excluded.hash_hex,
                   file_size = excluded.file_size,
                   file_mtime_ms = excluded.file_mtime_ms
-                """)
+                """
             for (photoId, hash) in resolvedVisualHashes {
                 let meta = photoMeta[photoId]
-                _ = try upsertHash.run([
+                _ = try db.run(upsertHashSQL, [
                     .text(sessionId), .text(photoId), .text(hash),
                     .int(meta?.size ?? 0), .real(meta?.mtimeMs ?? 0),
                 ])
@@ -336,34 +336,34 @@ public final class DuplicateService {
         }
 
         // TS:241 —— 视觉聚类 O(n²)（大库达秒级），读取已提升到事务外。
-        try connection.exec("PRAGMA group_concat_limit = 0")
+        try await database.execute("PRAGMA group_concat_limit = 0")
 
         // TS:243-258 —— 精确分组：按 checksum 聚合。
-        let exactRows = try connection.prepare("""
+        let exactRows = try await database.query("""
             SELECT checksum, COUNT(*) as cnt, GROUP_CONCAT(id) as photo_ids
             FROM photos
             WHERE session_id IN (?) AND checksum != ''
             GROUP BY checksum
             HAVING COUNT(*) > 1
-            """).query([.text(sessionId)])
+            """, [.text(sessionId)])
 
         var exactPhotoIds = Set<String>()
         for row in exactRows {
-            for photoId in (row[2].textValue ?? "").split(separator: ",") {
+            for photoId in (row.values[row.columnOrder[2]]?.textValue ?? "").split(separator: ",") {
                 exactPhotoIds.insert(String(photoId))
             }
         }
 
         // TS:260-274 —— 视觉聚类输入：排除精确重复照片。
         let hashRows = excludeExactDuplicateHashes(
-            rows: try connection.prepare("""
+            rows: try await database.query("""
                 SELECT sh.photo_id, sh.hash_hex
                 FROM similarity_hashes sh
                 JOIN photos p ON p.id = sh.photo_id
                 WHERE p.session_id IN (?)
                 ORDER BY sh.photo_id
-                """).query([.text(sessionId)]).map { row in
-                    (photoId: row[0].textValue ?? "", hashHex: row[1].textValue ?? "")
+                """, [.text(sessionId)]).map { row in
+                    (photoId: row.values[row.columnOrder[0]]?.textValue ?? "", hashHex: row.values[row.columnOrder[1]]?.textValue ?? "")
                 },
             exactPhotoIds: exactPhotoIds
         )
@@ -391,8 +391,8 @@ public final class DuplicateService {
 
         // TS:292-329 —— 重建分组事务：先复位旧成员（removed → ready）再整组
         // 删除重插，保证扫描结果幂等。
-        let groupIds = try connection.transaction { () -> (exact: [Int], visual: [Int]) in
-            _ = try connection.prepare("""
+        let groupIds = try await database.transaction { db -> (exact: [Int], visual: [Int]) in
+            _ = try db.run("""
                 UPDATE photos
                 SET status = 'ready'
                 WHERE id IN (
@@ -401,32 +401,30 @@ public final class DuplicateService {
                   WHERE session_id IN (?)
                 )
                 AND status = 'removed'
-                """).run([.text(sessionId)])
-            _ = try connection.prepare(
-                "DELETE FROM duplicate_group_members WHERE session_id IN (?)"
-            ).run([.text(sessionId)])
-            _ = try connection.prepare(
-                "DELETE FROM duplicate_groups WHERE session_id IN (?)"
-            ).run([.text(sessionId)])
+                """, [.text(sessionId)])
+            _ = try db.run(
+                "DELETE FROM duplicate_group_members WHERE session_id IN (?)",
+                [.text(sessionId)]
+            )
+            _ = try db.run(
+                "DELETE FROM duplicate_groups WHERE session_id IN (?)",
+                [.text(sessionId)]
+            )
 
-            let insertGroup = try connection.prepare(
-                "INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)"
-            )
-            let insertMember = try connection.prepare(
-                "INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime) VALUES (?, ?, ?, 1, ?, ?)"
-            )
+            let insertGroupSQL = "INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)"
+            let insertMemberSQL = "INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime) VALUES (?, ?, ?, 1, ?, ?)"
             var exactGroupIds: [Int] = []
             for row in exactRows {
-                let photoIds = (row[2].textValue ?? "").split(separator: ",").map(String.init)
-                _ = try insertGroup.run([
-                    .text(sessionId), .text("exact"), .text(row[0].textValue ?? ""), .null,
+                let photoIds = (row.values[row.columnOrder[2]]?.textValue ?? "").split(separator: ",").map(String.init)
+                _ = try db.run(insertGroupSQL, [
+                    .text(sessionId), .text("exact"), .text(row.values[row.columnOrder[0]]?.textValue ?? ""), .null,
                     .int(Int64(photoIds.count)), .text(now),
                 ])
-                let groupId = Int(connection.lastInsertRowid)
+                let groupId = Int(db.lastInsertRowID)
                 exactGroupIds.append(groupId)
                 for photoId in photoIds {
                     let meta = photoMeta[photoId]
-                    _ = try insertMember.run([
+                    _ = try db.run(insertMemberSQL, [
                         .int(Int64(groupId)), .text(photoId), .text(sessionId),
                         meta.map { .int($0.size) } ?? .null,
                         meta.map { .text($0.mtimeISO) } ?? .null,
@@ -437,15 +435,15 @@ public final class DuplicateService {
             for memberIds in components {
                 // TS:318 —— 组内首成员（hashRows 按 photo_id 排序）的 hash 为代表。
                 let firstHash = hashByPhotoId[memberIds[0]]!
-                _ = try insertGroup.run([
+                _ = try db.run(insertGroupSQL, [
                     .text(sessionId), .text("visual"), .null, .text(firstHash),
                     .int(Int64(memberIds.count)), .text(now),
                 ])
-                let groupId = Int(connection.lastInsertRowid)
+                let groupId = Int(db.lastInsertRowID)
                 visualGroupIds.append(groupId)
                 for photoId in memberIds {
                     let meta = photoMeta[photoId]
-                    _ = try insertMember.run([
+                    _ = try db.run(insertMemberSQL, [
                         .int(Int64(groupId)), .text(photoId), .text(sessionId),
                         meta.map { .int($0.size) } ?? .null,
                         meta.map { .text($0.mtimeISO) } ?? .null,
@@ -455,18 +453,18 @@ public final class DuplicateService {
             return (exactGroupIds, visualGroupIds)
         }
 
-        return try buildResult(exactGroupIds: groupIds.exact, visualGroupIds: groupIds.visual)
+        return try await buildResult(exactGroupIds: groupIds.exact, visualGroupIds: groupIds.visual)
     }
 
     /// TS: getGroups —— duplicate.groups 命令；按 group_type, id 排序。
-    public func getGroups(sessionId: String) throws -> [DuplicateGroup] {
-        let groupRows = try connection.prepare("""
+    public func getGroups(sessionId: String) async throws -> [DuplicateGroup] {
+        let groupRows = try await database.query("""
             SELECT * FROM duplicate_groups
             WHERE session_id = ?
             ORDER BY group_type, id
-            """).query([.text(sessionId)])
+            """, [.text(sessionId)])
         if groupRows.isEmpty { return [] }
-        let memberMap = try fetchMembers(ids: groupRows.map { Int($0[0].intValue ?? 0) })
+        let memberMap = try await fetchMembers(ids: groupRows.map { Int($0.values[$0.columnOrder[0]]?.intValue ?? 0) })
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
@@ -474,91 +472,98 @@ public final class DuplicateService {
 
     /// TS: resolveGroup —— keep_one 按分数（size*1000 + mtimeMs）取最优保留，
     /// keep_all 全部保留；随后重算照片状态。
-    public func resolveGroup(groupId: Int, resolution: DupResolution) throws {
-        try connection.transaction {
-            _ = try connection.prepare(
-                "UPDATE duplicate_groups SET resolution = ? WHERE id = ?"
-            ).run([.text(resolution.rawValue), .int(Int64(groupId))])
+    public func resolveGroup(groupId: Int, resolution: DupResolution) async throws {
+        var resolvedPhotoIds: [String] = []
+        try await database.transaction { db in
+            _ = try db.run(
+                "UPDATE duplicate_groups SET resolution = ? WHERE id = ?",
+                [.text(resolution.rawValue), .int(Int64(groupId))]
+            )
 
-            let members = try connection.prepare(
-                "SELECT * FROM duplicate_group_members WHERE group_id = ?"
-            ).query([.int(Int64(groupId))])
+            let members = try db.query(
+                "SELECT * FROM duplicate_group_members WHERE group_id = ?",
+                [.int(Int64(groupId))]
+            )
             if members.isEmpty {
                 throw DuplicateServiceError.groupNotFound(groupId)
             }
 
             if resolution == .keepAll {
-                let updateMember = try connection.prepare(
-                    "UPDATE duplicate_group_members SET is_kept = 1, resolution = ? WHERE id = ?"
-                )
+                let updateMemberSQL = "UPDATE duplicate_group_members SET is_kept = 1, resolution = ? WHERE id = ?"
                 for member in members {
-                    _ = try updateMember.run([
-                        .text(resolution.rawValue), .int(member[0].intValue ?? 0),
+                    _ = try db.run(updateMemberSQL, [
+                        .text(resolution.rawValue), .int(member.values[member.columnOrder[0]]?.intValue ?? 0),
                     ])
                 }
             } else {
-                var bestId = members[0][0].intValue ?? 0
+                var bestId = members[0].values[members[0].columnOrder[0]]?.intValue ?? 0
                 var bestScore: Double = -1
                 for member in members {
                     // TS: new Date(m.file_mtime || 0).getTime() —— null/空串 → 0，
                     // 非空非法串 → NaN（永不中选）。
                     let mtimeMs: Double
-                    if let fileMtime = member[6].textValue, !fileMtime.isEmpty {
+                    if let fileMtime = member.values[member.columnOrder[6]]?.textValue, !fileMtime.isEmpty {
                         mtimeMs = tsDateParse(fileMtime) ?? .nan
                     } else {
                         mtimeMs = 0
                     }
-                    let score = Double(member[5].intValue ?? 0) * 1000 + mtimeMs
+                    let score = Double(member.values[member.columnOrder[5]]?.intValue ?? 0) * 1000 + mtimeMs
                     if score > bestScore {
                         bestScore = score
-                        bestId = member[0].intValue ?? 0
+                        bestId = member.values[member.columnOrder[0]]?.intValue ?? 0
                     }
                 }
-                let updateMember = try connection.prepare(
-                    "UPDATE duplicate_group_members SET is_kept = ?, resolution = ? WHERE id = ?"
-                )
+                let updateMemberKeepOneSQL = "UPDATE duplicate_group_members SET is_kept = ?, resolution = ? WHERE id = ?"
                 for member in members {
-                    let id = member[0].intValue ?? 0
-                    _ = try updateMember.run([
+                    let id = member.values[member.columnOrder[0]]?.intValue ?? 0
+                    _ = try db.run(updateMemberKeepOneSQL, [
                         .int(id == bestId ? 1 : 0), .text(resolution.rawValue), .int(id),
                     ])
                 }
             }
-            try recomputePhotoStatuses(members.compactMap { $0[2].textValue })
+            resolvedPhotoIds = members.compactMap { $0.values[$0.columnOrder[2]]?.textValue }
+        }
+        if !resolvedPhotoIds.isEmpty {
+            try await recomputePhotoStatuses(resolvedPhotoIds)
         }
     }
 
     /// TS: resolveMember —— 单成员保留/移除；resolution 只在未定（NULL）时写。
-    public func resolveMember(memberId: Int, isKept: Bool) throws {
-        try connection.transaction {
-            _ = try connection.prepare("""
+    public func resolveMember(memberId: Int, isKept: Bool) async throws {
+        var memberPhotoId: String?
+        try await database.transaction { db in
+            _ = try db.run("""
                 UPDATE duplicate_group_members
                 SET is_kept = ?, resolution = COALESCE(resolution, ?)
                 WHERE id = ?
-                """).run([
+                """, [
                     .int(isKept ? 1 : 0),
                     .text(isKept ? "keep_all" : "keep_one"),
                     .int(Int64(memberId)),
                 ])
-            let member = try connection.prepare(
-                "SELECT photo_id FROM duplicate_group_members WHERE id = ?"
-            ).get([.int(Int64(memberId))])
+            let member = try db.queryOne(
+                "SELECT photo_id FROM duplicate_group_members WHERE id = ?",
+                [.int(Int64(memberId))]
+            )
             guard let member else {
                 throw DuplicateServiceError.memberNotFound(memberId)
             }
-            try recomputePhotoStatuses([member[0].textValue ?? ""])
+            memberPhotoId = member.values[member.columnOrder[0]]?.textValue
+        }
+        if let memberPhotoId {
+            try await recomputePhotoStatuses([memberPhotoId])
         }
     }
 
     // MARK: - 内部
 
     /// TS: recomputePhotoStatuses —— 任一 is_kept=0 成员 → 'removed'，否则 'ready'。
-    private func recomputePhotoStatuses(_ photoIds: [String]) throws {
+    private func recomputePhotoStatuses(_ photoIds: [String]) async throws {
         if photoIds.isEmpty { return }
         var seen = Set<String>()
         let uniqueIds = photoIds.filter { seen.insert($0).inserted }
         let placeholders = uniqueIds.map { _ in "?" }.joined(separator: ",")
-        _ = try connection.prepare("""
+        _ = try await database.run("""
             UPDATE photos
             SET status = CASE
               WHEN EXISTS (
@@ -570,16 +575,16 @@ public final class DuplicateService {
               ELSE 'ready'
             END
             WHERE id IN (\(placeholders))
-            """).run(uniqueIds.map { .text($0) })
+            """, uniqueIds.map { .text($0) })
     }
 
     /// TS: buildResult —— 按组 id 读取分组与成员，汇总 totalDuplicates。
-    private func buildResult(exactGroupIds: [Int], visualGroupIds: [Int]) throws -> DuplicateScanResult {
+    private func buildResult(exactGroupIds: [Int], visualGroupIds: [Int]) async throws -> DuplicateScanResult {
         var exactGroups: [DuplicateGroup] = []
         var visualGroups: [DuplicateGroup] = []
         for ids in [exactGroupIds, visualGroupIds] {
             if ids.isEmpty { continue }
-            for group in try fetchGroups(ids: ids) {
+            for group in try await fetchGroups(ids: ids) {
                 if group.groupType == .exact {
                     exactGroups.append(group)
                 } else {
@@ -598,57 +603,58 @@ public final class DuplicateService {
     }
 
     /// TS: buildResult/getGroups 的组读取（按 id 排序，成员 JOIN photos）。
-    private func fetchGroups(ids: [Int]) throws -> [DuplicateGroup] {
+    private func fetchGroups(ids: [Int]) async throws -> [DuplicateGroup] {
         guard !ids.isEmpty else { return [] }
         let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        let groupRows = try connection.prepare(
-            "SELECT * FROM duplicate_groups WHERE id IN (\(placeholders)) ORDER BY id"
-        ).query(ids.map { .int(Int64($0)) })
-        let memberMap = try fetchMembers(ids: ids)
+        let groupRows = try await database.query(
+            "SELECT * FROM duplicate_groups WHERE id IN (\(placeholders)) ORDER BY id",
+            ids.map { .int(Int64($0)) }
+        )
+        let memberMap = try await fetchMembers(ids: ids)
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
     }
 
     /// TS: duplicate_group_members JOIN photos（filepath/filename）按 dgm.id 排序。
-    private func fetchMembers(ids: [Int]) throws -> [Int: [DuplicateGroupMember]] {
+    private func fetchMembers(ids: [Int]) async throws -> [Int: [DuplicateGroupMember]] {
         guard !ids.isEmpty else { return [:] }
         let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        let rows = try connection.prepare("""
+        let rows = try await database.query("""
             SELECT dgm.*, p.filepath, p.filename
             FROM duplicate_group_members dgm
             JOIN photos p ON p.id = dgm.photo_id
             WHERE dgm.group_id IN (\(placeholders))
             ORDER BY dgm.id
-            """).query(ids.map { .int(Int64($0)) })
+            """, ids.map { .int(Int64($0)) })
         var memberMap: [Int: [DuplicateGroupMember]] = [:]
         for row in rows {
-            let groupId = Int(row[1].intValue ?? 0)
+            let groupId = Int(row.values[row.columnOrder[1]]?.intValue ?? 0)
             memberMap[groupId, default: []].append(DuplicateGroupMember(
-                id: Int(row[0].intValue ?? 0),
-                photoId: row[2].textValue ?? "",
-                isKept: (row[4].intValue ?? 0) != 0,
-                fileSize: row[5].intValue.map(Int.init),
-                fileMtime: row[6].textValue,
-                resolution: row[7].textValue,
-                filepath: row[8].textValue ?? "",
-                filename: row[9].textValue ?? ""
+                id: Int(row.values[row.columnOrder[0]]?.intValue ?? 0),
+                photoId: row.values[row.columnOrder[2]]?.textValue ?? "",
+                isKept: (row.values[row.columnOrder[4]]?.intValue ?? 0) != 0,
+                fileSize: row.values[row.columnOrder[5]]?.intValue.map(Int.init),
+                fileMtime: row.values[row.columnOrder[6]]?.textValue,
+                resolution: row.values[row.columnOrder[7]]?.textValue,
+                filepath: row.values[row.columnOrder[8]]?.textValue ?? "",
+                filename: row.values[row.columnOrder[9]]?.textValue ?? ""
             ))
         }
         return memberMap
     }
 
-    private func makeGroup(row: DBRow, memberMap: [Int: [DuplicateGroupMember]]) -> DuplicateGroup {
-        let id = Int(row[0].intValue ?? 0)
+    private func makeGroup(row: SQLiteRow, memberMap: [Int: [DuplicateGroupMember]]) -> DuplicateGroup {
+        let id = Int(row.values[row.columnOrder[0]]?.intValue ?? 0)
         return DuplicateGroup(
             id: id,
-            groupType: (row[2].textValue ?? "") == "exact" ? .exact : .visual,
-            checksum: row[3].textValue,
-            hashHex: row[4].textValue,
-            memberCount: Int(row[5].intValue ?? 0),
+            groupType: (row.values[row.columnOrder[2]]?.textValue ?? "") == "exact" ? .exact : .visual,
+            checksum: row.values[row.columnOrder[3]]?.textValue,
+            hashHex: row.values[row.columnOrder[4]]?.textValue,
+            memberCount: Int(row.values[row.columnOrder[5]]?.intValue ?? 0),
             members: memberMap[id] ?? [],
-            resolution: row[6].textValue,
-            createdAt: row[7].textValue ?? ""
+            resolution: row.values[row.columnOrder[6]]?.textValue,
+            createdAt: row.values[row.columnOrder[7]]?.textValue ?? ""
         )
     }
 
