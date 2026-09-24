@@ -269,6 +269,8 @@ public actor MetadataWriter {
     private func settle(xmpPath: String, ticket: UUID) {
         guard entries[xmpPath]?.ticket == ticket else { return }
         let generation = entries[xmpPath]?.generation ?? 0
+        // mwwd：结算即消费就绪队列（本路径本次结算出队）。
+        readyQueue.removeAll { $0 == xmpPath }
         entries[xmpPath]?.phase = .idle
         // mww6a / W4-4 ②：仅本 ticket 才清在飞登记，避免清掉新一波。
         if activeWrites[xmpPath] == ticket { activeWrites[xmpPath] = nil }
