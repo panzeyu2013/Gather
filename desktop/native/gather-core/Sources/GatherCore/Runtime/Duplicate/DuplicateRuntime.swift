@@ -10,7 +10,7 @@
 //   视觉聚类走 Task.detached —— actor 内不执行阻塞 IO 与长同步 CPU。
 // - 写路径全部为 Store 单事务：writeScanResults（checksum 回写 + hash UPSERT）、
 //   rebuildGroups（状态复位 + 整组重建）、applyResolution / resolveMember
-//   （成员写入 + 照片状态重算）；本文件零 SQL、零锁、零 @unchecked Sendable。
+//   （成员写入 + 照片状态重算）；本文件零 SQL、零锁、零 unchecked 并发标注。
 // - 语义修正：sha256 流式（SHA256.stream，内存有界）；成员 = dgm.id 序、
 //   组 = id 序（Store 保证）；keep_one 打分经纯函数
 //   DuplicateAssembler.keptMemberIds；Store 的 DuplicateStoreError 映射回
