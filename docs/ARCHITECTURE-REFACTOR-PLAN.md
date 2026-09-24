@@ -680,3 +680,21 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 
 **审计正面结论（保留）**：`Legacy*/Compat*/Adapter*` = 0（宽口径与门禁口径一致）；文档中 15 个 commit 号 15/15 均存在于 git；`Services=10` / `enforced=15` / `tracked=6` 三项与门禁实跑一致；`IndexerService` 的 live 外部耦合仅 `IndexerRuntime.swift` 的 `FileStat/defaultStat/sha256File/defaultDimensions` + `Error`；`FaceKwService` 的真实耦合仅 `FaceKeywordAssembler.swift` L65/68 抛 `FaceKwServiceError` —— **删该服务前必须先裁决错误类型归属**（登记为下一批第一优先项）。
 | round 11：R8 §16-⑧ 裁决执行——移除失效度量 | 已入库 | acc-legacy 指出 tracked 指标 `legacy AnalysisJobRepo callers (R1)=1` 的类型现存 `Store/JobStore.swift`（**正常 Store 层，非遗留仓储**）。裁决：该指标已不度量遗留残迹，**予以撤销**（从门禁脚本与 baseline 同时删除），避免把正常 Store 层计数当作棘轮。结果：**tracked 6 → 5**，`enforced rules: 15, tracked metrics: 5`，门禁 `legacy boundary check OK`。 |
+## 17. R7 死码裁决结果（Round 12/40，实测反证）
+
+**结论：原 R7 清单中的「4 个零调用 Store 方法」前提不成立，删除目标予以撤销。**
+
+实测（`grep -rn` 全仓，区分声明/实现/调用/测试替身）：
+
+| 方法 | 声明（协议） | 实现 | 真实调用者 | 判定 |
+|---|---|---|---|---|
+| `updateWritebackStatusByXmpPath` | `Store/WritebackStore.swift:180` | `:957` | `Tests/.../Store/WritebackItemsTests.swift:270` **（真实调用）** | **保留**（有测试覆盖的真实 API） |
+| `hasActiveWriteback` | 协议声明 | 实现 | `WritebackItemsTests.swift:283/286/290/302…` **（多处断言）** | **保留** |
+| `updateWritebackBackupPath` | 协议声明 | 实现 | `WritebackItemsTests.swift` **（真实调用）** | **保留** |
+| `writebackItem(itemId:)` | 协议声明 | 实现 | `WritebackItemsTests.swift`（11 处引用） | **保留** |
+
+另发现：`MetadataWriterSummaryTests.swift:227/228` 与 `MetadataWriterConflictsTests.swift:408/409` 的**测试替身**把这 4 个方法写成 `fatalError("unused")`——这是**有意的契约**（被意外调用即崩溃，暴露替身不完整），**不属于死码**，本轮不动；与债务 D3 注记的 `recoverInterruptedOutbox` 替身同性质。
+
+**R7 剩余真实工作（更新后清单）**：① `FaceCluster` / `BindingData` 重复类型合并（同一概念两处定义）；② `FilterEngine`（542 行）与 `PhotoAssets`（47 行）从 `Services/` 归位到 `Runtime/Filter` 与 `Runtime/Support`（二者均有活跃调用：`FilterEngine` 外部 15 行/3 文件含 app 路由与 VM；`PhotoAssets` 被 Quality/Similarity Runtime 使用，**迁移前不可删**）。
+
+**方法论登记（纪律 14）**：删除任何「零调用」成员前，必须用 `grep -rn` 同时排除「协议声明 / 实现 / 测试替身 stub / 真实调用」四类引用；仅有测试替身 stub 也算非零调用面，需先裁决替身契约再删。
