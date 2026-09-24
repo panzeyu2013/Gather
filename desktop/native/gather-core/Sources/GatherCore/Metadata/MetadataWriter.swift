@@ -438,10 +438,12 @@ public actor MetadataWriter {
     }
 
     /// mwstart / W4-4：重启入口。shutdown 为终止态（置 isShutDown，enqueue 一律拒绝），
-    /// 关停后需 start 才能再次排程；start 会丢弃关停前残留状态（就绪队列/在飞写/串行链尾），
+    /// 关停后需 start 才能再次排程；start 会丢弃关停前残留状态
+    /// （排程条目/就绪队列/在飞写/串行链尾；清后 generation 从 1 重新计数），
     /// 语义为调用方在 start 后重新 schedule，不注入新依赖（依赖仍由 init 注入）。
     public func start() {
         isShutDown = false
+        entries.removeAll()
         readyQueue.removeAll()
         activeWrites.removeAll()
         mutationTails.removeAll()

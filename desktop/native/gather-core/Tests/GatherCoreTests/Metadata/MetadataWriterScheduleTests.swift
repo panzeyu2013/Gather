@@ -219,4 +219,67 @@ struct MetadataWriterScheduleTests {
         #expect(tails == 0)
         await gate.open()
     }
+
+    // MARK: - mwstart / W4-4 关停后 start 复用
+
+    @Test func shutdownRejectsSchedulesUntilStartReenablesThem() async throws {
+        let (writer, path) = try await makeWriter(label: "mwstart-reenable")
+        defer { removeStoreFiles(path) }
+        let xmpPath = "/v/IMG_start_reuse.xmp"
+
+        try await writer.shutdown(timeoutMs: 5_000)
+        // 关停仍是终止态：迟到 schedule 被拒，状态不复活（先证前提）。
+        writer.schedule(xmpPath: xmpPath, delayMs: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        var snapshot = await writer.scheduleSnapshot()
+        #expect(snapshot.isEmpty)
+
+        // start 清除终止态：同一实例可重新排程，并结算到 idle。
+        await writer.start()
+        writer.schedule(xmpPath: xmpPath, delayMs: 0)
+        try await writer.waitForGeneration(xmpPath: xmpPath, minGeneration: 1, timeoutMs: 5_000)
+        try await writer.waitForIdle(xmpPath: xmpPath, timeoutMs: 5_000)
+
+        snapshot = await writer.scheduleSnapshot()
+        #expect(snapshot.count == 1)
+        #expect(snapshot.first?.xmpPath == xmpPath)
+        #expect(snapshot.first?.generation == 1)
+        #expect(snapshot.first?.phase == "idle")
+        let writeState = await writer.writeStateSnapshot()
+        #expect(writeState.ready.isEmpty)
+        #expect(writeState.active.isEmpty)
+        let tails = await writer.mutationTailCount()
+        #expect(tails == 0)
+    }
+
+    @Test func startDiscardsResidueStateBeforeRescheduling() async throws {
+        let (writer, path) = try await makeWriter(label: "mwstart-residue")
+        defer { removeStoreFiles(path) }
+        let xmpPath = "/v/IMG_start_residue.xmp"
+        let gate = MetadataWriterWriteGate()
+        await writer.setWriteBodyForTesting { _ in await gate.wait() }
+
+        // 关停前残留：一笔写被钉在 in-flight，排程/在飞/链尾三处均有状态。
+        writer.schedule(xmpPath: xmpPath, delayMs: 0)
+        try await writer.waitForGeneration(xmpPath: xmpPath, minGeneration: 1, timeoutMs: 5_000)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        var snapshot = await writer.scheduleSnapshot()
+        #expect(snapshot.count == 1)
+        var writeState = await writer.writeStateSnapshot()
+        #expect(writeState.active[xmpPath] != nil)
+        var tails = await writer.mutationTailCount()
+        #expect(tails == 1)
+
+        // start 丢弃全部残留：scheduleSnapshot 空 + writeStateSnapshot 空 + 链尾归零。
+        await writer.start()
+        snapshot = await writer.scheduleSnapshot()
+        #expect(snapshot.isEmpty)
+        writeState = await writer.writeStateSnapshot()
+        #expect(writeState.ready.isEmpty)
+        #expect(writeState.active.isEmpty)
+        tails = await writer.mutationTailCount()
+        #expect(tails == 0)
+
+        await gate.open()
+    }
 }
