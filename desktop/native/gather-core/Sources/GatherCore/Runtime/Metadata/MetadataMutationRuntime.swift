@@ -91,11 +91,12 @@ public actor MetadataMutationRuntime: MetadataMutationPort {
         schedule: Bool = true
     ) async throws -> MetadataMutationResult {
         let resolved = try await deps.assetResolver.resolve(sessionId: sessionId, photoId: photoId)
-        // 注：dirtyFields 取 values.keys（Swift Dictionary 无序），多字段时 outbox 的
-        // dirty_fields JSON 顺序可能逐次不同；消费方按集合处理，若需确定性快照请在后续步骤排序。
+        // dirtyFields 按 rawValue 排序，保证 outbox 的 dirty_fields JSON 顺序确定
+        // （values.keys 为 Swift Dictionary，迭代顺序不稳定，会产生非确定性快照）。
         let dirtyFields = values.keys
             .filter { ["rating", "label", "keywords"].contains($0) }
             .compactMap { MetadataField(rawValue: $0) }
+            .sorted { $0.rawValue < $1.rawValue }
         if dirtyFields.isEmpty {
             throw MetadataMutationError.empty
         }
