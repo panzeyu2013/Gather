@@ -314,11 +314,12 @@ struct MetadataServiceTests {
         #expect(MetadataService.normalizeKeywordList(nil) == nil)
         #expect(MetadataService.normalizeKeywordList(.array([])) == nil)
         #expect(MetadataService.normalizeKeywordList(.string("solo")) == ["solo"])
-        // 数字按 Double 字符串化（既有实现语义：7 → "7.0"，非 JS String(7) 的 "7"）。
-        #expect(MetadataService.normalizeKeywordList(.number(7)) == ["7.0"])
+        // 数字按 JS String(number) 字符串化（与 TS 参考实现一致：7 → "7"）。
+        #expect(MetadataService.normalizeKeywordList(.number(7)) == ["7"])
+        #expect(MetadataService.normalizeKeywordList(.number(7.5)) == ["7.5"])
         #expect(
             MetadataService.normalizeKeywordList(.array([.string("a"), .number(2), .null]))
-                == ["a", "2.0"])
+                == ["a", "2"])
 
         let parsed = MetadataParseSegments(
             ifd0: .object(["Rating": .number(2)]),

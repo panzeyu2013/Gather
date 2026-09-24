@@ -109,14 +109,14 @@ public final class MetadataService {
     }
 
     /// TS: normalizeKeywordList —— 镜像 EmbeddedWriter 对 exifr 关键词列表的归一化
-    /// （单值到达为标量）。
+    /// （单值到达为标量；数字按 JS `String(item)` 字符串化）。
     public static func normalizeKeywordList(_ value: JSONValue?) -> [String]? {
         let strings: [String]
         switch value {
         case .array(let items):
             strings = items.compactMap { item in
                 if let s = item.stringValue { return s }
-                if let n = item.numberValue { return String(n) }
+                if let n = item.numberValue { return Self.keywordString(n) }
                 return nil
             }
         case .none, .null:
@@ -125,12 +125,22 @@ public final class MetadataService {
             if let s = scalar.stringValue {
                 strings = [s]
             } else if let n = scalar.numberValue {
-                strings = [String(n)]
+                strings = [Self.keywordString(n)]
             } else {
                 strings = []
             }
         }
         return strings.isEmpty ? nil : strings
+    }
+
+    /// TS: `String(item)` —— JS Number 字符串化语义：整数值不带小数点
+    /// （7 → "7"，-0 → "0"），NaN/±Infinity 同 JS 命名；非整数保留
+    /// Double 字符串形式（7.5 → "7.5"）。
+    private static func keywordString(_ number: Double) -> String {
+        if number.isNaN { return "NaN" }
+        if number.isInfinite { return number < 0 ? "-Infinity" : "Infinity" }
+        if let integer = Int64(exactly: number) { return String(integer) }
+        return String(number)
     }
 
     // MARK: - 有效属性合成
