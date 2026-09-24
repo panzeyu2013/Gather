@@ -13,7 +13,7 @@
 //       → SettingsService（3.6；TS 源 settings.ipc.ts）
 //     filter.photos / photos_global / suggest → FilterEngine（3.6；
 //       TS 源 filter.ipc.ts，limit/offset 钳制语义在 IPC 层）
-//     navigation.list / split / merge → NavigationService（3.6；
+//     navigation.list / split / merge → NavigationRuntime（3.6；
 //       TS 源 navigation.ipc.ts）
 //     photo.list_page → PhotoRepo.getAssetPage + 资产装配（TS 源 photo.ipc.ts）
 //     assets.candidates / accept_candidate / reject_candidate / volumes /
@@ -36,7 +36,7 @@
 //       （destructive）/ reset（destructive）→ CullingService（Wave 2；
 //       sync/writeback 端口注入真实 MetadataSyncCoordinator / WritebackService）
 //   异步（executeAsync）：
-//     navigation.analyze → NavigationService.analyze（TS 源 navigation.ipc.ts，
+//     navigation.analyze → NavigationRuntime.analyze（TS 源 navigation.ipc.ts，
 //       TS 侧为 async wrapper 内同步执行，Swift 同步直连）
 //     sim.*（SimilarityRuntime，W2c；TS 源 similarity.ipc.ts）：analyze
 //       （JobRunner executor + waitForResult）/ recluster / result /
