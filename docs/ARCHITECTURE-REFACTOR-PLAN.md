@@ -801,3 +801,18 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 | H9 | **baseline 漂移窗口** | `count < limit` 只提示 → 曾出现 `Services 实测4 / baseline5` 的合法回涨窗口（现 5 条全贴边） | count<limit 时自动收紧（写回 baseline）或至少 fail |
 
 **④ 方法论留痕**：验收方明确「并行构建期间不采信单次数字，复现须固定快照（HEAD + 工作树指纹）」，并因并发改动**弃用了不可复现的 check-1**——与纪律 15（快照复验）一致。
+### 26. D4 闭环细节 + 新增债务 D6/D7 + **TS 参考实现的取回方式（重要）**
+
+**⚠️ TS 参考源的取回方式（后续所有保真比对必读）**：`desktop/src` 下的 TS 源码**已被提交 `bf936d4`（「移除 Electron 运行时与 TS 源码」）删除**，工作树中不再存在。需要对照 TS 时**必须用只读方式从历史取回**：`git show bf936d4^:desktop/src/main/services/<path>.ts`。本轮即以此方式取回 `metadata/metadata.service.ts:66-74`（与 `xmp/embedded-writer.ts:87-95` **逐字相同**）作为唯一权威参照。
+
+**TS 参考原文（权威）**：`list = Array.isArray(value) ? value : (value == null ? [] : [value])` → `.filter(item => typeof item === 'string' || typeof item === 'number')` → `.map(item => String(item))` → 空则 `undefined`。即：**JS `String(number)`（整数不带小数点：7→"7"、7.5→"7.5"、-0→"0"、NaN/±Infinity 同 JS 命名）· null/不支持类型丢弃 · 单层数组展开 · 空结果 nil · 无 trim、无去重、无大小写折叠**。
+
+**修正确认（提交 2f81fcd）**：`item.numberValue` 分支由 `String(n)` 改为 `Self.keywordString(n)`（`NaN`→"NaN" · `±Infinity`→±"Infinity" · `Int64(exactly:)` 命中→无小数点十进制（7→"7"、-0.0→"0"）· 非整数/超 Int64 回退 `String(number)`，**不 trap**）；测试断言恢复 `["7"]`/`["a","2"]` + 新增 `7.5` → `["7.5"]`（**未放宽任何断言**）。验证：`--filter MetadataServiceTests` 10/10 · `--filter Metadata` **120 tests/18 suites 全绿** · 门禁 OK；touch 重跑前后两文件 md5 不变（`d7b19d90…` / `ef51e607…`）。
+
+**新增债务（本轮登记）**：
+| # | 债务 | 说明 | 建议处置 |
+|---|---|---|---|
+| **D6** | **函数语义边界核对**：我下发的"其余规则（trim、去重）保持不变"**与 TS 不符**——trim + 去重属于**另一个函数** `metadata-contract.ts: normalizeKeywords(unknown)`（**只收 string[]**、非数组抛 `METADATA_KEYWORDS_INVALID`、**丢弃数字**）。Swift `normalizeKeywordList` 与 TS **同名函数**完全一致（不去重不去空格、收 string\|number），本轮按 TS 保持不动、**未把两函数规则混用**（正确）。但 `MetadataContract.swift` 的 `normalizeKeywords(values:[JSONValue])` **是否也应"只收字符串"** 未核对 → 另立债务。 | 下一轮专项核对 `MetadataContract.normalizeKeywords` 与 TS `metadata-contract.ts` 的语义一致性（含 `METADATA_KEYWORDS_INVALID` 抛出条件） |
+| **D7** | **同款风险散落**：同文件 `stringValue(_:)`（约 `:563`，EXIF `dateTaken`/`shutterSpeed` 标量字符串化，TS 为 `value ? String(value) : undefined`）**仍用 `String(number)`** → 整数存在同款 `.0` 风险 | 随 D6 同批核对并按同一 `keywordString`/等价 helper 归一 |
+
+**登记为已知例外**：本修正使行为相对**迁移前 Swift** 有变化（向 TS 对齐）——后续「迁移逐字节不变」类审计须以此为已知例外。**残余 JS 边界**（未扩大范围，关键词场景可忽略）：`String(1e-7)` Swift=`"1e-07"` vs JS=`"1e-7"`；`|x|≥2^63` 整数值回退 Swift 描述（`1e19`→`"1e+19"` vs JS 全数字）。
