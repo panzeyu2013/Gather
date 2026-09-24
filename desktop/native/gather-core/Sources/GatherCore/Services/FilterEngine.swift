@@ -15,15 +15,15 @@
 //   - filterPhotos 引擎内不钳制 limit/offset；filterGlobally 钳制
 //     1..500 / ≥0（不对称，与 TS 一致）；countPhotos 全局模式 asset 去重
 //   - rowToPhotoData 硬编码 hasExistingXmp: false
-// 与 TS 的差异：参数统一 DBValue；FaceCount 子查询保留。
+// 与 TS 的差异：参数统一 SQLiteValue；FaceCount 子查询保留。
 import Foundation
 
 /// TS: WhereClauseResult。
 public struct WhereClauseResult: Equatable, Sendable {
     public let sql: String
-    public let params: [DBValue]
+    public let params: [SQLiteValue]
 
-    public init(sql: String, params: [DBValue]) {
+    public init(sql: String, params: [SQLiteValue]) {
         self.sql = sql
         self.params = params
     }
@@ -59,10 +59,10 @@ public final class FilterEngine {
         "gps_latitude", "gps_longitude", "width", "height", "file_size", "file_mtime", "label",
     ]
 
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
 
-    public init(connection: DBConnection) {
-        self.connection = connection
+    public init(database: SQLiteDatabase) {
+        self.database = database
     }
 
     // MARK: API
@@ -75,7 +75,7 @@ public final class FilterEngine {
         sortOrder: String? = nil,
         limit: Int? = nil,
         offset: Int? = nil
-    ) throws -> [FilteredPhotoData] {
+    ) async throws -> [FilteredPhotoData] {
         let clause = try buildWhereClause(criteria)
         let sessionFilter = sessionId == "__global__" ? "1=1" : "p.session_id = ?"
         let sql = [
@@ -87,7 +87,7 @@ public final class FilterEngine {
             "WHERE \(sessionFilter) AND (\(clause.sql.isEmpty ? "1=1" : clause.sql))",
         ].joined(separator: " ")
 
-        var allParams: [DBValue] = sessionId == "__global__" ? clause.params : [.text(sessionId)] + clause.params
+        var allParams: [SQLiteValue] = sessionId == "__global__" ? clause.params : [.text(sessionId)] + clause.params
         var resolvedSql = sql
         if let sortBy {
             resolvedSql += " ORDER BY \(resolveSortColumn(sortBy)) \(sortOrder == "asc" ? "ASC" : "DESC")"
@@ -101,7 +101,7 @@ public final class FilterEngine {
             allParams.append(.int(Int64(offset)))
         }
 
-        let rows = try connection.prepare(resolvedSql).query(allParams)
+        let rows = try await database.query(resolvedSql, allParams)
         return rows.map(rowToPhotoData)
     }
 
@@ -113,7 +113,7 @@ public final class FilterEngine {
         limit: Int? = nil,
         offset: Int? = nil,
         sessionId: String? = nil
-    ) throws -> [GlobalPhotoResult] {
+    ) async throws -> [GlobalPhotoResult] {
         let clause = try buildWhereClause(criteria)
         let membershipFilter = membershipSql(sessionId)
         let sql = [
@@ -141,7 +141,7 @@ public final class FilterEngine {
                 : "ORDER BY p.rowid",
         ].joined(separator: " ")
 
-        var params: [DBValue] = clause.params
+        var params: [SQLiteValue] = clause.params
         if sessionId != nil { params.append(.text(sessionId!)) }
         var paginatedSql = sql
         if let limit {
@@ -152,69 +152,70 @@ public final class FilterEngine {
                 params.append(.int(Int64(max(0, Int(floor(Double(offset)))))))
             }
         }
-        let rows = try connection.prepare(paginatedSql).query(params)
+        let rows = try await database.query(paginatedSql, params)
         return rows.map { row in
             // SELECT 共 12 列（0-11）：session_ids(10) / session_names(11)。
-            let sessionIds = (row[10].textValue ?? "").split(separator: ",").map(String.init)
-            let sessionNames = (row[11].textValue ?? "").split(separator: ",").map(String.init)
+            let sessionIds = (row.values[row.columnOrder[10]]?.textValue ?? "").split(separator: ",").map(String.init)
+            let sessionNames = (row.values[row.columnOrder[11]]?.textValue ?? "").split(separator: ",").map(String.init)
             return GlobalPhotoResult(
-                photoId: row[0].textValue ?? "",
-                assetId: row[1].textValue ?? "",
-                sessionId: row[2].textValue ?? "",
-                sessionName: row[3].textValue ?? "",
-                sessionIds: sessionIds.isEmpty ? [row[2].textValue ?? ""] : sessionIds,
-                sessionNames: sessionNames.isEmpty ? [row[3].textValue ?? ""] : sessionNames,
-                filename: row[4].textValue ?? "",
-                filepath: row[5].textValue ?? "",
-                status: row[6].textValue ?? "",
-                rating: row[7].doubleValue ?? 0,
-                label: row[8].textValue ?? "",
-                keywords: parseKeywords(row[9].textValue ?? "[]")
+                photoId: row.values[row.columnOrder[0]]?.textValue ?? "",
+                assetId: row.values[row.columnOrder[1]]?.textValue ?? "",
+                sessionId: row.values[row.columnOrder[2]]?.textValue ?? "",
+                sessionName: row.values[row.columnOrder[3]]?.textValue ?? "",
+                sessionIds: sessionIds.isEmpty ? [row.values[row.columnOrder[2]]?.textValue ?? ""] : sessionIds,
+                sessionNames: sessionNames.isEmpty ? [row.values[row.columnOrder[3]]?.textValue ?? ""] : sessionNames,
+                filename: row.values[row.columnOrder[4]]?.textValue ?? "",
+                filepath: row.values[row.columnOrder[5]]?.textValue ?? "",
+                status: row.values[row.columnOrder[6]]?.textValue ?? "",
+                rating: row.values[row.columnOrder[7]]?.doubleValue ?? 0,
+                label: row.values[row.columnOrder[8]]?.textValue ?? "",
+                keywords: parseKeywords(row.values[row.columnOrder[9]]?.textValue ?? "[]")
             )
         }
     }
 
     /// TS: countGlobally。
-    public func countGlobally(criteria: FilterGroup, sessionId: String? = nil) throws -> Int {
+    public func countGlobally(criteria: FilterGroup, sessionId: String? = nil) async throws -> Int {
         let clause = try buildWhereClause(criteria)
         let membershipFilter = membershipSql(sessionId)
         var params = clause.params
         if sessionId != nil { params.append(.text(sessionId!)) }
-        guard let row = try connection.prepare("""
+        guard let row = try await database.queryOne("""
             SELECT COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id)) AS count
             FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id
             WHERE (\(clause.sql.isEmpty ? "1=1" : clause.sql)) \(membershipFilter)
-        """).get(params) else { return 0 }
-        return Int(row[0].intValue ?? 0)
+        """, params) else { return 0 }
+        return Int(row.values[row.columnOrder[0]]?.intValue ?? 0)
     }
 
     /// TS: countPhotos —— __global__ 时 asset 去重。
-    public func countPhotos(sessionId: String, criteria: FilterGroup) throws -> Int {
+    public func countPhotos(sessionId: String, criteria: FilterGroup) async throws -> Int {
         let clause = try buildWhereClause(criteria)
         let sessionFilter = sessionId == "__global__" ? "1=1" : "p.session_id = ?"
-        let allParams: [DBValue] = sessionId == "__global__" ? clause.params : [.text(sessionId)] + clause.params
+        let allParams: [SQLiteValue] = sessionId == "__global__" ? clause.params : [.text(sessionId)] + clause.params
         let countExpression = sessionId == "__global__"
             ? "COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id))"
             : "COUNT(DISTINCT p.id)"
-        guard let row = try connection.prepare("""
+        guard let row = try await database.queryOne("""
             SELECT \(countExpression) AS count
             FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id
             WHERE \(sessionFilter) AND (\(clause.sql.isEmpty ? "1=1" : clause.sql))
-        """).get(allParams) else { return 0 }
-        return Int(row[0].intValue ?? 0)
+        """, allParams) else { return 0 }
+        return Int(row.values[row.columnOrder[0]]?.intValue ?? 0)
     }
 
     /// TS: suggest —— 仅 camera_make LIKE，<2 字符返回空。
-    public func suggest(_ sessionId: String, keyword: String) throws -> [FilterSuggestion] {
+    public func suggest(_ sessionId: String, keyword: String) async throws -> [FilterSuggestion] {
         let trimmed = keyword.trimmingCharacters(in: .whitespaces)
         guard trimmed.count >= 2 else { return [] }
         let pattern = "%\(trimmed)%"
-        let rows = try connection.prepare(
-            "SELECT DISTINCT camera_make FROM photo_metadata_cache WHERE camera_make LIKE ? LIMIT 5"
-        ).query([.text(pattern)])
+        let rows = try await database.query(
+            "SELECT DISTINCT camera_make FROM photo_metadata_cache WHERE camera_make LIKE ? LIMIT 5",
+            [.text(pattern)]
+        )
         return [FilterSuggestion(
             field: "camera_make",
-            values: rows.compactMap { $0[0].textValue }
+            values: rows.compactMap { $0.values[$0.columnOrder[0]]?.textValue }
         )]
     }
 
@@ -223,7 +224,7 @@ public final class FilterEngine {
     /// TS: buildWhereClause —— 递归组合；空组 → sql:''（调用方视为 1=1）。
     public func buildWhereClause(_ group: FilterGroup) throws -> WhereClauseResult {
         var parts: [String] = []
-        var params: [DBValue] = []
+        var params: [SQLiteValue] = []
         for condition in group.conditions {
             switch condition {
             case .rule(let rule):
@@ -249,7 +250,7 @@ public final class FilterEngine {
 
     // MARK: buildConditionSql
 
-    private func buildConditionSql(_ rule: FilterRule) throws -> (sql: String, params: [DBValue]) {
+    private func buildConditionSql(_ rule: FilterRule) throws -> (sql: String, params: [SQLiteValue]) {
         let field = rule.field
         let op = rule.`operator`
         let value = rule.value
@@ -300,25 +301,25 @@ public final class FilterEngine {
         let fullCol = "\(resolved.prefix).\(resolved.col)"
 
         switch op {
-        case .eq: return ("\(fullCol) = ?", [value.toDBValue])
-        case .neq: return ("\(fullCol) != ?", [value.toDBValue])
-        case .gt: return ("\(fullCol) > ?", [value.toDBValue])
-        case .lt: return ("\(fullCol) < ?", [value.toDBValue])
-        case .gte: return ("\(fullCol) >= ?", [value.toDBValue])
-        case .lte: return ("\(fullCol) <= ?", [value.toDBValue])
+        case .eq: return ("\(fullCol) = ?", [value.toSQLiteValue])
+        case .neq: return ("\(fullCol) != ?", [value.toSQLiteValue])
+        case .gt: return ("\(fullCol) > ?", [value.toSQLiteValue])
+        case .lt: return ("\(fullCol) < ?", [value.toSQLiteValue])
+        case .gte: return ("\(fullCol) >= ?", [value.toSQLiteValue])
+        case .lte: return ("\(fullCol) <= ?", [value.toSQLiteValue])
         case .between:
             let arr = value.arrayElements ?? []
             guard arr.count >= 2 else {
-                return ("\(fullCol) BETWEEN ? AND ?", [value.toDBValue, value.toDBValue])
+                return ("\(fullCol) BETWEEN ? AND ?", [value.toSQLiteValue, value.toSQLiteValue])
             }
-            return ("\(fullCol) BETWEEN ? AND ?", [arr[0].toDBValue, arr[1].toDBValue])
+            return ("\(fullCol) BETWEEN ? AND ?", [arr[0].toSQLiteValue, arr[1].toSQLiteValue])
         case .in:
             let arr = value.arrayElements ?? []
             if arr.isEmpty {
                 return (sql: "1=0", params: [])
             }
             let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
-            return ("\(fullCol) IN (\(placeholders))", arr.map { $0.toDBValue })
+            return ("\(fullCol) IN (\(placeholders))", arr.map { $0.toSQLiteValue })
         case .contains:
             return ("\(fullCol) LIKE '%' || ? || '%'", [.text(stringValue(value))])
         case .startsWith:
@@ -327,18 +328,18 @@ public final class FilterEngine {
             let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
             if arr.isEmpty { return (sql: "1=0", params: []) }
             let orParts = arr.map { _ in "\(fullCol) LIKE '%' || ? || '%'" }
-            return ("(\(orParts.joined(separator: " OR ")))", arr.map(DBValue.text))
+            return ("(\(orParts.joined(separator: " OR ")))", arr.map(SQLiteValue.text))
         case .containsAll:
             let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
             if arr.isEmpty { return (sql: "1=0", params: []) }
             let andParts = arr.map { _ in "\(fullCol) LIKE '%' || ? || '%'" }
-            return ("(\(andParts.joined(separator: " AND ")))", arr.map(DBValue.text))
+            return ("(\(andParts.joined(separator: " AND ")))", arr.map(SQLiteValue.text))
         case .exists:
             return ("\(fullCol) IS NOT NULL", [])
         }
     }
 
-    private func buildKeywordsCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {
+    private func buildKeywordsCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [SQLiteValue]) {
         let op = `operator`
         let arr = value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)]
         switch op {
@@ -347,7 +348,7 @@ public final class FilterEngine {
             let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
             return (
                 sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(placeholders)))",
-                params: arr.map(DBValue.text)
+                params: arr.map(SQLiteValue.text)
             )
         case .containsAll:
             if arr.isEmpty { return (sql: "1=0", params: []) }
@@ -357,7 +358,7 @@ public final class FilterEngine {
             // INTEGER，绑 TEXT '2' 会因 SQLite 类型序 INTEGER < TEXT 恒不等）。
             return (
                 sql: "(SELECT COUNT(DISTINCT value) FROM json_each(pmc.keywords) WHERE value IN (\(placeholders))) = ?",
-                params: unique.map(DBValue.text) + [.int(Int64(unique.count))]
+                params: unique.map(SQLiteValue.text) + [.int(Int64(unique.count))]
             )
         case .exists:
             return (sql: "pmc.keywords IS NOT NULL AND pmc.keywords != '[]'", params: [])
@@ -380,7 +381,7 @@ public final class FilterEngine {
         }
     }
 
-    private func buildHasFaceCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {
+    private func buildHasFaceCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [SQLiteValue]) {
         let op = `operator`
         let existsSql = "EXISTS (SELECT 1 FROM face_observations fo WHERE fo.photo_id = p.id AND fo.session_id = p.session_id)"
         switch op {
@@ -399,7 +400,7 @@ public final class FilterEngine {
         }
     }
 
-    private func buildPersonCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {
+    private func buildPersonCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [SQLiteValue]) {
         let op = `operator`
         switch op {
         case .eq:
@@ -423,7 +424,7 @@ public final class FilterEngine {
             let parts = names.map { _ in "per.name LIKE '%' || ? || '%'" }
             return (
                 sql: "EXISTS (SELECT 1 FROM person_photos pp JOIN persons per ON pp.person_id = per.id WHERE pp.photo_id = p.id AND (\(parts.joined(separator: " OR "))))",
-                params: names.map(DBValue.text)
+                params: names.map(SQLiteValue.text)
             )
         case .in:
             let ids = value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)]
@@ -431,7 +432,7 @@ public final class FilterEngine {
             let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
             return (
                 sql: "EXISTS (SELECT 1 FROM person_photos pp WHERE pp.photo_id = p.id AND pp.person_id IN (\(placeholders)))",
-                params: ids.map(DBValue.text)
+                params: ids.map(SQLiteValue.text)
             )
         default:
             return (
@@ -471,22 +472,22 @@ public final class FilterEngine {
         return "p.filename"
     }
 
-    private func rowToPhotoData(_ row: DBRow) -> FilteredPhotoData {
+    private func rowToPhotoData(_ row: SQLiteRow) -> FilteredPhotoData {
         FilteredPhotoData(
-            id: row[0].textValue ?? "",
-            sessionId: row[1].textValue ?? "",
-            filepath: row[2].textValue ?? "",
-            filename: row[3].textValue ?? "",
-            checksum: row[4].textValue ?? "",
+            id: row.values[row.columnOrder[0]]?.textValue ?? "",
+            sessionId: row.values[row.columnOrder[1]]?.textValue ?? "",
+            filepath: row.values[row.columnOrder[2]]?.textValue ?? "",
+            filename: row.values[row.columnOrder[3]]?.textValue ?? "",
+            checksum: row.values[row.columnOrder[4]]?.textValue ?? "",
             hasExistingXmp: false,
-            faceCount: Int(row[10].intValue ?? 0),
+            faceCount: Int(row.values[row.columnOrder[10]]?.intValue ?? 0),
             width: 0, // TS: SELECT 未含 width/height，row.width ?? 0 → 恒 0
             height: 0,
-            metadata: row[6].textValue ?? "{}",
-            result: row[7].textValue ?? "{}",
-            status: row[5].textValue ?? "",
-            createdAt: row[8].textValue ?? "",
-            updatedAt: row[9].textValue ?? ""
+            metadata: row.values[row.columnOrder[6]]?.textValue ?? "{}",
+            result: row.values[row.columnOrder[7]]?.textValue ?? "{}",
+            status: row.values[row.columnOrder[5]]?.textValue ?? "",
+            createdAt: row.values[row.columnOrder[8]]?.textValue ?? "",
+            updatedAt: row.values[row.columnOrder[9]]?.textValue ?? ""
         )
     }
 }
@@ -525,10 +526,10 @@ public enum FilterEngineError: Error, CustomStringConvertible {
     }
 }
 
-// MARK: - JSONValue → DBValue
+// MARK: - JSONValue → SQLiteValue
 
 extension JSONValue {
-    var toDBValue: DBValue {
+    var toSQLiteValue: SQLiteValue {
         switch self {
         case .null: return .null
         case .bool(let value): return .int(value ? 1 : 0)

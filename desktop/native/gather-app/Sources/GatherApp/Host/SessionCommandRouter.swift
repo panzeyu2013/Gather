@@ -322,7 +322,7 @@ public final class SessionCommandRouter: CommandRouter {
             jobService: jobService,
             settings: settings,
             settingsAPI: settingsAPI,
-            filterEngine: FilterEngine(connection: db),
+            filterEngine: FilterEngine(database: database),
             navigationService: NavigationService(connection: db),
             similarityService: similarityService,
             duplicateService: DuplicateService(
@@ -574,52 +574,6 @@ public final class SessionCommandRouter: CommandRouter {
             return try GatherCore.JSONValue(from: buildMLStatus())
 
         // ── filter.*（3.6 服务层；TS 源 filter.ipc.ts）──
-
-        case "filter.photos":
-            // filter.ipc.ts:39-69 —— 引擎内不钳制，IPC 层钳制 limit 1..500/offset ≥0
-            // （默认 100/0），返回 PhotoData[]。
-            let sessionId = try requiredString(params, "sessionId")
-            let criteria = try parseFilterCriteria(params)
-            let sortBy = try optionalString(params, "sortBy")
-            let sortOrder = try optionalString(params, "sortOrder")
-            let limit = clampedLimit(params, default: 100, max: 500)
-            let offset = clampedOffset(params)
-            let photos = try filterEngine.filterPhotos(
-                sessionId: sessionId,
-                criteria: criteria,
-                sortBy: sortBy,
-                sortOrder: sortOrder,
-                limit: limit,
-                offset: offset
-            )
-            return .array(photos.map(filterPhotoDataJSON))
-
-        case "filter.photos_global":
-            // filter.ipc.ts:71-94 —— ok({ photos, total })；total 为全局计数。
-            let criteria = try parseFilterCriteria(params)
-            let sessionId = try optionalString(params, "sessionId")
-            let limit = clampedLimit(params, default: 100, max: 500)
-            let offset = clampedOffset(params)
-            let photos = try filterEngine.filterGlobally(
-                criteria: criteria,
-                limit: limit,
-                offset: offset,
-                sessionId: sessionId
-            )
-            let total = try filterEngine.countGlobally(criteria: criteria, sessionId: sessionId)
-            return .object([
-                "photos": try .array(photos.map { try GatherCore.JSONValue(from: $0) }),
-                "total": .number(Double(total)),
-            ])
-
-        case "filter.suggest":
-            // filter.ipc.ts:96-104 —— FilterSuggestion[]；keyword 非 string → ''。
-            let sessionId = try requiredString(params, "sessionId")
-            let keyword = try optionalString(params, "keyword") ?? ""
-            let suggestions = try filterEngine.suggest(sessionId, keyword: keyword)
-            return try .array(suggestions.map { try GatherCore.JSONValue(from: $0) })
-
-        // ── navigation.*（3.6 服务层；TS 源 navigation.ipc.ts）──
 
         case "navigation.list":
             let sessionId = try requiredString(params, "sessionId")
@@ -907,6 +861,64 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "filter.photos":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    let criteria = try parseFilterCriteria(params)
+                    let sortBy = try optionalString(params, "sortBy")
+                    let sortOrder = try optionalString(params, "sortOrder")
+                    let limit = clampedLimit(params, default: 100, max: 500)
+                    let offset = clampedOffset(params)
+                    let photos = try await filterEngine.filterPhotos(
+                        sessionId: sessionId,
+                        criteria: criteria,
+                        sortBy: sortBy,
+                        sortOrder: sortOrder,
+                        limit: limit,
+                        offset: offset
+                    )
+                    completion(WebResponse(ok: true, data: .array(photos.map(filterPhotoDataJSON)))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "filter.photos_global":
+            Task {
+                do {
+                    let criteria = try parseFilterCriteria(params)
+                    let sessionId = try optionalString(params, "sessionId")
+                    let limit = clampedLimit(params, default: 100, max: 500)
+                    let offset = clampedOffset(params)
+                    let photos = try await filterEngine.filterGlobally(
+                        criteria: criteria,
+                        limit: limit,
+                        offset: offset,
+                        sessionId: sessionId
+                    )
+                    let total = try await filterEngine.countGlobally(criteria: criteria, sessionId: sessionId)
+                    completion(WebResponse(ok: true, data: .object([
+                        "photos": try .array(photos.map { try GatherCore.JSONValue(from: $0) }),
+                        "total": .number(Double(total)),
+                    ]))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "filter.suggest":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    let keyword = try optionalString(params, "keyword") ?? ""
+                    let suggestions = try await filterEngine.suggest(sessionId, keyword: keyword)
+                    completion(WebResponse(ok: true, data: try .array(suggestions.map { try GatherCore.JSONValue(from: $0) }))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
 
         case "session.update":
             Task {
@@ -2767,7 +2779,7 @@ public final class SessionCommandRouter: CommandRouter {
                         let record = try await albums.create(data: SmartAlbumCreateData(
                             name: name, description: description, filterCriteria: criteria,
                             sortBy: sortBy, sortOrder: sortOrder, icon: icon))
-                        let detail = try albumDetailData(row: record)
+                        let detail = try await albumDetailData(row: record)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: detail)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2817,7 +2829,7 @@ public final class SessionCommandRouter: CommandRouter {
                         guard let record = try await albums.get(id: albumId) else {
                             throw BridgeError.notFound("ALBUM_NOT_FOUND")
                         }
-                        completion(WebResponse(
+                        await completion(WebResponse(
                             ok: true, data: try GatherCore.JSONValue(from: albumDetailData(row: record))))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2888,10 +2900,10 @@ public final class SessionCommandRouter: CommandRouter {
                             FilterGroup.self, from: GatherCore.JSONValue.parse(record.filterCriteria))
                         let limit = clampedLimit(params, default: 100, max: 500)
                         let offset = clampedOffset(params)
-                        let photos = try filterEngine.filterGlobally(
+                        let photos = try await filterEngine.filterGlobally(
                             criteria: criteria, sortBy: record.sortBy, sortOrder: record.sortOrder,
                             limit: limit, offset: offset)
-                        let total = try filterEngine.countGlobally(criteria: criteria)
+                        let total = try await filterEngine.countGlobally(criteria: criteria)
                         completion(WebResponse(ok: true, data: .object([
                             "photos": try .array(photos.map { try GatherCore.JSONValue(from: $0) }),
                             "total": .number(Double(total)),
@@ -3626,7 +3638,7 @@ public final class SessionCommandRouter: CommandRouter {
     }
 
     /// TS filter.ipc.ts SmartAlbumDetailData（album.create / album.get）。
-    private func albumDetailData(row: SmartAlbumRecord) throws -> SmartAlbumDetailData {
+    private func albumDetailData(row: SmartAlbumRecord) async throws -> SmartAlbumDetailData {
         let criteria = try decodeJSON(FilterGroup.self, from: GatherCore.JSONValue.parse(row.filterCriteria))
         return SmartAlbumDetailData(
             id: row.id,
@@ -3639,7 +3651,7 @@ public final class SessionCommandRouter: CommandRouter {
             icon: row.icon,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
-            photoCount: try filterEngine.countGlobally(criteria: criteria)
+            photoCount: try await filterEngine.countGlobally(criteria: criteria)
         )
     }
 

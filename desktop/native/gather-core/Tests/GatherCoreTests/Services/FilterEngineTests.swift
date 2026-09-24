@@ -16,6 +16,7 @@ import Testing
 @testable import GatherCore
 
 private struct Harness {
+    let database: SQLiteDatabase
     let db: DBConnection
     let engine: FilterEngine
     let sessionId: String
@@ -23,7 +24,10 @@ private struct Harness {
 
 /// TS: 种子 session + 3 照片 + 元数据。
 private func makeHarness() async throws -> Harness {
-    let db = try await makeMigratedDB()
+    // 同一临时文件库：旧连接（种子）与 Store（FilterEngine 读）必须同库。
+    let harnessPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-filter-\(UUID().uuidString).sqlite").path
+    let db = try await makeMigratedLegacyDB(path: harnessPath)
     let now = "2026-07-30T10:00:00.000Z"
     _ = try db.prepare("""
         INSERT INTO sessions (id, name, status, analysis_status, writeback_status,
@@ -63,7 +67,7 @@ private func makeHarness() async throws -> Harness {
             .int(Int64(rating)), .text(keywords), .text(now), .text(now),
         ])
     }
-    return Harness(db: db, engine: FilterEngine(connection: db), sessionId: "session")
+    return Harness(database: try SQLiteDatabase(path: harnessPath), db: db, engine: FilterEngine(database: try SQLiteDatabase(path: harnessPath)), sessionId: "session")
 }
 
 /// 构造单规则组。
@@ -80,7 +84,7 @@ struct FilterEngineTests {
     // TS: "rejects legacy or forged regular-expression filters"。
     @Test func rejectsRegexOperator() async throws {
         let harness = try await makeHarness()
-        let engine = FilterEngine(connection: harness.db)
+        let engine = FilterEngine(database: harness.database)
         // FilterOperator 无 regex case —— 用字段名伪造（契约层已拒）。
         #expect(FilterOperator.allCases.map(\.rawValue).contains("regex") == false)
     }
@@ -145,7 +149,7 @@ struct FilterEngineTests {
     // TS: filterPhotos 基本过滤 + 排序 + limit。
     @Test func filterPhotosBasic() async throws {
         let harness = try await makeHarness()
-        let photos = try harness.engine.filterPhotos(
+        let photos = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("camera_make", .eq, .string("Canon"))),
             sortBy: "rating",
@@ -160,7 +164,7 @@ struct FilterEngineTests {
     // TS: filterPhotos limit/offset 引擎内不钳制（直接透传）。
     @Test func filterPhotosPassesLimitThrough() async throws {
         let harness = try await makeHarness()
-        let photos = try harness.engine.filterPhotos(
+        let photos = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: FilterGroup(logic: .and, conditions: []),
             limit: 2
@@ -171,7 +175,7 @@ struct FilterEngineTests {
     // TS: countPhotos 会话内计数。
     @Test func countPhotosSessionScoped() async throws {
         let harness = try await makeHarness()
-        let count = try harness.engine.countPhotos(
+        let count = try await harness.engine.countPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("status", .eq, .string("pending")))
         )
@@ -181,7 +185,7 @@ struct FilterEngineTests {
     // TS: keywords contains_any（json_each）。
     @Test func keywordsContainsAny() async throws {
         let harness = try await makeHarness()
-        let ids = try harness.engine.filterPhotos(
+        let ids = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .containsAny, .array([.string("travel"), .string("bw")])))
         ).map(\.id)
@@ -193,7 +197,7 @@ struct FilterEngineTests {
     // TS: keywords contains_all —— 同时含 travel 与 bw 的只有 p1。
     @Test func keywordsContainsAll() async throws {
         let harness = try await makeHarness()
-        let ids = try harness.engine.filterPhotos(
+        let ids = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .containsAll, .array([.string("travel"), .string("bw")])))
         ).map(\.id)
@@ -203,7 +207,7 @@ struct FilterEngineTests {
     // TS: keywords eq —— 集合相等（无序）。
     @Test func keywordsEqIgnoresOrder() async throws {
         let harness = try await makeHarness()
-        let ids = try harness.engine.filterPhotos(
+        let ids = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .eq, .array([.string("bw"), .string("travel")])))
         ).map(\.id)
@@ -213,7 +217,7 @@ struct FilterEngineTests {
     // TS: keywords exists —— 非空数组。
     @Test func keywordsExists() async throws {
         let harness = try await makeHarness()
-        let ids = try harness.engine.filterPhotos(
+        let ids = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("keywords", .exists, .null))
         ).map(\.id)
@@ -223,9 +227,9 @@ struct FilterEngineTests {
     // TS: suggest —— camera_make LIKE，<2 字符返回空。
     @Test func suggestFiltersByCameraMake() async throws {
         let harness = try await makeHarness()
-        let short = try harness.engine.suggest(harness.sessionId, keyword: "c")
+        let short = try await harness.engine.suggest(harness.sessionId, keyword: "c")
         #expect(short.isEmpty)
-        let suggestions = try harness.engine.suggest(harness.sessionId, keyword: "Can")
+        let suggestions = try await harness.engine.suggest(harness.sessionId, keyword: "Can")
         #expect(suggestions.first?.field == "camera_make")
         #expect(suggestions.first?.values == ["Canon"])
     }
@@ -244,12 +248,12 @@ struct FilterEngineTests {
             VALUES (1, 1, 'p1', 'session', 1, 100, '2026-07-30T10:00:00.000Z')
           """).run([])
 
-        let withDup = try harness.engine.filterPhotos(
+        let withDup = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("has_duplicates", .eq, .bool(true)))
         ).map(\.id)
         #expect(withDup == ["p1"])
-        let withoutDup = try harness.engine.filterPhotos(
+        let withoutDup = try await harness.engine.filterPhotos(
             sessionId: harness.sessionId,
             criteria: group(rule("has_duplicates", .eq, .bool(false)))
         ).map(\.id)
