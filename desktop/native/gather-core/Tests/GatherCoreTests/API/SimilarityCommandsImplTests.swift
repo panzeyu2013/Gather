@@ -274,6 +274,9 @@ struct SimilarityCommandsImplTests {
     func cancelAnalysisCancelsQueuedJob() async throws {
         let harness = try await makeSimCommandsHarness()
         defer { harness.cleanup() }
+        // P0-3：create 前置要求 executor 已注册（未注册即抛
+        // executorNotRegistered），本用例只验证排队作业的取消，故注册 stub。
+        await harness.jobs.registerExecutor(type: .similarityAnalyze) { _, _ in true }
         _ = try await harness.jobs.create(JobCreateParams(
             type: .similarityAnalyze,
             scopeType: "session",

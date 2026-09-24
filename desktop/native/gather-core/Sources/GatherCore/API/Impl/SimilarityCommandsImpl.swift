@@ -60,7 +60,7 @@ public actor SimilarityCommandsImpl: SimilarityCommands {
             type: .similarityAnalyze,
             scopeType: "session",
             scopeId: params.sessionId,
-            dedupeKey: "similarity.analyze:\(params.sessionId):\(threshold.map { String($0) } ?? "default"):\(minGroupSize.map { String($0) } ?? "default"):\(groupingMode.rawValue)",
+            dedupeKey: "similarity.analyze:\(params.sessionId):\(threshold.map { String(Double($0)) } ?? "default"):\(minGroupSize.map { String(Double($0)) } ?? "default"):\(groupingMode.rawValue)",
             checkpoint: [
                 "threshold": threshold.map { .number($0) } ?? .null,
                 "minGroupSize": minGroupSize.map { .number(Double($0)) } ?? .null,
