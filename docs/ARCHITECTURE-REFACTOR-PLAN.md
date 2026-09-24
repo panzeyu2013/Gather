@@ -665,3 +665,17 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 ### 15.5 装配切片（5c3948ea）发现与编排侧裁决（不询问用户，自行裁决并记录）
 - 发现：IndexerRuntime 公开面仅有 init(dependencies:)/scan(sessionId:options:)/cancel(sessionId:)，**无 pendingChecksums / backfillChecksums**；9 处 indexerService 引用中 6 处可直接切换（字段/init 形参/赋值/构造/闭包捕获/scanSession 调用），另 3 处分属 pendingChecksums（可等价内联）与 checksum 回填 executor（其乐观写库为 core 内事务，未迁 Runtime）。
 - **裁决（接受代理提议）**：①6 处直接切 IndexerRuntime；②pendingChecksums 在路由内用 photoStore.getBySessionProjection + IndexAssembler.needsChecksumBackfill 逐字等价实现；③checksum 回填暂留一个 IndexerService 实例（错误码/JSON 形状逐字不变），**登记 idx2b5 待迁**（须把乐观写库事务下沉 Store 后再删服务）；④取消补线为 signal.addHandler 内 Task { await indexer.cancel(sessionId:) }。**注**：该方案意味着 IndexerService 在 idx2b5 完成前不会整体删除，`Services layer` 度量暂不下降。
+## 16. 验收勘误表（acc-legacy 审计，快照 19:37:37 / HEAD e37b1d5；本节为权威更正，覆盖前文旧值）
+
+| # | 前文位置 | 错误内容 | 更正（权威值） |
+|---|---|---|---|
+| 1 | round 189 记录 | 称 R6 步骤①（UI Shell 骨架）提交为 `24c6d61` | `24c6d61` 实为 FaceKw 纯层抽取；**R6 Shell 骨架的真正提交是 `b87e64b`** |
+| 2 | round 6 的 6 条「实测」值 | 4 条与门禁口径不符 | 门禁口径为**命中文件数**：awaitSync=2 文件（出现 16）· SessionCommandRouter=17 文件（出现 34）· StubCommandRouter=7 文件（出现 12）· dual-track l10n=1 文件（出现 0）· AnalysisJobRepo callers=1 文件 · Services=10（唯一两种口径相同） |
+| 3 | §15.5 | `5c3948ea` 被当作 git 对象 | `5c3948ea` 是**子代理 id**，非 git 对象（该装配工作最终提交为 `a6033e7`） |
+| 4 | §10 Services 清退清单 | 标题「22 文件 / 13,005 行」为历史值，且仍列已删文件 | **权威现状：10 文件 / 6,142 行**；清退 8（FaceKwService 1293 · IndexerService 1106 · SessionService 337 · MetadataSyncCoordinator 982 · WritebackService 790 · MetadataService 637 · MetadataMutationService 240 · PhotoAssetResolver 168）；保留 2（FilterEngine 542 · PhotoAssets 47，均有活跃调用，迁移前不可删）。权威剩余清单见 §15.3/§15.4b |
+| 5 | 多处「Services→3」 | 口径含糊 | 目标应为 **→2**（清退 8 后仅剩 FilterEngine/PhotoAssets）；若把 R5 才删的 SessionService 计为残余则为 3，前文表述不一致 |
+| 6 | §12 与 L57/L330 | 「enforced 4→9 / 12 条」「4 条强制规则 + 16 项度量」 | **当前值：enforced 15 条 + tracked 6 条**（R8 两次加固后；见 §15.1 逐条核对） |
+| 7 | §15 头部 | 写 `HEAD 41e46ce` | 验收起始快照 `41e46ce`，收尾快照 `a6033e7`（详见各小节） |
+| 8 | tracked 指标 | `legacy AnalysisJobRepo callers (R1) = 1` | 类型现存 `Store/JobStore.swift`（属正常 Store 层，非遗留仓储）；**R8 全量转 enforced 前须裁决该指标是否撤销或改名为 Store 层作业计数** |
+
+**审计正面结论（保留）**：`Legacy*/Compat*/Adapter*` = 0（宽口径与门禁口径一致）；文档中 15 个 commit 号 15/15 均存在于 git；`Services=10` / `enforced=15` / `tracked=6` 三项与门禁实跑一致；`IndexerService` 的 live 外部耦合仅 `IndexerRuntime.swift` 的 `FileStat/defaultStat/sha256File/defaultDimensions` + `Error`；`FaceKwService` 的真实耦合仅 `FaceKeywordAssembler.swift` L65/68 抛 `FaceKwServiceError` —— **删该服务前必须先裁决错误类型归属**（登记为下一批第一优先项）。
