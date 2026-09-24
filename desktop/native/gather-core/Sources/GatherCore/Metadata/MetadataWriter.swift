@@ -163,17 +163,71 @@ public actor MetadataWriter {
 
     private var quiescenceWaiters: [QuiescenceWaiter] = []
 
-    /// mwwshut 测试接缝（internal）：真实写回落点尚未接入（W4-4 后续步骤）。
-    /// 测试用它把一笔写钉在 in-flight，验证 shutdown 的等待与超时；生产路径为空体。
-    private var writeBody: @Sendable (String) async -> Void = { _ in }
+    /// mwwshut 测试接缝（internal）：nil = 生产真实写回落点（performWriteback）。
+    /// 测试用它把一笔写钉在 in-flight，验证 shutdown 的等待与超时。
+    private var writeBody: (@Sendable (String) async -> Void)?
 
     func setWriteBodyForTesting(_ body: @escaping @Sendable (String) async -> Void) {
         writeBody = body
     }
 
     /// 写体执行（actor 内）：存储属性不跨 actor 边界，跨边界只经本方法。
+    /// 未注入测试写体时执行生产真实写回。
     private func performWriteBody(xmpPath: String) async {
+        guard let writeBody else {
+            await performWriteback(xmpPath: xmpPath)
+            return
+        }
         await writeBody(xmpPath)
+    }
+
+    /// w4write / W4-4：真实写回落点 —— 只用既有 Store 与 XMP 端口消费一笔排程：
+    /// outboxEntry 读行 → claimOutbox CAS 认领（旧 revision/非 pending·failed 即弃）→
+    /// 批量失效会话 reload-ack（数据丢失守卫）→ backup + writeAttributes + readAttributes
+    /// → markOutboxWritten；任一步失败一律 markOutboxStatus(failed)，绝不把行留在 writing。
+    /// 冲突检测/基线快照/退避重试属后续写面步骤，本落点不伪造这些语义。
+    private func performWriteback(xmpPath: String) async {
+        let store = dependencies.writebackStore
+        guard let row = try? await store.outboxEntry(xmpPath: xmpPath),
+              ["pending", "writing", "failed"].contains(row.status) else { return }
+        guard (try? await store.claimOutbox(
+            xmpPath: xmpPath, expectedRevision: row.revision)) == true else { return }
+        if let sessionStore = dependencies.sessionStore {
+            _ = try? await sessionStore.clearReloadAckedAtForXmpPaths([xmpPath])
+        }
+        guard let xmp = dependencies.xmpProvider else {
+            try? await store.markOutboxStatus(
+                xmpPath: xmpPath, status: "failed",
+                errorMessage: "XMP_PROVIDER_UNSUPPORTED")
+            return
+        }
+        do {
+            let backupPath: String
+            if row.backupPath.isEmpty {
+                backupPath = try await xmp.backup(photoPath: row.photoPath)
+                try await store.setOutboxBackupPath(xmpPath: xmpPath, backupPath: backupPath)
+            } else {
+                backupPath = row.backupPath
+            }
+            let patch = metadataWriterSafeObject(row.patchJSON)
+            try await xmp.writeAttributes(photoPath: row.photoPath, attributes: MetadataWriteAttributes(
+                keywords: patch["keywords"]?.arrayValue,
+                rating: patch["rating"]?.numberValue,
+                label: patch["label"]?.stringValue
+            ))
+            let persisted = try await xmp.readAttributes(photoPath: row.photoPath)
+            let fingerprint = (try? await MetadataFingerprint.contentFingerprint(xmpPath)) ?? ""
+            try await store.markOutboxWritten(
+                xmpPath: xmpPath,
+                revision: row.revision,
+                fingerprint: fingerprint,
+                baseValues: persisted.asJSONValue,
+                backupPath: backupPath
+            )
+        } catch {
+            try? await store.markOutboxStatus(
+                xmpPath: xmpPath, status: "failed", errorMessage: String(describing: error))
+        }
     }
 
     /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
@@ -239,7 +293,7 @@ public actor MetadataWriter {
     }
 
     /// mwwshut：启动一笔写 —— 挂到同路径串行链尾（前一条未结算完绝不并发进入写面）；
-    /// 任务体先执行注入写体（生产为空体占位，真实写回落点留待后续写面步骤），
+    /// 任务体先执行写体（测试注入写体或生产真实写回），
     /// 完成后统一走 finishWrite（结算 + 消费队列 + 释放链尾）。
     private func startWrite(xmpPath: String, ticket: UUID) {
         entries[xmpPath]?.phase = .inFlight
