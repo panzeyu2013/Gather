@@ -4,7 +4,7 @@
 //
 // 边界（设计文档 §0 门禁）：
 // - 本文件只依赖 Store/NavigationStore.swift 的 NavigationStore 协议，不出现 SQL 文本、
-//   SQLiteDatabase、NSLock 或 @unchecked Sendable；纯计算一律调用 NavigationAssembler。
+//   SQLiteDatabase、NSLock 或 unchecked 并发标注；纯计算一律调用 NavigationAssembler。
 // - 错误类型 NavigationError 仍由 Services/NavigationService.swift 声明（命名纪律：旧服务
 //   文件删除前不新建公开错误类型），本文件仅引用其 case。
 // - NAV_* 错误码与抛出顺序与 NavigationService 对应方法逐条一致：
