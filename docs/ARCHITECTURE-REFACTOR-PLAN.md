@@ -546,3 +546,28 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 
 **收尾定义（R8 出口）**：`./scripts/check-no-legacy.sh` 全绿且**全部度量转 enforced**；`Services/` 仅剩 `Runtime/Support`+`Runtime/Filter` 归属的纯函数；双包 0 error、app 测试不减、core 全量绿（已知 flake 隔离复跑通过）；文档（`ARCHITECTURE-W2B/W2C/W2D/W4/W5-DESIGN.md` + 计划进度行 + ADR）齐备。
 | round 58–59：R7 `ImagePreloadService` 删除尝试回退（教训） | 已回退 | 用脚本按行删除 4 个 `image.*` case + `thumbnailBuild` executor + 5 行字段/装配后，`SessionCommandRouter.swift` **大括号净差 −1**（executor 块内嵌套闭包的收尾判定错误）→ 潜在语法损坏。**已 `git checkout` 回退两文件，HEAD 保持全绿**。教训：**Swift 大文件（3800 行）禁用行级/括号级文本手术**，必须用「小步编辑 + 每次编译」或语法感知工具（如 `swift-format`/AST 级改写）；括号差检查应作为提交前强制门。 |
+
+## 13. 交接快照（round 64/64，HEAD `05781af`）
+
+### 已完成
+- **R1 收官**：`DB.swift`（352 行）删除，Store 为唯一 SQL 所有者（`DB layer=0`、`raw SQL outside Store=0`）。
+- **R3 收官**：`JobService`/`JobScheduler`/`AnalysisWorker`（1006 行）删除，`JobRunner` 为唯一作业层（`waitForResult` 超时改返回 nil 为新契约）。
+- **R2-Culling 闭环**：`CullingService.swift` 2550 行 + 57 旧用例删除；新链路 `CullingQueryStore→QueryBuilder→Assembler→SessionCache→LookupLoader→CullingRuntime`；**38 处 NOT_IMPLEMENTED 缺陷修复**；149 tests/10 suites。
+- **R2-W2c 闭环**：`SimilarityService`(955)+`DuplicateService`(744)+`QualityService`(648) + 63 旧用例删除；16 路由 case 异步化；`CullingQualityInvalidationPort` 接线；`sim.writeback_items` 潜伏缺陷修复；209 tests/37 suites、app 172/19。
+- **R4 Store 命令层**：CAS `markOutboxStatus(expectedRevision:)`、`recoverInterruptedOutbox`、`mergeOutboxPatches`（单事务）、`reconcileWritebackProjection`、`applyAcceptedRemoteValues`（单事务）、`clearReloadAckedAtForXmpPaths`、`metadataTargets`/`photoLookups`/`photoIdsByFilepath`、`mergeMetadata`（仅非 nil 覆盖）。
+- **R4-2**：5 个 Metadata 支撑文件迁入 `Metadata/`（`git mv` 保历史）+ 5 处死码删除 + 31 用例。
+- **设计资产**：`ARCHITECTURE-W2B/W2C/W2D/W4/W5-DESIGN.md` + `Services/` 清退清单 + R7 死代码裁决清单 + R8 门禁加固与出口定义。
+- **度量**：`Services layer` 25→**13**；`unchecked Sendable` 22→**5**；`batchAsync` 6→**3**；`Runtime SQL` 0；门禁逐轮全绿（30+ 提交，无红态入库）。
+
+### 待完成
+| 步骤 | 内容 |
+|---|---|
+| R7 在途 | `ImagePreloadService`（82 行）+ 4 个 `image.*` case + `thumbnail.build` executor（**注意 `AnalysisJobType.thumbnailBuild` 枚举值保留**）；`photo.list`；4 个零调用 Store 方法；`FaceCluster`/`BindingData` 合并 |
+| W2d（−4） | Navigation 558 / Export 617 / Indexer 1160 / FaceKw 1436：各自 Runtime actor → 装配 → 路由异步化 → 删旧（一域一轮 + 语义承接审计） |
+| W4（−6） | `MetadataWriter` actor 吸收 `MetadataSyncCoordinator` 982 / `WritebackService` 790 / `MetadataService` 637 / `MetadataMutationService` 240 / `PhotoAssetResolver` 168（分读面 W4-3、写面 W4-4、写回面 W4-5；Store 命令已就绪） |
+| R5 | 类型化 async API：111 命令 / 18 域子协议；删 `SessionCommandRouter`（17→0）、`awaitSync`（2→0）、`StubCommandRouter`（7→0） |
+| R6 | UI 重写（Shell + 11 Feature），消费 typed API |
+| R8 | 全部度量转 enforced + 出口核验（定义见 §12） |
+
+### 执行纪律（血泪教训，务必遵守）
+1. 不提交半成品；2. 不并行改同一文件（`SessionCommandRouter.swift` 单写者）；3. 删旧必做语义承接审计（未覆盖必补用例）；4. **Swift 大文件禁行级/括号级文本手术**（曾致 router 括号差 −1，已回退）；5. **括号差 + 小步编译**为提交前强制门；6. 取消/超时类测试必须限时（无界轮询会导致 swift-testing 挂起）；7. app 包特性目录在**包根**，提交须 `git add desktop/native/gather-app`（整包）。
