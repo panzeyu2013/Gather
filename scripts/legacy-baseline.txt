@@ -4,8 +4,8 @@
 # 缺任一 key、或存在无对应度量的孤儿 key，脚本会 FAIL（R8 加固 H2）。
 awaitSync semaphore bridge (R5)=2
 awaitSync semaphore bridge (R5) [occurrences]=16
-SessionCommandRouter (R5)=17
-SessionCommandRouter (R5) [occurrences]=34
+SessionCommandRouter (R5)=16
+SessionCommandRouter (R5) [occurrences]=31
 StubCommandRouter (R5)=7
 StubCommandRouter (R5) [occurrences]=12
 dual-track l10n zhDesc/enDesc (R6)=1
