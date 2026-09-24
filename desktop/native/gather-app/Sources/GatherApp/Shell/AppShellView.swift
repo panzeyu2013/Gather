@@ -3,6 +3,8 @@
 // R6 步骤二：接入选中的特性视图——左侧 Feature 列表选择，右侧按所选 case
 // 渲染；设置与人脸库两个 case 指向真实视图，其余仍为占位 Text。依赖由 init
 // 以可选形式注入，壳层不自行构造路由或数据层。
+// R6 步骤三：工作台与全局图库也指向真实视图（DashboardView / LibraryView），
+// 数据提供者同样以可选参数注入；未注入（nil）或未接线的 case 一律回退占位。
 //
 // 本步骤只建立壳层根视图骨架：按 app 目录名枚举 11 个特性，逐项输出占位
 // Text，并在每项上标注 R6 后续要替换成的特性视图。业务代码一律不改；
@@ -10,13 +12,13 @@
 import SwiftUI
 
 /// 壳层根视图骨架：左侧列出 app 目录中的 11 个特性，右侧渲染所选 Case；
-/// 当前仅「设置」与「人脸库」接真实视图，其余仍为占位 Text。
+/// 当前「工作台/全局图库/设置/人脸库」接真实视图，其余仍为占位 Text。
 public struct AppShellView: View {
     /// app 目录枚举出的 11 个特性（顺序即建议的 R6 迁移顺序）。
     public enum Feature: String, CaseIterable, Identifiable, Sendable {
-        // Sources/GatherApp/Dashboard -> 将替换为 DashboardView。
+        // Sources/GatherApp/Dashboard -> 已接入 DashboardView。
         case dashboard
-        // Sources/GatherApp/Library -> 将替换为 LibraryView。
+        // Sources/GatherApp/Library -> 已接入 LibraryView。
         case library
         // Sources/GatherApp/Gallery -> 将替换为 GalleryView。
         case gallery
@@ -95,16 +97,44 @@ public struct AppShellView: View {
     private let settingsRouter: CommandRouter?
     /// 人脸库需要的数据提供者（可选：未注入时该特性回退占位）。
     private let personsProvider: PersonsDataProvider?
+    /// 工作台需要的数据提供者（可选：未注入时该特性回退占位）。
+    private let dashboardProvider: DashboardDataProvider?
+    /// 全局图库需要的数据提供者（可选：未注入时该特性回退占位）。
+    private let libraryProvider: LibraryDataProvider?
+    /// 打开工作区回调：工作台与全局图库共用，壳层只透传不解释。
+    private let onOpenSession: (String) -> Void
     /// 当前选中的特性：左侧列表点击切换，右侧渲染对应视图。
     @State private var selectedFeature: Feature = .dashboard
+    /// 工作台视图模型：仅在注入数据提供者时创建，壳层不自行取数。
+    @State private var dashboardViewModel: DashboardViewModel?
+    /// 全局图库视图模型：仅在注入数据提供者时创建，壳层不自行取数。
+    @State private var libraryViewModel: LibraryViewModel?
     /// 人脸库视图模型：仅在注入数据提供者时创建，壳层不自行取数。
     @State private var personsViewModel: PersonsViewModel?
 
-    /// 依赖经 init 以可选形式传入；两个参数都有默认值，既有调用点不受影响。
+    /// 依赖经 init 以可选形式传入；全部参数都有默认值，既有调用点不受影响。
+    /// 注：工作台的数据提供者协议为模块内可见，public init 无法引用内部类型，
+    /// 故本 init 与结构体保持同模块可见；调用点在 app 目标内部（GatherApp
+    /// 装配处，后续步骤替换现有根视图时传入）。
     @MainActor
-    public init(settingsRouter: CommandRouter? = nil, personsProvider: PersonsDataProvider? = nil) {
+    init(
+        settingsRouter: CommandRouter? = nil,
+        personsProvider: PersonsDataProvider? = nil,
+        dashboardProvider: DashboardDataProvider? = nil,
+        libraryProvider: LibraryDataProvider? = nil,
+        onOpenSession: @escaping (String) -> Void = { _ in }
+    ) {
         self.settingsRouter = settingsRouter
         self.personsProvider = personsProvider
+        self.dashboardProvider = dashboardProvider
+        self.libraryProvider = libraryProvider
+        self.onOpenSession = onOpenSession
+        if let dashboardProvider {
+            _dashboardViewModel = State(initialValue: DashboardViewModel(provider: dashboardProvider))
+        }
+        if let libraryProvider {
+            _libraryViewModel = State(initialValue: LibraryViewModel(provider: libraryProvider))
+        }
         if let personsProvider {
             _personsViewModel = State(initialValue: PersonsViewModel(provider: personsProvider))
         }
@@ -167,20 +197,34 @@ public struct AppShellView: View {
         .buttonStyle(.plain)
     }
 
-    /// 是否已接真实视图：R6 步骤二仅「设置」与「人脸库」两项。
+    /// 是否已接真实视图：R6 步骤三含「工作台/全局图库/设置/人脸库」四项。
     private func isWired(_ feature: Feature) -> Bool {
         switch feature {
+        case .dashboard: return dashboardViewModel != nil
+        case .library: return libraryViewModel != nil
         case .settings: return settingsRouter != nil
         case .persons: return personsViewModel != nil
         default: return false
         }
     }
 
-    /// 右侧详情：private switch 只把「设置」与「人脸库」指向真实视图，
+    /// 右侧详情：private switch 把「工作台/全局图库/设置/人脸库」指向真实视图，
     /// 其余 case 仍为占位 Text；依赖缺失时同样回退占位，保持可编译。
     @ViewBuilder
     private func detailView(for feature: Feature) -> some View {
         switch feature {
+        case .dashboard:
+            if let dashboardViewModel {
+                DashboardView(viewModel: dashboardViewModel, onOpenSession: onOpenSession)
+            } else {
+                placeholderView(for: feature)
+            }
+        case .library:
+            if let libraryViewModel {
+                LibraryView(viewModel: libraryViewModel, onOpenSession: onOpenSession)
+            } else {
+                placeholderView(for: feature)
+            }
         case .settings:
             if let settingsRouter {
                 SettingsView(router: settingsRouter)
