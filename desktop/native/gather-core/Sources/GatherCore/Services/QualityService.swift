@@ -102,7 +102,7 @@ public final class QualityService {
     public typealias StatProvider = (String) throws -> (size: Int64, mtimeMs: Double)
 
     private let photoStore: any PhotoStore
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     private let imageProvider: ImageMetricsProvider
     private let statProvider: StatProvider
     /// TS: culling?.invalidateSessionLookup（可选依赖）。
@@ -110,13 +110,13 @@ public final class QualityService {
 
     public init(
         photoStore: any PhotoStore,
-        connection: DBConnection,
+        database: SQLiteDatabase,
         imageProvider: @escaping ImageMetricsProvider = QualityService.defaultImageProvider,
         statProvider: @escaping StatProvider = QualityService.defaultStat,
         invalidateCullingLookup: ((String) -> Void)? = nil
     ) {
         self.photoStore = photoStore
-        self.connection = connection
+        self.database = database
         self.imageProvider = imageProvider
         self.statProvider = statProvider
         self.invalidateCullingLookup = invalidateCullingLookup
@@ -170,8 +170,8 @@ public final class QualityService {
             .map { set in sessionPhotos.filter { set.contains($0.id) } }
             ?? PhotoAssets.collapse(sessionPhotos)
         // 批量预载：每照片一次 IN 查询替代逐照片缓存/人脸查询（TS 同款）。
-        let cachedByPhoto = try getCachedBatch(photos)
-        let facesByPhoto = try getFacesBatch(sessionId: sessionId, photos: photos)
+        let cachedByPhoto = try await getCachedBatch(photos)
+        let facesByPhoto = try await getFacesBatch(sessionId: sessionId, photos: photos)
 
         // TS: 每 ANALYZE_CONCURRENCY 完成帧上报一次（worker 乱序完成，逐项上报
         // 可能倒退）；末帧（current === total）在循环外只发一次。
@@ -338,16 +338,16 @@ public final class QualityService {
 
         // 全部 INSERT 单事务串行提交（并行计算阶段不碰写）。
         if outcomes.contains(where: { $0.insert != nil }) {
-            let insertStmt = try connection.prepare("""
+            let insertSQL = """
                 INSERT OR REPLACE INTO asset_analysis (
                   photo_id, asset_file_id, analysis_type, result_json, warnings_json,
                   model_id, model_version, input_fingerprint, created_at, updated_at
                 ) VALUES (?, ?, 'technical_quality', ?, ?, ?, ?, ?, ?, ?)
-              """)
-            try connection.transaction {
+              """
+            try await database.transaction { db in
                 for outcome in outcomes {
                     guard let insert = outcome.insert else { continue }
-                    _ = try insertStmt.run([
+                    _ = try db.run(insertSQL, [
                         .text(insert.photoId),
                         .text(insert.assetFileId),
                         .text(insert.resultJson),
@@ -365,8 +365,8 @@ public final class QualityService {
         invalidateCullingLookup?(sessionId)
 
         var results = outcomes.map(\.result)
-        let groups = try loadSimilarityGroups(sessionId: sessionId)
-        try applyRelativeRanks(sessionId: sessionId, results: &results, groups: groups)
+        let groups = try await loadSimilarityGroups(sessionId: sessionId)
+        try await applyRelativeRanks(sessionId: sessionId, results: &results, groups: groups)
         return results
     }
 
@@ -381,15 +381,15 @@ public final class QualityService {
         var rows: [(resultJson: String, requestedPhotoId: String)] = []
         for chunk in chunkIds(ids) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let queryRows = try connection.prepare("""
+            let queryRows = try await database.query("""
                 SELECT aa.result_json, p.id AS requested_photo_id
                 FROM photos p
                 JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
                 WHERE aa.analysis_type = 'technical_quality' AND p.id IN (\(placeholders))
                 ORDER BY aa.updated_at DESC
-              """).query(chunk.map { .text($0) })
+              """, chunk.map { .text($0) })
             for row in queryRows {
-                rows.append((row[0].textValue ?? "", row[1].textValue ?? ""))
+                rows.append((row.values[row.columnOrder[0]]?.textValue ?? "", row.values[row.columnOrder[1]]?.textValue ?? ""))
             }
         }
         var latest: [String: QualityResult] = [:]
@@ -404,8 +404,8 @@ public final class QualityService {
             latest[row.requestedPhotoId] = result
         }
         var results = Array(latest.values)
-        let groups = try loadSimilarityGroups(sessionId: sessionId)
-        try applyRelativeRanks(sessionId: sessionId, results: &results, groups: groups)
+        let groups = try await loadSimilarityGroups(sessionId: sessionId)
+        try await applyRelativeRanks(sessionId: sessionId, results: &results, groups: groups)
         return results
     }
 
@@ -413,54 +413,54 @@ public final class QualityService {
 
     /// TS: getCachedBatch —— 每照片同一 model/version 的全部存储结果
     /// （updated_at DESC；指纹精确匹配在 stat 后做）。
-    private func getCachedBatch(_ photos: [PhotoProjection]) throws -> [String: [(fingerprint: String, result: QualityResult)]] {
+    private func getCachedBatch(_ photos: [PhotoProjection]) async throws -> [String: [(fingerprint: String, result: QualityResult)]] {
         var rowsByPhoto: [String: [(fingerprint: String, result: QualityResult)]] = [:]
         let ids = photos.map(\.id)
         for chunk in chunkIds(ids) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT p.id AS photo_id, aa.result_json, aa.input_fingerprint
                 FROM asset_analysis aa
                 JOIN photos p ON p.asset_file_id = aa.asset_file_id
                 WHERE p.id IN (\(placeholders)) AND aa.analysis_type = 'technical_quality'
                   AND model_id = ? AND model_version = ?
                 ORDER BY aa.updated_at DESC
-              """).query(chunk.map { .text($0) } + [.text(Self.modelId), .text(Self.modelVersion)])
+              """, chunk.map { .text($0) } + [.text(Self.modelId), .text(Self.modelVersion)])
             for row in rows {
-                let photoId = row[0].textValue ?? ""
-                guard let json = row[1].textValue,
+                let photoId = row.values[row.columnOrder[0]]?.textValue ?? ""
+                guard let json = row.values[row.columnOrder[1]]?.textValue,
                       let data = json.data(using: .utf8),
                       let result = try? JSONDecoder().decode(QualityResult.self, from: data) else {
                     continue
                 }
-                rowsByPhoto[photoId, default: []].append((row[2].textValue ?? "", result))
+                rowsByPhoto[photoId, default: []].append((row.values[row.columnOrder[2]]?.textValue ?? "", result))
             }
         }
         return rowsByPhoto
     }
 
     /// TS: getFacesBatch —— 每照片最大人脸观测（bbox 面积降序首行）。
-    private func getFacesBatch(sessionId: String, photos: [PhotoProjection]) throws -> [String: FaceBox] {
+    private func getFacesBatch(sessionId: String, photos: [PhotoProjection]) async throws -> [String: FaceBox] {
         var faces: [String: FaceBox] = [:]
         let ids = photos.map(\.id)
         for chunk in chunkIds(ids) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
                 FROM face_observations
                 WHERE session_id = ? AND photo_id IN (\(placeholders))
                 ORDER BY bbox_w * bbox_h DESC
-              """).query([.text(sessionId)] + chunk.map { .text($0) })
+              """, [.text(sessionId)] + chunk.map { .text($0) })
             for row in rows {
-                let photoId = row[0].textValue ?? ""
+                let photoId = row.values[row.columnOrder[0]]?.textValue ?? ""
                 // 按面积降序，每照片首行即最大人脸。
                 if faces[photoId] == nil {
                     faces[photoId] = FaceBox(
-                        x: row[1].doubleValue ?? 0,
-                        y: row[2].doubleValue ?? 0,
-                        w: row[3].doubleValue ?? 0,
-                        h: row[4].doubleValue ?? 0,
-                        analysisSignature: row[5].textValue ?? ""
+                        x: row.values[row.columnOrder[1]]?.doubleValue ?? 0,
+                        y: row.values[row.columnOrder[2]]?.doubleValue ?? 0,
+                        w: row.values[row.columnOrder[3]]?.doubleValue ?? 0,
+                        h: row.values[row.columnOrder[4]]?.doubleValue ?? 0,
+                        analysisSignature: row.values[row.columnOrder[5]]?.textValue ?? ""
                     )
                 }
             }
@@ -477,21 +477,22 @@ public final class QualityService {
     }
 
     /// TS: loadSimilarityGroups —— 最新 similarity_results 的组成员一次读完。
-    private func loadSimilarityGroups(sessionId: String) throws -> [Int: [String]]? {
-        let latest = try connection.prepare(
-            "SELECT id FROM similarity_results WHERE session_id = ? ORDER BY id DESC LIMIT 1"
-        ).get([.text(sessionId)])
-        guard let latest, let resultId = latest[0].intValue else { return nil }
-        let rows = try connection.prepare("""
+    private func loadSimilarityGroups(sessionId: String) async throws -> [Int: [String]]? {
+        let latest = try await database.queryOne(
+            "SELECT id FROM similarity_results WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+            [.text(sessionId)]
+        )
+        guard let latest, let resultId = latest.values[latest.columnOrder[0]]?.intValue else { return nil }
+        let rows = try await database.query("""
             SELECT group_index, photo_id
             FROM similarity_result_members
             WHERE session_id = ? AND result_id = ?
             ORDER BY group_index, photo_id
-          """).query([.text(sessionId), .int(resultId)])
+          """, [.text(sessionId), .int(resultId)])
         var groups: [Int: [String]] = [:]
         for row in rows {
-            let groupIndex = Int(row[0].intValue ?? 0)
-            groups[groupIndex, default: []].append(row[1].textValue ?? "")
+            let groupIndex = Int(row.values[row.columnOrder[0]]?.intValue ?? 0)
+            groups[groupIndex, default: []].append(row.values[row.columnOrder[1]]?.textValue ?? "")
         }
         return groups
     }
@@ -502,13 +503,18 @@ public final class QualityService {
         sessionId: String,
         results: inout [QualityResult],
         groups: [Int: [String]]?
-    ) throws {
+    ) async throws {
         let successful = Dictionary(
             uniqueKeysWithValues: results
                 .filter { $0.status == .succeeded }
                 .map { ($0.photoId, $0) }
         )
-        let memberGroups = try groups ?? loadSimilarityGroups(sessionId: sessionId)
+        let memberGroups: [Int: [String]]?
+        if let groups {
+            memberGroups = groups
+        } else {
+            memberGroups = try await loadSimilarityGroups(sessionId: sessionId)
+        }
         guard let memberGroups else { return }
         for members in memberGroups.values {
             let ranked = members

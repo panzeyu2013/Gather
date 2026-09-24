@@ -342,7 +342,7 @@ public final class SessionCommandRouter: CommandRouter {
             templates: templates,
             qualityService: QualityService(
                 photoStore: photoStore,
-                connection: db,
+                database: database,
                 imageProvider: QualityService.defaultImageProvider,
                 statProvider: QualityService.defaultStat
             ),

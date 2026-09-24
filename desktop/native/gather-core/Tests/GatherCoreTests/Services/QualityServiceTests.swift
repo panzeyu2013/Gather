@@ -14,6 +14,7 @@ import Testing
 /// 临时文件库 + 同库 PhotoStore（store 读必须与旧连接同文件）。
 private struct QualityEnv {
     let db: DBConnection
+    let database: SQLiteDatabase
     let photoStore: any PhotoStore
     let sessionStore: any SessionStore
 }
@@ -22,7 +23,7 @@ private func makeQualityEnv() async throws -> QualityEnv {
     let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-quality-\(UUID().uuidString).sqlite").path
     let db = try await makeMigratedLegacyDB(path: path)
-    return QualityEnv(db: db, photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: path)), sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
+    return QualityEnv(db: db, database: try SQLiteDatabase(path: path), photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: path)), sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: path)))
 }
 
 
@@ -114,7 +115,7 @@ private func makeHarness(
     let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
     let service = QualityService(
         photoStore: env.photoStore,
-        connection: db,
+        database: env.database,
         imageProvider: imageProvider,
         statProvider: statProvider
     )
@@ -409,7 +410,7 @@ struct QualityGetTests {
             VALUES ('p1', ?, '/vault/a.jpg', 'a.jpg', '', 'ready', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
                    ('p2', ?, '/vault/b.jpg', 'b.jpg', '', 'ready', 'af-2', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
           """).run([.text(session.id), .text(session.id)])
-        let service = QualityService(photoStore: env.photoStore, connection: db)
+        let service = QualityService(photoStore: env.photoStore, database: env.database)
         // p1 两条历史行（旧 updatedAt 的旧分）；p2 一条。
         let insertStmt = try db.prepare("""
             INSERT INTO asset_analysis (photo_id, asset_file_id, analysis_type, result_json, warnings_json, model_id, model_version, input_fingerprint, created_at, updated_at)
@@ -449,7 +450,7 @@ struct QualityGetTests {
         let env = try await makeQualityEnv()
         let db = env.db
         let session = try await env.sessionStore.create(name: "Quality", source: "folder", sourcePath: "", truncatedImport: false)
-        let service = QualityService(photoStore: env.photoStore, connection: db)
+        let service = QualityService(photoStore: env.photoStore, database: env.database)
         #expect(try await service.get(sessionId: session.id).isEmpty)
         #expect(try await service.get(sessionId: "unknown").isEmpty)
     }
@@ -504,7 +505,7 @@ struct QualityRelativeRankTests {
             ])
         }
 
-        let service = QualityService(photoStore: env.photoStore, connection: db)
+        let service = QualityService(photoStore: env.photoStore, database: env.database)
         let results = try await service.get(sessionId: session.id)
 
         #expect(results.first { $0.photoId == "p2" }?.relativeRank == 1)
