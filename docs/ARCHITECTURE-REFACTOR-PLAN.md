@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾㊶：DB.swift 退役第四切片——QualityService | ✅ | QualityService(642) 去 DBConnection：database: SQLiteDatabase；写入改用 database.transaction { db in db.run(insertSQL, values) }（替代 prepare+connection.transaction）；查询改 database.query/queryOne，行访问改 columnOrder；getCachedBatch/getFacesBatch/loadSimilarityGroups/applyRelativeRanks 异步化（?? 自动闭包不能 await → 显式分支）；路由 QualityService(database:) 注入。验证：双包库编译 0 error；QualityServiceTests 14/4 全绿；app 172/19 全绿。DB.swift 消费者 14→13 |
+| R1 收尾㊷：DB.swift 退役第五切片——元数据双服务 | ✅ | MetadataSyncCoordinator(983)/MetadataService(636) 去 DBConnection：database: SQLiteDatabase；clearReloadAck/requireReloadAck 异步化（queryOne/query），写回事务改 database.transaction + db.run，行访问改 columnOrder；MetadataService.getPhotosByIds 异步化（含 try? await 与批处理闭包）；路由两处注入 database。验证：双包库编译 0 error；MetadataSyncCoordinatorTests 6/2 + Metadata* 全套 41/8 全绿；app 172/19（2 个计时用例全量并行偶发，隔离跑均通过）。DB.swift 消费者 13→11 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。

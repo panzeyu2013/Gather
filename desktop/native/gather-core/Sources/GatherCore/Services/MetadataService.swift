@@ -42,7 +42,7 @@ public struct MetadataPhotoLookup {
 public final class MetadataService {
     private let metadataStore: any MetadataStore
     private let xmp: any XMPProvider
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     private let mutations: any MetadataMutationPort
     private let assetResolver: PhotoAssetResolver?
     private let exif: (any ExifProvider)?
@@ -52,7 +52,7 @@ public final class MetadataService {
     public init(
         metadataStore: any MetadataStore,
         xmp: any XMPProvider,
-        connection: DBConnection,
+        database: SQLiteDatabase,
         mutations: any MetadataMutationPort,
         assetResolver: PhotoAssetResolver? = nil,
         exif: (any ExifProvider)? = nil,
@@ -61,7 +61,7 @@ public final class MetadataService {
     ) {
         self.metadataStore = metadataStore
         self.xmp = xmp
-        self.connection = connection
+        self.database = database
         self.mutations = mutations
         self.assetResolver = assetResolver
         self.exif = exif
@@ -218,20 +218,21 @@ public final class MetadataService {
 
     /// TS: getPhotosByIds —— 800/块 IN 查询（镜像缓存仓库的分块，低于 SQLite
     /// 常见参数上限）。
-    public func getPhotosByIds(_ photoIds: [String]) throws -> [MetadataPhotoLookup] {
+    public func getPhotosByIds(_ photoIds: [String]) async throws -> [MetadataPhotoLookup] {
         if photoIds.isEmpty { return [] }
         var photos: [MetadataPhotoLookup] = []
         for chunkStart in stride(from: 0, to: photoIds.count, by: 800) {
             let chunk = Array(photoIds[chunkStart..<min(chunkStart + 800, photoIds.count)])
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare(
-                "SELECT id, session_id, filepath FROM photos WHERE id IN (\(placeholders))"
-            ).query(chunk.map { .text($0) })
+            let rows = try await database.query(
+                "SELECT id, session_id, filepath FROM photos WHERE id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
             photos.append(contentsOf: rows.map {
                 MetadataPhotoLookup(
-                    id: $0[0].textValue ?? "",
-                    sessionId: $0[1].textValue ?? "",
-                    filepath: $0[2].textValue ?? ""
+                    id: $0.values[$0.columnOrder[0]]?.textValue ?? "",
+                    sessionId: $0.values[$0.columnOrder[1]]?.textValue ?? "",
+                    filepath: $0.values[$0.columnOrder[2]]?.textValue ?? ""
                 )
             })
         }
@@ -260,7 +261,7 @@ public final class MetadataService {
     /// → 批量事务 upsert。
     public func getMetadata(photoIds: [String]) async throws -> [String: MetadataTags] {
         var result: [String: MetadataTags] = [:]
-        let allPhotos = try getPhotosByIds(photoIds)
+        let allPhotos = try await getPhotosByIds(photoIds)
         let photoById = Dictionary(uniqueKeysWithValues: allPhotos.map { ($0.id, $0) })
         var fingerprints: [String: (size: Int, value: String)] = [:]
         try await batchAsync(allPhotos, concurrency: 16) { photo in
@@ -412,7 +413,7 @@ public final class MetadataService {
         let merged = overlayTags(baseTags, overlay: overlay)
 
         let cacheInput = tagsToCacheInput(merged)
-        let photos = try getPhotosByIds([photoId])
+        let photos = try await getPhotosByIds([photoId])
         let photo = photos.first
         let sessionId = photo?.sessionId ?? existing?.sessionId ?? ""
 
@@ -446,7 +447,7 @@ public final class MetadataService {
         var photosById: [String: MetadataPhotoLookup]? = nil
         do {
             photosById = Dictionary(
-                uniqueKeysWithValues: try getPhotosByIds(updates.map(\.photoId)).map { ($0.id, $0) }
+                uniqueKeysWithValues: try await getPhotosByIds(updates.map(\.photoId)).map { ($0.id, $0) }
             )
         } catch {
             GatherLogger.log("Failed to batch-load photos for metadata batch: \(error)", level: .warn)
@@ -476,7 +477,7 @@ public final class MetadataService {
         func groupKey(_ photoId: String) async -> String {
             var photo = photosById?[photoId]
             if photo == nil, photosById == nil {
-                photo = (try? getPhotosByIds([photoId]))?.first
+                photo = (try? await getPhotosByIds([photoId]))?.first
             }
             guard let photo else { return "missing:\(photoId)" }
             if let xmpPathByPhoto, let xmpPath = xmpPathByPhoto[photoId] {
@@ -517,7 +518,7 @@ public final class MetadataService {
         var photoById: [String: MetadataPhotoLookup]? = nil
         do {
             photoById = Dictionary(
-                uniqueKeysWithValues: try getPhotosByIds(photoIds).map { ($0.id, $0) }
+                uniqueKeysWithValues: try await getPhotosByIds(photoIds).map { ($0.id, $0) }
             )
         } catch {
             GatherLogger.log("Failed to batch-load photos for cache populate: \(error)", level: .warn)
@@ -526,7 +527,7 @@ public final class MetadataService {
             do {
                 var photo = photoById?[photoId]
                 if photo == nil, photoById == nil {
-                    photo = (try? self.getPhotosByIds([photoId]))?.first
+                    photo = (try? await self.getPhotosByIds([photoId]))?.first
                 }
                 guard let photo else { return }
                 guard let metadata = try await dimensions.metadata(filePath: photo.filepath) else { return }

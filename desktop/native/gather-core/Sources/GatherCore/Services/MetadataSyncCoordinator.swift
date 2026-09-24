@@ -90,7 +90,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
     private let getNumber: (String, Double) -> Double
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     /// TS: process.env.GATHER_TEST_SKIP_RELOAD_ACK === '1'（e2e/单测跳过 reload-ack 守卫）。
     public let skipReloadAck: Bool
 
@@ -125,13 +125,13 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     public init(
         writebackStore: any WritebackStore,
         xmp: any XMPProvider,
-        connection: DBConnection,
+        database: SQLiteDatabase,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         skipReloadAck: Bool = false
     ) {
         self.writebackStore = writebackStore
         self.xmp = xmp
-        self.connection = connection
+        self.database = database
         self.getNumber = getNumber
         self.skipReloadAck = skipReloadAck
     }
@@ -268,7 +268,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             _ = try await writebackStore.discardWritebackPending(xmpPath: xmpPath)
             // 保持 metadata 缓存与 culling 决策与用户选择保留的值一致，
             // 否则 UI 会一直显示本地 rating/label/keywords。
-            syncAcceptedRemoteValues(photoPath: row.photoPath, remote: current)
+            await syncAcceptedRemoteValues(photoPath: row.photoPath, remote: current)
         }
         let fingerprint = try await MetadataFingerprint.contentFingerprint(xmpPath)
         try await writebackStore.resolveOutboxConflict(
@@ -364,7 +364,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         // 主侧守卫（闭合渲染层陈旧视图竞态）：确认同步把行提升到 synced
         // （解锁 cleanup），因此 C1 必须已加载元数据——即必须存在 reload ack。
         // 缺失时 cleanup 可能恢复 C1 从未加载过的 XMP 备份。
-        try requireReloadAck(sessionId)
+        try await requireReloadAck(sessionId)
         try await writebackStore.markSessionSynced(sessionId: sessionId, sourceModule: sourceModule)
         return try await emitSummary(sessionId: sessionId)
     }
@@ -377,7 +377,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             throw MetadataSyncError.cleanupRequiresLoaded
         }
         // cleanup 会恢复备份，同样受 reload-ack 门控；无可恢复行时不要求 ack。
-        if !eligible.isEmpty { try requireReloadAck(sessionId) }
+        if !eligible.isEmpty { try await requireReloadAck(sessionId) }
         // 每行序列（waitForIdle → 指纹复核 → 恢复/删除 → 标记 cleaned）只在本行
         // 内有顺序敏感性，无关行可并行。
         let results = try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row -> (deleted: Bool, error: String?) in
@@ -679,25 +679,25 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: clearReloadAck —— 新写入活动使会话 reload-ack 失效（耐久半部的
     /// safeToCleanup 门，数据丢失修复）。
-    private func clearReloadAck(_ sessionId: String) throws {
-        _ = try connection.prepare(
-            "UPDATE sessions SET reload_acked_at = NULL, updated_at = ? WHERE id = ? AND reload_acked_at IS NOT NULL"
-        ).run([.text(nowISOString()), .text(sessionId)])
+    private func clearReloadAck(_ sessionId: String) async throws {
+        _ = try await database.run(
+            "UPDATE sessions SET reload_acked_at = NULL, updated_at = ? WHERE id = ? AND reload_acked_at IS NOT NULL",
+            [.text(nowISOString()), .text(sessionId)]
+        )
     }
 
     private func clearReloadAckForXmpPath(_ xmpPath: String) async {
         let sessionIds = (try? await writebackStore.outboxSessionIds(xmpPath: xmpPath)) ?? []
         for sessionId in sessionIds {
-            try? clearReloadAck(sessionId)
+            try? await clearReloadAck(sessionId)
         }
     }
 
     /// TS: requireReloadAck —— 主侧守卫；GATHER_TEST_SKIP_RELOAD_ACK 等价跳过。
-    private func requireReloadAck(_ sessionId: String) throws {
+    private func requireReloadAck(_ sessionId: String) async throws {
         if skipReloadAck { return }
-        let row = try connection.prepare("SELECT reload_acked_at FROM sessions WHERE id = ?")
-            .get([.text(sessionId)])
-        guard let acked = row?[0].textValue, !acked.isEmpty else {
+        let row = try await database.queryOne("SELECT reload_acked_at FROM sessions WHERE id = ?", [.text(sessionId)])
+        guard let acked = row?.values[row!.columnOrder[0]]?.textValue, !acked.isEmpty else {
             throw MetadataSyncError.reloadNotAcked
         }
     }
@@ -772,24 +772,23 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: syncAcceptedRemoteValues —— 用户选择保留的外部值回写 metadata 缓存与
     /// culling 决策表（钳制到 CHECK 约束，非标准外部 label/rating 不得回滚事务）。
-    private func syncAcceptedRemoteValues(photoPath: String, remote: MetadataWriteAttributes) {
+    private func syncAcceptedRemoteValues(photoPath: String, remote: MetadataWriteAttributes) async {
         do {
             // 损坏的 sidecar 让 readAttributes 返回空对象：镜像 metadata.service
             // 守卫，空读取不得清空先前有效缓存值。
             if remote.isEmpty && xmp.fileExists(TSPath.xmpSidecarPath(photoPath)) {
                 return
             }
-            let photos = try connection.prepare("SELECT id, session_id FROM photos WHERE filepath = ?")
-                .query([.text(photoPath)])
+            let photos = try await database.query("SELECT id, session_id FROM photos WHERE filepath = ?", [.text(photoPath)])
             let now = nowISOString()
             let keywords = remote.keywords ?? []
             let rating = clampRating(remote.rating)
             let label = sanitizeCullingLabel(remote.label)
             let keywordsJSON = try JSONValue.stringify(.array(keywords.map { .string($0) }))
-            try connection.transaction {
+            try await database.transaction { db in
                 for photo in photos {
                     do {
-                        _ = try connection.prepare("""
+                        _ = try db.run("""
                             INSERT INTO photo_metadata_cache
                               (photo_id, session_id, keywords, rating, label, cached_at)
                             VALUES (?, ?, ?, ?, ?, ?)
@@ -798,28 +797,28 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                               rating = excluded.rating,
                               label = excluded.label,
                               cached_at = excluded.cached_at
-                          """).run([
-                            .text(photo[0].textValue ?? ""),
-                            .text(photo[1].textValue ?? ""),
+                          """, [
+                            .text(photo.values[photo.columnOrder[0]]?.textValue ?? ""),
+                            .text(photo.values[photo.columnOrder[1]]?.textValue ?? ""),
                             .text(keywordsJSON),
                             .int(Int64(rating)),
                             .text(label),
                             .text(now),
                         ])
-                        _ = try connection.prepare("""
+                        _ = try db.run("""
                             UPDATE culling_decisions
                             SET rating = ?, color_label = ?, updated_at = ?
                             WHERE photo_id = ? AND session_id = ?
-                          """).run([
+                          """, [
                             .int(Int64(rating)),
                             .text(label),
                             .text(now),
-                            .text(photo[0].textValue ?? ""),
-                            .text(photo[1].textValue ?? ""),
+                            .text(photo.values[photo.columnOrder[0]]?.textValue ?? ""),
+                            .text(photo.values[photo.columnOrder[1]]?.textValue ?? ""),
                         ])
                     } catch {
                         // 单张照片失败不得阻塞其余批次。
-                        GatherLogger.log("Failed to sync accepted remote values for photo \(photo[0].textValue ?? ""): \(error)", level: .warn)
+                        GatherLogger.log("Failed to sync accepted remote values for photo \(photo.values[photo.columnOrder[0]]?.textValue ?? ""): \(error)", level: .warn)
                     }
                 }
             }

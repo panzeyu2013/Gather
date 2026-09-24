@@ -119,7 +119,7 @@ private struct CoordinatorFixture {
         let coordinator = MetadataSyncCoordinator(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            connection: db,
+            database: try SQLiteDatabase(path: dbPath),
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
@@ -384,7 +384,7 @@ struct WritebackServiceTests {
         let coordinator = MetadataSyncCoordinator(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            connection: db,
+            database: try SQLiteDatabase(path: dbPath),
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
@@ -468,7 +468,7 @@ struct WritebackServiceTests {
         let coordinator = MetadataSyncCoordinator(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            connection: db,
+            database: try SQLiteDatabase(path: dbPath),
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )

@@ -233,7 +233,7 @@ public final class SessionCommandRouter: CommandRouter {
         let metadataSyncCoordinator = MetadataSyncCoordinator(
             writebackStore: writebackStore,
             xmp: xmp,
-            connection: db,
+            database: database,
             getNumber: { key, defaultValue in
                 if key == "metadata_write_debounce_ms", let metadataWriteDebounceMs {
                     return metadataWriteDebounceMs
@@ -257,7 +257,7 @@ public final class SessionCommandRouter: CommandRouter {
         let metadataService = MetadataService(
             metadataStore: metadataStore,
             xmp: xmp,
-            connection: db,
+            database: database,
             mutations: metadataMutationService,
             assetResolver: assetResolver
         )
