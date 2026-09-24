@@ -167,6 +167,11 @@ public protocol PhotoStore: Sendable {
     func photoIdsByFilepath(_ filepaths: [String]) async throws -> [String: String]
     func addPhotos(sessionId: String, inputs: [PhotoAddInput], source: String) async throws -> PhotoAddResult
     func deleteBySession(sessionId: String) async throws
+    /// M1：索引器生成缓存照片清理（原 IndexerService 内联事务的 Store 化）。
+    /// 单事务按旧顺序执行 4 条删除（photos / session_assets / asset_files / assets）；
+    /// asset_files 的 id 列表由删除前 photos 行反查（旧调用方 compactMap(\.assetFileId) 的等价物）。
+    /// 返回删除的 photos 行数；行已删的重复调用返回 0。
+    func purgeGeneratedCachePhotos(photoIds: [String], sessionId: String) async throws -> Int
     func updateIndexedFile(photoId: String, width: Int, height: Int, changed: Bool) async throws
     func updateChecksum(photoId: String, checksum: String, fileSize: Int, fileMtimeMs: Double) async throws
     func markMissing(photoIds: [String]) async throws
@@ -438,6 +443,58 @@ public struct SQLitePhotoStore: PhotoStore {
 
     public func deleteBySession(sessionId: String) async throws {
         try await database.run("DELETE FROM photos WHERE session_id = ?", [.text(sessionId)])
+    }
+
+    /// M1：IndexerService 生成缓存清理的 Store 化。单事务内按旧顺序执行 4 条删除；
+    /// 旧调用方在事务外随记录提供 assetFileId 列表（compactMap(\.assetFileId)），
+    /// 此签名只收 photoIds，故在删除 photos 前按同一映射反查（4 条删除的 SQL 逐字保留）。
+    public func purgeGeneratedCachePhotos(photoIds: [String], sessionId: String) async throws -> Int {
+        guard !photoIds.isEmpty else { return 0 }
+        return try await database.transaction { db in
+            // 旧 IN_CHUNK_SIZE=400（IndexAssembler.chunked 的等价分片）。
+            var fileIds: [String] = []
+            for chunk in photoIds.chunked(by: 400) {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                let rows = try db.query(
+                    "SELECT asset_file_id FROM photos WHERE id IN (\(placeholders))",
+                    chunk.map { .text($0) }
+                )
+                for row in rows {
+                    if let fileId = row.text("asset_file_id") { fileIds.append(fileId) }
+                }
+            }
+            var removed = 0
+            for chunk in photoIds.chunked(by: 400) {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                removed += try db.run(
+                    "DELETE FROM photos WHERE id IN (\(placeholders))",
+                    chunk.map { .text($0) }
+                )
+            }
+            _ = try db.run("""
+                DELETE FROM session_assets
+                WHERE session_id = ? AND NOT EXISTS (
+                  SELECT 1 FROM photos p
+                  WHERE p.session_id = session_assets.session_id
+                    AND p.asset_id = session_assets.asset_id
+                )
+              """, [.text(sessionId)])
+            if !fileIds.isEmpty {
+                for chunk in fileIds.chunked(by: 400) {
+                    let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                    _ = try db.run("""
+                        DELETE FROM asset_files
+                        WHERE id IN (\(placeholders))
+                          AND NOT EXISTS (SELECT 1 FROM photos p WHERE p.asset_file_id = asset_files.id)
+                      """, chunk.map { .text($0) })
+                }
+                _ = try db.run("""
+                    DELETE FROM assets
+                    WHERE NOT EXISTS (SELECT 1 FROM asset_members am WHERE am.asset_id = assets.id)
+                  """)
+            }
+            return removed
+        }
     }
 
     public func updateIndexedFile(photoId: String, width: Int, height: Int, changed: Bool) async throws {
