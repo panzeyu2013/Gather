@@ -106,6 +106,60 @@ public actor MetadataWriter {
         self.dependencies = dependencies
     }
 
+    // MARK: - mww4 / W4-4 ① 写面去抖排程骨架
+
+    /// 每个 xmpPath 一条排程条目：ticket 标识「最新一次 schedule」；
+    /// generation 单调 +1（只增不减，测试用它断言合流次数）；
+    /// 旧 ticket 的延迟任务醒来后发现 ticket 已被替换即自行退出。
+    private struct ScheduleEntry: Sendable {
+        var ticket: UUID
+        var generation: UInt64
+        var phase: Phase
+
+        enum Phase: Sendable {
+            case idle
+            case debouncing
+            case queued
+            case inFlight
+        }
+    }
+
+    private var entries: [String: ScheduleEntry] = [:]
+
+    /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
+    static let defaultDebounceDelayMs = 200
+
+    /// 异步入队（非阻塞）：立即返回，实际登记在 actor 上串行执行。
+    public nonisolated func schedule(xmpPath: String) {
+        schedule(xmpPath: xmpPath, delayMs: nil)
+    }
+
+    /// delayMs = nil 用默认去抖窗口；0/负数表示不等待、下一跳立刻入队。
+    public nonisolated func schedule(xmpPath: String, delayMs: Int?) {
+        Task { await self.enqueue(xmpPath: xmpPath, delayMs: delayMs) }
+    }
+
+    /// generation 单调 +1；同路径重复调用只保留最新 ticket —— 旧 ticket 到点即弃。
+    private func enqueue(xmpPath: String, delayMs: Int?) async {
+        let generation = (entries[xmpPath]?.generation ?? 0) + 1
+        let ticket = UUID()
+        entries[xmpPath] = ScheduleEntry(
+            ticket: ticket, generation: generation, phase: .debouncing)
+        let delay = delayMs ?? Self.defaultDebounceDelayMs
+        if delay > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
+        }
+        guard entries[xmpPath]?.ticket == ticket else { return }
+        entries[xmpPath]?.phase = .queued
+    }
+
+    /// 测试只读访问器（internal）：排程条目快照，按路径排序，不暴露私有类型。
+    func scheduleSnapshot() -> [(xmpPath: String, generation: UInt64, phase: String)] {
+        entries
+            .map { ($0.key, $0.value.generation, String(describing: $0.value.phase)) }
+            .sorted { $0.0 < $1.0 }
+    }
+
     /// TS: getMetadata（W4-3d 读路径）—— 缓存轻投影 → 全命中返回 / 有未命中显式标记。
     /// 与 Services/MetadataService.getMetadata 的有意差异（留后续步骤）：
     /// ① 指纹失效检查需要 photo 文件路径端口（MetadataWriter 尚未接线，W4-6 补齐）；
