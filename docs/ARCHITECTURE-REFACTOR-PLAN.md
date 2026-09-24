@@ -434,3 +434,14 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 - **并行工作流划分**：①`JobRunner` actor 骨架 + 租约/fencing ②取消/宽限/`stop()` 超时 ③checkpoint/去重键/结果 take ④集成测试（4 组）⑤路由 `jobs.*` 接线与旧测试删除。
 ### R7 追加候选（由 app 测试迁移子代理发现）
 - `Host/SessionCommandRouter.swift` 存在**重复 case 死分支**（HEAD 即存在）：`case "export.preview"`(L1949) 与 `case "fkw.unbind"`(L2080) 永不命中 → R5（删除该路由）或 R7 清理时一并删除，并核对两处语义差异是否需合并。
+### R5/R7 重要发现：路由重复 case 导致**新实现成为死代码**（主代理核实）
+
+`Host/SessionCommandRouter.swift` 中两个命令各出现两次，Swift switch 只命中**第一次**：
+
+| 命令 | 存活实现（先出现） | 死代码（永不命中） | 语义差异 |
+|---|---|---|---|
+| `export.preview` | **L1161**：`Task { … requiredString 抛错 → catch → errorMessage }`（统一错误映射） | L1949：先 `guard let … else MISSING_PARAM:sessionId` 再 Task | 缺失参数时的错误码路径不同；L1949 还提前解 params |
+| `fkw.unbind` | **L1521**：先 `guard confirmed` → `FKW_UNBIND_CONFIRM_REQUIRED`，再要求 sessionId | L2080：`guard confirmed` → `throw BridgeError.badParams(...)`，且要求 `clusterId`（额外参数！） | **死掉的 L2080 才是要求 clusterId 的新版**，存活版不校验 clusterId |
+
+**含义**：`fkw.unbind` 当前实际走的是旧实现（不校验 `clusterId`），R1 之后新增的严格校验版从未生效——这是真实的行为缺陷（潜在破坏性命令参数校验缺失）。
+**处置**：属 R5（删除路由、改类型化 API）时**必须显式裁决**：以 L2080 的严格语义（要求 clusterId + BridgeError）为准，并为该命令补回归测试；R7 复核是否还有其他 `case` 重复。**本轮不动**（避免在 W2 波次中改变行为）。

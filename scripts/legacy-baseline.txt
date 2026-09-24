@@ -8,6 +8,7 @@ raw SQL outside Store (R1)=0
 unchecked Sendable (R1/R2)=21
 dual-track l10n zhDesc/enDesc (R6)=1
 batchAsync copies (R2)=4
+Runtime layer SQL statements (R2)=0
 legacy DB layer files (R1)=0
 legacy Repositories files (R1)=0
 legacy Repo test files (R1)=0

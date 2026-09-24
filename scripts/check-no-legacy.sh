@@ -80,6 +80,7 @@ tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepa
 tracked "unchecked Sendable (R1/R2)"            '@unchecked Sendable'              "$NATIVE" "*.swift"
 tracked "dual-track l10n zhDesc/enDesc (R6)"    'zhDesc|enDesc'                    "$APP"    "*.swift"
 tracked "batchAsync copies (R2)"                'func batchAsync'                  "$CORE"   "*.swift"
+tracked "Runtime layer SQL statements (R2)"   'SELECT |INSERT INTO |UPDATE .* SET|DELETE FROM '  "$CORE/Sources/GatherCore/Runtime" "*.swift"
 tracked "legacy DB layer files (R1)"            '.'  "$CORE/Sources/GatherCore/Database" "*.swift"
 tracked "legacy Repositories files (R1)"        '.'  "$CORE/Sources/GatherCore/Database/Repositories" "*.swift"
 tracked "legacy Repo test files (R1)"           '.'  "$CORE/Tests/GatherCoreTests/Database" "*.swift"
