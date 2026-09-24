@@ -424,4 +424,297 @@ struct WritebackStoreTests {
 
         #expect(try await store.recoverInterruptedOutbox() == 0, "无 writing 行 → 0")
     }
+
+    // MARK: W4-1b：批量与投影命令
+
+    private func insertPhoto(
+        _ database: SQLiteDatabase,
+        id: String,
+        sessionId: String,
+        filepath: String
+    ) async throws {
+        try await database.run(
+            """
+            INSERT INTO photos (id, session_id, filepath, created_at, updated_at)
+            VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            """,
+            [.text(id), .text(sessionId), .text(filepath)]
+        )
+    }
+
+    /// 批量 merge：1000 条小样本，revision 单调、dirty 合并、结果顺序与入参一致。
+    @Test func mergeOutboxPatchesMergesBatchWithMonotonicRevisions() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        let requests = (0..<1000).map { index in
+            OutboxMergeRequest(
+                xmpPath: "/v/IMG_\(index).xmp",
+                sessionId: "s1",
+                photoPath: "/v/IMG_\(index).jpg",
+                patch: JSONValue.object(["source": JSONValue.string("face-keyword")]),
+                dirtyFields: ["keywords"]
+            )
+        }
+        let records = try await store.mergeOutboxPatches(requests)
+        #expect(records.count == 1000)
+        #expect(records.allSatisfy { $0.revision == 1 })
+        #expect(records.first?.xmpPath == "/v/IMG_0.xmp", "返回顺序与入参一致")
+        #expect(records.last?.xmpPath == "/v/IMG_999.xmp")
+        #expect(try await rowCount(database, "SELECT COUNT(*) FROM metadata_outbox") == 1000)
+        #expect(try await rowCount(database, "SELECT COUNT(*) FROM metadata_outbox_sessions") == 1000)
+
+        let second = try await store.mergeOutboxPatches([
+            OutboxMergeRequest(
+                xmpPath: "/v/IMG_0.xmp", sessionId: "s1", photoPath: "/v/IMG_0.jpg",
+                patch: JSONValue.object(["rating": JSONValue.int(5)]), dirtyFields: ["rating"]
+            ),
+        ])
+        #expect(second.count == 1)
+        #expect(second[0].revision == 2, "既有路径 revision+1")
+        #expect(second[0].dirty == ["keywords", "rating"], "dirty_fields 去重合并")
+        #expect(second[0].patch["source"]?.stringValue == "face-keyword", "旧 patch 保留")
+        #expect(second[0].patch["rating"] == .number(5))
+        #expect(try await rowCount(database, "SELECT COUNT(*) FROM metadata_outbox") == 1000)
+    }
+
+    /// 单事务证明：第 2 条注入失败后，第 1 条（以及 sessions 边）也必须回滚。
+    @Test func mergeOutboxPatchesRollsBackWholeBatchOnFailure() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        try await database.execute(
+            """
+            CREATE TRIGGER reject_second_merge BEFORE INSERT ON metadata_outbox
+            WHEN NEW.xmp_path = '/v/IMG_2.xmp'
+            BEGIN SELECT RAISE(ABORT, 'injected merge failure'); END
+            """
+        )
+        await #expect(throws: SQLiteFailure.self) {
+            _ = try await store.mergeOutboxPatches((1...3).map { index in
+                OutboxMergeRequest(
+                    xmpPath: "/v/IMG_\(index).xmp", sessionId: "s1", photoPath: "/v/IMG_\(index).jpg",
+                    patch: JSONValue.object(["source": JSONValue.string("manual")]), dirtyFields: []
+                )
+            })
+        }
+        #expect(try await rowCount(database, "SELECT COUNT(*) FROM metadata_outbox") == 0, "第 1 条同事务回滚")
+        #expect(try await rowCount(database, "SELECT COUNT(*) FROM metadata_outbox_sessions") == 0)
+        #expect(await database.currentTransactionDepth == 0)
+    }
+
+    /// 空参数：三个批量命令都返回空/0，且不开事务。
+    @Test func batchCommandsReturnEmptyForEmptyInput() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        #expect(try await store.mergeOutboxPatches([]).isEmpty)
+        #expect(try await store.outboxEntries(xmpPaths: []).isEmpty)
+        #expect(try await store.reconcileWritebackProjection(sessionId: "s1", module: "m", snapshot: [:]) == 0)
+        #expect(await database.currentTransactionDepth == 0)
+    }
+
+    /// 批量读跨 400 分块、去重、忽略缺失路径。
+    @Test func outboxEntriesByPathsChunksAndDedupes() async throws {
+        let (store, _, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        let requests = (0..<450).map { index in
+            OutboxMergeRequest(
+                xmpPath: "/v/IMG_\(index).xmp", sessionId: "s1", photoPath: "/v/IMG_\(index).jpg",
+                patch: JSONValue.object(["source": JSONValue.string("manual")]), dirtyFields: []
+            )
+        }
+        _ = try await store.mergeOutboxPatches(requests)
+        let paths = requests.map(\.xmpPath)
+        let all = try await store.outboxEntries(xmpPaths: paths + [paths[0], "/v/missing.xmp"])
+        #expect(all.count == 450, "重复路径不重复返回，缺失路径忽略")
+        #expect(Set(all.map(\.xmpPath)) == Set(paths))
+        #expect(try await store.outboxEntries(xmpPaths: ["/v/missing.xmp"]).isEmpty)
+    }
+
+    /// reconcile 幂等：重复调用返回 0；只写 xmp_status，不动 attempt_count/error_message。
+    @Test func reconcileWritebackProjectionIsIdempotentAndKeepsAttemptCount() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        try await insertPhoto(database, id: "p1", sessionId: "s1", filepath: "/v/IMG_1.jpg")
+        try await database.run(
+            """
+            INSERT INTO writeback_items
+              (photo_id, photo_path, session_id, module, xmp_path, xmp_status, error_message, attempt_count, last_attempt_at)
+            VALUES ('p1', '/v/IMG_1.jpg', 's1', 'face-keyword', '/v/IMG_1.xmp', 'pending', 'boom', 7, '2026-01-01T00:00:00.000Z')
+            """
+        )
+
+        let first = try await store.reconcileWritebackProjection(
+            sessionId: "s1", module: "face-keyword",
+            snapshot: ["/v/IMG_1.xmp": .written, "/v/missing.xmp": .failed]
+        )
+        #expect(first == 1, "只计实际存在的行")
+        let second = try await store.reconcileWritebackProjection(
+            sessionId: "s1", module: "face-keyword",
+            snapshot: ["/v/IMG_1.xmp": .written]
+        )
+        #expect(second == 0, "幂等：已是目标状态不再计入")
+
+        let item = try await store.writebackItem(itemId: 1)
+        #expect(item?.xmpStatus == "written")
+        #expect(item?.attemptCount == 7, "投影不得改 attempt_count")
+        #expect(item?.errorMessage == "boom", "投影只写 xmp_status")
+        #expect(
+            try await store.reconcileWritebackProjection(
+                sessionId: "s1", module: "other", snapshot: ["/v/IMG_1.xmp": .failed]
+            ) == 0,
+            "module 不匹配不写"
+        )
+    }
+
+    /// 接受远端值：缓存 upsert + 决策更新 + 清理 pending 投影与 outbox 行。
+    @Test func applyAcceptedRemoteValuesUpdatesCacheDecisionAndCleansRows() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        try await insertPhoto(database, id: "p1", sessionId: "s1", filepath: "/v/IMG_1.jpg")
+        _ = try await store.mergeOutboxPatch(
+            xmpPath: "/v/IMG_1.xmp", sessionId: "s1", photoPath: "/v/IMG_1.jpg",
+            patch: JSONValue.object(["source": JSONValue.string("manual")]), dirtyFields: ["rating"]
+        )
+        try await store.saveWritebackItems(
+            sessionId: "s1", module: "metadata",
+            items: [
+                WritebackItemInput(
+                    photoId: "p1", photoPath: "/v/IMG_1.jpg", module: "metadata",
+                    keywords: [], xmpPath: "/v/IMG_1.xmp", backupPath: ""
+                ),
+            ]
+        )
+        try await database.run(
+            """
+            INSERT INTO culling_decisions (session_id, photo_id, group_id, decision, rating, color_label, updated_at)
+            VALUES ('s1', 'p1', 'g1', 'pending', 0, 'None', '2026-01-01T00:00:00.000Z')
+            """
+        )
+
+        let processed = try await store.applyAcceptedRemoteValues(
+            sessionId: "s1", xmpPath: "/v/IMG_1.xmp", rating: 4, label: "Green", keywords: ["k1", "k2"]
+        )
+        #expect(processed == 1)
+        #expect(try await store.outboxEntry(xmpPath: "/v/IMG_1.xmp") == nil, "outbox 行删除")
+        #expect(try await rowCount(database, "SELECT COUNT(*) FROM metadata_outbox_sessions") == 0, "sessions 边 CASCADE")
+        #expect(
+            try await rowCount(database, "SELECT COUNT(*) FROM writeback_items WHERE xmp_path = '/v/IMG_1.xmp'") == 0,
+            "pending 投影行删除"
+        )
+        let cache = try await database.queryOne(
+            "SELECT keywords, rating, label FROM photo_metadata_cache WHERE photo_id = 'p1'"
+        )
+        #expect((try? JSONValue.parse(cache?.text("keywords") ?? ""))?.arrayValue == ["k1", "k2"])
+        #expect(cache?.int("rating") == 4)
+        #expect(cache?.text("label") == "Green")
+        let decision = try await database.queryOne(
+            "SELECT rating, color_label FROM culling_decisions WHERE photo_id = 'p1'"
+        )
+        #expect(decision?.int("rating") == 4)
+        #expect(decision?.text("color_label") == "Green")
+    }
+
+    /// nil 字段（未被接受）不得覆盖缓存/决策中的原值。
+    @Test func applyAcceptedRemoteValuesKeepsUnacceptedFields() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        try await insertPhoto(database, id: "p1", sessionId: "s1", filepath: "/v/IMG_1.jpg")
+        _ = try await store.mergeOutboxPatch(
+            xmpPath: "/v/IMG_1.xmp", sessionId: "s1", photoPath: "/v/IMG_1.jpg",
+            patch: JSONValue.object(["source": JSONValue.string("manual")]), dirtyFields: ["rating"]
+        )
+        try await database.run(
+            """
+            INSERT INTO photo_metadata_cache (photo_id, session_id, keywords, rating, label, cached_at)
+            VALUES ('p1', 's1', '[\"old\"]', 2, 'Red', '2026-01-01T00:00:00.000Z')
+            """
+        )
+        try await database.run(
+            """
+            INSERT INTO culling_decisions (session_id, photo_id, group_id, decision, rating, color_label, updated_at)
+            VALUES ('s1', 'p1', 'g1', 'keep', 2, 'Red', '2026-01-01T00:00:00.000Z')
+            """
+        )
+
+        let processed = try await store.applyAcceptedRemoteValues(
+            sessionId: "s1", xmpPath: "/v/IMG_1.xmp", rating: nil, label: nil, keywords: ["new"]
+        )
+        #expect(processed == 1)
+        let cache = try await database.queryOne(
+            "SELECT keywords, rating, label FROM photo_metadata_cache WHERE photo_id = 'p1'"
+        )
+        #expect((try? JSONValue.parse(cache?.text("keywords") ?? ""))?.arrayValue == ["new"])
+        #expect(cache?.int("rating") == 2, "rating=nil 保持原值")
+        #expect(cache?.text("label") == "Red", "label=nil 保持原值")
+        let decision = try await database.queryOne(
+            "SELECT rating, color_label FROM culling_decisions WHERE photo_id = 'p1'"
+        )
+        #expect(decision?.int("rating") == 2)
+        #expect(decision?.text("color_label") == "Red")
+    }
+
+    /// 单事务整批回滚：决策更新被注入失败后，先前照片的缓存 upsert 与清理都必须回滚。
+    @Test func applyAcceptedRemoteValuesRollsBackWholeBatchOnFailure() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        try await insertPhoto(database, id: "p1", sessionId: "s1", filepath: "/v/IMG_1.jpg")
+        _ = try await store.mergeOutboxPatch(
+            xmpPath: "/v/IMG_1.xmp", sessionId: "s1", photoPath: "/v/IMG_1.jpg",
+            patch: JSONValue.object(["source": JSONValue.string("manual")]), dirtyFields: ["rating"]
+        )
+        try await store.saveWritebackItems(
+            sessionId: "s1", module: "metadata",
+            items: [
+                WritebackItemInput(
+                    photoId: "p1", photoPath: "/v/IMG_1.jpg", module: "metadata",
+                    keywords: [], xmpPath: "/v/IMG_1.xmp", backupPath: ""
+                ),
+            ]
+        )
+        try await database.run(
+            """
+            INSERT INTO culling_decisions (session_id, photo_id, group_id, decision, rating, color_label, updated_at)
+            VALUES ('s1', 'p1', 'g1', 'pending', 0, 'None', '2026-01-01T00:00:00.000Z')
+            """
+        )
+        // 缓存 upsert 先执行成功，随后决策更新被注入失败：整批必须回滚缓存写入。
+        try await database.execute(
+            """
+            CREATE TRIGGER reject_decision_update BEFORE UPDATE ON culling_decisions
+            WHEN NEW.photo_id = 'p1'
+            BEGIN SELECT RAISE(ABORT, 'injected decision failure'); END
+            """
+        )
+
+        await #expect(throws: SQLiteFailure.self) {
+            _ = try await store.applyAcceptedRemoteValues(
+                sessionId: "s1", xmpPath: "/v/IMG_1.xmp", rating: 3, label: "Blue", keywords: ["x"]
+            )
+        }
+        #expect(try await rowCount(database, "SELECT COUNT(*) FROM photo_metadata_cache") == 0, "缓存 upsert 回滚")
+        #expect(
+            try await rowCount(database, "SELECT COUNT(*) FROM metadata_outbox WHERE xmp_path = '/v/IMG_1.xmp'") == 1,
+            "outbox 行保留"
+        )
+        #expect(
+            try await rowCount(
+                database,
+                "SELECT COUNT(*) FROM writeback_items WHERE xmp_path = '/v/IMG_1.xmp' AND xmp_status = 'pending'"
+            ) == 1,
+            "pending 投影行保留"
+        )
+        let decision = try await database.queryOne(
+            "SELECT rating, color_label FROM culling_decisions WHERE photo_id = 'p1'"
+        )
+        #expect(decision?.int("rating") == 0, "被注入失败的决策未被修改")
+        #expect(decision?.text("color_label") == "None")
+        #expect(await database.currentTransactionDepth == 0)
+    }
 }

@@ -82,10 +82,35 @@ public enum OutboxStatus: String, Codable, Sendable {
     case cleaned
 }
 
+/// mergeOutboxPatches 的单条输入：与 mergeOutboxPatch 的参数逐项对应。
+public struct OutboxMergeRequest: Sendable {
+    public let xmpPath: String
+    public let sessionId: String
+    public let photoPath: String
+    public let patch: JSONValue
+    public let dirtyFields: [String]
+
+    public init(
+        xmpPath: String,
+        sessionId: String,
+        photoPath: String,
+        patch: JSONValue,
+        dirtyFields: [String]
+    ) {
+        self.xmpPath = xmpPath
+        self.sessionId = sessionId
+        self.photoPath = photoPath
+        self.patch = patch
+        self.dirtyFields = dirtyFields
+    }
+}
+
 public protocol WritebackStore: Sendable {
     func outboxEntry(xmpPath: String) async throws -> OutboxRecord?
     func outboxEntries(sessionId: String) async throws -> [OutboxRecord]
     func outboxEntries(sessionId: String, xmpPaths: [String]) async throws -> [OutboxRecord]
+    /// 无会话过滤的批量读：空参数返回 []，内部 400 分块。
+    func outboxEntries(xmpPaths: [String]) async throws -> [OutboxRecord]
     func outboxSummaries(sessionId: String) async throws -> [OutboxSummary]
     func outboxSessionIds(xmpPath: String) async throws -> [String]
     func outboxCounts(sessionId: String) async throws -> [String: Int64]
@@ -100,6 +125,8 @@ public protocol WritebackStore: Sendable {
         patch: JSONValue,
         dirtyFields: [String]
     ) async throws -> OutboxRecord
+    /// 批量 merge：整个数组在单个事务内逐条执行，语义与 mergeOutboxPatch 逐字一致；空数组返回 []。
+    func mergeOutboxPatches(_ requests: [OutboxMergeRequest]) async throws -> [OutboxRecord]
     func claimOutbox(xmpPath: String, expectedRevision: Int64) async throws -> Bool
     func markOutboxWritten(
         xmpPath: String,
@@ -153,6 +180,22 @@ public protocol WritebackStore: Sendable {
     func updateWritebackStatusByXmpPath(sessionId: String, module: String, xmpPath: String, status: String) async throws
     func hasActiveWriteback(xmpPath: String) async throws -> Bool
     @discardableResult func discardWritebackPending(xmpPath: String) async throws -> Int
+    /// 投影单写者：单事务把 snapshot 的权威状态按 xmp_path 写入 writeback_items.xmp_status；
+    /// 幂等（已是目标状态的行计 0），不触碰 attempt_count。
+    @discardableResult func reconcileWritebackProjection(
+        sessionId: String,
+        module: String,
+        snapshot: [String: OutboxStatus]
+    ) async throws -> Int
+    /// 裁决接受远端值：photos by filepath → photo_metadata_cache upsert → culling_decisions update
+    /// → 删除该 xmpPath 的 pending writeback 行 → 删除 outbox 行；单事务整批成败，返回处理的 photos 行数。
+    @discardableResult func applyAcceptedRemoteValues(
+        sessionId: String,
+        xmpPath: String,
+        rating: Int?,
+        label: String?,
+        keywords: [String]?
+    ) async throws -> Int
 }
 
 public extension WritebackStore {
@@ -209,6 +252,22 @@ public struct SQLiteWritebackStore: WritebackStore {
             rows.append(contentsOf: part)
         }
         return rows
+    }
+
+    /// 无会话过滤的批量读：按 xmpPath 去重、内部 400 分块；空参数返回 []。
+    public func outboxEntries(xmpPaths: [String]) async throws -> [OutboxRecord] {
+        let unique = Array(Set(xmpPaths))
+        guard !unique.isEmpty else { return [] }
+        var rows: [OutboxRecord] = []
+        for chunk in unique.chunked(by: 400) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let part = try await database.query(
+                "SELECT * FROM metadata_outbox WHERE xmp_path IN (\(placeholders))",
+                chunk.map { .text($0) }
+            ).map { try $0.decode(OutboxRecord.self) }
+            rows.append(contentsOf: part)
+        }
+        return rows.sorted { ($0.updatedAt, $0.xmpPath) < ($1.updatedAt, $1.xmpPath) }
     }
 
     public func outboxEntries(sessionId: String) async throws -> [OutboxRecord] {
@@ -328,67 +387,24 @@ public struct SQLiteWritebackStore: WritebackStore {
         dirtyFields: [String]
     ) async throws -> OutboxRecord {
         try await database.transaction { db in
-            let existing = try Self.outboxEntry(db, xmpPath: xmpPath)
-            var existingPatch = JSONValue.object([:])
-            var existingDirty: [String] = []
-            if let existing {
-                let startsNewRevision =
-                    existing.persistedRevision == existing.revision &&
-                    ["written", "synced", "clean", "cleaned"].contains(existing.status)
-                if !startsNewRevision {
-                    existingPatch = (try? JSONValue.parse(existing.patchJSON)) ?? JSONValue.object([:])
-                    existingDirty = ((try? JSONValue.parse(existing.dirtyFields)) as JSONValue?)?.arrayValue ?? []
-                }
-            }
-            let mergedPatch = Self.mergeObjects(existingPatch, patch)
-            var mergedDirty: [String] = []
-            for field in existingDirty + dirtyFields where !mergedDirty.contains(field) {
-                mergedDirty.append(field)
-            }
-            let sourceModule = patch["source"]?.stringValue ?? ""
-            let resolvedSource = sourceModule.isEmpty ? "manual" : sourceModule
-            let revision = (existing?.revision ?? 0) + 1
-            let now = nowISOString()
-
-            try db.run(
-                """
-                INSERT INTO metadata_outbox (
-                  xmp_path, owner_session_id, created_by_session_id, photo_path, patch_json, dirty_fields,
-                  source_module, revision, persisted_revision, base_fingerprint, base_values_json,
-                  backup_path, status, attempt_count, error_message, updated_at
+            try Self.mergeOutboxPatch(
+                db,
+                request: OutboxMergeRequest(
+                    xmpPath: xmpPath,
+                    sessionId: sessionId,
+                    photoPath: photoPath,
+                    patch: patch,
+                    dirtyFields: dirtyFields
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', '{}', '', 'pending', 0, '', ?)
-                ON CONFLICT(xmp_path) DO UPDATE SET
-                  photo_path = excluded.photo_path,
-                  patch_json = excluded.patch_json,
-                  dirty_fields = excluded.dirty_fields,
-                  source_module = excluded.source_module,
-                  revision = excluded.revision,
-                  status = 'pending',
-                  attempt_count = 0,
-                  error_message = '',
-                  updated_at = excluded.updated_at
-                """,
-                [
-                    .text(xmpPath), .text(sessionId), .text(sessionId), .text(photoPath),
-                    .text(try JSONValue.stringify(mergedPatch)),
-                    .text(try JSONValue.stringify(JSONValue.array(mergedDirty.map { JSONValue.string($0) }))),
-                    .text(resolvedSource), .int(revision), .text(now),
-                ]
             )
-            try db.run(
-                """
-                INSERT INTO metadata_outbox_sessions (xmp_path, session_id, confirmed_at, linked_at)
-                VALUES (?, ?, '', ?)
-                ON CONFLICT(xmp_path, session_id) DO UPDATE SET confirmed_at = ''
-                """,
-                [.text(xmpPath), .text(sessionId), .text(now)]
-            )
-            try db.run("UPDATE metadata_outbox_sessions SET confirmed_at = '' WHERE xmp_path = ?", [.text(xmpPath)])
-            guard let record = try Self.outboxEntry(db, xmpPath: xmpPath) else {
-                throw SQLiteFailure(phase: .other, code: 0, extended: 0, message: "outbox row missing after merge: \(xmpPath)")
-            }
-            return record
+        }
+    }
+
+    /// 批量版本：全部请求在同一个事务内逐条合并，任一条失败整批回滚；返回顺序与入参一致。
+    public func mergeOutboxPatches(_ requests: [OutboxMergeRequest]) async throws -> [OutboxRecord] {
+        guard !requests.isEmpty else { return [] }
+        return try await database.transaction { db in
+            try requests.map { try Self.mergeOutboxPatch(db, request: $0) }
         }
     }
 
@@ -601,6 +617,77 @@ public struct SQLiteWritebackStore: WritebackStore {
     private static func outboxEntry(_ db: isolated SQLiteDatabase, xmpPath: String) throws -> OutboxRecord? {
         try db.queryOne("SELECT * FROM metadata_outbox WHERE xmp_path = ?", [.text(xmpPath)])?
             .decode(OutboxRecord.self)
+    }
+
+    /// 单条读-改-写：必须由调用方放进事务（无 await），mergeOutboxPatch / mergeOutboxPatches 共用。
+    private static func mergeOutboxPatch(
+        _ db: isolated SQLiteDatabase,
+        request: OutboxMergeRequest
+    ) throws -> OutboxRecord {
+        let existing = try outboxEntry(db, xmpPath: request.xmpPath)
+        var existingPatch = JSONValue.object([:])
+        var existingDirty: [String] = []
+        if let existing {
+            let startsNewRevision =
+                existing.persistedRevision == existing.revision &&
+                ["written", "synced", "clean", "cleaned"].contains(existing.status)
+            if !startsNewRevision {
+                existingPatch = (try? JSONValue.parse(existing.patchJSON)) ?? JSONValue.object([:])
+                existingDirty = ((try? JSONValue.parse(existing.dirtyFields)) as JSONValue?)?.arrayValue ?? []
+            }
+        }
+        let mergedPatch = mergeObjects(existingPatch, request.patch)
+        var mergedDirty: [String] = []
+        for field in existingDirty + request.dirtyFields where !mergedDirty.contains(field) {
+            mergedDirty.append(field)
+        }
+        let sourceModule = request.patch["source"]?.stringValue ?? ""
+        let resolvedSource = sourceModule.isEmpty ? "manual" : sourceModule
+        let revision = (existing?.revision ?? 0) + 1
+        let now = nowISOString()
+
+        try db.run(
+            """
+            INSERT INTO metadata_outbox (
+              xmp_path, owner_session_id, created_by_session_id, photo_path, patch_json, dirty_fields,
+              source_module, revision, persisted_revision, base_fingerprint, base_values_json,
+              backup_path, status, attempt_count, error_message, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', '{}', '', 'pending', 0, '', ?)
+            ON CONFLICT(xmp_path) DO UPDATE SET
+              photo_path = excluded.photo_path,
+              patch_json = excluded.patch_json,
+              dirty_fields = excluded.dirty_fields,
+              source_module = excluded.source_module,
+              revision = excluded.revision,
+              status = 'pending',
+              attempt_count = 0,
+              error_message = '',
+              updated_at = excluded.updated_at
+            """,
+            [
+                .text(request.xmpPath), .text(request.sessionId), .text(request.sessionId), .text(request.photoPath),
+                .text(try JSONValue.stringify(mergedPatch)),
+                .text(try JSONValue.stringify(JSONValue.array(mergedDirty.map { JSONValue.string($0) }))),
+                .text(resolvedSource), .int(revision), .text(now),
+            ]
+        )
+        try db.run(
+            """
+            INSERT INTO metadata_outbox_sessions (xmp_path, session_id, confirmed_at, linked_at)
+            VALUES (?, ?, '', ?)
+            ON CONFLICT(xmp_path, session_id) DO UPDATE SET confirmed_at = ''
+            """,
+            [.text(request.xmpPath), .text(request.sessionId), .text(now)]
+        )
+        try db.run("UPDATE metadata_outbox_sessions SET confirmed_at = '' WHERE xmp_path = ?", [.text(request.xmpPath)])
+        guard let record = try outboxEntry(db, xmpPath: request.xmpPath) else {
+            throw SQLiteFailure(
+                phase: .other, code: 0, extended: 0,
+                message: "outbox row missing after merge: \(request.xmpPath)"
+            )
+        }
+        return record
     }
 
     /// TS 展开 { ...existingPatch, ...patch }（后者覆盖前者）。
@@ -896,6 +983,118 @@ public extension SQLiteWritebackStore {
             "DELETE FROM writeback_items WHERE xmp_path = ? AND xmp_status IN ('pending', 'failed')",
             [.text(xmpPath)]
         )
+    }
+
+    /// 投影单写者：单事务、幂等。只按 xmp_path 写 xmp_status，不触碰 attempt_count/error_message；
+    /// 已是目标状态的行计 0，因此重复调用返回 0 且 DB 不变。
+    @discardableResult
+    func reconcileWritebackProjection(
+        sessionId: String,
+        module: String,
+        snapshot: [String: OutboxStatus]
+    ) async throws -> Int {
+        guard !snapshot.isEmpty else { return 0 }
+        return try await database.transaction { db in
+            var updated = 0
+            for (xmpPath, status) in snapshot {
+                updated += try db.run(
+                    """
+                    UPDATE writeback_items SET xmp_status = ?
+                    WHERE session_id = ? AND module = ? AND xmp_path = ? AND xmp_status != ?
+                    """,
+                    [
+                        .text(status.rawValue), .text(sessionId), .text(module),
+                        .text(xmpPath), .text(status.rawValue),
+                    ]
+                )
+            }
+            return updated
+        }
+    }
+
+    /// 裁决接受远端值：photos by filepath → photo_metadata_cache upsert → culling_decisions update
+    /// → 删除该 xmpPath 的 pending writeback 行 → 删除 outbox 行。
+    /// 单事务：任一步抛错整批回滚。nil 字段表示未被接受，保持缓存/决策原值。
+    /// 返回按 filepath 匹配处理的 photos 行数（无匹配时仍执行清理，返回 0）。
+    @discardableResult
+    func applyAcceptedRemoteValues(
+        sessionId: String,
+        xmpPath: String,
+        rating: Int?,
+        label: String?,
+        keywords: [String]?
+    ) async throws -> Int {
+        let keywordsValue: SQLiteValue = keywords.map {
+            .text((try? JSONValue.stringify(JSONValue.array($0.map { JSONValue.string($0) }))) ?? "[]")
+        } ?? .null
+        let ratingValue: SQLiteValue = rating.map { .int(Int64($0)) } ?? .null
+        let labelValue: SQLiteValue = label.map { .text($0) } ?? .null
+        let now = nowISOString()
+        return try await database.transaction { db in
+            // 1) photo_path 以 outbox 权威行为准，缺失时回退 writeback_items 投影。
+            let outboxPath = try db.queryOne(
+                "SELECT photo_path FROM metadata_outbox WHERE xmp_path = ?",
+                [.text(xmpPath)]
+            )?.text("photo_path") ?? ""
+            let resolvedPath: String
+            if !outboxPath.isEmpty {
+                resolvedPath = outboxPath
+            } else {
+                resolvedPath = try db.queryOne(
+                    """
+                    SELECT photo_path FROM writeback_items
+                    WHERE session_id = ? AND xmp_path = ? AND photo_path != ''
+                    LIMIT 1
+                    """,
+                    [.text(sessionId), .text(xmpPath)]
+                )?.text("photo_path") ?? ""
+            }
+            // 2) photos by filepath（限定会话）。
+            let photoIds: [String]
+            if resolvedPath.isEmpty {
+                photoIds = []
+            } else {
+                photoIds = try db.query(
+                    "SELECT id FROM photos WHERE session_id = ? AND filepath = ?",
+                    [.text(sessionId), .text(resolvedPath)]
+                ).compactMap { $0.text("id") }
+            }
+            // 3) 缓存 upsert + 决策更新。
+            for photoId in photoIds {
+                try db.run(
+                    """
+                    INSERT INTO photo_metadata_cache (photo_id, session_id, keywords, rating, label, cached_at)
+                    VALUES (?, ?, COALESCE(?, '[]'), COALESCE(?, 0), ?, ?)
+                    ON CONFLICT(photo_id) DO UPDATE SET
+                      keywords = COALESCE(?, photo_metadata_cache.keywords),
+                      rating = COALESCE(?, photo_metadata_cache.rating),
+                      label = COALESCE(?, photo_metadata_cache.label),
+                      cached_at = excluded.cached_at
+                    """,
+                    [
+                        .text(photoId), .text(sessionId), keywordsValue, ratingValue, labelValue, .text(now),
+                        keywordsValue, ratingValue, labelValue,
+                    ]
+                )
+                try db.run(
+                    """
+                    UPDATE culling_decisions
+                    SET rating = COALESCE(?, rating),
+                        color_label = COALESCE(?, color_label),
+                        updated_at = ?
+                    WHERE photo_id = ? AND session_id = ?
+                    """,
+                    [ratingValue, labelValue, .text(now), .text(photoId), .text(sessionId)]
+                )
+            }
+            // 4) 清理：pending/failed 投影行 + 权威 outbox 行（sessions 边由 CASCADE 删除）。
+            try db.run(
+                "DELETE FROM writeback_items WHERE xmp_path = ? AND xmp_status IN ('pending', 'failed')",
+                [.text(xmpPath)]
+            )
+            try db.run("DELETE FROM metadata_outbox WHERE xmp_path = ?", [.text(xmpPath)])
+            return photoIds.count
+        }
     }
 
     private static func keywordsJSON(_ keywords: [String]) -> String {
