@@ -757,3 +757,25 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 - **分层与命名**：`Services/WritebackService.swift` → `Runtime/Metadata/WritebackRuntime.swift`（逐字搬迁，仅改文件头注释 + **删除死代码 `jsonObject`/`jsonScalar`**——private、全仓无引用、注释指向已删的 WritebackRepo，Store 已有 `attributesJSON`）；公开符号（`WritebackService`/`WritebackServiceError`/`mutationSource`/`buildCullingWritebackPlan`/`buildSimilarityKeywordPlan`/`WritebackPlannerError`）**保持原名**以免触碰 app 路由 → app 侧 0 改动。
 - **测试迁移（覆盖不降的精确账目）**：`WritebackServiceTests`(2 tests) + `StubMutationPort` → `Tests/GatherCoreTests/Runtime/Metadata/WritebackRuntimeTests.swift`（188 行逐字搬迁）；`FakeFSXMPProvider` 由 private 改 internal 供两文件共用。迁移前 `--filter MetadataSyncCoordinatorTests` = **6 tests / 2 suites**；迁移后 `WritebackServiceTests` 2/1 + `WritebackRuntimeTests` 2/1 + `MetadataSyncCoordinatorTests` 4/1 = **6/2 合计不变**。
 - **裁决 D5（命名债，登记待 R5 剪路由时一并解决）**：文件已入 `Runtime/`（`WritebackRuntime.swift`），但**类型名仍是 `WritebackService`**（历史名）。改名需动 `app/Host/SessionCommandRouter.swift` 与 `app/Host/FaceKwWritebackBridge.swift` 两处——当前阶段**不值得为纯命名触碰单写者路由文件**。**处置**：随 R5「一次性剪 Host 路由」同批改名（届时路由删除，改动面自然消失）；在此之前保留原名，**不属兼容层/双路径**（只是命名滞后），登记于此以免遗忘。
+### 24. acc-legacy 验收结论（T1 快照 HEAD 4c170a6）——**3 项门禁缺陷 + 4 项文档不一致，待修**
+
+**正面结论（已核实）**：① `Services/` T0=5 完全符合「3 清退 + 2 保留」，无越清退；T1 已降到 4（WritebackService 先行清退）。② `Legacy*/Compat*/Adapter*` = 0（两条口径）。③ `DBConnection`（2 文件）与 `Database/Repositories`（13 文件）**经逐行核验全为注释残留**（0 真实代码）；`NativeCommandClient`（门禁口径 6 文件）为**真实代码**（12 条非注释引用 + 1 类定义）。④ **R5 = 19 域 / 111 方法实测一致**（`API/*.swift` 20 文件 155 func，扣掉组合根 `GatherAPI.swift` 的 44 func）。⑤ 文档中作为 commit 出现的 **30 个哈希 30/30 均存在于 git**。⑥ **R6 5/5 页签在代码中成立**（`SessionTab` 5 case + `SessionShellView.tabContent` 全 switch + `Feature.sessionTab/forTab/isWired` 覆盖 5 项），仅文档缺失。
+
+**必须修复的门禁缺陷（P0/P1）**：
+| # | 缺陷 | 影响 | 修法 |
+|---|---|---|---|
+| G1 | **`NativeCommandClient` 度量盲区**：门禁口径 `$APP/Sources` 命中 **6 文件**，真实足迹 **13 文件**（多出的 7 个在口径外：Culling/CullingView、ControlCenter/SessionControlView、Settings/SettingsView、Export/ExportView、Duplicates/DuplicatesView、FaceKeywording/FaceKeywordingView、Tests/GatherAppTests/NativeCommandClientTests） | **R5 接线后度量可能显示 0 而真实调用尚存**——棘轮给出假安全感 | 把该度量作用域扩到整个 app 包（含 Tests），或拆成「Sources」与「Tests」两条 |
+| G2 | **新增 3 条符号级 tracked 无 baseline 行**（`DBConnection symbols` / `Repositories path refs` / `NativeCommandClient`，脚本 L128/129/130），而 baseline 仅 5 条 key | 棘轮循环 L155 `[[ -z "$limit" ]] && continue` 使其**只打印不受约束**，可增长而不 FAIL | 为 3 条补 baseline 上限行（DBConnection=2 · Repositories refs=13 · NativeCommandClient=6/13），归零后升 enforced |
+| G3 | 度量口径混用「文件数」与「出现次数」（已部分修补：3 条出现次数棘轮），但**新符号级度量只有文件数口径** | 文件内继续增长不可见 | 为 3 条同时补出现次数口径 |
+
+**文档不一致项（行号定位，待重写）**：
+| 位置 | 陈旧内容 | 实测/正确值 |
+|---|---|---|
+| **L722「当前权威基线」** | Services 8 · 15 enforced/5 tracked · R5 15 域/73 方法 · R6 4/11 视图 | **Services 4 · 18 enforced/8 tracked · R5 19 域/111 方法 · R6 5/5 工作区页签** |
+| L570 / L610 | 「111 命令 / 18 域子协议」 | **19 域** |
+| L677 / L682 | 「15 enforced + 6 tracked」/「tracked 6→5」/「余 5 条 tracked」 | **18 enforced / 8 tracked** |
+| L681 | 「15 个 commit 号 15/15」 | **30 个 distinct 哈希 30/30** |
+
+**风格问题**：文档中 9 个十六进制串（子代理 id `b87f42bb`/`13178f1b`/`687d20bf`/`dfa2acd1`/`5c3948ea`、sha256 前缀 `164aae10`/`2e6d2148`/`c76a5a2a`、指纹 `d4b1fe3e5a9da77e`）**与 commit 哈希同形混用、风格不可区分**（无「假 commit」误引，但易误读）→ 后续统一加前缀标记（如 `agent:` / `sha256:` / `fingerprint:`）。
+
+**方法论留痕**：验收方全程固定 HEAD + 等待树静默，并明确标注「Services=5 只在 T0 成立，T1 实测=4」——**并发环境下的验收必须以快照锚定**（呼应纪律 15）。
