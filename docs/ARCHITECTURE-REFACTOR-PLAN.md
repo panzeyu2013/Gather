@@ -571,3 +571,4 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 
 ### 执行纪律（血泪教训，务必遵守）
 1. 不提交半成品；2. 不并行改同一文件（`SessionCommandRouter.swift` 单写者）；3. 删旧必做语义承接审计（未覆盖必补用例）；4. **Swift 大文件禁行级/括号级文本手术**（曾致 router 括号差 −1，已回退）；5. **括号差 + 小步编译**为提交前强制门；6. 取消/超时类测试必须限时（无界轮询会导致 swift-testing 挂起）；7. app 包特性目录在**包根**，提交须 `git add desktop/native/gather-app`（整包）。
+| round 73–75：Navigation 删旧前的语义承接审计结论 | 审计完成 | 新套件已覆盖：merge 校验、split 越界、list 过滤与时间回填、analyze 落库与指纹缓存、merge 排序/最小/类型不匹配。**未覆盖需迁移 6 项**：①`rejectsUnsafeOrInvertedIntervals`（analyze 参数校验）②`recomputesWhenThresholdsChange`（阈值变化重算、不复用缓存）③`manualOverridesScopedToOwnType`（persistAutomatic 保留 manual 成员）④`closedEyeWarningPenalizedInLead`（lead 选择闭眼惩罚，`NavigationAssembler.withLead`/`safeQuality`）⑤`filenameSequenceExtractsTrailingDigits` ⑥`hammingDistanceCountsBits`（纯函数 → 新建 `NavigationAssemblerTests`）。**迁移完成并全绿后才允许删除 `Services/NavigationService.swift`（255 行）与旧测试文件**，随后 baseline `Services layer 12→11`。 |
