@@ -2,7 +2,7 @@
 # 由 scripts/check-no-legacy.sh 校验（count > baseline 即失败）。
 awaitSync semaphore bridge (R5)=2
 SessionCommandRouter (R5)=17
-Services layer (R2)=11
+Services layer (R2)=10
 StubCommandRouter (R5)=7
 raw SQL outside Store (R1)=0
 unchecked Sendable (R1/R2)=5

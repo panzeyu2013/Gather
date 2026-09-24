@@ -109,7 +109,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let albums: AlbumsAPI
     /// 3.4 Culling 模块（CullingRuntime：查询/写回端口注入真实协调器与写回服务）。
     private let culling: CullingRuntime
-    public let exportService: ExportService
+    public let exportService: ExportRuntime
 
     public init(
         sessionService: SessionService,
@@ -133,7 +133,7 @@ public final class SessionCommandRouter: CommandRouter {
         writebackService: WritebackService,
         albums: AlbumsAPI,
         culling: CullingRuntime,
-        exportService: ExportService,
+        exportService: ExportRuntime,
         photoStore: any PhotoStore,
         sessionStore: any SessionStore
     ) {
@@ -283,7 +283,7 @@ public final class SessionCommandRouter: CommandRouter {
             assetResolver: assetResolver
         )
         let jobRunner = JobRunner(jobStore: jobStore)
-        let exportService = ExportService(photoStore: photoStore, sessionStore: sessionStore, database: database)
+        let exportService = ExportRuntime(dependencies: .init(photoStore: photoStore, sessionStore: sessionStore, reportSource: SQLiteExportReportSource(store: SQLiteExportStore(database: database)), fileSystem: DiskExportFileSystem()))
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoStore: photoStore,
             sessionStore: sessionStore,
@@ -532,10 +532,10 @@ public final class SessionCommandRouter: CommandRouter {
                     "completedPhotoIds": .array(completedSnapshot.map(JSONValue.string)),
                 ]
             }
-            context.signal.addHandler { exportService.cancel(sessionId: job.scopeId) }
+            context.signal.addHandler { Task { try? await exportService.cancel(job.scopeId) } }
             let result = try await exportService.execute(
-                sessionId: job.scopeId,
-                options: options,
+                ExportExecuteParams(sessionId: job.scopeId, options: options, confirmed: true),
+                resume: ExportResumeState(destinations: destinations, completedPhotoIds: completedIds),
                 onProgress: { progress in
                     Task { await context.updateProgress(JobProgressUpdate(
                         current: progress.current,
@@ -543,16 +543,12 @@ public final class SessionCommandRouter: CommandRouter {
                         message: progress.status == "error" ? (progress.errorMessage ?? "export.error") : "export.processing",
                         checkpoint: checkpoint())) }
                 },
-                resume: NativeExportResumeState(
-                    destinations: destinations,
-                    completedPhotoIds: completedIds,
-                    onPlanned: { photoId, destinationName in destinations[photoId] = destinationName },
-                    onPlanReady: { Task { await context.updateCheckpoint(checkpoint()) } },
-                    onCompleted: { photoId in
-                        if completedIds.insert(photoId).inserted { completedSnapshot.append(photoId) }
-                        Task { await context.updateProgress(JobProgressUpdate(checkpoint: checkpoint())) }
-                    }
-                )
+                onPlanned: { photoId, destinationName in destinations[photoId] = destinationName },
+                onPlanReady: { Task { await context.updateCheckpoint(checkpoint()) } },
+                onCompleted: { photoId in
+                    if completedIds.insert(photoId).inserted { completedSnapshot.append(photoId) }
+                    Task { await context.updateProgress(JobProgressUpdate(checkpoint: checkpoint())) }
+                }
             )
             await context.updateCheckpoint(checkpoint())
             return result
@@ -723,7 +719,7 @@ public final class SessionCommandRouter: CommandRouter {
             let sessionId = try requiredString(params, "sessionId")
             Task { [jobRunner] in
                 _ = try? await jobRunner.cancelScope(type: .exportExecute, scopeId: sessionId)
-                exportService.cancel(sessionId: sessionId)
+                Task { try? await exportService.cancel(sessionId) }
             }
             return .bool(true)
 
@@ -831,8 +827,7 @@ public final class SessionCommandRouter: CommandRouter {
                     let sessionId = try requiredString(params, "sessionId")
                     let reportType = try optionalString(params, "reportType") ?? "session_summary"
                     let format = try optionalString(params, "format")
-                    let report = try await exportService.generateReport(
-                        sessionId: sessionId, reportType: reportType, format: format)
+                    let report = try await exportService.report(ExportReportParams(sessionId: sessionId, reportType: reportType, format: format))
                     completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: report))); return
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -1019,7 +1014,7 @@ public final class SessionCommandRouter: CommandRouter {
                 do {
                 let sessionId = try requiredString(params, "sessionId")
                 let options = try decodeExportOptions(params["options"] ?? .object([:]))
-                completion(WebResponse(ok: true, data: try await GatherCore.JSONValue(from: exportService.preview(sessionId: sessionId, options: options)))); return
+                completion(WebResponse(ok: true, data: try await GatherCore.JSONValue(from: exportService.preview(ExportPreviewParams(sessionId: sessionId, options: options))))); return
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                 }
@@ -1840,7 +1835,7 @@ public final class SessionCommandRouter: CommandRouter {
             Task {
                 do {
                     let options = try self.decodeExportOptions(params["options"] ?? .object([:]))
-                    let preview = try await self.exportService.preview(sessionId: sessionId, options: options)
+                    let preview = try await self.exportService.preview(ExportPreviewParams(sessionId: sessionId, options: options))
                     completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: preview)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
