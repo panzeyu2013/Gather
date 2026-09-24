@@ -72,7 +72,12 @@ struct CullingCommandsImplTests {
         #expect(first.assets.map(\.photo.id) == ["asset-1-raw", "p2", "p3"])
         #expect(first.assets[0].photo.variantCount == 2, "变体同页")
         #expect(first.total == 3)
-        #expect(first.nextRowId == nil, "缺省 limit 200 覆盖全量 → 末页无游标")
+        #expect(first.nextRowId == 4, "游标为页内末行 rowid（覆盖全量时同样返回）")
+
+        let done = try await h.impl.listPage(CullingListPageParams(
+            sessionId: h.base.sessionId, scope: .all, afterRowId: 4))
+        #expect(done.assets.isEmpty)
+        #expect(done.nextRowId == nil, "末页无游标（不产生死循环）")
 
         let second = try await h.impl.listPage(CullingListPageParams(
             sessionId: h.base.sessionId, scope: .all, afterRowId: 1, limit: 1))

@@ -1,5 +1,5 @@
 // API/Impl/CullingCommandsImpl.swift
-// R5 命令层接线：culling 域实现（17 条命令，批次 B?：Culling）。
+// R5 命令层接线：culling 域实现（Culling 域 17 条命令）。
 // 逻辑来源：宿主路由层 culling.* 分支；错误码字符串/错误类型/返回形状/缺省值/
 // 门控一律不变：
 // - 读路径：list_page（scope 白名单由 DTO 枚举承载；afterRowId 正整数、limit
@@ -79,7 +79,7 @@ public actor CullingCommandsImpl: CullingCommands {
     }
 
     /// 旧命令：`culling.update`。expectedRevision 非负（旧分支门控保留）；
-    /// patch 合法性（互斥/范围/枚举）由运行时逐字抛出。
+    /// patch 合法性（互斥/范围/枚举）沿用旧分支逐字错误消息。
     public func update(_ params: CullingUpdateParams) async throws -> CullingUpdateResult {
         guard params.expectedRevision >= 0 else {
             throw CullingCommandsError.invalidExpectedRevision
@@ -94,7 +94,7 @@ public actor CullingCommandsImpl: CullingCommands {
     }
 
     /// 旧命令：`culling.batch_update`。photoIds 上限 10000（旧分支门控保留，
-    /// 按原始条数计）；空选择/补丁非法由运行时逐字抛出。
+    /// 按原始条数计）；空选择由运行时逐字抛出。
     public func batchUpdate(_ params: CullingBatchUpdateParams) async throws -> [CullingUpdateResult] {
         guard params.photoIds.count <= CullingQueryBuilder.batchMax else {
             throw CullingServiceError.tooManyPhotoIds
