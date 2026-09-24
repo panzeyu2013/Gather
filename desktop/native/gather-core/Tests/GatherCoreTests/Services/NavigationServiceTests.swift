@@ -66,17 +66,17 @@ struct NavigationServiceTests {
     // TS: "rejects unsafe or inverted grouping intervals"。
     @Test func rejectsUnsafeOrInvertedIntervals() {
         #expect(throws: (any Error).self) {
-            try validateNavigationParameters(burstGapSeconds: .nan, sceneGapSeconds: 100)
+            try NavigationAssembler.validateNavigationParameters(burstGapSeconds: .nan, sceneGapSeconds: 100)
         }
         #expect(throws: (any Error).self) {
-            try validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 1)
+            try NavigationAssembler.validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 1)
         }
         #expect(throws: (any Error).self) {
-            try validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 86_401)
+            try NavigationAssembler.validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 86_401)
         }
         // 合法参数不抛错。
         #expect(throws: Never.self) {
-            try validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 1_800)
+            try NavigationAssembler.validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 1_800)
         }
     }
 
@@ -219,25 +219,25 @@ struct NavigationServiceTests {
 struct NavigationPureFunctionsTests {
     // TS: filenameSequence —— 尾部数字；无数字 nil。
     @Test func filenameSequenceExtractsTrailingDigits() {
-        #expect(filenameSequence("IMG_0001.JPG") == 1)
-        #expect(filenameSequence("IMG_0042.jpg") == 42)
-        #expect(filenameSequence("IMG_0001_EDIT.JPG") == 1)
-        #expect(filenameSequence("IMG.JPG") == nil)
-        #expect(filenameSequence("0001.JPG") == 1)
+        #expect(NavigationAssembler.filenameSequence("IMG_0001.JPG") == 1)
+        #expect(NavigationAssembler.filenameSequence("IMG_0042.jpg") == 42)
+        #expect(NavigationAssembler.filenameSequence("IMG_0001_EDIT.JPG") == 1)
+        #expect(NavigationAssembler.filenameSequence("IMG.JPG") == nil)
+        #expect(NavigationAssembler.filenameSequence("0001.JPG") == 1)
     }
 
     // TS: hammingDistance —— 同长 hex 逐位差异。
     @Test func hammingDistanceCountsBits() {
-        #expect(hammingDistance("0000000000000000", "0000000000000000") == 0)
-        #expect(hammingDistance("0000000000000000", "0000000000000001") == 1)
-        #expect(hammingDistance("0000000000000000", "ffffffffffffffff") == 64)
-        #expect(hammingDistance("0000000000000001", "0000000000000003") == 1)
+        #expect(NavigationAssembler.hammingDistance("0000000000000000", "0000000000000000") == 0)
+        #expect(NavigationAssembler.hammingDistance("0000000000000000", "0000000000000001") == 1)
+        #expect(NavigationAssembler.hammingDistance("0000000000000000", "ffffffffffffffff") == 64)
+        #expect(NavigationAssembler.hammingDistance("0000000000000001", "0000000000000003") == 1)
         // 长度不同 → nil。
-        #expect(hammingDistance("0000", "0000000000000000") == nil)
+        #expect(NavigationAssembler.hammingDistance("0000", "0000000000000000") == nil)
         // 空串 → nil。
-        #expect(hammingDistance("", "0000000000000000") == nil)
+        #expect(NavigationAssembler.hammingDistance("", "0000000000000000") == nil)
         // 非法 hex → nil。
-        #expect(hammingDistance("zzzzzzzzzzzzzzzz", "0000000000000000") == nil)
+        #expect(NavigationAssembler.hammingDistance("zzzzzzzzzzzzzzzz", "0000000000000000") == nil)
     }
 }
 
