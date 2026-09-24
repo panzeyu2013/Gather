@@ -467,3 +467,5 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 2. 仅允许两类 `try?`：`Task.sleep`（取消语义）与文件系统尽力清理（且需注释说明）；
 3. 门禁后续可加跟踪度量：`Services/Runtime 中非良性 try?` 数，逐步归零（R2 出口）。
 | W2 批次①：Store 读模型 + Assembler + SessionCache + JobRunner（新增落地） | OK | ①Store/CullingQueryStore.swift（唯一 SQL 所有者，14 测试；5 个 Store 追加方法含 revision CAS）+ 新增 Runtime/Culling/CullingAssembler.swift（20 纯函数，16 测试）②Runtime/Culling/CullingSessionCache.swift actor（13 测试，确定性淘汰）+ Runtime/Jobs/{JobRunner,JobDedupKey,JobCheckpoint}.swift（JobRunner actor 953 行，16 测试覆盖 8 类语义）③验证：core 817/114（2 个已知并发 flake，隔离 22/3 全绿）；门禁 4 规则 17 度量全绿；Runtime 层 SQL=0、Sources unchecked=9（=baseline）④4 个并行子代理 + 设计代理（W2c 已入库、W2d 报告在途） |
+
+| W2 批次②（进行中）：W2a ConcurrentMap/SHA256.stream + W2c Store 扩展与三纯函数层 + W2b CullingRuntime | 进行中 | 5 个并行子代理：W2a（ConcurrentMap/IndexCursor/SHA256.stream）、W2c Store 扩展（Similarity hash 面/analysis_runs/质量行/assetFileIds/duplicate membersWithPhoto/largestFacePerPhoto）、W2c Similarity 纯函数层、W2c Duplicate+Quality 纯函数层、**W2b CullingLookupLoader+CullingRuntime actor（关键路径）**。主代理本轮已完成：CullingQueryBuilder 纯函数层（7 测试，提交 9c8b839）、W2d 四 Runtime 设计定稿（提交 8e2f29e，含 F5/E1/N1 三处真实缺陷） |
