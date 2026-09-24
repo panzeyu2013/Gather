@@ -5,6 +5,9 @@
 // 以可选形式注入，壳层不自行构造路由或数据层。
 // R6 步骤三：工作台与全局图库也指向真实视图（DashboardView / LibraryView），
 // 数据提供者同样以可选参数注入；未注入（nil）或未接线的 case 一律回退占位。
+// R6 步骤四：5 个工作区特性指向会话宿主视图（SessionShellView），会话与页签由
+// 壳层导航状态承载；未选中会话或依赖未注入时回退占位。根视图切换与浏览/
+// 相似度接线留待后续步骤。
 //
 // 本步骤只建立壳层根视图骨架：按 app 目录名枚举 11 个特性，逐项输出占位
 // Text，并在每项上标注 R6 后续要替换成的特性视图。业务代码一律不改；
@@ -12,7 +15,8 @@
 import SwiftUI
 
 /// 壳层根视图骨架：左侧列出 app 目录中的 11 个特性，右侧渲染所选 Case；
-/// 当前「工作台/全局图库/设置/人脸库」接真实视图，其余仍为占位 Text。
+/// 「工作台/全局图库/设置/人脸库」接真实视图，5 个工作区特性按当前会话接
+/// 会话宿主（未选中会话或依赖缺失时占位），浏览/相似度仍为占位 Text。
 public struct AppShellView: View {
     /// app 目录枚举出的 11 个特性（顺序即建议的 R6 迁移顺序）。
     public enum Feature: String, CaseIterable, Identifiable, Sendable {
@@ -93,6 +97,29 @@ public struct AppShellView: View {
         }
     }
 
+    /// 工作区页签映射：5 个工作区特性各对应一个页签，其余特性返回 nil。
+    var sessionTab: SessionTab? {
+        switch self {
+        case .controlCenter: return .control
+        case .faceKeywording: return .faceKw
+        case .duplicates: return .duplicates
+        case .culling: return .culling
+        case .export: return .export
+        default: return nil
+        }
+    }
+
+    /// 反向映射：页签 → 侧栏特性（页签切换时保持侧栏高亮一致）。
+    static func forTab(_ tab: SessionTab) -> Feature {
+        switch tab {
+        case .control: return .controlCenter
+        case .faceKw: return .faceKeywording
+        case .duplicates: return .duplicates
+        case .culling: return .culling
+        case .export: return .export
+        }
+    }
+
     /// 设置页需要的命令路由（可选：未注入时该特性回退占位）。
     private let settingsRouter: CommandRouter?
     /// 人脸库需要的数据提供者（可选：未注入时该特性回退占位）。
@@ -101,6 +128,10 @@ public struct AppShellView: View {
     private let dashboardProvider: DashboardDataProvider?
     /// 全局图库需要的数据提供者（可选：未注入时该特性回退占位）。
     private let libraryProvider: LibraryDataProvider?
+    /// 会话工作区需要的依赖（可选：未注入时 5 个工作区页签回退占位）。
+    private let sessionRouter: CommandRouter?
+    /// 壳层导航状态：当前会话与当前页签；未注入时内部新建（无选中会话）。
+    private let navigation: AppNavigationState
     /// 打开工作区回调：工作台与全局图库共用，壳层只透传不解释。
     private let onOpenSession: (String) -> Void
     /// 当前选中的特性：左侧列表点击切换，右侧渲染对应视图。
@@ -122,12 +153,16 @@ public struct AppShellView: View {
         personsProvider: PersonsDataProvider? = nil,
         dashboardProvider: DashboardDataProvider? = nil,
         libraryProvider: LibraryDataProvider? = nil,
+        sessionRouter: CommandRouter? = nil,
+        navigation: AppNavigationState? = nil,
         onOpenSession: @escaping (String) -> Void = { _ in }
     ) {
         self.settingsRouter = settingsRouter
         self.personsProvider = personsProvider
         self.dashboardProvider = dashboardProvider
         self.libraryProvider = libraryProvider
+        self.sessionRouter = sessionRouter
+        self.navigation = navigation ?? AppNavigationState()
         self.onOpenSession = onOpenSession
         if let dashboardProvider {
             _dashboardViewModel = State(initialValue: DashboardViewModel(provider: dashboardProvider))
@@ -149,6 +184,16 @@ public struct AppShellView: View {
         }
         .padding(20)
         .frame(minWidth: 720, minHeight: 480, alignment: .topLeading)
+        // 装配处选中会话后：侧栏自动落到当前工作区页签（未选中时保持原选择）。
+        .onChange(of: navigation.currentSessionId) { _, newValue in
+            guard newValue != nil else { return }
+            selectedFeature = Feature.forTab(navigation.selectedTab)
+        }
+        // 外部（装配处/页签栏）切换页签时同步侧栏高亮。
+        .onChange(of: navigation.selectedTab) { _, newTab in
+            guard navigation.currentSessionId != nil else { return }
+            selectedFeature = Feature.forTab(newTab)
+        }
     }
 
     /// 左侧特性列表：点击切换当前特性，已接真实视图的项在右侧直接打开。
@@ -175,7 +220,7 @@ public struct AppShellView: View {
     private func featureRow(_ feature: Feature) -> some View {
         let isSelected = selectedFeature == feature
         return Button {
-            selectedFeature = feature
+            selectFeature(feature)
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(feature.displayName)
@@ -197,19 +242,29 @@ public struct AppShellView: View {
         .buttonStyle(.plain)
     }
 
-    /// 是否已接真实视图：R6 步骤三含「工作台/全局图库/设置/人脸库」四项。
+    /// 侧栏选择：同步当前特性与壳层导航状态的当前页签（非工作区特性不动页签）。
+    private func selectFeature(_ feature: Feature) {
+        selectedFeature = feature
+        if let tab = feature.sessionTab {
+            navigation.selectTab(tab)
+        }
+    }
+
+    /// 是否已接真实视图：工作台/全局图库/设置/人脸库 + 依赖齐备的会话工作区。
     private func isWired(_ feature: Feature) -> Bool {
         switch feature {
         case .dashboard: return dashboardViewModel != nil
         case .library: return libraryViewModel != nil
         case .settings: return settingsRouter != nil
         case .persons: return personsViewModel != nil
+        case .controlCenter, .faceKeywording, .duplicates, .culling, .export:
+            return navigation.currentSessionId != nil && sessionRouter != nil
         default: return false
         }
     }
 
-    /// 右侧详情：private switch 把「工作台/全局图库/设置/人脸库」指向真实视图，
-    /// 其余 case 仍为占位 Text；依赖缺失时同样回退占位，保持可编译。
+    /// 右侧详情：工作台/全局图库/设置/人脸库 + 5 个工作区页签（会话宿主）指向
+    /// 真实视图；浏览/相似度仍为占位。依赖缺失或未选中会话时回退占位，保持可编译。
     @ViewBuilder
     private func detailView(for feature: Feature) -> some View {
         switch feature {
@@ -237,9 +292,44 @@ public struct AppShellView: View {
             } else {
                 placeholderView(for: feature)
             }
+        case .controlCenter, .faceKeywording, .duplicates, .culling, .export:
+            if let sessionId = navigation.currentSessionId, let tab = feature.sessionTab {
+                SessionShellView(
+                    sessionId: sessionId,
+                    tab: tab,
+                    router: sessionRouter,
+                    onBack: { navigation.openGallery(sessionId) },
+                    onOpenTab: { sessionId, tab in
+                        selectedFeature = Feature.forTab(tab)
+                        navigation.openTab(sessionId, tab)
+                    },
+                    onOpenSimilarity: { navigation.openSimilarity($0) },
+                    onOpenGallery: { navigation.openGallery($0) },
+                    onOpenSettings: { navigation.openSettings() }
+                )
+                // 会话或页签变化时强制造型重建：页签内状态以 init 时的会话初始化。
+                .id("session-shell-\(sessionId)-\(tab.rawValue)")
+            } else {
+                sessionPlaceholder(for: feature)
+            }
         default:
             placeholderView(for: feature)
         }
+    }
+
+    /// 会话未选中时的占位：提示先打开会话，避免页签视图拿到空 id。
+    private func sessionPlaceholder(for feature: Feature) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(feature.displayName)
+                .font(.title3.weight(.semibold))
+            Text(feature.replacementViewName)
+                .font(.caption.monospaced())
+                .foregroundStyle(.tertiary)
+            Text(GatherLocalization.l("未选中会话：请先在工作台或全局图库打开一个会话。"))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(12)
     }
 
     private func placeholderView(for feature: Feature) -> some View {
