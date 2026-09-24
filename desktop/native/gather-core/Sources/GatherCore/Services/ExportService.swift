@@ -4,6 +4,10 @@
 // 该服务刻意保持在 GatherCore：预览、文件规划、断点续作、原图复制、
 // ImageIO 转码与报告生成必须由同一条受控路径完成，不能让 WebView 直接
 // 访问任意文件系统路径。命令层只负责参数解码和 JobService 编排。
+//
+// W2d-4 步骤①：纯逻辑（选项校验/命名模板/冲突消解/路径规划/报告聚合）已下沉到
+// Runtime/Export/ExportAssembler.swift；本服务只保留 Store 查询、文件 IO、转码与
+// 取消标记，并逐字调用该纯函数层，不保留第二份实现。
 
 import Foundation
 #if canImport(ImageIO)
@@ -141,7 +145,7 @@ public final class ExportService {
     }
 
     public func preview(sessionId: String, options: ExportOptions) async throws -> ExportPreview {
-        try validate(options)
+        try ExportAssembler.validate(options)
         try await assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
         let files = try await filteredPhotos(sessionId: sessionId, options: options).map { photo in
             let size = (try? FileManager.default.attributesOfItem(atPath: photo.filepath)[.size] as? NSNumber)
@@ -163,7 +167,7 @@ public final class ExportService {
         onProgress: ((NativeExportProgress) -> Void)? = nil,
         resume: NativeExportResumeState? = nil
     ) async throws -> ExportResult {
-        try validate(options)
+        try ExportAssembler.validate(options)
         try await assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
         setCancelled(sessionId, value: false)
 
@@ -183,13 +187,16 @@ public final class ExportService {
                 FileManager.default.fileExists(atPath: destination.appendingPathComponent($0).path)
             } ?? false
             if name == nil || (!existingResume && name.map { FileManager.default.fileExists(atPath: destination.appendingPathComponent($0).path) } == true) {
-                name = resolveName(
-                    photo: photo,
+                name = ExportAssembler.resolveName(
+                    filename: photo.filename,
                     options: options,
                     counter: (options.naming.counterStart ?? 1) + index,
-                    sessionName: sessionName
+                    sessionName: sessionName,
+                    date: Date()
                 )
-                name = uniqueName(name!, usedNames: &usedNames, destination: destination)
+                name = ExportAssembler.uniqueName(name!, usedNames: &usedNames) { candidate in
+                    FileManager.default.fileExists(atPath: destination.appendingPathComponent(candidate).path)
+                }
                 state.destinations[photo.id] = name!
                 state.onPlanned?(photo.id, name!)
             } else {
@@ -222,7 +229,7 @@ public final class ExportService {
 
             var created = false
             do {
-                try assertDestinationPath(plan.url, inside: destination)
+                try ExportAssembler.assertDestinationPath(plan.url, inside: destination)
                 if options.format == .original {
                     try FileManager.default.copyItem(at: URL(fileURLWithPath: plan.photo.filepath), to: plan.url)
                     created = true
@@ -282,21 +289,7 @@ public final class ExportService {
             let rows = try await database.query(
                 "SELECT filename, filepath, status FROM photos WHERE session_id = ? ORDER BY rowid",
 [.text(sessionId)])
-            if requested == .csv {
-                var content = "filename,filepath,status\n"
-                content += rows.map {
-                    [($0.values[$0.columnOrder[0]]?.textValue ?? ""), ($0.values[$0.columnOrder[1]]?.textValue ?? ""), ($0.values[$0.columnOrder[2]]?.textValue ?? "")]
-                        .map(Self.csvField).joined(separator: ",")
-                }.joined(separator: "\n")
-                return ReportData(path: "", content: content, format: .csv)
-            }
-            var content = "# Session summary\n\n"
-            content += "Total photos: \(rows.count)\n\n"
-            content += "| # | Filename | Path | Status |\n|---:|---|---|---|\n"
-            for (index, row) in rows.enumerated() {
-                content += "| \(index + 1) | \(Self.mdField(row.values[row.columnOrder[0]]?.textValue ?? "")) | \(Self.mdField(row.values[row.columnOrder[1]]?.textValue ?? "")) | \(Self.mdField(row.values[row.columnOrder[2]]?.textValue ?? "")) |\n"
-            }
-            return ReportData(path: "", content: content, format: .md)
+            return ExportAssembler.sessionSummary(rows: rows, format: requested)
 
         case "person":
             let rows = try await database.query(
@@ -308,181 +301,41 @@ public final class ExportService {
                 """,
                 [.text(sessionId)]
             )
-            var content = "# Person report\n\nBindings: \(rows.count)\n\n"
-            content += "| Role | Keywords | Cluster | Members |\n|---|---|---|---:|\n"
-            for row in rows {
-                let keywords = (try? JSONValue.parse(row.values[row.columnOrder[1]]?.textValue ?? "[]"))?.arrayValue?.joined(separator: ", ") ?? ""
-                content += "| \(Self.mdField(row.values[row.columnOrder[0]]?.textValue ?? "")) | \(Self.mdField(keywords)) | \(Self.mdField(row.values[row.columnOrder[2]]?.textValue ?? "")) | \(row.values[row.columnOrder[3]]?.intValue ?? 0) |\n"
-            }
-            return ReportData(path: "", content: content, format: .md)
+            return ExportAssembler.personReport(rows: rows)
 
         case "keyword":
             let rows = try await database.query(
                 "SELECT DISTINCT keywords FROM role_bindings WHERE session_id = ? AND keywords != '[]'",
 [.text(sessionId)])
-            var keywords = Set<String>()
-            for row in rows {
-                keywords.formUnion((try? JSONValue.parse(row.values[row.columnOrder[0]]?.textValue ?? "[]"))?.arrayValue ?? [])
-            }
             let culling = try await database.query(
                 "SELECT DISTINCT decision FROM culling_decisions WHERE session_id = ? AND decision != 'pending'",
 [.text(sessionId)])
-            for row in culling {
-                if row.values[row.columnOrder[0]]?.textValue == "keep" { keywords.insert("culling:keep") }
-                if row.values[row.columnOrder[0]]?.textValue == "reject" { keywords.insert("culling:reject") }
-            }
-            var content = "# Keyword report\n\n"
-            content += keywords.sorted().map { "- \(Self.mdField($0))" }.joined(separator: "\n")
-            if !keywords.isEmpty { content += "\n" }
-            return ReportData(path: "", content: content, format: .md)
+            return ExportAssembler.keywordReport(
+                keywords: ExportAssembler.keywords(bindingRows: rows, cullingRows: culling)
+            )
 
         default:
-            return ReportData(path: "", content: "", format: requested)
+            return ExportAssembler.emptyReport(format: requested)
         }
     }
 
-    // MARK: - Validation and planning
-
-    private func validate(_ options: ExportOptions) throws {
-        guard !options.destination.isEmpty else { throw ExportServiceError.destinationInvalid }
-        guard options.destination.hasPrefix("/") else { throw ExportServiceError.destinationAbsoluteRequired }
-        let destination = URL(fileURLWithPath: options.destination).standardizedFileURL.path
-        guard destination != "/" else { throw ExportServiceError.destinationRootForbidden }
-        guard ExportFormat.allCases.contains(options.format) else { throw ExportServiceError.formatInvalid }
-        if let policy = options.variantPolicy, !ExportVariantPolicy.allCases.contains(policy) {
-            throw ExportServiceError.variantPolicyInvalid
-        }
-        if options.format == .original, options.maxDimension != nil || options.watermark != nil {
-            throw ExportServiceError.originalTransformNotAllowed
-        }
-        guard !options.naming.pattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ExportServiceError.namingEmpty
-        }
-        if options.naming.pattern.contains("/") || options.naming.pattern.contains("\\") || options.naming.pattern.contains("\0") {
-            throw ExportServiceError.namingInvalidCharacters
-        }
-        if let quality = options.quality, quality.rounded() != quality || quality < 1 || quality > 100 {
-            throw ExportServiceError.qualityInvalid
-        }
-        if let maxDimension = options.maxDimension, maxDimension < 1 {
-            throw ExportServiceError.maxDimensionInvalid
-        }
-        if let start = options.naming.counterStart, start < 0 {
-            throw ExportServiceError.startIndexInvalid
-        }
-        if let watermark = options.watermark {
-            guard watermark.type == .text else { throw ExportServiceError.watermarkTypeUnsupported }
-            guard !watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ExportServiceError.watermarkTextEmpty
-            }
-            guard watermark.opacity.isFinite, watermark.opacity >= 0, watermark.opacity <= 1 else {
-                throw ExportServiceError.watermarkOpacityInvalid
-            }
-            if let fontSize = watermark.fontSize, !fontSize.isFinite || fontSize < 1 || fontSize > 1000 {
-                throw ExportServiceError.watermarkFontSizeInvalid
-            }
-        }
-    }
+    // MARK: - Validation and planning（纯逻辑见 ExportAssembler.validate）
 
     private func assertDestinationOutsideSource(sessionId: String, destination: String) async throws {
         guard let session = try await sessionStore.get(id: sessionId) else { throw ExportServiceError.sessionNotFound }
         guard !session.sourcePath.isEmpty else { return }
-        let dest = canonicalPath(destination)
-        let source = canonicalPath(session.sourcePath)
-        if dest == source || isPathInside(dest, source) {
+        let dest = ExportAssembler.canonicalPath(destination)
+        let source = ExportAssembler.canonicalPath(session.sourcePath)
+        if dest == source || ExportAssembler.isPathInside(dest, source) {
             throw ExportServiceError.destinationInsideSession
         }
     }
 
     private func filteredPhotos(sessionId: String, options: ExportOptions) async throws -> [PhotoProjection] {
         let photos = try await photoStore.getBySessionProjection(sessionId: sessionId)
-        guard options.scope == .session else { throw ExportServiceError.scopeUnsupported }
-        let scoped = photos.filter { $0.status != "removed" }
+        let scoped = try ExportAssembler.scopedPhotos(photos, scope: options.scope)
         let policy = options.variantPolicy ?? .preferred
-        if policy == .all { return scoped }
-
-        let raw: Set<String> = [".3fr", ".arw", ".cr2", ".cr3", ".dng", ".fff", ".gpr", ".iiq", ".mos", ".nef", ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f"]
-        let jpeg: Set<String> = [".jpg", ".jpeg"]
-        var groups: [String: [PhotoProjection]] = [:]
-        for photo in scoped { groups[photo.assetId ?? photo.id, default: []].append(photo) }
-        return groups.values.compactMap { variants in
-            let isRaw: (PhotoProjection) -> Bool = { raw.contains(URL(fileURLWithPath: $0.filename).pathExtension.lowercased().isEmpty ? "" : ".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
-            let isJPEG: (PhotoProjection) -> Bool = { jpeg.contains(".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
-            switch policy {
-            case .raw: return variants.first(where: isRaw)
-            case .jpeg: return variants.first(where: isJPEG)
-            case .preferred: return variants.first(where: isRaw) ?? variants.first(where: isJPEG) ?? variants.first
-            case .all: return variants.first
-            }
-        }
-    }
-
-    private func resolveName(photo: PhotoProjection, options: ExportOptions, counter: Int, sessionName: String) -> String {
-        let filename = URL(fileURLWithPath: photo.filename).lastPathComponent
-        let ext = URL(fileURLWithPath: filename).pathExtension
-        let base = sanitize(URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent)
-        let session = sanitize(sessionName)
-        let date = Date()
-        let dateFormat = options.naming.dateFormat ?? "YYYY-MM-DD"
-        let dateString = dateFormat
-            .replacingOccurrences(of: "YYYY", with: String(Calendar.current.component(.year, from: date)))
-            .replacingOccurrences(of: "MM", with: String(format: "%02d", Calendar.current.component(.month, from: date)))
-            .replacingOccurrences(of: "DD", with: String(format: "%02d", Calendar.current.component(.day, from: date)))
-        // {time} 固定 HH-mm-ss（24h 制）：localizedString(.medium) 在 12h locale
-        // 下产出 "3-45-30 PM"（含空格 + AM/PM），与 ExportView 预览的 HH-mm-ss
-        // 不符。与 TS 的差异：TS 两端统一 24h 制，此处对齐该语义。
-        // 审计 P1：静态 DateFormatter 被 worker 线程（并发导出）与主线程共用
-        // 存在数据竞争，改为函数内新建（格式化成本可忽略）。
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH-mm-ss"
-        let time = formatter.string(from: date)
-        var pattern = options.naming.pattern
-        pattern = pattern.replacingOccurrences(of: "{date}", with: dateString)
-        pattern = pattern.replacingOccurrences(of: "{time}", with: time)
-        pattern = pattern.replacingOccurrences(of: "{counter}", with: String(format: "%04d", counter))
-        pattern = pattern.replacingOccurrences(of: "{original}", with: base)
-        // Older UI versions exposed {filename}; keep it as a compatibility
-        // alias so an existing saved preset never exports a literal token.
-        pattern = pattern.replacingOccurrences(of: "{filename}", with: base)
-        pattern = pattern.replacingOccurrences(of: "{session}", with: session)
-        let targetExt = options.format == .jpeg ? "jpg" : options.format == .tiff ? "tiff" : ext
-        return "\(pattern).\(targetExt.isEmpty ? "jpg" : targetExt)"
-    }
-
-    private func uniqueName(_ input: String, usedNames: inout Set<String>, destination: URL) -> String {
-        let url = URL(fileURLWithPath: input)
-        let base = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension.isEmpty ? "" : ".\(url.pathExtension)"
-        var candidate = input
-        var index = 2
-        while usedNames.contains(candidate.lowercased()) || FileManager.default.fileExists(atPath: destination.appendingPathComponent(candidate).path) {
-            candidate = "\(base)_\(index)\(ext)"
-            index += 1
-        }
-        usedNames.insert(candidate.lowercased())
-        return candidate
-    }
-
-    private func assertDestinationPath(_ url: URL, inside directory: URL) throws {
-        let candidate = canonicalPath(url.path)
-        let root = canonicalPath(directory.path)
-        guard candidate == root || isPathInside(candidate, root) else { throw ExportServiceError.exportPathInvalid }
-    }
-
-    private func isPathInside(_ candidate: String, _ directory: String) -> Bool {
-        let candidateComponents = URL(fileURLWithPath: candidate).pathComponents
-        let directoryComponents = URL(fileURLWithPath: directory).pathComponents
-        guard candidateComponents.count > directoryComponents.count else { return false }
-        return Array(candidateComponents.prefix(directoryComponents.count)) == directoryComponents
-    }
-
-    private func canonicalPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
-    }
-
-    private func sanitize(_ value: String) -> String {
-        let replaced = value.replacingOccurrences(of: "[<>:\"/\\\\|?*]", with: "_", options: .regularExpression)
-        return URL(fileURLWithPath: replaced).lastPathComponent
+        return ExportAssembler.selectVariants(scoped, policy: policy)
     }
 
     private func freeSpace(at path: String) -> Int {
@@ -604,14 +457,5 @@ public final class ExportService {
         let cancelled = cancelledSessions.contains(sessionId)
         cancelLock.unlock()
         return cancelled
-    }
-
-    private static func csvField(_ value: String) -> String {
-        guard value.contains(",") || value.contains("\"") || value.contains("\n") else { return value }
-        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
-    }
-
-    private static func mdField(_ value: String) -> String {
-        value.replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: " ")
     }
 }
