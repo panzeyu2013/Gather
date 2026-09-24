@@ -9,6 +9,8 @@
 // updateChecksum / addPhotos → missing 对账 + markMissing + asset_files offline
 // → backfillSession → photoCount / status / index_seq 提交；scan 返回真实
 // IndexScanResult。
+// idx2b5：迁入 checksum 回填（写库事务下沉 Store/ChecksumBackfillStore.swift；
+// Runtime 保持零 SQL 文本），签名/取消/进度/计数与旧 IndexerService 等价。
 //
 // 边界（逐步填充）：
 // - 可变状态：cancelledSessions（cancel(sessionId:) 幂等登记；批间读取并清理，
@@ -71,6 +73,8 @@ public actor IndexerRuntime {
         public let sessionStore: any SessionStore
         public let photoStore: any PhotoStore
         public let assetStore: any AssetStore
+        /// checksum 回填的乐观写库事务（Store/ChecksumBackfillStore.swift）。
+        public let checksumBackfillStore: any ChecksumBackfillStore
         public let database: SQLiteDatabase
         /// 图片尺寸读取（旧 IndexerService.DimensionsProvider；默认走 RAWDecoder）。
         public let getDimensions: @Sendable (String) throws -> (width: Int, height: Int)
@@ -86,6 +90,7 @@ public actor IndexerRuntime {
             photoStore: any PhotoStore,
             assetStore: any AssetStore,
             database: SQLiteDatabase,
+            checksumBackfillStore: (any ChecksumBackfillStore)? = nil,
             getDimensions: @escaping @Sendable (String) throws -> (width: Int, height: Int) = { try IndexerService.defaultDimensions($0) },
             getSetting: @escaping @Sendable (String, String) -> String = { _, defaultValue in defaultValue },
             stat: @escaping @Sendable (String) throws -> IndexerService.FileStat = { try IndexerService.defaultStat($0) },
@@ -94,6 +99,7 @@ public actor IndexerRuntime {
             self.sessionStore = sessionStore
             self.photoStore = photoStore
             self.assetStore = assetStore
+            self.checksumBackfillStore = checksumBackfillStore ?? SQLiteChecksumBackfillStore(database: database)
             self.database = database
             self.getDimensions = getDimensions
             self.getSetting = getSetting
@@ -140,6 +146,112 @@ public actor IndexerRuntime {
     /// 请求取消（幂等）。
     public func cancel(sessionId: String) {
         cancelledSessions.insert(sessionId)
+    }
+
+    // ───────────── idx2b5：checksum 回填（旧 IndexerService.backfillChecksums） ─────────────
+
+    /// TS: backfillChecksums —— 后台回填懒索引留下的空 checksum：循环直到无
+    /// pending；每批 stat 取新鲜 size/mtime，乐观守卫写（Store 层
+    /// ChecksumBackfillStore 单事务）保证与并发扫描互不覆盖；不可读照片记入
+    /// per-job 失败集避免死循环。签名与返回结构和旧 IndexerService 等价；
+    /// 取消沿用 cancel(sessionId:) 与 context 双通道。
+    public func backfillChecksums(
+        sessionId: String,
+        context: JobRunnerContext? = nil
+    ) async throws -> (processed: Int, backfilled: Int, skipped: Int) {
+        var processed = 0
+        var backfilled = 0
+        var skipped = 0
+        var failedPhotoIds = Set<String>()
+        // Keyset 游标：首趟全扫，后续从最后 rowid 继续。
+        var afterRowId: Int64?
+        // 终态清理登记：迟到的 cancel 不得污染下一次回填。
+        defer { cancelledSessions.remove(sessionId) }
+        for _ in 0... {
+            try throwIfCancelled(sessionId: sessionId)
+            try await context?.throwIfCancelled()
+            let (pending, lastRowId) = try await loadPendingBackfill(
+                sessionId: sessionId, afterRowId: afterRowId, failedPhotoIds: failedPhotoIds
+            )
+            if let lastRowId { afterRowId = lastRowId }
+            if pending.isEmpty { break }
+            await context?.updateProgress(JobProgressUpdate(
+                current: 0, total: pending.count, phase: "index.checksum"
+            ))
+            var passBackfilled = 0
+            for offset in stride(from: 0, to: pending.count, by: IndexAssembler.checksumBackfillBatch) {
+                try throwIfCancelled(sessionId: sessionId)
+                try await context?.throwIfCancelled()
+                let batch = Array(pending[offset..<min(offset + IndexAssembler.checksumBackfillBatch, pending.count)])
+                // 哈希阶段只读；全部写入进入 Store 单事务。
+                let dependencies = deps
+                let results = try await ConcurrentMap.run(
+                    batch, concurrency: IndexAssembler.checksumBackfillConcurrency
+                ) { photo -> (photo: PhotoPage, checksum: String, size: Int64, mtimeMs: Double)? in
+                    do {
+                        let source = try dependencies.stat(photo.filepath)
+                        let checksum = try await dependencies.fileHasher(photo.filepath)
+                        return (photo, checksum, source.size, source.mtimeMs)
+                    } catch {
+                        // 已删除/不可读：本任务内放弃，循环得以终止；
+                        // 下次全量扫描会标记 missing。
+                        return nil
+                    }
+                }
+                var writes: [ChecksumBackfillWrite] = []
+                writes.reserveCapacity(results.count)
+                for (index, result) in results.enumerated() {
+                    guard let result else {
+                        failedPhotoIds.insert(batch[index].id)
+                        skipped += 1
+                        processed += 1
+                        continue
+                    }
+                    writes.append(ChecksumBackfillWrite(
+                        photoId: result.photo.id,
+                        assetFileId: result.photo.assetFileId,
+                        checksum: result.checksum,
+                        fileSize: result.size,
+                        fileMtimeMs: result.mtimeMs
+                    ))
+                    processed += 1
+                }
+                let outcome = try await deps.checksumBackfillStore.applyBackfilledChecksums(writes)
+                passBackfilled += outcome.backfilled
+                backfilled += outcome.backfilled
+                skipped += outcome.skipped
+                await context?.updateProgress(JobProgressUpdate(current: processed, total: pending.count))
+            }
+            // 全部 pending 要么已失败要么重试只会重复失败：停止而非空转。
+            if passBackfilled == 0 { break }
+        }
+        return (processed: processed, backfilled: backfilled, skipped: skipped)
+    }
+
+    /// TS: loadPendingBackfill —— keyset 分页扫描待回填照片（Store 读面）。
+    private func loadPendingBackfill(
+        sessionId: String,
+        afterRowId: Int64?,
+        failedPhotoIds: Set<String>
+    ) async throws -> (rows: [PhotoPage], lastRowId: Int64?) {
+        var rows: [PhotoPage] = []
+        var cursor: Int64? = afterRowId
+        var lastRowId: Int64?
+        for _ in 0... {
+            let page = try await deps.photoStore.getBySessionPage(
+                sessionId: sessionId, afterRowId: cursor, limit: IndexAssembler.checksumBackfillPageSize
+            )
+            if page.isEmpty { break }
+            lastRowId = page[page.count - 1].rowid
+            for photo in page {
+                if IndexAssembler.needsChecksumBackfill(checksum: photo.checksum, status: photo.status),
+                   !failedPhotoIds.contains(photo.id) {
+                    rows.append(photo)
+                }
+            }
+            cursor = lastRowId
+        }
+        return (rows, lastRowId)
     }
 
     /// TS: managedCacheRoots —— disk_cache_dir 设置优先，否则默认缓存目录。
