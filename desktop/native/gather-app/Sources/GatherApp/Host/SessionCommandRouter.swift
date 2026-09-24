@@ -323,7 +323,7 @@ public final class SessionCommandRouter: CommandRouter {
             settings: settings,
             settingsAPI: settingsAPI,
             filterEngine: FilterEngine(database: database),
-            navigationService: NavigationService(connection: db),
+            navigationService: NavigationService(database: database),
             similarityService: similarityService,
             duplicateService: DuplicateService(
                 connection: db,
@@ -574,24 +574,6 @@ public final class SessionCommandRouter: CommandRouter {
             return try GatherCore.JSONValue(from: buildMLStatus())
 
         // ── filter.*（3.6 服务层；TS 源 filter.ipc.ts）──
-
-        case "navigation.list":
-            let sessionId = try requiredString(params, "sessionId")
-            return try GatherCore.JSONValue(from: navigationService.list(sessionId: sessionId))
-
-        case "navigation.split":
-            let sessionId = try requiredString(params, "sessionId")
-            let groupId = try requiredString(params, "groupId")
-            let beforePhotoId = try requiredString(params, "beforePhotoId")
-            return try GatherCore.JSONValue(
-                from: navigationService.split(sessionId: sessionId, groupId: groupId, beforePhotoId: beforePhotoId)
-            )
-
-        case "navigation.merge":
-            // ADR-017：服务内部重校验（组数 ≥2 / 同类型），IPC 仅做数组解析。
-            let sessionId = try requiredString(params, "sessionId")
-            let groupIds = try requiredStringArray(params, "groupIds")
-            return try GatherCore.JSONValue(from: navigationService.merge(sessionId: sessionId, groupIds: groupIds))
 
         // ── sim.*（3.3 服务层；TS 源 similarity.ipc.ts）──
 
@@ -855,6 +837,45 @@ public final class SessionCommandRouter: CommandRouter {
         completion: @escaping (WebResponse) -> Void
     ) {
         switch command {
+
+        case "navigation.list":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    let groups = try await navigationService.list(sessionId: sessionId)
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: groups))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "navigation.split":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    let groupId = try requiredString(params, "groupId")
+                    let beforePhotoId = try requiredString(params, "beforePhotoId")
+                    let groups = try await navigationService.split(
+                        sessionId: sessionId, groupId: groupId, beforePhotoId: beforePhotoId)
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: groups))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        case "navigation.merge":
+            Task {
+                do {
+                    // ADR-017：服务内部重校验（组数 ≥2 / 同类型），IPC 仅做数组解析。
+                    let sessionId = try requiredString(params, "sessionId")
+                    let groupIds = try requiredStringArray(params, "groupIds")
+                    let groups = try await navigationService.merge(sessionId: sessionId, groupIds: groupIds)
+                    completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: groups))); return
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
 
         case "export.report":
             Task {
@@ -1306,17 +1327,19 @@ public final class SessionCommandRouter: CommandRouter {
             let burstGapSeconds = try? optionalNumber(params, "burstGapSeconds")
             let sceneGapSeconds = try? optionalNumber(params, "sceneGapSeconds")
             let dryRun = optionalBool(params, "dryRun") ?? false
-            do {
-                let groups = try navigationService.analyze(
-                    sessionId: sessionId,
-                    burstGapSeconds: burstGapSeconds ?? 2,
-                    sceneGapSeconds: sceneGapSeconds ?? 1_800,
-                    dryRun: dryRun
-                )
-                let data = try GatherCore.JSONValue(from: groups)
-                completion(WebResponse(ok: true, data: data))
-            } catch {
-                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+            Task {
+                do {
+                    let groups = try await navigationService.analyze(
+                        sessionId: sessionId,
+                        burstGapSeconds: burstGapSeconds ?? 2,
+                        sceneGapSeconds: sceneGapSeconds ?? 1_800,
+                        dryRun: dryRun
+                    )
+                    let data = try GatherCore.JSONValue(from: groups)
+                    completion(WebResponse(ok: true, data: data))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
             }
 
         // TS 源: similarity.ipc.ts:169-187 —— 阈值重聚类（await worker）。

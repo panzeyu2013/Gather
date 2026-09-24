@@ -14,7 +14,10 @@ private struct Harness {
 
 /// TS: navigation-service.test.ts fixture —— 3 照片 + 元数据 + 哈希。
 private func makeHarness() async throws -> Harness {
-    let db = try await makeMigratedDB()
+    // 同一临时文件库：旧连接（种子）与 Store（NavigationService 读）必须同库。
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-navigation-\(UUID().uuidString).sqlite").path
+    let db = try await makeMigratedLegacyDB(path: path)
     let now = "2026-07-30T10:00:00.000Z"
     _ = try db.prepare("""
         INSERT INTO sessions (
@@ -55,7 +58,7 @@ private func makeHarness() async throws -> Harness {
         ])
         _ = try insertHash.run([.text(id), .text("0000000000000000")])
     }
-    return Harness(db: db, service: NavigationService(connection: db))
+    return Harness(db: db, service: NavigationService(database: try SQLiteDatabase(path: path)))
 }
 
 @Suite("NavigationService")
@@ -80,7 +83,7 @@ struct NavigationServiceTests {
     // TS: "recomputes when thresholds change and explains the rating-only lead fallback"。
     @Test func recomputesWhenThresholdsChange() async throws {
         let harness = try await makeHarness()
-        let initial = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        let initial = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = initial.first { $0.type == .burst }
         let scene = initial.first { $0.type == .scene }
         #expect(burst?.photoIds == ["p1", "p2"])
@@ -88,7 +91,7 @@ struct NavigationServiceTests {
         #expect(burst?.leadPhotoId == "p2")
         #expect(burst?.explanation == "NAV_RECOMMEND_RATING")
 
-        let tighter = try harness.service.analyze(sessionId: "session", burstGapSeconds: 0.5, sceneGapSeconds: 1_800)
+        let tighter = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 0.5, sceneGapSeconds: 1_800)
         #expect(tighter.contains { $0.type == .burst } == false)
         #expect(tighter.contains { $0.type == .scene } == true)
     }
@@ -96,15 +99,15 @@ struct NavigationServiceTests {
     // TS: "keeps manual overrides scoped to their own navigation type"。
     @Test func manualOverridesScopedToOwnType() async throws {
         let harness = try await makeHarness()
-        let groups = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        let groups = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = try #require(groups.first { $0.type == .burst })
-        _ = try harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p2")
+        _ = try await harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p2")
 
         _ = try harness.db.prepare(
             "UPDATE similarity_hashes SET hash_hex = '0000000000000001' WHERE photo_id = 'p3'"
         ).run([])
 
-        let refreshed = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        let refreshed = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         #expect(refreshed.contains { group in
             group.type == .scene && group.photoIds.contains("p1") && group.photoIds.contains("p2")
         })
@@ -154,7 +157,7 @@ struct NavigationServiceTests {
             .text("p2"), .text(now), .text(now),
         ])
 
-        let burst = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800, dryRun: true)
+        let burst = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800, dryRun: true)
             .first { $0.type == .burst }
         // p1 质量分 0.9 但闭眼警告 -0.25 → 0.65 < p2 的 0.8 → lead 为 p2。
         #expect(burst?.leadPhotoId == "p2")
@@ -163,34 +166,34 @@ struct NavigationServiceTests {
     // TS 补充：merge 错误码（≥2 组/同类型）。
     @Test func mergeValidation() async throws {
         let harness = try await makeHarness()
-        let groups = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        let groups = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = try #require(groups.first { $0.type == .burst })
         let scene = try #require(groups.first { $0.type == .scene })
 
         // 单组 → NAV_MERGE_MIN_TWO。
-        #expect(throws: (any Error).self) {
-            try harness.service.merge(sessionId: "session", groupIds: [burst.id])
+        await #expect(throws: (any Error).self) {
+            try await harness.service.merge(sessionId: "session", groupIds: [burst.id])
         }
         // 类型不同 → NAV_MERGE_TYPE_MISMATCH。
-        #expect(throws: (any Error).self) {
-            try harness.service.merge(sessionId: "session", groupIds: [burst.id, scene.id])
+        await #expect(throws: (any Error).self) {
+            try await harness.service.merge(sessionId: "session", groupIds: [burst.id, scene.id])
         }
         // 不存在的组 → NAV_GROUP_NOT_FOUND。
-        #expect(throws: (any Error).self) {
-            try harness.service.merge(sessionId: "session", groupIds: [burst.id, "nope"])
+        await #expect(throws: (any Error).self) {
+            try await harness.service.merge(sessionId: "session", groupIds: [burst.id, "nope"])
         }
     }
 
     // TS 补充：split 越界 → NAV_SPLIT_OUT_OF_GROUP。
     @Test func splitOutOfGroupThrows() async throws {
         let harness = try await makeHarness()
-        let groups = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        let groups = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let burst = try #require(groups.first { $0.type == .burst })
-        #expect(throws: (any Error).self) {
-            try harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p1")
+        await #expect(throws: (any Error).self) {
+            try await harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p1")
         }
         // 正常 split 产生两个 manual 组（list 过滤 <2 张的组，直接查库断言）。
-        _ = try harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p2")
+        _ = try await harness.service.split(sessionId: "session", groupId: burst.id, beforePhotoId: "p2")
         let manualCount = try harness.db.prepare("""
             SELECT COUNT(*) AS count FROM navigation_groups
             WHERE session_id = 'session' AND group_type = 'burst' AND source = 'manual'
@@ -201,9 +204,9 @@ struct NavigationServiceTests {
     // TS: 缓存语义 —— 相同指纹直接返回缓存组（不重建，组 id 不变）。
     @Test func fingerprintCacheReusesGroups() async throws {
         let harness = try await makeHarness()
-        let first = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        let first = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let firstBurst = try #require(first.first { $0.type == .burst })
-        let second = try harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        let second = try await harness.service.analyze(sessionId: "session", burstGapSeconds: 2, sceneGapSeconds: 1_800)
         let secondBurst = try #require(second.first { $0.type == .burst })
         #expect(firstBurst.id == secondBurst.id)
         #expect(secondBurst.photoIds == firstBurst.photoIds)

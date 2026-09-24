@@ -79,10 +79,10 @@ public final class NavigationService {
     /// TS: IN chunk 800（quality 查询）。
     private static let qualityChunkSize = 800
 
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
 
-    public init(connection: DBConnection) {
-        self.connection = connection
+    public init(database: SQLiteDatabase) {
+        self.database = database
     }
 
     // MARK: API
@@ -93,15 +93,15 @@ public final class NavigationService {
         burstGapSeconds: Double = 2,
         sceneGapSeconds: Double = 1_800,
         dryRun: Bool = false
-    ) throws -> [NavigationGroup] {
+    ) async throws -> [NavigationGroup] {
         try validateNavigationParameters(burstGapSeconds: burstGapSeconds, sceneGapSeconds: sceneGapSeconds)
-        let rows = try captureRows(sessionId: sessionId)
+        let rows = try await captureRows(sessionId: sessionId)
         let capturedAt = Dictionary(rows.map { ($0.id, $0.capturedAt) }, uniquingKeysWith: { first, _ in first })
         let fingerprint = fingerprintHash(burst: burstGapSeconds, scene: sceneGapSeconds, rows: rows)
 
         if !dryRun {
-            let cached = try list(sessionId: sessionId, capturedAt: capturedAt)
-            let cachedFingerprint = try Self.cachedFingerprint(connection: connection, sessionId: sessionId)
+            let cached = try await list(sessionId: sessionId, capturedAt: capturedAt)
+            let cachedFingerprint = try await Self.cachedFingerprint(database: database, sessionId: sessionId)
             if !cached.isEmpty && cachedFingerprint == fingerprint {
                 return cached
             }
@@ -114,50 +114,50 @@ public final class NavigationService {
         ).map { withLead(group: $0, byId: byId) }
 
         if !dryRun {
-            try persistAutomatic(sessionId: sessionId, groups: groups, fingerprint: fingerprint)
-            return try list(sessionId: sessionId, capturedAt: capturedAt)
+            try await persistAutomatic(sessionId: sessionId, groups: groups, fingerprint: fingerprint)
+            return try await list(sessionId: sessionId, capturedAt: capturedAt)
         }
         return groups
     }
 
     /// TS: list(sessionId, capturedAt?) —— 组 <2 张被过滤。
-    public func list(sessionId: String, capturedAt: [String: String]? = nil) throws -> [NavigationGroup] {
-        let rows = try connection.prepare("""
+    public func list(sessionId: String, capturedAt: [String: String]? = nil) async throws -> [NavigationGroup] {
+        let rows = try await database.query("""
             SELECT id, group_type, photo_ids_json, lead_photo_id, explanation, source
             FROM navigation_groups WHERE session_id = ?
             ORDER BY group_type, created_at, id
-        """).query([.text(sessionId)])
+        """, [.text(sessionId)])
 
         let capturedByPhoto: [String: String]
         if let capturedAt {
             capturedByPhoto = capturedAt
         } else {
-            capturedByPhoto = Dictionary(
+            capturedByPhoto = await Dictionary(
                 (try captureRows(sessionId: sessionId)).map { ($0.id, $0.capturedAt) },
                 uniquingKeysWith: { first, _ in first }
             )
         }
         return rows.compactMap { row -> NavigationGroup? in
-            guard let photoIdsRaw = row[2].textValue,
+            guard let photoIdsRaw = row.values[row.columnOrder[2]]?.textValue,
                   let photoIds = parsePhotoIds(photoIdsRaw),
                   photoIds.count >= 2
             else { return nil }
             return NavigationGroup(
-                id: row[0].textValue ?? "",
-                type: NavigationGroupType(rawValue: row[1].textValue ?? "") ?? .burst,
+                id: row.values[row.columnOrder[0]]?.textValue ?? "",
+                type: NavigationGroupType(rawValue: row.values[row.columnOrder[1]]?.textValue ?? "") ?? .burst,
                 photoIds: photoIds,
                 startAt: capturedByPhoto[photoIds[0]] ?? "",
                 endAt: capturedByPhoto[photoIds[photoIds.count - 1]] ?? "",
-                leadPhotoId: row[3].textValue,
-                explanation: row[4].textValue ?? "",
-                source: NavigationGroupSource(rawValue: row[5].textValue ?? "") ?? .automatic
+                leadPhotoId: row.values[row.columnOrder[3]]?.textValue,
+                explanation: row.values[row.columnOrder[4]]?.textValue ?? "",
+                source: NavigationGroupSource(rawValue: row.values[row.columnOrder[5]]?.textValue ?? "") ?? .automatic
             )
         }
     }
 
     /// TS: split(sessionId, groupId, beforePhotoId)。
-    public func split(sessionId: String, groupId: String, beforePhotoId: String) throws -> [NavigationGroup] {
-        let groups = try list(sessionId: sessionId)
+    public func split(sessionId: String, groupId: String, beforePhotoId: String) async throws -> [NavigationGroup] {
+        let groups = try await list(sessionId: sessionId)
         guard let group = groups.first(where: { $0.id == groupId }) else {
             throw NavigationError.groupNotFound
         }
@@ -165,7 +165,7 @@ public final class NavigationService {
         if splitIndex <= 0 || splitIndex >= group.photoIds.count {
             throw NavigationError.splitOutOfGroup
         }
-        let rows = try captureRows(sessionId: sessionId)
+        let rows = try await captureRows(sessionId: sessionId)
         let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let replacements = [
             NavigationGroup(
@@ -188,23 +188,25 @@ public final class NavigationService {
             ),
         ].map { withLead(group: $0, byId: byId) }
 
-        try connection.transaction {
-            _ = try connection.prepare("DELETE FROM navigation_groups WHERE id = ? AND session_id = ?")
-                .run([.text(groupId), .text(sessionId)])
+        try await database.transaction { db in
+            _ = try db.run(
+                "DELETE FROM navigation_groups WHERE id = ? AND session_id = ?",
+                [.text(groupId), .text(sessionId)]
+            )
             for candidate in replacements {
-                try insertGroup(sessionId: sessionId, group: candidate, source: .manual, fingerprint: "")
+                try insertGroup(db, sessionId: sessionId, group: candidate, source: .manual, fingerprint: "")
             }
         }
-        return try list(sessionId: sessionId)
+        return try await list(sessionId: sessionId)
     }
 
     /// TS: merge(sessionId, groupIds)。
-    public func merge(sessionId: String, groupIds: [String]) throws -> [NavigationGroup] {
+    public func merge(sessionId: String, groupIds: [String]) async throws -> [NavigationGroup] {
         let uniqueIds = Array(Set(groupIds))
         if uniqueIds.count < 2 {
             throw NavigationError.mergeMinTwo
         }
-        let all = try list(sessionId: sessionId)
+        let all = try await list(sessionId: sessionId)
         let selected = all.filter { uniqueIds.contains($0.id) }
         if selected.count != uniqueIds.count {
             throw NavigationError.groupNotFound
@@ -212,7 +214,7 @@ public final class NavigationService {
         if Set(selected.map { $0.type }).count != 1 {
             throw NavigationError.mergeTypeMismatch
         }
-        let rows = try captureRows(sessionId: sessionId)
+        let rows = try await captureRows(sessionId: sessionId)
         let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let order = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let photoIds = Array(Set(selected.flatMap { $0.photoIds }))
@@ -229,23 +231,23 @@ public final class NavigationService {
             ),
             byId: byId
         )
-        try connection.transaction {
+        try await database.transaction { db in
             let placeholders = uniqueIds.map { _ in "?" }.joined(separator: ", ")
-            _ = try connection.prepare("""
+            _ = try db.run("""
                 DELETE FROM navigation_groups
                 WHERE session_id = ? AND id IN (\(placeholders))
-            """).run([.text(sessionId)] + uniqueIds.map(DBValue.text))
-            try insertGroup(sessionId: sessionId, group: merged, source: .manual, fingerprint: "")
+            """, [.text(sessionId)] + uniqueIds.map(SQLiteValue.text))
+            try insertGroup(db, sessionId: sessionId, group: merged, source: .manual, fingerprint: "")
         }
-        return try list(sessionId: sessionId)
+        return try await list(sessionId: sessionId)
     }
 
     // MARK: captureRows
 
     /// TS: captureRows —— 主查询 + 每 800 个 asset_file 一次 IN 查询的
     /// technical_quality 结果（每文件最新一条）。
-    private func captureRows(sessionId: String) throws -> [CaptureRow] {
-        let rows = try connection.prepare("""
+    private func captureRows(sessionId: String) async throws -> [CaptureRow] {
+        let rows = try await database.query("""
             SELECT p.id, p.filepath, p.filename,
                 COALESCE(NULLIF(pmc.date_taken, ''), p.created_at) AS captured_at,
                 COALESCE(pmc.camera_model, '') AS camera_model,
@@ -257,37 +259,38 @@ public final class NavigationService {
             LEFT JOIN similarity_hashes sh ON sh.photo_id = p.id AND sh.session_id = p.session_id
             WHERE p.session_id = ? AND p.status != 'missing'
             ORDER BY captured_at, p.rowid
-        """).query([.text(sessionId)])
+        """, [.text(sessionId)])
 
-        let fileIds = Array(Set(rows.compactMap { $0[7].textValue }))
+        let fileIds = Array(Set(rows.compactMap { $0.values[$0.columnOrder[7]]?.textValue }))
         var qualityByFile: [String: String] = [:]
         for offset in stride(from: 0, to: fileIds.count, by: Self.qualityChunkSize) {
             let chunk = Array(fileIds[offset..<min(offset + Self.qualityChunkSize, fileIds.count)])
             let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let analysisRows = try connection.prepare("""
+            let analysisRows = try await database.query("""
                 SELECT aa.asset_file_id, aa.result_json
                 FROM asset_analysis aa
                 WHERE aa.asset_file_id IN (\(placeholders)) AND aa.analysis_type = 'technical_quality'
                 ORDER BY aa.asset_file_id, aa.updated_at DESC
-            """).query(chunk.map(DBValue.text))
+            """, chunk.map(SQLiteValue.text))
             for row in analysisRows {
-                if let fileId = row[0].textValue, qualityByFile[fileId] == nil {
-                    qualityByFile[fileId] = row[1].textValue ?? ""
+                if let fileId = row.values[row.columnOrder[0]]?.textValue, qualityByFile[fileId] == nil {
+                    qualityByFile[fileId] = row.values[row.columnOrder[1]]?.textValue ?? ""
                 }
             }
         }
 
         return rows.map { row in
-            let qualityJson = row[7].textValue != nil ? (qualityByFile[row[7].textValue!] ?? nil) : nil
+            let qualityKey = row.values[row.columnOrder[7]]?.textValue
+            let qualityJson = qualityKey != nil ? qualityByFile[qualityKey!] : nil
             let quality = safeQuality(value: qualityJson)
-            let rating = row[6].intValue.map { Double($0) } ?? row[6].doubleValue ?? 0
+            let rating = row.values[row.columnOrder[6]]?.intValue.map { Double($0) } ?? row.values[row.columnOrder[6]]?.doubleValue ?? 0
             return CaptureRow(
-                id: row[0].textValue ?? "",
-                filepath: row[1].textValue ?? "",
-                filename: row[2].textValue ?? "",
-                capturedAt: row[3].textValue ?? "",
-                cameraModel: row[4].textValue ?? "",
-                hashHex: row[5].textValue ?? "",
+                id: row.values[row.columnOrder[0]]?.textValue ?? "",
+                filepath: row.values[row.columnOrder[1]]?.textValue ?? "",
+                filename: row.values[row.columnOrder[2]]?.textValue ?? "",
+                capturedAt: row.values[row.columnOrder[3]]?.textValue ?? "",
+                cameraModel: row.values[row.columnOrder[4]]?.textValue ?? "",
+                hashHex: row.values[row.columnOrder[5]]?.textValue ?? "",
                 rating: rating,
                 qualityScore: quality.qualityScore,
                 qualityWarnings: quality.warnings,
@@ -397,15 +400,15 @@ public final class NavigationService {
     }
 
     /// TS: persistAutomatic —— manual 成员从自动组剔除（per type）。
-    private func persistAutomatic(sessionId: String, groups: [NavigationGroup], fingerprint: String) throws {
-        let manualRows = try connection.prepare("""
+    private func persistAutomatic(sessionId: String, groups: [NavigationGroup], fingerprint: String) async throws {
+        let manualRows = try await database.query("""
             SELECT group_type, photo_ids_json FROM navigation_groups
             WHERE session_id = ? AND source = 'manual'
-        """).query([.text(sessionId)])
+        """, [.text(sessionId)])
         var manuallyGrouped: [NavigationGroupType: Set<String>] = [:]
         for row in manualRows {
-            guard let type = NavigationGroupType(rawValue: row[0].textValue ?? ""),
-                  let ids = parsePhotoIds(row[1].textValue ?? "")
+            guard let type = NavigationGroupType(rawValue: row.values[row.columnOrder[0]]?.textValue ?? ""),
+                  let ids = parsePhotoIds(row.values[row.columnOrder[1]]?.textValue ?? "")
             else { continue }
             manuallyGrouped[type, default: []].formUnion(ids)
         }
@@ -426,34 +429,36 @@ public final class NavigationService {
                 ))
             }
         }
-        try connection.transaction {
-            _ = try connection.prepare(
-                "DELETE FROM navigation_groups WHERE session_id = ? AND source = 'automatic'"
-            ).run([.text(sessionId)])
+        try await database.transaction { db in
+            _ = try db.run(
+                "DELETE FROM navigation_groups WHERE session_id = ? AND source = 'automatic'",
+                [.text(sessionId)]
+            )
             for group in automaticGroups {
-                try insertGroup(sessionId: sessionId, group: group, source: .automatic, fingerprint: fingerprint)
+                try insertGroup(db, sessionId: sessionId, group: group, source: .automatic, fingerprint: fingerprint)
             }
         }
     }
 
     private func insertGroup(
+        _ db: isolated SQLiteDatabase,
         sessionId: String,
         group: NavigationGroup,
         source: NavigationGroupSource,
         fingerprint: String
     ) throws {
         let now = Self.nowISO()
-        _ = try connection.prepare("""
+        _ = try db.run("""
             INSERT INTO navigation_groups (
                 id, session_id, group_type, photo_ids_json, lead_photo_id,
                 explanation, input_fingerprint, source, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """).run([
+        """, [
             .text(group.id),
             .text(sessionId),
             .text(group.type.rawValue),
             .text(photoIdsJSON(group.photoIds)),
-            group.leadPhotoId.map(DBValue.text) ?? .null,
+            group.leadPhotoId.map(SQLiteValue.text) ?? .null,
             .text(group.explanation),
             .text(fingerprint),
             .text(source.rawValue),
@@ -484,12 +489,12 @@ public final class NavigationService {
         return SHA256.hash(Data(data)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func cachedFingerprint(connection: DBConnection, sessionId: String) throws -> String? {
-        guard let row = try connection.prepare("""
+    private static func cachedFingerprint(database: SQLiteDatabase, sessionId: String) async throws -> String? {
+        guard let row = try await database.queryOne("""
             SELECT input_fingerprint FROM navigation_groups
             WHERE session_id = ? AND source = 'automatic' LIMIT 1
-        """).get([.text(sessionId)]) else { return nil }
-        return row[0].textValue
+        """, [.text(sessionId)]) else { return nil }
+        return row.values[row.columnOrder[0]]?.textValue
     }
 }
 
