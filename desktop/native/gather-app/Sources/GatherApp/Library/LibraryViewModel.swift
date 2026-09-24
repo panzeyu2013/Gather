@@ -184,7 +184,7 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
     }
 
     public func listSessions() async throws -> [SessionData] {
-        try await router.sessionService.listSessions()
+        try await router.sessionRuntime.listSessions()
     }
 
     public func globalPhotos(

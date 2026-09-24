@@ -5,7 +5,7 @@
 //
 // 接线清单（截至 2026-08-11，对应 NATIVE-DEVELOPMENT-ANALYSIS.md §10.4/§10.6）：
 //   同步（execute）：
-//     session.* → SessionService + PhotoRepo（3.2 服务层）
+//     session.* → SessionRuntime（R4 归位；删除 Store 端口注入）+ PhotoRepo
 //     workspace.status → WorkspaceStatusService（3.1 服务层）
 //     jobs.list / jobs.cancel / jobs.retry / jobs.clear_completed → JobRunner
 //     face.models_status → FaceInferenceConfig / Vision provider 状态（2.2）
@@ -52,7 +52,7 @@
 //     fkw.recluster → FaceKeywordingRuntime.recluster（TS 源 face-kw.ipc.ts）
 //     index.scan → JobRunner executor（metadata.scan）创建即返回 job
 //       （TS 源 indexer.ipc.ts）
-//     session.create_from_directory → SessionService.createFromDirectory +
+//     session.create_from_directory → SessionRuntime.createFromDirectory +
 //       metadata.scan job 入队（TS 源 session.ipc.ts）
 //     metadata.resolve_conflict / resolve_orphan → MetadataSyncCoordinator
 //       （TS 源 metadata.ipc.ts；destructive 二次兜底）
@@ -78,7 +78,7 @@ private struct CullingQualityInvalidationPort: QualityInvalidationPort {
 /// 路由实现：注入 GatherCore 服务。
 public final class SessionCommandRouter: CommandRouter {
     /// 公开服务访问器（3.1 起供 RootView/DashboardViewModel 同进程直连）。
-    public let sessionService: SessionService
+    public let sessionRuntime: SessionRuntime
     public let workspace: WorkspaceAPI
     public let jobRunner: JobRunner
     /// 设置快照（同步读：服务与命令处理不再触碰设置存储）。
@@ -112,7 +112,7 @@ public final class SessionCommandRouter: CommandRouter {
     public let exportService: ExportRuntime
 
     public init(
-        sessionService: SessionService,
+        sessionRuntime: SessionRuntime,
         workspace: WorkspaceAPI,
         jobRunner: JobRunner,
         settings: SettingsSnapshot,
@@ -137,7 +137,7 @@ public final class SessionCommandRouter: CommandRouter {
         photoStore: any PhotoStore,
         sessionStore: any SessionStore
     ) {
-        self.sessionService = sessionService
+        self.sessionRuntime = sessionRuntime
         self.workspace = workspace
         self.jobRunner = jobRunner
         self.settings = settings
@@ -355,11 +355,11 @@ public final class SessionCommandRouter: CommandRouter {
         // checksum.backfill 的 backfillChecksums 已迁入 IndexerRuntime（idx2b5）；
         // scan / 待回填判定 / 回填 executor 全部走下方 router 的 indexer。
         let router = SessionCommandRouter(
-            sessionService: SessionService(
+            sessionRuntime: SessionRuntime(
                 sessionStore: sessionStore,
                 photoStore: photoStore,
                 faceStore: faceStore,
-                database: database,
+                deletionStore: SQLiteSessionDeletionStore(database: database),
                 dimensionsProvider: { path in
                     let dims = try RAWDecoder.getDimensions(path: path)
                     return (dims.width, dims.height)
@@ -914,7 +914,7 @@ public final class SessionCommandRouter: CommandRouter {
                 do {
                 let id = try requiredString(params, "sessionId")
                 let name = try requiredString(params, "name")
-                let session = try await sessionService.updateSession(sessionId: id, name: name)
+                let session = try await sessionRuntime.updateSession(sessionId: id, name: name)
                 completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: session))); return
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -926,7 +926,7 @@ public final class SessionCommandRouter: CommandRouter {
         case "session.list":
             Task {
                 do {
-                let sessions = try await sessionService.listSessions()
+                let sessions = try await sessionRuntime.listSessions()
                 completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: sessions))); return
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -944,7 +944,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let id = try requiredString(params, "sessionId")
                 let filepaths = try requiredStringArray(params, "filepaths")
                 let source = try optionalString(params, "source") ?? "import"
-                let result = try await sessionService.addPhotos(sessionId: id, filepaths: filepaths, source: source)
+                let result = try await sessionRuntime.addPhotos(sessionId: id, filepaths: filepaths, source: source)
                 completion(WebResponse(ok: true, data: .object([
                     "added": .number(Double(result.added)),
                     "skipped": .number(Double(result.skipped)),
@@ -968,16 +968,16 @@ public final class SessionCommandRouter: CommandRouter {
                 let source = try optionalString(params, "source") ?? "manual"
                 let sourcePath = try optionalString(params, "sourcePath") ?? ""
                 let truncatedImport = optionalBool(params, "truncatedImport") ?? false
-                let session = try await sessionService.createSession(
+                let session = try await sessionRuntime.createSession(
                     name: name, source: source, sourcePath: sourcePath, truncatedImport: truncatedImport)
                 // TS 契约：filepaths 传入时创建即导入（addPhotos），返回
                 // {session, failedFiles, added, skipped}；照片落库后重取会话
                 // （status/photoCount 已更新），对齐 DashboardViewModel
                 // LiveDashboardDataProvider.createSessionFromFiles。
                 if let filepaths = try optionalStringArray(params, "filepaths"), !filepaths.isEmpty {
-                    let result = try await sessionService.addPhotos(
+                    let result = try await sessionRuntime.addPhotos(
                         sessionId: session.id, filepaths: filepaths, source: source)
-                    let refreshed = try await sessionService.getSession(session.id) ?? session
+                    let refreshed = try await sessionRuntime.getSession(session.id) ?? session
                     completion(WebResponse(ok: true, data: .object([
                         "session": try GatherCore.JSONValue(from: refreshed),
                         "failedFiles": .array(result.failedFiles.map(GatherCore.JSONValue.string)),
@@ -997,7 +997,7 @@ public final class SessionCommandRouter: CommandRouter {
             Task {
                 do {
                 let id = try requiredString(params, "sessionId")
-                guard let session = try await sessionService.getSession(id) else {
+                guard let session = try await sessionRuntime.getSession(id) else {
                     throw BridgeError.notFound("SESSION_NOT_FOUND")
                 }
                 completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: session))); return
@@ -1689,7 +1689,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let session = try await sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
+                    let session = try await sessionRuntime.createFromDirectory(name: name, sourcePath: sourcePath)
                     do {
                         _ = try await jobRunner.create(JobCreateParams(
                             type: .metadataScan,
@@ -1701,7 +1701,7 @@ public final class SessionCommandRouter: CommandRouter {
                         // TS: 入队失败回滚会话行，工作区列表不出现半成品会话。
                         // R1/R2：删除依赖 face Store（async），经 Task 排队后抛出原始错误。
                         let rollbackId = session.id
-                        Task { try? await sessionService.deleteSession(rollbackId, confirmed: true) }
+                        Task { try? await sessionRuntime.deleteSession(rollbackId, confirmed: true) }
                         throw error
                     }
                     let data = try GatherCore.JSONValue(from: session)
@@ -2464,7 +2464,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let confirmedValue = confirmed(params)
                 Task {
                     do {
-                        try await sessionService.deleteSession(id, confirmed: confirmedValue)
+                        try await sessionRuntime.deleteSession(id, confirmed: confirmedValue)
                         completion(WebResponse(ok: true, data: .null))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2480,7 +2480,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let confirmedValue = confirmed(params)
                 Task {
                     do {
-                        _ = try await sessionService.deleteSessions(ids, confirmed: confirmedValue)
+                        _ = try await sessionRuntime.deleteSessions(ids, confirmed: confirmedValue)
                         completion(WebResponse(ok: true, data: .null))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))

@@ -69,26 +69,26 @@ struct CreateSessionOutcome: Equatable, Sendable {
 /// 真实实现：同进程直连已移植 GatherCore 服务（与 SessionCommandRouter
 /// makeDefault 共用装配，见 GatherApp.bootstrap）。
 final class LiveDashboardDataProvider: DashboardDataProvider {
-    private let sessionService: SessionService
+    private let sessionRuntime: SessionRuntime
     private let workspace: WorkspaceAPI
     private let jobRunner: JobRunner
 
     init(
-        sessionService: SessionService,
+        sessionRuntime: SessionRuntime,
         workspace: WorkspaceAPI,
         jobRunner: JobRunner
     ) {
-        self.sessionService = sessionService
+        self.sessionRuntime = sessionRuntime
         self.workspace = workspace
         self.jobRunner = jobRunner
     }
 
     func listSessions() async throws -> [SessionData] {
-        try await sessionService.listSessions()
+        try await sessionRuntime.listSessions()
     }
 
     func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData {
-        try await sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
+        try await sessionRuntime.createFromDirectory(name: name, sourcePath: sourcePath)
     }
 
     /// TS session.create：文件列表建库 + addPhotos（source 透传，C1 为
@@ -103,25 +103,25 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         // TS session.create handler：sourcePath 落库前 sanitize —— 单文件/根
         // 目录等会扩大索引范围的来源一律清空，防索引器递归无关目录。
         let sanitizedSourcePath = sanitizeSessionSourcePath(sourcePath: sourcePath, filepaths: filepaths)
-        let created = try await sessionService.createSession(name: name, source: source, sourcePath: sanitizedSourcePath)
-        let result = try await sessionService.addPhotos(
+        let created = try await sessionRuntime.createSession(name: name, source: source, sourcePath: sanitizedSourcePath)
+        let result = try await sessionRuntime.addPhotos(
             sessionId: created.id,
             filepaths: filepaths,
             source: source
         )
         // TS 在 addPhotos 后重取 session（状态/photoCount 已更新）。
-        let session = try await sessionService.getSession(created.id) ?? created
+        let session = try await sessionRuntime.getSession(created.id) ?? created
         return CreateSessionOutcome(session: session, failedFiles: result.failedFiles, added: result.added)
     }
 
     func deleteSession(_ sessionId: String) async throws {
         // UI 层已确认（对齐 TS ConfirmDialog → sessionApi.delete 带 confirmed）。
-        try await sessionService.deleteSession(sessionId, confirmed: true)
+        try await sessionRuntime.deleteSession(sessionId, confirmed: true)
     }
 
     func deleteSessions(_ sessionIds: [String]) async throws {
         // UI 层已确认（对齐 TS ConfirmDialog → sessionApi.deleteMany 带 confirmed）。
-        _ = try await sessionService.deleteSessions(sessionIds, confirmed: true)
+        _ = try await sessionRuntime.deleteSessions(sessionIds, confirmed: true)
     }
 
     func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? {

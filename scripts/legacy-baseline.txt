@@ -1,11 +1,20 @@
 # 旧层度量上限（ratchet）：只允许下降；下降后请同步本文件。
 # 由 scripts/check-no-legacy.sh 校验（count > baseline 即失败）。
-# 注：已达目标值的度量已升为 enforced（阈值硬编码于 check-no-legacy.sh），不在此列。
+# 每个 tracked 度量有两个 key：文件数（原名）与出现次数（"[occurrences]" 后缀），两个口径都不允许增长。
+# 缺任一 key、或存在无对应度量的孤儿 key，脚本会 FAIL（R8 加固 H2）。
 awaitSync semaphore bridge (R5)=2
+awaitSync semaphore bridge (R5) [occurrences]=16
 SessionCommandRouter (R5)=17
-Services layer (R2)=4
+SessionCommandRouter (R5) [occurrences]=34
+Services layer (R2)=3
+Services layer (R2) [occurrences]=71740
 StubCommandRouter (R5)=7
+StubCommandRouter (R5) [occurrences]=12
 dual-track l10n zhDesc/enDesc (R6)=1
+dual-track l10n zhDesc/enDesc (R6) [occurrences]=66
 legacy DBConnection symbols (R1) [待处理]=2
+legacy DBConnection symbols (R1) [待处理] [occurrences]=3
 legacy Repositories path refs (R1) [待处理]=13
+legacy Repositories path refs (R1) [待处理] [occurrences]=16
 legacy module bridge symbols (R5) [待处理]=6
+legacy module bridge symbols (R5) [待处理] [occurrences]=12

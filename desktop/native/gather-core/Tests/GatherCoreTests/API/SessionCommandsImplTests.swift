@@ -9,8 +9,8 @@ import Testing
 
 @Suite("API/SessionCommandsImpl (R5)")
 struct SessionCommandsImplTests {
-    /// 目录直连 harness：服务与作业运行器共享同一临时库（多连接，与既有
-    /// SessionService/JobRunner 测试同构）；metadata.scan executor 为空壳，
+    /// 目录直连 harness：Runtime 与作业运行器共享同一临时库（多连接，与既有
+    /// SessionRuntime/JobRunner 测试同构）；metadata.scan executor 为空壳，
     /// 只为通过运行器的「已注册类型」门控，不实际执行扫描。
     private func makeHarness(
         dimensions: @escaping (String) throws -> (width: Int, height: Int) = { _ in (100, 80) }
@@ -18,16 +18,16 @@ struct SessionCommandsImplTests {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-session-commands-\(UUID().uuidString).sqlite").path
         let db = try await makeMigratedStore(path: dbPath)
-        let service = SessionService(
-            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
-            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
+        let runtime = SessionRuntime(
+            sessionStore: SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
+            photoStore: SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            database: try SQLiteDatabase(path: dbPath),
+            deletionStore: SQLiteSessionDeletionStore(database: try SQLiteDatabase(path: dbPath)),
             dimensionsProvider: dimensions
         )
         let runner = JobRunner(jobStore: SQLiteJobStore(database: try SQLiteDatabase(path: dbPath)))
         await runner.registerExecutor(type: .metadataScan, executor: { _, _ in nil }, autoResume: false)
-        return (SessionCommandsImpl(service: service, jobs: runner), db)
+        return (SessionCommandsImpl(runtime: runtime, jobs: runner), db)
     }
 
     @Test("create imports filepaths, reads back the session and derives the source path")
@@ -116,7 +116,7 @@ struct SessionCommandsImplTests {
     func createFromDirectoryEnqueuesScan() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
-        try writeTempFile(in: dir, name: "a.jpg")
+        _ = try writeTempFile(in: dir, name: "a.jpg")
         let (impl, db) = try await makeHarness()
 
         let session = try await impl.createFromDirectory(

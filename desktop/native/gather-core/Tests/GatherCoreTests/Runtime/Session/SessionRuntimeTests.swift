@@ -1,5 +1,5 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Services/SessionServiceTests.swift
-// SessionService 行为测试（Phase 3.2）。
+// desktop/native/gather-core/Tests/GatherCoreTests/Runtime/Session/SessionRuntimeTests.swift
+// SessionRuntime 行为测试（R4 从 Services/SessionServiceTests.swift 迁移，逐用例保留）。
 // TS 源: tests/unit/services/session-create-from-directory.test.ts +
 // tests/unit/services/session/session-add-photos-seq.test.ts（用例逐一对应，
 // 另补路径工具纯函数与删除/查询用例）。
@@ -16,7 +16,7 @@ private func makeTempPhotoStore() async throws -> any PhotoStore {
 
 private struct SessionHarness {
     let db: SQLiteDatabase
-    let service: SessionService
+    let runtime: SessionRuntime
     let sessionStore: any SessionStore
     let tempDirs: [String]
 }
@@ -28,14 +28,14 @@ private func makeHarness(
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
     let db = try await makeMigratedStore(path: dbPath)
     let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
-    let service = SessionService(
+    let runtime = SessionRuntime(
         sessionStore: sessionStore,
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-        database: try SQLiteDatabase(path: dbPath),
+        deletionStore: SQLiteSessionDeletionStore(database: try SQLiteDatabase(path: dbPath)),
         dimensionsProvider: dimensions
     )
-    return SessionHarness(db: db, service: service, sessionStore: sessionStore, tempDirs: [])
+    return SessionHarness(db: db, runtime: runtime, sessionStore: sessionStore, tempDirs: [])
 }
 
 /// TS: addOkAnalysisRun。
@@ -49,8 +49,8 @@ private func addOkAnalysisRun(_ db: SQLiteDatabase, _ sessionId: String, indexSe
       """, [.text(sessionId), .int(Int64(indexSeq)), .text(timestamp), .text(timestamp)])
 }
 
-@Suite("SessionService.createFromDirectory (one-hop import)")
-struct SessionServiceCreateFromDirectoryTests {
+@Suite("SessionRuntime.createFromDirectory (one-hop import)")
+struct SessionRuntimeCreateFromDirectoryTests {
     @Test("creates a local session row with source_path and inserts no photos")
     func createsLocalSessionRow() async throws {
         let dir = try makeTempDir()
@@ -59,7 +59,7 @@ struct SessionServiceCreateFromDirectoryTests {
         try writeTempFile(in: dir, name: "b.jpg")
 
         let harness = try await makeHarness()
-        let session = try await harness.service.createFromDirectory(name: "Wedding", sourcePath: dir)
+        let session = try await harness.runtime.createFromDirectory(name: "Wedding", sourcePath: dir)
 
         #expect(session.name == "Wedding")
         #expect(session.importSource == "local")
@@ -67,8 +67,8 @@ struct SessionServiceCreateFromDirectoryTests {
         #expect(session.photoCount == 0)
         #expect(session.truncatedImport == false)
         // 照片不在创建时插入——metadata.scan 索引 job 后台填充。
-        #expect(try await harness.service.getSession(session.id)?.photoCount == 0)
-        #expect(try await harness.service.listSessions().count == 1)
+        #expect(try await harness.runtime.getSession(session.id)?.photoCount == 0)
+        #expect(try await harness.runtime.listSessions().count == 1)
     }
 
     @Test("derives the session name from the directory basename when name is empty")
@@ -78,7 +78,7 @@ struct SessionServiceCreateFromDirectoryTests {
         try writeTempFile(in: dir, name: "a.jpg")
 
         let harness = try await makeHarness()
-        let session = try await harness.service.createFromDirectory(name: "   ", sourcePath: dir)
+        let session = try await harness.runtime.createFromDirectory(name: "   ", sourcePath: dir)
 
         #expect(session.name == TSPath.basename(TSPath.resolve(dir)))
     }
@@ -91,7 +91,7 @@ struct SessionServiceCreateFromDirectoryTests {
 
         let harness = try await makeHarness()
         await #expect(throws: SessionServiceError.sourceNotDir) {
-            try await harness.service.createFromDirectory(name: "X", sourcePath: filePath)
+            try await harness.runtime.createFromDirectory(name: "X", sourcePath: filePath)
         }
     }
 
@@ -99,13 +99,13 @@ struct SessionServiceCreateFromDirectoryTests {
     func rejectsFilesystemRoot() async throws {
         let harness = try await makeHarness()
         await #expect(throws: SessionServiceError.sourceRootForbidden) {
-            try await harness.service.createFromDirectory(name: "X", sourcePath: "/")
+            try await harness.runtime.createFromDirectory(name: "X", sourcePath: "/")
         }
     }
 }
 
-@Suite("SessionService.addPhotos")
-struct SessionServiceAddPhotosTests {
+@Suite("SessionRuntime.addPhotos")
+struct SessionRuntimeAddPhotosTests {
     @Test("bumps index_seq when photos are added so a previous ok run goes stale")
     func bumpsIndexSeqOnAdd() async throws {
         let dir = try makeTempDir()
@@ -118,7 +118,7 @@ struct SessionServiceAddPhotosTests {
         // 先前 ok run 快照了加照片前的游标。
         try await addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
 
-        let result = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA, photoB], source: "manual")
+        let result = try await harness.runtime.addPhotos(sessionId: session.id, filepaths: [photoA, photoB], source: "manual")
 
         #expect(result.added == 2)
         // 1.4.2: last_ok_run.index_seq (0) < session.index_seq (1) => stale。
@@ -137,12 +137,12 @@ struct SessionServiceAddPhotosTests {
         let session = try await harness.sessionStore.create(name: "Add", source: "folder", sourcePath: dir, truncatedImport: false)
         try await addOkAnalysisRun(harness.db, session.id, indexSeq: 0)
 
-        let first = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
+        let first = try await harness.runtime.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
         #expect(first.added == 1)
         #expect(try await harness.sessionStore.indexSeq(id: session.id) == 1)
 
         // 重复路径插入零行：游标不得移动。
-        let second = try await harness.service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
+        let second = try await harness.runtime.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
         #expect(second.added == 0)
         #expect(try await harness.sessionStore.indexSeq(id: session.id) == 1)
     }
@@ -163,7 +163,7 @@ struct SessionServiceAddPhotosTests {
         let session = try await harness.sessionStore.create(name: "Add", source: "folder", sourcePath: "", truncatedImport: false)
         #expect(session.status == "draft")
 
-        let result = try await harness.service.addPhotos(
+        let result = try await harness.runtime.addPhotos(
             sessionId: session.id,
             filepaths: [goodA, goodB, dir + "/broken.jpg"],
             source: "manual"
@@ -178,19 +178,19 @@ struct SessionServiceAddPhotosTests {
     }
 }
 
-@Suite("SessionService 删除与查询")
-struct SessionServiceDeleteAndQueryTests {
+@Suite("SessionRuntime 删除与查询")
+struct SessionRuntimeDeleteAndQueryTests {
     @Test("deleteSession removes the session and orphans all unbound assets")
     func deleteSessionOrphansAssets() async throws {
         let dbPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
     let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
-        let service = SessionService(
+        let runtime = SessionRuntime(
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            database: try SQLiteDatabase(path: dbPath)
+            deletionStore: SQLiteSessionDeletionStore(database: try SQLiteDatabase(path: dbPath))
         )
         let session = try await sessionStore.create(name: "Del", source: "folder", sourcePath: "", truncatedImport: false)
         try await insertPhoto(db, id: "p1", sessionId: session.id)
@@ -199,7 +199,7 @@ struct SessionServiceDeleteAndQueryTests {
         // 无会话引用的资产在删除时应被标记 orphan。
         try await insertAsset(db, id: "af2")
 
-        try await service.deleteSession(session.id, confirmed: true)
+        try await runtime.deleteSession(session.id, confirmed: true)
 
         #expect(try await sessionStore.get(id: session.id) == nil)
         #expect(try await rowCount(db, "SELECT COUNT(*) FROM photos WHERE session_id = ?", [.text(session.id)]) == 0)
@@ -216,16 +216,16 @@ struct SessionServiceDeleteAndQueryTests {
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
     let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
-        let service = SessionService(
+        let runtime = SessionRuntime(
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            database: try SQLiteDatabase(path: dbPath)
+            deletionStore: SQLiteSessionDeletionStore(database: try SQLiteDatabase(path: dbPath))
         )
         let session = try await sessionStore.create(name: "Del", source: "folder", sourcePath: "", truncatedImport: false)
 
         await #expect(throws: SessionServiceError.deleteNotConfirmed) {
-            try await service.deleteSession(session.id, confirmed: false)
+            try await runtime.deleteSession(session.id, confirmed: false)
         }
         #expect(try await sessionStore.get(id: session.id) != nil)
     }
@@ -236,11 +236,11 @@ struct SessionServiceDeleteAndQueryTests {
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
     let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
-        let service = SessionService(
+        let runtime = SessionRuntime(
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            database: try SQLiteDatabase(path: dbPath)
+            deletionStore: SQLiteSessionDeletionStore(database: try SQLiteDatabase(path: dbPath))
         )
         let session = try await sessionStore.create(name: "Derive", source: "folder", sourcePath: "", truncatedImport: false)
         let dir = try makeTempDir()
@@ -252,7 +252,7 @@ struct SessionServiceDeleteAndQueryTests {
         try await insertPhoto(db, id: "p1", sessionId: session.id, filepath: subA + "/a.jpg")
         try await insertPhoto(db, id: "p2", sessionId: session.id, filepath: subB + "/b.jpg")
 
-        let data = try await service.getSession(session.id)
+        let data = try await runtime.getSession(session.id)
 
         #expect(data?.sourcePath == TSPath.resolve(dir))
         // 已持久化，再次读取不靠内存。
@@ -260,7 +260,7 @@ struct SessionServiceDeleteAndQueryTests {
     }
 }
 
-@Suite("SessionService 路径工具（纯函数）")
+@Suite("SessionRuntime 路径工具（纯函数）")
 struct SessionPathUtilityTests {
     @Test("commonParentDirectory returns the common parent and rejects the root")
     func commonParentDirectoryBehavior() async throws {
@@ -334,18 +334,18 @@ struct SessionServiceErrorCodeTests {
         .appendingPathComponent("gather-session-face-\(UUID().uuidString).sqlite").path
     let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
-        let service = SessionService(
+        let runtime = SessionRuntime(
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            database: try SQLiteDatabase(path: dbPath),
+            deletionStore: SQLiteSessionDeletionStore(database: try SQLiteDatabase(path: dbPath)),
             getNumber: { _, _ in .nan },
             dimensionsProvider: { _ in (100, 80) }
         )
         let session = try await sessionStore.create(name: "Add", source: "folder", sourcePath: "", truncatedImport: false)
 
         // TS：batchSize=NaN 时循环零批次执行，不崩溃、不报错。
-        let result = try await service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
+        let result = try await runtime.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
 
         #expect(result.added == 0)
         #expect(result.failedFiles.isEmpty)

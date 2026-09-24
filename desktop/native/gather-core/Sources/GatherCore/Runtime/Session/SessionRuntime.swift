@@ -1,7 +1,9 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/SessionService.swift
-// TS 源: desktop/src/main/services/session/session.service.ts（Phase 3.2 移植）
-// 会话服务：创建/列表/查询/删除/加照片。图片尺寸读取通过注入的
-// dimensionsProvider 接入原生 RAWDecoder，
+// Runtime/Session/SessionRuntime.swift
+// R4：会话编排从 Services/SessionService.swift 归位。TS 源:
+// desktop/src/main/services/session/session.service.ts（Phase 3.2 移植）。
+// 会话创建/列表/查询/删除/加照片；删除路径的跨域语句已逐字下沉
+// Store/SessionDeletionStore.swift，本文件不再持有数据库连接。
+// 图片尺寸读取通过注入的 dimensionsProvider 接入原生 RAWDecoder，
 // 本文件保持零图片依赖，Linux 可单测。
 import Foundation
 #if canImport(Glibc)
@@ -44,7 +46,8 @@ public struct SessionAddPhotoResult: Equatable, Sendable {
     }
 }
 
-public final class SessionService {
+/// 会话编排 Runtime（R4 归位）：依赖全部注入，无自有连接。
+public final class SessionRuntime {
     /// TS: SettingsService.getNumber 注入（import_concurrency 用）。
     private let getNumber: (String, Double) -> Double
     /// TS: ImageService.getDimensions(filepath) → { width, height }，失败抛错。
@@ -53,14 +56,14 @@ public final class SessionService {
     private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
     private let faceStore: any FaceStore
-    private let assetStore: any AssetStore?
-    private let database: SQLiteDatabase
+    private let deletionStore: any SessionDeletionStore
+    private let assetStore: (any AssetStore)?
 
     public init(
         sessionStore: any SessionStore,
         photoStore: any PhotoStore,
         faceStore: any FaceStore,
-        database: SQLiteDatabase,
+        deletionStore: any SessionDeletionStore,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         dimensionsProvider: @escaping (String) throws -> (width: Int, height: Int) = { _ in
             throw SessionServiceError.sourceNotDir
@@ -70,7 +73,7 @@ public final class SessionService {
         self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.faceStore = faceStore
-        self.database = database
+        self.deletionStore = deletionStore
         self.getNumber = getNumber
         self.dimensionsProvider = dimensionsProvider
         self.assetStore = assetStore
@@ -122,22 +125,14 @@ public final class SessionService {
 
     public func deleteSession(_ sessionId: String, confirmed: Bool) async throws {
         if !confirmed { throw SessionServiceError.deleteNotConfirmed }
-        // 人脸数据由 Store 连接清理（跨连接不共享事务）；其余依赖 + 会话行
-        // 仍在旧连接的单个事务内完成，删除顺序与 ON DELETE 约束保持一致。
+        // 人脸数据由 Store 连接清理（跨连接不共享事务）；其余依赖行 + 会话行
+        // 仍在原连接的删除顺序内完成，删除顺序与 ON DELETE 约束保持一致。
         try await deleteFaceData(sessionId)
         // Store 连接的照片行清理先于旧事务（foreign_keys = ON 下删除顺序要求）。
         try await deleteSessionDependencies(sessionId)
         let deleted = try await sessionStore.delete(id: sessionId)
         if !deleted { throw SessionServiceError.sessionNotFound }
-        try await database.transaction { db in
-            _ = try db.run("""
-                UPDATE assets SET status = 'orphan', updated_at = ?
-                WHERE status != 'orphan'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
-                  )
-              """, [.text(nowISOString())])
-        }
+        try await deletionStore.markOrphanAssets(now: nowISOString())
     }
 
     public func deleteSessions(_ sessionIds: [String], confirmed: Bool) async throws -> Int {
@@ -149,15 +144,7 @@ public final class SessionService {
             try await deleteSessionDependencies(id)
         }
         _ = try await sessionStore.deleteMany(ids: sessionIds)
-        try await database.transaction { db in
-            _ = try db.run("""
-                UPDATE assets SET status = 'orphan', updated_at = ?
-                WHERE status != 'orphan'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
-                  )
-              """, [.text(nowISOString())])
-        }
+        try await deletionStore.markOrphanAssets(now: nowISOString())
         return sessionIds.count
     }
 
@@ -169,20 +156,11 @@ public final class SessionService {
         try await faceStore.deleteObservationsBySession(sessionId)
     }
 
-    /// 删除其余依赖行（旧连接事务内；顺序满足 ON DELETE 约束）。
+    /// 删除其余依赖行（Store 连接；顺序满足 ON DELETE 约束）。
     private func deleteSessionDependencies(_ sessionId: String) async throws {
         // similarity_hashes 无级联引用 photos。
         try await sessionStore.deleteSimilarityData(sessionId: sessionId)
-        _ = try await database.run("DELETE FROM person_embeddings WHERE session_id = ?", [.text(sessionId)])
-        _ = try await database.run("DELETE FROM person_photos WHERE session_id = ?", [.text(sessionId)])
-        _ = try await database.run("DELETE FROM photo_metadata_cache WHERE session_id = ?", [.text(sessionId)])
-        _ = try await database.run("DELETE FROM writeback_items WHERE session_id = ?", [.text(sessionId)])
-        // 审计 P2：analysis_jobs 无 FK，会话删除后残留僵尸行（状态查询/
-        // 任务中心会一直看到幽灵任务）。
-        _ = try await database.run(
-            "DELETE FROM analysis_jobs WHERE scope_type = 'session' AND scope_id = ?",
-            [.text(sessionId)]
-        )
+        try await deletionStore.deleteSessionDependencyRows(sessionId: sessionId)
         try await photoStore.deleteBySession(sessionId: sessionId)
     }
 

@@ -122,7 +122,7 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
     }
 
     public func getSession(_ sessionId: String) async throws -> SessionData? {
-        try await router.sessionService.getSession(sessionId)
+        try await router.sessionRuntime.getSession(sessionId)
     }
 
     public func photoPage(

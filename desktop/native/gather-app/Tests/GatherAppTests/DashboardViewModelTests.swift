@@ -140,11 +140,11 @@ private func makeLiveProvider() async throws -> (LiveDashboardDataProvider, SQLi
     let container = AppContainer(database: db)
     let jobStore = SQLiteJobStore(database: db)
     let provider = LiveDashboardDataProvider(
-        sessionService: SessionService(
+        sessionRuntime: SessionRuntime(
             sessionStore: container.sessions,
             photoStore: SQLitePhotoStore(database: db),
             faceStore: container.faces,
-            database: db
+            deletionStore: SQLiteSessionDeletionStore(database: db)
         ),
         workspace: GatherAPI(container: container).workspace,
         jobRunner: JobRunner(jobStore: jobStore)
