@@ -71,16 +71,16 @@ struct CreateSessionOutcome: Equatable, Sendable {
 final class LiveDashboardDataProvider: DashboardDataProvider {
     private let sessionService: SessionService
     private let workspace: WorkspaceAPI
-    private let jobService: JobService
+    private let jobRunner: JobRunner
 
     init(
         sessionService: SessionService,
         workspace: WorkspaceAPI,
-        jobService: JobService
+        jobRunner: JobRunner
     ) {
         self.sessionService = sessionService
         self.workspace = workspace
-        self.jobService = jobService
+        self.jobRunner = jobRunner
     }
 
     func listSessions() async throws -> [SessionData] {
@@ -129,23 +129,23 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
     }
 
     func listJobs() async throws -> [AnalysisJobData] {
-        try await jobService.list()
+        try await jobRunner.list()
     }
 
     func cancelJob(_ jobId: String) async throws -> Bool {
-        try await jobService.cancel(jobId)
+        try await jobRunner.cancel(jobId)
     }
 
     func retryJob(_ jobId: String) async throws -> Bool {
-        try await jobService.retry(jobId)
+        try await jobRunner.retry(jobId)
     }
 
     func clearCompletedJobs() async throws -> Int {
-        try await jobService.clearCompleted()
+        try await jobRunner.clearCompleted()
     }
 
     func enqueueIndexScan(sessionId: String) async throws {
-        _ = try await jobService.create(JobCreateParams(
+        _ = try await jobRunner.create(JobCreateParams(
             type: .metadataScan,
             scopeType: "session",
             scopeId: sessionId,

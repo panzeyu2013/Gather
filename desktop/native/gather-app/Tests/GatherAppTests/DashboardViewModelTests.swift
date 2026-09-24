@@ -147,7 +147,7 @@ private func makeLiveProvider() async throws -> (LiveDashboardDataProvider, SQLi
             database: db
         ),
         workspace: GatherAPI(container: container).workspace,
-        jobService: JobService(jobStore: jobStore)
+        jobRunner: JobRunner(jobStore: jobStore)
     )
     return (provider, db, jobStore)
 }

@@ -1978,7 +1978,7 @@ public final class SessionCommandRouter: CommandRouter {
                     let options = try self.decodeExportOptions(params["options"] ?? .object([:]))
                     // makeDefault 的 router 可被 CLI/测试直接调用；start 是幂等的，
                     // 这里确保 export.execute 不会因宿主忘记启动 job service 而永久 queued。
-                    self.jobRunner.start()
+                    await self.jobRunner.start()
                     let job = try await self.jobRunner.create(JobCreateParams(
                         type: .exportExecute,
                         scopeType: "session",

@@ -187,7 +187,7 @@ private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, SQL
     let db = try await makeMigratedStore(path: path)
     let container = AppContainer(database: db)
     let api = GatherAPI(container: container)
-    let router = SessionCommandRouter.makeDefault(
+    let router = await SessionCommandRouter.makeDefault(
         database: db,
         settings: SettingsSnapshot(values: SettingsAPI.defaults),
         settingsAPI: api.settings,
@@ -208,7 +208,7 @@ private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, SQL
     )
     // JobService 需 start() 后 drain 才运行（TS index.ts:476 主进程启动语义；
     // 否则 sim.analyze job 永不执行，waitForResult 挂满超时）。
-    router.jobService.start()
+    await router.jobRunner.start()
     return (LiveSimilarityDataProvider(router: router), db)
 }
 

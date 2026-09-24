@@ -139,7 +139,7 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
     }
 
     public func listSimilarityJobs(sessionId: String) async throws -> [AnalysisJobData] {
-        try await router.jobService.list().filter {
+        try await router.jobRunner.list().filter {
             $0.type == .similarityAnalyze && $0.scopeType == "session" && $0.scopeId == sessionId
         }
     }

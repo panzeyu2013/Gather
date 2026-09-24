@@ -94,7 +94,7 @@ private func makeLiveProvider() async throws -> (LiveLibraryDataProvider, SQLite
     let db = try await makeMigratedStore(path: tempStorePath)
     let tempJobStore = try SQLiteJobStore(database: db)
     let settings = try await makeTestSettings()
-    let router = SessionCommandRouter.makeDefault(
+    let router = await SessionCommandRouter.makeDefault(
         database: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try await makeTempPhotoStore(), sessionStore: try GatherCore.SQLiteSessionStore(database: try GatherCore.SQLiteDatabase(path: tempStorePath)))
     return (LiveLibraryDataProvider(router: router), db)
 }

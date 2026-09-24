@@ -89,7 +89,7 @@ struct GatherApp: App {
             let api = GatherAPI(container: AppContainer(database: storeDatabase))
             let settingsSnapshot = await api.settings.snapshot()
 
-            let router = SessionCommandRouter.makeDefault(
+            let router = await SessionCommandRouter.makeDefault(
                 database: storeDatabase,
                 settings: settingsSnapshot,
                 settingsAPI: api.settings,
@@ -108,15 +108,15 @@ struct GatherApp: App {
                 photoStore: api.container.photos,
                 sessionStore: api.container.sessions
             )
-            router.jobService.start()
+            await router.jobRunner.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
-            GatherEventCenter.shared.wire(jobService: router.jobService)
+            await GatherEventCenter.shared.wire(jobRunner: router.jobRunner)
             await Self.prepareNativeEmbeddingRerun(
                 router: router, databasePath: dbURL.path, settingsAPI: api.settings)
             let provider = LiveDashboardDataProvider(
                 sessionService: router.sessionService,
                 workspace: api.workspace,
-                jobService: router.jobService
+                jobRunner: router.jobRunner
             )
             // 3.2/3.3 页面 provider：经路由直连（photo.list_page/filter.*/sim.*
             // 装配形状以路由为唯一事实源）。
@@ -170,7 +170,7 @@ struct GatherApp: App {
 
     /// Phase 4.3 一次性迁移：Vision feature print rev2 为 768 维，不能与
     /// 旧 512 维向量混用。首次启动原生宿主时切换 native
-    /// embedding_dim，并为已有工作区排入 face.analyze；JobService 的
+    /// embedding_dim，并为已有工作区排入 face.analyze；JobRunner 的
     /// dedupe/checkpoint 保证重启可续。真实照片集的 ARI/NMI 仍需发布前离线
     /// 验收，不在启动阶段伪造通过。
     private static func prepareNativeEmbeddingRerun(
@@ -187,7 +187,7 @@ struct GatherApp: App {
             // R5：设置写路径经 SettingsAPI（异步、白名单校验）。
             try await settingsAPI.set("embedding_dim", value: "768")
             for session in try await router.sessionService.listSessions() where session.photoCount > 0 {
-                _ = try await router.jobService.create(JobCreateParams(
+                _ = try await router.jobRunner.create(JobCreateParams(
                     type: .faceAnalyze,
                     scopeType: "session",
                     scopeId: session.id,
@@ -241,7 +241,7 @@ struct GatherApp: App {
                 filepaths: normalized,
                 source: "import"
             )
-            _ = try await router.jobService.create(JobCreateParams(
+            _ = try await router.jobRunner.create(JobCreateParams(
                 type: .metadataScan,
                 scopeType: "session",
                 scopeId: session.id,

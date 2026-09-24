@@ -104,7 +104,7 @@ private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, SQLite
     let db = try await makeMigratedStore(path: path)
     let container = AppContainer(database: db)
     let api = GatherAPI(container: container)
-    let router = SessionCommandRouter.makeDefault(
+    let router = await SessionCommandRouter.makeDefault(
         database: db,
         settings: SettingsSnapshot(values: SettingsAPI.defaults),
         settingsAPI: api.settings,

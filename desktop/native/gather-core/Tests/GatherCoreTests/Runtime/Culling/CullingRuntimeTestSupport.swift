@@ -431,8 +431,8 @@ func insertCullingDecision(
     decision: String = "pending",
     rating: Int64 = 0,
     colorLabel: String = "None",
-    revision: Int64 = 0,
-    groupId: String = "ungrouped"
+    groupId: String = "ungrouped",
+    revision: Int64 = 0
 ) async throws {
     try await db.run(
         """

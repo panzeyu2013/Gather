@@ -568,7 +568,9 @@ struct JobRunnerTests {
         let started = Date()
         let value: String? = try await runner.waitForResult(jobId: job.id, timeoutMs: 80)
         #expect(value == nil, "超时应返回 nil")
-        #expect(Date().timeIntervalSince(started) < 2.0)
+        // 上界只用于区分「按 80ms 超时返回」与「挂满默认 1h 超时」；
+        // 全量并行跑时 Task 调度可能被拖慢，故放宽到 10s。
+        #expect(Date().timeIntervalSince(started) < 10.0)
 
         do {
             let _: String? = try await runner.waitForResult(jobId: "missing", timeoutMs: 50)
@@ -680,8 +682,12 @@ struct JobRunnerTests {
         #expect(reached, "并发上限 2：应有 2 个 executor 同时在飞")
         let peak = await probe.maxRunning()
         #expect(peak == 2, "并发峰值应为 2，实际 \(peak)")
-        let thirdQueued = try await env.store.get(j3.id)?.status == .queued
-        #expect(thirdQueued, "并发上限 2：第三个任务应排队")
+        // 排队顺序在 updated_at 同毫秒时不保证（Store 按 priority/updated_at 排序），
+        // 但「恰好 2 个在飞 + 1 个排队」是并发上限的不变量。
+        let running = try await env.store.list(status: .running)
+        let queued = try await env.store.list(status: .queued)
+        #expect(running.count == 2, "并发上限 2：应有 2 个在飞，实际 \(running.count)")
+        #expect(queued.count == 1, "并发上限 2：应有 1 个排队，实际 \(queued.count)")
 
         await gate.open()
         let _: Void? = try? await runner.waitForResult(jobId: j1.id, timeoutMs: 3_000)

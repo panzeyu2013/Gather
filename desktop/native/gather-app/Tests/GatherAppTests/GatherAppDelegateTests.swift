@@ -105,7 +105,7 @@ struct GatherAppDelegateTests {
         let db = try await makeMigratedStore(path: tempStorePath)
         let tempJobStore = try SQLiteJobStore(database: db)
         let settings = try await makeTestSettings()
-        let router = SessionCommandRouter.makeDefault(
+        let router = await SessionCommandRouter.makeDefault(
             database: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try SQLitePhotoStore(database: db), sessionStore: try GatherCore.SQLiteSessionStore(database: db))
 
         final class Box: @unchecked Sendable {
