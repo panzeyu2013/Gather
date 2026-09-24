@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾㊽：DB.swift 退役第十切片——SimilarityService | ✅ | SimilarityService(963 行/14 连接点) 去 DBConnection：database: SQLiteDatabase；4 处读改 query/queryOne；2 个写事务改 database.transaction+db.run（insertSQL/saveSQL 常量）；startAnalysisRun 改 database.run+lastInsertRowID、finalizeAnalysisRun 异步化；静态 reuseSimilarityHashes(connection:) → (database:) 且异步化；行访问统一 columnOrder；路由 database 注入 + 7 处 await。测试：SimilarityServiceTests 改同库 + reuseSimilarityHashes await；注意脚本误伤 SessionService/IndexerService 测试已回退修复。验证：双包库编译 0 error；Similarity 全套 52/13 全绿；app 172/19（2 计时 flake 隔离跑通过）。DB.swift 消费者 7→6 |
+| R1 收尾㊾：DB.swift 退役第十一切片——SessionService | ✅ | SessionService 残余连接点清零：database: SQLiteDatabase；deleteSession/deleteSessions 尾部孤儿资产事务改 database.transaction+db.run（deleteSessions 由 return transaction 改为 事务+return 计数）；deleteSessionDependencies 的 5 条 DELETE 改 database.run。测试：SessionServiceTests 四处构造改同库；app DashboardViewModelTests 的 SessionService 构造同步。验证：双包库编译 0 error；Session 相关 25/6 全绿；app 172/19 全绿。**剩余唯一 DBConnection 消费者：IndexerService（31 处）**；路由仅剩 1 处 connection: db |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。

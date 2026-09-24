@@ -54,13 +54,13 @@ public final class SessionService {
     private let photoStore: any PhotoStore
     private let faceStore: any FaceStore
     private let assetStore: any AssetStore?
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
 
     public init(
         sessionStore: any SessionStore,
         photoStore: any PhotoStore,
         faceStore: any FaceStore,
-        connection: DBConnection,
+        database: SQLiteDatabase,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         dimensionsProvider: @escaping (String) throws -> (width: Int, height: Int) = { _ in
             throw SessionServiceError.sourceNotDir
@@ -70,7 +70,7 @@ public final class SessionService {
         self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.faceStore = faceStore
-        self.connection = connection
+        self.database = database
         self.getNumber = getNumber
         self.dimensionsProvider = dimensionsProvider
         self.assetStore = assetStore
@@ -129,14 +129,14 @@ public final class SessionService {
         try await deleteSessionDependencies(sessionId)
         let deleted = try await sessionStore.delete(id: sessionId)
         if !deleted { throw SessionServiceError.sessionNotFound }
-        try connection.transaction {
-            _ = try connection.prepare("""
+        try await database.transaction { db in
+            _ = try db.run("""
                 UPDATE assets SET status = 'orphan', updated_at = ?
                 WHERE status != 'orphan'
                   AND NOT EXISTS (
                     SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
                   )
-              """).run([.text(nowISOString())])
+              """, [.text(nowISOString())])
         }
     }
 
@@ -149,16 +149,16 @@ public final class SessionService {
             try await deleteSessionDependencies(id)
         }
         _ = try await sessionStore.deleteMany(ids: sessionIds)
-        return try connection.transaction {
-            _ = try connection.prepare("""
+        try await database.transaction { db in
+            _ = try db.run("""
                 UPDATE assets SET status = 'orphan', updated_at = ?
                 WHERE status != 'orphan'
                   AND NOT EXISTS (
                     SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
                   )
-              """).run([.text(nowISOString())])
-            return sessionIds.count
+              """, [.text(nowISOString())])
         }
+        return sessionIds.count
     }
 
     /// 按依赖顺序删除所有引用 photos(id)/face_observations(id) 且无
@@ -173,14 +173,16 @@ public final class SessionService {
     private func deleteSessionDependencies(_ sessionId: String) async throws {
         // similarity_hashes 无级联引用 photos。
         try await sessionStore.deleteSimilarityData(sessionId: sessionId)
-        _ = try connection.prepare("DELETE FROM person_embeddings WHERE session_id = ?").run([.text(sessionId)])
-        _ = try connection.prepare("DELETE FROM person_photos WHERE session_id = ?").run([.text(sessionId)])
-        _ = try connection.prepare("DELETE FROM photo_metadata_cache WHERE session_id = ?").run([.text(sessionId)])
-        _ = try connection.prepare("DELETE FROM writeback_items WHERE session_id = ?").run([.text(sessionId)])
+        _ = try await database.run("DELETE FROM person_embeddings WHERE session_id = ?", [.text(sessionId)])
+        _ = try await database.run("DELETE FROM person_photos WHERE session_id = ?", [.text(sessionId)])
+        _ = try await database.run("DELETE FROM photo_metadata_cache WHERE session_id = ?", [.text(sessionId)])
+        _ = try await database.run("DELETE FROM writeback_items WHERE session_id = ?", [.text(sessionId)])
         // 审计 P2：analysis_jobs 无 FK，会话删除后残留僵尸行（状态查询/
         // 任务中心会一直看到幽灵任务）。
-        _ = try connection.prepare("DELETE FROM analysis_jobs WHERE scope_type = 'session' AND scope_id = ?")
-            .run([.text(sessionId)])
+        _ = try await database.run(
+            "DELETE FROM analysis_jobs WHERE scope_type = 'session' AND scope_id = ?",
+            [.text(sessionId)]
+        )
         try await photoStore.deleteBySession(sessionId: sessionId)
     }
 

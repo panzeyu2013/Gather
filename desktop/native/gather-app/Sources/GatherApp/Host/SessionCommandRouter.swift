@@ -311,7 +311,7 @@ public final class SessionCommandRouter: CommandRouter {
                 sessionStore: sessionStore,
                 photoStore: photoStore,
                 faceStore: faceStore,
-                connection: db,
+                database: database,
                 dimensionsProvider: { path in
                     let dims = try RAWDecoder.getDimensions(path: path)
                     return (dims.width, dims.height)

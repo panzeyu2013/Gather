@@ -146,7 +146,7 @@ private func makeLiveProvider() async throws -> (LiveDashboardDataProvider, DBCo
             sessionStore: container.sessions,
             photoStore: SQLitePhotoStore(database: storeDatabase),
             faceStore: container.faces,
-            connection: db
+            database: storeDatabase
         ),
         workspace: GatherAPI(container: container).workspace,
         jobService: JobService(jobStore: jobStore)

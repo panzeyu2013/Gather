@@ -32,7 +32,7 @@ private func makeHarness(
         sessionStore: sessionStore,
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-        connection: db,
+        database: try SQLiteDatabase(path: dbPath),
         dimensionsProvider: dimensions
     )
     return SessionHarness(db: db, service: service, sessionStore: sessionStore, tempDirs: [])
@@ -192,7 +192,7 @@ struct SessionServiceDeleteAndQueryTests {
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
         let session = try await sessionStore.create(name: "Del", source: "folder", sourcePath: "", truncatedImport: false)
         try insertPhoto(db, id: "p1", sessionId: session.id)
@@ -224,7 +224,7 @@ struct SessionServiceDeleteAndQueryTests {
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
         let session = try await sessionStore.create(name: "Del", source: "folder", sourcePath: "", truncatedImport: false)
 
@@ -244,7 +244,7 @@ struct SessionServiceDeleteAndQueryTests {
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
         let session = try await sessionStore.create(name: "Derive", source: "folder", sourcePath: "", truncatedImport: false)
         let dir = try makeTempDir()
@@ -342,7 +342,7 @@ struct SessionServiceErrorCodeTests {
             sessionStore: sessionStore,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
-            connection: db,
+            database: try SQLiteDatabase(path: dbPath),
             getNumber: { _, _ in .nan },
             dimensionsProvider: { _ in (100, 80) }
         )
