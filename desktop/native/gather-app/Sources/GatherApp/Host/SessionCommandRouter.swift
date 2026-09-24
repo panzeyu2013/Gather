@@ -8,8 +8,6 @@
 //     session.* / photo.list → SessionService + PhotoRepo（3.2 服务层）
 //     workspace.status → WorkspaceStatusService（3.1 服务层）
 //     jobs.list / jobs.cancel / jobs.retry / jobs.clear_completed → JobRunner
-//     image.get_dimensions / image.prioritize_thumbnail / image.preload_* →
-//       ImagePreloadService + RAWDecoder（2.1/3.6；缩略图任务走 JobRunner）
 //     face.models_status → FaceInferenceConfig / Vision provider 状态（2.2）
 //     settings.get_all / get / set / reset / set_language / get_ml_status
 //       → SettingsService（3.6；TS 源 settings.ipc.ts）
@@ -112,7 +110,6 @@ public final class SessionCommandRouter: CommandRouter {
     /// 3.4 Culling 模块（CullingRuntime：查询/写回端口注入真实协调器与写回服务）。
     private let culling: CullingRuntime
     public let exportService: ExportService
-    private let imagePreloadService: ImagePreloadService
 
     public init(
         sessionService: SessionService,
@@ -138,8 +135,7 @@ public final class SessionCommandRouter: CommandRouter {
         culling: CullingRuntime,
         exportService: ExportService,
         photoStore: any PhotoStore,
-        sessionStore: any SessionStore,
-        imagePreloadService: ImagePreloadService
+        sessionStore: any SessionStore
     ) {
         self.sessionService = sessionService
         self.workspace = workspace
@@ -165,7 +161,6 @@ public final class SessionCommandRouter: CommandRouter {
         self.albums = albums
         self.culling = culling
         self.exportService = exportService
-        self.imagePreloadService = imagePreloadService
         // executor 注册是 actor async：由 makeDefault 在装配期 await 完成，
         // 保证返回后立即 create 的作业不会命中 executorNotRegistered。
     }
@@ -289,7 +284,6 @@ public final class SessionCommandRouter: CommandRouter {
         )
         let jobRunner = JobRunner(jobStore: jobStore)
         let exportService = ExportService(photoStore: photoStore, sessionStore: sessionStore, database: database)
-        let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoStore: photoStore,
             sessionStore: sessionStore,
@@ -399,8 +393,7 @@ public final class SessionCommandRouter: CommandRouter {
             culling: culling,
             exportService: exportService,
             photoStore: photoStore,
-            sessionStore: sessionStore,
-            imagePreloadService: imagePreloadService
+            sessionStore: sessionStore
         )
         await router.registerExecutors()
         return router
@@ -518,27 +511,6 @@ public final class SessionCommandRouter: CommandRouter {
                 context: context
             )
             return result
-        }
-
-        // TS image.ipc.ts：缩略图预加载是低优先级可恢复任务；ImageIO
-        // 解码失败按单张跳过，JobRunner 仍负责取消/心跳/终态。
-        await jobRunner.registerExecutor(type: .thumbnailBuild) { [imagePreloadService] job, context in
-            let paths = job.checkpoint["paths"]?.arrayElements?.compactMap(\.stringValue) ?? []
-            let size = Int(job.checkpoint["size"]?.numberValue ?? 1024)
-            return try imagePreloadService.buildThumbnails(
-                paths: paths,
-                size: size,
-                signal: context.signal,
-                onProgress: { current, total in
-                    Task { await context.updateProgress(JobProgressUpdate(
-                        current: current, total: total, phase: "thumbnail.building",
-                        checkpoint: [
-                            "paths": .array(paths.map(JSONValue.string)),
-                            "size": .number(Double(size)),
-                            "nextPathIndex": .number(Double(current)),
-                        ])) }
-                }
-            )
         }
 
         // TS export.ipc.ts：断点状态以 checkpoint 为唯一持久化来源，
@@ -952,60 +924,6 @@ public final class SessionCommandRouter: CommandRouter {
 
 
 
-        case "image.get_dimensions":
-            Task {
-                do {
-                if let paths = params["paths"]?.arrayElements?.compactMap(\.stringValue) {
-                    var results: [String: GatherCore.JSONValue] = [:]
-                    for path in try await allowedPhotoPaths(paths) {
-                        if let dims = try? RAWDecoder.getDimensions(path: path) {
-                            results[path] = .object([
-                                "width": .number(Double(dims.width)),
-                                "height": .number(Double(dims.height)),
-                            ])
-                        }
-                    }
-                    completion(WebResponse(ok: true, data: .object(results))); return
-                }
-                let path = try requiredString(params, "path")
-                try await requirePhotoPath(path)
-                let dims = try RAWDecoder.getDimensions(path: path)
-                completion(WebResponse(ok: true, data: .object([
-                    "width": .number(Double(dims.width)), "height": .number(Double(dims.height)),
-                ]))); return
-                } catch {
-                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-                }
-            }
-
-
-
-        case "image.preload_previews":
-            Task {
-                do {
-                let paths = try await allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
-                let maxDimension = Int((try? optionalNumber(params, "maxDimension")) ?? 2048)
-                imagePreloadService.preloadPreviews(paths: paths, maxDimension: maxDimension)
-                completion(WebResponse(ok: true, data: .null)); return
-                } catch {
-                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-                }
-            }
-
-
-
-        case "image.prioritize_thumbnail":
-            Task {
-                do {
-                let path = try requiredString(params, "path")
-                try await requirePhotoPath(path)
-                let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
-                try imagePreloadService.prioritizeThumbnail(path: path, size: size)
-                completion(WebResponse(ok: true, data: .null)); return
-                } catch {
-                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-                }
-            }
 
 
 
@@ -1213,33 +1131,6 @@ public final class SessionCommandRouter: CommandRouter {
                 }
             }
 
-
-
-        case "image.preload_thumbnails":
-            Task {
-                do {
-                    let paths = try await allowedPhotoPaths(params["paths"]?.arrayElements?.compactMap(\.stringValue) ?? [])
-                    guard !paths.isEmpty else { completion(WebResponse(ok: true, data: .null)); return }
-                    let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
-                    let fingerprint = paths.joined(separator: "\u{0}")
-                    let job = try await jobRunner.create(JobCreateParams(
-                        type: .thumbnailBuild,
-                        scopeType: "paths",
-                        scopeId: paths[0],
-                        dedupeKey: "thumbnail.build:\(size):\(fingerprint)",
-                        priority: -1,
-                        checkpoint: [
-                            "paths": .array(paths.map(JSONValue.string)),
-                            "size": .number(Double(size)),
-                        ]
-                    ))
-                    completion(WebResponse(ok: true, data: .string(job.id))); return
-
-
-                } catch {
-                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-                }
-            }
 
 
 
@@ -3726,7 +3617,6 @@ public final class SessionCommandRouter: CommandRouter {
             return cullingError.description
         }
         if let exportError = error as? ExportServiceError { return exportError.description }
-        if let imageError = error as? ImagePreloadError { return imageError.description }
         // 仓库层直接抛出的 SQLiteFailure.message（TS 侧 throw new Error(code) 的
         // 仓库等价物，如 ASSET_LINK_CANDIDATE_NOT_FOUND）逐字透传。
         if let sqliteError = error as? SQLiteFailure {
