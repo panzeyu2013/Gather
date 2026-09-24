@@ -49,26 +49,9 @@ extension IndexerServiceError {
 }
 
 public final class IndexerService {
-    /// TS: SUPPORTED（index.service.ts 顶部）。
-    public static let supportedExtensions: Set<String> = [
-        ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
-        ".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw",
-        ".tif", ".tiff", ".psd",
-    ]
-    /// TS: WALK_CHANNEL_CAPACITY。
-    public static let walkChannelCapacity = 256
-    /// TS: IN_CHUNK_SIZE。
-    public static let inChunkSize = 400
-    /// TS: PRUNE_LIKE_PREFILTER_CAP。
-    public static let pruneLikePrefilterCap = 200
-    /// TS: CHECKSUM_BACKFILL_BATCH / CHECKSUM_BACKFILL_CONCURRENCY /
-    /// CHECKSUM_BACKFILL_PAGE_SIZE。
-    public static let checksumBackfillBatch = 32
-    public static let checksumBackfillConcurrency = 6
-    public static let checksumBackfillPageSize = 2000
-    /// TS: SCAN_BATCH_CONCURRENCY / SCAN_BATCH_FILES。
-    public static let scanBatchConcurrency = 4
-    public static let scanBatchFiles = 32
+    /// 纯逻辑常量（SUPPORTED/WALK_CHANNEL_CAPACITY/IN_CHUNK_SIZE/
+    /// PRUNE_LIKE_PREFILTER_CAP/CHECKSUM_BACKFILL_*/SCAN_BATCH_*）统一迁至
+    /// Runtime/Indexer/IndexAssembler.swift（W2d-5 步骤①），本类不再保留副本。
 
     /// stat 结果（TS stat() 的字段子集）。
     public typealias FileStat = (size: Int64, mtimeMs: Double, dev: Int64, ino: Int64, isFile: Bool)
@@ -142,41 +125,16 @@ public final class IndexerService {
         return SHA256.hash(data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// TS: canonicalPath —— realpath，失败回退 textualPath（macOS /var、/tmp 前缀）。
-    public static func canonicalPath(_ path: String) -> String {
-        if let resolved = realpath(path, nil) {
-            defer { free(resolved) }
-            return String(cString: resolved)
-        }
-        return textualPath(path)
-    }
-
-    /// TS: textualPath —— 仅解析 macOS 的两个符号链接前缀，避免逐文件 realpath。
-    public static func textualPath(_ value: String) -> String {
-        let resolved = TSPath.resolve(value)
-        if resolved == "/var" || resolved.hasPrefix("/var/") {
-            return "/private" + resolved
-        }
-        if resolved == "/tmp" || resolved.hasPrefix("/tmp/") {
-            return "/private" + resolved
-        }
-        return resolved
-    }
-
-    /// TS: isWithin —— 候选路径是否落在规范根之内。
-    public static func isWithin(candidate: String, canonicalRoot: String) -> Bool {
-        let relative = TSPath.relative(canonicalRoot, to: textualPath(candidate))
-        return relative == "" || (!relative.hasPrefix("..") && !TSPath.isAbsolute(relative))
-    }
+    // 路径纯函数（canonicalPath/textualPath/isWithin）迁至 IndexAssembler（W2d-5 步骤①）。
 
     /// TS: managedCacheRoots —— disk_cache_dir 设置优先，否则默认缓存目录。
     private func managedCacheRoots() -> [String] {
         let configured = getSetting("disk_cache_dir", "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !configured.isEmpty { return [Self.canonicalPath(configured)] }
+        if !configured.isEmpty { return [IndexAssembler.canonicalPath(configured)] }
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             // Application Support/Gather/thumbnails（应用数据目录在
             // macOS 即 Application Support/<app>）。
-            return [Self.canonicalPath(appSupport.appendingPathComponent("thumbnails").path)]
+            return [IndexAssembler.canonicalPath(appSupport.appendingPathComponent("thumbnails").path)]
         }
         return []
     }
@@ -202,13 +160,13 @@ public final class IndexerService {
         var pendingInsertEntries: [NewEntry] = []
         // 生成缓存目录内的存量照片（缓存清扫）：事务内删除照片行 + 孤儿资产行。
         let generatedCachePhotos = existing.filter { photo in
-            excludedRoots.contains { Self.isWithin(candidate: TSPath.resolve(photo.filepath), canonicalRoot: $0) }
+            IndexAssembler.isExcluded(path: TSPath.resolve(photo.filepath), excludedRoots: excludedRoots)
         }
         if !generatedCachePhotos.isEmpty {
             let photoIds = generatedCachePhotos.map(\.id)
             let fileIds = generatedCachePhotos.compactMap(\.assetFileId)
             try await self.database.transaction { db in
-                for chunk in chunked(photoIds) {
+                for chunk in IndexAssembler.chunked(photoIds) {
                     let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
                     _ = try db.run(
                         "DELETE FROM photos WHERE id IN (\(placeholders))",
@@ -224,7 +182,7 @@ public final class IndexerService {
                     )
                   """, [.text(sessionId)])
                 if !fileIds.isEmpty {
-                    for chunk in chunked(fileIds) {
+                    for chunk in IndexAssembler.chunked(fileIds) {
                         let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
                         _ = try db.run("""
                             DELETE FROM asset_files
@@ -243,7 +201,7 @@ public final class IndexerService {
         }
 
         let existingByPath: [String: PhotoProjection] = Dictionary(
-            uniqueKeysWithValues: existing.map { (TSPath.normalize(TSPath.resolve($0.filepath)), $0) }
+            uniqueKeysWithValues: existing.map { (IndexAssembler.normalizedPath($0.filepath), $0) }
         )
         let fileRows = try await self.database.query("""
             SELECT af.id, af.file_size, af.file_mtime_ms, af.checksum
@@ -279,8 +237,8 @@ public final class IndexerService {
             try await context?.throwIfCancelled()
             // 懒校验模式：新/变文件只记尺寸，checksum 交给后台 checksum.backfill。
             let lazyChecksum = self.getSetting("lazy_checksum", "true") != "false"
-            let results = try await mapConcurrent(filepaths, concurrency: Self.scanBatchConcurrency) { filepath -> BatchOutcome in
-                let normalized = TSPath.normalize(TSPath.resolve(filepath))
+            let results = try await mapConcurrent(filepaths, concurrency: IndexAssembler.scanBatchConcurrency) { filepath -> BatchOutcome in
+                let normalized = IndexAssembler.normalizedPath(filepath)
                 // stat 先行：目录列举与 stat 之间消失的文件不得进入 discoveredSet，
                 // 否则末段永远不会把它对账为 missing（ghost photo）。
                 let source: FileStat
@@ -306,15 +264,14 @@ public final class IndexerService {
                 // 仅当基线证明文件确实变化才算 content-changed：无 asset_files
                 // 行时用照片自身的索引 stat（checksum_file_size/mtime）作基线，
                 // 否则每次重扫都 bump index_seq（TS 注释原话）。
-                let contentChanged: Bool
-                if let indexed {
-                    contentChanged = indexed.fileSize != source.size
-                        || abs(indexed.fileMtimeMs - source.mtimeMs) >= 1
-                } else {
-                    contentChanged = !(photo.checksumFileSize > 0
-                        && Int64(photo.checksumFileSize) == source.size
-                        && abs(photo.checksumFileMtimeMs - source.mtimeMs) < 1)
-                }
+                let contentChanged = IndexAssembler.contentChanged(
+                    indexedFileSize: indexed?.fileSize,
+                    indexedFileMtimeMs: indexed?.fileMtimeMs,
+                    photoChecksumFileSize: photo.checksumFileSize,
+                    photoChecksumFileMtimeMs: photo.checksumFileMtimeMs,
+                    sourceSize: source.size,
+                    sourceMtimeMs: source.mtimeMs
+                )
                 if !contentChanged && photo.status != "missing" && !(indexed?.checksum.isEmpty ?? true) {
                     return BatchOutcome(normalized: normalized, item: .unchanged)
                 }
@@ -500,10 +457,10 @@ public final class IndexerService {
             if let requestedPaths {
                 var candidates: [String] = []
                 for filepath in Set(requestedPaths.map { TSPath.resolve($0) }) {
-                    if excludedRoots.contains(where: { Self.isWithin(candidate: filepath, canonicalRoot: $0) }) { continue }
+                    if IndexAssembler.isExcluded(path: filepath, excludedRoots: excludedRoots) { continue }
                     do {
                         let source = try self.stat(filepath)
-                        if source.isFile && Self.supportedExtensions.contains(TSPath.extname(filepath).lowercased()) {
+                        if source.isFile && IndexAssembler.isSupportedImage(filepath) {
                             candidates.append(filepath)
                             discovered += 1
                         }
@@ -514,7 +471,7 @@ public final class IndexerService {
                 if !candidates.isEmpty { try await scanBatch(candidates) }
             } else {
                 // 生产者/消费者：walk 经有界通道流式产出，scanBatch 按 32 个一批消费。
-                let channel = WalkChannel(capacity: Self.walkChannelCapacity)
+                let channel = WalkChannel(capacity: IndexAssembler.walkChannelCapacity)
                 let producer = Task {
                     await Self.traverse(
                         directory: session.sourcePath,
@@ -549,7 +506,7 @@ public final class IndexerService {
                             current: discovered, total: 0, phase: "index.scanning"
                         ))
                         pending.append(filepath)
-                        if pending.count >= Self.scanBatchFiles {
+                        if pending.count >= IndexAssembler.scanBatchFiles {
                             try await scanBatch(pending)
                             pending.removeAll(keepingCapacity: true)
                         }
@@ -559,17 +516,14 @@ public final class IndexerService {
             }
 
             let requestedNormalized: Set<String>? = requestedPaths.map {
-                Set($0.map { TSPath.normalize(TSPath.resolve($0)) })
+                Set($0.map(IndexAssembler.normalizedPath))
             }
-            for photo in existing {
-                let normalized = TSPath.normalize(TSPath.resolve(photo.filepath))
-                let inRequested = requestedNormalized.map { $0.contains(normalized) } ?? true
-                if inRequested
-                    && !discoveredSet.contains(normalized)
-                    && !relinkedPhotoIds.contains(photo.id) {
-                    missing.append(photo)
-                }
-            }
+            missing.append(contentsOf: IndexAssembler.missingPhotos(
+                existing: existing,
+                requestedNormalized: requestedNormalized,
+                discoveredSet: discoveredSet,
+                relinkedPhotoIds: relinkedPhotoIds
+            ))
             try await self.photoStore.markMissing(photoIds: missing.map(\.id))
             _ = try await self.assetStore.backfillSession(sessionId)
             // index_seq 是分析过期游标：仅在真实变更（新增/内容变/重链接/新增缺失）
@@ -590,7 +544,7 @@ public final class IndexerService {
             }
             if !missing.isEmpty {
                 let fileIds = missing.compactMap(\.assetFileId)
-                for chunk in chunked(fileIds) {
+                for chunk in IndexAssembler.chunked(fileIds) {
                     let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
                     _ = try await self.database.run("""
                         UPDATE asset_files SET online_status = 'offline', updated_at = ?
@@ -627,7 +581,7 @@ public final class IndexerService {
     /// 创建 checksum.backfill 任务）。
     public func pendingChecksums(sessionId: String) async throws -> Int {
         try await self.photoStore.getBySessionProjection(sessionId: sessionId)
-            .filter { $0.checksum.isEmpty && $0.status != "missing" }
+            .filter { IndexAssembler.needsChecksumBackfill(checksum: $0.checksum, status: $0.status) }
             .count
     }
 
@@ -655,12 +609,12 @@ public final class IndexerService {
                 current: 0, total: pending.count, phase: "index.checksum"
             ))
             var passBackfilled = 0
-            for offset in stride(from: 0, to: pending.count, by: Self.checksumBackfillBatch) {
+            for offset in stride(from: 0, to: pending.count, by: IndexAssembler.checksumBackfillBatch) {
                 try await context?.throwIfCancelled()
-                let batch = Array(pending[offset..<min(offset + Self.checksumBackfillBatch, pending.count)])
+                let batch = Array(pending[offset..<min(offset + IndexAssembler.checksumBackfillBatch, pending.count)])
                 // 哈希阶段只读；全部写入进入单事务。
                 let results = try await mapConcurrent(
-                    batch, concurrency: Self.checksumBackfillConcurrency
+                    batch, concurrency: IndexAssembler.checksumBackfillConcurrency
                 ) { photo -> (photo: PhotoPage, checksum: String, size: Int64, mtimeMs: Double)? in
                     do {
                         let source = try self.stat(photo.filepath)
@@ -731,13 +685,12 @@ public final class IndexerService {
         var lastRowId: Int64?
         for _ in 0... {
             let page = try await self.photoStore.getBySessionPage(
-                sessionId: sessionId, afterRowId: cursor, limit: Self.checksumBackfillPageSize
+                sessionId: sessionId, afterRowId: cursor, limit: IndexAssembler.checksumBackfillPageSize
             )
             if page.isEmpty { break }
             lastRowId = page[page.count - 1].rowid
             for photo in page {
-                if photo.checksum?.isEmpty ?? true,
-                   photo.status != "missing",
+                if IndexAssembler.needsChecksumBackfill(checksum: photo.checksum, status: photo.status),
                    !failedPhotoIds.contains(photo.id) {
                     rows.append(photo)
                 }
@@ -752,7 +705,7 @@ public final class IndexerService {
     /// TS: deletePhotoInputs —— 逐照片删除分析输入（photo_id 粒度）。
     private func deletePhotoInputs(_ db: isolated SQLiteDatabase, photoIds: [String]) throws {
         if photoIds.isEmpty { return }
-        for chunk in chunked(photoIds) {
+        for chunk in IndexAssembler.chunked(photoIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             _ = try db.run(
                 "DELETE FROM similarity_hashes WHERE photo_id IN (\(placeholders))",
@@ -782,7 +735,7 @@ public final class IndexerService {
     private func pruneAutomaticNavigationGroups(_ db: isolated SQLiteDatabase, sessionId: String, photoIds: [String]) throws {
         let affected = Set(photoIds)
         var groups: [(id: String, photoIdsJSON: String)] = []
-        if !photoIds.isEmpty && photoIds.count <= Self.pruneLikePrefilterCap {
+        if !photoIds.isEmpty && photoIds.count <= IndexAssembler.pruneLikePrefilterCap {
             let conditions = photoIds.map { _ in "photo_ids_json LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
             let patterns = photoIds.map { id -> String in
                 let escaped = id
@@ -817,7 +770,7 @@ public final class IndexerService {
             }
             if containsAffected { doomed.append(group.id) }
         }
-        for chunk in chunked(doomed) {
+        for chunk in IndexAssembler.chunked(doomed) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             _ = try db.run(
                 "DELETE FROM navigation_groups WHERE id IN (\(placeholders))",
@@ -844,7 +797,7 @@ public final class IndexerService {
     private func invalidatePathDependentAnalysis(photoIds: [String]) async throws {
         if photoIds.isEmpty { return }
         var affectedSessions = Set<String>()
-        for chunk in chunked(photoIds) {
+        for chunk in IndexAssembler.chunked(photoIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             let rows = try await self.database.query(
                 "SELECT DISTINCT session_id FROM photos WHERE id IN (\(placeholders))",
@@ -855,7 +808,7 @@ public final class IndexerService {
             }
         }
         var photoIdsBySession: [String: [String]] = [:]
-        for chunk in chunked(photoIds) {
+        for chunk in IndexAssembler.chunked(photoIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             let rows = try await self.database.query(
                 "SELECT id, session_id FROM photos WHERE id IN (\(placeholders))",
@@ -903,10 +856,10 @@ public final class IndexerService {
         }
         for name in entries {
             let full = directory + "/" + name
-            if excludedRoots.contains(where: { isWithin(candidate: full, canonicalRoot: $0) }) { continue }
+            if IndexAssembler.isExcluded(path: full, excludedRoots: excludedRoots) { continue }
             if isDirectory(full) {
                 await traverse(directory: full, isRoot: false, excludedRoots: excludedRoots, channel: channel)
-            } else if supportedExtensions.contains(TSPath.extname(name).lowercased()) {
+            } else if IndexAssembler.isSupportedImage(name) {
                 await channel.push(.file(full))
             }
         }
@@ -919,13 +872,6 @@ public final class IndexerService {
         return lstat(path, &s) == 0 && (s.st_mode & S_IFMT) == S_IFDIR
     }
 
-    private func chunked(_ values: [String]) -> [[String]] {
-        var chunks: [[String]] = []
-        for offset in stride(from: 0, to: values.count, by: Self.inChunkSize) {
-            chunks.append(Array(values[offset..<min(offset + Self.inChunkSize, values.count)]))
-        }
-        return chunks
-    }
 }
 
 // MARK: - 扫描载荷类型
