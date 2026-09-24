@@ -816,3 +816,22 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 | **D7** | **同款风险散落**：同文件 `stringValue(_:)`（约 `:563`，EXIF `dateTaken`/`shutterSpeed` 标量字符串化，TS 为 `value ? String(value) : undefined`）**仍用 `String(number)`** → 整数存在同款 `.0` 风险 | 随 D6 同批核对并按同一 `keywordString`/等价 helper 归一 |
 
 **登记为已知例外**：本修正使行为相对**迁移前 Swift** 有变化（向 TS 对齐）——后续「迁移逐字节不变」类审计须以此为已知例外。**残余 JS 边界**（未扩大范围，关键词场景可忽略）：`String(1e-7)` Swift=`"1e-07"` vs JS=`"1e-7"`；`|x|≥2^63` 整数值回退 Swift 描述（`1e19`→`"1e+19"` vs JS 全数字）。
+### 27. acc-build 验收结论：**PASS（工作树态 + HEAD 态双套，均 0 error）** 2026-09-24 20:19
+
+**环境**：macOS 27.0 · Apple Swift 6.4 (swiftlang-6.4.0.34.1) · arm64-apple-macosx27.0.0 · Xcode at /Applications/Xcode.app/Contents/Developer。
+
+**A. 工作树态**（编译窗口 20:16:46–20:18:00，**TREE-STABLE=yes**；源码哈希 `d776f5f5…`（core+app 338 文件，排除 .build）编译前后一致，报告时仍等于该值 → **可复现**）：
+| 步骤 | 结果 |
+|---|---|
+| ① core `swift build` | **exit=0 · Build complete!（16.32s）** |
+| ② core `--build-tests` | **exit=0 · Build complete!（28.95s）** |
+| ③ app `swift build` | **exit=0 · Build complete!（22.16s）** |
+error 计数三步均 **0**（`grep -cE '^[^ ]*error: '` = 0，grep 退出码 1）；**交叉校验真实诊断**（`^error:` / `path:line:col: error:` / `^<unknown>:0: error:`）均 **0**；warning 29/105/40。产物：`GatherCoreTests.xctest`（主可执行 48,626,048 B）· `gather-app`（**37,045,152 B Mach-O arm64**，mtime 20:17:59）。
+
+**B. HEAD 态**（按裁决用 `git archive` 冻结，**pin = `cddc932`**；导出 337 文件、0 个 .build；独立 scratch）：① core exit=0（11.60s）② `--build-tests` exit=0（22.25s）③ app exit=0（21.24s）；真实诊断 0；产物 `gather-app` 37,031,376 B。**注**：HEAD 在导出后继续推进（`f97c8bd`），但 B 由**不可变 archive 固定**，不受影响。
+
+**C. 只读性与过程（可作验收范例）**：全程 `--scratch-path`，仓库零写入（未生成 `Package.resolved`/`.swiftpm`，源码哈希前后一致）；**静默门在开跑前检出 5 次他方写入**（`01da2e27`→`766eb671`→`5c6a7e5c`→`f1bd5b39`→`d776f5f5`）并等待稳定才编译；**第一轮因自身快照哈希函数缺陷（路径含空格 + `xargs` 未加 `-0`）整体作废**，日志保留于 `.aborted-run1-<ts>/`。
+
+**复核提醒（已由编排侧处置）**：sibling PID 90016 命令行含 `swift build … \| tail`（**无 `pipefail`**），其 PASS 可能被掩码 → 该风险已中和：`c1ef014` / `2f81fcd` 均由编排侧**以 `$?` 直接复核**后才提交，未采信其自报结论。
+
+**边界声明**：acc-build **只验可编译性**，不含 `swift test` 运行结果（由 acc-tests 负责）。
