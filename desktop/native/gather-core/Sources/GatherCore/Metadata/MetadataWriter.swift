@@ -499,17 +499,18 @@ public actor MetadataWriter {
     /// 是未结算的在飞写，start 时经 WritebackStore.recoverInterruptedOutbox()
     /// 一律回退为 'pending'（与 Services/MetadataSyncCoordinator.start 同语义），
     /// 使新排程可重新认领这些行；绝不把 writing 残留当作已写入而丢工作。
-    /// recoverInterruptedOutbox 为 async，而 start 保持既有同步签名（调用方无需
-    /// 等待即可继续 schedule），故用 Task 包装为 best-effort：回收失败只丢弃该次
-    /// 回收（try? 吞错），不阻断 start、不改变 start 的返回语义与调用点。
-    public func start() {
+    /// D3：start 为 async（非 throws），内部 try? 吞错——回收失败不阻断启动；
+    /// 调用方需 await（既有测试调用点本就有 await，无需加 try）。
+    public func start() async {
         isShutDown = false
         entries.removeAll()
         readyQueue.removeAll()
         activeWrites.removeAll()
         mutationTails.removeAll()
-        let writebackStore = dependencies.writebackStore
-        Task { try? await writebackStore.recoverInterruptedOutbox() }
+        // D3 修复：await 直接回收（不再用 best-effort Task 包装）。原实现 start() 立即返回，
+        // 若紧随其后的 schedule() 已 claimOutbox 置 writing，而 recover 的 UPDATE 稍后执行，
+        // 会把在飞行重置为 pending 造成重复写。改 async 后回收先于任何后续排程完成。
+        try? await dependencies.writebackStore.recoverInterruptedOutbox()
     }
 
     /// 静默判据：无在飞写且无排队的就绪路径。
