@@ -67,7 +67,7 @@ final class C1StatusService {
     func refresh(sessionId: String) async {
         guard let client else { return }
         do {
-            let value = try client.execute("culling.sync_status", params: ["sessionId": .string(sessionId)])
+            let value = try await client.executeAsync("culling.sync_status", params: ["sessionId": .string(sessionId)])
             statuses[sessionId] = SessionState(
                 syncStatus: try value.decoded(as: MetadataSyncSummary.self),
                 reloadedAt: value.objectValue?["reloadAckedAt"]?.stringValue,

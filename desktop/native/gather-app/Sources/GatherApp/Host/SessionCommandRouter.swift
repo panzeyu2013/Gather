@@ -95,8 +95,8 @@ public final class SessionCommandRouter: CommandRouter {
     private let metadataMutationService: MetadataMutationService
     private let writebackService: WritebackService
     private let albums: AlbumsAPI
-    /// 3.4 Culling 模块（sync/writeback 端口注入真实协调器与写回服务）。
-    private let cullingService: CullingService
+    /// 3.4 Culling 模块（CullingRuntime：查询/写回端口注入真实协调器与写回服务）。
+    private let culling: CullingRuntime
     public let exportService: ExportService
     private let imagePreloadService: ImagePreloadService
 
@@ -121,7 +121,7 @@ public final class SessionCommandRouter: CommandRouter {
         metadataMutationService: MetadataMutationService,
         writebackService: WritebackService,
         albums: AlbumsAPI,
-        cullingService: CullingService,
+        culling: CullingRuntime,
         exportService: ExportService,
         photoStore: any PhotoStore,
         sessionStore: any SessionStore,
@@ -149,7 +149,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.metadataMutationService = metadataMutationService
         self.writebackService = writebackService
         self.albums = albums
-        self.cullingService = cullingService
+        self.culling = culling
         self.exportService = exportService
         self.imagePreloadService = imagePreloadService
         // executor 注册是 actor async：由 makeDefault 在装配期 await 完成，
@@ -283,22 +283,31 @@ public final class SessionCommandRouter: CommandRouter {
             },
             writebackProvider: FaceKwWritebackBridge(writebackService: writebackService)
         )
-        // 3.4 CullingService：sync/writeback 端口注入真实
+        // 3.4 CullingRuntime：查询/写回端口注入真实
         // MetadataSyncCoordinator / WritebackService（CullingSyncPort /
         // CullingWritebackPort 扩展即上述类型，见 CullingService.swift）。
-        let cullingService = CullingService(
-            photoStore: photoStore,
-            similarityStore: similarityStore,
-            writebackStore: writebackStore,
-            database: database,
-            metadataSync: metadataSyncCoordinator,
-            metadataMutations: metadataMutationService,
-            writeback: writebackService,
-            cullingStore: cullingStore,
-            metadataStore: metadataStore,
-            getNumber: { key, defaultValue in
-                settings.number(key, default: defaultValue)
-            }
+        // LookupLoader 由 Runtime init 内装配（cullingStore 可选），SessionCache
+        // 显式传入以保证跨命令复用。
+        let culling = CullingRuntime(
+            dependencies: CullingRuntime.Dependencies(
+                photoStore: photoStore,
+                queryStore: SQLiteCullingQueryStore(database: database, photoStore: photoStore),
+                cullingStore: cullingStore,
+                metadataStore: metadataStore,
+                similarityStore: similarityStore,
+                writebackStore: writebackStore,
+                sessionStore: sessionStore,
+                jobStore: jobStore,
+                faceStore: faceStore,
+                personStore: personStore,
+                metadataSync: metadataSyncCoordinator,
+                metadataMutations: metadataMutationService,
+                writeback: writebackService,
+                getNumber: { key, defaultValue in
+                    settings.number(key, default: defaultValue)
+                }
+            ),
+            cache: CullingSessionCache()
         )
         let router = SessionCommandRouter(
             sessionService: SessionService(
@@ -357,7 +366,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataMutationService: metadataMutationService,
             writebackService: writebackService,
             albums: albums,
-            cullingService: cullingService,
+            culling: culling,
             exportService: exportService,
             photoStore: photoStore,
             sessionStore: sessionStore,
@@ -766,39 +775,6 @@ public final class SessionCommandRouter: CommandRouter {
                 "modelsPresent": .bool(true),
                 "downloading": .bool(false),
             ])
-
-        // ── culling.* 同步面（TS 源 culling.ipc.ts；3.4 CullingService）──
-
-        // culling.ipc.ts:83-107 —— 资产分组 keyset 分页；scope 白名单 +
-        // afterRowId/limit 校验（limit 缺省 200，上限 2000）。
-        case "culling.retry_failed_writeback":
-            guard confirmed(params) else {
-                throw BridgeError.badParams("WRITEBACK_RETRY_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let result = try awaitSync {
-                try await self.cullingService.retryFailedWriteback(sessionId: sessionId, confirmed: true)
-            }
-            return try GatherCore.JSONValue(from: result)
-
-        // culling.ipc.ts:360-370 —— 协调器确认 + 写回项存在时的写回确认；ok(true)。
-        case "culling.confirm_sync":
-            let sessionId = try requiredString(params, "sessionId")
-            try awaitSync {
-                try await self.cullingService.confirmSync(sessionId: sessionId)
-            }
-            return .bool(true)
-
-        // culling.ipc.ts:372-386 —— destructive；协调器 + 写回并集清理。
-        case "culling.cleanup":
-            guard confirmed(params) else {
-                throw BridgeError.badParams("WRITEBACK_CLEANUP_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let result = try awaitSync {
-                try await self.cullingService.cleanup(sessionId: sessionId, confirmed: true)
-            }
-            return try GatherCore.JSONValue(from: result)
 
         default:
             throw BridgeError.notImplemented(command)
@@ -1669,7 +1645,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let result = try await cullingService.retryFailedWriteback(sessionId: sessionId, confirmed: true)
+                    let result = try await culling.retryFailedWriteback(sessionId: sessionId, confirmed: true)
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
@@ -1688,9 +1664,24 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let result = try await cullingService.cleanup(sessionId: sessionId, confirmed: true)
+                    let result = try await culling.cleanup(sessionId: sessionId, confirmed: true)
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // culling.ipc.ts:360-370 —— 协调器确认 + 写回项存在时的写回确认；ok(true)。
+        case "culling.confirm_sync":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task {
+                do {
+                    try await culling.confirmSync(sessionId: sessionId)
+                    completion(WebResponse(ok: true, data: .bool(true)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                 }
@@ -1905,7 +1896,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let result = try await cullingService.writeback(
+                    let result = try await culling.writeback(
                         sessionId: sessionId, target: target, confirmed: true)
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
@@ -1923,7 +1914,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let summary = try await cullingService.flush(sessionId: sessionId)
+                    let summary = try await culling.flush(sessionId: sessionId)
                     let data = try GatherCore.JSONValue(from: summary)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
@@ -1939,7 +1930,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let summary = try await cullingService.retrySync(sessionId: sessionId)
+                    let summary = try await culling.retrySync(sessionId: sessionId)
                     let data = try GatherCore.JSONValue(from: summary)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
@@ -2139,27 +2130,6 @@ public final class SessionCommandRouter: CommandRouter {
                 completion(WebResponse(ok: false, error: Self.errorMessage(error)))
             }
 
-        case "culling.decide":
-            do {
-                let sessionId = try requiredString(params, "sessionId")
-                let photoId = try requiredString(params, "photoId")
-                let decisionRaw = try requiredString(params, "decision")
-                guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
-                    throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
-                }
-                Task {
-                    do {
-                        _ = try await cullingService.decide(
-                            sessionId: sessionId, photoId: photoId, decision: decision)
-                        completion(WebResponse(ok: true, data: .bool(true)))
-                    } catch {
-                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-                    }
-                }
-            } catch {
-                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-            }
-
         // culling.ipc.ts:336-347 —— destructive；groupId 可选（整会话或按组）。
         case "culling.reset":
             guard confirmed(params) else {
@@ -2171,7 +2141,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let groupId = try optionalString(params, "groupId")
                 Task {
                     do {
-                        try await cullingService.resetCommand(
+                        try await culling.resetCommand(
                             sessionId: sessionId, groupId: groupId, confirmed: true)
                         completion(WebResponse(ok: true, data: .bool(true)))
                     } catch {
@@ -2266,7 +2236,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let summary = try await cullingService.syncStatus(sessionId: sessionId)
+                    let summary = try await culling.syncStatus(sessionId: sessionId)
                     completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: summary)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2310,7 +2280,7 @@ public final class SessionCommandRouter: CommandRouter {
                 if let raw = params["limit"] {
                     guard let value = raw.numberValue, value.isFinite,
                           value.rounded() == value,
-                          value >= 1, value <= Double(CullingService.pageLimitMax) else {
+                          value >= 1, value <= Double(CullingQueryBuilder.pageLimitMax) else {
                         throw BridgeError.badParams("limit must be an integer between 1 and 2000")
                     }
                     limit = Int(value)
@@ -2319,7 +2289,7 @@ public final class SessionCommandRouter: CommandRouter {
                 }
                 Task {
                     do {
-                        let page = try await cullingService.listPage(
+                        let page = try await culling.listPage(
                             sessionId: sessionId, scope: scope, filters: filters,
                             requestedGroupId: groupId, afterRowId: afterRowId, limit: limit)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: page)))
@@ -2337,7 +2307,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let sessionId = try requiredString(params, "sessionId")
                 Task {
                     do {
-                        let groups = try await cullingService.getGroups(sessionId: sessionId)
+                        let groups = try await culling.groups(sessionId: sessionId)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: groups)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2352,7 +2322,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let sessionId = try requiredString(params, "sessionId")
                 Task {
                     do {
-                        let summary = try await cullingService.getSummary(sessionId: sessionId)
+                        let summary = try await culling.summary(sessionId: sessionId)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: summary)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2372,7 +2342,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let sessionId = try requiredString(params, "sessionId")
                 Task {
                     do {
-                        let summary = try await cullingService.finalizeSync(sessionId: sessionId, confirmed: true)
+                        let summary = try await culling.finalizeSync(sessionId: sessionId, confirmed: true)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: summary)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2399,7 +2369,7 @@ public final class SessionCommandRouter: CommandRouter {
                 }
                 Task {
                     do {
-                        let operations = try await cullingService.getHistory(
+                        let operations = try await culling.history(
                             sessionId: sessionId, limit: limit ?? 100)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: operations)))
                     } catch {
@@ -2415,7 +2385,7 @@ public final class SessionCommandRouter: CommandRouter {
             do {
                 let sessionId = try requiredString(params, "sessionId")
                 guard let entryValues = params["entries"]?.arrayElements,
-                      !entryValues.isEmpty, entryValues.count <= CullingService.batchMax else {
+                      !entryValues.isEmpty, entryValues.count <= CullingQueryBuilder.batchMax else {
                     throw BridgeError.badParams("entries must be a non-empty array with at most 10000 items")
                 }
                 let entries: [CullingHistoryApplyEntry] = try entryValues.enumerated().map { index, item in
@@ -2450,7 +2420,7 @@ public final class SessionCommandRouter: CommandRouter {
                 }
                 Task {
                     do {
-                        let results = try await cullingService.applyHistory(
+                        let results = try await culling.applyHistory(
                             sessionId: sessionId,
                             requestedEntries: entries,
                             historyOperationId: Int(historyOperationId),
@@ -2478,7 +2448,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let patch = try parseCullingUpdatePatch(params["patch"])
                 Task {
                     do {
-                        let result = try await cullingService.update(
+                        let result = try await culling.update(
                             sessionId: sessionId, photoId: photoId,
                             expectedRevision: Int(expectedRevision), patch: patch)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
@@ -2495,13 +2465,13 @@ public final class SessionCommandRouter: CommandRouter {
             do {
                 let sessionId = try requiredString(params, "sessionId")
                 let photoIds = try requiredStringArray(params, "photoIds")
-                if photoIds.count > CullingService.batchMax {
+                if photoIds.count > CullingQueryBuilder.batchMax {
                     throw BridgeError.badParams("Too many photoIds in one batch")
                 }
                 let patch = try parseCullingUpdatePatch(params["patch"])
                 Task {
                     do {
-                        let results = try await cullingService.batchUpdate(
+                        let results = try await culling.batchUpdate(
                             sessionId: sessionId, photoIds: photoIds, patch: patch)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: results)))
                     } catch {
@@ -2518,36 +2488,14 @@ public final class SessionCommandRouter: CommandRouter {
                 let sessionId = try requiredString(params, "sessionId")
                 let groupId = try requiredString(params, "groupId")
                 let keepPhotoIds = try requiredStringArray(params, "keepPhotoIds")
-                if keepPhotoIds.count > CullingService.batchMax {
+                if keepPhotoIds.count > CullingQueryBuilder.batchMax {
                     throw BridgeError.badParams("Too many keepPhotoIds")
                 }
                 Task {
                     do {
-                        let results = try await cullingService.decideSimilarityGroup(
+                        let results = try await culling.decideGroup(
                             sessionId: sessionId, groupId: groupId, keepPhotoIds: keepPhotoIds)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: results)))
-                    } catch {
-                        completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-                    }
-                }
-            } catch {
-                completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-            }
-
-        // culling.ipc.ts:273-285 —— 旧版 renderer 批量决策；ok(true)。
-        case "culling.batch_decide":
-            do {
-                let sessionId = try requiredString(params, "sessionId")
-                let photoIds = try requiredStringArray(params, "photoIds")
-                let decisionRaw = try requiredString(params, "decision")
-                guard let decision = LegacyCullingDecision(rawValue: decisionRaw) else {
-                    throw BridgeError.badParams("Invalid decision: must be keep, reject, or pending")
-                }
-                Task {
-                    do {
-                        try await cullingService.batchDecide(
-                            sessionId: sessionId, photoIds: photoIds, decision: decision)
-                        completion(WebResponse(ok: true, data: .bool(true)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                     }
