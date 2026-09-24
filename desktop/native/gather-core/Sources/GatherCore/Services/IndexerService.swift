@@ -64,6 +64,8 @@ public final class IndexerService {
     private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
     private let assetStore: any AssetStore
+    /// checksum 回填的乐观写库事务（Store 层；默认经 database 构造）。
+    private let checksumBackfillStore: any ChecksumBackfillStore
     private let getDimensions: DimensionsProvider
     private let getSetting: SettingReader
 
@@ -79,12 +81,14 @@ public final class IndexerService {
         photoStore: any PhotoStore,
         assetStore: any AssetStore,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
-        getSetting: @escaping SettingReader = { _, defaultValue in defaultValue }
+        getSetting: @escaping SettingReader = { _, defaultValue in defaultValue },
+        checksumBackfillStore: (any ChecksumBackfillStore)? = nil
     ) {
         self.database = database
         self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.assetStore = assetStore
+        self.checksumBackfillStore = checksumBackfillStore ?? SQLiteChecksumBackfillStore(database: database)
         self.getDimensions = getDimensions
         self.getSetting = getSetting
     }
@@ -586,8 +590,9 @@ public final class IndexerService {
     }
 
     /// TS: backfillChecksums —— 后台回填懒索引留下的空 checksum：循环直到无
-    /// pending；每批 stat 取新鲜 size/mtime，乐观守卫（AND checksum = ''）保证
-    /// 与并发扫描互不覆盖；不可读照片记入 per-job 失败集避免死循环。
+    /// pending；每批 stat 取新鲜 size/mtime，乐观守卫写（Store 层
+    /// ChecksumBackfillStore 单事务）保证与并发扫描互不覆盖；不可读照片记入
+    /// per-job 失败集避免死循环。
     public func backfillChecksums(
         sessionId: String,
         context: JobRunnerContext? = nil
@@ -612,7 +617,8 @@ public final class IndexerService {
             for offset in stride(from: 0, to: pending.count, by: IndexAssembler.checksumBackfillBatch) {
                 try await context?.throwIfCancelled()
                 let batch = Array(pending[offset..<min(offset + IndexAssembler.checksumBackfillBatch, pending.count)])
-                // 哈希阶段只读；全部写入进入单事务。
+                // 哈希阶段只读；全部写入进入 Store 单事务（乐观守卫写与
+                // asset_files 同步见 Store/ChecksumBackfillStore.swift）。
                 let results = try await mapConcurrent(
                     batch, concurrency: IndexAssembler.checksumBackfillConcurrency
                 ) { photo -> (photo: PhotoPage, checksum: String, size: Int64, mtimeMs: Double)? in
@@ -626,46 +632,28 @@ public final class IndexerService {
                         return nil
                     }
                 }
-                try await self.database.transaction { db in
-                    for (index, result) in results.enumerated() {
-                        guard let result else {
-                            failedPhotoIds.insert(batch[index].id)
-                            skipped += 1
-                            processed += 1
-                            continue
-                        }
-                        // 乐观填充：仅当照片 checksum 仍为空才写（并发扫描
-                        // 刚写/清空的值不被覆盖）。
-                        let photoChanges = try db.run("""
-                            UPDATE photos
-                            SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
-                                updated_at = ?
-                            WHERE id = ? AND checksum = ''
-                          """, [
-                            .text(result.checksum), .int(result.size), .real(result.mtimeMs),
-                            .text(nowISOString()), .text(result.photo.id),
-                        ])
-                        if photoChanges == 0 {
-                            // 另一写入者已填充（或清空）：跳过资产行写入，
-                            // 保持 photos 与 asset_files 一致。
-                            skipped += 1
-                        } else {
-                            if let assetFileId = result.photo.assetFileId {
-                                _ = try db.run("""
-                                    UPDATE asset_files
-                                    SET checksum = ?, file_size = ?, file_mtime_ms = ?, updated_at = ?
-                                    WHERE id = ? AND checksum = ''
-                                  """, [
-                                    .text(result.checksum), .int(result.size), .real(result.mtimeMs),
-                                    .text(nowISOString()), .text(assetFileId),
-                                ])
-                            }
-                            passBackfilled += 1
-                            backfilled += 1
-                        }
+                var writes: [ChecksumBackfillWrite] = []
+                writes.reserveCapacity(results.count)
+                for (index, result) in results.enumerated() {
+                    guard let result else {
+                        failedPhotoIds.insert(batch[index].id)
+                        skipped += 1
                         processed += 1
+                        continue
                     }
+                    writes.append(ChecksumBackfillWrite(
+                        photoId: result.photo.id,
+                        assetFileId: result.photo.assetFileId,
+                        checksum: result.checksum,
+                        fileSize: result.size,
+                        fileMtimeMs: result.mtimeMs
+                    ))
+                    processed += 1
                 }
+                let outcome = try await self.checksumBackfillStore.applyBackfilledChecksums(writes)
+                passBackfilled += outcome.backfilled
+                backfilled += outcome.backfilled
+                skipped += outcome.skipped
                 await context?.updateProgress(JobProgressUpdate(current: processed, total: pending.count))
             }
             // 全部 pending 要么已失败要么重试只会重复失败：停止而非空转。
