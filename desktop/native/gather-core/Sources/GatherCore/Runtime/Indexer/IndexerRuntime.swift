@@ -20,16 +20,40 @@ public enum IndexerRuntimeError: Error, Equatable {
 }
 
 public actor IndexerRuntime {
-    /// 运行时依赖（三个成员均为 Sendable 值语义引用，可跨 actor 边界传递）。
+    /// 运行时依赖（idx2b1 扩容：对齐旧 IndexerService 全集；引用为 Sendable
+    /// 值语义，闭包为 @Sendable，可跨 actor 边界传递）。
     public struct Dependencies: Sendable {
         public let sessionStore: any SessionStore
         public let photoStore: any PhotoStore
+        public let assetStore: any AssetStore
         public let database: SQLiteDatabase
+        /// 图片尺寸读取（旧 IndexerService.DimensionsProvider；默认走 RAWDecoder）。
+        public let getDimensions: @Sendable (String) throws -> (width: Int, height: Int)
+        /// 设置读取（旧 IndexerService.SettingReader；默认回退 defaultValue）。
+        public let getSetting: @Sendable (String, String) -> String
+        /// stat 测试接缝（等价旧 IndexerService.stat；默认 IndexerService.defaultStat）。
+        public var stat: @Sendable (String) throws -> IndexerService.FileStat
+        /// checksum 计算接缝（等价旧 IndexerService.fileHasher；默认 IndexerService.sha256File）。
+        public var fileHasher: @Sendable (String) async throws -> String
 
-        public init(sessionStore: any SessionStore, photoStore: any PhotoStore, database: SQLiteDatabase) {
+        public init(
+            sessionStore: any SessionStore,
+            photoStore: any PhotoStore,
+            assetStore: any AssetStore,
+            database: SQLiteDatabase,
+            getDimensions: @escaping @Sendable (String) throws -> (width: Int, height: Int) = { try IndexerService.defaultDimensions($0) },
+            getSetting: @escaping @Sendable (String, String) -> String = { _, defaultValue in defaultValue },
+            stat: @escaping @Sendable (String) throws -> IndexerService.FileStat = { try IndexerService.defaultStat($0) },
+            fileHasher: @escaping @Sendable (String) async throws -> String = { try IndexerService.sha256File($0) }
+        ) {
             self.sessionStore = sessionStore
             self.photoStore = photoStore
+            self.assetStore = assetStore
             self.database = database
+            self.getDimensions = getDimensions
+            self.getSetting = getSetting
+            self.stat = stat
+            self.fileHasher = fileHasher
         }
     }
 
