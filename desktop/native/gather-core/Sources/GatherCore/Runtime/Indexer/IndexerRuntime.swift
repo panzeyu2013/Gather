@@ -20,8 +20,8 @@
 //   继承 Sendable，SQLiteDatabase 为 actor，因此 Dependencies 可安全跨 actor
 //   边界传递。
 // - 契约类型复用 Protocol/Indexer.swift 的真实定义（IndexScanParams /
-//   IndexScanResult），不在此重复声明。错误复用 Services 侧 IndexerServiceError
-//   （sessionNotFound / noSourcePath，与旧 scanSession 一致）与
+//   IndexScanResult），不在此重复声明。错误复用 IndexerError（Runtime/Indexer/
+//   IndexerError.swift；sessionNotFound / noSourcePath，与旧 scanSession 一致）与
 //   Runtime/Jobs/JobRunner.JobCancelledError（批间取消）。
 // - 旧 scanSession 的 JobRunnerContext 不入 actor：scan 签名无 context，取消经
 //   cancel(sessionId:) + 批间检查提供，进度上报留待接线步骤。
@@ -80,9 +80,9 @@ public actor IndexerRuntime {
         public let getDimensions: @Sendable (String) throws -> (width: Int, height: Int)
         /// 设置读取（旧 IndexerService.SettingReader；默认回退 defaultValue）。
         public let getSetting: @Sendable (String, String) -> String
-        /// stat 测试接缝（等价旧 IndexerService.stat；默认 IndexerService.defaultStat）。
-        public var stat: @Sendable (String) throws -> IndexerService.FileStat
-        /// checksum 计算接缝（等价旧 IndexerService.fileHasher；默认 IndexerService.sha256File）。
+        /// stat 测试接缝（等价旧 IndexerService.stat；默认 IndexerRuntime.defaultStat）。
+        public var stat: @Sendable (String) throws -> IndexerRuntime.FileStat
+        /// checksum 计算接缝（等价旧 IndexerService.fileHasher；默认 IndexerRuntime.sha256File）。
         public var fileHasher: @Sendable (String) async throws -> String
 
         public init(
@@ -91,10 +91,10 @@ public actor IndexerRuntime {
             assetStore: any AssetStore,
             database: SQLiteDatabase,
             checksumBackfillStore: (any ChecksumBackfillStore)? = nil,
-            getDimensions: @escaping @Sendable (String) throws -> (width: Int, height: Int) = { try IndexerService.defaultDimensions($0) },
+            getDimensions: @escaping @Sendable (String) throws -> (width: Int, height: Int) = { try IndexerRuntime.defaultDimensions($0) },
             getSetting: @escaping @Sendable (String, String) -> String = { _, defaultValue in defaultValue },
-            stat: @escaping @Sendable (String) throws -> IndexerService.FileStat = { try IndexerService.defaultStat($0) },
-            fileHasher: @escaping @Sendable (String) async throws -> String = { try IndexerService.sha256File($0) }
+            stat: @escaping @Sendable (String) throws -> IndexerRuntime.FileStat = { try IndexerRuntime.defaultStat($0) },
+            fileHasher: @escaping @Sendable (String) async throws -> String = { try IndexerRuntime.sha256File($0) }
         ) {
             self.sessionStore = sessionStore
             self.photoStore = photoStore
@@ -273,8 +273,8 @@ public actor IndexerRuntime {
     /// best-effort 推进 index_seq（不掩盖原错误）。
     private func performScan(sessionId: String, requestedPaths: [String]?) async throws -> IndexScanResult {
         let session = try await deps.sessionStore.get(id: sessionId)
-        guard let session else { throw IndexerServiceError.sessionNotFound }
-        guard !session.sourcePath.isEmpty else { throw IndexerServiceError.noSourcePath }
+        guard let session else { throw IndexerError.sessionNotFound }
+        guard !session.sourcePath.isEmpty else { throw IndexerError.noSourcePath }
         let excludedRoots = managedCacheRoots()
         var existing = try await deps.photoStore.getBySessionProjection(sessionId: sessionId)
         // 生成缓存目录内的存量照片（缓存清扫）：Store 事务删除照片行 + 孤儿资产行。
@@ -439,7 +439,7 @@ public actor IndexerRuntime {
             let normalized = IndexAssembler.normalizedPath(filepath)
             // stat 先行：目录列举与 stat 之间消失的文件不得进入 discoveredSet，
             // 否则末段永远不会把它对账为 missing（ghost photo）。
-            let source: IndexerService.FileStat
+            let source: IndexerRuntime.FileStat
             do {
                 source = try dependencies.stat(filepath)
             } catch {
@@ -727,4 +727,49 @@ private struct IndexBatchEffects: Sendable {
 /// 形态与旧 IndexerService.lstatBuf 一致）。
 private func runtimeLstatBuf() -> stat {
     stat()
+}
+
+// MARK: - 旧 IndexerService 静态接缝（Services 删除后原样迁入 Runtime，idx2c）
+
+/// 原 Services/IndexerService.swift 的公开类型/默认实现逐字迁移：stat 结果、
+/// 默认 stat、默认图片尺寸与整文件 SHA256（无兼容别名、无重复定义）。
+public extension IndexerRuntime {
+    /// stat 结果（TS stat() 的字段子集）。
+    typealias FileStat = (size: Int64, mtimeMs: Double, dev: Int64, ino: Int64, isFile: Bool)
+
+    /// 默认 stat（TS stat 语义：缺失抛错，消息格式对齐 Node ENOENT）。
+    static func defaultStat(_ path: String) throws -> FileStat {
+        guard let info = tsStat(path) else {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadNoSuchFileError,
+                userInfo: [
+                    NSFilePathErrorKey: path,
+                    NSLocalizedDescriptionKey: "ENOENT: no such file or directory, stat '\(path)'",
+                ]
+            )
+        }
+        return (
+            size: info.size,
+            mtimeMs: info.mtimeMs,
+            dev: info.dev,
+            ino: info.ino,
+            isFile: info.isFile
+        )
+    }
+
+    /// 默认图片尺寸读取（macOS 走 RAWDecoder，其余平台不可用即抛错）。
+    static func defaultDimensions(_ path: String) throws -> (width: Int, height: Int) {
+        #if canImport(ImageIO)
+        return try RAWDecoder.getDimensions(path: path)
+        #else
+        throw IndexerError.noSourcePath
+        #endif
+    }
+
+    /// TS: sha256File —— 整文件 SHA256 hex（小写，逐字节对齐 createReadStream 流式）。
+    static func sha256File(_ filePath: String) throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: filePath))
+        return SHA256.hash(data).map { String(format: "%02x", $0) }.joined()
+    }
 }

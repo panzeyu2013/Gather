@@ -348,20 +348,8 @@ public final class SessionCommandRouter: CommandRouter {
                     mode: mode, onProgress: onProgress)
             }
         )
-        // checksum.backfill 的 backfillChecksums 尚未迁入 Runtime（idx2b5 处理），
-        // 暂由旧 IndexerService 承担；scan 与待回填判定已走 Runtime。
-        let checksumBackfiller = IndexerService(
-            database: database,
-            sessionStore: sessionStore,
-            photoStore: photoStore,
-            assetStore: assetStore,
-            getDimensions: { path in
-                try RAWDecoder.getDimensions(path: path)
-            },
-            getSetting: { key, defaultValue in
-                settings.value(key, default: defaultValue)
-            }
-        )
+        // checksum.backfill 的 backfillChecksums 已迁入 IndexerRuntime（idx2b5）；
+        // scan / 待回填判定 / 回填 executor 全部走下方 router 的 indexer。
         let router = SessionCommandRouter(
             sessionService: SessionService(
                 sessionStore: sessionStore,
@@ -411,14 +399,14 @@ public final class SessionCommandRouter: CommandRouter {
             photoStore: photoStore,
             sessionStore: sessionStore
         )
-        await router.registerExecutors(checksumBackfiller: checksumBackfiller)
+        await router.registerExecutors()
         return router
     }
 
     /// TS di/init.ts 的 executor 注册段（similarity.analyze / duplicate.scan）。
     /// JobRunner 恢复 interrupted 任务时依赖 autoResume 注册表，故装配期
     /// 同步注册（autoResume 默认 true）。
-    private func registerExecutors(checksumBackfiller: IndexerService) async {
+    private func registerExecutors() async {
         await jobRunner.registerExecutor(type: .similarityAnalyze) { [similarity] job, context in
             // TS similarity.ipc.ts:100-121：abort 时同步取消相似度占用
             // （session 列仅在真正持有者取消时写入，见 SimilarityRuntime.cancel）。
@@ -529,8 +517,8 @@ public final class SessionCommandRouter: CommandRouter {
 
         // TS 源: indexer.ipc.ts:26-32 —— checksum.backfill executor（后台回填
         // 懒索引留下的空 checksum）。
-        await jobRunner.registerExecutor(type: .checksumBackfill) { [checksumBackfiller] job, context in
-            let result = try await checksumBackfiller.backfillChecksums(
+        await jobRunner.registerExecutor(type: .checksumBackfill) { [indexer] job, context in
+            let result = try await indexer.backfillChecksums(
                 sessionId: job.scopeId,
                 context: context
             )
@@ -3588,7 +3576,7 @@ public final class SessionCommandRouter: CommandRouter {
         if let faceKwError = error as? FaceKwError { return faceKwError.description }
         if let templateError = error as? TemplateError { return templateError.description }
         if let qualityError = error as? QualityError { return qualityError.description }
-        if let indexerError = error as? IndexerServiceError { return indexerError.description }
+        if let indexerError = error as? IndexerError { return indexerError.description }
         if let writebackError = error as? WritebackServiceError { return writebackError.description }
         if let metadataSyncError = error as? MetadataSyncError { return metadataSyncError.description }
         if let metadataMutationError = error as? MetadataMutationError {
