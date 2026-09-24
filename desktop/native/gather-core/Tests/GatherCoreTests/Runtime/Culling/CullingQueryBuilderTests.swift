@@ -98,7 +98,20 @@ struct CullingQueryBuilderTests {
         #expect(throws: CullingServiceError.self) {
             try CullingQueryBuilder.validatePatch(CullingUpdatePatch(rating: 9, pickState: nil, colorLabel: nil))
         }
+        #expect(throws: CullingServiceError.ratingOutOfRange) {
+            try CullingQueryBuilder.validatePatch(CullingUpdatePatch(rating: -1, pickState: nil, colorLabel: nil))
+        }
         try CullingQueryBuilder.validatePatch(CullingUpdatePatch(rating: nil, pickState: .picked, colorLabel: nil))
         try CullingQueryBuilder.validatePatch(CullingUpdatePatch(rating: nil, pickState: nil, colorLabel: .red))
+    }
+
+    @Test("补丁/分页校验错误码描述与 TS 逐字一致（IPC 契约）")
+    func validationErrorDescriptions() {
+        #expect(CullingServiceError.patchInvalid.description == "CULLING_PATCH_INVALID")
+        #expect(CullingServiceError.ratingOutOfRange.description == "rating must be an integer from 0 to 5")
+        #expect(CullingServiceError.invalidPickState.description == "Invalid pickState")
+        #expect(CullingServiceError.invalidColorLabel.description == "Invalid colorLabel")
+        #expect(CullingServiceError.afterRowIdInvalid.description == "afterRowId must be a positive integer")
+        #expect(CullingServiceError.pageLimitInvalid.description == "limit must be an integer between 1 and 2000")
     }
 }
