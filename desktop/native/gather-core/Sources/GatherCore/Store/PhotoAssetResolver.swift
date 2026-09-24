@@ -1,5 +1,6 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/PhotoAssetResolver.swift
+// desktop/native/gather-core/Sources/GatherCore/Store/PhotoAssetResolver.swift
 // TS 源: desktop/src/main/services/assets/photo-asset-resolver.ts（Phase 3.2 移植）
+// R4 迁移：由 Services/ 下沉 Store/（R1：SQL 归 Store 层；公开类型/方法签名与语义逐字不变）。
 // 照片 → 资产解析：按 asset_read_mode（dual/asset/legacy）决定解析到资产文件
 // 还是遗留路径；dual 模式下资产就绪但路径与遗留不一致时输出 shadow-read 警告。
 import Foundation

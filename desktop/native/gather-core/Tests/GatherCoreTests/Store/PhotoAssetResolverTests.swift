@@ -1,5 +1,5 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Services/PhotoAssetResolverTests.swift
-// PhotoAssetResolver 行为测试（Phase 3.2）。
+// desktop/native/gather-core/Tests/GatherCoreTests/Store/PhotoAssetResolverTests.swift
+// PhotoAssetResolver 行为测试（Phase 3.2；R4 随实现迁入 Store/，用例逐条保留）。
 // TS 源: desktop/src/main/services/assets/photo-asset-resolver.ts 的行为基线
 // （asset_read_mode 三态 + resolveMany 去重/分块）。
 
