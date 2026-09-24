@@ -234,7 +234,8 @@ public extension AssetStore {
 }
 
 public struct SQLiteAssetStore: AssetStore {
-    private let database: SQLiteDatabase
+    // M3 起：Store/ 下 extension 文件需要访问连接（Swift private 为文件级作用域）。
+    let database: SQLiteDatabase
 
     public init(database: SQLiteDatabase) {
         self.database = database
