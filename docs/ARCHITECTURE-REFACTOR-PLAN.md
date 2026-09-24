@@ -864,3 +864,56 @@ acc-legacy 验收（快照 4c170a6）指出文档多处数字陈旧。以下为*
 
 **口径纪律（写入权威口径）**：①门禁度量一律**双口径**（文件数 + 出现次数），引用时须注明口径；②共享 worktree + 并发构建下，**并行全量测试不作为判定依据**，以**串行全量**为权威；③验收结论必须以「HEAD + 工作树指纹」锚定（见 §24/§28）。
 | round 44：**债务 D3 闭环**——`MetadataWriter.start()` 改 async，消除回收竞态 | 已入库 | 原实现 `start()` 同步返回并用 `Task { try? await recoverInterruptedOutbox() }` best-effort 回收，存在窄竞态：紧随其后的 `schedule()` 若已 `claimOutbox` 置 `writing`，而 recover 的 UPDATE 稍后执行，会把在飞行**重置为 pending** → 重复写。**修法**：`public func start()` → **`public func start() async`**（**非 throws**，内部 `try?` 吞错），直接 `try? await dependencies.writebackStore.recoverInterruptedOutbox()`，使回收**先于任何后续排程**完成；既有两处测试调用点本就有 `await`，**无需加 `try`、零调用点改动**。验证：`--filter MetadataWriter` → **30 tests / 5 suites 全绿（exit=0，pipefail 复核）**；括号差 0（695 行）。 |
+## 30. 未实现的残余目标清单（截至 HEAD 28ca0ee，Round 74 编制）
+
+本节为唯一权威的残余清单；与 §15–§29 冲突时以本节为准。
+
+### 30.1 已完成（不在残余之列）
+| 目标 | 状态 |
+|---|---|
+| R1 Store 唯一 SQL 所有者 | ✅ 收官（Runtime SQL=0 · raw SQL outside Store=0 · DB layer=0）|
+| R3 JobRunner 唯一作业层 | ✅ 收官 |
+| R2 六域闭环 | ✅ Culling −2550 · Similarity+Duplicate+Quality −2347 · Navigation −255 · Export −461 · Indexer −1094 · FaceKw −1199 |
+| R4 服务层清退 | ✅ Services 25 → 0（层退役，enforce_absent_tree 强制不再出现）|
+| R5 协议层 | ✅ 19 域 / 111 方法 |
+| R6 会话宿主与根视图 | ✅ 11/11 Feature + 根视图切 AppShellView + 6 项壳级职责 + 死树清理 + 23 壳层测试 |
+| R7 死码裁决与归位 | ✅ FilterEngine→Store/Filter、PhotoAssets→Runtime/Support、Services 归零 |
+| R8 门禁加固 | ✅ 七次加固：enforced 4→18、tracked 17→7、突变 20/20 |
+| 债务 D3 / D6 / D7 | ✅ 闭环 |
+| 四项验收 | ✅ acc-build / acc-tests / acc-gate / acc-legacy 均已出结论 |
+
+### 30.2 未实现残余（按优先级）
+
+**P0 — 阻断重构真正生效**
+| # | 残余目标 | 现状与证据 | 下一步 |
+|---|---|---|---|
+| P0-1 | 命令层 19 域实现未被宿主使用 | API/Impl 已有 19 个 actor（111 方法），但 app 仍走 3800 行旧路由 SessionCommandRouter.swift（tracked 16 文件 / 31 处）| 在宿主组合根把命令分发切到 19 个 CommandsImpl（GatherAPI 装配）|
+| P0-2 | 删除 3800 行旧路由（R5 硬要求）| SessionCommandRouter 未删；CommandRouter / NativeCommandClient / JSONValueDecoding / StubCommandRouter 均未删 | 同一合并单元内删除；度量归零：SessionCommandRouter 16→0 · awaitSync 2→0 · StubCommandRouter 7→0 · NativeCommandClient 6→0 |
+| P0-3 | Similarity 域直测 1 用例失败 | SimilarityCommandsImplTests.swift:273 → Caught error: .executorNotRegistered(AnalysisJobType.similarityAnalyze)；判定为测试侧缺陷（用例未注册作业执行器），非实现缺陷 | 用例内注册 stub executor（参考同套件其他用例），或注入式 JobRunner 替身 |
+| P0-4 | dedupeKey 数值格式修复未提交 | 工作区已改 String(Double($0))（使 similarity.analyze:<sid>:12.0:3.0:<mode> 与旧链路逐字一致），因同套件另一用例失败被门控拒绝 | 随 P0-3 一并提交；--filter ImplTests 须全绿 |
+
+**P1 — 计划书明确要求但未落地**
+| # | 残余目标 | 现状 | 下一步 |
+|---|---|---|---|
+| P1-1 | eventSink 收紧 | MetadataSyncRuntime.eventSink 为 nonisolated(unsafe) public var（为修 app 红态引入；注释已登记为 R4 残余）| 改 private var + 宿主改 await setEventSink（makeDefault 为 async）；须双包验证；禁手工括号级编辑（纪律 4）|
+| P1-2 | 债务 D5：WritebackService 类型改名 | 仍名 WritebackService | 随 P0-2 一并改为 WritebackRuntime（含文件与全部引用点）|
+| P1-3 | G1 度量盲区 | NativeCommandClient 度量只扫 APP/Sources（6 文件），实际足迹 13 文件（另有 CullingView / SessionControlView / SettingsView / ExportView / DuplicatesView / FaceKeywordingView / NativeCommandClientTests）| 扫描根扩到整个 app 包（含包根特性目录与 Tests）后更新 baseline；否则删路由后度量会假归零 |
+| P1-4 | R8：7 条 tracked 未转 enforced | DBConnection symbols=2 · Repositories path refs=13 · module bridge symbols=6 · awaitSync=2 · SessionCommandRouter=16 · StubCommandRouter=7 · dual-track l10n=1 | 逐条清退到 0 后转 enforced（P0-2 落地后其中 4 条可归零）|
+| P1-5 | R7：重复类型合并 | FaceCluster / BindingData 重复类型未合并 | 类型级依赖扫描 → 合并为单一权威类型 → 改全部引用点 |
+| P1-6 | R4 写面残余：5 档退避的设置注入 | MetadataSyncRuntime 已实现 5 档退避常量与去抖，但档位未从 Settings 读取 | 若要求可配置则注入 Settings 快照；否则显式登记为有意保持固定档位 |
+| P1-7 | R4 写面残余：冲突检测 / 基线快照语义差 | applyAcceptedRemoteValues 相对旧实现有 3 项设计内语义差（photos 限定 session · 错误上抛 · 行清理并入同一事务），见 §23 | 若需逐字等价则逐条回归；否则保持并标注为有意更严格 |
+
+**P2 — 出口核验与文档一致性（末 2 轮应完成）**
+| # | 残余目标 | 现状 | 下一步 |
+|---|---|---|---|
+| P2-1 | 最终全量验收未做 | 最近一次串行全量是 acc-tests（HEAD 27bf63c，1078/140 绿）；此后大量提交（Services 归零、19 域命令层、R6 壳层）未做串行全量 | 双包编译 + 串行全量（权威口径）+ 门禁 + 度量 + 死码清查 + 文档一致性，五路并行验收 |
+| P2-2 | app 测试未复验 | app 185 tests/19 suites 为 Round 57 实测；此后 app 侧有壳级职责迁移、死树删除、根视图切换 | 复跑 app 全量（含 ShellCoordinatorTests 23 例）|
+| P2-3 | 数字归一化专项核查 | 本 session 已修 3 例同类缺陷（normalizeKeywordList 的 7 vs 7.0 · stringValue 的 10.0 · dedupeKey 的 12 vs 12.0），均为 Swift Int/Double 插值 vs 旧链路 JS 数字字符串化 | 全仓排查面向协议/持久化的数值字符串化点（dedupeKey、checkpoint、JSON 响应、XMP 写入、缓存键），建清单逐条对齐 |
+| P2-4 | 计划书陈旧数字 | §29 已建权威更正，但 §15–§28 内仍有未覆盖旧行 | 逐节扫描并加已由 §29/§30 覆盖的标注 |
+| P2-5 | H4 元防护 / H9 漂移窗口 | 两次加固明确未实现（脚本头已登记）：H4 需 CODEOWNERS/分支保护/脚本哈希锁定；H9 需固定 commit 或只读快照扫描 | 若纳入范围则实施；否则保留为已知限制 |
+| P2-6 | 遗留设计裁决未落地 | Store 级 replaceGroup（Navigation split/merge 原子性，见 §26）；MetadataWriter 与 MetadataSyncRuntime 双实现（调度/getSummary/listOrphans/getConflicts），属 W4-8 切换项 | 二选一：实现原子命令；或把双实现收敛为单一权威（MetadataWriter 未接线）|
+
+### 30.3 风险提示
+- 最关键单点风险：P0-1 / P0-2 未完成前，19 域命令层是死代码——架构重写收益（可测试、可注入、无 3800 行上帝类）尚未兑现；且 Services 已归零而旧路由仍在，构成事实上的双轨。
+- 工程量：P0-2 是本计划最大单次变更（3800 行、118 case → 111 命令、含 app 组合根装配与 7 个口径外调用点），必须独占切片并配双包 + 全量验证。
+- 纪律：多切片共享包时禁止 git checkout 回退疑似并发写手的文件（Round 71 曾误把受害者当加害者，反复覆盖切片成果）；提交必须门控 + 快照锚定（纪律 20/22）。
