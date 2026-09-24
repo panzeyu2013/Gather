@@ -17,26 +17,18 @@
 //       TS 源 filter.ipc.ts，limit/offset 钳制语义在 IPC 层）
 //     navigation.list / split / merge → NavigationService（3.6；
 //       TS 源 navigation.ipc.ts）
-//     sim.result（同步查询）/ sim.cancel_analysis → SimilarityService（3.3；
-//       TS 源 similarity.ipc.ts）
 //     photo.list_page → PhotoRepo.getAssetPage + 资产装配（TS 源 photo.ipc.ts）
 //     assets.candidates / accept_candidate / reject_candidate / volumes /
 //       relink_root → AssetRepo（TS 源 assets.ipc.ts）
-//     dup.groups / dup.resolve / dup.resolve_member → DuplicateService（3.6；
-//       TS 源 duplicate.ipc.ts）
 //     fkw.clusters / bind / merge / remove_member / cancel_analysis →
 //       FaceKwService（TS 源 face-kw.ipc.ts；写回族 fkw.unbind / preview /
 //       writeback / confirm_sync / cleanup / confirm_cleanup 经 FaceWritebackProvider
 //       适配 WritebackService，TS 语义 await → awaitSync 信号量桥接）
 //     person.* → PersonRepo（TS 源 person.ipc.ts）
 //     template.* → TemplateService（TS 源 template.ipc.ts）
-//     quality.get → QualityService（TS 源 quality.ipc.ts）
 //     metadata.get / set / batch_set / conflicts / orphans →
 //       MetadataService + MetadataSyncCoordinator（TS 源 metadata.ipc.ts；
 //       set/batch_set/conflicts 的 TS await → awaitSync 桥接）
-//     sim.preview_writeback / writeback / writeback_items /
-//       retry_failed_writeback / confirm_sync / cleanup → WritebackService
-//       （TS 源 similarity.ipc.ts 190-274 行）
 //     album.* → SmartAlbumRepo + FilterEngine（TS 源 filter.ipc.ts
 //       registerAlbumHandlers 段）
 //     culling.* 同步面（TS 源 culling.ipc.ts）：list_page / history /
@@ -48,14 +40,20 @@
 //   异步（executeAsync）：
 //     navigation.analyze → NavigationService.analyze（TS 源 navigation.ipc.ts，
 //       TS 侧为 async wrapper 内同步执行，Swift 同步直连）
-//     sim.recluster → SimilarityService.recluster（TS 侧 await worker）
-//     sim.analyze / dup.scan → JobRunner executor + waitForResult（TS 源
-//       similarity.ipc.ts / duplicate.ipc.ts）
+//     sim.*（SimilarityRuntime，W2c；TS 源 similarity.ipc.ts）：analyze
+//       （JobRunner executor + waitForResult）/ recluster / result /
+//       cancel_analysis / preview_writeback / confirm_sync / cleanup；
+//       写回族 writeback / writeback_items / retry_failed_writeback →
+//       WritebackService（190-274 行）
+//     dup.*（DuplicateRuntime，W2c；TS 源 duplicate.ipc.ts）：scan（JobRunner
+//       executor + waitForResult）/ groups / resolve / resolve_member
+//     quality.*（QualityRuntime，W2c；TS 源 quality.ipc.ts）：analyze（建
+//       quality.score job 即返回）/ get
 //     fkw.analyze → JobRunner executor（face.analyze）+ waitForResult；
 //       job abort 经 signal handler 传播给 FaceKwService（TS 源 face-kw.ipc.ts）
 //     fkw.recluster → FaceKwService.recluster（TS 源 face-kw.ipc.ts）
-//     index.scan / quality.analyze → JobRunner executor（metadata.scan /
-//       quality.score）创建即返回 job（TS 源 indexer.ipc.ts / quality.ipc.ts）
+//     index.scan → JobRunner executor（metadata.scan）创建即返回 job
+//       （TS 源 indexer.ipc.ts）
 //     session.create_from_directory → SessionService.createFromDirectory +
 //       metadata.scan job 入队（TS 源 session.ipc.ts）
 //     metadata.resolve_conflict / resolve_orphan → MetadataSyncCoordinator
@@ -66,6 +64,18 @@
 //   export.* → ExportService（预览/原图复制/JPEG-TIFF 转换/XMP/断点续作/report）
 import Foundation
 import GatherCore
+
+/// W2c：Quality 结果提交后的失效适配器 —— 端口方法
+/// `QualityInvalidationPort.invalidateQualityLookup` 落到
+/// `CullingRuntime.invalidateSessionLookup`（分析派生映射：质量/人脸/关键词
+/// 立即失效，下一次读取按需重载）。
+private struct CullingQualityInvalidationPort: QualityInvalidationPort {
+    let culling: CullingRuntime
+
+    func invalidateQualityLookup(sessionId: String) async {
+        await culling.invalidateSessionLookup(sessionId: sessionId)
+    }
+}
 
 /// 路由实现：注入 GatherCore 服务。
 public final class SessionCommandRouter: CommandRouter {
@@ -79,8 +89,11 @@ public final class SessionCommandRouter: CommandRouter {
     private let settingsAPI: SettingsAPI
     private let filterEngine: FilterEngine
     private let navigationService: NavigationService
-    private let similarityService: SimilarityService
-    private let duplicateService: DuplicateService
+    /// W2c：Similarity 域 Runtime（sim.analyze executor / recluster / result /
+    /// cancel / preview_writeback 计划）。
+    private let similarity: SimilarityRuntime
+    /// W2c：Duplicate 域 Runtime（dup.scan executor / dup.groups / dup.resolve*）。
+    private let duplicate: DuplicateRuntime
     private let assetStore: any AssetStore
     private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
@@ -88,7 +101,8 @@ public final class SessionCommandRouter: CommandRouter {
     private let faceKwService: FaceKwService
     private let persons: PersonsAPI
     private let templates: TemplatesAPI
-    private let qualityService: QualityService
+    /// W2c：Quality 域 Runtime（quality.analyze executor / quality.get）。
+    private let quality: QualityRuntime
     private let indexerService: IndexerService
     private let metadataService: MetadataService
     private let metadataSyncCoordinator: MetadataSyncCoordinator
@@ -108,13 +122,13 @@ public final class SessionCommandRouter: CommandRouter {
         settingsAPI: SettingsAPI,
         filterEngine: FilterEngine,
         navigationService: NavigationService,
-        similarityService: SimilarityService,
-        duplicateService: DuplicateService,
+        similarity: SimilarityRuntime,
+        duplicate: DuplicateRuntime,
         assetStore: any AssetStore,
         faceKwService: FaceKwService,
         persons: PersonsAPI,
         templates: TemplatesAPI,
-        qualityService: QualityService,
+        quality: QualityRuntime,
         indexerService: IndexerService,
         metadataService: MetadataService,
         metadataSyncCoordinator: MetadataSyncCoordinator,
@@ -134,15 +148,15 @@ public final class SessionCommandRouter: CommandRouter {
         self.settingsAPI = settingsAPI
         self.filterEngine = filterEngine
         self.navigationService = navigationService
-        self.similarityService = similarityService
-        self.duplicateService = duplicateService
+        self.similarity = similarity
+        self.duplicate = duplicate
         self.assetStore = assetStore
         self.sessionStore = sessionStore
         self.photoStore = photoStore
         self.faceKwService = faceKwService
         self.persons = persons
         self.templates = templates
-        self.qualityService = qualityService
+        self.quality = quality
         self.indexerService = indexerService
         self.metadataService = metadataService
         self.metadataSyncCoordinator = metadataSyncCoordinator
@@ -203,20 +217,27 @@ public final class SessionCommandRouter: CommandRouter {
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
     ) async -> SessionCommandRouter {
-        let similarityService = SimilarityService(
-            photoStore: photoStore,
-            sessionStore: sessionStore,
-            similarityStore: similarityStore,
-            database: database,
-            getNumber: { key, defaultValue in
-                settings.number(key, default: defaultValue)
-            },
-            // 修复（审计 P0-1）：此前未注入 thumbnailProvider（默认恒 nil），
-            // 相似度分析全部哈希计算失败 → SIM_NO_HASH_DATA。与
-            // DuplicateService 共用同一 RAWDecoder 9x8 灰度管线。
-            thumbnailProvider: { path, size in
-                RAWDecoder.pixels9x8(path: path, maxPixel: size)
-            }
+        // W2c：SimilarityRuntime（Store/provider 注入；旧 SimilarityService 的
+        // SQL 已下沉 Store）。
+        let similarity = SimilarityRuntime(
+            dependencies: SimilarityRuntime.Dependencies(
+                photoStore: photoStore,
+                sessionStore: sessionStore,
+                similarityStore: similarityStore,
+                jobStore: jobStore,
+                getNumber: { key, defaultValue in
+                    settings.number(key, default: defaultValue)
+                }
+            ),
+            providers: SimilarityRuntime.Providers(
+                // 修复（审计 P0-1）：此前未注入 thumbnailProvider（默认恒 nil），
+                // 相似度分析全部哈希计算失败 → SIM_NO_HASH_DATA。与
+                // DuplicateRuntime 共用同一 RAWDecoder 9x8 灰度管线；
+                // cluster/multiCluster 用默认 ClusterEngine（与旧服务缺省一致）。
+                thumbnail: { path, size in
+                    RAWDecoder.pixels9x8(path: path, maxPixel: size)
+                }
+            )
         )
         // 元数据写回链（TS di/init.ts 组合根）：XMP provider → 协调器 →
         // 变更服务 → 元数据服务 / 写回服务（XMPProvider 为宿主接缝，3.4
@@ -309,6 +330,30 @@ public final class SessionCommandRouter: CommandRouter {
             ),
             cache: CullingSessionCache()
         )
+        // W2c：QualityRuntime（quality.analyze / quality.get 的 Runtime 化）。
+        // 提交后经 QualityInvalidationPort 失效 Culling 分析派生缓存（旧
+        // QualityService.invalidateCullingLookup 从未接线）。
+        let quality = QualityRuntime(
+            photoStore: photoStore,
+            jobStore: jobStore,
+            similarityStore: similarityStore,
+            faceStore: faceStore,
+            imageProvider: QualityRuntime.defaultImageProvider,
+            statProvider: QualityRuntime.defaultStat,
+            invalidation: CullingQualityInvalidationPort(culling: culling)
+        )
+        // W2c：DuplicateRuntime（dup.scan / dup.groups / dup.resolve* 的 Runtime 化）。
+        let duplicate = DuplicateRuntime(
+            store: SQLiteDuplicateStore(database: database),
+            thumbnailProvider: { path, size in
+                RAWDecoder.pixels9x8(path: path, maxPixel: size)
+            },
+            clusterProvider: { entries, threshold, minGroupSize, mode, onProgress in
+                try ClusterEngine.clusterByHash(
+                    entries: entries, threshold: threshold, minGroupSize: minGroupSize,
+                    mode: mode, onProgress: onProgress)
+            }
+        )
         let router = SessionCommandRouter(
             sessionService: SessionService(
                 sessionStore: sessionStore,
@@ -327,28 +372,13 @@ public final class SessionCommandRouter: CommandRouter {
             settingsAPI: settingsAPI,
             filterEngine: FilterEngine(database: database),
             navigationService: NavigationService(database: database),
-            similarityService: similarityService,
-            duplicateService: DuplicateService(
-                database: database,
-                thumbnailProvider: { path, size in
-                    RAWDecoder.pixels9x8(path: path, maxPixel: size)
-                },
-                clusterProvider: { entries, threshold, minGroupSize, mode, onProgress in
-                    try ClusterEngine.clusterByHash(
-                        entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-                        mode: mode, onProgress: onProgress)
-                }
-            ),
+            similarity: similarity,
+            duplicate: duplicate,
             assetStore: assetStore,
             faceKwService: resolvedFaceKwService,
             persons: persons,
             templates: templates,
-            qualityService: QualityService(
-                photoStore: photoStore,
-                database: database,
-                imageProvider: QualityService.defaultImageProvider,
-                statProvider: QualityService.defaultStat
-            ),
+            quality: quality,
             indexerService: IndexerService(
                 database: database,
                 sessionStore: sessionStore,
@@ -380,14 +410,14 @@ public final class SessionCommandRouter: CommandRouter {
     /// JobRunner 恢复 interrupted 任务时依赖 autoResume 注册表，故装配期
     /// 同步注册（autoResume 默认 true）。
     private func registerExecutors() async {
-        await jobRunner.registerExecutor(type: .similarityAnalyze) { [similarityService] job, context in
+        await jobRunner.registerExecutor(type: .similarityAnalyze) { [similarity] job, context in
             // TS similarity.ipc.ts:100-121：abort 时同步取消相似度占用
-            // （session 列仅在真正持有者取消时写入，见 SimilarityService.cancel）。
+            // （session 列仅在真正持有者取消时写入，见 SimilarityRuntime.cancel）。
             if context.signal.aborted {
-                try? await similarityService.cancel(sessionId: job.scopeId, markStatus: false)
+                try? await similarity.cancel(sessionId: job.scopeId, markStatus: false)
             }
             let checkpoint = job.checkpoint
-            try await similarityService.analyze(
+            try await similarity.analyze(
                 sessionId: job.scopeId,
                 threshold: checkpoint["threshold"]?.numberValue,
                 minGroupSize: checkpoint["minGroupSize"]?.numberValue,
@@ -400,10 +430,10 @@ public final class SessionCommandRouter: CommandRouter {
             return true
         }
 
-        await jobRunner.registerExecutor(type: .duplicateScan) { [duplicateService] job, context in
+        await jobRunner.registerExecutor(type: .duplicateScan) { [duplicate] job, context in
             // TS duplicate.ipc.ts:11-20：checkpoint.visualThreshold 为 number
             // 时透传，否则 undefined。
-            let result = try await duplicateService.scanDuplicates(
+            let result = try await duplicate.scanDuplicates(
                 sessionId: job.scopeId,
                 visualThreshold: job.checkpoint["visualThreshold"]?.numberValue.map(Int.init),
                 signal: context.signal,
@@ -439,9 +469,9 @@ public final class SessionCommandRouter: CommandRouter {
 
         // TS 源: quality.ipc.ts:7-12 —— quality.score executor（photoIds 从
         // checkpoint 还原，TS 非数组过滤语义）。
-        await jobRunner.registerExecutor(type: .qualityScore) { [qualityService] job, context in
+        await jobRunner.registerExecutor(type: .qualityScore) { [quality] job, context in
             let photoIds = job.checkpoint["photoIds"]?.arrayElements?.compactMap(\.stringValue)
-            return try await qualityService.analyze(
+            return try await quality.analyze(
                 sessionId: job.scopeId,
                 photoIds: photoIds,
                 context: context
@@ -580,19 +610,6 @@ public final class SessionCommandRouter: CommandRouter {
 
         // ── filter.*（3.6 服务层；TS 源 filter.ipc.ts）──
 
-        // ── sim.*（3.3 服务层；TS 源 similarity.ipc.ts）──
-
-        case "sim.cancel_analysis":
-            // similarity.ipc.ts:146-157 —— jobs.cancelScope + cancel(markStatus:false)，
-            // 同步返回 ok(true)。
-            let sessionId = try requiredString(params, "sessionId")
-            // cancel 为异步语义：立即返回 ok(true)，取消在后台完成（对齐 TS）。
-            Task { [jobRunner, similarityService] in
-                _ = try? await jobRunner.cancelScope(type: .similarityAnalyze, scopeId: sessionId)
-                try? await similarityService.cancel(sessionId: sessionId, markStatus: false)
-            }
-            return .bool(true)
-
         // ── assets.*（3.2 服务层；TS 源 assets.ipc.ts:9-14）──
 
 
@@ -721,34 +738,6 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return try GatherCore.JSONValue(from: conflicts)
 
-        case "sim.preview_writeback":
-            let sessionId = try requiredString(params, "sessionId")
-            let assignments = try validateSimilarityAssignments(params["assignments"])
-            let threshold = try optionalNumber(params, "threshold").map { Int($0) }
-            return try awaitSync {
-                try await self.buildSimilarityKeywordPreview(
-                    sessionId: sessionId, assignments: assignments, threshold: threshold)
-            }
-
-        case "sim.confirm_sync":
-            // similarity.ipc.ts:257-263 —— ok(true)。
-            let sessionId = try requiredString(params, "sessionId")
-            try awaitSync {
-                try await self.writebackService.confirmSync(sessionId: sessionId, module: "similarity")
-            }
-            return .bool(true)
-
-        case "sim.cleanup":
-            // similarity.ipc.ts:265-274 —— destructive。
-            guard confirmed(params) else {
-                throw BridgeError.badParams("WRITEBACK_CLEANUP_CONFIRM_REQUIRED")
-            }
-            let sessionId = try requiredString(params, "sessionId")
-            let result = try awaitSync {
-                try await self.writebackService.cleanup(sessionId: sessionId, module: "similarity")
-            }
-            return try GatherCore.JSONValue(from: result)
-
         // ── assets.*（TS 源 assets.ipc.ts）──
 
 
@@ -798,7 +787,7 @@ public final class SessionCommandRouter: CommandRouter {
             let isKept = optionalBool(params, "isKept") ?? true
             Task {
                 do {
-                    try await duplicateService.resolveMember(memberId: Int(memberId), isKept: isKept)
+                    try await duplicate.resolveMember(memberId: Int(memberId), isKept: isKept)
                     completion(WebResponse(ok: true, data: .bool(true))); return
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -817,7 +806,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    try await duplicateService.resolveGroup(groupId: Int(groupId), resolution: resolution)
+                    try await duplicate.resolveGroup(groupId: Int(groupId), resolution: resolution)
                     completion(WebResponse(ok: true, data: .bool(true))); return
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -1126,7 +1115,7 @@ public final class SessionCommandRouter: CommandRouter {
                 // quality.ipc.ts:25-30 —— photoIds 可选（validateStringArray 语义）。
                 let sessionId = try requiredString(params, "sessionId")
                 let photoIds = try optionalStringArray(params, "photoIds")
-                let results = try await qualityService.get(sessionId: sessionId, photoIds: photoIds)
+                let results = try await quality.get(sessionId: sessionId, photoIds: photoIds)
                 completion(WebResponse(ok: true, data: try await GatherCore.JSONValue(from: results))); return
 
             // ── metadata.*（TS 源 metadata.ipc.ts）──
@@ -1329,6 +1318,47 @@ public final class SessionCommandRouter: CommandRouter {
                 }
             }
 
+        // TS 源: similarity.ipc.ts:146-157 —— jobs.cancelScope +
+        // cancel(markStatus:false)，立即返回 ok(true)（取消在后台完成）。
+        case "sim.cancel_analysis":
+            guard let sessionId = try? requiredString(params, "sessionId") else {
+                completion(WebResponse(ok: false, error: "MISSING_PARAM:sessionId"))
+                return
+            }
+            Task { [jobRunner, similarity] in
+                _ = try? await jobRunner.cancelScope(type: .similarityAnalyze, scopeId: sessionId)
+                try? await similarity.cancel(sessionId: sessionId, markStatus: false)
+            }
+            completion(WebResponse(ok: true, data: .bool(true)))
+
+        // TS 源: similarity.ipc.ts:190-263 —— 写回预览计划（buildKeywordPreview）。
+        // 错误消息经 Self.errorMessage 与同步分支逐字一致。
+        case "sim.preview_writeback":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    let assignments = try validateSimilarityAssignments(params["assignments"])
+                    let threshold = try optionalNumber(params, "threshold").map { Int($0) }
+                    let preview = try await buildSimilarityKeywordPreview(
+                        sessionId: sessionId, assignments: assignments, threshold: threshold)
+                    completion(WebResponse(ok: true, data: preview))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
+        // TS 源: similarity.ipc.ts:257-263 —— ok(true)。
+        case "sim.confirm_sync":
+            Task {
+                do {
+                    let sessionId = try requiredString(params, "sessionId")
+                    try await writebackService.confirmSync(sessionId: sessionId, module: "similarity")
+                    completion(WebResponse(ok: true, data: .bool(true)))
+                } catch {
+                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
+                }
+            }
+
         // TS 源: similarity.ipc.ts:169-187 —— 阈值重聚类（await worker）。
         case "sim.recluster":
             guard let sessionId = try? requiredString(params, "sessionId") else {
@@ -1347,8 +1377,8 @@ public final class SessionCommandRouter: CommandRouter {
                     } else {
                         groupingMode = .global
                     }
-                    try validateSimilarityParameters(threshold: threshold, minGroupSize: minGroupSize)
-                    let result = try await similarityService.recluster(
+                    try SimilarityValidation.validate(threshold: threshold, minGroupSize: minGroupSize)
+                    let result = try await similarity.recluster(
                         sessionId: sessionId,
                         threshold: threshold,
                         minGroupSize: minGroupSize,
@@ -1378,7 +1408,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    try validateSimilarityParameters(
+                    try SimilarityValidation.validate(
                         threshold: threshold ?? settings.number("default_threshold", default: 10),
                         minGroupSize: minGroupSize ?? settings.number("default_min_group_size", default: 2)
                     )
@@ -1627,7 +1657,8 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let data = try GatherCore.JSONValue(from: await duplicateService.getGroups(sessionId: sessionId))
+                    let groups = try await duplicate.getGroups(sessionId: sessionId)
+                    let data = try GatherCore.JSONValue(from: groups)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2159,7 +2190,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let threshold = try optionalNumber(params, "threshold").map(Int.init)
                 Task {
                     do {
-                        guard let result = try await similarityService.getResult(
+                        guard let result = try await similarity.getResult(
                             sessionId: sessionId, threshold: threshold) else {
                             completion(WebResponse(ok: true, data: .null))
                             return
@@ -2193,7 +2224,7 @@ public final class SessionCommandRouter: CommandRouter {
                 Task {
                     do {
                         if let threshold,
-                           !(try await similarityService.hasResult(sessionId: sessionId, threshold: threshold)) {
+                           !(try await similarity.hasResult(sessionId: sessionId, threshold: threshold)) {
                             throw BridgeError.badParams("SIM_THRESHOLD_NO_RESULTS")
                         }
                         let pendingItems = try await writebackService.getItems(
@@ -3595,7 +3626,7 @@ public final class SessionCommandRouter: CommandRouter {
         assignments: [SimilarityKeywordAssignment],
         threshold: Int?
     ) async throws -> GatherCore.JSONValue {
-        let result = try await similarityService.getResult(sessionId: sessionId, threshold: threshold)
+        let result = try await similarity.getResult(sessionId: sessionId, threshold: threshold)
         guard let result else {
             throw BridgeError.badParams(threshold == nil ? "SIM_ANALYSIS_MISSING" : "SIM_THRESHOLD_NO_RESULTS")
         }
@@ -3669,14 +3700,14 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return filterError.description
         }
-        if let similarityError = error as? SimilarityServiceError { return similarityError.gatherCode.rawValue }
+        if let similarityError = error as? SimilarityError { return similarityError.gatherCode.rawValue }
         if let assetError = error as? PhotoAssetResolverError { return assetError.gatherCode.rawValue }
-        if let duplicateError = error as? DuplicateServiceError {
+        if let duplicateError = error as? DuplicateError {
             return duplicateError.description
         }
         if let faceKwError = error as? FaceKwServiceError { return faceKwError.description }
         if let templateError = error as? TemplateError { return templateError.description }
-        if let qualityError = error as? QualityServiceError { return qualityError.description }
+        if let qualityError = error as? QualityError { return qualityError.description }
         if let indexerError = error as? IndexerServiceError { return indexerError.description }
         if let writebackError = error as? WritebackServiceError { return writebackError.description }
         if let metadataSyncError = error as? MetadataSyncError { return metadataSyncError.description }

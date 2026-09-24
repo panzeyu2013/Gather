@@ -550,4 +550,19 @@ struct SimilarityRuntimeGetResultTests {
             try await runtime.getResult(sessionId: "session")
         }
     }
+
+    @Test("recluster rejects non-integer thresholds like TS")
+    func reclusterRejectsFractionalThreshold() async throws {
+        // 承接旧 Services/SimilarityServiceTests.reclusterRejectsFractionalThreshold：
+        // 已有结果行时，小数阈值仍在校验层被拒（而非走到 noResults）。
+        let harness = try await simRuntimeMakeHarness()
+        _ = try await SQLiteSimilarityStore(database: try SQLiteDatabase(path: harness.dbPath)).replaceResult(
+            sessionId: harness.sessionId, groupsJson: "{\"groups\":[]}",
+            statsJson: "{}", threshold: 10, minGroupSize: 2, memberships: []
+        )
+
+        await #expect(throws: SimilarityError.thresholdInvalid) {
+            try await harness.runtime.recluster(sessionId: harness.sessionId, threshold: 10.5, minGroupSize: 2)
+        }
+    }
 }

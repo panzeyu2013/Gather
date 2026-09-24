@@ -54,7 +54,7 @@ extension SimilarityDataProvider {
     /// TS: captureOneApi.syncState 的模块级数据源 —— 相似度模块 outbox 行
     /// （sim.writeback_items，每行 xmpStatus）。默认实现返回空（测试 stub；
     /// 同步状态仅 Live 侧有意义）。
-    public func syncStateItems(sessionId: String) throws -> [WritebackItem] { [] }
+    public func syncStateItems(sessionId: String) async throws -> [WritebackItem] { [] }
 }
 
 /// 真实实现：同进程直连 SessionCommandRouter（sim.* 已接线命令以路由为
@@ -108,8 +108,16 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
     }
 
     public func cancelAnalysis(sessionId: String) async throws -> Bool {
-        let response = try router.execute("sim.cancel_analysis", params: ["sessionId": .string(sessionId)])
-        return response.boolValue ?? false
+        // W2c：sim.cancel_analysis 已迁 executeAsync（routers 无同步分支）。
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+            router.executeAsync("sim.cancel_analysis", params: ["sessionId": .string(sessionId)]) { response in
+                if response.ok {
+                    continuation.resume(returning: response.data?.boolValue ?? false)
+                } else {
+                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_CANCEL_FAILED"))
+                }
+            }
+        }
     }
 
     public func recluster(
@@ -228,10 +236,20 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         }
     }
 
-    /// 同步状态数据源：sim.writeback_items（模块 outbox 行，xmpStatus 计数）。
-    public func syncStateItems(sessionId: String) throws -> [WritebackItem] {
-        try router.execute("sim.writeback_items", params: ["sessionId": .string(sessionId)])
-            .decoded(as: [WritebackItem].self)
+    /// 同步状态数据源：sim.writeback_items（模块 outbox 行，xmpStatus 计数；
+    /// W2c 该命令为异步路由面，同步 execute 会 NOT_IMPLEMENTED，故 async 直连）。
+    public func syncStateItems(sessionId: String) async throws -> [WritebackItem] {
+        let data: GatherCore.JSONValue = try await withCheckedThrowingContinuation { continuation in
+            router.executeAsync("sim.writeback_items", params: ["sessionId": .string(sessionId)]) { response in
+                guard response.ok, let data = response.data else {
+                    continuation.resume(throwing: RouterCommandError(
+                        message: response.error ?? "SIM_WRITEBACK_ITEMS_FAILED"))
+                    return
+                }
+                continuation.resume(returning: data)
+            }
+        }
+        return try data.decoded(as: [WritebackItem].self)
     }
 }
 
@@ -388,7 +406,7 @@ public final class SimilarityViewModel {
             phase = .error(text)
             errorMessage = text
         }
-        refreshSyncState()
+        await refreshSyncState()
         // TS 挂载恢复：jobs.list 中残留 similarity.analyze 活跃任务 →
         // 恢复分析中状态与进度（轮询代替 jobs:progress 推送）；列表查询
         // 失败不静默吞错，写入 errorMessage 可见（审计 7a）。
@@ -755,7 +773,7 @@ public final class SimilarityViewModel {
         isSyncBusy = true
         defer {
             isSyncBusy = false
-            refreshSyncState()
+            await refreshSyncState()
         }
         do {
             // TS: preview ?? await previewWriteback(...)（无预览时自动补一次）。
@@ -793,7 +811,7 @@ public final class SimilarityViewModel {
         isSyncBusy = true
         defer {
             isSyncBusy = false
-            refreshSyncState()
+            await refreshSyncState()
         }
         do {
             let nextResult = try await provider.retryFailedWriteback(sessionId: sessionId)
@@ -813,7 +831,7 @@ public final class SimilarityViewModel {
         isSyncBusy = true
         defer {
             isSyncBusy = false
-            refreshSyncState()
+            await refreshSyncState()
         }
         do {
             try await captureOne.reloadMetadata(sessionId: sessionId)
@@ -837,7 +855,7 @@ public final class SimilarityViewModel {
             errorMessage = text
             writebackMessage = String(format: GatherLocalization.l("确认失败：%@"), text)
         }
-        refreshSyncState()
+        await refreshSyncState()
     }
 
     public func cleanupKeywordWriteback() async {
@@ -852,7 +870,7 @@ public final class SimilarityViewModel {
             errorMessage = text
             writebackMessage = String(format: GatherLocalization.l("清理失败：%@"), text)
         }
-        refreshSyncState()
+        await refreshSyncState()
     }
 
     // MARK: C1 同步状态机（TS utils/c1-sync-controls.ts 移植，2.3.5 P1）
@@ -860,10 +878,10 @@ public final class SimilarityViewModel {
     /// 重拉同步状态视图（sim.writeback_items 行计数 → aggregateSessionState）；
     /// 失败保留上次视图（未知状态下按钮按保守策略全部禁用），但给出可见
     /// 提示，不再静默吞错（审计 7c）。
-    public func refreshSyncState() {
+    public func refreshSyncState() async {
         let items: [WritebackItem]
         do {
-            items = try provider.syncStateItems(sessionId: sessionId)
+            items = try await provider.syncStateItems(sessionId: sessionId)
         } catch {
             errorMessage = Self.message(for: error)
             return

@@ -1,7 +1,11 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Services/SimilarityIncrementalServiceTests.swift
-// 增量聚类的服务层接线（ROADMAP 1.3）：参数匹配 → 邻域增量（不调用全量聚类）、
-// 版本号递增、连续增量计数、收敛间隔到期后的全量重聚类、阈值变化与 sequential
-// 模式的退化路径。
+// desktop/native/gather-core/Tests/GatherCoreTests/Runtime/Similarity/SimilarityRuntimeIncrementalTests.swift
+// W2c：SimilarityRuntime 增量聚类路径 —— 承接旧
+// Services/SimilarityIncrementalServiceTests.swift 的 7 用例（旧服务/旧测试随
+// W2c 删除），断言逐条保留：全量/增量路径的聚类调用计数、版本号/增量计数/
+// 成员数、收敛间隔全量、阈值变化全量、sequential 清状态、状态与结果一致。
+//
+// 差异：SimilarityService(photoStore:...) → SimilarityRuntime(Dependencies/
+// Providers 注入)；clusterVersion → clusterMeta。
 //
 // 夹具策略：为照片预置 checksum 尺寸/mtime 与 similarity_hashes 行，使 analyze
 // 走 hash 复用路径（不触碰真实文件与解码），从而精确控制哈希与分量结构。
@@ -10,14 +14,8 @@ import Foundation
 import Testing
 @testable import GatherCore
 
-private func makeTempPhotoStore() async throws -> any PhotoStore {
-    let (database, _) = try await makeMigratedStoreDatabase(label: "photos")
-    return SQLitePhotoStore(database: database)
-}
-
-
 /// 统计全量聚类调用次数（增量路径不得触发）。
-private final class ClusterCallCounter {
+private final class ClusterCallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
 
@@ -36,7 +34,7 @@ private final class ClusterCallCounter {
 
 private struct IncrementalHarness {
     let db: SQLiteDatabase
-    let service: SimilarityService
+    let runtime: SimilarityRuntime
     let sessionStore: any SessionStore
     let similarityStore: SQLiteSimilarityStore
     let counter: ClusterCallCounter
@@ -72,23 +70,27 @@ private func makeIncrementalHarness(settings: [String: Double] = [:]) async thro
     try await insertSession(db, sessionId)
     let counter = ClusterCallCounter()
     let similarityStore = SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath))
-    let service = SimilarityService(
-        photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
-        sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
-        similarityStore: similarityStore,
-        database: try SQLiteDatabase(path: dbPath),
-        getNumber: { key, defaultValue in settings[key] ?? defaultValue },
-        thumbnailProvider: { _, _ in nil },
-        clusterProvider: { entries, threshold, minGroupSize, mode, onProgress in
-            counter.increment()
-            return try ClusterEngine.clusterByHash(
-                entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-                mode: mode, onProgress: onProgress
-            )
-        }
+    let runtime = SimilarityRuntime(
+        dependencies: SimilarityRuntime.Dependencies(
+            photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
+            similarityStore: similarityStore,
+            jobStore: try SQLiteJobStore(database: try SQLiteDatabase(path: dbPath)),
+            getNumber: { key, defaultValue in settings[key] ?? defaultValue }
+        ),
+        providers: SimilarityRuntime.Providers(
+            thumbnail: { _, _ in nil },
+            cluster: { entries, threshold, minGroupSize, mode, onProgress in
+                counter.increment()
+                return try ClusterEngine.clusterByHash(
+                    entries: entries, threshold: threshold, minGroupSize: minGroupSize,
+                    mode: mode, onProgress: onProgress
+                )
+            }
+        )
     )
     return IncrementalHarness(
-        db: db, service: service, sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
+        db: db, runtime: runtime, sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: similarityStore, counter: counter, sessionId: sessionId
     )
 }
@@ -102,11 +104,11 @@ private let base: UInt64 = 0xAAAA_AAAA_AAAA_AAAA
 private let outlier: UInt64 = 0x5555_5555_5555_5555
 
 private func analyze(_ harness: IncrementalHarness, threshold: Double = 10) async throws {
-    try await harness.service.analyze(sessionId: harness.sessionId, threshold: threshold, minGroupSize: 2)
+    try await harness.runtime.analyze(sessionId: harness.sessionId, threshold: threshold, minGroupSize: 2)
 }
 
-@Suite("SimilarityService 增量聚类路径")
-struct SimilarityIncrementalServiceTests {
+@Suite("SimilarityRuntime 增量聚类路径")
+struct SimilarityRuntimeIncrementalTests {
     @Test("首次分析全量并落状态，新增照片后走增量且版本递增")
     func incrementalPathSkipsFullClustering() async throws {
         let harness = try await makeIncrementalHarness()
@@ -117,7 +119,7 @@ struct SimilarityIncrementalServiceTests {
 
         try await analyze(harness)
         #expect(harness.counter.count == 1, "首次分析应全量聚类")
-        let first = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
+        let first = try #require(try await harness.runtime.clusterMeta(sessionId: harness.sessionId))
         #expect(first.version == 1)
         #expect(first.incrementalUpdates == 0)
         #expect(first.memberCount == 4)
@@ -128,13 +130,13 @@ struct SimilarityIncrementalServiceTests {
         try await addPhotoWithHash(harness.db, "p5", hash: hex(base ^ 0b111111))
         try await analyze(harness)
         #expect(harness.counter.count == 1, "增量路径不得调用全量聚类")
-        let second = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
+        let second = try #require(try await harness.runtime.clusterMeta(sessionId: harness.sessionId))
         #expect(second.version == 2)
         #expect(second.incrementalUpdates == 1)
         #expect(second.memberCount == 5)
 
         // p4 是离群照片：新增 p5 后成组的是 {p1, p2, p3, p5}（4 张），p4 仍未成组。
-        let result = try #require(try await harness.service.getResult(sessionId: harness.sessionId))
+        let result = try #require(try await harness.runtime.getResult(sessionId: harness.sessionId))
         #expect(result.groups.count == 1)
         #expect(result.groups[0].count == 4)
         #expect(result.ungrouped.count == 1)
@@ -152,11 +154,11 @@ struct SimilarityIncrementalServiceTests {
         try await removePhoto(harness.db, "p1")
         try await analyze(harness)
         #expect(harness.counter.count == 1, "移除也走增量")
-        let meta = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
+        let meta = try #require(try await harness.runtime.clusterMeta(sessionId: harness.sessionId))
         #expect(meta.version == 2)
         #expect(meta.memberCount == 2)
 
-        let result = try #require(try await harness.service.getResult(sessionId: harness.sessionId))
+        let result = try #require(try await harness.runtime.getResult(sessionId: harness.sessionId))
         #expect(result.groups.count == 1)
         #expect(result.groups[0].count == 2)
     }
@@ -173,10 +175,10 @@ struct SimilarityIncrementalServiceTests {
         try await updateHash(harness.db, "p3", hash: hex(base ^ 0b111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
-        let result = try #require(try await harness.service.getResult(sessionId: harness.sessionId))
+        let result = try #require(try await harness.runtime.getResult(sessionId: harness.sessionId))
         #expect(result.groups.count == 1)
         #expect(result.groups[0].count == 3)
-        let meta = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
+        let meta = try #require(try await harness.runtime.clusterMeta(sessionId: harness.sessionId))
         #expect(meta.version == 2)
     }
 
@@ -187,23 +189,23 @@ struct SimilarityIncrementalServiceTests {
         try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
-        await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.incrementalUpdates == 0)
+        await #expect(try await harness.runtime.clusterMeta(sessionId: harness.sessionId)?.incrementalUpdates == 0)
 
         try await addPhotoWithHash(harness.db, "p3", hash: hex(base ^ 0b111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
-        await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.incrementalUpdates == 1)
+        await #expect(try await harness.runtime.clusterMeta(sessionId: harness.sessionId)?.incrementalUpdates == 1)
 
         try await addPhotoWithHash(harness.db, "p4", hash: hex(base ^ 0b1111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
-        await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.incrementalUpdates == 2)
+        await #expect(try await harness.runtime.clusterMeta(sessionId: harness.sessionId)?.incrementalUpdates == 2)
 
         // 第三次增量：达到间隔 → 全量收敛，计数清零、版本继续递增。
         try await addPhotoWithHash(harness.db, "p5", hash: hex(base ^ 0b11111))
         try await analyze(harness)
         #expect(harness.counter.count == 2, "达到收敛间隔应触发全量重聚类")
-        let meta = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
+        let meta = try #require(try await harness.runtime.clusterMeta(sessionId: harness.sessionId))
         #expect(meta.incrementalUpdates == 0)
         #expect(meta.version == 4)
     }
@@ -215,17 +217,17 @@ struct SimilarityIncrementalServiceTests {
         try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11111))
         try await analyze(harness)
         #expect(harness.counter.count == 1)
-        await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.paramThreshold == 10)
+        await #expect(try await harness.runtime.clusterMeta(sessionId: harness.sessionId)?.paramThreshold == 10)
 
-        _ = try await harness.service.recluster(sessionId: harness.sessionId, threshold: 4, minGroupSize: 2)
+        _ = try await harness.runtime.recluster(sessionId: harness.sessionId, threshold: 4, minGroupSize: 2)
         #expect(harness.counter.count == 2, "阈值变化必须全量重聚类")
-        let meta = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
+        let meta = try #require(try await harness.runtime.clusterMeta(sessionId: harness.sessionId))
         #expect(meta.paramThreshold == 4)
         #expect(meta.incrementalUpdates == 0)
         #expect(meta.version == 2)
 
         // 变回原阈值：参数不匹配 → 仍走全量，而不是复用 4 的状态。
-        _ = try await harness.service.recluster(sessionId: harness.sessionId, threshold: 10, minGroupSize: 2)
+        _ = try await harness.runtime.recluster(sessionId: harness.sessionId, threshold: 10, minGroupSize: 2)
         #expect(harness.counter.count == 3)
     }
 
@@ -235,18 +237,18 @@ struct SimilarityIncrementalServiceTests {
         try await addPhotoWithHash(harness.db, "p1", hash: hex(base))
         try await addPhotoWithHash(harness.db, "p2", hash: hex(base ^ 0b11))
         try await analyze(harness)
-        await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId) != nil)
+        await #expect(try await harness.runtime.clusterMeta(sessionId: harness.sessionId) != nil)
 
-        try await harness.service.analyze(
+        try await harness.runtime.analyze(
             sessionId: harness.sessionId, threshold: 10, minGroupSize: 2, groupingMode: .sequential
         )
         #expect(harness.counter.count == 2)
-        await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId) == nil, "sequential 模式不保留增量状态")
+        await #expect(try await harness.runtime.clusterMeta(sessionId: harness.sessionId) == nil, "sequential 模式不保留增量状态")
 
         // 回到 global：状态缺失 → 全量重建。
         try await analyze(harness)
         #expect(harness.counter.count == 3)
-        await #expect(try await harness.service.clusterVersion(sessionId: harness.sessionId)?.groupingMode == "global")
+        await #expect(try await harness.runtime.clusterMeta(sessionId: harness.sessionId)?.groupingMode == "global")
     }
 
     @Test("状态行与结果一致：全量重算的划分与增量结果相同")
@@ -264,11 +266,11 @@ struct SimilarityIncrementalServiceTests {
         // 再跑一次：无变化时增量更新为幂等（版本递增、划分不变）。
         try await analyze(harness)
         #expect(harness.counter.count == 1)
-        let meta = try #require(try await harness.service.clusterVersion(sessionId: harness.sessionId))
+        let meta = try #require(try await harness.runtime.clusterMeta(sessionId: harness.sessionId))
         #expect(meta.version == 2)
         #expect(meta.incrementalUpdates == 1)
 
-        let result = try #require(try await harness.service.getResult(sessionId: harness.sessionId))
+        let result = try #require(try await harness.runtime.getResult(sessionId: harness.sessionId))
         #expect(result.groups.count == 2)
         #expect(result.groups.map(\.count).sorted() == [3, 3])
     }
