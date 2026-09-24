@@ -104,7 +104,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let indexer: IndexerRuntime
     private let metadataService: MetadataService
     private let metadataSyncCoordinator: MetadataSyncCoordinator
-    private let metadataMutationService: MetadataMutationService
+    private let metadataMutationRuntime: MetadataMutationRuntime
     private let writebackService: WritebackService
     private let albums: AlbumsAPI
     /// 3.4 Culling 模块（CullingRuntime：查询/写回端口注入真实协调器与写回服务）。
@@ -129,7 +129,7 @@ public final class SessionCommandRouter: CommandRouter {
         indexer: IndexerRuntime,
         metadataService: MetadataService,
         metadataSyncCoordinator: MetadataSyncCoordinator,
-        metadataMutationService: MetadataMutationService,
+        metadataMutationRuntime: MetadataMutationRuntime,
         writebackService: WritebackService,
         albums: AlbumsAPI,
         culling: CullingRuntime,
@@ -156,7 +156,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.indexer = indexer
         self.metadataService = metadataService
         self.metadataSyncCoordinator = metadataSyncCoordinator
-        self.metadataMutationService = metadataMutationService
+        self.metadataMutationRuntime = metadataMutationRuntime
         self.writebackService = writebackService
         self.albums = albums
         self.culling = culling
@@ -235,7 +235,7 @@ public final class SessionCommandRouter: CommandRouter {
             )
         )
         // 元数据写回链（TS di/init.ts 组合根）：XMP provider → 协调器 →
-        // 变更服务 → 元数据服务 / 写回服务（XMPProvider 为宿主接缝，3.4
+        // 变更 Runtime → 元数据服务 / 写回服务（XMPProvider 为宿主接缝，3.4
         // 正式 exiftool/XML-DOM 桥落位前用 SidecarXMPProvider 保证端到端可用）。
         let xmp = xmpProvider ?? SidecarXMPProvider()
         let assetResolver = PhotoAssetResolver(database: database, getSetting: { key, defaultValue in
@@ -252,11 +252,13 @@ public final class SessionCommandRouter: CommandRouter {
                 return settings.number(key, default: defaultValue)
             }
         )
-        let metadataMutationService = MetadataMutationService(
-            writebackStore: writebackStore,
-            xmp: xmp,
-            sync: metadataSyncCoordinator,
-            assetResolver: assetResolver
+        let metadataMutationRuntime = MetadataMutationRuntime(
+            dependencies: MetadataMutationRuntime.Dependencies(
+                writebackStore: writebackStore,
+                xmp: xmp,
+                sync: metadataSyncCoordinator,
+                assetResolver: assetResolver
+            )
         )
         // UI 对齐（§十一 11.9-1）：写回协调器 emitSummary 后广播 c1-sync-status
         // 事件，驱动 Culling/ControlCenter/Similarity 的同步状态即时刷新。
@@ -269,7 +271,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataStore: metadataStore,
             xmp: xmp,
             database: database,
-            mutations: metadataMutationService,
+            mutations: metadataMutationRuntime,
             assetResolver: assetResolver
         )
         let writebackService = WritebackService(
@@ -278,7 +280,7 @@ public final class SessionCommandRouter: CommandRouter {
             photoStore: photoStore,
             sessionStore: sessionStore,
             metadataSync: metadataSyncCoordinator,
-            metadataMutations: metadataMutationService,
+            metadataMutations: metadataMutationRuntime,
             metadataStore: metadataStore,
             assetResolver: assetResolver
         )
@@ -316,7 +318,7 @@ public final class SessionCommandRouter: CommandRouter {
                 faceStore: faceStore,
                 personStore: personStore,
                 metadataSync: metadataSyncCoordinator,
-                metadataMutations: metadataMutationService,
+                metadataMutations: metadataMutationRuntime,
                 writeback: writebackService,
                 getNumber: { key, defaultValue in
                     settings.number(key, default: defaultValue)
@@ -391,7 +393,7 @@ public final class SessionCommandRouter: CommandRouter {
             ),
             metadataService: metadataService,
             metadataSyncCoordinator: metadataSyncCoordinator,
-            metadataMutationService: metadataMutationService,
+            metadataMutationRuntime: metadataMutationRuntime,
             writebackService: writebackService,
             albums: albums,
             culling: culling,
