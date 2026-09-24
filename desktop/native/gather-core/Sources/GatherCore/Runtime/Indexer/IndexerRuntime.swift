@@ -3,6 +3,8 @@
 // idx2b3：迁入 scan 的只读阶段（目录遍历/扩展名过滤/排除规则/stat 与
 // contentChanged 判定/分块），产出候选变更列表；scan 仍抛 notImplemented，
 // 写库、缺失对账与 index_seq 推进留待后续步骤。
+// idxbase：asset_files 扫描基线经 AssetStore.assetFileStatsBySession 接入
+// classify（键为 photo.assetFileId → asset_files.id），.unchanged 现可产出。
 //
 // 边界（逐步填充）：
 // - 可变状态：cancelledSessions（cancel(sessionId:) 幂等登记，扫描实现迁入后
@@ -35,8 +37,8 @@ public enum IndexScanCandidateAction: String, Sendable, Equatable {
     case new
     /// 会话内已有同路径照片，stat/基线判定内容变化（尺寸与 checksum 留待写阶段）。
     case changed
-    /// 会话内已有同路径照片且基线证明未变（本步骤缺 asset_files checksum 基线，
-    /// 待只读 Store 方法补齐后才会产出）。
+    /// 会话内已有同路径照片且基线证明未变（asset_files 基线已接入；checksum
+    /// 非空时短路为 unchanged）。
     case unchanged
     /// stat 失败：目录列举与 stat 之间消失，后续对账为 missing。
     case missing
@@ -183,13 +185,15 @@ public actor IndexerRuntime {
             )
         }
 
-        // 只读基线：existingByPath 用于区分 new/existing。asset_files 的
-        // size/mtime/checksum 基线在旧实现里经 raw SQL 读取，本步骤禁新增
-        // SQL；故 contentChanged 只走照片自身 checksum stat 的回退分支。
+        // 只读基线：existingByPath 用于区分 new/existing；asset_files 的
+        // size/mtime/checksum 基线经 AssetStore 只读方法批量读取（键为
+        // asset_files.id = photo.assetFileId，与旧实现 fileStats[assetFileId]
+        // 的 join 键一致），本文件仍零 SQL。
         let existing = try await deps.photoStore.getBySessionProjection(sessionId: sessionId)
         let existingByPath: [String: PhotoProjection] = Dictionary(
             uniqueKeysWithValues: existing.map { (IndexAssembler.normalizedPath($0.filepath), $0) }
         )
+        let baselinesByAssetFileId = try await deps.assetStore.assetFileStatsBySession(sessionId: sessionId)
 
         var candidates: [IndexScanCandidate] = []
         candidates.reserveCapacity(filepaths.count + unreadableDirectories.count)
@@ -200,7 +204,11 @@ public actor IndexerRuntime {
         while offset < filepaths.count {
             let end = min(offset + IndexAssembler.scanBatchFiles, filepaths.count)
             for filepath in filepaths[offset..<end] {
-                candidates.append(classify(filepath: filepath, existingByPath: existingByPath))
+                candidates.append(classify(
+                    filepath: filepath,
+                    existingByPath: existingByPath,
+                    baselinesByAssetFileId: baselinesByAssetFileId
+                ))
             }
             offset = end
         }
@@ -214,7 +222,8 @@ public actor IndexerRuntime {
     /// 尺寸/checksum 读取属写阶段，本步骤不发）。
     private func classify(
         filepath: String,
-        existingByPath: [String: PhotoProjection]
+        existingByPath: [String: PhotoProjection],
+        baselinesByAssetFileId: [String: AssetFileScanBaseline]
     ) -> IndexScanCandidate {
         let normalized = IndexAssembler.normalizedPath(filepath)
         // stat 先行：目录列举与 stat 之间消失的文件不得进入发现集合，
@@ -228,21 +237,22 @@ public actor IndexerRuntime {
         guard let photo = existingByPath[normalized] else {
             return IndexScanCandidate(filepath: filepath, action: .new)
         }
-        // 仅当基线证明文件确实变化才算 content-changed：asset_files 基线
-        // （indexedFileSize/MtimeMs）需 raw SQL（禁新增 SQL），传 nil 即旧
-        // 实现「无 asset_files 行」的回退语义（照片自身索引 stat 作基线）。
+        // asset_files 基线按 photo.assetFileId 查表（键为 asset_files.id）；
+        // 无基线行时取 nil，退回照片自身索引 stat 作基线（旧实现同语义）。
+        let indexed = photo.assetFileId.flatMap { baselinesByAssetFileId[$0] }
+        // 仅当基线证明文件确实变化才算 content-changed：有 asset_files 基线
+        // 比 size/mtime，无基线走照片自身 checksum stat。
         let contentChanged = IndexAssembler.contentChanged(
-            indexedFileSize: nil,
-            indexedFileMtimeMs: nil,
+            indexedFileSize: indexed?.fileSize,
+            indexedFileMtimeMs: indexed?.mtimeMs,
             photoChecksumFileSize: photo.checksumFileSize,
             photoChecksumFileMtimeMs: photo.checksumFileMtimeMs,
             sourceSize: source.size,
             sourceMtimeMs: source.mtimeMs
         )
-        // 旧实现还有「有 asset_files 基线且 checksum 非空 → unchanged」的
-        // 短路；checksum 基线同样待只读 Store 方法补齐，故暂为 nil。
-        let indexedChecksum: String? = nil
-        if !contentChanged && photo.status != "missing" && !(indexedChecksum?.isEmpty ?? true) {
+        // 旧实现的短路：有 asset_files 基线且 checksum 非空 → unchanged
+        // （checksum 为空串/NULL 时仍需重算，不短路）。
+        if !contentChanged && photo.status != "missing" && !(indexed?.checksum?.isEmpty ?? true) {
             return IndexScanCandidate(filepath: filepath, action: .unchanged)
         }
         return IndexScanCandidate(filepath: filepath, action: .changed)
