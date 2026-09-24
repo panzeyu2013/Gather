@@ -235,7 +235,7 @@ private func makeHarness(
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
         writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
-        connection: db,
+        database: try SQLiteDatabase(path: dbPath),
         metadataSync: sync,
         metadataMutations: mutations,
         writeback: writeback,

@@ -374,7 +374,7 @@ public final class CullingService {
     private let photoStore: any PhotoStore
     private let similarityStore: any SimilarityStore
     private let writebackStore: any WritebackStore
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     private let metadataSync: any CullingSyncPort
     private let metadataMutations: any MetadataMutationPort
     private let writeback: any CullingWritebackPort
@@ -386,7 +386,7 @@ public final class CullingService {
         photoStore: any PhotoStore,
         similarityStore: any SimilarityStore,
         writebackStore: any WritebackStore,
-        connection: DBConnection,
+        database: SQLiteDatabase,
         metadataSync: any CullingSyncPort,
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
@@ -397,7 +397,7 @@ public final class CullingService {
         self.photoStore = photoStore
         self.similarityStore = similarityStore
         self.writebackStore = writebackStore
-        self.connection = connection
+        self.database = database
         self.metadataSync = metadataSync
         self.metadataMutations = metadataMutations
         self.writeback = writeback
@@ -667,7 +667,7 @@ public final class CullingService {
             metadataPatch["label"] = .string(colorLabel == .none ? "" : colorLabel.rawValue)
         }
 
-        try connection.transaction {
+        do {
             let existingRows = context?.decisionRows ?? [:]
 
             for photo in affectedPhotos {
@@ -815,7 +815,7 @@ public final class CullingService {
         )
         let batchCache = try await metadataStore.metadataBatch(photoIds: operationIds)
         let batchCacheRows = Dictionary(uniqueKeysWithValues: batchCache.map { ($0.photoId, $0) })
-        try connection.transaction {
+        do {
             for photoId in operationIds {
                 let current = currentRows[photoId]
                 results.append(try updateState(
@@ -962,7 +962,7 @@ public final class CullingService {
         var historyEntries: [CullingHistoryEntry] = []
         var xmpPatches: [String: (photoId: String, values: [String: JSONValue])] = [:]
         let writeSink = CullingHistorySink()
-        try connection.transaction {
+        do {
             for entry in entries {
                 let photo = photoById[entry.photoId]!
                 let existing = currentRows[entry.photoId]
@@ -1213,7 +1213,7 @@ public final class CullingService {
         let decisionByPhoto = Dictionary(uniqueKeysWithValues: decisions.map { ($0.photoId, $0) })
         // 决策与缓存读每次调用保持新鲜：renderer 在每次 update/undo/redo 后重取
         // summary，徽标必须反映刚完成的写入，故每会话缓存永不在此复用。
-        let cacheByPhoto = try loadSummaryCacheByPhoto(photos)
+        let cacheByPhoto = try await loadSummaryCacheByPhoto(photos)
         var kept = 0
         var rejected = 0
         var rated = 0
@@ -1387,7 +1387,7 @@ public final class CullingService {
     ) async throws -> (photos: [CullingPhotoRow], cursor: Int64?) {
         if scope == .filtered {
             let whereClause = buildFilteredWhere(sessionId: sessionId, filters: filters)
-            let groups = try connection.prepare("""
+            let groups = try await database.query("""
                 SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
                 FROM photos p
                 LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
@@ -1397,8 +1397,8 @@ public final class CullingService {
                 HAVING MIN(p.rowid) > ?
                 ORDER BY first_rowid
                 LIMIT ?
-              """).query(whereClause.params + [.int(afterRowId ?? 0), .int(Int64(limit))])
-            let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
+              """, whereClause.params + [.int(afterRowId ?? 0), .int(Int64(limit))])
+            let gids = groups.map { (gid: $0.values[$0.columnOrder[0]]?.textValue ?? "", firstRowid: $0.values[$0.columnOrder[1]]?.intValue ?? 0) }
             return (
                 photos: try await loadAssetRows(sessionId: sessionId, groups: gids),
                 cursor: gids.last?.firstRowid
@@ -1407,7 +1407,7 @@ public final class CullingService {
         if scope == .similarityGroup {
             let similarity = buildSimilarityClause(sessionId: sessionId, requestedGroupId: requestedGroupId)
             if let similarity {
-                let groups = try connection.prepare("""
+                let groups = try await database.query("""
                     SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
                     FROM photos p
                     WHERE p.session_id = ? AND \(similarity.sql) AND \(preferredRowPredicate())
@@ -1415,11 +1415,11 @@ public final class CullingService {
                     HAVING MIN(p.rowid) > ?
                     ORDER BY first_rowid
                     LIMIT ?
-                  """).query(
+                  """,
                     [.text(sessionId)] + similarity.params
                         + [.int(afterRowId ?? 0), .int(Int64(limit))]
                 )
-                let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
+                let gids = groups.map { (gid: $0.values[$0.columnOrder[0]]?.textValue ?? "", firstRowid: $0.values[$0.columnOrder[1]]?.intValue ?? 0) }
                 return (
                     photos: try await loadAssetRows(sessionId: sessionId, groups: gids),
                     cursor: gids.last?.firstRowid
@@ -1461,9 +1461,9 @@ public final class CullingService {
     private func buildFilteredWhere(
         sessionId: String,
         filters: CullingFilters?
-    ) -> (sql: String, params: [DBValue?]) {
+    ) -> (sql: String, params: [SQLiteValue]) {
         var clauses: [String] = ["p.session_id = ?"]
-        var params: [DBValue?] = [.text(sessionId)]
+        var params: [SQLiteValue] = [.text(sessionId)]
         if let filters {
             if filters.unreviewedOnly == true {
                 clauses.append("COALESCE(d.decision, 'pending') = 'pending'")
@@ -1483,7 +1483,7 @@ public final class CullingService {
             if let ratings = filters.ratings, !ratings.isEmpty {
                 let placeholders = ratings.map { _ in "?" }.joined(separator: ",")
                 clauses.append("COALESCE(d.rating, c.rating, 0) IN (\(placeholders))")
-                params.append(contentsOf: ratings.map { DBValue.real($0) })
+                params.append(contentsOf: ratings.map { SQLiteValue.real($0) })
             }
             if let colorLabels = filters.colorLabels, !colorLabels.isEmpty {
                 let placeholders = colorLabels.map { _ in "?" }.joined(separator: ",")
@@ -1530,7 +1530,7 @@ public final class CullingService {
     private func buildSimilarityClause(
         sessionId: String,
         requestedGroupId: String?
-    ) -> (sql: String, params: [DBValue?])? {
+    ) -> (sql: String, params: [SQLiteValue])? {
         if let requestedGroupId {
             let separator = requestedGroupId.lastIndex(of: ":")
             guard let separator else { return nil }
@@ -1580,15 +1580,15 @@ public final class CullingService {
         if scope == .similarityGroup {
             let similarity = buildSimilarityClause(sessionId: sessionId, requestedGroupId: requestedGroupId)
             if let similarity {
-                let row = try connection.prepare("""
+                let row = try await database.queryOne("""
                     SELECT COUNT(*) AS count
                     FROM (SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
                           FROM photos p
                           WHERE p.session_id = ? AND \(similarity.sql)
                             AND \(preferredRowPredicate())
                           GROUP BY gid)
-                  """).get([.text(sessionId)] + similarity.params)
-                return Int(row?[0].intValue ?? 0)
+                  """, [.text(sessionId)] + similarity.params)
+                return Int(row?.values[row!.columnOrder[0]]?.intValue ?? 0)
             }
             // 无法解析的组 id：无 SQL 谓词，按 JS 相似度映射计数（去重成员照片）。
             if let requestedGroupId {
@@ -1602,7 +1602,7 @@ public final class CullingService {
         }
         if scope == .filtered {
             let whereClause = buildFilteredWhere(sessionId: sessionId, filters: filters)
-            let row = try connection.prepare("""
+            let row = try await database.queryOne("""
                 SELECT COUNT(*) AS count
                 FROM (SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
                       FROM photos p
@@ -1610,8 +1610,8 @@ public final class CullingService {
                       LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
                       WHERE \(whereClause.sql)
                       GROUP BY gid)
-              """).get(whereClause.params)
-            return Int(row?[0].intValue ?? 0)
+              """, whereClause.params)
+            return Int(row?.values[row!.columnOrder[0]]?.intValue ?? 0)
         }
         return try await photoStore.countAssetsBySession(sessionId: sessionId)
     }
@@ -1631,6 +1631,19 @@ public final class CullingService {
         return rows
     }
 
+    /// 异步版本：SQL 已迁至 Store（await database.query）。
+    private func withChunkedIdsAsync<T>(
+        _ ids: [String],
+        query: ([String]) async throws -> [T]
+    ) async throws -> [T] {
+        var rows: [T] = []
+        for chunkStart in stride(from: 0, to: ids.count, by: Self.chunkSize) {
+            let chunk = Array(ids[chunkStart..<min(chunkStart + Self.chunkSize, ids.count)])
+            rows.append(contentsOf: try await query(chunk))
+        }
+        return rows
+    }
+
     /// TS: loadOutboxByPaths —— 按 xmp 路径批量读 outbox 行。
     private func loadOutboxByPaths(
         sessionId: String,
@@ -1641,27 +1654,27 @@ public final class CullingService {
     }
 
     /// TS: loadQualityByPhoto —— technical_quality 分析行 → 每照片质量对象。
-    private func loadQualityByPhoto(photos: [CullingPhotoRow]) throws -> [String: CullingQuality] {
+    private func loadQualityByPhoto(photos: [CullingPhotoRow]) async throws -> [String: CullingQuality] {
         var qualityByPhoto: [String: CullingQuality] = [:]
         if photos.isEmpty { return qualityByPhoto }
         struct QualityRow {
             let requestedPhotoId: String
             let resultJSON: String
         }
-        let qualityRows: [QualityRow] = try withChunkedIds(photos.map(\.id)) { chunk in
+        let qualityRows: [QualityRow] = try await withChunkedIdsAsync(photos.map(\.id)) { chunk in
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT p.id AS requested_photo_id, aa.result_json
                 FROM photos p
                 JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
                 WHERE aa.analysis_type = 'technical_quality'
                   AND p.id IN (\(placeholders))
                 ORDER BY aa.updated_at DESC
-              """).query(chunk.map { .text($0) })
+              """, chunk.map { .text($0) })
             return rows.map {
                 QualityRow(
-                    requestedPhotoId: $0[0].textValue ?? "",
-                    resultJSON: $0[1].textValue ?? "{}"
+                    requestedPhotoId: $0.values[$0.columnOrder[0]]?.textValue ?? "",
+                    resultJSON: $0.values[$0.columnOrder[1]]?.textValue ?? "{}"
                 )
             }
         }
@@ -1694,7 +1707,7 @@ public final class CullingService {
         photos: [CullingPhotoRow],
         sessionId: String,
         mode: LookupMode
-    ) throws -> (facesByPhoto: [String: [[Double]]], analysisMaxByPhoto: [String: Double]) {
+    ) async throws -> (facesByPhoto: [String: [[Double]]], analysisMaxByPhoto: [String: Double]) {
         struct FaceRow {
             let photoId: String
             let bbox: [Double]
@@ -1702,35 +1715,35 @@ public final class CullingService {
         }
         let faceRows: [FaceRow]
         if mode == .session {
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
                 FROM face_observations
                 WHERE session_id = ?
                 ORDER BY id
-              """).query([.text(sessionId)])
+              """, [.text(sessionId)])
             faceRows = rows.map {
                 FaceRow(
-                    photoId: $0[0].textValue ?? "",
-                    bbox: [$0[1].doubleValue ?? 0, $0[2].doubleValue ?? 0,
-                           $0[3].doubleValue ?? 0, $0[4].doubleValue ?? 0],
-                    analysisSignature: $0[5].textValue ?? ""
+                    photoId: $0.values[$0.columnOrder[0]]?.textValue ?? "",
+                    bbox: [$0.values[$0.columnOrder[1]]?.doubleValue ?? 0, $0.values[$0.columnOrder[2]]?.doubleValue ?? 0,
+                           $0.values[$0.columnOrder[3]]?.doubleValue ?? 0, $0.values[$0.columnOrder[4]]?.doubleValue ?? 0],
+                    analysisSignature: $0.values[$0.columnOrder[5]]?.textValue ?? ""
                 )
             }
         } else {
-            faceRows = try withChunkedIds(photos.map(\.id)) { chunk in
+            faceRows = try await withChunkedIdsAsync(photos.map(\.id)) { chunk in
                 let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-                let rows = try connection.prepare("""
+                let rows = try await database.query("""
                     SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
                     FROM face_observations
                     WHERE session_id = ? AND photo_id IN (\(placeholders))
                     ORDER BY id
-                  """).query([.text(sessionId)] + chunk.map { .text($0) })
+                  """, [.text(sessionId)] + chunk.map { .text($0) })
                 return rows.map {
                     FaceRow(
-                        photoId: $0[0].textValue ?? "",
-                        bbox: [$0[1].doubleValue ?? 0, $0[2].doubleValue ?? 0,
-                               $0[3].doubleValue ?? 0, $0[4].doubleValue ?? 0],
-                        analysisSignature: $0[5].textValue ?? ""
+                        photoId: $0.values[$0.columnOrder[0]]?.textValue ?? "",
+                        bbox: [$0.values[$0.columnOrder[1]]?.doubleValue ?? 0, $0.values[$0.columnOrder[2]]?.doubleValue ?? 0,
+                               $0.values[$0.columnOrder[3]]?.doubleValue ?? 0, $0.values[$0.columnOrder[4]]?.doubleValue ?? 0],
+                        analysisSignature: $0.values[$0.columnOrder[5]]?.textValue ?? ""
                     )
                 }
             }
@@ -1757,32 +1770,32 @@ public final class CullingService {
         photos: [CullingPhotoRow],
         sessionId: String,
         mode: LookupMode
-    ) throws -> [String: [String]] {
+    ) async throws -> [String: [String]] {
         struct PersonRow {
             let photoId: String
             let name: String
         }
         let personRows: [PersonRow]
         if mode == .session {
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT pp.photo_id, p.name
                 FROM person_photos pp
                 JOIN persons p ON p.id = pp.person_id
                 WHERE pp.session_id = ?
                 ORDER BY p.name
-              """).query([.text(sessionId)])
-            personRows = rows.map { PersonRow(photoId: $0[0].textValue ?? "", name: $0[1].textValue ?? "") }
+              """, [.text(sessionId)])
+            personRows = rows.map { PersonRow(photoId: $0.values[$0.columnOrder[0]]?.textValue ?? "", name: $0.values[$0.columnOrder[1]]?.textValue ?? "") }
         } else {
-            personRows = try withChunkedIds(photos.map(\.id)) { chunk in
+            personRows = try await withChunkedIdsAsync(photos.map(\.id)) { chunk in
                 let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-                let rows = try connection.prepare("""
+                let rows = try await database.query("""
                     SELECT pp.photo_id, p.name
                     FROM person_photos pp
                     JOIN persons p ON p.id = pp.person_id
                     WHERE pp.session_id = ? AND pp.photo_id IN (\(placeholders))
                     ORDER BY p.name
-                  """).query([.text(sessionId)] + chunk.map { .text($0) })
-                return rows.map { PersonRow(photoId: $0[0].textValue ?? "", name: $0[1].textValue ?? "") }
+                  """, [.text(sessionId)] + chunk.map { .text($0) })
+                return rows.map { PersonRow(photoId: $0.values[$0.columnOrder[0]]?.textValue ?? "", name: $0.values[$0.columnOrder[1]]?.textValue ?? "") }
             }
         }
         var peopleByPhoto: [String: [String]] = [:]
@@ -1835,22 +1848,22 @@ public final class CullingService {
         if mode == .session {
             if !sessionLookup.analysesLoaded {
                 sessionLookup.analysesLoaded = true
-                sessionLookup.qualityByPhoto = try loadQualityByPhoto(photos: photos)
-                let faces = try loadFaces(photos: photos, sessionId: sessionId, mode: .session)
+                sessionLookup.qualityByPhoto = try await loadQualityByPhoto(photos: photos)
+                let faces = try await loadFaces(photos: photos, sessionId: sessionId, mode: .session)
                 sessionLookup.facesByPhoto = faces.facesByPhoto
                 sessionLookup.analysisMaxByPhoto = faces.analysisMaxByPhoto
-                sessionLookup.peopleByPhoto = try loadPeople(photos: photos, sessionId: sessionId, mode: .session)
+                sessionLookup.peopleByPhoto = try await loadPeople(photos: photos, sessionId: sessionId, mode: .session)
             }
             qualityByPhoto = sessionLookup.qualityByPhoto
             facesByPhoto = sessionLookup.facesByPhoto
             analysisMaxByPhoto = sessionLookup.analysisMaxByPhoto
             peopleByPhoto = sessionLookup.peopleByPhoto
         } else {
-            qualityByPhoto = try loadQualityByPhoto(photos: photos)
-            let faces = try loadFaces(photos: photos, sessionId: sessionId, mode: .page)
+            qualityByPhoto = try await loadQualityByPhoto(photos: photos)
+            let faces = try await loadFaces(photos: photos, sessionId: sessionId, mode: .page)
             facesByPhoto = faces.facesByPhoto
             analysisMaxByPhoto = faces.analysisMaxByPhoto
-            peopleByPhoto = try loadPeople(photos: photos, sessionId: sessionId, mode: .page)
+            peopleByPhoto = try await loadPeople(photos: photos, sessionId: sessionId, mode: .page)
         }
         var linkedCounts: [String: Int] = [:]
         for photo in photos {
@@ -2218,7 +2231,7 @@ public final class CullingService {
     /// 计数循环只需要 rating/label 兜底，跳过 getBatch 携带的重 keywords JSON 列。
     private func loadSummaryCacheByPhoto(
         _ photos: [CullingPhotoRow]
-    ) throws -> [String: (rating: Int64, label: String?)] {
+    ) async throws -> [String: (rating: Int64, label: String?)] {
         var cacheByPhoto: [String: (rating: Int64, label: String?)] = [:]
         if photos.isEmpty { return cacheByPhoto }
         struct CacheLiteRow {
@@ -2226,15 +2239,15 @@ public final class CullingService {
             let rating: Int64
             let label: String?
         }
-        let rows: [CacheLiteRow] = try withChunkedIds(photos.map(\.id)) { chunk in
+        let rows: [CacheLiteRow] = try await withChunkedIdsAsync(photos.map(\.id)) { chunk in
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT photo_id, rating, label
                 FROM photo_metadata_cache
                 WHERE photo_id IN (\(placeholders))
-              """).query(chunk.map { .text($0) })
+              """, chunk.map { .text($0) })
             return rows.map {
-                CacheLiteRow(photoId: $0[0].textValue ?? "", rating: $0[1].intValue ?? 0, label: $0[2].textValue)
+                CacheLiteRow(photoId: $0.values[$0.columnOrder[0]]?.textValue ?? "", rating: $0.values[$0.columnOrder[1]]?.intValue ?? 0, label: $0.values[$0.columnOrder[2]]?.textValue)
             }
         }
         for row in rows { cacheByPhoto[row.photoId] = (row.rating, row.label) }

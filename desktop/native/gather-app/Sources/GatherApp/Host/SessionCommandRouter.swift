@@ -295,7 +295,7 @@ public final class SessionCommandRouter: CommandRouter {
             photoStore: photoStore,
             similarityStore: similarityStore,
             writebackStore: writebackStore,
-            connection: db,
+            database: database,
             metadataSync: metadataSyncCoordinator,
             metadataMutations: metadataMutationService,
             writeback: writebackService,
