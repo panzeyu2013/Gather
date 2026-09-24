@@ -1,6 +1,6 @@
 // Tests/GatherCoreTests/Metadata/MetadataWriterSummaryTests.swift
 // mwsum / W4-3a：MetadataWriter.getSummary 直测。
-// 语义基线：Services/MetadataSyncCoordinator.getSummary（轻投影 + outboxCounts 分组计数、
+// 语义基线：MetadataSyncRuntime.getSummary（轻投影 + outboxCounts 分组计数、
 // 逐行过滤兜底）。三个用例覆盖：空 outbox、混合状态分组、Store 抛错上抛。
 
 import Foundation

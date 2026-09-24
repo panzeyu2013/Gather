@@ -342,7 +342,7 @@ public final class WritebackService {
 
                 do {
                     // outbox 行（与协调器的在飞写入）按解析后的路径键控，等待同一键。
-                    try await self.metadataSync.waitForIdle(xmpPath: group.0, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
+                    try await self.metadataSync.waitForIdle(xmpPath: group.0, timeoutMs: MetadataSyncRuntime.defaultWaitTimeoutMs)
                     let keywordsBeforeWrite = try await self.xmp.readKeywords(photoPath: photoPath)
                     // 对当前文件状态重新合并，而不是信任 preview 快照：外部软件可能
                     // 在 preview 与 execute 之间加了关键词，写陈旧列表会静默丢弃那些改动。

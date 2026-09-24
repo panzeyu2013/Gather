@@ -46,13 +46,13 @@ public actor MetadataMutationRuntime: MetadataMutationPort {
     public struct Dependencies {
         public let writebackStore: any WritebackStore
         public let xmp: any XMPProvider
-        public let sync: MetadataSyncCoordinator
+        public let sync: MetadataSyncRuntime
         public let assetResolver: PhotoAssetResolver
 
         public init(
             writebackStore: any WritebackStore,
             xmp: any XMPProvider,
-            sync: MetadataSyncCoordinator,
+            sync: MetadataSyncRuntime,
             assetResolver: PhotoAssetResolver
         ) {
             self.writebackStore = writebackStore

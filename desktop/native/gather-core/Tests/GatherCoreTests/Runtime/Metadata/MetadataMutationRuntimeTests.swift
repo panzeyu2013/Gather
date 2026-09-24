@@ -20,9 +20,10 @@
 // - PhotoAssetResolver 是 final class（无协议端口，生产文件不可改），故按仓库标准
 //   基座 makeMigratedStoreDatabase 建迁移库（仓库统一用唯一临时文件库，未开
 //   :memory: 共享路径）并播入 photos 行，使 resolve 返回确定路径。
-// - MetadataSyncCoordinator 也是 final class：构造后立即 shutdown() 停在 stopped
-//   态，queuePhotoValues(schedule: true) 的 schedule 成为 no-op，避免后台基线/
-//   写回任务污染对 readAttributes 顺序的观测；测试观测面只剩串行链本身。
+// - MetadataSyncRuntime 是 actor：构造后立即 shutdown() 停在 stopped 态，
+//   queuePhotoValues(schedule: true) 的 schedule 成为 no-op（enqueueSchedule 见
+//   stopped 即返回），避免后台基线/写回任务污染对 readAttributes 顺序的观测；
+//   测试观测面只剩串行链本身。
 
 import Foundation
 import Testing
@@ -292,7 +293,11 @@ private func makeMutationRuntimeHarness(
         gatedPaths: gatedPaths,
         failingReads: failingReads
     )
-    let coordinator = MetadataSyncCoordinator(writebackStore: store, xmp: xmp, database: database)
+    let coordinator = MetadataSyncRuntime(
+        writebackStore: store,
+        xmp: xmp,
+        sessionStore: try SQLiteSessionStore(database: database)
+    )
     // 立即停机：Runtime 内 queuePhotoValues(schedule: true) 的排程成为 no-op。
     await coordinator.shutdown()
 

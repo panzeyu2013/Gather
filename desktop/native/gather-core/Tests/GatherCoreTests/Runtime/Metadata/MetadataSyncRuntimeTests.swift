@@ -1,5 +1,7 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Services/MetadataSyncCoordinatorTests.swift
-// MetadataSyncCoordinator 直测（补齐数据安全核心路径的协调器级覆盖）：
+// desktop/native/gather-core/Tests/GatherCoreTests/Runtime/Metadata/MetadataSyncRuntimeTests.swift
+// MetadataSyncRuntime 直测（R4：由 Tests/.../Services/MetadataSyncCoordinatorTests.swift
+// 迁入 Runtime/Metadata/，被测公开类型改名，4 tests / 1 suite 逐字搬迁；补齐数据安全
+// 核心路径的协调器级覆盖）：
 // 真实临时文件 + 真实 XMP 侧车读写（FakeFSXMPProvider），覆盖——
 // 1) 排程写回：写前备份 + 原子写入 + markWritten（baseValues/指纹落库）
 // 2) 外部修改 → 冲突检测（XMP_EXTERNAL_EDIT_CONFLICT）
@@ -95,7 +97,7 @@ private struct CoordinatorFixture {
     let xmpPath: String
     let outbox: SQLiteWritebackStore
     let provider: FakeFSXMPProvider
-    let coordinator: MetadataSyncCoordinator
+    let coordinator: MetadataSyncRuntime
 
     let sessionStore: any SessionStore
     init() async throws {
@@ -116,10 +118,11 @@ private struct CoordinatorFixture {
         _ = try await db.run("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", [.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
         let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
         let provider = FakeFSXMPProvider()
-        let coordinator = MetadataSyncCoordinator(
+        let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
+        let coordinator = MetadataSyncRuntime(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            database: try SQLiteDatabase(path: dbPath),
+            sessionStore: sessionStore,
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
@@ -130,7 +133,7 @@ private struct CoordinatorFixture {
         self.xmpPath = xmpPath
         self.outbox = outbox
         self.provider = provider
-        self.sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
+        self.sessionStore = sessionStore
         self.coordinator = coordinator
     }
 
@@ -158,7 +161,7 @@ private func waitForStatus(
 // MARK: - 测试
 
 @Suite(.serialized)
-struct MetadataSyncCoordinatorTests {
+struct MetadataSyncRuntimeTests {
     /// 1) 排程写回：备份原始侧车 → 写入新属性 → markWritten（指纹与基线落库）。
     @Test func scheduledWritebackBacksUpWritesAndMarksWritten() async throws {
         let fx = try await CoordinatorFixture()

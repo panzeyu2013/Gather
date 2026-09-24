@@ -1,20 +1,33 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/MetadataSyncCoordinator.swift
-// TS 源: desktop/src/main/services/metadata/metadata-sync-coordinator.ts（804 行，
+// desktop/native/gather-core/Sources/GatherCore/Runtime/Metadata/MetadataSyncRuntime.swift
+// R4：Services/MetadataSyncCoordinator.swift（982 行）→ Runtime 层 actor
+// （公开类型/方法原样搬迁，Services 旧文件同批删除）。TS 源:
+// desktop/src/main/services/metadata/metadata-sync-coordinator.ts（804 行，
 // 状态机逐字段对齐）
 //
-// 协调状态机：outbox 行（metadata_outbox）是唯一持久真相源；本服务负责
+// 协调状态机：outbox 行（metadata_outbox）是唯一持久真相源；本 Runtime 负责
 // 去抖调度 → 基线快照 → 冲突检测 → 备份写回 → 自动重试（5 档退避）→ 摘要推送。
 // 关键语义与 TS 逐字一致：
 // - schedule() 先失效 reload-ack 再排程（cleanup 不得恢复 C1 从未加载过的备份）
 // - processUntilCurrent 循环直至当前 revision 的 pending 被消费
-// - 全局写并发上限 2（MAX_CONCURRENCY），withSlot 排队
+// - 全局写并发上限 2（maxConcurrency），withSlot 排队
 // - 崩溃窗口：备份存在 + 指纹与基线不符 + 当前内容恰为 patch → 补写 markWritten
 // - 每次 schedule 即新写入活动 → clearReloadAckForXmpPath（数据丢失修复）
 // - confirm/cleanup 主侧守卫 requireReloadAck（GATHER_TEST_SKIP_RELOAD_ACK →
 //   skipReloadAck，测试注入）
 //
-// 并发注记：NSLock 只在同步辅助方法内使用（Swift 6 并发检查下 async 上下文
-// 直接 lock() 是错误），模式与 DuplicateService 一致。
+// R4 分层归位（本层零 SQL、零 @unchecked Sendable、零 NSLock）：
+// - reload-ack 清除/读取经 Store/SessionStore（clearReloadAckedAtForXmpPaths /
+//   reloadAckedAt）；裁决接受远端值的 SQL 经 Store/WritebackStore
+//   .applyAcceptedRemoteValues（W4-1 已下沉的 photos → photo_metadata_cache →
+//   culling_decisions 单事务命令，连带清理 pending 投影与 outbox 行）。
+// - 并发原语：actor 隔离取代 NSLock（原「async 上下文直接 lock()」告警消除）；
+//   批并发统一 Runtime/Support/ConcurrentMap.run（取代本地 batchAsync 与锁游标
+//   BatchCursor）；全局写槽位为 private actor SlotGate（continuation 唤醒）。
+// - 等待语义不变：waitForIdle 仍按原 20ms 步进观察 writing 行，shutdown 仍等待
+//   active/baseline 任务与槽位三空。
+//
+// 宿主路由层接线：MetadataSyncRuntime(writebackStore:xmp:sessionStore:...)，
+// 摘要推送经 `await setEventSink { ... }`（actor 边界唯一写入入口）。
 
 import Foundation
 
@@ -69,8 +82,10 @@ public protocol MetadataSyncPort: Sendable {
     func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult
 }
 
-/// TS: MetadataSyncCoordinator。
-public final class MetadataSyncCoordinator: MetadataSyncPort {
+/// TS: MetadataSyncCoordinator —— Runtime 层 actor（R4 由 Services/ 迁入）。
+/// actor 隔离取代原 NSLock + @unchecked 辅助类型：调度/基线/摘要计时器状态全部
+/// 是 actor 私有（不跨边界），跨边界只经 async 方法。
+public actor MetadataSyncRuntime: MetadataSyncPort {
     /// TS: MAX_CONCURRENCY。
     public static let maxConcurrency = 2
     /// TS: MAX_AUTOMATIC_ATTEMPTS。
@@ -89,20 +104,14 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
+    private let sessionStore: any SessionStore
     private let getNumber: (String, Double) -> Double
-    private let database: SQLiteDatabase
     /// TS: process.env.GATHER_TEST_SKIP_RELOAD_ACK === '1'（e2e/单测跳过 reload-ack 守卫）。
     public let skipReloadAck: Bool
 
     /// TS: eventSink（summary push 回调，宿主组合根接线）。
-    /// 审计 P1-并发：后台 writer 线程读、MainActor（Router 接线处）写 →
-    /// 锁保护；调用时先取副本再回调（锁内回调可能反向调用协调器而死锁）。
-    private let eventSinkLock = NSLock()
-    private var _eventSink: ((MetadataSyncSummary) -> Void)?
-    public var eventSink: ((MetadataSyncSummary) -> Void)? {
-        get { eventSinkLock.withLock { _eventSink } }
-        set { eventSinkLock.withLock { _eventSink = newValue } }
-    }
+    /// actor 隔离：只在 actor 内读；跨边界写入只有 setEventSink（无锁、无拷贝态）。
+    private var eventSink: (@Sendable (MetadataSyncSummary) -> Void)?
 
     /// TS: timers（Map<xmpPath, Timeout>）→ 可取消 Task。
     private var timers: [String: Task<Void, Never>] = [:]
@@ -118,72 +127,47 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     private var summaryEmitCounts: [String: Int] = [:]
     private var stopped = false
 
-    private let lock = NSLock()
     /// TS: activeCount + slotWaiters 的等价物（全局写并发上限）。
-    private let slotGate = SlotGate(max: MetadataSyncCoordinator.maxConcurrency)
+    private let slotGate = SlotGate(max: MetadataSyncRuntime.maxConcurrency)
 
     public init(
         writebackStore: any WritebackStore,
         xmp: any XMPProvider,
-        database: SQLiteDatabase,
+        sessionStore: any SessionStore,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         skipReloadAck: Bool = false
     ) {
         self.writebackStore = writebackStore
         self.xmp = xmp
-        self.database = database
+        self.sessionStore = sessionStore
         self.getNumber = getNumber
         self.skipReloadAck = skipReloadAck
+    }
+
+    /// 摘要推送接线（宿主组合根）：跨 actor 边界只有本方法。
+    public func setEventSink(_ sink: (@Sendable (MetadataSyncSummary) -> Void)?) {
+        eventSink = sink
     }
 
     // MARK: - 公开 API（与 TS 方法一一对应）
 
     /// TS: start —— 恢复被中断的行并重新排程 recoverable active 行。
-    public func start(eventSink: ((MetadataSyncSummary) -> Void)? = nil) async {
-        lock.lock()
+    public func start(eventSink: (@Sendable (MetadataSyncSummary) -> Void)? = nil) async {
         stopped = false
-        lock.unlock()
-        self.eventSink = eventSink
+        setEventSink(eventSink)
         // Orphan（创建会话已删除的行）有意保留：它们是可通过全局恢复 UI 找回的
         // XMP 工作，不是垃圾；但绝不在此自动重试（已删会话的 pending 工作不得
         // 在后台无 UI 记录地写 XMP）。Orphan 只能经 resolveOrphan('retry') 显式重试。
-        try? await writebackStore.recoverInterruptedOutbox()
+        _ = try? await writebackStore.recoverInterruptedOutbox()
         for row in (try? await writebackStore.recoverableActiveOutbox()) ?? [] {
             schedule(xmpPath: row.xmpPath, delayMs: 0)
         }
     }
 
     /// TS: schedule —— 排程一次写入；取消旧计时器并失效 reload-ack。
-    public func schedule(xmpPath: String, delayMs: Int? = nil) {
-        let stoppedNow = {
-            lock.lock()
-            defer { lock.unlock() }
-            return stopped
-        }()
-        if stoppedNow { return }
-        // 每次 schedule() 都是新写入活动（行刚插入或转入 pending/writing/failed）：
-        // 会话上一次 reload ack 不再覆盖该文件。在行可能变为 written/synced 之前
-        // 失效之，使渲染门控与 confirm/cleanup 守卫永远看不到陈旧 ack
-        // （数据丢失修复：cleanup 不得恢复 C1 从未加载过的备份）。
-        // ack 失效经 Task 排队（Store 读为 async）；先于写回完成前生效。
-        Task { await clearReloadAckForXmpPath(xmpPath) }
-        // TS: void this.ensureBaseline(xmpPath) —— 基线快照立即（去抖窗口前）启动。
-        Task { [weak self] in
-            guard let self else { return }
-            await self.ensureBaseline(xmpPath)
-        }
-        let delay = delayMs ?? max(0, Int(getNumber("metadata_write_debounce_ms", Double(MetadataSyncCoordinator.defaultWriteDebounceMs))))
-        lock.lock()
-        timers[xmpPath]?.cancel()
-        let task = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
-            guard let self else { return }
-            await self.ensureBaseline(xmpPath)
-            self.enqueueQueued(xmpPath)
-            self.drain()
-        }
-        timers[xmpPath] = task
-        lock.unlock()
+    /// nonisolated：宿主路由层与变更 Runtime 在同步上下文调用，实际登记交给 actor。
+    public nonisolated func schedule(xmpPath: String, delayMs: Int? = nil) {
+        Task { await self.enqueueSchedule(xmpPath: xmpPath, delayMs: delayMs) }
     }
 
     /// TS: getSummary —— 轻投影 + 分组计数（countBySession 为主，逐行过滤兜底）。
@@ -220,8 +204,9 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     /// TS: getConflicts —— 每个冲突行读一次磁盘上的 sidecar，并发与写入管线一致。
     public func getConflicts(sessionId: String) async throws -> [MetadataConflict] {
         let rows = try await writebackStore.outboxEntries(sessionId: sessionId).filter { $0.status == "conflict" }
-        return try await batchAsync(rows, concurrency: MetadataSyncCoordinator.maxConcurrency) { row in
-            let current = try await self.xmp.readAttributes(photoPath: row.photoPath)
+        let provider = xmp
+        return try await ConcurrentMap.run(rows, concurrency: MetadataSyncRuntime.maxConcurrency) { row in
+            let current = try await provider.readAttributes(photoPath: row.photoPath)
             let base = safeObject(row.baseValuesJSON)
             let local = safeObject(row.patchJSON)
             let dirtyFields = MetadataConflictFields.parseDirtyFields(row.dirtyFields)
@@ -265,10 +250,22 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         }
         let acceptRemote = dirtyFields.isEmpty
         if acceptRemote {
-            _ = try await writebackStore.discardWritebackPending(xmpPath: xmpPath)
-            // 保持 metadata 缓存与 culling 决策与用户选择保留的值一致，
-            // 否则 UI 会一直显示本地 rating/label/keywords。
-            await syncAcceptedRemoteValues(photoPath: row.photoPath, remote: current)
+            // 保持原 syncAcceptedRemoteValues 的语义：损坏的 sidecar 让
+            // readAttributes 返回空对象时，空读取不得清空先前有效缓存值
+            // （镜像 metadata.service 守卫）；其余情况把钳制/归一后的外部值交给
+            // Store 单事务命令（W4-1 下沉：photos → 缓存 upsert → 决策更新，
+            // 并连带清理 pending 投影与 outbox 行）。
+            if current.isEmpty && xmp.fileExists(TSPath.xmpSidecarPath(row.photoPath)) {
+                _ = try await writebackStore.discardWritebackPending(xmpPath: xmpPath)
+            } else {
+                _ = try await writebackStore.applyAcceptedRemoteValues(
+                    sessionId: sessionId,
+                    xmpPath: xmpPath,
+                    rating: Int(clampRating(current.rating)),
+                    label: sanitizeCullingLabel(current.label),
+                    keywords: current.keywords ?? []
+                )
+            }
         }
         let fingerprint = try await MetadataFingerprint.contentFingerprint(xmpPath)
         try await writebackStore.resolveOutboxConflict(
@@ -311,7 +308,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             schedule(xmpPath: xmpPath, delayMs: 0)
             return try await listOrphans()
         }
-        try await waitForIdle(xmpPath: xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
+        try await waitForIdle(xmpPath: xmpPath, timeoutMs: MetadataSyncRuntime.defaultWaitTimeoutMs)
         if action == .restore {
             if !row.backupPath.isEmpty {
                 if !xmp.fileExists(row.backupPath) {
@@ -380,25 +377,29 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         if !eligible.isEmpty { try await requireReloadAck(sessionId) }
         // 每行序列（waitForIdle → 指纹复核 → 恢复/删除 → 标记 cleaned）只在本行
         // 内有顺序敏感性，无关行可并行。
-        let results = try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row -> (deleted: Bool, error: String?) in
+        let store = writebackStore
+        let provider = xmp
+        let results = try await ConcurrentMap.run(
+            eligible, concurrency: MetadataSyncRuntime.maxConcurrency
+        ) { row -> (deleted: Bool, error: String?) in
             do {
                 // 快照后可能排入新变更：恢复/删除文件前等待在飞写入并复核行仍 synced，
                 // 以免并发编辑被静默还原。
-                try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
-                guard let latest = try await self.writebackStore.outboxEntry(xmpPath: row.xmpPath), latest.status == "synced" else { return (false, nil) }
+                try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncRuntime.defaultWaitTimeoutMs)
+                guard let latest = try await store.outboxEntry(xmpPath: row.xmpPath), latest.status == "synced" else { return (false, nil) }
                 let currentFingerprint = try await MetadataFingerprint.contentFingerprint(row.xmpPath)
                 if !latest.baseFingerprint.isEmpty && currentFingerprint != latest.baseFingerprint {
-                    try await self.writebackStore.markOutboxStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT")
+                    try await store.markOutboxStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT")
                     throw MetadataSyncError.externallyModified
                 }
                 if !latest.backupPath.isEmpty {
-                    guard self.xmp.fileExists(latest.backupPath) else { throw MetadataSyncError.backupMissing }
-                    try await self.xmp.restore(photoPath: latest.photoPath, backupPath: latest.backupPath)
-                } else if self.xmp.fileExists(latest.xmpPath) {
-                    try await self.xmp.removeFile(latest.xmpPath)
+                    guard provider.fileExists(latest.backupPath) else { throw MetadataSyncError.backupMissing }
+                    try await provider.restore(photoPath: latest.photoPath, backupPath: latest.backupPath)
+                } else if provider.fileExists(latest.xmpPath) {
+                    try await provider.removeFile(latest.xmpPath)
                 }
-                try await self.writebackStore.markOutboxStatus(xmpPath: latest.xmpPath, status: "cleaned")
-                try await self.writebackStore.deleteOutbox(xmpPath: latest.xmpPath)
+                try await store.markOutboxStatus(xmpPath: latest.xmpPath, status: "cleaned")
+                try await store.deleteOutbox(xmpPath: latest.xmpPath)
                 return (true, nil)
             } catch {
                 return (false, "\(row.xmpPath): \(String(describing: error))")
@@ -416,27 +417,29 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: finalizeSession —— 删除恢复备份并 revision 守卫地删除行。
     public func finalizeSession(sessionId: String) async throws -> MetadataSyncSummary {
-        let rows = try await self.writebackStore.outboxEntries(sessionId: sessionId)
+        let rows = try await writebackStore.outboxEntries(sessionId: sessionId)
         let eligible = rows.filter { $0.status == "synced" }
         if eligible.isEmpty && !rows.isEmpty {
             throw MetadataSyncError.confirmRequiresSync
         }
         // 行内顺序敏感（先删备份后删行：unlink 失败必须保留行以便重试，
         // 避免 .gather-backup 永久泄漏）；无关行可并行。
-        try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row in
-            try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
-            guard let latest = try await self.writebackStore.outboxEntry(xmpPath: row.xmpPath), latest.status == "synced" else { return }
+        let store = writebackStore
+        let provider = xmp
+        _ = try await ConcurrentMap.run(eligible, concurrency: MetadataSyncRuntime.maxConcurrency) { row in
+            try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncRuntime.defaultWaitTimeoutMs)
+            guard let latest = try await store.outboxEntry(xmpPath: row.xmpPath), latest.status == "synced" else { return }
             let backupPath = latest.backupPath
-            if !backupPath.isEmpty && self.xmp.fileExists(backupPath) {
-                try await self.xmp.removeFile(backupPath)
+            if !backupPath.isEmpty && provider.fileExists(backupPath) {
+                try await provider.removeFile(backupPath)
             }
             // revision 守卫删除：备份移除期间排入的变更会 bump revision，
             // 只删恰被 finalize 的行，新事务存活。
-            try await self.writebackStore.deleteOutboxByRevision(xmpPath: latest.xmpPath, revision: latest.revision)
+            try await store.deleteOutboxByRevision(xmpPath: latest.xmpPath, revision: latest.revision)
             // 存活的同路径行不得继续指向已删除的备份（后续写入会跳过新建备份、
             // cleanup 会因悬空路径失败），陈旧引用清除。
             if !backupPath.isEmpty {
-                try await self.writebackStore.clearOutboxBackupPath(xmpPath: latest.xmpPath, backupPath: backupPath)
+                try await store.clearOutboxBackupPath(xmpPath: latest.xmpPath, backupPath: backupPath)
             }
         }
         return try await emitSummary(sessionId: sessionId)
@@ -444,7 +447,6 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: shutdown —— 停排程、取消计时器、等待全部在飞任务与槽位等待者排空。
     public func shutdown() async {
-        lock.lock()
         stopped = true
         for timer in timers.values { timer.cancel() }
         timers.removeAll()
@@ -453,13 +455,13 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         summaryEmitCounts.removeAll()
         queued.removeAll()
         queuedSet.removeAll()
-        lock.unlock()
         // 快照后仍可能新增任务（槽位等待者被唤醒后启动自己的任务；并发
         // flushSession 可直接调用 runPath）——循环等待直至 active 为空
         // 且无 parked 等待者，保证 shutdown 返回后没有任务再碰数据库。
         while true {
             let tasks = snapshotTasks()
-            if tasks.isEmpty && slotGate.isIdle { break }
+            let slotIdle = await slotGate.isIdle
+            if tasks.isEmpty && slotIdle { break }
             await withTaskGroup(of: Void.self) { group in
                 for task in tasks {
                     group.addTask { await task.value }
@@ -474,8 +476,9 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     public func waitForIdle(xmpPath: String, timeoutMs: Int) async throws {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
         while true {
-            let activeTask = activeTask(for: xmpPath)
-            if let activeTask { await activeTask.value }
+            if let activeTask = activeTask(for: xmpPath) {
+                await activeTask.value
+            }
             guard let row = try? await writebackStore.outboxEntry(xmpPath: xmpPath), row.status == "writing" else { return }
             if Date() >= deadline {
                 GatherLogger.log("Timed out waiting for metadata writer: \(xmpPath)", level: .warn)
@@ -487,70 +490,68 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     // MARK: - 内部（与 TS 私有方法一一对应）
 
+    /// TS: schedule 的 actor 内登记段（去抖计时器 + 基线快照 + 摘要前置）。
+    private func enqueueSchedule(xmpPath: String, delayMs: Int?) async {
+        guard !stopped else { return }
+        // 每次 schedule() 都是新写入活动（行刚插入或转入 pending/writing/failed）：
+        // 会话上一次 reload ack 不再覆盖该文件。在行可能变为 written/synced 之前
+        // 失效之，使渲染门控与 confirm/cleanup 守卫永远看不到陈旧 ack
+        // （数据丢失修复：cleanup 不得恢复 C1 从未加载过的备份）。
+        await clearReloadAckForXmpPath(xmpPath)
+        // TS: void this.ensureBaseline(xmpPath) —— 基线快照立即（去抖窗口前）启动。
+        await ensureBaseline(xmpPath)
+        let delay = delayMs ?? max(0, Int(getNumber("metadata_write_debounce_ms", Double(MetadataSyncRuntime.defaultWriteDebounceMs))))
+        timers[xmpPath]?.cancel()
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
+            guard let self else { return }
+            await self.ensureBaseline(xmpPath)
+            await self.enqueueQueued(xmpPath)
+            await self.drain()
+        }
+        timers[xmpPath] = task
+    }
+
     private func drain() {
         while true {
-            let next: String? = {
-                lock.lock()
-                defer { lock.unlock() }
-                guard !stopped, !queued.isEmpty else { return nil }
-                let nextPath = queued.removeFirst()
-                queuedSet.remove(nextPath)
-                return nextPath
-            }()
-            guard let xmpPath = next else { return }
-            _ = runPath(xmpPath)
+            guard !stopped, !queued.isEmpty else { return }
+            let nextPath = queued.removeFirst()
+            queuedSet.remove(nextPath)
+            _ = runPath(nextPath)
         }
     }
 
+    @discardableResult
     private func runPath(_ xmpPath: String) -> Task<Void, Never> {
-        lock.lock()
-        guard !stopped else {
-            lock.unlock()
-            return Task {}
-        }
-        if let existing = active[xmpPath] {
-            lock.unlock()
-            return existing
-        }
+        guard !stopped else { return Task {} }
+        if let existing = active[xmpPath] { return existing }
         let task = Task { [weak self] in
             guard let self else { return }
-            do {
-                await self.withSlot {
-                    await self.processUntilCurrent(xmpPath)
-                }
-            } catch {
-                GatherLogger.log("Metadata sync failed for \(xmpPath): \(error)", level: .error)
+            await self.withSlot {
+                await self.processUntilCurrent(xmpPath)
             }
-            self.finishRun(xmpPath)
+            await self.finishRun(xmpPath)
         }
         active[xmpPath] = task
-        lock.unlock()
         return task
     }
 
     /// TS: runPath 的 .finally 段（从 active 摘除并继续 drain）。
     private func finishRun(_ xmpPath: String) {
-        lock.lock()
         active.removeValue(forKey: xmpPath)
-        lock.unlock()
         drain()
     }
 
     private func withSlot(_ operation: () async -> Void) async {
         await slotGate.acquire()
-        defer { slotGate.release() }
         await operation()
+        await slotGate.release()
     }
 
     /// TS: processUntilCurrent —— 循环处理直至当前 revision 消费完毕。
     private func processUntilCurrent(_ xmpPath: String) async {
         while true {
-            let stoppedNow = {
-                lock.lock()
-                defer { lock.unlock() }
-                return stopped
-            }()
-            if stoppedNow { return }
+            if stopped { return }
             await ensureBaseline(xmpPath)
             guard let row = try? await writebackStore.outboxEntry(xmpPath: xmpPath),
                   ["pending", "writing", "failed"].contains(row.status) else { return }
@@ -620,9 +621,9 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             let message = String(describing: error)
             try? await writebackStore.markOutboxStatus(xmpPath: row.xmpPath, status: "failed", errorMessage: message)
             let latest = try? await writebackStore.outboxEntry(xmpPath: row.xmpPath)
-            if let latest, latest.attemptCount < MetadataSyncCoordinator.maxAutomaticAttempts {
-                let retryIndex = min(Int(latest.attemptCount) - 1, MetadataSyncCoordinator.retryDelaysMs.count - 1)
-                schedule(xmpPath: row.xmpPath, delayMs: MetadataSyncCoordinator.retryDelaysMs[max(0, retryIndex)])
+            if let latest, latest.attemptCount < MetadataSyncRuntime.maxAutomaticAttempts {
+                let retryIndex = min(Int(latest.attemptCount) - 1, MetadataSyncRuntime.retryDelaysMs.count - 1)
+                schedule(xmpPath: row.xmpPath, delayMs: MetadataSyncRuntime.retryDelaysMs[max(0, retryIndex)])
             }
             await emitPathSummaries(row.xmpPath)
             return false
@@ -641,13 +642,13 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: ensureBaseline —— 单飞；行无基线时快照内容指纹与属性基线。
     private func ensureBaseline(_ xmpPath: String) async {
-        let task: Task<Void, Never> = {
-            lock.lock()
-            defer { lock.unlock() }
-            if let existing = baselineTasks[xmpPath] { return existing }
-            let task = Task { [weak self] in
+        let task: Task<Void, Never>
+        if let existing = baselineTasks[xmpPath] {
+            task = existing
+        } else {
+            let created = Task { [weak self] in
                 guard let self else { return }
-                guard let row = try? await writebackStore.outboxEntry(xmpPath: xmpPath), row.baseFingerprint.isEmpty else { return }
+                guard let row = try? await self.writebackStore.outboxEntry(xmpPath: xmpPath), row.baseFingerprint.isEmpty else { return }
                 let baselineFingerprint = (try? await MetadataFingerprint.contentFingerprint(row.xmpPath)) ?? ""
                 var baselineValues = JSONValue.object([:])
                 do {
@@ -655,49 +656,35 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 } catch {
                     // 损坏的 sidecar 在此被指纹化并由 writer 拒绝。
                 }
-                try? await writebackStore.initializeOutboxBaseline(
+                try? await self.writebackStore.initializeOutboxBaseline(
                     xmpPath: xmpPath,
                     baselineFingerprint: baselineFingerprint.isEmpty ? "__missing__" : baselineFingerprint,
                     baselineValues: baselineValues
                 )
             }
-            baselineTasks[xmpPath] = task
-            return task
-        }()
+            baselineTasks[xmpPath] = created
+            task = created
+        }
         await task.value
-        lock.lock()
         baselineTasks.removeValue(forKey: xmpPath)
-        lock.unlock()
     }
 
     private func emitSummary(sessionId: String) async throws -> MetadataSyncSummary {
         let summary = try await getSummary(sessionId: sessionId)
-        let sink = eventSinkLock.withLock { _eventSink }
-        sink?(summary)
+        eventSink?(summary)
         return summary
     }
 
     /// TS: clearReloadAck —— 新写入活动使会话 reload-ack 失效（耐久半部的
-    /// safeToCleanup 门，数据丢失修复）。
-    private func clearReloadAck(_ sessionId: String) async throws {
-        _ = try await database.run(
-            "UPDATE sessions SET reload_acked_at = NULL, updated_at = ? WHERE id = ? AND reload_acked_at IS NOT NULL",
-            [.text(nowISOString()), .text(sessionId)]
-        )
-    }
-
+    /// safeToCleanup 门，数据丢失修复）。Store/SessionStore 单事务命令（W4-1c）。
     private func clearReloadAckForXmpPath(_ xmpPath: String) async {
-        let sessionIds = (try? await writebackStore.outboxSessionIds(xmpPath: xmpPath)) ?? []
-        for sessionId in sessionIds {
-            try? await clearReloadAck(sessionId)
-        }
+        _ = try? await sessionStore.clearReloadAckedAtForXmpPaths([xmpPath])
     }
 
     /// TS: requireReloadAck —— 主侧守卫；GATHER_TEST_SKIP_RELOAD_ACK 等价跳过。
     private func requireReloadAck(_ sessionId: String) async throws {
         if skipReloadAck { return }
-        let row = try await database.queryOne("SELECT reload_acked_at FROM sessions WHERE id = ?", [.text(sessionId)])
-        guard let acked = row?.values[row!.columnOrder[0]]?.textValue, !acked.isEmpty else {
+        guard let acked = try await sessionStore.reloadAckedAt(sessionId: sessionId), !acked.isEmpty else {
             throw MetadataSyncError.reloadNotAcked
         }
     }
@@ -706,125 +693,53 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     private func emitPathSummaries(_ xmpPath: String) async {
         let sessionIds = (try? await writebackStore.outboxSessionIds(xmpPath: xmpPath)) ?? []
         for sessionId in sessionIds {
-            let decision = {
-                lock.lock()
-                defer { lock.unlock() }
-                let count = (summaryEmitCounts[sessionId] ?? 0) + 1
-                summaryEmitCounts[sessionId] = count
-                summaryEmitTimers[sessionId]?.cancel()
-                if count >= MetadataSyncCoordinator.summaryEmitBurstThreshold {
-                    summaryEmitCounts[sessionId] = 0
-                    return (burst: true, stoppedNow: stopped)
+            let count = (summaryEmitCounts[sessionId] ?? 0) + 1
+            summaryEmitCounts[sessionId] = count
+            summaryEmitTimers[sessionId]?.cancel()
+            if count >= MetadataSyncRuntime.summaryEmitBurstThreshold {
+                summaryEmitCounts[sessionId] = 0
+                if !stopped {
+                    _ = try? await emitSummary(sessionId: sessionId)
                 }
-                let task = Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: UInt64(MetadataSyncCoordinator.summaryEmitThrottleMs) * 1_000_000)
-                    guard let self else { return }
-                    if !self.consumeEmitTimer(sessionId) {
-                        _ = try? await self.emitSummary(sessionId: sessionId)
-                    }
-                }
-                summaryEmitTimers[sessionId] = task
-                return (burst: false, stoppedNow: stopped)
-            }()
-            if decision.burst, !decision.stoppedNow {
-                _ = try? await emitSummary(sessionId: sessionId)
+                continue
             }
+            let task = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(MetadataSyncRuntime.summaryEmitThrottleMs) * 1_000_000)
+                guard let self else { return }
+                if !(await self.consumeEmitTimer(sessionId)) {
+                    _ = try? await self.emitSummary(sessionId: sessionId)
+                }
+            }
+            summaryEmitTimers[sessionId] = task
         }
     }
 
-    /// 摘除已触发的合并推送计时器并返回是否已停止（sync helper）。
+    /// 摘除已触发的合并推送计时器并返回是否已停止。
     private func consumeEmitTimer(_ sessionId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
         summaryEmitTimers.removeValue(forKey: sessionId)
         summaryEmitCounts[sessionId] = 0
         return stopped
     }
 
     private func enqueueQueued(_ xmpPath: String) {
-        lock.lock()
-        defer { lock.unlock() }
         if queuedSet.insert(xmpPath).inserted {
             queued.append(xmpPath)
         }
     }
 
     private func cancelTimers(paths: [String]) {
-        lock.lock()
         for path in paths {
             timers[path]?.cancel()
             timers.removeValue(forKey: path)
         }
-        lock.unlock()
     }
 
     private func activeTask(for xmpPath: String) -> Task<Void, Never>? {
-        lock.lock()
-        defer { lock.unlock() }
-        return active[xmpPath]
+        active[xmpPath]
     }
 
     private func snapshotTasks() -> [Task<Void, Never>] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(baselineTasks.values) + Array(active.values)
-    }
-
-    /// TS: syncAcceptedRemoteValues —— 用户选择保留的外部值回写 metadata 缓存与
-    /// culling 决策表（钳制到 CHECK 约束，非标准外部 label/rating 不得回滚事务）。
-    private func syncAcceptedRemoteValues(photoPath: String, remote: MetadataWriteAttributes) async {
-        do {
-            // 损坏的 sidecar 让 readAttributes 返回空对象：镜像 metadata.service
-            // 守卫，空读取不得清空先前有效缓存值。
-            if remote.isEmpty && xmp.fileExists(TSPath.xmpSidecarPath(photoPath)) {
-                return
-            }
-            let photos = try await database.query("SELECT id, session_id FROM photos WHERE filepath = ?", [.text(photoPath)])
-            let now = nowISOString()
-            let keywords = remote.keywords ?? []
-            let rating = clampRating(remote.rating)
-            let label = sanitizeCullingLabel(remote.label)
-            let keywordsJSON = try JSONValue.stringify(.array(keywords.map { .string($0) }))
-            try await database.transaction { db in
-                for photo in photos {
-                    do {
-                        _ = try db.run("""
-                            INSERT INTO photo_metadata_cache
-                              (photo_id, session_id, keywords, rating, label, cached_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(photo_id) DO UPDATE SET
-                              keywords = excluded.keywords,
-                              rating = excluded.rating,
-                              label = excluded.label,
-                              cached_at = excluded.cached_at
-                          """, [
-                            .text(photo.values[photo.columnOrder[0]]?.textValue ?? ""),
-                            .text(photo.values[photo.columnOrder[1]]?.textValue ?? ""),
-                            .text(keywordsJSON),
-                            .int(Int64(rating)),
-                            .text(label),
-                            .text(now),
-                        ])
-                        _ = try db.run("""
-                            UPDATE culling_decisions
-                            SET rating = ?, color_label = ?, updated_at = ?
-                            WHERE photo_id = ? AND session_id = ?
-                          """, [
-                            .int(Int64(rating)),
-                            .text(label),
-                            .text(now),
-                            .text(photo.values[photo.columnOrder[0]]?.textValue ?? ""),
-                            .text(photo.values[photo.columnOrder[1]]?.textValue ?? ""),
-                        ])
-                    } catch {
-                        // 单张照片失败不得阻塞其余批次。
-                        GatherLogger.log("Failed to sync accepted remote values for photo \(photo.values[photo.columnOrder[0]]?.textValue ?? ""): \(error)", level: .warn)
-                    }
-                }
-            }
-        } catch {
-            GatherLogger.log("Failed to sync accepted remote metadata values: \(error)", level: .warn)
-        }
+        Array(baselineTasks.values) + Array(active.values)
     }
 }
 
@@ -873,110 +788,33 @@ private func clampRating(_ value: Double?) -> Double {
     return min(5, max(0, num.rounded()))
 }
 
-/// TS: batchAsync（utils/async.ts）—— 固定数量常驻 runner 从共享游标取任务；
-/// 结果按输入索引收集；首个失败停止调度、在飞项跑完，错误按完成序取第一个。
-private func batchAsync<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = BatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    collected.sort { $0.index < $1.index }
-    return collected.map(\.value)
-}
-
-/// 共享取号游标（对齐 DuplicateService.swift 的 BatchCursor）。
-private final class BatchCursor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var next = 0
-    private var failed = false
-    private let count: Int
-
-    init(count: Int) { self.count = count }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failed || next >= count { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
-}
-
 /// TS: withSlot 的并发上限器（activeCount + slotWaiters 等价物）。
-private final class SlotGate: @unchecked Sendable {
+/// actor 隔离取代原 NSLock + @unchecked Sendable 标注；等待经 continuation 唤醒。
+private actor SlotGate {
     private let max: Int
     private var active = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
-    private let lock = NSLock()
 
     init(max: Int) { self.max = max }
 
     func acquire() async {
-        lock.lock()
         if active < max {
             active += 1
-            lock.unlock()
             return
         }
-        lock.unlock()
         await withCheckedContinuation { continuation in
-            lock.lock()
-            if active < max {
-                active += 1
-                lock.unlock()
-                continuation.resume()
-                return
-            }
             waiters.append(continuation)
-            lock.unlock()
         }
     }
 
     func release() {
-        lock.lock()
         if active > 0 { active -= 1 }
         if let next = waiters.first {
             waiters.removeFirst()
             active += 1
-            lock.unlock()
             next.resume()
-        } else {
-            lock.unlock()
         }
     }
 
-    var isIdle: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return active == 0 && waiters.isEmpty
-    }
+    var isIdle: Bool { active == 0 && waiters.isEmpty }
 }

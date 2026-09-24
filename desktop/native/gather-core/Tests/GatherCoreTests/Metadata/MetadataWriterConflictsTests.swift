@@ -1,6 +1,6 @@
 // Tests/GatherCoreTests/Metadata/MetadataWriterConflictsTests.swift
 // mwconf / W4-3c：MetadataWriter.listOrphans + getConflicts 直测。
-// 语义基线：Services/MetadataSyncCoordinator.listOrphans（孤儿行全量投影）与
+// 语义基线：MetadataSyncRuntime.listOrphans（孤儿行全量投影）与
 // getConflicts（仅 status == "conflict" 行、每行读一次 sidecar、并发上限 2、
 // base=baseValuesJSON / local=patchJSON / MetadataConflictFields.fieldConflicts）。
 // 覆盖：孤儿空/非空（含真实库：无 session 链接才算孤儿）、conflicts 行过滤、

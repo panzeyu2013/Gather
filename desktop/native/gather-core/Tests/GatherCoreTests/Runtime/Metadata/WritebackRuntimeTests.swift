@@ -78,10 +78,10 @@ struct WritebackServiceTests {
 
         let provider = FakeFSXMPProvider()
         let outbox = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
-        let coordinator = MetadataSyncCoordinator(
+        let coordinator = MetadataSyncRuntime(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            database: try SQLiteDatabase(path: dbPath),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
@@ -159,10 +159,10 @@ struct WritebackServiceTests {
         )
 
         let provider = FakeFSXMPProvider()
-        let coordinator = MetadataSyncCoordinator(
+        let coordinator = MetadataSyncRuntime(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
-            database: try SQLiteDatabase(path: dbPath),
+            sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
