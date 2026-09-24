@@ -835,3 +835,12 @@ error 计数三步均 **0**（`grep -cE '^[^ ]*error: '` = 0，grep 退出码 1�
 **复核提醒（已由编排侧处置）**：sibling PID 90016 命令行含 `swift build … \| tail`（**无 `pipefail`**），其 PASS 可能被掩码 → 该风险已中和：`c1ef014` / `2f81fcd` 均由编排侧**以 `$?` 直接复核**后才提交，未采信其自报结论。
 
 **边界声明**：acc-build **只验可编译性**，不含 `swift test` 运行结果（由 acc-tests 负责）。
+### 28. acc-tests verdict (2026-09-24, HEAD 27bf63c, fingerprint 329d6866)
+
+- core default parallel: FAILED 1078 tests / 140 suites, 13 issues (exit 1) - all polling-timeout/contention type (failure durations cluster 10.35-10.56s; all failures are waitUntil 3s conditions, not semantic assertions).
+- core explicit serial (--no-parallel): PASSED 1078 tests / 140 suites (exit 0) - authoritative.
+- app full (3 runs): PASSED 172 tests / 19 suites (exit 0); known flaky applyProgressFrameUpdatesScanSnapshotAndJobRow did not appear.
+- All 7 failing core cases pass when re-run in isolation (3/3 each).
+- NOT previously in the flaky list (reported highest priority): JobRunnerTests.enforcesConcurrencyLimit (15/15 isolated), JobRunnerTests.waitForResultTakesCompletedResultExactlyOnce (15/15), JobRunnerTests.interruptedStatusFencesRunAndAbortsSignal (3/3); --filter JobRunnerTests 21/21 twice; serial full run 0 failures -> in-process parallel contention, not a logic regression. Recommend adding these three to the flaky list.
+- METHOD RULE: under a shared worktree with concurrent builds, PARALLEL full-suite results are not a valid verdict; use SERIAL full-suite as the authoritative gate (or mark high-contention suites serial).
+- Evidence: /private/tmp/gather-build-acc-tests/acc-run-2012/REPORT.md + core-serial-final.log/.exit, app-full-final.log/.exit, core-iso-*.log, core-suite-JobRunnerTests-run*.log.
