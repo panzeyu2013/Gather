@@ -118,6 +118,37 @@ public struct PhotoAddResult: Equatable, Sendable {
     }
 }
 
+/// W4-1c：照片 → 元数据写入目标（吸收 PhotoAssetResolver 的 legacy/asset 裁决；
+/// MetadataWriter 的 Store 侧读面）。dual 模式取值与 legacy 一致（资产 shadow-read
+/// 告警仍留在调用方），asset 模式下资产未就绪的行缺席。
+public struct MetadataTarget: Equatable, Sendable {
+    public let photoId: String
+    public let sessionId: String
+    public let filepath: String
+    public let xmpPath: String
+    public let source: String // 'legacy' | 'asset'
+    public let assetId: String?
+    public let assetFileId: String?
+
+    public init(
+        photoId: String,
+        sessionId: String,
+        filepath: String,
+        xmpPath: String,
+        source: String,
+        assetId: String? = nil,
+        assetFileId: String? = nil
+    ) {
+        self.photoId = photoId
+        self.sessionId = sessionId
+        self.filepath = filepath
+        self.xmpPath = xmpPath
+        self.source = source
+        self.assetId = assetId
+        self.assetFileId = assetFileId
+    }
+}
+
 public protocol PhotoStore: Sendable {
     func getBySession(sessionId: String) async throws -> [PhotoRecord]
     func getBySessionProjection(sessionId: String) async throws -> [PhotoProjection]
@@ -128,6 +159,12 @@ public protocol PhotoStore: Sendable {
     func containsFilepath(filepath: String) async throws -> Bool
     /// W2c：会话照片 → asset_file_id 映射（跳过 NULL；空串保留，与旧内联查询一致）。
     func assetFileIdsByPhoto(sessionId: String) async throws -> [String: String]
+    /// W4-1c：批量解析元数据写入目标（内部 400 分块；未知照片/asset 模式未就绪的行缺席；空参 [:]）。
+    func metadataTargets(sessionId: String, photoIds: [String], mode: String) async throws -> [String: MetadataTarget]
+    /// W4-1c：批量照片轻查询 id/session_id/filepath（内部 800 分块；空参 []）。
+    func photoLookups(photoIds: [String]) async throws -> [MetadataPhotoLookup]
+    /// W4-1c：filepath → photoId 反查（内部 800 分块；跨会话重复路径后者覆盖；空参 [:]）。
+    func photoIdsByFilepath(_ filepaths: [String]) async throws -> [String: String]
     func addPhotos(sessionId: String, inputs: [PhotoAddInput], source: String) async throws -> PhotoAddResult
     func deleteBySession(sessionId: String) async throws
     func updateIndexedFile(photoId: String, width: Int, height: Int, changed: Bool) async throws
@@ -260,6 +297,100 @@ public struct SQLitePhotoStore: PhotoStore {
             assetFileByPhoto[id] = assetFileId
         }
         return assetFileByPhoto
+    }
+
+    /// W4-1c：PhotoAssetResolver.resolveMany 的 Store 化（裁决语义与 buildResolved 一致，
+    /// 仅去掉 shadow-read 日志）。400 分块为 N 路 JOIN 留出参数余量。
+    public func metadataTargets(
+        sessionId: String,
+        photoIds: [String],
+        mode: String
+    ) async throws -> [String: MetadataTarget] {
+        guard !photoIds.isEmpty else { return [:] }
+        var targets: [String: MetadataTarget] = [:]
+        var seen = Set<String>()
+        for chunk in photoIds.chunked(by: 400) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT p.id AS photo_id, p.session_id, p.filepath AS legacy_path,
+                  p.asset_id, p.asset_file_id, af.normalized_path AS asset_path, sb.xmp_path
+                FROM photos p
+                LEFT JOIN asset_files af ON af.id = p.asset_file_id
+                LEFT JOIN sidecar_binding_files sbf ON sbf.file_id = af.id
+                LEFT JOIN sidecar_bindings sb ON sb.id = sbf.sidecar_binding_id AND sb.status = 'active'
+                WHERE p.id IN (\(placeholders)) AND p.session_id = ?
+                ORDER BY p.id, sb.updated_at DESC
+                """,
+                chunk.map { .text($0) } + [.text(sessionId)]
+            )
+            for row in rows {
+                guard let photoId = row.text("photo_id"), !seen.contains(photoId) else { continue }
+                seen.insert(photoId)
+                guard let target = buildMetadataTarget(row: row, mode: mode) else { continue }
+                targets[photoId] = target
+            }
+        }
+        return targets
+    }
+
+    /// TS: buildResolved（不写日志）：asset 模式未就绪返回 nil；dual 模式始终走 legacy 取值。
+    private func buildMetadataTarget(row: SQLiteRow, mode: String) -> MetadataTarget? {
+        guard let photoId = row.text("photo_id") else { return nil }
+        let legacyPath = row.text("legacy_path") ?? ""
+        let assetId = row.text("asset_id")
+        let assetFileId = row.text("asset_file_id")
+        let assetPath = row.text("asset_path")
+        let assetReady = assetId != nil && assetFileId != nil && assetPath != nil
+        if mode == "asset" && !assetReady { return nil }
+        let useAsset = mode == "asset" && assetReady
+        let assetXmpPath = row.text("xmp_path") ?? TSPath.xmpSidecarPath(assetPath ?? "")
+        return MetadataTarget(
+            photoId: photoId,
+            sessionId: row.text("session_id") ?? "",
+            filepath: useAsset ? (assetPath ?? legacyPath) : legacyPath,
+            xmpPath: useAsset ? assetXmpPath : TSPath.xmpSidecarPath(legacyPath),
+            source: useAsset ? "asset" : "legacy",
+            assetId: assetId,
+            assetFileId: assetFileId
+        )
+    }
+
+    public func photoLookups(photoIds: [String]) async throws -> [MetadataPhotoLookup] {
+        guard !photoIds.isEmpty else { return [] }
+        var result: [MetadataPhotoLookup] = []
+        for chunk in photoIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                "SELECT id, session_id, filepath FROM photos WHERE id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            result.append(contentsOf: rows.map {
+                MetadataPhotoLookup(
+                    id: $0.text("id") ?? "",
+                    sessionId: $0.text("session_id") ?? "",
+                    filepath: $0.text("filepath") ?? ""
+                )
+            })
+        }
+        return result
+    }
+
+    public func photoIdsByFilepath(_ filepaths: [String]) async throws -> [String: String] {
+        guard !filepaths.isEmpty else { return [:] }
+        var result: [String: String] = [:]
+        for chunk in filepaths.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                "SELECT id, filepath FROM photos WHERE filepath IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            for row in rows {
+                guard let id = row.text("id"), let filepath = row.text("filepath") else { continue }
+                result[filepath] = id
+            }
+        }
+        return result
     }
 
     public func addPhotos(sessionId: String, inputs: [PhotoAddInput], source: String) async throws -> PhotoAddResult {

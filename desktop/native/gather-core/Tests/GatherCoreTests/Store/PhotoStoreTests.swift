@@ -31,19 +31,21 @@ struct PhotoStoreTests {
         sessionId: String,
         filepath: String,
         assetId: String? = nil,
+        assetFileId: String? = nil,
         checksum: String = "abc123"
     ) async throws {
         try await database.run(
             """
             INSERT INTO photos
               (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id,
-               width, height, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', '{}', '{}', ?, 100, 200,
+               asset_file_id, width, height, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', '{}', '{}', ?, ?, 100, 200,
                     '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
             """,
             [
                 .text(id), .text(sessionId), .text(filepath), .text((filepath as NSString).lastPathComponent),
                 .text(checksum), assetId.map { SQLiteValue.text($0) } ?? .null,
+                assetFileId.map { SQLiteValue.text($0) } ?? .null,
             ]
         )
     }
@@ -290,5 +292,112 @@ struct PhotoStoreTests {
         #expect(rows.count == 2)
         #expect(rows[0].text("status") == "missing")
         #expect(rows[1].text("status") == "pending")
+    }
+
+    // MARK: W4-1c metadataTargets / photoLookups / photoIdsByFilepath
+
+    @Test func metadataTargetsResolvesLegacyAndSkipsUnknownIDs() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        try await insertSession(database, id: "s1")
+        try await insertSession(database, id: "s2")
+        try await insertPhoto(database, id: "p1", sessionId: "s1", filepath: "/photos/one.cr3")
+        try await insertPhoto(database, id: "p2", sessionId: "s2", filepath: "/photos/two.jpg")
+
+        #expect(try await store.metadataTargets(sessionId: "s1", photoIds: [], mode: "dual").isEmpty, "空参 [:]")
+
+        let targets = try await store.metadataTargets(sessionId: "s1", photoIds: ["p1", "p2", "ghost"], mode: "dual")
+        #expect(targets.count == 1, "跨会话/未知照片缺席")
+        let target = try #require(targets["p1"])
+        #expect(target.photoId == "p1")
+        #expect(target.sessionId == "s1")
+        #expect(target.source == "legacy")
+        #expect(target.filepath == "/photos/one.cr3")
+        #expect(target.xmpPath == "/photos/one.xmp")
+        #expect(target.assetId == nil)
+        #expect(target.assetFileId == nil)
+    }
+
+    @Test func metadataTargetsBatchesAcross400Boundary() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        try await insertSession(database, id: "s1")
+        var ids: [String] = []
+        try await database.transaction { db in
+            for index in 0..<401 {
+                let id = "p\(index)"
+                ids.append(id)
+                try db.run(
+                    """
+                    INSERT INTO photos (id, session_id, filepath, filename, status, created_at, updated_at)
+                    VALUES (?, 's1', ?, ?, 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+                    """,
+                    [.text(id), .text("/photos/\(id).jpg"), .text("\(id).jpg")]
+                )
+            }
+        }
+
+        let targets = try await store.metadataTargets(sessionId: "s1", photoIds: ids, mode: "dual")
+        #expect(targets.count == 401, "401 条跨 400 分块边界全量返回")
+        #expect(targets["p0"]?.xmpPath == "/photos/p0.xmp")
+        #expect(targets["p400"]?.filepath == "/photos/p400.jpg")
+    }
+
+    @Test func metadataTargetsAssetModeSwitchesPathAndDropsIncomplete() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        try await insertSession(database, id: "s1")
+        try await insertAsset(database, id: "a1")
+        try await insertAssetFile(database, id: "af1", normalizedPath: "/vol/raw/one.cr3")
+        try await database.run(
+            """
+            INSERT INTO sidecar_bindings
+              (id, xmp_path, normalized_xmp_path, binding_rule, status, created_at, updated_at)
+            VALUES ('sb1', '/vol/raw/one.xmp', '/vol/raw/one.xmp', 'same-name', 'active',
+                    '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')
+            """
+        )
+        try await database.run(
+            "INSERT INTO sidecar_binding_files (sidecar_binding_id, file_id) VALUES ('sb1', 'af1')"
+        )
+        try await insertPhoto(
+            database, id: "p1", sessionId: "s1", filepath: "/legacy/one.cr3", assetId: "a1", assetFileId: "af1"
+        )
+        try await insertPhoto(database, id: "p2", sessionId: "s1", filepath: "/legacy/two.cr3")
+
+        // asset 模式：资产未就绪的 p2 缺席；p1 切到资产路径与绑定侧车。
+        let assetTargets = try await store.metadataTargets(sessionId: "s1", photoIds: ["p1", "p2"], mode: "asset")
+        #expect(assetTargets.count == 1)
+        #expect(assetTargets["p1"]?.source == "asset")
+        #expect(assetTargets["p1"]?.filepath == "/vol/raw/one.cr3")
+        #expect(assetTargets["p1"]?.xmpPath == "/vol/raw/one.xmp")
+        #expect(assetTargets["p1"]?.assetId == "a1")
+        #expect(assetTargets["p1"]?.assetFileId == "af1")
+
+        // dual 模式：取值仍走 legacy（shadow-read 告警留给调用方）。
+        let dualTargets = try await store.metadataTargets(sessionId: "s1", photoIds: ["p1", "p2"], mode: "dual")
+        #expect(dualTargets.count == 2)
+        #expect(dualTargets["p1"]?.source == "legacy")
+        #expect(dualTargets["p1"]?.filepath == "/legacy/one.cr3")
+        #expect(dualTargets["p1"]?.xmpPath == "/legacy/one.xmp")
+    }
+
+    @Test func photoLookupsAndFilepathReverseLookup() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        try await insertSession(database, id: "s1")
+        try await insertPhoto(database, id: "p1", sessionId: "s1", filepath: "/one.jpg")
+        try await insertPhoto(database, id: "p2", sessionId: "s1", filepath: "/two.jpg")
+
+        #expect(try await store.photoLookups(photoIds: []).isEmpty, "空参 []")
+        let lookups = try await store.photoLookups(photoIds: ["p1", "ghost"])
+        #expect(lookups.count == 1)
+        #expect(lookups.first?.id == "p1")
+        #expect(lookups.first?.sessionId == "s1")
+        #expect(lookups.first?.filepath == "/one.jpg")
+
+        #expect(try await store.photoIdsByFilepath([]).isEmpty, "空参 [:]")
+        let byPath = try await store.photoIdsByFilepath(["/two.jpg", "/one.jpg", "/missing.jpg"])
+        #expect(byPath == ["/one.jpg": "p1", "/two.jpg": "p2"])
     }
 }

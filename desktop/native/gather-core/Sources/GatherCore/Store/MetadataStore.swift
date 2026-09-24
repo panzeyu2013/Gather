@@ -133,6 +133,11 @@ public protocol MetadataStore: Sendable {
 
     func upsertMetadata(photoId: String, sessionId: String, data: MetadataCacheInput) async throws
     func upsertMetadataBatch(_ entries: [(photoId: String, sessionId: String, data: MetadataCacheInput)]) async throws
+    /// W4-1c：派生字段合并写（单事务；缺失行以默认值建行，仅非 nil 列覆盖；
+    /// provider 派生字段传 nil 时不得清零用户 rating/label/keywords）。
+    func mergeMetadata(photoId: String, sessionId: String, data: MetadataCacheInput) async throws
+    /// W4-1c：rating/label/keywords 轻投影批量读（内部 800 分块；空参 [:]；仅返回已缓存行）。
+    func metadataBatchLite(photoIds: [String]) async throws -> [String: MetadataTags]
     func metadata(photoId: String) async throws -> MetadataCacheRecord?
     func metadataBatch(photoIds: [String]) async throws -> [MetadataCacheRecord]
     /// W2b：批量 rating/label 轻投影（summary 计数用）；photoIds 为空返回 []。
@@ -224,6 +229,96 @@ public struct SQLiteMetadataStore: MetadataStore {
         for entry in entries {
             try await upsertMetadata(photoId: entry.photoId, sessionId: entry.sessionId, data: entry.data)
         }
+    }
+
+    /// W4-1c：修复「全列 excluded 覆盖会清空 rating/label/keywords」的雷：
+    /// 每条 SET 走 COALESCE(?，旧值)，nil 参数不改变已有列；keywords 的 JSON
+    /// 序列化失败在事务外抛出，不产生半写。
+    public func mergeMetadata(photoId: String, sessionId: String, data: MetadataCacheInput) async throws {
+        let keywordsJSON: String? = try data.keywords.map { keywords in
+            try JSONValue.stringify(JSONValue.array(keywords.map { JSONValue.string($0) }))
+        }
+        try await database.transaction { db in
+            let now = nowISOString()
+            try db.run(
+                """
+                INSERT OR IGNORE INTO photo_metadata_cache
+                  (photo_id, session_id, rating, keywords, cached_at)
+                VALUES (?, ?, 0, '[]', ?)
+                """,
+                [.text(photoId), .text(data.sessionId ?? sessionId), .text(now)]
+            )
+            try db.run(
+                """
+                UPDATE photo_metadata_cache SET
+                  session_id = ?,
+                  date_taken = COALESCE(?, date_taken),
+                  camera_make = COALESCE(?, camera_make),
+                  camera_model = COALESCE(?, camera_model),
+                  lens_model = COALESCE(?, lens_model),
+                  focal_length = COALESCE(?, focal_length),
+                  f_number = COALESCE(?, f_number),
+                  exposure_time = COALESCE(?, exposure_time),
+                  iso = COALESCE(?, iso),
+                  rating = COALESCE(?, rating),
+                  label = COALESCE(?, label),
+                  gps_latitude = COALESCE(?, gps_latitude),
+                  gps_longitude = COALESCE(?, gps_longitude),
+                  width = COALESCE(?, width),
+                  height = COALESCE(?, height),
+                  file_size = COALESCE(?, file_size),
+                  file_mtime = COALESCE(?, file_mtime),
+                  keywords = COALESCE(?, keywords),
+                  cached_at = ?
+                WHERE photo_id = ?
+                """,
+                [
+                    .text(data.sessionId ?? sessionId),
+                    sqlValue(data.dateTaken),
+                    sqlValue(data.cameraMake),
+                    sqlValue(data.cameraModel),
+                    sqlValue(data.lensModel),
+                    sqlValue(data.focalLength),
+                    sqlValue(data.fNumber),
+                    sqlValue(data.exposureTime),
+                    sqlValue(data.iso),
+                    sqlValue(data.rating),
+                    sqlValue(data.label),
+                    sqlValue(data.gpsLatitude),
+                    sqlValue(data.gpsLongitude),
+                    sqlValue(data.width),
+                    sqlValue(data.height),
+                    sqlValue(data.fileSize),
+                    sqlValue(data.fileMtime),
+                    sqlValue(keywordsJSON),
+                    .text(now),
+                    .text(photoId),
+                ]
+            )
+        }
+    }
+
+    /// W4-1c：与 cacheRowToTags 的三个用户可编辑列逐字对齐（keywords 空数组 → nil）。
+    public func metadataBatchLite(photoIds: [String]) async throws -> [String: MetadataTags] {
+        guard !photoIds.isEmpty else { return [:] }
+        var result: [String: MetadataTags] = [:]
+        for chunk in photoIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                "SELECT photo_id, rating, label, keywords FROM photo_metadata_cache WHERE photo_id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            for row in rows {
+                guard let photoId = row.text("photo_id") else { continue }
+                let keywords = ((try? JSONValue.parse(row.text("keywords") ?? "[]")) as JSONValue?)?.arrayValue ?? []
+                result[photoId] = MetadataTags(
+                    keywords: keywords.isEmpty ? nil : keywords,
+                    rating: Double(row.int("rating") ?? 0),
+                    label: row.text("label")
+                )
+            }
+        }
+        return result
     }
 
     public func metadata(photoId: String) async throws -> MetadataCacheRecord? {

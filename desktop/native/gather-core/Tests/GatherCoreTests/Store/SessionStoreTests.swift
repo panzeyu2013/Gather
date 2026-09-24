@@ -36,6 +36,24 @@ struct SessionStoreTests {
         )
     }
 
+    /// W4-1c：metadata_outbox 行 + metadata_outbox_sessions 边（清 reload 确认用）。
+    private func insertOutbox(_ database: SQLiteDatabase, xmpPath: String, sessionId: String) async throws {
+        try await database.run(
+            """
+            INSERT INTO metadata_outbox (xmp_path, photo_path, updated_at)
+            VALUES (?, ?, '2026-01-01T00:00:00.000Z')
+            """,
+            [.text(xmpPath), .text(xmpPath + ".jpg")]
+        )
+        try await database.run(
+            """
+            INSERT INTO metadata_outbox_sessions (xmp_path, session_id, linked_at)
+            VALUES (?, ?, '2026-01-01T00:00:00.000Z')
+            """,
+            [.text(xmpPath), .text(sessionId)]
+        )
+    }
+
     @Test func createAppliesDefaultsAndGetReturnsRow() async throws {
         let (store, _, path) = try await makeStore()
         defer { removeStoreFiles(path) }
@@ -176,5 +194,76 @@ struct SessionStoreTests {
         // 其他会话数据不受影响。
         #expect(try await database.scalarInt("SELECT COUNT(*) FROM similarity_results WHERE session_id = 's2'") == 1)
         #expect(try await database.scalarInt("SELECT COUNT(*) FROM similarity_hashes WHERE session_id = 's2'") == 1)
+    }
+
+    // MARK: W4-1c clearReloadAckedAtForXmpPaths
+
+    @Test func clearReloadAckedAtForXmpPathsClearsOnlyLinkedSessions() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        for id in ["s1", "s2", "s3"] {
+            try await insertSession(database, id: id, name: "S", updatedAt: "2026-01-01T00:00:00.000Z")
+            #expect(try await store.setReloadAckedAt(sessionId: id, iso: "2026-01-02T00:00:00.000Z"))
+        }
+        try await insertOutbox(database, xmpPath: "/v/a.xmp", sessionId: "s1")
+        try await insertOutbox(database, xmpPath: "/v/b.xmp", sessionId: "s2")
+
+        #expect(try await store.clearReloadAckedAtForXmpPaths([]) == 0, "空参 0")
+        #expect(try await store.clearReloadAckedAtForXmpPaths(["/v/a.xmp"]) == 1)
+        #expect(try await store.reloadAckedAt(sessionId: "s1") == nil)
+        #expect(try await store.reloadAckedAt(sessionId: "s2") == "2026-01-02T00:00:00.000Z")
+        #expect(try await store.reloadAckedAt(sessionId: "s3") == "2026-01-02T00:00:00.000Z")
+
+        // 幂等：已清行不再计数；未链接路径 0。
+        #expect(try await store.clearReloadAckedAtForXmpPaths(["/v/a.xmp"]) == 0)
+        #expect(try await store.clearReloadAckedAtForXmpPaths(["/v/missing.xmp"]) == 0)
+
+        // 同一会话链接多条路径：一次调用只计一次（子查询去重）。
+        try await insertOutbox(database, xmpPath: "/v/c.xmp", sessionId: "s3")
+        try await insertOutbox(database, xmpPath: "/v/d.xmp", sessionId: "s3")
+        #expect(try await store.setReloadAckedAt(sessionId: "s3", iso: "2026-01-02T00:00:00.000Z"))
+        #expect(try await store.clearReloadAckedAtForXmpPaths(["/v/c.xmp", "/v/d.xmp"]) == 1)
+        #expect(try await store.reloadAckedAt(sessionId: "s3") == nil)
+    }
+
+    @Test func clearReloadAckedAtForXmpPathsRollsBackWholeBatchAcrossChunks() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        for id in ["s1", "s2"] {
+            try await insertSession(database, id: id, name: "S", updatedAt: "2026-01-01T00:00:00.000Z")
+            #expect(try await store.setReloadAckedAt(sessionId: id, iso: "2026-01-02T00:00:00.000Z"))
+        }
+        // 801 条 s1 路径跨 800 分块边界（单事务内写入）。
+        var xmpPaths: [String] = []
+        try await database.transaction { db in
+            for index in 0..<801 {
+                let xmpPath = "/v/batch_\(index).xmp"
+                xmpPaths.append(xmpPath)
+                try db.run(
+                    "INSERT INTO metadata_outbox (xmp_path, photo_path, updated_at) VALUES (?, ?, '2026-01-01T00:00:00.000Z')",
+                    [.text(xmpPath), .text(xmpPath + ".jpg")]
+                )
+                try db.run(
+                    "INSERT INTO metadata_outbox_sessions (xmp_path, session_id, linked_at) VALUES (?, ?, '2026-01-01T00:00:00.000Z')",
+                    [.text(xmpPath), .text("s1")]
+                )
+            }
+        }
+        xmpPaths.append("/v/boom.xmp")
+        try await insertOutbox(database, xmpPath: "/v/boom.xmp", sessionId: "s2")
+        // 末块（s2）被触发器拒绝：整批（含已更新的第 1 块）必须回滚。
+        try await database.run(
+            """
+            CREATE TRIGGER block_clear_s2 BEFORE UPDATE OF reload_acked_at ON sessions
+            WHEN OLD.id = 's2' AND NEW.reload_acked_at IS NULL
+            BEGIN SELECT RAISE(ABORT, 'blocked'); END
+            """
+        )
+
+        await #expect(throws: SQLiteFailure.self) {
+            _ = try await store.clearReloadAckedAtForXmpPaths(xmpPaths)
+        }
+        #expect(try await store.reloadAckedAt(sessionId: "s1") == "2026-01-02T00:00:00.000Z", "单事务回滚")
+        #expect(try await store.reloadAckedAt(sessionId: "s2") == "2026-01-02T00:00:00.000Z")
     }
 }

@@ -240,4 +240,73 @@ struct MetadataStoreTests {
             xmpPath: "/v/IMG_1.xmp", source: "face-keyword", keywords: ["a", "b"]
         ) == ["a", "b"])
     }
+
+    // MARK: W4-1c mergeMetadata / metadataBatchLite
+
+    @Test func mergeMetadataPreservesUserFieldsWhenNil() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        try await store.updateRating(photoId: "p1", rating: 5)
+        try await store.updateLabel(photoId: "p1", label: "Red")
+        try await store.updateKeywords(photoId: "p1", keywords: ["a", "b"])
+
+        // provider 派生字段有值，用户三列全 nil：不得清零。
+        try await store.mergeMetadata(
+            photoId: "p1",
+            sessionId: "s1",
+            data: MetadataCacheInput(
+                dateTaken: "2026-02-01T00:00:00.000Z",
+                cameraMake: "Nikon",
+                cameraModel: "Z8",
+                focalLength: 35.5,
+                iso: 400,
+                width: 6000,
+                height: 4000
+            )
+        )
+
+        let row = try #require(try await store.metadata(photoId: "p1"))
+        #expect(row.rating == 5, "nil rating 不得清零用户 rating")
+        #expect(row.label == "Red", "nil label 不得清零用户 label")
+        #expect(row.keywords == ["a", "b"], "nil keywords 不得清零用户 keywords")
+        #expect(row.cameraMake == "Nikon")
+        #expect(row.cameraModel == "Z8")
+        #expect(row.iso == 400)
+        #expect(row.width == 6000)
+        #expect(row.height == 4000)
+    }
+
+    @Test func mergeMetadataInsertsMissingRowAndNonNilOverwrites() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        try await store.mergeMetadata(
+            photoId: "p2", sessionId: "s1", data: MetadataCacheInput(cameraMake: "Canon", keywords: ["x"])
+        )
+        let inserted = try #require(try await store.metadata(photoId: "p2"))
+        #expect(inserted.sessionId == "s1")
+        #expect(inserted.rating == 0, "缺失行以默认 rating 建行")
+        #expect(inserted.cameraMake == "Canon")
+        #expect(inserted.keywords == ["x"])
+
+        // 第二个批次只带 rating：其他非 nil 列保留，nil 列不覆盖。
+        try await store.mergeMetadata(photoId: "p2", sessionId: "s1", data: MetadataCacheInput(rating: 3))
+        let merged = try #require(try await store.metadata(photoId: "p2"))
+        #expect(merged.rating == 3, "非 nil 覆盖")
+        #expect(merged.cameraMake == "Canon")
+        #expect(merged.keywords == ["x"])
+        #expect(merged.cameraModel == nil)
+    }
+
+    @Test func metadataBatchLiteReturnsUserColumnsAndEmptyInput() async throws {
+        let (store, database, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+        #expect(try await store.metadataBatchLite(photoIds: []).isEmpty, "空参 [:]")
+
+        try await store.upsertMetadata(photoId: "p1", sessionId: "s1", data: input())
+        let lite = try await store.metadataBatchLite(photoIds: ["p1", "px", "p2"])
+        #expect(Set(lite.keys) == ["p1"], "仅返回已缓存行")
+        #expect(lite["p1"]?.rating == 4)
+        #expect(lite["p1"]?.label == nil)
+        #expect(lite["p1"]?.keywords == ["nature", "travel"])
+    }
 }

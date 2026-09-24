@@ -82,6 +82,8 @@ public protocol SessionStore: Sendable {
     func updateFailedWritebackCount(id: String, count: Int) async throws
     func reloadAckedAt(sessionId: String) async throws -> String?
     func setReloadAckedAt(sessionId: String, iso: String) async throws -> Bool
+    /// W4-1c：按 XMP 路径批量清除 reload 确认（单事务，返回实际清除的会话行数；空参 0）。
+    func clearReloadAckedAtForXmpPaths(_ paths: [String]) async throws -> Int
     func indexSeq(id: String) async throws -> Int
     func bumpIndexSeq(id: String) async throws -> Int
 }
@@ -89,6 +91,12 @@ public protocol SessionStore: Sendable {
 public extension SessionStore {
     func create(name: String, source: String) async throws -> SessionRecord {
         try await create(name: name, source: source, sourcePath: "", truncatedImport: false)
+    }
+
+    /// W4-1c：非 SQLite 实现（如测试包装器）无持久层可清，默认空操作。
+    /// 真实持久化实现必须重写（SQLiteSessionStore 已提供单事务实现）。
+    func clearReloadAckedAtForXmpPaths(_ paths: [String]) async throws -> Int {
+        0
     }
 }
 
@@ -212,6 +220,32 @@ public struct SQLiteSessionStore: SessionStore {
             "UPDATE sessions SET reload_acked_at = ?, updated_at = ? WHERE id = ?",
             [.text(iso), .text(nowISOString()), .text(sessionId)]
         ) > 0
+    }
+
+    /// W4-1c：metadata_outbox_sessions → sessions 批量清 reload_acked_at。
+    /// 单事务内按 800 分块（SQLite 变量上限），只清实际有值的行，
+    /// 返回清除行数（重复调用第二次为 0）。
+    public func clearReloadAckedAtForXmpPaths(_ paths: [String]) async throws -> Int {
+        guard !paths.isEmpty else { return 0 }
+        let now = nowISOString()
+        return try await database.transaction { db in
+            var cleared = 0
+            for chunk in paths.chunked(by: 800) {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                cleared += try db.run(
+                    """
+                    UPDATE sessions SET reload_acked_at = NULL, updated_at = ?
+                    WHERE reload_acked_at IS NOT NULL
+                      AND id IN (
+                        SELECT os.session_id FROM metadata_outbox_sessions os
+                        WHERE os.xmp_path IN (\(placeholders))
+                      )
+                    """,
+                    [.text(now)] + chunk.map { .text($0) }
+                )
+            }
+            return cleared
+        }
     }
 
     public func indexSeq(id: String) async throws -> Int {
