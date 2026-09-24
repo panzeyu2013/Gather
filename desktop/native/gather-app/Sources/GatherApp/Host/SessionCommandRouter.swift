@@ -5,7 +5,7 @@
 //
 // 接线清单（截至 2026-08-11，对应 NATIVE-DEVELOPMENT-ANALYSIS.md §10.4/§10.6）：
 //   同步（execute）：
-//     session.* / photo.list → SessionService + PhotoRepo（3.2 服务层）
+//     session.* → SessionService + PhotoRepo（3.2 服务层）
 //     workspace.status → WorkspaceStatusService（3.1 服务层）
 //     jobs.list / jobs.cancel / jobs.retry / jobs.clear_completed → JobRunner
 //     face.models_status → FaceInferenceConfig / Vision provider 状态（2.2）
@@ -924,36 +924,6 @@ public final class SessionCommandRouter: CommandRouter {
 
 
 
-
-
-
-        case "photo.list":
-            Task {
-                do {
-                    let sessionId = try requiredString(params, "sessionId")
-                    let photos = try await photoStore.getBySessionProjection(sessionId: sessionId)
-                    // 轻投影列（列名与 TS PhotoProjection 逐字一致）。
-                    let payload: [GatherCore.JSONValue] = photos.map { row in
-                        .object([
-                            "id": .string(row.id),
-                            "session_id": .string(row.sessionId),
-                            "filepath": .string(row.filepath),
-                            "filename": .string(row.filename),
-                            "checksum": .string(row.checksum),
-                            "checksum_file_size": .number(Double(row.checksumFileSize)),
-                            "checksum_file_mtime_ms": .number(row.checksumFileMtimeMs),
-                            "status": .string(row.status),
-                            "width": .number(Double(row.width)),
-                            "height": .number(Double(row.height)),
-                            "created_at": .string(row.createdAt),
-                            "updated_at": .string(row.updatedAt),
-                        ])
-                    }
-                    completion(WebResponse(ok: true, data: .array(payload))); return
-                } catch {
-                    completion(WebResponse(ok: false, error: Self.errorMessage(error)))
-                }
-            }
 
 
 
