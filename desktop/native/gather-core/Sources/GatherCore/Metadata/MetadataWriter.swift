@@ -131,6 +131,12 @@ public actor MetadataWriter {
 
     private var entries: [String: ScheduleEntry] = [:]
 
+    /// mww6a / W4-4 ②：就绪 FIFO 队列（入队时按路径去重，顺序即入队先后）。
+    private var readyQueue: [String] = []
+
+    /// mww6a / W4-4 ②：在飞写及其 ticket；结束清空仅当 ticket 匹配。
+    private var activeWrites: [String: UUID] = [:]
+
     /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
     /// 取旧管线 MetadataSyncCoordinator.defaultWriteDebounceMs = 500（TS 设置
     /// metadata_write_debounce_ms 同值）；设置注入留待写面后续步骤。
@@ -160,9 +166,13 @@ public actor MetadataWriter {
         }
         guard entries[xmpPath]?.ticket == ticket else { return }
         entries[xmpPath]?.phase = .queued
+        // mww6a / W4-4 ②：就绪入队（同路径已在队列中则不重复入队）。
+        if !readyQueue.contains(xmpPath) { readyQueue.append(xmpPath) }
         // W4-4 ① 骨架：就绪队列消费与真实写回落点由后续写面步骤插入；
         // 骨架期 queued → inFlight → idle 走通相位与唤醒，保证 waitForIdle 可被完整驱动。
         entries[xmpPath]?.phase = .inFlight
+        // mww6a / W4-4 ②：登记在飞写 ticket。
+        activeWrites[xmpPath] = ticket
         settle(xmpPath: xmpPath, ticket: ticket)
     }
 
@@ -246,6 +256,8 @@ public actor MetadataWriter {
         guard entries[xmpPath]?.ticket == ticket else { return }
         let generation = entries[xmpPath]?.generation ?? 0
         entries[xmpPath]?.phase = .idle
+        // mww6a / W4-4 ②：仅本 ticket 才清在飞登记，避免清掉新一波。
+        if activeWrites[xmpPath] == ticket { activeWrites[xmpPath] = nil }
         resumeWaiters(xmpPath: xmpPath, generation: generation, includeIdle: true)
     }
 
@@ -296,6 +308,11 @@ public actor MetadataWriter {
         entries
             .map { ($0.key, $0.value.generation, String(describing: $0.value.phase)) }
             .sorted { $0.0 < $1.0 }
+    }
+
+    /// mww6a / W4-4 ② 测试只读访问器（internal）：就绪队列顺序 + 在飞写 ticket 快照。
+    func writeStateSnapshot() -> (ready: [String], active: [String: UUID]) {
+        (ready: readyQueue, active: activeWrites)
     }
 
     /// TS: getMetadata（W4-3d 读路径）—— 缓存轻投影 → 全命中返回 / 有未命中显式标记。
