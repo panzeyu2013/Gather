@@ -1,4 +1,8 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/WritebackService.swift
+// desktop/native/gather-core/Sources/GatherCore/Runtime/Metadata/WritebackRuntime.swift
+// R4：Services/WritebackService.swift → Runtime/Metadata/（公开类型/方法签名与
+// 语义不变，旧文件同批删除）。本文件不含 SQL——写回行/outbox/会话计数全部经
+// Store 端口（WritebackStore / PhotoStore / SessionStore / MetadataStore）注入；
+// 此处仅有编排、行映射与并发窗口逻辑。
 // TS 源: desktop/src/main/services/writeback/writeback.service.ts（630 行）+ 
 // writeback-planners.ts（66 行），逐字移植
 //
@@ -649,26 +653,6 @@ private func orderedUnion(_ a: [String], _ b: [String]) -> [String] {
         result.append(value)
     }
     return result
-}
-
-/// [String: JSONValue] → [String: Any]（WritebackRepo.updateAttributesMany 入参）。
-private func jsonObject(_ dict: [String: JSONValue]) -> [String: Any] {
-    var result: [String: Any] = [:]
-    for (key, value) in dict {
-        result[key] = jsonScalar(value)
-    }
-    return result
-}
-
-private func jsonScalar(_ value: JSONValue) -> Any {
-    switch value {
-    case .null: return NSNull()
-    case .bool(let v): return v
-    case .number(let v): return v
-    case .string(let v): return v
-    case .array(let items): return items.map { jsonScalar($0) }
-    case .object(let dict): return jsonObject(dict)
-    }
 }
 
 /// TS: batchAsync（utils/async.ts）—— 与 coordinator / metadata.service 同款滑动窗口。
