@@ -19,7 +19,7 @@
 //     assets.candidates / accept_candidate / reject_candidate / volumes /
 //       relink_root → AssetRepo（TS 源 assets.ipc.ts）
 //     fkw.clusters / bind / merge / remove_member / cancel_analysis →
-//       FaceKwService（TS 源 face-kw.ipc.ts；写回族 fkw.unbind / preview /
+//       FaceKeywordingRuntime（TS 源 face-kw.ipc.ts；写回族 fkw.unbind / preview /
 //       writeback / confirm_sync / cleanup / confirm_cleanup 经 FaceWritebackProvider
 //       适配 WritebackService，TS 语义 await → awaitSync 信号量桥接）
 //     person.* → PersonRepo（TS 源 person.ipc.ts）
@@ -48,8 +48,8 @@
 //     quality.*（QualityRuntime，W2c；TS 源 quality.ipc.ts）：analyze（建
 //       quality.score job 即返回）/ get
 //     fkw.analyze → JobRunner executor（face.analyze）+ waitForResult；
-//       job abort 经 signal handler 传播给 FaceKwService（TS 源 face-kw.ipc.ts）
-//     fkw.recluster → FaceKwService.recluster（TS 源 face-kw.ipc.ts）
+//       job abort 经 signal handler 传播给 FaceKeywordingRuntime（TS 源 face-kw.ipc.ts）
+//     fkw.recluster → FaceKeywordingRuntime.recluster（TS 源 face-kw.ipc.ts）
 //     index.scan → JobRunner executor（metadata.scan）创建即返回 job
 //       （TS 源 indexer.ipc.ts）
 //     session.create_from_directory → SessionService.createFromDirectory +
@@ -96,7 +96,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let sessionStore: any SessionStore
     private let photoStore: any PhotoStore
     /// 3.0 接线扩展：人脸关键字 / 人物库 / 模板 / 质量 / 索引 / 元数据 / 写回 / 智能相册。
-    private let faceKwService: FaceKwService
+    private let faceKwRuntime: FaceKeywordingRuntime
     private let persons: PersonsAPI
     private let templates: TemplatesAPI
     /// W2c：Quality 域 Runtime（quality.analyze executor / quality.get）。
@@ -122,7 +122,7 @@ public final class SessionCommandRouter: CommandRouter {
         similarity: SimilarityRuntime,
         duplicate: DuplicateRuntime,
         assetStore: any AssetStore,
-        faceKwService: FaceKwService,
+        faceKwRuntime: FaceKeywordingRuntime,
         persons: PersonsAPI,
         templates: TemplatesAPI,
         quality: QualityRuntime,
@@ -149,7 +149,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.assetStore = assetStore
         self.sessionStore = sessionStore
         self.photoStore = photoStore
-        self.faceKwService = faceKwService
+        self.faceKwRuntime = faceKwRuntime
         self.persons = persons
         self.templates = templates
         self.quality = quality
@@ -188,8 +188,8 @@ public final class SessionCommandRouter: CommandRouter {
     ///   内存假件）。
     /// - metadataWriteDebounceMs：协调器写去抖（TS 设置 metadata_write_debounce_ms，
     ///   默认 500；测试注入大值避免后台任务在用例窗口内落盘）。
-    /// - faceKwService：默认装配 Vision 推理 + RAWDecoder 解码；测试可注入
-    ///   假推理/解码（对齐 gather-core FaceKeywordingServiceTests 模式）。
+    /// - faceKwRuntime：默认装配 Vision 推理 + RAWDecoder 解码；测试可注入
+    ///   假推理/解码（对齐 Runtime/FaceKeywording 测试模式）。
     public static func makeDefault(
         database: SQLiteDatabase,
         settings: SettingsSnapshot,
@@ -210,7 +210,7 @@ public final class SessionCommandRouter: CommandRouter {
         sessionStore: any SessionStore,
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
-        faceKwService: FaceKwService? = nil
+        faceKwRuntime: FaceKeywordingRuntime? = nil
     ) async -> SessionCommandRouter {
         // W2c：SimilarityRuntime（Store/provider 注入；旧 SimilarityService 的
         // SQL 已下沉 Store）。
@@ -286,19 +286,21 @@ public final class SessionCommandRouter: CommandRouter {
         )
         let jobRunner = JobRunner(jobStore: jobStore)
         let exportService = ExportRuntime(dependencies: .init(photoStore: photoStore, sessionStore: sessionStore, reportSource: SQLiteExportReportSource(store: SQLiteExportStore(database: database)), fileSystem: DiskExportFileSystem()))
-        let resolvedFaceKwService = faceKwService ?? FaceKwService(
-            photoStore: photoStore,
-            sessionStore: sessionStore,
-            faceStore: faceStore,
-            personStore: personStore,
-            database: database,
-            getNumber: { key, defaultValue in
-                settings.number(key, default: defaultValue)
-            },
-            getString: { key, defaultValue in
-                settings.value(key, default: defaultValue)
-            },
-            writebackProvider: FaceKwWritebackBridge(writebackService: writebackService)
+        let resolvedFaceKwRuntime = faceKwRuntime ?? FaceKeywordingRuntime(
+            dependencies: FaceKeywordingRuntime.Dependencies(
+                photoStore: photoStore,
+                sessionStore: sessionStore,
+                faceStore: faceStore,
+                personStore: personStore,
+                analysisRunStore: SQLiteAnalysisRunStore(database: database),
+                getNumber: { key, defaultValue in
+                    settings.number(key, default: defaultValue)
+                },
+                getString: { key, defaultValue in
+                    settings.value(key, default: defaultValue)
+                },
+                writebackProvider: FaceKwWritebackBridge(writebackService: writebackService)
+            )
         )
         // 3.4 CullingRuntime：查询/写回端口注入真实
         // MetadataSyncCoordinator / WritebackService（CullingSyncPort /
@@ -373,7 +375,7 @@ public final class SessionCommandRouter: CommandRouter {
             similarity: similarity,
             duplicate: duplicate,
             assetStore: assetStore,
-            faceKwService: resolvedFaceKwService,
+            faceKwRuntime: resolvedFaceKwRuntime,
             persons: persons,
             templates: templates,
             quality: quality,
@@ -445,14 +447,14 @@ public final class SessionCommandRouter: CommandRouter {
         }
 
         // TS 源: face-kw.ipc.ts:24-40 —— face.analyze executor。job abort 经
-        // signal handler 传播给 FaceKwService 的自持 controller（TS
+        // signal handler 传播给 FaceKeywordingRuntime 的自持 controller（TS
         // addEventListener('abort') 语义；JobAbortSignal.addHandler 即等价物）。
-        await jobRunner.registerExecutor(type: .faceAnalyze) { [faceKwService] job, context in
+        await jobRunner.registerExecutor(type: .faceAnalyze) { [faceKwRuntime] job, context in
             context.signal.addHandler {
-                faceKwService.cancel(sessionId: job.scopeId)
+                faceKwRuntime.cancel(sessionId: job.scopeId)
             }
             let checkpoint = job.checkpoint
-            let result = try await faceKwService.analyze(
+            let result = try await faceKwRuntime.analyze(
                 sessionId: job.scopeId,
                 detectorPath: checkpoint["detectorPath"]?.stringValue ?? "models/face_detector.onnx",
                 encoderPath: checkpoint["encoderPath"]?.stringValue ?? "models/face_encoder.onnx",
@@ -608,7 +610,7 @@ public final class SessionCommandRouter: CommandRouter {
             let sessionId = try requiredString(params, "sessionId")
             let options = try parseWritebackOptions(params["options"])
             let preview = try awaitSync {
-                try await self.faceKwService.preview(sessionId: sessionId, options: options)
+                try await self.faceKwRuntime.preview(sessionId: sessionId, options: options)
             }
             return try GatherCore.JSONValue(from: preview)
 
@@ -620,7 +622,7 @@ public final class SessionCommandRouter: CommandRouter {
             let sessionId = try requiredString(params, "sessionId")
             let items = try parseFaceKwWritebackItems(params["items"])
             let result = try awaitSync {
-                try await self.faceKwService.writeback(sessionId: sessionId, confirmed: true, items: items)
+                try await self.faceKwRuntime.writeback(sessionId: sessionId, confirmed: true, items: items)
             }
             return try GatherCore.JSONValue(from: result)
 
@@ -628,7 +630,7 @@ public final class SessionCommandRouter: CommandRouter {
             // face-kw.ipc.ts:232-239 —— ok(true)。
             let sessionId = try requiredString(params, "sessionId")
             let ok = try awaitSync {
-                try await self.faceKwService.confirmSync(sessionId: sessionId)
+                try await self.faceKwRuntime.confirmSync(sessionId: sessionId)
             }
             return .bool(ok)
 
@@ -640,7 +642,7 @@ public final class SessionCommandRouter: CommandRouter {
                 throw BridgeError.badParams("FKW_CLEANUP_CONFIRM_REQUIRED")
             }
             let result = try awaitSync {
-                try await self.faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+                try await self.faceKwRuntime.cleanup(sessionId: sessionId, confirmed: true)
             }
             return try GatherCore.JSONValue(from: result)
 
@@ -651,16 +653,16 @@ public final class SessionCommandRouter: CommandRouter {
             }
             let sessionId = try requiredString(params, "sessionId")
             let result = try awaitSync {
-                try await self.faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+                try await self.faceKwRuntime.cleanup(sessionId: sessionId, confirmed: true)
             }
             return try GatherCore.JSONValue(from: result)
 
         case "fkw.cancel_analysis":
             // face-kw.ipc.ts:72-80 —— jobs.cancelScope + cancel，返回 {done:true}。
             let sessionId = try requiredString(params, "sessionId")
-            Task { [jobRunner, faceKwService] in
+            Task { [jobRunner, faceKwRuntime] in
                 _ = try? await jobRunner.cancelScope(type: .faceAnalyze, scopeId: sessionId)
-                faceKwService.cancel(sessionId: sessionId)
+                faceKwRuntime.cancel(sessionId: sessionId)
             }
             return .object(["done": .bool(true)])
 
@@ -1388,7 +1390,7 @@ public final class SessionCommandRouter: CommandRouter {
                     let epsValue = eps ?? settings.number("default_eps", default: 0.6)
                     let minSamplesValue = minSamples ?? settings.number("default_min_samples", default: 2)
                     try validateFaceClusteringParameters(eps: epsValue, minPts: minSamplesValue)
-                    try await faceKwService.recluster(sessionId: sessionId, eps: epsValue, minPts: minSamplesValue)
+                    try await faceKwRuntime.recluster(sessionId: sessionId, eps: epsValue, minPts: minSamplesValue)
                     completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -1412,7 +1414,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let result = try await faceKwService.unbind(
+                    let result = try await faceKwRuntime.unbind(
                         sessionId: sessionId, clusterId: Int64(clusterId), confirmed: true)
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
@@ -1429,7 +1431,7 @@ public final class SessionCommandRouter: CommandRouter {
             let options = (try? parseWritebackOptions(params["options"])) ?? FaceKwWritebackOptions()
             Task {
                 do {
-                    let preview = try await faceKwService.preview(sessionId: sessionId, options: options)
+                    let preview = try await faceKwRuntime.preview(sessionId: sessionId, options: options)
                     let data = try GatherCore.JSONValue(from: preview)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
@@ -1457,7 +1459,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let result = try await faceKwService.writeback(sessionId: sessionId, confirmed: true, items: items)
+                    let result = try await faceKwRuntime.writeback(sessionId: sessionId, confirmed: true, items: items)
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
@@ -1472,7 +1474,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let ok = try await faceKwService.confirmSync(sessionId: sessionId)
+                    let ok = try await faceKwRuntime.confirmSync(sessionId: sessionId)
                     completion(WebResponse(ok: true, data: .bool(ok)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -1490,7 +1492,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let result = try await faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+                    let result = try await faceKwRuntime.cleanup(sessionId: sessionId, confirmed: true)
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
@@ -1509,7 +1511,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let result = try await faceKwService.cleanup(sessionId: sessionId, confirmed: true)
+                    let result = try await faceKwRuntime.cleanup(sessionId: sessionId, confirmed: true)
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
                 } catch {
@@ -1960,7 +1962,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let keywords = keywordValues.compactMap(\.stringValue)
                 Task {
                     do {
-                        try await faceKwService.bindCluster(
+                        try await faceKwRuntime.bindCluster(
                             sessionId: sessionId, clusterId: Int64(clusterId),
                             roleName: roleName, keywords: keywords)
                         completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
@@ -1982,7 +1984,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let clusterId = try requiredNumber(params, "clusterId")
                 Task {
                     do {
-                        let result = try await faceKwService.unbind(
+                        let result = try await faceKwRuntime.unbind(
                             sessionId: sessionId, clusterId: Int64(clusterId), confirmed: true)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
                     } catch {
@@ -2001,7 +2003,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let target = try requiredNumber(params, "target")
                 Task {
                     do {
-                        try await faceKwService.mergeClusters(
+                        try await faceKwRuntime.mergeClusters(
                             sessionId: sessionId, sourceId: Int64(source), targetId: Int64(target))
                         completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
                     } catch {
@@ -2020,7 +2022,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let memberId = try requiredNumber(params, "memberId")
                 Task {
                     do {
-                        try await faceKwService.removeMember(
+                        try await faceKwRuntime.removeMember(
                             sessionId: sessionId, clusterId: Int64(clusterId), memberId: Int64(memberId))
                         completion(WebResponse(ok: true, data: .object(["done": .bool(true)])))
                     } catch {
@@ -2444,7 +2446,7 @@ public final class SessionCommandRouter: CommandRouter {
                 let sessionId = try requiredString(params, "sessionId")
                 Task {
                     do {
-                        let clusters = try await faceKwService.getClusters(sessionId: sessionId)
+                        let clusters = try await faceKwRuntime.getClusters(sessionId: sessionId)
                         completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: clusters)))
                     } catch {
                         completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -3107,7 +3109,7 @@ public final class SessionCommandRouter: CommandRouter {
 
         // 角色与脸数小查询下沉 Repo/Service（原内联 SQL，P1-2 修复）。
         let memberRoles = (try? await assetStore.memberRoles(sessionId: sessionId, photoIds: ids)) ?? [:]
-        let faceCounts = (try? await faceKwService.faceCounts(sessionId: sessionId, photoIds: ids)) ?? [:]
+        let faceCounts = (try? await faceKwRuntime.faceCounts(sessionId: sessionId, photoIds: ids)) ?? [:]
 
         func toPhotoData(_ row: PhotoPage, variants: [PhotoPage]) -> GatherCore.JSONValue {
             var object: [String: GatherCore.JSONValue] = [

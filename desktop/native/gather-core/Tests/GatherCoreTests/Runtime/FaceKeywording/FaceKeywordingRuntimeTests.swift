@@ -1,5 +1,6 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Services/FaceKeywordingServiceTests.swift
-// FaceKwService + PersonRepo（人脸库桥接）+ 写回接缝 行为测试（Phase 3.5）。
+// desktop/native/gather-core/Tests/GatherCoreTests/Runtime/FaceKeywording/FaceKeywordingRuntimeTests.swift
+// FaceKeywordingRuntime + PersonStore（人脸库桥接）+ 写回接缝 行为测试（Phase 3.5；
+// W2d-6 自 Services/FaceKeywordingServiceTests.swift 迁入并改指 Runtime 类型）。
 // TS 源（用例逐一对应）:
 //   tests/unit/services/face-kw/face-parameters.test.ts
 //   tests/unit/services/face-kw/face-kw-observations.test.ts
@@ -30,10 +31,10 @@ private func makeTempPhotoStore() async throws -> any PhotoStore {
 // MARK: - 支撑
 
 /// 幂等等待门（swift-testing 并行下 Task 调度延迟明显，避免固定 sleep）。
-private final class AsyncGate {
+private final class AsyncGate: Sendable {
     private let lock = NSLock()
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-    private var released = false
+    nonisolated(unsafe) private var continuations: [CheckedContinuation<Void, Never>] = []
+    nonisolated(unsafe) private var released = false
 
     func wait() async {
         let mustWait: Bool = {
@@ -93,7 +94,7 @@ private func waitUntil(
 
 private struct FaceKwHarness {
     let db: SQLiteDatabase
-    let service: FaceKwService
+    let service: FaceKeywordingRuntime
     let sessionStore: any SessionStore
     let faceStore: SQLiteFaceStore
     let personStore: SQLitePersonStore
@@ -115,8 +116,8 @@ private func makeTestPersonStore() throws -> SQLitePersonStore {
 /// mock 语义）；推理默认返回单脸 [10,20,30,40] / 0.95 / [0.5,0.6]。
 private func makeFaceKwHarness(
     photoCount: Int = 1,
-    inference: FaceKwService.FaceInferenceProvider? = nil,
-    cluster: FaceKwService.FaceClusterProvider? = nil,
+    inference: FaceKeywordingRuntime.FaceInferenceProvider? = nil,
+    cluster: FaceKeywordingRuntime.FaceClusterProvider? = nil,
     writeback: FaceWritebackProvider? = nil,
     settings: [String: Double] = [:]
 ) async throws -> FaceKwHarness {
@@ -133,12 +134,12 @@ private func makeFaceKwHarness(
         try await insertPhoto(db, id: "photo-\(i)", sessionId: session.id, filepath: path)
         if i == 1 { photoPath = path }
     }
-    let service = FaceKwService(
+    let service = FaceKeywordingRuntime(dependencies: .init(
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         sessionStore: sessionStore,
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
         personStore: SQLitePersonStore(database: try SQLiteDatabase(path: dbPath)),
-        database: try SQLiteDatabase(path: dbPath),
+        analysisRunStore: SQLiteAnalysisRunStore(database: try SQLiteDatabase(path: dbPath)),
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
         decodeProvider: { _, _ in Data("jpeg".utf8) },
         inferenceProvider: inference ?? defaultFakeInference(),
@@ -147,7 +148,7 @@ private func makeFaceKwHarness(
                 entries: entries, eps: eps, minPts: minPts, onProgress: onProgress)
         },
         writebackProvider: writeback
-    )
+    ))
     return FaceKwHarness(
         db: db, service: service, sessionStore: sessionStore,
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
@@ -157,7 +158,7 @@ private func makeFaceKwHarness(
 }
 
 /// 默认 fake 推理：每图一个成功脸。
-private func defaultFakeInference() -> FaceKwService.FaceInferenceProvider {
+private func defaultFakeInference() -> FaceKeywordingRuntime.FaceInferenceProvider {
     { images, _, _ in
         images.map { _ in
             FaceInferenceItem(observations: [
@@ -204,7 +205,7 @@ private func runRow(_ db: SQLiteDatabase, _ sessionId: String) async throws -> S
     try await db.queryOne("SELECT kind, photo_count, index_seq, params, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?", [.text(sessionId)])
 }
 
-private let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
+private let analysisSignatureForDefaults = FaceKeywordingRuntime.makeAnalysisSignature(
     detectorPath: "det.onnx", encoderPath: "enc.onnx",
     primaryDetectionSize: 640, secondaryDetectionSize: 128,
     confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
@@ -240,7 +241,7 @@ struct FaceClusteringParameterTests {
 
 // MARK: - analyze 观察保留（TS: face-kw-observations.test.ts 前两个用例）
 
-@Suite("FaceKwService.analyze observation retention")
+@Suite("FaceKeywordingRuntime.analyze observation retention")
 struct FaceKwObservationRetentionTests {
     @Test("keeps previous observations when re-inference for a photo fails")
     func keepsObservationsOnFailedInference() async throws {
@@ -295,7 +296,7 @@ struct FaceKwObservationRetentionTests {
 
 // MARK: - analyze run 记录（TS: face-run-record.test.ts）
 
-@Suite("FaceKwService analysis run records")
+@Suite("FaceKeywordingRuntime analysis run records")
 struct FaceKwRunRecordTests {
     @Test("writes a face run row at entry and finalizes it to ok")
     func runRowFinalizesOk() async throws {
@@ -341,7 +342,7 @@ struct FaceKwRunRecordTests {
 
 // MARK: - analyze 流程（缓存 / 取消 / 占用 / 进度 / 空结果）
 
-@Suite("FaceKwService.analyze flow")
+@Suite("FaceKeywordingRuntime.analyze flow")
 struct FaceKwAnalyzeFlowTests {
     @Test("serves cached clusters without re-inference when nothing changed")
     func cachedClustersEarlyReturn() async throws {
@@ -516,15 +517,15 @@ struct FaceKwAnalyzeFlowTests {
         let db = try await makeMigratedStore(path: dbPath)
         let sessionStore = try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath))
         let session = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "Empty", source: "folder")
-        let service = FaceKwService(
+        let service = FaceKeywordingRuntime(dependencies: .init(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             personStore: try makeTestPersonStore(),
-            database: try SQLiteDatabase(path: dbPath),
+            analysisRunStore: SQLiteAnalysisRunStore(database: try SQLiteDatabase(path: dbPath)),
             decodeProvider: { _, _ in Data("jpeg".utf8) },
             inferenceProvider: defaultFakeInference()
-        )
+        ))
         await #expect(throws: FaceKwError.noPhotos) {
             try await service.analyze(
                 sessionId: session.id, detectorPath: "det.onnx", encoderPath: "enc.onnx")
@@ -547,13 +548,13 @@ struct FaceKwAnalyzeFlowTests {
 
 // MARK: - 绑定迁移（TS: face-binding-migration.test.ts）
 
-@Suite("FaceKwService binding migration across re-clustering")
+@Suite("FaceKeywordingRuntime binding migration across re-clustering")
 struct FaceKwBindingMigrationTests {
     /// 建会话 + 观察（p1/p2）+ 旧集群与绑定。
     private func makeMigrationHarness(
         bindings: [(clusterId: Int64, roleName: String, keywords: [String], photoIds: [String])],
         clusterResult: [[(observationId: Int, photoId: String)]]
-    ) async throws -> (db: SQLiteDatabase, service: FaceKwService, faceStore: SQLiteFaceStore, sessionId: String) {
+    ) async throws -> (db: SQLiteDatabase, service: FaceKeywordingRuntime, faceStore: SQLiteFaceStore, sessionId: String) {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-fkw-face-\(UUID().uuidString).sqlite").path
         let db = try await makeMigratedStore(path: dbPath)
@@ -575,12 +576,12 @@ struct FaceKwBindingMigrationTests {
                 members: binding.photoIds.map { (photoId: $0, bbox: [1, 2, 3, 4], confidence: 0.9) })
             try await faceStore.updateBinding(clusterId: binding.clusterId, roleName: binding.roleName, keywords: binding.keywords)
         }
-        let service = FaceKwService(
+        let service = FaceKeywordingRuntime(dependencies: .init(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
-            database: try SQLiteDatabase(path: dbPath),
+            analysisRunStore: SQLiteAnalysisRunStore(database: try SQLiteDatabase(path: dbPath)),
             clusterProvider: { entries, _, _, _ in
                 FaceClusterResult(
                     clusters: clusterResult.map { group in
@@ -591,7 +592,7 @@ struct FaceKwBindingMigrationTests {
                     noise: []
                 )
             }
-        )
+        ))
         return (db, service, faceStore, sessionId)
     }
 
@@ -661,7 +662,7 @@ struct FaceKwBindingMigrationTests {
 
 // MARK: - clusters 读取与集群命令
 
-@Suite("FaceKwService.getClusters shape")
+@Suite("FaceKeywordingRuntime.getClusters shape")
 struct FaceKwGetClustersTests {
     @Test("truncates members to the preview window and maps binding fields")
     func truncatesMembersAndMapsBinding() async throws {
@@ -679,13 +680,13 @@ struct FaceKwGetClustersTests {
             members: (1...5).map { (photoId: "photo-\($0)", bbox: [Double($0), 2, 3, 4], confidence: 0.9) })
         try await faceStore.updateBinding(clusterId: 1, roleName: "Alice", keywords: ["kw1", "kw2"])
 
-        let service = FaceKwService(
+        let service = FaceKeywordingRuntime(dependencies: .init(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
-            database: try SQLiteDatabase(path: dbPath)
-        )
+            analysisRunStore: SQLiteAnalysisRunStore(database: try SQLiteDatabase(path: dbPath))
+        ))
         let clusters = try await service.getClusters(sessionId: sessionId)
 
         #expect(clusters.count == 1)
@@ -708,7 +709,7 @@ struct FaceKwGetClustersTests {
     }
 }
 
-@Suite("FaceKwService cluster commands")
+@Suite("FaceKeywordingRuntime cluster commands")
 struct FaceKwClusterCommandTests {
     @Test("binds a cluster with normalized role and deduped keywords, bridging the person library")
     func bindNormalizesAndBridges() async throws {
@@ -741,13 +742,13 @@ struct FaceKwClusterCommandTests {
         let sessionB = try await SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)).create(name: "B", source: "folder")
         let faceStore = SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath))
         try await seedCluster(db, id: 1, sessionId: sessionA.id, memberCount: 0)
-        let service = FaceKwService(
+        let service = FaceKeywordingRuntime(dependencies: .init(
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
-            database: try SQLiteDatabase(path: dbPath)
-        )
+            analysisRunStore: SQLiteAnalysisRunStore(database: try SQLiteDatabase(path: dbPath))
+        ))
         await await #expect(throws: FaceKwError.clusterNotFound) {
             try await service.bindCluster(sessionId: sessionA.id, clusterId: 99, roleName: "Alice", keywords: [])
         }
@@ -960,7 +961,7 @@ private func makeWritebackItem(photoId: String) -> FaceKwWritebackItem {
     )
 }
 
-@Suite("FaceKwService writeback commands")
+@Suite("FaceKeywordingRuntime writeback commands")
 struct FaceKwWritebackTests {
     @Test("fkw.unbind requires confirmation")
     func unbindRequiresConfirmation() async throws {
