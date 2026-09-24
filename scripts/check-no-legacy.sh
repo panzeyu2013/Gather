@@ -279,8 +279,8 @@ enforce_max "Runtime layer SQL statements (R2)" 'SELECT |INSERT INTO |UPDATE .* 
 # R7：Services 层已完全清退（0 文件），原「Services 内不得有裸 SQL」度量随层退役；
 # 以 H1 删除态断言承接（旧层同名目录再现即 FAIL），enforced 计数不变。
 enforce_absent_tree "legacy Services dir must stay absent (R2)" "$CORE/Sources/GatherCore" "Services"
-enforce_max "unchecked Sendable (R1/R2)"      '@unchecked Sendable'                "$CORE/Sources" "*.swift" 5
-enforce_max "batchAsync copies (R2)"          'func batchAsync'                    "$CORE"   "*.swift" 3
+enforce_max "unchecked Sendable (R1/R2)"      '@unchecked Sendable'                "$CORE/Sources" "*.swift" 3
+enforce_max "batchAsync copies (R2)"          'func batchAsync'                    "$CORE"   "*.swift" 2
 
 # —— 出现次数粒度棘轮（R8 加固：审计指出的「文件数」粒度空隙）——
 enforce_max_occ "awaitSync occurrences (R5)" 'awaitSync' "$APP" "*.swift" 16
@@ -289,8 +289,8 @@ enforce_max_occ "awaitSync occurrences (R5)" 'awaitSync' "$APP" "*.swift" 16
 tracked "legacy DBConnection symbols (R1) [待处理]" 'DBConnection' "$CORE/Sources" "*.swift"
 tracked "legacy Repositories path refs (R1) [待处理]" 'Database/Repositories' "$CORE/Sources" "*.swift"
 tracked "legacy module bridge symbols (R5) [待处理]" 'NativeCommandClient' "$APP/Sources" "*.swift"
-enforce_max_occ "@unchecked Sendable occurrences (R1/R2)" '@unchecked Sendable' "$CORE/Sources" "*.swift" 5
-enforce_max_occ "batchAsync occurrences (R2)" 'func batchAsync' "$CORE" "*.swift" 3
+enforce_max_occ "@unchecked Sendable occurrences (R1/R2)" '@unchecked Sendable' "$CORE/Sources" "*.swift" 3
+enforce_max_occ "batchAsync occurrences (R2)" 'func batchAsync' "$CORE" "*.swift" 2
 
 # ---------------------------------------------------------------- tracked
 tracked "awaitSync semaphore bridge (R5)"       'awaitSync'                        "$APP"    "*.swift"
