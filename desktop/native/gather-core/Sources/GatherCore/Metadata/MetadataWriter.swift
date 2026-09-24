@@ -495,12 +495,21 @@ public actor MetadataWriter {
     /// 关停后需 start 才能再次排程；start 会丢弃关停前残留状态
     /// （排程条目/就绪队列/在飞写/串行链尾；清后 generation 从 1 重新计数），
     /// 语义为调用方在 start 后重新 schedule，不注入新依赖（依赖仍由 init 注入）。
+    /// w4wire / W4：崩溃遗留回收 —— 上次进程中断时停留在 status='writing' 的行
+    /// 是未结算的在飞写，start 时经 WritebackStore.recoverInterruptedOutbox()
+    /// 一律回退为 'pending'（与 Services/MetadataSyncCoordinator.start 同语义），
+    /// 使新排程可重新认领这些行；绝不把 writing 残留当作已写入而丢工作。
+    /// recoverInterruptedOutbox 为 async，而 start 保持既有同步签名（调用方无需
+    /// 等待即可继续 schedule），故用 Task 包装为 best-effort：回收失败只丢弃该次
+    /// 回收（try? 吞错），不阻断 start、不改变 start 的返回语义与调用点。
     public func start() {
         isShutDown = false
         entries.removeAll()
         readyQueue.removeAll()
         activeWrites.removeAll()
         mutationTails.removeAll()
+        let writebackStore = dependencies.writebackStore
+        Task { try? await writebackStore.recoverInterruptedOutbox() }
     }
 
     /// 静默判据：无在飞写且无排队的就绪路径。
