@@ -137,9 +137,9 @@ public final class CullingViewModel {
         self.captureOne = CaptureOneBridge(router: router)
     }
 
-    public func load() {
-        loadNavigation()
-        loadPage(reset: true)
+    public func load() async {
+        await loadNavigation()
+        await loadPage(reset: true)
     }
 
     /// 从 MetadataSyncSummary 推导同步状态机（优先级对齐旧版 syncLabel：
@@ -181,17 +181,17 @@ public final class CullingViewModel {
         ).canCleanup
     }
     /// c1SyncStatus 事件（GatherEventCenter.c1SyncStatus，object 为 sessionId）的轻量刷新。
-    public func refreshSyncStatus() {
+    public func refreshSyncStatus() async {
         var failure: String?
         do {
-            syncStatus = try client.execute("culling.sync_status", params: [
+            syncStatus = try await client.executeAsync("culling.sync_status", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: MetadataSyncSummary.self)
         } catch {
             failure = NativeCommandClient.message(for: error)
         }
         do {
-            summary = try client.execute("culling.summary", params: [
+            summary = try await client.executeAsync("culling.summary", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: CullingSummary.self)
         } catch {
@@ -225,7 +225,7 @@ public final class CullingViewModel {
                     return
                 }
                 if !isActive { return }
-                let jobs = try client.execute("jobs.list", params: [:]).decoded(as: [AnalysisJobData].self)
+                let jobs = try await client.executeAsync("jobs.list", params: [:]).decoded(as: [AnalysisJobData].self)
                 guard let latest = jobs.first(where: { $0.id == job.id }) else { return }
                 qualityJob = latest
                 switch latest.status {
@@ -233,15 +233,15 @@ public final class CullingViewModel {
                     continue
                 case .succeeded:
                     notice = GatherLocalization.l("技术质量分析已完成")
-                    loadPage(reset: true)
+                    await loadPage(reset: true)
                     return
                 case .failed, .interrupted:
                     errorMessage = GatherLocalization.jobErrorMessage(latest.errorMessage)
-                    loadPage(reset: true)
+                    await loadPage(reset: true)
                     return
                 case .cancelled:
                     notice = GatherLocalization.l("质量分析已取消")
-                    loadPage(reset: true)
+                    await loadPage(reset: true)
                     return
                 }
             }
@@ -251,10 +251,10 @@ public final class CullingViewModel {
     }
 
     /// 取消技术质量分析任务（jobs.cancel 通道）。
-    public func cancelQualityAnalysis() {
+    public func cancelQualityAnalysis() async {
         guard let job = qualityJob else { return }
         do {
-            _ = try client.execute("jobs.cancel", params: ["jobId": .string(job.id)])
+            _ = try await client.executeAsync("jobs.cancel", params: ["jobId": .string(job.id)])
             notice = GatherLocalization.l("已请求取消质量分析")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -262,9 +262,9 @@ public final class CullingViewModel {
     }
 
     /// TS: navigationApi.list —— 挑片页保留自动/手工导航组的可见入口。
-    public func loadNavigation() {
+    public func loadNavigation() async {
         do {
-            navigationGroups = try client.execute("navigation.list", params: [
+            navigationGroups = try await client.executeAsync("navigation.list", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: [NavigationGroup].self)
             normalizeNavigationSelection()
@@ -305,13 +305,13 @@ public final class CullingViewModel {
         }
     }
 
-    public func splitNavigation(beforePhotoId: String) {
+    public func splitNavigation(beforePhotoId: String) async {
         guard !selectedNavigationGroupId.isEmpty, !beforePhotoId.isEmpty else {
             errorMessage = GatherLocalization.l("请选择导航组和拆分位置")
             return
         }
         do {
-            navigationGroups = try client.execute("navigation.split", params: [
+            navigationGroups = try await client.executeAsync("navigation.split", params: [
                 "sessionId": .string(sessionId),
                 "groupId": .string(selectedNavigationGroupId),
                 "beforePhotoId": .string(beforePhotoId),
@@ -324,13 +324,13 @@ public final class CullingViewModel {
         }
     }
 
-    public func mergeSelectedNavigationGroups() {
+    public func mergeSelectedNavigationGroups() async {
         guard selectedNavigationGroupIds.count >= 2 else {
             errorMessage = GatherLocalization.l("请选择至少两个导航组")
             return
         }
         do {
-            navigationGroups = try client.execute("navigation.merge", params: [
+            navigationGroups = try await client.executeAsync("navigation.merge", params: [
                 "sessionId": .string(sessionId),
                 "groupIds": .array(selectedNavigationGroupIds.sorted().map(JSONValue.string)),
             ]).decoded(as: [NavigationGroup].self)
@@ -351,7 +351,7 @@ public final class CullingViewModel {
             errorMessage = GatherLocalization.l("请先定位到组内非首张照片")
             return
         }
-        splitNavigation(beforePhotoId: current)
+        Task { await splitNavigation(beforePhotoId: current) }
     }
 
     /// 对齐旧版 keepInGroupRejectRest 的工具列入口：按相似组 id 定位组并决策。
@@ -360,7 +360,7 @@ public final class CullingViewModel {
             errorMessage = GatherLocalization.l("相似组已变化，请刷新后重试")
             return
         }
-        decideSimilarityGroup(group, keepPhotoIds: keepPhotoIds, shouldAdvance: shouldAdvance)
+        Task { await decideSimilarityGroup(group, keepPhotoIds: keepPhotoIds, shouldAdvance: shouldAdvance) }
     }
 
     private func normalizeNavigationSelection() {
@@ -381,7 +381,7 @@ public final class CullingViewModel {
             return
         }
         selectedNavigationGroupIds = [previous.id, selected.id]
-        mergeSelectedNavigationGroups()
+        Task { await mergeSelectedNavigationGroups() }
     }
 
     /// 对齐旧版导航组下拉跳转：选中组后定位到该组的推荐首张照片。
@@ -395,9 +395,9 @@ public final class CullingViewModel {
         }
     }
 
-    public func loadMore() {
+    public func loadMore() async {
         guard !isLoading, page?.nextRowId != nil else { return }
-        loadPage(reset: false)
+        await loadPage(reset: false)
     }
 
     private struct RefreshSnapshot: Sendable {
@@ -489,7 +489,7 @@ public final class CullingViewModel {
         let filters = filtersForCurrentState()
         let groupId = selectedSimilarityGroupId
         refreshTask = Task.detached { [client, sessionId, scope, filters, groupId, version] in
-            let snapshot = Self.fetchSnapshot(
+            let snapshot = await Self.fetchSnapshot(
                 client: client,
                 sessionId: sessionId,
                 scope: scope,
@@ -535,7 +535,7 @@ public final class CullingViewModel {
         scope: CullingScope,
         filters: CullingFilters?,
         groupId: String
-    ) -> RefreshSnapshot {
+    ) async -> RefreshSnapshot {
         var snapshot = RefreshSnapshot()
         var params: [String: JSONValue] = [
             "sessionId": .string(sessionId),
@@ -549,13 +549,13 @@ public final class CullingViewModel {
             params["groupId"] = .string(groupId)
         }
         do {
-            snapshot.page = try client.execute("culling.list_page", params: params).decoded(as: CullingPage.self)
+            snapshot.page = try await client.executeAsync("culling.list_page", params: params).decoded(as: CullingPage.self)
         } catch {
             snapshot.pageError = NativeCommandClient.message(for: error)
         }
         guard !Task.isCancelled else { return snapshot }
         do {
-            snapshot.summary = try client.execute("culling.summary", params: [
+            snapshot.summary = try await client.executeAsync("culling.summary", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: CullingSummary.self)
         } catch {
@@ -563,7 +563,7 @@ public final class CullingViewModel {
         }
         guard !Task.isCancelled else { return snapshot }
         do {
-            snapshot.groups = try client.execute("culling.groups", params: [
+            snapshot.groups = try await client.executeAsync("culling.groups", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: [CullingGroup].self)
         } catch {
@@ -571,7 +571,7 @@ public final class CullingViewModel {
         }
         guard !Task.isCancelled else { return snapshot }
         do {
-            snapshot.syncStatus = try client.execute("culling.sync_status", params: [
+            snapshot.syncStatus = try await client.executeAsync("culling.sync_status", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: MetadataSyncSummary.self)
         } catch {
@@ -579,7 +579,7 @@ public final class CullingViewModel {
         }
         guard !Task.isCancelled else { return snapshot }
         do {
-            snapshot.history = try client.execute("culling.history", params: [
+            snapshot.history = try await client.executeAsync("culling.history", params: [
                 "sessionId": .string(sessionId),
                 "limit": .number(100),
             ]).decoded(as: [CullingHistoryOperation].self)
@@ -597,7 +597,7 @@ public final class CullingViewModel {
         return snapshot
     }
 
-    private func loadPage(reset: Bool) {
+    private func loadPage(reset: Bool) async {
         isLoading = true
         defer { isLoading = false }
         do {
@@ -623,7 +623,7 @@ public final class CullingViewModel {
             if !reset, let afterRowId = page?.nextRowId {
                 params["afterRowId"] = .number(Double(afterRowId))
             }
-            let nextPage = try client.execute("culling.list_page", params: params).decoded(as: CullingPage.self)
+            let nextPage = try await client.executeAsync("culling.list_page", params: params).decoded(as: CullingPage.self)
             let newIds = Set(nextPage.assets.map { $0.photo.id })
             pageVersion += 1
             if reset || page == nil {
@@ -646,13 +646,13 @@ public final class CullingViewModel {
                 )
                 loadedPhotoIds.formUnion(newIds)
             }
-            summary = try client.execute("culling.summary", params: [
+            summary = try await client.executeAsync("culling.summary", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: CullingSummary.self)
             // 以下为辅助查询：失败保持降级（空结果）但不静默，写入 lastSyncError 由 UI 提示。
             lastSyncError = nil
             do {
-                similarityGroups = try client.execute("culling.groups", params: [
+                similarityGroups = try await client.executeAsync("culling.groups", params: [
                     "sessionId": .string(sessionId),
                 ]).decoded(as: [CullingGroup].self)
             } catch {
@@ -665,7 +665,7 @@ public final class CullingViewModel {
                 selectedSimilarityGroupId = ""
             }
             do {
-                syncStatus = try client.execute("culling.sync_status", params: [
+                syncStatus = try await client.executeAsync("culling.sync_status", params: [
                     "sessionId": .string(sessionId),
                 ]).decoded(as: MetadataSyncSummary.self)
             } catch {
@@ -673,7 +673,7 @@ public final class CullingViewModel {
                 lastSyncError = NativeCommandClient.message(for: error)
             }
             do {
-                history = try client.execute("culling.history", params: [
+                history = try await client.executeAsync("culling.history", params: [
                     "sessionId": .string(sessionId),
                     "limit": .number(100),
                 ]).decoded(as: [CullingHistoryOperation].self)
@@ -709,34 +709,34 @@ public final class CullingViewModel {
 
     /// 任意维度变化入口：更新组合筛选状态并整页刷新；
     /// 无活跃筛选时回到"全部"范围（与原 all → scope .all 行为一致）。
-    public func setFilterState(_ mutate: (inout FilterState) -> Void) {
+    public func setFilterState(_ mutate: (inout FilterState) -> Void) async {
         mutate(&filterState)
         scopeMode = filterState.isActive ? .filtered : .all
-        loadPage(reset: true)
+        await loadPage(reset: true)
     }
 
     /// TS FilterControls 重置（setFilters({})）。
-    public func resetFilters() {
+    public func resetFilters() async {
         guard filterState.isActive || scopeMode != .all else { return }
         filterState = FilterState()
         scopeMode = .all
-        loadPage(reset: true)
+        await loadPage(reset: true)
     }
 
-    public func setScope(_ scope: ScopeMode) {
+    public func setScope(_ scope: ScopeMode) async {
         guard scopeMode != scope else { return }
         scopeMode = scope
-        loadPage(reset: true)
+        await loadPage(reset: true)
     }
 
-    public func selectSimilarityGroup(_ groupId: String) {
+    public func selectSimilarityGroup(_ groupId: String) async {
         guard similarityGroups.contains(where: { $0.groupId == groupId }) else { return }
         selectedSimilarityGroupId = groupId
         scopeMode = .similarityGroup
-        loadPage(reset: true)
+        await loadPage(reset: true)
     }
 
-    public func decideSimilarityGroup(_ group: CullingGroup, keepPhotoIds: [String], shouldAdvance: Bool = true) {
+    public func decideSimilarityGroup(_ group: CullingGroup, keepPhotoIds: [String], shouldAdvance: Bool = true) async {
         let validIds = Set(group.images.map(\.photoId))
         // 对齐 TS keepInGroupRejectRest：保留 1..组员数-1 张、且都在组内。
         guard !keepPhotoIds.isEmpty,
@@ -746,13 +746,13 @@ public final class CullingViewModel {
             return
         }
         do {
-            _ = try client.execute("culling.decide_group", params: [
+            _ = try await client.executeAsync("culling.decide_group", params: [
                 "sessionId": .string(sessionId),
                 "groupId": .string(group.groupId),
                 "keepPhotoIds": .array(keepPhotoIds.map(JSONValue.string)),
             ])
             notice = GatherLocalization.l("已更新相似度组挑片决策")
-            loadPage(reset: true)
+            await loadPage(reset: true)
             if shouldAdvance && autoAdvance {
                 jumpToNextGroup(after: group)
             }
@@ -769,7 +769,7 @@ public final class CullingViewModel {
             let groups = similarityGroups
             guard let index = groups.firstIndex(where: { $0.groupId == group.groupId }),
                   let next = groups.dropFirst(index + 1).first else { return }
-            selectSimilarityGroup(next.groupId)
+            Task { await selectSimilarityGroup(next.groupId) }
             return
         }
         guard let assets = page?.assets, let current = currentPhotoId,
@@ -797,9 +797,9 @@ public final class CullingViewModel {
     }
 
     /// 单张更新；nextPhotoId 非空时在刷新前预置当前照片（自动前进目标）。
-    public func update(_ asset: CullingAsset, patch: CullingUpdatePatch, nextPhotoId: String? = nil) {
+    public func update(_ asset: CullingAsset, patch: CullingUpdatePatch, nextPhotoId: String? = nil) async {
         do {
-            let data = try client.execute("culling.update", params: [
+            let data = try await client.executeAsync("culling.update", params: [
                 "sessionId": .string(sessionId),
                 "photoId": .string(asset.photo.id),
                 "expectedRevision": .number(Double(asset.state.revision)),
@@ -834,13 +834,13 @@ public final class CullingViewModel {
         }
     }
 
-    public func batchUpdate(patch: CullingUpdatePatch) {
+    public func batchUpdate(patch: CullingUpdatePatch) async {
         guard !selectedPhotoIds.isEmpty else {
             errorMessage = GatherLocalization.l("请选择至少一张照片")
             return
         }
         do {
-            let data = try client.execute("culling.batch_update", params: [
+            let data = try await client.executeAsync("culling.batch_update", params: [
                 "sessionId": .string(sessionId),
                 "photoIds": .array(selectedPhotoIds.sorted().map(JSONValue.string)),
                 "patch": try JSONValue(from: patch),
@@ -889,9 +889,9 @@ public final class CullingViewModel {
         if targets.count == 1 {
             guard let asset = page?.assets.first(where: { $0.photo.id == targets[0] }) else { return }
             let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: targets[0]) : nil
-            update(asset, patch: patch, nextPhotoId: nextId)
+            Task { await update(asset, patch: patch, nextPhotoId: nextId) }
         } else {
-            batchUpdate(patch: patch)
+            Task { await batchUpdate(patch: patch) }
         }
     }
 
@@ -913,7 +913,7 @@ public final class CullingViewModel {
             if index < assets.count - 1 {
                 currentPhotoId = assets[index + 1].photo.id
             } else if page?.nextRowId != nil {
-                loadMore()
+                Task { await loadMore() }
             }
         } else {
             currentPhotoId = assets.first?.photo.id
@@ -934,7 +934,7 @@ public final class CullingViewModel {
             notice = GatherLocalization.l("没有可撤销的挑片操作")
             return
         }
-        applyHistory(operation, direction: .undo)
+        Task { await applyHistory(operation, direction: .undo) }
     }
 
     public func redo() {
@@ -942,10 +942,10 @@ public final class CullingViewModel {
             notice = GatherLocalization.l("没有可重做的挑片操作")
             return
         }
-        applyHistory(operation, direction: .redo)
+        Task { await applyHistory(operation, direction: .redo) }
     }
 
-    private func applyHistory(_ operation: CullingHistoryOperation, direction: CullingHistoryDirection) {
+    private func applyHistory(_ operation: CullingHistoryOperation, direction: CullingHistoryDirection) async {
         do {
             let entries = try operation.entries.map { entry -> JSONValue in
                 let snapshot = direction == .undo ? entry.before : entry.after
@@ -960,7 +960,7 @@ public final class CullingViewModel {
                     "patch": try JSONValue(from: patch),
                 ])
             }
-            let data = try client.execute("culling.apply_history", params: [
+            let data = try await client.executeAsync("culling.apply_history", params: [
                 "sessionId": .string(sessionId),
                 "entries": .array(entries),
                 "historyOperationId": .number(Double(operation.id)),
@@ -991,7 +991,7 @@ public final class CullingViewModel {
                 syncStatus = nil
                 notice = String(format: GatherLocalization.l("已写回 %@，但同步状态读取失败，请刷新页面确认"), targetLabel(target))
             }
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -1009,7 +1009,7 @@ public final class CullingViewModel {
                 syncStatus = nil
                 notice = retry ? GatherLocalization.l("已重试同步队列，但同步状态读取失败") : GatherLocalization.l("已刷新同步队列，但同步状态读取失败")
             }
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -1028,7 +1028,7 @@ public final class CullingViewModel {
                 syncStatus = nil
                 notice = GatherLocalization.l("已重试失败写回项，但同步状态读取失败")
             }
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -1044,11 +1044,11 @@ public final class CullingViewModel {
         }
     }
 
-    public func confirmSync() {
+    public func confirmSync() async {
         do {
-            _ = try client.execute("culling.confirm_sync", params: ["sessionId": .string(sessionId)])
+            _ = try await client.executeAsync("culling.confirm_sync", params: ["sessionId": .string(sessionId)])
             notice = GatherLocalization.l("已确认 Capture One 同步")
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -1056,12 +1056,12 @@ public final class CullingViewModel {
 
     public func finalizeSync() async {
         do {
-            _ = try client.execute("culling.finalize_sync", params: [
+            _ = try await client.executeAsync("culling.finalize_sync", params: [
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
             notice = GatherLocalization.l("已完成元数据同步")
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -1074,45 +1074,45 @@ public final class CullingViewModel {
                 "confirmed": .bool(true),
             ])
             notice = GatherLocalization.l("已清理可安全删除的备份")
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func reset() {
+    public func reset() async {
         do {
-            _ = try client.execute("culling.reset", params: [
+            _ = try await client.executeAsync("culling.reset", params: [
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
             notice = GatherLocalization.l("已重置挑片状态")
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func resolve(_ conflict: MetadataConflict, choices: [MetadataField: MetadataConflictChoice]) {
+    public func resolve(_ conflict: MetadataConflict, choices: [MetadataField: MetadataConflictChoice]) async {
         do {
             let rawChoices = Dictionary(uniqueKeysWithValues: choices.map {
                 ($0.key.rawValue, JSONValue.string($0.value.rawValue))
             })
-            _ = try client.execute("metadata.resolve_conflict", params: [
+            _ = try await client.executeAsync("metadata.resolve_conflict", params: [
                 "sessionId": .string(sessionId),
                 "xmpPath": .string(conflict.xmpPath),
                 "choices": .object(rawChoices),
                 "confirmed": .bool(true),
             ])
             notice = GatherLocalization.l("已处理元数据冲突")
-            loadPage(reset: true)
+            await loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
     public func resolve(_ conflict: MetadataConflict, choice: MetadataConflictChoice) {
-        resolve(conflict, choices: Dictionary(uniqueKeysWithValues: conflict.fields.map { ($0.field, choice) }))
+        Task { await resolve(conflict, choices: Dictionary(uniqueKeysWithValues: conflict.fields.map { ($0.field, choice) })) }
     }
 
     private func targetLabel(_ target: CullingWritebackTarget) -> String {
@@ -1192,7 +1192,7 @@ public struct CullingView: View {
             windowBox.window = window
         })
         .task {
-            viewModel.load()
+            await viewModel.load()
         }
         // 可见性门控（审计 P1-并发）：条件渲染页离开即销毁，isActive=false
         // 让 analyzeQuality 轮询及时退出。
@@ -1207,7 +1207,7 @@ public struct CullingView: View {
         // 写回协调器 emitSummary 后刷新同步状态（TS useEvent('culling:sync-status')）。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
-            viewModel.refreshSyncStatus()
+            Task { await viewModel.refreshSyncStatus() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .gatherMenuUndo)) { _ in
             viewModel.undo()
@@ -1218,7 +1218,7 @@ public struct CullingView: View {
         // 对齐旧版 UX：写回/组决策等高频操作无确认弹窗（由 API 层 confirmed:true 承担）；
         // 仅保留两个破坏性操作的确认（重置挑片 / 清理备份）。
         .alert(GatherLocalization.l("确认重置挑片状态？"), isPresented: $confirmReset) {
-            Button(GatherLocalization.l("重置"), role: .destructive) { viewModel.reset() }
+            Button(GatherLocalization.l("重置"), role: .destructive) { Task { await viewModel.reset() } }
             Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
             Text(GatherLocalization.l("重置只清除 Gather 中的挑片决策，不删除照片文件。"))
@@ -1241,7 +1241,7 @@ public struct CullingView: View {
                 }
                 Spacer()
                 C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
-                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }.nonFocusable()
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { Task { await viewModel.load() } }.nonFocusable()
             }
             SessionTabBar(
                 selection: .tab(.culling),
@@ -1394,7 +1394,7 @@ public struct CullingView: View {
                     Toggle(GatherLocalization.l("仅 XMP 冲突"), isOn: conflictOnlyBinding)
                         .toggleStyle(.checkbox)
                         .nonFocusable()
-                    Button(GatherLocalization.l("重置")) { viewModel.resetFilters() }.nonFocusable()
+                    Button(GatherLocalization.l("重置")) { Task { await viewModel.resetFilters() } }.nonFocusable()
 
                     Divider().frame(height: 18)
 
@@ -1487,7 +1487,7 @@ public struct CullingView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Button(GatherLocalization.l("取消")) {
-                        viewModel.cancelQualityAnalysis()
+                        Task { await viewModel.cancelQualityAnalysis() }
                     }
                     .font(.caption2)
                     .nonFocusable()
@@ -1724,7 +1724,7 @@ public struct CullingView: View {
                     .foregroundStyle(GatherTheme.error)
                     .lineLimit(1)
                     .help(syncError)
-                Button(GatherLocalization.l("重试")) { viewModel.load() }
+                Button(GatherLocalization.l("重试")) { Task { await viewModel.load() } }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
                     .tint(GatherTheme.error)
@@ -1737,7 +1737,7 @@ public struct CullingView: View {
                     Button(GatherLocalization.l("在 Capture One 中加载元数据")) { Task { await viewModel.reloadCaptureOne() } }
                         .disabled(!viewModel.canLoadMetadata || isBusy)
                         .help(syncLoadHint)
-                    Button(GatherLocalization.l("已在 Capture One 加载")) { viewModel.confirmSync() }
+                    Button(GatherLocalization.l("已在 Capture One 加载")) { Task { await viewModel.confirmSync() } }
                         .disabled(!viewModel.canConfirmSync || isBusy)
                         .help(syncConfirmHint)
                 }
@@ -1837,13 +1837,13 @@ public struct CullingView: View {
                                 .onAppear {
                                     let count = viewModel.page?.assets.count ?? 0
                                     if index >= count - 4, viewModel.page?.nextRowId != nil {
-                                        viewModel.loadMore()
+                                        Task { await viewModel.loadMore() }
                                     }
                                 }
                         }
                         if viewModel.page?.nextRowId != nil {
                             Button(viewModel.isLoading ? GatherLocalization.l("加载中…") : GatherLocalization.l("加载更多")) {
-                                viewModel.loadMore()
+                                Task { await viewModel.loadMore() }
                             }
                             .disabled(viewModel.isLoading)
                             .font(.footnote)
@@ -1936,7 +1936,7 @@ public struct CullingView: View {
                         let choices = Dictionary(uniqueKeysWithValues: conflict.fields.map { field in
                             (field.field, conflictChoices["\(conflict.xmpPath)|\(field.field.rawValue)"] ?? .keepLocal)
                         })
-                        viewModel.resolve(conflict, choices: choices)
+                        Task { await viewModel.resolve(conflict, choices: choices) }
                     }
                     .font(.footnote)
                     .nonFocusable()
@@ -2081,42 +2081,42 @@ public struct CullingView: View {
     private var unreviewedOnlyBinding: Binding<Bool> {
         Binding(
             get: { viewModel.filterState.unreviewedOnly },
-            set: { value in viewModel.setFilterState { $0.unreviewedOnly = value } }
+            set: { value in Task { await viewModel.setFilterState { $0.unreviewedOnly = value } } }
         )
     }
 
     private var pickStateBinding: Binding<PickState?> {
         Binding(
             get: { viewModel.filterState.pickState },
-            set: { value in viewModel.setFilterState { $0.pickState = value } }
+            set: { value in Task { await viewModel.setFilterState { $0.pickState = value } } }
         )
     }
 
     private var ratingBinding: Binding<Int?> {
         Binding(
             get: { viewModel.filterState.rating },
-            set: { value in viewModel.setFilterState { $0.rating = value } }
+            set: { value in Task { await viewModel.setFilterState { $0.rating = value } } }
         )
     }
 
     private var colorFilterBinding: Binding<CaptureOneColorLabel?> {
         Binding(
             get: { viewModel.filterState.colorLabel },
-            set: { value in viewModel.setFilterState { $0.colorLabel = value } }
+            set: { value in Task { await viewModel.setFilterState { $0.colorLabel = value } } }
         )
     }
 
     private var qualityStatusBinding: Binding<CullingFilterQualityStatus?> {
         Binding(
             get: { viewModel.filterState.qualityStatus },
-            set: { value in viewModel.setFilterState { $0.qualityStatus = value } }
+            set: { value in Task { await viewModel.setFilterState { $0.qualityStatus = value } } }
         )
     }
 
     private var conflictOnlyBinding: Binding<Bool> {
         Binding(
             get: { viewModel.filterState.metadataConflictOnly },
-            set: { value in viewModel.setFilterState { $0.metadataConflictOnly = value } }
+            set: { value in Task { await viewModel.setFilterState { $0.metadataConflictOnly = value } } }
         )
     }
 
@@ -2130,7 +2130,7 @@ public struct CullingView: View {
     private var scopeBinding: Binding<CullingViewModel.ScopeMode> {
         Binding(
             get: { viewModel.scopeMode },
-            set: { viewModel.setScope($0) }
+            set: { scope in Task { await viewModel.setScope(scope) } }
         )
     }
 
@@ -2253,21 +2253,25 @@ private struct CullingFilmThumbView: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(GatherLocalization.l("保留")) {
-                viewModel.update(
-                    asset,
-                    patch: CullingUpdatePatch(pickState: .picked),
-                    nextPhotoId: viewModel.autoAdvance ? viewModel.nextPhotoId(after: asset.photo.id) : nil
-                )
+                Task {
+                    await viewModel.update(
+                        asset,
+                        patch: CullingUpdatePatch(pickState: .picked),
+                        nextPhotoId: viewModel.autoAdvance ? viewModel.nextPhotoId(after: asset.photo.id) : nil
+                    )
+                }
             }
             Button(GatherLocalization.l("淘汰")) {
-                viewModel.update(
-                    asset,
-                    patch: CullingUpdatePatch(pickState: .rejected),
-                    nextPhotoId: viewModel.autoAdvance ? viewModel.nextPhotoId(after: asset.photo.id) : nil
-                )
+                Task {
+                    await viewModel.update(
+                        asset,
+                        patch: CullingUpdatePatch(pickState: .rejected),
+                        nextPhotoId: viewModel.autoAdvance ? viewModel.nextPhotoId(after: asset.photo.id) : nil
+                    )
+                }
             }
             Button(GatherLocalization.l("未处理")) {
-                viewModel.update(asset, patch: CullingUpdatePatch(pickState: .unreviewed))
+                Task { await viewModel.update(asset, patch: CullingUpdatePatch(pickState: .unreviewed)) }
             }
             if let url = Self.finderURL(for: asset.photo.filepath) {
                 Divider()

@@ -39,19 +39,19 @@ public final class SessionControlViewModel {
         self.client = NativeCommandClient(router: router)
     }
 
-    public func load() {
+    public func load() async {
         isLoading = true
         defer { isLoading = false }
         do {
-            session = try client.execute("session.get", params: [
+            session = try await client.executeAsync("session.get", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: SessionData.self)
-            workspaceStatus = try client.execute("workspace.status", params: [
+            workspaceStatus = try await client.executeAsync("workspace.status", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: WorkspaceStatus.self)
-            jobs = try client.execute("jobs.list").decoded(as: [AnalysisJobData].self)
+            jobs = try await client.executeAsync("jobs.list").decoded(as: [AnalysisJobData].self)
                 .filter { $0.scopeId == sessionId }
-            syncStatus = try? client.execute("culling.sync_status", params: [
+            syncStatus = try? await client.executeAsync("culling.sync_status", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: MetadataSyncSummary.self)
             errorMessage = nil
@@ -73,31 +73,31 @@ public final class SessionControlViewModel {
         await enqueue("index.scan", message: GatherLocalization.l("索引扫描已入队"))
     }
 
-    public func retry(jobId: String) {
+    public func retry(jobId: String) async {
         do {
-            _ = try client.execute("jobs.retry", params: ["jobId": .string(jobId)])
+            _ = try await client.executeAsync("jobs.retry", params: ["jobId": .string(jobId)])
             notice = GatherLocalization.l("已重试任务")
-            load()
+            await load()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func retry(_ job: AnalysisJobData) {
+    public func retry(_ job: AnalysisJobData) async {
         guard [.failed, .interrupted, .cancelled].contains(job.status) else { return }
-        retry(jobId: job.id)
+        await retry(jobId: job.id)
     }
 
     /// recommendedNext.retry_jobs 动作：重试全部失败任务（TS 跳转 /jobs；
     /// 原生无任务中心页，等价改为逐个 jobs.retry）。
-    public func retryFailedJobs() {
+    public func retryFailedJobs() async {
         let failed = workspaceStatus?.failedJobs ?? []
         guard !failed.isEmpty else { return }
         var retried = 0
         var firstFailure: String?
         for job in failed {
             do {
-                _ = try client.execute("jobs.retry", params: ["jobId": .string(job.id)])
+                _ = try await client.executeAsync("jobs.retry", params: ["jobId": .string(job.id)])
                 retried += 1
             } catch {
                 if firstFailure == nil {
@@ -107,7 +107,7 @@ public final class SessionControlViewModel {
         }
         if retried > 0 {
             notice = String(format: GatherLocalization.l("已重试 %lld 个失败任务"), retried)
-            load()
+            await load()
         }
         if retried == 0 {
             errorMessage = firstFailure ?? GatherLocalization.l("重试任务失败")
@@ -121,7 +121,7 @@ public final class SessionControlViewModel {
         do {
             _ = try await client.executeAsync(command, params: ["sessionId": .string(sessionId)])
             notice = message
-            load()
+            await load()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -241,7 +241,7 @@ public struct SessionControlView: View {
                         VStack(spacing: 10) {
                             Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(.secondary)
                             Text(GatherLocalization.l("暂无工作区状态")).foregroundStyle(.secondary)
-                            Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
+                            Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { Task { await viewModel.load() } }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(40)
@@ -270,7 +270,7 @@ public struct SessionControlView: View {
             }
         }
         .task {
-            viewModel.load()
+            await viewModel.load()
             // 兜底轮询：jobTerminal / c1SyncStatus 事件驱动为主，无事件时按状态
             // 动态调整间隔——索引进度活跃期（isIndexingActive）每 3s 刷新一次，
             // 其余情况 15s（对齐 OLD useWorkspaceStatus.ts 的 3s/30s 双档）。
@@ -279,18 +279,18 @@ public struct SessionControlView: View {
                 let interval = viewModel.isIndexingActive ? Self.pollIntervalActive : Self.pollInterval
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { break }
-                viewModel.load()
+                await viewModel.load()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobTerminal)) { notification in
             guard let event = notification.object as? GatherJobEvent,
                   event.job.scopeType == "session",
                   event.job.scopeId == viewModel.sessionId else { return }
-            viewModel.load()
+            Task { await viewModel.load() }
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
-            viewModel.load()
+            Task { await viewModel.load() }
         }
     }
 
@@ -310,7 +310,7 @@ public struct SessionControlView: View {
                     router: router,
                     onOpenSettings: onOpenSettings
                 )
-                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { Task { await viewModel.load() } }
             }
             SessionTabBar(
                 selection: .tab(.control),
@@ -719,9 +719,9 @@ public struct SessionControlView: View {
             // 在 RootView 已接线 navigation.openGallery；默认闭包保证独立编译。
             onOpenGallery(viewModel.sessionId)
         case .retryJob(let jobId):
-            viewModel.retry(jobId: jobId)
+            Task { await viewModel.retry(jobId: jobId) }
         case .retryFailedJobs:
-            viewModel.retryFailedJobs()
+            Task { await viewModel.retryFailedJobs() }
         }
     }
 
@@ -804,7 +804,7 @@ public struct SessionControlView: View {
                             Text("\(job.progressCurrent)/\(job.progressTotal)").font(.footnote.monospaced())
                         }
                         if [.failed, .interrupted, .cancelled].contains(job.status) {
-                            Button(GatherLocalization.l("重试")) { viewModel.retry(job) }
+                            Button(GatherLocalization.l("重试")) { Task { await viewModel.retry(job) } }
                                 .buttonStyle(.bordered).controlSize(.small)
                         }
                     }

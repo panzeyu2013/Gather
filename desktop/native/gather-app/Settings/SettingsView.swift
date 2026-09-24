@@ -207,9 +207,9 @@ public final class SettingsViewModel {
 
     // MARK: - 语言（settings.set_language 持久化 + 页内文案联动）
 
-    public func setLanguage(_ value: String) {
+    public func setLanguage(_ value: String) async {
         do {
-            _ = try client.execute("settings.set_language", params: ["language": .string(value)])
+            _ = try await client.executeAsync("settings.set_language", params: ["language": .string(value)])
             language = value
             values["ui_language"] = value
             notice = value == "en" ? "Language saved" : GatherLocalization.l("语言已保存")
@@ -220,9 +220,9 @@ public final class SettingsViewModel {
 
     // MARK: - 推理后端
 
-    public func setBackend(_ value: String) {
+    public func setBackend(_ value: String) async {
         do {
-            _ = try client.execute("settings.set", params: [
+            _ = try await client.executeAsync("settings.set", params: [
                 "key": .string("onnx_provider"),
                 "value": .string(value),
             ])
@@ -237,7 +237,7 @@ public final class SettingsViewModel {
 
     // MARK: - 分组设置（含类型约束：数值 min/max 校验，非法值禁止保存）
 
-    public func saveField(_ field: SettingField) {
+    public func saveField(_ field: SettingField) async {
         let raw = (edits[field.key] ?? values[field.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
             errorMessage = String(format: GatherLocalization.l("「%@」不能为空"), field.zhLabel)
@@ -245,7 +245,7 @@ public final class SettingsViewModel {
         }
         switch field.type {
         case .text:
-            save(key: field.key, value: raw)
+            await save(key: field.key, value: raw)
         case .number(let min, let max):
             guard let parsed = Double(raw), parsed.isFinite else {
                 errorMessage = String(format: GatherLocalization.l("「%@」必须是数字"), field.zhLabel)
@@ -259,42 +259,42 @@ public final class SettingsViewModel {
                 errorMessage = String(format: GatherLocalization.l("「%@」不能大于 %@"), field.zhLabel, Self.numberText(max))
                 return
             }
-            save(key: field.key, value: raw)
+            await save(key: field.key, value: raw)
         case .select:
             break
         }
     }
 
-    public func saveSelect(_ field: SettingField, value: String) {
-        save(key: field.key, value: value)
+    public func saveSelect(_ field: SettingField, value: String) async {
+        await save(key: field.key, value: value)
     }
 
     // MARK: - 模型路径编辑（保存后重查模型状态）
 
-    public func saveModelPath(key: String) {
+    public func saveModelPath(key: String) async {
         let raw = (edits[key] ?? values[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
             errorMessage = GatherLocalization.l("模型路径不能为空")
             return
         }
-        save(key: key, value: raw)
+        await save(key: key, value: raw)
     }
 
     // MARK: - 滑杆提交
 
-    public func commitSlider(_ slider: SliderSetting) {
+    public func commitSlider(_ slider: SliderSetting) async {
         guard let raw = sliderValues[slider.key] else { return }
         let clamped = min(slider.max, max(slider.min, raw))
         sliderValues[slider.key] = clamped
         let formatted = slider.isInteger
             ? String(Int(clamped.rounded()))
             : String(format: "%.2f", clamped)
-        save(key: slider.key, value: formatted)
+        await save(key: slider.key, value: formatted)
     }
 
-    private func save(key: String, value: String) {
+    private func save(key: String, value: String) async {
         do {
-            _ = try client.execute("settings.set", params: [
+            _ = try await client.executeAsync("settings.set", params: [
                 "key": .string(key),
                 "value": .string(value),
             ])
@@ -335,9 +335,9 @@ public final class SettingsViewModel {
         NSWorkspace.shared.open(URL(fileURLWithPath: parent, isDirectory: true))
     }
 
-    public func reset() {
+    public func reset() async {
         do {
-            values = try client.execute("settings.reset").decoded(as: [String: String].self)
+            values = try await client.executeAsync("settings.reset").decoded(as: [String: String].self)
             language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
             backend = values["onnx_provider"] ?? "auto"
             edits = values
@@ -468,9 +468,9 @@ public final class SettingsViewModel {
 
     /// 对齐 C1HealthPanel.refreshSync：经 session.list 取最近会话，再读
     /// culling.sync_status；无会话时置空（UI 显示「无工作区」）。
-    public func refreshSyncState() {
+    public func refreshSyncState() async {
         do {
-            let sessions = try client.execute("session.list").decoded(as: [SessionData].self)
+            let sessions = try await client.executeAsync("session.list").decoded(as: [SessionData].self)
             guard let session = Self.mostRecentSession(sessions) else {
                 syncSessionId = nil
                 syncStatus = nil
@@ -479,7 +479,7 @@ public final class SettingsViewModel {
                 return
             }
             syncSessionId = session.id
-            let response = try client.execute("culling.sync_status", params: [
+            let response = try await client.executeAsync("culling.sync_status", params: [
                 "sessionId": .string(session.id),
             ])
             syncStatus = try response.decoded(as: MetadataSyncSummary.self)
@@ -950,15 +950,15 @@ public struct SettingsView: View {
         .task { await viewModel.checkC1Health() }
         // 对齐 C1HealthPanel.tsx：culling.sync_status 每 12s 轮询刷新。
         .task {
-            viewModel.refreshSyncState()
+            await viewModel.refreshSyncState()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(12))
-                viewModel.refreshSyncState()
+                await viewModel.refreshSyncState()
             }
         }
         .alert(GatherLocalization.l("恢复所有设置默认值？"), isPresented: $confirmReset) {
             Button(GatherLocalization.l("恢复默认"), role: .destructive) {
-                viewModel.reset()
+                Task { await viewModel.reset() }
             }
             Button(GatherLocalization.l("取消"), role: .cancel) {}
         } message: {
@@ -1034,7 +1034,7 @@ public struct SettingsView: View {
                     LabeledContent(GatherLocalization.l("推理后端")) {
                         Picker(GatherLocalization.l("推理后端"), selection: Binding(
                             get: { viewModel.backend },
-                            set: { viewModel.setBackend($0) }
+                            set: { value in Task { await viewModel.setBackend(value) } }
                         )) {
                             Text(GatherLocalization.l("自动")).tag("auto")
                             ForEach(model.availableBackends, id: \.value) { backend in
@@ -1096,7 +1096,7 @@ public struct SettingsView: View {
                 .font(.system(.body, design: .monospaced))
                 .frame(width: 300)
                 Button(GatherLocalization.l("保存")) {
-                    viewModel.saveModelPath(key: key)
+                    Task { await viewModel.saveModelPath(key: key) }
                 }
                 Button(GatherLocalization.l("打开")) {
                     viewModel.openModelPathDirectory(key: key)
@@ -1255,7 +1255,7 @@ public struct SettingsView: View {
             LabeledContent(GatherLocalization.l("界面语言")) {
                 Picker(GatherLocalization.l("界面语言"), selection: Binding(
                     get: { viewModel.language },
-                    set: { viewModel.setLanguage($0) }
+                    set: { value in Task { await viewModel.setLanguage(value) } }
                 )) {
                     Text(GatherLocalization.l("简体中文")).tag("zh-CN")
                     Text("English").tag("en")
@@ -1308,7 +1308,7 @@ public struct SettingsView: View {
                 get: { viewModel.sliderValue(for: slider.key, defaultValue: slider.defaultValue) },
                 set: { viewModel.sliderValues[slider.key] = $0 }
             ), in: slider.min...slider.max, step: slider.step) { editing in
-                if !editing { viewModel.commitSlider(slider) }
+                if !editing { Task { await viewModel.commitSlider(slider) } }
             }
             .accessibilityLabel(GatherLocalization.l(slider.zhLabel))
             .accessibilityValue(Text(sliderValueWithUnit(slider)))
@@ -1370,7 +1370,7 @@ public struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: isPathField ? 300 : 220)
                         Button(GatherLocalization.l("保存")) {
-                            viewModel.saveField(field)
+                            Task { await viewModel.saveField(field) }
                         }
                     }
                 case .number:
@@ -1382,7 +1382,7 @@ public struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 120)
                         Button(GatherLocalization.l("保存")) {
-                            viewModel.saveField(field)
+                            Task { await viewModel.saveField(field) }
                         }
                     }
                 case .select(let options):
@@ -1397,7 +1397,7 @@ public struct SettingsView: View {
                         },
                         set: { selected in
                             guard let selected else { return }
-                            viewModel.saveSelect(field, value: selected)
+                            Task { await viewModel.saveSelect(field, value: selected) }
                         }
                     )) {
                         Text(GatherLocalization.l("请选择")).tag(String?.none)
