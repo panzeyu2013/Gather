@@ -37,22 +37,22 @@ public final class PhotoAssetResolver {
     /// TS: resolveMany 的分块大小（SQLite 参数上限 999 以内，同其他批量读）。
     private static let chunkSize = 800
 
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     /// TS: SettingsService.get(key, defaultValue)。
     private let getSetting: (String, String) -> String
 
     public init(
-        connection: DBConnection,
+        database: SQLiteDatabase,
         getSetting: @escaping (String, String) -> String = { _, defaultValue in defaultValue }
     ) {
-        self.connection = connection
+        self.database = database
         self.getSetting = getSetting
     }
 
     /// 单照片解析；照片不属于会话抛 CULLING_PHOTO_NOT_IN_SESSION，
     /// 资产模式迁移不完整抛 ASSET_MIGRATION_INCOMPLETE。
-    public func resolve(sessionId: String, photoId: String) throws -> ResolvedPhotoAsset {
-        guard let row = try queryOne(sessionId: sessionId, photoId: photoId) else {
+    public func resolve(sessionId: String, photoId: String) async throws -> ResolvedPhotoAsset {
+        guard let row = try await queryOne(sessionId: sessionId, photoId: photoId) else {
             throw PhotoAssetResolverError.photoNotInSession
         }
         let mode = getSetting("asset_read_mode", "dual")
@@ -64,7 +64,7 @@ public final class PhotoAssetResolver {
 
     /// 批量解析：一次 IN 查询替代每照片 5 路 JOIN；未知照片或
     /// asset 模式迁移不完整的行直接缺席，调用方按单照片抛错语义自行兜底。
-    public func resolveMany(sessionId: String, photoIds: [String]) throws -> [String: ResolvedPhotoAsset] {
+    public func resolveMany(sessionId: String, photoIds: [String]) async throws -> [String: ResolvedPhotoAsset] {
         var resolved: [String: ResolvedPhotoAsset] = [:]
         if photoIds.isEmpty { return resolved }
         let mode = getSetting("asset_read_mode", "dual")
@@ -72,7 +72,7 @@ public final class PhotoAssetResolver {
         for chunkStart in stride(from: 0, to: photoIds.count, by: Self.chunkSize) {
             let chunk = Array(photoIds[chunkStart..<min(chunkStart + Self.chunkSize, photoIds.count)])
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT p.id AS photo_id, p.session_id, p.filepath AS legacy_path,
                   p.asset_id, p.asset_file_id, af.normalized_path AS asset_path,
                   sb.xmp_path
@@ -82,9 +82,9 @@ public final class PhotoAssetResolver {
                 LEFT JOIN sidecar_bindings sb ON sb.id = sbf.sidecar_binding_id AND sb.status = 'active'
                 WHERE p.id IN (\(placeholders)) AND p.session_id = ?
                 ORDER BY p.id, sb.updated_at DESC
-              """).query(chunk.map { .text($0) } + [.text(sessionId)])
+              """, chunk.map { .text($0) } + [.text(sessionId)])
             for row in rows {
-                guard let photoId = row[0].textValue, !seen.contains(photoId) else { continue }
+                guard let photoId = row["photo_id"]?.textValue, !seen.contains(photoId) else { continue }
                 seen.insert(photoId)
                 guard let asset = buildResolved(row: row, mode: mode) else { continue }
                 resolved[photoId] = asset
@@ -93,8 +93,8 @@ public final class PhotoAssetResolver {
         return resolved
     }
 
-    private func queryOne(sessionId: String, photoId: String) throws -> DBRow? {
-        try connection.prepare("""
+    private func queryOne(sessionId: String, photoId: String) async throws -> SQLiteRow? {
+        try await database.queryOne("""
             SELECT p.id AS photo_id, p.session_id, p.filepath AS legacy_path,
               p.asset_id, p.asset_file_id, af.normalized_path AS asset_path,
               sb.xmp_path
@@ -104,18 +104,18 @@ public final class PhotoAssetResolver {
             LEFT JOIN sidecar_bindings sb ON sb.id = sbf.sidecar_binding_id AND sb.status = 'active'
             WHERE p.id = ? AND p.session_id = ?
             ORDER BY sb.updated_at DESC LIMIT 1
-          """).get([.text(photoId), .text(sessionId)])
+          """, [.text(photoId), .text(sessionId)])
     }
 
     /// TS: buildResolved。
-    private func buildResolved(row: DBRow, mode: String) -> ResolvedPhotoAsset? {
-        guard let photoId = row[0].textValue else { return nil }
-        let sessionId = row[1].textValue ?? ""
-        let legacyPath = row[2].textValue ?? ""
-        let assetId = row[3].textValue
-        let assetFileId = row[4].textValue
-        let assetPath = row[5].textValue
-        let xmpPath = row[6].textValue
+    private func buildResolved(row: SQLiteRow, mode: String) -> ResolvedPhotoAsset? {
+        guard let photoId = row["photo_id"]?.textValue else { return nil }
+        let sessionId = row["session_id"]?.textValue ?? ""
+        let legacyPath = row["legacy_path"]?.textValue ?? ""
+        let assetId = row["asset_id"]?.textValue
+        let assetFileId = row["asset_file_id"]?.textValue
+        let assetPath = row["asset_path"]?.textValue
+        let xmpPath = row["xmp_path"]?.textValue
 
         let assetReady = assetId != nil && assetFileId != nil && assetPath != nil
         let assetXmpPath = xmpPath ?? (assetPath.map(TSPath.xmpSidecarPath) ?? nil)

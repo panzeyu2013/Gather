@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾㊲：DB.swift 迁移面测绘（下一步方案） | 🔎 | 最后一个 legacy 文件 DB.swift(352) 的消费者共 20 个 Sources 文件；调用形态集中于 connection.prepare(sql).query/get/run；Store 侧 SQLiteDatabase 已有 query/queryOne/scalarInt/run/execute（同步），缺串行化+异步包装层。关键阻塞：SessionCommandRouter.makeDefault(db:) 把 DBConnection 注入近 10 个构造点，单服务迁移需先把路由/AppContainer 改为持有同一库文件的 SQLiteDatabase。下一步：建立单一 database 持有者 → 逐服务切 database: 并 async 化（每批 2-3 个服务+双包测试）→ 删 DB.swift（DB layer 1→0）收官 R1 |
+| R1 收尾㊳：DB.swift 退役第一切片——PhotoAssetResolver | ✅ | PhotoAssetResolver(168) 去 DBConnection：connection:→database: SQLiteDatabase，resolve/resolveMany 异步化，查询改 database.queryOne/query，行访问改列名（row["photo_id"] 等）；SessionCommandRouter.makeDefault 新增 database: SQLiteDatabase 并贯通 5 个调用点（app 启动传 storeDatabase）；MetadataService（groupKey 异步化）/WritebackService（resolveExecuteXmpPath/resolvePreviewTargets 异步化）调用方同步改造；PhotoAssetResolverTests harness 改同库文件库 + await。验证：core/app 库编译 0 error；app 172/19 全绿；ResolverTests 8/2 全绿（隔离跑）。DB.swift 消费者 20→18（DB layer 仍为 1，待全部迁完才删） |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。

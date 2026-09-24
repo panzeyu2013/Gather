@@ -92,6 +92,7 @@ struct GatherApp: App {
 
             let router = SessionCommandRouter.makeDefault(
                 db: db,
+                database: storeDatabase,
                 settings: settingsSnapshot,
                 settingsAPI: api.settings,
                 templates: api.templates,

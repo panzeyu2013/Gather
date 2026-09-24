@@ -72,7 +72,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         source: MetadataMutationSource,
         schedule: Bool = true
     ) async throws -> MetadataMutationResult {
-        let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
+        let resolved = try await assetResolver.resolve(sessionId: sessionId, photoId: photoId)
         let dirtyFields = values.keys
             .filter { ["rating", "label", "keywords"].contains($0) }
             .compactMap { MetadataField(rawValue: $0) }
@@ -109,7 +109,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         source: MetadataMutationSource
     ) async throws -> MetadataMutationResult {
         let normalized = try validateMetadataPatch(patch)
-        let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
+        let resolved = try await assetResolver.resolve(sessionId: sessionId, photoId: photoId)
         let xmpPath = resolved.xmpPath
         // 串行链：等待前一回合（含其错误传播，对齐 TS promise 链语义）。
         let previous = previousTurn(xmpPath)

@@ -9,12 +9,16 @@ import Testing
 
 private struct ResolverHarness {
     let db: DBConnection
+    let database: SQLiteDatabase
     let settings: [String: String]
 }
 
 private func makeHarness(settings: [String: String] = [:]) async throws -> ResolverHarness {
-    let db = try await makeMigratedDB()
-    return ResolverHarness(db: db, settings: settings)
+    // 同一临时文件库：旧连接（种子）与 Store（resolver 读）必须同库。
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-resolver-\(UUID().uuidString).sqlite").path
+    let db = try await makeMigratedLegacyDB(path: path)
+    return ResolverHarness(db: db, database: try SQLiteDatabase(path: path), settings: settings)
 }
 
 /// 幂等会话种子（photos.session_id 外键）。
@@ -32,7 +36,7 @@ private func seedPhoto(_ harness: ResolverHarness, id: String, sessionId: String
 
 private func makeResolver(_ harness: ResolverHarness) -> PhotoAssetResolver {
     PhotoAssetResolver(
-        connection: harness.db,
+        database: harness.database,
         getSetting: { key, defaultValue in harness.settings[key] ?? defaultValue }
     )
 }
@@ -72,7 +76,7 @@ struct PhotoAssetResolverResolveTests {
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/shoot/a.jpg")
         let resolver = makeResolver(harness)
 
-        let asset = try resolver.resolve(sessionId: "s1", photoId: "p1")
+        let asset = try await resolver.resolve(sessionId: "s1", photoId: "p1")
 
         #expect(asset.photoId == "p1")
         #expect(asset.sessionId == "s1")
@@ -93,7 +97,7 @@ struct PhotoAssetResolverResolveTests {
         )
         let resolver = makeResolver(harness)
 
-        let asset = try resolver.resolve(sessionId: "s1", photoId: "p1")
+        let asset = try await resolver.resolve(sessionId: "s1", photoId: "p1")
 
         #expect(asset.assetId == "af1")
         #expect(asset.filepath == "/vault/a.NEF")
@@ -112,7 +116,7 @@ struct PhotoAssetResolverResolveTests {
         ).run()
         let resolver = makeResolver(harness)
 
-        let asset = try resolver.resolve(sessionId: "s1", photoId: "p1")
+        let asset = try await resolver.resolve(sessionId: "s1", photoId: "p1")
 
         // 资产就绪且无 binding 行：xmp 从资产路径推导。
         #expect(asset.filepath == "/vault/a.NEF")
@@ -126,8 +130,8 @@ struct PhotoAssetResolverResolveTests {
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/shoot/a.jpg")
         let resolver = makeResolver(harness)
 
-        #expect(throws: PhotoAssetResolverError.photoNotInSession) {
-            try resolver.resolve(sessionId: "s2", photoId: "p1")
+        await #expect(throws: PhotoAssetResolverError.photoNotInSession) {
+            try await resolver.resolve(sessionId: "s2", photoId: "p1")
         }
     }
 
@@ -138,8 +142,8 @@ struct PhotoAssetResolverResolveTests {
         try seedPhoto(harness, id: "p1", sessionId: "s1", filepath: "/shoot/a.jpg")
         let resolver = makeResolver(harness)
 
-        #expect(throws: PhotoAssetResolverError.migrationIncomplete) {
-            try resolver.resolve(sessionId: "s1", photoId: "p1")
+        await #expect(throws: PhotoAssetResolverError.migrationIncomplete) {
+            try await resolver.resolve(sessionId: "s1", photoId: "p1")
         }
     }
 }
@@ -157,7 +161,7 @@ struct PhotoAssetResolverResolveManyTests {
         try seedPhoto(harness, id: "p2", sessionId: "s1", filepath: "/shoot/b.jpg")
         let resolver = makeResolver(harness)
 
-        let resolved = try resolver.resolveMany(sessionId: "s1", photoIds: ["p1", "p2", "ghost"])
+        let resolved = try await resolver.resolveMany(sessionId: "s1", photoIds: ["p1", "p2", "ghost"])
 
         #expect(resolved.count == 1)
         #expect(resolved["p1"]?.source == "asset")
@@ -190,7 +194,7 @@ struct PhotoAssetResolverResolveManyTests {
         }
         let resolver = makeResolver(harness)
 
-        let resolved = try resolver.resolveMany(sessionId: "s1", photoIds: ["p1", "p1"])
+        let resolved = try await resolver.resolveMany(sessionId: "s1", photoIds: ["p1", "p1"])
 
         #expect(resolved.count == 1)
         #expect(resolved["p1"]?.xmpPath == "/vault/fresh.xmp")
@@ -200,7 +204,7 @@ struct PhotoAssetResolverResolveManyTests {
     func emptyInput() async throws {
         let harness = try await makeHarness()
         let resolver = makeResolver(harness)
-        let resolved = try resolver.resolveMany(sessionId: "s1", photoIds: [])
+        let resolved = try await resolver.resolveMany(sessionId: "s1", photoIds: [])
         #expect(resolved.isEmpty)
     }
 }

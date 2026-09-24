@@ -104,11 +104,10 @@ struct GatherAppDelegateTests {
         let tempStorePath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-delegate-\(UUID().uuidString).sqlite").path
         let db = try await makeMigratedLegacyDB(path: tempStorePath)
-        _ = try await makeMigratedLegacyDB(path: tempStorePath)
         let tempJobStore = try SQLiteJobStore(database: try SQLiteDatabase(path: tempStorePath))
         let settings = try await makeTestSettings()
         let router = SessionCommandRouter.makeDefault(
-            db: db, settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: tempStorePath)), sessionStore: try GatherCore.SQLiteSessionStore(database: try SQLiteDatabase(path: tempStorePath)))
+            db: db, database: try SQLiteDatabase(path: tempStorePath), settings: settings.snapshot, settingsAPI: settings.api, templates: settings.templates, albums: settings.albums, workspace: settings.workspace, persons: settings.persons, personStore: settings.personStore, faceStore: settings.faceStore, metadataStore: settings.metadataStore, cullingStore: settings.cullingStore, similarityStore: settings.similarityStore, writebackStore: settings.writebackStore, jobStore: tempJobStore, assetStore: try await makeTempAssetStore(), photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: tempStorePath)), sessionStore: try GatherCore.SQLiteSessionStore(database: try SQLiteDatabase(path: tempStorePath)))
 
         final class Box: @unchecked Sendable {
             var userInfo: [AnyHashable: Any]?

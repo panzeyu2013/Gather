@@ -187,6 +187,7 @@ public final class SessionCommandRouter: CommandRouter {
     ///   假推理/解码（对齐 gather-core FaceKeywordingServiceTests 模式）。
     public static func makeDefault(
         db: DBConnection,
+        database: SQLiteDatabase,
         settings: SettingsSnapshot,
         settingsAPI: SettingsAPI,
         templates: TemplatesAPI,
@@ -226,7 +227,7 @@ public final class SessionCommandRouter: CommandRouter {
         // 变更服务 → 元数据服务 / 写回服务（XMPProvider 为宿主接缝，3.4
         // 正式 exiftool/XML-DOM 桥落位前用 SidecarXMPProvider 保证端到端可用）。
         let xmp = xmpProvider ?? SidecarXMPProvider()
-        let assetResolver = PhotoAssetResolver(connection: db, getSetting: { key, defaultValue in
+        let assetResolver = PhotoAssetResolver(database: database, getSetting: { key, defaultValue in
             settings.value(key, default: defaultValue)
         })
         let metadataSyncCoordinator = MetadataSyncCoordinator(

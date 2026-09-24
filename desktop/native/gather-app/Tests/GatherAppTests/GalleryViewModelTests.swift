@@ -107,6 +107,7 @@ private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, DBConn
     let api = GatherAPI(container: container)
     let router = SessionCommandRouter.makeDefault(
         db: db,
+        database: try SQLiteDatabase(path: path),
         settings: SettingsSnapshot(values: SettingsAPI.defaults),
         settingsAPI: api.settings,
         templates: api.templates,

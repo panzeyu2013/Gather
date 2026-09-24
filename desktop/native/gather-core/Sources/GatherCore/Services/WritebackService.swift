@@ -114,13 +114,13 @@ public final class WritebackService {
         sessionId: String,
         dbRow: WritebackItemRecord,
         resolvedByPhoto: [String: String]? = nil
-    ) -> String {
+    ) async -> String {
         if let assetResolver {
             if let resolvedByPhoto, let xmpPath = resolvedByPhoto[dbRow.photoId], !xmpPath.isEmpty {
                 return xmpPath
             } else if resolvedByPhoto == nil {
                 // 解析失败回退存储的 preview 路径。
-                if let xmpPath = try? assetResolver.resolve(sessionId: sessionId, photoId: dbRow.photoId).xmpPath {
+                if let xmpPath = try? await assetResolver.resolve(sessionId: sessionId, photoId: dbRow.photoId).xmpPath {
                     return xmpPath
                 }
             }
@@ -133,9 +133,9 @@ public final class WritebackService {
     private func preloadResolvedXmpPaths(
         sessionId: String,
         rows: [WritebackItemRecord]
-    ) throws -> [String: String]? {
+    ) async throws -> [String: String]? {
         guard let assetResolver else { return nil }
-        let resolved = try assetResolver.resolveMany(
+        let resolved = try await assetResolver.resolveMany(
             sessionId: sessionId,
             photoIds: Array(Set(rows.map(\.photoId)))
         )
@@ -152,13 +152,13 @@ public final class WritebackService {
     private func resolvePreviewTargets(
         sessionId: String,
         photos: [(id: String, filepath: String)]
-    ) throws -> [String: (filepath: String, xmpPath: String)] {
+    ) async throws -> [String: (filepath: String, xmpPath: String)] {
         func fallback(_ photo: (id: String, filepath: String)) -> (filepath: String, xmpPath: String) {
             (photo.filepath, TSPath.xmpSidecarPath(photo.filepath))
         }
         var byPhoto: [String: (filepath: String, xmpPath: String)] = [:]
         if let assetResolver {
-            let resolved = try assetResolver.resolveMany(sessionId: sessionId, photoIds: photos.map(\.id))
+            let resolved = try await assetResolver.resolveMany(sessionId: sessionId, photoIds: photos.map(\.id))
             for photo in photos {
                 if let asset = resolved[photo.id] {
                     byPhoto[photo.id] = (asset.filepath, asset.xmpPath)
@@ -169,7 +169,7 @@ public final class WritebackService {
             return byPhoto
         }
         for photo in photos {
-            if let assetResolver, let asset = try? assetResolver.resolve(sessionId: sessionId, photoId: photo.id) {
+            if let assetResolver, let asset = try? await assetResolver.resolve(sessionId: sessionId, photoId: photo.id) {
                 byPhoto[photo.id] = (asset.filepath, asset.xmpPath)
             } else {
                 byPhoto[photo.id] = fallback(photo)
@@ -205,7 +205,7 @@ public final class WritebackService {
         // 与 execute 完全相同的资产解析：asset_read_mode='asset' 且 relink 后，
         // 照片行的遗留 filepath/sidecar 与 PhotoAssetResolver.resolve() 返回不同，
         // preview/execute 不一致会让每个项永久失败。
-        let resolvedByPhoto = try resolvePreviewTargets(
+        let resolvedByPhoto = try await resolvePreviewTargets(
             sessionId: sessionId,
             photos: filtered.map { (id: $0.id, filepath: $0.filepath) }
         )
@@ -285,7 +285,7 @@ public final class WritebackService {
         var failedItems: [WritebackItem] = []
         let persistedRows = try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: nil)
         let rowById = Dictionary(uniqueKeysWithValues: persistedRows.map { (Int($0.id), $0) })
-        let resolvedXmpByPhoto = try preloadResolvedXmpPaths(sessionId: sessionId, rows: persistedRows)
+        let resolvedXmpByPhoto = try await preloadResolvedXmpPaths(sessionId: sessionId, rows: persistedRows)
 
         // Phase 1：prepare（合并关键词 + 变更入队），任何 flush 之前完成。
         var prepared: [PreparedEntry] = []
@@ -309,7 +309,7 @@ public final class WritebackService {
                 skipped += 1
                 continue
             }
-            let groupKey = resolveExecuteXmpPath(sessionId: sessionId, dbRow: dbRow, resolvedByPhoto: resolvedXmpByPhoto)
+            let groupKey = await resolveExecuteXmpPath(sessionId: sessionId, dbRow: dbRow, resolvedByPhoto: resolvedXmpByPhoto)
             groups[groupKey, default: []].append(item)
         }
 
@@ -408,7 +408,7 @@ public final class WritebackService {
                 // outbox 按 execute 时解析的 xmp 路径键控变更；资产迁移在
                 // preview 与 execute 之间完成后该路径与 preview 快照不同——按
                 // 实时解析匹配，已落盘的项不得误报失败。
-                let resolvedXmpPath = resolveExecuteXmpPath(sessionId: sessionId, dbRow: entry.dbRow, resolvedByPhoto: resolvedXmpByPhoto)
+                let resolvedXmpPath = await resolveExecuteXmpPath(sessionId: sessionId, dbRow: entry.dbRow, resolvedByPhoto: resolvedXmpByPhoto)
                 let syncItem = summaryByPath[entry.dbRow.xmpPath] ?? summaryByPath[resolvedXmpPath]
                 if let syncItem, syncItem.status == .written || syncItem.status == .synced {
                     try await writebackStore.updateWritebackStatus(itemId: entry.itemId, status: "written", error: nil)

@@ -461,7 +461,7 @@ public final class MetadataService {
                     idsBySession[photo.sessionId, default: []].append(photo.id)
                 }
                 for (sessionId, ids) in idsBySession {
-                    for (photoId, asset) in try assetResolver.resolveMany(sessionId: sessionId, photoIds: ids) {
+                    for (photoId, asset) in try await assetResolver.resolveMany(sessionId: sessionId, photoIds: ids) {
                         map[photoId] = asset.xmpPath
                     }
                 }
@@ -473,7 +473,7 @@ public final class MetadataService {
             }
         }
 
-        func groupKey(_ photoId: String) -> String {
+        func groupKey(_ photoId: String) async -> String {
             var photo = photosById?[photoId]
             if photo == nil, photosById == nil {
                 photo = (try? getPhotosByIds([photoId]))?.first
@@ -482,7 +482,7 @@ public final class MetadataService {
             if let xmpPathByPhoto, let xmpPath = xmpPathByPhoto[photoId] {
                 return xmpPath
             } else if let assetResolver {
-                if let xmpPath = try? assetResolver.resolve(sessionId: photo.sessionId, photoId: photoId).xmpPath {
+                if let xmpPath = try? await assetResolver.resolve(sessionId: photo.sessionId, photoId: photoId).xmpPath {
                     return xmpPath
                 }
                 // 资产迁移不完整：按遗留路径分组（queueMutation 在该情形同样解析到它）。
@@ -492,7 +492,8 @@ public final class MetadataService {
 
         var bySidecar: [String: [(photoId: String, tags: MetadataTags)]] = [:]
         for update in updates {
-            bySidecar[groupKey(update.photoId), default: []].append(update)
+            let key = await groupKey(update.photoId)
+            bySidecar[key, default: []].append(update)
         }
 
         try await batchAsync(Array(bySidecar.values), concurrency: 4) { group in
