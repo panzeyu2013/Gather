@@ -44,7 +44,8 @@ public enum MetadataWriterError: Error, Equatable, CustomStringConvertible {
     /// provider 已接线，但提取所需的 photo 路径端口与批量 upsert 属写面
     /// （W4-4/W4-6）；读面不伪造提取结果，同样显式上抛。
     case extractionDeferred(cached: [String: MetadataTags], missingPhotoIds: [String])
-    /// mww4 / W4-4 ①：waitForIdle 在超时窗口内未等到路径结算到 idle。
+    /// mww4 / W4-4 ①：waitForIdle 超时（路径未结算到 idle）；
+    /// mwwshut：shutdown 超时（activeWrites/readyQueue 未在窗口内双空）。
     case scheduleTimeout(xmpPath: String, timeoutMs: Int)
 
     /// 已命中的缓存行（显式标记时一并带回，调用方不丢失可用数据）。
@@ -139,7 +140,36 @@ public actor MetadataWriter {
 
     /// mww6c：同路径 mutation 串行链 —— 每个 xmpPath 一条 Task 尾，
     /// 新 mutation 挂到链尾，前一条未结算完绝不并发进入写面。
-    private var mutationTails: [String: Task<Void, Never>] = [:]
+    /// mwwshut：尾项携带 ticket，完成后按 ticket 精确释放，
+    /// 已完成的前序 task 不再随字典存活（避免链尾字典无界增长）。
+    private struct MutationTail {
+        let ticket: UUID
+        let task: Task<Void, Never>
+    }
+
+    private var mutationTails: [String: MutationTail] = [:]
+
+    /// mwwshut / W4-4：关停标记。schedule 的入队 Task 是独立的，
+    /// 关停后仍可能落到 actor 上；标记为真后入队一律拒绝，保证 shutdown
+    /// 返回后没有任务再触碰 Store（与旧管线 stopped 标记同语义）。
+    private var isShutDown = false
+
+    /// mwwshut：有界关停的汇合点 —— activeWrites 与 readyQueue 双空时唤醒；
+    /// 超时由 expireQuiescenceWaiter 结算（continuation，绝不轮询）。
+    private struct QuiescenceWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+
+    private var quiescenceWaiters: [QuiescenceWaiter] = []
+
+    /// mwwshut 测试接缝（internal）：真实写回落点尚未接入（W4-4 后续步骤）。
+    /// 测试用它把一笔写钉在 in-flight，验证 shutdown 的等待与超时；生产路径为空体。
+    private var writeBody: @Sendable (String) async -> Void = { _ in }
+
+    func setWriteBodyForTesting(_ body: @escaping @Sendable (String) async -> Void) {
+        writeBody = body
+    }
 
     /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
     /// 取旧管线 MetadataSyncCoordinator.defaultWriteDebounceMs = 500（TS 设置
@@ -172,22 +202,67 @@ public actor MetadataWriter {
         entries[xmpPath]?.phase = .queued
         // mww6a / W4-4 ②：就绪入队（同路径已在队列中则不重复入队）。
         if !readyQueue.contains(xmpPath) { readyQueue.append(xmpPath) }
-        // W4-4 ① 骨架：就绪队列消费与真实写回落点由后续写面步骤插入；
-        // 骨架期 queued → inFlight → idle 走通相位与唤醒，保证 waitForIdle 可被完整驱动。
-        // mww6c：同路径串行链 —— 新 mutation 挂到该 xmpPath 的链尾，
-        // 前一条未结算完绝不并发进入写面；任务体当前仅等待占位，真实写回落点留待后续写面步骤。
-        let previous = mutationTails[xmpPath]
-        let task: Task<Void, Never> = Task {
-            await previous?.value
-            /* 占位：真实写回落点 */
+        // mwwshut：就绪队列消费 —— 入队后由 drainReadyQueue 按 FIFO 启动写面；
+        // 本方法不再等待本笔写完成，结算与唤醒统一落在 finishWrite。
+        drainReadyQueue()
+    }
+
+    /// mwwshut / W4-4 ②：就绪队列消费 —— FIFO 取出可启动路径并进入写面。
+    /// 过期条目（ticket 已被新一轮 schedule 替换、条目已删除）直接丢弃；
+    /// 上一笔仍在飞的路径本轮跳过，待 finishWrite 释放 activeWrites 后再消费。
+    private func drainReadyQueue() {
+        while let next = firstStartableReady() {
+            readyQueue.removeAll { $0 == next.xmpPath }
+            startWrite(xmpPath: next.xmpPath, ticket: next.ticket)
         }
-        mutationTails[xmpPath] = task
+    }
+
+    /// 就绪队列中首个可启动条目；先丢弃过期/已启动条目（原地删除，保持 FIFO 相对顺序）。
+    private func firstStartableReady() -> (xmpPath: String, ticket: UUID)? {
+        readyQueue.removeAll { xmpPath in
+            guard let entry = entries[xmpPath] else { return true }
+            return entry.phase != .queued
+        }
+        for xmpPath in readyQueue {
+            guard let entry = entries[xmpPath] else { continue }
+            if activeWrites[xmpPath] == nil { return (xmpPath, entry.ticket) }
+        }
+        return nil
+    }
+
+    /// mwwshut：启动一笔写 —— 挂到同路径串行链尾（前一条未结算完绝不并发进入写面）；
+    /// 任务体先执行注入写体（生产为空体占位，真实写回落点留待后续写面步骤），
+    /// 完成后统一走 finishWrite（结算 + 消费队列 + 释放链尾）。
+    private func startWrite(xmpPath: String, ticket: UUID) {
         entries[xmpPath]?.phase = .inFlight
         // mww6a / W4-4 ②：登记在飞写 ticket。
         activeWrites[xmpPath] = ticket
-        // mww6c：等待链上本 mutation 结算，之后仍按现有逻辑 inFlight → idle。
-        await task.value
+        let previous = mutationTails[xmpPath]?.task
+        let task: Task<Void, Never> = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            let body = self.writeBody
+            await body(xmpPath)
+            await self.finishWrite(xmpPath: xmpPath, ticket: ticket)
+        }
+        mutationTails[xmpPath] = MutationTail(ticket: ticket, task: task)
+    }
+
+    /// mwwshut：一笔写的统一完成点 —— 结算相位/在飞登记 → 继续消费队列 → 释放链尾
+    /// （释放后触发关停汇合点，保证「结算处 resume」）。
+    private func finishWrite(xmpPath: String, ticket: UUID) {
         settle(xmpPath: xmpPath, ticket: ticket)
+        drainReadyQueue()
+        releaseMutationTail(xmpPath: xmpPath, ticket: ticket)
+    }
+
+    /// mwwshut：按 ticket 精确释放本路径链尾 —— 仅当本路径已无在飞写且无排队时置 nil，
+    /// 已完成 task 不随字典长期存活（round 160 遗留项）；释放后结算关停等待者。
+    private func releaseMutationTail(xmpPath: String, ticket: UUID) {
+        guard mutationTails[xmpPath]?.ticket == ticket else { return }
+        guard activeWrites[xmpPath] == nil, !readyQueue.contains(xmpPath) else { return }
+        mutationTails[xmpPath] = nil
+        signalQuiescenceIfIdle()
     }
 
     // MARK: - 等待原语（continuation 唤醒，绝不轮询）
@@ -267,13 +342,14 @@ public actor MetadataWriter {
 
     /// 当前 ticket 完成整个生命周期：inFlight → idle，并唤醒 idle 等待者。
     private func settle(xmpPath: String, ticket: UUID) {
+        // mwwshut：在飞登记的清理不随 ticket 守卫短路 —— 被新一轮 schedule
+        // 替换的旧写若不清理，会永久挡住就绪队列里新一笔的启动。
+        if activeWrites[xmpPath] == ticket { activeWrites[xmpPath] = nil }
         guard entries[xmpPath]?.ticket == ticket else { return }
         let generation = entries[xmpPath]?.generation ?? 0
         // mwwd：结算即消费就绪队列（本路径本次结算出队）。
         readyQueue.removeAll { $0 == xmpPath }
         entries[xmpPath]?.phase = .idle
-        // mww6a / W4-4 ②：仅本 ticket 才清在飞登记，避免清掉新一波。
-        if activeWrites[xmpPath] == ticket { activeWrites[xmpPath] = nil }
         resumeWaiters(xmpPath: xmpPath, generation: generation, includeIdle: true)
     }
 
@@ -329,6 +405,100 @@ public actor MetadataWriter {
     /// mww6a / W4-4 ② 测试只读访问器（internal）：就绪队列顺序 + 在飞写 ticket 快照。
     func writeStateSnapshot() -> (ready: [String], active: [String: UUID]) {
         (ready: readyQueue, active: activeWrites)
+    }
+
+    /// mwwshut 测试只读访问器（internal）：链尾释放后应回到 0。
+    func mutationTailCount() -> Int {
+        mutationTails.count
+    }
+
+    /// mwwshut / W4-4：有界关停。
+    /// ①置关停标记，拒绝后续入队（入队 Task 可能晚于关停落到 actor）；
+    /// ②在 timeoutMs 内等待 activeWrites 与 readyQueue 双空（continuation 汇合，
+    ///   结算处 resume，绝不轮询）；超时抛 MetadataWriterError.scheduleTimeout；
+    /// ③成功或超时都清空排程/就绪/在飞/链尾，保证返回后没有任务再触碰 Store。
+    public func shutdown(timeoutMs: Int = 5_000) async throws {
+        isShutDown = true
+        do {
+            try await awaitQuiescence(timeoutMs: timeoutMs)
+        } catch {
+            // 超时：取消未完成任务并强制清场，避免链尾与等待者悬挂。
+            for tail in mutationTails.values { tail.task.cancel() }
+            clearShutdownState()
+            throw error
+        }
+        clearShutdownState()
+    }
+
+    /// 静默判据：无在飞写且无排队的就绪路径。
+    private var isQuiescent: Bool {
+        activeWrites.isEmpty && readyQueue.isEmpty
+    }
+
+    /// 等待 activeWrites 与 readyQueue 双空；已空立即返回，否则登记 continuation +
+    /// 超时兜底任务（超时抛 scheduleTimeout，携带当前待结算路径便于定位）。
+    private func awaitQuiescence(timeoutMs: Int) async throws {
+        if isQuiescent { return }
+        guard timeoutMs > 0 else {
+            throw MetadataWriterError.scheduleTimeout(
+                xmpPath: firstPendingXmpPath(), timeoutMs: timeoutMs)
+        }
+        let waiterId = UUID()
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, any Error>) in
+            quiescenceWaiters.append(QuiescenceWaiter(id: waiterId, continuation: continuation))
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                await self?.expireQuiescenceWaiter(id: waiterId, timeoutMs: timeoutMs)
+            }
+        }
+    }
+
+    /// 待结算路径（错误定位用）：就绪队列头优先，其次任一在飞写。
+    private func firstPendingXmpPath() -> String {
+        readyQueue.first ?? activeWrites.keys.sorted().first ?? ""
+    }
+
+    private func expireQuiescenceWaiter(id: UUID, timeoutMs: Int) {
+        guard let index = quiescenceWaiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = quiescenceWaiters.remove(at: index)
+        waiter.continuation.resume(
+            throwing: MetadataWriterError.scheduleTimeout(
+                xmpPath: firstPendingXmpPath(), timeoutMs: timeoutMs))
+    }
+
+    /// 结算处汇合：双空且有关停等待者时恰好 resume 一次。
+    private func signalQuiescenceIfIdle() {
+        guard isQuiescent, !quiescenceWaiters.isEmpty else { return }
+        let pending = quiescenceWaiters
+        quiescenceWaiters.removeAll()
+        for waiter in pending { waiter.continuation.resume() }
+    }
+
+    /// 关停清场：排程/就绪/在飞/链尾一次清空，并结算登记中的等待者，绝不悬挂。
+    private func clearShutdownState() {
+        entries.removeAll()
+        readyQueue.removeAll()
+        activeWrites.removeAll()
+        mutationTails.removeAll()
+        signalQuiescenceIfIdle()
+        retireWaitersAfterShutdown()
+    }
+
+    /// 关停收尾：登记中的等待者不再有结果 —— idle 等待按满足唤醒，
+    /// generation 等待按取消唤醒。
+    private func retireWaitersAfterShutdown() {
+        let pending = waiters
+        waiters.removeAll()
+        for list in pending.values {
+            for waiter in list {
+                if waiter.minGeneration == nil {
+                    waiter.continuation.resume()
+                } else {
+                    waiter.continuation.resume(throwing: CancellationError())
+                }
+            }
+        }
     }
 
     /// TS: getMetadata（W4-3d 读路径）—— 缓存轻投影 → 全命中返回 / 有未命中显式标记。
