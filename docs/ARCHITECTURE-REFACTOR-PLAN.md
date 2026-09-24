@@ -751,3 +751,9 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 | B6 | Similarity10 + Face14 + Culling17 | **最重最后** |
 
 **批次纪律（沿用本 session 实践）**：每批只用新文件（不改路由，避免与单写者冲突）→ 每批补直测 → 批次完成后编译 + filter + 门禁三验 → 全部批次完成后才**一次性剪 `Host` 路由**（3800 行）并归零 4 项度量（`SessionCommandRouter 17→0` · `awaitSync 2→0` · `StubCommandRouter 7→0` · `NativeCommandClient 6→0`）。
+### 23. R4 第五片（WritebackService）细节勘误 + 裁决（提交 c1ef014）
+
+- **前提勘误（重要）**：`WritebackService` **不含任何 SQL**——R1⑬ 早已把 `writeback_items`/outbox 读写全部下沉 `Store/WritebackStore.swift`，服务只依赖 Store 端口（门禁 `Runtime layer SQL (0 <= 0)` 佐证）。故「SQL 逐字搬 Store」**无对象，Store 未新增方法**（纠正了我下发任务书中的默认假设）。
+- **分层与命名**：`Services/WritebackService.swift` → `Runtime/Metadata/WritebackRuntime.swift`（逐字搬迁，仅改文件头注释 + **删除死代码 `jsonObject`/`jsonScalar`**——private、全仓无引用、注释指向已删的 WritebackRepo，Store 已有 `attributesJSON`）；公开符号（`WritebackService`/`WritebackServiceError`/`mutationSource`/`buildCullingWritebackPlan`/`buildSimilarityKeywordPlan`/`WritebackPlannerError`）**保持原名**以免触碰 app 路由 → app 侧 0 改动。
+- **测试迁移（覆盖不降的精确账目）**：`WritebackServiceTests`(2 tests) + `StubMutationPort` → `Tests/GatherCoreTests/Runtime/Metadata/WritebackRuntimeTests.swift`（188 行逐字搬迁）；`FakeFSXMPProvider` 由 private 改 internal 供两文件共用。迁移前 `--filter MetadataSyncCoordinatorTests` = **6 tests / 2 suites**；迁移后 `WritebackServiceTests` 2/1 + `WritebackRuntimeTests` 2/1 + `MetadataSyncCoordinatorTests` 4/1 = **6/2 合计不变**。
+- **裁决 D5（命名债，登记待 R5 剪路由时一并解决）**：文件已入 `Runtime/`（`WritebackRuntime.swift`），但**类型名仍是 `WritebackService`**（历史名）。改名需动 `app/Host/SessionCommandRouter.swift` 与 `app/Host/FaceKwWritebackBridge.swift` 两处——当前阶段**不值得为纯命名触碰单写者路由文件**。**处置**：随 R5「一次性剪 Host 路由」同批改名（届时路由删除，改动面自然消失）；在此之前保留原名，**不属兼容层/双路径**（只是命名滞后），登记于此以免遗忘。
