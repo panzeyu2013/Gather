@@ -137,6 +137,10 @@ public actor MetadataWriter {
     /// mww6a / W4-4 ②：在飞写及其 ticket；结束清空仅当 ticket 匹配。
     private var activeWrites: [String: UUID] = [:]
 
+    /// mww6c：同路径 mutation 串行链 —— 每个 xmpPath 一条 Task 尾，
+    /// 新 mutation 挂到链尾，前一条未结算完绝不并发进入写面。
+    private var mutationTails: [String: Task<Void, Never>] = [:]
+
     /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
     /// 取旧管线 MetadataSyncCoordinator.defaultWriteDebounceMs = 500（TS 设置
     /// metadata_write_debounce_ms 同值）；设置注入留待写面后续步骤。
@@ -170,9 +174,19 @@ public actor MetadataWriter {
         if !readyQueue.contains(xmpPath) { readyQueue.append(xmpPath) }
         // W4-4 ① 骨架：就绪队列消费与真实写回落点由后续写面步骤插入；
         // 骨架期 queued → inFlight → idle 走通相位与唤醒，保证 waitForIdle 可被完整驱动。
+        // mww6c：同路径串行链 —— 新 mutation 挂到该 xmpPath 的链尾，
+        // 前一条未结算完绝不并发进入写面；任务体当前仅等待占位，真实写回落点留待后续写面步骤。
+        let previous = mutationTails[xmpPath]
+        let task: Task<Void, Never> = Task {
+            await previous?.value
+            /* 占位：真实写回落点 */
+        }
+        mutationTails[xmpPath] = task
         entries[xmpPath]?.phase = .inFlight
         // mww6a / W4-4 ②：登记在飞写 ticket。
         activeWrites[xmpPath] = ticket
+        // mww6c：等待链上本 mutation 结算，之后仍按现有逻辑 inFlight → idle。
+        await task.value
         settle(xmpPath: xmpPath, ticket: ticket)
     }
 
