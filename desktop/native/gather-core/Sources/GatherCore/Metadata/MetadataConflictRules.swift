@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/MetadataConflictFields.swift
+// desktop/native/gather-core/Sources/GatherCore/Metadata/MetadataConflictRules.swift
 // TS 源: desktop/src/main/services/metadata/metadata-conflict-fields.ts（逐字移植，纯逻辑）
 // 冲突检测：dirty-fields 解析 / 逐字段外部变更列表（冲突 UI 数据源）/ 快速布尔门控。
 

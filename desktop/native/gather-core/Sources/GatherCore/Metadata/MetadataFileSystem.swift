@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/MetadataFingerprint.swift
+// desktop/native/gather-core/Sources/GatherCore/Metadata/MetadataFileSystem.swift
 // TS 源: desktop/src/main/services/metadata/metadata-fingerprint.ts（算法逐字移植）
 // 纯逻辑：指纹字符串拼接规则与 TS 完全一致（`${size}:${round(mtimeMs)}:${sha256hex}`），
 // 文件读取经 tsStat / Data(contentsOf:) 直接走真实文件系统（TS 测试同款真实临时文件）。

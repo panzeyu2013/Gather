@@ -1,6 +1,6 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/MetadataContract.swift
+// desktop/native/gather-core/Sources/GatherCore/Metadata/MetadataMutationPlan.swift
 // TS 源: desktop/src/main/services/metadata/metadata-contract.ts（逐字移植，纯逻辑）
-// 契约校验层：patch 规范化 / 关键词规范化 / dirty-fields 推导。错误消息与 TS
+// 契约校验层：patch 规范化 / 关键词规范化。错误消息与 TS
 // 逐字一致（CustomStringConvertible）。
 
 import Foundation
@@ -90,36 +90,4 @@ public func validateMetadataPatch(_ patch: MetadataPatch) throws -> MetadataPatc
         throw MetadataContractError.patchEmpty
     }
     return normalized
-}
-
-/// TS: dirtyFieldsForPatch —— patch 中出现的字段序（rating/label/keywords 固定序）。
-public func dirtyFieldsForPatch(_ patch: MetadataPatch) -> [MetadataField] {
-    [MetadataField.rating, .label, .keywords].filter { field in
-        switch field {
-        case .rating: patch.rating != nil
-        case .label: patch.label != nil
-        case .keywords: patch.keywords != nil
-        }
-    }
-}
-
-/// TS: patchToOutboxValues —— patch → outbox values（keywords 保留 op/values 结构）。
-public func patchToOutboxValues(_ patch: MetadataPatch) -> [String: JSONValue] {
-    var values: [String: JSONValue] = [:]
-    if let rating = patch.rating { values["rating"] = .number(rating.value) }
-    if let label = patch.label { values["label"] = .string(label.value) }
-    if let keywords = patch.keywords {
-        values["keywords"] = .object([
-            "op": .string(keywords.op.rawValue),
-            "values": .array(keywords.values.map { .string($0) }),
-        ])
-    }
-    return values
-}
-
-/// TS: assertMutationSource —— 非法来源抛错。
-public func assertMutationSource(_ source: String) throws {
-    guard MetadataMutationSource(rawValue: source) != nil else {
-        throw MetadataContractError.unsupportedSource(source)
-    }
 }

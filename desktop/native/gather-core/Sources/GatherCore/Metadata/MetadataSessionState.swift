@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/CaptureOneSyncState.swift
+// desktop/native/gather-core/Sources/GatherCore/Metadata/MetadataSessionState.swift
 // TS 源: desktop/src/main/services/capture-one/sync-state.ts（会话级同步状态聚合，
 // 设计文档 2.3.2 / 2.3.3，纯函数与 DB 重推导逐字移植）
 //
@@ -34,15 +34,6 @@ public enum CaptureOneSessionState: String, Codable, CaseIterable, Equatable, Se
 private let knownOutboxStatuses: Set<String> = [
     "pending", "writing", "written", "failed", "conflict", "synced", "clean", "cleaned",
 ]
-
-/// TS: countOutboxStatuses —— 纯行归约：status → 计数。
-public func countOutboxStatuses(rows: [String]) -> [String: Int] {
-    var counts: [String: Int] = [:]
-    for status in rows {
-        counts[status, default: 0] += 1
-    }
-    return counts
-}
 
 /// TS: aggregateSessionState —— 确定性聚合（2.3.2），纯函数，不依赖 DB。
 public func aggregateSessionState(
