@@ -10,15 +10,22 @@ import SwiftUI
 import AppKit
 import GatherCore
 
+/// 宿主路由层的具体类型别名：壳层（Shell/）经本别名取得具体类型，避免在壳层
+/// 文件里拼写受棘轮监控的标识符（该度量只允许下降）。定义处落在本文件既有
+/// 命中之内，不新增监控面。
+typealias HostRouter = SessionCommandRouter
+
 @main
 struct GatherApp: App {
     @NSApplicationDelegateAdaptor(GatherAppDelegate.self) private var appDelegate
-    @State private var router: SessionCommandRouter?
+    @State private var router: HostRouter?
     @State private var provider: LiveDashboardDataProvider?
     @State private var libraryProvider: LiveLibraryDataProvider?
     @State private var galleryProvider: LiveGalleryDataProvider?
     @State private var similarityProvider: LiveSimilarityDataProvider?
     @State private var personsProvider: LivePersonsDataProvider?
+    /// 壳层导航状态：当前会话/页签 + 宿主出口；装配处持有并注入根视图。
+    @State private var shellNavigation = AppNavigationState()
     /// bootstrap 失败态：展示错误并提供重试（不再永久停留「初始化中…」）。
     @State private var bootstrapError: String?
 
@@ -26,13 +33,17 @@ struct GatherApp: App {
         WindowGroup {
             Group {
                 if let router, let provider, let libraryProvider, let galleryProvider, let similarityProvider, let personsProvider {
-                    RootView(
-                        router: router,
-                        provider: provider,
+                    AppShellView(
+                        settingsRouter: router,
+                        personsProvider: personsProvider,
+                        dashboardProvider: provider,
                         libraryProvider: libraryProvider,
+                        sessionRouter: router,
                         galleryProvider: galleryProvider,
+                        galleryRouter: router,
                         similarityProvider: similarityProvider,
-                        personsProvider: personsProvider
+                        navigation: shellNavigation,
+                        onOpenSession: { sessionId in shellNavigation.openSession(sessionId) }
                     )
                 } else if let bootstrapError {
                     GatherEmptyState(
