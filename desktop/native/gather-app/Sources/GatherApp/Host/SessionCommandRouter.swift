@@ -3581,7 +3581,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             return cullingError.description
         }
-        if let exportError = error as? ExportServiceError { return exportError.description }
+        if let exportError = error as? ExportError { return exportError.description }
         // 仓库层直接抛出的 SQLiteFailure.message（TS 侧 throw new Error(code) 的
         // 仓库等价物，如 ASSET_LINK_CANDIDATE_NOT_FOUND）逐字透传。
         if let sqliteError = error as? SQLiteFailure {

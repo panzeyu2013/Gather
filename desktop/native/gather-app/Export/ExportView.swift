@@ -234,12 +234,12 @@ public final class ExportViewModel {
 
     private func parameters() throws -> [String: GatherCore.JSONValue] {
         guard !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ExportServiceError.destinationInvalid
+            throw ExportError.destinationInvalid
         }
         let parsedQuality: Double?
         if format == .jpeg {
             guard let value = Double(quality), value.rounded() == value else {
-                throw ExportServiceError.qualityInvalid
+                throw ExportError.qualityInvalid
             }
             parsedQuality = value
         } else {
@@ -255,7 +255,7 @@ public final class ExportViewModel {
             // 非数字前缀 → nil → maxDimensionInvalid，保持安全路径。
             parsedDimension = value
         } else {
-            throw ExportServiceError.maxDimensionInvalid
+            throw ExportError.maxDimensionInvalid
         }
         let options = ExportOptions(
             scope: .session,
@@ -280,9 +280,9 @@ public final class ExportViewModel {
 
     private func watermark() throws -> ExportWatermark {
         let text = watermarkText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw ExportServiceError.watermarkTextEmpty }
+        guard !text.isEmpty else { throw ExportError.watermarkTextEmpty }
         guard let fontSize = Double(watermarkFontSize), fontSize > 0 else {
-            throw ExportServiceError.watermarkFontSizeInvalid
+            throw ExportError.watermarkFontSizeInvalid
         }
         return ExportWatermark(
             type: .text,
@@ -296,18 +296,18 @@ public final class ExportViewModel {
     /// 对齐旧版行内错误定位：参数校验错误映射到对应字段附近展示。
     private static func fieldError(for error: Error) -> ExportFieldError? {
         switch error {
-        case ExportServiceError.destinationInvalid,
-             ExportServiceError.destinationAbsoluteRequired,
-             ExportServiceError.destinationRootForbidden,
-             ExportServiceError.destinationInsideSession:
+        case ExportError.destinationInvalid,
+             ExportError.destinationAbsoluteRequired,
+             ExportError.destinationRootForbidden,
+             ExportError.destinationInsideSession:
             return .destination
-        case ExportServiceError.qualityInvalid:
+        case ExportError.qualityInvalid:
             return .quality
-        case ExportServiceError.maxDimensionInvalid:
+        case ExportError.maxDimensionInvalid:
             return .maxDimension
-        case ExportServiceError.watermarkTextEmpty,
-             ExportServiceError.watermarkFontSizeInvalid,
-             ExportServiceError.watermarkOpacityInvalid:
+        case ExportError.watermarkTextEmpty,
+             ExportError.watermarkFontSizeInvalid,
+             ExportError.watermarkOpacityInvalid:
             return .watermark
         default:
             break
