@@ -127,6 +127,9 @@ public protocol AssetStore: Sendable {
     /// 返回受影响 photoIds（去重，首次出现序——旧实现收集进 Set）。sessionId 为
     /// 调用侧会话标识；旧 SQL 无会话过滤，故不进入 WHERE。
     func applyScannedFiles(_ updates: [AssetFileScanUpdate], sessionId: String) async throws -> [String]
+    /// 路径相关分析失效（Indexer 扫描发现内容变化时清理簇/相似度/分析输入并剪枝自动导航组）。
+    @discardableResult
+    func invalidatePathDependentAnalysis(photoIds: [String]) async throws -> Int
 
     // MARK: 回填
 
