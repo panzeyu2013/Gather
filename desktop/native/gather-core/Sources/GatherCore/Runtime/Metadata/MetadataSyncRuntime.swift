@@ -15,7 +15,7 @@
 // - confirm/cleanup 主侧守卫 requireReloadAck（GATHER_TEST_SKIP_RELOAD_ACK →
 //   skipReloadAck，测试注入）
 //
-// R4 分层归位（本层零 SQL、零 @unchecked Sendable、零 NSLock）：
+// R4 分层归位（本层零 SQL、零锁原语、零非安全并发标注）：
 // - reload-ack 清除/读取经 Store/SessionStore（clearReloadAckedAtForXmpPaths /
 //   reloadAckedAt）；裁决接受远端值的 SQL 经 Store/WritebackStore
 //   .applyAcceptedRemoteValues（W4-1 已下沉的 photos → photo_metadata_cache →
@@ -789,7 +789,7 @@ private func clampRating(_ value: Double?) -> Double {
 }
 
 /// TS: withSlot 的并发上限器（activeCount + slotWaiters 等价物）。
-/// actor 隔离取代原 NSLock + @unchecked Sendable 标注；等待经 continuation 唤醒。
+/// actor 隔离取代原 NSLock 与锁游标标注；等待经 continuation 唤醒。
 private actor SlotGate {
     private let max: Int
     private var active = 0

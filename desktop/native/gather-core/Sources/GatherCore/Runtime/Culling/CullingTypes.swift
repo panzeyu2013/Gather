@@ -85,10 +85,10 @@ public protocol CullingSyncPort {
     func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult
 }
 
-extension MetadataSyncCoordinator: CullingSyncPort {
+extension MetadataSyncRuntime: CullingSyncPort {
     /// TS: schedule(xmpPath) —— 默认去抖窗口；协调器的 delayMs 是 default-arg，
-    /// 双参方法不能作单参需求的 witness，显式转发。
-    public func schedule(xmpPath: String) {
+    /// 双参方法不能作单参需求的 witness，显式转发（nonisolated：调度入口同步返回）。
+    public nonisolated func schedule(xmpPath: String) {
         schedule(xmpPath: xmpPath, delayMs: nil)
     }
 }

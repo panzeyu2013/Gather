@@ -1,7 +1,7 @@
 import Foundation
 
 /// TS: safeObject —— JSON 文本解析为对象，损坏或非对象一律退化为空对象
-/// （与 Services/MetadataSyncCoordinator 的 safeObject 逐字同语义）。
+/// （与 Runtime/Metadata/MetadataSyncRuntime 的 safeObject 逐字同语义）。
 private func metadataWriterSafeObject(_ value: String) -> JSONValue {
     guard let parsed = try? JSONValue.parse(value) else { return .object([:]) }
     if case .object = parsed { return parsed }
@@ -9,7 +9,7 @@ private func metadataWriterSafeObject(_ value: String) -> JSONValue {
 }
 
 /// mwsum / W4-3a：getSummary —— 轻投影 + 分组计数（outboxCounts 为主、逐行过滤兜底），
-/// 语义对齐 Services/MetadataSyncCoordinator.getSummary。
+/// 语义对齐 MetadataSyncRuntime.getSummary。
 /// mwstate / W4-3b：getSessionState —— outbox 分组计数 + reload-ack 只读聚合。
 /// W4-3d/W4-6：元数据提取 provider 集合（EXIF 解析 / 尺寸兜底 / 内嵌 XMP 读）。
 /// nil = 宿主未接线：读路径遇未缓存 id 时显式标记 capability=unsupported，
@@ -231,7 +231,7 @@ public actor MetadataWriter {
     }
 
     /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
-    /// 取旧管线 MetadataSyncCoordinator.defaultWriteDebounceMs = 500（TS 设置
+    /// 取旧管线 MetadataSyncRuntime.defaultWriteDebounceMs = 500（TS 设置
     /// metadata_write_debounce_ms 同值）；设置注入留待写面后续步骤。
     static let defaultDebounceDelayMs = 500
 
@@ -497,7 +497,7 @@ public actor MetadataWriter {
     /// 语义为调用方在 start 后重新 schedule，不注入新依赖（依赖仍由 init 注入）。
     /// w4wire / W4：崩溃遗留回收 —— 上次进程中断时停留在 status='writing' 的行
     /// 是未结算的在飞写，start 时经 WritebackStore.recoverInterruptedOutbox()
-    /// 一律回退为 'pending'（与 Services/MetadataSyncCoordinator.start 同语义），
+    /// 一律回退为 'pending'（与 MetadataSyncRuntime.start 同语义），
     /// 使新排程可重新认领这些行；绝不把 writing 残留当作已写入而丢工作。
     /// D3：start 为 async（非 throws），内部 try? 吞错——回收失败不阻断启动；
     /// 调用方需 await（既有测试调用点本就有 await，无需加 try）。
@@ -633,7 +633,7 @@ public actor MetadataWriter {
         )
     }
 
-    /// TS: listOrphans —— 孤儿写回行全量投影（语义对齐 Services/MetadataSyncCoordinator.listOrphans：
+    /// TS: listOrphans —— 孤儿写回行全量投影（语义对齐 MetadataSyncRuntime.listOrphans：
     /// 读全部孤儿行，逐行映射为 MetadataOrphan；任何排序/过滤都交给 Store 查询）。
     public func listOrphans() async throws -> [MetadataOrphan] {
         try await dependencies.writebackStore.orphanOutbox().map { row in
@@ -648,12 +648,12 @@ public actor MetadataWriter {
         }
     }
 
-    /// sidecar 读取的并发上限：与旧写入管线 MetadataSyncCoordinator.maxConcurrency 一致。
-    /// 迁移期取本地常量，避免 Metadata/ 反向依赖 Services/。
+    /// sidecar 读取的并发上限：与旧写入管线 MetadataSyncRuntime.maxConcurrency 一致。
+    /// 迁移期取本地常量，避免 Metadata/ 反向依赖 Runtime/ 层。
     private static let sidecarReadConcurrency = 2
 
     /// TS: getConflicts —— 每个冲突行读一次磁盘上的 sidecar，并发与写入管线一致（上限 2）。
-    /// 语义逐条对齐 Services/MetadataSyncCoordinator.getConflicts：
+    /// 语义逐条对齐 MetadataSyncRuntime.getConflicts：
     /// 仅取 status == "conflict" 的行；base=baseValuesJSON、local=patchJSON、
     /// dirtyFields 损坏时按空列表处理；字段冲突由 MetadataConflictFields.fieldConflicts 判定。
     public func getConflicts(sessionId: String) async throws -> [MetadataConflict] {

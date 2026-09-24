@@ -191,7 +191,7 @@ public enum AssetStoreError: Error, Equatable, CustomStringConvertible, Sendable
 
 public struct AssetRelinkRootResult: Equatable, Sendable {
     public let relocatedFiles: Int
-    /// 需要通知 MetadataSyncCoordinator 的新 XMP 路径（旧实现用可变 sink 回调）。
+    /// 需要通知 MetadataSyncRuntime 的新 XMP 路径（旧实现用可变 sink 回调）。
     public let relocatedOutboxPaths: [String]
 
     public init(relocatedFiles: Int, relocatedOutboxPaths: [String]) {

@@ -10,7 +10,7 @@
 // 页面阶段的宿主职责（实现留在 gather-app）；本文件定义与本层写回/同步链对齐的
 // 调用点：
 // - recordReloadAck：TS reloadMetadata() 成功路径 —— 宿主 reload 成功后在桥内调用，
-//   写入 sessions.reload_acked_at（MetadataSyncCoordinator 的 confirm/cleanup
+//   写入 sessions.reload_acked_at（MetadataSyncRuntime 的 confirm/cleanup
 //   主侧守卫数据源）。
 // - deriveSessionState：TS CaptureOneSyncState.deriveSessionState（2.3.2 优先级：
 //   conflict > failed > syncing > c1Read > …）。
