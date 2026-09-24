@@ -65,3 +65,9 @@
 1. **CullingRichLookup 暂时改名 CullingAssetLookup**：Services/CullingService.swift:2462 已有 file-private struct CullingRichLookup，同模块顶层类型不允许重名。Assembler 文件当前用 CullingAssetLookup（字段与设计一致）；**步骤 7 删除旧服务后必须机械改回**（或统一保留新名）。
 2. **CullingFilterSpec 实际为 struct**（在 Store/CullingQueryStore.swift）：字段 unreviewed / pickStates / ratings / colorLabels / quality，由 CullingFilterSpec(filters:) 做唯一映射；Assembler 的 specs(from:) 委托它，matches(_:specs:metadataConflictOnly:) 跨 spec/字段 AND。**LookupLoader/Runtime 不得再声明同名类型**。
 
+
+## 9. 切换前置与实现决策（round 16，Culling Runtime 子代理实测）
+
+1. **类型迁移前置**：`CullingPhotoRow`（含 3 个 `init(row:)` 扩展）与 `CullingSyncPort`/`CullingWritebackPort`/`CullingOutboxWrite`/`CullingDecisionWrite`/`CullingCachePatch` 仍声明在 `Services/CullingService.swift`；其中 **`CullingDecisionWrite` 被 `Store/CullingStore.applyDecisionStates` 引用** → 删除旧服务前必须先把这些类型迁入 `Runtime/Culling/**`（机械搬迁，零语义变化）。
+2. **`applyDecisionStates` 单 revision 限制**：Store 的 CAS 只接受单一 `expectedRevision`，而同一资产的两个变体（RAW/JPEG）在 `update`/`batchUpdate` 中 revision 基线可能不同 → Runtime 侧**按基线分组、同基线一次事务**执行 CAS（组间顺序执行）。该决策已由 Runtime 实现采纳，测试需断言「同基线组内冲突整组回滚、跨基线组互不影响」。
+3. **已落盘**：`Runtime/Culling/CullingLookupLoader.swift`（8 个装载方法 + `CullingLookupAnalyses` + `CullingGroupIndex.build`，分块与排序逐段对照旧服务 1622-1901）——提交 `d7b3e11`。
