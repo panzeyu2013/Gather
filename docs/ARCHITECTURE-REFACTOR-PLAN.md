@@ -483,3 +483,5 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | round 29：Culling 切换单元执行中 | 进行中 | 子代理 `b87f42bb` 已开工（新增 `Tests/.../Runtime/Culling/CullingRuntimeCancellationTests.swift`）；`Services/` 仍 22，`Services/CullingService.swift` 待删除。切换内容：类型迁移（`CullingPhotoRow`/`CullingSyncPort`/`CullingWritebackPort`/`CullingOutboxWrite`/`CullingDecisionWrite`/`CullingCachePatch`）→ `makeDefault` 装配 `CullingRuntime` → 路由 22 个 `culling.*` case 异步化 → 同批删旧服务（2550 行）与旧测试 → 修 `CullingRuntimeTests` 2 用例 → baseline 22→21。HEAD `f7717e3` 保持全绿。 |
 
 | round 30：Culling 切换仍需时间；后续各域切换必须与路由改动串行 | 进行中 | `b87f42bb` 运行中（`Services/CullingService.swift` 2550 行的类型迁移+装配+路由+删旧+修测试+双包验证同批次进行）。**编排约束**：所有需要改 `SessionCommandRouter.swift` 的切换单元必须串行（同一文件），因此 W2c/W2d 切换将在 Culling 收口后依次派发；core 侧类型迁移可提前，但删旧服务必须与路由切换同批。 |
+
+| round 32：两个工作流在途（Culling 切换 `b87f42bb`、W4-1 Store `13178f1b`） | 进行中 | Culling：`Services/` 仍 22、`CullingService.swift`（2550 行）待删，新测试 `CullingRuntimeCancellationTests.swift` 已落盘；W4-1：Store CAS/批量命令与大体积事务（`mergeOutboxPatches`/`reconcileWritebackProjection`/`applyAcceptedRemoteValues`）编写中。两者文件集合不相交，HEAD 保持全绿。 |
