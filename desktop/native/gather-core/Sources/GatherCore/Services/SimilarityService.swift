@@ -117,7 +117,7 @@ public final class SimilarityService {
     private let photoStore: any PhotoStore
     private let sessionStore: any SessionStore
     private let similarityStore: any SimilarityStore
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
     private let thumbnailProvider: ThumbnailProvider
@@ -153,7 +153,7 @@ public final class SimilarityService {
         photoStore: any PhotoStore,
         sessionStore: any SessionStore,
         similarityStore: any SimilarityStore,
-        connection: DBConnection,
+        database: SQLiteDatabase,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
         clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
@@ -170,7 +170,7 @@ public final class SimilarityService {
         self.photoStore = photoStore
         self.sessionStore = sessionStore
         self.similarityStore = similarityStore
-        self.connection = connection
+        self.database = database
         self.getNumber = getNumber
         self.thumbnailProvider = thumbnailProvider
         self.clusterProvider = clusterProvider
@@ -209,7 +209,7 @@ public final class SimilarityService {
         // TS finally：早退（abort）与异常路径都必须落 run 终态并释放占用。
         defer {
             if runId != 0 {
-                try? finalizeAnalysisRun(runId: runId, status: runStatus)
+                try? await finalizeAnalysisRun(runId: runId, status: runStatus)
             }
             removeControllerIfCurrent(signal, for: sessionId)
         }
@@ -224,7 +224,7 @@ public final class SimilarityService {
             let indexSeqSnapshot: Int = try await sessionStore.indexSeq(id: sessionId)
             let snapshot: (photos: [PhotoProjection], indexSeq: Int) = (photosSnapshot, indexSeqSnapshot)
             if snapshot.photos.isEmpty { throw SimilarityServiceError.noPhotos }
-            runId = try startAnalysisRun(
+            runId = try await startAnalysisRun(
                 sessionId: sessionId,
                 kind: "similarity",
                 photoCount: snapshot.photos.count,
@@ -234,14 +234,15 @@ public final class SimilarityService {
 
             if signal.aborted { return }
 
-            let existingHashes = try connection.prepare(
-                "SELECT photo_id, hash_hex, file_size, file_mtime_ms FROM similarity_hashes WHERE session_id = ?"
-            ).query([.text(sessionId)]).map { row in
+            let existingHashes = try await database.query(
+                "SELECT photo_id, hash_hex, file_size, file_mtime_ms FROM similarity_hashes WHERE session_id = ?",
+                [.text(sessionId)]
+            ).map { row in
                 SimilarityHashRow(
-                    photoId: row[0].textValue ?? "",
-                    hashHex: row[1].textValue ?? "",
-                    fileSize: Int(row[2].intValue ?? 0),
-                    fileMtimeMs: row[3].doubleValue ?? 0
+                    photoId: row.values[row.columnOrder[0]]?.textValue ?? "",
+                    hashHex: row.values[row.columnOrder[1]]?.textValue ?? "",
+                    fileSize: Int(row.values[row.columnOrder[2]]?.intValue ?? 0),
+                    fileMtimeMs: row.values[row.columnOrder[3]]?.doubleValue ?? 0
                 )
             }
 
@@ -264,8 +265,8 @@ public final class SimilarityService {
                       abs(stat.mtimeMs - row.fileMtimeMs) < 1 else { continue }
                 existingHashMap[row.photoId] = row.hashHex
             }
-            _ = try Self.reuseSimilarityHashes(
-                connection: connection,
+            _ = try await Self.reuseSimilarityHashes(
+                database: database,
                 sessionId: sessionId,
                 photos: snapshot.photos,
                 sourceStats: sourceStats,
@@ -277,7 +278,7 @@ public final class SimilarityService {
                 if signal.aborted { return }
 
                 onProgress?(0, uncachedPhotos.count, "similarity.hash")
-                let insertStmt = try connection.prepare("""
+                let insertSQL = """
                     INSERT INTO similarity_hashes
                       (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
                     VALUES (?, ?, ?, ?, ?)
@@ -285,7 +286,7 @@ public final class SimilarityService {
                       hash_hex = excluded.hash_hex,
                       file_size = excluded.file_size,
                       file_mtime_ms = excluded.file_mtime_ms
-                  """)
+                  """
 
                 let decodeBatchSize = min(32, max(1, Int(getNumber("similarity_decode_concurrency", 4))))
                 let previewMaxDimension = min(2048, max(64, Int(getNumber("similarity_preview_max_dimension", 256))))
@@ -330,9 +331,9 @@ public final class SimilarityService {
                     }
                     if signal.aborted { return }
                     if !insertRows.isEmpty {
-                        try connection.transaction {
+                        try await database.transaction { db in
                             for row in insertRows {
-                                _ = try insertStmt.run([
+                                _ = try db.run(insertSQL, [
                                     .text(row.sessionId), .text(row.photoId), .text(row.hash),
                                     .int(Int64(row.fileSize)), .real(row.fileMtimeMs),
                                 ])
@@ -424,20 +425,21 @@ public final class SimilarityService {
     /// TS: reuseSimilarityHashes —— 按 asset_file_id 分块批量读，消除逐照片 N+1；
     /// 目标照片与来源照片同资产文件且 size/mtime 一致时复用来源 hash。
     public static func reuseSimilarityHashes(
-        connection: DBConnection,
+        database: SQLiteDatabase,
         sessionId: String,
         photos: [PhotoProjection],
         sourceStats: [String: (size: Int, mtimeMs: Double)],
         existingHashMap: inout [String: String]
-    ) throws -> Int {
-        let photoRows = try connection.prepare(
-            "SELECT id, asset_file_id FROM photos WHERE session_id = ? AND asset_file_id IS NOT NULL"
-        ).query([.text(sessionId)])
+    ) async throws -> Int {
+        let photoRows = try await database.query(
+            "SELECT id, asset_file_id FROM photos WHERE session_id = ? AND asset_file_id IS NOT NULL",
+            [.text(sessionId)]
+        )
         var assetFileByPhoto: [String: String] = [:]
         var assetFileIds: [String] = []
         var seenAssetFiles = Set<String>()
         for row in photoRows {
-            guard let id = row[0].textValue, let assetFileId = row[1].textValue else { continue }
+            guard let id = row.values[row.columnOrder[0]]?.textValue, let assetFileId = row.values[row.columnOrder[1]]?.textValue else { continue }
             assetFileByPhoto[id] = assetFileId
             if seenAssetFiles.insert(assetFileId).inserted { assetFileIds.append(assetFileId) }
         }
@@ -447,25 +449,25 @@ public final class SimilarityService {
         for chunkStart in stride(from: 0, to: assetFileIds.count, by: reuseHashChunkSize) {
             let chunk = Array(assetFileIds[chunkStart..<min(chunkStart + reuseHashChunkSize, assetFileIds.count)])
             let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let rows = try connection.prepare("""
+            let rows = try await database.query("""
                 SELECT h.id AS hash_id, h.photo_id, h.hash_hex, h.file_size, h.file_mtime_ms, p.asset_file_id
                 FROM similarity_hashes h
                 JOIN photos p ON h.photo_id = p.id
                 WHERE p.asset_file_id IN (\(placeholders))
-              """).query(chunk.map { .text($0) })
+              """, chunk.map { .text($0) })
             for row in rows {
-                guard let assetFileId = row[5].textValue else { continue }
+                guard let assetFileId = row.values[row.columnOrder[5]]?.textValue else { continue }
                 rowsByAssetFile[assetFileId, default: []].append(HashCandidate(
-                    id: row[0].intValue ?? 0,
-                    photoId: row[1].textValue ?? "",
-                    hashHex: row[2].textValue ?? "",
-                    fileSize: Int(row[3].intValue ?? 0),
-                    fileMtimeMs: row[4].doubleValue ?? 0
+                    id: row.values[row.columnOrder[0]]?.intValue ?? 0,
+                    photoId: row.values[row.columnOrder[1]]?.textValue ?? "",
+                    hashHex: row.values[row.columnOrder[2]]?.textValue ?? "",
+                    fileSize: Int(row.values[row.columnOrder[3]]?.intValue ?? 0),
+                    fileMtimeMs: row.values[row.columnOrder[4]]?.doubleValue ?? 0
                 ))
             }
         }
 
-        let saveStmt = try connection.prepare("""
+        let saveSQL = """
             INSERT INTO similarity_hashes
               (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
             VALUES (?, ?, ?, ?, ?)
@@ -473,9 +475,9 @@ public final class SimilarityService {
               hash_hex = excluded.hash_hex,
               file_size = excluded.file_size,
               file_mtime_ms = excluded.file_mtime_ms
-          """)
+          """
         var reused = 0
-        try connection.transaction {
+        try await database.transaction { db in
             for photo in photos {
                 if existingHashMap[photo.id] != nil { continue }
                 guard let sourceStat = sourceStats[photo.id],
@@ -489,7 +491,7 @@ public final class SimilarityService {
                     if source == nil || candidate.id > source!.id { source = candidate }
                 }
                 guard let source else { continue }
-                _ = try saveStmt.run([
+                _ = try db.run(saveSQL, [
                     .text(sessionId), .text(photo.id), .text(source.hashHex),
                     .int(Int64(sourceStat.size)), .real(sourceStat.mtimeMs),
                 ])
@@ -591,12 +593,13 @@ public final class SimilarityService {
         if existing == nil { throw SimilarityServiceError.noResults }
 
         let photos = PhotoAssets.collapse(try await photoStore.getBySessionProjection(sessionId: sessionId))
-        let hashRows = try connection.prepare(
-            "SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?"
-        ).query([.text(sessionId)])
+        let hashRows = try await database.query(
+            "SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?",
+            [.text(sessionId)]
+        )
         var hashMap: [String: String] = [:]
         for row in hashRows {
-            guard let photoId = row[0].textValue, let hash = row[1].textValue else { continue }
+            guard let photoId = row.values[row.columnOrder[0]]?.textValue, let hash = row.values[row.columnOrder[1]]?.textValue else { continue }
             hashMap[photoId] = hash
         }
 
@@ -754,24 +757,26 @@ public final class SimilarityService {
         photoCount: Int,
         indexSeq: Int,
         params: AnalysisRunParams
-    ) throws -> Int64 {
+    ) async throws -> Int64 {
         let data = try JSONEncoder().encode(params)
-        _ = try connection.prepare("""
+        _ = try await database.run("""
             INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
             VALUES (?, ?, ?, ?, ?, '', ?, 'running')
-          """).run([
+          """, [
             .text(sessionId), .text(kind), .int(Int64(photoCount)), .int(Int64(indexSeq)),
             .text(nowISOString()), .text(String(data: data, encoding: .utf8) ?? "{}"),
         ])
-        return connection.lastInsertRowid
+        return await database.lastInsertRowID
     }
 
     // 取消的 run 在此以 'failed' 终态（sessions.analysis_status 在 catch 写
     // 'cancelled'）：run 记录按设计只区分 ok/failed，该分歧是刻意的——
     // 过期检测（1.4.2）一律忽略非 ok run。
-    private func finalizeAnalysisRun(runId: Int64, status: String) throws {
-        _ = try connection.prepare("UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?")
-            .run([.text(status), .text(nowISOString()), .int(runId)])
+    private func finalizeAnalysisRun(runId: Int64, status: String) async throws {
+        _ = try await database.run(
+            "UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?",
+            [.text(status), .text(nowISOString()), .int(runId)]
+        )
     }
 
     /// TS: buildStoredResult。

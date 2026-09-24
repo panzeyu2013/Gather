@@ -79,7 +79,7 @@ private func makeIncrementalHarness(settings: [String: Double] = [:]) async thro
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: similarityStore,
-        connection: db,
+        database: try SQLiteDatabase(path: dbPath),
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
         thumbnailProvider: { _, _ in nil },
         clusterProvider: { entries, threshold, minGroupSize, mode, onProgress in

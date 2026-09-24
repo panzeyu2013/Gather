@@ -120,7 +120,7 @@ private func makeHarness(
         photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
         sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
         similarityStore: SQLiteSimilarityStore(database: try SQLiteDatabase(path: dbPath)),
-        connection: db,
+        database: try SQLiteDatabase(path: dbPath),
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
         thumbnailProvider: thumbnail,
         clusterProvider: cluster
@@ -236,8 +236,8 @@ struct ReuseSimilarityHashesTests {
         ]
         var existing: [String: String] = [:]
         let photos = try await try! SQLitePhotoStore(database: SQLiteDatabase(path: dbPath)).getBySessionProjection(sessionId: "session")
-        let reused = try SimilarityService.reuseSimilarityHashes(
-            connection: db, sessionId: "session",
+        let reused = try await SimilarityService.reuseSimilarityHashes(
+            database: try SQLiteDatabase(path: dbPath), sessionId: "session",
             photos: photos, sourceStats: stats, existingHashMap: &existing
         )
 
@@ -265,8 +265,8 @@ struct ReuseSimilarityHashesTests {
         let stats: [String: (size: Int, mtimeMs: Double)] = ["q1": (200, 2000), "q2": (200, 2000)]
         var existing: [String: String] = [:]
         let photos = try await try! SQLitePhotoStore(database: SQLiteDatabase(path: dbPath)).getBySessionProjection(sessionId: "session")
-        let reused = try SimilarityService.reuseSimilarityHashes(
-            connection: db, sessionId: "session",
+        let reused = try await SimilarityService.reuseSimilarityHashes(
+            database: try SQLiteDatabase(path: dbPath), sessionId: "session",
             photos: photos, sourceStats: stats, existingHashMap: &existing
         )
 
@@ -277,8 +277,8 @@ struct ReuseSimilarityHashesTests {
         // 文件统计不匹配 → 零复用。
         let staleStats: [String: (size: Int, mtimeMs: Double)] = ["q1": (999, 9999), "q2": (999, 9999)]
         var existing2: [String: String] = [:]
-        let reused2 = try SimilarityService.reuseSimilarityHashes(
-            connection: db, sessionId: "session",
+        let reused2 = try await SimilarityService.reuseSimilarityHashes(
+            database: try SQLiteDatabase(path: dbPath), sessionId: "session",
             photos: photos, sourceStats: staleStats, existingHashMap: &existing2
         )
         #expect(reused2 == 0)
@@ -302,8 +302,8 @@ struct ReuseSimilarityHashesTests {
         var existing: [String: String] = [:]
         let target = try await try! SQLitePhotoStore(database: SQLiteDatabase(path: dbPath)).getBySessionProjection(sessionId: "session")
             .filter { $0.id == "r403" }
-        let reused = try SimilarityService.reuseSimilarityHashes(
-            connection: db, sessionId: "session",
+        let reused = try await SimilarityService.reuseSimilarityHashes(
+            database: try SQLiteDatabase(path: dbPath), sessionId: "session",
             photos: target, sourceStats: stats, existingHashMap: &existing
         )
 
@@ -323,8 +323,8 @@ struct ReuseSimilarityHashesTests {
         let stats: [String: (size: Int, mtimeMs: Double)] = ["s1": (400, 4000), "s2": (400, 4000)]
         var existing: [String: String] = ["s1": "already-present"]
         let photos = try await try! SQLitePhotoStore(database: SQLiteDatabase(path: dbPath)).getBySessionProjection(sessionId: "session")
-        let reused = try SimilarityService.reuseSimilarityHashes(
-            connection: db, sessionId: "session",
+        let reused = try await SimilarityService.reuseSimilarityHashes(
+            database: try SQLiteDatabase(path: dbPath), sessionId: "session",
             photos: photos, sourceStats: stats, existingHashMap: &existing
         )
 
@@ -447,7 +447,7 @@ struct SimilarityGetResultTests {
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
 
         // 成员按序写入：组 0 成员在前，组 1 在后。
@@ -516,7 +516,7 @@ struct SimilarityGetResultTests {
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
 
         let result = try await service.getResult(sessionId: "session")
@@ -544,7 +544,7 @@ struct SimilarityGetResultTests {
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
 
         _ = try await similarityStore.replaceResult(
@@ -584,7 +584,7 @@ struct SimilarityGetResultTests {
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
         #expect(try await service.hasResult(sessionId: "session") == false)
         _ = try await similarityStore.replaceResult(
@@ -709,7 +709,7 @@ struct SimilarityServiceRobustnessTests {
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             similarityStore: similarityStore,
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
 
         await #expect(throws: (any Error).self) {

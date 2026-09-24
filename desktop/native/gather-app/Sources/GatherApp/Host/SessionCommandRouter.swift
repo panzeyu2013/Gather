@@ -212,7 +212,7 @@ public final class SessionCommandRouter: CommandRouter {
             photoStore: photoStore,
             sessionStore: sessionStore,
             similarityStore: similarityStore,
-            connection: db,
+            database: database,
             getNumber: { key, defaultValue in
                 settings.number(key, default: defaultValue)
             },
