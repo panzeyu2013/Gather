@@ -231,7 +231,7 @@ struct AssetsCommandsImplTests {
         #expect(count == 3, "旧 number 计数以 Int 承接（不含 outbox 路径）")
 
         let calls = await stub.relinkCalls
-        #expect(calls.map(\.oldRoot) == ["/old"])
-        #expect(calls.map(\.newRoot) == ["/new"])
+        #expect(calls.map { $0.oldRoot } == ["/old"])
+        #expect(calls.map { $0.newRoot } == ["/new"])
     }
 }
