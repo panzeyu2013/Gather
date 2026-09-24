@@ -73,7 +73,7 @@ public actor QualityRuntime {
     public func analyze(
         sessionId: String,
         photoIds: [String]? = nil,
-        context: JobRunContext? = nil
+        context: JobRunnerContext? = nil
     ) async throws -> [QualityResult] {
         let sessionPhotos = try await photoStore.getBySessionProjection(sessionId: sessionId)
         let requested = photoIds.map(Set.init)

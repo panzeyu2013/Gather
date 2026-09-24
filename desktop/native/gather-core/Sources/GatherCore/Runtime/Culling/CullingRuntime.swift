@@ -80,7 +80,7 @@ private struct CullingUpdateOutcome: Sendable {
 /// CAS 失败组（用于按真实 current revision 抛出 CULLING_REVISION_CONFLICT）。
 private struct CullingDecisionCASConflict: Sendable {
     let expected: Int
-    let photoId: String
+    let writes: [CullingDecisionWrite]
 }
 
 // MARK: - CullingRuntime
@@ -1031,23 +1031,30 @@ public actor CullingRuntime {
                 sessionId: sessionId, writes: group, expectedRevision: baseline
             )
             if !succeeded {
-                return CullingDecisionCASConflict(expected: baseline, photoId: group[0].photoId)
+                return CullingDecisionCASConflict(expected: baseline, writes: group)
             }
         }
         return nil
     }
 
-    /// CAS 冲突 → 按真实 current revision 抛 CULLING_REVISION_CONFLICT（错误码逐字不变）。
+    /// CAS 冲突 → 按组内第一张真实偏离基线的照片抛 CULLING_REVISION_CONFLICT
+    /// （错误码逐字不变；Store 只返回 Bool，这里回读定位并发写入者）。
     private func revisionConflictError(
         _ conflict: CullingDecisionCASConflict,
         sessionId: String
     ) async throws -> CullingServiceError {
-        let current = try await deps.cullingStore?
-            .decision(sessionId: sessionId, photoId: conflict.photoId)?.revision
+        for write in conflict.writes {
+            let current = try await deps.cullingStore?
+                .decision(sessionId: sessionId, photoId: write.photoId)?.revision
+                ?? Int64(conflict.expected)
+            if Int(current) != conflict.expected {
+                return CullingServiceError.revisionConflict(
+                    expected: conflict.expected, current: Int(current))
+            }
+        }
+        // 行不存在或恰好回到基线：仍按 CAS 冲突上报（调用方重试语义不变）。
         return CullingServiceError.revisionConflict(
-            expected: conflict.expected,
-            current: Int(current ?? Int64(conflict.expected))
-        )
+            expected: conflict.expected, current: conflict.expected)
     }
 
     /// 事务外批量读 outbox 行（返回状态必须反映写后行）。

@@ -7,9 +7,9 @@
 //   同步（execute）：
 //     session.* / photo.list → SessionService + PhotoRepo（3.2 服务层）
 //     workspace.status → WorkspaceStatusService（3.1 服务层）
-//     jobs.list / jobs.cancel / jobs.retry / jobs.clear_completed → JobService
+//     jobs.list / jobs.cancel / jobs.retry / jobs.clear_completed → JobRunner
 //     image.get_dimensions / image.prioritize_thumbnail / image.preload_* →
-//       ImagePreloadService + RAWDecoder（2.1/3.6；缩略图任务走 JobService）
+//       ImagePreloadService + RAWDecoder（2.1/3.6；缩略图任务走 JobRunner）
 //     face.models_status → FaceInferenceConfig / Vision provider 状态（2.2）
 //     settings.get_all / get / set / reset / set_language / get_ml_status
 //       → SettingsService（3.6；TS 源 settings.ipc.ts）
@@ -49,12 +49,12 @@
 //     navigation.analyze → NavigationService.analyze（TS 源 navigation.ipc.ts，
 //       TS 侧为 async wrapper 内同步执行，Swift 同步直连）
 //     sim.recluster → SimilarityService.recluster（TS 侧 await worker）
-//     sim.analyze / dup.scan → JobService executor + waitForResult（TS 源
+//     sim.analyze / dup.scan → JobRunner executor + waitForResult（TS 源
 //       similarity.ipc.ts / duplicate.ipc.ts）
-//     fkw.analyze → JobService executor（face.analyze）+ waitForResult；
+//     fkw.analyze → JobRunner executor（face.analyze）+ waitForResult；
 //       job abort 经 signal handler 传播给 FaceKwService（TS 源 face-kw.ipc.ts）
 //     fkw.recluster → FaceKwService.recluster（TS 源 face-kw.ipc.ts）
-//     index.scan / quality.analyze → JobService executor（metadata.scan /
+//     index.scan / quality.analyze → JobRunner executor（metadata.scan /
 //       quality.score）创建即返回 job（TS 源 indexer.ipc.ts / quality.ipc.ts）
 //     session.create_from_directory → SessionService.createFromDirectory +
 //       metadata.scan job 入队（TS 源 session.ipc.ts）
@@ -72,7 +72,7 @@ public final class SessionCommandRouter: CommandRouter {
     /// 公开服务访问器（3.1 起供 RootView/DashboardViewModel 同进程直连）。
     public let sessionService: SessionService
     public let workspace: WorkspaceAPI
-    public let jobService: JobService
+    public let jobRunner: JobRunner
     /// 设置快照（同步读：服务与命令处理不再触碰设置存储）。
     private let settings: SettingsSnapshot
     /// 设置写路径（异步唯一入口；R5：取代 SettingsService）。
@@ -103,7 +103,7 @@ public final class SessionCommandRouter: CommandRouter {
     public init(
         sessionService: SessionService,
         workspace: WorkspaceAPI,
-        jobService: JobService,
+        jobRunner: JobRunner,
         settings: SettingsSnapshot,
         settingsAPI: SettingsAPI,
         filterEngine: FilterEngine,
@@ -129,7 +129,7 @@ public final class SessionCommandRouter: CommandRouter {
     ) {
         self.sessionService = sessionService
         self.workspace = workspace
-        self.jobService = jobService
+        self.jobRunner = jobRunner
         self.settings = settings
         self.settingsAPI = settingsAPI
         self.filterEngine = filterEngine
@@ -152,7 +152,8 @@ public final class SessionCommandRouter: CommandRouter {
         self.cullingService = cullingService
         self.exportService = exportService
         self.imagePreloadService = imagePreloadService
-        registerExecutors()
+        // executor 注册是 actor async：由 makeDefault 在装配期 await 完成，
+        // 保证返回后立即 create 的作业不会命中 executorNotRegistered。
     }
 
     /// Capture One 脚本成功后由宿主调用，写入持久 reload ack；页面不得在
@@ -168,7 +169,7 @@ public final class SessionCommandRouter: CommandRouter {
     /// 停任务调度器（后续不再发起写回）→ 排空 XMP 协调器在飞任务与计时器
     /// （outbox 行保持 recoverable，下次启动由 start() 恢复）→ 关闭 SQLite。
     public func prepareForTermination() async {
-        await jobService.stop()
+        await jobRunner.stop()
         await metadataSyncCoordinator.shutdown()
         // Store 连接由组合根（GatherApp）负责关闭。
     }
@@ -201,7 +202,7 @@ public final class SessionCommandRouter: CommandRouter {
         xmpProvider: (any XMPProvider)? = nil,
         metadataWriteDebounceMs: Double? = nil,
         faceKwService: FaceKwService? = nil
-    ) -> SessionCommandRouter {
+    ) async -> SessionCommandRouter {
         let similarityService = SimilarityService(
             photoStore: photoStore,
             sessionStore: sessionStore,
@@ -265,7 +266,7 @@ public final class SessionCommandRouter: CommandRouter {
             metadataStore: metadataStore,
             assetResolver: assetResolver
         )
-        let jobService = JobService(jobStore: jobStore)
+        let jobRunner = JobRunner(jobStore: jobStore)
         let exportService = ExportService(photoStore: photoStore, sessionStore: sessionStore, database: database)
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
@@ -299,7 +300,7 @@ public final class SessionCommandRouter: CommandRouter {
                 settings.number(key, default: defaultValue)
             }
         )
-        return SessionCommandRouter(
+        let router = SessionCommandRouter(
             sessionService: SessionService(
                 sessionStore: sessionStore,
                 photoStore: photoStore,
@@ -312,7 +313,7 @@ public final class SessionCommandRouter: CommandRouter {
                 assetStore: assetStore
             ),
             workspace: workspace,
-            jobService: jobService,
+            jobRunner: jobRunner,
             settings: settings,
             settingsAPI: settingsAPI,
             filterEngine: FilterEngine(database: database),
@@ -362,13 +363,15 @@ public final class SessionCommandRouter: CommandRouter {
             sessionStore: sessionStore,
             imagePreloadService: imagePreloadService
         )
+        await router.registerExecutors()
+        return router
     }
 
     /// TS di/init.ts 的 executor 注册段（similarity.analyze / duplicate.scan）。
-    /// JobService 恢复 interrupted 任务时依赖 autoResume 注册表，故装配期
+    /// JobRunner 恢复 interrupted 任务时依赖 autoResume 注册表，故装配期
     /// 同步注册（autoResume 默认 true）。
-    private func registerExecutors() {
-        jobService.registerExecutor(type: .similarityAnalyze) { [similarityService] job, context in
+    private func registerExecutors() async {
+        await jobRunner.registerExecutor(type: .similarityAnalyze) { [similarityService] job, context in
             // TS similarity.ipc.ts:100-121：abort 时同步取消相似度占用
             // （session 列仅在真正持有者取消时写入，见 SimilarityService.cancel）。
             if context.signal.aborted {
@@ -388,7 +391,7 @@ public final class SessionCommandRouter: CommandRouter {
             return true
         }
 
-        jobService.registerExecutor(type: .duplicateScan) { [duplicateService] job, context in
+        await jobRunner.registerExecutor(type: .duplicateScan) { [duplicateService] job, context in
             // TS duplicate.ipc.ts:11-20：checkpoint.visualThreshold 为 number
             // 时透传，否则 undefined。
             let result = try await duplicateService.scanDuplicates(
@@ -406,7 +409,7 @@ public final class SessionCommandRouter: CommandRouter {
         // TS 源: face-kw.ipc.ts:24-40 —— face.analyze executor。job abort 经
         // signal handler 传播给 FaceKwService 的自持 controller（TS
         // addEventListener('abort') 语义；JobAbortSignal.addHandler 即等价物）。
-        jobService.registerExecutor(type: .faceAnalyze) { [faceKwService] job, context in
+        await jobRunner.registerExecutor(type: .faceAnalyze) { [faceKwService] job, context in
             context.signal.addHandler {
                 faceKwService.cancel(sessionId: job.scopeId)
             }
@@ -427,7 +430,7 @@ public final class SessionCommandRouter: CommandRouter {
 
         // TS 源: quality.ipc.ts:7-12 —— quality.score executor（photoIds 从
         // checkpoint 还原，TS 非数组过滤语义）。
-        jobService.registerExecutor(type: .qualityScore) { [qualityService] job, context in
+        await jobRunner.registerExecutor(type: .qualityScore) { [qualityService] job, context in
             let photoIds = job.checkpoint["photoIds"]?.arrayElements?.compactMap(\.stringValue)
             return try await qualityService.analyze(
                 sessionId: job.scopeId,
@@ -439,7 +442,7 @@ public final class SessionCommandRouter: CommandRouter {
         // TS 源: indexer.ipc.ts:26-67 —— metadata.scan executor：扫描 →
         // 元数据提取 → 资产链接对账 → checkpoint 落结果（恢复语义），
         // 剩余待回填 checksum 时入队 checksum.backfill。
-        jobService.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoStore, assetStore, jobService] job, context in
+        await jobRunner.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoStore, assetStore, jobRunner] job, context in
             let result = try await indexerService.scanSession(
                 sessionId: job.scopeId,
                 context: context
@@ -458,7 +461,7 @@ public final class SessionCommandRouter: CommandRouter {
                 current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
             ))
             if (try await indexerService.pendingChecksums(sessionId: job.scopeId)) > 0 {
-                _ = try await jobService.create(JobCreateParams(
+                _ = try await jobRunner.create(JobCreateParams(
                     type: .checksumBackfill,
                     scopeType: "session",
                     scopeId: job.scopeId,
@@ -470,7 +473,7 @@ public final class SessionCommandRouter: CommandRouter {
 
         // TS 源: indexer.ipc.ts:26-32 —— checksum.backfill executor（后台回填
         // 懒索引留下的空 checksum）。
-        jobService.registerExecutor(type: .checksumBackfill) { [indexerService] job, context in
+        await jobRunner.registerExecutor(type: .checksumBackfill) { [indexerService] job, context in
             let result = try await indexerService.backfillChecksums(
                 sessionId: job.scopeId,
                 context: context
@@ -479,8 +482,8 @@ public final class SessionCommandRouter: CommandRouter {
         }
 
         // TS image.ipc.ts：缩略图预加载是低优先级可恢复任务；ImageIO
-        // 解码失败按单张跳过，JobService 仍负责取消/心跳/终态。
-        jobService.registerExecutor(type: .thumbnailBuild) { [imagePreloadService] job, context in
+        // 解码失败按单张跳过，JobRunner 仍负责取消/心跳/终态。
+        await jobRunner.registerExecutor(type: .thumbnailBuild) { [imagePreloadService] job, context in
             let paths = job.checkpoint["paths"]?.arrayElements?.compactMap(\.stringValue) ?? []
             let size = Int(job.checkpoint["size"]?.numberValue ?? 1024)
             return try imagePreloadService.buildThumbnails(
@@ -501,7 +504,7 @@ public final class SessionCommandRouter: CommandRouter {
 
         // TS export.ipc.ts：断点状态以 checkpoint 为唯一持久化来源，
         // 避免导出中途退出后重新生成同名文件。
-        jobService.registerExecutor(type: .exportExecute) { [exportService] job, context in
+        await jobRunner.registerExecutor(type: .exportExecute) { [exportService] job, context in
             let options: ExportOptions = try self.decodeJSON(
                 ExportOptions.self,
                 from: job.checkpoint["options"] ?? .object([:])
@@ -575,8 +578,8 @@ public final class SessionCommandRouter: CommandRouter {
             // 同步返回 ok(true)。
             let sessionId = try requiredString(params, "sessionId")
             // cancel 为异步语义：立即返回 ok(true)，取消在后台完成（对齐 TS）。
-            Task { [jobService, similarityService] in
-                _ = try? await jobService.cancelScope(type: .similarityAnalyze, scopeId: sessionId)
+            Task { [jobRunner, similarityService] in
+                _ = try? await jobRunner.cancelScope(type: .similarityAnalyze, scopeId: sessionId)
                 try? await similarityService.cancel(sessionId: sessionId, markStatus: false)
             }
             return .bool(true)
@@ -647,8 +650,8 @@ public final class SessionCommandRouter: CommandRouter {
         case "fkw.cancel_analysis":
             // face-kw.ipc.ts:72-80 —— jobs.cancelScope + cancel，返回 {done:true}。
             let sessionId = try requiredString(params, "sessionId")
-            Task { [jobService, faceKwService] in
-                _ = try? await jobService.cancelScope(type: .faceAnalyze, scopeId: sessionId)
+            Task { [jobRunner, faceKwService] in
+                _ = try? await jobRunner.cancelScope(type: .faceAnalyze, scopeId: sessionId)
                 faceKwService.cancel(sessionId: sessionId)
             }
             return .object(["done": .bool(true)])
@@ -748,8 +751,8 @@ public final class SessionCommandRouter: CommandRouter {
 
         case "export.cancel":
             let sessionId = try requiredString(params, "sessionId")
-            Task { [jobService] in
-                _ = try? await jobService.cancelScope(type: .exportExecute, scopeId: sessionId)
+            Task { [jobRunner] in
+                _ = try? await jobRunner.cancelScope(type: .exportExecute, scopeId: sessionId)
                 exportService.cancel(sessionId: sessionId)
             }
             return .bool(true)
@@ -1254,7 +1257,7 @@ public final class SessionCommandRouter: CommandRouter {
                     guard !paths.isEmpty else { completion(WebResponse(ok: true, data: .null)); return }
                     let size = Int((try? optionalNumber(params, "size")) ?? settings.number("thumbnail_size", default: 1024))
                     let fingerprint = paths.joined(separator: "\u{0}")
-                    let job = try await jobService.create(JobCreateParams(
+                    let job = try await jobRunner.create(JobCreateParams(
                         type: .thumbnailBuild,
                         scopeType: "paths",
                         scopeId: paths[0],
@@ -1279,7 +1282,7 @@ public final class SessionCommandRouter: CommandRouter {
         case "jobs.list":
             Task {
                 do {
-                    let jobs = try await jobService.list()
+                    let jobs = try await jobRunner.list()
                     completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: jobs)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -1293,7 +1296,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    completion(WebResponse(ok: true, data: .bool(try await jobService.cancel(jobId))))
+                    completion(WebResponse(ok: true, data: .bool(try await jobRunner.cancel(jobId))))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                 }
@@ -1306,7 +1309,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    completion(WebResponse(ok: true, data: .bool(try await jobService.retry(jobId))))
+                    completion(WebResponse(ok: true, data: .bool(try await jobRunner.retry(jobId))))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                 }
@@ -1319,7 +1322,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    completion(WebResponse(ok: true, data: .number(Double(try await jobService.clearCompleted()))))
+                    completion(WebResponse(ok: true, data: .number(Double(try await jobRunner.clearCompleted()))))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
                 }
@@ -1406,7 +1409,7 @@ public final class SessionCommandRouter: CommandRouter {
                     // TS: threshold ?? 'default'（undefined 时不输出数值）。
                     let dedupeThreshold = threshold.map { String($0) } ?? "default"
                     let dedupeMinGroupSize = minGroupSize.map { String($0) } ?? "default"
-                    let job = try await jobService.create(JobCreateParams(
+                    let job = try await jobRunner.create(JobCreateParams(
                         type: .similarityAnalyze,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1417,7 +1420,7 @@ public final class SessionCommandRouter: CommandRouter {
                             "groupingMode": .string(groupingMode.rawValue),
                         ]
                     ))
-                    _ = try await jobService.waitForResult(jobId: job.id) as Any?
+                    _ = try await jobRunner.waitForResult(jobId: job.id) as Any?
                     completion(WebResponse(ok: true, data: .bool(true)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -1434,7 +1437,7 @@ public final class SessionCommandRouter: CommandRouter {
             let visualThreshold = try? optionalNumber(params, "visualThreshold")
             Task {
                 do {
-                    let job = try await jobService.create(JobCreateParams(
+                    let job = try await jobRunner.create(JobCreateParams(
                         type: .duplicateScan,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1443,9 +1446,9 @@ public final class SessionCommandRouter: CommandRouter {
                             "visualThreshold": visualThreshold.map { .number($0) } ?? .null,
                         ]
                     ))
-                    let result: DuplicateScanResult? = try await jobService.waitForResult(jobId: job.id)
+                    let result: DuplicateScanResult? = try await jobRunner.waitForResult(jobId: job.id)
                     guard let result else {
-                        throw JobServiceError.jobFailed(job.id, "empty duplicate.scan result")
+                        throw JobRunnerError.jobFailed(job.id, "empty duplicate.scan result")
                     }
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
@@ -1473,7 +1476,7 @@ public final class SessionCommandRouter: CommandRouter {
                         eps: eps ?? settings.number("default_eps", default: 0.6),
                         minPts: minSamples ?? settings.number("default_min_samples", default: 2)
                     )
-                    let job = try await jobService.create(JobCreateParams(
+                    let job = try await jobRunner.create(JobCreateParams(
                         type: .faceAnalyze,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1485,9 +1488,9 @@ public final class SessionCommandRouter: CommandRouter {
                             "minSamples": minSamples.map { .number($0) } ?? .null,
                         ]
                     ))
-                    let result: FaceAnalysisResult? = try await jobService.waitForResult(jobId: job.id)
+                    let result: FaceAnalysisResult? = try await jobRunner.waitForResult(jobId: job.id)
                     guard let result else {
-                        throw JobServiceError.jobFailed(job.id, "empty fkw.analyze result")
+                        throw JobRunnerError.jobFailed(job.id, "empty fkw.analyze result")
                     }
                     let data = try GatherCore.JSONValue(from: result)
                     completion(WebResponse(ok: true, data: data))
@@ -1739,7 +1742,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let job = try await jobService.create(JobCreateParams(
+                    let job = try await jobRunner.create(JobCreateParams(
                         type: .metadataScan,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1766,7 +1769,7 @@ public final class SessionCommandRouter: CommandRouter {
             }
             Task {
                 do {
-                    let job = try await jobService.create(JobCreateParams(
+                    let job = try await jobRunner.create(JobCreateParams(
                         type: .qualityScore,
                         scopeType: "session",
                         scopeId: sessionId,
@@ -1794,7 +1797,7 @@ public final class SessionCommandRouter: CommandRouter {
                 do {
                     let session = try await sessionService.createFromDirectory(name: name, sourcePath: sourcePath)
                     do {
-                        _ = try await jobService.create(JobCreateParams(
+                        _ = try await jobRunner.create(JobCreateParams(
                             type: .metadataScan,
                             scopeType: "session",
                             scopeId: session.id,
@@ -1975,17 +1978,17 @@ public final class SessionCommandRouter: CommandRouter {
                     let options = try self.decodeExportOptions(params["options"] ?? .object([:]))
                     // makeDefault 的 router 可被 CLI/测试直接调用；start 是幂等的，
                     // 这里确保 export.execute 不会因宿主忘记启动 job service 而永久 queued。
-                    self.jobService.start()
-                    let job = try await self.jobService.create(JobCreateParams(
+                    self.jobRunner.start()
+                    let job = try await self.jobRunner.create(JobCreateParams(
                         type: .exportExecute,
                         scopeType: "session",
                         scopeId: sessionId,
                         dedupeKey: "export.execute:\(sessionId)",
                         checkpoint: ["options": try GatherCore.JSONValue(from: options)]
                     ))
-                    let result: ExportResult? = try await self.jobService.waitForResult(jobId: job.id)
+                    let result: ExportResult? = try await self.jobRunner.waitForResult(jobId: job.id)
                     guard let result else {
-                        throw JobServiceError.jobFailed(job.id, "empty export.execute result")
+                        throw JobRunnerError.jobFailed(job.id, "empty export.execute result")
                     }
                     completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: result)))
                 } catch {
@@ -3750,9 +3753,9 @@ public final class SessionCommandRouter: CommandRouter {
         if let sqliteError = error as? SQLiteFailure {
             return sqliteError.message
         }
-        // JobService.waitForResult 失败终态：message 即 TS errorMessage
+        // JobRunner.waitForResult 失败终态：message 即 TS errorMessage
         // （executor 抛错经 String(describing:) 记录，错误枚举 description 对齐 TS）。
-        if case JobServiceError.jobFailed(_, let message) = error { return message }
+        if case JobRunnerError.jobFailed(_, let message) = error { return message }
         if error is JobCancelledError { return "CANCELLED" }
         // DecodingError（JSON 解码契约漂移）：错误载荷必须保持码值，英文散文
         // 会绕过 translateError 映射，统一收敛为 INVALID_PARAMS。

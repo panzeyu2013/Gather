@@ -50,6 +50,31 @@ private actor CounterActor {
     func value() -> Int { count }
 }
 
+/// 并发峰值探针（executor 进入/退出计数）。
+private actor ConcurrencyProbe {
+    private var running = 0
+    private var peak = 0
+
+    func enter() {
+        running += 1
+        peak = max(peak, running)
+    }
+
+    func exit() { running -= 1 }
+    func maxRunning() -> Int { peak }
+}
+
+/// 进度帧收集（含 checkpoint；sink 是同步闭包，经 Task 投递到 actor）。
+private actor UpdateLog {
+    private var updates: [JobProgressUpdate] = []
+
+    func append(_ update: JobProgressUpdate) { updates.append(update) }
+    func count() -> Int { updates.count }
+    func containsCheckpointPhase(_ phase: String) -> Bool {
+        updates.contains { $0.checkpoint?["phase"] == .string(phase) }
+    }
+}
+
 /// 进度帧收集（sink 是同步闭包，经 Task 投递到 actor）。
 private actor FrameLog {
     private var frames: [(jobId: String, message: String)] = []
@@ -629,5 +654,144 @@ struct JobRunnerTests {
         #expect(scanRow != nil, "metadata.scan 阶段证据应保留")
         #expect(exportRow != nil, "export.execute 阶段证据应保留")
         #expect(dupRow == nil)
+    }
+
+    // ── 旧 JobServiceTests 语义迁移（未覆盖用例）：
+    //    并发上限 / 停止不调度 / claim 失败不覆盖取消结果 / 持久失败终态 / 进度节流 ──
+
+    @Test func enforcesConcurrencyLimit() async throws {
+        let env = try await makeEnv(heartbeatMs: 10_000, watchdogMs: 10_000)
+        let runner = env.runner
+        let gate = TestGate()
+        let probe = ConcurrencyProbe()
+        await runner.registerExecutor(type: .faceAnalyze) { _, _ in
+            await probe.enter()
+            await gate.wait()
+            await probe.exit()
+            return nil
+        }
+        _ = await runner.start()
+
+        let j1 = try await runner.create(makeParams(type: .faceAnalyze, scopeId: "s1"))
+        let j2 = try await runner.create(makeParams(type: .faceAnalyze, scopeId: "s2"))
+        let j3 = try await runner.create(makeParams(type: .faceAnalyze, scopeId: "s3"))
+
+        let reached = await waitUntil { await probe.maxRunning() >= 2 }
+        #expect(reached, "并发上限 2：应有 2 个 executor 同时在飞")
+        let peak = await probe.maxRunning()
+        #expect(peak == 2, "并发峰值应为 2，实际 \(peak)")
+        let thirdQueued = try await env.store.get(j3.id)?.status == .queued
+        #expect(thirdQueued, "并发上限 2：第三个任务应排队")
+
+        await gate.open()
+        let _: Void? = try? await runner.waitForResult(jobId: j1.id, timeoutMs: 3_000)
+        let _: Void? = try? await runner.waitForResult(jobId: j2.id, timeoutMs: 3_000)
+        let _: Void? = try? await runner.waitForResult(jobId: j3.id, timeoutMs: 3_000)
+        let finalPeak = await probe.maxRunning()
+        #expect(finalPeak == 2, "全程并发峰值应为 2，实际 \(finalPeak)")
+        await runner.stop()
+    }
+
+    @Test func stoppedRunnerDoesNotDrain() async throws {
+        let env = try await makeEnv()
+        let runner = env.runner
+        let executed = CounterActor()
+        await runner.registerExecutor(type: .checksumBackfill) { _, _ in
+            await executed.increment()
+            return nil
+        }
+        // 未 start()：create 不得触发 drain（旧 JobService.stopped 语义）。
+        let job = try await runner.create(makeParams(type: .checksumBackfill))
+        try await Task.sleep(for: .milliseconds(200))
+        let executions = await executed.value()
+        #expect(executions == 0, "未 start() 不得执行任何作业")
+        let status = try await env.store.get(job.id)?.status
+        #expect(status == .queued)
+        await runner.stop()
+    }
+
+    @Test func claimFailureDoesNotOverwriteQueuedCancellationResult() async throws {
+        let env = try await makeEnv()
+        let runner = env.runner
+        await runner.registerExecutor(type: .duplicateScan) { _, _ in nil }
+
+        // 排队任务取消：cancel 同步登记 JobCancelledError。
+        let job = try await runner.create(makeParams(type: .duplicateScan))
+        #expect(try await runner.cancel(job.id))
+        // drain 的 claim 失败分支：任务在 list 快照与 claim 之间被取消。
+        await runner.handleClaimFailure(
+            id: job.id, error: JobRunnerError.notClaimable(job.id))
+
+        do {
+            let _: String? = try await runner.waitForResult(jobId: job.id, timeoutMs: 500)
+            Issue.record("应抛 JobCancelledError 而非 notClaimable")
+        } catch is JobCancelledError {
+            // 预期
+        } catch {
+            Issue.record("错误类型漂移：收到 \(error)")
+        }
+
+        // 对照组：无已登记结果时 claim 失败照常分发 notClaimable。
+        let other = try await runner.create(makeParams(type: .duplicateScan, scopeId: "s2"))
+        await runner.handleClaimFailure(
+            id: other.id, error: JobRunnerError.notClaimable(other.id))
+        do {
+            let _: String? = try await runner.waitForResult(jobId: other.id, timeoutMs: 500)
+            Issue.record("应抛 notClaimable")
+        } catch let error as JobRunnerError {
+            #expect(error == .notClaimable(other.id))
+        }
+        await runner.stop()
+    }
+
+    @Test func waitForResultHandlesPersistedFailedTerminalState() async throws {
+        let env = try await makeEnv()
+        let runner = env.runner
+        let job = try await env.store.create(makeParams(type: .qualityScore))
+        _ = try await env.store.claim(id: job.id, leaseOwner: "test-owner")
+        _ = try await env.store.finish(
+            id: job.id, leaseOwner: "test-owner", status: .failed,
+            error: ("SCAN_READ_FAILED", "boom"))
+
+        // 失败终态 → jobFailed（message 即执行器落库的错误消息）。
+        do {
+            let _: String? = try await runner.waitForResult(jobId: job.id, timeoutMs: 500)
+            Issue.record("失败终态应抛 jobFailed")
+        } catch let error as JobRunnerError {
+            #expect(error == .jobFailed(job.id, "boom"))
+            #expect(error.code == "JOB_FAILED")
+        }
+        await runner.stop()
+    }
+
+    @Test func throttlesProgressAndFlushesCheckpoint() async throws {
+        let env = try await makeEnv(progressWriteMs: 250)
+        let runner = env.runner
+        let log = UpdateLog()
+        await runner.setProgressSink { _, update in
+            Task { await log.append(update) }
+        }
+        await runner.registerExecutor(type: .thumbnailBuild) { _, context in
+            // 快速连续 5 次更新：250ms 节流窗口内应合并（期间不逐次落库）。
+            for i in 1...5 {
+                await context.updateProgress(JobProgressUpdate(current: i, total: 10))
+            }
+            await context.updateCheckpoint(["phase": .string("t1")])
+            try await context.throwIfCancelled()
+            return nil
+        }
+        _ = await runner.start()
+
+        let job = try await runner.create(makeParams(type: .thumbnailBuild))
+        let _: Void? = try await runner.waitForResult(jobId: job.id, timeoutMs: 3_000)
+
+        let persisted = try await env.store.get(job.id)
+        #expect(persisted?.progressCurrent == 5)
+        #expect(persisted?.checkpoint["phase"] == .string("t1"))
+        let sawCheckpoint = await waitUntil { await log.containsCheckpointPhase("t1") }
+        #expect(sawCheckpoint, "checkpoint 更新应经 progressSink 发出")
+        let frames = await log.count()
+        #expect(frames <= 7, "节流合并后帧数应少于逐次上报数，实际 \(frames)")
+        await runner.stop()
     }
 }

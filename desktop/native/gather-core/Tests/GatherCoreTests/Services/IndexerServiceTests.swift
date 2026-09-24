@@ -362,12 +362,15 @@ struct CancelledScanIndexSeqTests {
         let job = try await jobStore.create(JobCreateParams(
             type: .metadataScan, scopeType: "session", scopeId: session.id, dedupeKey: "d"
         ))
-        let context = JobRunContext(
+        // JobRunnerContext 直写 Store：先 claim 使进度写成功（旧 JobRunContext
+        // 注入恒真 updateProgress 的等价接线）。
+        _ = try await jobStore.claim(id: job.id, leaseOwner: "test")
+        let context = JobRunnerContext(
             signal: signal,
             jobStore: jobStore,
-            jobId: job.id,
+            job: job,
             leaseOwner: "test",
-            updateProgress: { _, _, _ in true },
+            progressWriteIntervalMs: JobRunner.progressWriteIntervalMs,
             progressSink: nil
         )
 
@@ -726,12 +729,15 @@ struct ChecksumBackfillTests {
             type: .checksumBackfill, scopeType: "session", scopeId: harness.sessionId, dedupeKey: "d"
         ))
         let signal = JobAbortSignal()
-        let context = JobRunContext(
+        // JobRunnerContext 直写 Store：先 claim 使进度写成功（旧 JobRunContext
+        // 注入恒真 updateProgress 的等价接线）。
+        _ = try await jobStore.claim(id: job.id, leaseOwner: "test")
+        let context = JobRunnerContext(
             signal: signal,
             jobStore: jobStore,
-            jobId: job.id,
+            job: job,
             leaseOwner: "test",
-            updateProgress: { _, _, _ in true },
+            progressWriteIntervalMs: JobRunner.progressWriteIntervalMs,
             progressSink: nil
         )
         // 首批哈希期间到达取消（signal.abort）：批仍提交，次趟循环检查抛出。

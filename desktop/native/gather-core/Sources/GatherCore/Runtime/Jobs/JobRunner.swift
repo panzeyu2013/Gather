@@ -1,6 +1,6 @@
 // desktop/native/gather-core/Sources/GatherCore/Runtime/Jobs/JobRunner.swift
 // R3：JobRunner actor —— 取代 Services/JobService.swift + JobScheduler.swift +
-// AnalysisWorker.swift（集成轮同批删除；本轮只新增，不接线、不改旧文件）。
+// AnalysisWorker.swift（W3 切换轮已同批删除旧实现并完成生产/路由接线）。
 //
 // 与旧实现（job.service.ts 移植版）的语义对齐与硬化：
 // - 单注册表：每个 AnalysisJobType 一个 executor；未注册类型 create 即抛
@@ -23,13 +23,55 @@
 // - 崩溃恢复：start() 真正执行 recoverStale + resumeInterrupted 后才 drain，
 //   并返回 JobRunnerStartReport 供宿主/测试核对。
 //
-// 依赖说明（集成轮）：JobAbortSignal / JobCancelledError 目前仍是
-// Services/JobService.swift 的 public 类型（本轮不动旧文件）；删除旧文件时把
-// 这两个声明原样迁入本文件即可，语义不变。
-//
 // 注意：Runtime/ 目录禁止出现 SQL 文本（check-no-legacy.sh 度量）。
 
 import Foundation
+
+// MARK: - 取消原语（W3 自 Services/JobService.swift 原样迁入，零语义变化）
+
+public struct JobCancelledError: Error, Equatable {
+    public init() {}
+}
+
+/// 取消信号（TS AbortSignal 的等价物）。
+public final class JobAbortSignal {
+    private let lock = NSLock()
+    private var _aborted = false
+    private var handlers: [() -> Void] = []
+
+    public var aborted: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _aborted
+    }
+
+    func abort() {
+        lock.lock()
+        guard !_aborted else {
+            lock.unlock()
+            return
+        }
+        _aborted = true
+        let handlers = self.handlers
+        lock.unlock()
+        handlers.forEach { $0() }
+    }
+
+    /// TS AbortSignal.addEventListener（abort 监听；宿主 executor 用于把
+    /// job 取消传播给服务的自持 controller，如 fkw.analyze）。
+    public func addHandler(_ handler: @escaping () -> Void) {
+        // 审计 P1-并发：已 abort 时不得持锁回调（handler 可能反向取锁 →
+        // 非递归锁死锁）。与 abort() 的"拷贝后锁外调用"模式一致。
+        lock.lock()
+        if _aborted {
+            lock.unlock()
+            handler()
+            return
+        }
+        handlers.append(handler)
+        lock.unlock()
+    }
+}
 
 // MARK: - 错误
 
@@ -525,7 +567,10 @@ public actor JobRunner {
         return signal
     }
 
-    private func handleClaimFailure(id: String, error: Error) {
+    /// drain 的 claim 失败分支：无已登记结果时登记 notClaimable。排队取消
+    /// （cancel → completeResultOnce(JobCancelledError)）先到则不覆盖，否则
+    /// 等待者会收到错误类型漂移。internal 供 @testable 确定性驱动该分支。
+    internal func handleClaimFailure(id: String, error: Error) {
         completeResultOnce(id: id, .error(error))
     }
 

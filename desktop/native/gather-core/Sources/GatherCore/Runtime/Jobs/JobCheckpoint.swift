@@ -4,7 +4,7 @@
 // 存储格式不变：checkpoint_json 仍是 JSON 对象（Store 逐字读写），本类型只在
 // 内存侧提供强类型读写：JSONValue 访问器 + Codable 往返 + 覆盖/合并两种写语义。
 // 崩溃恢复：recoverStale/resumeInterrupted 不清 checkpoint 列，重启后的
-// executor 经 JobRunContext.initialCheckpoint / loadCheckpoint() 读回上次值。
+// executor 经 JobRunnerContext.initialCheckpoint / loadCheckpoint() 读回上次值。
 
 import Foundation
 

@@ -189,7 +189,7 @@ public final class IndexerService {
     public func scanSession(
         sessionId: String,
         requestedPaths: [String]? = nil,
-        context: JobRunContext? = nil
+        context: JobRunnerContext? = nil
     ) async throws -> IndexScanResult {
         let session = try await self.sessionStore.get(id: sessionId)
         guard let session else { throw IndexerServiceError.sessionNotFound }
@@ -636,7 +636,7 @@ public final class IndexerService {
     /// 与并发扫描互不覆盖；不可读照片记入 per-job 失败集避免死循环。
     public func backfillChecksums(
         sessionId: String,
-        context: JobRunContext? = nil
+        context: JobRunnerContext? = nil
     ) async throws -> (processed: Int, backfilled: Int, skipped: Int) {
         var processed = 0
         var backfilled = 0

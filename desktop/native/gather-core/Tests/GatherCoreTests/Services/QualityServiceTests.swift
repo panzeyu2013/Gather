@@ -340,17 +340,15 @@ struct QualityAnalyzeTests {
         let job = try await jobStore.create(JobCreateParams(
             type: .qualityScore, scopeType: "session", scopeId: harness.sessionId, dedupeKey: "d"
         ))
-        // 模拟 JobService.execute 的接线：claim 租约 + 真实 updateProgress
+        // 模拟 JobRunnerContext 的接线：claim 租约 + 真实 updateProgress
         // 落库（TS 执行器语义），否则 checkpoint 不会持久化到 analysis_jobs。
         _ = try await jobStore.claim(id: job.id, leaseOwner: "test")
-        let context = JobRunContext(
+        let context = JobRunnerContext(
             signal: JobAbortSignal(),
             jobStore: jobStore,
-            jobId: job.id,
+            job: job,
             leaseOwner: "test",
-            updateProgress: { id, owner, update in
-                try await jobStore.updateProgress(id: id, leaseOwner: owner, update: update)
-            },
+            progressWriteIntervalMs: JobRunner.progressWriteIntervalMs,
             progressSink: nil
         )
 
@@ -379,12 +377,12 @@ struct QualityAnalyzeTests {
         ))
         let signal = JobAbortSignal()
         signal.abort()
-        let context = JobRunContext(
+        let context = JobRunnerContext(
             signal: signal,
             jobStore: jobStore,
-            jobId: job.id,
+            job: job,
             leaseOwner: "test",
-            updateProgress: { _, _, _ in true },
+            progressWriteIntervalMs: JobRunner.progressWriteIntervalMs,
             progressSink: nil
         )
 

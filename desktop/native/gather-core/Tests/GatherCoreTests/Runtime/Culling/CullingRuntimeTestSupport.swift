@@ -190,6 +190,90 @@ final class FakeCullingWritebackPort: CullingWritebackPort {
     }
 }
 
+// MARK: - 并发注入包装（CAS 失败路径的确定性测试）
+
+/// 转发全部 CullingStore 调用，仅在 applyDecisionStates 前执行一次可注入钩子
+/// （模拟「预读之后、CAS 之前」的并发写入者），用于确定性覆盖 CAS 失败/回滚分支。
+/// actor 隔离使其满足 Store 的 Sendable 约束，测试侧无锁、无检查豁免。
+actor RacingCullingStore: CullingStore {
+    private let base: any CullingStore
+    private var beforeApply: (() async -> Void)?
+
+    init(base: any CullingStore) {
+        self.base = base
+    }
+
+    /// 设置一次性钩子（在首次 applyDecisionStates 前执行）。
+    func setBeforeApplyDecisionStates(_ hook: @escaping () async -> Void) {
+        beforeApply = hook
+    }
+
+    func decisions(sessionId: String) async throws -> [CullingDecisionLite] {
+        try await base.decisions(sessionId: sessionId)
+    }
+    func decisionsFull(sessionId: String) async throws -> [CullingDecisionRecord] {
+        try await base.decisionsFull(sessionId: sessionId)
+    }
+    func decision(sessionId: String, photoId: String) async throws -> CullingDecisionRecord? {
+        try await base.decision(sessionId: sessionId, photoId: photoId)
+    }
+    func decisions(sessionId: String, photoIds: [String]) async throws -> [CullingDecisionRecord] {
+        try await base.decisions(sessionId: sessionId, photoIds: photoIds)
+    }
+    func upsertDecision(sessionId: String, photoId: String, groupId: String, decision: String) async throws {
+        try await base.upsertDecision(sessionId: sessionId, photoId: photoId, groupId: groupId, decision: decision)
+    }
+    func upsertDecisionState(
+        sessionId: String, photoId: String, groupId: String, state: CullingDecisionState
+    ) async throws {
+        try await base.upsertDecisionState(sessionId: sessionId, photoId: photoId, groupId: groupId, state: state)
+    }
+    func upsertDecisions(sessionId: String, decisions: [CullingDecisionInput]) async throws {
+        try await base.upsertDecisions(sessionId: sessionId, decisions: decisions)
+    }
+    func decisionsByResultPrefix(sessionId: String, resultId: Int64) async throws -> [CullingDecisionLite] {
+        try await base.decisionsByResultPrefix(sessionId: sessionId, resultId: resultId)
+    }
+    func decisionCountsByResultPrefix(sessionId: String, resultId: Int64) async throws -> [CullingDecisionCount] {
+        try await base.decisionCountsByResultPrefix(sessionId: sessionId, resultId: resultId)
+    }
+    func decisionCounts(sessionId: String) async throws -> [CullingDecisionCount] {
+        try await base.decisionCounts(sessionId: sessionId)
+    }
+    func deleteDecisions(sessionId: String) async throws {
+        try await base.deleteDecisions(sessionId: sessionId)
+    }
+    func deleteDecisions(sessionId: String, groupId: String) async throws {
+        try await base.deleteDecisions(sessionId: sessionId, groupId: groupId)
+    }
+    func restoreDecisions(_ decisions: [CullingRestoreInput]) async throws {
+        try await base.restoreDecisions(decisions)
+    }
+    func applyDecisionStates(
+        sessionId: String, writes: [CullingDecisionWrite], expectedRevision: Int
+    ) async throws -> Bool {
+        let hook = beforeApply
+        beforeApply = nil
+        if let hook { await hook() }
+        return try await base.applyDecisionStates(
+            sessionId: sessionId, writes: writes, expectedRevision: expectedRevision)
+    }
+    func appendHistory(
+        sessionId: String, entries: [CullingHistoryEntry]
+    ) async throws -> CullingHistoryOperation {
+        try await base.appendHistory(sessionId: sessionId, entries: entries)
+    }
+    func setHistoryUndone(sessionId: String, operationId: Int, undone: Bool) async throws {
+        try await base.setHistoryUndone(sessionId: sessionId, operationId: operationId, undone: undone)
+    }
+    func historyOperation(sessionId: String, operationId: Int) async throws -> CullingHistoryOperation? {
+        try await base.historyOperation(sessionId: sessionId, operationId: operationId)
+    }
+    func historyList(sessionId: String, limit: Int) async throws -> [CullingHistoryOperation] {
+        try await base.historyList(sessionId: sessionId, limit: limit)
+    }
+}
+
 // MARK: - 夹具
 
 struct CullingRuntimeHarness {
@@ -199,7 +283,8 @@ struct CullingRuntimeHarness {
     let cache: CullingSessionCache
     let photoStore: SQLitePhotoStore
     let queryStore: SQLiteCullingQueryStore
-    let cullingStore: SQLiteCullingStore
+    /// 直接构造的 SQLiteCullingStore，或 wrapCullingStore 注入的包装（并发测试）。
+    let cullingStore: any CullingStore
     let metadataStore: SQLiteMetadataStore
     let similarityStore: SQLiteSimilarityStore
     let writebackStore: SQLiteWritebackStore
@@ -221,7 +306,8 @@ struct CullingRuntimeHarness {
 func makeCullingRuntimeHarness(
     writeOutbox: Bool = false,
     history: Bool = true,
-    cache: CullingSessionCache = CullingSessionCache()
+    cache: CullingSessionCache = CullingSessionCache(),
+    wrapCullingStore: (@Sendable (any CullingStore) -> any CullingStore)? = nil
 ) async throws -> CullingRuntimeHarness {
     let db = try await makeMigratedStore(path: storeTempPath("culling-runtime"))
     try await insertSession(db, "session")
@@ -230,7 +316,8 @@ func makeCullingRuntimeHarness(
     let similarityStore = SQLiteSimilarityStore(database: db)
     let writebackStore = SQLiteWritebackStore(database: db)
     let metadataStore = SQLiteMetadataStore(database: db)
-    let cullingStore = SQLiteCullingStore(database: db)
+    let sqliteCullingStore = SQLiteCullingStore(database: db)
+    let cullingStore: any CullingStore = wrapCullingStore?(sqliteCullingStore) ?? sqliteCullingStore
     let faceStore = SQLiteFaceStore(database: db)
     let personStore = SQLitePersonStore(database: db)
     let jobStore = SQLiteJobStore(database: db)
