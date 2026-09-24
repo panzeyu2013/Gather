@@ -44,12 +44,15 @@ public enum MetadataWriterError: Error, Equatable, CustomStringConvertible {
     /// provider 已接线，但提取所需的 photo 路径端口与批量 upsert 属写面
     /// （W4-4/W4-6）；读面不伪造提取结果，同样显式上抛。
     case extractionDeferred(cached: [String: MetadataTags], missingPhotoIds: [String])
+    /// mww4 / W4-4 ①：waitForIdle 在超时窗口内未等到路径结算到 idle。
+    case scheduleTimeout(xmpPath: String, timeoutMs: Int)
 
     /// 已命中的缓存行（显式标记时一并带回，调用方不丢失可用数据）。
     public var cached: [String: MetadataTags] {
         switch self {
         case .providerUnsupported(let cached, _): cached
         case .extractionDeferred(let cached, _): cached
+        case .scheduleTimeout: [:]
         }
     }
 
@@ -58,6 +61,7 @@ public enum MetadataWriterError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .providerUnsupported(_, let missing): missing
         case .extractionDeferred(_, let missing): missing
+        case .scheduleTimeout: []
         }
     }
 
@@ -65,6 +69,7 @@ public enum MetadataWriterError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .providerUnsupported: "METADATA_PROVIDER_UNSUPPORTED"
         case .extractionDeferred: "METADATA_EXTRACTION_DEFERRED"
+        case .scheduleTimeout: "METADATA_SCHEDULE_TIMEOUT"
         }
     }
 }
@@ -127,7 +132,9 @@ public actor MetadataWriter {
     private var entries: [String: ScheduleEntry] = [:]
 
     /// 默认去抖窗口（毫秒）：同路径高频写回在窗口内合并为一次。
-    static let defaultDebounceDelayMs = 200
+    /// 取旧管线 MetadataSyncCoordinator.defaultWriteDebounceMs = 500（TS 设置
+    /// metadata_write_debounce_ms 同值）；设置注入留待写面后续步骤。
+    static let defaultDebounceDelayMs = 500
 
     /// 异步入队（非阻塞）：立即返回，实际登记在 actor 上串行执行。
     public nonisolated func schedule(xmpPath: String) {
@@ -145,12 +152,143 @@ public actor MetadataWriter {
         let ticket = UUID()
         entries[xmpPath] = ScheduleEntry(
             ticket: ticket, generation: generation, phase: .debouncing)
+        // generation +1 立即结算阈值等待者：同路径 100 次 schedule 在此汇合。
+        resumeGenerationWaiters(xmpPath: xmpPath, generation: generation)
         let delay = delayMs ?? Self.defaultDebounceDelayMs
         if delay > 0 {
             try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
         }
         guard entries[xmpPath]?.ticket == ticket else { return }
         entries[xmpPath]?.phase = .queued
+        // W4-4 ① 骨架：就绪队列消费与真实写回落点由后续写面步骤插入；
+        // 骨架期 queued → inFlight → idle 走通相位与唤醒，保证 waitForIdle 可被完整驱动。
+        entries[xmpPath]?.phase = .inFlight
+        settle(xmpPath: xmpPath, ticket: ticket)
+    }
+
+    // MARK: - 等待原语（continuation 唤醒，绝不轮询）
+
+    /// 等待登记：minGeneration == nil 表示等到 idle；否则等到 generation 阈值。
+    private struct Waiter {
+        let id: UUID
+        let minGeneration: UInt64?
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+
+    private var waiters: [String: [Waiter]] = [:]
+
+    /// 等待指定路径结算到 idle；超时抛 MetadataWriterError.scheduleTimeout。
+    /// 挂起 continuation，由 settle 精确唤醒，超时由 expireWaiter 结算，绝不 sleep 轮询。
+    /// 从未排程（无条目）视为本已空闲，立即返回。
+    public func waitForIdle(xmpPath: String, timeoutMs: Int = 5_000) async throws {
+        guard let entry = entries[xmpPath], entry.phase != .idle else { return }
+        try await awaitSatisfied(
+            xmpPath: xmpPath,
+            minGeneration: nil,
+            timeoutMs: timeoutMs
+        ) { _ in
+            guard let current = self.entries[xmpPath] else { return true }
+            return current.phase == .idle
+        }
+    }
+
+    /// 测试汇合原语（internal）：等到 generation 至少达到 minGeneration。
+    /// 非阻塞 schedule 把入队 Task 交给全局执行器，调用方需要确定性汇合点；
+    /// 唤醒同样走 continuation（enqueue 每次 +1 时结算），不轮询。
+    func waitForGeneration(
+        xmpPath: String, minGeneration: UInt64, timeoutMs: Int = 5_000
+    ) async throws {
+        try await awaitSatisfied(
+            xmpPath: xmpPath,
+            minGeneration: minGeneration,
+            timeoutMs: timeoutMs
+        ) { generation in
+            generation >= minGeneration
+        }
+    }
+
+    /// 统一等待入口：先判一次谓词，再登记 continuation 与超时兜底任务。
+    private func awaitSatisfied(
+        xmpPath: String,
+        minGeneration: UInt64?,
+        timeoutMs: Int,
+        isSatisfied: (UInt64) -> Bool
+    ) async throws {
+        if isSatisfied(entries[xmpPath]?.generation ?? 0) { return }
+        guard timeoutMs > 0 else {
+            throw MetadataWriterError.scheduleTimeout(xmpPath: xmpPath, timeoutMs: timeoutMs)
+        }
+        let waiterId = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                waiters[xmpPath, default: []].append(
+                    Waiter(id: waiterId, minGeneration: minGeneration, continuation: continuation))
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                    await self?.expireWaiter(
+                        xmpPath: xmpPath, waiterId: waiterId, timeoutMs: timeoutMs)
+                }
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelWaiter(xmpPath: xmpPath, waiterId: waiterId)
+            }
+        }
+    }
+
+    /// 当前 ticket 完成整个生命周期：inFlight → idle，并唤醒 idle 等待者。
+    private func settle(xmpPath: String, ticket: UUID) {
+        guard entries[xmpPath]?.ticket == ticket else { return }
+        let generation = entries[xmpPath]?.generation ?? 0
+        entries[xmpPath]?.phase = .idle
+        resumeWaiters(xmpPath: xmpPath, generation: generation, includeIdle: true)
+    }
+
+    /// generation +1 后结算阈值等待者（同路径重复调用的确定性汇合点）。
+    private func resumeGenerationWaiters(xmpPath: String, generation: UInt64) {
+        resumeWaiters(xmpPath: xmpPath, generation: generation, includeIdle: false)
+    }
+
+    /// 结算命中等待者；continuation 命中即移除，恰好 resume 一次。
+    private func resumeWaiters(xmpPath: String, generation: UInt64, includeIdle: Bool) {
+        guard let list = waiters[xmpPath] else { return }
+        var pending: [Waiter] = []
+        var resumable: [Waiter] = []
+        for waiter in list {
+            if let threshold = waiter.minGeneration {
+                if generation >= threshold { resumable.append(waiter) } else { pending.append(waiter) }
+            } else if includeIdle {
+                resumable.append(waiter)
+            } else {
+                pending.append(waiter)
+            }
+        }
+        waiters[xmpPath] = pending.isEmpty ? nil : pending
+        for waiter in resumable { waiter.continuation.resume() }
+    }
+
+    private func removeWaiter(xmpPath: String, waiterId: UUID) -> Waiter? {
+        guard var list = waiters[xmpPath],
+              let index = list.firstIndex(where: { $0.id == waiterId }) else { return nil }
+        let removed = list.remove(at: index)
+        waiters[xmpPath] = list.isEmpty ? nil : list
+        return removed
+    }
+
+    private func expireWaiter(xmpPath: String, waiterId: UUID, timeoutMs: Int) {
+        guard let waiter = removeWaiter(xmpPath: xmpPath, waiterId: waiterId) else { return }
+        waiter.continuation.resume(
+            throwing: MetadataWriterError.scheduleTimeout(xmpPath: xmpPath, timeoutMs: timeoutMs))
+    }
+
+    private func cancelWaiter(xmpPath: String, waiterId: UUID) {
+        guard let waiter = removeWaiter(xmpPath: xmpPath, waiterId: waiterId) else { return }
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     /// 测试只读访问器（internal）：排程条目快照，按路径排序，不暴露私有类型。
