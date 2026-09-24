@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Sources/GatherCore/Store/AnalysisRunStore.swift
 // R1：analysis_runs 写路径（INSERT/UPDATE）的 Store 入口。
 //
-// 来源：Services/FaceKwService.swift 的 startAnalysisRun / finalizeAnalysisRun
+// 来源：Services/FaceKeywordingRuntime.swift 的 startAnalysisRun / finalizeAnalysisRun
 // 内联 SQL 逐字下沉（列序/WHERE/参数顺序不变：status 固定 'running'、
 // finished_at 固定空串，started_at/finished_at 取 nowISOString()，插入返回
 // runId）。插入与 lastInsertRowID 读取在同一事务内，与 Store/JobStore.swift

@@ -776,7 +776,7 @@ public func buildSimilarityKeywordPlan(
 }
 
 /// TS: buildFaceKeywordAdditions —— 人脸簇绑定 → 每照片关键词追加。
-/// 实现见 FaceKwService.buildFaceKeywordAdditions（同 TS 源
+/// 实现见 FaceKeywordingRuntime.buildFaceKeywordAdditions（同 TS 源
 /// writeback-planners.ts:48，本文件不重复定义）。
 
 public enum WritebackPlannerError: Error, Equatable, CustomStringConvertible {

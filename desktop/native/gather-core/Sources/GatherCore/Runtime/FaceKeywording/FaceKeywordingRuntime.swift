@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherCore/Runtime/FaceKeywording/FaceKeywordingRuntime.swift
-// W2d-6 收口：FaceKeywordingRuntime actor —— 取代 Services/FaceKwService.swift 的
+// W2d-6 收口：FaceKeywordingRuntime actor —— 取代 Services/FaceKeywordingRuntime.swift 的
 // 编排面（旧服务与旧测试同批迁入本 Runtime 目录；旧服务文件删除）。
 //
 // 边界与结构：
@@ -318,7 +318,7 @@ public func validateFaceClusteringParameters(eps: Double, minPts: Double) throws
     try FaceKeywordAssembler.validateFaceClusteringParameters(eps: eps, minPts: minPts)
 }
 
-/// TS: FaceKwService（desktop/src/main/services/face-kw/face-kw.service.ts）。
+/// TS: FaceKeywordingRuntime（desktop/src/main/services/face-kw/face-kw.service.ts）。
 public actor FaceKeywordingRuntime {
 
     // MARK: - 端口类型

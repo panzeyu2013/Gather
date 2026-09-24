@@ -1,14 +1,14 @@
 // desktop/native/gather-core/Sources/GatherCore/Runtime/FaceKeywording/FaceKwError.swift
 // fkwerr：FaceKeywording 错误类型的归属裁决 —— 属 Runtime 层。
 //
-// 来源：自 Services/FaceKwService.swift 机械搬迁（枚举/描述/错误码映射逐字
+// 来源：自 Services/FaceKeywordingRuntime.swift 机械搬迁（枚举/描述/错误码映射逐字
 // 不变），唯一变化是类型名去掉 Service 后缀改为 FaceKwError，对齐既有先例
 // （Navigation 错误类型搬迁时改为 NavigationError）与 Runtime/{Similarity,
 // Quality,Duplicate,Export}/<Feature>Error.swift 的命名。全仓引用已同步，
 // 不保留兼容别名/双定义。
 //
 // 归属理由：Runtime/FaceKeywording/FaceKeywordAssembler.swift L65/68 是唯一
-// 跨层抛出方（聚类参数校验），Services/FaceKwService.swift 只做透传；Runtime
+// 跨层抛出方（聚类参数校验），Services/FaceKeywordingRuntime.swift 只做透传；Runtime
 // 层必须能独立表达自身错误，且本类型不依赖 Store/SQL/文件系统（仅值类型 +
 // GatherErrorCode 映射，与 QualityError 同形）。
 

@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherApp/Host/FaceKwWritebackBridge.swift
-// FaceKwService 的 FaceWritebackProvider 适配器：把 GatherCore 的 WritebackService
+// FaceKeywordingRuntime 的 FaceWritebackProvider 适配器：把 GatherCore 的 WritebackService
 // （TS writeback.service.ts 移植）接入人脸关键字写回链（fkw.unbind / fkw.preview /
 // fkw.writeback / fkw.confirm_sync / fkw.cleanup）。
 // FaceKw 接缝类型（FaceKwWriteback*）与 WritebackService 类型（Writeback*）字段

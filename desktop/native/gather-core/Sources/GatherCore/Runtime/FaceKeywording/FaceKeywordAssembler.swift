@@ -1,8 +1,8 @@
 // desktop/native/gather-core/Sources/GatherCore/Runtime/FaceKeywording/FaceKeywordAssembler.swift
-// W2d-6 步骤①：FaceKeywording 纯函数层（Services/FaceKwService.swift 的纯逻辑下沉）。
+// W2d-6 步骤①：FaceKeywording 纯函数层（Services/FaceKeywordingRuntime.swift 的纯逻辑下沉）。
 //
 // 来源与边界：
-// - 逐字移植 FaceKwService.swift 中的纯逻辑：聚类参数校验
+// - 逐字移植 FaceKeywordingRuntime.swift 中的纯逻辑：聚类参数校验
 //   （validateFaceClusteringParameters）、聚类入口分片（embeddingEntries 的非零
 //   向量过滤）、聚类结果映射（clusterInputs 的 "Person N" 标签与观察回填）、
 //   集群签名格式（clusterSignature）、角色名归一化（normalizedRoleName）与关键词
@@ -51,7 +51,7 @@ import Foundation
 /// 推理与解码 provider 均不在此文件）。
 public enum FaceKeywordAssembler {
 
-    // MARK: - 常量（旧 FaceKwService.maxPreviewMembers）
+    // MARK: - 常量（旧 FaceKeywordingRuntime.maxPreviewMembers）
 
     /// TS: MAX_PREVIEW_MEMBERS（getClusters 的成员截断窗口）。
     public static let maxPreviewMembers = 4
