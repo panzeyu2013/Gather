@@ -6,3 +6,6 @@ SessionCommandRouter (R5)=17
 Services layer (R2)=4
 StubCommandRouter (R5)=7
 dual-track l10n zhDesc/enDesc (R6)=1
+legacy DBConnection symbols (R1) [待处理]=2
+legacy Repositories path refs (R1) [待处理]=13
+legacy module bridge symbols (R5) [待处理]=6
