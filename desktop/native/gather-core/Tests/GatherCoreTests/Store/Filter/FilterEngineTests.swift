@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Services/FilterEngineTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/Store/Filter/FilterEngineTests.swift
 // FilterEngine 行为测试（Phase 3.6）。
 // TS 源: tests/unit/services/filter/filter-engine.test.ts（regex 拒绝）
 // + filter-engine.ts 行为红线（字段×操作符矩阵 + 特殊字段，逐条对账）。

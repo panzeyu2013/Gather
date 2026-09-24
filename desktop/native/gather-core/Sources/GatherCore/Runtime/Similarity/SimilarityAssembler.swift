@@ -18,7 +18,7 @@
 //   裁决后若改抛错，只需改 build 的 path 解析一处）。
 //
 // 边界：无 IO、无 SQL、无 Store 依赖。仅依赖纯折叠助手 PhotoAssets.collapse
-// （Services/PhotoAssets.swift，同为无状态纯函数）与 Protocol 层 DTO。
+// （Runtime/Support/PhotoAssets.swift，同为无状态纯函数）与 Protocol 层 DTO。
 
 import Foundation
 

@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/PhotoAssets.swift
+// desktop/native/gather-core/Sources/GatherCore/Runtime/Support/PhotoAssets.swift
 // TS 源: desktop/src/main/services/assets/logical-photo-assets.ts（Phase 3.2 移植）
 // 逻辑照片资产：分析与浏览操作的是逻辑资产而非每个物理 RAW/JPEG 变体。
 // 保持导入顺序，组内优先 RAW 成员。

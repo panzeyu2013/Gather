@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/FilterEngine.swift
+// desktop/native/gather-core/Sources/GatherCore/Store/Filter/FilterEngine.swift
 // TS 源: desktop/src/main/services/filter/filter-engine.ts（Phase 3.6 移植）
 //
 // 纯 SQL 生成 + 参数绑定（无 Node 依赖，可独立对账）。

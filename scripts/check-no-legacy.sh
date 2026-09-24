@@ -276,7 +276,9 @@ enforce "no app-level JSONSerialization" 'JSONSerialization'                    
 # 度量已达目标值：超过阈值即 FAIL（不得回退的棘轮）。
 # 收敛后请同步下调此处阈值与 scripts/legacy-baseline.txt。
 enforce_max "Runtime layer SQL statements (R2)" 'SELECT |INSERT INTO |UPDATE .* SET|DELETE FROM '  "$CORE/Sources/GatherCore/Runtime" "*.swift" 0 "-i"
-enforce_max "raw SQL outside Store (R1)"      'connection\.prepare\(|db\.prepare\(|db\.execute\(' "$CORE/Sources/GatherCore/Services" "*.swift" 0
+# R7：Services 层已完全清退（0 文件），原「Services 内不得有裸 SQL」度量随层退役；
+# 以 H1 删除态断言承接（旧层同名目录再现即 FAIL），enforced 计数不变。
+enforce_absent_tree "legacy Services dir must stay absent (R2)" "$CORE/Sources/GatherCore" "Services"
 enforce_max "unchecked Sendable (R1/R2)"      '@unchecked Sendable'                "$CORE/Sources" "*.swift" 5
 enforce_max "batchAsync copies (R2)"          'func batchAsync'                    "$CORE"   "*.swift" 3
 
@@ -293,7 +295,7 @@ enforce_max_occ "batchAsync occurrences (R2)" 'func batchAsync' "$CORE" "*.swift
 # ---------------------------------------------------------------- tracked
 tracked "awaitSync semaphore bridge (R5)"       'awaitSync'                        "$APP"    "*.swift"
 tracked "SessionCommandRouter (R5)"             'SessionCommandRouter'             "$APP"    "*.swift"
-tracked "Services layer (R2)"                   '.'                                "$CORE/Sources/GatherCore/Services" "*.swift"
+# R7：Services 层已完全清退（0 文件），"Services layer (R2)" 度量退役（baseline 两个 key 同步删除）。
 tracked "StubCommandRouter (R5)"                'StubCommandRouter'                "$APP"    "*.swift"
 tracked "dual-track l10n zhDesc/enDesc (R6)"    'zhDesc|enDesc'                    "$APP"    "*.swift"
 # H1 删除态：旧层目录已整树删除，不允许同名目录再现（锚点存在性由函数内断言保证）。
