@@ -11,6 +11,64 @@ private func metadataWriterSafeObject(_ value: String) -> JSONValue {
 /// mwsum / W4-3a：getSummary —— 轻投影 + 分组计数（outboxCounts 为主、逐行过滤兜底），
 /// 语义对齐 Services/MetadataSyncCoordinator.getSummary。
 /// mwstate / W4-3b：getSessionState —— outbox 分组计数 + reload-ack 只读聚合。
+/// W4-3d/W4-6：元数据提取 provider 集合（EXIF 解析 / 尺寸兜底 / 内嵌 XMP 读）。
+/// nil = 宿主未接线：读路径遇未缓存 id 时显式标记 capability=unsupported，
+/// 绝不静默返回空或不完整结果。W4-6 provider 一等注入时迁入 MetadataProviderContract.swift。
+public struct MetadataProviderSet: Sendable {
+    public let exif: (any ExifProvider)?
+    public let dimensions: (any ImageDimensionsProvider)?
+    public let embeddedReader: (any EmbeddedXMPReader)?
+
+    public init(
+        exif: (any ExifProvider)? = nil,
+        dimensions: (any ImageDimensionsProvider)? = nil,
+        embeddedReader: (any EmbeddedXMPReader)? = nil
+    ) {
+        self.exif = exif
+        self.dimensions = dimensions
+        self.embeddedReader = embeddedReader
+    }
+
+    /// 至少一条提取路径已接线；全 nil 等价于未接线（capability=unsupported）。
+    public var isWired: Bool {
+        exif != nil || dimensions != nil || embeddedReader != nil
+    }
+}
+
+/// W4-3d：getMetadata 的显式能力标记错误。
+/// providerSet 未接线时，未缓存 id 无法提取 —— 抛本错误并携带已命中缓存，
+/// 绝不静默返回空字典或只含部分行的字典。
+public enum MetadataWriterError: Error, Equatable, CustomStringConvertible {
+    /// capability=unsupported：无任何提取 provider。
+    case providerUnsupported(cached: [String: MetadataTags], missingPhotoIds: [String])
+    /// provider 已接线，但提取所需的 photo 路径端口与批量 upsert 属写面
+    /// （W4-4/W4-6）；读面不伪造提取结果，同样显式上抛。
+    case extractionDeferred(cached: [String: MetadataTags], missingPhotoIds: [String])
+
+    /// 已命中的缓存行（显式标记时一并带回，调用方不丢失可用数据）。
+    public var cached: [String: MetadataTags] {
+        switch self {
+        case .providerUnsupported(let cached, _): cached
+        case .extractionDeferred(let cached, _): cached
+        }
+    }
+
+    /// 未命中的 photoId（保持请求顺序，含重复项，与旧实现一致）。
+    public var missingPhotoIds: [String] {
+        switch self {
+        case .providerUnsupported(_, let missing): missing
+        case .extractionDeferred(_, let missing): missing
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .providerUnsupported: "METADATA_PROVIDER_UNSUPPORTED"
+        case .extractionDeferred: "METADATA_EXTRACTION_DEFERRED"
+        }
+    }
+}
+
 public actor MetadataWriter {
 
     /// 注入依赖；协议组合可测（测试可传抛错替身）。
@@ -23,17 +81,22 @@ public actor MetadataWriter {
         /// sidecar 读取端口（getConflicts 每冲突行读一次）；缺省 nil = 未接线，
         /// 有冲突行时抛 conflictDetailsUnavailable，绝不伪造「无字段冲突」。
         public let xmpProvider: (any XMPProvider)?
+        /// W4-3d：提取 provider 集合；缺省 nil = 无 provider。
+        /// getMetadata 遇未缓存 id 时显式标记 capability=unsupported，绝不静默返回。
+        public let providerSet: MetadataProviderSet?
 
         public init(
             writebackStore: any WritebackStore,
             metadataStore: any MetadataStore,
             sessionStore: (any SessionStore)? = nil,
-            xmpProvider: (any XMPProvider)? = nil
+            xmpProvider: (any XMPProvider)? = nil,
+            providerSet: MetadataProviderSet? = nil
         ) {
             self.writebackStore = writebackStore
             self.metadataStore = metadataStore
             self.sessionStore = sessionStore
             self.xmpProvider = xmpProvider
+            self.providerSet = providerSet
         }
     }
 
@@ -41,6 +104,24 @@ public actor MetadataWriter {
 
     public init(dependencies: Dependencies) {
         self.dependencies = dependencies
+    }
+
+    /// TS: getMetadata（W4-3d 读路径）—— 缓存轻投影 → 全命中返回 / 有未命中显式标记。
+    /// 与 Services/MetadataService.getMetadata 的有意差异（留后续步骤）：
+    /// ① 指纹失效检查需要 photo 文件路径端口（MetadataWriter 尚未接线，W4-6 补齐）；
+    /// ② 未命中分支的 EXIF/sharp 提取与 upsertMetadataBatch 属写面（W4-4/W4-6），
+    ///    本步只做读路径；未命中绝不静默吞掉，而是抛 MetadataWriterError 显式标记。
+    public func getMetadata(photoIds: [String]) async throws -> [String: MetadataTags] {
+        guard !photoIds.isEmpty else { return [:] }
+        let cached = try await dependencies.metadataStore.metadataBatchLite(photoIds: photoIds)
+        let missingPhotoIds = photoIds.filter { cached[$0] == nil }
+        guard !missingPhotoIds.isEmpty else { return cached }
+        if dependencies.providerSet?.isWired == true {
+            throw MetadataWriterError.extractionDeferred(
+                cached: cached, missingPhotoIds: missingPhotoIds)
+        }
+        throw MetadataWriterError.providerUnsupported(
+            cached: cached, missingPhotoIds: missingPhotoIds)
     }
 
     /// TS: getSummary —— 轻投影 + 分组计数（countBySession 为主，逐行过滤兜底）。
