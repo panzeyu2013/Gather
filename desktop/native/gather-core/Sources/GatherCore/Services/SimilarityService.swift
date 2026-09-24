@@ -64,19 +64,6 @@ extension SimilarityServiceError {
         }
     }
 }
-/// TS: SimilarityResult（相似度结果，非协议类型；sim.result / sim.recluster
-/// 经 IPC 原样序列化 → Codable 合成 key 与 TS 逐字相同）。
-public struct SimilarityResult: Codable, Equatable, Sendable {
-    public let groups: [SimilarityGroup]
-    public let ungrouped: [SimilarityImage]
-    public let stats: SimilarityResultStats
-
-    public init(groups: [SimilarityGroup], ungrouped: [SimilarityImage], stats: SimilarityResultStats) {
-        self.groups = groups
-        self.ungrouped = ungrouped
-        self.stats = stats
-    }
-}
 
 /// 协议枚举 → 聚类引擎枚举（两枚举值集相同，逐值映射）。
 extension HashGroupingMode {

@@ -186,3 +186,17 @@ public struct SimilarityResultStats: Codable, Equatable, Sendable {
         self.precomputed = precomputed
     }
 }
+
+// TS: SimilarityResult（w2cA：自 Services/SimilarityService.swift 逐字搬迁；
+// sim.result / sim.recluster 经 IPC 原样序列化 → Codable 合成 key 与 TS 逐字相同）。
+public struct SimilarityResult: Codable, Equatable, Sendable {
+    public let groups: [SimilarityGroup]
+    public let ungrouped: [SimilarityImage]
+    public let stats: SimilarityResultStats
+
+    public init(groups: [SimilarityGroup], ungrouped: [SimilarityImage], stats: SimilarityResultStats) {
+        self.groups = groups
+        self.ungrouped = ungrouped
+        self.stats = stats
+    }
+}
