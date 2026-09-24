@@ -9,7 +9,7 @@
 // - timePlaceholderUsesFixed24HourFormat：{time} 固定 HH-mm-ss（24h 制）；
 // 另按任务覆盖 scopedPhotos/selectVariants、报告聚合（csvField/mdField/
 // sessionSummary/emptyReport，补充 personReport/keywords/keywordReport）与
-// validate 全部可达错误分支（错误码逐字对应 ExportServiceError.description）。
+// validate 全部可达错误分支（错误码逐字对应 ExportError.description）。
 //
 // 不可达分支说明（报告存疑项）：validate 对 format/variantPolicy 的校验是
 // ExportFormat.allCases.contains(_:)，对任何可由类型系统构造的枚举值恒为真，
@@ -115,22 +115,22 @@ private func csvLogicalRecordCount(_ content: String) -> Int {
     return records
 }
 
-private func validationError(_ options: ExportOptions) -> ExportServiceError? {
+private func validationError(_ options: ExportOptions) -> ExportError? {
     do {
         try ExportAssembler.validate(options)
         return nil
-    } catch let error as ExportServiceError {
+    } catch let error as ExportError {
         return error
     } catch {
         return nil
     }
 }
 
-private func scopedError(_ photos: [PhotoProjection], scope: ExportScope) -> ExportServiceError? {
+private func scopedError(_ photos: [PhotoProjection], scope: ExportScope) -> ExportError? {
     do {
         _ = try ExportAssembler.scopedPhotos(photos, scope: scope)
         return nil
-    } catch let error as ExportServiceError {
+    } catch let error as ExportError {
         return error
     } catch {
         return nil
@@ -391,17 +391,17 @@ struct ExportAssemblerTests {
         try ExportAssembler.assertDestinationPath(root, inside: root)
         try ExportAssembler.assertDestinationPath(sub, inside: root)
         // 兄弟目录/父目录拒绝，错误码逐字。
-        #expect(throws: ExportServiceError.exportPathInvalid) {
+        #expect(throws: ExportError.exportPathInvalid) {
             try ExportAssembler.assertDestinationPath(sibling, inside: root)
         }
-        #expect(throws: ExportServiceError.exportPathInvalid) {
+        #expect(throws: ExportError.exportPathInvalid) {
             try ExportAssembler.assertDestinationPath(tmp, inside: root)
         }
-        #expect(ExportServiceError.exportPathInvalid.description == "EXPORT_PATH_INVALID")
+        #expect(ExportError.exportPathInvalid.description == "EXPORT_PATH_INVALID")
         // 符号链接指向 root 之外时按真实路径判定拒绝。
         let escape = root.appendingPathComponent("escape")
         try fm.createSymbolicLink(at: escape, withDestinationURL: sibling)
-        #expect(throws: ExportServiceError.exportPathInvalid) {
+        #expect(throws: ExportError.exportPathInvalid) {
             try ExportAssembler.assertDestinationPath(escape, inside: root)
         }
     }
@@ -475,7 +475,7 @@ struct ExportAssemblerTests {
         #expect(try! ExportAssembler.scopedPhotos(photos, scope: .session).map(\.id) == ["keep-1", "keep-2"])
         #expect(scopedError(photos, scope: .selected) == .scopeUnsupported)
         #expect(scopedError(photos, scope: .filtered) == .scopeUnsupported)
-        #expect(ExportServiceError.scopeUnsupported.description == "EXPORT_SCOPE_UNSUPPORTED")
+        #expect(ExportError.scopeUnsupported.description == "EXPORT_SCOPE_UNSUPPORTED")
     }
 
     // MARK: - 5) 报告聚合
@@ -595,18 +595,18 @@ struct ExportAssemblerTests {
 
     @Test func validateRejectsDestinationVariantsVerbatim() {
         #expect(validationError(makeOptions(destination: "")) == .destinationInvalid)
-        #expect(ExportServiceError.destinationInvalid.description == "EXPORT_DIR_INVALID")
+        #expect(ExportError.destinationInvalid.description == "EXPORT_DIR_INVALID")
         #expect(validationError(makeOptions(destination: "relative/path")) == .destinationAbsoluteRequired)
-        #expect(ExportServiceError.destinationAbsoluteRequired.description == "EXPORT_DIR_ABSOLUTE_REQUIRED")
+        #expect(ExportError.destinationAbsoluteRequired.description == "EXPORT_DIR_ABSOLUTE_REQUIRED")
         #expect(validationError(makeOptions(destination: "/")) == .destinationRootForbidden)
-        #expect(ExportServiceError.destinationRootForbidden.description == "EXPORT_DIR_ROOT_FORBIDDEN")
+        #expect(ExportError.destinationRootForbidden.description == "EXPORT_DIR_ROOT_FORBIDDEN")
         #expect(validationError(makeOptions()) == nil)
     }
 
     @Test func validateRejectsOriginalTransform() {
         let original = makeOptions(format: .original, maxDimension: 100)
         #expect(validationError(original) == .originalTransformNotAllowed)
-        #expect(ExportServiceError.originalTransformNotAllowed.description == "EXPORT_ORIGINAL_NO_TRANSFORM")
+        #expect(ExportError.originalTransformNotAllowed.description == "EXPORT_ORIGINAL_NO_TRANSFORM")
         #expect(validationError(makeOptions(format: .original, watermark: makeWatermark())) == .originalTransformNotAllowed)
         #expect(validationError(makeOptions(format: .original)) == nil)
         // 非 original 格式允许变换。
@@ -616,10 +616,10 @@ struct ExportAssemblerTests {
 
     @Test func validateRejectsNamingEmptyAndInvalidCharacters() {
         #expect(validationError(makeOptions(pattern: "")) == .namingEmpty)
-        #expect(ExportServiceError.namingEmpty.description == "EXPORT_NAMING_EMPTY")
+        #expect(ExportError.namingEmpty.description == "EXPORT_NAMING_EMPTY")
         #expect(validationError(makeOptions(pattern: "   \n")) == .namingEmpty)
         #expect(validationError(makeOptions(pattern: "a/b")) == .namingInvalidCharacters)
-        #expect(ExportServiceError.namingInvalidCharacters.description == "EXPORT_NAMING_INVALID_CHARS")
+        #expect(ExportError.namingInvalidCharacters.description == "EXPORT_NAMING_INVALID_CHARS")
         #expect(validationError(makeOptions(pattern: "a\\b")) == .namingInvalidCharacters)
         #expect(validationError(makeOptions(pattern: "a\u{0}b")) == .namingInvalidCharacters)
         #expect(validationError(makeOptions(pattern: "{original}")) == nil)
@@ -627,30 +627,30 @@ struct ExportAssemblerTests {
 
     @Test func validateRejectsQualityMaxDimensionAndCounterStart() {
         #expect(validationError(makeOptions(quality: 0.5)) == .qualityInvalid)
-        #expect(ExportServiceError.qualityInvalid.description == "EXPORT_JPEG_QUALITY_INVALID")
+        #expect(ExportError.qualityInvalid.description == "EXPORT_JPEG_QUALITY_INVALID")
         #expect(validationError(makeOptions(quality: 0)) == .qualityInvalid)
         #expect(validationError(makeOptions(quality: 101)) == .qualityInvalid)
         #expect(validationError(makeOptions(quality: 1)) == nil)
         #expect(validationError(makeOptions(quality: 100)) == nil)
         #expect(validationError(makeOptions(maxDimension: 0)) == .maxDimensionInvalid)
-        #expect(ExportServiceError.maxDimensionInvalid.description == "EXPORT_MAX_DIMENSION_INVALID")
+        #expect(ExportError.maxDimensionInvalid.description == "EXPORT_MAX_DIMENSION_INVALID")
         #expect(validationError(makeOptions(maxDimension: 1)) == nil)
         #expect(validationError(makeOptions(counterStart: -1)) == .startIndexInvalid)
-        #expect(ExportServiceError.startIndexInvalid.description == "EXPORT_START_INDEX_INVALID")
+        #expect(ExportError.startIndexInvalid.description == "EXPORT_START_INDEX_INVALID")
         #expect(validationError(makeOptions(counterStart: 0)) == nil)
     }
 
     @Test func validateRejectsWatermarkVariantsVerbatim() {
         #expect(validationError(makeOptions(watermark: makeWatermark(type: .image))) == .watermarkTypeUnsupported)
-        #expect(ExportServiceError.watermarkTypeUnsupported.description == "EXPORT_WATERMARK_TYPE_UNSUPPORTED")
+        #expect(ExportError.watermarkTypeUnsupported.description == "EXPORT_WATERMARK_TYPE_UNSUPPORTED")
         #expect(validationError(makeOptions(watermark: makeWatermark(content: "   "))) == .watermarkTextEmpty)
-        #expect(ExportServiceError.watermarkTextEmpty.description == "EXPORT_WATERMARK_TEXT_EMPTY")
+        #expect(ExportError.watermarkTextEmpty.description == "EXPORT_WATERMARK_TEXT_EMPTY")
         #expect(validationError(makeOptions(watermark: makeWatermark(opacity: -0.1))) == .watermarkOpacityInvalid)
-        #expect(ExportServiceError.watermarkOpacityInvalid.description == "EXPORT_WATERMARK_OPACITY_INVALID")
+        #expect(ExportError.watermarkOpacityInvalid.description == "EXPORT_WATERMARK_OPACITY_INVALID")
         #expect(validationError(makeOptions(watermark: makeWatermark(opacity: 1.5))) == .watermarkOpacityInvalid)
         #expect(validationError(makeOptions(watermark: makeWatermark(opacity: .nan))) == .watermarkOpacityInvalid)
         #expect(validationError(makeOptions(watermark: makeWatermark(fontSize: 0))) == .watermarkFontSizeInvalid)
-        #expect(ExportServiceError.watermarkFontSizeInvalid.description == "EXPORT_WATERMARK_FONT_SIZE_INVALID")
+        #expect(ExportError.watermarkFontSizeInvalid.description == "EXPORT_WATERMARK_FONT_SIZE_INVALID")
         #expect(validationError(makeOptions(watermark: makeWatermark(fontSize: 2000))) == .watermarkFontSizeInvalid)
         #expect(validationError(makeOptions(watermark: makeWatermark(content: "©", opacity: 0.5, fontSize: 24))) == nil)
     }

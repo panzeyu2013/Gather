@@ -123,11 +123,11 @@ public struct SystemExportImageConverter: ExportImageConverter {
                 quality: 1
             )
         } catch {
-            throw ExportServiceError.rawConvertUnsupported
+            throw ExportError.rawConvertUnsupported
         }
         guard let sourceRef = CGImageSourceCreateWithData(decoded.buffer as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(sourceRef, 0, nil) else {
-            throw ExportServiceError.rawConvertUnsupported
+            throw ExportError.rawConvertUnsupported
         }
         let outputImage = try applyingWatermark(image, watermark: options.watermark)
         let type: CFString = options.format == .jpeg ? "public.jpeg" as CFString : "public.tiff" as CFString
@@ -145,15 +145,15 @@ public struct SystemExportImageConverter: ExportImageConverter {
         }
         let destination = URL(fileURLWithPath: destinationPath)
         guard let destinationRef = CGImageDestinationCreateWithURL(destination as CFURL, type, 1, nil) else {
-            throw ExportServiceError.formatUnsupported
+            throw ExportError.formatUnsupported
         }
         CGImageDestinationAddImage(destinationRef, outputImage, properties as CFDictionary)
-        guard CGImageDestinationFinalize(destinationRef) else { throw ExportServiceError.formatUnsupported }
+        guard CGImageDestinationFinalize(destinationRef) else { throw ExportError.formatUnsupported }
 #else
         _ = sourcePath
         _ = destinationPath
         _ = options
-        throw ExportServiceError.formatUnsupported
+        throw ExportError.formatUnsupported
 #endif
     }
 
@@ -167,7 +167,7 @@ public struct SystemExportImageConverter: ExportImageConverter {
             data: nil, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: 0, space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { throw ExportServiceError.formatUnsupported }
+        ) else { throw ExportError.formatUnsupported }
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         context.setAlpha(CGFloat(watermark.opacity))
         context.setFillColor(CGColor(gray: 1, alpha: 1))
@@ -419,11 +419,11 @@ public actor ExportRuntime {
                 onProgress?(NativeExportProgress(
                     sessionId: sessionId, current: completed, total: plans.count,
                     fileName: plan.name, bytesWritten: bytes, status: "done"))
-            } catch ExportServiceError.cancelled {
+            } catch ExportError.cancelled {
                 skipped += 1
             } catch {
                 if created { try? await deps.fileSystem.removeItem(plan.url.path) }
-                let message = error is ExportServiceError ? String(describing: error) : (error as NSError).localizedDescription
+                let message = error is ExportError ? String(describing: error) : (error as NSError).localizedDescription
                 errors.append("\(plan.photo.filename): \(message)")
                 failed += 1
                 completed += 1
@@ -473,13 +473,13 @@ public actor ExportRuntime {
 
     private func assertDestinationOutsideSource(sessionId: String, destination: String) async throws {
         guard let session = try await deps.sessionStore.get(id: sessionId) else {
-            throw ExportServiceError.sessionNotFound
+            throw ExportError.sessionNotFound
         }
         guard !session.sourcePath.isEmpty else { return }
         let dest = ExportAssembler.canonicalPath(destination)
         let source = ExportAssembler.canonicalPath(session.sourcePath)
         if dest == source || ExportAssembler.isPathInside(dest, source) {
-            throw ExportServiceError.destinationInsideSession
+            throw ExportError.destinationInsideSession
         }
     }
 
@@ -505,7 +505,7 @@ public actor ExportRuntime {
         if await deps.fileSystem.exists(destination) {
             let sourceData = try await deps.fileSystem.readData(source)
             let destinationData = try await deps.fileSystem.readData(destination)
-            if sourceData != destinationData { throw ExportServiceError.xmpConflict }
+            if sourceData != destinationData { throw ExportError.xmpConflict }
             return
         }
         try await deps.fileSystem.copyItem(from: source, to: destination)

@@ -54,42 +54,42 @@ public enum ExportAssembler {
 
     /// 逐字移植 ExportService.validate(_:)。
     public static func validate(_ options: ExportOptions) throws {
-        guard !options.destination.isEmpty else { throw ExportServiceError.destinationInvalid }
-        guard options.destination.hasPrefix("/") else { throw ExportServiceError.destinationAbsoluteRequired }
+        guard !options.destination.isEmpty else { throw ExportError.destinationInvalid }
+        guard options.destination.hasPrefix("/") else { throw ExportError.destinationAbsoluteRequired }
         let destination = URL(fileURLWithPath: options.destination).standardizedFileURL.path
-        guard destination != "/" else { throw ExportServiceError.destinationRootForbidden }
-        guard ExportFormat.allCases.contains(options.format) else { throw ExportServiceError.formatInvalid }
+        guard destination != "/" else { throw ExportError.destinationRootForbidden }
+        guard ExportFormat.allCases.contains(options.format) else { throw ExportError.formatInvalid }
         if let policy = options.variantPolicy, !ExportVariantPolicy.allCases.contains(policy) {
-            throw ExportServiceError.variantPolicyInvalid
+            throw ExportError.variantPolicyInvalid
         }
         if options.format == .original, options.maxDimension != nil || options.watermark != nil {
-            throw ExportServiceError.originalTransformNotAllowed
+            throw ExportError.originalTransformNotAllowed
         }
         guard !options.naming.pattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ExportServiceError.namingEmpty
+            throw ExportError.namingEmpty
         }
         if options.naming.pattern.contains("/") || options.naming.pattern.contains("\\") || options.naming.pattern.contains("\0") {
-            throw ExportServiceError.namingInvalidCharacters
+            throw ExportError.namingInvalidCharacters
         }
         if let quality = options.quality, quality.rounded() != quality || quality < 1 || quality > 100 {
-            throw ExportServiceError.qualityInvalid
+            throw ExportError.qualityInvalid
         }
         if let maxDimension = options.maxDimension, maxDimension < 1 {
-            throw ExportServiceError.maxDimensionInvalid
+            throw ExportError.maxDimensionInvalid
         }
         if let start = options.naming.counterStart, start < 0 {
-            throw ExportServiceError.startIndexInvalid
+            throw ExportError.startIndexInvalid
         }
         if let watermark = options.watermark {
-            guard watermark.type == .text else { throw ExportServiceError.watermarkTypeUnsupported }
+            guard watermark.type == .text else { throw ExportError.watermarkTypeUnsupported }
             guard !watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ExportServiceError.watermarkTextEmpty
+                throw ExportError.watermarkTextEmpty
             }
             guard watermark.opacity.isFinite, watermark.opacity >= 0, watermark.opacity <= 1 else {
-                throw ExportServiceError.watermarkOpacityInvalid
+                throw ExportError.watermarkOpacityInvalid
             }
             if let fontSize = watermark.fontSize, !fontSize.isFinite || fontSize < 1 || fontSize > 1000 {
-                throw ExportServiceError.watermarkFontSizeInvalid
+                throw ExportError.watermarkFontSizeInvalid
             }
         }
     }
@@ -98,7 +98,7 @@ public enum ExportAssembler {
 
     /// 逐字移植 filteredPhotos 的会话作用域过滤：scope 非 session 报错，removed 行剔除。
     public static func scopedPhotos(_ photos: [PhotoProjection], scope: ExportScope) throws -> [PhotoProjection] {
-        guard scope == .session else { throw ExportServiceError.scopeUnsupported }
+        guard scope == .session else { throw ExportError.scopeUnsupported }
         return photos.filter { $0.status != "removed" }
     }
 
@@ -208,7 +208,7 @@ public enum ExportAssembler {
     public static func assertDestinationPath(_ url: URL, inside directory: URL) throws {
         let candidate = canonicalPath(url.path)
         let root = canonicalPath(directory.path)
-        guard candidate == root || isPathInside(candidate, root) else { throw ExportServiceError.exportPathInvalid }
+        guard candidate == root || isPathInside(candidate, root) else { throw ExportError.exportPathInvalid }
     }
 
     // MARK: - 报告聚合（旧 ExportService.generateReport / csvField / mdField）
