@@ -3585,7 +3585,7 @@ public final class SessionCommandRouter: CommandRouter {
         if let duplicateError = error as? DuplicateError {
             return duplicateError.description
         }
-        if let faceKwError = error as? FaceKwServiceError { return faceKwError.description }
+        if let faceKwError = error as? FaceKwError { return faceKwError.description }
         if let templateError = error as? TemplateError { return templateError.description }
         if let qualityError = error as? QualityError { return qualityError.description }
         if let indexerError = error as? IndexerServiceError { return indexerError.description }

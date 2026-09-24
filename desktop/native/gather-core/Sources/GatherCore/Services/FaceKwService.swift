@@ -18,7 +18,7 @@
 //   用 POSIX stat + errno 复刻该分支。
 // - 取消语义对齐 SimilarityService：聚类为同步调用，abort 在聚类返回后补查
 //   抛取消（TS worker 可中途拒绝；Swift 更严格，取消不落库）。
-// - analysis_runs.params 经 JSONEncoder 编码，键序不保证与 TS JSON.stringify
+// - 分析 run 的 params 经 JSONEncoder 编码，键序不保证与 TS JSON.stringify
 //   的插入序一致；消费方按 JSON 语义解析。
 // - 写回（fkw.unbind 的 removeOwnedFaceKeywords、fkw.preview / writeback /
 //   confirm_sync / confirm_cleanup / cleanup）经注入的 FaceWritebackProvider
@@ -27,98 +27,6 @@
 // - TS 侧 analyze/错误路径会 invalidateSessionLookup（culling 缓存）；Swift
 //   侧通过原生挑片页面重新加载 session 数据，保持同进程状态一致。
 import Foundation
-
-public enum FaceKwServiceError: Error, Equatable {
-    /// TS: ValidationError('FACE_EPS_INVALID')
-    case epsInvalid
-    /// TS: ValidationError('FACE_MIN_CLUSTER_INVALID')
-    case minClusterInvalid
-    /// TS: Error('FKW_ANALYSIS_RUNNING')
-    case analysisRunning
-    /// TS: NotFoundError('SESSION_NOT_FOUND')
-    case sessionNotFound
-    /// TS: ValidationError('FACE_NO_PHOTOS')
-    case noPhotos
-    /// TS: Error('FACE_WORKERS_INIT_FAILED')
-    case workersInitFailed
-    /// TS: ValidationError('FKW_NO_OBSERVATIONS')
-    case noObservations
-    /// TS: NotFoundError('FKW_CLUSTER_NOT_FOUND')
-    case clusterNotFound
-    /// TS: ValidationError('FKW_CLUSTER_NOT_IN_SESSION')
-    case clusterNotInSession
-    /// TS: NotFoundError('FKW_CLUSTER_MEMBER_NOT_FOUND')
-    case clusterMemberNotFound
-    /// TS: ValidationError('FKW_ROLE_NAME_EMPTY')
-    case roleNameEmpty
-    /// TS: ValidationError('FKW_KEYWORDS_INVALID')
-    case keywordsInvalid
-    /// TS: ValidationError('FACE_SELF_MERGE')
-    case selfMerge
-    /// TS: Error('FKW_UNBIND_CONFIRM_REQUIRED')
-    case unbindConfirmRequired
-    /// TS: Error('WRITEBACK_CONFIRM_REQUIRED')
-    case writebackConfirmRequired
-    /// TS: Error('FKW_ITEMS_INVALID')
-    case itemsInvalid
-    /// TS: Error('FKW_CLEANUP_CONFIRM_REQUIRED')
-    case cleanupConfirmRequired
-    /// 写回 Provider 未注入（迁移接缝，非 TS 错误码；3.4 Wave 接线后不可达）。
-    case writebackProviderMissing
-}
-
-/// TS 错误消息逐字对齐（executor 失败路径经 JobService 以 String(describing:)
-/// 记录为 errorMessage，必须等于 TS error.message）。
-extension FaceKwServiceError: CustomStringConvertible {
-    public var description: String {
-        switch self {
-        case .epsInvalid: "FACE_EPS_INVALID"
-        case .minClusterInvalid: "FACE_MIN_CLUSTER_INVALID"
-        case .analysisRunning: "FKW_ANALYSIS_RUNNING"
-        case .sessionNotFound: "SESSION_NOT_FOUND"
-        case .noPhotos: "FACE_NO_PHOTOS"
-        case .workersInitFailed: "FACE_WORKERS_INIT_FAILED"
-        case .noObservations: "FKW_NO_OBSERVATIONS"
-        case .clusterNotFound: "FKW_CLUSTER_NOT_FOUND"
-        case .clusterNotInSession: "FKW_CLUSTER_NOT_IN_SESSION"
-        case .clusterMemberNotFound: "FKW_CLUSTER_MEMBER_NOT_FOUND"
-        case .roleNameEmpty: "FKW_ROLE_NAME_EMPTY"
-        case .keywordsInvalid: "FKW_KEYWORDS_INVALID"
-        case .selfMerge: "FACE_SELF_MERGE"
-        case .unbindConfirmRequired: "FKW_UNBIND_CONFIRM_REQUIRED"
-        case .writebackConfirmRequired: "WRITEBACK_CONFIRM_REQUIRED"
-        case .itemsInvalid: "FKW_ITEMS_INVALID"
-        case .cleanupConfirmRequired: "FKW_CLEANUP_CONFIRM_REQUIRED"
-        case .writebackProviderMissing: "WRITEBACK_PROVIDER_NOT_INJECTED"
-        }
-    }
-}
-
-/// TS 错误码映射（rawValue 与 TS 错误消息字符串逐字一致，桥接层序列化用）。
-extension FaceKwServiceError {
-    public var gatherCode: GatherErrorCode {
-        switch self {
-        case .epsInvalid: .FACE_EPS_INVALID
-        case .minClusterInvalid: .FACE_MIN_CLUSTER_INVALID
-        case .analysisRunning: .FKW_ANALYSIS_RUNNING
-        case .sessionNotFound: .SESSION_NOT_FOUND
-        case .noPhotos: .FACE_NO_PHOTOS
-        case .workersInitFailed: .FACE_WORKERS_INIT_FAILED
-        case .noObservations: .FKW_NO_OBSERVATIONS
-        case .clusterNotFound: .FKW_CLUSTER_NOT_FOUND
-        case .clusterNotInSession: .FKW_CLUSTER_NOT_IN_SESSION
-        case .clusterMemberNotFound: .FKW_CLUSTER_MEMBER_NOT_FOUND
-        case .roleNameEmpty: .FKW_ROLE_NAME_EMPTY
-        case .keywordsInvalid: .FKW_KEYWORDS_INVALID
-        case .selfMerge: .FACE_SELF_MERGE
-        case .unbindConfirmRequired: .FKW_UNBIND_CONFIRM_REQUIRED
-        case .writebackConfirmRequired: .WRITEBACK_CONFIRM_REQUIRED
-        case .itemsInvalid: .FKW_ITEMS_INVALID
-        case .cleanupConfirmRequired: .FKW_CLEANUP_CONFIRM_REQUIRED
-        case .writebackProviderMissing: .WRITEBACK_OTHER_MODULE_ACTIVE
-        }
-    }
-}
 
 /// TS: FaceAnalysisResult（fkw.analyze 返回；status 为 'done' | 'failed' | 'cancelled'）。
 public struct FaceAnalysisResult: Codable, Equatable, Sendable {
@@ -438,7 +346,8 @@ public final class FaceKwService {
     private let sessionStore: any SessionStore
     private let faceStore: any FaceStore
     private let personStore: any PersonStore
-    private let database: SQLiteDatabase
+    /// R1：analysis_runs 写路径经 Store（SQL 见 Store/AnalysisRunStore.swift）。
+    private let analysisRunStore: any AnalysisRunStore
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
     /// TS: SettingsService.get 注入（onnx_provider 等字符串设置）。
@@ -497,7 +406,7 @@ public final class FaceKwService {
         self.sessionStore = sessionStore
         self.faceStore = faceStore
         self.personStore = personStore
-        self.database = database
+        self.analysisRunStore = SQLiteAnalysisRunStore(database: database)
         self.getNumber = getNumber
         self.getString = getString
         self.decodeProvider = decodeProvider
@@ -521,7 +430,7 @@ public final class FaceKwService {
         let epsValue = eps ?? getNumber("default_eps", 0.6)
         let minPtsValue = minPts ?? getNumber("default_min_samples", 2)
         try validateFaceClusteringParameters(eps: epsValue, minPts: minPtsValue)
-        if controller(for: sessionId) != nil { throw FaceKwServiceError.analysisRunning }
+        if controller(for: sessionId) != nil { throw FaceKwError.analysisRunning }
         let signal = JobAbortSignal()
         registerController(signal, for: sessionId)
 
@@ -541,7 +450,7 @@ public final class FaceKwService {
 
         do {
             guard try await sessionStore.get(id: sessionId) != nil else {
-                throw FaceKwServiceError.sessionNotFound
+                throw FaceKwError.sessionNotFound
             }
             try await sessionStore.updateAnalysisStatus(id: sessionId, status: "running")
             onProgress?(0, 0, "face.init")
@@ -556,7 +465,7 @@ public final class FaceKwService {
             // index_seq 单次 Store 读（旧读事务仅包这一行，无需保留）。
             let indexSeqSnapshot: Int = try await sessionStore.indexSeq(id: sessionId)
             let snapshot: (photos: [PhotoProjection], indexSeq: Int) = (photosSnapshot, indexSeqSnapshot)
-            if snapshot.photos.isEmpty { throw FaceKwServiceError.noPhotos }
+            if snapshot.photos.isEmpty { throw FaceKwError.noPhotos }
             if signal.aborted { throw JobCancelledError() }
             runId = try await startAnalysisRun(
                 sessionId: sessionId,
@@ -694,10 +603,10 @@ public final class FaceKwService {
             // 旧集群与角色绑定刻意保留到新结果就绪（TS 注释 270-272）：失败
             // 的推理不得摧毁用户已绑定的集群与角色名。
             if !photosNeedingAnalysis.isEmpty && inferenceProvider == nil && !Self.visionAvailable {
-                throw FaceKwServiceError.workersInitFailed
+                throw FaceKwError.workersInitFailed
             }
             let provider: FaceInferenceProvider = try inferenceProvider ?? {
-                guard Self.visionAvailable else { throw FaceKwServiceError.workersInitFailed }
+                guard Self.visionAvailable else { throw FaceKwError.workersInitFailed }
                 return Self.makeDefaultProvider(config: inferenceConfig)
             }()
             let decode: DecodeProvider = decodeProvider ?? { path, maxDimension in
@@ -766,7 +675,7 @@ public final class FaceKwService {
                 batchIndices[w] = []
                 let results = try await provider(images, inferenceConfig, signal)
                 guard results.count == indices.count else {
-                    throw FaceKwServiceError.workersInitFailed
+                    throw FaceKwError.workersInitFailed
                 }
                 for b in 0..<indices.count {
                     await applyInferenceResult(index: indices[b], item: results[b])
@@ -854,10 +763,10 @@ public final class FaceKwService {
     public func recluster(sessionId: String, eps: Double, minPts: Double) async throws {
         try validateFaceClusteringParameters(eps: eps, minPts: minPts)
         guard try await sessionStore.get(id: sessionId) != nil else {
-            throw FaceKwServiceError.sessionNotFound
+            throw FaceKwError.sessionNotFound
         }
         if try await faceStore.observations(sessionId: sessionId).isEmpty {
-            throw FaceKwServiceError.noObservations
+            throw FaceKwError.noObservations
         }
         let photos = PhotoAssets.collapse(try await photoStore.getBySessionProjection(sessionId: sessionId))
         try await clusterStoredObservations(
@@ -905,10 +814,10 @@ public final class FaceKwService {
     /// TS: bindCluster（fkw.bind）。绑定后把角色桥接进人物库（best-effort）。
     public func bindCluster(sessionId: String, clusterId: Int64, roleName: String, keywords: [String]) async throws {
         let clusterSessionId = try await faceStore.clusterSessionId(clusterId: clusterId)
-        guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
-        if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
+        guard let clusterSessionId else { throw FaceKwError.clusterNotFound }
+        if clusterSessionId != sessionId { throw FaceKwError.clusterNotInSession }
         let normalizedRoleName = FaceKeywordAssembler.normalizedRoleName(roleName)
-        if normalizedRoleName.isEmpty { throw FaceKwServiceError.roleNameEmpty }
+        if normalizedRoleName.isEmpty { throw FaceKwError.roleNameEmpty }
         // TS 的 FKW_KEYWORDS_INVALID（Array.isArray / typeof === 'string' 校验）
         // 属 JSON 契约层职责；Swift 参数类型已强约束，此处不做重复校验。
         let dedupedKeywords = FaceKeywordAssembler.deduplicatedKeywords(keywords)
@@ -933,8 +842,8 @@ public final class FaceKwService {
     /// TS: unbindCluster（fkw.unbind 的服务层步骤；解除绑定并重算人物库）。
     public func unbindCluster(sessionId: String, clusterId: Int64) async throws {
         let clusterSessionId = try await faceStore.clusterSessionId(clusterId: clusterId)
-        guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
-        if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
+        guard let clusterSessionId else { throw FaceKwError.clusterNotFound }
+        if clusterSessionId != sessionId { throw FaceKwError.clusterNotInSession }
         try await faceStore.deleteBinding(clusterId: clusterId)
         // 不再被角色绑定覆盖的照片从人物库摘除。Best-effort。
         do {
@@ -947,13 +856,13 @@ public final class FaceKwService {
     /// TS: face-kw.ipc.ts fkw.unbind 全流程：确认 → 受保护关键字过滤 →
     /// removeOwnedFaceKeywords（写回）→ unbindCluster。
     public func unbind(sessionId: String, clusterId: Int64, confirmed: Bool) async throws -> FkwUnbindResult {
-        guard confirmed else { throw FaceKwServiceError.unbindConfirmRequired }
-        guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
+        guard confirmed else { throw FaceKwError.unbindConfirmRequired }
+        guard let writebackProvider else { throw FaceKwError.writebackProviderMissing }
         // getClusters(includeMembers=true) 是一次昂贵的批量读；结果同时用于
         // 目标查找与剩余已绑定集群的扫描（TS 注释 133-135）。
         let clusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: true)
         guard let cluster = clusters.first(where: { $0.id == clusterId }) else {
-            throw FaceKwServiceError.clusterNotFound
+            throw FaceKwError.clusterNotFound
         }
         var protectedByPath: [String: Set<String>] = [:]
         for remaining in clusters {
@@ -984,12 +893,12 @@ public final class FaceKwService {
 
     /// TS: mergeClusters（fkw.merge）。
     public func mergeClusters(sessionId: String, sourceId: Int64, targetId: Int64) async throws {
-        if sourceId == targetId { throw FaceKwServiceError.selfMerge }
+        if sourceId == targetId { throw FaceKwError.selfMerge }
         let sourceSessionId = try await faceStore.clusterSessionId(clusterId: sourceId)
         let targetSessionId = try await faceStore.clusterSessionId(clusterId: targetId)
-        guard let sourceSessionId, let targetSessionId else { throw FaceKwServiceError.clusterNotFound }
+        guard let sourceSessionId, let targetSessionId else { throw FaceKwError.clusterNotFound }
         if sourceSessionId != sessionId || targetSessionId != sessionId {
-            throw FaceKwServiceError.clusterNotInSession
+            throw FaceKwError.clusterNotInSession
         }
         try await faceStore.mergeClusters(sourceId: sourceId, targetId: targetId)
         // 移入目标集群的照片归属目标角色；源角色失去它们。Best-effort。
@@ -1003,10 +912,10 @@ public final class FaceKwService {
     /// TS: removeMember（fkw.remove_member）。
     public func removeMember(sessionId: String, clusterId: Int64, memberId: Int64) async throws {
         let clusterSessionId = try await faceStore.clusterSessionId(clusterId: clusterId)
-        guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
-        if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
+        guard let clusterSessionId else { throw FaceKwError.clusterNotFound }
+        if clusterSessionId != sessionId { throw FaceKwError.clusterNotInSession }
         if !(try await faceStore.removeMemberFromCluster(clusterId: clusterId, memberId: memberId)) {
-            throw FaceKwServiceError.clusterMemberNotFound
+            throw FaceKwError.clusterMemberNotFound
         }
         // 被移除成员的照片不再被该集群的角色绑定覆盖。Best-effort。
         do {
@@ -1028,7 +937,7 @@ public final class FaceKwService {
         sessionId: String,
         options: FaceKwWritebackOptions?
     ) async throws -> FaceKwWritebackPreview {
-        guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
+        guard let writebackProvider else { throw FaceKwError.writebackProviderMissing }
         let clusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: true)
         let additions = FaceKeywordAssembler.buildFaceKeywordAdditions(clusters)
         let boundPhotoIds = Set(additions.keys)
@@ -1046,8 +955,8 @@ public final class FaceKwService {
         confirmed: Bool,
         items: [FaceKwWritebackItem]?
     ) async throws -> FaceKwWritebackResult {
-        guard confirmed else { throw FaceKwServiceError.writebackConfirmRequired }
-        guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
+        guard confirmed else { throw FaceKwError.writebackConfirmRequired }
+        guard let writebackProvider else { throw FaceKwError.writebackProviderMissing }
         // TS 的 FKW_ITEMS_INVALID（Array.isArray 校验）属 JSON 契约层职责；
         // Swift 参数类型已强约束（nil 等价 TS 的 `params.items ?? []`）。
         let resolved = items ?? []
@@ -1056,15 +965,15 @@ public final class FaceKwService {
 
     /// TS: face-kw.ipc.ts fkw.confirm_sync（返回 ok(true)）。
     public func confirmSync(sessionId: String) async throws -> Bool {
-        guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
+        guard let writebackProvider else { throw FaceKwError.writebackProviderMissing }
         try await writebackProvider.confirmSync(sessionId: sessionId)
         return true
     }
 
     /// TS: face-kw.ipc.ts fkw.confirm_cleanup / fkw.cleanup。
     public func cleanup(sessionId: String, confirmed: Bool) async throws -> FaceKwCleanupResult {
-        guard confirmed else { throw FaceKwServiceError.cleanupConfirmRequired }
-        guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
+        guard confirmed else { throw FaceKwError.cleanupConfirmRequired }
+        guard let writebackProvider else { throw FaceKwError.writebackProviderMissing }
         return try await writebackProvider.cleanup(sessionId: sessionId)
     }
 
@@ -1139,7 +1048,8 @@ public final class FaceKwService {
         }
     }
 
-    /// TS: startAnalysisRun。
+    /// TS: startAnalysisRun —— 仅做 params 编码；INSERT 经 Store（R1：SQL 见
+    /// Store/AnalysisRunStore.swift）。
     private func startAnalysisRun(
         sessionId: String,
         kind: String,
@@ -1148,24 +1058,20 @@ public final class FaceKwService {
         params: FaceRunParams
     ) async throws -> Int64 {
         let data = try JSONEncoder().encode(params)
-        _ = try await database.run("""
-            INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
-            VALUES (?, ?, ?, ?, ?, '', ?, 'running')
-          """, [
-            .text(sessionId), .text(kind), .int(Int64(photoCount)), .int(Int64(indexSeq)),
-            .text(nowISOString()), .text(String(data: data, encoding: .utf8) ?? "{}"),
-        ])
-        return await database.lastInsertRowID
+        return try await analysisRunStore.insertAnalysisRun(AnalysisRunInsert(
+            sessionId: sessionId,
+            kind: kind,
+            photoCount: photoCount,
+            indexSeq: indexSeq,
+            params: String(data: data, encoding: .utf8) ?? "{}"
+        ))
     }
 
     // 取消的 run 在此以 'failed' 终态（sessions.analysis_status 在 catch 写
     // 'cancelled'）：run 记录按设计只区分 ok/failed，该分歧是刻意的（TS 注释
     // 603-606；过期检测 1.4.2 一律忽略非 ok run）。
     private func finalizeAnalysisRun(runId: Int64, status: String) async throws {
-        _ = try await database.run(
-            "UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?",
-            [.text(status), .text(nowISOString()), .int(runId)]
-        )
+        try await analysisRunStore.finishAnalysisRun(runId: runId, status: status)
     }
 
     /// TS: analysisSignature 构造（face-kw.service.ts:139-158）。键序与 TS
@@ -1284,7 +1190,7 @@ public final class FaceKwService {
 
 // MARK: - 私有载荷类型
 
-/// TS: analysis_runs.params（face run）。
+/// TS: 分析 run 的 params（face run）。
 private struct FaceRunParams: Codable {
     let detectorPath: String
     let encoderPath: String

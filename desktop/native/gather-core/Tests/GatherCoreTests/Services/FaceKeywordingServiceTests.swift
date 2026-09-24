@@ -226,7 +226,7 @@ struct FaceClusteringParameterTests {
         (0.6, 1.5),
     ])
     func rejectsInvalid(_ pair: (eps: Double, minPts: Double)) throws {
-        #expect(throws: FaceKwServiceError.self) {
+        #expect(throws: FaceKwError.self) {
             try validateFaceClusteringParameters(eps: pair.eps, minPts: pair.minPts)
         }
     }
@@ -348,7 +348,7 @@ struct FaceKwAnalyzeFlowTests {
         let probe = LockedFlag()
         let harness = try await makeFaceKwHarness(inference: { images, _, _ in
             probe.set()
-            throw FaceKwServiceError.analysisRunning
+            throw FaceKwError.analysisRunning
         })
         _ = try await harness.faceStore.saveObservations(sessionId: harness.sessionId, observations: [
             FaceObservationInput(
@@ -425,7 +425,7 @@ struct FaceKwAnalyzeFlowTests {
             try? await Task.sleep(for: .milliseconds(20))
         }
 
-        await #expect(throws: FaceKwServiceError.analysisRunning) {
+        await #expect(throws: FaceKwError.analysisRunning) {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
@@ -503,7 +503,7 @@ struct FaceKwAnalyzeFlowTests {
     @Test("throws SESSION_NOT_FOUND for an unknown session")
     func throwsSessionNotFound() async throws {
         let harness = try await makeFaceKwHarness()
-        await #expect(throws: FaceKwServiceError.sessionNotFound) {
+        await #expect(throws: FaceKwError.sessionNotFound) {
             try await harness.service.analyze(
                 sessionId: "missing", detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
@@ -525,7 +525,7 @@ struct FaceKwAnalyzeFlowTests {
             decodeProvider: { _, _ in Data("jpeg".utf8) },
             inferenceProvider: defaultFakeInference()
         )
-        await #expect(throws: FaceKwServiceError.noPhotos) {
+        await #expect(throws: FaceKwError.noPhotos) {
             try await service.analyze(
                 sessionId: session.id, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
@@ -534,11 +534,11 @@ struct FaceKwAnalyzeFlowTests {
     @Test("rejects invalid clustering parameters before anything else")
     func throwsInvalidParameters() async throws {
         let harness = try await makeFaceKwHarness()
-        await #expect(throws: FaceKwServiceError.epsInvalid) {
+        await #expect(throws: FaceKwError.epsInvalid) {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "d", encoderPath: "e", eps: -0.1)
         }
-        await #expect(throws: FaceKwServiceError.minClusterInvalid) {
+        await #expect(throws: FaceKwError.minClusterInvalid) {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "d", encoderPath: "e", minPts: 0)
         }
@@ -748,13 +748,13 @@ struct FaceKwClusterCommandTests {
             personStore: try makeTestPersonStore(),
             database: try SQLiteDatabase(path: dbPath)
         )
-        await await #expect(throws: FaceKwServiceError.clusterNotFound) {
+        await await #expect(throws: FaceKwError.clusterNotFound) {
             try await service.bindCluster(sessionId: sessionA.id, clusterId: 99, roleName: "Alice", keywords: [])
         }
-        await await #expect(throws: FaceKwServiceError.clusterNotInSession) {
+        await await #expect(throws: FaceKwError.clusterNotInSession) {
             try await service.bindCluster(sessionId: sessionB.id, clusterId: 1, roleName: "Alice", keywords: [])
         }
-        await #expect(throws: FaceKwServiceError.roleNameEmpty) {
+        await #expect(throws: FaceKwError.roleNameEmpty) {
             try await service.bindCluster(sessionId: sessionA.id, clusterId: 1, roleName: "   ", keywords: [])
         }
     }
@@ -803,13 +803,13 @@ struct FaceKwClusterCommandTests {
             INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
             VALUES (50, ?, 'x', 0, 'unbound', '', '')
           """, [.text(otherSession.id)])
-        await #expect(throws: FaceKwServiceError.selfMerge) {
+        await #expect(throws: FaceKwError.selfMerge) {
             try await harness.service.mergeClusters(sessionId: harness.sessionId, sourceId: 1, targetId: 1)
         }
-        await #expect(throws: FaceKwServiceError.clusterNotFound) {
+        await #expect(throws: FaceKwError.clusterNotFound) {
             try await harness.service.mergeClusters(sessionId: harness.sessionId, sourceId: 1, targetId: 99)
         }
-        await #expect(throws: FaceKwServiceError.clusterNotInSession) {
+        await #expect(throws: FaceKwError.clusterNotInSession) {
             try await harness.service.mergeClusters(sessionId: harness.sessionId, sourceId: 1, targetId: 50)
         }
     }
@@ -835,10 +835,10 @@ struct FaceKwClusterCommandTests {
         let harness = try await makeFaceKwHarness()
         try await seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
-        await #expect(throws: FaceKwServiceError.clusterNotFound) {
+        await #expect(throws: FaceKwError.clusterNotFound) {
             try await harness.service.removeMember(sessionId: harness.sessionId, clusterId: 99, memberId: 1)
         }
-        await #expect(throws: FaceKwServiceError.clusterMemberNotFound) {
+        await #expect(throws: FaceKwError.clusterMemberNotFound) {
             try await harness.service.removeMember(sessionId: harness.sessionId, clusterId: 1, memberId: 99)
         }
     }
@@ -846,13 +846,13 @@ struct FaceKwClusterCommandTests {
     @Test("recluster validates and requires observations")
     func reclusterErrors() async throws {
         let harness = try await makeFaceKwHarness()
-        await #expect(throws: FaceKwServiceError.epsInvalid) {
+        await #expect(throws: FaceKwError.epsInvalid) {
             try await harness.service.recluster(sessionId: harness.sessionId, eps: 1.5, minPts: 2)
         }
-        await #expect(throws: FaceKwServiceError.sessionNotFound) {
+        await #expect(throws: FaceKwError.sessionNotFound) {
             try await harness.service.recluster(sessionId: "missing", eps: 0.6, minPts: 2)
         }
-        await #expect(throws: FaceKwServiceError.noObservations) {
+        await #expect(throws: FaceKwError.noObservations) {
             try await harness.service.recluster(sessionId: harness.sessionId, eps: 0.6, minPts: 2)
         }
     }
@@ -966,7 +966,7 @@ struct FaceKwWritebackTests {
     func unbindRequiresConfirmation() async throws {
         let writeback = FakeWritebackProvider()
         let harness = try await makeFaceKwHarness(writeback: writeback)
-        await #expect(throws: FaceKwServiceError.unbindConfirmRequired) {
+        await #expect(throws: FaceKwError.unbindConfirmRequired) {
             _ = try await harness.service.unbind(sessionId: harness.sessionId, clusterId: 1, confirmed: false)
         }
     }
@@ -975,7 +975,7 @@ struct FaceKwWritebackTests {
     func unbindClusterNotFound() async throws {
         let writeback = FakeWritebackProvider()
         let harness = try await makeFaceKwHarness(writeback: writeback)
-        await await #expect(throws: FaceKwServiceError.clusterNotFound) {
+        await await #expect(throws: FaceKwError.clusterNotFound) {
             _ = try await harness.service.unbind(sessionId: harness.sessionId, clusterId: 99, confirmed: true)
         }
     }
@@ -1048,7 +1048,7 @@ struct FaceKwWritebackTests {
         let harness = try await makeFaceKwHarness(writeback: writeback)
         let item = makeWritebackItem(photoId: "photo-1")
 
-        await #expect(throws: FaceKwServiceError.writebackConfirmRequired) {
+        await #expect(throws: FaceKwError.writebackConfirmRequired) {
             _ = try await harness.service.writeback(
                 sessionId: harness.sessionId, confirmed: false, items: [item])
         }
@@ -1082,7 +1082,7 @@ struct FaceKwWritebackTests {
         writeback.cleanupResult = FaceKwCleanupResult(deletedCount: 3, errors: [])
         let harness = try await makeFaceKwHarness(writeback: writeback)
 
-        await #expect(throws: FaceKwServiceError.cleanupConfirmRequired) {
+        await #expect(throws: FaceKwError.cleanupConfirmRequired) {
             _ = try await harness.service.cleanup(sessionId: harness.sessionId, confirmed: false)
         }
         let result = try await harness.service.cleanup(sessionId: harness.sessionId, confirmed: true)

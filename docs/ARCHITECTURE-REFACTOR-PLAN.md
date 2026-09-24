@@ -678,7 +678,7 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 | 7 | §15 头部 | 写 `HEAD 41e46ce` | 验收起始快照 `41e46ce`，收尾快照 `a6033e7`（详见各小节） |
 | 8 | tracked 指标 | `legacy AnalysisJobRepo callers (R1) = 1` | 类型现存 `Store/JobStore.swift`（属正常 Store 层，非遗留仓储）；**R8 全量转 enforced 前须裁决该指标是否撤销或改名为 Store 层作业计数** |
 
-**审计正面结论（保留）**：`Legacy*/Compat*/Adapter*` = 0（宽口径与门禁口径一致）；文档中 15 个 commit 号 15/15 均存在于 git；`Services=10` / `enforced=15` / `tracked=6` 三项与门禁实跑一致；`IndexerService` 的 live 外部耦合仅 `IndexerRuntime.swift` 的 `FileStat/defaultStat/sha256File/defaultDimensions` + `Error`；`FaceKwService` 的真实耦合仅 `FaceKeywordAssembler.swift` L65/68 抛 `FaceKwServiceError` —— **删该服务前必须先裁决错误类型归属**（登记为下一批第一优先项）。
+**审计正面结论（保留）**：`Legacy*/Compat*/Adapter*` = 0（宽口径与门禁口径一致）；文档中 15 个 commit 号 15/15 均存在于 git；`Services=10` / `enforced=15` / `tracked=6` 三项与门禁实跑一致；`IndexerService` 的 live 外部耦合仅 `IndexerRuntime.swift` 的 `FileStat/defaultStat/sha256File/defaultDimensions` + `Error`；`FaceKwService` 的真实耦合仅 `FaceKeywordAssembler.swift` L65/68 抛 `FaceKwError`（fkwerr 已完成归属裁决：类型迁至 `Runtime/FaceKeywording/FaceKwError.swift`，`analysis_runs` 写路径下沉 `Store/AnalysisRunStore.swift`）—— **删该服务前必须先裁决错误类型归属**（已完成）。
 | round 11：R8 §16-⑧ 裁决执行——移除失效度量 | 已入库 | acc-legacy 指出 tracked 指标 `legacy AnalysisJobRepo callers (R1)=1` 的类型现存 `Store/JobStore.swift`（**正常 Store 层，非遗留仓储**）。裁决：该指标已不度量遗留残迹，**予以撤销**（从门禁脚本与 baseline 同时删除），避免把正常 Store 层计数当作棘轮。结果：**tracked 6 → 5**，`enforced rules: 15, tracked metrics: 5`，门禁 `legacy boundary check OK`。 |
 ## 17. R7 死码裁决结果（Round 12/40，实测反证）
 

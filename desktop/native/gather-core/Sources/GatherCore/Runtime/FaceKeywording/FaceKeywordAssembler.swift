@@ -15,10 +15,10 @@
 // - 本文件自身不发起 Store/SQL/文件系统操作：输入均为值类型（String/Data/
 //   FaceObservationRecord/FaceAnalysisStateRecord/FaceClusterRecord/
 //   FaceBindingDetail 等值袋），只做集合、字符串与数值运算。唯一例外是
-//   validateFaceClusteringParameters 抛出 Services 层的 FaceKwServiceError
-//   （与 Runtime/Culling/CullingRuntime.swift 引用 CullingServiceError 的既有
-//   分层一致）。模型指纹的文件 stat（modelFingerprint/tsStat）与推理/解码
-//   provider 均留在服务层，本层以注入值接收。
+//   validateFaceClusteringParameters 抛出同层 FaceKwError（fkwerr 起定义在
+//   Runtime/FaceKeywording/FaceKwError.swift；本文件是其唯一跨层抛出方）。
+//   模型指纹的文件 stat（modelFingerprint/tsStat）与推理/解码 provider 均留在
+//   服务层，本层以注入值接收。
 // - 设计文档门禁：Runtime/** 内不得出现 SQL 语句文本或数据库连接类型（本文件
 //   既不 import C SQLite，也不持有连接）。
 //
@@ -62,10 +62,10 @@ public enum FaceKeywordAssembler {
     /// Number.isInteger 校验（拒绝 NaN/∞/小数），通过后调用方再安全转 Int。
     public static func validateFaceClusteringParameters(eps: Double, minPts: Double) throws {
         if eps.isNaN || eps.isInfinite || eps < 0 || eps > 1 {
-            throw FaceKwServiceError.epsInvalid
+            throw FaceKwError.epsInvalid
         }
         if minPts.isNaN || minPts.isInfinite || minPts.rounded() != minPts || minPts < 1 {
-            throw FaceKwServiceError.minClusterInvalid
+            throw FaceKwError.minClusterInvalid
         }
     }
 
