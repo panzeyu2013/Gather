@@ -110,9 +110,11 @@ public actor MetadataSyncRuntime: MetadataSyncPort {
     public let skipReloadAck: Bool
 
     /// TS: eventSink（summary push 回调，宿主组合根接线）。
-    /// actor 隔离：只在 actor 内读；跨边界写入只有 setEventSink（无锁、无拷贝态）。
-    /// 宿主组合根需要在构造后注入 summary 推送回调（路由装配点直接赋值）；
-    /// 亦可经 start(eventSink:) 注入（该 API 会同时启动循环）。
+    /// 读路径：emitSummary 只在 actor 内读该回调。
+    /// 写路径：宿主装配期直接同步赋值（构造后立即完成、此后只读），或经
+    /// setEventSink / start(eventSink:) 注入。
+    /// 注：为兼容宿主既有同步赋值接线，本属性是 nonisolated(unsafe)（登记为
+    /// R4 残余项）；若宿主改走 `await setEventSink`，应收紧回 actor 私有存储。
     nonisolated(unsafe) public var eventSink: (@Sendable (MetadataSyncSummary) -> Void)?
 
     /// TS: timers（Map<xmpPath, Timeout>）→ 可取消 Task。

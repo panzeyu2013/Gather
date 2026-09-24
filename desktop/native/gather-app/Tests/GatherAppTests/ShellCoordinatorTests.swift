@@ -203,8 +203,8 @@ struct ShellCoordinatorTests {
         var similarity: [String] = []
         var settingsCalls = 0
         let navigation = AppNavigationState(
-            onOpenGallery: { gallery.append($0) },
             onOpenSimilarity: { similarity.append($0) },
+            onOpenGallery: { gallery.append($0) },
             onOpenSettings: { settingsCalls += 1 }
         )
         navigation.openGallery("s1")
@@ -493,18 +493,19 @@ struct ShellCoordinatorTests {
 
     @Test("语言切换通知递增壳层语言版本并应用语言")
     func languageChangedBumpsVersionAndAppliesLanguage() async {
-        let original = GatherLocalization.appLanguage
-        defer { GatherLocalization.setAppLanguage(original) }
+        // 用当前语言回放：验证「通知 → setAppLanguage + 版本号递增」链路，
+        // 同时不改写全局语言（并行套件按 appLocale 断言文案，改写会串扰）。
+        let current = GatherLocalization.appLanguage
         let navigation = AppNavigationState()
         let coordinator = Self.makeCoordinator(navigation: navigation)
         coordinator.startObserving()
         defer { coordinator.stopObserving() }
         NotificationCenter.default.post(
             name: GatherAppNotification.languageChanged,
-            object: "en"
+            object: current
         )
         let ok = await waitUntil {
-            coordinator.languageVersion == 1 && GatherLocalization.appLanguage == "en"
+            coordinator.languageVersion == 1 && GatherLocalization.appLanguage == current
         }
         #expect(ok)
     }
