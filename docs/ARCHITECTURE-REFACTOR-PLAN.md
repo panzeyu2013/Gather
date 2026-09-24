@@ -631,3 +631,27 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | round 192：R5 步骤③ 入库（累计 **10/18 域、54 方法**）+ 剩余域精确计数 | 已入库 | 新增 4 域协议：`NavigationCommands`（4：nav.analyze/list/split/merge）· `JobsCommands`（4：jobs.list/cancel/retry/clear_completed）· `WorkspaceCommands`（1：workspace.status）· `FaceCommands`（14：fkw.analyze/cancel_analysis/recluster/clusters/bind/unbind/merge/remove_member/preview/writeback/confirm_sync/confirm_cleanup/cleanup + face.models_status）。**剩余 9 域、57 命令实测计数**：culling 17 · person 8 · metadata 7 · album 6 · template 6 · assets 5 · export 4 · filter 3 · index 1。**路由规模实测**：118 个 case 行、**去重 111 命令**（`fkw.*` 7 条与 `export.preview` 在同步/异步两分支重复出现——正是 R5 要消除的「双分支」）。**已标注待裁决的契约差异（W5-2）**：`fkw.analyze`/`fkw.unbind` 旧返回服务层形状 → 同形状元组；`fkw.recluster` 无 Params DTO → 扁平参数；fkw 写回族收敛为 Protocol 的 `WritebackPreview`/`WritebackResult`/`CleanupResult`；`face.models_status` 旧内联形状与 `FaceModelsStatusData` 字段不同 → 按 Protocol 基线并在注释标注映射；`jobs.list` 的 `status` 过滤是否启用待裁决；`workspace.status` 旧抛 `SESSION_NOT_FOUND` → 改返回非可选。 |
 | round 6（自执行 Round）：R7/R8 出口验收清单（只读盘点） | 已入库 | **剩余 6 条 tracked 度量实测**：
 awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=10**；dual-track l10n=0；AnalysisJobRepo callers=2。 **R7 待裁决**：4 个疑似零调用 Store 方法（updateWritebackStatusByXmpPath / hasActiveWriteback / updateWritebackBackupPath / writebackItem(itemId:)）需按「声明+实现+tests」逐条排除后删除；FaceCluster/BindingData 重复类型合并；FilterEngine/PhotoAssets 归位。 **R8 出口**：6 条 tracked 逐条转 enforced（其中 SessionCommandRouter/awaitSync/StubCommandRouter 将随 R5 归零，Services layer 随 R2/R4 降至 3）→ 全部转 enforced 后 tracked 归零，门禁成为纯棘轮。 |
+
+## 15. 全量验收报告（Round 9–10，多 subagent 交叉核验，HEAD 41e46ce）
+
+### 15.1 acc-gate（门禁与度量，独立复算 + 沙箱突变实验）——通过
+- ./scripts/check-no-legacy.sh exit 0、stderr 0 字节、两次运行输出逐字节一致、无副作用（仅 mktemp + trap 清理）。
+- 15/15 enforced 全绿且阈值全部等于当前实测（5<=5、3<=3 两条紧贴无余量，其余 0<=0）；6/6 tracked 全部等于 baseline 上限（无一条低于上限，与无 note[ratchet] 行互证）；baseline 与脚本 tracked 名称集合 1:1（无 stale/缺 key）。
+- 无掩码/跳过：15 条调用点全部 ACTIVE；无失败掩码、无 CLI 门控、无提前退出；唯一条件跳过（缺 baseline key 时 continue）当前不可达。
+- 沙箱突变反证（仓库未动）：新增 WebKit import → exit 1；batchAsync 4>3 → exit 1；awaitSync 3>2 → LEGACY[ratchet] FAIL；awaitSync 1<2 → 仅提示；干净树 → OK。结论：门禁为纯棘轮（文件计数粒度），数值上零回退空间。
+- 验收方指出的 3 项非数值型限制（登记，供后续加固）：①度量粒度为命中文件数（非出现次数）——文件内增加出现次数不触发；②两条 enforced 规则因 Sources/GatherCore/Database 与 Database/Repositories 目录已不存在而真空通过（旧层若以别名路径回归不会被这两条捕获）；③阈值/baseline 与门禁同仓且无元防护（改高数字即可过，虽在 diff 可见）。
+- 证据留存：gate.stdout/gate.stdout.2（逐字节一致）、gate.stderr、metrics-replay.tsv、sbx/；脚本 sha256 2e6d2148…f22，baseline sha256 164aae10…0d1。
+
+### 15.2 双包全量测试基线（job bash-1088）——与已知 flake 清单一致
+- core：1054 tests / 137 suites，13 issues（MetadataSyncCoordinatorTests、ConcurrentMapTests 的 resultsPreserveInputOrderDespiteOutOfOrderCompletion、DuplicateRuntime 扫描单飞、JobRunner 超时等——均为本 session 已登记的负载/时序型存量 flake，单独 --filter 复跑通过）。
+- app：172 tests / 19 suites，1 issue（applyProgressFrameUpdatesScanSnapshotAndJobRow——已登记的存量 flake，隔离复跑通过）。
+- 判定：无新增失败；全量并跑负载下的 flake 未因本轮改动扩大。
+
+### 15.3 旧实现与死码清查 + 交付判定
+结论：R0–R8 目标尚未达成，Goal 保持 active（不虚报完成）。剩余清单：
+- R2：Services/IndexerService.swift（1106 行）待删——装配切片已给出可行方案（6 处直接切 IndexerRuntime；pendingChecksums 在路由内用 getBySessionProjection + IndexAssembler.needsChecksumBackfill 等价实现；backfillChecksums 的乐观写库事务未迁移，暂留服务实例，登记 idx2b5）；Services/FaceKwService.swift（1293 行）待删（需先迁 Runtime 方法 + analysis_runs 下沉 Store）。
+- R4：吸收 MetadataSyncCoordinator(982)/WritebackService(790)/MetadataService(637)/MetadataMutationService(240)/PhotoAssetResolver(168) → Services 3；写面剩余（5 档退避、设置注入、冲突检测/基线快照、债务 D3）。
+- R5：余 8 域 57 命令协议 + 剪 Host 路由（3800 行）与其 3 项度量归零。
+- R6：会话宿主 + 导航上下文，余 7 项特性，切根视图。
+- R7：4 个疑似零调用 Store 方法逐条排除删除 + FaceCluster/BindingData 合并 + FilterEngine/PhotoAssets 归位。
+- R8：余 6 条 tracked 逐条转 enforced（3 条随 R5 归零、Services layer 随 R2/R4 降至 3），并把 15.1 的 3 项非数值限制纳入加固（改为计数而非文件数、真空规则改为路径无关符号模式、门禁加元防护）。
