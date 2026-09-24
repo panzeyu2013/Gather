@@ -51,6 +51,46 @@ public struct AssetFileScanBaseline: Sendable, Equatable {
     }
 }
 
+/// M2：批级扫描回写条目（对应旧 IndexerService existing 分支的写库参数；
+/// 字段按旧 SQL 用到的列定）。assetFileId 为 nil 表示照片未关联 asset_files 行，
+/// 旧实现此时跳过该照片的全部写。
+public struct AssetFileScanUpdate: Sendable, Equatable {
+    public let assetFileId: String?
+    public let volumeId: String
+    public let fileIdentity: String
+    public let fileSize: Int64
+    public let fileMtimeMs: Double
+    public let checksum: String
+    public let preserveChecksum: Bool
+    public let contentChanged: Bool
+    public let width: Int
+    public let height: Int
+
+    public init(
+        assetFileId: String?,
+        volumeId: String,
+        fileIdentity: String,
+        fileSize: Int64,
+        fileMtimeMs: Double,
+        checksum: String,
+        preserveChecksum: Bool,
+        contentChanged: Bool,
+        width: Int,
+        height: Int
+    ) {
+        self.assetFileId = assetFileId
+        self.volumeId = volumeId
+        self.fileIdentity = fileIdentity
+        self.fileSize = fileSize
+        self.fileMtimeMs = fileMtimeMs
+        self.checksum = checksum
+        self.preserveChecksum = preserveChecksum
+        self.contentChanged = contentChanged
+        self.width = width
+        self.height = height
+    }
+}
+
 public protocol AssetStore: Sendable {
     /// 批量照片的 asset_members 角色映射（photo.id → member_role；未关联为 "unknown"）。
     func memberRoles(sessionId: String, photoIds: [String]) async throws -> [String: String]
@@ -77,7 +117,16 @@ public protocol AssetStore: Sendable {
 
     /// M4：批量把缺失文件的 asset_files 标记为 offline（旧 IndexerService 545-554；
     /// 空参直接返回 0，返回受影响行数）。
-    func markAssetFilesOffline(ids: [String], updatedAt: Double) async throws -> Int
+    /// updatedAt 为 ISO 文本（updated_at 列为 TEXT affinity），绑定时用 .text。
+    func markAssetFilesOffline(ids: [String], updatedAt: String) async throws -> Int
+
+    /// M2：批级扫描回写（旧 IndexerService.swift 371-408；单事务，SQL 逐字搬）。
+    /// 每个 update 对应一条 existing 照片的扫描结果：assetFileId 有值时先 UPDATE
+    /// asset_files 扫描字段；contentChanged 时清扫 asset_analysis 并以 asset_file_id
+    /// 为 WHERE 全量刷新 photos 的 checksum/file_size/mtime/width/height。
+    /// 返回受影响 photoIds（去重，首次出现序——旧实现收集进 Set）。sessionId 为
+    /// 调用侧会话标识；旧 SQL 无会话过滤，故不进入 WHERE。
+    func applyScannedFiles(_ updates: [AssetFileScanUpdate], sessionId: String) async throws -> [String]
 
     // MARK: 回填
 
@@ -554,6 +603,58 @@ public extension SQLiteAssetStore {
         }
     }
 
+    /// M2：批级扫描回写（旧 IndexerService.swift 371-408）。单事务按旧顺序执行，
+    /// SQL 逐字搬（列序/WHERE/参数顺序不变）：asset_files 扫描字段 UPDATE 的
+    /// preserveChecksum CASE、contentChanged 门内的 photos 全量刷新与 analysis 清扫。
+    public func applyScannedFiles(_ updates: [AssetFileScanUpdate], sessionId: String) async throws -> [String] {
+        guard !updates.isEmpty else { return [] }
+        return try await database.transaction { db -> [String] in
+            var affectedPhotoIds: [String] = []
+            var seenPhotoIds = Set<String>()
+            for update in updates {
+                // 旧实现：photos.asset_file_id 为 NULL 时跳过 asset_files 写库分支。
+                guard let assetFileId = update.assetFileId else { continue }
+                let timestamp = nowISOString()
+                _ = try db.run("""
+                    UPDATE asset_files
+                    SET volume_id = ?, file_identity = ?, file_size = ?, file_mtime_ms = ?,
+                        checksum = CASE WHEN ? = 1 THEN checksum ELSE ? END,
+                        online_status = 'online', last_seen_at = ?, updated_at = ?
+                    WHERE id = ?
+                  """, [
+                    .text(update.volumeId), .text(update.fileIdentity), .int(update.fileSize), .real(update.fileMtimeMs),
+                    .int(update.preserveChecksum ? 1 : 0), .text(update.checksum),
+                    .text(timestamp), .text(timestamp), .text(assetFileId),
+                ])
+                if update.contentChanged {
+                    let photoIds = try db.query(
+                        "SELECT id FROM photos WHERE asset_file_id = ?",
+                        [.text(assetFileId)]
+                    ).compactMap { $0.text("id") }
+                    for photoId in photoIds where seenPhotoIds.insert(photoId).inserted {
+                        affectedPhotoIds.append(photoId)
+                    }
+                    // 文件级清扫：先前照片删除留下的孤儿 analysis 行。
+                    _ = try db.run(
+                        "DELETE FROM asset_analysis WHERE asset_file_id = ?",
+                        [.text(assetFileId)]
+                    )
+                    _ = try db.run("""
+                        UPDATE photos
+                        SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
+                            width = ?, height = ?, updated_at = ?
+                        WHERE asset_file_id = ?
+                      """, [
+                        .text(update.checksum), .int(update.fileSize), .real(update.fileMtimeMs),
+                        .int(Int64(update.width)), .int(Int64(update.height)),
+                        .text(timestamp), .text(assetFileId),
+                    ])
+                }
+            }
+            return affectedPhotoIds
+        }
+    }
+
     /// 完全证据（同目录/同基名 + 拍摄时间差 ≤2s + 同机型 + 双方各仅一个候选）才自动合并。
     func reconcileRawJpegLinks(sessionId: String) async throws -> Int64 {
         let candidates = try await database.query(
@@ -645,7 +746,8 @@ public extension SQLiteAssetStore {
     /// M4：SQL 逐字搬自 Services/IndexerService.swift 545-554（UPDATE asset_files
     /// SET online_status='offline', updated_at=? WHERE id IN ...）；批量 IN 分片
     /// 与参数顺序照旧（updatedAt 在前、id 依次在后），返回各分片受影响行数之和。
-    func markAssetFilesOffline(ids: [String], updatedAt: Double) async throws -> Int {
+    /// SQL 不变，仅绑定类型：updated_at 为 TEXT affinity，绑定 ISO 文本。
+    func markAssetFilesOffline(ids: [String], updatedAt: String) async throws -> Int {
         guard !ids.isEmpty else { return 0 }
         var affected = 0
         for chunk in ids.chunked(by: 400) {
@@ -655,7 +757,7 @@ public extension SQLiteAssetStore {
                 UPDATE asset_files SET online_status = 'offline', updated_at = ?
                 WHERE id IN (\(placeholders))
                 """,
-                [.real(updatedAt)] + chunk.map { .text($0) }
+                [.text(updatedAt)] + chunk.map { .text($0) }
             )
         }
         return affected

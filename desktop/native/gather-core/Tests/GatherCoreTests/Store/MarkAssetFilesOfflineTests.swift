@@ -45,14 +45,14 @@ struct MarkAssetFilesOfflineTests {
         defer { removeStoreFiles(path) }
         try await insertAssetFile(database, id: "f1", online: true)
         try await insertAssetFile(database, id: "f2", online: false)
-        let updatedAt: Double = 1_767_225_600_000
+        let updatedAt = "2026-02-01T00:00:00.000Z"
 
         let affected = try await store.markAssetFilesOffline(ids: ["f1"], updatedAt: updatedAt)
         #expect(affected == 1)
 
         let updated = try await fetch(database, id: "f1")
         #expect(updated?.text("online_status") == "offline")
-        #expect(updated?.double("updated_at") == updatedAt)
+        #expect(updated?.text("updated_at") == updatedAt)
 
         let control = try await fetch(database, id: "f2")
         #expect(control?.text("online_status") == "offline")
@@ -66,14 +66,14 @@ struct MarkAssetFilesOfflineTests {
         defer { removeStoreFiles(path) }
         try await insertAssetFile(database, id: "f1", online: true)
         try await insertAssetFile(database, id: "f2", online: false)
-        let updatedAt: Double = 1_767_225_600_001
+        let updatedAt = "2026-02-01T00:00:00.001Z"
 
         let affected = try await store.markAssetFilesOffline(ids: ["f1", "f2"], updatedAt: updatedAt)
         #expect(affected == 2)
 
         let refreshed = try await fetch(database, id: "f2")
         #expect(refreshed?.text("online_status") == "offline")
-        #expect(refreshed?.double("updated_at") == updatedAt)
+        #expect(refreshed?.text("updated_at") == updatedAt)
     }
 
     @Test func emptyIdsReturnsZeroWithoutWrites() async throws {
@@ -81,7 +81,7 @@ struct MarkAssetFilesOfflineTests {
         defer { removeStoreFiles(path) }
         try await insertAssetFile(database, id: "f1", online: true)
 
-        let affected = try await store.markAssetFilesOffline(ids: [], updatedAt: 123)
+        let affected = try await store.markAssetFilesOffline(ids: [], updatedAt: "2026-02-01T00:00:00.002Z")
         #expect(affected == 0)
 
         let row = try await fetch(database, id: "f1")
