@@ -6,4 +6,3 @@ SessionCommandRouter (R5)=17
 Services layer (R2)=10
 StubCommandRouter (R5)=7
 dual-track l10n zhDesc/enDesc (R6)=1
-legacy AnalysisJobRepo callers (R1)=1

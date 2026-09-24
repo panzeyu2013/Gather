@@ -107,7 +107,6 @@ enforce_max "legacy Repositories files (R1)"        '.'  "$CORE/Sources/GatherCo
 enforce_max "legacy Repo test files (R1)"           '.'  "$CORE/Tests/GatherCoreTests/Database" "*.swift" 0
 # 剩余旧 Repo 的调用文件数（R1 收尾排序用：越小越先切）。
 enforce_max "legacy SessionRepo callers (R1)"       'sessionRepo\.'        "$CORE/Sources"   "*.swift" 0
-tracked "legacy AnalysisJobRepo callers (R1)"   'AnalysisJobRepo'       "$CORE/Sources"   "*.swift"
 enforce_max "legacy MetadataOutboxRepo callers"     'outboxRepo\.'         "$CORE/Sources"   "*.swift" 0
 enforce_max "legacy PhotoRepo callers (R1)"         'photoRepo\.'          "$CORE/Sources"   "*.swift" 0
 enforce_max "legacy AssetRepo callers (R1)"         'assetRepo\.'          "$CORE/Sources"   "*.swift" 0
