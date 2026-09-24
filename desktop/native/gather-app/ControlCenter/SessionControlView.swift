@@ -14,7 +14,7 @@ import GatherCore
 @MainActor
 @Observable
 public final class SessionControlViewModel {
-    private let client: NativeCommandClient
+    private let commands: CommandSurface
     public let sessionId: String
     private(set) public var session: SessionData?
     private(set) public var workspaceStatus: WorkspaceStatus?
@@ -34,52 +34,52 @@ public final class SessionControlViewModel {
         return status.stage == .created || status.indexing.status == .active
     }
 
-    public init(sessionId: String, router: CommandRouter) {
+    public init(sessionId: String, commands: CommandSurface) {
         self.sessionId = sessionId
-        self.client = NativeCommandClient(router: router)
+        self.commands = commands
     }
 
     public func load() async {
         isLoading = true
         defer { isLoading = false }
         do {
-            session = try await client.executeAsync("session.get", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: SessionData.self)
-            workspaceStatus = try await client.executeAsync("workspace.status", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: WorkspaceStatus.self)
-            jobs = try await client.executeAsync("jobs.list").decoded(as: [AnalysisJobData].self)
+            session = try await commands.session.get(SessionGetParams(sessionId: sessionId))
+            workspaceStatus = try await commands.workspace.status(WorkspaceStatusParams(sessionId: sessionId))
+            jobs = try await commands.jobs.list(JobListParams())
                 .filter { $0.scopeId == sessionId }
-            syncStatus = try? await client.executeAsync("culling.sync_status", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: MetadataSyncSummary.self)
+            syncStatus = try? await commands.culling.syncStatus(CullingSyncStatusParams(sessionId: sessionId))
             errorMessage = nil
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
     public func scanIndex() async {
-        await enqueue("index.scan", message: GatherLocalization.l("索引扫描已入队"))
+        await enqueue(message: GatherLocalization.l("索引扫描已入队")) {
+            _ = try await self.commands.index.scan(IndexScanParams(sessionId: self.sessionId))
+        }
     }
 
     public func analyzeQuality() async {
-        await enqueue("quality.analyze", message: GatherLocalization.l("技术质量分析已入队"))
+        await enqueue(message: GatherLocalization.l("技术质量分析已入队")) {
+            _ = try await self.commands.quality.analyze(QualityAnalyzeParams(sessionId: self.sessionId))
+        }
     }
 
-    /// 索引失败重试：重新入队 metadata.scan（对齐 TS retryIndex → indexerApi.scan）。
+    /// 索引失败重试：重新入队索引扫描（对齐 TS retryIndex → indexerApi.scan）。
     public func retryIndex() async {
-        await enqueue("index.scan", message: GatherLocalization.l("索引扫描已入队"))
+        await enqueue(message: GatherLocalization.l("索引扫描已入队")) {
+            _ = try await self.commands.index.scan(IndexScanParams(sessionId: self.sessionId))
+        }
     }
 
     public func retry(jobId: String) async {
         do {
-            _ = try await client.executeAsync("jobs.retry", params: ["jobId": .string(jobId)])
+            _ = try await commands.jobs.retry(JobRetryParams(jobId: jobId))
             notice = GatherLocalization.l("已重试任务")
             await load()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -97,11 +97,11 @@ public final class SessionControlViewModel {
         var firstFailure: String?
         for job in failed {
             do {
-                _ = try await client.executeAsync("jobs.retry", params: ["jobId": .string(job.id)])
+                _ = try await commands.jobs.retry(JobRetryParams(jobId: job.id))
                 retried += 1
             } catch {
                 if firstFailure == nil {
-                    firstFailure = NativeCommandClient.message(for: error)
+                    firstFailure = GatherErrorText.message(for: error)
                 }
             }
         }
@@ -114,16 +114,16 @@ public final class SessionControlViewModel {
         }
     }
 
-    private func enqueue(_ command: String, message: String) async {
+    private func enqueue(message: String, _ operation: () async throws -> Void) async {
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }
         do {
-            _ = try await client.executeAsync(command, params: ["sessionId": .string(sessionId)])
+            try await operation()
             notice = message
             await load()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 }
@@ -188,7 +188,7 @@ struct IndexHeaderCopy: Equatable {
 
 public struct SessionControlView: View {
     @State private var viewModel: SessionControlViewModel
-    private let router: CommandRouter
+    private let commands: CommandSurface
     private let onBack: () -> Void
     private let onOpenSimilarity: (String) -> Void
     private let onOpenTab: (String, SessionTab) -> Void
@@ -207,15 +207,15 @@ public struct SessionControlView: View {
 
     init(
         sessionId: String,
-        router: CommandRouter,
+        commands: CommandSurface,
         onBack: @escaping () -> Void = {},
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
         onOpenGallery: @escaping (String) -> Void = { _ in },
         onOpenSettings: @escaping () -> Void = {}
     ) {
-        _viewModel = State(initialValue: SessionControlViewModel(sessionId: sessionId, router: router))
-        self.router = router
+        _viewModel = State(initialValue: SessionControlViewModel(sessionId: sessionId, commands: commands))
+        self.commands = commands
         self.onBack = onBack
         self.onOpenSimilarity = onOpenSimilarity
         self.onOpenTab = onOpenTab
@@ -307,7 +307,7 @@ public struct SessionControlView: View {
                 Spacer()
                 C1StatusCapsuleHost(
                     sessionId: viewModel.sessionId,
-                    router: router,
+                    culling: commands.culling,
                     onOpenSettings: onOpenSettings
                 )
                 Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { Task { await viewModel.load() } }

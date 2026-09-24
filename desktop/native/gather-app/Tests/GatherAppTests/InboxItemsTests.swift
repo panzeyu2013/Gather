@@ -40,7 +40,7 @@ struct InboxItemsTests {
     }
 
     private func items(_ status: WorkspaceStatus, truncated: Bool = false) -> [InboxItem] {
-        SessionControlView(sessionId: "s1", router: StubCommandRouter.empty())
+        SessionControlView(sessionId: "s1", commands: .testEmpty())
             .inboxItems(status, truncatedImport: truncated)
     }
 

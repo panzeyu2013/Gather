@@ -296,8 +296,8 @@
 
 - 挑片刷新仍为整页（500 条/页 + 辅助查询），大库下每次决策有固定成本；接受当前
   规模，若 10 万级滚动出现卡顿再引入局部 patch。
-- 胶囊为进程级单例服务：会话状态在服务端聚合，按 sessionId 分键缓存；路由由首个
-  订阅页面注入（各页共享同一 SessionCommandRouter 实例），一致性由服务端兜底；
+- 胶囊为进程级单例服务：会话状态在服务端聚合，按 sessionId 分键缓存；命令面由首个
+  订阅页面注入（各页共享同一 CommandSurface 实例），一致性由服务端兜底；
   `statuses` 缓存随订阅生命周期刷新，隐藏页不触发任何查询。
 - 轮询档位参数是运维性常量，改档位须同步 Dashboard 与控制中心，避免轮询风暴。
 
@@ -373,8 +373,8 @@
 
 ### 现状
 
-`sim.recluster` 路由直接 `Task { await similarityService.recluster(...) }`
-（`SessionCommandRouter.swift:1731-1760`），不创建 JobService job；recluster
+`sim.recluster` 命令直接调用 `SimilarityRuntime` 的聚类能力（R5 后位于
+`Runtime/Similarity/SimilarityRuntime.swift`），不创建 JobRunner job；recluster
 复用已有 hash（`SimilarityService.swift:572-609`），只做聚类 + 档位预计算，不重算
 哈希。
 

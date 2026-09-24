@@ -122,6 +122,21 @@ scan() {
   return 0
 }
 
+# ------------------------------------------------------- H9 run-internal snapshot
+# 扫描开始/结束各取一次受扫源码指纹；两次不一致说明运行期间源码被并发改写，
+# 本次结果不可采信（fail 而不是静默采信）。
+SOURCE_FINGERPRINT=""
+compute_source_fingerprint() {
+  # 排除 .build：构建产物不是源码，构建期间变化不应触发 H9 误报。
+  SOURCE_FINGERPRINT=$(find "$CORE/Sources" "$CORE/Tests" "$APP" -name '*.swift' -type f \
+      -not -path '*/.build/*' -print0 2>/dev/null \
+    | LC_ALL=C sort -z 2>/dev/null \
+    | xargs -0 shasum 2>/dev/null \
+    | shasum | awk '{print $1}')
+  if [[ -z "$SOURCE_FINGERPRINT" ]]; then SOURCE_FINGERPRINT="EMPTY"; fi
+  return 0
+}
+
 # ---------------------------------------------------------------- rule helpers
 # enforce <name> <pattern> <path> <include-glob> [grep-flags]
 enforce() {
@@ -251,6 +266,9 @@ APP="desktop/native/gather-app"
 CORE="desktop/native/gather-core"
 NATIVE="desktop/native"
 
+compute_source_fingerprint
+FINGERPRINT_AT_START="$SOURCE_FINGERPRINT"
+
 # ---------------------------------------------------------------- enforced
 enforced_rules=$((enforced_rules + 1))
 BANNED_NAME="no Legacy*/Compat*/Adapter* source files"
@@ -274,30 +292,29 @@ enforce "no app-level JSONSerialization" 'JSONSerialization'                    
 
 # --------------------------------------- enforced: threshold ratchet (R8 gate)
 # 度量已达目标值：超过阈值即 FAIL（不得回退的棘轮）。
-# 收敛后请同步下调此处阈值与 scripts/legacy-baseline.txt。
+# R8 收口后全部阈值均为 0（旧层已删除，任何回归立即 FAIL）。
 enforce_max "Runtime layer SQL statements (R2)" 'SELECT |INSERT INTO |UPDATE .* SET|DELETE FROM '  "$CORE/Sources/GatherCore/Runtime" "*.swift" 0 "-i"
 # R7：Services 层已完全清退（0 文件），原「Services 内不得有裸 SQL」度量随层退役；
 # 以 H1 删除态断言承接（旧层同名目录再现即 FAIL），enforced 计数不变。
 enforce_absent_tree "legacy Services dir must stay absent (R2)" "$CORE/Sources/GatherCore" "Services"
-enforce_max "unchecked Sendable (R1/R2)"      '@unchecked Sendable'                "$CORE/Sources" "*.swift" 3
-enforce_max "batchAsync copies (R2)"          'func batchAsync'                    "$CORE"   "*.swift" 2
+enforce_max "unchecked Sendable (R1/R2)"      '@unchecked Sendable'                "$CORE/Sources" "*.swift" 0
+enforce_max "batchAsync copies (R2)"          'func batchAsync'                    "$CORE"   "*.swift" 0
 
 # —— 出现次数粒度棘轮（R8 加固：审计指出的「文件数」粒度空隙）——
-enforce_max_occ "awaitSync occurrences (R5)" 'awaitSync' "$APP" "*.swift" 16
+enforce_max_occ "@unchecked Sendable occurrences (R1/R2)" '@unchecked Sendable' "$CORE/Sources" "*.swift" 0
+enforce_max_occ "batchAsync occurrences (R2)" 'func batchAsync' "$CORE" "*.swift" 0
 
-# —— 路径无关的符号级棘轮（R8 加固：闭合审计限制②"真空通过"）——
-tracked "legacy DBConnection symbols (R1) [待处理]" 'DBConnection' "$CORE/Sources" "*.swift"
-tracked "legacy Repositories path refs (R1) [待处理]" 'Database/Repositories' "$CORE/Sources" "*.swift"
-tracked "legacy module bridge symbols (R5) [待处理]" 'NativeCommandClient' "$APP/Sources" "*.swift"
-enforce_max_occ "@unchecked Sendable occurrences (R1/R2)" '@unchecked Sendable' "$CORE/Sources" "*.swift" 3
-enforce_max_occ "batchAsync occurrences (R2)" 'func batchAsync' "$CORE" "*.swift" 2
-
-# ---------------------------------------------------------------- tracked
-tracked "awaitSync semaphore bridge (R5)"       'awaitSync'                        "$APP"    "*.swift"
-tracked "SessionCommandRouter (R5)"             'SessionCommandRouter'             "$APP"    "*.swift"
-# R7：Services 层已完全清退（0 文件），"Services layer (R2)" 度量退役（baseline 两个 key 同步删除）。
-tracked "StubCommandRouter (R5)"                'StubCommandRouter'                "$APP"    "*.swift"
-tracked "dual-track l10n zhDesc/enDesc (R6)"    'zhDesc|enDesc'                    "$APP"    "*.swift"
+# ------------------------------------------------- R5/R6/R8 清退后转零容忍
+# 旧命令桥（宿主路由 / 测试替身 / 客户端）与双轨本地化已全部删除；
+# 原 tracked 度量归零后转 enforced（出现次数零容忍，等价于文件数零容忍）。
+enforce "awaitSync semaphore bridge (R5)"        'awaitSync'              "$APP"           "*.swift"
+enforce "legacy host router symbols (R5)"        'SessionCommandRouter'   "$APP"           "*.swift"
+enforce "legacy test router stubs (R5)"          'StubCommandRouter'      "$APP"           "*.swift"
+# P1-3（G1）：module bridge 度量作用域从 $APP/Sources 扩到整个 app 包（含包根特性目录与 Tests）。
+enforce "legacy module bridge symbols (R5)"      'NativeCommandClient'    "$APP"           "*.swift"
+enforce "legacy DBConnection symbols (R1)"       'DBConnection'           "$CORE/Sources"  "*.swift"
+enforce "legacy Repositories path refs (R1)"     'Database/Repositories'  "$CORE/Sources"  "*.swift"
+enforce "dual-track l10n zhDesc/enDesc (R6)"     'zhDesc|enDesc'          "$APP"           "*.swift"
 # H1 删除态：旧层目录已整树删除，不允许同名目录再现（锚点存在性由函数内断言保证）。
 enforce_absent_tree "legacy DB layer dir must stay absent (R1)"     "$CORE/Sources/GatherCore" "Database"
 enforce_absent_tree "legacy Repositories dir must stay absent (R1)" "$CORE/Sources/GatherCore" "Repositories"
@@ -345,6 +362,22 @@ else
       fail=1
     fi
   done < "$BASELINE"
+fi
+
+# ---------------------------------------------------------------- self checks
+# H4 部分缓解：enforced 规则条数自检（删规则 / 分支提前退出即 FAIL）。
+EXPECTED_ENFORCED_RULES=24
+if (( enforced_rules != EXPECTED_ENFORCED_RULES )); then
+  echo "LEGACY[gate] enforced 规则条数 $enforced_rules != 预期 $EXPECTED_ENFORCED_RULES（H4：规则被删/未执行）" >&2
+  fail=1
+fi
+
+# H9 部分缓解：受扫源码在本 run 内不得被改写。
+compute_source_fingerprint
+if [[ "$SOURCE_FINGERPRINT" != "$FINGERPRINT_AT_START" ]]; then
+  echo "LEGACY[gate] 受扫源码在本次扫描期间发生变化（H9：TOCTOU 漂移），结果不可采信" >&2
+  echo "  start=$FINGERPRINT_AT_START end=$SOURCE_FINGERPRINT" >&2
+  fail=1
 fi
 
 echo "----"

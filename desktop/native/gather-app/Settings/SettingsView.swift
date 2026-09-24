@@ -12,8 +12,8 @@
 //   进程探测）作为 reachable/appRunning 层，本文件内 osascript 文档探测补
 //   documentOpen/automationAuthorized 层；✓/✗ 徽标、重新检测按钮（检测中禁用）、
 //   挂载时检测一次（对齐 TS checkHealth：仅挂载时 + 手动重检，12s 定时器只
-//   轮询 sync-state）。写回队列 6 格与最近同步时间经 culling.sync_status
-//   （响应含 reloadAckedAt）接线，非占位。
+//   轮询 sync-state）。写回队列 6 格与最近同步时间经类型化 culling.syncStatus
+//   接线（摘要不含 reloadAckedAt），非占位。
 // - 模型路径编辑：detector_model_path/encoder_model_path 可编辑输入框 + 保存后
 //   重查 settings.get_ml_status。
 // - 语言切换：settings.set_language 持久化后本页文案跟随 ui_language，并广播
@@ -22,28 +22,16 @@ import SwiftUI
 import AppKit
 import GatherCore
 
-// MARK: - 页面文案（zh-CN.json settings.* / c1.health.* 键 + 英文对照）
-
-public struct PageCopy {
-    public let zh: String
-    public let en: String
-    public init(zh: String, en: String) {
-        self.zh = zh
-        self.en = en
-    }
-}
-
 // MARK: - 分组设置与滑杆定义（对齐 TS Settings/index.tsx GROUPS / 滑杆段）
 
 public struct SelectOption: Identifiable, Equatable {
     public let value: String
-    public let labelZh: String
-    public let labelEn: String
+    /// 中文源文案（唯一 key；英文经 Localizable.strings 映射，显示一律 GatherLocalization.l）。
+    public let label: String
     public var id: String { value }
-    public init(value: String, labelZh: String, labelEn: String) {
+    public init(value: String, label: String) {
         self.value = value
-        self.labelZh = labelZh
-        self.labelEn = labelEn
+        self.label = label
     }
 }
 
@@ -56,30 +44,27 @@ public enum SettingFieldType: Equatable {
 public struct SettingField: Identifiable {
     public let key: String
     public let type: SettingFieldType
-    public let zhLabel: String
-    public let enLabel: String
-    public let zhDesc: String
-    public let enDesc: String
+    /// 中文源文案（唯一 key；英文经 Localizable.strings 映射）。
+    public let label: String
+    /// 中文源描述（唯一 key；英文经 Localizable.strings 映射）。
+    public let desc: String
     public var id: String { key }
-    public init(key: String, type: SettingFieldType, zhLabel: String, enLabel: String, zhDesc: String, enDesc: String) {
+    public init(key: String, type: SettingFieldType, label: String, desc: String) {
         self.key = key
         self.type = type
-        self.zhLabel = zhLabel
-        self.enLabel = enLabel
-        self.zhDesc = zhDesc
-        self.enDesc = enDesc
+        self.label = label
+        self.desc = desc
     }
 }
 
 public struct SettingGroup: Identifiable {
     public let id: String
-    public let titleZh: String
-    public let titleEn: String
+    /// 中文源标题（唯一 key；英文经 Localizable.strings 映射）。
+    public let title: String
     public let fields: [SettingField]
-    public init(id: String, titleZh: String, titleEn: String, fields: [SettingField]) {
+    public init(id: String, title: String, fields: [SettingField]) {
         self.id = id
-        self.titleZh = titleZh
-        self.titleEn = titleEn
+        self.title = title
         self.fields = fields
     }
 }
@@ -91,29 +76,27 @@ public struct SliderSetting: Identifiable {
     public let step: Double
     public let isInteger: Bool
     public let defaultValue: Double
-    public let zhLabel: String
-    public let enLabel: String
-    public let zhDesc: String
-    public let enDesc: String
+    /// 中文源文案（唯一 key；英文经 Localizable.strings 映射）。
+    public let label: String
+    /// 中文源描述（唯一 key；英文经 Localizable.strings 映射）。
+    public let desc: String
     public var id: String { key }
-    public init(key: String, min: Double, max: Double, step: Double, isInteger: Bool, defaultValue: Double, zhLabel: String, enLabel: String, zhDesc: String, enDesc: String) {
+    public init(key: String, min: Double, max: Double, step: Double, isInteger: Bool, defaultValue: Double, label: String, desc: String) {
         self.key = key
         self.min = min
         self.max = max
         self.step = step
         self.isInteger = isInteger
         self.defaultValue = defaultValue
-        self.zhLabel = zhLabel
-        self.enLabel = enLabel
-        self.zhDesc = zhDesc
-        self.enDesc = enDesc
+        self.label = label
+        self.desc = desc
     }
 }
 
 @MainActor
 @Observable
 public final class SettingsViewModel {
-    private let client: NativeCommandClient
+    private let commands: CommandSurface
     private let captureOne: CaptureOneBridge
     private(set) public var values: [String: String] = [:]
     /// 分组设置行的编辑缓冲（未保存）。
@@ -139,8 +122,8 @@ public final class SettingsViewModel {
     /// sessionStore.currentSessionId 的会话级替代——设置页无当前会话上下文，
     /// 按旧版工作区页面的会话列表取最近会话）；nil = 无工作区。
     public private(set) var syncSessionId: String?
-    /// culling.sync_status 响应中的 reloadAckedAt（旧版 c1:sync-state 载荷字段，
-    /// 对齐 C1HealthPanel 的最近同步时间；原生响应暂无该字段时为 nil）。
+    /// 旧版 c1:sync-state 载荷的 reloadAckedAt（对齐 C1HealthPanel 的最近同步
+    /// 时间）；类型化 sync_status 摘要不含该字段，恒为 nil。
     public private(set) var syncReloadAckedAt: String?
     public private(set) var syncStateError = false
 
@@ -162,23 +145,17 @@ public final class SettingsViewModel {
 
     public private(set) var downloadPhase: ModelDownloadPhase = .idle
 
-    public init(router: CommandRouter) {
-        self.client = NativeCommandClient(router: router)
-        self.captureOne = CaptureOneBridge(router: router)
-    }
-
-    public var isChinese: Bool { language == "zh-CN" }
-
-    public func text(_ copy: PageCopy) -> String {
-        isChinese ? copy.zh : copy.en
+    public init(commands: CommandSurface) {
+        self.commands = commands
+        self.captureOne = CaptureOneBridge()
     }
 
     // MARK: - 数据加载
 
-    public func load() {
+    public func load() async {
         do {
-            values = try client.execute("settings.get_all").decoded(as: [String: String].self)
-            modelStatus = try client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
+            values = try await commands.settings.getAll()
+            modelStatus = try await commands.settings.getMLStatus()
             language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
             backend = values["onnx_provider"] ?? "auto"
             edits = values
@@ -186,7 +163,7 @@ public final class SettingsViewModel {
             reconcileDownloadPhaseWithModelStatus()
             errorMessage = nil
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -209,12 +186,12 @@ public final class SettingsViewModel {
 
     public func setLanguage(_ value: String) async {
         do {
-            _ = try await client.executeAsync("settings.set_language", params: ["language": .string(value)])
+            _ = try await commands.settings.setLanguage(language: value)
             language = value
             values["ui_language"] = value
             notice = value == "en" ? "Language saved" : GatherLocalization.l("语言已保存")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -222,16 +199,13 @@ public final class SettingsViewModel {
 
     public func setBackend(_ value: String) async {
         do {
-            _ = try await client.executeAsync("settings.set", params: [
-                "key": .string("onnx_provider"),
-                "value": .string(value),
-            ])
+            try await commands.settings.set(key: "onnx_provider", value: value)
             backend = value
             values["onnx_provider"] = value
-            modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
+            modelStatus = try? await commands.settings.getMLStatus()
             notice = GatherLocalization.l("推理后端已保存")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -240,7 +214,7 @@ public final class SettingsViewModel {
     public func saveField(_ field: SettingField) async {
         let raw = (edits[field.key] ?? values[field.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
-            errorMessage = String(format: GatherLocalization.l("「%@」不能为空"), field.zhLabel)
+            errorMessage = String(format: GatherLocalization.l("「%@」不能为空"), GatherLocalization.l(field.label))
             return
         }
         switch field.type {
@@ -248,15 +222,15 @@ public final class SettingsViewModel {
             await save(key: field.key, value: raw)
         case .number(let min, let max):
             guard let parsed = Double(raw), parsed.isFinite else {
-                errorMessage = String(format: GatherLocalization.l("「%@」必须是数字"), field.zhLabel)
+                errorMessage = String(format: GatherLocalization.l("「%@」必须是数字"), GatherLocalization.l(field.label))
                 return
             }
             if let min, parsed < min {
-                errorMessage = String(format: GatherLocalization.l("「%@」不能小于 %@"), field.zhLabel, Self.numberText(min))
+                errorMessage = String(format: GatherLocalization.l("「%@」不能小于 %@"), GatherLocalization.l(field.label), Self.numberText(min))
                 return
             }
             if let max, parsed > max {
-                errorMessage = String(format: GatherLocalization.l("「%@」不能大于 %@"), field.zhLabel, Self.numberText(max))
+                errorMessage = String(format: GatherLocalization.l("「%@」不能大于 %@"), GatherLocalization.l(field.label), Self.numberText(max))
                 return
             }
             await save(key: field.key, value: raw)
@@ -294,19 +268,16 @@ public final class SettingsViewModel {
 
     private func save(key: String, value: String) async {
         do {
-            _ = try await client.executeAsync("settings.set", params: [
-                "key": .string(key),
-                "value": .string(value),
-            ])
+            try await commands.settings.set(key: key, value: value)
             values[key] = value
             edits[key] = value
             notice = String(format: GatherLocalization.l("已保存 %@"), key)
             errorMessage = nil
             if key == "detector_model_path" || key == "encoder_model_path" || key == "onnx_provider" {
-                modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
+                modelStatus = try? await commands.settings.getMLStatus()
             }
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -337,15 +308,15 @@ public final class SettingsViewModel {
 
     public func reset() async {
         do {
-            values = try await client.executeAsync("settings.reset").decoded(as: [String: String].self)
+            values = try await commands.settings.reset()
             language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
             backend = values["onnx_provider"] ?? "auto"
             edits = values
             seedSliderValues()
             notice = GatherLocalization.l("设置已恢复默认值")
-            modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
+            modelStatus = try? await commands.settings.getMLStatus()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -470,7 +441,7 @@ public final class SettingsViewModel {
     /// culling.sync_status；无会话时置空（UI 显示「无工作区」）。
     public func refreshSyncState() async {
         do {
-            let sessions = try await client.executeAsync("session.list").decoded(as: [SessionData].self)
+            let sessions = try await commands.session.list()
             guard let session = Self.mostRecentSession(sessions) else {
                 syncSessionId = nil
                 syncStatus = nil
@@ -479,13 +450,12 @@ public final class SettingsViewModel {
                 return
             }
             syncSessionId = session.id
-            let response = try await client.executeAsync("culling.sync_status", params: [
-                "sessionId": .string(session.id),
-            ])
-            syncStatus = try response.decoded(as: MetadataSyncSummary.self)
-            // 旧版 C1HealthPanel 以 c1:sync-state 的 reloadAckedAt 为准；原生
-            // 路由响应若携带该字段则优先使用，缺失时回退 items.updatedAt。
-            syncReloadAckedAt = response.objectValue?["reloadAckedAt"]?.stringValue
+            syncStatus = try await commands.culling.syncStatus(
+                CullingSyncStatusParams(sessionId: session.id))
+            // 类型化 sync_status 摘要（MetadataSyncSummary）不含 reloadAckedAt；
+            // 旧客户端同样从未从该响应读到它，故这里保持 nil，
+            // 「最近同步」时间由 lastSyncDate 回退到 items.updatedAt。
+            syncReloadAckedAt = nil
             syncStateError = false
         } catch {
             syncStateError = true
@@ -559,7 +529,7 @@ public final class SettingsViewModel {
                 self.downloadPhase = .downloading(filename: filename, percent: percent, step: step)
             }
             downloadPhase = .done
-            modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
+            modelStatus = try? await commands.settings.getMLStatus()
             reconcileDownloadPhaseWithModelStatus()
         } catch {
             downloadPhase = .error
@@ -589,18 +559,18 @@ public final class SettingsViewModel {
     public static let generalSliders: [SliderSetting] = [
         SliderSetting(
             key: "detect_confidence", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.5,
-            zhLabel: "检测敏感度", enLabel: "Detection confidence",
-            zhDesc: "低于此置信度的人脸将被忽略", enDesc: "Faces below this confidence are ignored"
+            label: "检测敏感度",
+            desc: "低于此置信度的人脸将被忽略"
         ),
         SliderSetting(
             key: "default_eps", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.6,
-            zhLabel: "聚类半径", enLabel: "Cluster radius",
-            zhDesc: "值越大，不同人脸越容易被归为同一人", enDesc: "Higher values cluster different faces together more easily"
+            label: "聚类半径",
+            desc: "值越大，不同人脸越容易被归为同一人"
         ),
         SliderSetting(
             key: "default_min_samples", min: 1, max: 20, step: 1, isInteger: true, defaultValue: 2,
-            zhLabel: "最小样本数", enLabel: "Min samples",
-            zhDesc: "一个人至少出现 N 张照片才形成聚类", enDesc: "A person must appear in at least N photos to form a cluster"
+            label: "最小样本数",
+            desc: "一个人至少出现 N 张照片才形成聚类"
         ),
     ]
 
@@ -608,144 +578,136 @@ public final class SettingsViewModel {
     public static let advancedSliders: [SliderSetting] = [
         SliderSetting(
             key: "nms_threshold", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.4,
-            zhLabel: "NMS 阈值", enLabel: "NMS threshold",
-            zhDesc: "重叠人脸的过滤阈值", enDesc: "Overlap filtering threshold for detections"
+            label: "NMS 阈值",
+            desc: "重叠人脸的过滤阈值"
         ),
         SliderSetting(
             key: "max_detections", min: 1, max: 500, step: 1, isInteger: true, defaultValue: 100,
-            zhLabel: "最大检测数", enLabel: "Max detections",
-            zhDesc: "单张图片最多检测的人脸数", enDesc: "Maximum faces detected per image"
+            label: "最大检测数",
+            desc: "单张图片最多检测的人脸数"
         ),
         SliderSetting(
             key: "onnx_threads", min: 1, max: 16, step: 1, isInteger: true, defaultValue: 4,
-            zhLabel: "ONNX 线程", enLabel: "ONNX threads",
-            zhDesc: "推理并行线程数", enDesc: "Parallel inference threads"
+            label: "ONNX 线程",
+            desc: "推理并行线程数"
         ),
     ]
 
     /// 分组设置（TS index.tsx L25-74；min/max 抄 input 约束 + 描述文案约束）。
     public static let settingGroups: [SettingGroup] = [
-        SettingGroup(id: "cache", titleZh: "缓存", titleEn: "Cache", fields: [
+        SettingGroup(id: "cache", title: "缓存", fields: [
             SettingField(
                 key: "memory_cache_size", type: .number(min: 1, max: nil),
-                zhLabel: "内存缓存条目数", enLabel: "Memory cache entries",
-                zhDesc: "内存中缓存的缩略图最大数量", enDesc: "Maximum thumbnails cached in memory"
+                label: "内存缓存条目数",
+                desc: "内存中缓存的缩略图最大数量"
             ),
             SettingField(
                 key: "memory_cache_max_size_mb", type: .number(min: 32, max: 2048),
-                zhLabel: "内存缓存上限 (MB)", enLabel: "Memory cache cap (MB)",
-                zhDesc: "缩略图和预览内存缓存的最大空间，防止高分辨率图片占满内存",
-                enDesc: "Maximum memory for thumbnails and previews, preventing high-res images from exhausting RAM"
+                label: "内存缓存上限 (MB)",
+                desc: "缩略图和预览内存缓存的最大空间，防止高分辨率图片占满内存",
             ),
             SettingField(
                 key: "disk_cache_dir", type: .text,
-                zhLabel: "磁盘缓存目录", enLabel: "Disk cache directory",
-                zhDesc: "磁盘缓存存储路径（留空使用默认）", enDesc: "Disk cache storage path (empty for default)"
+                label: "磁盘缓存目录",
+                desc: "磁盘缓存存储路径（留空使用默认）"
             ),
             SettingField(
                 key: "disk_cache_max_size_gb", type: .number(min: 0, max: nil),
-                zhLabel: "磁盘缓存上限 (GB)", enLabel: "Disk cache cap (GB)",
-                zhDesc: "磁盘缓存占用硬盘的最大空间", enDesc: "Maximum disk space used by the cache"
+                label: "磁盘缓存上限 (GB)",
+                desc: "磁盘缓存占用硬盘的最大空间"
             ),
             SettingField(
                 key: "disk_cache_eviction_policy", type: .select([
-                    SelectOption(value: "lru", labelZh: "LRU（最近最少使用）", labelEn: "LRU (least recently used)"),
-                    SelectOption(value: "fifo", labelZh: "FIFO（先进先出）", labelEn: "FIFO (first in, first out)"),
-                    SelectOption(value: "lfu", labelZh: "LFU（最不经常使用）", labelEn: "LFU (least frequently used)"),
+                    SelectOption(value: "lru", label: "LRU（最近最少使用）"),
+                    SelectOption(value: "fifo", label: "FIFO（先进先出）"),
+                    SelectOption(value: "lfu", label: "LFU（最不经常使用）"),
                 ]),
-                zhLabel: "淘汰策略", enLabel: "Eviction policy",
-                zhDesc: "lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）",
-                enDesc: "lru=LRU (least recently used), fifo=FIFO (first in, first out), lfu=LFU (least frequently used)"
+                label: "淘汰策略",
+                desc: "lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）",
             ),
         ]),
-        SettingGroup(id: "image", titleZh: "图片处理", titleEn: "Image Processing", fields: [
+        SettingGroup(id: "image", title: "图片处理", fields: [
             SettingField(
                 key: "thumbnail_size", type: .number(min: 256, max: 2048),
-                zhLabel: "缩略图尺寸", enLabel: "Thumbnail size",
-                zhDesc: "画廊缓存分辨率（建议 1024；内部按 256/1024/2048 三级复用）",
-                enDesc: "Gallery cache resolution (1024 recommended; reused at 256/1024/2048)"
+                label: "缩略图尺寸",
+                desc: "画廊缓存分辨率（建议 1024；内部按 256/1024/2048 三级复用）",
             ),
             SettingField(
                 key: "thumbnail_quality", type: .number(min: 0, max: 100),
-                zhLabel: "缩略图质量", enLabel: "Thumbnail quality",
-                zhDesc: "缩略图的 JPEG 压缩质量 (0-100)", enDesc: "JPEG compression quality of thumbnails (0-100)"
+                label: "缩略图质量",
+                desc: "缩略图的 JPEG 压缩质量 (0-100)"
             ),
             SettingField(
                 key: "thumbnail_concurrency", type: .number(min: 1, max: maxConcurrency),
-                zhLabel: "缩略图生成并发数", enLabel: "Thumbnail concurrency",
-                zhDesc: "同时生成缩略图的任务数（RAW 建议 2-4，最大 8）",
-                enDesc: "Concurrent thumbnail tasks (2-4 for RAW, max 8)"
+                label: "缩略图生成并发数",
+                desc: "同时生成缩略图的任务数（RAW 建议 2-4，最大 8）",
             ),
             SettingField(
                 key: "face_thumbnail_size", type: .number(min: 1, max: nil),
-                zhLabel: "人脸缩略图尺寸", enLabel: "Face thumbnail size",
-                zhDesc: "人脸缩略图的宽高像素值", enDesc: "Width/height in pixels of face thumbnails"
+                label: "人脸缩略图尺寸",
+                desc: "人脸缩略图的宽高像素值"
             ),
             SettingField(
                 key: "face_thumbnail_quality", type: .number(min: 0, max: 100),
-                zhLabel: "人脸缩略图质量", enLabel: "Face thumbnail quality",
-                zhDesc: "人脸缩略图的 JPEG 压缩质量 (0-100)", enDesc: "JPEG compression quality of face thumbnails (0-100)"
+                label: "人脸缩略图质量",
+                desc: "人脸缩略图的 JPEG 压缩质量 (0-100)"
             ),
         ]),
-        SettingGroup(id: "db", titleZh: "数据库", titleEn: "Database", fields: [
+        SettingGroup(id: "db", title: "数据库", fields: [
             SettingField(
                 key: "db_cache_size_mb", type: .number(min: 1, max: nil),
-                zhLabel: "缓存大小 (MB)", enLabel: "Cache size (MB)",
-                zhDesc: "SQLite 数据库的页面缓存大小", enDesc: "SQLite page cache size"
+                label: "缓存大小 (MB)",
+                desc: "SQLite 数据库的页面缓存大小"
             ),
             SettingField(
                 key: "db_synchronous", type: .select([
-                    SelectOption(value: "off", labelZh: "OFF（关闭）", labelEn: "OFF"),
-                    SelectOption(value: "normal", labelZh: "NORMAL（正常）", labelEn: "NORMAL"),
-                    SelectOption(value: "full", labelZh: "FULL（完整）", labelEn: "FULL"),
+                    SelectOption(value: "off", label: "OFF（关闭）"),
+                    SelectOption(value: "normal", label: "NORMAL（正常）"),
+                    SelectOption(value: "full", label: "FULL（完整）"),
                 ]),
-                zhLabel: "同步模式", enLabel: "Sync mode",
-                zhDesc: "off=OFF（关闭）, normal=NORMAL（正常）, full=FULL（完整）",
-                enDesc: "off=OFF, normal=NORMAL, full=FULL"
+                label: "同步模式",
+                desc: "off=OFF（关闭）, normal=NORMAL（正常）, full=FULL（完整）",
             ),
         ]),
-        SettingGroup(id: "c1", titleZh: "Capture One 集成", titleEn: "Capture One Integration", fields: [
+        SettingGroup(id: "c1", title: "Capture One 集成", fields: [
             SettingField(
                 key: "c1_timeout_ms", type: .number(min: 1, max: nil),
-                zhLabel: "超时时间 (ms)", enLabel: "Timeout (ms)",
-                zhDesc: "与 Capture One 通信的超时毫秒数", enDesc: "Communication timeout with Capture One, in milliseconds"
+                label: "超时时间 (ms)",
+                desc: "与 Capture One 通信的超时毫秒数"
             ),
             SettingField(
                 key: "c1_retries", type: .number(min: 0, max: nil),
-                zhLabel: "重试次数", enLabel: "Retries",
-                zhDesc: "与 Capture One 通信的最大重试次数", enDesc: "Maximum retries when communicating with Capture One"
+                label: "重试次数",
+                desc: "与 Capture One 通信的最大重试次数"
             ),
             SettingField(
                 key: "c1_reload_delay_ms", type: .number(min: 0, max: nil),
-                zhLabel: "重载延迟 (ms)", enLabel: "Reload delay (ms)",
-                zhDesc: "重载元数据后的等待延迟毫秒数", enDesc: "Wait delay in milliseconds after reloading metadata"
+                label: "重载延迟 (ms)",
+                desc: "重载元数据后的等待延迟毫秒数"
             ),
         ]),
-        SettingGroup(id: "metadata", titleZh: "元数据", titleEn: "Metadata", fields: [
+        SettingGroup(id: "metadata", title: "元数据", fields: [
             SettingField(
                 key: "metadata_write_mode", type: .select([
-                    SelectOption(value: "auto", labelZh: "自动（RAW侧边栏，成品格式内嵌）", labelEn: "Auto (sidecar for RAW, embedded for finished formats)"),
-                    SelectOption(value: "sidecar", labelZh: "XMP Sidecar", labelEn: "XMP Sidecar"),
-                    SelectOption(value: "embedded", labelZh: "Embedded", labelEn: "Embedded"),
+                    SelectOption(value: "auto", label: "自动（RAW侧边栏，成品格式内嵌）"),
+                    SelectOption(value: "sidecar", label: "XMP Sidecar"),
+                    SelectOption(value: "embedded", label: "Embedded"),
                 ]),
-                zhLabel: "写入方式", enLabel: "Write mode",
-                zhDesc: "auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded",
-                enDesc: "auto=sidecar for RAW and embedded for finished formats, sidecar=XMP Sidecar, embedded=Embedded"
+                label: "写入方式",
+                desc: "auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded",
             ),
             SettingField(
                 key: "metadata_write_debounce_ms", type: .number(min: 1, max: nil),
-                zhLabel: "后台写入防抖 (ms)", enLabel: "Writeback debounce (ms)",
-                zhDesc: "连续评级或改色后等待多久合并写入，建议 300-800",
-                enDesc: "Debounce for coalescing consecutive rating or color edits; 300-800 recommended"
+                label: "后台写入防抖 (ms)",
+                desc: "连续评级或改色后等待多久合并写入，建议 300-800",
             ),
             SettingField(
                 key: "capture_one_color_compatibility", type: .select([
-                    SelectOption(value: "label_and_urgency", labelZh: "Label + Urgency（推荐，兼容更多版本）", labelEn: "Label + Urgency (recommended, more compatible)"),
-                    SelectOption(value: "label_only", labelZh: "仅标准 xmp:Label", labelEn: "Standard xmp:Label only"),
+                    SelectOption(value: "label_and_urgency", label: "Label + Urgency（推荐，兼容更多版本）"),
+                    SelectOption(value: "label_only", label: "仅标准 xmp:Label"),
                 ]),
-                zhLabel: "Capture One 颜色兼容", enLabel: "C1 color compatibility",
-                zhDesc: "label_and_urgency=Label + Urgency（推荐，兼容更多版本）, label_only=仅标准 xmp:Label",
-                enDesc: "label_and_urgency=Label + Urgency (recommended), label_only=standard xmp:Label only"
+                label: "Capture One 颜色兼容",
+                desc: "label_and_urgency=Label + Urgency（推荐，兼容更多版本）, label_only=仅标准 xmp:Label",
             ),
         ]),
     ]
@@ -923,8 +885,8 @@ public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @State private var confirmReset = false
 
-    public init(router: CommandRouter) {
-        _viewModel = State(initialValue: SettingsViewModel(router: router))
+    public init(commands: CommandSurface) {
+        _viewModel = State(initialValue: SettingsViewModel(commands: commands))
     }
 
     public var body: some View {
@@ -944,7 +906,7 @@ public struct SettingsView: View {
             }
         }
         .background(Color.gatherBackground)
-        .task { viewModel.load() }
+        .task { await viewModel.load() }
         // 对齐 C1HealthPanel.tsx：挂载时检测一次；重检走"重新检测"按钮
         // （TS checkHealth 仅挂载时 + 手动触发，12s 定时器只轮询 sync-state）。
         .task { await viewModel.checkC1Health() }
@@ -976,7 +938,7 @@ public struct SettingsView: View {
             }
             Spacer()
             Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") {
-                viewModel.load()
+                Task { await viewModel.load() }
             }
             Button(GatherLocalization.l("恢复默认"), systemImage: "arrow.counterclockwise") {
                 confirmReset = true
@@ -1294,14 +1256,14 @@ public struct SettingsView: View {
     private func sliderRow(_ slider: SliderSetting) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(GatherLocalization.l(slider.zhLabel))
+                Text(GatherLocalization.l(slider.label))
                     .font(.callout.weight(.medium))
                 Spacer()
                 Text(sliderValueWithUnit(slider))
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
             }
-            Text(GatherLocalization.l(slider.zhDesc))
+            Text(GatherLocalization.l(slider.desc))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Slider(value: Binding(
@@ -1310,7 +1272,7 @@ public struct SettingsView: View {
             ), in: slider.min...slider.max, step: slider.step) { editing in
                 if !editing { Task { await viewModel.commitSlider(slider) } }
             }
-            .accessibilityLabel(GatherLocalization.l(slider.zhLabel))
+            .accessibilityLabel(GatherLocalization.l(slider.label))
             .accessibilityValue(Text(sliderValueWithUnit(slider)))
         }
     }
@@ -1333,7 +1295,7 @@ public struct SettingsView: View {
         VStack(alignment: .leading, spacing: 26) {
             ForEach(SettingsViewModel.settingGroups) { group in
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(GatherLocalization.l(group.titleZh))
+                    Text(GatherLocalization.l(group.title))
                         .font(.title3).fontWeight(.semibold)
                     ForEach(group.fields) { field in
                         fieldRow(field)
@@ -1352,9 +1314,9 @@ public struct SettingsView: View {
         let isPathField = field.key.contains("dir") || field.key.contains("path")
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(GatherLocalization.l(field.zhLabel))
+                Text(GatherLocalization.l(field.label))
                     .font(.callout.weight(.medium))
-                Text(GatherLocalization.l(field.zhDesc))
+                Text(GatherLocalization.l(field.desc))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1363,7 +1325,7 @@ public struct SettingsView: View {
                 switch field.type {
                 case .text:
                     HStack(spacing: 6) {
-                        TextField(GatherLocalization.l(field.zhLabel), text: Binding(
+                        TextField(GatherLocalization.l(field.label), text: Binding(
                             get: { viewModel.edits[field.key] ?? viewModel.values[field.key] ?? "" },
                             set: { viewModel.edits[field.key] = $0 }
                         ))
@@ -1375,7 +1337,7 @@ public struct SettingsView: View {
                     }
                 case .number:
                     HStack(spacing: 6) {
-                        TextField(GatherLocalization.l(field.zhLabel), text: Binding(
+                        TextField(GatherLocalization.l(field.label), text: Binding(
                             get: { viewModel.edits[field.key] ?? viewModel.values[field.key] ?? "" },
                             set: { viewModel.edits[field.key] = $0 }
                         ))
@@ -1402,7 +1364,7 @@ public struct SettingsView: View {
                     )) {
                         Text(GatherLocalization.l("请选择")).tag(String?.none)
                         ForEach(options) { option in
-                            Text(GatherLocalization.l(option.labelZh))
+                            Text(GatherLocalization.l(option.label))
                                 .tag(String?.some(option.value))
                         }
                     }

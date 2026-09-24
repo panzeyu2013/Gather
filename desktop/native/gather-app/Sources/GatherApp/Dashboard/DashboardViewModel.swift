@@ -66,7 +66,7 @@ struct CreateSessionOutcome: Equatable, Sendable {
     var added: Int
 }
 
-/// 真实实现：同进程直连已移植 GatherCore 服务（与 SessionCommandRouter
+/// 真实实现：同进程直连已移植 GatherCore 服务（与旧宿主路由层
 /// makeDefault 共用装配，见 GatherApp.bootstrap）。
 final class LiveDashboardDataProvider: DashboardDataProvider {
     private let sessionRuntime: SessionRuntime
@@ -684,7 +684,7 @@ final class DashboardViewModel {
     }
 
     /// 错误 message：错误码经 GatherLocalization.errorText 翻译（对齐
-    /// SessionCommandRouter.errorMessage 与 utils/errors.ts translateErrorCode），
+    /// 旧宿主路由层 errorMessage 与 utils/errors.ts translateErrorCode），
     /// 非错误码消息原样透出。
     static func message(for error: Error) -> String {
         if let sessionError = error as? SessionServiceError {

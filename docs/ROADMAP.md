@@ -80,13 +80,13 @@
 
 | 项 | 位置 | 说明 |
 |---|---|---|
-| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（边界扫描门禁）；gather-core 772 测试 / 102 suites，gather-app 172 / 19 suites（2026-08-13 台账，含写回协调器/写回服务直测） |
-| 命令面 118/118 | `gather-app/Host/SessionCommandRouter.swift` | 同步 103 + 异步 33 case（18 双注册），destructive 确认 37+ 处 |
-| 磁盘缓存 SQLite 化 | `gather-core/Database/ImageCache.swift` | WAL + 惰性淘汰 + 损坏/只读降级（ADR-007） |
-| Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
-| 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
-| 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 未任务化（ADR-024） |
-| 相似 hash 批量复用 | `SimilarityService` | 分块 `IN` 查询，消除 N+1 |
+| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（边界扫描门禁）；gather-core **1200 测试 / 153 suites**，gather-app **181 / 18 suites**（R5/R8 收口轮，串行台账） |
+| 类型化命令面 19 域 / 111 方法 | `gather-core/API/CommandSurface.swift` + `gather-app/Sources/GatherApp/App/AppComposition.swift` | async-only、Protocol DTO、组合根装配 19 个 `*CommandsImpl`；旧命令路由层已删除 |
+| 磁盘缓存 SQLite 化 | `Store/SQLiteDatabase.swift` | WAL + 语句缓存 + 结构化错误（ADR-007）；ImageCache 已随 R7 裁决移除 |
+| Culling 逻辑资产分页 | `Runtime/Culling/CullingQueryBuilder.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
+| 阈值预计算多档 | `Runtime/Similarity/SimilarityRuntime.swift` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
+| 任务化分析/写回 | `Runtime/Jobs/JobRunner.swift` + executors | 租约/fencing/checkpoint/dedupeKey/取消/重试；`sim.recluster` 未任务化（ADR-024） |
+| 相似 hash 批量复用 | `Runtime/Similarity` + `Store/SimilarityStore` | 分块 `IN` 查询，消除 N+1 |
 | Vision 人脸管线 | `gather-core/Face/` | 检测 + 768 维特征编码 + Inference 调度；ONNX 仅质量门回退（ADR-026） |
 | 聚类/向量对账 | `Face/Clusterer` / `VectorIndex` | 8 case DBSCAN+LSH 对账；topK 逐位一致 |
 | 文件监控 | `Watch/Coordinator.swift` | FSEvents + 去抖 + 全量兜底 + 丢事件矩阵 |

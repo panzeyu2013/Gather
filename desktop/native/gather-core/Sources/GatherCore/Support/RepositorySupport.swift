@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherCore/Database/Repositories/RepositorySupport.swift
+// desktop/native/gather-core/Sources/GatherCore/旧 RepositorySupport
 // 仓库层共享支撑（1.2）：TS 侧 node:crypto / node:path / node:fs / JSON 语义的最小复刻，
 // 供各 Repo 复用，保证行为与 TS 一一对应。
 

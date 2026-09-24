@@ -1,6 +1,6 @@
 // Store/SimilarityStore.swift
 // R1：相似度结果与增量聚类状态的唯一访问入口
-// （取代 Database/Repositories/SimilarityResultRepo.swift + SimilarityClusterStateRepo.swift）。
+// （取代 旧 SimilarityResultRepo + SimilarityClusterStateRepo.swift）。
 //
 // 与旧实现的差异（均为修正而非兼容层）：
 // - 成员映射缓存从 Repo 的可变字典改为独立 actor（Store 保持 Sendable 无状态），

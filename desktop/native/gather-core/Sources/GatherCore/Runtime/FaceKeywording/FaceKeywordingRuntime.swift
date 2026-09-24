@@ -29,54 +29,6 @@ public struct FaceAnalysisResult: Codable, Equatable, Sendable {
         self.encodingFailures = encodingFailures
     }
 }
-
-/// TS: FaceClusterData.binding（{ roleName, keywords }）。
-public struct FaceClusterBinding: Codable, Equatable, Sendable {
-    public let roleName: String
-    public let keywords: [String]
-
-    public init(roleName: String, keywords: [String]) {
-        self.roleName = roleName
-        self.keywords = keywords
-    }
-}
-
-/// TS: FaceClusterData（fkw.clusters 返回；members 截断至预览窗口 4 条，
-/// size 保持精确总数——见 face-kw.service.ts:756-783 注释）。
-public struct FaceClusterData: Codable, Equatable, Sendable {
-    public let id: Int
-    public let sessionId: String
-    public let label: String
-    public let size: Int
-    public let status: String
-    public let thumbnailBase64: String
-    public let binding: FaceClusterBinding?
-    public let thumbnailPhotoId: String?
-    public let members: [ClusterMember]
-
-    public init(
-        id: Int,
-        sessionId: String,
-        label: String,
-        size: Int,
-        status: String,
-        thumbnailBase64: String,
-        binding: FaceClusterBinding?,
-        thumbnailPhotoId: String?,
-        members: [ClusterMember]
-    ) {
-        self.id = id
-        self.sessionId = sessionId
-        self.label = label
-        self.size = size
-        self.status = status
-        self.thumbnailBase64 = thumbnailBase64
-        self.binding = binding
-        self.thumbnailPhotoId = thumbnailPhotoId
-        self.members = members
-    }
-}
-
 /// TS: fkw.unbind 返回（{ done, removedKeywords }）。
 public struct FkwUnbindResult: Codable, Equatable, Sendable {
     public let done: Bool
@@ -292,7 +244,7 @@ public struct FaceKwCleanupResult: Codable, Equatable, Sendable {
     }
 }
 
-/// 写回 Provider（3.4 Wave 实现；注入协议对齐 TS WritebackService 的相关方法）。
+/// 写回 Provider（3.4 Wave 实现；注入协议对齐 TS WritebackRuntime 的相关方法）。
 /// 实现留给 3.4 的 writeback 服务，本服务只按同样契约调用。
 public protocol FaceWritebackProvider: Sendable {
     /// TS: writebackService.removeOwnedFaceKeywords(sessionId, entries) → removedKeywords。

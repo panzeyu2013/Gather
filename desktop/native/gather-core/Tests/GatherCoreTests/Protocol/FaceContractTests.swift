@@ -114,49 +114,44 @@ struct FaceContractTests {
         #expect(!keys.contains("id"), "TS id? 为可选字段，nil 时省略 key")
     }
 
-    // MARK: - FaceCluster / ClusterMember / BindingData
+    // MARK: - FaceClusterData / ClusterMember / FaceClusterBinding
 
-    @Test func faceClusterRoundTripAndKeys() throws {
-        let original = FaceCluster(
+    @Test func faceClusterDataRoundTripAndKeys() throws {
+        let original = FaceClusterData(
             id: 1,
             sessionId: "s1",
             label: "cluster_1",
             size: 2,
+            status: "analyzed",
+            thumbnailBase64: "base64...",
+            binding: FaceClusterBinding(roleName: "妈妈", keywords: ["妈妈"]),
+            thumbnailPhotoId: "p1",
             members: [
                 ClusterMember(memberId: 10, photoId: "p1", photoPath: "/u/a.jpg", filename: "a.jpg", bbox: [1, 2, 3, 4], confidence: 0.9),
-            ],
-            status: "analyzed",
-            binding: BindingData(clusterId: 1, roleName: "妈妈", keywords: ["妈妈"], notes: "n"),
-            thumbnailBase64: "base64...",
-            syncedToLibrary: true,
-            matchedPersonId: "person_1",
-            matchConfidence: 0.87
+            ]
         )
         let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(FaceCluster.self, from: data)
+        let decoded = try JSONDecoder().decode(FaceClusterData.self, from: data)
         #expect(decoded == original)
 
         let keys = try jsonKeys(of: data)
         let expected = [
-            "id", "sessionId", "label", "size", "members", "status",
-            "binding", "thumbnailBase64", "syncedToLibrary", "matchedPersonId", "matchConfidence",
+            "id", "sessionId", "label", "size", "status",
+            "thumbnailBase64", "binding", "thumbnailPhotoId", "members",
         ]
-        #expect(Set(keys) == Set(expected), "FaceCluster JSON key 必须与 TS 字段名一致")
+        #expect(Set(keys) == Set(expected), "FaceClusterData JSON key 必须与 TS face-kw.service.ts 字段名一致")
         #expect(!keys.contains("synced_to_library"))
         #expect(!keys.contains("thumbnail_base64"))
     }
 
-    @Test func faceClusterOptionalsOmittedWhenNil() throws {
-        let cluster = FaceCluster(
-            id: 1, sessionId: "s1", label: "c", size: 1,
-            members: [], status: "analyzed"
+    @Test func faceClusterDataOptionalsOmittedWhenNil() throws {
+        let cluster = FaceClusterData(
+            id: 1, sessionId: "s1", label: "c", size: 1, status: "analyzed",
+            thumbnailBase64: "", binding: nil, thumbnailPhotoId: nil, members: []
         )
         let keys = try jsonKeys(of: JSONEncoder().encode(cluster))
         #expect(!keys.contains("binding"))
-        #expect(!keys.contains("thumbnailBase64"))
-        #expect(!keys.contains("syncedToLibrary"))
-        #expect(!keys.contains("matchedPersonId"))
-        #expect(!keys.contains("matchConfidence"))
+        #expect(!keys.contains("thumbnailPhotoId"))
     }
 
     @Test func clusterMemberRoundTrip() throws {

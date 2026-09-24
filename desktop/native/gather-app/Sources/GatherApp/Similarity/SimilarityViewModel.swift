@@ -57,31 +57,20 @@ extension SimilarityDataProvider {
     public func syncStateItems(sessionId: String) async throws -> [WritebackItem] { [] }
 }
 
-/// 真实实现：同进程直连 SessionCommandRouter（sim.* 已接线命令以路由为
-/// 唯一事实源，保证相似度占用/取消跨页一致）。
+/// 真实实现：同进程直连类型化命令面（similarity/jobs 两域），
+/// 保证相似度占用/取消跨页一致。
 public final class LiveSimilarityDataProvider: SimilarityDataProvider {
-    private let router: SessionCommandRouter
+    private let commands: CommandSurface
 
-    public init(router: SessionCommandRouter) {
-        self.router = router
+    public init(commands: CommandSurface) {
+        self.commands = commands
     }
 
     public func getResult(sessionId: String, threshold: Int?) async throws -> SimilarityResult? {
-        // sim.result 已迁入异步路由（结果读经 SimilarityStore）。
-        let response: GatherCore.JSONValue = try await withCheckedThrowingContinuation { continuation in
-            router.executeAsync("sim.result", params: [
-                "sessionId": .string(sessionId),
-                "threshold": threshold.map { .number(Double($0)) } ?? .null,
-            ]) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_RESULT_FAILED"))
-                    return
-                }
-                continuation.resume(returning: data)
-            }
-        }
-        if response == .null { return nil }
-        return try response.decoded(as: SimilarityResult.self)
+        try await commands.similarity.result(SimResultParams(
+            sessionId: sessionId,
+            threshold: threshold.map { Double($0) }
+        ))
     }
 
     public func analyze(
@@ -90,34 +79,17 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         minGroupSize: Int?,
         groupingMode: SimilarityGroupingMode
     ) async throws {
-        var params: [String: JSONValue] = [
-            "sessionId": .string(sessionId),
-            "groupingMode": .string(groupingMode.rawValue),
-        ]
-        if let threshold { params["threshold"] = .number(Double(threshold)) }
-        if let minGroupSize { params["minGroupSize"] = .number(Double(minGroupSize)) }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            router.executeAsync("sim.analyze", params: params) { response in
-                if response.ok {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_ANALYZE_FAILED"))
-                }
-            }
-        }
+        try await commands.similarity.analyze(SimAnalyzeParams(
+            sessionId: sessionId,
+            threshold: threshold.map { Double($0) },
+            minGroupSize: minGroupSize,
+            groupingMode: groupingMode
+        ))
     }
 
     public func cancelAnalysis(sessionId: String) async throws -> Bool {
-        // W2c：sim.cancel_analysis 已迁 executeAsync（routers 无同步分支）。
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
-            router.executeAsync("sim.cancel_analysis", params: ["sessionId": .string(sessionId)]) { response in
-                if response.ok {
-                    continuation.resume(returning: response.data?.boolValue ?? false)
-                } else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_CANCEL_FAILED"))
-                }
-            }
-        }
+        try await commands.similarity.cancelAnalysis(SimCancelAnalysisParams(sessionId: sessionId))
+        return true
     }
 
     public func recluster(
@@ -126,130 +98,55 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         minGroupSize: Int,
         groupingMode: SimilarityGroupingMode
     ) async throws -> SimilarityResult {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SimilarityResult, Error>) in
-            router.executeAsync("sim.recluster", params: [
-                "sessionId": .string(sessionId),
-                "threshold": .number(Double(threshold)),
-                "minGroupSize": .number(Double(minGroupSize)),
-                "groupingMode": .string(groupingMode.rawValue),
-            ]) { response in
-                if response.ok, let data = response.data {
-                    do {
-                        continuation.resume(returning: try data.decoded(as: SimilarityResult.self))
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                } else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_RECLUSTER_FAILED"))
-                }
-            }
-        }
+        try await commands.similarity.recluster(SimReclusterParams(
+            sessionId: sessionId,
+            threshold: Double(threshold),
+            minGroupSize: minGroupSize,
+            groupingMode: groupingMode
+        ))
     }
 
     public func listSimilarityJobs(sessionId: String) async throws -> [AnalysisJobData] {
-        try await router.jobRunner.list().filter {
+        try await commands.jobs.list(JobListParams()).filter {
             $0.type == .similarityAnalyze && $0.scopeType == "session" && $0.scopeId == sessionId
         }
     }
 
     public func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) async throws -> WritebackPreview {
-        var params: [String: JSONValue] = [
-            "sessionId": .string(sessionId),
-            "assignments": try .array(assignments.map { try JSONValue(from: $0) }),
-        ]
-        if let threshold { params["threshold"] = .number(Double(threshold)) }
-        // 经 executeAsync：sim.preview_writeback 在同步 execute 中的 awaitSync
-        // 信号量桥会阻塞 @MainActor 调用线程（XMP/DB I/O 期间 UI 冻结）。
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WritebackPreview, Error>) in
-            router.executeAsync("sim.preview_writeback", params: params) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_PREVIEW_WRITEBACK_FAILED"))
-                    return
-                }
-                do { continuation.resume(returning: try data.decoded(as: WritebackPreview.self)) }
-                catch { continuation.resume(throwing: error) }
-            }
-        }
+        try await commands.similarity.previewWriteback(SimPreviewWritebackParams(
+            sessionId: sessionId,
+            assignments: assignments,
+            threshold: threshold.map { Double($0) }
+        ))
     }
 
     public func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult {
-        var params: [String: JSONValue] = [
-            "sessionId": .string(sessionId),
-            "itemIds": .array(itemIds.map { .number(Double($0)) }),
-            "confirmed": .bool(true),
-        ]
-        if let threshold { params["threshold"] = .number(Double(threshold)) }
-        return try await withCheckedThrowingContinuation { continuation in
-            router.executeAsync("sim.writeback", params: params) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_WRITEBACK_FAILED"))
-                    return
-                }
-                do { continuation.resume(returning: try data.decoded(as: WritebackResult.self)) }
-                catch { continuation.resume(throwing: error) }
-            }
-        }
+        try await commands.similarity.writeback(SimWritebackParams(
+            sessionId: sessionId,
+            itemIds: itemIds,
+            confirmed: true,
+            threshold: threshold.map { Double($0) }
+        ))
     }
 
     public func retryFailedWriteback(sessionId: String) async throws -> WritebackResult {
-        try await withCheckedThrowingContinuation { continuation in
-            router.executeAsync("sim.retry_failed_writeback", params: [
-                "sessionId": .string(sessionId),
-                "confirmed": .bool(true),
-            ]) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_RETRY_WRITEBACK_FAILED"))
-                    return
-                }
-                do { continuation.resume(returning: try data.decoded(as: WritebackResult.self)) }
-                catch { continuation.resume(throwing: error) }
-            }
-        }
+        try await commands.similarity.retryFailedWriteback(SimRetryFailedWritebackParams(
+            sessionId: sessionId,
+            confirmed: true
+        ))
     }
 
     public func confirmSync(sessionId: String) async throws {
-        // 经 executeAsync：同步 execute 的 awaitSync 桥会阻塞 @MainActor 调用线程。
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            router.executeAsync("sim.confirm_sync", params: ["sessionId": .string(sessionId)]) { response in
-                if response.ok {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_CONFIRM_SYNC_FAILED"))
-                }
-            }
-        }
+        try await commands.similarity.confirmSync(SimConfirmSyncParams(sessionId: sessionId))
     }
 
     public func cleanupWriteback(sessionId: String) async throws -> CleanupResult {
-        try await withCheckedThrowingContinuation { continuation in
-            router.executeAsync("sim.cleanup", params: [
-                "sessionId": .string(sessionId),
-                "confirmed": .bool(true),
-            ]) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_CLEANUP_FAILED"))
-                    return
-                }
-                do { continuation.resume(returning: try data.decoded(as: CleanupResult.self)) }
-                catch { continuation.resume(throwing: error) }
-            }
-        }
+        try await commands.similarity.cleanup(SimCleanupParams(sessionId: sessionId, confirmed: true))
     }
 
-    /// 同步状态数据源：sim.writeback_items（模块 outbox 行，xmpStatus 计数；
-    /// W2c 该命令为异步路由面，同步 execute 会 NOT_IMPLEMENTED，故 async 直连）。
+    /// 同步状态数据源：sim.writeback_items（模块 outbox 行，xmpStatus 计数）。
     public func syncStateItems(sessionId: String) async throws -> [WritebackItem] {
-        let data: GatherCore.JSONValue = try await withCheckedThrowingContinuation { continuation in
-            router.executeAsync("sim.writeback_items", params: ["sessionId": .string(sessionId)]) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: RouterCommandError(
-                        message: response.error ?? "SIM_WRITEBACK_ITEMS_FAILED"))
-                    return
-                }
-                continuation.resume(returning: data)
-            }
-        }
-        return try data.decoded(as: [WritebackItem].self)
+        try await commands.similarity.writebackItems(SimWritebackItemsParams(sessionId: sessionId))
     }
 }
 
@@ -371,7 +268,7 @@ public final class SimilarityViewModel {
         provider: SimilarityDataProvider,
         pollInterval: Duration = .seconds(1),
         tierDebounceDelay: Duration = .milliseconds(300),
-        captureOne: CaptureOneBridge = CaptureOneBridge()
+        captureOne: CaptureOneBridge
     ) {
         self.sessionId = sessionId
         self.provider = provider
@@ -970,13 +867,6 @@ public final class SimilarityViewModel {
     // MARK: 错误 message（对齐 DashboardViewModel.message）
 
     static func message(for error: Error) -> String {
-        if error is RouterCommandError {
-            return GatherLocalization.message(for: error)
-        }
-        if let sessionError = error as? SessionServiceError {
-            return sessionError.gatherCode.rawValue
-        }
-        let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        GatherErrorText.message(for: error)
     }
 }

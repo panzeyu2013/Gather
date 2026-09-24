@@ -10,7 +10,7 @@ struct WorkspaceStageMarksTests {
     private func marks(_ stage: WorkspaceStage) -> [SessionControlView.StageMark] {
         SessionControlView(
             sessionId: "s1",
-            router: StubCommandRouter.empty()
+            commands: .testEmpty()
         ).stageMarks(stage)
     }
 

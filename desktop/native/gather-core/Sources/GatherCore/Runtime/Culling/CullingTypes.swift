@@ -93,8 +93,8 @@ extension MetadataSyncRuntime: CullingSyncPort {
     }
 }
 
-/// TS: culling.ipc.ts 用到的 WritebackService 最小面（culling 写回四命令 +
-/// confirm/cleanup 协作）—— 宿主注入 WritebackService，测试注入替身。
+/// TS: culling.ipc.ts 用到的 WritebackRuntime 最小面（culling 写回四命令 +
+/// confirm/cleanup 协作）—— 宿主注入 WritebackRuntime，测试注入替身。
 public protocol CullingWritebackPort {
     func preview(
         sessionId: String,
@@ -111,7 +111,7 @@ public protocol CullingWritebackPort {
     func cleanup(sessionId: String, module: String) async throws -> CleanupResult
 }
 
-extension WritebackService: CullingWritebackPort {}
+extension WritebackRuntime: CullingWritebackPort {}
 
 /// TS: CullingPhotoRow（PhotoRow | PhotoPageRow | PhotoProjection 的并集）——
 /// culling 服务消费的最小行形状：重 JSON 列（metadata/result）为可选，三种投影

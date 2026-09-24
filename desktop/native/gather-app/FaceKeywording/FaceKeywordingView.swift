@@ -72,13 +72,13 @@ public final class FaceKeywordingViewModel {
     /// TS StepReview CLUSTER_PAGE_SIZE。
     public static let clusterPageSize = 100
 
-    private let client: NativeCommandClient
+    private let commands: CommandSurface
     private let captureOne: CaptureOneBridge
     public let sessionId: String
     private(set) public var clusters: [FaceClusterData] = []
     private(set) public var analysisResult: FaceAnalysisResult?
-    private(set) public var preview: FaceKwWritebackPreview?
-    private(set) public var writebackResult: FaceKwWritebackResult?
+    private(set) public var preview: WritebackPreview?
+    private(set) public var writebackResult: WritebackResult?
     /// 初始为 true：首帧即渲染加载态，避免 load() 完成前误显空态。
     private(set) public var isLoading = true
     private(set) public var isWritingBack = false
@@ -117,12 +117,12 @@ public final class FaceKeywordingViewModel {
 
     public init(
         sessionId: String,
-        router: CommandRouter,
+        commands: CommandSurface,
         initialRoleFilter: String? = nil
     ) {
         self.sessionId = sessionId
-        self.client = NativeCommandClient(router: router)
-        self.captureOne = CaptureOneBridge(router: router)
+        self.commands = commands
+        self.captureOne = CaptureOneBridge.shared ?? CaptureOneBridge()
         self.initialRoleFilter = initialRoleFilter
     }
 
@@ -163,23 +163,21 @@ public final class FaceKeywordingViewModel {
         self.step = step
     }
 
-    public func load() {
+    public func load() async {
         isLoading = true
         defer { isLoading = false }
         do {
-            clusters = try client.execute("fkw.clusters", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: [FaceClusterData].self)
+            clusters = try await commands.face.clusters(FkwClustersParams(sessionId: sessionId))
             if let selectedClusterId,
                let cluster = clusters.first(where: { $0.id == selectedClusterId }) {
                 select(cluster)
             }
             errorMessage = nil
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
-        refreshModelsStatus()
-        recoverAnalysis()
+        await refreshModelsStatus()
+        await recoverAnalysis()
         seedInitialRoleFilter()
     }
 
@@ -215,12 +213,16 @@ public final class FaceKeywordingViewModel {
         progressPhase = "face.detecting"
         errorMessage = nil
         do {
-            let data = try await client.executeAsync("fkw.analyze", params: [
-                "sessionId": .string(sessionId),
-                "eps": .number(eps),
-                "minSamples": .number(Double(minSamples)),
-            ])
-            analysisResult = try data.decoded(as: FaceAnalysisResult.self)
+            let result = try await commands.face.analyze(FkwAnalyzeParams(
+                sessionId: sessionId,
+                eps: eps,
+                minSamples: minSamples
+            ))
+            analysisResult = FaceAnalysisResult(
+                status: result.status,
+                detectionFailures: result.detectionFailures,
+                encodingFailures: result.encodingFailures
+            )
             if let result = analysisResult, result.status == "cancelled" {
                 analysisPhase = .cancelled
                 notice = GatherLocalization.l("人脸分析已取消")
@@ -234,24 +236,24 @@ public final class FaceKeywordingViewModel {
             }
             finishAnalysis()
             notice = GatherLocalization.l("人脸分析完成")
-            load()
+            await load()
         } catch {
             if Self.rawMessage(for: error).localizedCaseInsensitiveContains("cancelled") {
                 analysisPhase = .cancelled
                 notice = GatherLocalization.l("人脸分析已取消")
             } else {
                 analysisPhase = .failed
-                errorMessage = NativeCommandClient.message(for: error) + guidanceSuffix
+                errorMessage = GatherErrorText.message(for: error) + guidanceSuffix
             }
         }
     }
 
-    public func cancel() {
+    public func cancel() async {
         do {
-            _ = try client.execute("fkw.cancel_analysis", params: ["sessionId": .string(sessionId)])
+            try await commands.face.cancelAnalysis(FkwCancelAnalysisParams(sessionId: sessionId))
             notice = GatherLocalization.l("已请求取消人脸分析")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -260,25 +262,21 @@ public final class FaceKeywordingViewModel {
         analysisPhase = .running
         errorMessage = nil
         do {
-            _ = try await client.executeAsync("fkw.recluster", params: [
-                "sessionId": .string(sessionId),
-                "eps": .number(eps),
-                "minSamples": .number(Double(minSamples)),
-            ])
+            try await commands.face.recluster(sessionId: sessionId, eps: eps, minSamples: minSamples)
             finishAnalysis()
             notice = GatherLocalization.l("已重新聚类")
-            load()
+            await load()
         } catch {
             if Self.rawMessage(for: error).localizedCaseInsensitiveContains("cancelled") {
                 analysisPhase = .cancelled
             } else {
                 analysisPhase = .failed
-                errorMessage = NativeCommandClient.message(for: error) + guidanceSuffix
+                errorMessage = GatherErrorText.message(for: error) + guidanceSuffix
             }
         }
     }
 
-    public func bind(_ cluster: FaceClusterData) {
+    public func bind(_ cluster: FaceClusterData) async {
         let role = roleName.trimmingCharacters(in: .whitespacesAndNewlines)
         let words = parseKeywords()
         guard !role.isEmpty else {
@@ -289,55 +287,55 @@ public final class FaceKeywordingViewModel {
             return
         }
         do {
-            _ = try client.execute("fkw.bind", params: [
-                "sessionId": .string(sessionId),
-                "clusterId": .number(Double(cluster.id)),
-                "roleName": .string(role),
-                "keywords": .array(words.map(JSONValue.string)),
-            ])
+            try await commands.face.bind(FkwBindParams(
+                sessionId: sessionId,
+                clusterId: cluster.id,
+                roleName: role,
+                keywords: words
+            ))
             notice = String(format: GatherLocalization.l("已绑定簇 #%lld"), cluster.id)
             reviewActionError = nil
-            load()
+            await load()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
             reviewActionError = errorMessage
         }
     }
 
     public func unbind(_ cluster: FaceClusterData) async {
         do {
-            _ = try await client.executeAsync("fkw.unbind", params: [
-                "sessionId": .string(sessionId),
-                "clusterId": .number(Double(cluster.id)),
-                "confirmed": .bool(true),
-            ])
+            _ = try await commands.face.unbind(FkwUnbindParams(
+                sessionId: sessionId,
+                clusterId: cluster.id,
+                confirmed: true
+            ))
             notice = String(format: GatherLocalization.l("已解除簇 #%lld 的绑定"), cluster.id)
             reviewActionError = nil
-            load()
+            await load()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
             reviewActionError = errorMessage
         }
     }
 
-    public func removeMember(_ member: ClusterMember, from cluster: FaceClusterData) {
+    public func removeMember(_ member: ClusterMember, from cluster: FaceClusterData) async {
         do {
-            _ = try client.execute("fkw.remove_member", params: [
-                "sessionId": .string(sessionId),
-                "clusterId": .number(Double(cluster.id)),
-                "memberId": .number(Double(member.memberId)),
-            ])
+            try await commands.face.removeMember(FkwRemoveMemberParams(
+                sessionId: sessionId,
+                clusterId: cluster.id,
+                memberId: member.memberId
+            ))
             notice = String(format: GatherLocalization.l("已从簇 #%lld 移除成员"), cluster.id)
             reviewActionError = nil
-            load()
+            await load()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
             reviewActionError = errorMessage
         }
     }
 
     /// TS handleMerge：合并到下拉目标（过滤当前簇），成功后选中目标簇。
-    public func merge(_ cluster: FaceClusterData) {
+    public func merge(_ cluster: FaceClusterData) async {
         guard let target = mergeTargetId,
               target != cluster.id,
               clusters.contains(where: { $0.id == target }) else {
@@ -347,20 +345,20 @@ public final class FaceKeywordingViewModel {
             return
         }
         do {
-            _ = try client.execute("fkw.merge", params: [
-                "sessionId": .string(sessionId),
-                "source": .number(Double(cluster.id)),
-                "target": .number(Double(target)),
-            ])
+            try await commands.face.merge(FkwMergeParams(
+                sessionId: sessionId,
+                source: cluster.id,
+                target: target
+            ))
             notice = String(format: GatherLocalization.l("已将簇 #%lld 合并到簇 #%lld"), cluster.id, target)
             mergeTargetId = nil
             reviewActionError = nil
-            load()
+            await load()
             if let targetCluster = clusters.first(where: { $0.id == target }) {
                 select(targetCluster)
             }
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
             reviewActionError = errorMessage
         }
     }
@@ -371,21 +369,20 @@ public final class FaceKeywordingViewModel {
             return
         }
         do {
-            let options = FaceKwWritebackOptions(
+            let options = WritebackOptions(
                 createAlbums: false,
                 addPrefix: false,
                 markUngrouped: false,
                 writeIPTC: false
             )
-            let data = try await client.executeAsync("fkw.preview", params: [
-                "sessionId": .string(sessionId),
-                "options": try JSONValue(from: options),
-            ])
-            preview = try data.decoded(as: FaceKwWritebackPreview.self)
+            preview = try await commands.face.preview(FkwPreviewParams(
+                sessionId: sessionId,
+                options: options
+            ))
             writebackResult = nil
             notice = GatherLocalization.l("写回预览已生成")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -399,37 +396,35 @@ public final class FaceKeywordingViewModel {
         isWritingBack = true
         defer { isWritingBack = false }
         do {
-            let preview: FaceKwWritebackPreview
+            let preview: WritebackPreview
             if let existing = self.preview {
                 preview = existing
             } else {
-                let options = FaceKwWritebackOptions(
+                let options = WritebackOptions(
                     createAlbums: false,
                     addPrefix: false,
                     markUngrouped: false,
                     writeIPTC: false
                 )
-                let data = try await client.executeAsync("fkw.preview", params: [
-                    "sessionId": .string(sessionId),
-                    "options": try JSONValue(from: options),
-                ])
-                preview = try data.decoded(as: FaceKwWritebackPreview.self)
+                preview = try await commands.face.preview(FkwPreviewParams(
+                    sessionId: sessionId,
+                    options: options
+                ))
                 self.preview = preview
             }
             guard !preview.items.isEmpty else {
                 errorMessage = GatherLocalization.l("预览没有可写回项")
                 return
             }
-            let data = try await client.executeAsync("fkw.writeback", params: [
-                "sessionId": .string(sessionId),
-                "items": .array(try preview.items.map { try JSONValue(from: $0) }),
-                "confirmed": .bool(true),
-            ])
-            writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
+            writebackResult = try await commands.face.writeback(FkwWritebackParams(
+                sessionId: sessionId,
+                confirmed: true,
+                items: preview.items
+            ))
             isSyncConfirmed = false
             notice = String(format: GatherLocalization.l("已写回 %lld 项；请先让 Capture One 重新加载元数据"), writebackResult?.written ?? 0)
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -439,16 +434,15 @@ public final class FaceKeywordingViewModel {
             return
         }
         do {
-            let data = try await client.executeAsync("fkw.writeback", params: [
-                "sessionId": .string(sessionId),
-                "items": .array(try items.map { try JSONValue(from: $0) }),
-                "confirmed": .bool(true),
-            ])
-            writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
+            writebackResult = try await commands.face.writeback(FkwWritebackParams(
+                sessionId: sessionId,
+                confirmed: true,
+                items: items
+            ))
             isSyncConfirmed = false
             notice = GatherLocalization.l("已重试失败写回项")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -457,29 +451,26 @@ public final class FaceKeywordingViewModel {
             try await captureOne.reloadMetadata(sessionId: sessionId)
             notice = GatherLocalization.l("Capture One 已重新加载元数据，现在可以确认同步")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
     public func confirmSync() async {
         do {
-            _ = try await client.executeAsync("fkw.confirm_sync", params: ["sessionId": .string(sessionId)])
+            try await commands.face.confirmSync(FkwConfirmSyncParams(sessionId: sessionId))
             isSyncConfirmed = true
             notice = GatherLocalization.l("已确认人脸关键字同步")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
     public func cleanup() async {
         do {
-            _ = try await client.executeAsync("fkw.cleanup", params: [
-                "sessionId": .string(sessionId),
-                "confirmed": .bool(true),
-            ])
+            try await commands.face.cleanup(FkwCleanupParams(sessionId: sessionId, confirmed: true))
             notice = GatherLocalization.l("已清理人脸写回备份")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -495,7 +486,7 @@ public final class FaceKeywordingViewModel {
                 finishAnalysis()
                 progressCurrent = event.job.progressCurrent
                 progressTotal = event.job.progressTotal
-                load()
+                Task { await load() }
             case .cancelled:
                 analysisPhase = .cancelled
                 notice = GatherLocalization.l("人脸分析已取消")
@@ -518,20 +509,20 @@ public final class FaceKeywordingViewModel {
         modelsMissing ? "\n" + GatherLocalization.l("人脸推理当前使用系统内置引擎") : ""
     }
 
-    private func refreshModelsStatus() {
+    private func refreshModelsStatus() async {
         do {
-            let data = try client.execute("face.models_status").decoded(as: FaceModelsStatusData.self)
+            let data = try await commands.face.modelsStatus()
             // 2.2 决议：Vision provider 恒可用（无 ONNX 模型资产）→
             // modelsPresent 恒 true → modelsMissing 恒 false。横幅/引导分支
             // 为防御性保留（若未来引入 cpu provider 回退则自然生效）。
-            modelsMissing = !data.modelsPresent
+            modelsMissing = !(data.detectorPresent && data.encoderPresent)
         } catch {
             modelsMissing = false
         }
     }
 
-    private func recoverAnalysis() {
-        let jobs = (try? client.execute("jobs.list").decoded(as: [AnalysisJobData].self)) ?? []
+    private func recoverAnalysis() async {
+        let jobs = (try? await commands.jobs.list(JobListParams())) ?? []
         guard let job = jobs.first(where: { candidate in
             candidate.type == .faceAnalyze &&
                 candidate.scopeType == "session" &&
@@ -550,9 +541,7 @@ public final class FaceKeywordingViewModel {
     }
 
     private static func rawMessage(for error: Error) -> String {
-        if let native = error as? NativeCommandError { return native.description }
-        if let router = error as? RouterCommandError { return router.message }
-        if let bridge = error as? BridgeError { return bridge.description }
+        if let described = error as? CustomStringConvertible { return described.description }
         return (error as NSError).localizedDescription
     }
 
@@ -563,16 +552,9 @@ public final class FaceKeywordingViewModel {
     }
 }
 
-private struct FaceModelsStatusData: Codable {
-    let provider: String
-    let fallbackToOnnxEnabled: Bool
-    let modelsPresent: Bool
-    let downloading: Bool
-}
-
 public struct FaceKeywordingView: View {
     @State private var viewModel: FaceKeywordingViewModel
-    private let router: CommandRouter
+    private let commands: CommandSurface
     private let onBack: () -> Void
     private let onOpenSimilarity: (String) -> Void
     private let onOpenTab: (String, SessionTab) -> Void
@@ -598,7 +580,7 @@ public struct FaceKeywordingView: View {
 
     init(
         sessionId: String,
-        router: CommandRouter,
+        commands: CommandSurface,
         onBack: @escaping () -> Void = {},
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
@@ -608,10 +590,10 @@ public struct FaceKeywordingView: View {
     ) {
         _viewModel = State(initialValue: FaceKeywordingViewModel(
             sessionId: sessionId,
-            router: router,
+            commands: commands,
             initialRoleFilter: initialRoleFilter
         ))
-        self.router = router
+        self.commands = commands
         self.onBack = onBack
         self.onOpenSimilarity = onOpenSimilarity
         self.onOpenTab = onOpenTab
@@ -646,7 +628,7 @@ public struct FaceKeywordingView: View {
         }
         .background(Color.gatherBackground)
         .task {
-            viewModel.load()
+            await viewModel.load()
             visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
@@ -681,8 +663,12 @@ public struct FaceKeywordingView: View {
                     Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
                 }
                 Spacer()
-                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings ?? {})
-                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
+                C1StatusCapsuleHost(
+                    sessionId: viewModel.sessionId,
+                    culling: commands.culling,
+                    onOpenSettings: onOpenSettings ?? {}
+                )
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { Task { await viewModel.load() } }
             }
             SessionTabBar(
                 selection: .tab(.faceKw),
@@ -796,7 +782,7 @@ public struct FaceKeywordingView: View {
                 if viewModel.analysisPhase == .running { analysisProgress }
                 HStack(spacing: 12) {
                     if viewModel.analysisPhase == .running {
-                        Button(GatherLocalization.l("取消"), systemImage: "stop.fill") { viewModel.cancel() }
+                        Button(GatherLocalization.l("取消"), systemImage: "stop.fill") { Task { await viewModel.cancel() } }
                             .foregroundStyle(GatherTheme.error)
                     } else if viewModel.analysisPhase == .done {
                         Button(GatherLocalization.l("仅重新聚类"), systemImage: "arrow.triangle.2.circlepath") {
@@ -1173,7 +1159,7 @@ public struct FaceKeywordingView: View {
             VStack(spacing: 0) {
                 ForEach(Array(cluster.members.enumerated()), id: \.element.memberId) { index, member in
                     MemberRowView(index: index, member: member) {
-                        viewModel.removeMember(member, from: cluster)
+                        Task { await viewModel.removeMember(member, from: cluster) }
                     }
                     Divider().opacity(0.5)
                 }
@@ -1194,7 +1180,7 @@ public struct FaceKeywordingView: View {
                 .textFieldStyle(.roundedBorder)
             HStack(spacing: 8) {
                 Button(cluster.binding != nil ? GatherLocalization.l("更新绑定") : GatherLocalization.l("绑定")) {
-                    viewModel.bind(cluster)
+                    Task { await viewModel.bind(cluster) }
                 }
                 .buttonStyle(.borderedProminent)
                 .frame(maxWidth: .infinity)
@@ -1229,7 +1215,7 @@ public struct FaceKeywordingView: View {
                 .accessibilityLabel(GatherLocalization.l("合并目标"))
                 .frame(maxWidth: .infinity)
                 Button(GatherLocalization.l("合并")) {
-                    viewModel.merge(cluster)
+                    Task { await viewModel.merge(cluster) }
                 }
                 .buttonStyle(.bordered)
                 .disabled(viewModel.mergeTargetId == nil)
@@ -1365,7 +1351,7 @@ public struct FaceKeywordingView: View {
         }
     }
 
-    private func xmpPreviewRow(_ item: FaceKwWritebackItem) -> some View {
+    private func xmpPreviewRow(_ item: WritebackItem) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
                 .font(.callout.weight(.semibold))
@@ -1383,7 +1369,7 @@ public struct FaceKeywordingView: View {
         .padding(.vertical, 10)
     }
 
-    private func xmpMarkerText(_ item: FaceKwWritebackItem) -> String {
+    private func xmpMarkerText(_ item: WritebackItem) -> String {
         var parts: [String] = []
         if let preview = item.preview {
             parts.append(preview.willCreate ? GatherLocalization.l("新建 XMP") : GatherLocalization.l("更新 XMP"))
@@ -1401,7 +1387,7 @@ public struct FaceKeywordingView: View {
 
     /// TS WritebackReport：已写入/失败/已跳过三色统计卡 + 失败项明细 +
     /// 重试/确认同步/清理 + reload 行。
-    private func resultSection(_ result: FaceKwWritebackResult) -> some View {
+    private func resultSection(_ result: WritebackResult) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(GatherLocalization.l("写回报告")).font(.headline)
             WritebackReportCard(

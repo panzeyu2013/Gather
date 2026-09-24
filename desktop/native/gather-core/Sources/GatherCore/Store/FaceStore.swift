@@ -1,6 +1,6 @@
 // Store/FaceStore.swift
 // R1：face_observations / face_analysis_state / face_cluster_state / face_clusters /
-// face_cluster_members / role_bindings 的访问入口（取代 Database/Repositories/FaceRepo.swift；
+// face_cluster_members / role_bindings 的访问入口（取代 旧 FaceRepo；
 // 本轮先落观察/分析状态/复用/缩略图目录，集群与绑定随后并入同一 Store）。
 import Foundation
 
@@ -964,7 +964,7 @@ public extension SQLiteFaceStore {
     }
 }
 
-// MARK: - 复用型 DTO（从 Database/Repositories/FaceRepo.swift 迁入，R1 单一来源）
+// MARK: - 复用型 DTO（从 旧 FaceRepo 迁入，R1 单一来源）
 
 /// TS FaceClusterInput.members 元素。
 public struct FaceClusterMemberInput {
@@ -1035,7 +1035,7 @@ public struct FaceBindingDetail {
     }
 }
 
-// MARK: - 观察输入（从 Database/Repositories/FaceRepo.swift 迁入，R1 单一来源）
+// MARK: - 观察输入（从 旧 FaceRepo 迁入，R1 单一来源）
 
 /// TS FaceObservationInput。
 public struct FaceObservationInput {

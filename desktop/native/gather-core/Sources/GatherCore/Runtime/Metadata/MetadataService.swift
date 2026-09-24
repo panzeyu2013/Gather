@@ -249,12 +249,15 @@ public final class MetadataService {
         var result: [String: MetadataTags] = [:]
         let allPhotos = try await getPhotosByIds(photoIds)
         let photoById = Dictionary(uniqueKeysWithValues: allPhotos.map { ($0.id, $0) })
-        var fingerprints: [String: (size: Int, value: String)] = [:]
-        try await batchAsync(allPhotos, concurrency: 16) { photo in
-            if let fingerprint = try? await MetadataFingerprint.cacheStalenessKey(photo.filepath) {
-                fingerprints[photo.id] = fingerprint
+        // 指纹经返回值收集：并发闭包不得改写捕获变量（数据竞争）。
+        let sampledFingerprints = try await ConcurrentMap.run(allPhotos, concurrency: 16) {
+            photo -> (String, (size: Int, value: String))? in
+            guard let fingerprint = try? await MetadataFingerprint.cacheStalenessKey(photo.filepath) else {
+                return nil
             }
+            return (photo.id, fingerprint)
         }
+        let fingerprints = Dictionary(uniqueKeysWithValues: sampledFingerprints.compactMap { $0 })
         let cached = try await metadataStore.metadataBatch(photoIds: photoIds).filter { row in
             guard let fingerprint = fingerprints[row.photoId] else { return false }
             return row.fileSize == Int64(fingerprint.size) && row.fileMtime == fingerprint.value
@@ -272,7 +275,8 @@ public final class MetadataService {
             // 是裸语句无内部事务，包裹安全）；每照片 try/catch 隔离提取失败。
             var pendingUpserts: [(photoId: String, sessionId: String, input: MetadataCacheInput)] = []
 
-            try await batchAsync(photos, concurrency: 10) { photo in
+            let extracted = try await ConcurrentMap.run(photos, concurrency: 10) {
+                photo -> (id: String, sessionId: String, tags: MetadataTags, cache: MetadataCacheInput?) in
                 do {
                     var tags = MetadataTags()
                     var cacheInput = MetadataCacheInput()
@@ -335,9 +339,7 @@ public final class MetadataService {
                                 cacheInput.label = writerAttributes.label
                             }
 
-                            result[photo.id] = tags
-                            pendingUpserts.append((photo.id, photo.sessionId, cacheInput))
-                            return
+                            return (photo.id, photo.sessionId, tags, cacheInput)
                         }
                     }
 
@@ -369,11 +371,17 @@ public final class MetadataService {
                     if existingAttributes.rating != nil { cacheInput.rating = existingAttributes.rating.map { Int64($0) } }
                     if existingAttributes.label != nil { cacheInput.label = existingAttributes.label }
 
-                    result[photo.id] = tags
-                    pendingUpserts.append((photo.id, photo.sessionId, cacheInput))
+                    return (photo.id, photo.sessionId, tags, cacheInput)
                 } catch {
                     GatherLogger.log("Failed to extract metadata for \(photo.filepath): \(error)", level: .warn)
-                    result[photo.id] = MetadataTags()
+                    return (photo.id, photo.sessionId, MetadataTags(), nil)
+                }
+            }
+
+            for item in extracted {
+                result[item.id] = item.tags
+                if let cache = item.cache {
+                    pendingUpserts.append((item.id, item.sessionId, cache))
                 }
             }
 
@@ -483,15 +491,25 @@ public final class MetadataService {
             bySidecar[key, default: []].append(update)
         }
 
-        try await batchAsync(Array(bySidecar.values), concurrency: 4) { group in
+        let batchOutcomes = try await ConcurrentMap.run(Array(bySidecar.values), concurrency: 4) {
+            group -> [(ok: Bool, error: String?)] in
+            var local: [(ok: Bool, error: String?)] = []
             for update in group {
                 do {
                     _ = try await self.setMetadata(photoId: update.photoId, tags: update.tags)
-                    success += 1
+                    local.append((true, nil))
                 } catch {
-                    failed += 1
-                    errors.append("\(update.photoId): \(String(describing: error))")
+                    local.append((false, "\(update.photoId): \(String(describing: error))"))
                 }
+            }
+            return local
+        }
+        for outcome in batchOutcomes.flatMap({ $0 }) {
+            if outcome.ok {
+                success += 1
+            } else {
+                failed += 1
+                if let error = outcome.error { errors.append(error) }
             }
         }
 
@@ -509,7 +527,7 @@ public final class MetadataService {
         } catch {
             GatherLogger.log("Failed to batch-load photos for cache populate: \(error)", level: .warn)
         }
-        try await batchAsync(photoIds, concurrency: 10) { photoId in
+        _ = try await ConcurrentMap.run(photoIds, concurrency: 10) { photoId in
             do {
                 var photo = photoById?[photoId]
                 if photo == nil, photoById == nil {
@@ -568,58 +586,3 @@ private func stringValue(_ value: JSONValue?) -> String? {
     return nil
 }
 
-/// TS: batchAsync（utils/async.ts）—— 与 DuplicateService / coordinator 同款滑动窗口。
-private func batchAsync<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = MetadataBatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    collected.sort { $0.index < $1.index }
-    return collected.map(\.value)
-}
-
-private final class MetadataBatchCursor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var next = 0
-    private var failed = false
-    private let count: Int
-
-    init(count: Int) { self.count = count }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failed || next >= count { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
-}

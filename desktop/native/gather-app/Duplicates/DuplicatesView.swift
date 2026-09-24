@@ -41,7 +41,7 @@ public enum VisualPreset: String, CaseIterable {
 @MainActor
 @Observable
 public final class DuplicatesViewModel {
-    private let client: NativeCommandClient
+    private let commands: CommandSurface
     public let sessionId: String
     private(set) public var groups: [DuplicateGroup] = []
     private(set) public var scanResult: DuplicateScanResult?
@@ -59,9 +59,9 @@ public final class DuplicatesViewModel {
     private(set) public var visibleGroupCount = groupPageSize
     private var expandedGroupIds: Set<Int> = []
 
-    public init(sessionId: String, router: CommandRouter) {
+    public init(sessionId: String, commands: CommandSurface) {
         self.sessionId = sessionId
-        self.client = NativeCommandClient(router: router)
+        self.commands = commands
     }
 
     // MARK: - 预设 / 阈值（对齐 TS L159-166、309-343）
@@ -84,12 +84,10 @@ public final class DuplicatesViewModel {
         isLoading = true
         defer { isLoading = false }
         do {
-            groups = try await client.executeAsync("dup.groups", params: [
-                "sessionId": .string(sessionId),
-            ]).decoded(as: [DuplicateGroup].self)
+            groups = try await commands.duplicate.groups(DupGroupsParams(sessionId: sessionId))
             errorMessage = nil
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -101,14 +99,12 @@ public final class DuplicatesViewModel {
         scanJobId = nil
         defer { isScanning = false }
         do {
-            scanResult = try await client.executeAsync("dup.scan", params: [
-                "sessionId": .string(sessionId),
-                "visualThreshold": .number(Double(threshold)),
-            ]).decoded(as: DuplicateScanResult.self)
+            scanResult = try await commands.duplicate.scan(
+                DupScanParams(sessionId: sessionId, visualThreshold: Double(threshold)))
             notice = GatherLocalization.l("重复扫描完成")
             await load()
         } catch {
-            let text = NativeCommandClient.message(for: error)
+            let text = GatherErrorText.message(for: error)
             if text.localizedCaseInsensitiveContains("cancelled") {
                 notice = GatherLocalization.l("重复扫描已取消")
             } else {
@@ -131,18 +127,24 @@ public final class DuplicatesViewModel {
     }
 
     /// 取消扫描：优先用事件记录的 jobId，事件未到达时按会话内活跃任务兜底。
-    public func cancelScan() {
-        guard let jobId = scanJobId ?? activeScanJobId() else { return }
+    public func cancelScan() async {
+        let jobId: String?
+        if let scanJobId {
+            jobId = scanJobId
+        } else {
+            jobId = await activeScanJobId()
+        }
+        guard let jobId else { return }
         do {
-            _ = try client.execute("jobs.cancel", params: ["jobId": .string(jobId)])
+            _ = try await commands.jobs.cancel(JobCancelParams(jobId: jobId))
             notice = GatherLocalization.l("已请求取消重复扫描")
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
-    private func activeScanJobId() -> String? {
-        let jobs = (try? client.execute("jobs.list").decoded(as: [AnalysisJobData].self)) ?? []
+    private func activeScanJobId() async -> String? {
+        let jobs = (try? await commands.jobs.list(JobListParams())) ?? []
         return jobs.first { job in
             job.type == .duplicateScan && job.scopeId == sessionId &&
                 ["queued", "running", "cancelling"].contains(job.status.rawValue)
@@ -151,13 +153,10 @@ public final class DuplicatesViewModel {
 
     // MARK: - 组 / 成员操作（本地 patch，对齐 TS L201-270）
 
-    public func resolveGroup(_ group: DuplicateGroup, resolution: DupResolution) {
+    public func resolveGroup(_ group: DuplicateGroup, resolution: DupResolution) async {
         do {
-            _ = try client.execute("dup.resolve", params: [
-                "groupId": .number(Double(group.id)),
-                "resolution": .string(resolution.rawValue),
-                "confirmed": .bool(true),
-            ])
+            try await commands.duplicate.resolve(
+                DupResolveParams(groupId: group.id, resolution: resolution, confirmed: true))
             notice = String(format: GatherLocalization.l("已处理重复组 #%lld"), group.id)
             guard let index = groups.firstIndex(where: { $0.id == group.id }) else { return }
             var updated = groups[index]
@@ -171,17 +170,14 @@ public final class DuplicatesViewModel {
             }
             groups[index] = updated
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
-    public func toggle(_ member: DuplicateGroupMember) {
+    public func toggle(_ member: DuplicateGroupMember) async {
         do {
-            _ = try client.execute("dup.resolve_member", params: [
-                "memberId": .number(Double(member.id)),
-                "isKept": .bool(!member.isKept),
-                "confirmed": .bool(true),
-            ])
+            try await commands.duplicate.resolveMember(
+                DupResolveMemberParams(memberId: member.id, isKept: !member.isKept, confirmed: true))
             guard let groupIndex = groups.firstIndex(where: { $0.members.contains(where: { $0.id == member.id }) }),
                   let memberIndex = groups[groupIndex].members.firstIndex(where: { $0.id == member.id })
             else { return }
@@ -191,7 +187,7 @@ public final class DuplicatesViewModel {
                 ? DupResolution.keepAll.rawValue
                 : DupResolution.keepOne.rawValue
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
         }
     }
 
@@ -288,7 +284,7 @@ public final class DuplicatesViewModel {
 
 public struct DuplicatesView: View {
     @State private var viewModel: DuplicatesViewModel
-    private let router: CommandRouter
+    private let commands: CommandSurface
     private let onBack: () -> Void
     private let onOpenSimilarity: (String) -> Void
     private let onOpenTab: (String, SessionTab) -> Void
@@ -297,15 +293,15 @@ public struct DuplicatesView: View {
 
     init(
         sessionId: String,
-        router: CommandRouter,
+        commands: CommandSurface,
         onBack: @escaping () -> Void = {},
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
         onOpenGallery: @escaping (String) -> Void = { _ in },
         onOpenSettings: @escaping () -> Void = {}
     ) {
-        _viewModel = State(initialValue: DuplicatesViewModel(sessionId: sessionId, router: router))
-        self.router = router
+        _viewModel = State(initialValue: DuplicatesViewModel(sessionId: sessionId, commands: commands))
+        self.commands = commands
         self.onBack = onBack
         self.onOpenSimilarity = onOpenSimilarity
         self.onOpenTab = onOpenTab
@@ -368,7 +364,11 @@ public struct DuplicatesView: View {
                     Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
                 }
                 Spacer()
-                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
+                C1StatusCapsuleHost(
+                    sessionId: viewModel.sessionId,
+                    culling: commands.culling,
+                    onOpenSettings: onOpenSettings
+                )
                 Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { Task { await viewModel.load() } }
             }
             SessionTabBar(
@@ -398,7 +398,7 @@ public struct DuplicatesView: View {
                 }
                 Spacer()
                 Button(GatherLocalization.l("取消"), systemImage: "stop.fill") {
-                    viewModel.cancelScan()
+                    Task { await viewModel.cancelScan() }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -503,8 +503,12 @@ private struct GroupCardView: View {
                 }
                 Spacer()
                 Menu(GatherLocalization.l("处理")) {
-                    Button(GatherLocalization.l("保留最佳")) { viewModel.resolveGroup(group, resolution: .keepOne) }
-                    Button(GatherLocalization.l("保留全部")) { viewModel.resolveGroup(group, resolution: .keepAll) }
+                    Button(GatherLocalization.l("保留最佳")) {
+                        Task { await viewModel.resolveGroup(group, resolution: .keepOne) }
+                    }
+                    Button(GatherLocalization.l("保留全部")) {
+                        Task { await viewModel.resolveGroup(group, resolution: .keepAll) }
+                    }
                 }
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
@@ -569,8 +573,10 @@ private struct GroupCardView: View {
                 Text(String(format: GatherLocalization.l("%.1f MB"), Double(fileSize) / 1024 / 1024))
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Button(member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃")) { viewModel.toggle(member) }
-                .buttonStyle(.bordered)
+            Button(member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃")) {
+                Task { await viewModel.toggle(member) }
+            }
+            .buttonStyle(.bordered)
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(GatherTheme.surface.opacity(0.5)))
@@ -582,10 +588,10 @@ private struct GroupCardView: View {
         )
         .contextMenu {
             Button(GatherLocalization.l("保留")) {
-                if !member.isKept { viewModel.toggle(member) }
+                if !member.isKept { Task { await viewModel.toggle(member) } }
             }
             Button(GatherLocalization.l("丢弃")) {
-                if member.isKept { viewModel.toggle(member) }
+                if member.isKept { Task { await viewModel.toggle(member) } }
             }
         }
         .opacity(member.isKept ? 1 : 0.72)

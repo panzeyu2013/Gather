@@ -92,7 +92,7 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
 public protocol LibraryDataProvider {
     func listSessions() async throws -> [SessionData]
     /// TS: filterApi.photosGlobal → { photos, total }。
-    /// async：分页大查询经 executeAsync 走后台线程（避免 @MainActor 主线程阻塞）。
+    /// async：分页大查询经类型化命令面异步执行（避免 @MainActor 主线程阻塞）。
     func globalPhotos(
         criteria: FilterGroup,
         sessionId: String?,
@@ -139,27 +139,27 @@ public extension LibraryDataProvider {
     }
 
     func createAlbum(name: String, criteria: FilterGroup) async throws -> SmartAlbumData {
-        throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
+        throw UnsupportedOperationError(code: "ALBUM_NOT_SUPPORTED")
     }
 
     func updateAlbum(albumId: String, criteria: FilterGroup) async throws {
-        throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
+        throw UnsupportedOperationError(code: "ALBUM_NOT_SUPPORTED")
     }
 
     func deleteAlbum(albumId: String) async throws {
-        throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
+        throw UnsupportedOperationError(code: "ALBUM_NOT_SUPPORTED")
     }
 
     func listAssetCandidates() async throws -> [AssetLinkCandidateData] { [] }
 
     func updateAssetCandidate(candidateId: String, accept: Bool) async throws {
-        throw NativeCommandError.failed("ASSET_LINK_NOT_SUPPORTED")
+        throw UnsupportedOperationError(code: "ASSET_LINK_NOT_SUPPORTED")
     }
 
     func listAssetVolumes() async throws -> [AssetVolumeData] { [] }
 
     func relinkAssetRoot(oldRoot: String, newRoot: String) async throws -> Int {
-        throw NativeCommandError.failed("ASSET_RELINK_NOT_SUPPORTED")
+        throw UnsupportedOperationError(code: "ASSET_RELINK_NOT_SUPPORTED")
     }
 
     func listMetadataOrphans() async throws -> [MetadataOrphan] { [] }
@@ -168,23 +168,21 @@ public extension LibraryDataProvider {
         xmpPath: String,
         action: MetadataOrphanAction
     ) async throws -> [MetadataOrphan] {
-        throw NativeCommandError.failed("METADATA_ORPHAN_NOT_SUPPORTED")
+        throw UnsupportedOperationError(code: "METADATA_ORPHAN_NOT_SUPPORTED")
     }
 }
 
-/// 真实实现：同进程直连 SessionCommandRouter（photo.list_page 等装配形状
-/// 以路由为唯一事实源，避免复制资产装配逻辑）。
+/// 真实实现：同进程直连类型化命令面（session/filter/album/assets/metadata 域），
+/// 装配形状以各域命令实现为唯一事实源，避免复制资产装配逻辑。
 public final class LiveLibraryDataProvider: LibraryDataProvider {
-    private let router: SessionCommandRouter
-    private let client: NativeCommandClient
+    private let commands: CommandSurface
 
-    public init(router: SessionCommandRouter) {
-        self.router = router
-        self.client = NativeCommandClient(router: router)
+    public init(commands: CommandSurface) {
+        self.commands = commands
     }
 
     public func listSessions() async throws -> [SessionData] {
-        try await router.sessionRuntime.listSessions()
+        try await commands.session.list()
     }
 
     public func globalPhotos(
@@ -193,21 +191,16 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         limit: Int,
         offset: Int
     ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let response = try await client.executeAsync("filter.photos_global", params: [
-            "criteria": try JSONValue(from: criteria),
-            "sessionId": sessionId.map { .string($0) } ?? .null,
-            "limit": .number(Double(limit)),
-            "offset": .number(Double(offset)),
-        ])
-        let object = response.objectValue ?? [:]
-        let photos: [GlobalPhotoResult] = try (object["photos"] ?? .array([])).decoded(as: [GlobalPhotoResult].self)
-        let total = Int(object["total"]?.numberValue ?? 0)
-        return (photos, total)
+        try await commands.filter.photosGlobal(FilterPhotosGlobalParams(
+            criteria: criteria,
+            sessionId: sessionId,
+            limit: limit,
+            offset: offset
+        ))
     }
 
     public func listAlbums() async throws -> [SmartAlbumData] {
-        let response = try await client.executeAsync("album.list", params: [:])
-        return try response.decoded(as: [SmartAlbumData].self)
+        try await commands.album.list()
     }
 
     public func albumPhotos(
@@ -215,111 +208,95 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         limit: Int,
         offset: Int
     ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let response = try await client.executeAsync("album.get_photos", params: [
-            "albumId": .string(albumId),
-            "limit": .number(Double(limit)),
-            "offset": .number(Double(offset)),
-        ])
-        let object = response.objectValue ?? [:]
-        let photos: [GlobalPhotoResult] = try (object["photos"] ?? .array([])).decoded(as: [GlobalPhotoResult].self)
-        let total = Int(object["total"]?.numberValue ?? 0)
-        return (photos, total)
+        try await commands.album.getPhotos(albumId: albumId, limit: limit, offset: offset)
     }
 
     public func createAlbum(name: String, criteria: FilterGroup) async throws -> SmartAlbumData {
-        let response = try await client.executeAsync("album.create", params: [
-            "name": .string(name),
-            "criteria": try JSONValue(from: criteria),
-        ])
-        return try response.decoded(as: SmartAlbumData.self)
+        let detail = try await commands.album.create(
+            name: name,
+            description: nil,
+            criteria: criteria,
+            sortBy: nil,
+            sortOrder: nil,
+            icon: nil
+        )
+        return SmartAlbumData(detail: detail)
     }
 
     public func updateAlbum(albumId: String, criteria: FilterGroup) async throws {
-        _ = try await client.executeAsync("album.update", params: [
-            "albumId": .string(albumId),
-            "criteria": try JSONValue(from: criteria),
-        ])
-    }
-
-    public func deleteAlbum(albumId: String) async throws {
-        _ = try await client.executeAsync("album.delete", params: [
-            "albumId": .string(albumId),
-            "confirmed": .bool(true),
-        ])
-    }
-
-    /// 异步命令桥：executeAsync + 续体（assets.* 已迁异步路由）。
-    private func asyncCommand(
-        _ command: String,
-        params: [String: GatherCore.JSONValue]
-    ) async throws -> GatherCore.JSONValue {
-        try await withCheckedThrowingContinuation { continuation in
-            router.executeAsync(command, params: params) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: NativeCommandError.failed(response.error ?? command))
-                    return
-                }
-                continuation.resume(returning: data)
-            }
-        }
-    }
-
-    public func listAssetCandidates() async throws -> [AssetLinkCandidateData] {
-        let data = try await asyncCommand("assets.candidates", params: [:])
-        return try data.decoded(as: [AssetLinkCandidateData].self)
-    }
-
-    public func updateAssetCandidate(candidateId: String, accept: Bool) async throws {
-        _ = try router.execute(
-            accept ? "assets.accept_candidate" : "assets.reject_candidate",
-            params: [
-                "candidateId": .string(candidateId),
-                "confirmed": .bool(true),
-            ]
+        try await commands.album.update(
+            albumId: albumId,
+            name: nil,
+            description: nil,
+            criteria: criteria,
+            sortBy: nil,
+            sortOrder: nil,
+            icon: nil
         )
     }
 
+    public func deleteAlbum(albumId: String) async throws {
+        try await commands.album.delete(albumId: albumId, confirmed: true)
+    }
+
+    public func listAssetCandidates() async throws -> [AssetLinkCandidateData] {
+        try await commands.assets.candidates(AssetCandidateListParams())
+    }
+
+    public func updateAssetCandidate(candidateId: String, accept: Bool) async throws {
+        let params = AssetCandidateMutationParams(candidateId: candidateId, confirmed: true)
+        if accept {
+            try await commands.assets.acceptCandidate(params)
+        } else {
+            try await commands.assets.rejectCandidate(params)
+        }
+    }
+
     public func listAssetVolumes() async throws -> [AssetVolumeData] {
-        let response = try await asyncCommand("assets.volumes", params: [:])
-        return try response.decoded(as: [AssetVolumeData].self)
+        try await commands.assets.volumes()
     }
 
     public func relinkAssetRoot(oldRoot: String, newRoot: String) async throws -> Int {
-        let response = try await asyncCommand("assets.relink_root", params: [
-            "oldRoot": .string(oldRoot),
-            "newRoot": .string(newRoot),
-            "confirmed": .bool(true),
-        ])
-        return Int(response.numberValue ?? 0)
+        try await commands.assets.relinkRoot(AssetRelinkRootParams(
+            oldRoot: oldRoot,
+            newRoot: newRoot,
+            confirmed: true
+        ))
     }
 
     public func listMetadataOrphans() async throws -> [MetadataOrphan] {
-        // metadata.orphans 已迁入异步路由（orphanOutbox 为 Store 读）。
-        let response: GatherCore.JSONValue = try await withCheckedThrowingContinuation { continuation in
-            router.executeAsync("metadata.orphans", params: [:]) { response in
-                guard response.ok, let data = response.data else {
-                    continuation.resume(throwing: RouterCommandError(message: response.error ?? "METADATA_ORPHANS_FAILED"))
-                    return
-                }
-                continuation.resume(returning: data)
-            }
-        }
-        return try response.decoded(as: [MetadataOrphan].self)
+        try await commands.metadata.orphans()
     }
 
     public func resolveMetadataOrphan(
         xmpPath: String,
         action: MetadataOrphanAction
     ) async throws -> [MetadataOrphan] {
-        let response = try await NativeCommandClient(router: router).executeAsync(
-            "metadata.resolve_orphan",
-            params: [
-                "xmpPath": .string(xmpPath),
-                "action": .string(action.rawValue),
-                "confirmed": .bool(true),
-            ]
+        try await commands.metadata.resolveOrphan(MetadataOrphanResolveParams(
+            xmpPath: xmpPath,
+            action: action,
+            confirmed: true
+        ))
+    }
+}
+
+/// album.create 的 SmartAlbumDetailData → SmartAlbumData 投影（photoCount 不在此
+/// DTO 形状内，create 调用方不消费该字段）。
+private extension SmartAlbumData {
+    init(detail: SmartAlbumDetailData) {
+        self.init(
+            id: detail.id,
+            schemaVersion: detail.schemaVersion,
+            name: detail.name,
+            description: detail.description,
+            filterCriteria: detail.filterCriteria,
+            sortBy: detail.sortBy,
+            sortOrder: detail.sortOrder,
+            icon: detail.icon,
+            createdAt: detail.createdAt,
+            updatedAt: detail.updatedAt,
+            validationError: detail.validationError
         )
-        return try response.decoded(as: [MetadataOrphan].self)
     }
 }
 
@@ -659,10 +636,6 @@ public final class LibraryViewModel {
     // MARK: 错误 message（对齐 DashboardViewModel.message）
 
     static func message(for error: Error) -> String {
-        if let sessionError = error as? SessionServiceError {
-            return GatherLocalization.errorText(sessionError.gatherCode.rawValue)
-        }
-        let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        GatherErrorText.message(for: error)
     }
 }

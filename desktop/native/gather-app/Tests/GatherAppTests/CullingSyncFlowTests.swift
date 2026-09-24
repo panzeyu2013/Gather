@@ -85,7 +85,7 @@ struct CullingSyncFlowStateTests {
     private func makeViewModel() -> CullingViewModel {
         CullingViewModel(
             sessionId: "s1",
-            router: StubCommandRouter.empty()
+            commands: .testEmpty()
         )
     }
 

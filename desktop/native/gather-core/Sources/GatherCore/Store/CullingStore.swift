@@ -1,6 +1,6 @@
 // Store/CullingStore.swift
 // R1：culling_decisions / culling_history 的唯一访问入口
-// （取代 Database/Repositories/CullingDecisionRepo.swift + CullingHistoryRepo.swift）。
+// （取代 旧 CullingDecisionRepo + CullingHistoryRepo.swift）。
 import Foundation
 
 /// applyDecisionStates 事务内 CAS 失败的回滚信号（仅本文件使用，不得逃出该方法）。

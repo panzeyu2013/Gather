@@ -15,6 +15,7 @@
 // 11 个特性全部接线：依赖未注入或未选中会话时回退占位，壳层不自行构造
 // 路由或数据层。
 import SwiftUI
+import GatherCore
 
 /// 壳层根视图：左侧列出 app 目录中的 11 个特性，右侧渲染所选 Case。
 /// 「工作台/全局图库/设置/人脸库」接真实视图；5 个工作区特性按当前会话接
@@ -122,16 +123,14 @@ public struct AppShellView: View {
         }
     }
 
-    /// 设置页需要的命令路由（可选：未注入时该特性回退占位）。
-    private let settingsRouter: CommandRouter?
+    /// 类型化命令面（可选：未注入时依赖命令的页面回退占位）。
+    private let commands: CommandSurface?
     /// 人脸库需要的数据提供者（可选：未注入时该特性回退占位）。
     private let personsProvider: PersonsDataProvider?
     /// 全局图库需要的数据提供者（可选：未注入时该特性回退占位）。
     private let libraryProvider: LibraryDataProvider?
-    /// 会话工作区需要的依赖（可选：未注入时 5 个工作区页签回退占位）。
-    private let sessionRouter: CommandRouter?
-    /// 浏览页需要宿主路由层的具体类型（可选：未注入时该特性回退占位）。
-    private let galleryRouter: HostRouter?
+    /// Capture One 桥（注入给会话级视图模型；未注入时用空实现）。
+    private let captureOneBridge: CaptureOneBridge?
     /// 壳层导航状态：当前会话与当前页签；未注入时内部新建（无选中会话）。
     private let navigation: AppNavigationState
     /// 打开工作区回调：工作台与全局图库共用，壳层只透传不解释。
@@ -149,22 +148,20 @@ public struct AppShellView: View {
     /// 装配处传入 provider 与壳层导航状态）。
     @MainActor
     init(
-        settingsRouter: CommandRouter? = nil,
+        commands: CommandSurface? = nil,
         personsProvider: PersonsDataProvider? = nil,
         dashboardProvider: DashboardDataProvider? = nil,
         libraryProvider: LibraryDataProvider? = nil,
-        sessionRouter: CommandRouter? = nil,
         galleryProvider: GalleryDataProvider? = nil,
-        galleryRouter: HostRouter? = nil,
         similarityProvider: SimilarityDataProvider? = nil,
+        captureOneBridge: CaptureOneBridge? = nil,
         navigation: AppNavigationState? = nil,
         onOpenSession: @escaping (String) -> Void = { _ in }
     ) {
-        self.settingsRouter = settingsRouter
+        self.commands = commands
         self.personsProvider = personsProvider
         self.libraryProvider = libraryProvider
-        self.sessionRouter = sessionRouter
-        self.galleryRouter = galleryRouter
+        self.captureOneBridge = captureOneBridge
         let navigation = navigation ?? AppNavigationState()
         self.navigation = navigation
         self.onOpenSession = onOpenSession
@@ -173,9 +170,9 @@ public struct AppShellView: View {
             navigation: navigation,
             dashboardProvider: dashboardProvider,
             galleryProvider: galleryProvider,
-            isGalleryRouterWired: galleryRouter != nil,
+            isGalleryWired: commands != nil,
             similarityProvider: similarityProvider,
-            sessionRouter: sessionRouter
+            captureOneBridge: captureOneBridge
         ))
         if let libraryProvider {
             _libraryViewModel = State(initialValue: LibraryViewModel(provider: libraryProvider))
@@ -273,12 +270,12 @@ public struct AppShellView: View {
         switch feature {
         case .dashboard: return coordinator.dashboardViewModel != nil
         case .library: return libraryViewModel != nil
-        case .gallery: return coordinator.galleryViewModel != nil && galleryRouter != nil
-        case .similarity: return coordinator.similarityViewModel != nil && sessionRouter != nil
-        case .settings: return settingsRouter != nil
+        case .gallery: return coordinator.galleryViewModel != nil && commands != nil
+        case .similarity: return coordinator.similarityViewModel != nil && commands != nil
+        case .settings: return commands != nil
         case .persons: return personsViewModel != nil
         case .controlCenter, .faceKeywording, .duplicates, .culling, .export:
-            return navigation.currentSessionId != nil && sessionRouter != nil
+            return navigation.currentSessionId != nil && commands != nil
         }
     }
 
@@ -314,8 +311,8 @@ public struct AppShellView: View {
                 placeholderView(for: feature)
             }
         case .settings:
-            if let settingsRouter {
-                SettingsView(router: settingsRouter)
+            if let commands {
+                SettingsView(commands: commands)
             } else {
                 placeholderView(for: feature)
             }
@@ -330,7 +327,7 @@ public struct AppShellView: View {
                 SessionShellView(
                     sessionId: sessionId,
                     tab: tab,
-                    router: sessionRouter,
+                    commands: commands,
                     onBack: { coordinator.openGalleryFeature(sessionId) },
                     onOpenTab: { coordinator.openSessionTab($0, $1) },
                     onOpenSimilarity: { coordinator.openSimilarityFeature($0) },
@@ -345,10 +342,10 @@ public struct AppShellView: View {
         case .gallery:
             if let sessionId = navigation.currentSessionId,
                let galleryViewModel = coordinator.galleryViewModel,
-               let galleryRouter {
+               let commands {
                 GalleryView(
                     viewModel: galleryViewModel,
-                    router: galleryRouter,
+                    commands: commands,
                     onBack: { coordinator.openDashboardFeature() },
                     onOpenSimilarity: { coordinator.openSimilarityFeature($0) },
                     onOpenTab: { coordinator.openSessionTab($0, $1) },
@@ -364,10 +361,10 @@ public struct AppShellView: View {
         case .similarity:
             if let sessionId = navigation.currentSessionId,
                let similarityViewModel = coordinator.similarityViewModel,
-               let sessionRouter {
+               let commands {
                 SimilarityView(
                     viewModel: similarityViewModel,
-                    router: sessionRouter,
+                    commands: commands,
                     onBack: { coordinator.openGalleryFeature(sessionId) },
                     onOpenGallery: { coordinator.openGalleryFeature($0) },
                     onOpenTab: { coordinator.openSessionTab($0, $1) },

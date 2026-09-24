@@ -11,7 +11,7 @@ import GatherCore
 
 struct SimilarityView: View {
     @Bindable var viewModel: SimilarityViewModel
-    let router: CommandRouter
+    let commands: CommandSurface
     let onBack: () -> Void
     let onOpenGallery: (String) -> Void
     let onOpenTab: (String, SessionTab) -> Void
@@ -139,7 +139,7 @@ struct SimilarityView: View {
                 Spacer()
                 C1StatusCapsuleHost(
                     sessionId: viewModel.sessionId,
-                    router: router,
+                    culling: commands.culling,
                     onOpenSettings: onOpenSettings,
                     isActive: isActive
                 )

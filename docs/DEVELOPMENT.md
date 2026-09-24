@@ -20,10 +20,10 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 
 ```text
 desktop/native/
-├── gather-core/       # SQLite、任务、索引、元数据、导出和 Vision 服务
-│   └── Sources/GatherCore/{Protocol,Database,Face,Image,Services,Similarity,Watch,Logging}
-├── gather-app/        # SwiftUI 页面、应用路由、菜单与原生命令路由
-│   ├── Sources/GatherApp/   # RootView、Dashboard/Library/Gallery/Similarity/Persons、Host、Support
+├── gather-core/       # Protocol / Store / Runtime / Jobs / Metadata / API / Support + 算法内核
+│   └── Sources/GatherCore/{Protocol,Store,Runtime,Jobs,Metadata,API,Support,Face,Image,Similarity,Logging}
+├── gather-app/        # SwiftUI 壳层与页面、菜单、组合根（无第二命令层）
+│   ├── Sources/GatherApp/   # App(组合根)/ Shell / Dashboard / Library / Gallery / Similarity / Persons / Host / Support
 │   ├── Culling/ FaceKeywording/ ControlCenter/ Settings/ Export/ Duplicates/
 │   └── Resources/     # en.lproj / zh-Hans.lproj 本地化表
 docs/                  # 总览、开发指南、ADR、路线图
@@ -61,31 +61,46 @@ GatherApp，并在存在 Capture One 插件源码时尝试构建插件。默认�
 ## 架构约定
 
 ```text
-SwiftUI
+SwiftUI（Features：View + ViewModel）
+  ↓ 只依赖类型化命令面（无命令名、无 JSON 桥、无同步入口）
+GatherAPI / CommandSurface（19 域 · 111 方法，async-only）
   ↓
-SessionCommandRouter / CommandRouter（118 命令，同进程直连）
-  ↓
-GatherCore 服务
-  ├── SQLite（WAL + 迁移 + 备份/回滚）
-  ├── 图片读取、Vision 和 RAW 解码
-  ├── JobService（可恢复任务，executor + checkpoint + dedupeKey）
-  └── MetadataOutbox / XMP 写回
+GatherCore Runtime（actor：Culling / Similarity / Duplicate / Quality / Indexer /
+Export / FaceKeywording / Navigation / Session / Jobs / Metadata …）
+  ↓ 只经 Store 协议
+Store（唯一 SQL 所有者：SQLiteDatabase actor + 迁移注册表 + 每聚合一个 Store）
+  ├── SQLite（WAL + 备份/回滚，见 ADR-005）
+  ├── 图片读取、Vision 和 RAW 解码（Domain/Image/Face 算法内核）
+  └── JobRunner（可恢复任务：executor + checkpoint + dedupeKey + 租约 fencing）
 ```
 
-### 页面与路由
+**架构规则（门禁脚本强制，回归即失败）：**
 
-- `RootView`（`Sources/GatherApp/RootView.swift`）负责 Dashboard、Library、
-  Gallery、Similarity、Persons 及原生功能页的导航；页面以 opacity 常驻切换，
-  隐藏页显式停止轮询并用 `.accessibilityHidden` 屏蔽。
-- 工作区功能经 `SessionCommandRouter` 访问核心服务，保持 session 范围隔离；
-  session 切换用 `.id("session-tab-\(sessionId)-\(tab)")` 守卫强制重建。
+1. `Services/` 目录不存在；`Store/` 之外不得出现裸 SQL（CI 扫描）；
+2. 命令面只有 async：不存在同步执行入口、信号量桥接或命令名分发表；
+3. 参数与结果一律 `Protocol/` DTO（Codable），UI 层不出现命令级 JSON；
+4. 有可变状态者一律 `actor`；`@unchecked Sendable` 归零（enforced）；
+5. DDL 只在 Store 的 schema 单源；迁移步骤只做数据变换；
+6. 错误各有领域类型（`description` 即错误码），UI 经 `GatherErrorText` 单点映射；
+7. 并发原语唯一：`ConcurrentMap.run`（值返回、取消传播、保序）。
+
+### 页面与壳层
+
+- `AppShellView`（`Sources/GatherApp/Shell/`）是根视图：左侧特性列表 +
+  右侧按 Feature 渲染；`ShellCoordinator` 承担菜单/通知/窗口标题/拖放/语言版本
+  与会话级 ViewModel 构造。
+- 会话级页面经 `SessionShellView` 承载 5 个工作区页签（控制中心/人脸/重复/挑片/
+  导出），导航状态由 `AppNavigationState` 注入；session 切换用
+  `.id("session-shell-\(sessionId)-\(tab)")` 守卫强制重建。
 - Jobs、Settings、Face Keywording、Duplicates、Culling、Export 和 Control Center
-  均由 SwiftUI 原生页面承载。
+  均由 SwiftUI 原生页面承载；每个 Feature 的 ViewModel 独立文件、`@MainActor`
+  `@Observable`、只依赖命令面或数据提供者协议（可注入替身）。
 
 ### 数据与任务
 
-- SQLite 使用 WAL；迁移由 `GatherCore/Database/Migrations.swift` 统一管理，
-  含磁盘空间检查、SQLite backup API 备份与失败恢复（见 ADR-005）。
+- SQLite 使用 WAL；迁移由 `Store/StoreMigrator.swift`（33 步注册表）统一管理，
+  含磁盘空间检查、SQLite backup API 备份与失败恢复（见 ADR-005）；DDL 单源在
+  `Store/StoreSchema.swift`，结构漂移由 `StoreSchemaTests` 门禁。
 - 导入创建 session、写入照片资产后，立即提交 `metadata.scan` 任务；任务中心负责
   进度、失败显示、重试和取消。
 - 元数据写回经过 outbox，支持失败重试、冲突处理和重启后恢复。
@@ -95,8 +110,9 @@ GatherCore 服务
 ### 原生边界
 
 - 应用不包含 WKWebView、JavaScriptCore、React、TypeScript IPC 或 Electron 主进程。
-- 原生命令路由只接受明确的命令和参数；未知命令返回可诊断错误，不应静默成功。
-- UI 不直接持有数据库连接或执行任意文件路径操作，服务层负责授权和事务边界。
+- UI 只经 `CommandSurface` 的领域协议调用能力；不存在命令名字符串与命令级 JSON，
+  未知能力在编译期即不可表达（R5 出口）。
+- UI 不直接持有数据库连接或执行任意文件路径操作，Runtime/Store 负责授权和事务边界。
 
 ## 本地化体系
 
@@ -112,9 +128,10 @@ GatherCore 服务
   （`errorMessages` 表，`GatherLocalization.swift:10-170`）；未知码回退通用文案。
 - 任务侧映射：`jobStatusText` / `jobTypeText` / `progressPhaseText` 分别覆盖
   `jobs.status.*` / `jobs.type.*` / `progress.*` 相位键。
-- 通用出口：`message(for:)` 统一翻译 `RouterCommandError` / `NativeCommandError`
-  等错误对象；`jobErrorMessage` 只翻译错误码，非错误码回退通用文案（原始细节
-  留给 tooltip）。
+- 通用出口：`GatherErrorText.message(for:)`（`Support/GatherErrorText.swift`）
+  是 UI 展示错误的唯一出口：Swift 领域错误的 `description` 即错误码 → 翻译为
+  文案（未知码回退通用文案）；显式 NSError 诊断消息原样保留；
+  `jobErrorMessage` 只翻译错误码，非错误码回退通用文案（原始细节留给 tooltip）。
 - 语言状态：`appLanguage`（zh-CN/en）、`setAppLanguage(_:)`、`appLocale`
   （格式化跟随语言）；设置页 `settings.set_language` → `languageChanged` 通知 →
   `RootView` 重建外壳文案并 `GatherAppDelegate` 重建菜单。
@@ -181,7 +198,9 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 
 验收记录至少包含：gather-core 测试总数/套件数/失败数、gather-app 同名指标、
 `.app` 组装结果、fixture-dependent skip 与未执行的外部验收项。
-（最近一次台账：gather-core 765 / 98 suites、gather-app 92 / 18 suites，2026-08-12。）
+（最近一次台账：gather-core 1200 / 153 suites（串行；按当前约定跳过 2 个高计算
+similarity 套件）、gather-app 181 / 18 suites（串行），R5/R8 收口轮。）
+提交前同时运行 `./scripts/check-no-legacy.sh`（24 条 enforced 规则、0 tracked 度量）。
 
 验收时要区分：
 
@@ -219,17 +238,20 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
 扫描应以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此判断
 文件仍然存在。
 
-## IPC 契约精华（原 IPC_CONTRACT.md）
+## 命令面契约（R5）
 
-原契约冻结的是 renderer/main 双进程边界；原生化后 renderer 不存在，`SessionCommandRouter`
-成为唯一命令面。以下规则从旧契约继承，是路由与服务的兼容性底线。
+原 IPC 契约冻结的是 renderer/main 双进程边界；原生化后 renderer 与命令名路由层
+均已删除，**类型化命令面**是唯一入口。以下规则从旧契约继承并升级为编译期契约。
 
 ### 命令面
 
-- 全命令面 **118/118**：同步 `execute` 103 + 异步 `executeAsync` 22（去重 118，
-  与 TS preload 白名单逐名相等）；`SessionCommandRouter.swift` 为唯一实现点。
-- **破坏性命令** 31 项必须带 `confirmed: true` 双兜底，路由层校验失败即拒绝。
-- 未知命令/参数缺失返回结构化错误（`MISSING_PARAM:*` 等），不静默成功。
+- `GatherCore.CommandSurface`（`API/CommandSurface.swift`）聚合 **19 域 · 111 方法**
+  的 `*Commands` 协议；组合根 `AppComposition` 构造 19 个 `*CommandsImpl` actor。
+- 全部方法 `async throws`，参数/结果只用 `Protocol/` DTO；不存在同步入口、
+  命令名字符串或命令级 JSON。
+- **破坏性命令**必须由入参 DTO 携带 `confirmed`，实现内部校验失败即拒绝
+  （如 `SESSION_DELETE_NOT_CONFIRMED`、`WRITEBACK_CONFIRM_REQUIRED`）。
+- 参数缺失由 DTO 的可选性表达，运行时仅保留领域校验（不再有 MISSING_PARAM 层）。
 
 ### 分组与取消/状态
 
@@ -266,7 +288,7 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
 
 ### 事件通道
 
-- 推送走 `GatherEventCenter.shared.wire(jobService:)`（`Support/GatherEventCenter.swift`）：
+- 推送走 `GatherEventCenter.shared.wire(jobRunner:)`（`Support/GatherEventCenter.swift`）：
   `jobs:progress` 逐帧（终态帧驱动整页刷新）、`culling:sync-status`（C1 队列
   状态转换）、`gather:notification`（错误码，UI 经 `errorText` 映射）、
   `languageChanged`、`importCompleted`。
@@ -278,7 +300,7 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
 - `metadata.scan`（session 范围，去重键 `metadata.scan:<sessionId>`）、
   `checksum.backfill`（`checksum.backfill:<sessionId>`）、`sim.analyze`、
   `face.analyze`、`duplicate.scan`、`quality.score`、`export.execute`、
-  `thumbnail.build` 均由 JobService executor 承载；重聚类（recluster）除外，
+  `thumbnail.build` 均由 `JobRunner` executor 承载；重聚类（recluster）除外，
   见 ADR-024。
 
 ### 相似度结果档位

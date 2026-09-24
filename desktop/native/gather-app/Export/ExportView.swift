@@ -8,7 +8,7 @@ import GatherCore
 @MainActor
 @Observable
 public final class ExportViewModel {
-    private let client: NativeCommandClient
+    private let commands: CommandSurface
     public let sessionId: String
     private(set) public var preview: ExportPreview?
     private(set) public var result: ExportResult?
@@ -48,9 +48,9 @@ public final class ExportViewModel {
     public var watermarkFontSize = "24"
     public var destination = ""
 
-    public init(sessionId: String, router: CommandRouter) {
+    public init(sessionId: String, commands: CommandSurface) {
         self.sessionId = sessionId
-        self.client = NativeCommandClient(router: router)
+        self.commands = commands
     }
 
     public var destinationIsEmpty: Bool {
@@ -98,11 +98,9 @@ public final class ExportViewModel {
     }
 
     /// 加载会话名供命名预览 {session} 占位（session.get 失败静默保持 nil）。
-    public func loadSessionName() {
+    public func loadSessionName() async {
         guard sessionName == nil else { return }
-        sessionName = try? client.execute("session.get", params: [
-            "sessionId": .string(sessionId),
-        ]).decoded(as: SessionData.self).name
+        sessionName = try? await commands.session.get(SessionGetParams(sessionId: sessionId)).name
     }
 
     /// events.job-progress 消费：仅当前工作区 export.execute 任务的进度帧。
@@ -154,8 +152,10 @@ public final class ExportViewModel {
 
     public func previewExport() async {
         await run(isPreviewing: true) {
-            let data = try await self.client.executeAsync("export.preview", params: try self.parameters())
-            self.preview = try data.decoded(as: ExportPreview.self)
+            self.preview = try await self.commands.export.preview(ExportPreviewParams(
+                sessionId: self.sessionId,
+                options: try self.exportOptions()
+            ))
             self.result = nil
             self.notice = GatherLocalization.l("预览已更新")
         }
@@ -167,42 +167,42 @@ public final class ExportViewModel {
         await run {
             self.isExporting = true
             defer { self.isExporting = false }
-            var params = try self.parameters()
-            params["confirmed"] = .bool(true)
-            let data = try await self.client.executeAsync("export.execute", params: params)
-            self.result = try data.decoded(as: ExportResult.self)
+            let runExport = self.commands.export.execute
+            self.result = try await runExport(ExportExecuteParams(
+                sessionId: self.sessionId,
+                options: try self.exportOptions(),
+                confirmed: true
+            ))
             self.notice = GatherLocalization.l("导出任务已完成")
         }
         exportProgress = nil
         currentFileName = nil
     }
 
-    public func cancelExport() {
+    public func cancelExport() async {
         do {
-            // export.cancel 在路由端恒返回 true（SessionCommandRouter.swift:1408-1412），
-            // 无法区分 no-op（无导出任务时同样返回 true），因此保持提示展示。
-            _ = try client.execute("export.cancel", params: [
-                "sessionId": .string(sessionId),
-            ])
+            // 取消接口恒返回成功（无导出任务时同样如此），无法区分 no-op，
+            // 因此保持提示展示。
+            try await commands.export.cancel(sessionId: sessionId)
             notice = GatherLocalization.l("已请求取消导出")
             fieldError = nil
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
             fieldError = nil
         }
     }
 
-    public func generateReport(format: ReportFormat) {
+    public func generateReport(format: ReportFormat) async {
         do {
-            report = try client.execute("export.report", params: [
-                "sessionId": .string(sessionId),
-                "reportType": .string("session_summary"),
-                "format": .string(format.rawValue),
-            ]).decoded(as: ReportData.self)
+            report = try await commands.export.report(ExportReportParams(
+                sessionId: sessionId,
+                reportType: "session_summary",
+                format: format.rawValue
+            ))
             notice = String(format: GatherLocalization.l("报告已生成：%@"), report?.path ?? "")
             fieldError = nil
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
             fieldError = nil
         }
     }
@@ -232,7 +232,7 @@ public final class ExportViewModel {
         return "\(line[..<separator.lowerBound]): \(GatherLocalization.errorText(String(tail)))"
     }
 
-    private func parameters() throws -> [String: GatherCore.JSONValue] {
+    private func exportOptions() throws -> ExportOptions {
         guard !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ExportError.destinationInvalid
         }
@@ -272,10 +272,7 @@ public final class ExportViewModel {
             includeXmp: includeXmp,
             destination: destination.trimmingCharacters(in: .whitespacesAndNewlines)
         )
-        return [
-            "sessionId": .string(sessionId),
-            "options": try GatherCore.JSONValue(from: options),
-        ]
+        return options
     }
 
     private func watermark() throws -> ExportWatermark {
@@ -333,7 +330,7 @@ public final class ExportViewModel {
         do {
             try await operation()
         } catch {
-            errorMessage = NativeCommandClient.message(for: error)
+            errorMessage = GatherErrorText.message(for: error)
             fieldError = Self.fieldError(for: error)
         }
     }
@@ -357,7 +354,7 @@ public struct ExportView: View {
     @State private var viewModel: ExportViewModel
     @FocusState private var maxDimensionFocused: Bool
     @FocusState private var watermarkFontSizeFocused: Bool
-    private let router: CommandRouter
+    private let commands: CommandSurface
     private let onBack: () -> Void
     private let onOpenSimilarity: (String) -> Void
     private let onOpenTab: (String, SessionTab) -> Void
@@ -366,15 +363,15 @@ public struct ExportView: View {
 
     init(
         sessionId: String,
-        router: CommandRouter,
+        commands: CommandSurface,
         onBack: @escaping () -> Void = {},
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
         onOpenGallery: @escaping (String) -> Void = { _ in },
         onOpenSettings: @escaping () -> Void = {}
     ) {
-        _viewModel = State(initialValue: ExportViewModel(sessionId: sessionId, router: router))
-        self.router = router
+        _viewModel = State(initialValue: ExportViewModel(sessionId: sessionId, commands: commands))
+        self.commands = commands
         self.onBack = onBack
         self.onOpenSimilarity = onOpenSimilarity
         self.onOpenTab = onOpenTab
@@ -405,7 +402,7 @@ public struct ExportView: View {
             }
         }
         .background(Color.gatherBackground)
-        .task { viewModel.loadSessionName() }
+        .task { await viewModel.loadSessionName() }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
             guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.applyJobEvent(event)
@@ -422,7 +419,11 @@ public struct ExportView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
+                C1StatusCapsuleHost(
+                    sessionId: viewModel.sessionId,
+                    culling: commands.culling,
+                    onOpenSettings: onOpenSettings
+                )
             }
             SessionTabBar(
                 selection: .tab(.export),
@@ -462,7 +463,7 @@ public struct ExportView: View {
             .disabled(viewModel.isExporting || viewModel.destinationIsEmpty)
             // 对齐旧版 export.tsx:195：取消仅在导出进行中可用（预览期间禁用）。
             Button(GatherLocalization.l("取消导出"), systemImage: "stop.circle") {
-                viewModel.cancelExport()
+                Task { await viewModel.cancelExport() }
             }
             .disabled(!viewModel.isExporting)
         }
@@ -715,8 +716,8 @@ public struct ExportView: View {
                     Text(ExportViewModel.translateErrorLine(error)).font(.footnote).foregroundStyle(GatherTheme.error)
                 }
                 HStack(spacing: 8) {
-                    Button(GatherLocalization.l("生成 CSV 报告")) { viewModel.generateReport(format: .csv) }
-                    Button(GatherLocalization.l("生成 Markdown 报告")) { viewModel.generateReport(format: .md) }
+                    Button(GatherLocalization.l("生成 CSV 报告")) { Task { await viewModel.generateReport(format: .csv) } }
+                    Button(GatherLocalization.l("生成 Markdown 报告")) { Task { await viewModel.generateReport(format: .md) } }
                 }
                 if let report = viewModel.report {
                     Text(report.path)

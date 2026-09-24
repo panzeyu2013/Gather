@@ -43,7 +43,7 @@ struct IndexHeaderCopyTests {
     private func copy(_ status: WorkspaceStatus, _ session: SessionData?) -> IndexHeaderCopy {
         SessionControlView(
             sessionId: "s1",
-            router: StubCommandRouter.empty()
+            commands: .testEmpty()
         ).indexHeaderCopy(status, session: session)
     }
 

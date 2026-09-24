@@ -133,7 +133,7 @@ actor FakeCullingMutationPort: MetadataMutationPort {
     }
 }
 
-/// TS: WritebackService 替身（culling.ipc.ts 用到的最小面，全部记录调用）。
+/// TS: WritebackRuntime 替身（culling.ipc.ts 用到的最小面，全部记录调用）。
 final class FakeCullingWritebackPort: CullingWritebackPort {
     var previewCalls: [(sessionId: String, module: String, photoIds: Set<String>?)] = []
     var persistCalls: [[WritebackItem]] = []

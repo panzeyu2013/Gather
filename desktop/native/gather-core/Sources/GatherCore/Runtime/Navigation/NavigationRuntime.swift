@@ -99,13 +99,12 @@ public actor NavigationRuntime {
     private func split(group: NavigationGroup, splitIndex: Int, sessionId: String) async throws -> [NavigationGroup] {
         let rows = try await captureRows(sessionId: sessionId)
         let replacements = NavigationAssembler.splitReplacements(group: group, splitIndex: splitIndex, rows: rows)
-        try await store.deleteGroup(sessionId: sessionId, id: group.id)
-        for candidate in replacements {
-            try await store.insertGroup(
-                sessionId: sessionId,
-                group: Self.insert(group: candidate, source: .manual, fingerprint: "")
-            )
-        }
+        // 原子替换：删旧组与插入新组在同一事务内（P2-6）。
+        try await store.replaceGroups(
+            sessionId: sessionId,
+            deleteIds: [group.id],
+            inserting: replacements.map { Self.insert(group: $0, source: .manual, fingerprint: "") }
+        )
         return try await list(sessionId: sessionId)
     }
 
@@ -119,10 +118,11 @@ public actor NavigationRuntime {
         try NavigationAssembler.validateMergeSelection(uniqueIds: uniqueIds, selected: selected)
         let rows = try await captureRows(sessionId: sessionId)
         let merged = NavigationAssembler.mergedGroup(selected: selected, rows: rows)
-        try await store.deleteGroups(sessionId: sessionId, ids: uniqueIds)
-        try await store.insertGroup(
+        // 原子替换：删源组与插入合并组在同一事务内（P2-6）。
+        try await store.replaceGroups(
             sessionId: sessionId,
-            group: Self.insert(group: merged, source: .manual, fingerprint: "")
+            deleteIds: uniqueIds,
+            inserting: [Self.insert(group: merged, source: .manual, fingerprint: "")]
         )
         return try await list(sessionId: sessionId)
     }

@@ -20,8 +20,8 @@ import Foundation
 /// - 旧 `fkw.recluster` 无参数 DTO，本协议用扁平参数（sessionId / eps /
 ///   minSamples），缺省走设置项 default_eps / default_min_samples。
 /// - 旧 `fkw.unbind` 返回 {done, removedKeywords}，同样以元组承接。
-/// - 旧 `fkw.clusters` 返回服务层 FaceClusterData，本协议收敛为
-///   Protocol/Face.swift 的 FaceCluster。
+/// - 旧 `fkw.clusters` 返回服务层 FaceClusterData；R7 合并重复类型后，
+///   Protocol/Face.swift 的 FaceClusterData 即该形状（不再二次映射）。
 /// - 旧 `fkw.preview` / `fkw.writeback` / `fkw.confirm_cleanup` / `fkw.cleanup`
 ///   返回服务层 FaceKw 结果，本协议按 Protocol/Core.swift 的 WritebackPreview /
 ///   WritebackResult / CleanupResult 收敛，字段映射由实现承载。
@@ -43,8 +43,8 @@ public protocol FaceCommands: Sendable {
     func recluster(sessionId: String, eps: Double?, minSamples: Int?) async throws
 
     /// 旧命令：`fkw.clusters`。
-    /// 返回该会话的人脸簇，元素为 Protocol/Face.swift 的 FaceCluster。
-    func clusters(_ params: FkwClustersParams) async throws -> [FaceCluster]
+    /// 返回该会话的人脸簇（Protocol/Face.swift 的 FaceClusterData，与运行时同型）。
+    func clusters(_ params: FkwClustersParams) async throws -> [FaceClusterData]
 
     /// 旧命令：`fkw.bind`。
     /// 绑定簇到角色名与关键词；旧响应 {done:true}，本协议返回空。

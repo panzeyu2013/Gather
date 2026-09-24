@@ -1,6 +1,6 @@
 // Store/AssetStore.swift
 // R1：asset_files / asset_members / asset_link_candidates / session_assets 的访问入口
-// （取代 Database/Repositories/AssetRepo.swift；本轮先落只读查询面，
+// （取代 旧 AssetRepo；本轮先落只读查询面，
 //  backfill/relink/reconcile 变更面随后并入同一 Store）。
 import Foundation
 

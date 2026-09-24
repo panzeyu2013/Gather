@@ -22,7 +22,8 @@ final class C1StatusService {
     private(set) var statuses: [String: SessionState] = [:]
     private var activeSessions: Set<String> = []
     private var pollTask: Task<Void, Never>?
-    private var client: NativeCommandClient?
+    /// culling.sync_status 的类型化入口（R5：命令面注入，无命令名/JSON 桥）。
+    private var culling: (any CullingCommands)?
     private var eventObserver: NSObjectProtocol?
 
     private init() {
@@ -39,9 +40,9 @@ final class C1StatusService {
         }
     }
 
-    func setRouter(_ router: CommandRouter) {
-        guard client == nil else { return }
-        client = NativeCommandClient(router: router)
+    func setCommands(_ culling: any CullingCommands) {
+        guard self.culling == nil else { return }
+        self.culling = culling
     }
 
     func subscribe(sessionId: String) {
@@ -65,12 +66,16 @@ final class C1StatusService {
     }
 
     func refresh(sessionId: String) async {
-        guard let client else { return }
+        guard let culling else { return }
         do {
-            let value = try await client.executeAsync("culling.sync_status", params: ["sessionId": .string(sessionId)])
+            let summary = try await culling.syncStatus(
+                CullingSyncStatusParams(sessionId: sessionId))
+            // 旧客户端读取的 reloadAckedAt 从未出现在 sync_status 响应里
+            // （MetadataSyncSummary 无该字段），故此处保持 nil —— 「最近同步」
+            // 行与旧实现同样不显示。
             statuses[sessionId] = SessionState(
-                syncStatus: try value.decoded(as: MetadataSyncSummary.self),
-                reloadedAt: value.objectValue?["reloadAckedAt"]?.stringValue,
+                syncStatus: summary,
+                reloadedAt: nil,
                 failedToLoad: false
             )
         } catch {
@@ -91,14 +96,14 @@ final class C1StatusService {
 /// 不再显示旧工作区状态）；② isActive=false 时取消订阅（隐藏页不轮询）。
 struct C1StatusCapsuleHost: View {
     let sessionId: String
-    let router: CommandRouter
+    let culling: any CullingCommands
     let onOpenSettings: () -> Void
     var isActive: Bool = true
 
     var body: some View {
         C1StatusCapsule(sessionId: sessionId, onOpenSettings: onOpenSettings)
             .onAppear {
-                C1StatusService.shared.setRouter(router)
+                C1StatusService.shared.setCommands(culling)
                 if isActive {
                     C1StatusService.shared.subscribe(sessionId: sessionId)
                 }

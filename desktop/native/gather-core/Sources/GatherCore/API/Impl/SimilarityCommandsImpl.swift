@@ -25,13 +25,13 @@ import Foundation
 public actor SimilarityCommandsImpl: SimilarityCommands {
     private let similarity: SimilarityRuntime
     private let jobs: JobRunner
-    private let writeback: WritebackService
+    private let writeback: WritebackRuntime
     private let settings: SettingsSnapshot
 
     public init(
         similarity: SimilarityRuntime,
         jobs: JobRunner,
-        writeback: WritebackService,
+        writeback: WritebackRuntime,
         settings: SettingsSnapshot
     ) {
         self.similarity = similarity

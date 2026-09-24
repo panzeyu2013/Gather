@@ -1,6 +1,6 @@
 // Store/WritebackStore.swift
 // R1：metadata_outbox / metadata_outbox_sessions 的唯一访问入口
-// （取代 Database/Repositories/MetadataOutboxRepo.swift；writeback_items 部分随后并入）。
+// （取代 旧 MetadataOutboxRepo；writeback_items 部分随后并入）。
 import Foundation
 
 public struct OutboxRecord: Decodable, Equatable, Sendable {

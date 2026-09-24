@@ -4,7 +4,7 @@
 // 其余命名空间随各 feature 重写逐个并入。
 import Foundation
 
-/// 应用组合根：拥有唯一 SQLiteDatabase 与各 Store（取代 DBConnection + 服务手拼）。
+/// 应用组合根：拥有唯一 SQLiteDatabase 与各 Store（取代旧 DB 连接封装 + 服务手拼）。
 public struct AppContainer: Sendable {
     public let database: SQLiteDatabase
     public let settings: any SettingsStore

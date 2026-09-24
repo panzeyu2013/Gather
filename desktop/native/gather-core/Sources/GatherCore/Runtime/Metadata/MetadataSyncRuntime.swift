@@ -72,9 +72,9 @@ public enum MetadataSyncError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// TS: WritebackService 依赖的协调器最小面（`Pick<MetadataSyncCoordinator,
+/// TS: WritebackRuntime 依赖的协调器最小面（`Pick<MetadataSyncCoordinator,
 /// 'waitForIdle' | 'flushSession' | 'confirmSync' | 'cleanup'>`）——
-/// 3.4 CullingService / WritebackService 均只依赖该端口，测试可注入替身。
+/// 3.4 CullingService / WritebackRuntime 均只依赖该端口，测试可注入替身。
 public protocol MetadataSyncPort: Sendable {
     func waitForIdle(xmpPath: String, timeoutMs: Int) async throws
     func flushSession(sessionId: String) async throws -> MetadataSyncSummary
@@ -111,11 +111,10 @@ public actor MetadataSyncRuntime: MetadataSyncPort {
 
     /// TS: eventSink（summary push 回调，宿主组合根接线）。
     /// 读路径：emitSummary 只在 actor 内读该回调。
-    /// 写路径：宿主装配期直接同步赋值（构造后立即完成、此后只读），或经
-    /// setEventSink / start(eventSink:) 注入。
-    /// 注：为兼容宿主既有同步赋值接线，本属性是 nonisolated(unsafe)（登记为
-    /// R4 残余项）；若宿主改走 `await setEventSink`，应收紧回 actor 私有存储。
-    nonisolated(unsafe) public var eventSink: (@Sendable (MetadataSyncSummary) -> Void)?
+    /// 写路径：唯一入口为 actor 隔离的 setEventSink / start(eventSink:)。
+    /// 收紧（P1-1）：宿主改为 `await setEventSink` 后，本属性回归 actor 私有，
+    /// 不再有跨隔离域的裸写路径。
+    private var eventSink: (@Sendable (MetadataSyncSummary) -> Void)?
 
     /// TS: timers（Map<xmpPath, Timeout>）→ 可取消 Task。
     private var timers: [String: Task<Void, Never>] = [:]

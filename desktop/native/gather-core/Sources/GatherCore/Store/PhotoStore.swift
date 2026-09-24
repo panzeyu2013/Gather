@@ -1,5 +1,5 @@
 // Store/PhotoStore.swift
-// R1：photos 的唯一访问入口（取代 Database/Repositories/PhotoRepo.swift）。
+// R1：photos 的唯一访问入口（取代 旧 PhotoRepo）。
 import Foundation
 
 public struct PhotoRecord: Decodable, Equatable, Sendable {

@@ -2,7 +2,7 @@
 // R1 新持久化层的唯一连接/事务/语句入口。
 //
 // 设计要点（对应审计 P1）：
-// - actor 串行化全部 SQL（替代旧 DBConnection 的 NSRecursiveLock + @unchecked Sendable）；
+// - actor 串行化全部 SQL（替代旧 DB 连接封装的重入锁与不安全并发标注）；
 // - 事务嵌套退化为 SAVEPOINT，与旧行为一致，但不再跨线程共享可变 handle；
 // - 预编译语句 LRU 缓存（旧层每次 prepare，热点循环每行编译）；
 // - 失败统一为 SQLiteFailure（含 phase/code/extended/message/sql），替代字符串判定。
@@ -141,7 +141,7 @@ public actor SQLiteDatabase {
         try execute("PRAGMA wal_checkpoint(TRUNCATE)")
     }
 
-    /// SQLite backup API（非直接复制活动库），对应旧 DBConnection backup 语义。
+    /// SQLite backup API（非直接复制活动库），对应旧 DB 连接封装的 backup 语义。
     public func backup(to destinationPath: String) throws {
         guard !closed, let handle else {
             throw SQLiteFailure(phase: .other, code: SQLITE_MISUSE, extended: SQLITE_MISUSE, message: "database is closed")

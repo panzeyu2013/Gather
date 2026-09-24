@@ -1,17 +1,18 @@
 // desktop/native/gather-app/Sources/GatherApp/Shell/SessionShellView.swift
-// R6 会话宿主（步骤四）：一个会话下的 5 个工作区页签
+// R6 会话宿主：一个会话下的 5 个工作区页签
 // （controlCenter / faceKeywording / duplicates / culling / export）。
 // 只做「按页签 switch + 透传导航闭包」，不创建视图模型、不解释路由；
-// 路由层依赖未注入时整页回退占位。浏览/相似度由导航闭包交回外层壳接线。
+// 命令面未注入时整页回退占位。浏览/相似度由导航闭包交回外层壳接线。
 import SwiftUI
+import GatherCore
 
 struct SessionShellView: View {
     /// 会话 id：透传给各页签；调用方在会话/页签变化时必须重建本视图。
     let sessionId: String
     /// 当前页签（5 选 1，由外层壳的导航状态驱动）。
     let tab: SessionTab
-    /// 会话工作区依赖（可选：nil 时回退占位）。
-    let router: CommandRouter?
+    /// 类型化命令面（可选：nil 时回退占位）。
+    let commands: CommandSurface?
     /// 返回浏览页（5 个页签共用的 onBack）。
     let onBack: () -> Void
     let onOpenTab: (String, SessionTab) -> Void
@@ -22,7 +23,7 @@ struct SessionShellView: View {
     init(
         sessionId: String,
         tab: SessionTab = .control,
-        router: CommandRouter? = nil,
+        commands: CommandSurface? = nil,
         onBack: @escaping () -> Void = {},
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
@@ -31,7 +32,7 @@ struct SessionShellView: View {
     ) {
         self.sessionId = sessionId
         self.tab = tab
-        self.router = router
+        self.commands = commands
         self.onBack = onBack
         self.onOpenTab = onOpenTab
         self.onOpenSimilarity = onOpenSimilarity
@@ -40,8 +41,8 @@ struct SessionShellView: View {
     }
 
     var body: some View {
-        if let router {
-            tabContent(router: router)
+        if let commands {
+            tabContent(commands: commands)
         } else {
             placeholder
         }
@@ -49,12 +50,12 @@ struct SessionShellView: View {
 
     /// 按当前页签渲染对应工作区视图；导航闭包原样透传（不解释目的地）。
     @ViewBuilder
-    private func tabContent(router: CommandRouter) -> some View {
+    private func tabContent(commands: CommandSurface) -> some View {
         switch tab {
         case .control:
             SessionControlView(
                 sessionId: sessionId,
-                router: router,
+                commands: commands,
                 onBack: onBack,
                 onOpenSimilarity: onOpenSimilarity,
                 onOpenTab: onOpenTab,
@@ -64,7 +65,7 @@ struct SessionShellView: View {
         case .faceKw:
             FaceKeywordingView(
                 sessionId: sessionId,
-                router: router,
+                commands: commands,
                 onBack: onBack,
                 onOpenSimilarity: onOpenSimilarity,
                 onOpenTab: onOpenTab,
@@ -74,7 +75,7 @@ struct SessionShellView: View {
         case .duplicates:
             DuplicatesView(
                 sessionId: sessionId,
-                router: router,
+                commands: commands,
                 onBack: onBack,
                 onOpenSimilarity: onOpenSimilarity,
                 onOpenTab: onOpenTab,
@@ -84,7 +85,7 @@ struct SessionShellView: View {
         case .culling:
             CullingView(
                 sessionId: sessionId,
-                router: router,
+                commands: commands,
                 onBack: onBack,
                 onOpenSimilarity: onOpenSimilarity,
                 onOpenTab: onOpenTab,
@@ -94,7 +95,7 @@ struct SessionShellView: View {
         case .export:
             ExportView(
                 sessionId: sessionId,
-                router: router,
+                commands: commands,
                 onBack: onBack,
                 onOpenSimilarity: onOpenSimilarity,
                 onOpenTab: onOpenTab,

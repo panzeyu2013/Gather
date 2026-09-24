@@ -13,44 +13,34 @@ public protocol PersonsDataProvider {
 }
 
 public final class LivePersonsDataProvider: PersonsDataProvider {
-    private let router: SessionCommandRouter
-    private let client: NativeCommandClient
+    private let commands: CommandSurface
 
-    public init(router: SessionCommandRouter) {
-        self.router = router
-        self.client = NativeCommandClient(router: router)
+    public init(commands: CommandSurface) {
+        self.commands = commands
     }
 
     public func list() async throws -> [PersonData] {
-        try await client.executeAsync("person.list", params: [:]).decoded(as: [PersonData].self)
+        try await commands.person.list(PersonListParams())
     }
 
     public func get(_ personId: String) async throws -> PersonDetailData {
-        try await client.executeAsync("person.get", params: ["personId": .string(personId)])
-            .decoded(as: PersonDetailData.self)
+        try await commands.person.get(PersonGetParams(personId: personId))
     }
 
     public func create(name: String) async throws -> String {
-        let response = try await client.executeAsync("person.create", params: ["name": .string(name)])
-        guard let id = response.objectValue?["id"]?.stringValue else {
-            throw RouterCommandError(message: "PERSON_CREATE_EMPTY_RESPONSE")
-        }
-        return id
+        try await commands.person.create(PersonCreateParams(name: name))
     }
 
     public func update(personId: String, name: String, notes: String) async throws {
-        _ = try await client.executeAsync("person.update", params: [
-            "personId": .string(personId),
-            "name": .string(name),
-            "notes": .string(notes),
-        ])
+        try await commands.person.update(PersonUpdateParams(
+            personId: personId,
+            name: name,
+            notes: notes
+        ))
     }
 
     public func delete(personId: String) async throws {
-        _ = try await client.executeAsync("person.delete", params: [
-            "personId": .string(personId),
-            "confirmed": .bool(true),
-        ])
+        try await commands.person.delete(PersonDeleteParams(personId: personId, confirmed: true))
     }
 }
 
@@ -178,6 +168,6 @@ public final class PersonsViewModel {
     /// 对齐 TS translateError（utils/errors.ts）：错误码翻译为中文文案，
     /// 未知错误码回退通用文案，其余原样展示。
     private static func message(_ error: Error) -> String {
-        GatherLocalization.message(for: error)
+        GatherErrorText.message(for: error)
     }
 }

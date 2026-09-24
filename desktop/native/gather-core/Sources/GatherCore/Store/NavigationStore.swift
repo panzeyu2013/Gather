@@ -102,6 +102,13 @@ public protocol NavigationStore: Sendable {
     func insertGroup(sessionId: String, group: NavigationGroupInsert) async throws
     func deleteGroup(sessionId: String, id: String) async throws
     func deleteGroups(sessionId: String, ids: [String]) async throws
+    /// 原子替换（P2-6）：同一事务内删除 deleteIds 指定的组并插入 replacements。
+    /// split/merge 的「删旧组 + 插入新组」必须不可分割，避免中途失败留下空组集合。
+    func replaceGroups(
+        sessionId: String,
+        deleteIds: [String],
+        inserting groups: [NavigationGroupInsert]
+    ) async throws
     func deleteAutomaticGroups(sessionId: String) async throws
     func replaceAutomaticGroups(
         sessionId: String,
@@ -174,6 +181,25 @@ public struct SQLiteNavigationStore: NavigationStore {
             "DELETE FROM navigation_groups WHERE session_id = ? AND id IN (\(placeholders))",
             [.text(sessionId)] + ids.map { .text($0) }
         )
+    }
+
+    public func replaceGroups(
+        sessionId: String,
+        deleteIds: [String],
+        inserting groups: [NavigationGroupInsert]
+    ) async throws {
+        try await database.transaction { db in
+            if !deleteIds.isEmpty {
+                let placeholders = deleteIds.map { _ in "?" }.joined(separator: ", ")
+                try db.run(
+                    "DELETE FROM navigation_groups WHERE session_id = ? AND id IN (\(placeholders))",
+                    [.text(sessionId)] + deleteIds.map { .text($0) }
+                )
+            }
+            for group in groups {
+                try Self.insertGroup(db, sessionId: sessionId, group: group)
+            }
+        }
     }
 
     public func deleteAutomaticGroups(sessionId: String) async throws {

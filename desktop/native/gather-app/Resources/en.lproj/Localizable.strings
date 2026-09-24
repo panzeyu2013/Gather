@@ -133,6 +133,8 @@
 "常规参数" = "Basic Parameters";
 "高级参数" = "Advanced Parameters";
 "请选择" = "Select…";
+"XMP Sidecar" = "XMP Sidecar";
+"Embedded" = "Embedded";
 /* Culling/CullingView.swift */
 "全部" = "All";
 "全部照片" = "All Photos";

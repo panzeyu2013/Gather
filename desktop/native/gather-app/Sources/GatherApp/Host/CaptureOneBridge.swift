@@ -80,13 +80,6 @@ public final class CaptureOneBridge: @unchecked Sendable {
         self.recordReloadAck = recordReloadAck
     }
 
-    public convenience init(router: CommandRouter) {
-        self.init(recordReloadAck: { sessionId in
-            guard let router = router as? SessionCommandRouter else { return }
-            try await router.recordCaptureOneReloadAck(sessionId: sessionId)
-        })
-    }
-
     public func selectedPhotoPaths() async throws -> [String] {
         let appName = try await captureOneApplicationName()
         let output = try await runAppleScript(Self.selectedVariantsScript(appName: appName))

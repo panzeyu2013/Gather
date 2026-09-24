@@ -104,7 +104,7 @@ private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, SQLite
     let db = try await makeMigratedStore(path: path)
     let container = AppContainer(database: db)
     let api = GatherAPI(container: container)
-    let router = await SessionCommandRouter.makeDefault(
+    let composition = await AppComposition.makeDefault(
         database: db,
         settings: SettingsSnapshot(values: SettingsAPI.defaults),
         settingsAPI: api.settings,
@@ -123,7 +123,7 @@ private func makeLiveProvider() async throws -> (LiveGalleryDataProvider, SQLite
         photoStore: container.photos,
         sessionStore: container.sessions
     )
-    return (LiveGalleryDataProvider(router: router), db)
+    return (LiveGalleryDataProvider(commands: composition.commands), db)
 }
 
 private func insertSession(_ db: SQLiteDatabase, _ id: String) async throws {

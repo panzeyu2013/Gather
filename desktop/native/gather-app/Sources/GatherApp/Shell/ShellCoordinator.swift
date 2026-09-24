@@ -32,9 +32,11 @@ final class ShellCoordinator {
     private let dashboardProvider: DashboardDataProvider?
     private let galleryProvider: GalleryDataProvider?
     private let similarityProvider: SimilarityDataProvider?
-    private let sessionRouter: CommandRouter?
-    /// 浏览页宿主路由层是否已接线（未接线时不构造浏览视图模型，与占位一致）。
-    private let isGalleryRouterWired: Bool
+    /// Capture One 桥（相似度页的「在 C1 中加载元数据」按钮使用）；
+    /// 未注入时用默认空实现（不写 reload ack）。
+    private let captureOneBridge: CaptureOneBridge?
+    /// 命令面是否已接线（未接线时不构造浏览视图模型，与占位一致）。
+    private let isGalleryWired: Bool
 
     // MARK: - 视图模型
 
@@ -57,16 +59,16 @@ final class ShellCoordinator {
         navigation: AppNavigationState,
         dashboardProvider: DashboardDataProvider? = nil,
         galleryProvider: GalleryDataProvider? = nil,
-        isGalleryRouterWired: Bool = false,
+        isGalleryWired: Bool = false,
         similarityProvider: SimilarityDataProvider? = nil,
-        sessionRouter: CommandRouter? = nil
+        captureOneBridge: CaptureOneBridge? = nil
     ) {
         self.navigation = navigation
         self.dashboardProvider = dashboardProvider
         self.galleryProvider = galleryProvider
         self.similarityProvider = similarityProvider
-        self.sessionRouter = sessionRouter
-        self.isGalleryRouterWired = isGalleryRouterWired
+        self.captureOneBridge = captureOneBridge
+        self.isGalleryWired = isGalleryWired
 
         let dashboardViewModel = dashboardProvider.map { DashboardViewModel(provider: $0) }
         // 常驻工作台：selectedFeature 初值恒为 .dashboard，启动即可见。
@@ -76,14 +78,14 @@ final class ShellCoordinator {
         // 装配处预置了选中会话时（深链/恢复）：同步构造两个会话级视图模型；
         // 未预置时等首次会话变化走 syncSessionScopedViewModels()。
         if let sessionId = navigation.currentSessionId {
-            if let galleryProvider, isGalleryRouterWired {
+            if let galleryProvider, isGalleryWired {
                 self.galleryViewModel = GalleryViewModel(sessionId: sessionId, provider: galleryProvider)
             }
             if let similarityProvider {
                 self.similarityViewModel = SimilarityViewModel(
                     sessionId: sessionId,
                     provider: similarityProvider,
-                    captureOne: Self.captureOneBridge(router: sessionRouter)
+                    captureOne: captureOneBridge ?? CaptureOneBridge()
                 )
             }
         }
@@ -270,7 +272,7 @@ final class ShellCoordinator {
             similarityViewModel = nil
             return
         }
-        if galleryViewModel?.sessionId != sessionId, let galleryProvider, isGalleryRouterWired {
+        if galleryViewModel?.sessionId != sessionId, let galleryProvider, isGalleryWired {
             galleryViewModel?.stopIndexStatusPolling()
             galleryViewModel = GalleryViewModel(sessionId: sessionId, provider: galleryProvider)
         }
@@ -280,7 +282,7 @@ final class ShellCoordinator {
             similarityViewModel = SimilarityViewModel(
                 sessionId: sessionId,
                 provider: similarityProvider,
-                captureOne: Self.captureOneBridge(router: sessionRouter)
+                captureOne: captureOneBridge ?? CaptureOneBridge()
             )
         }
     }
@@ -326,11 +328,5 @@ final class ShellCoordinator {
         } else {
             dashboardViewModel.stopAutoRefresh()
         }
-    }
-
-    /// 相似度页的 Capture One 桥：注入了命令路由时用真实桥，否则用默认空实现。
-    private static func captureOneBridge(router: CommandRouter?) -> CaptureOneBridge {
-        guard let router else { return CaptureOneBridge() }
-        return CaptureOneBridge(router: router)
     }
 }

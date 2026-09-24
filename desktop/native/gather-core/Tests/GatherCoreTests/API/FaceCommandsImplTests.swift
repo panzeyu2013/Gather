@@ -5,7 +5,7 @@
 //   dedupeKey 走旧硬编码回退 / 非法设置缺省拒绝且不建作业；
 // - cancel_analysis：取消排队作业 / 未知会话静默；
 // - recluster：设置缺省重聚类并落库 / 非法 eps 拒绝 / 无观察拒绝；
-// - clusters：FaceClusterData → FaceCluster 字段与绑定映射 / 未知会话空数组；
+// - clusters：FaceClusterData 字段与绑定 / 未知会话空数组；
 // - bind：角色名归一化 + 关键词去重落库 / 空角色名与未知簇错误；
 // - unbind：确认门控 FKW_UNBIND_CONFIRM_REQUIRED / 移除关键词与解绑；
 // - merge：并入目标簇 / 自合并 FACE_SELF_MERGE；
@@ -385,7 +385,7 @@ struct FaceCommandsImplTests {
 
     // MARK: clusters
 
-    @Test("clusters maps FaceClusterData into the protocol FaceCluster shape")
+    @Test("clusters returns the runtime FaceClusterData shape")
     func clustersMapsProtocolShape() async throws {
         let harness = try await makeFaceCommandsHarness()
         defer { harness.cleanup() }
@@ -406,12 +406,10 @@ struct FaceCommandsImplTests {
         #expect(cluster.size == 1)
         #expect(cluster.status == "bound")
         #expect(cluster.thumbnailBase64 == "")
-        #expect(cluster.binding == BindingData(clusterId: 1, roleName: "Alice", keywords: ["kw1"]))
+        #expect(cluster.binding == FaceClusterBinding(roleName: "Alice", keywords: ["kw1"]))
         #expect(cluster.members.count == 1)
         #expect(cluster.members.first?.photoId == "p1")
         #expect(cluster.members.first?.filename == "photo-a.jpg")
-        #expect(cluster.syncedToLibrary == nil)
-        #expect(cluster.matchedPersonId == nil)
     }
 
     @Test("clusters returns an empty list for an unknown session")

@@ -1,6 +1,6 @@
 // Store/PersonStore.swift
 // R1：persons / person_photos / person_embeddings 的访问入口
-// （取代 Database/Repositories/PersonRepo.swift；本轮先落 CRUD/计数/照片桥接，
+// （取代 旧 PersonRepo；本轮先落 CRUD/计数/照片桥接，
 //  merge/嵌入存取/reconcileSession 随后并入同一 Store）。
 import Foundation
 
@@ -682,7 +682,7 @@ public extension SQLitePersonStore {
     }
 }
 
-// MARK: - 共享 DTO（从 Database/Repositories/PersonRepo.swift 迁入）
+// MARK: - 共享 DTO（从 旧 PersonRepo 迁入）
 
 /// addPhotos 的单条输入（TS: { photoId, faceBbox, confidence }）。
 public struct PersonPhotoInput {

@@ -253,6 +253,14 @@ struct NavigationRuntimeTests {
 
     /// 阻塞 store：captureRows 挂起至取消。
     private struct BlockingNavigationStore: NavigationStore {
+        func replaceGroups(
+            sessionId: String,
+            deleteIds: [String],
+            inserting groups: [NavigationGroupInsert]
+        ) async throws {
+            throw NavigationError.groupNotFound
+        }
+
         func groups(sessionId: String) async throws -> [NavigationGroupRecord] { [] }
         func manualGroups(sessionId: String) async throws -> [NavigationGroupRecord] { [] }
         func cachedFingerprint(sessionId: String) async throws -> String? { nil }

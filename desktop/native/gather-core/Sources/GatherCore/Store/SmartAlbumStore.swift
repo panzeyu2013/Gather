@@ -1,5 +1,5 @@
 // Store/SmartAlbumStore.swift
-// R1：smart_albums 的唯一访问入口（取代 Database/Repositories/SmartAlbumRepo.swift）。
+// R1：smart_albums 的唯一访问入口（取代 旧 SmartAlbumRepo）。
 import Foundation
 
 public struct SmartAlbumCreateData {

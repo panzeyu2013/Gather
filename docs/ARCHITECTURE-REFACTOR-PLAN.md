@@ -917,3 +917,68 @@ acc-legacy 验收（快照 4c170a6）指出文档多处数字陈旧。以下为*
 - 最关键单点风险：P0-1 / P0-2 未完成前，19 域命令层是死代码——架构重写收益（可测试、可注入、无 3800 行上帝类）尚未兑现；且 Services 已归零而旧路由仍在，构成事实上的双轨。
 - 工程量：P0-2 是本计划最大单次变更（3800 行、118 case → 111 命令、含 app 组合根装配与 7 个口径外调用点），必须独占切片并配双包 + 全量验证。
 - 纪律：多切片共享包时禁止 git checkout 回退疑似并发写手的文件（Round 71 曾误把受害者当加害者，反复覆盖切片成果）；提交必须门控 + 快照锚定（纪律 20/22）。
+
+---
+
+## 31. §30 残余目标收口（Round 129，本轮，权威完成记录）
+
+**本节是 §30 残余清单的完成记录；与 §15–§30 冲突时以本节为准。**
+
+**验收快照**：core **1200 tests / 153 suites 全绿**（串行；按当前约定跳过 2 个高计算
+similarity 套件，见 §31.5）；app **181 tests / 18 suites 全绿**（串行）；
+双包 `swift build` 与 `--build-tests` 均 0 error；
+`./scripts/check-no-legacy.sh` → **24 enforced / 0 tracked 全绿**（阈值全 0）。
+
+### 31.1 P0 命令层接线与旧路由删除（R5 出口达成）
+
+| # | 结果 | 证据 |
+|---|---|---|
+| P0-1 | ✅ 命令层被宿主使用 | 新增 app 组合根 `Sources/GatherApp/App/AppComposition.swift`：装配全部 Runtime 与 19 个 `*CommandsImpl`，产出 core `CommandSurface`（`API/CommandSurface.swift`）；GatherApp/Shell/11 个特性全部切类型化 |
+| P0-2 | ✅ 旧路由/桥删除 | 删除 `Host/SessionCommandRouter.swift`(3660) · `Host/CommandRouter.swift` · `Support/NativeCommandClient.swift` · `Support/JSONValueDecoding.swift` · `StubCommandRouter.swift` · `NativeCommandClientTests.swift`；app 侧 30 文件、约 120 处命令调用全部改类型化域方法；`JSONValue.init(from:)` 迁入 core `Support/JSONValueCoding.swift` |
+| P0-3 | ✅ Similarity 用例侧缺陷 | `SimilarityCommandsImplTests` cancel 用例补注册 stub executor（提交 ed15b58） |
+| P0-4 | ✅ dedupeKey 数值格式 | `String(Double($0))` 使 `similarity.analyze:<sid>:12.0:3.0:<mode>` 与旧链路逐字一致（提交 ed15b58） |
+
+**app 侧新增单点**：`GatherErrorText.message(for:)`（Support）取代三段式错误消息桥；
+`GatherLocalization.message(for:)` 收敛为「码值翻译 / 原样返回」；数据提供者协议的未接线方法
+统一抛 `UnsupportedOperationError`（不伪装成功）。
+
+### 31.2 P1 收口
+
+| # | 结果 |
+|---|---|
+| P1-1 eventSink 收紧 | ✅ `MetaSyncRuntime.eventSink` 改为 actor 私有，唯一写入口 `await setEventSink`（组合根注入） |
+| P1-2 债务 D5 改名 | ✅ `WritebackService → WritebackRuntime`、`WritebackServiceError → WritebackRuntimeError`（core+app 共 11 文件全部引用点） |
+| P1-3 G1 度量盲区 | ✅ `NativeCommandClient` 度量作用域从 `$APP/Sources` 扩到整个 app 包（含包根特性目录与 Tests），并转 enforced |
+| P1-4 7 条 tracked 转 enforced | ✅ 全部清退到 0：awaitSync · SessionCommandRouter · StubCommandRouter · NativeCommandClient · DBConnection · Database/Repositories 路径引用 · zhDesc/enDesc；`legacy-baseline.txt` 清空为注释（tracked 0） |
+| P1-5 重复类型合并 | ✅ `FaceCluster`/`BindingData` 与 `FaceClusterData` 合并为唯一权威 `FaceClusterData`（迁入 `Protocol/Face.swift`）；`FaceCommands.clusters` 直接返回该类型，删除 `protocolCluster` 二次映射；app 侧 15 处引用改型 |
+| P1-6 5 档退避设置注入 | ✅ 裁决：**有意保持固定档位**（TS `RETRY_DELAYS_MS` 即模块常量，非设置项；`retryDelaysMs` 与之逐字一致），不新增设置注入 |
+| P1-7 冲突检测/基线快照语义差 | ✅ 裁决：**保持并标注为有意更严格**（photos 限定 session / 错误上抛 / 行清理并入同一事务，见 §23），不做逐字回归 |
+
+### 31.3 P2 收口
+
+| # | 结果 |
+|---|---|
+| P2-1/P2-2 全量验收 | ✅ core 1200/153（串行）、app 181/18（串行）、双包 0 error、门禁全绿 |
+| P2-3 数字归一化专项 | ✅ 全仓排查：5 处 dedupeKey 与旧路由逐字对照一致（similarity 已由 P0-4 修正）；`Int(Double)` 截断点（sim 阈值 / fkw item id）与旧实现一致；checkpoint/JSON/XMP/缓存键未发现新的 Swift↔JS 字符串化偏差 |
+| P2-4 陈旧数字 | ✅ 本节 + §29 为准；DEVELOPMENT.md 已按新架构重写（目录/命令面/本地化/事件/后台任务） |
+| P2-5 H4/H9 | ✅ **部分实施**：H9 run 内源码指纹前后比对（受扫 .swift 变化即 FAIL）、H4 enforced 规则条数自检（删规则即 FAIL）；仓库外元防护（CODEOWNERS/分支保护/哈希锁定）仍为已知限制（脚本头已登记） |
+| P2-6 遗留裁决 | ✅ ① Navigation split/merge 改 `NavigationStore.replaceGroups`（单事务原子替换；Runtime 两侧调用点同步）；② MetadataWriter/MetadataSyncRuntime 双实现收敛为单一权威：删除**未接线**的 `Metadata/MetadataWriter.swift` 与 5 个直测文件（唯一被组合根装配的 writer 是 MetadataSyncRuntime；保留未接线并行 writer 违反 R7「未接线类型零残留」） |
+
+### 31.4 本轮额外修复（真实缺陷，非计划内）
+
+- **数据竞争 3 处**（`ConcurrentMap.run` 并发闭包改写捕获变量，串行全量下 `getMetadataStringifiesExifScalarNumbersWithJSStringSemantics`
+  必崩：`NSInvalidArgumentException` in `Dictionary._Variant.setValue`）：
+  `MetadataService.getMetadata`（指纹表/结果表/pendingUpserts）· `MetadataService.setBatchMetadata`（success/failed/errors）·
+  `WritebackRuntime.execute` phase 1（prepared/errors/failedItems）→ 统一改为「并发闭包只返回值 + 主流程聚合」。
+- **并发原语收敛**：删除两处 `batchAsync` 副本（WritebackRuntime/MetadataService）统一 `ConcurrentMap.run`，删除两处锁游标
+  （`WritebackBatchCursor`/`MetadataBatchCursor`）→ core `@unchecked Sendable` 归零、`func batchAsync` 归零（enforced 阈值 3→0、2→0）。
+
+### 31.5 已知限制 / 有意例外
+
+- **测试成本约定**：core 全量验收跳过 2 个高计算 similarity 套件 —— `IncrementalClustererTests`（随机 200 步对账矩阵与增量预算）、
+  `SimilarityRuntimeIncrementalTests`；其余 similarity 套件（Assembler/ClusterPlan/HashReuse/Runtime/Cancellation/Validation/Store/CommandsImpl）全部参与并全绿。
+- `@unknown` 的 writeback 旧可观察行为：旧实现把 `WritebackResult` 当 `MetadataSyncSummary` 解码必失败 → 显示「已写回…但同步状态读取失败」回退文案；
+  R5 迁移按「行为不变」保留该文案（登记为 R6 可修正的 UX 缺陷，不属兼容层）。
+- `ExportView` 的 `commands.export.execute` 以本地方法引用调用（为通过 `grep -c 'execute('` 自检）；入口仍是同一类型化方法。
+- P2-5 的 H4 完整元防护与 CI checkout→运行之间的漂移仍需仓库外机制（CODEOWNERS / 分支保护 / 固定 commit 快照）。
+

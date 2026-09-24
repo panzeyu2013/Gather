@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherCore/Runtime/Metadata/WritebackRuntime.swift
-// R4：Services/WritebackService.swift → Runtime/Metadata/（公开类型/方法签名与
+// R4：Services/WritebackRuntime.swift → Runtime/Metadata/（公开类型/方法签名与
 // 语义不变，旧文件同批删除）。本文件不含 SQL——写回行/outbox/会话计数全部经
 // Store 端口（WritebackStore / PhotoStore / SessionStore / MetadataStore）注入；
 // 此处仅有编排、行映射与并发窗口逻辑。
@@ -23,7 +23,7 @@
 import Foundation
 
 /// TS: writeback.service.ts 抛出的错误码。
-public enum WritebackServiceError: Error, Equatable, CustomStringConvertible {
+public enum WritebackRuntimeError: Error, Equatable, CustomStringConvertible {
     case otherModuleActive // WRITEBACK_OTHER_MODULE_ACTIVE
     case failuresPending // WRITEBACK_FAILURES_PENDING
     case undoFaceFailed // WRITEBACK_UNDO_FACE_FAILED
@@ -55,8 +55,8 @@ public func mutationSource(_ module: String) -> MetadataMutationSource {
     }
 }
 
-/// TS: WritebackService。
-public final class WritebackService {
+/// TS: WritebackRuntime。
+public final class WritebackRuntime {
     private let writebackStore: any WritebackStore
     private let xmp: any XMPProvider
     private let photoStore: any PhotoStore
@@ -95,7 +95,7 @@ public final class WritebackService {
     private func assertNoActiveOtherModule(sessionId: String, module: String) async throws {
         if try await writebackStore.hasActiveOtherModule(
             sessionId: sessionId, module: mutationSource(module).rawValue) {
-            throw WritebackServiceError.otherModuleActive
+            throw WritebackRuntimeError.otherModuleActive
         }
         // 未注入 outbox 仓库的调用方遗留兜底：镜像 outbox 门控——交互式 culling
         // 同步是连续的，绝不阻塞批量写回，故 culling 行在此同样排除（outbox 侧
@@ -106,7 +106,7 @@ public final class WritebackService {
                 && (item.xmpStatus == "written" || item.xmpStatus == "synced")
         }
         if activeOtherModule != nil {
-            throw WritebackServiceError.otherModuleActive
+            throw WritebackRuntimeError.otherModuleActive
         }
     }
 
@@ -278,7 +278,13 @@ public final class WritebackService {
         )
     }
 
-    /// TS: execute —— 两阶段：先全部 prepare（合并关键词、入队变更）再一次性
+    /// execute 并发阶段单项结果：并发闭包只返回值，不写捕获状态（数据竞争修复）。
+private enum WritebackExecuteOutcome {
+    case prepared(PreparedEntry)
+    case failed(message: String, item: WritebackItem)
+}
+
+/// TS: execute —— 两阶段：先全部 prepare（合并关键词、入队变更）再一次性
     /// flushSession（旧实现逐项 flush 会把整个会话队列重写 O(items) 次）。
     public func execute(sessionId: String, module: String, items: [WritebackItem]) async throws -> WritebackResult {
         try await assertNoActiveOtherModule(sessionId: sessionId, module: module)
@@ -317,7 +323,10 @@ public final class WritebackService {
             groups[groupKey, default: []].append(item)
         }
 
-        try await batchAsync(groups.map { ($0.key, $0.value) }, concurrency: 4) { group in
+        // 并发阶段只返回值：不得在闭包内改写 prepared/errors/failedItems（数据竞争）。
+        let outcomes = try await ConcurrentMap.run(groups.map { ($0.key, $0.value) }, concurrency: 4) {
+            group -> [WritebackExecuteOutcome] in
+            var local: [WritebackExecuteOutcome] = []
             for item in group.1 {
                 guard let itemId = item.id, let dbRow = rowById[itemId] else { continue }
 
@@ -331,11 +340,9 @@ public final class WritebackService {
                 guard !photoPath.isEmpty else {
                     let message = "Missing photo path for writeback item"
                     try await self.writebackStore.updateWritebackStatus(itemId: Int64(itemId), status: "failed", error: message)
-                    errors.append("\(itemId): \(message)")
                     var failedItem = item
                     failedItem.photoPath = ""
-                    failedItems.append(failedItem)
-                    failed += 1
+                    local.append(.failed(message: "\(itemId): \(message)", item: failedItem))
                     continue
                 }
                 let persistedItem = try self.rowToItem(dbRow)
@@ -368,21 +375,30 @@ public final class WritebackService {
                         source: mutationSource(module),
                         schedule: false
                     )
-                    prepared.append(PreparedEntry(
+                    local.append(.prepared(PreparedEntry(
                         itemId: Int64(itemId),
                         dbRow: dbRow,
                         persistedItem: persistedItem,
                         photoPath: photoPath,
                         writeAttrs: writeAttrs,
                         keywordsBeforeWrite: keywordsBeforeWrite
-                    ))
+                    )))
                 } catch {
                     let message = String(describing: error)
                     try await self.writebackStore.updateWritebackStatus(itemId: Int64(itemId), status: "failed", error: message)
-                    errors.append("\(photoPath): \(message)")
-                    failedItems.append(persistedItem)
-                    failed += 1
+                    local.append(.failed(message: "\(photoPath): \(message)", item: persistedItem))
                 }
+            }
+            return local
+        }
+        for outcome in outcomes.flatMap({ $0 }) {
+            switch outcome {
+            case .prepared(let entry):
+                prepared.append(entry)
+            case .failed(let message, let item):
+                errors.append(message)
+                failedItems.append(item)
+                failed += 1
             }
         }
 
@@ -505,7 +521,7 @@ public final class WritebackService {
                 removed.append(contentsOf: item.keywords)
             } else {
                 let message = result?.errorMessage.isEmpty == false ? result!.errorMessage : ""
-                throw WritebackServiceError.undoFaceFailedWithMessage(message)
+                throw WritebackRuntimeError.undoFaceFailedWithMessage(message)
             }
         }
         return removed
@@ -530,7 +546,7 @@ public final class WritebackService {
     /// 与其它模块的写回都会被永久阻塞）。
     public func confirmSync(sessionId: String, module: String) async throws {
         if try await writebackStore.failedWritebackCount(sessionId: sessionId, module: module) > 0 {
-            throw WritebackServiceError.failuresPending
+            throw WritebackRuntimeError.failuresPending
         }
         _ = try await metadataSync.confirmSync(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
         try await writebackStore.markWritebackWrittenAsSynced(sessionId: sessionId, module: module)
@@ -577,7 +593,7 @@ public final class WritebackService {
         let allItems = try await writebackStore.writebackItems(sessionId: sessionId, module: module, status: nil)
         let syncedItems = allItems.filter { $0.xmpStatus == "synced" }
         if syncedItems.isEmpty && !allItems.isEmpty {
-            throw WritebackServiceError.cleanupRequiresLoaded
+            throw WritebackRuntimeError.cleanupRequiresLoaded
         }
         let result = try await metadataSync.cleanup(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
         if !result.errors.isEmpty { return result }
@@ -655,61 +671,6 @@ private func orderedUnion(_ a: [String], _ b: [String]) -> [String] {
     return result
 }
 
-/// TS: batchAsync（utils/async.ts）—— 与 coordinator / metadata.service 同款滑动窗口。
-private func batchAsync<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = WritebackBatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    collected.sort { $0.index < $1.index }
-    return collected.map(\.value)
-}
-
-private final class WritebackBatchCursor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var next = 0
-    private var failed = false
-    private let count: Int
-
-    init(count: Int) { self.count = count }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failed || next >= count { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
-}
 
 // ────────────────────────────────────────────────────────────
 // writeback-planners.ts（writeback-planners.ts 全量）

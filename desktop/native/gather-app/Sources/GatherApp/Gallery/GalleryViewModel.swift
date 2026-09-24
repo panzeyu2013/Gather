@@ -86,7 +86,7 @@ public struct GalleryVariantData: Codable, Equatable, Sendable {
 public protocol GalleryDataProvider {
     func getSession(_ sessionId: String) async throws -> SessionData?
     /// TS: sessionApi.getPhotosPage → { rows, cursor }。
-    /// async：分页投影经 executeAsync 后台执行（避免 @MainActor 主线程阻塞）。
+    /// async：分页投影经类型化命令面异步执行（避免 @MainActor 主线程阻塞）。
     func photoPage(
         sessionId: String,
         afterFirstRowid: Int64?,
@@ -103,26 +103,31 @@ public protocol GalleryDataProvider {
 public extension GalleryDataProvider {
     /// 网格缩略图目标解码尺寸（TS Gallery.tsx:50-55：settings thumbnail_size
     /// 分桶 → ≤320→256、≤1280→1024、>1280→2048）。测试 stub 未实现时取默认。
-    func thumbnailSize() -> Int { 1024 }
+    func thumbnailSize() async -> Int { 1024 }
 
     func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus? { nil }
 
     func retryIndex(sessionId: String) async throws {
-        throw NativeCommandError.failed("INDEX_SCAN_NOT_SUPPORTED")
+        throw UnsupportedOperationError(code: "INDEX_SCAN_NOT_SUPPORTED")
     }
 }
 
-/// 真实实现：同进程直连 SessionCommandRouter（photo.list_page 的资产分组/
-/// 变体装配以路由为唯一事实源）。
+/// 真实实现：同进程直连类型化命令面（photo/session/workspace/index/settings 域），
+/// 资产分组/变体装配以命令面实现为唯一事实源。
 public final class LiveGalleryDataProvider: GalleryDataProvider {
-    private let router: SessionCommandRouter
+    private let commands: CommandSurface
 
-    public init(router: SessionCommandRouter) {
-        self.router = router
+    public init(commands: CommandSurface) {
+        self.commands = commands
     }
 
     public func getSession(_ sessionId: String) async throws -> SessionData? {
-        try await router.sessionRuntime.getSession(sessionId)
+        do {
+            return try await commands.session.get(SessionGetParams(sessionId: sessionId))
+        } catch SessionServiceError.sessionNotFound {
+            // 旧 sessionRuntime.getSession 语义：会话不存在返回 nil（不置错误态）。
+            return nil
+        }
     }
 
     public func photoPage(
@@ -131,21 +136,18 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
         limit: Int,
         expandVariants: Bool
     ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        let response = try await NativeCommandClient(router: router).executeAsync("photo.list_page", params: [
-            "sessionId": .string(sessionId),
-            "afterFirstRowid": afterFirstRowid.map { .number(Double($0)) } ?? .null,
-            "limit": .number(Double(limit)),
-            "expandVariants": .bool(expandVariants),
-        ])
-        let object = response.objectValue ?? [:]
-        let rows: [GalleryPhotoData] = try (object["rows"] ?? .array([])).decoded(as: [GalleryPhotoData].self)
-        let cursor = object["cursor"]?.numberValue.map(Int64.init)
-        return (rows, cursor)
+        let page = try await commands.photo.listPage(
+            sessionId: sessionId,
+            afterFirstRowid: afterFirstRowid,
+            limit: limit,
+            expandVariants: expandVariants
+        )
+        return (page.rows.map { GalleryPhotoData(photo: $0) }, page.cursor)
     }
 
     /// TS: Gallery.tsx:50-55 —— settings thumbnail_size（默认 1024）分桶映射。
-    public func thumbnailSize() -> Int {
-        let raw = (try? router.execute("settings.get", params: ["key": .string("thumbnail_size")]))?.stringValue ?? ""
+    public func thumbnailSize() async -> Int {
+        let raw = (try? await commands.settings.get(key: "thumbnail_size")) ?? ""
         return Self.thumbnailBucket(Int(raw) ?? 1024)
     }
 
@@ -161,16 +163,42 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
     /// TS: workspace.status —— indexing job 派生（quque/running/cancelling →
     /// active；succeeded → stage indexed；failed → failed）。
     public func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus? {
-        try await NativeCommandClient(router: router).executeAsync("workspace.status", params: [
-            "sessionId": .string(sessionId),
-        ]).decoded(as: WorkspaceStatus.self)
+        try await commands.workspace.status(WorkspaceStatusParams(sessionId: sessionId))
     }
 
-    /// TS: indexerApi.scan —— 建 metadata.scan job 即返回（走 async 通道）。
+    /// TS: indexerApi.scan —— 建 metadata.scan job 即返回（命令面异步提交）。
     public func retryIndex(sessionId: String) async throws {
-        _ = try await NativeCommandClient(router: router).executeAsync(
-            "index.scan",
-            params: ["sessionId": .string(sessionId)]
+        _ = try await commands.index.scan(IndexScanParams(sessionId: sessionId))
+    }
+}
+
+/// photo.list_page 行（Protocol/PhotoData）→ Gallery 行投影：
+/// metadata/result 两键在 Gallery 中不消费；可选计数/变体按缺省空值折叠。
+private extension GalleryPhotoData {
+    init(photo: PhotoData) {
+        self.init(
+            id: photo.id,
+            sessionId: photo.sessionId,
+            filepath: photo.filepath,
+            filename: photo.filename,
+            checksum: photo.checksum,
+            hasExistingXmp: photo.hasExistingXmp,
+            faceCount: photo.faceCount,
+            width: photo.width,
+            height: photo.height,
+            status: photo.status,
+            variantCount: photo.variantCount ?? 0,
+            variants: (photo.variants ?? []).map { variant in
+                GalleryVariantData(
+                    photoId: variant.photoId,
+                    filepath: variant.filepath,
+                    filename: variant.filename,
+                    role: variant.role
+                )
+            },
+            createdAt: photo.createdAt,
+            updatedAt: photo.updatedAt,
+            assetId: photo.assetId
         )
     }
 }
@@ -368,7 +396,7 @@ public final class GalleryViewModel {
         } catch {
             actionError = Self.message(for: error)
         }
-        thumbnailSize = provider.thumbnailSize()
+        thumbnailSize = await provider.thumbnailSize()
         await refreshWorkspaceStatus()
         await reload()
     }
@@ -565,11 +593,7 @@ public final class GalleryViewModel {
     // MARK: 错误 message（对齐 DashboardViewModel.message）
 
     static func message(for error: Error) -> String {
-        if let sessionError = error as? SessionServiceError {
-            return GatherLocalization.errorText(sessionError.gatherCode.rawValue)
-        }
-        let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        GatherErrorText.message(for: error)
     }
 
     // MARK: 终态事件刷新（对齐 TS 事件失效语义）

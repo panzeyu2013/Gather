@@ -21,7 +21,7 @@ enum SessionTab: String, CaseIterable, Identifiable {
 
 struct GalleryView: View {
     @Bindable var viewModel: GalleryViewModel
-    let router: SessionCommandRouter
+    let commands: CommandSurface
     let onBack: () -> Void
     let onOpenSimilarity: (String) -> Void
     let onOpenTab: (String, SessionTab) -> Void
@@ -156,7 +156,7 @@ struct GalleryView: View {
                 // C1 状态胶囊（旧版 C1StatusCapsule：状态点 + 队列数 + 跳设置）。
                 C1StatusCapsuleHost(
                     sessionId: viewModel.sessionId,
-                    router: router,
+                    culling: commands.culling,
                     onOpenSettings: onOpenSettings,
                     isActive: isActive
                 )

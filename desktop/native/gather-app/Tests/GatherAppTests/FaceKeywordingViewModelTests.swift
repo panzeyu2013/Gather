@@ -9,8 +9,20 @@ import GatherCore
 @Suite("FaceKeywordingViewModel 步骤状态机")
 @MainActor
 struct FaceKeywordingViewModelTests {
-    private func makeViewModel(sessionId: String = "session-a") -> FaceKeywordingViewModel {
-        FaceKeywordingViewModel(sessionId: sessionId, router: StubCommandRouter.empty())
+    /// 只覆写 face.clusters 的测试替身：其余人脸域方法沿用未实现默认。
+    private struct ClustersFaceCommands: FaceCommands {
+        let clusters: [FaceClusterData]
+        func clusters(_ params: FkwClustersParams) async throws -> [FaceClusterData] { clusters }
+    }
+
+    private func makeViewModel(
+        sessionId: String = "session-a",
+        clusters: [FaceClusterData] = []
+    ) -> FaceKeywordingViewModel {
+        FaceKeywordingViewModel(
+            sessionId: sessionId,
+            commands: CommandSurface.testEmpty().replacingFace(ClustersFaceCommands(clusters: clusters))
+        )
     }
 
     /// 构造 face.analyze 任务的成功终态事件（终态帧语义：update.message ==
@@ -159,53 +171,53 @@ struct FaceKeywordingViewModelTests {
     }
 
     @Test("默认无 initialRoleFilter → roleFilter 为 nil，不跳步骤")
-    func defaultInitialRoleFilterLeavesRoleFilterNil() {
+    func defaultInitialRoleFilterLeavesRoleFilterNil() async {
         let vm = makeViewModel(sessionId: "session-a")
-        vm.load()
+        await vm.load()
         #expect(vm.roleFilter == nil)
         #expect(vm.step == .analyze)
     }
 
     @Test("initialRoleFilter 深链：播种角色过滤；分析已完成 → 直接进入审核步骤")
-    func initialRoleFilterSeedsFilterAndJumpsToReview() {
-        let router = StubCommandRouter(responses: [
-            "fkw.clusters": .array([
-                try! JSONValue(from: boundCluster(id: 1, roleName: "张三")),
-            ]),
-        ])
-        let vm = FaceKeywordingViewModel(sessionId: "session-a", router: router, initialRoleFilter: "张三")
-        vm.load()
+    func initialRoleFilterSeedsFilterAndJumpsToReview() async {
+        let vm = FaceKeywordingViewModel(
+            sessionId: "session-a",
+            commands: CommandSurface.testEmpty().replacingFace(
+                ClustersFaceCommands(clusters: [boundCluster(id: 1, roleName: "张三")])),
+            initialRoleFilter: "张三"
+        )
+        await vm.load()
         #expect(vm.roleFilter == "张三", "深链角色应播种到角色过滤")
         #expect(vm.analysisPhase == .done, "存在簇 → 恢复为已完成")
         #expect(vm.step == .review, "分析已完成时深链直接落在审核步骤")
     }
 
     @Test("initialRoleFilter 深链：分析未完成时只播种过滤，不强制跳步骤")
-    func initialRoleFilterSeedsFilterWithoutJump() {
+    func initialRoleFilterSeedsFilterWithoutJump() async {
         let vm = FaceKeywordingViewModel(
             sessionId: "session-a",
-            router: StubCommandRouter.empty(),
+            commands: .testEmpty(),
             initialRoleFilter: "张三"
         )
-        vm.load()
+        await vm.load()
         #expect(vm.roleFilter == "张三")
         #expect(vm.analysisPhase == .idle)
         #expect(vm.step == .analyze)
     }
 
     @Test("initialRoleFilter 深链播种只执行一次：后续 load 不再强制跳回审核")
-    func initialRoleFilterSeedIsOneShot() {
-        let router = StubCommandRouter(responses: [
-            "fkw.clusters": .array([
-                try! JSONValue(from: boundCluster(id: 1, roleName: "张三")),
-            ]),
-        ])
-        let vm = FaceKeywordingViewModel(sessionId: "session-a", router: router, initialRoleFilter: "张三")
-        vm.load()
+    func initialRoleFilterSeedIsOneShot() async {
+        let vm = FaceKeywordingViewModel(
+            sessionId: "session-a",
+            commands: CommandSurface.testEmpty().replacingFace(
+                ClustersFaceCommands(clusters: [boundCluster(id: 1, roleName: "张三")])),
+            initialRoleFilter: "张三"
+        )
+        await vm.load()
         #expect(vm.step == .review)
         // 用户手动切到写回步骤后，刷新数据不应被深链拉回审核。
         vm.setStep(.writeback)
-        vm.load()
+        await vm.load()
         #expect(vm.step == .writeback)
         #expect(vm.roleFilter == "张三")
     }

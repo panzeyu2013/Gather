@@ -210,19 +210,10 @@ public enum GatherLocalization {
         return "发生未知错误，请稍后重试"
     }
 
-    /// 翻译任意 Error/字符串：消息是错误码则翻译（含参数化错误码插值），
-    /// 否则原样返回。
-    public static func message(for error: Any) -> String {
-        let raw: String
-        switch error {
-        case let e as RouterCommandError: raw = e.message
-        case let e as NativeCommandError: raw = e.description
-        case let e as BridgeError: raw = e.description
-        case let e as Error: raw = (e as NSError).localizedDescription
-        case let s as String: raw = s
-        default: raw = String(describing: error)
-        }
-        return resolvedTemplate(for: raw) ?? raw
+    /// 翻译任意字符串：是错误码则翻译（含参数化错误码插值），否则原样返回。
+    /// （Error 的错误码翻译单点在 GatherErrorText.message(for:)。）
+    public static func message(for value: String) -> String {
+        resolvedTemplate(for: value) ?? value
     }
 
     // MARK: - 任务状态（jobs.status.*）
@@ -290,7 +281,7 @@ public enum GatherLocalization {
     }
 
     // MARK: - 界面语言（settings.ui_language 共享访问；对齐 SettingsViewModel
-    // 的 ui_language 读取与 SessionCommandRouter.effectiveAppLocale 回退语义：
+    // 的 ui_language 读取与旧宿主 effectiveAppLocale 回退语义：
     // ui_language 覆盖 > 系统语言 zh 前缀 > en）
     /// 当前界面语言（"zh-CN"/"en"）。设置页 settings.set_language 后经
     /// languageChanged 通知刷新（DashboardView 订阅）；启动时未收到通知 →

@@ -1,5 +1,5 @@
 // Store/SessionStore.swift
-// R1：sessions / session_assets 的唯一访问入口（取代 Database/Repositories/SessionRepo.swift）。
+// R1：sessions / session_assets 的唯一访问入口（取代 旧 SessionRepo）。
 import Foundation
 
 public struct SessionRecord: Decodable, Equatable, Sendable {

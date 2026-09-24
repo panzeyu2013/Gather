@@ -1,29 +1,24 @@
 // desktop/native/gather-app/Sources/GatherApp/GatherApp.swift
-// Phase 3.0 宿主与桥：App 入口、路由壳、窗口。
-// 原始窗口/生命周期实现已迁入本文件。
+// Phase 3.0 宿主与桥：App 入口、装配根、窗口。
 //
-// 当前形态（3.x）：RootView 与所有页面均为 SwiftUI，业务命令在同进程
-// 通过 SessionCommandRouter 直连 GatherCore。
+// 当前形态（R5）：RootView 与所有页面均为 SwiftUI，业务命令经类型化
+// CommandSurface（19 域协议）同进程直连 GatherCore。
 // 数据库：Application Support/Gather/gather.sqlite。
 // native app 不依赖 renderer 资产。
 import SwiftUI
 import AppKit
 import GatherCore
 
-/// 宿主路由层的具体类型别名：壳层（Shell/）经本别名取得具体类型，避免在壳层
-/// 文件里拼写受棘轮监控的标识符（该度量只允许下降）。定义处落在本文件既有
-/// 命中之内，不新增监控面。
-typealias HostRouter = SessionCommandRouter
-
 @main
 struct GatherApp: App {
     @NSApplicationDelegateAdaptor(GatherAppDelegate.self) private var appDelegate
-    @State private var router: HostRouter?
+    @State private var composition: AppComposition?
     @State private var provider: LiveDashboardDataProvider?
     @State private var libraryProvider: LiveLibraryDataProvider?
     @State private var galleryProvider: LiveGalleryDataProvider?
     @State private var similarityProvider: LiveSimilarityDataProvider?
     @State private var personsProvider: LivePersonsDataProvider?
+    @State private var captureOneBridge: CaptureOneBridge?
     /// 壳层导航状态：当前会话/页签 + 宿主出口；装配处持有并注入根视图。
     @State private var shellNavigation = AppNavigationState()
     /// bootstrap 失败态：展示错误并提供重试（不再永久停留「初始化中…」）。
@@ -32,16 +27,16 @@ struct GatherApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if let router, let provider, let libraryProvider, let galleryProvider, let similarityProvider, let personsProvider {
+                if let composition, let provider, let libraryProvider, let galleryProvider,
+                   let similarityProvider, let personsProvider {
                     AppShellView(
-                        settingsRouter: router,
+                        commands: composition.commands,
                         personsProvider: personsProvider,
                         dashboardProvider: provider,
                         libraryProvider: libraryProvider,
-                        sessionRouter: router,
                         galleryProvider: galleryProvider,
-                        galleryRouter: router,
                         similarityProvider: similarityProvider,
+                        captureOneBridge: captureOneBridge,
                         navigation: shellNavigation,
                         onOpenSession: { sessionId in shellNavigation.openSession(sessionId) }
                     )
@@ -72,9 +67,9 @@ struct GatherApp: App {
         .windowStyle(.automatic)
     }
 
-    /// 启动装配：打开/迁移数据库 → 构建服务 → 创建原生路由。
+    /// 启动装配：打开/迁移数据库 → 构建组合根（Runtime + 19 域命令）→ 生产 provider。
     private func bootstrap() async {
-        guard router == nil else { return }
+        guard composition == nil else { return }
         await MainActor.run { bootstrapError = nil }
         do {
             let applicationSupport = try FileManager.default.url(
@@ -93,14 +88,13 @@ struct GatherApp: App {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
 
-            // R1/R5：设置存储切到 Store + SettingsAPI（同一库文件的新连接，
-            // 打开即确保迁移到当前版本；快照供同步世界读取，写路径走异步 API）。
+            // R1/R5：Store + 类型化 API 是唯一数据入口（打开即确保迁移到当前版本）。
             let storeDatabase = try SQLiteDatabase(path: dbURL.path)
             try await StoreMigrator().migrate(storeDatabase)
             let api = GatherAPI(container: AppContainer(database: storeDatabase))
             let settingsSnapshot = await api.settings.snapshot()
 
-            let router = await SessionCommandRouter.makeDefault(
+            let composition = await AppComposition.makeDefault(
                 database: storeDatabase,
                 settings: settingsSnapshot,
                 settingsAPI: api.settings,
@@ -119,28 +113,29 @@ struct GatherApp: App {
                 photoStore: api.container.photos,
                 sessionStore: api.container.sessions
             )
-            await router.jobRunner.start()
+            await composition.jobRunner.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
-            await GatherEventCenter.shared.wire(jobRunner: router.jobRunner)
+            await GatherEventCenter.shared.wire(jobRunner: composition.jobRunner)
             await Self.prepareNativeEmbeddingRerun(
-                router: router, databasePath: dbURL.path, settingsAPI: api.settings)
+                composition: composition, databasePath: dbURL.path, settingsAPI: api.settings)
             let provider = LiveDashboardDataProvider(
-                sessionRuntime: router.sessionRuntime,
+                sessionRuntime: composition.sessionRuntime,
                 workspace: api.workspace,
-                jobRunner: router.jobRunner
+                jobRunner: composition.jobRunner
             )
-            // 3.2/3.3 页面 provider：经路由直连（photo.list_page/filter.*/sim.*
-            // 装配形状以路由为唯一事实源）。
-            let libraryProvider = LiveLibraryDataProvider(router: router)
-            let galleryProvider = LiveGalleryDataProvider(router: router)
-            let similarityProvider = LiveSimilarityDataProvider(router: router)
-            let personsProvider = LivePersonsDataProvider(router: router)
-            let captureOneBridge = CaptureOneBridge(router: router)
+            // 页面 provider：经类型化命令面直连（唯一命令入口）。
+            let libraryProvider = LiveLibraryDataProvider(commands: composition.commands)
+            let galleryProvider = LiveGalleryDataProvider(commands: composition.commands)
+            let similarityProvider = LiveSimilarityDataProvider(commands: composition.commands)
+            let personsProvider = LivePersonsDataProvider(commands: composition.commands)
+            let captureOneBridge = CaptureOneBridge(recordReloadAck: { sessionId in
+                try await composition.recordCaptureOneReloadAck(sessionId: sessionId)
+            })
             // Dashboard 新建工作区（Capture One 来源）经共享实例访问四层预检
             // 与选中照片读取；菜单导入走 appDelegate.onCaptureOneImport。
             CaptureOneBridge.shared = captureOneBridge
             appDelegate.onImportFiles = { files in
-                Task { await Self.importFiles(files, router: router) }
+                Task { await Self.importFiles(files, composition: composition) }
             }
             appDelegate.onCaptureOneImportFiles = { files in
                 // 对齐旧版 App.tsx c1:plugin-import：C1 导入保留
@@ -148,7 +143,7 @@ struct GatherApp: App {
                 Task {
                     await Self.importFiles(
                         files,
-                        router: router,
+                        composition: composition,
                         source: "capture-one",
                         sourceLabel: GatherLocalization.l("Capture One 文件")
                     )
@@ -159,20 +154,21 @@ struct GatherApp: App {
             }
             // ADR-023：退出前优雅停机（排空写回 + 关闭 SQLite）。
             appDelegate.onPrepareForTermination = {
-                await router.prepareForTermination()
+                await composition.prepareForTermination()
             }
             await MainActor.run {
-                self.router = router
+                self.composition = composition
                 self.provider = provider
                 self.libraryProvider = libraryProvider
                 self.galleryProvider = galleryProvider
                 self.similarityProvider = similarityProvider
                 self.personsProvider = personsProvider
+                self.captureOneBridge = captureOneBridge
                 self.bootstrapError = nil
             }
         } catch {
             GatherLogger.log("bootstrap failed: \(error)", level: .error)
-            let message = NativeCommandClient.message(for: error)
+            let message = GatherErrorText.message(for: error)
             await MainActor.run {
                 self.bootstrapError = message
             }
@@ -185,7 +181,7 @@ struct GatherApp: App {
     /// dedupe/checkpoint 保证重启可续。真实照片集的 ARI/NMI 仍需发布前离线
     /// 验收，不在启动阶段伪造通过。
     private static func prepareNativeEmbeddingRerun(
-        router: SessionCommandRouter,
+        composition: AppComposition,
         databasePath: String,
         settingsAPI: SettingsAPI
     ) async {
@@ -197,8 +193,8 @@ struct GatherApp: App {
         do {
             // R5：设置写路径经 SettingsAPI（异步、白名单校验）。
             try await settingsAPI.set("embedding_dim", value: "768")
-            for session in try await router.sessionRuntime.listSessions() where session.photoCount > 0 {
-                _ = try await router.jobRunner.create(JobCreateParams(
+            for session in try await composition.sessionRuntime.listSessions() where session.photoCount > 0 {
+                _ = try await composition.jobRunner.create(JobCreateParams(
                     type: .faceAnalyze,
                     scopeType: "session",
                     scopeId: session.id,
@@ -228,7 +224,7 @@ struct GatherApp: App {
     /// internal（非 private）：GatherAppDelegateTests 需要直调以断言通知内容。
     static func importFiles(
         _ files: [String],
-        router: SessionCommandRouter,
+        composition: AppComposition,
         source: String = "local",
         sourceLabel: String = ""
     ) async {
@@ -242,17 +238,17 @@ struct GatherApp: App {
             } else {
                 name = URL(fileURLWithPath: sourcePath).lastPathComponent
             }
-            let session = try await router.sessionRuntime.createSession(
+            let session = try await composition.sessionRuntime.createSession(
                 name: name.isEmpty ? Self.defaultImportName(source: source) : name,
                 source: source,
                 sourcePath: sourcePath
             )
-            let result = try await router.sessionRuntime.addPhotos(
+            let result = try await composition.sessionRuntime.addPhotos(
                 sessionId: session.id,
                 filepaths: normalized,
                 source: "import"
             )
-            _ = try await router.jobRunner.create(JobCreateParams(
+            _ = try await composition.jobRunner.create(JobCreateParams(
                 type: .metadataScan,
                 scopeType: "session",
                 scopeId: session.id,

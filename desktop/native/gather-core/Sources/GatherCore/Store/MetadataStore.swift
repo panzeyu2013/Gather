@@ -1,6 +1,6 @@
 // Store/MetadataStore.swift
 // R1：photo_metadata_cache / metadata_keyword_origins 的唯一访问入口
-// （取代 Database/Repositories/MetadataCacheRepo.swift + MetadataKeywordOriginRepo.swift）。
+// （取代 旧 MetadataCacheRepo + MetadataKeywordOriginRepo.swift）。
 import Foundation
 
 /// 元数据缓存写入输入（从旧 MetadataCacheRepo.swift 迁入，字段与默认值不变）。

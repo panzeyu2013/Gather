@@ -1,5 +1,5 @@
 // Store/JobStore.swift
-// R1：analysis_jobs 的唯一访问入口（取代 Database/Repositories/AnalysisJobRepo.swift）。
+// R1：analysis_jobs 的唯一访问入口（取代 旧 AnalysisJobRepo）。
 // 返回类型沿用 Protocol/Jobs.swift 的领域 DTO（AnalysisJobData 已是 Sendable 值类型）。
 import Foundation
 

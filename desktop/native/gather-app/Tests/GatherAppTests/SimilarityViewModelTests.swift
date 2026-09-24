@@ -176,7 +176,7 @@ private func makeStubVM(
     tierDelay: Duration = .milliseconds(5)
 ) -> (SimilarityViewModel, StubSimilarityProvider) {
     let stub = StubSimilarityProvider()
-    return (SimilarityViewModel(sessionId: "s1", provider: stub, pollInterval: poll, tierDebounceDelay: tierDelay), stub)
+    return (SimilarityViewModel(sessionId: "s1", provider: stub, pollInterval: poll, tierDebounceDelay: tierDelay, captureOne: CaptureOneBridge()), stub)
 }
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
@@ -187,7 +187,7 @@ private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, SQL
     let db = try await makeMigratedStore(path: path)
     let container = AppContainer(database: db)
     let api = GatherAPI(container: container)
-    let router = await SessionCommandRouter.makeDefault(
+    let composition = await AppComposition.makeDefault(
         database: db,
         settings: SettingsSnapshot(values: SettingsAPI.defaults),
         settingsAPI: api.settings,
@@ -206,10 +206,10 @@ private func makeLiveProvider() async throws -> (LiveSimilarityDataProvider, SQL
         photoStore: container.photos,
         sessionStore: container.sessions
     )
-    // JobService 需 start() 后 drain 才运行（TS index.ts:476 主进程启动语义；
+    // JobRunner 需 start() 后 drain 才运行（TS index.ts:476 主进程启动语义；
     // 否则 sim.analyze job 永不执行，waitForResult 挂满超时）。
-    await router.jobRunner.start()
-    return (LiveSimilarityDataProvider(router: router), db)
+    await composition.jobRunner.start()
+    return (LiveSimilarityDataProvider(commands: composition.commands), db)
 }
 
 private func insertSession(_ db: SQLiteDatabase, _ id: String) async throws {
@@ -520,7 +520,7 @@ struct SimilarityViewModelTests {
             VALUES ('s1', ?, ?, 10, 2, '2026-01-01T00:00:00.000Z')
         """, [.text(groupsJSON), .text(statsJSON)])
 
-        let viewModel = SimilarityViewModel(sessionId: "s1", provider: provider)
+        let viewModel = SimilarityViewModel(sessionId: "s1", provider: provider, captureOne: CaptureOneBridge())
         await viewModel.load()
         #expect(viewModel.phase == .result)
         let result = viewModel.result
@@ -532,7 +532,7 @@ struct SimilarityViewModelTests {
         #expect(viewModel.threshold == 10)
 
         // 无结果会话 → idle。
-        let empty = SimilarityViewModel(sessionId: "s2", provider: provider)
+        let empty = SimilarityViewModel(sessionId: "s2", provider: provider, captureOne: CaptureOneBridge())
         await empty.load()
         #expect(empty.phase == .idle)
     }
@@ -551,7 +551,8 @@ struct SimilarityViewModelTests {
         let viewModel = SimilarityViewModel(
             sessionId: "s1",
             provider: provider,
-            pollInterval: .milliseconds(10)
+            pollInterval: .milliseconds(10),
+            captureOne: CaptureOneBridge()
         )
         viewModel.threshold = 0
         viewModel.startAnalyze()

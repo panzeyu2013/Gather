@@ -213,58 +213,53 @@ public struct ClusterMember: Codable, Equatable, Sendable {
     }
 }
 
-// TS: BindingData
-public struct BindingData: Codable, Equatable, Sendable {
-    public var clusterId: Int
-    public var roleName: String
-    public var keywords: [String]
-    public var notes: String? // TS: notes?
+// R7 合并：人脸簇只有这一个权威类型（原 Protocol.FaceCluster/BindingData 与
+// Runtime.FaceClusterData 是同一概念的两处定义）。字段与 TS face-kw.service.ts 的
+// FaceClusterData 对齐：thumbnailBase64 非可选、binding 为 {roleName, keywords}、
+// thumbnailPhotoId 为首个预览成员（members 截断至预览窗口 4 条，size 保持精确总数）。
+/// TS: FaceClusterData.binding（{ roleName, keywords }）。
+public struct FaceClusterBinding: Codable, Equatable, Sendable {
+    public let roleName: String
+    public let keywords: [String]
 
-    public init(clusterId: Int, roleName: String, keywords: [String], notes: String? = nil) {
-        self.clusterId = clusterId
+    public init(roleName: String, keywords: [String]) {
         self.roleName = roleName
         self.keywords = keywords
-        self.notes = notes
     }
 }
 
-// TS: FaceCluster
-public struct FaceCluster: Codable, Equatable, Sendable {
-    public var id: Int
-    public var sessionId: String
-    public var label: String
-    public var size: Int
-    public var members: [ClusterMember]
-    public var status: String
-    public var binding: BindingData? // TS: binding?
-    public var thumbnailBase64: String? // TS: thumbnailBase64?
-    public var syncedToLibrary: Bool? // TS: syncedToLibrary?
-    public var matchedPersonId: String? // TS: matchedPersonId?
-    public var matchConfidence: Double? // TS: matchConfidence?
+/// TS: FaceClusterData（fkw.clusters 返回；members 截断至预览窗口 4 条，
+/// size 保持精确总数——见 face-kw.service.ts:756-783 注释）。
+public struct FaceClusterData: Codable, Equatable, Sendable {
+    public let id: Int
+    public let sessionId: String
+    public let label: String
+    public let size: Int
+    public let status: String
+    public let thumbnailBase64: String
+    public let binding: FaceClusterBinding?
+    public let thumbnailPhotoId: String?
+    public let members: [ClusterMember]
 
     public init(
         id: Int,
         sessionId: String,
         label: String,
         size: Int,
-        members: [ClusterMember],
         status: String,
-        binding: BindingData? = nil,
-        thumbnailBase64: String? = nil,
-        syncedToLibrary: Bool? = nil,
-        matchedPersonId: String? = nil,
-        matchConfidence: Double? = nil
+        thumbnailBase64: String,
+        binding: FaceClusterBinding?,
+        thumbnailPhotoId: String?,
+        members: [ClusterMember]
     ) {
         self.id = id
         self.sessionId = sessionId
         self.label = label
         self.size = size
-        self.members = members
         self.status = status
-        self.binding = binding
         self.thumbnailBase64 = thumbnailBase64
-        self.syncedToLibrary = syncedToLibrary
-        self.matchedPersonId = matchedPersonId
-        self.matchConfidence = matchConfidence
+        self.binding = binding
+        self.thumbnailPhotoId = thumbnailPhotoId
+        self.members = members
     }
 }

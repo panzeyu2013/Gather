@@ -1,17 +1,17 @@
 // desktop/native/gather-app/Sources/GatherApp/Host/FaceKwWritebackBridge.swift
-// FaceKeywordingRuntime 的 FaceWritebackProvider 适配器：把 GatherCore 的 WritebackService
+// FaceKeywordingRuntime 的 FaceWritebackProvider 适配器：把 GatherCore 的 WritebackRuntime
 // （TS writeback.service.ts 移植）接入人脸关键字写回链（fkw.unbind / fkw.preview /
 // fkw.writeback / fkw.confirm_sync / fkw.cleanup）。
-// FaceKw 接缝类型（FaceKwWriteback*）与 WritebackService 类型（Writeback*）字段
+// FaceKw 接缝类型（FaceKwWriteback*）与 WritebackRuntime 类型（Writeback*）字段
 // 逐字同源（都是 packages/shared/src/protocol/core.ts writeback 段的契约副本），
 // 本文件只做等值搬运，不改变 JSON 形状。
 import Foundation
 import GatherCore
 
 public final class FaceKwWritebackBridge: FaceWritebackProvider, @unchecked Sendable {
-    private let writebackService: WritebackService
+    private let writebackService: WritebackRuntime
 
-    public init(writebackService: WritebackService) {
+    public init(writebackService: WritebackRuntime) {
         self.writebackService = writebackService
     }
 

@@ -21,7 +21,7 @@ public enum MetadataMutationError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// WritebackService / MetadataService 依赖的变更服务最小面。
+/// WritebackRuntime / MetadataService 依赖的变更服务最小面。
 public protocol MetadataMutationPort: Sendable {
     /// TS: queuePhotoValues（schedule 默认 true）。
     func queuePhotoValues(

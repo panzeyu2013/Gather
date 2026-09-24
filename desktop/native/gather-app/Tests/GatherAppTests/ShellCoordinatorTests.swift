@@ -124,18 +124,6 @@ private final class ShellStubSimilarityProvider: SimilarityDataProvider {
     }
 }
 
-/// 命令路由替身：相似度视图模型构造只需可注入的路由依赖，不执行命令。
-private final class ShellStubRouter: CommandRouter {
-    func execute(_ command: String, params: [String: JSONValue]) throws -> JSONValue { .null }
-    func executeAsync(
-        _ command: String,
-        params: [String: JSONValue],
-        completion: @escaping (WebResponse) -> Void
-    ) {
-        completion(WebResponse(ok: true, data: .null))
-    }
-}
-
 private func makeSessionData(id: String, name: String) -> SessionData {
     SessionData(
         id: id,
@@ -164,15 +152,15 @@ struct ShellCoordinatorTests {
         gallery: ShellStubGalleryProvider? = nil,
         galleryWired: Bool = false,
         similarity: ShellStubSimilarityProvider? = nil,
-        router: CommandRouter? = nil
+        captureOneBridge: CaptureOneBridge? = CaptureOneBridge()
     ) -> ShellCoordinator {
         ShellCoordinator(
             navigation: navigation,
             dashboardProvider: dashboard,
             galleryProvider: gallery,
-            isGalleryRouterWired: galleryWired,
+            isGalleryWired: galleryWired,
             similarityProvider: similarity,
-            sessionRouter: router
+            captureOneBridge: captureOneBridge
         )
     }
 
@@ -296,7 +284,7 @@ struct ShellCoordinatorTests {
             gallery: ShellStubGalleryProvider(),
             galleryWired: true,
             similarity: ShellStubSimilarityProvider(),
-            router: ShellStubRouter()
+            captureOneBridge: CaptureOneBridge()
         )
         #expect(coordinator.galleryViewModel?.sessionId == "restored")
         #expect(coordinator.similarityViewModel?.sessionId == "restored")
@@ -310,7 +298,7 @@ struct ShellCoordinatorTests {
             gallery: ShellStubGalleryProvider(),
             galleryWired: true,
             similarity: ShellStubSimilarityProvider(),
-            router: ShellStubRouter()
+            captureOneBridge: CaptureOneBridge()
         )
         coordinator.navigationSessionDidChange()
         #expect(coordinator.galleryViewModel == nil)

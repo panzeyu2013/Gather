@@ -1,5 +1,5 @@
 // Store/SettingsStore.swift
-// R1：app_settings 的唯一访问入口（取代 Database/Repositories/SettingsRepo.swift）。
+// R1：app_settings 的唯一访问入口（取代 旧 SettingsRepo）。
 import Foundation
 
 public struct SettingRecord: Decodable, Equatable, Sendable {

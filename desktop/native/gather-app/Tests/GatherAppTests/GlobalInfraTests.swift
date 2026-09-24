@@ -25,7 +25,7 @@ struct GatherLocalizationTests {
         #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN::rating") == "未知的筛选字段：rating")
         #expect(GatherLocalization.errorText("CULLING_REVISION_CONFLICT::3::5") == "挑片版本冲突：期望 3，当前 5")
         #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN") == "未知的筛选字段：")
-        #expect(GatherLocalization.message(for: RouterCommandError(message: "FILTER_FIELD_UNKNOWN::label")) == "未知的筛选字段：label")
+        #expect(GatherLocalization.message(for: "FILTER_FIELD_UNKNOWN::label") == "未知的筛选字段：label")
     }
 
     @Test("jobErrorMessage 仅翻译错误码，诊断原文回退")
@@ -35,10 +35,19 @@ struct GatherLocalizationTests {
         #expect(GatherLocalization.jobErrorMessage(nil) == "发生未知错误，请稍后重试")
     }
 
-    @Test("message(for:) 翻译 RouterCommandError 中的错误码")
+    @Test("message(for:) 翻译错误码字符串；GatherErrorText 负责 Error → 文案")
     func messageForTranslatesCode() {
-        #expect(GatherLocalization.message(for: RouterCommandError(message: "PERSON_NOT_FOUND")) == "人物不存在")
-        #expect(GatherLocalization.message(for: RouterCommandError(message: "诊断信息")) == "诊断信息")
+        #expect(GatherLocalization.message(for: "PERSON_NOT_FOUND") == "人物不存在")
+        #expect(GatherLocalization.message(for: "诊断信息") == "诊断信息")
+        #expect(GatherErrorText.message(for: CodedError(code: "PERSON_NOT_FOUND")) == "人物不存在")
+        // 非码值错误经单点映射回退通用文案（与 UI 出口一致）。
+        #expect(GatherErrorText.message(for: CodedError(code: "诊断信息")) == "发生未知错误，请稍后重试")
+    }
+
+    /// 领域错误的测试替身：description 即错误码（与各域 *Error 约定一致）。
+    private struct CodedError: Error, CustomStringConvertible {
+        let code: String
+        var description: String { code }
     }
 
     @Test("任务状态/类型/进度相位映射")

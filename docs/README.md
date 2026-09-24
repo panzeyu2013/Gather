@@ -23,9 +23,10 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 架构一句话
 
-**SwiftUI 页面 → `SessionCommandRouter` / `CommandRouter`（118 个命令、同进程直连）
-→ `GatherCore` 领域服务**：SQLite（WAL + 迁移）为唯一持久层，Vision/ImageIO/RAW
-解码负责图像，`JobService` 承载可恢复后台任务，Metadata outbox 负责可靠写回。
+**SwiftUI 页面 → 类型化命令面 `CommandSurface`（19 域 · 111 方法，async-only）
+→ `GatherCore` Runtime（actor）→ Store**：SQLite（WAL + 迁移）为唯一持久层，
+Vision/ImageIO/RAW 解码负责图像，`JobRunner` 承载可恢复后台任务，Metadata outbox
+负责可靠写回。app 侧不存在命令名字符串、命令级 JSON 与第二命令层。
 无 Node.js、无 Electron、无浏览器渲染层、无本地 HTTP 服务。
 
 ## 核心工作流
@@ -43,12 +44,12 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 ```text
 desktop/native/
 ├── build.sh                 # 原生 release 组装（gather-core + gather-app + .app）
-├── gather-core/             # Swift Package：SQLite、任务、索引、元数据、导出和 Vision 服务
-│   ├── Sources/GatherCore/  #   Protocol/ Database/ Face/ Image/ Services/ Similarity/ Watch/ Logging/
-│   └── Tests/GatherCoreTests/  # XCTest（含对账、迁移与基准门禁）
-└── gather-app/              # Swift Package：SwiftUI 页面、路由、菜单与原生命令路由
-    ├── Sources/GatherApp/   #   RootView / Dashboard / Library / Gallery / Similarity / Persons /
-    │                        #   Host（SessionCommandRouter、GatherAppDelegate）/ Support（主题、本地化、事件、Toast）
+├── gather-core/             # Swift Package：Protocol/Store/Runtime/Jobs/Metadata/API/Support + 算法内核
+│   ├── Sources/GatherCore/  #   Protocol/ Store/ Runtime/ Jobs/ Metadata/ API/ Support/ Face/ Image/ Similarity/ Logging/
+│   └── Tests/GatherCoreTests/  # swift-testing（含对账、迁移与结构漂移门禁）
+└── gather-app/              # Swift Package：SwiftUI 壳层与页面、组合根、菜单
+    ├── Sources/GatherApp/   #   App（AppComposition 组合根）/ Shell / Dashboard / Library / Gallery / Similarity / Persons /
+    │                        #   Host（CaptureOneBridge、GatherAppDelegate）/ Support（主题、本地化、错误映射、事件、Toast）
     ├── Culling/ FaceKeywording/ ControlCenter/ Settings/ Export/ Duplicates/
     └── Resources/           #   en.lproj / zh-Hans.lproj Localizable.strings
 docs/                        # 本文档、开发指南、ADR、路线图
@@ -86,10 +87,10 @@ SwiftUI 应用，不需要 JavaScript 工具链；设置 `CODESIGN_IDENTITY` 后
 ## 数据与安全模型
 
 ```text
-SwiftUI → SessionCommandRouter → GatherCore 服务
-                                  ├─ SQLite（WAL + 迁移 + 备份/回滚）
+SwiftUI → CommandSurface（19 域类型化命令）→ GatherCore Runtime
+                                  ├─ Store（唯一 SQL 所有者：SQLite WAL + 迁移 + 备份/回滚）
                                   ├─ Vision/ImageIO/RAW 解码
-                                  └─ XMP 与元数据写回队列（outbox）
+                                  └─ XMP 与元数据写回队列（outbox）+ JobRunner
 ```
 
 破坏性操作需要显式确认（`confirmed` 门控 31 项），图片路径必须来自数据库资产授权，

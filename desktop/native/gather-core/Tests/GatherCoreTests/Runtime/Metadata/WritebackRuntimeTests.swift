@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Runtime/Metadata/WritebackRuntimeTests.swift
-// R4：WritebackService 直测由 Tests/.../Services/MetadataSyncCoordinatorTests.swift
+// R4：WritebackRuntime 直测由 Tests/.../Services/MetadataSyncCoordinatorTests.swift
 // 迁入 Runtime/Metadata/（被测公开类型/签名不变，2 tests / 1 suite 逐字搬迁；
 // 用例数不降）。共享替身：FakeFSXMPProvider（仍随 coordinator 直测文件，internal
 // 可见）；Store fixture 来自 Support/RepoTestSupport.swift。
@@ -8,7 +8,7 @@ import Foundation
 import Testing
 @testable import GatherCore
 
-// MARK: - WritebackService 直测
+// MARK: - WritebackRuntime 直测
 
 /// MetadataMutationPort 替身：无资产解析器环境下按 photoId 查 filepath，
 /// 复刻 queuePhotoValues 的 mergePatch 语义（source 注入 + dirty 过滤）。
@@ -59,7 +59,7 @@ private struct StubMutationPort: MetadataMutationPort {
 }
 
 @Suite(.serialized)
-struct WritebackServiceTests {
+struct WritebackRuntimeTests {
     @Test func previewThenExecuteWritesSidecarAndReportsResult() async throws {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-wb-\(UUID().uuidString).sqlite").path
@@ -85,7 +85,7 @@ struct WritebackServiceTests {
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
-        let service = WritebackService(
+        let service = WritebackRuntime(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
@@ -166,7 +166,7 @@ struct WritebackServiceTests {
             getNumber: { _, defaultValue in defaultValue },
             skipReloadAck: false
         )
-        let service = WritebackService(
+        let service = WritebackRuntime(
             writebackStore: SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath)),
             xmp: provider,
             photoStore: try SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
@@ -180,7 +180,7 @@ struct WritebackServiceTests {
         do {
             _ = try await service.preview(sessionId: sessionId, module: "similarity")
             Issue.record("expected otherModuleActive")
-        } catch let error as WritebackServiceError {
+        } catch let error as WritebackRuntimeError {
             #expect(error == .otherModuleActive)
         }
 

@@ -104,8 +104,8 @@ public actor FaceCommandsImpl: FaceCommands {
     // MARK: - clusters
 
     /// 旧命令：`fkw.clusters`。成员截断与 size 语义由运行时承担。
-    public func clusters(_ params: FkwClustersParams) async throws -> [FaceCluster] {
-        try await face.getClusters(sessionId: params.sessionId).map(Self.protocolCluster)
+    public func clusters(_ params: FkwClustersParams) async throws -> [FaceClusterData] {
+        try await face.getClusters(sessionId: params.sessionId)
     }
 
     // MARK: - bind / unbind / merge / remove_member
@@ -235,22 +235,6 @@ public actor FaceCommandsImpl: FaceCommands {
     }
 
     // MARK: - 类型映射（运行时接缝 ↔ Protocol 契约）
-
-    /// FaceClusterData → FaceCluster：协议多出的同步/人物匹配字段旧分支不返回。
-    private static func protocolCluster(_ cluster: FaceClusterData) -> FaceCluster {
-        FaceCluster(
-            id: cluster.id,
-            sessionId: cluster.sessionId,
-            label: cluster.label,
-            size: cluster.size,
-            members: cluster.members,
-            status: cluster.status,
-            binding: cluster.binding.map {
-                BindingData(clusterId: cluster.id, roleName: $0.roleName, keywords: $0.keywords)
-            },
-            thumbnailBase64: cluster.thumbnailBase64
-        )
-    }
 
     /// WritebackOptions → 运行时接缝选项（字段逐字同源）。
     private static func runtimeOptions(_ options: WritebackOptions) -> FaceKwWritebackOptions {

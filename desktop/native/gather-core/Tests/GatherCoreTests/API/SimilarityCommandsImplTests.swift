@@ -13,7 +13,7 @@
 // - confirm_sync：会话转 done / 失败项挂起；
 // - cleanup：确认门控 / 无 synced 行拒绝 / 干净会话空结果；
 // - 错误码字符串与 gatherCode 逐字对齐旧分支。
-// 基座：真实迁移库 + SQLite Store + SimilarityRuntime + WritebackService
+// 基座：真实迁移库 + SQLite Store + SimilarityRuntime + WritebackRuntime
 // （写回协调器 skipReloadAck 打开，与 Runtime 直测同形）。
 import Foundation
 import Testing
@@ -77,7 +77,7 @@ private struct SimCommandsHarness {
     let impl: SimilarityCommandsImpl
     let jobs: JobRunner
     let runtime: SimilarityRuntime
-    let writeback: WritebackService
+    let writeback: WritebackRuntime
     let similarityStore: SQLiteSimilarityStore
     let writebackStore: any WritebackStore
     let sessionStore: any SessionStore
@@ -133,7 +133,7 @@ private func makeSimCommandsHarness(
         skipReloadAck: true
     )
     let writebackStore = try SQLiteWritebackStore(database: try SQLiteDatabase(path: dbPath))
-    let writeback = WritebackService(
+    let writeback = WritebackRuntime(
         writebackStore: writebackStore,
         xmp: xmp,
         photoStore: SQLitePhotoStore(database: try SQLiteDatabase(path: dbPath)),
@@ -575,7 +575,7 @@ struct SimilarityCommandsImplTests {
         try await harness.writebackStore.updateWritebackStatus(
             itemId: Int64(itemId), status: "failed", error: "boom")
 
-        await #expect(throws: WritebackServiceError.failuresPending) {
+        await #expect(throws: WritebackRuntimeError.failuresPending) {
             try await harness.impl.confirmSync(SimConfirmSyncParams(sessionId: harness.sessionId))
         }
     }
@@ -592,7 +592,7 @@ struct SimilarityCommandsImplTests {
 
         _ = try await harness.writeback.preview(
             sessionId: harness.sessionId, module: "similarity", photoIds: ["p1"])
-        await #expect(throws: WritebackServiceError.cleanupRequiresLoaded) {
+        await #expect(throws: WritebackRuntimeError.cleanupRequiresLoaded) {
             _ = try await harness.impl.cleanup(SimCleanupParams(
                 sessionId: harness.sessionId, confirmed: true))
         }
