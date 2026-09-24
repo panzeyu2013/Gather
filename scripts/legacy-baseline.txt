@@ -3,6 +3,6 @@
 # 注：已达目标值的度量已升为 enforced（阈值硬编码于 check-no-legacy.sh），不在此列。
 awaitSync semaphore bridge (R5)=2
 SessionCommandRouter (R5)=17
-Services layer (R2)=6
+Services layer (R2)=5
 StubCommandRouter (R5)=7
 dual-track l10n zhDesc/enDesc (R6)=1

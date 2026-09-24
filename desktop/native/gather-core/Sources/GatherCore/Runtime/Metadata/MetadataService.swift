@@ -1,4 +1,6 @@
-// desktop/native/gather-core/Sources/GatherCore/Services/MetadataService.swift
+// desktop/native/gather-core/Sources/GatherCore/Runtime/Metadata/MetadataService.swift
+// R4：由 Services/ 迁入 Runtime/Metadata/（公开类型/方法签名与语义不变；photos
+// 轻查询 SQL 下沉 Store/PhotoStore.photoLookups，本文件不再持有数据库句柄）。
 // TS 源: desktop/src/main/services/metadata/metadata.service.ts（536 行，逐字移植）
 //
 // 注入点差异（host 职责，与 SimilarityService 同款注入模式）：
@@ -25,24 +27,12 @@ public enum MetadataServiceError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// TS: metadata.service.ts 的 photos 轻查询行。
-public struct MetadataPhotoLookup {
-    public let id: String
-    public let sessionId: String
-    public let filepath: String
-
-    public init(id: String, sessionId: String, filepath: String) {
-        self.id = id
-        self.sessionId = sessionId
-        self.filepath = filepath
-    }
-}
-
-/// TS: MetadataService。
+/// TS: MetadataService —— Runtime 层编排（photos 轻查询经 Store/PhotoStore）。
 public final class MetadataService {
     private let metadataStore: any MetadataStore
     private let xmp: any XMPProvider
-    private let database: SQLiteDatabase
+    /// 照片轻查询端口（R4：原内联 photos 查询下沉 Store/PhotoStore.photoLookups）。
+    private let photoStore: any PhotoStore
     private let mutations: any MetadataMutationPort
     private let assetResolver: PhotoAssetResolver?
     private let exif: (any ExifProvider)?
@@ -57,11 +47,13 @@ public final class MetadataService {
         assetResolver: PhotoAssetResolver? = nil,
         exif: (any ExifProvider)? = nil,
         dimensions: (any ImageDimensionsProvider)? = nil,
-        embeddedReader: (any EmbeddedXMPReader)? = nil
+        embeddedReader: (any EmbeddedXMPReader)? = nil,
+        photoStore: (any PhotoStore)? = nil
     ) {
         self.metadataStore = metadataStore
         self.xmp = xmp
-        self.database = database
+        // 路由层当前仍传 database；显式端口优先（过渡期接线，后续片收口）。
+        self.photoStore = photoStore ?? SQLitePhotoStore(database: database)
         self.mutations = mutations
         self.assetResolver = assetResolver
         self.exif = exif
@@ -216,27 +208,10 @@ public final class MetadataService {
         )
     }
 
-    /// TS: getPhotosByIds —— 800/块 IN 查询（镜像缓存仓库的分块，低于 SQLite
-    /// 常见参数上限）。
+    /// TS: getPhotosByIds —— 照片轻查询（800/块分块由 Store/PhotoStore.photoLookups
+    /// 承担，低于 SQLite 常见参数上限）。
     public func getPhotosByIds(_ photoIds: [String]) async throws -> [MetadataPhotoLookup] {
-        if photoIds.isEmpty { return [] }
-        var photos: [MetadataPhotoLookup] = []
-        for chunkStart in stride(from: 0, to: photoIds.count, by: 800) {
-            let chunk = Array(photoIds[chunkStart..<min(chunkStart + 800, photoIds.count)])
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try await database.query(
-                "SELECT id, session_id, filepath FROM photos WHERE id IN (\(placeholders))",
-                chunk.map { .text($0) }
-            )
-            photos.append(contentsOf: rows.map {
-                MetadataPhotoLookup(
-                    id: $0.values[$0.columnOrder[0]]?.textValue ?? "",
-                    sessionId: $0.values[$0.columnOrder[1]]?.textValue ?? "",
-                    filepath: $0.values[$0.columnOrder[2]]?.textValue ?? ""
-                )
-            })
-        }
-        return photos
+        try await photoStore.photoLookups(photoIds: photoIds)
     }
 
     /// TS: preserveValuesOnCorruptSidecar —— 损坏 sidecar 让 readAttributes 返回

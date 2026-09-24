@@ -149,6 +149,20 @@ public struct MetadataTarget: Equatable, Sendable {
     }
 }
 
+/// TS: metadata.service.ts 的 photos 轻查询行（R4：随其生产查询并入 Store/，
+/// 由 PhotoStore.photoLookups 产出）。
+public struct MetadataPhotoLookup {
+    public let id: String
+    public let sessionId: String
+    public let filepath: String
+
+    public init(id: String, sessionId: String, filepath: String) {
+        self.id = id
+        self.sessionId = sessionId
+        self.filepath = filepath
+    }
+}
+
 public protocol PhotoStore: Sendable {
     func getBySession(sessionId: String) async throws -> [PhotoRecord]
     func getBySessionProjection(sessionId: String) async throws -> [PhotoProjection]
