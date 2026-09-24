@@ -779,3 +779,25 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 **风格问题**：文档中 9 个十六进制串（子代理 id `b87f42bb`/`13178f1b`/`687d20bf`/`dfa2acd1`/`5c3948ea`、sha256 前缀 `164aae10`/`2e6d2148`/`c76a5a2a`、指纹 `d4b1fe3e5a9da77e`）**与 commit 哈希同形混用、风格不可区分**（无「假 commit」误引，但易误读）→ 后续统一加前缀标记（如 `agent:` / `sha256:` / `fingerprint:`）。
 
 **方法论留痕**：验收方全程固定 HEAD + 等待树静默，并明确标注「Services=5 只在 T0 成立，T1 实测=4」——**并发环境下的验收必须以快照锚定**（呼应纪律 15）。
+### 25. acc-gate 验收结论（快照 HEAD `afc5bf8`，20:16:27）——门禁**绿灯但含系统性漏洞**，构成 R8 收口清单
+
+**快照声明**：HEAD `afc5bf8` · 工作树 .swift 指纹 `769e0223…` · 脚本 sha256 `b54df5fe…` · baseline sha256 `d74062a8…`；`check-5` 与前快照逐字节相同（可复现）。**注意**：本快照早于 `3344d74`，故其「3/8 tracked 无 baseline key」一项**已由 `3344d74` 修复**（现 8/8 均有上限行、超出即 FAIL）。
+
+**① 当前门禁状态（18 enforced / 8 tracked，exit 0，stderr 0 字节）**：18 = find 1 + enforce 3 + enforce_max 5 + enforce_max_occ 1 + enforce_max_occ 2 + enforce_max 6（逐行已核）。**阈值=实测且 4 条贴边无余量**：`unchecked 4≤5`（余量 1）· `batchAsync 3≤3` · `awaitSync occ 16≤16` · `@unchecked occ 5≤5` · `batchAsync occ 3≤3`。**2 条 enforced 真空**（`legacy DB layer files`、`legacy Repositories files` 目录已不存在 → `count_matches` 返回 0）。
+
+**② 沙箱突变反证（脚本+baseline 复制到 scratch，仓库未动）——12 个预期场景全部 exit 码正确**：WebKit import→1 · 第 4 处 `batchAsync`→1（文件+出现次数两条同时命中）· 第 6 处 `@unchecked`（同文件 & 新文件）→1（**出现次数棘轮正是为此刻设计，验证有效**）· 5 文件 `zhDesc`→1（ratchet）· app 内 `JSONSerialization`→1。
+
+**③ 被证实为真的漏检场景（9 项 R8 收口清单）**：
+| # | 漏洞 | 实测表现 | 加固方向 |
+|---|---|---|---|
+| H1 | **扫描路径改名/消失 = 全局放行** | `desktop/native` 改名且含 WebKit 违规 → **exit 0** | 加「路径必须存在」断言（否则 fail） |
+| H2 | **baseline 缺失/删 key → ratchet 静默消失** | 移走 baseline → **exit 0**（仅 note，fail-open） | baseline 缺失或无 key 应 **fail** 而非 note；连同 H1 一起 |
+| H3 | **`\|\| true` + `2>/dev/null` 使「grep 报错」与「0 命中」不可区分** | 坏正则 + 真实违规 → **exit 0** 且仍打印 `ok [enforced]` | 计数管线加「grep stderr 非空即失败」 |
+| H4 | **元防护缺失** | 18/8 条数、阈值、baseline 全为同仓纯文本；删一条 enforce 只改打印数字 | 加脚本/基线完整性校验（如 sha256 记录 + 自检） |
+| H5 | **粒度仍偏粗（5/8 tracked 为文件计数）** | `Services layer` 用 `.` 只数非空文件数 → **单文件可无限膨胀**；`SessionCommandRouter` 17 文件内出现次数无上限 | 继续把剩余 tracked 转「出现次数」口径 |
+| H6 | **pattern 覆盖缺口** | Runtime SQL 只认**大写**关键字（小写 `select` 漏检）；Services 内 `db.execute("SELECT …")` **两条规则都不命中**（rule5 只扫 Runtime、rule6 只认 `.prepare(`）；Electron 大小写敏感 | 补小写/大小写不敏感变体；把 `db.execute` 纳入 raw SQL 规则 |
+| H7 | **读取失败静默漏计** | 扫描目录 `chmod 000` + 真实违规 → **exit 0**（计数掉到 3≤5） | 目录不可读应 fail 而非少算 |
+| H8 | **CI 不阻塞产物** | `.github/workflows/ci.yml` 的 boundary 是独立 job；`gather-core`/`gather-app` 无 `needs: boundary`（仅 `toolchain-compat` 依赖） | 让产物 job `needs: boundary` |
+| H9 | **baseline 漂移窗口** | `count < limit` 只提示 → 曾出现 `Services 实测4 / baseline5` 的合法回涨窗口（现 5 条全贴边） | count<limit 时自动收紧（写回 baseline）或至少 fail |
+
+**④ 方法论留痕**：验收方明确「并行构建期间不采信单次数字，复现须固定快照（HEAD + 工作树指纹）」，并因并发改动**弃用了不可复现的 check-1**——与纪律 15（快照复验）一致。
