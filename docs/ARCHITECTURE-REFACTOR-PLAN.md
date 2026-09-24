@@ -710,3 +710,15 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 - **app 3 处**：删临时实例（351-364）；`registerExecutors()` 去参；checksumBackfill executor 捕获 `[indexer]` 并调 `indexer.backfillChecksums(sessionId:context:)`；错误映射改 `IndexerError`。app `swift build` **Build complete（37.05s）**。
 - **快照复验方法论（新增，纪律 15）**：在有并行在飞改动时，用 `git archive HEAD` 导出快照到独立目录再 `build --build-tests` + `--filter Index` 复验，**排除在飞改动对结论的干扰**——本轮快照复验：0 error、**44 tests / 17 suites 全绿**（与迁移前完全一致）。
 - **标识符清查**：`grep -rn 'IndexerService' Sources/` 命中 33 行，逐行核验**全部为注释**，标识符命中 **0**；括号差 0（IndexerRuntime 115/115、IndexerError 7/7、新测试 95/95、router 816/816）。
+### 20. 轮次进展台账（Round 23–25，HEAD 112fb6d）
+
+| 轮次 | 交付 | 验证 |
+|---|---|---|
+| Round 22 | `cb610f8` R2 Indexer 域闭环（删 `IndexerService` 1094 行→Services 9）· `3b20160` R5 +5 域（19 方法）· `f71c9a9` R4 首片吸收 `MetadataMutationService`（→Services 8）并修复门禁红灯 | 全新 scratch `--filter Index` 44/17 全绿 · app build 0 error · gate OK |
+| Round 23 | 派发三片：R5 余 4 域（culling/person/metadata/album=38 方法）· R4 吸收 `PhotoAssetResolver` · FaceKw 收口（Runtime 迁移+装配+删服务） | 路由文件单写者纪律（仅 FaceKw 片可改路由） |
+| Round 24 | `112fb6d` Indexer 闭环细节补记（行数勘误 1094/755 · 类型迁移清单 · 测试迁移零损失 · app 3 处）+ **纪律 15**（并行在飞时用 `git archive HEAD` 快照复验） | 快照复验 0 error + 44/17 全绿 |
+| Round 24b | R4 首片重写为 **actor 原生串行链**（`QueueTail{id,task}` + 单调 `tailId` + `AsyncStream<Void>`，无 `@unchecked`/`nonisolated(unsafe)`/`NSLock`/`CheckedContinuation`）→ **`unchecked Sendable` 降至 4** | 双包 0 error · 82 tests/7 suites 全绿 · gate OK |
+
+**当前权威基线**：`Services` **8 文件** · `unchecked Sendable` **4** · `batchAsync` **3** · `Runtime SQL` **0** · `DB layer` **0** · 门禁 **15 enforced / 5 tracked** · R5 **15 域 / 73 方法** · R6 **4/11 视图** · 提交 **136**。
+
+**Round 26 起剩余路线（供 Round 39–40 验收核对）**：① R5 补齐 culling 17/person 8/metadata 7/album 6（38 方法）→ 19 域 111 方法；② R4 续吸收 `MetadataService`(637)→`WritebackService`(790)→`MetadataSyncCoordinator`(982)（→Services 3）；③ FaceKw Runtime 迁移+装配+删服务（→Services 7）；④ R5 命令层接线 + 删 `SessionCommandRouter`(3800 行)/`CommandRouter`/`NativeCommandClient`/`JSONValueDecoding`/`StubCommandRouter`（度量 17/2/7→0）；⑤ R6 会话宿主+导航上下文+余 7 特性+切根视图；⑥ R7 `FaceCluster`/`BindingData` 合并 + `FilterEngine`/`PhotoAssets` 归位；⑦ R8 余 5 条 tracked 转 enforced + 门禁 3 项非数值限制加固（文件数→计数、真空规则、元防护）。
