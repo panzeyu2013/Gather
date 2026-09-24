@@ -103,14 +103,14 @@ tracked "SessionCommandRouter (R5)"             'SessionCommandRouter'          
 tracked "Services layer (R2)"                   '.'                                "$CORE/Sources/GatherCore/Services" "*.swift"
 tracked "StubCommandRouter (R5)"                'StubCommandRouter'                "$APP"    "*.swift"
 tracked "dual-track l10n zhDesc/enDesc (R6)"    'zhDesc|enDesc'                    "$APP"    "*.swift"
-tracked "legacy Repositories files (R1)"        '.'  "$CORE/Sources/GatherCore/Database/Repositories" "*.swift"
-tracked "legacy Repo test files (R1)"           '.'  "$CORE/Tests/GatherCoreTests/Database" "*.swift"
+enforce_max "legacy Repositories files (R1)"        '.'  "$CORE/Sources/GatherCore/Database/Repositories" "*.swift" 0
+enforce_max "legacy Repo test files (R1)"           '.'  "$CORE/Tests/GatherCoreTests/Database" "*.swift" 0
 # 剩余旧 Repo 的调用文件数（R1 收尾排序用：越小越先切）。
-tracked "legacy SessionRepo callers (R1)"       'sessionRepo\.'        "$CORE/Sources"   "*.swift"
+enforce_max "legacy SessionRepo callers (R1)"       'sessionRepo\.'        "$CORE/Sources"   "*.swift" 0
 tracked "legacy AnalysisJobRepo callers (R1)"   'AnalysisJobRepo'       "$CORE/Sources"   "*.swift"
-tracked "legacy MetadataOutboxRepo callers"     'outboxRepo\.'         "$CORE/Sources"   "*.swift"
-tracked "legacy PhotoRepo callers (R1)"         'photoRepo\.'          "$CORE/Sources"   "*.swift"
-tracked "legacy AssetRepo callers (R1)"         'assetRepo\.'          "$CORE/Sources"   "*.swift"
+enforce_max "legacy MetadataOutboxRepo callers"     'outboxRepo\.'         "$CORE/Sources"   "*.swift" 0
+enforce_max "legacy PhotoRepo callers (R1)"         'photoRepo\.'          "$CORE/Sources"   "*.swift" 0
+enforce_max "legacy AssetRepo callers (R1)"         'assetRepo\.'          "$CORE/Sources"   "*.swift" 0
 
 # ---------------------------------------------------------------- ratchet
 # 剩余 tracked 度量只允许下降：baseline 是上限；上升即失败，下降时提示更新 baseline。
