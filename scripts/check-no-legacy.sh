@@ -59,6 +59,30 @@ enforce_max() {
   fi
 }
 
+count_occurrences() {
+  local pattern="$1" path="$2" include="$3"
+  if [[ -d "$path" ]]; then
+    grep -rEo --include="$include" "$pattern" "$path" 2>/dev/null | wc -l | tr -d ' ' || true
+  else
+    echo 0
+  fi
+}
+
+# enforce_max_occ <name> <pattern> <path> <include-glob> <max>
+# 出现次数粒度的棘轮：弥补「命中文件数」粒度无法阻止文件内继续增长的空隙。
+enforce_max_occ() {
+  local name="$1" pattern="$2" path="$3" include="$4" max="$5"
+  enforced_rules=$((enforced_rules + 1))
+  local n
+  n=$(count_occurrences "$pattern" "$path" "$include")
+  if (( n > max )); then
+    echo "LEGACY[enforced] $name: $n occurrence(s) > threshold $max in $path" >&2
+    fail=1
+  else
+    echo "ok   [enforced] $name ($n <= $max)"
+  fi
+}
+
 # tracked <name> <pattern> <path> <include-glob>
 tracked() {
   local name="$1" pattern="$2" path="$3" include="$4"
@@ -96,6 +120,11 @@ enforce_max "raw SQL outside Store (R1)"      'connection\.prepare\(|db\.prepare
 enforce_max "legacy DB layer files (R1)"      '.'  "$CORE/Sources/GatherCore/Database" "*.swift" 0
 enforce_max "unchecked Sendable (R1/R2)"      '@unchecked Sendable'                "$CORE/Sources" "*.swift" 5
 enforce_max "batchAsync copies (R2)"          'func batchAsync'                    "$CORE"   "*.swift" 3
+
+# —— 出现次数粒度棘轮（R8 加固：审计指出的「文件数」粒度空隙）——
+enforce_max_occ "awaitSync occurrences (R5)" 'awaitSync' "$APP" "*.swift" 16
+enforce_max_occ "@unchecked Sendable occurrences (R1/R2)" '@unchecked Sendable' "$CORE/Sources" "*.swift" 5
+enforce_max_occ "batchAsync occurrences (R2)" 'func batchAsync' "$CORE" "*.swift" 3
 
 # ---------------------------------------------------------------- tracked
 tracked "awaitSync semaphore bridge (R5)"       'awaitSync'                        "$APP"    "*.swift"
