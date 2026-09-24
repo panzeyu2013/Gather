@@ -655,3 +655,13 @@ awaitSync=16 SessionCommandRouter=34 StubCommandRouter=11 **Services 文件数=1
 - R6：会话宿主 + 导航上下文，余 7 项特性，切根视图。
 - R7：4 个疑似零调用 Store 方法逐条排除删除 + FaceCluster/BindingData 合并 + FilterEngine/PhotoAssets 归位。
 - R8：余 6 条 tracked 逐条转 enforced（3 条随 R5 归零、Services layer 随 R2/R4 降至 3），并把 15.1 的 3 项非数值限制纳入加固（改为计数而非文件数、真空规则改为路径无关符号模式、门禁加元防护）。
+### 15.4 acc-build（双包编译验收）——通过 3/3
+- core `swift build`（全新 scratch）：exit 0、error 0、Build complete (34.28s)、warning 84 行。
+- app `swift build`：exit 0、Build complete (32.74s)、warning 106 行；grep 命中的 2 处 error: 为编译器 warning 回显的源码片段（WebResponse(ok:false, error:...) 文案），非真实诊断错误。
+- core `swift build --build-tests`：exit 0、error 0、Build complete (36.32s)；产物 GatherCoreTests.xctest 存在。
+- 产物验证：app 可执行文件 /private/tmp/gather-build-acc-build/app/out/Products/Debug/gather-app（37,149,008 B，Mach-O 64-bit arm64，可执行位）；core 侧 libGatherCore.a、GatherCore.swiftmodule、gather-core-helper 等均在。
+- 环境：Apple Swift 6.4、Xcode 27.0、macOS 27.0 arm64；构建期间源码无变动（最新 mtime 19:28:11，构建 19:34–19:36）。
+
+### 15.5 装配切片（5c3948ea）发现与编排侧裁决（不询问用户，自行裁决并记录）
+- 发现：IndexerRuntime 公开面仅有 init(dependencies:)/scan(sessionId:options:)/cancel(sessionId:)，**无 pendingChecksums / backfillChecksums**；9 处 indexerService 引用中 6 处可直接切换（字段/init 形参/赋值/构造/闭包捕获/scanSession 调用），另 3 处分属 pendingChecksums（可等价内联）与 checksum 回填 executor（其乐观写库为 core 内事务，未迁 Runtime）。
+- **裁决（接受代理提议）**：①6 处直接切 IndexerRuntime；②pendingChecksums 在路由内用 photoStore.getBySessionProjection + IndexAssembler.needsChecksumBackfill 逐字等价实现；③checksum 回填暂留一个 IndexerService 实例（错误码/JSON 形状逐字不变），**登记 idx2b5 待迁**（须把乐观写库事务下沉 Store 后再删服务）；④取消补线为 signal.addHandler 内 Task { await indexer.cancel(sessionId:) }。**注**：该方案意味着 IndexerService 在 idx2b5 完成前不会整体删除，`Services layer` 度量暂不下降。
