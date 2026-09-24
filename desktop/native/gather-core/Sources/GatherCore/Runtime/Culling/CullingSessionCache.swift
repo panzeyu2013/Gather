@@ -17,7 +17,7 @@
 // - Lookup / Update 是值类型，字段与旧 SessionLookupEntry / SessionUpdateEntry 对齐；
 //   var 字段允许调用方做「读-改-写」懒解析（如 groupMap / analyses），并发安全由
 //   actor 串行化 + 值拷贝保证。
-// - 本文件禁止 SQL 文本与 SQLiteDatabase（W2b 门禁）。
+// - 本文件是纯内存缓存：不得出现数据库访问与 SQL 语句（W2b 门禁）。
 
 import Foundation
 
@@ -316,7 +316,7 @@ public actor CullingSessionCache {
 // MARK: - 确定性排序（同刻并列时的稳定次序）
 
 extension CullingSessionCache.LookupKey: Comparable {
-    static func < (lhs: Self, rhs: Self) -> Bool {
+    public static func < (lhs: Self, rhs: Self) -> Bool {
         if lhs.sessionId != rhs.sessionId { return lhs.sessionId < rhs.sessionId }
         if lhs.indexSeq != rhs.indexSeq { return lhs.indexSeq < rhs.indexSeq }
         return (lhs.similarityResultId ?? .min) < (rhs.similarityResultId ?? .min)
@@ -324,7 +324,7 @@ extension CullingSessionCache.LookupKey: Comparable {
 }
 
 extension CullingSessionCache.UpdateKey: Comparable {
-    static func < (lhs: Self, rhs: Self) -> Bool {
+    public static func < (lhs: Self, rhs: Self) -> Bool {
         if lhs.sessionId != rhs.sessionId { return lhs.sessionId < rhs.sessionId }
         return lhs.indexSeq < rhs.indexSeq
     }

@@ -68,6 +68,18 @@ public struct PersonPhotoRecord: Decodable, Equatable, Sendable {
     }
 }
 
+/// W2b：person_photos JOIN persons 的照片-姓名行（culling 富查询用；按 p.name 排序，
+/// 同名去重由调用方保序处理）。
+public struct PersonPhotoNameRow: Equatable, Sendable {
+    public let photoId: String
+    public let name: String
+
+    public init(photoId: String, name: String) {
+        self.photoId = photoId
+        self.name = name
+    }
+}
+
 public protocol PersonStore: Sendable {
     func list() async throws -> [PersonRecord]
     func listWithCounts() async throws -> [PersonWithCounts]
@@ -78,6 +90,8 @@ public protocol PersonStore: Sendable {
     func addPhoto(personId: String, photoId: String, sessionId: String, faceBbox: [Double], confidence: Double) async throws
     func getPhotos(personId: String, sessionIds: [String]?, limit: Int?, offset: Int?) async throws -> [PersonPhotoRecord]
     func getPersonPhoto(personId: String, photoId: String) async throws -> PersonPhotoRecord?
+    /// W2b：批量照片 → 人物名（ORDER BY p.name）；photoIds 为空返回 []。
+    func personNamesByPhoto(sessionId: String, photoIds: [String]) async throws -> [PersonPhotoNameRow]
     func removePhoto(personId: String, photoId: String) async throws
     func countPhotos(personId: String) async throws -> Int
     func sessionCount(personId: String) async throws -> Int
@@ -340,6 +354,32 @@ public struct SQLitePersonStore: PersonStore {
             "SELECT * FROM person_photos WHERE person_id = ? AND photo_id = ?",
             [.text(personId), .text(photoId)]
         )?.decode(PersonPhotoRecord.self)
+    }
+
+    /// W2b：culling 富查询的批量人物名（原 CullingService.loadPeople 的 SQL 下沉）。
+    public func personNamesByPhoto(
+        sessionId: String,
+        photoIds: [String]
+    ) async throws -> [PersonPhotoNameRow] {
+        guard !photoIds.isEmpty else { return [] }
+        var result: [PersonPhotoNameRow] = []
+        for chunk in photoIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT pp.photo_id, p.name
+                FROM person_photos pp
+                JOIN persons p ON p.id = pp.person_id
+                WHERE pp.session_id = ? AND pp.photo_id IN (\(placeholders))
+                ORDER BY p.name
+                """,
+                [.text(sessionId)] + chunk.map { .text($0) }
+            )
+            result.append(contentsOf: rows.map {
+                PersonPhotoNameRow(photoId: $0.text("photo_id") ?? "", name: $0.text("name") ?? "")
+            })
+        }
+        return result
     }
 
     public func countPhotos(personId: String) async throws -> Int {

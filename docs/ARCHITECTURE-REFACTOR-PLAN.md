@@ -466,3 +466,4 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 1. Store/SQL 调用**禁止** `try?`：必须上抛（领域错误映射到既有错误码）或显式记录到 job 失败原因；
 2. 仅允许两类 `try?`：`Task.sleep`（取消语义）与文件系统尽力清理（且需注释说明）；
 3. 门禁后续可加跟踪度量：`Services/Runtime 中非良性 try?` 数，逐步归零（R2 出口）。
+| W2 批次①：Store 读模型 + Assembler + SessionCache + JobRunner（新增落地） | OK | ①Store/CullingQueryStore.swift（唯一 SQL 所有者，14 测试；5 个 Store 追加方法含 revision CAS）+ 新增 Runtime/Culling/CullingAssembler.swift（20 纯函数，16 测试）②Runtime/Culling/CullingSessionCache.swift actor（13 测试，确定性淘汰）+ Runtime/Jobs/{JobRunner,JobDedupKey,JobCheckpoint}.swift（JobRunner actor 953 行，16 测试覆盖 8 类语义）③验证：core 817/114（2 个已知并发 flake，隔离 22/3 全绿）；门禁 4 规则 17 度量全绿；Runtime 层 SQL=0、Sources unchecked=9（=baseline）④4 个并行子代理 + 设计代理（W2c 已入库、W2d 报告在途） |

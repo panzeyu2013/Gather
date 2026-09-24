@@ -32,6 +32,20 @@ public struct FaceObservationRecord: Decodable, Equatable, Sendable {
     }
 }
 
+/// W2b：face_observations 的轻投影（CullingLookupLoader 用：bbox + 分析签名，
+/// 不含 embedding blob）。
+public struct FaceObservationLiteRecord: Equatable, Sendable {
+    public let photoId: String
+    public let bbox: [Double]
+    public let analysisSignature: String
+
+    public init(photoId: String, bbox: [Double], analysisSignature: String) {
+        self.photoId = photoId
+        self.bbox = bbox
+        self.analysisSignature = analysisSignature
+    }
+}
+
 public struct FaceAnalysisStateRecord: Equatable, Sendable {
     public let sourceFileSize: Int64
     public let sourceFileMtimeMs: Double
@@ -75,6 +89,8 @@ public protocol FaceStore: Sendable {
     func saveObservations(sessionId: String, observations: [FaceObservationInput]) async throws -> [Int64]
     func observations(sessionId: String) async throws -> [FaceObservationRecord]
     func countsByPhoto(sessionId: String, photoIds: [String]) async throws -> [String: Int]
+    /// W2b：批量轻投影（bbox + analysis_signature，ORDER BY id）；photoIds 为空返回 []。
+    func observationsLite(sessionId: String, photoIds: [String]) async throws -> [FaceObservationLiteRecord]
     func replaceObservationsByPhoto(
         sessionId: String,
         photoId: String,
@@ -238,6 +254,38 @@ public struct SQLiteFaceStore: FaceStore {
             counts[photoId] = Int(row.int("cnt") ?? 0)
         }
         return counts
+    }
+
+    /// W2b：culling 富查询的批量人脸轻读（原 CullingService.loadFaces 的 SQL 下沉）。
+    public func observationsLite(
+        sessionId: String,
+        photoIds: [String]
+    ) async throws -> [FaceObservationLiteRecord] {
+        guard !photoIds.isEmpty else { return [] }
+        var result: [FaceObservationLiteRecord] = []
+        for chunk in photoIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
+                FROM face_observations
+                WHERE session_id = ? AND photo_id IN (\(placeholders))
+                ORDER BY id
+                """,
+                [.text(sessionId)] + chunk.map { .text($0) }
+            )
+            result.append(contentsOf: rows.map { row in
+                FaceObservationLiteRecord(
+                    photoId: row.text("photo_id") ?? "",
+                    bbox: [
+                        row.double("bbox_x") ?? 0, row.double("bbox_y") ?? 0,
+                        row.double("bbox_w") ?? 0, row.double("bbox_h") ?? 0,
+                    ],
+                    analysisSignature: row.text("analysis_signature") ?? ""
+                )
+            })
+        }
+        return result
     }
 
     /// 原子替换照片的人脸观察：先删旧后插新，失败时旧数据不受影响。

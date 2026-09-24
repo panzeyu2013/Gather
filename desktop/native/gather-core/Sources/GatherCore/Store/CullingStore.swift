@@ -3,6 +3,9 @@
 // （取代 Database/Repositories/CullingDecisionRepo.swift + CullingHistoryRepo.swift）。
 import Foundation
 
+/// applyDecisionStates 事务内 CAS 失败的回滚信号（仅本文件使用，不得逃出该方法）。
+private struct CullingStoreRevisionConflictRollback: Error {}
+
 public enum CullingStoreError: Error, Equatable, Sendable {
     case undoNotLatest
     case redoOutOfOrder
@@ -116,6 +119,21 @@ public protocol CullingStore: Sendable {
     func deleteDecisions(sessionId: String) async throws
     func deleteDecisions(sessionId: String, groupId: String) async throws
     func restoreDecisions(_ decisions: [CullingRestoreInput]) async throws
+
+    // MARK: 单事务 CAS 决策写入（W2b）
+
+    /// 单事务 CAS 落库决策行写入（消除 update 的 TOCTOU）。
+    ///
+    /// 每条写入以 `WHERE session_id = ? AND photo_id = ? AND revision = ?` 命中既有行
+    /// （新 revision 取 `write.state.revision`）；任一 changes == 0 即整批回滚并返回
+    /// false（并发点击同一 revision 恰一个成功）。`expectedRevision == 0` 且行不存在时
+    /// 允许 INSERT（首次决策，保持 upsertDecisionState 语义）。
+    /// `writes` 必须全部属于 `sessionId`，否则返回 false 且不落库。
+    func applyDecisionStates(
+        sessionId: String,
+        writes: [CullingDecisionWrite],
+        expectedRevision: Int
+    ) async throws -> Bool
 
     // MARK: culling_history
 
@@ -281,6 +299,73 @@ public struct SQLiteCullingStore: CullingStore {
                     [.text(item.decision), .text(item.sessionId), .text(item.photoId)]
                 )
             }
+        }
+    }
+
+    // MARK: 单事务 CAS 决策写入（W2b）
+
+    /// 命中既有行的 CAS 更新（WHERE revision = expectedRevision；0 changes = 冲突）。
+    private static let applyDecisionStateSQL = """
+        UPDATE culling_decisions
+        SET group_id = ?, decision = ?, rating = ?, color_label = ?,
+            decision_source = ?, revision = ?, updated_at = ?
+        WHERE session_id = ? AND photo_id = ? AND revision = ?
+        """
+
+    /// 首次决策（expectedRevision == 0）允许插入；既有行仍要求 revision 匹配
+    /// （ON CONFLICT DO UPDATE 的 WHERE 不满足时 changes == 0）。
+    private static let insertFirstDecisionStateSQL = """
+        INSERT INTO culling_decisions
+          (session_id, photo_id, group_id, decision, rating, color_label,
+           decision_source, revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, photo_id) DO UPDATE SET
+          group_id = excluded.group_id,
+          decision = excluded.decision,
+          rating = excluded.rating,
+          color_label = excluded.color_label,
+          decision_source = excluded.decision_source,
+          revision = excluded.revision,
+          updated_at = excluded.updated_at
+        WHERE culling_decisions.revision = ?
+        """
+
+    public func applyDecisionStates(
+        sessionId: String,
+        writes: [CullingDecisionWrite],
+        expectedRevision: Int
+    ) async throws -> Bool {
+        guard writes.allSatisfy({ $0.sessionId == sessionId }) else { return false }
+        guard !writes.isEmpty else { return true }
+        do {
+            try await database.transaction { db in
+                let now = nowISOString()
+                let baseline = Int64(expectedRevision)
+                for write in writes {
+                    let state = write.state
+                    let changed: Int
+                    if expectedRevision == 0 {
+                        changed = try db.run(Self.insertFirstDecisionStateSQL, [
+                            .text(write.sessionId), .text(write.photoId), .text(write.groupId),
+                            .text(state.decision), .int(state.rating), .text(state.colorLabel),
+                            .text(state.source ?? "manual"), .int(state.revision),
+                            .text(now), .text(now), .int(baseline),
+                        ])
+                    } else {
+                        changed = try db.run(Self.applyDecisionStateSQL, [
+                            .text(write.groupId), .text(state.decision), .int(state.rating),
+                            .text(state.colorLabel), .text(state.source ?? "manual"),
+                            .int(state.revision), .text(now),
+                            .text(write.sessionId), .text(write.photoId), .int(baseline),
+                        ])
+                    }
+                    // 冲突：整批回滚（transaction 抛错回滚），对外映射为 false。
+                    if changed == 0 { throw CullingStoreRevisionConflictRollback() }
+                }
+            }
+            return true
+        } catch is CullingStoreRevisionConflictRollback {
+            return false
         }
     }
 

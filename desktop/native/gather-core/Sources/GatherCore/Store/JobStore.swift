@@ -3,6 +3,18 @@
 // 返回类型沿用 Protocol/Jobs.swift 的领域 DTO（AnalysisJobData 已是 Sendable 值类型）。
 import Foundation
 
+/// W2b：asset_analysis 的 technical_quality 轻投影（不含 warnings/model 等列）。
+/// 同一照片多行时，行序为 updated_at DESC（首行即最新，由调用方取首）。
+public struct TechnicalQualityRow: Equatable, Sendable {
+    public let requestedPhotoId: String
+    public let resultJSON: String
+
+    public init(requestedPhotoId: String, resultJSON: String) {
+        self.requestedPhotoId = requestedPhotoId
+        self.resultJSON = resultJSON
+    }
+}
+
 public protocol JobStore: Sendable {
     func create(_ params: JobCreateParams) async throws -> AnalysisJobData
     func get(_ id: String) async throws -> AnalysisJobData?
@@ -23,6 +35,10 @@ public protocol JobStore: Sendable {
     ) async throws -> Bool
     func interrupt(id: String, leaseOwner: String, message: String) async throws -> Bool
     func clearCompleted(excludeTypes: [AnalysisJobType]) async throws -> Int
+
+    /// W2b：批量技术质量分析行（asset_analysis JOIN photos，ORDER BY updated_at DESC）；
+    /// photoIds 为空返回 []。
+    func technicalQualityRows(photoIds: [String]) async throws -> [TechnicalQualityRow]
 }
 
 public extension JobStore {
@@ -281,6 +297,33 @@ public struct SQLiteJobStore: JobStore {
             "DELETE FROM analysis_jobs WHERE status IN ('succeeded', 'cancelled', 'failed', 'interrupted')\(exclusion)",
             excludeTypes.map { .text($0.rawValue) }
         )
+    }
+
+    /// W2b：culling 富查询的批量质量行（原 CullingService.loadQualityByPhoto 的 SQL 下沉）。
+    public func technicalQualityRows(photoIds: [String]) async throws -> [TechnicalQualityRow] {
+        guard !photoIds.isEmpty else { return [] }
+        var result: [TechnicalQualityRow] = []
+        for chunk in photoIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                """
+                SELECT p.id AS requested_photo_id, aa.result_json
+                FROM photos p
+                JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
+                WHERE aa.analysis_type = 'technical_quality'
+                  AND p.id IN (\(placeholders))
+                ORDER BY aa.updated_at DESC
+                """,
+                chunk.map { .text($0) }
+            )
+            result.append(contentsOf: rows.map {
+                TechnicalQualityRow(
+                    requestedPhotoId: $0.text("requested_photo_id") ?? "",
+                    resultJSON: $0.text("result_json") ?? "{}"
+                )
+            })
+        }
+        return result
     }
 
     /// 行 → 领域 DTO（checkpoint_json 解析失败回退空对象；未知枚举回退默认值）。

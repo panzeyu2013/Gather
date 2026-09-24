@@ -115,6 +115,19 @@ public struct MetadataCacheRecord: Decodable, Equatable, Sendable {
     }
 }
 
+/// W2b：photo_metadata_cache 的 rating/label 轻投影（summary 计数用，跳过 keywords 重列）。
+public struct MetadataRatingLabelRow: Equatable, Sendable {
+    public let photoId: String
+    public let rating: Int64
+    public let label: String?
+
+    public init(photoId: String, rating: Int64, label: String?) {
+        self.photoId = photoId
+        self.rating = rating
+        self.label = label
+    }
+}
+
 public protocol MetadataStore: Sendable {
     // MARK: photo_metadata_cache
 
@@ -122,6 +135,8 @@ public protocol MetadataStore: Sendable {
     func upsertMetadataBatch(_ entries: [(photoId: String, sessionId: String, data: MetadataCacheInput)]) async throws
     func metadata(photoId: String) async throws -> MetadataCacheRecord?
     func metadataBatch(photoIds: [String]) async throws -> [MetadataCacheRecord]
+    /// W2b：批量 rating/label 轻投影（summary 计数用）；photoIds 为空返回 []。
+    func ratingLabels(photoIds: [String]) async throws -> [MetadataRatingLabelRow]
     func deleteMetadataBySession(_ sessionId: String) async throws
     func deleteMetadataByPhotoId(_ photoId: String) async throws
     func updateRating(photoId: String, rating: Int64) async throws
@@ -226,6 +241,27 @@ public struct SQLiteMetadataStore: MetadataStore {
                 chunk.map { .text($0) }
             )
             result.append(contentsOf: try rows.map { try $0.decode(MetadataCacheRecord.self) })
+        }
+        return result
+    }
+
+    /// W2b：culling summary 的批量 rating/label（原 loadSummaryCacheByPhoto 的 SQL 下沉）。
+    public func ratingLabels(photoIds: [String]) async throws -> [MetadataRatingLabelRow] {
+        guard !photoIds.isEmpty else { return [] }
+        var result: [MetadataRatingLabelRow] = []
+        for chunk in photoIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try await database.query(
+                "SELECT photo_id, rating, label FROM photo_metadata_cache WHERE photo_id IN (\(placeholders))",
+                chunk.map { .text($0) }
+            )
+            result.append(contentsOf: rows.map {
+                MetadataRatingLabelRow(
+                    photoId: $0.text("photo_id") ?? "",
+                    rating: $0.int("rating") ?? 0,
+                    label: $0.text("label")
+                )
+            })
         }
         return result
     }
