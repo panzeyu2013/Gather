@@ -64,7 +64,9 @@ public actor MetadataMutationRuntime: MetadataMutationPort {
 
     /// TS: mutationQueues（Map<xmpPath, Promise>）—— 每路径串行链。
     /// 链的语义与 TS 逐字一致：`queued = previous.then(() => currentTurn)`，
-    /// 链只在前一链拒绝时拒绝（错误向后续回合传播），currentTurn 永不休止
+    /// 每回合的 tail 只等待前一 tail 与本回合完成信号（不含回合体），故 tail 永不 reject；
+    /// 某回合抛错只传播给该回合调用方，后续同 xmpPath 回合照常执行（currentTurn 永不休止），
+    /// 与测试 failedMutationTurnPropagatesErrorAndChainContinues 断言一致——「错误沿链继承」并非现行语义。
     /// （release 在 finally 里）——因此尾部任务 = 等待前一链 + 等待本回合结束信号。
     /// actor 隔离取代锁：字典读写在无 await 的同步前缀内完成。
     private struct QueueTail: Sendable {
@@ -89,6 +91,8 @@ public actor MetadataMutationRuntime: MetadataMutationPort {
         schedule: Bool = true
     ) async throws -> MetadataMutationResult {
         let resolved = try await deps.assetResolver.resolve(sessionId: sessionId, photoId: photoId)
+        // 注：dirtyFields 取 values.keys（Swift Dictionary 无序），多字段时 outbox 的
+        // dirty_fields JSON 顺序可能逐次不同；消费方按集合处理，若需确定性快照请在后续步骤排序。
         let dirtyFields = values.keys
             .filter { ["rating", "label", "keywords"].contains($0) }
             .compactMap { MetadataField(rawValue: $0) }
