@@ -418,12 +418,7 @@ public protocol FaceWritebackProvider: Sendable {
 /// TS: validateFaceClusteringParameters。minPts 为 Double 对齐 TS number：
 /// Number.isInteger 校验（拒绝 NaN/∞/小数），通过后调用方再安全转 Int。
 public func validateFaceClusteringParameters(eps: Double, minPts: Double) throws {
-    if eps.isNaN || eps.isInfinite || eps < 0 || eps > 1 {
-        throw FaceKwServiceError.epsInvalid
-    }
-    if minPts.isNaN || minPts.isInfinite || minPts.rounded() != minPts || minPts < 1 {
-        throw FaceKwServiceError.minClusterInvalid
-    }
+    try FaceKeywordAssembler.validateFaceClusteringParameters(eps: eps, minPts: minPts)
 }
 
 /// TS: FaceKwService（desktop/src/main/services/face-kw/face-kw.service.ts）。
@@ -438,9 +433,6 @@ public final class FaceKwService {
     public typealias FaceInferenceProvider = ([Data], FaceInferenceConfig, JobAbortSignal?) async throws -> [FaceInferenceItem]
     /// TS: clusterFacesInWorker（eps/minPts 聚类，同步 CPU 实现）。
     public typealias FaceClusterProvider = ([EmbeddingEntry], Double, Int, ((Int, Int) -> Void)?) throws -> FaceClusterResult
-
-    /// TS: MAX_PREVIEW_MEMBERS（getClusters 的成员截断窗口）。
-    private static let maxPreviewMembers = 4
 
     private let photoStore: any PhotoStore
     private let sessionStore: any SessionStore
@@ -635,7 +627,7 @@ public final class FaceKwService {
             var reuseTargets: [FaceReuseTargetInput] = []
             for photo in snapshot.photos {
                 guard case .ok(let size, let mtimeMs)? = sourceStats[photo.id] else { continue }
-                if Self.isCacheValid(
+                if FaceKeywordAssembler.isCacheValid(
                     analysisStates[photo.id], sourceSize: size, sourceMtimeMs: mtimeMs,
                     analysisSignature: analysisSignature
                 ) { continue }
@@ -672,12 +664,12 @@ public final class FaceKwService {
 
             let photosNeedingAnalysis = snapshot.photos.filter { photo in
                 guard case .ok(let size, let mtimeMs)? = sourceStats[photo.id] else { return false }
-                return !Self.isCacheValid(
+                return !FaceKeywordAssembler.isCacheValid(
                     analysisStates[photo.id], sourceSize: size, sourceMtimeMs: mtimeMs,
                     analysisSignature: analysisSignature
                 )
             }
-            let clusterSignature = "\(epsValue):\(Int(minPtsValue))"
+            let clusterSignature = FaceKeywordAssembler.clusterSignature(eps: epsValue, minPts: Int(minPtsValue))
             let signatureMatches = (try? await faceStore.clusterSignature(sessionId: sessionId)) == clusterSignature
             let existingClusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: false)
             let hasClusters = !existingClusters.isEmpty
@@ -795,7 +787,7 @@ public final class FaceKwService {
                     onProgress?(i + 1, totalPhotos, "face.detect")
                     continue
                 }
-                if Self.isCacheValid(
+                if FaceKeywordAssembler.isCacheValid(
                     analysisStates[photo.id], sourceSize: size, sourceMtimeMs: mtimeMs,
                     analysisSignature: analysisSignature
                 ) {
@@ -871,14 +863,14 @@ public final class FaceKwService {
         try await clusterStoredObservations(
             sessionId: sessionId, photos: photos, eps: eps, minPts: Int(minPts),
             signal: nil, clearOnEmpty: true, onProgress: nil)
-        try await faceStore.upsertClusterSignature(sessionId: sessionId, signature: "\(eps):\(Int(minPts))")
+        try await faceStore.upsertClusterSignature(sessionId: sessionId, signature: FaceKeywordAssembler.clusterSignature(eps: eps, minPts: Int(minPts)))
     }
 
     /// TS: getClusters（fkw.clusters）。成员截断至预览窗口，size 保持精确总数。
     public func getClusters(sessionId: String) async throws -> [FaceClusterData] {
         let clusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: true)
         return clusters.map { cluster in
-            let previewMembers = Array((cluster.members ?? []).prefix(Self.maxPreviewMembers))
+            let previewMembers = Array((cluster.members ?? []).prefix(FaceKeywordAssembler.maxPreviewMembers))
             return FaceClusterData(
                 id: Int(cluster.id),
                 sessionId: cluster.sessionId,
@@ -894,7 +886,7 @@ public final class FaceKwService {
                         photoId: member.photoId,
                         photoPath: member.photoPath,
                         filename: (member.photoPath as NSString).lastPathComponent,
-                        bbox: Self.parseBbox(member.bbox),
+                        bbox: FaceKeywordAssembler.parseBbox(member.bbox),
                         confidence: member.confidence
                     )
                 }
@@ -915,14 +907,11 @@ public final class FaceKwService {
         let clusterSessionId = try await faceStore.clusterSessionId(clusterId: clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
-        let normalizedRoleName = roleName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedRoleName = FaceKeywordAssembler.normalizedRoleName(roleName)
         if normalizedRoleName.isEmpty { throw FaceKwServiceError.roleNameEmpty }
         // TS 的 FKW_KEYWORDS_INVALID（Array.isArray / typeof === 'string' 校验）
         // 属 JSON 契约层职责；Swift 参数类型已强约束，此处不做重复校验。
-        var seen = Set<String>()
-        let dedupedKeywords = keywords
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        let dedupedKeywords = FaceKeywordAssembler.deduplicatedKeywords(keywords)
         try await faceStore.updateBinding(clusterId: clusterId, roleName: normalizedRoleName, keywords: dedupedKeywords)
         // 角色桥接进人物库（「人脸库」页不孤立）：按角色名 upsert 人物并挂接
         // 集群照片。Best-effort —— 桥接失败不得使绑定本身失败。
@@ -973,9 +962,8 @@ public final class FaceKwService {
             for member in remaining.members ?? [] {
                 let xmpPath = TSPath.xmpSidecarPath(member.photoPath)
                 var protected = protectedByPath[xmpPath] ?? []
-                for keyword in ([binding.roleName] + binding.keywords)
-                    .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) {
-                    if !keyword.isEmpty { protected.insert(keyword) }
+                for keyword in FaceKeywordAssembler.normalizedKeywords([binding.roleName] + binding.keywords) {
+                    protected.insert(keyword)
                 }
                 protectedByPath[xmpPath] = protected
             }
@@ -984,9 +972,8 @@ public final class FaceKwService {
         let entries = (cluster.members ?? []).map { member in
             let xmpPath = TSPath.xmpSidecarPath(member.photoPath)
             let protected = protectedByPath[xmpPath] ?? []
-            let keywords = roleKeywords
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty && !protected.contains($0) }
+            let keywords = FaceKeywordAssembler.normalizedKeywords(roleKeywords)
+                .filter { !protected.contains($0) }
             return FaceKeywordEntry(photoId: member.photoId, xmpPath: xmpPath, keywords: keywords)
         }
         let removedKeywords = try await writebackProvider.removeOwnedFaceKeywords(
@@ -1043,7 +1030,7 @@ public final class FaceKwService {
     ) async throws -> FaceKwWritebackPreview {
         guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
         let clusters = try await faceStore.clusters(sessionId: sessionId, includeMembers: true)
-        let additions = Self.buildFaceKeywordAdditions(clusters)
+        let additions = FaceKeywordAssembler.buildFaceKeywordAdditions(clusters)
         let boundPhotoIds = Set(additions.keys)
         return try await writebackProvider.preview(
             sessionId: sessionId,
@@ -1098,41 +1085,16 @@ public final class FaceKwService {
         let observationById = Dictionary(uniqueKeysWithValues: observations.map { ($0.id, $0) })
         let photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.filepath) })
 
-        var entries: [EmbeddingEntry] = []
-        for observation in observations {
-            let embedding = Self.floats(from: observation.embedding)
-            if embedding.contains(where: { $0 != 0 }) {
-                entries.append(EmbeddingEntry(
-                    observationId: Int(observation.id),
-                    photoId: observation.photoId,
-                    embedding: embedding
-                ))
-            }
-        }
+        let entries = FaceKeywordAssembler.embeddingEntries(from: observations)
 
         let clustered = try clusterProvider(entries, eps, minPts, onProgress)
         if signal?.aborted ?? false { throw JobCancelledError() }
 
-        let clusterInputs = clustered.clusters.enumerated().map { index, cluster in
-            FaceClusterInput(
-                label: "Person \(index + 1)",
-                members: cluster.map { entry in
-                    let observation = observationById[Int64(entry.observationId)]
-                    return FaceClusterMemberInput(
-                        photoId: entry.photoId,
-                        photoPath: photoById[entry.photoId] ?? "",
-                        bbox: [
-                            observation?.bboxX ?? 0,
-                            observation?.bboxY ?? 0,
-                            observation?.bboxW ?? 0,
-                            observation?.bboxH ?? 0,
-                        ],
-                        confidence: observation?.confidence ?? 0,
-                        observationId: Int64(entry.observationId)
-                    )
-                }
-            )
-        }
+        let clusterInputs = FaceKeywordAssembler.clusterInputs(
+            clustered: clustered,
+            observationsById: observationById,
+            photoPathsById: photoById
+        )
         if clusterInputs.isEmpty {
             // 分析成功但无脸时不应留下陈旧集群；全失败 run 则保留（TS 注释）。
             if clearOnEmpty { try await faceStore.deleteClustersBySession(sessionId) }
@@ -1145,14 +1107,10 @@ public final class FaceKwService {
         try await faceStore.deleteClustersBySession(sessionId)
         let newClusterIds = try await faceStore.saveClusters(sessionId: sessionId, clusters: clusterInputs)
         if !previousBindings.isEmpty {
-            let membersByCluster = newClusterIds.enumerated().map { index, clusterId in
-                (
-                    clusterId: clusterId,
-                    photoIds: Set(
-                        clusterInputs[index].members.map(\.photoId).filter { !$0.isEmpty }
-                    )
-                )
-            }
+            let membersByCluster = FaceKeywordAssembler.memberPhotoIdsByCluster(
+                clusterIds: newClusterIds,
+                clusterInputs: clusterInputs
+            )
             await migrateBindings(previousBindings, newMembers: membersByCluster)
         }
     }
@@ -1164,32 +1122,16 @@ public final class FaceKwService {
         _ previousBindings: [FaceBindingDetail],
         newMembers: [(clusterId: Int64, photoIds: Set<String>)]
     ) async {
-        var candidates: [(binding: FaceBindingDetail, clusterId: Int64, overlap: Int)] = []
-        for binding in previousBindings {
-            let memberPhotos = Set(binding.memberPhotoIds)
-            for candidate in newMembers {
-                var overlap = 0
-                for photoId in candidate.photoIds where memberPhotos.contains(photoId) {
-                    overlap += 1
-                }
-                if overlap > 0 {
-                    candidates.append((binding, candidate.clusterId, overlap))
-                }
-            }
-        }
-        candidates.sort { $0.overlap > $1.overlap }
-        var claimedClusters = Set<Int64>()
-        var migratedBindings = Set<Int64>()
-        for candidate in candidates {
-            if claimedClusters.contains(candidate.clusterId) { continue }
-            if migratedBindings.contains(candidate.binding.clusterId) { continue }
-            claimedClusters.insert(candidate.clusterId)
-            migratedBindings.insert(candidate.binding.clusterId)
+        let plan = FaceKeywordAssembler.planBindingMigrations(
+            previousBindings: previousBindings,
+            newMembers: newMembers
+        )
+        for migration in plan {
             do {
                 try await faceStore.updateBinding(
-                    clusterId: candidate.clusterId,
-                    roleName: candidate.binding.roleName,
-                    keywords: candidate.binding.keywords
+                    clusterId: migration.clusterId,
+                    roleName: migration.roleName,
+                    keywords: migration.keywords
                 )
             } catch {
                 GatherLogger.log("Failed to migrate role binding after re-clustering \(error)", level: .warn)
@@ -1226,26 +1168,6 @@ public final class FaceKwService {
         )
     }
 
-    /// TS: buildFaceKeywordAdditions（fkw.preview 的写回规划）。
-    public static func buildFaceKeywordAdditions(_ clusters: [FaceClusterRecord]) -> [String: [String]] {
-        var additions: [String: [String]] = [:]
-        for cluster in clusters {
-            guard let binding = cluster.binding else { continue }
-            var seen = Set<String>()
-            let keywords = ([binding.roleName] + binding.keywords)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty && seen.insert($0).inserted }
-            for member in cluster.members ?? [] {
-                var merged = additions[member.photoId] ?? []
-                for keyword in keywords where !merged.contains(keyword) {
-                    merged.append(keyword)
-                }
-                additions[member.photoId] = merged
-            }
-        }
-        return additions
-    }
-
     /// TS: analysisSignature 构造（face-kw.service.ts:139-158）。键序与 TS
     /// JSON.stringify 的插入序逐字一致；preprocessingVersion 恒为 2。
     static func makeAnalysisSignature(
@@ -1258,87 +1180,22 @@ public final class FaceKwService {
         embeddingDim: Int,
         previewMaxDimension: Int
     ) -> String {
-        let fields = [
-            jsonField("detector", Self.modelFingerprint(detectorPath)),
-            jsonField("encoder", Self.modelFingerprint(encoderPath)),
-            "\(jsonKey("primaryDetectionSize")):\(primaryDetectionSize)",
-            "\(jsonKey("secondaryDetectionSize")):\(secondaryDetectionSize)",
-            "\(jsonKey("confidenceThreshold")):\(confidenceThreshold)",
-            "\(jsonKey("encoderInputSize")):\(encoderInputSize)",
-            "\(jsonKey("embeddingDim")):\(embeddingDim)",
-            "\(jsonKey("previewMaxDimension")):\(previewMaxDimension)",
-            "\(jsonKey("preprocessingVersion")):2",
-        ]
-        return "{\(fields.joined(separator: ","))}"
+        FaceKeywordAssembler.makeAnalysisSignature(
+            detectorFingerprint: Self.modelFingerprint(detectorPath),
+            encoderFingerprint: Self.modelFingerprint(encoderPath),
+            primaryDetectionSize: primaryDetectionSize,
+            secondaryDetectionSize: secondaryDetectionSize,
+            confidenceThreshold: confidenceThreshold,
+            encoderInputSize: encoderInputSize,
+            embeddingDim: embeddingDim,
+            previewMaxDimension: previewMaxDimension
+        )
     }
 
     /// TS: modelFingerprint —— resolveModelPath 后 stat；失败回落为路径本身。
     static func modelFingerprint(_ modelPath: String) -> String {
         guard let stat = tsStat(modelPath) else { return modelPath }
         return "\(modelPath):\(stat.size):\(Int64(stat.mtimeMs.rounded()))"
-    }
-
-    private static func jsonKey(_ key: String) -> String { "\"\(key)\"" }
-
-    private static func jsonField(_ key: String, _ value: String) -> String {
-        "\"\(key)\":\"\(jsonEscape(value))\""
-    }
-
-    /// TS: JSON.stringify 的最小等价转义（签名只含路径/整数，控制字符按
-    /// \uXXXX 转义；JSON.parse 侧无感知差异）。
-    private static func jsonEscape(_ value: String) -> String {
-        var out = ""
-        for scalar in value.unicodeScalars {
-            switch scalar {
-            case "\"": out += "\\\""
-            case "\\": out += "\\\\"
-            case "\n": out += "\\n"
-            case "\r": out += "\\r"
-            case "\t": out += "\\t"
-            case "\u{8}": out += "\\b"
-            case "\u{0C}": out += "\\f"
-            default:
-                if scalar.value < 0x20 {
-                    out += String(format: "\\u%04x", scalar.value)
-                } else {
-                    out.unicodeScalars.append(scalar)
-                }
-            }
-        }
-        return out
-    }
-
-    /// TS: isCacheValid（观察/状态与文件状态、签名一致）。
-    private static func isCacheValid(
-        _ state: FaceAnalysisStateRecord?,
-        sourceSize: Int64,
-        sourceMtimeMs: Double,
-        analysisSignature: String
-    ) -> Bool {
-        guard let state else { return false }
-        return state.sourceFileSize == sourceSize &&
-            abs(state.sourceFileMtimeMs - sourceMtimeMs) < 1 &&
-            state.analysisSignature == analysisSignature
-    }
-
-    /// 存储 BLOB 的 Float32 视图（TS: Float32Array 视图，零拷贝语义）。
-    private static func floats(from data: Data) -> [Float] {
-        guard !data.isEmpty else { return [] }
-        let count = data.count / MemoryLayout<Float>.size
-        var floats = [Float](repeating: 0, count: count)
-        _ = floats.withUnsafeMutableBytes { buffer in
-            data.copyBytes(to: buffer)
-        }
-        return floats
-    }
-
-    /// TS: JSON.parse(m.bbox)。
-    private static func parseBbox(_ raw: String) -> [Double] {
-        guard let value = try? JSONValue.parse(raw), case .array(let items) = value else { return [] }
-        return items.compactMap {
-            if case .number(let v) = $0 { return v }
-            return nil
-        }
     }
 
     /// 文件 stat 三态：ok / missing（ENOENT）/ failed（其他错误，算检测失败）。
@@ -1348,7 +1205,7 @@ public final class FaceKwService {
         case failed
     }
 
-    /// TS: batchAsync(fs.promises.stat, 32) —— ENOENT 与其他 stat 失败区分。
+    /// TS: fs.promises.stat 的 32 并发窗口 —— ENOENT 与其他 stat 失败区分。
     private static func statPhotos(_ photos: [PhotoProjection]) async -> [String: SourceStat] {
         var result: [String: SourceStat] = [:]
         for chunkStart in stride(from: 0, to: photos.count, by: 32) {
