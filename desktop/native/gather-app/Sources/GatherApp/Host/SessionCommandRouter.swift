@@ -101,7 +101,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let templates: TemplatesAPI
     /// W2c：Quality 域 Runtime（quality.analyze executor / quality.get）。
     private let quality: QualityRuntime
-    private let indexerService: IndexerService
+    private let indexer: IndexerRuntime
     private let metadataService: MetadataService
     private let metadataSyncCoordinator: MetadataSyncCoordinator
     private let metadataMutationService: MetadataMutationService
@@ -126,7 +126,7 @@ public final class SessionCommandRouter: CommandRouter {
         persons: PersonsAPI,
         templates: TemplatesAPI,
         quality: QualityRuntime,
-        indexerService: IndexerService,
+        indexer: IndexerRuntime,
         metadataService: MetadataService,
         metadataSyncCoordinator: MetadataSyncCoordinator,
         metadataMutationService: MetadataMutationService,
@@ -153,7 +153,7 @@ public final class SessionCommandRouter: CommandRouter {
         self.persons = persons
         self.templates = templates
         self.quality = quality
-        self.indexerService = indexerService
+        self.indexer = indexer
         self.metadataService = metadataService
         self.metadataSyncCoordinator = metadataSyncCoordinator
         self.metadataMutationService = metadataMutationService
@@ -348,6 +348,20 @@ public final class SessionCommandRouter: CommandRouter {
                     mode: mode, onProgress: onProgress)
             }
         )
+        // checksum.backfill 的 backfillChecksums 尚未迁入 Runtime（idx2b5 处理），
+        // 暂由旧 IndexerService 承担；scan 与待回填判定已走 Runtime。
+        let checksumBackfiller = IndexerService(
+            database: database,
+            sessionStore: sessionStore,
+            photoStore: photoStore,
+            assetStore: assetStore,
+            getDimensions: { path in
+                try RAWDecoder.getDimensions(path: path)
+            },
+            getSetting: { key, defaultValue in
+                settings.value(key, default: defaultValue)
+            }
+        )
         let router = SessionCommandRouter(
             sessionService: SessionService(
                 sessionStore: sessionStore,
@@ -373,17 +387,19 @@ public final class SessionCommandRouter: CommandRouter {
             persons: persons,
             templates: templates,
             quality: quality,
-            indexerService: IndexerService(
-                database: database,
-                sessionStore: sessionStore,
-                photoStore: photoStore,
-                assetStore: assetStore,
-                getDimensions: { path in
-                    try RAWDecoder.getDimensions(path: path)
-                },
-                getSetting: { key, defaultValue in
-                    settings.value(key, default: defaultValue)
-                }
+            indexer: IndexerRuntime(
+                dependencies: IndexerRuntime.Dependencies(
+                    sessionStore: sessionStore,
+                    photoStore: photoStore,
+                    assetStore: assetStore,
+                    database: database,
+                    getDimensions: { path in
+                        try RAWDecoder.getDimensions(path: path)
+                    },
+                    getSetting: { key, defaultValue in
+                        settings.value(key, default: defaultValue)
+                    }
+                )
             ),
             metadataService: metadataService,
             metadataSyncCoordinator: metadataSyncCoordinator,
@@ -395,14 +411,14 @@ public final class SessionCommandRouter: CommandRouter {
             photoStore: photoStore,
             sessionStore: sessionStore
         )
-        await router.registerExecutors()
+        await router.registerExecutors(checksumBackfiller: checksumBackfiller)
         return router
     }
 
     /// TS di/init.ts 的 executor 注册段（similarity.analyze / duplicate.scan）。
     /// JobRunner 恢复 interrupted 任务时依赖 autoResume 注册表，故装配期
     /// 同步注册（autoResume 默认 true）。
-    private func registerExecutors() async {
+    private func registerExecutors(checksumBackfiller: IndexerService) async {
         await jobRunner.registerExecutor(type: .similarityAnalyze) { [similarity] job, context in
             // TS similarity.ipc.ts:100-121：abort 时同步取消相似度占用
             // （session 列仅在真正持有者取消时写入，见 SimilarityRuntime.cancel）。
@@ -474,12 +490,17 @@ public final class SessionCommandRouter: CommandRouter {
         // TS 源: indexer.ipc.ts:26-67 —— metadata.scan executor：扫描 →
         // 元数据提取 → 资产链接对账 → checkpoint 落结果（恢复语义），
         // 剩余待回填 checksum 时入队 checksum.backfill。
-        await jobRunner.registerExecutor(type: .metadataScan) { [indexerService, metadataService, photoStore, assetStore, jobRunner] job, context in
-            let result = try await indexerService.scanSession(
-                sessionId: job.scopeId,
-                context: context
-            )
+        await jobRunner.registerExecutor(type: .metadataScan) { [indexer, metadataService, photoStore, assetStore, jobRunner] job, context in
+            // 取消经 Runtime 的 cancel(sessionId:) 传入（已 abort 时 addHandler 同步回调）。
+            let scanSessionId = job.scopeId
+            context.signal.addHandler {
+                Task { await indexer.cancel(sessionId: scanSessionId) }
+            }
             try await context.throwIfCancelled()
+            let result = try await indexer.scan(
+                sessionId: scanSessionId,
+                options: IndexScanParams(sessionId: scanSessionId)
+            )
             let photoIds = try await photoStore.getBySessionProjection(sessionId: job.scopeId)
                 .filter { $0.status != "missing" }
                 .map(\.id)
@@ -492,7 +513,10 @@ public final class SessionCommandRouter: CommandRouter {
             await context.updateProgress(JobProgressUpdate(
                 current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
             ))
-            if (try await indexerService.pendingChecksums(sessionId: job.scopeId)) > 0 {
+            let pendingChecksums = try await photoStore.getBySessionProjection(sessionId: job.scopeId)
+                .filter { IndexAssembler.needsChecksumBackfill(checksum: $0.checksum, status: $0.status) }
+                .count
+            if pendingChecksums > 0 {
                 _ = try await jobRunner.create(JobCreateParams(
                     type: .checksumBackfill,
                     scopeType: "session",
@@ -505,8 +529,8 @@ public final class SessionCommandRouter: CommandRouter {
 
         // TS 源: indexer.ipc.ts:26-32 —— checksum.backfill executor（后台回填
         // 懒索引留下的空 checksum）。
-        await jobRunner.registerExecutor(type: .checksumBackfill) { [indexerService] job, context in
-            let result = try await indexerService.backfillChecksums(
+        await jobRunner.registerExecutor(type: .checksumBackfill) { [checksumBackfiller] job, context in
+            let result = try await checksumBackfiller.backfillChecksums(
                 sessionId: job.scopeId,
                 context: context
             )
