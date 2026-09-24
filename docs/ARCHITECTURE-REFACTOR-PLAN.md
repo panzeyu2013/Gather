@@ -518,3 +518,30 @@ W2 是 R2 的完整波次，按域拆成可并行子波，每轮 2–6 个互不
 | round 36：Culling 片 C 删旧（cullC，R2 首个删旧里程碑） | OK | ①删除 `Services/CullingService.swift`（2550 行）与 `Tests/GatherCoreTests/Services/CullingServiceTests.swift`（57 用例）；core/app 无引用点需修（仅注释残留；`CullingServiceError` 类型已由片 A 迁入 `Runtime/Culling/CullingTypes.swift`）②旧 57 用例语义逐条比对 `Runtime/Culling/` 6 套件（完全覆盖 ≈44，部分/未覆盖 13）：补 10 个用例 —— writeback rating/colorLabel 计划（keep→5/Green、reject→1/Red、pending 排除）、persist/execute 同批、retryFailed 成功路径、batch 去重+共享 historyOperationId、undo rating/label 回滚（cache+outbox+schedule）、单张 rejected/unreviewed 映射、update cache 兜底、groups_json 组 id 回退、filtered 仅 JPEG 命中排除、可解析组页 total、IPC 错误码描述契约；Store 已覆盖项（历史栈顺序守卫/append 清 undone/limit clamp/precomputed 排除/质量损坏行回退）不重复 ③实跑：core build 0 error、`Culling` 149/10 全绿、app 172/19 全绿、门禁 4 规则 17 度量全绿 ④baseline：`Services layer` 22→21、`unchecked Sendable` 7→6（同一删除的连带下降，按脚本 ratchet note 同步）。 |
 | round 37：W4-2 支撑文件迁入 Metadata/（w4b，5/5） | OK | ①git mv（保留历史）：Services/MetadataProviders.swift→Metadata/MetadataProviderContract.swift、MetadataContract.swift→Metadata/MetadataMutationPlan.swift、MetadataConflictFields.swift→Metadata/MetadataConflictRules.swift、MetadataFingerprint.swift→Metadata/MetadataFileSystem.swift、CaptureOneSessionState.swift→Metadata/MetadataSessionState.swift ②死码删除：countOutboxStatuses（76→66 行）、dirtyFieldsForPatch/patchToOutboxValues/assertMutationSource（125→93 行）③引用点 0 改动（同模块跨文件可见；类型名/函数名逐字保留）④语义承接：原 5 文件零专用单测 → 新增 Tests/GatherCoreTests/Metadata/ 4 套件 31 用例（契约校验/冲突规则/指纹文件系统/会话状态）；过滤 51/5 全绿，MetadataSyncCoordinator+Writeback+MetadataStore 回归 20/3 全绿 ⑤未完成（留 W4-2 后续步）：MetadataProviderSet 聚合结构、MetadataFileSystem stat/read/hash 接缝化、类型改名 ⑥baseline：Services layer 21→16。 |
 | round 38：W2c 片 B/C：Similarity+Duplicate+Quality 三域切换（w2cB） | OK | ①装配：`makeDefault` 用 `SimilarityRuntime`（Dependencies 四 Store+jobStore+getNumber、Providers.thumbnail 保留 P0-1 修复）/ `DuplicateRuntime`（SQLiteDuplicateStore + 原 thumbnail/cluster provider）/ `QualityRuntime`（photo/job/similarity/face Store + 默认 provider）取代三个服务；新增 `CullingQualityInvalidationPort` 把 `QualityInvalidationPort.invalidateQualityLookup` 接到 `CullingRuntime.invalidateSessionLookup`（旧 invalidateCullingLookup 从未接线）②路由：sim.* 10 / dup.* 4 / quality.* 2 共 16 case 全部落在 `executeAsync`；sim.cancel_analysis / sim.preview_writeback / sim.confirm_sync 从同步 execute 迁入并删同步分支，sim.cleanup 删重复转发分支；sim.analyze executor 切 runtime，`validateSimilarityParameters`（旧文件顶层）调用点改 `SimilarityValidation.validate`；错误映射 SimilarityServiceError/DuplicateServiceError/QualityServiceError → SimilarityError/DuplicateError/QualityError ③app：`SimilarityViewModel.cancelAnalysis`/`syncStateItems`/`refreshSyncState` 异步化（修 sim.writeback_items 同步 execute 命中 async case 必抛 NOT_IMPLEMENTED 的潜伏 bug），SimilarityView onReceive 用 Task 桥 ④删除 `Services/{SimilarityService,DuplicateService,QualityService}.swift` 与 4 个旧测试（SimilarityServiceTests 21 / DuplicateServiceTests 21 / QualityServiceTests 14 / SimilarityIncrementalServiceTests 7）；语义承接：前三组逐组落到 `Runtime/{Similarity,Duplicate,Quality}/` 套件（各旧用例名在新套件可逐条对上），增量 7 用例整体移植为 `SimilarityRuntimeIncrementalTests`（断言逐条保留），补 `reclusterRejectsFractionalThreshold`（旧唯一未覆盖语义）⑤baseline：Services layer 21→13（本单元 −3；含 round 37 W4-2 的 −5）、unchecked Sendable 6→5、batchAsync copies 4→3 |
+
+## 11. R7 死代码裁决清单（round 56 实测，待删除单元）
+
+| 目标 | 证据 | 处置 |
+|---|---|---|
+| `Services/ImagePreloadService.swift`（82 行） | `image.*` 4 命令全仓 0 调用（`PhotoThumbnailView` 直连 `RAWDecoder`） | R7 删除；`AnalysisJobType.thumbnailBuild` 枚举值保留（兼容既有 job 行） |
+| `image.get_dimensions` / `image.preload_previews` / `image.prioritize_thumbnail` / `image.preload_thumbnails` | 路由死分支（0 调用） | R5 不进入 typed API；R7 删路由分支 |
+| `culling.decide` / `culling.batch_decide` | 已删除（W2b 片 B） | ✅ 已完成 |
+| `photo.list` | 路由死分支（0 调用） | R7 删除（Store 侧 `PhotoStore.getAssetPage` 保留） |
+| `populateCache` / `countOutboxStatuses` / `dirtyFieldsForPatch` / `patchToOutboxValues` / `assertMutationSource` | 0 调用 | ✅ 已删除（W4-2 / W2c 迁移） |
+| Store 零调用方法：`updateWritebackStatusByXmpPath`、`hasActiveWriteback`、`updateWritebackBackupPath`、`writebackItem(itemId:)` | W4 设计 §1.6 实测 | R7 删除 + 相应测试收窄 |
+| `FaceCluster` / `BindingData` 与 `FaceClusterData` 重复类型 | W5 设计 §1.3 | R7 合并为 `FaceClusterData` |
+| `PhotoAssets`（47 行）/ `FilterEngine`（542 行） | 纯函数，被 Runtime 使用 | **保留**，迁入 `Runtime/Support` 与 `Runtime/Filter`（R7 定位，不删） |
+
+## 12. R8 门禁加固清单（新增 enforced 规则，实施于各 wave 收尾）
+
+| 规则 | 目标 | 状态 |
+|---|---|---|
+| `Runtime/**` 内 0 SQL 文本、0 `SQLiteDatabase`、0 `NSLock`、0 `unchecked 并发标注` | 已生效（Culling/Similarity/Duplicate/Quality/Jobs 全部达标） | ✅ 生效 |
+| `Metadata/**` 内同上 4 条 | W4 完成后转 enforced | 计划 |
+| app 内无 `WebResponse` / `CommandRouter` / `NativeCommandClient` / `JSONValueDecoding` / `RouterCommandError` / `NativeCommandError` / `BridgeError` / `.execute(` | W5 完成后转 enforced | 计划 |
+| `SessionCommandRouter (R5)` 17→0、`awaitSync` 2→0、`StubCommandRouter` 7→0 | W5 | 计划 |
+| `Services layer (R2)` 13→3（保留 `FilterEngine`/`PhotoAssets`）后改名为 legacy 并删除该度量 | W2d/W4/R7 后 | 计划 |
+| `batchAsync copies` 3→0（统一 `ConcurrentMap.run`） | W2d/W4 后 | 计划 |
+| `unchecked Sendable` 5→0 | 随 `Services` 清退 | 计划 |
+
+**收尾定义（R8 出口）**：`./scripts/check-no-legacy.sh` 全绿且**全部度量转 enforced**；`Services/` 仅剩 `Runtime/Support`+`Runtime/Filter` 归属的纯函数；双包 0 error、app 测试不减、core 全量绿（已知 flake 隔离复跑通过）；文档（`ARCHITECTURE-W2B/W2C/W2D/W4/W5-DESIGN.md` + 计划进度行 + ADR）齐备。
