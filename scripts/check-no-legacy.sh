@@ -73,11 +73,11 @@ enforce "no app-level JSONSerialization" 'JSONSerialization'                    
 
 # ---------------------------------------------------------------- tracked
 tracked "awaitSync semaphore bridge (R5)"       'awaitSync'                        "$APP"    "*.swift"
-tracked "SessionCommandRouter (R5)"             'SessionCommandRouter'             "$NATIVE" "*.swift"
+tracked "SessionCommandRouter (R5)"             'SessionCommandRouter'             "$APP"    "*.swift"
 tracked "Services layer (R2)"                   '.'                                "$CORE/Sources/GatherCore/Services" "*.swift"
 tracked "StubCommandRouter (R5)"                'StubCommandRouter'                "$APP"    "*.swift"
 tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepare\(' "$CORE/Sources/GatherCore/Services" "*.swift"
-tracked "unchecked Sendable (R1/R2)"            '@unchecked Sendable'              "$NATIVE" "*.swift"
+tracked "unchecked Sendable (R1/R2)"            '@unchecked Sendable'              "$CORE/Sources" "*.swift"
 tracked "dual-track l10n zhDesc/enDesc (R6)"    'zhDesc|enDesc'                    "$APP"    "*.swift"
 tracked "batchAsync copies (R2)"                'func batchAsync'                  "$CORE"   "*.swift"
 tracked "Runtime layer SQL statements (R2)"   'SELECT |INSERT INTO |UPDATE .* SET|DELETE FROM '  "$CORE/Sources/GatherCore/Runtime" "*.swift"
