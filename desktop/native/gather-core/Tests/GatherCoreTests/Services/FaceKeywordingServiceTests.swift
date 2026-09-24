@@ -138,7 +138,7 @@ private func makeFaceKwHarness(
         sessionStore: sessionStore,
         faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
         personStore: SQLitePersonStore(database: try SQLiteDatabase(path: dbPath)),
-        connection: db,
+        database: try SQLiteDatabase(path: dbPath),
         getNumber: { key, defaultValue in settings[key] ?? defaultValue },
         decodeProvider: { _, _ in Data("jpeg".utf8) },
         inferenceProvider: inference ?? defaultFakeInference(),
@@ -523,7 +523,7 @@ struct FaceKwAnalyzeFlowTests {
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: SQLiteFaceStore(database: try SQLiteDatabase(path: dbPath)),
             personStore: try makeTestPersonStore(),
-            connection: db,
+            database: try SQLiteDatabase(path: dbPath),
             decodeProvider: { _, _ in Data("jpeg".utf8) },
             inferenceProvider: defaultFakeInference()
         )
@@ -582,7 +582,7 @@ struct FaceKwBindingMigrationTests {
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
-            connection: db,
+            database: try SQLiteDatabase(path: dbPath),
             clusterProvider: { entries, _, _, _ in
                 FaceClusterResult(
                     clusters: clusterResult.map { group in
@@ -686,7 +686,7 @@ struct FaceKwGetClustersTests {
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
         let clusters = try await service.getClusters(sessionId: sessionId)
 
@@ -748,7 +748,7 @@ struct FaceKwClusterCommandTests {
             sessionStore: try SQLiteSessionStore(database: try SQLiteDatabase(path: dbPath)),
             faceStore: faceStore,
             personStore: try makeTestPersonStore(),
-            connection: db
+            database: try SQLiteDatabase(path: dbPath)
         )
         await await #expect(throws: FaceKwServiceError.clusterNotFound) {
             try await service.bindCluster(sessionId: sessionA.id, clusterId: 99, roleName: "Alice", keywords: [])

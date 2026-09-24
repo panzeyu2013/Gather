@@ -51,7 +51,7 @@
 | 删除切片台账 | ✅ 15/… | settings、template、smart album、workspace、person、face、keyword-origins、culling-history、metadata-cache、culling-decisions、similarity、writeback、metadata-outbox、analysis-jobs、assets |
 | 删除切片台账 | ✅ 5/… | settings、template、smart album、workspace、person（face 进行中）；每片均含旧实现与旧测试同批删除 + 门禁度量更新 |
 | R1 收尾⑦：其余切片 | 🔶 | 剩余 `Database/Repositories` 15 文件与 Services 内联 SQL 14 文件 |
-| R1 收尾㊸：DB.swift 退役第六切片——NavigationService | ✅ | NavigationService(553) 去 DBConnection：database: SQLiteDatabase；analyze/list/split/merge/captureRows/persistAutomatic 异步化；3 处写事务改 database.transaction+db.run（insertGroup 改为接收 isolated db 形参）；读取改 database.query/queryOne；行访问改 columnOrder；cachedFingerprint 改 async。路由：NavigationService(database:) + navigation.list/split/merge 三用例迁 executeAsync、navigation.analyze 包 Task。测试：NavigationServiceTests harness 改同库文件库、15 处 await、7 处 await #expect（同步参数校验保留非 await）。验证：双包库编译 0 error；NavigationServiceTests 21/4 全绿；app 172/19（1 flake 隔离跑通过）。DB.swift 消费者 11→10 |
+| R1 收尾㊹：DB.swift 退役第七切片——FaceKwService | ✅ | FaceKwService(1434) 去 DBConnection（仅 3 处连接点，主体是纯计算）：database: SQLiteDatabase；analysis_runs 插入改 database.run + database.lastInsertRowID；startAnalysisRun/finalizeAnalysisRun 异步化并传播调用点；路由 FaceKwService(database:) 注入。测试：FaceKeywordingServiceTests 两处构造改同库 + 保留其余。验证：双包库编译 0 error；FaceKeywording 全套 35/8 全绿；app 172/19 全绿。DB.swift 消费者 10→9 |
 | 已知 flake | ⚠️ | `JobSchedulerTests.admitsTasksWithinBudget` 在并发负载下偶发失败（单独运行稳定）——R3 JobRunner 重写时改为确定性调度测试 |
 
 > 基线复核（round 41 @ `dbed3c7`）：core **849 tests / 117 suites 全绿**；app **172/19 全绿**；门禁 4 条强制规则 + 16 项度量全绿。；app 172/19（全量跑时 `GatherToast` 计时用例偶发超时，单独运行通过）。

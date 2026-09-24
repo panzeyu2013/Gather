@@ -279,7 +279,7 @@ public final class SessionCommandRouter: CommandRouter {
             sessionStore: sessionStore,
             faceStore: faceStore,
             personStore: personStore,
-            connection: db,
+            database: database,
             getNumber: { key, defaultValue in
                 settings.number(key, default: defaultValue)
             },

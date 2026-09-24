@@ -446,7 +446,7 @@ public final class FaceKwService {
     private let sessionStore: any SessionStore
     private let faceStore: any FaceStore
     private let personStore: any PersonStore
-    private let connection: DBConnection
+    private let database: SQLiteDatabase
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
     /// TS: SettingsService.get 注入（onnx_provider 等字符串设置）。
@@ -490,7 +490,7 @@ public final class FaceKwService {
         sessionStore: any SessionStore,
         faceStore: any FaceStore,
         personStore: any PersonStore,
-        connection: DBConnection,
+        database: SQLiteDatabase,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         getString: @escaping (String, String) -> String = { _, defaultValue in defaultValue },
         decodeProvider: DecodeProvider? = nil,
@@ -505,7 +505,7 @@ public final class FaceKwService {
         self.sessionStore = sessionStore
         self.faceStore = faceStore
         self.personStore = personStore
-        self.connection = connection
+        self.database = database
         self.getNumber = getNumber
         self.getString = getString
         self.decodeProvider = decodeProvider
@@ -542,7 +542,7 @@ public final class FaceKwService {
         // TS finally：成功/失败/取消路径都必须落 run 终态并释放占用。
         defer {
             if runId != 0 {
-                try? finalizeAnalysisRun(runId: runId, status: runStatus)
+                try? await finalizeAnalysisRun(runId: runId, status: runStatus)
             }
             removeControllerIfCurrent(signal, for: sessionId)
         }
@@ -566,7 +566,7 @@ public final class FaceKwService {
             let snapshot: (photos: [PhotoProjection], indexSeq: Int) = (photosSnapshot, indexSeqSnapshot)
             if snapshot.photos.isEmpty { throw FaceKwServiceError.noPhotos }
             if signal.aborted { throw JobCancelledError() }
-            runId = try startAnalysisRun(
+            runId = try await startAnalysisRun(
                 sessionId: sessionId,
                 kind: "face",
                 photoCount: snapshot.photos.count,
@@ -1204,24 +1204,26 @@ public final class FaceKwService {
         photoCount: Int,
         indexSeq: Int,
         params: FaceRunParams
-    ) throws -> Int64 {
+    ) async throws -> Int64 {
         let data = try JSONEncoder().encode(params)
-        _ = try connection.prepare("""
+        _ = try await database.run("""
             INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
             VALUES (?, ?, ?, ?, ?, '', ?, 'running')
-          """).run([
+          """, [
             .text(sessionId), .text(kind), .int(Int64(photoCount)), .int(Int64(indexSeq)),
             .text(nowISOString()), .text(String(data: data, encoding: .utf8) ?? "{}"),
         ])
-        return connection.lastInsertRowid
+        return await database.lastInsertRowID
     }
 
     // 取消的 run 在此以 'failed' 终态（sessions.analysis_status 在 catch 写
     // 'cancelled'）：run 记录按设计只区分 ok/failed，该分歧是刻意的（TS 注释
     // 603-606；过期检测 1.4.2 一律忽略非 ok run）。
-    private func finalizeAnalysisRun(runId: Int64, status: String) throws {
-        _ = try connection.prepare("UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?")
-            .run([.text(status), .text(nowISOString()), .int(runId)])
+    private func finalizeAnalysisRun(runId: Int64, status: String) async throws {
+        _ = try await database.run(
+            "UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?",
+            [.text(status), .text(nowISOString()), .int(runId)]
+        )
     }
 
     /// TS: buildFaceKeywordAdditions（fkw.preview 的写回规划）。
