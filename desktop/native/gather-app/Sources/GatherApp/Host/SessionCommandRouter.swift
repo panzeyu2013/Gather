@@ -25,7 +25,7 @@
 //     person.* → PersonRepo（TS 源 person.ipc.ts）
 //     template.* → TemplateService（TS 源 template.ipc.ts）
 //     metadata.get / set / batch_set / conflicts / orphans →
-//       MetadataService + MetadataSyncCoordinator（TS 源 metadata.ipc.ts；
+//       MetadataService + MetadataSyncRuntime（TS 源 metadata.ipc.ts；
 //       set/batch_set/conflicts 的 TS await → awaitSync 桥接）
 //     album.* → SmartAlbumRepo + FilterEngine（TS 源 filter.ipc.ts
 //       registerAlbumHandlers 段）
@@ -34,7 +34,7 @@
 //       finalize_sync（destructive）/ groups / decide / batch_decide / summary /
 //       retry_failed_writeback（destructive）/ confirm_sync / cleanup
 //       （destructive）/ reset（destructive）→ CullingService（Wave 2；
-//       sync/writeback 端口注入真实 MetadataSyncCoordinator / WritebackService）
+//       sync/writeback 端口注入真实 MetadataSyncRuntime / WritebackService）
 //   异步（executeAsync）：
 //     navigation.analyze → NavigationRuntime.analyze（TS 源 navigation.ipc.ts，
 //       TS 侧为 async wrapper 内同步执行，Swift 同步直连）
@@ -54,7 +54,7 @@
 //       （TS 源 indexer.ipc.ts）
 //     session.create_from_directory → SessionRuntime.createFromDirectory +
 //       metadata.scan job 入队（TS 源 session.ipc.ts）
-//     metadata.resolve_conflict / resolve_orphan → MetadataSyncCoordinator
+//     metadata.resolve_conflict / resolve_orphan → MetadataSyncRuntime
 //       （TS 源 metadata.ipc.ts；destructive 二次兜底）
 //     culling.writeback / flush / retry_sync → CullingService（TS 源
 //       culling.ipc.ts；writeback destructive 二次兜底；bridge 白名单
@@ -103,7 +103,7 @@ public final class SessionCommandRouter: CommandRouter {
     private let quality: QualityRuntime
     private let indexer: IndexerRuntime
     private let metadataService: MetadataService
-    private let metadataSyncCoordinator: MetadataSyncCoordinator
+    private let metadataSyncCoordinator: MetadataSyncRuntime
     private let metadataMutationRuntime: MetadataMutationRuntime
     private let writebackService: WritebackService
     private let albums: AlbumsAPI
@@ -128,7 +128,7 @@ public final class SessionCommandRouter: CommandRouter {
         quality: QualityRuntime,
         indexer: IndexerRuntime,
         metadataService: MetadataService,
-        metadataSyncCoordinator: MetadataSyncCoordinator,
+        metadataSyncCoordinator: MetadataSyncRuntime,
         metadataMutationRuntime: MetadataMutationRuntime,
         writebackService: WritebackService,
         albums: AlbumsAPI,
@@ -241,10 +241,10 @@ public final class SessionCommandRouter: CommandRouter {
         let assetResolver = PhotoAssetResolver(database: database, getSetting: { key, defaultValue in
             settings.value(key, default: defaultValue)
         })
-        let metadataSyncCoordinator = MetadataSyncCoordinator(
+        let metadataSyncCoordinator = MetadataSyncRuntime(
             writebackStore: writebackStore,
             xmp: xmp,
-            database: database,
+            sessionStore: sessionStore,
             getNumber: { key, defaultValue in
                 if key == "metadata_write_debounce_ms", let metadataWriteDebounceMs {
                     return metadataWriteDebounceMs
@@ -303,7 +303,7 @@ public final class SessionCommandRouter: CommandRouter {
             )
         )
         // 3.4 CullingRuntime：查询/写回端口注入真实
-        // MetadataSyncCoordinator / WritebackService（CullingSyncPort /
+        // MetadataSyncRuntime / WritebackService（CullingSyncPort /
         // CullingWritebackPort 扩展即上述类型，见 CullingService.swift）。
         // LookupLoader 由 Runtime init 内装配（cullingStore 可选），SessionCache
         // 显式传入以保证跨命令复用。

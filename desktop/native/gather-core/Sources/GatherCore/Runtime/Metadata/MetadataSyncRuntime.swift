@@ -111,7 +111,9 @@ public actor MetadataSyncRuntime: MetadataSyncPort {
 
     /// TS: eventSink（summary push 回调，宿主组合根接线）。
     /// actor 隔离：只在 actor 内读；跨边界写入只有 setEventSink（无锁、无拷贝态）。
-    private var eventSink: (@Sendable (MetadataSyncSummary) -> Void)?
+    /// 宿主组合根需要在构造后注入 summary 推送回调（路由装配点直接赋值）；
+    /// 亦可经 start(eventSink:) 注入（该 API 会同时启动循环）。
+    nonisolated(unsafe) public var eventSink: (@Sendable (MetadataSyncSummary) -> Void)?
 
     /// TS: timers（Map<xmpPath, Timeout>）→ 可取消 Task。
     private var timers: [String: Task<Void, Never>] = [:]
