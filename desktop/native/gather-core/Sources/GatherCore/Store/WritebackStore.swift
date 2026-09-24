@@ -70,6 +70,18 @@ public struct OutboxSummary: Decodable, Equatable, Sendable {
     }
 }
 
+/// outbox 行状态：与 metadata_outbox.status 列的字符串值一一对应。
+public enum OutboxStatus: String, Codable, Sendable {
+    case pending
+    case writing
+    case written
+    case failed
+    case conflict
+    case synced
+    case clean
+    case cleaned
+}
+
 public protocol WritebackStore: Sendable {
     func outboxEntry(xmpPath: String) async throws -> OutboxRecord?
     func outboxEntries(sessionId: String) async throws -> [OutboxRecord]
@@ -97,10 +109,18 @@ public protocol WritebackStore: Sendable {
         backupPath: String
     ) async throws
     func markOutboxStatus(xmpPath: String, status: String, errorMessage: String) async throws
+    /// CAS：仅当行 revision == expectedRevision 时更新 status/error_message；返回是否命中。
+    func markOutboxStatus(
+        xmpPath: String,
+        expectedRevision: Int,
+        status: OutboxStatus,
+        errorMessage: String?
+    ) async throws -> Bool
     func resetOutboxForRetry(xmpPath: String) async throws
     func setOutboxBackupPath(xmpPath: String, backupPath: String) async throws
     func initializeOutboxBaseline(xmpPath: String, baselineFingerprint: String, baselineValues: JSONValue) async throws
-    func recoverInterruptedOutbox() async throws
+    /// 把 status='writing' 的残留行恢复为 'pending'，返回受影响行数。
+    @discardableResult func recoverInterruptedOutbox() async throws -> Int
     func resolveOutboxConflict(
         xmpPath: String,
         patch: JSONValue,
@@ -412,6 +432,24 @@ public struct SQLiteWritebackStore: WritebackStore {
         )
     }
 
+    /// CAS 状态迁移：revision 不匹配时受影响行数为 0，DB 不变并返回 false。
+    @discardableResult
+    public func markOutboxStatus(
+        xmpPath: String,
+        expectedRevision: Int,
+        status: OutboxStatus,
+        errorMessage: String? = nil
+    ) async throws -> Bool {
+        let affected = try await database.run(
+            "UPDATE metadata_outbox SET status = ?, error_message = ?, updated_at = ? WHERE xmp_path = ? AND revision = ?",
+            [
+                .text(status.rawValue), .text(errorMessage ?? ""), .text(nowISOString()),
+                .text(xmpPath), .int(Int64(expectedRevision)),
+            ]
+        )
+        return affected > 0
+    }
+
     public func resetOutboxForRetry(xmpPath: String) async throws {
         try await database.run(
             """
@@ -445,7 +483,8 @@ public struct SQLiteWritebackStore: WritebackStore {
         )
     }
 
-    public func recoverInterruptedOutbox() async throws {
+    @discardableResult
+    public func recoverInterruptedOutbox() async throws -> Int {
         try await database.run(
             "UPDATE metadata_outbox SET status = 'pending', updated_at = ? WHERE status = 'writing'",
             [.text(nowISOString())]

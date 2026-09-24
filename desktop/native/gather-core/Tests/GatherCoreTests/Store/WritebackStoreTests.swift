@@ -358,4 +358,70 @@ struct WritebackStoreTests {
         try await store.deleteOutbox(xmpPath: "/v/IMG_5.xmp")
         #expect(try await store.outboxEntry(xmpPath: "/v/IMG_5.xmp") == nil)
     }
+
+    // MARK: CAS markOutboxStatus / recoverInterruptedOutbox
+
+    @Test func markOutboxStatusCASUpdatesMatchingRevision() async throws {
+        let (store, _, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        let p = JSONValue.object(["source": JSONValue.string("manual")])
+        _ = try await store.mergeOutboxPatch(
+            xmpPath: "/v/IMG_1.xmp", sessionId: "s1", photoPath: "/v/IMG_1.jpg", patch: p, dirtyFields: []
+        )
+
+        let updated = try await store.markOutboxStatus(
+            xmpPath: "/v/IMG_1.xmp", expectedRevision: 1, status: .failed, errorMessage: "boom"
+        )
+        #expect(updated == true, "revision 命中 → true")
+        let row = try await store.outboxEntry(xmpPath: "/v/IMG_1.xmp")
+        #expect(row?.status == OutboxStatus.failed.rawValue)
+        #expect(row?.errorMessage == "boom")
+        #expect(row?.revision == 1, "CAS 不推进 revision")
+    }
+
+    @Test func markOutboxStatusCASRejectsStaleRevision() async throws {
+        let (store, _, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        let p = JSONValue.object(["source": JSONValue.string("manual")])
+        for _ in 1...2 {
+            _ = try await store.mergeOutboxPatch(
+                xmpPath: "/v/IMG_1.xmp", sessionId: "s1", photoPath: "/v/IMG_1.jpg", patch: p, dirtyFields: []
+            )
+        }
+        try await store.markOutboxStatus(xmpPath: "/v/IMG_1.xmp", status: "conflict")
+        #expect(try await store.outboxEntry(xmpPath: "/v/IMG_1.xmp")?.revision == 2)
+
+        let updated = try await store.markOutboxStatus(
+            xmpPath: "/v/IMG_1.xmp", expectedRevision: 1, status: .synced, errorMessage: "stale"
+        )
+        #expect(updated == false, "stale revision → false")
+        let row = try await store.outboxEntry(xmpPath: "/v/IMG_1.xmp")
+        #expect(row?.revision == 2, "行保持最新 revision")
+        #expect(row?.status == "conflict", "stale CAS 不改 DB")
+        #expect(row?.errorMessage == "", "stale CAS 不改 error_message")
+    }
+
+    @Test func recoverInterruptedOutboxOnlyResetsWritingRows() async throws {
+        let (store, _, path) = try await makeStore()
+        defer { removeStoreFiles(path) }
+
+        let p = JSONValue.object(["source": JSONValue.string("manual")])
+        for index in 1...3 {
+            _ = try await store.mergeOutboxPatch(
+                xmpPath: "/v/IMG_\(index).xmp", sessionId: "s1", photoPath: "/v/IMG_\(index).jpg", patch: p, dirtyFields: []
+            )
+        }
+        #expect(try await store.claimOutbox(xmpPath: "/v/IMG_1.xmp", expectedRevision: 1), "IMG_1 → writing")
+        try await store.markOutboxStatus(xmpPath: "/v/IMG_2.xmp", status: "failed")
+
+        let recovered = try await store.recoverInterruptedOutbox()
+        #expect(recovered == 1, "只计 writing 行的受影响数")
+        #expect(try await store.outboxEntry(xmpPath: "/v/IMG_1.xmp")?.status == "pending")
+        #expect(try await store.outboxEntry(xmpPath: "/v/IMG_2.xmp")?.status == "failed", "failed 行不动")
+        #expect(try await store.outboxEntry(xmpPath: "/v/IMG_3.xmp")?.status == "pending", "pending 行不动")
+
+        #expect(try await store.recoverInterruptedOutbox() == 0, "无 writing 行 → 0")
+    }
 }
