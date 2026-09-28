@@ -1,7 +1,0 @@
-*.app
-*.dmg
-*.coplugin
-.build/
-node_modules/
-*.log
-.DS_Store

@@ -1,13 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-*.egg
-.venv/
-.pytest_cache/
-.ruff_cache/
-
 # macOS
 .DS_Store
 *.swp
@@ -23,12 +13,6 @@ dist/
 *.coplugin
 release/
 
-# Native desktop build output
-node_modules/
-desktop/dist/
-desktop/release/
-desktop/out/
-
 # Capture One SDK (downloaded reference, not committed)
 Capture*One*Plugin*SDK*/
 
@@ -38,13 +22,6 @@ Capture*One*Plugin*SDK*/
 
 .env*
 *.log
-.coverage
-coverage/
-test-results/
-.mypy_cache/
-
-# Local-only native fixtures (ONNX models + RAW photos with faces).
-tests/fixtures/local/
 
 # 证书/签名材料（审计 P2-安全：防止密钥材料入库）。
 *.p12

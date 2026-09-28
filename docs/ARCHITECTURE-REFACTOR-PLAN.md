@@ -982,3 +982,44 @@ similarity 套件，见 §31.5）；app **181 tests / 18 suites 全绿**（串�
 - `ExportView` 的 `commands.export.execute` 以本地方法引用调用（为通过 `grep -c 'execute('` 自检）；入口仍是同一类型化方法。
 - P2-5 的 H4 完整元防护与 CI checkout→运行之间的漂移仍需仓库外机制（CODEOWNERS / 分支保护 / 固定 commit 快照）。
 
+---
+
+## 32. Electron 时代残留清理（工作树 + 门禁）
+
+**范围裁决**：只清理工作树残留并加固门禁；不改写 git 历史、不动 `main`/`refactor` 分支与远端；
+`docs/` 中的历史溯源说明（ADR 对照表、审计、计划）按记录保留。
+
+### 32.1 删除（Electron 时代残留）
+
+| 对象 | 依据 |
+|---|---|
+| `desktop/resources/entitlements.mac.plist` | 全仓 0 引用（ARCHITECTURE-AUDIT:251），属 §1「删除（裁决为不接线）」清单内的 entitlements 死文件；内容为 `app-sandbox=true`，与任意目录扫描冲突 |
+| `desktop/resources/models/.gitkeep` | ONNX 模型下载已随 ADR-026 删除，目录无任何消费者 |
+| `desktop/.gitignore` | 规则与根 `.gitignore` 重复且为 Node/Electron 时代（`node_modules/`、`*.dmg`） |
+
+清理后 `desktop/` 只剩 `coplugin/`（Capture One 插件）与 `native/`（两个 Swift 包）。
+
+### 32.2 根 `.gitignore` 收敛
+
+删除 Node/Electron/jest/Python 时代条目：`node_modules/`、`desktop/dist|release|out/`、
+`tests/fixtures/local/`（`tests/` 目录已不存在）、`coverage/`、`test-results/`、`.coverage`、
+`.mypy_cache/` 与整个 Python 块；保留 macOS/IDE/SwiftPM/构建产物/证书与签名材料条目。
+
+### 32.3 门禁加固（24 → 26 条 enforced）
+
+| 新规则 | 语义 |
+|---|---|
+| `no Electron/Node/TS artifacts (whole tree)` | 对全仓 tracked 文件按**文件名**判定：`*.ts/tsx/js/mjs/cjs/jsx`、`package(-lock).json`、`pnpm-lock.yaml`、`yarn.lock`、`electron-builder.yml`、`tsconfig*.json`、`.eslintrc*`、`eslint.config.js`、`.prettierrc*`、`.prettierignore` 一律 FAIL（文档内的历史引用不受影响） |
+| `legacy Electron paths must stay absent` | H1 删除态：`desktop/src`、`packages`、`tests`、`desktop/package.json`、`desktop/electron-builder.yml`、`desktop/tsconfig*.json`、`desktop/eslint.config.js`、`desktop/.prettierrc(ignore)`、`desktop/resources`、`desktop/scripts` 任一再现即 FAIL |
+
+原 `no Electron residue`（Swift 代码行）保留。两条新规则均已反向验证：合成文件列表 7/7 命中；
+临时重建 `desktop/src` 即 FAIL；恢复后门禁回到 26 enforced / 0 tracked 全绿。
+
+### 32.4 未做（明确边界）
+
+- **git 历史未重写**：本 baseline 祖先链上仍有 101 个含 `desktop/src`/`packages` 的提交
+  （`main`=0d6b667 携带完整 Electron 应用）。`filter-branch` 单独重写本地分支无法真正删除对象，
+  且会使全部提交哈希变化。
+- **分支/远端未动**：`main`、`origin/main` 保持原样（删除/强推不可逆且需远端凭据）。
+- 若后续要求历史级抹除：需一次性重写全部相关分支 + 强推 + `gc --prune`，并接受 baseline 哈希全部改变。
+

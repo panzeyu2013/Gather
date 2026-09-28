@@ -262,6 +262,45 @@ enforce_absent_tree() {
   return 0
 }
 
+# enforce_absent_paths <name> <path>...
+# H1 删除态变体（精确路径）：旧时代的文件/目录不得再现（Electron 构建配置等）。
+enforce_absent_paths() {
+  local name="$1"; shift
+  enforced_rules=$((enforced_rules + 1))
+  local found=() path
+  for path in "$@"; do
+    [[ -e "$path" ]] && found+=("$path")
+  done
+  if (( ${#found[@]} > 0 )); then
+    echo "LEGACY[enforced] $name: 旧路径再次出现" >&2
+    printf '%s\n' "${found[@]}" | sed 's/^/  - /' >&2 || true
+    fail=1
+  else
+    echo "ok   [enforced] $name ($# 条旧路径均不存在)"
+  fi
+  return 0
+}
+
+# enforce_no_electron_artifacts <name>
+# 全仓（tracked 文件）不得再出现 Electron / Node / TypeScript 产物文件名：工作树残留清理后
+# 这是「整树无 Electron」的回归闸门。按文件名判定，文档内的历史溯源引用不受影响。
+enforce_no_electron_artifacts() {
+  local name="$1"
+  enforced_rules=$((enforced_rules + 1))
+  local status=0 hits=""
+  : > "$GREP_ERR"
+  hits=$(git ls-files 2>>"$GREP_ERR" | grep -E '(^|/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|electron-builder\.ya?ml|tsconfig[^/]*\.json|\.eslintrc[^/]*|eslint\.config\.[cm]?js|\.prettierrc[^/]*|\.prettierignore)$|\.(ts|tsx|js|mjs|cjs|jsx)$' 2>>"$GREP_ERR") || status=$?
+  check_tool_errors "grep" "$name" "." "$status" 1
+  if [[ -n "$hits" ]]; then
+    echo "LEGACY[enforced] $name: Electron/Node/TypeScript 产物仍被跟踪" >&2
+    printf '%s\n' "$hits" | sed 's/^/  - /' >&2 || true
+    fail=1
+  else
+    echo "ok   [enforced] $name (tracked 文件中无 Electron/Node/TS 产物)"
+  fi
+  return 0
+}
+
 APP="desktop/native/gather-app"
 CORE="desktop/native/gather-core"
 NATIVE="desktop/native"
@@ -289,6 +328,14 @@ fi
 enforce "no WebKit/JS runtime"           'import (WebKit|JavaScriptCore)|WKWebView' "$NATIVE" "*.swift"
 enforce_no_electron "no Electron residue" "$NATIVE" "*.swift"
 enforce "no app-level JSONSerialization" 'JSONSerialization'                        "$APP"    "*.swift"
+
+# Electron 时代整树清退：工作树残留 + Electron/Node/TS 产物文件名 + 旧路径删除态。
+enforce_no_electron_artifacts "no Electron/Node/TS artifacts (whole tree)"
+enforce_absent_paths "legacy Electron paths must stay absent" \
+  "desktop/src" "packages" "tests" "desktop/package.json" "desktop/package-lock.json" \
+  "desktop/electron-builder.yml" "desktop/tsconfig.json" "desktop/tsconfig.main.json" \
+  "desktop/tsconfig.renderer.json" "desktop/eslint.config.js" "desktop/.prettierrc" \
+  "desktop/.prettierignore" "desktop/resources" "desktop/scripts"
 
 # --------------------------------------- enforced: threshold ratchet (R8 gate)
 # 度量已达目标值：超过阈值即 FAIL（不得回退的棘轮）。
@@ -366,7 +413,7 @@ fi
 
 # ---------------------------------------------------------------- self checks
 # H4 部分缓解：enforced 规则条数自检（删规则 / 分支提前退出即 FAIL）。
-EXPECTED_ENFORCED_RULES=24
+EXPECTED_ENFORCED_RULES=26
 if (( enforced_rules != EXPECTED_ENFORCED_RULES )); then
   echo "LEGACY[gate] enforced 规则条数 $enforced_rules != 预期 $EXPECTED_ENFORCED_RULES（H4：规则被删/未执行）" >&2
   fail=1
