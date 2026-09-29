@@ -4,15 +4,27 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 `desktop/native/gather-core`，界面与应用生命周期位于 `desktop/native/gather-app`；
 仓库不依赖 Node.js、Electron、浏览器渲染层或本地 HTTP 服务。
 
-本文档合并原 `TEST.md`（测试清单）与 `IPC_CONTRACT.md`（IPC 契约基线）的精华；
+本文档合并原 `TEST.md`（测试清单）与 `IPC_CONTRACT.md`（命令面契约基线）的精华；
 测试与契约细节以本节为准，两份旧文档已删除。
 
 ## 环境要求
 
 - macOS 14 或更高版本
 - Xcode 或 Xcode Command Line Tools
-- Swift 5.9 或更高版本
+- Swift 6.0 或更高版本（两个包均为 `swift-tools-version: 6.0` 且显式
+  `.swiftLanguageMode(.v6)`；迁移记录见 `docs/reviews/functional-design-review.md`）
 - Capture One 仅在需要验证原生插件/导入联动时才需要
+
+**Swift 6 并发约定（新增代码必须遵守）**
+- 类若含可变状态，须由具名锁保护；跨隔离域传递时标 `@unchecked Sendable` 并紧贴声明写明
+  "被保护字段 + 锁字段"的理由注释（参考 `JobService`、`WalkChannel`、`DBConnection`）。
+- 无任何可变状态（全 `let`）的类型可直接标 `Sendable` 或 `@unchecked Sendable`（注明"零可变"）。
+- **禁止**在 `async` 上下文直接调用 `NSLock.lock()/unlock()`（Swift 6 报错）：把临界区抽进
+  `private func xxxLocked(...)` 同步辅助方法，async 调用方只调它。
+- **禁止**用 `@preconcurrency import`/`nonisolated(unsafe)` 掩盖诊断；全局可变状态一律改成
+  "锁盒子 + 计算属性"（参考 `GatherLocalization.appLanguage`、`CaptureOneBridge.shared`）。
+- 有界并发统一走 `batchAsync`（`Concurrent/BatchRunner.swift`），其 `body` 为 `@Sendable`，
+  共享收集状态必须收进锁盒子（参考 `MetadataCollector`、`PhaseOneCollector`）。
 
 真实人脸推理质量、代码签名/公证/安装升级和商业信号不属于代码验收范围。
 
@@ -21,7 +33,7 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 ```text
 desktop/native/
 ├── gather-core/       # SQLite、任务、索引、元数据、导出和 Vision 服务
-│   └── Sources/GatherCore/{Protocol,Database,Face,Image,Services,Similarity,Watch,Logging}
+│   └── Sources/GatherCore/{Protocol,Database,Face,Image,IPC,Logging,Services,Similarity}
 ├── gather-app/        # SwiftUI 页面、应用路由、菜单与原生命令路由
 │   ├── Sources/GatherApp/   # RootView、Dashboard/Library/Gallery/Similarity/Persons、Host、Support
 │   ├── Culling/ FaceKeywording/ ControlCenter/ Settings/ Export/ Duplicates/
@@ -104,12 +116,12 @@ GatherCore 服务
 
 ### 入口与回退语义
 
-- `GatherLocalization.l(key)`（`GatherLocalization.swift:180-186`）：**key 即中文
+- `GatherLocalization.l(key)`（`GatherLocalization.swift:222`）：**key 即中文
   文案**；按 `appLanguage` 查 `Bundle.module` 中的 `.lproj` 表——`zh-Hans.lproj`
-  表为空（占位），未命中自动回退 key（即中文）；`en.lproj`（925 行）提供英文
+  表为空（占位），未命中自动回退 key（即中文）；`en.lproj`（1203 行）提供英文
   翻译，未翻译的 key 仍回退中文。所有文案调用点写中文 key，无需两处登记。
-- 错误码翻译：`errorText(_:)` 覆盖 156 项 `GatherErrorCode` → 中文文案
-  （`errorMessages` 表，`GatherLocalization.swift:10-170`）；未知码回退通用文案。
+- 错误码翻译：`errorText(_:)`（`GatherLocalization.swift:187`）覆盖 173 项
+  `GatherErrorCode` → 中文文案（`errorMessages` 表，`:10-182`）；未知码回退通用文案。
 - 任务侧映射：`jobStatusText` / `jobTypeText` / `progressPhaseText` 分别覆盖
   `jobs.status.*` / `jobs.type.*` / `progress.*` 相位键。
 - 通用出口：`message(for:)` 统一翻译 `RouterCommandError` / `NativeCommandError`
@@ -140,7 +152,7 @@ GatherCore 服务
 ### 按钮层级
 
 - 侧栏/工具栏导航按钮：`.buttonStyle(.plain)` + 自定义 hover/选中态
-  （见 `RootView.swift:510-549`），选中项加 `.accessibilityAddTraits(.isSelected)`。
+  （见 `RootView.swift` 的 `SidebarView`），选中项加 `.accessibilityAddTraits(.isSelected)`。
 - 主操作：系统 `Button` 经根视图 `.tint(GatherTheme.primary)` 统一着色，保持
   控件原生形态。
 - 破坏性操作：`role: .destructive` + `confirmationDialog` 双确认（如重置挑片、
@@ -181,7 +193,8 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 
 验收记录至少包含：gather-core 测试总数/套件数/失败数、gather-app 同名指标、
 `.app` 组装结果、fixture-dependent skip 与未执行的外部验收项。
-（最近一次台账：gather-core 765 / 98 suites、gather-app 92 / 18 suites，2026-08-12。）
+（最近一次台账：gather-core 951 / 134 suites、gather-app 224 / 27 suites，2026-09-28
+本机 `swift test` 自报数；`desktop/**` 并行重写期间测试数会变动，以运行时输出为准。）
 
 验收时要区分：
 
@@ -207,28 +220,33 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 - **错误与安全**：未知命令返回结构化错误；缺记录不崩溃；写回/删除/覆盖均有
   确认边界；资产路径来自授权记录；SQLite 迁移失败保留错误信息、不删用户数据。
 
-### 原生边界残留扫描
+### 原生边界与命令面门禁
+
+两条脚本是唯一的机器判据（CI 的 boundary job 亦直接执行）：
 
 ```bash
-test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' ')" = 0
-! rg -n '^(import (WebKit|JavaScriptCore)|.*WKWebView|.*WebViewHost|.*WebBridge)' \
-  desktop/native --glob '*.swift'
-! test -e package.json && ! test -e package-lock.json && ! test -e desktop/package.json
+./scripts/check-no-legacy.sh        # 4 条 enforced：无 Legacy/Compat/Adapter 源文件、
+                                    # 无 WebKit/JS 运行时、无 Electron 残留、app 层无 JSONSerialization
+./scripts/check-command-surface.sh  # 6 条不变量：命令单一注册、UI 调用可达、确认门控、
+                                    # 阻塞桥/第二套调度器/归一化口径不得复活
 ```
 
-扫描应以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此判断
-文件仍然存在。
+门禁与扫描一律以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此
+判断文件仍然存在。
 
-## IPC 契约精华（原 IPC_CONTRACT.md）
+## 命令面契约精华（原 IPC_CONTRACT.md）
 
 原契约冻结的是 renderer/main 双进程边界；原生化后 renderer 不存在，`SessionCommandRouter`
 成为唯一命令面。以下规则从旧契约继承，是路由与服务的兼容性底线。
 
 ### 命令面
 
-- 全命令面 **118/118**：同步 `execute` 103 + 异步 `executeAsync` 22（去重 118，
-  与 TS preload 白名单逐名相等）；`SessionCommandRouter.swift` 为唯一实现点。
-- **破坏性命令** 31 项必须带 `confirmed: true` 双兜底，路由层校验失败即拒绝。
+- 全命令面 **118/118**：同步 `execute` 82 + 异步 `executeAsync` 36（并集 118，
+  双注册 0）；`SessionCommandRouter.swift` 为唯一实现点。以上数字以
+  `./scripts/check-command-surface.sh` 输出为准。
+- **破坏性命令**必须带 `confirmed: true` 双兜底，路由层校验失败即拒绝；确认载荷
+  硬编码处必须伴随真实确认弹窗。当前脚本输出：载荷硬编码 7 处、`confirmed: true`
+  实参 49 处（实参只统计，供人工裁决）。
 - 未知命令/参数缺失返回结构化错误（`MISSING_PARAM:*` 等），不静默成功。
 
 ### 分组与取消/状态
@@ -237,7 +255,7 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
 |---|---|---|
 | Session/photo | `session.*`、`photo.list_page` | session 状态持久化；导入错误按文件返回 |
 | Culling | `culling.*`（分页 `culling.list_page`） | 逐 session 同步状态；写回失败可重试 |
-| Similarity | `sim.analyze`、`sim.recluster`、`sim.result`、写回族 | analyze 走 JobService executor；recluster 未任务化（ADR-024） |
+| Similarity | `sim.analyze`、`sim.recluster`、`sim.result`、写回族 | analyze/recluster 均走 JobService executor（ADR-024） |
 | Face/person | `fkw.*`、`person.*` | 分析取消；person 破坏性变更需确认 |
 | Metadata | `metadata.*` | 变更与恢复需确认；未知 XMP 字段保留 |
 | Assets/index | `assets.*`、`index.scan` | 重连需确认；扫描为持久任务，缺失文件保留 |
@@ -278,8 +296,8 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
 - `metadata.scan`（session 范围，去重键 `metadata.scan:<sessionId>`）、
   `checksum.backfill`（`checksum.backfill:<sessionId>`）、`sim.analyze`、
   `face.analyze`、`duplicate.scan`、`quality.score`、`export.execute`、
-  `thumbnail.build` 均由 JobService executor 承载；重聚类（recluster）除外，
-  见 ADR-024。
+  `thumbnail.build` 均由 JobService executor 承载；重聚类（recluster）亦已任务化
+  （ADR-024）。
 
 ### 相似度结果档位
 
@@ -287,25 +305,11 @@ test "$(rg --files desktop/src packages/shared tests scripts | wc -l | tr -d ' '
   `"precomputed": true`）；"最新结果"判定（`getLatest`、culling 相似组 SQL、
   质量相对排名）必须排除 precomputed 行（不变量由 `reuse-and-tiers` 测试强制）。
 
-### 增量聚类与簇版本（1.3）
+### 增量聚类与簇版本
 
-- 聚类状态持久化在 `similarity_cluster_state`（每张已哈希照片的分量归属
-  `component_index` + 已成组的 `group_seed`，NULL = 未成组）与
-  `similarity_cluster_meta`（参数指纹 / `version` / `incremental_updates`）。
-  `photo_id` 故意不加 `photos` 外键：照片删除后的残留行是增量 diff 的
-  "已移除"依据，由状态重写（replace）整体清理；级联删除会让移除事件不可见。
-- 增量路径的启用条件：分组模式为 `global`、状态参数指纹（阈值/组大小/模式）
-  与本次一致、且连续增量次数 < `similarity_cluster_convergence_interval`
-  （默认 10）。任一不满足即全量重聚类并清零计数（定期全局收敛）；
-  `sequential` 模式无增量设施，会清除状态强制下次全量。
-- 不变量：增量结果与 `ClusterEngine.clusterByHash` 全量结果在划分、组顺序
-  （种子升序）、代表图（组内首元素 = 种子）与未成组集合上一致；组内其余成员
-  为规范序（种子在前、其余按输入序），与全量的 BFS 发现序不承诺逐位相同。
-  由 `GatherCoreTests/Similarity/IncrementalClustererTests.swift` 的随机
-  200 步对账矩阵强制。
-- 复杂度：邻域探测 O(|added| × n)，受影响分量局部重算 O(k²)；未受影响分量
-  直接复用旧簇。若整库同属一个巨型分量，增量与全量同阶（无收益），后续可用
-  LSH 候选桶降到亚二次。
+状态表、启用条件、不变量与复杂度分析的唯一真相源是 [ADR.md](ADR.md) 的
+ADR-027（增量聚类：状态持久化 + 引擎语义复刻 + 定期全局收敛）；对账矩阵见
+`GatherCoreTests/Similarity/IncrementalClustererTests.swift`。
 
 ## 提交与 Pull Request
 

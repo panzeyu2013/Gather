@@ -562,7 +562,7 @@ ROADMAP 决策 B（1.3/1.6）：重分析此前按签名复用只重算变更照
   新需求重新立项，而不是直接接线旧实现（旧实现自带已知缺陷：FSEvents 缺 WatchRoot、
   ImageCache 与主库双 SQLite 文件）。
 
-## ADR-029 人脸管线算法改造：5 点对齐 + 质量核心点 + 歧义不猜（schema 34）
+## ADR-029 人脸管线算法改造：5 点对齐 + 质量核心点 + 歧义不猜 + 专用模型接缝（schema 34）
 
 **背景**：对标 Immich（ArcFace 5 点 → 112×112）、PhotoPrism（YuNet 5 关键点、
 `CLUSTER_CORE`/`CLUSTER_CORE_RETRY`、`MATCH_MARGIN`）与 digiKam 后确认：本仓骨架
@@ -571,14 +571,11 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
 且匹配是"最近且 ≥ 阈值即绑定"（会把夹在两人之间的脸猜错）。
 （对标详情与可学项见 `docs/reviews/face-clustering-benchmark.md`。）
 
-**决策**（2026-09-28）
+**决策（第一轮，2026-09-28）**
 
 1. **对齐**：`VNDetectFaceLandmarksRequest` 取 5 点（双眼中心、鼻尖、双嘴角），
    `FaceAligner` 做最小二乘相似变换（含尺度、不镜像）到 ArcFace 112×112 模板，
    在**对齐图**上取特征；关键点缺失回退 bbox 裁剪并标记 `aligned = false`。
-   Vision 无专用人脸嵌入 API，特征仍为 FeaturePrint rev2（768 维）；接口不变，
-   将来换 CoreML 的 ArcFace/SFace 只需替换 `featurePrintEmbedding` 实现并更新
-   `FaceEncoder.embeddingSpec`。
 2. **质量**：`FaceQuality.composite = 0.4·采集质量 + 0.4·尺寸分 + 0.2·滚转分`，
    采集体质量来自 `VNDetectFaceCaptureQualityRequest`（按 bbox IoU ≥ 0.5 配对，
    两次 perform 顺序不保证一致），落 `face_observations.quality/face_size_px/roll_degrees`。
@@ -589,19 +586,89 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
 4. **歧义不猜**：`face_match_margin`（默认 0.01）——冠军与**人物级**亚军差距不足时
    不写建议。亚军必须按人物聚合（`FaceMatcher.bestScoresPerPerson`）：库里同一人
    常有多条样本，行级次优会把同一人的另一张脸误当竞争者。
-5. **缓存失效**：`FaceEncoder.embeddingSpec` 进入 `analysis_signature`；聚类签名
-   含 eps/minPts/质量门槛/二遍阈值。换模型或改门槛后旧结果自动判过期并重算，
-   无需单独命令（对比 PhotoPrism 的 `faces migrate`）。
+5. **缓存失效**：嵌入规格进入 `analysis_signature`；聚类签名含 eps/minPts/质量门槛/
+   二遍阈值。换模型或改门槛后旧结果自动判过期并重算，无需单独命令（对比 PhotoPrism
+   的 `faces migrate`）。
 6. **schema 34**：`face_observations` 追加 6 列（quality / face_size_px /
    roll_degrees / model_id / model_version / embedding_dim）；迁移幂等，旧行默认 0/''。
    快照 `docs/fixtures/schema.snapshot.json` 同步为 34（43 表不变）。
 
-**兼容性**：`quality = 0` 视为"旧行 / 未提供质量"，聚类按不设限处理——否则升级后
-旧库会被门槛整库判成噪声；所有新参数都有默认值，新增字段均带默认值。
+**决策（第二轮：把"接口留缝"改成"缝里真的有实现"，2026-09-28）**
 
-**已知限制**：FeaturePrint 是通用图像特征，与 ArcFace/SFace 特征空间不兼容（仍需
-P4 全量重算）；`coreQualityFloor` 过高会"溶解"以低质量脸为唯一桥点的连通分量
-（默认 0.35 按 96px≈0.9 / 30px≈0.6 / 明显模糊或侧倾 <0.3 标定）；无标注集准确率
-基线，只有性能基准与召回对账。
+7. **专用嵌入模型可插拔**（`Face/EmbeddingModel.swift`）：
+   - `FaceEmbeddingProvider` 协议 + `FaceEmbeddingSpec`（modelId/modelVersion/
+     dimension/weightHash/signature）；`VisionFeaturePrintEmbedder` 是默认实现，
+     签名与旧 `FaceEncoder.embeddingSpec` **逐字一致**（老库不会因为这次改动被全量重算）。
+   - `CoreMLFaceEmbedder`：支持 `.mlmodel`（运行时编译）与 `.mlmodelc`（已编译），
+     要求 112×112 图像输入；输出维度 64…8192 且**恰好一个**输出能折叠成合法维度
+     （多输出模型直接报错而不是猜，猜错会静默写入错向量）；推理输出长度与声明维度
+     不符也报错。
+   - 设置键 `face_embedding_model_path` / `face_embedding_model_version`；路径为空 →
+     Vision。**禁止静默回退**：路径非空但不可加载时整批分析抛错，错误文案中文可读，
+     且在设置页**保存即校验**（当场拒绝，不潜伏到分析时）。
+   - 一次运行只创建**一个**嵌入实例，签名与推理由它同源（避免"签名算完后模型被替换"
+     导致用 A 的签名标注 B 的向量）；系统噪声文件（`.DS_Store` 等）不计入指纹，否则一次
+     Finder 浏览就会让整个库被判定过期重算。
+   - 指纹：`FaceEmbeddingFingerprint.contentFingerprint` 递归哈希模型包内**所有文件**
+     （`.mlmodelc` 的权重在包内独立文件里，原地替换不改目录 mtime——只哈希
+     `model.mlmodel` 会让"换权重"逃过签名，两套向量空间混进同一列）。缓存键用递归
+     stat 指纹（路径/大小/mtime 逐文件），内容指纹进 `analysis_signature`。
+     `~`、相对路径、软链统一规范化后再做键与加载。
+8. **增量聚类**（`face_incremental_clustering`，默认 1）：签名未变 + 已有簇 + 没有
+   整体失败时，新照片只对**自己**跑聚类并挂到已有簇质心（按 cluster 的归一化质心
+   取最相似且 ≥ eps，与亚军差距 < margin 则不挂）；已有簇 id、`matched_person_id`、
+   角色绑定一律不动，只清理"观察已删/为 NULL"的幽灵成员行。挂不上的新脸彼此跑同参
+   全量 DBSCAN 出新簇。**已知偏差**（写入测试）：全量会桥接合并的两人，增量不合并
+   （夜间重聚类收敛）；质心 ≥ eps 不蕴含与任一成员 ≥ eps，可能多收全量判噪的脸；
+   低质量新脸不被已有簇吸收；旧噪声不因增量转正。
+9. **参数影响预估（试算）**（`Face/ClusteringImpact.swift`）：纯函数对比"当前参数 vs
+   拟用参数"对同一批观测的划分差异，输出换簇数/簇数前后/噪声前后/变化簇数/新增消失
+   簇数、`parametersChanged` 与 `partitionChanged`（二者分开，"参数变了但划分没变"
+   只提示不重建）、`normalizedParameters`（与生产同刻度：floor 夹取、retry < 2 视为
+   关）、`isSubsetOfLibrary`。**口径**：所有计数只对传入观测集成立，子集试算 ≠ 全库
+   试算；规范簇 id（簇内最小 observationId）只在单次调用内稳定，不可持久化。
+   **尚未接 UI**：需要扩命令面（当前 118 条为冻结基线）或走 app 内进程直调，
+   且内核同步（n > 20000 才启用 LSH，此前是 O(n²)·d 精确分支）：2k 观测 debug 实测
+   d128 ≈ 4.8s、d512 ≈ 19.4s（另一次未优化配置测得 28.5s），接 UI 前必须后台化 +
+   可取消 + onProgress。
+10. **准确率基线**（`Tests/.../FaceClusteringAccuracyTests.swift` +
+    `Tests/.../FaceMarginDecisionTests.swift`）：
+    - 合成标注集（自写 PRNG）：生成器自检（分离度前提 ⇒ 划分=真值，**只证明指标实现正确，
+      不是性能证据**）、低质量但方向正确（门槛代价是"少成簇"而非"错聚"）、低质量桥接点
+      （量化门槛造成的真实召回损失）；ARI 用"列联表"与"配对计数"两种等价实现互证，
+      并对手算小例断言精确值（4/9、−0.5）——此前单实现的公式级错误把 0.4040 打成 0.7177，
+      且变化方向与真值相反。
+    - margin 曲线：**生产路径**（`fkw.analyze` → `face_clusters.matched_person_id`，49 查询 /
+      6 人库），不是测试内复刻判定；出货默认 0.01 时错绑 3→2、拦下 2 条歧义，
+      且同覆盖率下精度 0.9655→1.0000（不是靠"少绑定"冒充更准）。
+    **边界（必须与结论一起读）**：合成 embedding 层 ≠ 真实识别精度；单 seed、无置信区间；
+    全部计数只对传入观测集成立（子集试算会与全量分叉）；不能替代 Stretch 门与真实标注集
+    复核。
+11. **界面暴露**：`face_core_quality` / `face_core_retry_min_samples` /
+    `face_match_margin` 三个滑杆 + 「人脸模型」分组（模型路径 / 版本标签 / 增量开关）；
+    新键必须在 `SettingsService.getDefaults()` 注册否则 `set` 白名单会拒绝（有测试守）。
+    界面**不显示置信度**（用户明确否决：这个数字对用户没有用），置信度只作为
+    内部信号参与 margin 判定。
+
+**兼容性**：`quality = 0` 视为"旧行 / 未提供质量"，聚类按不设限处理——否则升级后
+旧库会被门槛整库判成噪声；所有新参数都有默认值，新增字段均带默认值；Vision 路径的
+签名与第一轮逐字一致，老库不需要重算。
+
+**已知限制**：
+- FeaturePrint 是通用图像特征，与 ArcFace/SFace 特征空间不兼容（换模型必须全量重算，
+  由签名自动触发）；
+- `coreQualityFloor` 过高会"溶解"以低质量脸为唯一桥点的连通分量（默认 0.35 按
+  96px≈0.9 / 30px≈0.6 / 明显模糊或侧倾 <0.3 标定）；
+- **CoreML 路径无真实模型夹具，测试覆盖为 0**（纯函数、指纹、strides/fp16 读取、
+  工厂错误与缓存失效有覆盖；`MLModel` 加载/推理未覆盖）。首次接入真实模型必须人工确认：
+  维度、是否已归一化、多输出模型的输出名。
+- 增量聚类与全量在桥接场景下结果不同（见决策 8 的已知偏差）；
+- 设置页保存模型路径只做**廉价**校验（展开 `~`/解析软链/存在性/扩展名），不验证"能否真正加载"：`.mlmodelc` 包缺内部文件、输出形状不支持、多输出歧义都要等下一次分析才报（代价换来的是不阻塞主线程——256 MiB 模型加载+整包哈希实测 48.4s，跑在 @MainActor 上会假死）；
+- 试算未接 UI（见决策 9）；
+- 本机测试进程无法解码 NEF（ImageIO RAW 解码受限），真实素材验证用
+  `GATHER_FACE_FIXTURE=<jpg> swift test --filter FaceRealPhotoPipelineTests` 走 JPEG 路径；
+- 模型缓存键是**递归 stat 指纹**而不是内容：同尺寸 + 同 mtime（`touch -r`）的替换不会被发现，进程内继续用已加载的旧模型；内容指纹仍决定签名，且一次运行只用一个实例（签名与推理同源）。选 stat 是因为内容哈希代价高（256 MiB ≈ 48s/Debug）；
+- 只要一张照片里有**任何**一张脸编码失败，这张照片就不写 `analysis_state` ⇒ 每次运行都会重新处理它（永久编不出来的脸会让该照片长期重试；这是"绝不静默丢数据"的代价，失败数会出现在 run 结果与 UI 警示里）；
+- 多输出模型只有"分类头名字（logits/softmax/fc/head…）"能被自动排除；其他多向量导出仍报歧义（**没有**"指定输出名"的设置项，需重导出或改名）。
 
 

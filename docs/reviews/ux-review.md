@@ -30,7 +30,7 @@
 | 人脸 → 绑定 | 核心已算好的 `matchedPersonName/matchConfidence` 入库但 **UI 零引用**；所有簇都叫 "Person 1/2/3…" | `core/Services/FaceKwService.swift:888-891,1147` |
 | 人脸 → 重聚类 | "仅重新聚类"**无确认即删库重建**，人工绑定/合并全部还原；无撤销 | `FaceKeywordingView.swift:1030-1033`、`FaceKwService.swift:1178-1188` |
 | 人脸 → 回滚 | 写回回滚只有 `fkw.cleanup`，却被 `isSyncConfirmed` 门控 ⇒ 想撤销错误关键词，得先让 C1 把错数据加载进来 | `FaceKeywordingView.swift:1680-1686` |
-| 设置 | 无自动保存/脏标记，**离开页面即静默丢弃**；保存提示打内部 key「已保存 thumbnail_size」 | `Settings/SettingsView.swift:97,273`、`Sources/GatherApp/RootView.swift:196` |
+| 设置 | 无自动保存/脏标记，**离开页面即静默丢弃**（保存提示已改用界面标签，不再打内部 key；见附录） | `Settings/SettingsView.swift:97,265`、`Sources/GatherApp/RootView.swift:196` |
 | 导出 | 未点"预览"直接导出，确认框写「写入 0 个文件」；失败无重试/无"在访达中显示" | `Export/ExportView.swift:174,458,758-784` |
 | 控制中心 | 索引中 Inbox 反而显示「全部正常」（`scanIncomplete` 被 filter）；同步卡"请先处理"无按钮；工具箱承诺"可取消"但无取消按钮 | `ControlCenter/SessionControlView.swift:496-503,758-793,745` vs `:803-824` |
 | 启动 | 首屏只有纯文字「初始化中…」无 spinner；初始化/导入失败只写 stdout（Finder 启动不可见） | `Sources/GatherApp/GatherApp.swift:49-52,139-145,274-276`、`core/Logging/Logger.swift:24` |
@@ -109,7 +109,7 @@
 6. 重复页显示判据：分辨率/文件大小/拍摄时间 + "推荐依据"tooltip，策略可选（最早拍摄/最高分辨率）。
 7. "已处理 X/N" + 仅未处理 + 裁决后自动前进；扫描中禁用陈旧结果裁决。
 8. 相似页写回预览可展开/导出、草稿与选择持久化。
-9. 设置页：自动保存或脏标记 + 离开拦截；提示改用 `zhLabel` 而非内部 key。
+9. 设置页：自动保存或脏标记 + 离开拦截（提示改用 `zhLabel` **已修**，见附录）。
 10. 导出：无预览时不要显示「写入 0 个文件」；失败项加"重试/在访达中显示"。
 11. 浏览网格显示决策（星级/色条/旗标），行补 `rating/colorLabel/pickState`。
 12. 人脸审核：用 `bbox` 裁人脸头像、显示 `matchedPersonName`+置信度并一键采纳、簇名改"首成员文件名 + 人数"或可重命名。
@@ -132,6 +132,26 @@
 | Lightroom | 网格内直接星级/旗标/色标并即时可见；导出预设记忆；整栈应用 | 中（需行补字段 + 预设持久化） |
 | Capture One | 对比模式明确主图指示、各格独立/同步缩放、色标数字键；撤销贯穿评级 | 低-中（键盘层已有） |
 | Immich | 乐观更新 + "已淘汰 12 张·撤销" Toast；人物页合并/隐藏/生日 | 低（Toast 已支持 action） |
+
+## 附录：算法改造轮次顺带修复（2026-09-28）
+
+人脸算法对标改造（ADR-029）落地时顺手修掉的三条设置页缺陷——它们的共同点是"旋钮存在但用户碰不到或改不回"：
+
+| 缺陷 | 症状 | 修法 | 守它的测试 |
+| --- | --- | --- | --- |
+| 保存提示打内部 key | `已保存 thumbnail_size`，用户无法确认改的是哪一项 | `SettingsViewModel.label(for:)` 查表取 `zhLabel`（找不到才退回键名） | `SettingsSaveSemanticsTests.noticeUsesHumanLabel` |
+| 文本键一律禁止清空 | 填错专用人脸模型路径后**再也退不回内置特征**（清空被判非法） | 只有"默认值本身为空"的键允许清空（`defaultValueIsEmpty`），其余仍拒绝 | `SettingsSaveSemanticsTests.clearing*` |
+| 算法参数"只存在于数据库" | 质量门槛/二遍阈值/margin/模型路径/增量开关无法从界面设置 | 设置页新增 3 个滑杆 + 「人脸模型」分组；键必须注册进 `SettingsService.getDefaults()` | `SettingsCatalogTests`（UI 键 ⊆ 默认表、滑杆默认值一致、算法参数已暴露） |
+| 错误配置潜伏到分析时才炸 | 错误的专用模型路径保存成功，直到下次分析才失败，且只显示"发生未知错误" | 保存模型路径时**当场校验**（展开 `~`/解析软链/存在性/扩展名），失败直接拒绝并显示与 core 逐字一致的中文原因 | `SettingsSaveSemanticsTests.unloadableModelPathIsRejectedOnSave` 等 |
+| 保存校验把界面卡死 | 第一版"当场校验"会**同步加载模型并整包哈希**（256 MiB 实测 48.4s，跑在 `@MainActor` 上）| 保存只做廉价校验，不加载/不哈希；"能否真正加载"交给分析路径（`fkw.analyze` 的错误现在能上屏） | `SettingsSaveSemanticsTests.廉价校验*`（垃圾包放行、`~` 展开、扩展名拒绝、空目录拒绝、软链放行） |
+| 模型错误对用户不可读 | 分析失败只显示"发生未知错误"——**加路由分支并不够**：分析页把消息交给 `GatherLocalization.errorText`，非错误码文案一律回落通用提示（对抗验证 V1 探针 F 实测四类文案全被吞） | 显示路径改为三段判定：①已知错误码 → 本地化模板；②原文含中日韩字符（core 的 `FaceEmbeddingError.description` 这类已经是人话）→ 原样上屏；③其余（英文 NSError 散文）→ 通用文案 + 原文进 tooltip | `ErrorLocalizationCoverageTests`（中文原因必须原样出现、英文 NSError 必须不出现） |
+| 部分失败伪装成"分析完成" | 1 张脸编码失败 + 1 张成功 → 状态是 `done`，界面显示"人脸分析完成"，用户不知道有脸没被处理 | 成功后检查 `encodingFailures`：>0 时改为可见警示（"N 张脸编码失败，下次分析会自动重试"），不显示完成文案 | `FaceKeywordingViewModelTests`「部分失败可见…」与「零编码失败：警示清除…」 |
+| 重新聚类无确认 | 「仅重新聚类」会重建全部簇并还原人工绑定与合并，一键即不可撤销 | 弹破坏性确认，文案陈述真实影响面（簇总数/已绑定数）并指向保留绑定的「开始分析」增量入口 | `FaceReclusterConfirmTests`（影响面计数、文案含两个计数与增量指引、取消写可见文案） |
+| 簇卡片成员过少 | 审核时只能看到前 4 张成员，难以判断"这个簇是不是同一个人" | 预览成员上限 4 → 12（仅载荷裁剪，仓库层本就取全量；约 3 KB/簇） | `FaceKeywordingServiceTests.truncatesMembersAndMapsBinding` |
+
+配置了专用模型却加载失败时，分析会**直接报错**而不是退回内置 Vision 特征——两套向量空间混进同一列会让此后所有阈值静默失效（见 [ADR-029](docs/ADR.md)）。
+
+**未修（属 UX 轨，需要产品决策）**：设置页**没有自动保存/脏标记**——编辑后直接离开页面即丢失（本页所有输入都要点"保存"）。这是 P1 #9 的根因，修它要改保存语义（影响面超出算法改造轮次）。
 
 ---
 

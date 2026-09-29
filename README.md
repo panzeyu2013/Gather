@@ -93,7 +93,7 @@ database-owned assets, and metadata outbox rows support retries and conflict
 handling.
 
 See [Architecture Decisions](docs/ADR.md), [Development guide](docs/DEVELOPMENT.md)
-(tests and IPC contract), and [Roadmap](docs/ROADMAP.md).
+(tests and the command-surface contract), and [Roadmap](docs/ROADMAP.md).
 
 ## Documentation
 

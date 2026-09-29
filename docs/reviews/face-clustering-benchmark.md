@@ -94,6 +94,57 @@
 | 9 | **标注集准确率基线**（少量标注 fixture + precision/recall 报告） | 我们只有召回对账与性能基准；Immich 用 buffalo_s/l 对比证明模型选择的价值 | 低-中（fixture + 脚本） | 让 #1 的收益可被证明 |
 | 10 | **可选 MWG-rs 区域导出**（opt-in + 备份） | digiKam 是唯一默认写区域的；互操作需要它 | 中 | 与 Lightroom/digiKam 互操作 |
 
+## 6b. 实施记录（2026-09-28，代码已落地）
+
+按上表按投入产出比排序实施，**用户明确否决了 #4（展示置信度）**——置信度不是产品解法，改为在算法层对齐竞品：
+
+| 项 | 状态 | 落地内容 | 入口 |
+| --- | --- | --- | --- |
+| #1 对齐 | ✅（几何层） | `VNDetectFaceLandmarksRequest` 5 点 → 最小二乘相似变换（含尺度、不镜像）→ ArcFace 112×112 对齐图 → 取特征；关键点缺失回退 bbox 并标记 | [Alignment.swift](desktop/native/gather-core/Sources/GatherCore/Face/Alignment.swift)、[Encoder.swift](desktop/native/gather-core/Sources/GatherCore/Face/Encoder.swift) |
+| #1 模型层 | ✅ 接缝落地 | 默认仍是 FeaturePrint rev2（768 维）；已可插拔 CoreML 的 ArcFace/SFace（见下方第二轮表） | [EmbeddingModel.swift](desktop/native/gather-core/Sources/GatherCore/Face/EmbeddingModel.swift) |
+| #2 质量 | ✅ | `FaceQuality.composite = 0.4·采集质量 + 0.4·尺寸 + 0.2·滚转`；采集质量用 `VNDetectFaceCaptureQualityRequest`（按 bbox IoU 配对） | [FaceQuality.swift](desktop/native/gather-core/Sources/GatherCore/Face/FaceQuality.swift) |
+| #3 歧义不猜 | ✅ | `face_match_margin`：冠军与**人物级**亚军差距不足即不写建议（亚军按人聚合，避免同一人的多样本互相干扰） | [Matcher.swift](desktop/native/gather-core/Sources/GatherCore/Face/Matcher.swift) `bestScoresPerPerson` + [FaceKwService.swift](desktop/native/gather-core/Sources/GatherCore/Services/FaceKwService.swift) |
+| 核心点 | ✅ | `coreQualityFloor`：低质量脸不能当核心点/扩展簇，但仍被吸收为边界点；`retryMinSamples` 二遍恢复小簇 | [Clusterer.swift](desktop/native/gather-core/Sources/GatherCore/Face/Clusterer.swift) |
+| #6 模型版本治理 | ✅（基础） | `model_id/model_version/embedding_dim` 落库；`embeddingSpec` 进入分析签名、质量门槛进入聚类签名 ⇒ 换模型/改门槛自动重算 | schema v34 + [ADR-029](docs/ADR.md) |
+
+**第二轮（同一 ADR 的"缝里要有实现"）：ADR-029 决策 7–11 全部落地**
+
+| 项 | 状态 | 落地内容 | 入口 |
+| --- | --- | --- | --- |
+| #1 模型层 | ✅ 接缝落地 / ⚠️ 真实推理未验证 | `FaceEmbeddingProvider` + `FaceEmbeddingSpec`；`CoreMLFaceEmbedder` 支持 `.mlmodel`/`.mlmodelc`；多输出歧义、维度不符、路径不存在都**报错而非回退**；递归全内容指纹进 `analysis_signature`（`.mlmodelc` 权重在包内独立文件，只哈希 `model.mlmodel` 会漏判换权重）；缓存键用递归 stat 指纹；`~`/相对/软链规范化 | [EmbeddingModel.swift](desktop/native/gather-core/Sources/GatherCore/Face/EmbeddingModel.swift)、[Encoder.swift](desktop/native/gather-core/Sources/GatherCore/Face/Encoder.swift) |
+| #7 增量聚类 | ✅（默认开） | 签名未变 + 有簇 + 无整体失败时，新照片挂已有簇质心（最相似 ≥ eps 且与亚军差 ≥ margin），不动簇 id/`matched_person_id`/绑定，只清幽灵成员；挂不上的新脸彼此跑同参全量 | `Clusterer.assignIncrementally` + [FaceKwService.swift](desktop/native/gather-core/Sources/GatherCore/Services/FaceKwService.swift)（键 `face_incremental_clustering`） |
+| #8 参数影响预估 | ✅ 纯函数 / ⛔ 未接 UI | `FaceClusteringImpactEstimator` 输出换簇/簇数/噪声/变化簇/新增消失簇 + `parametersChanged` 与 `partitionChanged` 分开 + `normalizedParameters`（与生产同刻度）+ `isSubsetOfLibrary`；**计数只对传入观测集成立**，2k 观测 debug ≈28.5s，接 UI 前必须后台化/可取消 | [ClusteringImpact.swift](desktop/native/gather-core/Sources/GatherCore/Face/ClusteringImpact.swift) |
+| #9 准确率基线 | ✅ 合成 / ⛔ 真实标注 | 合成标注集报簇级 P/R、pairwise P/R/F1、ARI（两种等价公式交叉验证）；含"对照组必须出现误聚"、"低质量但方向正确不被误杀"、"低质量桥接点量化召回代价" | `Tests/GatherCoreTests/Face/FaceClusteringAccuracyTests.swift` |
+| 真实素材 | ✅（本机可跑） | 真实人像跑通检测 + 5 点对齐 + 768 维单位向量 + 确定性；`GATHER_FACE_FIXTURE=<jpg>` 启用（本机测试进程无法解码 NEF，用 sips 转 JPEG） | `Tests/GatherCoreTests/Face/FaceRealPhotoPipelineTests.swift` |
+
+**新增设置键**（全部在设置页可改；键必须在 `SettingsService.getDefaults()` 注册，否则 `settings.set` 白名单拒绝——有测试守）
+
+| 键 | 默认 | 含义 |
+| --- | --- | --- |
+| `face_core_quality` | 0.35 | 核心点质量门槛（0 = 不设限）。0.35 标定：≥96px 清晰正脸 ≈0.9、30px 但清晰 ≈0.6、明显模糊/侧倾 <0.3 |
+| `face_core_retry_min_samples` | 2 | 二遍核心点 minPts（<2 视为关闭；=1 会让单张噪声脸各自成簇） |
+| `face_match_margin` | 0.01 | 冠军与人物级亚军的相似度差下限；不足则不写建议（留人工审核）。增量挂簇复用同一键 |
+| `face_embedding_model_path` | 空 | 专用嵌入模型（`.mlmodel`/`.mlmodelc`）；空 = 内置 Vision FeaturePrint。非空但不可加载 → 分析报错（**不静默回退**），设置页保存时即校验 |
+| `face_embedding_model_version` | 空 | 用户可读的模型版本标签，写进 `face_observations.model_version` 便于追溯 |
+| `face_incremental_clustering` | 1 | 增量聚类开关（只认逐字 `"1"` 为开；`"0"`/其他/空 = 关，走全量） |
+
+**对抗审查驱动的加固（同一轮，R1/R2 报告）**：
+
+- 阻断 1（`.mlmodelc` 换权重不被指纹发现）→ 递归全内容指纹 + 递归 stat 缓存键，回归测试用**同尺寸**替换强制该路径；
+- 阻断 2（逐脸嵌入失败被吞 → 照片被当成"没有脸"并删旧簇/绑定）→ `FaceEncodeBatch.encodeFailures` 上抛 + 服务层对"检测到脸但一张都没编码成功"的照片**保留旧观测与旧 analysis_state**（下次重试），整批失败时不写集群签名也不清簇；
+- 高 3（多输出取错）→ 模型描述里恰好一个合法输出才接受，否则报歧义；推理结果按输出名挑，并断言长度等于声明维度；
+- 高 4（错误不可见）→ `FaceEmbeddingError` 在路由层映射为中文可读原因（不再落到"发生未知错误"）；设置页保存模型路径时当场校验；
+- 高 5（strides/fp16）→ 非连续 strides 走逐下标读取（线性读会静默错序），支持 float32/double/float16；
+- R2（ARI 公式、试算口径、恒真断言）→ 见 [FaceClusteringAccuracyTests.swift](desktop/native/gather-core/Tests/GatherCoreTests/Face/FaceClusteringAccuracyTests.swift) 与 [ClusteringImpact.swift](desktop/native/gather-core/Sources/GatherCore/Face/ClusteringImpact.swift) 的边界声明。
+- 第二轮对抗验证（V2）新增：设置表被手改成 `NaN`/`inf` 时 `Int(getNumber(...))` 会 **trap 崩溃** → 统一经 `Double.safeInt(fallback:)`（13 处设置→Int 转换；非有限值回退默认值，语义对正常值与旧代码逐位一致）；
+- V2 独立复核结论：ARI 用第三种实现（4000 随机划分，≤1e-15 一致）、margin 走生产落库（49 簇 / ruleMismatches=0）、试算口径与生产归一化逐值一致。
+- V1（嵌入接缝验证）又抓出三个真实缺陷并已修：①**部分失败**（1 成功 + 1 失败）会写 `analysis_state` 且丢弃失败的脸 ⇒ 那些脸永不重试 → 现在只要本次有编码失败就不写 state（部分结果仍落库，下次重试）；②签名与推理由两次 `make` 解析，模型文件在两者间被替换会"用 A 的签名标注 B 的向量" → 一次运行只创建**一个**嵌入实例，签名与推理同源；③`.DS_Store` 等系统噪声会改变内容指纹 ⇒ 全库重算 → 指纹递归时跳过点开头文件。
+- V1 同时指出多输出"恰好一个合法"会误杀带分类头的真实导出 → 保守按名字排除 logits/softmax/fc/head 等分类头，排除后仍不唯一才报歧义（**没有**"指定输出名"的设置项，属已知限制）。
+
+**兼容性**：`quality = 0`（v34 迁移的旧行）按"不设限"处理，避免升级后旧库整库变噪声；所有新参数/字段都有默认值；Vision 路径的嵌入签名与第一轮逐字一致（老库不会因本轮改动被全量重算）；`FaceClusterOptions.disabled` 使既有调用语义逐位不变。
+
+**仍未做**：#5 拆分/改派/隐藏状态（需扩**冻结的**命令面：`fkw` 12 命令 + `person` 8 命令，当前 118 条为门禁基线）、#10 MWG-rs 区域导出、#8 的 UI 接线、#9 的真实标注集复核、`settings.get_ml_status` 展示当前嵌入模型（需要动 `MLStatusData` 协议形状）。
+
 ## 7. 不建议照抄的部分
 
 1. **Immich 的跨用户 cluster group（v3）**：引入"共享人脸聚类"的隐私面与跨用户合并缺陷（[#31117](https://github.com/immich-app/immich/issues/31117)、[#31514](https://github.com/immich-app/immich/issues/31514)）；我们是单用户桌面工具，无需这一层。

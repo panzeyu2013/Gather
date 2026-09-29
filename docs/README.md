@@ -40,19 +40,8 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 目录结构
 
-```text
-desktop/native/
-├── build.sh                 # 原生 release 组装（gather-core + gather-app + .app）
-├── gather-core/             # Swift Package：SQLite、任务、索引、元数据、导出和 Vision 服务
-│   ├── Sources/GatherCore/  #   Protocol/ Database/ Face/ Image/ Services/ Similarity/ Watch/ Logging/
-│   └── Tests/GatherCoreTests/  # XCTest（含对账、迁移与基准门禁）
-└── gather-app/              # Swift Package：SwiftUI 页面、路由、菜单与原生命令路由
-    ├── Sources/GatherApp/   #   RootView / Dashboard / Library / Gallery / Similarity / Persons /
-    │                        #   Host（SessionCommandRouter、GatherAppDelegate）/ Support（主题、本地化、事件、Toast）
-    ├── Culling/ FaceKeywording/ ControlCenter/ Settings/ Export/ Duplicates/
-    └── Resources/           #   en.lproj / zh-Hans.lproj Localizable.strings
-docs/                        # 本文档、开发指南、ADR、路线图
-```
+目录树、target 与各目录职责的唯一真相源是 [DEVELOPMENT.md](DEVELOPMENT.md)；本文不再
+复制，避免两处漂移。
 
 ## 快速开始
 
@@ -85,21 +74,17 @@ SwiftUI 应用，不需要 JavaScript 工具链；设置 `CODESIGN_IDENTITY` 后
 
 ## 数据与安全模型
 
-```text
-SwiftUI → SessionCommandRouter → GatherCore 服务
-                                  ├─ SQLite（WAL + 迁移 + 备份/回滚）
-                                  ├─ Vision/ImageIO/RAW 解码
-                                  └─ XMP 与元数据写回队列（outbox）
-```
-
-破坏性操作需要显式确认（`confirmed` 门控 31 项），图片路径必须来自数据库资产授权，
-元数据 outbox 支持重试、冲突处理和重启恢复。应用不启动本地 HTTP 服务，也不依赖
-浏览器渲染运行时。
+数据流与命令面契约的唯一真相源是 [DEVELOPMENT.md](DEVELOPMENT.md)。不变量：破坏性
+操作必须显式确认（路由层 `confirmed` 门控 + UI 真实弹窗，由
+`scripts/check-command-surface.sh` 校验）；图片路径必须来自数据库资产授权；元数据
+outbox 支持重试、冲突处理和重启恢复。应用不启动本地 HTTP 服务，也不依赖浏览器渲染
+运行时。
 
 ## 文档
 
-- [开发与贡献指南](DEVELOPMENT.md)：构建/测试、IPC 契约精华、本地化体系、HIG 约定
-- [架构决策记录](ADR.md)：ADR-001~020 既有决策 + 性能决议与四项遗留方案（ADR-021~026）
+- [开发与贡献指南](DEVELOPMENT.md)：构建/测试、命令面契约、本地化体系、HIG 约定
+- [架构决策记录](ADR.md)：ADR-001~020 既有决策 + 性能决议与遗留方案（ADR-021~028，
+  含未接线资产删除裁决 ADR-028）
 - [路线图](ROADMAP.md)：已完成勾除、未完成保留的更新路线图
 
 ## 许可证

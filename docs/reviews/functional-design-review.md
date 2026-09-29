@@ -35,7 +35,7 @@
 | `tests/fixtures/` | `.gitignore` 明确保留的**本地夹具**目录（ONNX 模型 + 人脸 RAW 照片），非垃圾。 |
 | `Capture_One_Plugin_SDK_(Mac)_v1.0.1/` | `desktop/coplugin/Makefile` 的 `SDK_PATH`/`FRAMEWORK_PATH` 引用。 |
 | `desktop/resources/Info.plist` | 被 `Package.swift` exclude，但 `desktop/native/build.sh` 会拷入 app bundle。 |
-| `docs/fixtures/schema.snapshot.json` | `MigrationTests` 读取（schemaVersion 33 / 43 表）。 |
+| `docs/fixtures/schema.snapshot.json` | `MigrationTests` 读取（schemaVersion 34 / 43 表；v34 加 face_observations 质量列）。 |
 | `Protocol/*.swift` 约 112 个 `*Params/*Result/Data` 结构体 | Codable IPC 契约基线，生产用 `[String: JSONValue]` 动态分发，无直接引用不等于无用。 |
 | `CaseIterable` 枚举的 `allCases` | 隐式引用。 |
 | 全部协议 witness | AppKit 委托方法（`applicationDidFinishLaunching` 等）、`XMPProvider`/`MetadataSyncPort`/`CullingSyncPort`/`FaceWritebackProvider` 等实现，均经协议调用。 |
@@ -215,8 +215,48 @@ core **855 tests / 119 suites**（约 1.9s）、app **199 tests / 24 suites**（
 - 有锁：`JobAbortSignal`、`JobRunContext`、`JobService`、`DuplicateService`、`IndexerService`（`seamLock`）、`WalkChannel`、`MetadataCollector`、`BatchSetCollector`、`PhaseOneCollector`、测试侧 `AsyncGate`/`ProgressRecorder`/`BoolBox`/`OrderBox`/`ImageCallBox`。
 - **无锁**（依据"当前零可变状态"，加 `var` 即失效）：`QualityService`、`MetadataService`、`WritebackService`、`Registration`（全 `let`）、`JobResultValue`（`Any?` 只读 + 由 `JobService.lock` 串行）。
 - app 侧：`AppLanguageStorage`、`CaptureOneBridgeStorage`（各由 `NSLock` 保护单一字段）。
+- 人脸模块（算法改造第二轮）：`CoreMLFaceEmbedder`（**无锁**——`spec` 是值类型、`MLModel` 加载后只读，每次 `embed` 新建 VNCoreMLRequest）、`FaceEmbeddingModelFactory.Cache`（**有锁**——NSLock 保护 providers 字典，模型加载刻意在锁外，代价是同键并发未命中可能重复加载一次）；测试侧 `FingerprintTestCounter`/`LockedCounter`/`VectorStore`/`PhaseCollector`/`IncrementalFaceHarness`/`MutableSettings`。
 
 **遗留（低危）**：`IndexerService.stat/fileHasher` 热路径多一次无竞争锁；`batchAsync` 的 `body` 现为 `@Sendable`，新调用点捕获非 Sendable 状态会被编译器拒绝（这是期望行为，请用锁盒子）。
+
+**既有告警（与本轮无关，冷编才可见）**：source 构建 0 error / 0 warning；`swift build --build-tests` 强制重编后有 **23 条 warning**，全部落在 10 个既有测试文件（`MetadataSyncCoordinatorTests` 5、`MetadataOutboxRepoTests` 4、`SessionServiceTests` 3、`MetadataWritebackStateMachineTests` 3、`JobServiceTests` 2、`CullingServiceTests` 2，其余各 1），类型是"未使用的返回值/未使用的局部变量/多余的 `try`"。本轮新增与改动的文件 **0 条**。清理它们是独立的小任务（机械改动），没有并入算法改造轮次。
+
+
+## 十二、人脸算法改造第二轮：模型层 / 增量 / 试算 / 基线（2026-09-28）
+
+第一轮把"接口留缝"当终点；第二轮把缝里的实现补齐，并按对抗审查修掉两轮共 4 个阻断项。逐项状态与诚实边界见 `docs/ADR.md` ADR-029 决策 7–11 与 `docs/reviews/face-clustering-benchmark.md` §6b。
+
+**本轮验证（全量实跑）**
+
+- core：`swift test --package-path desktop/native/gather-core` → **951 tests / 134 suites passed**（约 2.0–6.8s，视冷热）；`swift build` 0 error / 0 warning。
+- app：`swift test --package-path desktop/native/gather-app` → **212 tests / 27 suites passed**（约 0.3s）。
+- 门禁：`check-command-surface.sh`（118/118 = 82 sync + 36 async）与 `check-no-legacy.sh` 均通过。
+- 真实素材：`GATHER_FACE_FIXTURE=<jpg> swift test --filter FaceRealPhotoPipelineTests` → 3/3（真实人像检测 + 5 点对齐 + 768 维单位向量 + 两次编码一致；编码失败计数）。默认跳过：本机测试进程无法从 Data 解 RAW。
+
+**对抗审查修掉的阻断项（每条都有回归测试，且测试在旧实现上会失败）**
+
+1. `.mlmodelc` 包内权重不进指纹（原地替换不改目录 mtime）→ 递归**全内容**指纹（分段链式 SHA-256）+ 递归 stat 缓存键；回归用**同尺寸**替换强制该路径。
+2. 逐脸嵌入失败被吞 → 照片被当成"没有脸"（删旧观测、写 analysis_state 永不重试、重聚类连带清簇与人工绑定）→ `FaceEncodeBatch.encodeFailures` 上抛 + 服务层对"检测到脸但一张都没编码成功"的照片保留旧观测与旧状态、整批失败不清簇。
+3. ARI 公式写错（0.7177 vs 真值 0.4040，且变化方向与真值相反）→ 两种等价实现互证 + 手算小例（4/9、−0.5）精确断言。
+4. margin 结论来自测试内复刻 → 改为生产 `analyze` → `matched_person_id` 全路径（49 查询、6 人库）；出货默认 0.01：错绑 3→2、拦下 2 条歧义、同覆盖率精度 0.9655→1.0000。
+5. 设置表被手改成 `NaN`/`inf` 时 `Int(getNumber(...))` 会 **trap 崩溃**（`Int(inf)` 不是抛错而是 SIGTRAP）→ `Double.safeInt(fallback:)` 统一兜底（13 处；正常值语义不变），纯函数边界 + 服务层"手改 inf 不崩"各有用例。
+6. 第二轮对抗验证（V1）补的三个真实缺陷：①**部分失败漏保护**（1 成功 + 1 失败会写 analysis_state 且丢弃失败的脸 ⇒ 永不重试）→ 只要本次有编码失败就不写 state（部分结果仍落库）；②签名与推理由两次 `make` 解析，模型文件在两者之间被换会"用 A 的签名标注 B 的向量"→ 一次运行只创建**一个**嵌入实例，签名与推理同源；③`.DS_Store` 这类系统噪声会改变内容指纹 ⇒ 全库重算 → 指纹递归时跳过点开头文件。
+7. V1 还指出多输出"恰好一个合法"会误杀带分类头的真实导出 → 保守地按名字排除 logits/softmax/fc 等分类头，排除后仍不唯一才报歧义（不含"指定输出名"设置项，属已知限制）。
+8. V1 证明"错误可见性"第一版**没生效**：路由与设置页都改了，但分析页的显示层把非错误码文案一律回落"发生未知错误"（四类中文诊断全被吞）→ 显示路径改为三段判定（错误码→本地化模板；含中日韩字符→原样上屏；其余→通用文案 + 原文进 tooltip，不泄露英文散文）；同时把"保存即加载模型+整包哈希"（256 MiB 实测 48.4s，@MainActor 假死）降级为廉价校验（存在性/扩展名/软链/`~`），"能否真正加载"交给分析路径；`done + encodingFailures > 0` 不再显示"分析完成"，改为可见警示。
+
+**测试基建（顺手加固）**：`GatherLocalization.appLanguage` 是进程级全局量，切语言的套件与"断言本地化文案"的套件并行时会产生间歇失败（实测到一次：`DashboardViewModelTests.loadFailureSetsFailedPhase`）。已把 6 个未加锁文件（Dashboard / Gallery / Persons / RootView / ErrorLocalizationCoverage / FaceReclusterConfirm）的 15 处文案断言放进既有的 `AppLanguageLock`（约定见 `Support/AppLanguageLock.swift`）；连跑两次全绿。
+
+**明确降级的结论**（避免过度承诺）
+
+- 干净集 = 生成器自检，不是性能证据；合成 embedding ≠ 真实识别精度；单 seed、观测 ≤64；子集试算会与全量分叉（试算计数只对传入观测集成立）；不得替代 Stretch 门与真实标注集复核。
+
+**仍未做 / 已知边界**
+
+- 簇的拆分/改派/隐藏状态：需要扩**冻结的**命令面（当前 118 条为门禁基线）；
+- 参数试算接 UI：同样需要扩命令面或 app 内直调，且内核同步、2k 观测 debug 实测约 28.5s，接 UI 前必须后台化 + 可取消；
+- `settings.get_ml_status` 展示当前嵌入模型：需要改 `MLStatusData` 协议形状；
+- MWG-rs 区域导出（opt-in）；
+- CoreML 真实推理路径 **0 覆盖**（仓库无 `.mlmodel`/`.mlmodelc` 夹具）：首次接入真实模型必须人工确认维度、归一化与输出名。
 
 ---
 
