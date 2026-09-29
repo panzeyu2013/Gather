@@ -8,13 +8,31 @@ import GatherCore
 
 struct LibraryView: View {
     @Bindable var viewModel: LibraryViewModel
+    /// 页面是否可见（RootView 传 navigation.isLibrary）。隐藏页不发命令、
+    /// 不响应领域事件刷新（防抖任务与弹窗按钮由修饰符显式启用）。
+    var isActive: Bool = true
     let onOpenSession: (String) -> Void
+
+    /// 需要刷新本页支持数据（相册/关联候选/孤立 XMP/离线卷）的域。
+    private static let refreshDomains: Set<GatherDomain> = [
+        .duplicates, .metadata, .culling, .library,
+    ]
 
     @State private var showAdvancedFilters = false
     @State private var albumName = ""
-    @State private var showDeleteAlbumConfirmation = false
+    /// 破坏性动作的待确认项（非空即弹确认；取消不发命令）。
+    @State private var pendingDeleteAlbum: SmartAlbumData?
+    @State private var pendingAcceptCandidate: AssetLinkCandidateData?
+    @State private var pendingRejectCandidate: AssetLinkCandidateData?
+    @State private var pendingRelink: PendingRelink?
     /// 「恢复原片」确认的目标（不可逆覆盖操作）。
     @State private var pendingRestoreOrphan: MetadataOrphan?
+
+    /// 待确认的重新关联：oldRoot → newRoot 由用户选目录后填充。
+    struct PendingRelink: Equatable {
+        let oldRoot: String
+        let newRoot: String
+    }
     @State private var jobProgressDebounceTask: Task<Void, Never>?
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
@@ -37,10 +55,19 @@ struct LibraryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.gatherBackground)
+        .disabled(!isActive)
         .task {
             if viewModel.phase == .loading {
                 await viewModel.load()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
+            guard let change = notification.object as? GatherDomainChange,
+                  Self.refreshDomains.contains(change.domain),
+                  change.origin != LibraryViewModel.changeOrigin,
+                  isActive else { return }
+            // 只刷新本次变更可能影响的支持子域 + 当前页（不重置筛选/页码）。
+            viewModel.scheduleEventRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobTerminal)) { _ in
             // 任意终态事件都重载支持数据/照片列表（索引/分析结束即反映）。
@@ -224,23 +251,30 @@ struct LibraryView: View {
                     }
                     .disabled(viewModel.isSupportBusy)
                     Button(GatherLocalization.l("删除"), role: .destructive) {
-                        showDeleteAlbumConfirmation = true
+                        pendingDeleteAlbum = viewModel.albums.first {
+                            $0.id == viewModel.selectedAlbumId
+                        }
                     }
                     .disabled(viewModel.isSupportBusy)
                 }
             }
         }
-        .alert(
-            GatherLocalization.l("删除当前智能相册？"),
-            isPresented: $showDeleteAlbumConfirmation
-        ) {
-            Button(GatherLocalization.l("删除相册"), role: .destructive) {
-                Task { await viewModel.deleteSelectedAlbum() }
-            }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("只删除相册规则，不会删除照片文件。"))
-        }
+        .gatherDestructiveConfirm(
+            pending: $pendingDeleteAlbum,
+            title: GatherLocalization.l("删除当前智能相册？"),
+            confirmLabel: { _ in GatherLocalization.l("删除相册") },
+            message: { album in
+                String(
+                    format: GatherLocalization.l("将删除智能相册「%@」及其筛选规则。只删除相册规则，不会删除任何照片文件。"),
+                    album.name
+                )
+            },
+            onConfirm: { album in
+                // confirmed: true 只能从这个分支到达。
+                Task { await viewModel.deleteAlbum(id: album.id, confirmed: true) }
+            },
+            onCancel: { _ in viewModel.reportActionCancelled() }
+        )
     }
 
     private var assetCandidatesCard: some View {
@@ -264,13 +298,13 @@ struct LibraryView: View {
                         HStack(spacing: 6) {
                             if candidate.status != .accepted {
                                 Button(GatherLocalization.l("接受")) {
-                                    Task { await viewModel.updateCandidate(candidate, accept: true) }
+                                    pendingAcceptCandidate = candidate
                                 }
                                 .disabled(viewModel.isSupportBusy)
                             }
                             if candidate.status != .rejected {
                                 Button(candidate.status == .accepted ? GatherLocalization.l("拆分") : GatherLocalization.l("拒绝")) {
-                                    Task { await viewModel.updateCandidate(candidate, accept: false) }
+                                    pendingRejectCandidate = candidate
                                 }
                                 .disabled(viewModel.isSupportBusy)
                             }
@@ -282,6 +316,44 @@ struct LibraryView: View {
                 }
             }
         }
+        .gatherDestructiveConfirm(
+            pending: $pendingAcceptCandidate,
+            title: GatherLocalization.l("接受资产关联？"),
+            confirmLabel: { _ in GatherLocalization.l("接受并合并") },
+            message: { candidate in
+                String(
+                    format: GatherLocalization.l("将把「%@」与「%@」合并为同一个资产（RAW + JPEG 变体）：图库与导出中只保留一个条目，另一个作为变体保留在磁盘上。"),
+                    Self.basename(candidate.leftPath),
+                    Self.basename(candidate.rightPath)
+                )
+            },
+            onConfirm: { candidate in
+                Task { await viewModel.updateCandidate(candidate, accept: true, confirmed: true) }
+            },
+            onCancel: { _ in viewModel.reportActionCancelled() }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingRejectCandidate,
+            title: GatherLocalization.l("拒绝资产关联？"),
+            confirmLabel: { candidate in
+                candidate.status == .accepted
+                    ? GatherLocalization.l("拆分资产")
+                    : GatherLocalization.l("拒绝关联")
+            },
+            message: { candidate in
+                String(
+                    format: candidate.status == .accepted
+                        ? GatherLocalization.l("将拆分「%@」与「%@」：两张文件重新作为独立照片出现在图库中。")
+                        : GatherLocalization.l("将拒绝「%@」与「%@」的关联：两张文件保持独立，自动关联不会再合并它们。"),
+                    Self.basename(candidate.leftPath),
+                    Self.basename(candidate.rightPath)
+                )
+            },
+            onConfirm: { candidate in
+                Task { await viewModel.updateCandidate(candidate, accept: false, confirmed: true) }
+            },
+            onCancel: { _ in viewModel.reportActionCancelled() }
+        )
     }
 
     private var metadataOrphansCard: some View {
@@ -299,21 +371,29 @@ struct LibraryView: View {
                             .lineLimit(1)
                             .help(orphan.xmpPath)
                             .textSelection(.enabled)
-                        // TS index.tsx:380 —— translateErrorCode 语义：错误码经
-                        // GatherLocalization.errorText 翻译（未知码回退通用文案）。
-                        Text(orphan.errorMessage.isEmpty ? orphan.status : String(format: GatherLocalization.l("%@ · %@"), orphan.status, GatherLocalization.errorText(orphan.errorMessage)))
+                        // TS index.tsx:380 —— translateErrorCode 语义：状态与错误码
+                        // 一律经本地化漏斗，原始诊断只进日志（不直显给用户）。
+                        Text(orphan.errorMessage.isEmpty
+                            ? Self.orphanStatusText(orphan.status)
+                            : String(
+                                format: GatherLocalization.l("%@ · %@"),
+                                Self.orphanStatusText(orphan.status),
+                                Self.orphanErrorText(orphan.errorMessage)
+                            ))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                         HStack(spacing: 6) {
                             if orphan.status == "pending" || orphan.status == "failed" {
+                                // 重试是「再试一次已授权的写回」，按钮本身即用户决定。
                                 Button(GatherLocalization.l("重试")) {
-                                    Task { await viewModel.resolveOrphan(orphan, action: .retry) }
+                                    Task { await viewModel.resolveOrphan(orphan, action: .retry, confirmed: true) }
                                 }
                                 .disabled(viewModel.isSupportBusy)
                             }
+                            // 保留 XMP 不改写任何照片文件，按钮本身即用户决定。
                             Button(GatherLocalization.l("保留 XMP")) {
-                                Task { await viewModel.resolveOrphan(orphan, action: .keep) }
+                                Task { await viewModel.resolveOrphan(orphan, action: .keep, confirmed: true) }
                             }
                             .disabled(viewModel.isSupportBusy)
                             Button(GatherLocalization.l("恢复原片"), role: .destructive) {
@@ -328,24 +408,21 @@ struct LibraryView: View {
                 }
             }
         }
-        .confirmationDialog(
-            GatherLocalization.l("恢复原片"),
-            isPresented: Binding(
-                get: { pendingRestoreOrphan != nil },
-                set: { if !$0 { pendingRestoreOrphan = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(GatherLocalization.l("恢复原片"), role: .destructive) {
-                if let orphan = pendingRestoreOrphan {
-                    Task { await viewModel.resolveOrphan(orphan, action: .restore) }
-                }
-                pendingRestoreOrphan = nil
-            }
-            Button(GatherLocalization.l("取消"), role: .cancel) { pendingRestoreOrphan = nil }
-        } message: {
-            Text(GatherLocalization.l("恢复原片会用备份覆盖当前文件，此操作不可撤销。"))
-        }
+        .gatherDestructiveConfirm(
+            pending: $pendingRestoreOrphan,
+            title: GatherLocalization.l("恢复原片"),
+            confirmLabel: { _ in GatherLocalization.l("恢复原片") },
+            message: { orphan in
+                String(
+                    format: GatherLocalization.l("会用备份覆盖照片文件「%@」，当前内容将被替换，此操作不可撤销。"),
+                    Self.basename(orphan.xmpPath)
+                )
+            },
+            onConfirm: { orphan in
+                Task { await viewModel.resolveOrphan(orphan, action: .restore, confirmed: true) }
+            },
+            onCancel: { _ in viewModel.reportActionCancelled() }
+        )
     }
 
     private var offlineVolumesCard: some View {
@@ -367,7 +444,12 @@ struct LibraryView: View {
                             .foregroundStyle(.secondary)
                         ForEach(volume.roots, id: \.self) { root in
                             Button(GatherLocalization.l("重新关联此目录")) {
-                                Task { await viewModel.relinkVolume(root: root) }
+                                Task {
+                                    // 先只选目录（不发命令），拿到新旧根后再弹确认。
+                                    if let newRoot = await viewModel.chooseRelinkRoot() {
+                                        pendingRelink = PendingRelink(oldRoot: root, newRoot: newRoot)
+                                    }
+                                }
                             }
                             .disabled(viewModel.isSupportBusy)
                         }
@@ -375,6 +457,29 @@ struct LibraryView: View {
                 }
             }
         }
+        .gatherDestructiveConfirm(
+            pending: $pendingRelink,
+            title: GatherLocalization.l("重新关联离线存储卷？"),
+            confirmLabel: { _ in GatherLocalization.l("重新关联") },
+            message: { relink in
+                String(
+                    format: GatherLocalization.l("会把「%@」下已登记的文件路径改写为「%@」（该卷共 %lld 个离线文件），并重新索引这些文件。原目录不会被修改或删除。"),
+                    relink.oldRoot,
+                    relink.newRoot,
+                    viewModel.assetVolumes.reduce(0) { $0 + $1.offlineFiles }
+                )
+            },
+            onConfirm: { relink in
+                Task {
+                    await viewModel.relinkVolume(
+                        root: relink.oldRoot,
+                        newRoot: relink.newRoot,
+                        confirmed: true
+                    )
+                }
+            },
+            onCancel: { _ in viewModel.reportActionCancelled() }
+        )
     }
 
     private func supportCard<Content: View>(
@@ -401,6 +506,24 @@ struct LibraryView: View {
     }
 
     /// 对齐 TS Library/index.tsx:353-355：已关联/已拒绝/待确认·N%。
+    /// 孤立 XMP 状态 → 可本地化文案；未知状态记日志并回退通用文案，
+    /// 绝不把原始状态码/诊断字符串直显给用户（审查 P3）。
+    private static func orphanStatusText(_ status: String) -> String {
+        switch status {
+        case "pending": return GatherLocalization.l("待处理")
+        case "failed": return GatherLocalization.l("上次处理失败")
+        case "resolved", "kept", "restored": return GatherLocalization.l("已处理")
+        default:
+            GatherLogger.log("library orphan status unmapped: \(status)", level: .debug)
+            return GatherLocalization.l("状态未知")
+        }
+    }
+
+    /// 孤立 XMP 错误码 → 本地化文案；非错误码诊断只进日志 + 通用文案。
+    private static func orphanErrorText(_ raw: String) -> String {
+        LibraryViewModel.userFacingText(for: raw)
+    }
+
     private static func candidateStatusText(_ status: AssetLinkCandidateStatus) -> String {
         switch status {
         case .accepted: return GatherLocalization.l("已关联")
@@ -586,7 +709,7 @@ private struct LibraryCardView: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(GatherLocalization.l("打开"), action: onOpen)
-            if let url = Self.finderURL(for: photo.filepath) {
+            if let url = finderURLForPath(photo.filepath) {
                 Divider()
                 Button(GatherLocalization.l("在 Finder 中显示")) {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -601,12 +724,6 @@ private struct LibraryCardView: View {
         let count = Int(rating)
         guard count > 0 else { return GatherLocalization.l("未评级") }
         return String(repeating: "★", count: count) + String(repeating: "☆", count: max(0, 5 - count))
-    }
-
-    /// 右键「在 Finder 中显示」的 URL：路径为空时返回 nil（跳过该项）。
-    private static func finderURL(for path: String) -> URL? {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed)
     }
 }
 

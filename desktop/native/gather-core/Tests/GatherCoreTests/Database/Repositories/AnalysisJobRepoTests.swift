@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Database/Repositories/AnalysisJobRepoTests.swift
-// TS 源: desktop/src/main/db/repositories/analysis-job.repo.ts
+// AnalysisJobRepo 行为契约：状态机迁移、去重/checkpoint 继承、优先级排序、显式清理。
 
 import Foundation
 import Testing
@@ -51,30 +51,94 @@ struct AnalysisJobRepoTests {
         #expect(try rowCount(db, "SELECT COUNT(*) FROM analysis_jobs") == 1)
     }
 
+    /// activeRow 的活跃状态字面量必须与部分唯一索引
+    /// idx_analysis_jobs_active_dedupe 的 WHERE 子句逐字一致：SQLite 的部分索引
+    /// 匹配是语法级的，顺序变化/参数化会让该查询退化为全状态索引 + TEMP B-TREE
+    /// （去重查从索引点查变成按状态扫描）。本测试把该计划固定下来。
+    @Test func activeRowLookupUsesPartialDedupeIndex() throws {
+        let (db, _) = try makeRepo()
+        defer { db.close() }
+
+        let plan = try db.prepare("""
+            EXPLAIN QUERY PLAN
+            SELECT * FROM analysis_jobs
+            WHERE dedupe_key = ? AND status IN (\(SchemaSQL.activeAnalysisJobStatusSQLList))
+            ORDER BY rowid ASC LIMIT 1
+            """).query()
+        let text = plan.map { $0.compactMap(\.textValue).joined(separator: "|") }.joined(separator: " ")
+        #expect(text.contains("idx_analysis_jobs_active_dedupe"), "活跃去重必须走部分唯一索引，实际计划: \(text)")
+
+        // 同一字面量也被索引 DDL 使用（唯一真相源，避免两处手写字面量漂移）。
+        #expect(SchemaSQL.indexSQL.contains("WHERE status IN (\(SchemaSQL.activeAnalysisJobStatusSQLList))"))
+    }
+
+    /// 活跃行（queued/running/cancelling）存在时，create 复用该行，不新建。
     @Test func createWithDuplicateActiveDedupeReturnsExisting() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
         let first = try repo.create(createParams())
-        let second = try repo.create(createParams())
+        let second = try repo.create(createParams(checkpoint: ["ignored": .bool(true)]))
         #expect(second.id == first.id)
         #expect(second.status == .queued)
+        #expect(second.checkpoint["ignored"] == nil)
         #expect(try rowCount(db, "SELECT COUNT(*) FROM analysis_jobs") == 1)
     }
 
-    @Test func createAfterTerminalDedupeCreatesFreshRow() throws {
+    @Test func activeDedupeCoversRunningAndCancelling() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
-        let job = try repo.create(createParams())
-        _ = try repo.claim(id: job.id, leaseOwner: "worker-1")
-        _ = try repo.finish(id: job.id, leaseOwner: "worker-1", status: .failed, error: (code: "boom", message: "bad"))
-        // 终态行不在 idx_analysis_jobs_active_dedupe（部分唯一索引）内 → INSERT 不冲突，
-        // 与 TS 一致：此时创建新行（终态复用分支仅在同 dedupe 存在活跃行时可达）
-        let retried = try repo.create(createParams())
-        #expect(retried.id != job.id)
-        #expect(retried.status == .queued)
+        let running = try repo.create(createParams(dedupeKey: "running"))
+        _ = try repo.claim(id: running.id, leaseOwner: "worker")
+        #expect(try repo.create(createParams(dedupeKey: "running")).id == running.id)
+
+        let cancelling = try repo.create(createParams(dedupeKey: "cancelling"))
+        _ = try repo.claim(id: cancelling.id, leaseOwner: "worker")
+        #expect(try repo.requestCancel(cancelling.id) == .cancellationRequested)
+        #expect(try repo.create(createParams(dedupeKey: "cancelling")).id == cancelling.id)
         #expect(try rowCount(db, "SELECT COUNT(*) FROM analysis_jobs") == 2)
+    }
+
+    /// 终态行不再阻塞新建；新行默认继承最近终态行的 checkpoint（调用方键优先）。
+    @Test func createAfterTerminalDedupeCreatesFreshRowAndInheritsCheckpoint() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        let job = try repo.create(createParams(checkpoint: [
+            "destinations": .object(["p1": .string("a.jpg")]),
+            "completedPhotoIds": .array([.string("p1")]),
+            "options": .object(["format": .string("jpeg")]),
+        ]))
+        _ = try repo.claim(id: job.id, leaseOwner: "worker-1")
+        _ = try repo.finish(id: job.id, leaseOwner: "worker-1", status: .cancelled)
+        #expect(try repo.get(job.id)?.status == .cancelled)
+
+        let resumed = try repo.create(createParams(
+            checkpoint: ["options": .object(["format": .string("jpeg"), "quality": .number(90)])]
+        ))
+        #expect(resumed.id != job.id, "终态行不得被复用，不得把已取消行改回 queued")
+        #expect(resumed.status == .queued)
+        #expect(resumed.checkpoint["destinations"]?.objectValue?["p1"]?.stringValue == "a.jpg",
+                "续跑状态必须从最近终态行继承")
+        #expect(resumed.checkpoint["completedPhotoIds"]?.arrayElements?.first?.stringValue == "p1")
+        #expect(resumed.checkpoint["options"]?.objectValue?["quality"] == .number(90),
+                "调用方显式键优先")
+        #expect(try repo.get(job.id)?.status == .cancelled, "旧终态行保持原状")
+        #expect(try rowCount(db, "SELECT COUNT(*) FROM analysis_jobs") == 2)
+    }
+
+    @Test func createCanDisableCheckpointInheritance() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        let job = try repo.create(createParams(checkpoint: ["stage": .string("old")]))
+        _ = try repo.claim(id: job.id, leaseOwner: "w")
+        _ = try repo.finish(id: job.id, leaseOwner: "w", status: .failed, error: (code: "e", message: "m"))
+
+        let fresh = try repo.create(createParams(checkpoint: ["stage": .string("new")]), inheritCheckpoint: false)
+        #expect(fresh.id != job.id)
+        #expect(fresh.checkpoint["stage"]?.stringValue == "new")
     }
 
     @Test func getUnknownReturnsNil() throws {
@@ -83,68 +147,69 @@ struct AnalysisJobRepoTests {
         #expect(try repo.get("nope") == nil)
     }
 
-    @Test func listFiltersByStatusAndOrdersByPriority() throws {
+    /// 队列排序唯一口径：priority ASC（数值越小越紧急），同优先级按 FIFO。
+    @Test func listOrdersQueueByAscendingPriorityThenFifo() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
-        _ = try repo.create(createParams(dedupeKey: "a", priority: 1))
-        _ = try repo.create(createParams(dedupeKey: "b", priority: 5))
-        _ = try repo.create(createParams(dedupeKey: "c", priority: 3, checkpoint: ["x": JSONValue.bool(true)]))
-        // 直接改状态制造一个 running
-        _ = try db.prepare("UPDATE analysis_jobs SET status = 'running' WHERE dedupe_key = 'b'").run()
+        let normal = try repo.create(createParams(dedupeKey: "normal", priority: 0))
+        let urgent = try repo.create(createParams(dedupeKey: "urgent", priority: -1))
+        let low = try repo.create(createParams(dedupeKey: "low", priority: 5))
+        let normal2 = try repo.create(createParams(dedupeKey: "normal-2", priority: 0))
 
-        let running = try repo.list(status: .running)
-        #expect(running.count == 1)
-        #expect(running[0].dedupeKey == "b")
+        let queued = try repo.list(status: .queued)
+        #expect(queued.map(\.id) == [urgent.id, normal.id, normal2.id, low.id],
+                "priority ASC + rowid FIFO，实际 \(queued.map(\.dedupeKey))")
 
-        let all = try repo.list()
-        #expect(all.count == 3)
-        // list() 无 status 时按 updated_at DESC（TS 语义），同毫秒创建时顺序不定
-        #expect(all.map(\.priority).sorted() == [1, 3, 5])
+        // 展示用 list() 仍按 updated_at DESC；此处只断言集合完整。
+        #expect(try repo.list().count == 4)
     }
 
-    @Test func listByTypeFilters() throws {
+    @Test func requestCancelOutcomes() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
-        _ = try repo.create(createParams(dedupeKey: "a"))
-        _ = try repo.create(createParams(type: .faceAnalyze, dedupeKey: "b"))
-        let jobs = try repo.listByType(.metadataScan)
-        #expect(jobs.count == 1)
-        #expect(jobs[0].dedupeKey == "a")
-    }
-
-    @Test func requestCancelTransitions() throws {
-        let (db, repo) = try makeRepo()
-        defer { db.close() }
-
-        let queued = try repo.create(createParams())
-        #expect(try repo.requestCancel(queued.id))
-        #expect(try repo.get(queued.id)?.status == .cancelled)
+        let queued = try repo.create(createParams(dedupeKey: "queued"))
+        #expect(try repo.requestCancel(queued.id) == .cancelledQueued)
+        let cancelled = try repo.get(queued.id)
+        #expect(cancelled?.status == .cancelled)
+        #expect(cancelled?.finishedAt != "")
+        let cancelRequestedAt = try db.prepare(
+            "SELECT cancel_requested_at FROM analysis_jobs WHERE id = ?"
+        ).get([.text(queued.id)])?[0].textValue ?? ""
+        #expect(cancelRequestedAt != "", "queued 取消必须记录 cancel_requested_at")
+        // 终态幂等：再次取消无迁移。
+        #expect(try repo.requestCancel(queued.id) == .notCancellable)
 
         let running = try repo.create(createParams(dedupeKey: "running"))
         _ = try repo.claim(id: running.id, leaseOwner: "w")
-        #expect(try repo.requestCancel(running.id))
+        #expect(try repo.requestCancel(running.id) == .cancellationRequested)
         #expect(try repo.get(running.id)?.status == .cancelling)
+        // cancelling 行重复取消：幂等。
+        #expect(try repo.requestCancel(running.id) == .alreadyCancelling)
 
-        #expect(!(try repo.requestCancel("missing")))
+        #expect(try repo.requestCancel("missing") == .notCancellable)
     }
 
     @Test func retryOnlyFromTerminal() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
-        let failed = try repo.create(createParams())
+        let failed = try repo.create(createParams(checkpoint: ["resume": .bool(true)]))
         _ = try repo.claim(id: failed.id, leaseOwner: "w")
         _ = try repo.finish(id: failed.id, leaseOwner: "w", status: .failed, error: (code: "e", message: "m"))
         #expect(try repo.retry(failed.id))
-        #expect(try repo.get(failed.id)?.status == .queued)
+        let retried = try repo.get(failed.id)
+        #expect(retried?.status == .queued)
+        #expect(retried?.errorMessage == "")
+        #expect(retried?.checkpoint["resume"] == .bool(true), "重试保留 checkpoint（续跑）")
 
         let queued = try repo.create(createParams(dedupeKey: "queued"))
         #expect(!(try repo.retry(queued.id)))
     }
 
-    @Test func recoverStaleInterruptsExpiredHeartbeats() throws {
+    /// 回收：running 心跳超时 → interrupted；cancelling 心跳超时 → cancelled（不得恢复执行）。
+    @Test func recoverStaleSeparatesRunningAndCancelling() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
@@ -153,30 +218,43 @@ struct AnalysisJobRepoTests {
         _ = try db.prepare("UPDATE analysis_jobs SET heartbeat_at = '2020-01-01T00:00:00.000Z' WHERE id = ?")
             .run([.text(stale.id)])
 
+        let cancelling = try repo.create(createParams(dedupeKey: "cancelling"))
+        _ = try repo.claim(id: cancelling.id, leaseOwner: "w")
+        _ = try repo.requestCancel(cancelling.id)
+        _ = try db.prepare("UPDATE analysis_jobs SET heartbeat_at = '2020-01-01T00:00:00.000Z' WHERE id = ?")
+            .run([.text(cancelling.id)])
+
         let fresh = try repo.create(createParams(dedupeKey: "fresh"))
         _ = try repo.claim(id: fresh.id, leaseOwner: "w")
 
-        // 60s 租约：fresh 的心跳（now）远小于 cutoff，不会被误伤
         let count = try repo.recoverStale(leaseTimeoutMs: 60_000)
-        #expect(count == 1)
+        #expect(count == 2)
         #expect(try repo.get(stale.id)?.status == .interrupted)
         #expect(try repo.get(stale.id)?.errorCode == "worker_lost")
+        #expect(try repo.get(cancelling.id)?.status == .cancelled,
+                "用户已请求取消的行不得变成可恢复的 interrupted")
         #expect(try repo.get(fresh.id)?.status == .running)
     }
 
-    @Test func resumeInterruptedByTypes() throws {
+    @Test func resumeInterruptedByTypesAndAttemptCap() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
         let a = try repo.create(createParams(dedupeKey: "a"))
         let b = try repo.create(createParams(type: .faceAnalyze, dedupeKey: "b"))
+        let capped = try repo.create(createParams(dedupeKey: "capped"))
         _ = try db.prepare("UPDATE analysis_jobs SET status = 'interrupted'").run()
+        _ = try db.prepare("UPDATE analysis_jobs SET attempt_count = 5 WHERE id = ?").run([.text(capped.id)])
 
-        let count = try repo.resumeInterrupted(types: [.metadataScan])
-        #expect(count == 1)
+        let count = try repo.resumeInterrupted(types: [.metadataScan], maxAttempts: 3)
+        #expect(count == 1, "超限行不得自动恢复，实际恢复 \(count)")
         #expect(try repo.get(a.id)?.status == .queued)
+        #expect(try repo.get(capped.id)?.status == .interrupted)
         #expect(try repo.get(b.id)?.status == .interrupted)
+
         #expect(try repo.resumeInterrupted(types: []) == 0)
+        #expect(try repo.resumeInterrupted(types: [.metadataScan]) == 1)
+        #expect(try repo.get(capped.id)?.status == .queued, "无上限时超限行也可恢复")
     }
 
     @Test func claimLifecycle() throws {
@@ -245,26 +323,57 @@ struct AnalysisJobRepoTests {
         #expect(try repo.get(other.id)?.status == .interrupted)
         #expect(try repo.get(other.id)?.errorCode == "application_stopped")
         #expect(!(try repo.finish(id: other.id, leaseOwner: "intruder", status: .failed)))
+
+        // finish 只接受终态目标：running/cancelling/queued 一律显式报错。
+        #expect(throws: AnalysisJobRepoError.nonTerminalStatus(.running)) {
+            _ = try repo.finish(id: other.id, leaseOwner: "worker", status: .running)
+        }
     }
 
-    @Test func clearCompletedWithExclusion() throws {
+    /// 清理必须显式给出终态集合：默认只清 succeeded，失败原因不被顺手删除。
+    @Test func clearTerminalRequiresExplicitStatuses() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
         let done = try repo.create(createParams(type: .faceAnalyze, dedupeKey: "done"))
-        let excluded = try repo.create(createParams(dedupeKey: "excluded"))
+        let failed = try repo.create(createParams(dedupeKey: "failed"))
         let active = try repo.create(createParams(dedupeKey: "active"))
         _ = try db.prepare("UPDATE analysis_jobs SET status = 'succeeded' WHERE dedupe_key = 'done'").run()
-        _ = try db.prepare("UPDATE analysis_jobs SET status = 'failed' WHERE dedupe_key = 'excluded'").run()
+        _ = try db.prepare("UPDATE analysis_jobs SET status = 'failed', error_message = 'keep-me' WHERE dedupe_key = 'failed'").run()
 
-        let cleared = try repo.clearCompleted(excludeTypes: [.metadataScan])
+        let cleared = try repo.clearTerminal(statuses: [.succeeded])
         #expect(cleared == 1)
         #expect(try repo.get(done.id) == nil)
-        #expect(try repo.get(excluded.id) != nil, "被排除类型的终态行保留")
+        #expect(try repo.get(failed.id)?.errorMessage == "keep-me", "失败原因不得被顺手删除")
         #expect(try repo.get(active.id) != nil)
 
-        let clearedAll = try repo.clearCompleted()
-        #expect(clearedAll == 1)
-        #expect(try repo.get(excluded.id) == nil)
+        // 显式点名失败终态时才可删除。
+        #expect(try repo.clearTerminal(statuses: [.failed, .interrupted, .cancelled]) == 1)
+        #expect(try repo.get(failed.id) == nil)
+
+        // 非终态集合是编程错误：显式抛出，不静默吞。
+        #expect(throws: AnalysisJobRepoError.nonTerminalStatus(.running)) {
+            _ = try repo.clearTerminal(statuses: [.running])
+        }
+        #expect(try repo.clearTerminal(statuses: []) == 0)
+    }
+
+    @Test func clearTerminalExcludesStageEvidenceTypes() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        let scan = try repo.create(createParams(type: .metadataScan, dedupeKey: "scan"))
+        let export = try repo.create(createParams(type: .exportExecute, dedupeKey: "export"))
+        let dup = try repo.create(createParams(type: .duplicateScan, dedupeKey: "dup"))
+        _ = try db.prepare("UPDATE analysis_jobs SET status = 'succeeded'").run()
+
+        let cleared = try repo.clearTerminal(
+            statuses: [.succeeded],
+            excludeTypes: [.metadataScan, .exportExecute]
+        )
+        #expect(cleared == 1)
+        #expect(try repo.get(scan.id) != nil, "metadata.scan 阶段证据应保留")
+        #expect(try repo.get(export.id) != nil, "export.execute 阶段证据应保留")
+        #expect(try repo.get(dup.id) == nil)
     }
 }

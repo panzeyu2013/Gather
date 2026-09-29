@@ -6,12 +6,10 @@ import Foundation
 
 /// 逻辑资产折叠（TS: collapsePhotoAssets）。
 public enum PhotoAssets {
-    /// TS: RAW_EXTENSIONS（logical-photo-assets.ts）。
-    public static let rawExtensions: Set<String> = [
-        ".nef", ".nrw", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".orf",
-        ".rw2", ".pef", ".srw", ".srf", ".x3f", ".3fr", ".fff", ".mef",
-        ".mos", ".iiq", ".eip", ".erf", ".kdc", ".mrw",
-    ]
+    /// TS: RAW_EXTENSIONS（logical-photo-assets.ts）—— 唯一真相源是
+    /// AssetRepo.rawExtensions（此处仅别名；三份清单漂移会让相似度与图库/
+    /// 挑片对同一资产选出不同代表行）。
+    public static let rawExtensions: Set<String> = AssetRepo.rawExtensions
 
     /// TS: extension(filename) —— 最后一段点号起的子串转小写；无点号返回空串。
     public static func extensionName(of filename: String) -> String {

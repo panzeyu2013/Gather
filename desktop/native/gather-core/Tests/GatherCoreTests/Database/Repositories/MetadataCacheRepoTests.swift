@@ -93,27 +93,28 @@ struct MetadataCacheRepoTests {
         #expect(try repo.getBatch([]).isEmpty)
 
         var photoIds: [String] = []
-        for index in 0..<810 {
-            let id = "bulk-\(index)"
-            try insertPhoto(db, id: id, sessionId: "s1")
-            photoIds.append(id)
-            try repo.upsert(photoId: id, sessionId: "s1", data: MetadataCacheInput(rating: Int64(index % 5)))
+        // 810 次「插 photos + upsert 缓存行」若各自自动提交，就是 1620 次写事务；
+        // 本用例的断言只读最终状态（getBatch 的 810 行数量与末行 id），不依赖
+        // 逐条提交对外可见的中间态，故整段包一个事务（失败仍整体回滚）。
+        try db.transaction {
+            for index in 0..<810 {
+                let id = "bulk-\(index)"
+                try insertPhoto(db, id: id, sessionId: "s1")
+                photoIds.append(id)
+                try repo.upsert(photoId: id, sessionId: "s1", data: MetadataCacheInput(rating: Int64(index % 5)))
+            }
         }
         let rows = try repo.getBatch(photoIds)
         #expect(rows.count == 810)
         #expect(rows[809].photoId == "bulk-809")
     }
 
-    @Test func deleteBySessionAndPhoto() throws {
+    @Test func deleteBySessionRemovesAllRows() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
         try repo.upsert(photoId: "p1", sessionId: "s1", data: input())
         try repo.upsert(photoId: "p2", sessionId: "s1", data: input())
-
-        try repo.deleteByPhotoId("p1")
-        #expect(try repo.get("p1") == nil)
-        #expect(try repo.get("p2") != nil)
 
         try repo.deleteBySession("s1")
         #expect(try rowCount(db, "SELECT COUNT(*) FROM photo_metadata_cache") == 0)

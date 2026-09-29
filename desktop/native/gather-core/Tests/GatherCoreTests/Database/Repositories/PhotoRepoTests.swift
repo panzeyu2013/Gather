@@ -271,4 +271,36 @@ struct PhotoRepoTests {
         #expect(statuses[0][1].textValue == "missing")
         #expect(statuses[1][1].textValue == "pending")
     }
+
+    // 缺陷⑤：代表行规则必须唯一 —— 图库全局查询与挑片分组此前各写一份
+    // （MIN(rowid) vs RAW 优先），同一资产在两页会显示成不同的照片。
+    @Test func preferredRowOrderPrefersRawVariantThenLowestRowid() throws {
+        let db = try makeDB()
+        try insertSession(db, id: "s1")
+        // JPEG 先导入（rowid 更小），RAW 后导入：RAW 仍然胜出。
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: "/lib/IMG_1.jpg")
+        try insertPhoto(db, id: "p2", sessionId: "s1", filepath: "/lib/IMG_1.NEF")
+        try insertAsset(db, id: "a1")
+        try insertAsset(db, id: "a2")
+        _ = try db.prepare("UPDATE photos SET asset_id = 'a1' WHERE session_id = 's1'").run()
+
+        let picked = try db.prepare("""
+            SELECT p.id FROM photos p WHERE p.session_id = 's1'
+            ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p")) LIMIT 1
+        """).get()?[0].textValue
+        #expect(picked == "p2", "RAW 变体必须优先于更早导入的 JPEG（图库与挑片同一口径）")
+
+        // 没有 RAW 时按最小 rowid（导入顺序）取代表行，展示顺序稳定。
+        _ = try db.prepare("UPDATE photos SET asset_id = 'a1' WHERE id = 'p2'").run()
+        _ = try db.prepare("UPDATE photos SET asset_id = 'a2' WHERE id = 'p1'").run()
+        let jpegPicked = try db.prepare("""
+            SELECT p.id FROM photos p WHERE p.session_id = 's1' AND p.asset_id = 'a2'
+            ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p")) LIMIT 1
+        """).get()?[0].textValue
+        #expect(jpegPicked == "p1")
+
+        // 单一真相源：别名可换，判定规则内联在同一函数里。
+        #expect(PhotoRepo.rawVariantSQL(alias: "q").contains("LOWER(q.filename)"))
+        #expect(PhotoRepo.preferredRowOrderSQL(alias: "q").hasSuffix("DESC, q.rowid"))
+    }
 }

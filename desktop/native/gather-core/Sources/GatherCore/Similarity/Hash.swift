@@ -16,6 +16,16 @@
 import Foundation
 
 public enum DHash {
+    /// dHash 位宽：9x8 网格逐行比较 → 8 列 x 8 行 = 64 位。
+    public static let bitCount = 64
+
+    /// 汉明距离阈值的合法域：有限（拒 NaN/±∞）、整数（拒小数）、落在 [0, 64]。
+    /// 相似度阈值与重复（视觉）阈值是同一域上的同一判定，两个入口共用本函数，
+    /// 不再各写一遍常量与拒绝条件。
+    public static func isValidThreshold(_ value: Double) -> Bool {
+        value.isFinite && value.rounded() == value && value >= 0 && value <= Double(bitCount)
+    }
+
     public static func compute(pixels9x8: [UInt8]) -> String {
         var hash: UInt64 = 0
 

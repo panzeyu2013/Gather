@@ -29,12 +29,15 @@ struct GalleryView: View {
     /// 可见性门控（opacity 常驻架构）：隐藏时停止 C1 胶囊 12s 轮询。
     var isActive: Bool = true
 
-    /// TS: DENSITY_OPTIONS（行高密度）。
-    private static let densityOptions: [(value: Double, label: String)] = [
-        (160, GatherLocalization.l("小图")),
-        (220, GatherLocalization.l("中图")),
-        (300, GatherLocalization.l("大图")),
-    ]
+    /// TS: DENSITY_OPTIONS（行高密度）。计算属性：static let 只求值一次，
+    /// 语言切换后会残留旧语言文案。
+    private var densityOptions: [(value: Double, label: String)] {
+        [
+            (160, GatherLocalization.l("小图")),
+            (220, GatherLocalization.l("中图")),
+            (300, GatherLocalization.l("大图")),
+        ]
+    }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var density = 220.0
@@ -43,6 +46,8 @@ struct GalleryView: View {
     @State private var layoutCache: (key: String, rows: [JustifiedLayoutRow])?
     /// Lightbox 打开期间错过的终态事件：关闭后补一次刷新。
     @State private var refreshDeferredWhileLightbox = false
+    /// 隐藏期间错过的事件刷新：重新可见时补一次（隐藏页不发命令）。
+    @State private var refreshDeferredWhileHidden = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -63,6 +68,10 @@ struct GalleryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.gatherBackground)
+        // 隐藏页一致性：disabled / hit-testing / 无障碍三者同源（isActive）。
+        .disabled(!isActive)
+        .allowsHitTesting(isActive)
+        .accessibilityHidden(!isActive)
         .task(id: viewModel.sessionId) {
             // 会话切换时 RootView 重建 VM 但视图身份不变（opacity 常驻）：
             // id 变化会重启本任务，保证新 VM 立即加载而非永远 loading。
@@ -77,6 +86,11 @@ struct GalleryView: View {
             // 索引头轮询门控（opacity 常驻架构）：隐藏时停掉，避免后台空转。
             if active {
                 viewModel.startIndexStatusPolling()
+                // 隐藏期间错过的事件刷新：重新可见时补一次（不发命令则只登记）。
+                if refreshDeferredWhileHidden {
+                    refreshDeferredWhileHidden = false
+                    viewModel.scheduleEventRefresh()
+                }
             } else {
                 viewModel.stopIndexStatusPolling()
             }
@@ -90,14 +104,21 @@ struct GalleryView: View {
             // 仅本工作区的终态事件触发重载（其他会话的索引结束不打扰浏览）。
             guard let event = notification.object as? GatherJobEvent,
                   event.job.scopeId == viewModel.sessionId else { return }
-            if lightboxIndex != nil {
-                // Lightbox 打开时跳过全量重排（防止 photos 缩水打断预览），关闭后补刷。
-                refreshDeferredWhileLightbox = true
-            } else {
-                viewModel.scheduleEventRefresh()
-            }
+            scheduleRefreshFromEvent()
+        }
+        // 写路径广播（挑片决策/库变更/写回/人脸绑定）：命中本会话才刷新。
+        // photo.list_page 行不含评分/色标字段，重取后随行更新的是离线态、
+        // 变体徽标、人脸计数与行集合本身（照片被移除/恢复）。
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
+            guard let change = notification.object as? GatherDomainChange,
+                  change.matches(sessionId: viewModel.sessionId),
+                  [.culling, .library, .metadata, .faceKeywording].contains(change.domain) else { return }
+            scheduleRefreshFromEvent()
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
+            // 隐藏页不发命令：进度帧本身只更新缓存，但 VM 内去抖后会执行
+            // workspace.status；不可见时直接丢弃，重新可见由轮询补齐。
+            guard isActive else { return }
             // 索引活跃期间 jobs:progress 帧 → 索引头实时刷新（VM 内 1s 去抖）。
             guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.handleIndexJobProgress(event)
@@ -115,6 +136,8 @@ struct GalleryView: View {
                     initialIndex: index,
                     onClose: closeLightbox
                 )
+                // 页面隐藏时 .disabled(true) 会随环境下沉到 sheet：显式启用灯箱。
+                .disabled(false)
             }
         }
     }
@@ -125,14 +148,28 @@ struct GalleryView: View {
         lightboxIndex = nil
         if refreshDeferredWhileLightbox {
             refreshDeferredWhileLightbox = false
+            scheduleRefreshFromEvent()
+        }
+    }
+
+    /// 事件 → 刷新统一入口：可见才发命令；隐藏/Lightbox 期间只登记，
+    /// 回到可见（或关闭 Lightbox）时补一次（隐藏页不发命令）。
+    private func scheduleRefreshFromEvent() {
+        guard isActive else {
+            refreshDeferredWhileHidden = true
+            return
+        }
+        if lightboxIndex != nil {
+            // 全量重排会打断预览：登记到关闭后补刷。
+            refreshDeferredWhileLightbox = true
+        } else {
             viewModel.scheduleEventRefresh()
         }
     }
 
     /// 右键「在 Finder 中显示」的 URL：路径为空/不可用时返回 nil（跳过该项）。
     private static func finderURL(for photo: GalleryPhotoData) -> URL? {
-        let path = photo.filepath.trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+        finderURLForPath(photo.filepath)
     }
 
     // MARK: 会话头部（TS SessionDetail header：返回 + 身份 + 页签 + C1 胶囊）
@@ -166,6 +203,7 @@ struct GalleryView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
+                .accessibilityLabel(GatherLocalization.l("刷新"))
                 .help(GatherLocalization.l("刷新"))
                 Button(GatherLocalization.l("设置")) {
                     onOpenSettings()
@@ -250,7 +288,6 @@ struct GalleryView: View {
                 // 布局验收 P1 修复：固定 220 改弹性区间，窄窗口收缩、宽窗口舒展，
                 // 避免英文占位文案截断。
                 .frame(minWidth: 160, idealWidth: 240, maxWidth: 360)
-                .disabled(!isActive)
                 .onChange(of: viewModel.search) { _, _ in viewModel.searchChanged() }
             Picker(GatherLocalization.l("全部"), selection: $viewModel.filter) {
                 Text(GatherLocalization.l("全部")).tag(GalleryFilter.all)
@@ -261,7 +298,7 @@ struct GalleryView: View {
             .frame(minWidth: 120)
             .onChange(of: viewModel.filter) { _, _ in viewModel.filterOrVariantChanged() }
             Picker(GatherLocalization.l("中图"), selection: $density) {
-                ForEach(Self.densityOptions, id: \.value) { option in
+                ForEach(densityOptions, id: \.value) { option in
                     Text(option.label).tag(option.value)
                 }
             }
@@ -494,7 +531,7 @@ private struct GalleryCellView: View {
             if isSelected {
                 ZStack {
                     Circle().fill(GatherTheme.primary)
-                    Image(systemName: "checkmark")
+                    Image(systemName: "checkmark").accessibilityHidden(true)
                         .font(.footnote.weight(.bold))
                         .foregroundStyle(.white)
                 }
@@ -792,7 +829,8 @@ private struct LightboxView: View {
         await withTaskGroup(of: Void.self) { group in
             for path in paths {
                 group.addTask(priority: .utility) {
-                    _ = try? await Task.detached(priority: .utility) {
+                    // 外层 try? 不必要（Task 失败类型为 Never）；内层必须有 try?（decode 会抛错）
+                    _ = await Task.detached(priority: .utility) {
                         try? PhotoThumbnailDecoder.decode(path: path, size: 2048, preview: true)
                     }.value
                 }

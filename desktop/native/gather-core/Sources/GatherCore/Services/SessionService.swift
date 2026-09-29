@@ -83,16 +83,23 @@ public final class SessionService {
 
     /// 一跳本地目录导入：校验真实非根目录并建 session 行（source_path + 'local'）。
     /// 照片不在此插入——调用方入队 metadata.scan 索引 job，进程内流式遍历填充。
-    public func createFromDirectory(name: String, sourcePath: String, truncatedImport: Bool = false) throws -> SessionData {
+    public func createFromDirectory(
+        name: String,
+        sourcePath: String,
+        source: String = "local",
+        truncatedImport: Bool = false
+    ) throws -> SessionData {
         try requireDirectory(sourcePath)
-        let resolved = TSPath.resolve(sourcePath)
-        if resolved == "/" {
+        let resolved = ScanPath.canonical(sourcePath)
+        // 目录作用域的根必须是用户显式选择的目录：文件系统根、当前用户主目录
+        // 及其祖先一律拒绝——递归扫描它们等于把整个卷/主目录导入会话。
+        if ScanPath.isForbiddenRoot(resolved) {
             throw SessionServiceError.sourceRootForbidden
         }
         // TS: (name ?? '').trim() —— 空白含换行等，用 whitespacesAndNewlines 对齐。
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionName = trimmedName.isEmpty ? TSPath.basename(resolved) : trimmedName
-        return try createSession(name: sessionName, source: "local", sourcePath: resolved, truncatedImport: truncatedImport)
+        return try createSession(name: sessionName, source: source, sourcePath: resolved, truncatedImport: truncatedImport)
     }
 
     public func listSessions() throws -> [SessionData] {
@@ -100,23 +107,11 @@ public final class SessionService {
     }
 
     public func getSession(_ sessionId: String) throws -> SessionData? {
-        guard var row = try sessionRepo.get(id: sessionId) else { return nil }
-        if row.sourcePath.isEmpty {
-            let photos = try photoRepo.getBySession(sessionId: sessionId)
-            // 单张照片推父目录会让索引器递归监控整个文件夹；多目录选择时
-            // commonParentDirectory 同样拒绝文件系统根——绝不拿第一张照片的
-            // 目录充数，否则会导入用户未选择的文件。
-            if photos.count > 1 {
-                let sourcePath = commonParentDirectory(filepaths: photos.map(\.filepath))
-                if !sourcePath.isEmpty {
-                    _ = try sessionRepo.updateSourcePath(id: sessionId, sourcePath: sourcePath)
-                    // 与 TS 差异（有意）：TS 改内存行返回旧 updatedAt；这里重取
-                    // 返回持久化后的新 updatedAt，DB 结果一致。
-                    guard let updated = try sessionRepo.get(id: sessionId) else { return nil }
-                    row = updated
-                }
-            }
-        }
+        // source_path 是扫描/监听作用域的唯一判据：非空 = 目录作用域（递归全树），
+        // 空 = 显式文件集合作用域。这里绝不再用已导入照片的公共父目录回填它——
+        // 那会把一次「选了 N 张照片」永久升级成对某个目录的全树扫描，而且会随
+        // 照片集合变化漂移（历史 P0：父目录可上溯到 home）。
+        guard let row = try sessionRepo.get(id: sessionId) else { return nil }
         return try toSessionData(row)
     }
 
@@ -176,15 +171,13 @@ public final class SessionService {
     /// 批量加照片：分批读尺寸（import_concurrency，钳制 1..32），
     /// 落库 + 资产回填 + 照片计数 + index_seq 递增（新照片使旧分析失效）。
     public func addPhotos(sessionId: String, filepaths: [String], source: String) throws -> SessionAddPhotoResult {
-        let session = try sessionRepo.get(id: sessionId)
-        if session == nil { throw SessionServiceError.sessionNotFound }
-        let normalized = normalizeImportFilepaths(filepaths)
-        if session!.sourcePath.isEmpty && normalized.count >= 2 {
-            let sourcePath = commonParentDirectory(filepaths: normalized)
-            if !sourcePath.isEmpty {
-                _ = try sessionRepo.updateSourcePath(id: sessionId, sourcePath: sourcePath)
-            }
+        guard let session = try sessionRepo.get(id: sessionId) else {
+            throw SessionServiceError.sessionNotFound
         }
+        // 显式文件集合导入只写照片行，绝不推导/回填 source_path：导入范围
+        // 永远等于用户选择的文件集合（目录作用域只能由 createFromDirectory
+        // 或显式 relink 建立）。
+        let normalized = normalizeImportFilepaths(filepaths)
 
         var failedFiles: [String] = []
         var entries: [PhotoAddInput] = []
@@ -223,7 +216,7 @@ public final class SessionService {
                 _ = try sessionRepo.bumpIndexSeq(id: sessionId)
             }
         }
-        if totalCount > 0 && session!.status == "draft" {
+        if totalCount > 0 && session.status == "draft" {
             try sessionRepo.updateStatus(id: sessionId, status: "photos_loaded")
         }
         // id 是索引器的内部接缝，不外泄到 IPC（shared AddPhotoResult 无此字段）。
@@ -275,27 +268,46 @@ public final class SessionService {
 // MARK: - 路径工具（TS session.service.ts 模块级函数）
 
 /// TS: commonParentDirectory —— 文件列表的公共父目录；空列表或根目录返回空串。
-/// 文件系统根不是有意义的照片源：把 "/" 落库会让索引器递归监控整个卷。
+/// **仅用于给会话取名**：它绝不再被写进 sessions.source_path（那会把一次文件
+/// 导入变成对公共父目录的全树扫描）。文件系统根与主目录同样返回空串。
 public func commonParentDirectory(filepaths: [String]) -> String {
     if filepaths.isEmpty { return "" }
-    let directories = filepaths.map { TSPath.dirname(TSPath.resolve($0)) }
+    let directories = filepaths.map { TSPath.dirname(ScanPath.canonical($0)) }
     var candidate = directories[0]
     if directories.count > 1 {
+        // 向上收敛到同时包含 candidate 与 directory 的目录。用 ScanPath.isWithin
+        // 的路径分量比较：TSPath.relative 内部会再次 standardizingPath，对存在的
+        // 路径解析符号链接，使包含判定在 /private 前缀上不稳定。
         for directory in directories.dropFirst() {
-            while candidate != TSPath.dirname(candidate) {
-                let relative = TSPath.relative(candidate, to: directory)
-                if relative.isEmpty || (!relative.hasPrefix("..") && !TSPath.isAbsolute(relative)) {
-                    break
-                }
+            while candidate != TSPath.dirname(candidate),
+                  !ScanPath.isWithin(candidate: directory, root: candidate) {
                 candidate = TSPath.dirname(candidate)
             }
         }
     }
-    if candidate == TSPath.root(candidate) { return "" }
+    if ScanPath.isForbiddenRoot(candidate) { return "" }
     return candidate
 }
 
-/// TS: normalizeImportFilepaths —— trim + 去空 + resolve + 去重。
+/// TS: sanitizeSessionSourcePath —— 调用方提供的 sourcePath 只有在它是**至少两张
+/// 已导入照片的真实公共父目录**时才被接受，否则返回空串。
+///
+/// 这是「目录作用域准入」的域规则：单文件、文件系统根、主目录、无公共父目录
+/// 一律不得成为 source_path，否则索引器/监听器会递归到用户未选择的目录。
+/// 注意它不再是「文件导入把公共父目录落库」的许可：文件导入的作用域由
+/// metadata.scan job 的 requestedPaths 显式携带，source_path 保持为空。
+public func sanitizeSessionSourcePath(sourcePath: String, filepaths: [String]) -> String {
+    let resolved = ScanPath.canonical(sourcePath)
+    if resolved.isEmpty || ScanPath.isForbiddenRoot(resolved) { return "" }
+    let normalized = normalizeImportFilepaths(filepaths)
+    if normalized.count < 2 { return "" }
+    let parent = commonParentDirectory(filepaths: normalized)
+    return !parent.isEmpty && resolved == parent ? resolved : ""
+}
+
+/// TS: normalizeImportFilepaths —— trim + 去空 + 归一化 + 去重。
+/// 归一化走 ScanPath（扫描/监听/导入共用的唯一口径），因此落库的
+/// photos.filepath 与索引器构造的路径键逐字相同。
 public func normalizeImportFilepaths(_ filepaths: [String]) -> [String] {
     var seen = Set<String>()
     var result: [String] = []
@@ -305,20 +317,9 @@ public func normalizeImportFilepaths(_ filepaths: [String]) -> [String] {
         // 仅涉 Unicode 空白字符，可接受。
         let trimmed = fp.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { continue }
-        let resolved = TSPath.resolve(trimmed)
-        if seen.insert(resolved).inserted { result.append(resolved) }
+        let normalized = ScanPath.canonical(trimmed)
+        if seen.insert(normalized).inserted { result.append(normalized) }
     }
     return result
 }
 
-/// TS: sanitizeSessionSourcePath —— 除非 sourcePath 是至少两张已导入照片的非根
-/// 公共父目录，否则拒绝调用方提供的 sourcePath（防深链单文件或受损渲染层
-/// 让索引器递归监控无关目录）。
-public func sanitizeSessionSourcePath(sourcePath: String, filepaths: [String]) -> String {
-    let resolved = TSPath.resolve(sourcePath)
-    if resolved == TSPath.root(resolved) { return "" }
-    let normalized = normalizeImportFilepaths(filepaths)
-    if normalized.count < 2 { return "" }
-    let parent = commonParentDirectory(filepaths: normalized)
-    return !parent.isEmpty && resolved == parent ? resolved : ""
-}

@@ -74,7 +74,9 @@ private final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable 
                 "SELECT filepath FROM photos WHERE id = ?"
             ).get([.text(photoId)])
             photoPath = row?[0].textValue ?? ""
-            xmpPath = TSPath.xmpSidecarPath(photoPath)
+            // 写回内核唯一口径：MetadataOutboxPath.sidecar =
+            // TSPath.xmpSidecarPath(ScanPath.canonical(photo))。
+            xmpPath = MetadataOutboxPath.sidecar(photoPath)
         }
         if let outboxRepo, !xmpPath.isEmpty {
             var patch = values
@@ -931,7 +933,10 @@ struct CullingSummaryResetTests {
     func summaryCounts() throws {
         let harness = try makeHarness()
         for id in ["p1", "p2", "p3", "p4", "p5"] { try addPhoto(harness.db, id: id) }
-        try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 5)
+        // 唯一真相源 = photo_metadata_cache；决策行的 rating 只是镜像列，
+        // 故意写成不同值（1 vs 5）证明计数读的是 cache。
+        try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 1)
+        try harness.cacheRepo.updateRating(photoId: "p1", rating: 5)
         try addDecision(harness.db, photoId: "p2", decision: "keep")
         try addDecision(harness.db, photoId: "p3", decision: "reject")
         try harness.cacheRepo.updateRating(photoId: "p4", rating: 3)
@@ -944,7 +949,7 @@ struct CullingSummaryResetTests {
         #expect(summary.kept == 2)
         #expect(summary.rejected == 1)
         #expect(summary.pending == 2)
-        #expect(summary.rated == 2) // p1(5) + p4(cache 3)
+        #expect(summary.rated == 2) // p1(cache 5，镜像行 1 被忽略) + p4(cache 3)
         #expect(summary.labeled == 1) // p4 的 cache 'Red'
         #expect(summary.totalGroups == 3)
     }
@@ -1142,13 +1147,44 @@ struct CullingWritebackTests {
         #expect(harness.writeback.executeCalls.first?.items.map(\.photoId) == ["p1", "p2"])
     }
 
-    @Test("writeback rating/color_label 计划：keep→5/Green，reject→1/Red")
+    /// TS 合并用的是 [...new Set([...item.keywords, ...attributes.keywords])]：
+    /// 既有词与计划词重复时只能保留一次，且保持既有顺序。
+    /// 变异「去掉 merged.contains 去重」可杀。
+    @Test("writeback keyword 合并去重：既有词与计划词重复只保留一次")
+    func writebackKeywordMergeDeduplicates() async throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        try addDecision(harness.db, photoId: "p1", decision: "keep")
+        harness.writeback.previewItems = [
+            WritebackItem(
+                id: 1, photoId: "p1", photoPath: "/shoot/p1.jpg", sessionId: "session",
+                module: "culling", keywords: ["culling:keep", "other"],
+                attributes: nil,
+                xmpPath: "/shoot/p1.xmp", backupPath: "", xmpStatus: "pending",
+                errorMessage: "", attemptCount: 0, lastAttemptAt: ""
+            ),
+        ]
+
+        _ = try await harness.service.writeback(
+            sessionId: "session", target: .keyword, confirmed: true
+        )
+
+        let persisted = try #require(harness.writeback.persistCalls.first)
+        #expect(persisted.first?.attributes?.keywords == ["culling:keep", "other"],
+                "既有词与计划词重复时必须去重且保持既有顺序")
+    }
+
+    @Test("writeback rating/color_label 计划：写唯一真相源（cache）的值，不是 keep→5 派生常量")
     func writebackRatingAndLabelPlans() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
-        try addDecision(harness.db, photoId: "p1", decision: "keep")
-        try addDecision(harness.db, photoId: "p2", decision: "reject")
+        try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 1)
+        try addDecision(harness.db, photoId: "p2", decision: "reject", rating: 5)
+        try harness.cacheRepo.updateRating(photoId: "p1", rating: 3)
+        try harness.cacheRepo.updateRating(photoId: "p2", rating: 0)
+        try harness.cacheRepo.updateLabel(photoId: "p1", label: "Blue")
+        try harness.cacheRepo.updateLabel(photoId: "p2", label: "None")
         // pending 决策不进计划。
         try addPhoto(harness.db, id: "p3")
         try addDecision(harness.db, photoId: "p3", decision: "pending")
@@ -1167,13 +1203,16 @@ struct CullingWritebackTests {
         _ = try await harness.service.writeback(sessionId: "session", target: .rating, confirmed: true)
         let rated = try #require(harness.writeback.persistCalls.first)
         #expect(rated.map(\.photoId) == ["p1", "p2"])
-        #expect(rated[0].attributes?.rating == 5)
-        #expect(rated[1].attributes?.rating == 1)
+        // p1 用户设 3 星（决策行镜像写着 1）→ 写回必须写 3；keep→5 的派生常量会
+        // 在 execute 落盘后反过来污染真相源。
+        #expect(rated[0].attributes?.rating == 3)
+        #expect(rated[1].attributes?.rating == 0)
 
         _ = try await harness.service.writeback(sessionId: "session", target: .colorLabel, confirmed: true)
         let labeled = harness.writeback.persistCalls[1]
-        #expect(labeled[0].attributes?.label == "Green")
-        #expect(labeled[1].attributes?.label == "Red")
+        #expect(labeled[0].attributes?.label == "Blue")
+        // 写盘标签语义：None → 空串（清空色标）。
+        #expect(labeled[1].attributes?.label == "")
     }
 
     @Test("confirmSync：协调器确认 + 写回项存在时写回确认")
@@ -1328,6 +1367,33 @@ struct CullingPaginationTests {
         #expect(full.map(\.photo.id) == ["single"])
     }
 
+    /// filtered scope 的 keyset 分页：游标边界必须是严格大于，翻页不得重复上一页
+    /// 最后一个资产。变异「HAVING MIN(p.rowid) > ? 改成 >= ?」可杀。
+    @Test("filtered scope 翻页不重复边界资产（游标严格大于）")
+    func filteredPaginationDoesNotRepeatBoundaryAsset() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1", filepath: "/shoot/A001.jpg")
+        try addPhoto(harness.db, id: "p2", filepath: "/shoot/B001.jpg")
+        try addPhoto(harness.db, id: "p3", filepath: "/shoot/C001.jpg")
+        for id in ["p1", "p2", "p3"] {
+            try addDecision(harness.db, photoId: id, decision: "keep")
+        }
+
+        var walked: [String] = []
+        var cursor: Int64?
+        for _ in 0..<10 {
+            let page = try harness.service.listPage(
+                sessionId: "session", scope: .filtered,
+                filters: CullingFilters(pickStates: [.picked]),
+                afterRowId: cursor, limit: 1
+            )
+            walked.append(contentsOf: page.assets.map(\.photo.id))
+            guard let next = page.nextRowId else { break }
+            cursor = Int64(next)
+        }
+        #expect(walked == ["p1", "p2", "p3"], "每页 1 个资产走完应恰好 3 个且不重复，实际 \(walked)")
+    }
+
     @Test("首选 RAW 匹配时 JPEG 变体仍在页内（游标为组首 rowid）")
     func keepsAssetCompleteWithRawMatch() throws {
         let harness = try makeHarness()
@@ -1353,20 +1419,10 @@ struct CullingPaginationTests {
         for id in ["p1", "p2"] { try addPhoto(harness.db, id: id) }
         try addSimilarityResult(harness, memberships: [(photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0)])
         let groupId = "\(try latestResultId(harness)):0"
-        let dbgResult = try harness.db.prepare("SELECT id FROM similarity_results").query()
-        let dbgMembers = try harness.db.prepare("SELECT result_id, photo_id, group_index FROM similarity_result_members").query()
-        let dbgPhotos = try harness.db.prepare("SELECT id, rowid FROM photos").query()
-        print("DBG-RESULT: \(dbgResult) MEMBERS: \(dbgMembers) PHOTOS: \(dbgPhotos) GROUPID: \(groupId)")
-        let page2 = try harness.service.listPage(sessionId: "session", scope: CullingScope.similarityGroup, requestedGroupId: groupId)
-        print("DBG-PAGE2: \(page2.assets.map { $0.photo.id }) next=\(String(describing: page2.nextRowId))")
-
         let page = try harness.service.listPage(
             sessionId: "session", scope: .similarityGroup, requestedGroupId: groupId
         )
 
-        let rows = try harness.db.prepare("SELECT id, rowid FROM photos ORDER BY rowid").query()
-        print("DBG-ROWIDS: \(rows)")
-        print("DBG-GROUPID: \(groupId)")
         #expect(page.assets.map(\.photo.id) == ["p1", "p2"])
         #expect(page.assets.allSatisfy { $0.similarityGroupId == groupId })
         #expect(page.total == 2)
@@ -1472,11 +1528,12 @@ struct CullingPaginationTests {
         #expect(assets[0].linkedVariantCount == 1)
     }
 
-    @Test("list() filtered 经 matchesFilters 过滤；metadataConflictOnly 只在 JS 层应用")
+    @Test("list() filtered：SQL 下推 + JS 安全网同口径（星级读唯一真相源 cache）")
     func listFilteredScope() throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1", filepath: "/shoot/a.jpg")
-        try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 5)
+        try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 1)
+        try harness.cacheRepo.updateRating(photoId: "p1", rating: 5)
         try harness.cacheRepo.updateLabel(photoId: "p1", label: "Red")
 
         let kept = try harness.service.list(
@@ -1593,7 +1650,7 @@ struct CullingEnrichmentTests {
         #expect(assets[0].metadataSource == .faceKeyword)
         #expect(assets[0].syncStatus == .conflict)
 
-        // metadataConflictOnly 只在 JS 层应用（SQL 无此下推）。
+        // metadataConflictOnly 已下推到 SQL（同一 photo_path 规则），JS 安全网同口径。
         let conflicts = try harness.service.list(
             sessionId: "session", scope: .filtered,
             filters: CullingFilters(metadataConflictOnly: true)
@@ -1606,19 +1663,262 @@ struct CullingEnrichmentTests {
         #expect(all.map(\.photo.id) == ["p1", "p2"])
     }
 
-    @Test("invalidateSessionLookup 使缓存失效：后台分析后再次 list 读到新数据")
-    func invalidateSessionLookup() throws {
+}// MARK: - §4.1 回归：单一真相源 / 冲突下推 / 栈序（重写后的不变量）
+
+@Suite("CullingService 挑片状态单一真相源")
+struct CullingSingleTruthSourceTests {
+    @Test("决策行 rating/color_label 是镜像列：页面/筛选/summary 只认 cache")
+    func mirrorColumnsAreNeverRead() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1", filepath: "/shoot/a.jpg")
+        // 镜像列故意写成 keep/5/Green；唯一真相源写 2/Blue。
+        try addDecision(harness.db, photoId: "p1", decision: "keep", rating: 5)
+        _ = try harness.db.prepare(
+            "UPDATE culling_decisions SET color_label = 'Green' WHERE photo_id = 'p1'"
+        ).run()
+        try harness.cacheRepo.updateRating(photoId: "p1", rating: 2)
+        try harness.cacheRepo.updateLabel(photoId: "p1", label: "Blue")
+
+        let assets = try harness.service.list(sessionId: "session", scope: .all)
+        #expect(assets.count == 1)
+        #expect(assets[0].state.rating == 2)
+        #expect(assets[0].state.colorLabel == .blue)
+        #expect(assets[0].state.pickState == .picked) // 取舍只来自决策行
+
+        let summary = try harness.service.getSummary(sessionId: "session")
+        #expect(summary.rated == 1)
+        #expect(summary.labeled == 1)
+
+        // SQL 下推同样只认 cache：镜像的 5 星不得命中。
+        let byMirror = try harness.service.list(
+            sessionId: "session", scope: .filtered, filters: CullingFilters(ratings: [5])
+        )
+        #expect(byMirror.isEmpty)
+        let byCache = try harness.service.list(
+            sessionId: "session", scope: .filtered,
+            filters: CullingFilters(ratings: [2], colorLabels: [.blue])
+        )
+        #expect(byCache.map(\.photo.id) == ["p1"])
+    }
+
+    @Test("reset 清决策行 + cache 投影 + 触及照片的历史：页面/summary 收敛，其他照片不受影响")
+    func resetConvergesAllReadPaths() throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        _ = try harness.service.list(sessionId: "session", scope: .all)
-        // 模拟后台人脸分析写入后失效缓存。
-        _ = try harness.db.prepare("""
-            INSERT INTO face_observations (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h,
-              embedding, confidence, source_file_size, source_file_mtime_ms, analysis_signature, created_at)
-            VALUES ('p1', 'session', 0, 0, 1, 1, X'00', 0.9, 0, 0, '', '2026-01-01T00:00:00.000Z')
-          """).run()
-        harness.service.invalidateSessionLookup(sessionId: "session")
+        try addPhoto(harness.db, id: "p2")
+        let applied = try harness.service.updateState(
+            sessionId: "session", photoId: "p1", expectedRevision: 0,
+            patch: CullingUpdatePatch(rating: 4, pickState: .picked, colorLabel: .red)
+        )
+        #expect(applied.historyOperationId != nil)
+        // p2 的星级没有决策行（非挑片写入）：reset 不得误清。
+        try harness.cacheRepo.updateRating(photoId: "p2", rating: 5)
+
+        try harness.service.reset(sessionId: "session")
+
+        #expect(try harness.decision("p1") == nil)
+        #expect(try harness.cacheRepo.get("p1")?.rating == 0)
+        #expect(try harness.cacheRepo.get("p1")?.label == "None")
+        #expect(try harness.cacheRepo.get("p2")?.rating == 5)
+
+        let summary = try harness.service.getSummary(sessionId: "session")
+        #expect(summary.rated == 1)
+        #expect(summary.labeled == 0)
+        #expect(summary.kept == 0)
+        #expect(summary.pending == 2)
+
         let assets = try harness.service.list(sessionId: "session", scope: .all)
-        #expect(assets[0].photo.faceCount == 1)
+        let reset = try #require(assets.first { $0.photo.id == "p1" })
+        #expect(reset.state.rating == 0)
+        #expect(reset.state.colorLabel == .none)
+        #expect(reset.state.pickState == .unreviewed)
+
+        // 历史栈一并清空：不会留下「撤销 → 分歧」的死路。
+        #expect(try harness.service.getHistory(sessionId: "session").isEmpty)
+        #expect(try harness.historyRepo.stackTops(sessionId: "session")
+            == CullingHistoryStackTops(undoId: nil, redoId: nil))
+    }
+
+    @Test("metadataConflictOnly 下推：total 与页内容同口径（不虚高、不空页）")
+    func conflictFilterIsPushedDown() throws {
+        let harness = try makeHarness(writeOutbox: true)
+        for id in ["p1", "p2", "p3"] { try addPhoto(harness.db, id: id) }
+        _ = try harness.service.updateState(
+            sessionId: "session", photoId: "p1", expectedRevision: 0,
+            patch: CullingUpdatePatch(rating: 3)
+        )
+        let xmpPath = MetadataOutboxPath.sidecar("/shoot/p1.jpg")
+        _ = try harness.db.prepare(
+            "UPDATE metadata_outbox SET status = 'conflict' WHERE xmp_path = ?"
+        ).run([.text(xmpPath)])
+
+        let filters = CullingFilters(metadataConflictOnly: true)
+        let page = try harness.service.listPage(
+            sessionId: "session", scope: .filtered, filters: filters, limit: 200
+        )
+        #expect(page.total == 1)
+        #expect(page.assets.map(\.photo.id) == ["p1"])
+        // JS 安全网（list）与 SQL 下推同一规则。
+        #expect(try harness.service.list(sessionId: "session", scope: .filtered, filters: filters)
+            .map(\.photo.id) == ["p1"])
+    }
+
+    @Test("outbox 侧车键走 MetadataOutboxPath.sidecar：去重拼写的 photo 路径仍命中同一行")
+    func outboxSidecarKeyIsCanonical() throws {
+        let harness = try makeHarness(writeOutbox: true)
+        try addPhoto(harness.db, id: "p1", filepath: "/shoot/sub/../a.jpg")
+        _ = try harness.service.updateState(
+            sessionId: "session", photoId: "p1", expectedRevision: 0,
+            patch: CullingUpdatePatch(rating: 4)
+        )
+        // 侧车键是规范化后的 /shoot/a.xmp（裸拼会得到 /shoot/sub/../a.xmp）。
+        #expect(try harness.outboxRepo.get("/shoot/a.xmp") != nil)
+        let page = try harness.service.listPage(sessionId: "session", scope: .all, limit: 200)
+        #expect(page.assets.count == 1)
+        #expect(page.assets[0].syncStatus == .pending)
+    }
+}
+
+@Suite("CullingService 历史栈序唯一规则")
+struct CullingHistoryStackRuleTests {
+    private func applyRatings(_ harness: CullingHarness, count: Int) throws -> [Int] {
+        try addPhoto(harness.db, id: "p1")
+        var ids: [Int] = []
+        var revision = 0
+        // 星级取值 0...5 循环，保证每次操作的 after 都合法且各不相同。
+        for rating in (0..<count).map({ $0 % 6 }) {
+            let applied = try harness.service.updateState(
+                sessionId: "session", photoId: "p1", expectedRevision: revision,
+                patch: CullingUpdatePatch(rating: Double(rating))
+            )
+            revision = applied.states[0].revision
+            ids.append(try #require(applied.historyOperationId))
+        }
+        return ids
+    }
+
+    @Test("stackTops：undo=MAX(未撤销) / redo=MIN(已撤销)；非栈顶重做被顺序守卫拒绝")
+    func stackTopsRule() throws {
+        let harness = try makeHarness()
+        let ids = try applyRatings(harness, count: 3)
+
+        var tops = try harness.historyRepo.stackTops(sessionId: "session")
+        #expect(tops.undoId == ids[2])
+        #expect(tops.redoId == nil)
+
+        _ = try harness.service.applyHistory(
+            sessionId: "session", requestedEntries: [], historyOperationId: ids[2], direction: .undo)
+        _ = try harness.service.applyHistory(
+            sessionId: "session", requestedEntries: [], historyOperationId: ids[1], direction: .undo)
+        tops = try harness.historyRepo.stackTops(sessionId: "session")
+        #expect(tops.undoId == ids[0])
+        #expect(tops.redoId == ids[1]) // MIN(已撤销)
+
+        // 跳序重做（选 MAX(已撤销) = 旧 UI 的 first(where: undone)）必须被拒。
+        #expect(throws: DBError.self) {
+            try harness.historyRepo.setUndone(sessionId: "session", operationId: ids[2], undone: false)
+        }
+        _ = try harness.service.applyHistory(
+            sessionId: "session", requestedEntries: [], historyOperationId: ids[1], direction: .redo)
+        tops = try harness.historyRepo.stackTops(sessionId: "session")
+        #expect(tops.undoId == ids[1])
+        #expect(tops.redoId == ids[2])
+    }
+
+    @Test("getHistory 窗口外仍补栈顶：深度撤销后重做出口不消失（id DESC 保持）")
+    func windowAlwaysContainsStackTops() throws {
+        let harness = try makeHarness()
+        let ids = try applyRatings(harness, count: 6)
+        for id in ids.dropFirst().reversed() {
+            _ = try harness.service.applyHistory(
+                sessionId: "session", requestedEntries: [], historyOperationId: id, direction: .undo)
+        }
+        // 窗口只取最新 2 条（ids[5]/ids[4]，都已撤销）；栈顶 ids[0]/ids[1] 必须补进来，
+        // 否则 UI 按「MAX(未撤销)/MIN(已撤销)」推导会误报「没有可撤销/可重做」。
+        let window = try harness.service.getHistory(sessionId: "session", limit: 2)
+        #expect(Set(window.map(\.id)).isSuperset(of: [ids[0], ids[1], ids[4], ids[5]]))
+        #expect(window.map(\.id) == window.map(\.id).sorted(by: >))
+    }
+
+    @Test("历史条目引用已删除照片：跳过该条目、其余照常撤销，不崩溃")
+    func missingHistoryPhotoIsSkipped() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        try addPhoto(harness.db, id: "p2")
+        let results = try harness.service.batchUpdate(
+            sessionId: "session", photoIds: ["p1", "p2"],
+            patch: CullingUpdatePatch(pickState: .picked)
+        )
+        let operationId = try #require(results.first?.historyOperationId)
+        // p2 被删除（决策行级联删除，历史 operation_json 仍引用它）。
+        _ = try harness.db.prepare("DELETE FROM photos WHERE id = 'p2'").run()
+
+        let undone = try harness.service.applyHistory(
+            sessionId: "session", requestedEntries: [],
+            historyOperationId: operationId, direction: .undo
+        )
+        #expect(undone.flatMap(\.states).map(\.photoId) == ["p1"])
+        #expect(try harness.decision("p1")?.decision == "pending")
+    }
+
+    @Test("历史整条都指向已删除照片：抛可读分歧错误而非崩溃/静默成功")
+    func allMissingHistoryPhotosThrowsDiverged() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        let applied = try harness.service.updateState(
+            sessionId: "session", photoId: "p1", expectedRevision: 0,
+            patch: CullingUpdatePatch(pickState: .picked)
+        )
+        let operationId = try #require(applied.historyOperationId)
+        _ = try harness.db.prepare("DELETE FROM photos WHERE id = 'p1'").run()
+
+        #expect(throws: CullingServiceError.historyDiverged) {
+            _ = try harness.service.applyHistory(
+                sessionId: "session", requestedEntries: [],
+                historyOperationId: operationId, direction: .undo
+            )
+        }
+    }
+}
+@Suite("CullingService 代表行规则（与图库/导出同源）")
+struct CullingRepresentativeRowRuleTests {
+    @Test("JPEG 先入（rowid 更小）仍选 RAW：规则来自 PhotoRepo.preferredRowOrderSQL")
+    func prefersRawOverSmallerRowid() throws {
+        let harness = try makeHarness()
+        try insertAsset(harness.db, id: "asset-2")
+        try insertAssetFile(harness.db, id: "asset-2-jpg", normalizedPath: "/shoot/b.jpg")
+        try insertAssetFile(harness.db, id: "asset-2-raw", normalizedPath: "/shoot/b.NEF")
+        // 故意让 JPEG 先插（rowid 更小）：若本地重写「最小 rowid」就会错选 JPEG。
+        try addPhoto(
+            harness.db, id: "asset-2-jpg", filepath: "/shoot/b.jpg",
+            assetId: "asset-2", assetFileId: "asset-2-jpg"
+        )
+        try addPhoto(
+            harness.db, id: "asset-2-raw", filepath: "/shoot/b.NEF",
+            assetId: "asset-2", assetFileId: "asset-2-raw"
+        )
+        // 规则自身也断言一次（RAW 优先于更小 rowid）。
+        let rule = PhotoRepo.preferredRowOrderSQL(alias: "p2")
+        #expect(rule.contains("DESC"))
+        #expect(rule.hasSuffix("p2.rowid"))
+
+        let assets = try harness.service.list(sessionId: "session", scope: .all)
+        #expect(assets.map(\.photo.id) == ["asset-2-raw"])
+        // 变体数组顺序 = rowid（导入序），primary 落在共享规则选出的代表行上。
+        #expect(assets[0].photo.variants?.map(\.photoId) == ["asset-2-jpg", "asset-2-raw"])
+        #expect(assets[0].photo.variants?.first(where: { $0.role == "primary" })?.photoId == "asset-2-raw")
+
+        // 分页（.all 走 PhotoRepo.getAssetPage，不经过任何组谓词）同口径。
+        let page = try harness.service.listPage(sessionId: "session", scope: .all, limit: 200)
+        #expect(page.assets.map(\.photo.id) == ["asset-2-raw"])
+        #expect(page.total == 1)
+
+        // filtered 分页走 SQL 代表行谓词（PhotoRepo.preferredRowOrderSQL 经
+        // preferredRowPredicate）：SQL 选出的代表行与内存态 primary 必须是同一张。
+        let filtered = try harness.service.listPage(
+            sessionId: "session", scope: .filtered, filters: CullingFilters(), limit: 200
+        )
+        #expect(filtered.assets.map(\.photo.id) == ["asset-2-raw"])
+        #expect(filtered.total == 1)
     }
 }

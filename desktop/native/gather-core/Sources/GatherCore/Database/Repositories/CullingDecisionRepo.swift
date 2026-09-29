@@ -1,5 +1,18 @@
 // desktop/native/gather-core/Sources/GatherCore/Database/Repositories/CullingDecisionRepo.swift
 // TS 源: desktop/src/main/db/repositories/culling-decision.repo.ts
+//
+// ── 单一真相源契约（挑片域，禁止双真相源）─────────────────────────────
+// culling_decisions 只拥有「挑片决策本身」：decision(pick/reject/pending)、
+// group_id、revision、decision_source。
+//
+// rating / color_label 两列是**镜像列**：写路径在同一事务里把它们与
+// photo_metadata_cache 写成同值（保持数据库可检视、NOT NULL 约束可满足），
+// 但**任何读取路径都不得读它们**。星级/色标的唯一真相源是
+// photo_metadata_cache（全应用范围的 XMP 投影：导入扫描、写回落盘、外部接受、
+// 挑片更新都写它）。读取走 cache、写入走 cache、reset 清 cache，四条路径收敛。
+//
+// 历史背景：旧实现读路径优先决策行、写路径双写、reset 只删决策行 → reset 后
+// 页面仍显示旧值、summary 仍报 rated/labeled。禁止恢复该形态。
 import Foundation
 
 /// culling_decisions 表行（列序与 SELECT * 一致，见 Schema.swift）。
@@ -9,7 +22,9 @@ public struct CullingDecisionRow {
     public let photoId: String
     public let groupId: String
     public let decision: String
+    /// 镜像列：不是真相源，禁止读取（唯一真相源为 photo_metadata_cache.rating）。
     public let rating: Int64
+    /// 镜像列：不是真相源，禁止读取（唯一真相源为 photo_metadata_cache.label）。
     public let colorLabel: String
     public let decisionSource: String
     public let revision: Int64
@@ -37,13 +52,7 @@ public struct CullingDecisionLiteRow: Equatable {
     public let decision: String
 }
 
-/// 计数投影（decision, cnt）。
-public struct CullingDecisionCountRow: Equatable {
-    public let decision: String
-    public let cnt: Int64
-}
-
-/// upsertState 的状态输入（TS 内联对象）。
+/// upsertState 的状态输入（TS 内联对象）。rating/colorLabel 为镜像值（见文件头注）。
 public struct CullingDecisionStateInput {
     public let decision: String
     public let rating: Int64
@@ -75,10 +84,6 @@ public final class CullingDecisionRepo {
         return rows.map {
             CullingDecisionLiteRow(photoId: $0[0].textValue ?? "", decision: $0[1].textValue ?? "")
         }
-    }
-
-    public func getDecisionsFull(_ sessionId: String) throws -> [CullingDecisionRow] {
-        try getBySession(sessionId)
     }
 
     public func getBySession(_ sessionId: String) throws -> [CullingDecisionRow] {
@@ -126,6 +131,8 @@ public final class CullingDecisionRepo {
         return result
     }
 
+    /// 决策行 upsert（TS upsertState）。rating/colorLabel 是镜像列：调用方必须传入
+    /// 与 photo_metadata_cache 同事务同值的快照（见文件头注）。
     public func upsertState(
         sessionId: String,
         photoId: String,
@@ -155,100 +162,45 @@ public final class CullingDecisionRepo {
         ])
     }
 
-    public struct DecisionInput: Equatable {
-        public let photoId: String
-        public let groupId: String
-        public let decision: String
-
-        public init(photoId: String, groupId: String, decision: String) {
-            self.photoId = photoId
-            self.groupId = groupId
-            self.decision = decision
-        }
-    }
-
-    public func upsertMany(sessionId: String, decisions: [DecisionInput]) throws {
-        let statement = try connection.prepare("""
-            INSERT INTO culling_decisions
-              (session_id, photo_id, group_id, decision, updated_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, photo_id) DO UPDATE SET
-              group_id = excluded.group_id,
-              decision = excluded.decision,
-              decision_source = 'manual',
-              updated_at = excluded.updated_at
-          """)
+    /// 删除整会话决策行，返回被删除决策覆盖的 photo_id（reset 需要据此撤回
+    /// photo_metadata_cache 投影与历史操作）。SELECT+DELETE 在事务内原子完成。
+    @discardableResult
+    public func deleteBySession(_ sessionId: String) throws -> [String] {
         try connection.transaction {
-            let now = nowISOString()
-            for item in decisions {
-                _ = try statement.run([
-                    .text(sessionId), .text(item.photoId), .text(item.groupId),
-                    .text(item.decision), .text(now), .text(now),
-                ])
-            }
+            let ids = try photoIdsForDeletion(sessionId: sessionId, groupId: nil)
+            _ = try connection.prepare("DELETE FROM culling_decisions WHERE session_id = ?")
+                .run([.text(sessionId)])
+            return ids
         }
     }
 
-    public func getByResultPrefix(sessionId: String, resultId: Int64) throws -> [CullingDecisionLiteRow] {
-        let rows = try connection.prepare(
-            "SELECT photo_id, decision FROM culling_decisions WHERE session_id = ? AND group_id LIKE ?"
-        ).query([.text(sessionId), .text("\(resultId):%")])
-        return rows.map {
-            CullingDecisionLiteRow(photoId: $0[0].textValue ?? "", decision: $0[1].textValue ?? "")
-        }
-    }
-
-    public func getCountsByResultPrefix(sessionId: String, resultId: Int64) throws -> [CullingDecisionCountRow] {
-        let rows = try connection.prepare("""
-            SELECT decision, COUNT(*) AS cnt
-            FROM culling_decisions
-            WHERE session_id = ? AND group_id LIKE ?
-            GROUP BY decision
-          """).query([.text(sessionId), .text("\(resultId):%")])
-        return rows.map {
-            CullingDecisionCountRow(decision: $0[0].textValue ?? "", cnt: $0[1].intValue ?? 0)
-        }
-    }
-
-    public func getDecisionCounts(_ sessionId: String) throws -> [CullingDecisionCountRow] {
-        let rows = try connection.prepare(
-            "SELECT decision, COUNT(*) as cnt FROM culling_decisions WHERE session_id = ? GROUP BY decision"
-        ).query([.text(sessionId)])
-        return rows.map {
-            CullingDecisionCountRow(decision: $0[0].textValue ?? "", cnt: $0[1].intValue ?? 0)
-        }
-    }
-
-    public func deleteBySession(_ sessionId: String) throws {
-        _ = try connection.prepare("DELETE FROM culling_decisions WHERE session_id = ?").run([.text(sessionId)])
-    }
-
-    public func deleteBySessionAndGroup(sessionId: String, groupId: String) throws {
-        _ = try connection.prepare("DELETE FROM culling_decisions WHERE session_id = ? AND group_id = ?")
-            .run([.text(sessionId), .text(groupId)])
-    }
-
-    public struct RestoreDecisionInput: Equatable {
-        public let sessionId: String
-        public let photoId: String
-        public let decision: String
-
-        public init(sessionId: String, photoId: String, decision: String) {
-            self.sessionId = sessionId
-            self.photoId = photoId
-            self.decision = decision
-        }
-    }
-
-    public func batchRestoreDecisions(decisions: [RestoreDecisionInput]) throws {
+    /// 删除会话内单组决策行，返回被删除决策覆盖的 photo_id（语义同上）。
+    @discardableResult
+    public func deleteBySessionAndGroup(sessionId: String, groupId: String) throws -> [String] {
         try connection.transaction {
-            for d in decisions {
-                _ = try connection.prepare(
-                    "UPDATE culling_decisions SET decision = ? WHERE session_id = ? AND photo_id = ?"
-                ).run([.text(d.decision), .text(d.sessionId), .text(d.photoId)])
-            }
+            let ids = try photoIdsForDeletion(sessionId: sessionId, groupId: groupId)
+            _ = try connection.prepare("DELETE FROM culling_decisions WHERE session_id = ? AND group_id = ?")
+                .run([.text(sessionId), .text(groupId)])
+            return ids
         }
     }
+
+    private func photoIdsForDeletion(sessionId: String, groupId: String?) throws -> [String] {
+        let rows: [DBRow]
+        if let groupId {
+            rows = try connection.prepare(
+                "SELECT photo_id FROM culling_decisions WHERE session_id = ? AND group_id = ?"
+            ).query([.text(sessionId), .text(groupId)])
+        } else {
+            rows = try connection.prepare(
+                "SELECT photo_id FROM culling_decisions WHERE session_id = ?"
+            ).query([.text(sessionId)])
+        }
+        return rows.compactMap { $0[0].textValue }
+    }
+
+
+
 }
 
 extension Array {

@@ -1,5 +1,31 @@
 // desktop/native/gather-core/Sources/GatherCore/Database/Repositories/PersonRepo.swift
-// TS 源: desktop/src/main/db/repositories/person.repo.ts
+// 人物身份生命周期（全量重写；TS person.repo.ts 时代的按名投影已删除）。
+//
+// 单一真相源：
+//   persons                         身份本身（name/keywords/notes/match_threshold）
+//   role_bindings                   身份在某个会话簇上的角色名（写回 XMP 的键）
+//   face_clusters.matched_person_id 簇 → 身份 的显式链接
+//   person_photos / person_embeddings  身份的投影（照片桥接、人脸向量）
+//   metadata_keyword_origins（source='face-keyword'）我们实际写进 XMP 的关键词凭据
+//
+// 身份生命周期只有一处实现：applyIdentityTransition(_:)。bind / rename / delete /
+// merge 四条路径全部经它落地，任何一条都不得各自半写。它保证不变量：
+//   I1 绑定到身份的簇，其 role_name 恒等于身份当前 name（rename 同步 role_bindings）。
+//   I2 身份消失后，不得残留任何「无 person 但会被 upsertByName 按名认领」的
+//      role_binding —— 否则删除的身份会被对账复活（delete 同步）。
+//   I3 合并把源身份的全部关联（簇链接、角色名、照片、向量、关键词）重指向目标，
+//      源身份不留任何可认领物（merge 同步）。
+//   I4 任何身份变更只要让某个关键词不再属于「当前会写回的名字集合」，就把它连同
+//      实际持有它的 XMP 路径列进清理计划（PersonKeywordCleanup），由写回层执行移除；
+//      origin 行保持 active=1（= 物理仍存在于 XMP），直到写回成功由写回层 deactivate。
+//
+// 复活防护选型：**清干净关联**，不用 tombstone。理由：
+//   - upsertByName 的复活路径只有一条 —— role_bindings（FaceKwService.bindCluster
+//     与 reconcileSession 都经它按名 adopt）。delete 把这些绑定与 matched_person_id
+//     一并清掉，就没有可被认领的东西；
+//   - tombstone 需要新表/新列（Schema.swift、Migrations.swift 不在本域文件所有权内），
+//     且会把「用户以后再次显式绑定同名角色」误判为复活；
+//   - 清关联后再次出现同名人物只可能来自用户显式绑定，语义上就是新身份，不是复活。
 import Foundation
 
 /// persons 表行 + thumbnail_path（最近照片 filepath，无关联照片时为 nil）。
@@ -46,34 +72,6 @@ public struct PersonWithCountsRow: Equatable, Sendable {
         person = try PersonRow(row: row)
         photoCount = Int(row[9].intValue ?? 0)
         sessionCount = Int(row[10].intValue ?? 0)
-    }
-}
-
-/// person_embeddings 表行（SELECT *）。
-public struct PersonEmbeddingRow: Equatable, Sendable {
-    // 表列序: id(0), person_id(1), embedding(2), photo_id(3), session_id(4),
-    // face_observation_id(5), face_bbox(6), quality(7), created_at(8)
-    public let id: Int64
-    public let personId: String
-    public let embedding: Data
-    public let photoId: String
-    public let sessionId: String
-    public let faceObservationId: Int64?
-    public let faceBbox: String
-    public let quality: Double
-    public let createdAt: String
-
-    init(row: DBRow) throws {
-        guard row.count >= 9 else { throw DBError.message("PersonEmbeddingRow 列数不足: \(row.count)") }
-        id = row[0].intValue ?? 0
-        personId = row[1].textValue ?? ""
-        embedding = row[2].blobValue ?? Data()
-        photoId = row[3].textValue ?? ""
-        sessionId = row[4].textValue ?? ""
-        faceObservationId = row[5].intValue
-        faceBbox = row[6].textValue ?? ""
-        quality = row[7].doubleValue ?? 0
-        createdAt = row[8].textValue ?? ""
     }
 }
 
@@ -158,6 +156,19 @@ public struct SaveEmbeddingInput {
     }
 }
 
+/// 身份的展示名与匹配合格线（fkw.clusters 的建议展示 / 跨会话匹配的阈值）。
+public struct PersonIdentitySummary: Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let matchThreshold: Double
+
+    public init(id: String, name: String, matchThreshold: Double) {
+        self.id = id
+        self.name = name
+        self.matchThreshold = matchThreshold
+    }
+}
+
 public struct PersonUpdateFields {
     public let name: String?
     public let keywords: [String]?
@@ -172,12 +183,49 @@ public struct PersonUpdateFields {
     }
 }
 
+// MARK: - 身份生命周期值类型
+
+/// 身份变更产生的 XMP 关键词清理计划条目：这些关键词物理上仍写在 xmpPath 中，
+/// 但已不再属于该身份的写入集合，必须由写回层移除（face-keyword origin 凭据）。
+public struct PersonKeywordCleanup: Equatable, Sendable {
+    public let photoId: String
+    public let sessionId: String
+    public let xmpPath: String
+    public let keywords: [String]
+
+    public init(photoId: String, sessionId: String, xmpPath: String, keywords: [String]) {
+        self.photoId = photoId
+        self.sessionId = sessionId
+        self.xmpPath = xmpPath
+        self.keywords = keywords
+    }
+}
+
+/// 身份生命周期函数的返回值：谁发生了变化 + 需要清理哪些 XMP 关键词。
+/// cleanup 为空表示本次变更没有遗留外部关键词（例如纯绑定、只有备注变更）。
+public struct PersonIdentityOutcome: Equatable, Sendable {
+    public let personId: String?
+    /// merge 时的目标身份；其余为 nil。
+    public let mergedInto: String?
+    public let cleanup: [PersonKeywordCleanup]
+
+    public init(personId: String?, mergedInto: String? = nil, cleanup: [PersonKeywordCleanup] = []) {
+        self.personId = personId
+        self.mergedInto = mergedInto
+        self.cleanup = cleanup
+    }
+
+    public static let noop = PersonIdentityOutcome(personId: nil)
+}
+
 public final class PersonRepo {
     private let connection: DBConnection
 
     public init(connection: DBConnection) {
         self.connection = connection
     }
+
+    // ─────────────────────────── 查询 ───────────────────────────
 
     public func list() throws -> [PersonRow] {
         let rows = try connection.prepare("SELECT * FROM persons ORDER BY name").query()
@@ -191,6 +239,27 @@ public final class PersonRepo {
         return try rows.map { try PersonWithCountsRow(row: $0) }
     }
 
+    /// 批量身份摘要（名字 + match_threshold）；未命中的 id 不出现在结果中。
+    public func summaries(ids: [String]) throws -> [String: PersonIdentitySummary] {
+        guard !ids.isEmpty else { return [:] }
+        var result: [String: PersonIdentitySummary] = [:]
+        for chunk in ids.chunked(by: 400) where !chunk.isEmpty {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+            let rows = try connection.prepare(
+                "SELECT id, name, match_threshold FROM persons WHERE id IN (\(placeholders))"
+            ).query(chunk.map { .text($0) })
+            for row in rows {
+                guard let id = row[0].textValue else { continue }
+                result[id] = PersonIdentitySummary(
+                    id: id,
+                    name: row[1].textValue ?? "",
+                    matchThreshold: row[2].doubleValue ?? 0.65
+                )
+            }
+        }
+        return result
+    }
+
     public func get(id: String) throws -> PersonRow? {
         guard let row = try connection.prepare(
             "SELECT *, (SELECT ph.filepath FROM person_photos pp JOIN photos ph ON ph.id = pp.photo_id WHERE pp.person_id = persons.id ORDER BY pp.created_at DESC, pp.id DESC LIMIT 1) as thumbnail_path FROM persons WHERE id = ?"
@@ -200,16 +269,9 @@ public final class PersonRepo {
         return try PersonRow(row: row)
     }
 
-    public func create(name: String, keywords: [String]? = nil) throws -> String {
-        let id = newUUID()
-        let now = nowISO()
-        _ = try connection.prepare(
-            "INSERT INTO persons (id, name, keywords, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-        ).run([.text(id), .text(name), .text(jsonString(keywords ?? [])), .text(now), .text(now)])
-        return id
-    }
-
-    /// 按精确姓名查找，不存在则创建（TS: upsertByName，绑定人脸角色时使用）。
+    /// 按精确姓名查找，不存在则创建（角色绑定与对账的身份 adopt 入口）。
+    /// 这不是复活路径：删除身份时其 role_bindings / matched_person_id 已被
+    /// applyIdentityTransition(.delete) 清空，同名调用只可能来自用户显式绑定。
     public func upsertByName(name: String, keywords: [String]? = nil) throws -> String {
         guard let existing = try connection.prepare("SELECT id, keywords FROM persons WHERE name = ?").get([.text(name)]) else {
             return try create(name: name, keywords: keywords)
@@ -222,30 +284,96 @@ public final class PersonRepo {
                 merged.append(keyword)
             }
             if merged.count != existingKeywords.count {
-                try update(id: existingId, fields: PersonUpdateFields(keywords: merged))
+                try updatePersonRow(id: existingId, fields: PersonUpdateFields(keywords: merged))
             }
         }
         return existingId
     }
 
-    /// 批量添加照片到人物（INSERT OR IGNORE，重复安全，可用于重复绑定）。
-    public func addPhotos(personId: String, sessionId: String, photos: [PersonPhotoInput]) throws {
-        if photos.isEmpty { return }
-        let now = nowISO()
-        let stmt = try connection.prepare(
-            "INSERT OR IGNORE INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-        )
-        try connection.transaction {
-            for photo in photos {
-                _ = try stmt.run([
-                    .text(personId), .text(photo.photoId), .text(sessionId),
-                    .text(jsonString(photo.faceBbox)), .real(photo.confidence), .text(now),
-                ])
-            }
-        }
+    public func create(name: String, keywords: [String]? = nil) throws -> String {
+        let id = newUUIDString()
+        let now = nowISOString()
+        _ = try connection.prepare(
+            "INSERT INTO persons (id, name, keywords, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+        ).run([.text(id), .text(name), .text(jsonString(keywords ?? [])), .text(now), .text(now)])
+        return id
     }
 
-    /// 按会话对账人物↔照片桥接表（角色绑定 → 链接增删）。
+    // ─────────────────────────── 身份生命周期 ───────────────────────────
+
+    /// 绑定入口：把簇绑定到角色名所代表的身份（adopt-or-create + 照片桥接 + 显式链接）。
+    /// role_bindings 行由 FaceRepo.updateBinding 维护；这里只做身份侧关联。
+    @discardableResult
+    public func bindRole(
+        clusterId: Int64,
+        sessionId: String,
+        roleName: String,
+        keywords: [String],
+        members: [PersonPhotoInput]
+    ) throws -> PersonIdentityOutcome {
+        let name = roleName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let personId = try upsertByName(name: name, keywords: keywords)
+        try addPhotos(personId: personId, sessionId: sessionId, photos: members)
+        return try applyIdentityTransition(
+            .bind(personId: personId, name: name, sessionId: sessionId, clusterIds: [clusterId]))
+    }
+
+    /// 改名：persons.name 更新之外，同步全部由该身份持有的 role_bindings.role_name，
+    /// 旧名不再写回；旧名已写入 XMP 的部分进入清理计划。
+    @discardableResult
+    public func update(id: String, fields: PersonUpdateFields) throws -> PersonIdentityOutcome {
+        guard let previousName = try connection.prepare("SELECT name FROM persons WHERE id = ?")
+            .get([.text(id)])?[0].textValue else {
+            return .noop
+        }
+        var effective = fields
+        if let raw = fields.name {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            // 空名不是身份（会把角色名同步成无法写回的空关键词）：拒绝并保持原名。
+            effective = PersonUpdateFields(
+                name: trimmed.isEmpty ? previousName : trimmed,
+                keywords: fields.keywords,
+                notes: fields.notes,
+                matchThreshold: fields.matchThreshold)
+        }
+        try updatePersonRow(id: id, fields: effective)
+        guard let newName = effective.name, newName != previousName else {
+            return PersonIdentityOutcome(personId: id)
+        }
+        return try applyIdentityTransition(.rename(personId: id, from: previousName, to: newName))
+    }
+
+    /// 删除：解绑该身份持有的全部簇（role_bindings + matched_person_id），删除身份
+    /// 及其投影；名字与角色关键词若已写入 XMP，进入清理计划。删除后 upsertByName
+    /// 无从复活（I2）。
+    @discardableResult
+    public func delete(id: String) throws -> PersonIdentityOutcome {
+        guard let name = try connection.prepare("SELECT name FROM persons WHERE id = ?")
+            .get([.text(id)])?[0].textValue else {
+            return .noop
+        }
+        return try applyIdentityTransition(.delete(personId: id, name: name))
+    }
+
+    /// 合并：投影/向量/关键词并入目标，源身份的簇与角色名重指向目标后删除源身份。
+    /// 源名若已写入 XMP，进入清理计划（目标名由后续写回补写）。
+    @discardableResult
+    public func merge(sourceId: String, targetId: String) throws -> PersonIdentityOutcome {
+        guard let sourceName = try connection.prepare("SELECT name FROM persons WHERE id = ?")
+            .get([.text(sourceId)])?[0].textValue,
+            let targetName = try connection.prepare("SELECT name FROM persons WHERE id = ?")
+            .get([.text(targetId)])?[0].textValue else {
+            return .noop
+        }
+        if sourceId == targetId {
+            return PersonIdentityOutcome(personId: targetId)
+        }
+        return try applyIdentityTransition(
+            .merge(sourceId: sourceId, sourceName: sourceName, targetId: targetId, targetName: targetName))
+    }
+
+    /// 按会话对账角色绑定与人物库投影；同时把按名归属的簇补上显式链接
+    /// （rename/delete 的归属判据）。
     public func reconcileSession(sessionId: String) throws {
         let bindingRows = try connection.prepare(
             "SELECT rb.role_name, fcm.photo_id, fcm.bbox, fcm.confidence FROM role_bindings rb JOIN face_cluster_members fcm ON fcm.cluster_id = rb.cluster_id WHERE rb.session_id = ?"
@@ -265,7 +393,9 @@ public final class PersonRepo {
 
         var affected: Set<String> = []
         for roleName in desiredByRole.keys {
-            affected.insert(try upsertByName(name: roleName))
+            let personId = try upsertByName(name: roleName)
+            affected.insert(personId)
+            try linkClusters(named: roleName, sessionId: sessionId, personId: personId)
         }
         let linkedRows = try connection.prepare("SELECT DISTINCT person_id FROM person_photos WHERE session_id = ?")
             .query([.text(sessionId)])
@@ -276,13 +406,13 @@ public final class PersonRepo {
         }
         if affected.isEmpty { return }
 
-        let now = nowISO()
+        let now = nowISOString()
         let insertStmt = try connection.prepare(
             "INSERT OR IGNORE INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)"
         )
         try connection.transaction {
             for personId in affected {
-                let roleName = try get(id: personId)?.name ?? ""
+                let roleName = try getPersonName(personId) ?? ""
                 guard let desired = desiredByRole[roleName], !desired.isEmpty else {
                     _ = try connection.prepare("DELETE FROM person_photos WHERE person_id = ? AND session_id = ?")
                         .run([.text(personId), .text(sessionId)])
@@ -308,8 +438,232 @@ public final class PersonRepo {
         }
     }
 
-    public func update(id: String, fields: PersonUpdateFields) throws {
-        let now = nowISO()
+    // ─────────────────────── 身份生命周期唯一实现 ───────────────────────
+
+    private enum IdentityTransition {
+        case bind(personId: String, name: String, sessionId: String, clusterIds: [Int64])
+        case rename(personId: String, from: String, to: String)
+        case delete(personId: String, name: String)
+        case merge(sourceId: String, sourceName: String, targetId: String, targetName: String)
+    }
+
+    /// 所有身份变更的唯一落地函数（I1–I4）。
+    private func applyIdentityTransition(_ transition: IdentityTransition) throws -> PersonIdentityOutcome {
+        switch transition {
+        case .bind(let personId, _, _, let clusterIds):
+            try linkClusters(clusterIds, personId: personId)
+            return PersonIdentityOutcome(personId: personId)
+
+        case .rename(let personId, let from, let to):
+            let clusterIds = try ownedClusterIds(personId: personId, name: from)
+            let cleanup = try cleanupPlan(sessions: try sessions(of: clusterIds), keywords: [from])
+            try connection.transaction {
+                for chunk in clusterIds.chunked(by: 400) where !chunk.isEmpty {
+                    let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                    _ = try connection.prepare(
+                        "UPDATE role_bindings SET role_name = ?, updated_at = ? WHERE cluster_id IN (\(placeholders))"
+                    ).run([.text(to), .text(nowISOString())] + chunk.map { .int($0) })
+                }
+            }
+            return PersonIdentityOutcome(personId: personId, cleanup: cleanup)
+
+        case .delete(let personId, let name):
+            let clusterIds = try ownedClusterIds(personId: personId, name: name)
+            let deprecated = [name] + (try bindingKeywords(clusterIds: clusterIds))
+            let cleanup = try cleanupPlan(sessions: try sessions(of: clusterIds), keywords: deprecated)
+            try connection.transaction {
+                for chunk in clusterIds.chunked(by: 400) where !chunk.isEmpty {
+                    let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                    _ = try connection.prepare(
+                        "DELETE FROM role_bindings WHERE cluster_id IN (\(placeholders))"
+                    ).run(chunk.map { .int($0) })
+                    _ = try connection.prepare(
+                        "UPDATE face_clusters SET matched_person_id = NULL, match_confidence = NULL, status = 'unbound', updated_at = ? WHERE id IN (\(placeholders))"
+                    ).run([.text(nowISOString())] + chunk.map { .int($0) })
+                }
+                _ = try connection.prepare("DELETE FROM person_photos WHERE person_id = ?").run([.text(personId)])
+                _ = try connection.prepare("DELETE FROM person_embeddings WHERE person_id = ?").run([.text(personId)])
+                _ = try connection.prepare("DELETE FROM persons WHERE id = ?").run([.text(personId)])
+            }
+            return PersonIdentityOutcome(personId: personId, cleanup: cleanup)
+
+        case .merge(let sourceId, let sourceName, let targetId, let targetName):
+            let clusterIds = try ownedClusterIds(personId: sourceId, name: sourceName)
+            let deprecated = [sourceName] + (try bindingKeywords(clusterIds: clusterIds))
+            let cleanup = try cleanupPlan(sessions: try sessions(of: clusterIds), keywords: deprecated)
+            try connection.transaction {
+                _ = try connection.prepare("UPDATE person_embeddings SET person_id = ? WHERE person_id = ?")
+                    .run([.text(targetId), .text(sourceId)])
+                _ = try connection.prepare("UPDATE person_photos SET person_id = ? WHERE person_id = ?")
+                    .run([.text(targetId), .text(sourceId)])
+                let mergedKeywords = try getMergedKeywords(sourceId: sourceId, targetId: targetId)
+                _ = try connection.prepare("UPDATE persons SET keywords = ?, updated_at = ? WHERE id = ?")
+                    .run([.text(jsonString(mergedKeywords)), .text(nowISOString()), .text(targetId)])
+                for chunk in clusterIds.chunked(by: 400) where !chunk.isEmpty {
+                    let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                    _ = try connection.prepare(
+                        "UPDATE role_bindings SET role_name = ?, updated_at = ? WHERE cluster_id IN (\(placeholders))"
+                    ).run([.text(targetName), .text(nowISOString())] + chunk.map { .int($0) })
+                    _ = try connection.prepare(
+                        "UPDATE face_clusters SET matched_person_id = ?, updated_at = ? WHERE id IN (\(placeholders))"
+                    ).run([.text(targetId), .text(nowISOString())] + chunk.map { .int($0) })
+                }
+                _ = try connection.prepare("DELETE FROM persons WHERE id = ?").run([.text(sourceId)])
+            }
+            return PersonIdentityOutcome(personId: targetId, mergedInto: targetId, cleanup: cleanup)
+        }
+    }
+
+    /// 身份持有的簇：显式链接的 ∪ （该名字无第二持有者时）按名可被认领的未链接簇。
+    /// 删除/改名/合并只作用于这个集合，避免误伤另一个同名身份。
+    private func ownedClusterIds(personId: String, name: String) throws -> [Int64] {
+        var ids = Set<Int64>()
+        let linked = try connection.prepare("SELECT id FROM face_clusters WHERE matched_person_id = ?")
+            .query([.text(personId)])
+        for row in linked {
+            if let id = row[0].intValue { ids.insert(id) }
+        }
+        let otherSameName = try connection.prepare("SELECT COUNT(*) FROM persons WHERE name = ? AND id <> ?")
+            .get([.text(name), .text(personId)])
+        if (otherSameName?[0].intValue ?? 0) == 0 {
+            let byName = try connection.prepare("""
+                SELECT rb.cluster_id FROM role_bindings rb
+                JOIN face_clusters c ON c.id = rb.cluster_id
+                WHERE rb.role_name = ? AND c.matched_person_id IS NULL
+                """).query([.text(name)])
+            for row in byName {
+                if let id = row[0].intValue { ids.insert(id) }
+            }
+        }
+        return ids.sorted()
+    }
+
+    private func linkClusters(_ clusterIds: [Int64], personId: String) throws {
+        for chunk in clusterIds.chunked(by: 400) where !chunk.isEmpty {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            _ = try connection.prepare(
+                "UPDATE face_clusters SET matched_person_id = ?, updated_at = ? WHERE id IN (\(placeholders))"
+            ).run([.text(personId), .text(nowISOString())] + chunk.map { .int($0) })
+        }
+    }
+
+    private func linkClusters(named roleName: String, sessionId: String, personId: String) throws {
+        _ = try connection.prepare("""
+            UPDATE face_clusters SET matched_person_id = ?, updated_at = ?
+            WHERE session_id = ? AND id IN (
+              SELECT rb.cluster_id FROM role_bindings rb
+              WHERE rb.session_id = ? AND rb.role_name = ?
+            )
+            """).run([.text(personId), .text(nowISOString()), .text(sessionId), .text(sessionId), .text(roleName)])
+    }
+
+    private func sessions(of clusterIds: [Int64]) throws -> Set<String> {
+        var result = Set<String>()
+        for chunk in clusterIds.chunked(by: 400) where !chunk.isEmpty {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try connection.prepare(
+                "SELECT DISTINCT session_id FROM face_clusters WHERE id IN (\(placeholders))"
+            ).query(chunk.map { .int($0) })
+            for row in rows {
+                if let sessionId = row[0].textValue { result.insert(sessionId) }
+            }
+        }
+        return result
+    }
+
+    /// 这些簇上的绑定带了哪些额外关键词（删除/合并后不再写回，需要清理）。
+    private func bindingKeywords(clusterIds: [Int64]) throws -> [String] {
+        var result: [String] = []
+        var seen = Set<String>()
+        for chunk in clusterIds.chunked(by: 400) where !chunk.isEmpty {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try connection.prepare(
+                "SELECT keywords FROM role_bindings WHERE cluster_id IN (\(placeholders))"
+            ).query(chunk.map { .int($0) })
+            for row in rows {
+                for keyword in parseKeywords(row[0].textValue ?? "") where seen.insert(keyword).inserted {
+                    result.append(keyword)
+                }
+            }
+        }
+        return result
+    }
+
+    /// XMP 清理计划：以 metadata_keyword_origins（source='face-keyword'，active=1）
+    /// 为凭据反查实际持有这些关键词的照片 —— 与簇成员身份**无关**，因此成员被
+    /// 重扫/移出后的残留同样可清理。
+    private func cleanupPlan(sessions: Set<String>, keywords: [String]) throws -> [PersonKeywordCleanup] {
+        var wanted: [String] = []
+        var seen = Set<String>()
+        for raw in keywords {
+            let keyword = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !keyword.isEmpty && seen.insert(keyword).inserted { wanted.append(keyword) }
+        }
+        guard !wanted.isEmpty, !sessions.isEmpty else { return [] }
+
+        let placeholders = wanted.map { _ in "?" }.joined(separator: ",")
+        let originRows = try connection.prepare("""
+            SELECT DISTINCT xmp_path, keyword FROM metadata_keyword_origins
+            WHERE source = 'face-keyword' AND active = 1 AND keyword IN (\(placeholders))
+            """).query(wanted.map { .text($0) })
+        var keywordsByPath: [String: Set<String>] = [:]
+        for row in originRows {
+            guard let path = row[0].textValue, let keyword = row[1].textValue else { continue }
+            keywordsByPath[path, default: []].insert(keyword)
+        }
+        if keywordsByPath.isEmpty { return [] }
+
+        var entries: [PersonKeywordCleanup] = []
+        var seenPhotos = Set<String>()
+        let sessionList = Array(sessions)
+        for chunk in sessionList.chunked(by: 400) {
+            let sessionPlaceholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let photos = try connection.prepare("""
+                SELECT id, session_id, filepath FROM photos
+                WHERE session_id IN (\(sessionPlaceholders))
+                """).query(chunk.map { .text($0) })
+            for row in photos {
+                guard let photoId = row[0].textValue,
+                      let sessionId = row[1].textValue,
+                      let filepath = row[2].textValue else { continue }
+                let xmpPath = TSPath.xmpSidecarPath(filepath)
+                guard let owned = keywordsByPath[xmpPath] else { continue }
+                guard seenPhotos.insert(photoId).inserted else { continue }
+                let ordered = wanted.filter { owned.contains($0) }
+                guard !ordered.isEmpty else { continue }
+                entries.append(PersonKeywordCleanup(
+                    photoId: photoId, sessionId: sessionId, xmpPath: xmpPath, keywords: ordered))
+            }
+        }
+        return entries
+    }
+
+    private func getPersonName(_ id: String) throws -> String? {
+        try connection.prepare("SELECT name FROM persons WHERE id = ?").get([.text(id)])?[0].textValue
+    }
+
+    // ─────────────────────────── 投影维护 ───────────────────────────
+
+    /// 批量添加照片到人物（INSERT OR IGNORE，重复安全，可用于重复绑定）。
+    public func addPhotos(personId: String, sessionId: String, photos: [PersonPhotoInput]) throws {
+        if photos.isEmpty { return }
+        let now = nowISOString()
+        let stmt = try connection.prepare(
+            "INSERT OR IGNORE INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+        try connection.transaction {
+            for photo in photos {
+                _ = try stmt.run([
+                    .text(personId), .text(photo.photoId), .text(sessionId),
+                    .text(jsonString(photo.faceBbox)), .real(photo.confidence), .text(now),
+                ])
+            }
+        }
+    }
+
+    /// 纯行更新（不触发身份生命周期）：生命周期内的改名经 applyIdentityTransition。
+    private func updatePersonRow(id: String, fields: PersonUpdateFields) throws {
+        let now = nowISOString()
         var sets: [String] = []
         var values: [DBValue?] = []
 
@@ -339,67 +693,6 @@ public final class PersonRepo {
         _ = try connection.prepare("UPDATE persons SET \(sets.joined(separator: ", ")) WHERE id = ?").run(values)
     }
 
-    public func updateThumbnail(id: String, base64: String) throws {
-        _ = try connection.prepare("UPDATE persons SET thumbnail_base64 = ? WHERE id = ?")
-            .run([.text(base64), .text(id)])
-    }
-
-    public func delete(id: String) throws {
-        _ = try connection.prepare("DELETE FROM persons WHERE id = ?").run([.text(id)])
-    }
-
-    /// 合并来源人物到目标人物：嵌入/照片转移、关键词并集、删除来源。
-    public func merge(sourceId: String, targetId: String) throws {
-        try connection.transaction {
-            _ = try connection.prepare("UPDATE person_embeddings SET person_id = ? WHERE person_id = ?")
-                .run([.text(targetId), .text(sourceId)])
-            _ = try connection.prepare("UPDATE person_photos SET person_id = ? WHERE person_id = ?")
-                .run([.text(targetId), .text(sourceId)])
-            let mergedKeywords = try getMergedKeywords(sourceId: sourceId, targetId: targetId)
-            let now = nowISO()
-            _ = try connection.prepare("UPDATE persons SET keywords = ?, updated_at = ? WHERE id = ?")
-                .run([.text(jsonString(mergedKeywords)), .text(now), .text(targetId)])
-            _ = try connection.prepare("DELETE FROM persons WHERE id = ?").run([.text(sourceId)])
-        }
-    }
-
-    private func getMergedKeywords(sourceId: String, targetId: String) throws -> [String] {
-        var merged: [String] = []
-        let sourceRow = try connection.prepare("SELECT keywords FROM persons WHERE id = ?").get([.text(sourceId)])
-        let targetRow = try connection.prepare("SELECT keywords FROM persons WHERE id = ?").get([.text(targetId)])
-        if let sourceRow {
-            for keyword in parseKeywords(sourceRow[0].textValue ?? "") where !merged.contains(keyword) {
-                merged.append(keyword)
-            }
-        }
-        if let targetRow {
-            for keyword in parseKeywords(targetRow[0].textValue ?? "") where !merged.contains(keyword) {
-                merged.append(keyword)
-            }
-        }
-        return merged
-    }
-
-    public func getPhotos(personId: String, sessionIds: [String]? = nil, limit: Int? = nil, offset: Int? = nil) throws -> [PersonPhotoRow] {
-        var sql = "SELECT * FROM person_photos WHERE person_id = ?"
-        var params: [DBValue?] = [.text(personId)]
-        if let sessionIds, !sessionIds.isEmpty {
-            sql += " AND session_id IN (\(sessionIds.map { _ in "?" }.joined(separator: ",")))"
-            params.append(contentsOf: sessionIds.map { .text($0) })
-        }
-        sql += " ORDER BY created_at DESC"
-        if let limit {
-            sql += " LIMIT ?"
-            params.append(.int(Int64(limit)))
-        }
-        if let offset {
-            sql += " OFFSET ?"
-            params.append(.int(Int64(offset)))
-        }
-        let rows = try connection.prepare(sql).query(params)
-        return try rows.map { try PersonPhotoRow(row: $0) }
-    }
-
     public func removePhoto(personId: String, photoId: String) throws {
         try connection.transaction {
             _ = try connection.prepare("DELETE FROM person_photos WHERE person_id = ? AND photo_id = ?")
@@ -409,25 +702,9 @@ public final class PersonRepo {
         }
     }
 
-    public func getPersonPhoto(personId: String, photoId: String) throws -> PersonPhotoRow? {
-        guard let row = try connection.prepare(
-            "SELECT * FROM person_photos WHERE person_id = ? AND photo_id = ?"
-        ).get([.text(personId), .text(photoId)]) else {
-            return nil
-        }
-        return try PersonPhotoRow(row: row)
-    }
-
-    public func addPhoto(personId: String, photoId: String, sessionId: String, faceBbox: [Double], confidence: Double) throws {
-        let now = nowISO()
-        _ = try connection.prepare(
-            "INSERT INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-        ).run([.text(personId), .text(photoId), .text(sessionId), .text(jsonString(faceBbox)), .real(confidence), .text(now)])
-    }
-
     /// 批量保存嵌入（INSERT OR REPLACE，按 face_observation_id 唯一替换）。
     public func saveEmbeddings(embeddings: [SaveEmbeddingInput]) throws {
-        let now = nowISO()
+        let now = nowISOString()
         let stmt = try connection.prepare(
             "INSERT OR REPLACE INTO person_embeddings (person_id, embedding, photo_id, session_id, face_observation_id, face_bbox, quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
@@ -447,13 +724,6 @@ public final class PersonRepo {
         }
     }
 
-    public func deleteEmbeddingsByObservationIds(observationIds: [Int64]) throws {
-        if observationIds.isEmpty { return }
-        let placeholders = observationIds.map { _ in "?" }.joined(separator: ",")
-        _ = try connection.prepare("DELETE FROM person_embeddings WHERE face_observation_id IN (\(placeholders))")
-            .run(observationIds.map { .int($0) })
-    }
-
     public func getAllEmbeddings() throws -> [PersonEmbeddingRef] {
         let rows = try connection.prepare(
             "SELECT person_id, embedding, face_observation_id FROM person_embeddings"
@@ -467,22 +737,6 @@ public final class PersonRepo {
         }
     }
 
-    public func getEmbeddingsByPerson(personId: String) throws -> [PersonEmbeddingRow] {
-        let rows = try connection.prepare("SELECT * FROM person_embeddings WHERE person_id = ? ORDER BY id")
-            .query([.text(personId)])
-        return try rows.map { try PersonEmbeddingRow(row: $0) }
-    }
-
-    public func deleteEmbeddingsByPerson(personId: String) throws {
-        _ = try connection.prepare("DELETE FROM person_embeddings WHERE person_id = ?").run([.text(personId)])
-    }
-
-    public func countEmbeddings(personId: String) throws -> Int {
-        let row = try connection.prepare("SELECT COUNT(*) as count FROM person_embeddings WHERE person_id = ?")
-            .get([.text(personId)])
-        return Int(row?[0].intValue ?? 0)
-    }
-
     public func countPhotos(personId: String) throws -> Int {
         let row = try connection.prepare("SELECT COUNT(*) as count FROM person_photos WHERE person_id = ?")
             .get([.text(personId)])
@@ -493,11 +747,6 @@ public final class PersonRepo {
         let row = try connection.prepare("SELECT COUNT(DISTINCT session_id) as count FROM person_photos WHERE person_id = ?")
             .get([.text(personId)])
         return Int(row?[0].intValue ?? 0)
-    }
-
-    public func getThumbnailBase64(personId: String) throws -> String {
-        let row = try connection.prepare("SELECT thumbnail_base64 FROM persons WHERE id = ?").get([.text(personId)])
-        return row?[0].textValue ?? ""
     }
 
     public func getPhotosWithDetails(personId: String, sessionIds: [String]? = nil, limit: Int? = nil, offset: Int? = nil) throws -> (photos: [PersonPhotoDetail], total: Int) {
@@ -536,6 +785,23 @@ public final class PersonRepo {
     }
 
     // ── 私有辅助 ──
+
+    private func getMergedKeywords(sourceId: String, targetId: String) throws -> [String] {
+        var merged: [String] = []
+        let sourceRow = try connection.prepare("SELECT keywords FROM persons WHERE id = ?").get([.text(sourceId)])
+        let targetRow = try connection.prepare("SELECT keywords FROM persons WHERE id = ?").get([.text(targetId)])
+        if let sourceRow {
+            for keyword in parseKeywords(sourceRow[0].textValue ?? "") where !merged.contains(keyword) {
+                merged.append(keyword)
+            }
+        }
+        if let targetRow {
+            for keyword in parseKeywords(targetRow[0].textValue ?? "") where !merged.contains(keyword) {
+                merged.append(keyword)
+            }
+        }
+        return merged
+    }
 
     private func parseKeywords(_ raw: String) -> [String] {
         guard let data = raw.data(using: .utf8),
@@ -578,12 +844,4 @@ private func float32Data(_ floats: [Float]) -> Data {
     floats.withUnsafeBytes { Data($0) }
 }
 
-private func newUUID() -> String {
-    UUID().uuidString.lowercased()
-}
 
-private func nowISO() -> String {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.string(from: Date())
-}

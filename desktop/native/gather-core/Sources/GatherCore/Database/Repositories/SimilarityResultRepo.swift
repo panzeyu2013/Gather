@@ -132,7 +132,7 @@ public final class SimilarityResultRepo {
             .text(statsJson),
             .int(Int64(threshold)),
             .int(Int64(minGroupSize)),
-            .text(nowISO()),
+            .text(nowISOString()),
         ])
         let resultId = connection.lastInsertRowid
         let insertMember = try connection.prepare(
@@ -196,8 +196,4 @@ public final class SimilarityResultRepo {
     }
 }
 
-private func nowISO() -> String {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.string(from: Date())
-}
+

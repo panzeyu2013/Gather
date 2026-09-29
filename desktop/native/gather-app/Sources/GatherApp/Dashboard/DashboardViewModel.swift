@@ -19,42 +19,46 @@ protocol DashboardDataProvider {
     func createSession(name: String, source: String, sourcePath: String) throws -> SessionData
     /// TS session.create：以文件列表建库（Capture One 导入），返回含
     /// failedFiles 计数的结果，供截断导入横幅提示（TS Toast L208-219）。
+    /// source_path 恒为空：作用域由 metadata.scan 的 requestedPaths 承担。
     func createSessionFromFiles(
         name: String,
         source: String,
-        filepaths: [String],
-        sourcePath: String
+        filepaths: [String]
     ) throws -> CreateSessionOutcome
-    func deleteSession(_ sessionId: String) throws
-    func deleteSessions(_ sessionIds: [String]) throws
+    /// 删除会话。confirmed 是显式参数：只允许 UI 确认分支传 true，
+    /// Provider/VM 不得自证确认（与 Library/Similarity/FaceKeywording 同一防线）。
+    func deleteSession(_ sessionId: String, confirmed: Bool) throws
+    func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws
     func workspaceStatus(sessionId: String) throws -> WorkspaceStatus?
     func listJobs() throws -> [AnalysisJobData]
     func cancelJob(_ jobId: String) throws -> Bool
     func retryJob(_ jobId: String) throws -> Bool
     func clearCompletedJobs() throws -> Int
-    func enqueueIndexScan(sessionId: String) throws
+    /// 入队 metadata.scan。requestedPaths 非空 = 显式集合作用域（写入
+    /// checkpoint["requestedPaths"]，与 GatherApp.importFiles 同键名）；
+    /// nil = 目录作用域（扫 session.source_path 全树，仅目录导入/目录会话）。
+    func enqueueIndexScan(sessionId: String, requestedPaths: [String]?) throws
 }
 
 extension DashboardDataProvider {
     /// 测试 provider 不需要启动后台 worker；真实 provider 在这里接入
     /// metadata.scan，保证“创建工作区”是创建 + 索引的一跳流程。
-    func enqueueIndexScan(sessionId: String) throws {}
+    func enqueueIndexScan(sessionId: String, requestedPaths: [String]?) throws {}
 
-    /// 默认实现（stub 用）：退化为 createSession，无失败文件统计。
+    /// 默认实现（stub 用）：退化为 createSession（无目录作用域），无失败文件统计。
     func createSessionFromFiles(
         name: String,
         source: String,
-        filepaths: [String],
-        sourcePath: String
+        filepaths: [String]
     ) throws -> CreateSessionOutcome {
-        let session = try createSession(name: name, source: source, sourcePath: sourcePath)
+        let session = try createSession(name: name, source: source, sourcePath: "")
         return CreateSessionOutcome(session: session, failedFiles: [], added: 0)
     }
 
-    /// 默认实现（stub 用）：逐个删除。
-    func deleteSessions(_ sessionIds: [String]) throws {
+    /// 默认实现（stub 用）：逐个删除，confirmed 原样透传。
+    func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws {
         for sessionId in sessionIds {
-            try deleteSession(sessionId)
+            try deleteSession(sessionId, confirmed: confirmed)
         }
     }
 }
@@ -94,16 +98,17 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
     /// TS session.create：文件列表建库 + addPhotos（source 透传，C1 为
     /// "capture_one"），返回会话与失败文件计数；与 createFromDirectory
     /// 不同，照片在创建时写入，索引 job 随后补齐元数据。
+    ///
+    /// source_path 恒为空：文件导入的作用域由 metadata.scan job 的
+    /// checkpoint["requestedPaths"] 显式携带（与 GatherApp.importFiles 同一
+    /// 契约）。公共父目录只允许用于取名——落库会让全量扫描（requestedPaths=nil）
+    /// 重新递归该目录，重新引入「导入范围失控」。
     func createSessionFromFiles(
         name: String,
         source: String,
-        filepaths: [String],
-        sourcePath: String
+        filepaths: [String]
     ) throws -> CreateSessionOutcome {
-        // TS session.create handler：sourcePath 落库前 sanitize —— 单文件/根
-        // 目录等会扩大索引范围的来源一律清空，防索引器递归无关目录。
-        let sanitizedSourcePath = sanitizeSessionSourcePath(sourcePath: sourcePath, filepaths: filepaths)
-        let created = try sessionService.createSession(name: name, source: source, sourcePath: sanitizedSourcePath)
+        let created = try sessionService.createSession(name: name, source: source)
         let result = try sessionService.addPhotos(
             sessionId: created.id,
             filepaths: filepaths,
@@ -114,14 +119,14 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         return CreateSessionOutcome(session: session, failedFiles: result.failedFiles, added: result.added)
     }
 
-    func deleteSession(_ sessionId: String) throws {
-        // UI 层已确认（对齐 TS ConfirmDialog → sessionApi.delete 带 confirmed）。
-        try sessionService.deleteSession(sessionId, confirmed: true)
+    func deleteSession(_ sessionId: String, confirmed: Bool) throws {
+        // confirmed 显式透传（对齐 TS ConfirmDialog → sessionApi.delete）。
+        try sessionService.deleteSession(sessionId, confirmed: confirmed)
     }
 
-    func deleteSessions(_ sessionIds: [String]) throws {
-        // UI 层已确认（对齐 TS ConfirmDialog → sessionApi.deleteMany 带 confirmed）。
-        _ = try sessionService.deleteSessions(sessionIds, confirmed: true)
+    func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws {
+        // confirmed 显式透传（对齐 TS ConfirmDialog → sessionApi.deleteMany）。
+        _ = try sessionService.deleteSessions(sessionIds, confirmed: confirmed)
     }
 
     func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? {
@@ -144,12 +149,13 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         try jobService.clearCompleted()
     }
 
-    func enqueueIndexScan(sessionId: String) throws {
+    func enqueueIndexScan(sessionId: String, requestedPaths: [String]?) throws {
         _ = try jobService.create(JobCreateParams(
             type: .metadataScan,
             scopeType: "session",
             scopeId: sessionId,
-            dedupeKey: "metadata.scan:\(sessionId)"
+            dedupeKey: "metadata.scan:\(sessionId)",
+            checkpoint: GatherApp.scanScopeCheckpoint(requestedPaths: requestedPaths)
         ))
     }
 }
@@ -263,13 +269,6 @@ struct C1PreflightResult: Equatable, Sendable {
 @MainActor
 @Observable
 final class DashboardViewModel {
-    /// 首屏加载阶段。
-    enum LoadPhase: Equatable {
-        case loading
-        case loaded
-        case failed(String)
-    }
-
     /// 新建工作区来源（TS SOURCE_OPTIONS）。
     enum SessionSource: String, Equatable, CaseIterable, Identifiable {
         case local
@@ -403,11 +402,13 @@ final class DashboardViewModel {
         do {
             let session = try provider.createSession(name: name, source: "local", sourcePath: sourcePath)
             do {
-                try provider.enqueueIndexScan(sessionId: session.id)
+                // 目录导入：唯一允许递归 source_path 全树的作用域。
+                try provider.enqueueIndexScan(sessionId: session.id, requestedPaths: nil)
             } catch {
                 // TS session.ipc.ts L52-62：入队失败回滚已建 session，避免
-                // 工作区列表出现照片永不索引的半成品。
-                try? provider.deleteSession(session.id)
+                // 工作区列表出现照片永不索引的半成品。补偿删除（刚创建的空
+                // 工作区，非用户确认路径）显式带 true 以满足 SessionService 门禁。
+                try? provider.deleteSession(session.id, confirmed: true)
                 throw error
             }
             setImportNotice(session: session)
@@ -441,22 +442,26 @@ final class DashboardViewModel {
                 createError = GatherLocalization.l("请先在 Capture One 中选择至少一张照片")
                 return nil
             }
-            let sourcePath = commonParentDirectory(filepaths: files)
+            // 导入范围 = 本次选中集合（与 GatherApp.importFiles 同一契约）：
+            // 公共父目录只用于取名，绝不落库为 source_path，否则监听器与
+            // 「全量兜底」扫描会重新递归整个父目录树（历史 P0：选 3 张照片
+            // 等于扫描整棵目录树，最坏上溯到主目录）。
+            let selectedPaths = normalizeImportFilepaths(files)
+            let parentDirectory = commonParentDirectory(filepaths: selectedPaths)
             let sessionName = name.isEmpty
-                ? (sourcePath.isEmpty ? GatherLocalization.l("Capture One 导入") : TSPath.basename(sourcePath))
+                ? (parentDirectory.isEmpty ? GatherLocalization.l("Capture One 导入") : TSPath.basename(parentDirectory))
                 : name
             let outcome = try provider.createSessionFromFiles(
                 name: sessionName,
                 source: SessionSource.captureOne.rawValue,
-                filepaths: files,
-                sourcePath: sourcePath
+                filepaths: selectedPaths
             )
             do {
-                try provider.enqueueIndexScan(sessionId: outcome.session.id)
+                try provider.enqueueIndexScan(sessionId: outcome.session.id, requestedPaths: selectedPaths)
             } catch {
                 // TS session.ipc.ts L52-62：入队失败回滚已建 session（含已
-                // 写入照片），避免半成品工作区残留在列表。
-                try? provider.deleteSession(outcome.session.id)
+                // 写入照片），避免半成品工作区残留在列表。补偿删除同上传 true。
+                try? provider.deleteSession(outcome.session.id, confirmed: true)
                 throw error
             }
             setImportNotice(session: outcome.session, failedFiles: outcome.failedFiles, added: outcome.added)
@@ -490,7 +495,10 @@ final class DashboardViewModel {
     /// TS retryScan L361-371）。
     func retryScan(sessionId: String) async {
         do {
-            try provider.enqueueIndexScan(sessionId: sessionId)
+            // requestedPaths 传 nil：JobService 的 checkpoint 继承会保留原扫描
+            // 作用域（文件/C1 导入的 requestedPaths 随重跑续用，重跑=续跑）；
+            // 目录会话终态 checkpoint 无该键，仍按目录全树重扫。
+            try provider.enqueueIndexScan(sessionId: sessionId, requestedPaths: nil)
             scanJobs[sessionId] = DashboardScanJob(status: "queued", current: 0, total: 0)
             await refreshJobs()
         } catch {
@@ -502,9 +510,9 @@ final class DashboardViewModel {
     }
 
     @discardableResult
-    func deleteSession(_ sessionId: String) async -> Bool {
+    func deleteSession(_ sessionId: String, confirmed: Bool) async -> Bool {
         do {
-            try provider.deleteSession(sessionId)
+            try provider.deleteSession(sessionId, confirmed: confirmed)
             lastFullRefreshAt = .distantPast
             await refreshAll()
             return true
@@ -516,9 +524,9 @@ final class DashboardViewModel {
 
     /// 批量删除（TS deleteManyMutation → sessionApi.deleteMany 带 confirmed）。
     @discardableResult
-    func deleteSessions(_ sessionIds: [String]) async -> Bool {
+    func deleteSessions(_ sessionIds: [String], confirmed: Bool) async -> Bool {
         do {
-            try provider.deleteSessions(sessionIds)
+            try provider.deleteSessions(sessionIds, confirmed: confirmed)
             lastFullRefreshAt = .distantPast
             await refreshAll()
             return true
@@ -668,10 +676,12 @@ final class DashboardViewModel {
         jobs.filter { $0.status == .succeeded }
     }
 
-    /// TS utils/jobs.ts isAnalysisJobClearable（含阶段证据类型排除）。
+    /// 清理按钮的可见性 = 真的会被清掉的行：仅成功终态且非阶段证据类型。
+    /// 失败/中断/取消行保留错误原因（显式点名 statuses 才允许删除），
+    /// 因此不能作为「有可清理内容」的依据，否则按钮会静默无事发生。
     var hasClearableJobs: Bool {
         jobs.contains { job in
-            ["succeeded", "failed", "cancelled", "interrupted"].contains(job.status.rawValue)
+            job.status == .succeeded
                 && job.type != .metadataScan && job.type != .exportExecute
         }
     }
@@ -683,15 +693,11 @@ final class DashboardViewModel {
             : 0
     }
 
-    /// 错误 message：错误码经 GatherLocalization.errorText 翻译（对齐
-    /// SessionCommandRouter.errorMessage 与 utils/errors.ts translateErrorCode），
-    /// 非错误码消息原样透出。
+    /// 错误 message 的唯一漏斗：只允许「可本地化的错误码文案」出 UI。
+    /// 原始诊断（NSError/底层描述）只写日志，未知错误一律回退通用文案。
     static func message(for error: Error) -> String {
-        if let sessionError = error as? SessionServiceError {
-            return GatherLocalization.errorText(sessionError.gatherCode.rawValue)
-        }
-        let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        GatherLogger.log("dashboard error diagnostic: \(error)", level: .warn)
+        return NativeCommandClient.userFacingMessage(for: error)
     }
 
     /// TS handleCreate 成功路径的 Toast（truncatedToast L208-213 /
@@ -721,12 +727,13 @@ final class DashboardViewModel {
         return String(format: GatherLocalization.l("%lld 张照片已导入；文件读取失败：%@%@"), added, examples, remaining)
     }
 
-    /// C1 流程错误文案：错误码经 GatherLocalization.errorText 转引导文案。
+    /// C1 流程错误文案：错误码经 GatherLocalization.errorText 转引导文案，
+    /// 原始诊断只写日志（未知一律回退通用文案，绝不直显）。
     private static func c1Message(for error: Error) -> String {
+        GatherLogger.log("capture one import error diagnostic: \(error)", level: .warn)
         if let bridgeError = error as? CaptureOneBridgeError {
             return GatherLocalization.errorText(bridgeError.description)
         }
-        let raw = (error as NSError).localizedDescription
-        return GatherLocalization.errorText(raw)
+        return GatherLocalization.errorText((error as NSError).localizedDescription)
     }
 }

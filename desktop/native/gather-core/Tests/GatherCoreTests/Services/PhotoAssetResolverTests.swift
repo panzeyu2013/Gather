@@ -20,7 +20,7 @@ private func makeHarness(settings: [String: String] = [:]) throws -> ResolverHar
 /// 幂等会话种子（photos.session_id 外键）。
 private func seedSession(_ db: DBConnection, _ id: String) throws {
     _ = try db.prepare(
-        "INSERT OR IGNORE INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at) VALUES (?, '', 'draft', 'idle', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        "INSERT OR IGNORE INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at) VALUES (?, '', 'draft', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
     ).run([.text(id)])
 }
 

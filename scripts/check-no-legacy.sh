@@ -74,7 +74,9 @@ tracked "Services layer (R2)"                   '.'                             
 tracked "StubCommandRouter (R5)"                'StubCommandRouter'                "$APP"    "*.swift"
 tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepare\(' "$CORE/Sources/GatherCore/Services" "*.swift"
 tracked "unchecked Sendable (R1/R2)"            '@unchecked Sendable'              "$NATIVE" "*.swift"
-tracked "dual-track l10n zhDesc/enDesc (R6)"    'zhDesc|enDesc'                    "$APP"    "*.swift"
+# R6：双轨文案的判据只看"英文侧死数据"（enDesc/labelEn/titleEn）。zhDesc 是
+# 单轨实现里的正常键名（渲染走 l(zhLabel/zhDesc)），计入会把合法实现误报。
+tracked "dual-track l10n enDesc/labelEn/titleEn (R6)" 'enDesc|labelEn|titleEn'      "$APP"    "*.swift"
 tracked "batchAsync copies (R2)"                'func batchAsync'                  "$CORE"   "*.swift"
 
 echo "----"

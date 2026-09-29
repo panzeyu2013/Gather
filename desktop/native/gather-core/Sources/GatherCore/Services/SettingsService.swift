@@ -31,6 +31,23 @@ public final class SettingsService {
             "default_eps": "0.6",
             "default_min_samples": "2",
 
+            // 原生扩展（TS 无对应键；算法对标改造，见 ADR-029）：
+            // · face_core_quality：核心点质量门槛（0 = 不设限）
+            // · face_core_retry_min_samples：二遍核心点 minPts（<2 视为关闭）
+            // · face_match_margin：冠军与人物级亚军的相似度差下限（不足则不写建议）
+            "face_core_quality": "0.35",
+            "face_core_retry_min_samples": "2",
+            "face_match_margin": "0.01",
+            // · face_incremental_clustering：增量聚类开关（"1" = 开[推荐]；其余 = 关）。
+            //   开启后 analyze 保留已有簇 id / matched_person_id / role_bindings，只
+            //   追加新增人脸；首次分析、签名变化、recluster 命令仍走全量。
+            "face_incremental_clustering": "1",
+            // 专用人脸嵌入模型（ADR-029 决策 1 的模型层）：
+            // 路径非空必须可加载（.mlmodel/.mlmodelc，112×112 图像输入），失败即报错，
+            // 不静默回退到内置 Vision 特征——混用两套向量空间会让阈值全部失去意义。
+            "face_embedding_model_path": "",
+            "face_embedding_model_version": "",
+
             "nms_threshold": "0.4",
             "max_detections": "100",
             "onnx_threads": "4",

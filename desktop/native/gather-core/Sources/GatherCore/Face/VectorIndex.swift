@@ -43,59 +43,11 @@ public struct FaceVector: Equatable, Sendable {
         self.values = values
     }
 
-    /// 点积（TS hnsw-index.ts:69-89 同序累加：Float32 值读入、Double 累加）。
-    public func dot(_ other: FaceVector) -> Double {
-        let n = min(values.count, other.values.count)
-        var dot = 0.0
-        var k = 0
-        while k + 4 <= n {
-            dot += Double(values[k]) * Double(other.values[k])
-                 + Double(values[k + 1]) * Double(other.values[k + 1])
-                 + Double(values[k + 2]) * Double(other.values[k + 2])
-                 + Double(values[k + 3]) * Double(other.values[k + 3])
-            k += 4
-        }
-        while k < n {
-            dot += Double(values[k]) * Double(other.values[k])
-            k += 1
-        }
-        return dot
-    }
-
-    /// 余弦相似度（TS lsh-index.ts:307-338 非单位向量路径：
-    /// dot / (sqrt(magQ) * sqrt(magR))，同序计算）。单位向量时与点积一致。
-    /// 任一向量零幅值时返回 0（对应 TS verifyCandidates 跳过零向量行）。
-    public func cosineSimilarity(to other: FaceVector) -> Double {
-        let n = min(values.count, other.values.count)
-        var dot = 0.0
-        var magQ = 0.0
-        var magR = 0.0
-        var k = 0
-        while k + 4 <= n {
-            let q0 = Double(values[k])
-            let q1 = Double(values[k + 1])
-            let q2 = Double(values[k + 2])
-            let q3 = Double(values[k + 3])
-            let r0 = Double(other.values[k])
-            let r1 = Double(other.values[k + 1])
-            let r2 = Double(other.values[k + 2])
-            let r3 = Double(other.values[k + 3])
-            dot += q0 * r0 + q1 * r1 + q2 * r2 + q3 * r3
-            magQ += q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3
-            magR += r0 * r0 + r1 * r1 + r2 * r2 + r3 * r3
-            k += 4
-        }
-        while k < n {
-            let q = Double(values[k])
-            let r = Double(other.values[k])
-            dot += q * r
-            magQ += q * q
-            magR += r * r
-            k += 1
-        }
-        if magQ == 0 || magR == 0 { return 0 }
-        return dot / (sqrt(magQ) * sqrt(magR))
-    }
+    // 注：移植时此处曾有点积/余弦两个公开工具方法（TS hnsw-index.ts:69-89、
+    // lsh-index.ts:307-338 的逐字对应），但**从未有生产消费者**——检索热路径直接在
+    // 连续缓冲上按偏移量展开计算（见 CosineLshIndex 的扫描循环），并带两项不同语义：
+    // 长度固定为 `dim`（不做 min 截断）、零幅值候选**跳过**而非返回 0。
+    // 二者都在无用代码清理中删除，检索数学的唯一实现即热路径本身。
 }
 
 // MARK: - HNSW
@@ -187,11 +139,6 @@ public final class CosineHnswIndex {
 
     public var size: Int { count }
 
-    /// 对账测试专用（@testable）：导出各节点层级，fixture 校验 PRNG 确定性。
-    internal var debugLevels: [Int] {
-        (0..<count).map { Int(levels[$0]) }
-    }
-
     /// 插入一行（复制进索引）并返回其 id（TS hnsw-index.ts:134-189）。
     @discardableResult
     public func insert(_ vector: [Float]) throws -> Int {
@@ -243,18 +190,6 @@ public final class CosineHnswIndex {
             entryPoint = id
         }
         return id
-    }
-
-    /// 返回与查询行精确余弦 >= `threshold` 的全部行，按得分降序
-    /// （TS hnsw-index.ts:196-209）。查询可位于索引内部（聚类）或
-    /// 独立缓冲（匹配）。
-    public func searchByThreshold(query: [Float], queryOffset: Int = 0, threshold: Double) throws -> HnswHits {
-        let scratch = try searchScratch(query: query, queryOffset: queryOffset, ef: config.efSearch)
-        var hits: [Candidate] = []
-        for s in scratch where s.dist >= threshold {
-            hits.append(s)
-        }
-        return toHits(hits)
     }
 
     /// 返回 k 个最近行（按精确余弦），不受阈值限制（TS hnsw-index.ts:214-221）。
@@ -815,6 +750,9 @@ public final class CosineLshIndex {
                 score = vectorDot(query, queryOffset, rows, rowOffset, dim)
                 if score < threshold { continue }
             } else {
+                // 检索数学的唯一实现：直接在连续缓冲上按偏移展开，避免每个候选分配
+                // FaceVector 数组（性能关键路径）。语义与已删除的 FaceVector 工具方法
+                // 不同：长度固定 `dim`（不截断）、零幅值候选 `continue` 跳过。
                 var dot = 0.0
                 var magQ = 0.0
                 var magR = 0.0

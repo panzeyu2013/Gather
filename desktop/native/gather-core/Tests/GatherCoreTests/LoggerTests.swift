@@ -5,9 +5,11 @@
 import Testing
 @testable import GatherCore
 
+/// 串行化放在**套件**上：测试内直接替换 GatherLogger 的全局 output/minimumLevel，
+/// 并行会相互干扰。Test(.serialized) 对非参数化测试无效（编译告警且不生效）。
+@Suite(.serialized)
 struct LoggerTests {
-    // GatherLogger 为静态可变全局（output/minimumLevel），并行运行会相互干扰，串行执行。
-    @Test(.serialized) func allLevelsEmitNonEmptyTimestampedLines() {
+    @Test func allLevelsEmitNonEmptyTimestampedLines() {
         let lines = captureLines(minimumLevel: .debug) {
             GatherLogger.log("debug message", level: .debug)
             GatherLogger.log("info message", level: .info)
@@ -22,7 +24,7 @@ struct LoggerTests {
         }
     }
 
-    @Test(.serialized) func minimumLevelFiltersLowerSeverity() {
+    @Test func minimumLevelFiltersLowerSeverity() {
         let lines = captureLines(minimumLevel: .warn) {
             GatherLogger.log("debug message", level: .debug)
             GatherLogger.log("info message", level: .info)

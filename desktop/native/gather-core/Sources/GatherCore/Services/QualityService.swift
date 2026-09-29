@@ -1,5 +1,8 @@
 // desktop/native/gather-core/Sources/GatherCore/Services/QualityService.swift
 // TS 源: desktop/src/main/services/quality/quality.service.ts（Phase 3.6 移植，全量）
+//
+// Swift 6 并发说明：analyze 的并行 worker 通过 AnalyzeProgressCounter（同步方法内
+// 加锁）累加完成数——async 上下文禁止直接 lock/unlock，锁纪律由该盒子封装。
 // 技术质量评分服务：quality.analyze（JobService executor 长任务）与 quality.get。
 //
 // 移植差异说明（均为有意取舍）：
@@ -11,13 +14,29 @@
 //   String(describing:) 对齐 TS error.message 语义。
 // - culling 可选依赖经 invalidateCullingLookup 闭包注入（TS 为可注入 CullingService）；
 //   未注入时为 no-op。
-// - 有界并发批处理复用 batchAsync 语义（滑动窗口，结果保序）；进度帧与 checkpoint
+// - 有界并发批处理复用共享 batchAsync（Concurrent/BatchRunner.swift）语义（滑动
+//   窗口，结果保序）；进度帧与 checkpoint
 //  （{ photoIds, nextPhotoIndex }）逐字对齐 TS。
 import Foundation
 #if canImport(ImageIO)
 import ImageIO
 import CoreGraphics
 #endif
+
+/// analyze 并行阶段的完成计数（跨 worker 累加、乱序完成）。
+/// `@unchecked Sendable` 的依据：唯一可变状态 `completed` 只在 `lock` 临界区内读写。
+private final class AnalyzeProgressCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = 0
+
+    /// 同步方法：async 调用方只调它，避免在 async 上下文直接 lock/unlock。
+    func advance() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        completed += 1
+        return completed
+    }
+}
 
 public enum QualityServiceError: Error, Equatable {
     case noAssetFile
@@ -87,7 +106,12 @@ private func regionPixels(
     return (output, regionWidth, regionHeight)
 }
 
-public final class QualityService {
+/// 线程安全说明（Swift 6 `Sendable`）：本类无任何可变状态——全部存储属性
+/// （`photoRepo`/`connection`/`imageProvider`/`statProvider`/
+/// `invalidateCullingLookup`）都是 `let`，构造后不可变，故无需锁。
+/// 标注 `@unchecked` 仅因为依赖的 `PhotoRepo` 与闭包类型未标 `Sendable`；
+/// 不可变即天然可跨并发域共享（比锁更强的保证）。
+public final class QualityService: @unchecked Sendable {
     /// TS: MODEL_ID / MODEL_VERSION。
     public static let modelId = "technical-quality"
     public static let modelVersion = "1"
@@ -175,9 +199,12 @@ public final class QualityService {
 
         // TS: 每 ANALYZE_CONCURRENCY 完成帧上报一次（worker 乱序完成，逐项上报
         // 可能倒退）；末帧（current === total）在循环外只发一次。
-        let progressLock = NSLock()
-        var completed = 0
-        let reportProgress: (Int) -> Void = { current in
+        // Swift 6：async 上下文不可直接 lock/unlock，进度计数的临界区收进
+        // AnalyzeProgressCounter 的同步方法（worker 只是调用它）。
+        let progressCounter = AnalyzeProgressCounter()
+        // Swift 6：本闭包被 batchAsync 的 worker 子任务捕获（sending），故标
+        // @Sendable；捕获量均为 Sendable（photoIds/context/photos.count）。
+        let reportProgress: @Sendable (Int) -> Void = { current in
             // TS: checkpoint 为 { photoIds, nextPhotoIndex }；photoIds 为
             // undefined 时 JSON.stringify 丢弃该键（Swift 侧同样省略）。
             var checkpoint: [String: JSONValue] = ["nextPhotoIndex": .number(Double(current))]
@@ -192,7 +219,7 @@ public final class QualityService {
             ))
         }
 
-        let outcomes = try await mapConcurrent(photos, concurrency: Self.analyzeConcurrency) { photo -> AnalyzeOutcome in
+        let outcomes = try await batchAsync(photos, concurrency: Self.analyzeConcurrency) { photo -> AnalyzeOutcome in
             try context?.throwIfCancelled()
             let assetFileId = photo.assetFileId
             var result: QualityResult
@@ -324,10 +351,7 @@ public final class QualityService {
                     )
                 }
             }
-            progressLock.lock()
-            completed += 1
-            let current = completed
-            progressLock.unlock()
+            let current = progressCounter.advance()
             if current < photos.count && current % Self.analyzeConcurrency == 0 {
                 reportProgress(current)
             }
@@ -581,62 +605,3 @@ private func grayscalePixels(jpeg: Data) -> (pixels: [UInt8], width: Int, height
     return (pixels, width, height)
 }
 #endif
-
-/// TS: batchAsync —— 固定数量常驻 runner 从共享游标取任务（滑动窗口）；
-/// 结果按输入索引保序；首个失败停止调度并传播（取消语义一致）。
-private func mapConcurrent<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = QualityBatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    return collected.sorted { $0.index < $1.index }.map(\.value)
-}
-
-/// 共享游标（滑动窗口调度 + 首个失败即停）。
-private final class QualityBatchCursor {
-    private let lock = NSLock()
-    private var next = 0
-    private let count: Int
-    private var failed = false
-
-    init(count: Int) {
-        self.count = count
-    }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !failed, next < count else { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
-}

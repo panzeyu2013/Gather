@@ -7,6 +7,7 @@
 // 用法：
 //   .build/debug/gather-core-benchmarks            # 2 万/5 万两档全量
 //   .build/debug/gather-core-benchmarks --smoke    # 2 千冒烟档
+//   .build/debug/gather-core-benchmarks --multi-bench  # 多档位单趟 A/B（§4.2 性能证据）
 import Foundation
 import GatherCore
 
@@ -147,6 +148,43 @@ func benchDHashCluster(size: Int, seed: UInt32) throws {
         metric: "genMs=\(String(format: "%.1f", gen)) groups=\(result.groups.count) ungrouped=\(result.ungrouped.count)"))
 }
 
+
+/// §4.2 P1 性能证据：多档位 bitset 路径的单趟共享 vs 逐档独立（旧行为）。
+/// 同一批条目、同一组阈值分别跑 A/B：A = 每档一次 clusterByHash（旧实现每档
+/// 一趟 O(n²)），B = clusterByHashMulti（一次 pair 遍历 + 每档一次 wave BFS）。
+/// 结果逐位比对，不一致直接以非零退出（基准兼作等价性门禁）。
+func benchDHashClusterMulti(size: Int, seed: UInt32) throws {
+    let entries = makeHashEntries(count: size, seed: seed)
+    let thresholds = [4, 8, 12, 16, 20]
+
+    let sincePerTier = DispatchTime.now()
+    let perTier = try thresholds.map { tier in
+        try ClusterEngine.clusterByHash(
+            entries: entries, threshold: tier, minGroupSize: 3, mode: .global)
+    }
+    let perTierMs = elapsedMs(sincePerTier)
+
+    let sinceShared = DispatchTime.now()
+    let shared = try ClusterEngine.clusterByHashMulti(
+        entries: entries, thresholds: thresholds, minGroupSize: 3, mode: .global)
+    let sharedMs = elapsedMs(sinceShared)
+
+    let identical = zip(perTier, shared).allSatisfy { a, b in
+        a.groups == b.groups && a.ungrouped == b.ungrouped
+    }
+
+    emit(MetricRow(
+        benchmark: "similarity", phase: "dhash-cluster-multi", size: size,
+        durationMs: sharedMs,
+        throughputPerSec: Double(size) / max(sharedMs / 1000, 1e-9),
+        metric: "perTierMs=\(String(format: "%.1f", perTierMs)) sharedMs=\(String(format: "%.1f", sharedMs)) speedup=\(String(format: "%.2f", perTierMs / max(sharedMs, 1e-9))) tiers=\(thresholds.count) identical=\(identical)"))
+
+    if !identical {
+        print("benchmark=similarity error=multi-tier-result-mismatch")
+        exit(1)
+    }
+}
+
 func benchEmbeddingCluster(size: Int, seed: UInt32, lshMinPoints: Int) throws {
     let since = DispatchTime.now()
     let entries = makeEmbeddings(count: size, dim: 128, seed: seed)
@@ -253,6 +291,20 @@ func benchLsh(size: Int, seed: UInt32, queries: Int, dim: Int) throws {
 }
 
 // ── 入口 ──
+// 多档位单趟基准（§4.2 P1 性能证据）：只跑该阶段并以非零码报告结果不一致。
+if CommandLine.arguments.contains("--multi-bench") {
+    do {
+        for size in [2_000, 20_000] {
+            try benchDHashClusterMulti(size: size, seed: 0xD4A5)
+        }
+    } catch {
+        print("benchmark=similarity error=\(error)")
+        exit(1)
+    }
+    print("benchmark=similarity phase=dhash-cluster-multi doneMs=\(Int(elapsedMs(start)))")
+    exit(0)
+}
+
 let smoke = CommandLine.arguments.contains("--smoke")
 let sizes: [Int] = smoke ? [2_000] : [20_000, 50_000]
 let queries = smoke ? 20 : 100

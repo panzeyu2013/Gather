@@ -13,8 +13,8 @@ struct FaceKeywordingViewModelTests {
         FaceKeywordingViewModel(sessionId: sessionId, router: StubCommandRouter.empty())
     }
 
-    /// 构造 face.analyze 任务的成功终态事件（终态帧语义：update.message ==
-    /// job.status.rawValue，GatherEventCenter.isTerminal 依赖该约定）。
+    /// 构造 face.analyze 任务的终态事件（GatherEventCenter.isTerminal 只看
+    /// job.status；update.message 是真实 progressMessage，此处无需伪造）。
     private func terminalEvent(
         sessionId: String,
         status: AnalysisJobStatus = .succeeded
@@ -30,7 +30,7 @@ struct FaceKeywordingViewModelTests {
                 priority: 0,
                 progressCurrent: 10,
                 progressTotal: 10,
-                progressMessage: status.rawValue,
+                progressMessage: "",
                 inputFingerprint: "",
                 modelId: "",
                 modelVersion: "",
@@ -208,5 +208,218 @@ struct FaceKeywordingViewModelTests {
         vm.load()
         #expect(vm.step == .writeback)
         #expect(vm.roleFilter == "张三")
+    }
+
+    // ── 破坏性命令确认语义（confirmed 只能来自用户确认分支）──
+
+    @Test("fkw.unbind：未确认不发命令，确认后带 confirmed: true")
+    func unbindRequiresConfirmation() async {
+        let router = RecordingCommandRouter()
+        let vm = FaceKeywordingViewModel(sessionId: "session-a", router: router)
+        let cluster = FaceClusterData(
+            id: 7, sessionId: "session-a", label: "簇 7", size: 3,
+            status: "new", thumbnailBase64: "", binding: nil,
+            thumbnailPhotoId: nil, members: [])
+        await vm.unbind(cluster, confirmed: false)
+        #expect(router.params(for: "fkw.unbind").isEmpty, "用户取消后不得发出 fkw.unbind")
+        await vm.unbind(cluster, confirmed: true)
+        #expect(router.confirmedCallCount("fkw.unbind") == 1, "确认后必须带 confirmed: true 发出")
+    }
+
+    @Test("fkw.writeback 重试：未确认不发命令")
+    func retryRequiresConfirmation() async {
+        let router = RecordingCommandRouter()
+        let vm = FaceKeywordingViewModel(sessionId: "session-a", router: router)
+        await vm.retryFailed(confirmed: false)
+        #expect(router.params(for: "fkw.writeback").isEmpty, "用户取消后不得发出 fkw.writeback")
+    }
+
+    @Test("fkw.cleanup：未确认不发命令，确认后带 confirmed: true")
+    func cleanupRequiresConfirmation() async {
+        let router = RecordingCommandRouter()
+        let vm = FaceKeywordingViewModel(sessionId: "session-a", router: router)
+        await vm.cleanup(confirmed: false)
+        #expect(router.params(for: "fkw.cleanup").isEmpty, "用户取消后不得发出 fkw.cleanup")
+        await vm.cleanup(confirmed: true)
+        #expect(router.confirmedCallCount("fkw.cleanup") == 1, "确认后必须带 confirmed: true 发出")
+    }
+
+    // ── 错误上屏判定（对抗审查高 4：中文可读原因被 errorText 吞掉） ──
+
+    @Test("错误判定：FaceEmbeddingError 的中文原因原样上屏，不回落通用文案")
+    func embeddingErrorReasonIsShownVerbatim() {
+        let missing = "/tmp/gather-embed-\(UUID().uuidString).mlmodelc"
+        let error = FaceEmbeddingError.modelNotFound(missing)
+        AppLanguageLock.withStableCopy {
+            let failure = FaceKeywordingViewModel.analysisFailure(for: error)
+            #expect(failure.text == error.description, "必须原样复用 core 的中文原因")
+            #expect(failure.text.contains("人脸嵌入模型不存在"), "实际：\(failure.text)")
+            #expect(failure.text.contains(missing), "路径必须可见，用户才知道改哪个设置")
+            #expect(failure.detail == nil, "中文可读原因已上屏，不需要 tooltip")
+        }
+    }
+
+    @Test("错误判定：英文 NSError 散文不泄露——回落通用文案，原文只进 tooltip")
+    func englishNSErrorProseDoesNotLeak() {
+        let prose = "Failed to load model at /tmp/x.mlmodel: The file couldn't be opened."
+        let error = NSError(
+            domain: "GatherCore.FaceEmbeddingError",
+            code: 0,
+            userInfo: [NSLocalizedDescriptionKey: prose]
+        )
+        AppLanguageLock.withStableCopy {
+            let failure = FaceKeywordingViewModel.analysisFailure(for: error)
+            #expect(failure.text == GatherLocalization.errorText("NOT_A_CODE"), "必须回落通用文案")
+            #expect(!failure.text.contains("Failed"))
+            #expect(!failure.text.contains("couldn't"))
+            #expect(failure.detail == prose, "原文必须保留在 tooltip")
+        }
+    }
+
+    @Test("错误判定：已知错误码仍走本地化模板（与既有错误漏斗一致）")
+    func knownErrorCodeStillTranslates() {
+        AppLanguageLock.withStableCopy {
+            let failure = FaceKeywordingViewModel.analysisFailure(forMessage: "SESSION_NOT_FOUND")
+            #expect(failure.text == GatherLocalization.errorText("SESSION_NOT_FOUND"))
+            #expect(failure.detail == nil)
+        }
+    }
+
+    @Test("分析失败端到端：core 中文诊断经命令层错误信封上屏")
+    func analyzeFailureShowsChineseReasonEndToEnd() async {
+        let missing = "/tmp/gather-embed-\(UUID().uuidString).mlmodelc"
+        let reason = FaceEmbeddingError.modelNotFound(missing).description
+        let vm = FaceKeywordingViewModel(
+            sessionId: "session-a",
+            router: FailingAnalyzeRouter(errorPayload: reason)
+        )
+        await vm.analyze()
+        #expect(vm.analysisPhase == .failed)
+        let message = vm.errorMessage ?? ""
+        #expect(message.contains("人脸嵌入模型不存在"), "实际：\(message)")
+        #expect(message.contains(missing))
+        #expect(AppLanguageLock.withStableCopy { message != GatherLocalization.errorText("NOT_A_CODE") })
+        #expect(vm.errorDetail == nil)
+        #expect(vm.errorTooltip == nil, "中文原因直接上屏，tooltip 不应重复")
+    }
+
+    @Test("分析失败端到端：英文诊断上屏为通用文案，原文只进 tooltip")
+    func analyzeFailureHidesEnglishProseEndToEnd() async {
+        let prose = "The operation couldn't be completed. (GatherCore.FaceEmbeddingError error 0.)"
+        let vm = FaceKeywordingViewModel(
+            sessionId: "session-a",
+            router: FailingAnalyzeRouter(errorPayload: prose)
+        )
+        await vm.analyze()
+        #expect(vm.analysisPhase == .failed)
+        let message = vm.errorMessage ?? ""
+        // analyze 是异步的，锁外执行期间其它套件可能临时切换界面语言；两种语言下的
+        // 通用回退文案都算合法结果，但"必须是回退文案"这一断言不放宽。
+        let zhFallback = AppLanguageLock.withCopy("zh-CN") { GatherLocalization.errorText("NOT_A_CODE") }
+        let enFallback = AppLanguageLock.withCopy("en") { GatherLocalization.errorText("NOT_A_CODE") }
+        #expect(message == zhFallback || message == enFallback, "实际：\(message)")
+        #expect(!message.contains("operation"))
+        #expect(vm.errorTooltip == prose)
+    }
+
+    // ── 部分失败可见性（新增高风险：done + encodingFailures > 0 伪装成完成） ──
+
+    @Test("部分失败可见：done + encodingFailures > 0 必须警示，不得显示『分析完成』")
+    func partialEncodingFailuresWarn() async {
+        let router = StubCommandRouter()
+        router.asyncResponses = [
+            "fkw.analyze": try! JSONValue(from: FaceAnalysisResult(
+                status: "done", detectionFailures: 0, encodingFailures: 2)),
+        ]
+        let vm = FaceKeywordingViewModel(sessionId: "session-a", router: router)
+        await vm.analyze()
+        #expect(vm.analysisPhase == .done)
+        let warning = vm.encodingFailureWarning ?? ""
+        #expect(warning.contains("2"), "必须给出失败数量，实际：\(warning)")
+        #expect(warning.contains("重试"), "必须说明下次分析会自动重试")
+        #expect(vm.notice == nil, "存在编码失败时不得出示『人脸分析完成』")
+    }
+
+    @Test("零编码失败：警示清除并恢复『分析完成』提示")
+    func cleanAnalysisClearsEncodingWarning() async {
+        let router = StubCommandRouter()
+        router.asyncResponses = [
+            "fkw.analyze": try! JSONValue(from: FaceAnalysisResult(
+                status: "done", detectionFailures: 0, encodingFailures: 3)),
+        ]
+        let vm = FaceKeywordingViewModel(sessionId: "session-a", router: router)
+        await vm.analyze()
+        #expect(vm.encodingFailureWarning != nil, "先有一次部分失败")
+
+        router.asyncResponses = [
+            "fkw.analyze": try! JSONValue(from: FaceAnalysisResult(
+                status: "done", detectionFailures: 0, encodingFailures: 0)),
+        ]
+        await vm.analyze()
+        #expect(vm.encodingFailureWarning == nil)
+        #expect(vm.notice == GatherLocalization.l("人脸分析完成"))
+    }
+}
+
+// MARK: - 确认语义测试支撑
+
+/// 记录命令与参数的路由（StubCommandRouter 不回放调用记录，无法断言「没发命令」）。
+private final class RecordingCommandRouter: CommandRouter, @unchecked Sendable {
+    private(set) var executed: [(command: String, params: [String: GatherCore.JSONValue])] = []
+
+    func execute(_ command: String, params: [String: GatherCore.JSONValue]) throws -> GatherCore.JSONValue {
+        executed.append((command, params))
+        return .null
+    }
+
+    func executeAsync(
+        _ command: String,
+        params: [String: GatherCore.JSONValue],
+        completion: @escaping @Sendable (WebResponse) -> Void
+    ) {
+        executed.append((command, params))
+        completion(WebResponse(ok: true, data: .null))
+    }
+
+    /// 某命令的全部调用参数（用于「取消不发命令」断言）。
+    func params(for command: String) -> [[String: GatherCore.JSONValue]] {
+        executed.filter { $0.command == command }.map(\.params)
+    }
+
+    /// 某命令带 confirmed: true 的调用次数（用于「确认后才传 true」断言）。
+    func confirmedCallCount(_ command: String) -> Int {
+        params(for: command).filter { params in
+            if case .bool(true) = params["confirmed"] { return true }
+            return false
+        }.count
+    }
+}
+
+/// fkw.analyze 返回错误信封、其余命令成功：复现命令层错误的真实上抛路径
+/// （WebResponse.error → NativeCommandClient 抛 NativeCommandError.failed）。
+private final class FailingAnalyzeRouter: CommandRouter, @unchecked Sendable {
+    private let errorPayload: String
+
+    init(errorPayload: String) {
+        self.errorPayload = errorPayload
+    }
+
+    func execute(
+        _ command: String,
+        params: [String: GatherCore.JSONValue]
+    ) throws -> GatherCore.JSONValue {
+        .null
+    }
+
+    func executeAsync(
+        _ command: String,
+        params: [String: GatherCore.JSONValue],
+        completion: @escaping @Sendable (WebResponse) -> Void
+    ) {
+        if command == "fkw.analyze" {
+            completion(WebResponse(ok: false, error: errorPayload))
+        } else {
+            completion(WebResponse(ok: true, data: .null))
+        }
     }
 }

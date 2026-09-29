@@ -39,6 +39,7 @@ private func makeHarness(
         sessionRepo: sessionRepo,
         photoRepo: PhotoRepo(connection: db),
         assetRepo: AssetRepo(connection: db),
+        faceRepo: FaceRepo(connection: db),
         getDimensions: getDimensions,
         getSetting: { key, defaultValue in
             key == "lazy_checksum" ? lazyChecksum : defaultValue
@@ -726,3 +727,567 @@ struct ChecksumBackfillTests {
         #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos WHERE checksum != ''") == 32)
     }
 }
+
+// MARK: - 扫描范围（显式路径集合）与路径归一化
+
+/// 记录预热批次（actor：预热闭包可能从后台执行）。
+private actor WarmupRecorder {
+    private(set) var batches: [[String]] = []
+    func record(_ ids: [String]) { batches.append(ids) }
+}
+
+/// 记录设置读取（键 + 生产侧传入的默认值），用于收紧「identity 返回 default」替身。
+private final class SettingsReadRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(key: String, defaultValue: String)] = []
+
+    func record(_ key: String, _ defaultValue: String) {
+        lock.lock()
+        storage.append((key, defaultValue))
+        lock.unlock()
+    }
+
+    var reads: [(key: String, defaultValue: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+@Suite("IndexService 扫描范围与路径归一化")
+struct IndexScanScopeTests {
+    /// 缺陷③ 接线回归：扫描新插入的照片必须交给元数据预热（EXIF →
+    /// photo_metadata_cache 的 date_taken / camera_model；RAW/JPEG 按时间自动
+    /// 合并完全依赖这两列）。旧实现从无调用点 → 自动合并恒为 0。
+    @Test("new photos are handed to the metadata warmup exactly once")
+    func scanWarpsNewPhotoIdsForMetadata() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = try writeTempFile(in: root, name: "a.jpg")
+        _ = try writeTempFile(in: root, name: "b.jpg")
+
+        let db = try makeMigratedDB()
+        let sessionRepo = SessionRepo(connection: db)
+        let session = try sessionRepo.create(name: "Warmup", source: "folder", sourcePath: root)
+        let recorder = WarmupRecorder()
+        let indexer = IndexerService(
+            connection: db,
+            sessionRepo: sessionRepo,
+            photoRepo: PhotoRepo(connection: db),
+            assetRepo: AssetRepo(connection: db),
+            getDimensions: { _ in (100, 80) },
+            getSetting: { _, defaultValue in defaultValue },
+            warmMetadata: { ids in await recorder.record(ids) }
+        )
+
+        _ = try await indexer.scanSession(sessionId: session.id)
+        let batches = await recorder.batches
+        #expect(batches.count == 1, "一次扫描只预热一次（按批）")
+        #expect(batches.first?.count == 2, "两张新照片的 id 都必须交给预热")
+
+        // 二次扫描没有任何新行 → 不得重复提取 EXIF。
+        _ = try await indexer.scanSession(sessionId: session.id)
+        #expect(await recorder.batches.count == 1)
+    }
+
+    /// 文件导入的核心回归：会话 source_path 为空（显式文件集合作用域）时，
+    /// 扫描集合必须**恰好**是调用方给定的路径集合——同目录下的其它照片、
+    /// 子目录里的照片都不得被顺带导入。
+    @Test("explicit paths import only the requested files, never the sibling files")
+    func explicitPathsDoNotWiden() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let wanted = try writeTempFile(in: root, name: "wanted.jpg")
+        _ = try writeTempFile(in: root, name: "sibling.jpg")
+        let sub = root + "/sub"
+        try FileManager.default.createDirectory(atPath: sub, withIntermediateDirectories: true)
+        _ = try writeTempFile(in: sub, name: "nested.jpg")
+
+        let harness = try makeHarness(root: root)
+        // 文件导入语义：source_path 留空。
+        let fileScoped = try harness.sessionRepo.create(name: "Files", source: "local")
+        let result = try await harness.indexer.scanSession(
+            sessionId: fileScoped.id,
+            requestedPaths: [wanted]
+        )
+
+        #expect(result.added == 1)
+        #expect(result.discovered == 1)
+        let paths = try harness.db.prepare(
+            "SELECT filepath FROM photos WHERE session_id = ? ORDER BY filepath"
+        ).query([.text(fileScoped.id)]).compactMap { $0[0].textValue }
+        #expect(paths == [ScanPath.canonical(wanted)])
+        // 同目录/子目录的未选择文件绝不入库。
+        #expect(!paths.contains { $0.hasSuffix("sibling.jpg") })
+        #expect(!paths.contains { $0.hasSuffix("nested.jpg") })
+    }
+
+    /// 即使会话带 source_path（目录作用域），一旦调用方给出显式路径集合，
+    /// 扫描也必须服从集合而不是回退到全树——否则「重新索引」会放大范围。
+    @Test("explicit paths win over the session source path (no fallback to the full tree)")
+    func explicitPathsWinOverSourcePath() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let wanted = try writeTempFile(in: root, name: "wanted.jpg")
+        _ = try writeTempFile(in: root, name: "other.jpg")
+
+        let harness = try makeHarness(root: root)
+        let result = try await harness.indexer.scanSession(
+            sessionId: harness.sessionId,
+            requestedPaths: [wanted]
+        )
+
+        #expect(result.added == 1)
+        let paths = try harness.db.prepare(
+            "SELECT filepath FROM photos WHERE session_id = ? ORDER BY filepath"
+        ).query([.text(harness.sessionId)]).compactMap { $0[0].textValue }
+        #expect(paths == [ScanPath.canonical(wanted)])
+    }
+
+    /// 集合里的目录条目只在**它自己**范围内递归展开（用户显式选择了这个
+    /// 目录），集合外的目录不受影响。
+    @Test("a requested directory expands inside itself only")
+    func requestedDirectoryExpandsWithinItself() async throws {
+        let base = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let picked = base + "/picked"
+        let outside = base + "/outside"
+        try FileManager.default.createDirectory(atPath: picked, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: picked + "/nested", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
+        _ = try writeTempFile(in: picked, name: "a.jpg")
+        _ = try writeTempFile(in: picked + "/nested", name: "b.jpg")
+        _ = try writeTempFile(in: outside, name: "c.jpg")
+
+        let harness = try makeHarness(root: base)
+        let fileScoped = try harness.sessionRepo.create(name: "Dir pick", source: "local")
+        let result = try await harness.indexer.scanSession(
+            sessionId: fileScoped.id,
+            requestedPaths: [picked]
+        )
+
+        #expect(result.added == 2)
+        let paths = try harness.db.prepare(
+            "SELECT filepath FROM photos WHERE session_id = ? ORDER BY filepath"
+        ).query([.text(fileScoped.id)]).compactMap { $0[0].textValue }
+        #expect(paths.contains { $0.hasSuffix("a.jpg") })
+        #expect(paths.contains { $0.hasSuffix("b.jpg") })
+        #expect(!paths.contains { $0.hasSuffix("c.jpg") })
+    }
+
+    /// 目录导入（requestedPaths == nil）仍然递归 source_path 全树——收紧范围
+    /// 不能把既有的一跳目录导入一起收紧掉。
+    @Test("nil requested paths keep the directory-scope full-tree scan")
+    func nilPathsScanTheWholeTree() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = try writeTempFile(in: root, name: "a.jpg")
+        let sub = root + "/sub"
+        try FileManager.default.createDirectory(atPath: sub, withIntermediateDirectories: true)
+        _ = try writeTempFile(in: sub, name: "b.jpg")
+
+        let harness = try makeHarness(root: root)
+        let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
+
+        #expect(result.added == 2)
+    }
+
+    /// 空集合是合法输入：扫描零个路径并返回零结果，不报错也不回退全树。
+    @Test("an empty explicit set scans nothing and does not fall back")
+    func emptyExplicitSetScansNothing() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = try writeTempFile(in: root, name: "a.jpg")
+
+        let harness = try makeHarness(root: root)
+        let result = try await harness.indexer.scanSession(sessionId: harness.sessionId, requestedPaths: [])
+
+        #expect(result.discovered == 0)
+        #expect(result.added == 0)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos") == 0)
+    }
+
+    /// 文件系统根 / 主目录不得作为递归扫描根：显式失败，而不是照扫不误。
+    @Test("a forbidden directory root fails explicitly instead of scanning it")
+    func forbiddenRootFailsExplicitly() async throws {
+        let db = try makeMigratedDB()
+        let sessionRepo = SessionRepo(connection: db)
+        let session = try sessionRepo.create(
+            name: "Forbidden", source: "local", sourcePath: NSHomeDirectory()
+        )
+        let indexer = IndexerService(
+            connection: db,
+            sessionRepo: sessionRepo,
+            photoRepo: PhotoRepo(connection: db),
+            assetRepo: AssetRepo(connection: db)
+        )
+
+        await #expect(throws: IndexerServiceError.sourceRootForbidden) {
+            try await indexer.scanSession(sessionId: session.id)
+        }
+        // 显式路径集合不受该守卫影响（不是递归作用域）。
+        let explicit = try await indexer.scanSession(
+            sessionId: session.id,
+            requestedPaths: [NSHomeDirectory() + "/definitely-missing.jpg"]
+        )
+        #expect(explicit.added == 0)
+        #expect(IndexerServiceError.sourceRootForbidden.gatherCode == .SESSION_SOURCE_ROOT_FORBIDDEN)
+    }
+
+    /// 显式集合同样不得把 home / 文件系统根当作递归根：混合选择「目录 + 文件」
+    /// 时用户可能把 home 传进来，非 nil 分支也必须逐个条目显式失败。
+    @Test("a forbidden entry in an explicit set fails instead of being scanned")
+    func explicitForbiddenRootFails() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let harness = try makeHarness(root: root)
+        _ = try writeTempFile(in: root, name: "a.jpg")
+
+        await #expect(throws: IndexerServiceError.sourceRootForbidden) {
+            try await harness.indexer.scanSession(
+                sessionId: harness.sessionId,
+                requestedPaths: [root + "/a.jpg", NSHomeDirectory()]
+            )
+        }
+        await #expect(throws: IndexerServiceError.sourceRootForbidden) {
+            try await harness.indexer.scanSession(
+                sessionId: harness.sessionId,
+                requestedPaths: ["/"]
+            )
+        }
+        // 抛错发生在任何写入之前：库里不应留下半次扫描的痕迹。
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos") == 0)
+    }
+
+    /// 嵌套/冗余输入（目录 + 其内部文件、或同一条目的词法变体）必须收敛成
+    /// 一次扫描：祖先条目胜出，重复条目丢弃，计数不得翻倍。
+    @Test("an ancestor entry covers its descendants without double counting")
+    func requestedAncestorCoversDescendants() async throws {
+        let base = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let picked = base + "/picked"
+        try FileManager.default.createDirectory(atPath: picked, withIntermediateDirectories: true)
+        let inner = try writeTempFile(in: picked, name: "a.jpg")
+        _ = try writeTempFile(in: picked, name: "b.jpg")
+
+        let harness = try makeHarness(root: base)
+        let fileScoped = try harness.sessionRepo.create(name: "Ancestor", source: "local")
+        // 目录 + 目录内文件 + 同一文件的词法变体（/./ 变体归一化后同键）。
+        let result = try await harness.indexer.scanSession(
+            sessionId: fileScoped.id,
+            requestedPaths: [inner, picked, picked + "/./a.jpg"]
+        )
+
+        #expect(result.discovered == 2, "a.jpg 只能被计入一次")
+        #expect(result.added == 2)
+        let paths = try harness.db.prepare(
+            "SELECT filepath FROM photos WHERE session_id = ? ORDER BY filepath"
+        ).query([.text(fileScoped.id)]).compactMap { $0[0].textValue }
+        #expect(paths.count == 2)
+        #expect(paths == paths.sorted())
+    }
+
+    /// 历史库可能留下「字符串不同、归一化后相同」的两行（唯一索引只按字符串，
+    /// 拦不住 → 旧实现用唯一键字典构造路径表时直接 trap）。索引器必须确定性
+    /// 收敛（首见者胜 = 最早 rowid）+ 显式上报，绝不崩溃。
+    @Test("normalized duplicate paths neither trap nor get imported twice")
+    func normalizedDuplicatesDoNotTrap() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let harness = try makeHarness(root: root)
+        // 同一个文件的两种词法拼写（唯一索引按字符串，拦不住）。
+        try insertPhotoRow(
+            harness.db, id: "p1", sessionId: harness.sessionId,
+            filepath: "/tmp/gather-dup.jpg", assetFileId: nil
+        )
+        try insertPhotoRow(
+            harness.db, id: "p2", sessionId: harness.sessionId,
+            filepath: "/tmp/./gather-dup.jpg", assetFileId: nil
+        )
+        let key = ScanPath.canonical("/tmp/gather-dup.jpg")
+        #expect(ScanPath.canonical("/tmp/./gather-dup.jpg") == key,
+            "词法变体必须归一化到同一个键，否则唯一索引形同虚设")
+
+        let result = try await harness.indexer.scanSession(
+            sessionId: harness.sessionId,
+            requestedPaths: ["/tmp/gather-dup.jpg"]
+        )
+
+        #expect(result.added == 0, "同一物理文件不得再插一行")
+        #expect(result.failed.contains(key), "重复的归一化路径必须显式上报")
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos") == 2)
+    }
+
+    /// 预热参数必须是**本批真正插入**的 photo id：
+    /// - 只含本批新行（不得把已存在的行再喂一遍，也不得空批次）；
+    /// - 不得退化成文件路径（旧实现无调用点，接线错误同样会让 EXIF 永不回填）。
+    /// 变异「warmMetadata(insertedIds) → warmMetadata(newEntries.map(\.filepath))」可杀。
+    @Test("metadata warmup receives exactly the photo ids inserted by this batch")
+    func warmupReceivesInsertedPhotoIds() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = try writeTempFile(in: root, name: "a.jpg")
+
+        let db = try makeMigratedDB()
+        let sessionRepo = SessionRepo(connection: db)
+        let session = try sessionRepo.create(name: "WarmIds", source: "folder", sourcePath: root)
+        let recorder = WarmupRecorder()
+        let indexer = IndexerService(
+            connection: db,
+            sessionRepo: sessionRepo,
+            photoRepo: PhotoRepo(connection: db),
+            assetRepo: AssetRepo(connection: db),
+            getDimensions: { _ in (100, 80) },
+            getSetting: { _, defaultValue in defaultValue },
+            warmMetadata: { ids in await recorder.record(ids) }
+        )
+
+        _ = try await indexer.scanSession(sessionId: session.id)
+        _ = try writeTempFile(in: root, name: "b.jpg")
+        _ = try await indexer.scanSession(sessionId: session.id)
+
+        let batches = await recorder.batches
+        #expect(batches.count == 2, "两次扫描各预热一次，实际 \(batches.count)")
+
+        let allIds = try db.prepare(
+            "SELECT id FROM photos WHERE session_id = ? ORDER BY filepath"
+        ).query([.text(session.id)]).compactMap { $0[0].textValue }
+        #expect(allIds.count == 2, "两轮扫描后应有两行，实际 \(allIds.count)")
+        #expect(batches[1].count == 1, "第二批只应携带本次插入的 1 个 id，实际 \(batches[1])")
+        #expect(batches[1].allSatisfy { allIds.contains($0) },
+                "预热参数必须是 photo id（真实行 id），实际 \(batches[1])")
+    }
+
+    /// ScanPath.canonical 的 /private 前缀折叠：同一条物理路径的两种拼写必须落到
+    /// 同一个键（/tmp → private/tmp、/var → private/var，macOS 实测符号链接）。
+    /// 变异「删掉 /private/tmp 折叠」可杀。
+    @Test("canonical folds /private so both spellings of /tmp and /var agree")
+    func canonicalFoldsPrivatePrefix() {
+        // 独立 oracle：/tmp、/var 是指向 /private/* 的符号链接（不是实现自证）。
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: "/tmp")) == "private/tmp")
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: "/var")) == "private/var")
+        #expect(ScanPath.canonical("/private/tmp/gather-fold/photo.jpg")
+                == ScanPath.canonical("/tmp/gather-fold/photo.jpg"),
+                "/tmp 两种拼写必须归一到同一个键")
+        #expect(ScanPath.canonical("/private/var/folders/gather-fold/photo.jpg")
+                == ScanPath.canonical("/var/folders/gather-fold/photo.jpg"),
+                "/var 两种拼写必须归一到同一个键")
+    }
+
+    /// 禁根判定是「home 及其祖先」，不只是 home 自身：/Users 这类祖先目录被当作
+    /// 扫描根同样会退化成全盘递归。纯函数断言，不触发真实递归。
+    /// 变异「isForbiddenRoot 只比较 resolved == home」可杀。
+    @Test("isForbiddenRoot rejects home and its ancestors, not only home itself")
+    func forbiddenRootCoversAncestorsOfHome() {
+        let home = NSHomeDirectory()
+        #expect(ScanPath.isForbiddenRoot(home), "home 自身必须是禁根")
+        #expect(ScanPath.isForbiddenRoot("/"), "文件系统根必须是禁根")
+        let parent = (home as NSString).deletingLastPathComponent
+        if parent != "/" && !parent.isEmpty {
+            #expect(ScanPath.isForbiddenRoot(parent), "home 的祖先 \(parent) 必须是禁根")
+        }
+        #expect(!ScanPath.isForbiddenRoot("/tmp/gather-not-a-forbidden-root/photo.jpg"),
+                "普通目录不得被误判为禁根")
+    }
+
+    /// 设置读取的键名与默认值同样是契约：替身「identity 返回 default」会让
+    /// 键名写错、默认值写错都静默通过。这里把生产调用点传的键名/默认值钉成
+    /// 可审阅的字面量（不再是「替身返回什么就断言什么」）。
+    @Test("settings keys and production defaults are pinned")
+    func settingsKeysAndDefaultsArePinned() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = try writeTempFile(in: root, name: "a.jpg")
+
+        let db = try makeMigratedDB()
+        let sessionRepo = SessionRepo(connection: db)
+        let session = try sessionRepo.create(name: "Settings", source: "folder", sourcePath: root)
+        let recorder = SettingsReadRecorder()
+        let indexer = IndexerService(
+            connection: db,
+            sessionRepo: sessionRepo,
+            photoRepo: PhotoRepo(connection: db),
+            assetRepo: AssetRepo(connection: db),
+            getDimensions: { _ in (100, 80) },
+            getSetting: { key, defaultValue in
+                recorder.record(key, defaultValue)
+                return defaultValue
+            }
+        )
+
+        _ = try await indexer.scanSession(sessionId: session.id)
+
+        let reads = recorder.reads
+        #expect(reads.contains { $0.key == "disk_cache_dir" && $0.defaultValue == "" },
+                "disk_cache_dir 缺省必须为空串（未配置时不走自定义缓存目录），实际读取 \(reads)")
+        #expect(reads.contains { $0.key == "lazy_checksum" && $0.defaultValue == "true" },
+                "lazy_checksum 缺省必须为 true（首次扫描不算校验和），实际读取 \(reads)")
+    }
+}
+
+// MARK: - 人脸派生结果失效（内容变化只命中本批照片，用户绑定不清）
+
+/// Float32 小端 BLOB（face_observations.embedding / person_embeddings.embedding 同格式）。
+private func faceEmbeddingBlob(_ values: [Float]) -> Data {
+    var data = Data(count: values.count * MemoryLayout<Float>.size)
+    data.withUnsafeMutableBytes { buffer in
+        values.withUnsafeBytes { source in
+            buffer.copyMemory(from: source)
+        }
+    }
+    return data
+}
+
+/// 观察 + 分析状态 + 已绑定簇（含成员）+ 人物 + 一条 person_embeddings。
+private func seedBoundFace(
+    _ db: DBConnection,
+    sessionId: String,
+    clusterId: Int64,
+    observationId: Int64,
+    photoId: String,
+    roleName: String,
+    personId: String
+) throws {
+    let now = "2026-01-01T00:00:00.000Z"
+    let embedding = faceEmbeddingBlob([1, 0, 0, 0])
+    _ = try db.prepare("""
+        INSERT INTO face_observations (id, photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h,
+                                       embedding, confidence, source_file_size, source_file_mtime_ms,
+                                       analysis_signature, created_at)
+        VALUES (?, ?, ?, 1, 2, 3, 4, ?, 0.9, 10, 20, 'sig', ?)
+        """).run([.int(observationId), .text(photoId), .text(sessionId), .blob(embedding), .text(now)])
+    _ = try db.prepare("""
+        INSERT INTO face_analysis_state (photo_id, session_id, source_file_size, source_file_mtime_ms,
+                                         analysis_signature, updated_at)
+        VALUES (?, ?, 10, 20, 'sig', ?)
+        """).run([.text(photoId), .text(sessionId), .text(now)])
+    _ = try db.prepare("""
+        INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64,
+                                   thumbnail_path, created_at, updated_at)
+        VALUES (?, ?, ?, 1, 'bound', '', '', ?, ?)
+        """).run([.int(clusterId), .text(sessionId), .text(roleName), .text(now), .text(now)])
+    _ = try db.prepare("""
+        INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence, observation_id)
+        VALUES (?, ?, ?, '[1,2,3,4]', 0.9, ?)
+        """).run([.int(clusterId), .text(sessionId), .text(photoId), .int(observationId)])
+    _ = try db.prepare("""
+        INSERT INTO role_bindings (cluster_id, session_id, role_name, keywords, created_at, updated_at)
+        VALUES (?, ?, ?, '[]', ?, ?)
+        """).run([.int(clusterId), .text(sessionId), .text(roleName), .text(now), .text(now)])
+    _ = try db.prepare("""
+        INSERT INTO persons (id, name, keywords, thumbnail_base64, notes, match_threshold, created_at, updated_at)
+        VALUES (?, ?, '[]', '', '', 0.65, ?, ?)
+        """).run([.text(personId), .text(roleName), .text(now), .text(now)])
+    _ = try db.prepare("""
+        INSERT INTO person_embeddings (person_id, embedding, photo_id, session_id, face_observation_id,
+                                       face_bbox, quality, created_at)
+        VALUES (?, ?, ?, ?, ?, '[1,2,3,4]', 0.9, ?)
+        """).run([
+            .text(personId), .blob(embedding), .text(photoId), .text(sessionId), .int(observationId), .text(now),
+        ])
+}
+
+private struct InvalidationScenario {
+    let harness: IndexerHarness
+    let root: String
+    let faceRepo: FaceRepo
+}
+
+/// changed（asset_files 基线与真实文件不符 → 判定内容变化）与 untouched
+/// （基线与真实 stat + checksum 一致 → 判定不变）两张照片，各带一个已绑定簇
+/// （Alice / Bob）+ 观察 + person_embeddings，然后跑一次真实 scanSession。
+private func makeInvalidationScenario() async throws -> InvalidationScenario {
+    let root = try makeTempDir()
+    let changedPath = root + "/changed.jpg"
+    let untouchedPath = root + "/untouched.jpg"
+    let changedContent = "changed-content"
+    let untouchedContent = "untouched-content"
+    try Data(changedContent.utf8).write(to: URL(fileURLWithPath: changedPath))
+    try Data(untouchedContent.utf8).write(to: URL(fileURLWithPath: untouchedPath))
+
+    let harness = try makeHarness(root: root)
+    // changed：大小/时间与真实文件不符 → contentChanged；checksum 留空是安全的
+    // （判定变化后本就要重算）。
+    try insertAssetFileRow(harness.db, id: "file-changed", filepath: changedPath,
+                           fileSize: 1, fileMtimeMs: 1, checksum: "")
+    // untouched：三项基线全部与真实文件一致 → 不进入本批失效集合。
+    let untouchedStat = try IndexerService.defaultStat(untouchedPath)
+    try insertAssetFileRow(harness.db, id: "file-untouched", filepath: untouchedPath,
+                           fileSize: untouchedStat.size, fileMtimeMs: untouchedStat.mtimeMs,
+                           checksum: sha256Hex(untouchedContent))
+    try insertPhotoRow(harness.db, id: "changed", sessionId: harness.sessionId,
+                       filepath: changedPath, assetFileId: "file-changed")
+    try insertPhotoRow(harness.db, id: "untouched", sessionId: harness.sessionId,
+                       filepath: untouchedPath, assetFileId: "file-untouched")
+    try seedBoundFace(
+        harness.db, sessionId: harness.sessionId, clusterId: 1, observationId: 11,
+        photoId: "changed", roleName: "Alice", personId: "person-alice")
+    try seedBoundFace(
+        harness.db, sessionId: harness.sessionId, clusterId: 2, observationId: 12,
+        photoId: "untouched", roleName: "Bob", personId: "person-bob")
+
+    _ = try await harness.indexer.scanSession(sessionId: harness.sessionId)
+
+    return InvalidationScenario(
+        harness: harness, root: root, faceRepo: FaceRepo(connection: harness.db))
+}
+
+@Suite("Indexer face invalidation")
+struct IndexerFaceInvalidationTests {
+    @Test("content change invalidates only the changed photo's face members and embeddings")
+    func invalidationIsPhotoScoped() async throws {
+        let scenario = try await makeInvalidationScenario()
+        defer { try? FileManager.default.removeItem(atPath: scenario.root) }
+
+        // 命中照片：观察与分析状态删除；未命中照片原样保留。
+        #expect(try scenario.faceRepo.getObservations(scenario.harness.sessionId).map(\.photoId) == ["untouched"])
+        #expect(try rowCount(scenario.harness.db,
+            "SELECT COUNT(*) FROM face_analysis_state WHERE photo_id = 'changed'") == 0)
+        #expect(try rowCount(scenario.harness.db,
+            "SELECT COUNT(*) FROM face_analysis_state WHERE photo_id = 'untouched'") == 1)
+
+        // 成员行保留（绑定的照片集合不随派生数据消失），只解除对观察的引用。
+        let members = try scenario.harness.db.prepare("""
+            SELECT cluster_id, photo_id, observation_id FROM face_cluster_members ORDER BY cluster_id
+            """).query([])
+        #expect(members.count == 2)
+        #expect(members[0][1].textValue == "changed")
+        #expect(members[0][2].intValue == nil, "命中照片的成员必须先解除观察引用（FK 先解后删）")
+        #expect(members[1][1].textValue == "untouched")
+        #expect(members[1][2].intValue == 12, "未命中照片的成员不得被动")
+
+        // person_embeddings 与观察同生命周期：残留向量会被匹配读到。
+        #expect(try rowCount(scenario.harness.db,
+            "SELECT COUNT(*) FROM person_embeddings WHERE face_observation_id = 11") == 0)
+        #expect(try rowCount(scenario.harness.db,
+            "SELECT COUNT(*) FROM person_embeddings WHERE face_observation_id = 12") == 1)
+    }
+
+    @Test("content change keeps role bindings and clusters visible")
+    func bindingsSurviveContentChange() async throws {
+        let scenario = try await makeInvalidationScenario()
+        defer { try? FileManager.default.removeItem(atPath: scenario.root) }
+
+        // 旧实现整会话 DELETE role_bindings/face_clusters：内容变化不得销毁用户标注。
+        #expect(try rowCount(scenario.harness.db, "SELECT COUNT(*) FROM role_bindings") == 2)
+        let clusters = try scenario.faceRepo.getClusters(
+            scenario.harness.sessionId, includeMembers: true)
+        #expect(clusters.count == 2)
+
+        let changed = try #require(clusters.first { $0.id == 1 })
+        #expect(changed.binding?.roleName == "Alice", "命中照片的绑定必须仍在（孤儿绑定仍可见）")
+        // 照片行仍存在 → 成员行保留（绑定的照片集合不随派生数据消失），
+        // 只解除观察引用；成员计数是成员行的实时计数，不因观察失效而归零。
+        #expect(changed.memberCount == 1)
+        let changedMember = try #require(changed.members?.first)
+        #expect(changedMember.photoId == "changed")
+        #expect(changedMember.observationId == nil)
+
+        let untouched = try #require(clusters.first { $0.id == 2 })
+        #expect(untouched.binding?.roleName == "Bob")
+        #expect(untouched.memberCount == 1, "未命中照片的成员与计数不得被动")
+        let untouchedMember = try #require(untouched.members?.first)
+        #expect(untouchedMember.observationId == 12)
+    }
+}
+

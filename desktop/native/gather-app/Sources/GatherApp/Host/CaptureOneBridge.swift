@@ -32,13 +32,15 @@ public enum CaptureOneBridgeError: Error, Equatable, CustomStringConvertible, Se
     case timedOut
     case scriptFailed(String)
 
+    /// 码值统一取 `GatherErrorCode`（单一事实源：UI 按码取本地化文案，
+    /// 枚举外的裸字符串会绕过本地化并逃过交叉契约测试）。
     public var description: String {
         switch self {
-        case .notRunning: return "C1_NOT_RUNNING"
-        case .noDocument: return "C1_NO_DOCUMENT"
-        case .notAuthorized: return "C1_NOT_AUTHORIZED"
-        case .timedOut: return "C1_SCRIPT_TIMEOUT"
-        case .scriptFailed: return "C1_SCRIPT_FAILED"
+        case .notRunning: return GatherErrorCode.C1_NOT_RUNNING.rawValue
+        case .noDocument: return GatherErrorCode.C1_NO_DOCUMENT.rawValue
+        case .notAuthorized: return GatherErrorCode.C1_NOT_AUTHORIZED.rawValue
+        case .timedOut: return GatherErrorCode.C1_SCRIPT_TIMEOUT.rawValue
+        case .scriptFailed: return GatherErrorCode.C1_SCRIPT_FAILED.rawValue
         }
     }
 }
@@ -70,9 +72,35 @@ public struct C1PreflightStatus: Equatable, Sendable {
     }
 }
 
+/// `shared` 的锁保护存储（Swift 6：`nonisolated` 全局可变状态非法 #MutableGlobalVariable）。
+/// `@unchecked Sendable` 的依据：唯一可变状态 `value` 只在 `lock` 临界区内读写。
+private final class CaptureOneBridgeStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: CaptureOneBridge?
+
+    var current: CaptureOneBridge? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            value = newValue
+        }
+    }
+}
+
 public final class CaptureOneBridge: @unchecked Sendable {
+    private static let sharedStorage = CaptureOneBridgeStorage()
+
     /// 页面（Dashboard 新建工作区）未显式注入桥时取全局实例；bootstrap 注册。
-    public static var shared: CaptureOneBridge?
+    /// 读写经 sharedStorage 的锁（见上），公开语义与原先的静态存储属性一致。
+    public static var shared: CaptureOneBridge? {
+        get { sharedStorage.current }
+        set { sharedStorage.current = newValue }
+    }
 
     private let recordReloadAck: (String) throws -> Void
 
@@ -251,7 +279,8 @@ public final class CaptureOneBridge: @unchecked Sendable {
         "tell application \"System Events\" to get name of every process whose name contains \"Capture One\""
 
     /// TS buildDocumentProbeScript：发 Apple Event 同时探测自动化权限与文档。
-    private static func documentProbeScript(appName: String) -> String {
+    /// 共享实现：CaptureOneBridge 预检与设置页 C1 健康检查共用同一脚本文本。
+    static func documentProbeScript(appName: String) -> String {
         """
         tell application "\(appName)"
           get name of current document

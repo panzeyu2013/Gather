@@ -189,7 +189,7 @@ public final class TemplateService {
         let value = try JSONValue.parse(raw)
         let dict: [String: JSONValue]
         if case .object(let d) = value { dict = d } else { dict = [:] }
-        return try WorkflowTemplateConfig(
+        return WorkflowTemplateConfig(
             similarity: WorkflowTemplateSimilarity(
                 threshold: dict.double("similarity", "threshold"),
                 minGroupSize: dict.int("similarity", "minGroupSize")

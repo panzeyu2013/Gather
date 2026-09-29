@@ -108,15 +108,6 @@ public extension Color {
     // failed 红（浅色 #ffebee / #c62828；深色深底浅字）
     static let badgeFailedBg = Color.badgeDynamic(light: 0xFFEBEE, dark: 0x40242A)
     static let badgeFailedText = Color.badgeDynamic(light: 0xC62828, dark: 0xF2A6A6)
-    // cancelled 橙（浅色 #fff3e0 / #e65100；深色深底浅字）
-    static let badgeCancelledBg = Color.badgeDynamic(light: 0xFFF3E0, dark: 0x3D2A18)
-    static let badgeCancelledText = Color.badgeDynamic(light: 0xE65100, dark: 0xF0BC8A)
-    // partial 琥珀（浅色 #fff8e1 / #f57f17；深色深底浅字）
-    static let badgePartialBg = Color.badgeDynamic(light: 0xFFF8E1, dark: 0x3B3215)
-    static let badgePartialText = Color.badgeDynamic(light: 0xF57F17, dark: 0xF0D488)
-    // cleaned 紫（浅色 #f3e5f5 / #6a1b9a；深色深底浅字）
-    static let badgeCleanedBg = Color.badgeDynamic(light: 0xF3E5F5, dark: 0x33203B)
-    static let badgeCleanedText = Color.badgeDynamic(light: 0x6A1B9A, dark: 0xD4A8EA)
     // draft 灰（.draft 取旧版 --color-bg-secondary / --color-text-secondary）
     static let badgeDraftBg = GatherTheme.backgroundSecondary
     static let badgeDraftText = GatherTheme.textPrimary
@@ -155,21 +146,10 @@ public extension GatherBadge {
         Self(label, foreground: .badgeFailedText, background: .badgeFailedBg)
     }
 
-    static func cancelled() -> Self {
-        Self(GatherLocalization.l("已取消"), foreground: .badgeCancelledText, background: .badgeCancelledBg)
-    }
-
     static func draft() -> Self {
         Self(GatherLocalization.l("草稿"), foreground: .badgeDraftText, background: .badgeDraftBg)
     }
 
-    static func partial() -> Self {
-        Self(GatherLocalization.l("部分完成"), foreground: .badgePartialText, background: .badgePartialBg)
-    }
-
-    static func cleaned() -> Self {
-        Self(GatherLocalization.l("已清理"), foreground: .badgeCleanedText, background: .badgeCleanedBg)
-    }
 }
 
 // MARK: - 任务状态 → 徽标（对齐旧版 jobs 状态编码）

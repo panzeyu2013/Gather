@@ -84,6 +84,7 @@ public struct WorkflowTemplateSimilarity: Codable, Equatable, Sendable {
 
 // TS: WorkflowTemplateConfig.face（内联匿名对象）
 public struct WorkflowTemplateFace: Codable, Equatable, Sendable {
+    /// 人脸相似度下限（越大越严格；见 Face/Clusterer.swift 文件头语义）。
     public var eps: Double
     public var minSamples: Int
     public var detectorConfidence: Double

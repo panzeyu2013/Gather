@@ -52,6 +52,25 @@ private func seedPhotoWithoutAssetFile(
     ])
 }
 
+/// imageProvider 调用计数盒（provider 是 async 闭包：Swift 6 下 async 上下文
+/// 不得直接 lock/unlock，临界区收进同步方法）。
+private final class ImageCallBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+
+    func increment() {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+}
+
 /// 8x8 灰度像素（前 4 行棋盘格 0/255、后 4 行均匀 128）：
 /// 全图 sharpness ≈ 0.321、exposure ≈ 1，人脸框区域（0,0,50,20 分析坐标）
 /// 裁剪为 4 行棋盘格（横向梯度每格 255 / 归一化常数 510 → subjectSharpness
@@ -110,7 +129,9 @@ struct QualityMetricsTests {
             0, 0, 255, 255,
         ]
         let result = metricFromPixels(data: pixels, width: 4, height: 4)
-        #expect(result.sharpness > 0)
+        // 手算 oracle：横向梯度只有 y<height-1 的 3 行 × 255 = 765，纵向梯度为 0，
+        // 归一化常数 510 ⇒ 765 / ((4-1)*(4-1)*510) = 1/6（精确值，不是「大于 0」）。
+        #expect(abs(result.sharpness - 1.0 / 6.0) < 1e-9)
         #expect(abs(result.exposure - 0.996) < 0.001)
     }
 
@@ -164,12 +185,9 @@ struct QualityAnalyzeTests {
 
     @Test("reuses the cached row on fingerprint match without decoding again")
     func cacheHitSkipsDecode() async throws {
-        let callLock = NSLock()
-        var calls = 0
+        let calls = ImageCallBox()
         let harness = try makeHarness(imageProvider: { _, _ in
-            callLock.lock()
-            calls += 1
-            callLock.unlock()
+            calls.increment()
             return ([UInt8](repeating: 128, count: 16), 4, 4)
         })
         let dir = try makeTempDir()
@@ -185,12 +203,39 @@ struct QualityAnalyzeTests {
         #expect(second[0].photoId == "p1")
         #expect(second[0].status == .succeeded)
         // 缓存命中：不再解码（stat 指纹精确匹配），且不产生新写入。
-        callLock.lock()
-        let totalCalls = calls
-        callLock.unlock()
-        #expect(totalCalls == 1)
+        #expect(calls.value == 1)
         let rowCount = try rowCount(harness.db, "SELECT COUNT(*) FROM asset_analysis WHERE photo_id = 'p1'")
         #expect(rowCount == 1)
+    }
+
+    /// 缓存失效契约：命中判据是 stat 指纹（size:mtime），文件变化后必须重新
+    /// 解码/评分，不得复用旧行。变异验证：删掉 fingerprint 相等过滤后旧用例
+    /// 全绿——本用例是唯一的守卫。
+    @Test("changed file fingerprint invalidates the cached row")
+    func cacheMissOnChangedFingerprint() async throws {
+        let calls = ImageCallBox()
+        let harness = try makeHarness(imageProvider: { _, _ in
+            calls.increment()
+            return ([UInt8](repeating: 128, count: 16), 4, 4)
+        })
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let filepath = try writeTempFile(in: dir, name: "photo.jpg")
+        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: filepath, assetFileId: "af-1")
+
+        let first = try await harness.service.analyze(sessionId: harness.sessionId)
+        #expect(first[0].status == .succeeded)
+        let firstFingerprint = first[0].inputFingerprint
+
+        // 文件变大（size/mtime 指纹变化）：旧缓存行不得再被复用。
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: filepath))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("changed-bytes".utf8))
+        try handle.close()
+
+        let second = try await harness.service.analyze(sessionId: harness.sessionId)
+        #expect(second[0].inputFingerprint != firstFingerprint, "指纹变化后必须重新 stat/评分")
+        #expect(calls.value == 2, "指纹不匹配时必须重新解码，不能复用旧缓存行")
     }
 
     @Test("analyzes only the requested photo subset")

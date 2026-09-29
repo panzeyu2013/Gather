@@ -33,7 +33,9 @@ public struct ResolvedPhotoAsset: Equatable, Sendable {
     }
 }
 
-public final class PhotoAssetResolver {
+/// 线程安全说明：仅持有线程安全的 `DBConnection` 与构造后不可变的设置查询闭包，
+/// 无其它可变状态；闭包无法表达为 `@Sendable`（调用方持有服务引用），故 `@unchecked`。
+public final class PhotoAssetResolver: @unchecked Sendable {
     /// TS: resolveMany 的分块大小（SQLite 参数上限 999 以内，同其他批量读）。
     private static let chunkSize = 800
 

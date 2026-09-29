@@ -6,6 +6,7 @@ import Testing
 import GatherCore
 @testable import GatherApp
 
+@MainActor
 @Suite("deriveInboxItems（对齐 workspace-view.test.ts）")
 struct InboxItemsTests {
     private func status(
@@ -40,8 +41,11 @@ struct InboxItemsTests {
     }
 
     private func items(_ status: WorkspaceStatus, truncated: Bool = false) -> [InboxItem] {
-        SessionControlView(sessionId: "s1", router: StubCommandRouter.empty())
-            .inboxItems(status, truncatedImport: truncated)
+        // 文案经 l() 出当前语言：锁内钉死 zh-CN（含「人脸」等断言）。
+        AppLanguageLock.withCopy("zh-CN") {
+            SessionControlView(sessionId: "s1", router: StubCommandRouter.empty())
+                .inboxItems(status, truncatedImport: truncated)
+        }
     }
 
     @Test("全部健康 → 空")

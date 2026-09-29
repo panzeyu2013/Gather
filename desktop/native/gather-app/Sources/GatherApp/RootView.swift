@@ -22,9 +22,11 @@ final class RootNavigation {
         }
     }
 
+    /// 单一表示：WebPage 即页面身份，网页类页面统一走 .page(WebPage)。
+    /// （旧实现同时存在 .persons 与 .page(.persons) 两套表示，令 .page(.persons)
+    /// 永远构造不出来——已收敛，人脸库经侧栏 selectWeb(.persons) 真实可达。）
     enum Destination: Equatable {
         case dashboard
-        case persons
         case page(WebPage)
         case library
         case gallery(String)
@@ -36,17 +38,13 @@ final class RootNavigation {
 
     var selectedWebPage: WebPage? {
         if case .page(let page) = destination { return page }
-        if case .persons = destination { return .persons }
         return nil
     }
 
     var isDashboard: Bool { if case .dashboard = destination { return true }; return false }
     var isLibrary: Bool { if case .library = destination { return true }; return false }
-    var isPersons: Bool { if case .persons = destination { return true }; return false }
-    var isSettings: Bool {
-        if case .page(.settings) = destination { return true }
-        return false
-    }
+    var isPersons: Bool { if case .page(.persons) = destination { return true }; return false }
+    var isSettings: Bool { if case .page(.settings) = destination { return true }; return false }
 
     var gallerySessionId: String? {
         if case .gallery(let id) = destination { return id }
@@ -76,7 +74,7 @@ final class RootNavigation {
     func selectLibrary() { destination = .library }
 
     func selectWeb(_ page: WebPage) {
-        destination = page == .persons ? .persons : .page(page)
+        destination = .page(page)
     }
 
     /// 工作区入口与 TS /sessions/:id 一致：先进入控制中心。
@@ -158,6 +156,9 @@ struct RootView: View {
         HStack(spacing: 0) {
             if sidebarVisible {
                 SidebarView(navigation: navigation, width: sidebarWidth)
+                    // 语言切换只重建「无状态外壳子树」：侧栏（仅 hover 态）。
+                    // 页面子树的 @State/滚动位置必须保留。
+                    .id(languageVersion)
                     .transition(reduceMotion ? .opacity : .move(edge: .leading))
                 // 拖拽调宽手柄（6pt 热区；吸附左右光标，160–320 钳制）。
                 sidebarResizeHandle
@@ -170,7 +171,7 @@ struct RootView: View {
                 .allowsHitTesting(navigation.isDashboard)
                 .accessibilityHidden(!navigation.isDashboard)
 
-                LibraryView(viewModel: libraryViewModel) { sessionId in
+                LibraryView(viewModel: libraryViewModel, isActive: navigation.isLibrary) { sessionId in
                     navigation.openSession(sessionId)
                 }
                 .opacity(navigation.isLibrary ? 1 : 0)
@@ -184,7 +185,8 @@ struct RootView: View {
                         onReviewFaceRole: { role, sessionId in
                             faceKwInitialRole = role
                             navigation.openSessionTab(sessionId, .faceKw)
-                        }
+                        },
+                        isActive: navigation.isPersons
                     )
                         .opacity(navigation.isPersons ? 1 : 0)
                         .allowsHitTesting(navigation.isPersons)
@@ -236,7 +238,7 @@ struct RootView: View {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: navigation.destination)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first(where: { Self.isDirectoryURL($0) }) else { return false }
+                guard let url = urls.first(where: { isDirectoryURL($0) }) else { return false }
                 NotificationCenter.default.post(name: GatherAppNotification.menuImportFolder, object: url)
                 return true
             }
@@ -245,8 +247,10 @@ struct RootView: View {
         .navigationTitle(windowTitle)
         .tint(GatherTheme.primary)
         .background(Color.gatherBackground)
-        .id(languageVersion)
         // 设置页切换语言后：刷新外壳层双语文案（侧栏/页签/胶囊/toast）。
+        // 最小重建：languageVersion 滴答只让外壳 body 重算，各页就地重渲染
+        //（l() 在 body 内取值），@State/选择/滚动位置全部保留；旧实现把
+        // .id(languageVersion) 挂在 ZStack 根上会重建整棵树并丢页面状态，已删除。
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.languageChanged)) { notification in
             if let language = notification.object as? String {
                 GatherLocalization.setAppLanguage(language)
@@ -377,12 +381,6 @@ struct RootView: View {
                     }
             )
             .accessibilityLabel(GatherLocalization.l("调整侧栏宽度"))
-    }
-
-    /// 拖放目录判定：Finder 拖入的目录 URL 通常带尾斜杠；无尾斜杠时回退资源值探测。
-    private static func isDirectoryURL(_ url: URL) -> Bool {
-        if url.hasDirectoryPath { return true }
-        return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
     }
 
     /// 窗口标题跟随当前会话：有会话时用会话名，无会话（或无名称）保持「Gather」。
@@ -551,7 +549,7 @@ private struct SidebarView: View {
     ) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: systemImage).frame(width: 18)
+                Image(systemName: systemImage).frame(width: 18).accessibilityHidden(true)
                 Text(title)
                 Spacer()
             }

@@ -8,7 +8,8 @@
 //   文件恰产出一次、不可读非根目录报 failed、排除根跳过、不可读根抛错——
 //   与 TS 并行 walk 的对外语义一致；路径产出顺序为排序后的 DFS（TS 并行序
 //   不可预期，测试不依赖）。
-// - scanBatch 内部并发（SCAN_BATCH_CONCURRENCY=4）用 mapConcurrent 滑动窗口；
+// - scanBatch 内部并发（SCAN_BATCH_CONCURRENCY=4）用共享 batchAsync（Concurrent/
+//   BatchRunner.swift）滑动窗口；
 //   discoveredSet 等共享状态的写集中在串行提交阶段（TS 单线程天然安全）。
 // - stat 经 public stat 接缝注入（TS 同款测试接缝）；checksum 经 fileHasher
 //   注入（新增接缝，用于并发写入竞态测试；默认 = 整文件 SHA256，与 TS
@@ -25,6 +26,9 @@ import Darwin
 public enum IndexerServiceError: Error, Equatable {
     case sessionNotFound
     case noSourcePath
+    /// 目录作用域的根不可接受（文件系统根 / 用户主目录及其祖先）：
+    /// 递归扫描这类根会把用户未选择的整个卷/主目录导入会话。
+    case sourceRootForbidden
 }
 
 /// TS 错误消息逐字对齐（executor 失败路径以 String(describing:) 记录，
@@ -34,6 +38,7 @@ extension IndexerServiceError: CustomStringConvertible {
         switch self {
         case .sessionNotFound: "SESSION_NOT_FOUND"
         case .noSourcePath: "INDEX_SESSION_NO_SOURCE"
+        case .sourceRootForbidden: "SESSION_SOURCE_ROOT_FORBIDDEN"
         }
     }
 }
@@ -44,11 +49,16 @@ extension IndexerServiceError {
         switch self {
         case .sessionNotFound: .SESSION_NOT_FOUND
         case .noSourcePath: .INDEX_SESSION_NO_SOURCE
+        case .sourceRootForbidden: .SESSION_SOURCE_ROOT_FORBIDDEN
         }
     }
 }
 
-public final class IndexerService {
+/// 线程安全说明（Swift 6 `Sendable`）：全部存储属性除两个测试接缝
+/// `_stat`/`_fileHasher` 外均为 `let`；接缝由 `seamLock`（NSLock）保护，
+/// 公开的 `stat`/`fileHasher` 是加锁计算属性。锁纪律无法被编译器静态验证，
+/// 故标注 `@unchecked`（与同仓 MetadataSyncCoordinator/BatchCursor 一致）。
+public final class IndexerService: @unchecked Sendable {
     /// TS: SUPPORTED（index.service.ts 顶部）。
     public static let supportedExtensions: Set<String> = [
         ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
@@ -81,29 +91,74 @@ public final class IndexerService {
     private let sessionRepo: SessionRepo
     private let photoRepo: PhotoRepo
     private let assetRepo: AssetRepo
+    /// 人脸派生结果失效入口（FaceRepo.invalidateDerivedResults）。可选注入：
+    /// nil 时跳过人脸段（仅有相似度/元数据需求的宿主/测试），但**生产宿主必须
+    /// 注入**，否则内容变化后人脸观察与 person_embeddings 不会失效。
+    private let faceRepo: FaceRepo?
     private let getDimensions: DimensionsProvider
     private let getSetting: SettingReader
+    private let warmMetadata: MetadataWarmup
+
+    /// 测试接缝的共享可变状态：`_stat`/`_fileHasher` 由 `seamLock`（NSLock）保护，
+    /// 公开接缝是加锁计算属性（生产路径构造后只读；测试在并发使用前覆写一次）。
+    private let seamLock = NSLock()
+    private var _stat: (String) throws -> FileStat = IndexerService.defaultStat
+    private var _fileHasher: (String) throws -> String = IndexerService.sha256File
 
     /// TS: public stat 测试接缝 —— 增量扫描用 stat，可覆写以模拟目录列举与
     /// stat 之间文件消失（ghost photo 竞态）。
-    public var stat: (String) throws -> FileStat = IndexerService.defaultStat
+    public var stat: (String) throws -> FileStat {
+        get {
+            seamLock.lock()
+            defer { seamLock.unlock() }
+            return _stat
+        }
+        set {
+            seamLock.lock()
+            defer { seamLock.unlock() }
+            _stat = newValue
+        }
+    }
+
     /// checksum 计算接缝（默认整文件 SHA256 hex；测试注入并发写入者）。
-    public var fileHasher: (String) throws -> String = IndexerService.sha256File
+    public var fileHasher: (String) throws -> String {
+        get {
+            seamLock.lock()
+            defer { seamLock.unlock() }
+            return _fileHasher
+        }
+        set {
+            seamLock.lock()
+            defer { seamLock.unlock() }
+            _fileHasher = newValue
+        }
+    }
+
+    /// 新照片入库后的元数据预热：把新行 id 交给元数据链路（EXIF → 
+    /// photo_metadata_cache，含 date_taken / camera_model）。**必须**由宿主注入
+    /// MetadataService.getMetadata：不注入时这些列为空，RAW/JPEG 的按时间自动
+    /// 合并（AssetRepo.reconcileRawJpegLinks 要求两侧 date_taken + camera_model）
+    /// 会恒为 0 —— 旧实现正是漏了这一步。
+    public typealias MetadataWarmup = ([String]) async -> Void
 
     public init(
         connection: DBConnection,
         sessionRepo: SessionRepo,
         photoRepo: PhotoRepo,
         assetRepo: AssetRepo,
+        faceRepo: FaceRepo? = nil,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
-        getSetting: @escaping SettingReader = { _, defaultValue in defaultValue }
+        getSetting: @escaping SettingReader = { _, defaultValue in defaultValue },
+        warmMetadata: @escaping MetadataWarmup = { _ in }
     ) {
         self.connection = connection
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
         self.assetRepo = assetRepo
+        self.faceRepo = faceRepo
         self.getDimensions = getDimensions
         self.getSetting = getSetting
+        self.warmMetadata = warmMetadata
     }
 
     /// 默认 stat（TS stat 语义：缺失抛错，消息格式对齐 Node ENOENT）。
@@ -142,41 +197,18 @@ public final class IndexerService {
         return SHA256.hash(data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// TS: canonicalPath —— realpath，失败回退 textualPath（macOS /var、/tmp 前缀）。
-    public static func canonicalPath(_ path: String) -> String {
-        if let resolved = realpath(path, nil) {
-            defer { free(resolved) }
-            return String(cString: resolved)
-        }
-        return textualPath(path)
-    }
-
-    /// TS: textualPath —— 仅解析 macOS 的两个符号链接前缀，避免逐文件 realpath。
-    public static func textualPath(_ value: String) -> String {
-        let resolved = TSPath.resolve(value)
-        if resolved == "/var" || resolved.hasPrefix("/var/") {
-            return "/private" + resolved
-        }
-        if resolved == "/tmp" || resolved.hasPrefix("/tmp/") {
-            return "/private" + resolved
-        }
-        return resolved
-    }
-
-    /// TS: isWithin —— 候选路径是否落在规范根之内。
-    public static func isWithin(candidate: String, canonicalRoot: String) -> Bool {
-        let relative = TSPath.relative(canonicalRoot, to: textualPath(candidate))
-        return relative == "" || (!relative.hasPrefix("..") && !TSPath.isAbsolute(relative))
-    }
+    /// TS: canonicalPath / textualPath / isWithin 三个纯函数已收敛到
+    /// ScanPath（定义见文件末尾）：扫描与导入两条链路共用同一归一化口径，
+    /// 不得再各写一份。
 
     /// TS: managedCacheRoots —— disk_cache_dir 设置优先，否则默认缓存目录。
     private func managedCacheRoots() -> [String] {
         let configured = getSetting("disk_cache_dir", "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !configured.isEmpty { return [Self.canonicalPath(configured)] }
+        if !configured.isEmpty { return [ScanPath.canonical(configured)] }
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             // Application Support/Gather/thumbnails（应用数据目录在
             // macOS 即 Application Support/<app>）。
-            return [Self.canonicalPath(appSupport.appendingPathComponent("thumbnails").path)]
+            return [ScanPath.canonical(appSupport.appendingPathComponent("thumbnails").path)]
         }
         return []
     }
@@ -185,7 +217,7 @@ public final class IndexerService {
 
     /// TS: scanSession —— 全量/增量扫描 + 索引入库 + 缺失对账 + index_seq 游标。
     /// requestedPaths=nil 时走目录遍历（fullScan）；非 nil 时只处理候选路径。
-    /// 该方法是 WatchCoordinator fullScan/incremental 回调的服务端实现。
+    /// 由 app 的 metadata.scan job executor（SessionCommandRouter）直接调用。
     public func scanSession(
         sessionId: String,
         requestedPaths: [String]? = nil,
@@ -193,13 +225,50 @@ public final class IndexerService {
     ) async throws -> IndexScanResult {
         let session = try self.sessionRepo.get(id: sessionId)
         guard let session else { throw IndexerServiceError.sessionNotFound }
-        guard !session.sourcePath.isEmpty else { throw IndexerServiceError.noSourcePath }
+        // 扫描范围由调用方显式指定：
+        //   requestedPaths == nil → 目录作用域：以 session.source_path 为根递归全树。
+        //   requestedPaths != nil → 显式集合作用域：只处理给定路径（目录条目在其
+        //                           自身范围内递归展开），绝不回退/扩张到 source_path。
+        // 目录作用域要求 source_path 是「用户显式选择的目录」；历史实现会用所选
+        // 文件的公共父目录充当 source_path，于是选 3 张照片等于递归扫描整个目录树，
+        // 最坏可上溯到主目录。此处对不可接受的根显式失败，而不是照扫不误。
+        if requestedPaths == nil {
+            guard !session.sourcePath.isEmpty else { throw IndexerServiceError.noSourcePath }
+            guard !ScanPath.isForbiddenRoot(session.sourcePath) else {
+                throw IndexerServiceError.sourceRootForbidden
+            }
+        }
         let excludedRoots = managedCacheRoots()
         var existing = try self.photoRepo.getBySessionProjection(sessionId: sessionId)
-        // 生成缓存目录内的存量照片（缓存清扫）：事务内删除照片行 + 孤儿资产行。
-        let generatedCachePhotos = existing.filter { photo in
-            excludedRoots.contains { Self.isWithin(candidate: TSPath.resolve(photo.filepath), canonicalRoot: $0) }
+
+        /// 按归一化路径归约：首见者胜（getBySessionProjection 按 rowid 升序返回，
+        /// 首见者即最早导入的行，与迁移的「保留 rowid 最小者」一致）；重复键单独
+        /// 收集、随后显式上报。绝不会像旧实现那样用
+        /// Dictionary(uniqueKeysWithValues:) 在脏数据上 trap。
+        func reduceByNormalizedPath(_ photos: [PhotoProjectionRow]) -> (
+            byPath: [String: PhotoProjectionRow], duplicates: Set<String>
+        ) {
+            var byPath: [String: PhotoProjectionRow] = [:]
+            var duplicates: Set<String> = []
+            for photo in photos {
+                let key = ScanPath.canonical(photo.filepath)
+                if byPath[key] == nil {
+                    byPath[key] = photo
+                } else {
+                    duplicates.insert(key)
+                }
+            }
+            return (byPath, duplicates)
         }
+
+        var (existingByPath, duplicatePathKeys) = reduceByNormalizedPath(existing)
+        // 生成缓存目录内的存量照片（缓存清扫）：事务内删除照片行 + 孤儿资产行。
+        // 复用上一步的归一化键做归属判断，避免逐照片二次 realpath。
+        let generatedCachePhotos = existingByPath
+            .filter { entry in
+                excludedRoots.contains { ScanPath.isWithin(candidate: entry.key, root: $0) }
+            }
+            .map { $0.value }
         if !generatedCachePhotos.isEmpty {
             let photoIds = generatedCachePhotos.map(\.id)
             let fileIds = generatedCachePhotos.compactMap(\.assetFileId)
@@ -234,11 +303,8 @@ public final class IndexerService {
             }
             let removedIds = Set(photoIds)
             existing = existing.filter { !removedIds.contains($0.id) }
+            (existingByPath, duplicatePathKeys) = reduceByNormalizedPath(existing)
         }
-
-        let existingByPath: [String: PhotoProjectionRow] = Dictionary(
-            uniqueKeysWithValues: existing.map { (TSPath.normalize(TSPath.resolve($0.filepath)), $0) }
-        )
         let fileRows = try self.connection.prepare("""
             SELECT af.id, af.file_size, af.file_mtime_ms, af.checksum
             FROM asset_files af
@@ -259,6 +325,16 @@ public final class IndexerService {
         var discoveredSet = Set<String>()
         var relinkedPhotoIds = Set<String>()
         var failed: [String] = []
+        // 归一化后仍重复的路径是库层面的不一致（迁移每次启动都会收敛，此处是
+        // 运行期兜底）：不崩、不静默——首见者参与扫描，重复键作为失败项上报。
+        if !duplicatePathKeys.isEmpty {
+            let sample = duplicatePathKeys.sorted().prefix(3).joined(separator: ", ")
+            GatherLogger.log(
+                "Indexer found \(duplicatePathKeys.count) duplicate normalized photo path(s) in session \(sessionId); keeping the earliest row: \(sample)",
+                level: .warn
+            )
+            failed.append(contentsOf: duplicatePathKeys.sorted())
+        }
         var discovered = 0
         var added = 0
         var skipped = 0
@@ -270,11 +346,15 @@ public final class IndexerService {
 
         /// TS: scanBatch —— 一批文件的 stat/尺寸/checksum（并发 4）+ 单事务提交。
         let scanBatch: ([String]) async throws -> Void = { filepaths in
+            // batchAsync 的 worker 子任务（@Sendable）只读下面两个映射；它们在本
+            // 批次入口冻结为局部 let（构造后已无写者），避免并发闭包捕获 var。
+            let existingByPathSnapshot = existingByPath
+            let fileStatsSnapshot = fileStats
             try context?.throwIfCancelled()
             // 懒校验模式：新/变文件只记尺寸，checksum 交给后台 checksum.backfill。
             let lazyChecksum = self.getSetting("lazy_checksum", "true") != "false"
-            let results = try await mapConcurrent(filepaths, concurrency: Self.scanBatchConcurrency) { filepath -> BatchOutcome in
-                let normalized = TSPath.normalize(TSPath.resolve(filepath))
+            let results = try await batchAsync(filepaths, concurrency: Self.scanBatchConcurrency) { filepath -> BatchOutcome in
+                let normalized = ScanPath.canonical(filepath)
                 // stat 先行：目录列举与 stat 之间消失的文件不得进入 discoveredSet，
                 // 否则末段永远不会把它对账为 missing（ghost photo）。
                 let source: FileStat
@@ -283,7 +363,7 @@ public final class IndexerService {
                 } catch {
                     return BatchOutcome(normalized: normalized, item: .missing)
                 }
-                guard let photo = existingByPath[normalized] else {
+                guard let photo = existingByPathSnapshot[normalized] else {
                     do {
                         let dimensions = try self.getDimensions(filepath)
                         let checksum = lazyChecksum ? "" : try self.fileHasher(filepath)
@@ -296,7 +376,7 @@ public final class IndexerService {
                         return BatchOutcome(normalized: normalized, item: .failed(filepath: filepath))
                     }
                 }
-                let indexed = photo.assetFileId.flatMap { fileStats[$0] }
+                let indexed = photo.assetFileId.flatMap { fileStatsSnapshot[$0] }
                 // 仅当基线证明文件确实变化才算 content-changed：无 asset_files
                 // 行时用照片自身的索引 stat（checksum_file_size/mtime）作基线，
                 // 否则每次重扫都 bump index_seq（TS 注释原话）。
@@ -463,6 +543,11 @@ public final class IndexerService {
                         fileSize: Int(entry.fileSize), fileMtimeMs: entry.fileMtimeMs
                     )
                 }
+                // 只预热本批真正插入的行（跳过 == 无新行，不重复提取 EXIF）。
+                let insertedIds = inserted.ids.filter { !$0.isEmpty }
+                if !insertedIds.isEmpty {
+                    await self.warmMetadata(insertedIds)
+                }
             }
         }
 
@@ -472,18 +557,77 @@ public final class IndexerService {
         // （sim/fkw）的可见性完全依赖它推进；任何终态只要发生过真实变更
         // 都必须 bump（TS「任何批次提交后都 bump」语义）。
         do {
+            // 本次扫描真正覆盖到的路径（显式集合展开后的并集）：末段用它决定
+            // 哪些存量照片需要参与 missing 对账。
+            var requestedCoverage = Set<String>()
             if let requestedPaths {
+                // 显式集合作用域：扫描集合 == 调用方给定的路径集合，不因集合里
+                // 出现目录而扩张到 source_path 全树。目录条目仅在自身范围内递归
+                // 展开（符号链接目录不进入递归，与全树遍历同一规则）；文件条目
+                // 按受支持扩展名过滤；缺失/不支持的条目只登记覆盖集，留给末段
+                // 对账为 missing / 直接忽略。
                 var candidates: [String] = []
-                for filepath in Set(requestedPaths.map { TSPath.resolve($0) }) {
-                    if excludedRoots.contains(where: { Self.isWithin(candidate: filepath, canonicalRoot: $0) }) { continue }
-                    do {
-                        let source = try self.stat(filepath)
-                        if source.isFile && Self.supportedExtensions.contains(TSPath.extname(filepath).lowercased()) {
-                            candidates.append(filepath)
-                            discovered += 1
+                // 显式集合的入口规则（与 nil 分支同一错误语义）：
+                //   ① 每个条目都做禁根校验 —— 混合选择「目录 + 文件」时用户同样
+                //      可能把 home 或 / 传进来，绝不允许照递归；
+                //   ② 归一化去重；
+                //   ③ 祖先胜出：若条目 X 落在另一保留条目 Y 之内，丢弃 X
+                //      （Y 的展开已覆盖 X），避免同一子树被扫两遍；
+                //   ④ 剩余条目按路径排序，扫描顺序确定。
+                var requestedRoots = Set<String>()
+                for requested in requestedPaths {
+                    let canonical = ScanPath.canonical(requested)
+                    guard !ScanPath.isForbiddenRoot(canonical) else {
+                        GatherLogger.log(
+                            "metadata.scan: forbidden requested root \(canonical)",
+                            level: .warn
+                        )
+                        throw IndexerServiceError.sourceRootForbidden
+                    }
+                    requestedRoots.insert(canonical)
+                }
+                let orderedRoots = requestedRoots.sorted {
+                    let leftDepth = $0.split(separator: "/").count
+                    let rightDepth = $1.split(separator: "/").count
+                    if leftDepth != rightDepth { return leftDepth < rightDepth }
+                    return $0 < $1
+                }
+                var scanRoots: [String] = []
+                var redundantRoots = 0
+                for root in orderedRoots {
+                    if scanRoots.contains(where: {
+                        $0 != root && ScanPath.isWithin(candidate: root, root: $0)
+                    }) {
+                        redundantRoots += 1
+                        continue
+                    }
+                    scanRoots.append(root)
+                }
+                if redundantRoots > 0 {
+                    GatherLogger.log(
+                        "metadata.scan: \(redundantRoots) requested path(s) already covered by an ancestor entry",
+                        level: .warn
+                    )
+                }
+                var queue = scanRoots
+                while let filepath = queue.popLast() {
+                    guard requestedCoverage.insert(filepath).inserted else { continue }
+                    if excludedRoots.contains(where: { ScanPath.isWithin(candidate: filepath, root: $0) }) { continue }
+                    if ScanPath.isDirectory(filepath) {
+                        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: filepath) else {
+                            continue
                         }
-                    } catch {
-                        // 缺失路径在下方对账。
+                        for name in entries.sorted() {
+                            queue.append(ScanPath.canonical(filepath + "/" + name))
+                        }
+                        continue
+                    }
+                    guard Self.supportedExtensions.contains(TSPath.extname(filepath).lowercased()) else { continue }
+                    // stat 失败（列举与 stat 之间消失）不得进入 discoveredSet，
+                    // 否则末段永远不会把它对账为 missing（ghost photo）。
+                    if (try? self.stat(filepath))?.isFile == true {
+                        candidates.append(filepath)
+                        discovered += 1
                     }
                 }
                 if !candidates.isEmpty { try await scanBatch(candidates) }
@@ -492,7 +636,7 @@ public final class IndexerService {
                 let channel = WalkChannel(capacity: Self.walkChannelCapacity)
                 let producer = Task {
                     await Self.traverse(
-                        directory: session.sourcePath,
+                        directory: ScanPath.canonical(session.sourcePath),
                         isRoot: true,
                         excludedRoots: excludedRoots,
                         channel: channel
@@ -533,12 +677,11 @@ public final class IndexerService {
                 if !pending.isEmpty { try await scanBatch(pending) }
             }
 
-            let requestedNormalized: Set<String>? = requestedPaths.map {
-                Set($0.map { TSPath.normalize(TSPath.resolve($0)) })
-            }
             for photo in existing {
-                let normalized = TSPath.normalize(TSPath.resolve(photo.filepath))
-                let inRequested = requestedNormalized.map { $0.contains(normalized) } ?? true
+                let normalized = ScanPath.canonical(photo.filepath)
+                // 全树扫描覆盖每条存量路径；显式集合只覆盖展开后的并集——
+                // 集合外的照片不属于本次扫描范围，不得误标 missing。
+                let inRequested = requestedPaths == nil || requestedCoverage.contains(normalized)
                 if inRequested
                     && !discoveredSet.contains(normalized)
                     && !relinkedPhotoIds.contains(photo.id) {
@@ -637,7 +780,7 @@ public final class IndexerService {
                 try context?.throwIfCancelled()
                 let batch = Array(pending[offset..<min(offset + Self.checksumBackfillBatch, pending.count)])
                 // 哈希阶段只读；全部写入进入单事务。
-                let results = try await mapConcurrent(
+                let results = try await batchAsync(
                     batch, concurrency: Self.checksumBackfillConcurrency
                 ) { photo -> (photo: PhotoPageRow, checksum: String, size: Int64, mtimeMs: Double)? in
                     do {
@@ -728,18 +871,15 @@ public final class IndexerService {
     // ─────────────────────────── 分析失效 ───────────────────────────
 
     /// TS: deletePhotoInputs —— 逐照片删除分析输入（photo_id 粒度）。
+    /// 人脸段（face_observations / face_analysis_state）不在此处：它必须经
+    /// FaceRepo.invalidateDerivedResults 走"先解除成员引用、再删观察、同事务
+    /// 清 person_embeddings"的顺序（见 invalidatePathDependentAnalysis）。
     private func deletePhotoInputs(photoIds: [String]) throws {
         if photoIds.isEmpty { return }
         for chunk in chunked(photoIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             _ = try self.connection.prepare(
                 "DELETE FROM similarity_hashes WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM face_observations WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM face_analysis_state WHERE photo_id IN (\(placeholders))"
             ).run(chunk.map { .text($0) })
             _ = try self.connection.prepare(
                 "DELETE FROM asset_analysis WHERE photo_id IN (\(placeholders))"
@@ -804,18 +944,6 @@ public final class IndexerService {
             .run([.text(sessionId)])
     }
 
-    /// TS: deleteFaceClusterResults —— 会话级人脸簇结果失效（成员先于观测删除）。
-    private func deleteFaceClusterResults(sessionId: String) throws {
-        _ = try self.connection.prepare("DELETE FROM face_cluster_state WHERE session_id = ?")
-            .run([.text(sessionId)])
-        _ = try self.connection.prepare("DELETE FROM face_cluster_members WHERE session_id = ?")
-            .run([.text(sessionId)])
-        _ = try self.connection.prepare("DELETE FROM role_bindings WHERE session_id = ?")
-            .run([.text(sessionId)])
-        _ = try self.connection.prepare("DELETE FROM face_clusters WHERE session_id = ?")
-            .run([.text(sessionId)])
-    }
-
     /// TS: invalidatePathDependentAnalysis —— 路径/内容变化的照片：逐照片删输入、
     /// 按成员剪自动导航组、会话级丢簇结果；每批调用一次。
     private func invalidatePathDependentAnalysis(photoIds: [String]) throws {
@@ -842,9 +970,14 @@ public final class IndexerService {
             }
         }
         try self.connection.transaction {
-            // 会话级簇结果先行：成员行必须先于其引用的观测删除。
+            // 人脸派生结果：只失效本批命中的照片（成员引用先解除，再删观察，
+            // 同事务清 person_embeddings）。用户绑定与簇行保留 —— 旧实现整会话
+            // DELETE role_bindings/face_clusters 会静默销毁用户标注。
+            for (sessionId, sessionPhotoIds) in photoIdsBySession {
+                try faceRepo?.invalidateDerivedResults(
+                    sessionId: sessionId, photoIds: sessionPhotoIds)
+            }
             for sessionId in affectedSessions {
-                try deleteFaceClusterResults(sessionId: sessionId)
                 try deleteGlobalClusterResults(sessionId: sessionId)
             }
             try deletePhotoInputs(photoIds: photoIds)
@@ -878,20 +1011,13 @@ public final class IndexerService {
         }
         for name in entries {
             let full = directory + "/" + name
-            if excludedRoots.contains(where: { isWithin(candidate: full, canonicalRoot: $0) }) { continue }
-            if isDirectory(full) {
+            if excludedRoots.contains(where: { ScanPath.isWithin(candidate: full, root: $0) }) { continue }
+            if ScanPath.isDirectory(full) {
                 await traverse(directory: full, isRoot: false, excludedRoots: excludedRoots, channel: channel)
             } else if supportedExtensions.contains(TSPath.extname(name).lowercased()) {
                 await channel.push(.file(full))
             }
         }
-    }
-
-    private static func isDirectory(_ path: String) -> Bool {
-        // lstat 判定（符号链接不进入递归，与 TS opendir.isSymbolicLink 语义一致）；
-        // 用文件级 lstatRef 规避成员 stat 遮蔽。
-        var s = lstatBuf()
-        return lstat(path, &s) == 0 && (s.st_mode & S_IFMT) == S_IFDIR
     }
 
     private func chunked(_ values: [String]) -> [[String]] {
@@ -948,7 +1074,12 @@ private enum WalkEvent {
 /// TS: BoundedChannel —— 有界通道：生产者在缓冲满时等待（背压），消费者在
 /// 空时等待；fail 向消费者抛根级错误；close 正常结束。单生产者顺序遍历 +
 /// 单消费者（scanSession），锁内 drain 语义与 TS 一致。
-private final class WalkChannel {
+///
+/// 线程安全说明（Swift 6 `Sendable`）：生产者在独立 Task 里写通道，消费者在
+/// scanSession 里读；全部可变状态（`buffer`/`pullers`/`pushers`/`closed`/`failure`）
+/// 只在 `lock`（NSLock）临界区内读写。锁纪律无法被编译器静态验证，故标注
+/// `@unchecked`（与同仓 BatchCursor 一致）。
+private final class WalkChannel: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer: [WalkEvent] = []
     private var pullers: [CheckedContinuation<WalkEvent, Error>] = []
@@ -961,69 +1092,122 @@ private final class WalkChannel {
         self.capacity = capacity
     }
 
+    /// push 的锁内判定（多值判定 → 私有 enum，同 ScanSlotDecision）。
+    private enum PushSlotDecision {
+        /// 通道已关闭：直接返回。
+        case closed
+        /// 缓冲已满：调用方 await 等待后重试。
+        case waitForCapacity
+        /// 已入队并 drain。
+        case enqueued
+    }
+
+    /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
+    private func enqueueOrWaitLocked(_ event: WalkEvent) -> PushSlotDecision {
+        lock.lock()
+        defer { lock.unlock() }
+        if closed { return .closed }
+        if buffer.count >= capacity { return .waitForCapacity }
+        buffer.append(event)
+        drainLocked()
+        return .enqueued
+    }
+
+    /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
+    /// 返回 true = 已登记等待（由 drainLocked/close/fail 唤醒）；false = 条件已满足，
+    /// 调用方立即 resume。
+    private func parkPusherLocked(_ continuation: CheckedContinuation<Void, Never>) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if closed || buffer.count < capacity { return false }
+        pushers.append(continuation)
+        return true
+    }
+
     func push(_ event: WalkEvent) async {
         while true {
-            lock.lock()
-            if closed {
-                lock.unlock()
+            switch enqueueOrWaitLocked(event) {
+            case .closed:
                 return
-            }
-            if buffer.count >= capacity {
-                lock.unlock()
+            case .enqueued:
+                return
+            case .waitForCapacity:
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    lock.lock()
-                    if closed || buffer.count < capacity {
-                        lock.unlock()
+                    if !parkPusherLocked(continuation) {
                         continuation.resume()
-                    } else {
-                        pushers.append(continuation)
-                        lock.unlock()
                     }
                 }
-                continue
             }
-            buffer.append(event)
-            drainLocked()
-            lock.unlock()
-            return
         }
     }
 
+    /// pull 的锁内判定（多值判定 → 私有 enum，同 ScanSlotDecision）。
+    private enum PullSlotDecision {
+        /// 已有事件（已 drain）：立即交付。
+        case delivered(WalkEvent)
+        /// 已关闭：failure 非 nil 抛错，否则交付 .done。
+        case closed(Error?)
+        /// 未关闭但无事件：调用方 await 等待。
+        case wait
+    }
+
+    /// pull 登记等待的锁内判定（多值判定 → 私有 enum，同 ScanSlotDecision）。
+    private enum PullParkDecision {
+        /// 已登记 continuation，等待 drain/close/fail 唤醒。
+        case parked
+        /// 已有事件（已 drain）：立即交付。
+        case delivered(WalkEvent)
+        /// 已关闭：failure 非 nil 抛错，否则交付 .done。
+        case closed(Error?)
+    }
+
+    /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
+    private func takeOrWaitLocked() -> PullSlotDecision {
+        lock.lock()
+        defer { lock.unlock() }
+        if let event = buffer.isEmpty ? nil : buffer.removeFirst() {
+            drainLocked()
+            return .delivered(event)
+        }
+        if closed { return .closed(failure) }
+        return .wait
+    }
+
+    /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
+    private func parkPullerLocked(_ continuation: CheckedContinuation<WalkEvent, Error>) -> PullParkDecision {
+        lock.lock()
+        defer { lock.unlock() }
+        if let event = buffer.isEmpty ? nil : buffer.removeFirst() {
+            drainLocked()
+            return .delivered(event)
+        }
+        if closed { return .closed(failure) }
+        pullers.append(continuation)
+        return .parked
+    }
+
     func pull() async throws -> WalkEvent {
-        while true {
-            lock.lock()
-            if let event = buffer.isEmpty ? nil : buffer.removeFirst() {
-                drainLocked()
-                lock.unlock()
-                return event
-            }
-            if closed {
-                let error = failure
-                lock.unlock()
-                if let error { throw error }
-                return .done
-            }
-            lock.unlock()
-            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WalkEvent, Error>) in
-                lock.lock()
-                if let event = buffer.isEmpty ? nil : buffer.removeFirst() {
-                    drainLocked()
-                    lock.unlock()
-                    continuation.resume(returning: event)
-                    return
+        switch takeOrWaitLocked() {
+        case .delivered(let event):
+            return event
+        case .closed(let error):
+            if let error { throw error }
+            return .done
+        case .wait:
+            break
+        }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WalkEvent, Error>) in
+            switch parkPullerLocked(continuation) {
+            case .parked:
+                break
+            case .delivered(let event):
+                continuation.resume(returning: event)
+            case .closed(let error):
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: .done)
                 }
-                if closed {
-                    let error = failure
-                    lock.unlock()
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(returning: .done)
-                    }
-                    return
-                }
-                pullers.append(continuation)
-                lock.unlock()
             }
         }
     }
@@ -1075,61 +1259,93 @@ private final class WalkChannel {
     }
 }
 
-/// TS: mapConcurrent —— 固定 runner 从共享游标取任务（滑动窗口，结果保序，
-/// 首个失败停止调度并在在飞项跑完后传播）。
-private func mapConcurrent<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = BatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
+// MARK: - 路径归一化（单一真相源）
+
+/// 全链路唯一的路径归一化函数族：扫描（IndexerService）与导入
+/// （SessionService）两条链路共用同一口径，任何一侧都不得再自写一份
+/// （历史背景：已删除的监听链路曾用 realpath，符号链接下
+/// 会对同一物理文件产生两个键 → 重复导入或漏标）。
+///
+/// 口径（三步，纯字符串、无系统调用、幂等）：
+///   1. TSPath.resolve —— 词法绝对化 + 折叠 . / ..；
+///   2. TSPath.normalize；
+///   3. 系统前缀折叠 —— /private/var → /var、/private/tmp → /tmp。
+///
+/// **为什么必须自己做第 3 步**（探针实测证据）：NSString.standardizingPath 只在
+/// 路径**存在**时才解析 /private 系统符号链接。于是同一目录会出现两种拼写——
+/// 注册的监听根（存在）是 /var/…，而删除事件的路径（已不存在）是 /private/var/…，
+/// 包含判定因此失效（历史监听链路的删除事件即因此被丢弃）。realpath 同理：
+/// 它对不存在的路径直接失败，与 TSPath.relative/dirname 混合使用时还会把
+/// /private/var/folders/…/shoot-a/IMG_1 与 …/shoot-b/IMG_3 的公共父目录算成
+/// /private。第 3 步把两种拼写**无条件**折叠为同一结果，与文件是否存在无关。
+///
+/// 真实身份解析（同一物理文件的不同位置）因此收敛在「同卷同 inode」这一层
+/// （asset_files 的 volume_id + file_identity 重链接），不在路径字符串层做
+/// 任意符号链接解析。
+///
+/// 为什么放在 Services 而不是 Protocol：Protocol 是纯值类型契约层（仅
+/// Foundation），本类型需要 POSIX lstat，故与扫描器同文件、同模块可见即可。
+public enum ScanPath {
+    /// 全链路唯一的归一化函数（唯一名字，不设别名）：所有 map 键、集合成员、
+    /// 去重判等、落库路径一律使用它。名字强调「全链路唯一拼写」，**不代表**
+    /// realpath 解析（见上方为什么不用 realpath）。
+    public static func canonical(_ path: String) -> String {
+        let resolved = TSPath.normalize(TSPath.resolve(path))
+        // 系统符号链接前缀折叠：与「路径是否存在」无关，保证 /var 与
+        // /private/var 两种拼写永远映射到同一个键。
+        if resolved == "/private/var" || resolved.hasPrefix("/private/var/") {
+            return String(resolved.dropFirst("/private".count))
         }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
+        if resolved == "/private/tmp" || resolved.hasPrefix("/private/tmp/") {
+            return String(resolved.dropFirst("/private".count))
         }
-    }
-    return collected.sorted { $0.index < $1.index }.map(\.value)
-}
-
-/// 共享游标（滑动窗口调度 + 首个失败即停）。
-private final class BatchCursor {
-    private let lock = NSLock()
-    private var next = 0
-    private let count: Int
-    private var failed = false
-
-    init(count: Int) {
-        self.count = count
+        return resolved
     }
 
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !failed, next < count else { return nil }
-        defer { next += 1 }
-        return next
+    /// 候选路径是否落在根之内（含根自身）。两侧归一化后按路径分量精确比较；
+    /// 刻意不使用 TSPath.relative —— 它内部再次 standardizingPath，会对存在的
+    /// 路径解析符号链接，破坏包含判定。
+    public static func isWithin(candidate: String, root: String) -> Bool {
+        let rootComponents = pathComponents(canonical(root))
+        let candidateComponents = pathComponents(canonical(candidate))
+        guard candidateComponents.count >= rootComponents.count else { return false }
+        return Array(candidateComponents.prefix(rootComponents.count)) == rootComponents
     }
 
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
+    /// 词法相对路径：path 落在 root 内时返回相对部分（path == root → ""），
+    /// 否则 nil。两侧先 canonical 再按分量求差 —— 刻意不用 TSPath.relative，
+    /// 它内部的 standardizingPath 会按「路径是否存在」改变拼写（见上）。
+    public static func relative(path: String, root: String) -> String? {
+        let rootComponents = pathComponents(canonical(root))
+        let pathComponents = pathComponents(canonical(path))
+        guard pathComponents.count >= rootComponents.count,
+              Array(pathComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+        return pathComponents.dropFirst(rootComponents.count).joined(separator: "/")
+    }
+
+    /// lstat 判定目录：符号链接不进入递归（与 TS opendir.isSymbolicLink 语义一致）。
+    public static func isDirectory(_ path: String) -> Bool {
+        var s = lstatBuf()
+        return lstat(path, &s) == 0 && (s.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    /// 不可作为递归扫描根的目录：文件系统根、当前用户主目录及其祖先。
+    /// 这类目录一旦成为扫描根，「导入若干照片」就会退化为递归扫描整个卷或
+    /// 主目录——历史缺陷正是由所选文件的公共父目录上溯到 home 触发的。
+    public static func isForbiddenRoot(_ path: String) -> Bool {
+        let resolved = canonical(path)
+        if resolved == "/" { return true }
+        let home = canonical(NSHomeDirectory())
+        guard !home.isEmpty, home != "/" else { return false }
+        let homeComponents = pathComponents(home)
+        let resolvedComponents = pathComponents(resolved)
+        guard resolvedComponents.count <= homeComponents.count else { return false }
+        return Array(homeComponents.prefix(resolvedComponents.count)) == resolvedComponents
+    }
+
+    /// 绝对路径的非空分量（"//a/b/" → ["a", "b"]）。
+    private static func pathComponents(_ path: String) -> [String] {
+        path.split(separator: "/").map(String.init)
     }
 }

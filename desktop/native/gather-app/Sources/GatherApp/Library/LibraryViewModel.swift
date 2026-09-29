@@ -30,9 +30,12 @@ public struct LibraryFilterState: Equatable, Sendable {
     public init() {}
 
     /// 需防抖的自由文本字段（TS useDebouncedValue 包裹的四个）。
-    public static let debouncedFields: Set<WritableKeyPath<LibraryFilterState, String>> = [
-        \.search, \.keyword, \.directory, \.person,
-    ]
+    /// Swift 6 迁移：WritableKeyPath 非 Sendable，静态存储会触发
+    /// MutableGlobalVariable；改为只读计算属性（每次构造新 Set，无共享存储，
+    /// 调用点语义不变：仅做 contains 判定）。
+    public static var debouncedFields: Set<WritableKeyPath<LibraryFilterState, String>> {
+        [\.search, \.keyword, \.directory, \.person]
+    }
 }
 
 /// TS: Library/index.tsx buildCriteria（Library.tsx:52-91）—— 逐字段映射为
@@ -89,7 +92,10 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
 
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
 /// 真实路由（LiveLibraryDataProvider + 临时 SQLite）。
-public protocol LibraryDataProvider {
+/// Swift 6 迁移：协议继承 Sendable（Live 实现仅持有不可变 router，命令客户端
+/// 无状态只在调用点构造），使 @MainActor ViewModel 可在 async 调用中安全地把
+/// provider existential 送出当前隔离域。
+public protocol LibraryDataProvider: Sendable {
     func listSessions() throws -> [SessionData]
     /// TS: filterApi.photosGlobal → { photos, total }。
     /// async：分页大查询经 executeAsync 走后台线程（避免 @MainActor 主线程阻塞）。
@@ -111,19 +117,25 @@ public protocol LibraryDataProvider {
     ) async throws -> (photos: [GlobalPhotoResult], total: Int)
     func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData
     func updateAlbum(albumId: String, criteria: FilterGroup) throws
-    func deleteAlbum(albumId: String) throws
+    /// 破坏性：confirmed 必须由视图的确认动作注入，**不设默认值**——
+    /// 编译期强制每个调用点说明它拿到的是用户确认还是取消。
+    func deleteAlbum(albumId: String, confirmed: Bool) throws
 
     /// TS: assetApi.candidates / acceptCandidate / rejectCandidate / volumes / relinkRoot。
     func listAssetCandidates() throws -> [AssetLinkCandidateData]
-    func updateAssetCandidate(candidateId: String, accept: Bool) throws
+    /// 破坏性（合并/拆分会改变资产结构）：confirmed 同上。
+    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) throws
     func listAssetVolumes() throws -> [AssetVolumeData]
-    func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int
+    /// 破坏性（改写该根下全部路径记录）：confirmed 同上。
+    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) throws -> Int
 
     /// TS: metadataApi.orphans / resolveOrphan。
     func listMetadataOrphans() throws -> [MetadataOrphan]
+    /// .restore 会用备份覆盖照片文件（不可撤销）：confirmed 同上。
     func resolveMetadataOrphan(
         xmpPath: String,
-        action: MetadataOrphanAction
+        action: MetadataOrphanAction,
+        confirmed: Bool
     ) async throws -> [MetadataOrphan]
 }
 
@@ -146,19 +158,19 @@ public extension LibraryDataProvider {
         throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
     }
 
-    func deleteAlbum(albumId: String) throws {
+    func deleteAlbum(albumId: String, confirmed: Bool) throws {
         throw NativeCommandError.failed("ALBUM_NOT_SUPPORTED")
     }
 
     func listAssetCandidates() throws -> [AssetLinkCandidateData] { [] }
 
-    func updateAssetCandidate(candidateId: String, accept: Bool) throws {
+    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) throws {
         throw NativeCommandError.failed("ASSET_LINK_NOT_SUPPORTED")
     }
 
     func listAssetVolumes() throws -> [AssetVolumeData] { [] }
 
-    func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int {
+    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) throws -> Int {
         throw NativeCommandError.failed("ASSET_RELINK_NOT_SUPPORTED")
     }
 
@@ -166,7 +178,8 @@ public extension LibraryDataProvider {
 
     func resolveMetadataOrphan(
         xmpPath: String,
-        action: MetadataOrphanAction
+        action: MetadataOrphanAction,
+        confirmed: Bool
     ) async throws -> [MetadataOrphan] {
         throw NativeCommandError.failed("METADATA_ORPHAN_NOT_SUPPORTED")
     }
@@ -174,13 +187,14 @@ public extension LibraryDataProvider {
 
 /// 真实实现：同进程直连 SessionCommandRouter（photo.list_page 等装配形状
 /// 以路由为唯一事实源，避免复制资产装配逻辑）。
+/// Swift 6 迁移：本类经协议继承 Sendable —— 唯一存储属性 router 为不可变
+/// （SessionCommandRouter 全 let 不可变）。命令客户端 NativeCommandClient 无
+/// 状态，改为在调用点构造，避免再存一个非 Sendable 的引用。
 public final class LiveLibraryDataProvider: LibraryDataProvider {
     private let router: SessionCommandRouter
-    private let client: NativeCommandClient
 
     public init(router: SessionCommandRouter) {
         self.router = router
-        self.client = NativeCommandClient(router: router)
     }
 
     public func listSessions() throws -> [SessionData] {
@@ -193,7 +207,7 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         limit: Int,
         offset: Int
     ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let response = try await client.executeAsync("filter.photos_global", params: [
+        let response = try await NativeCommandClient(router: router).executeAsync("filter.photos_global", params: [
             "criteria": try JSONValue(from: criteria),
             "sessionId": sessionId.map { .string($0) } ?? .null,
             "limit": .number(Double(limit)),
@@ -215,7 +229,7 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         limit: Int,
         offset: Int
     ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let response = try await client.executeAsync("album.get_photos", params: [
+        let response = try await NativeCommandClient(router: router).executeAsync("album.get_photos", params: [
             "albumId": .string(albumId),
             "limit": .number(Double(limit)),
             "offset": .number(Double(offset)),
@@ -241,10 +255,10 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         ])
     }
 
-    public func deleteAlbum(albumId: String) throws {
+    public func deleteAlbum(albumId: String, confirmed: Bool) throws {
         _ = try router.execute("album.delete", params: [
             "albumId": .string(albumId),
-            "confirmed": .bool(true),
+            "confirmed": .bool(confirmed),
         ])
     }
 
@@ -253,12 +267,12 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         return try response.decoded(as: [AssetLinkCandidateData].self)
     }
 
-    public func updateAssetCandidate(candidateId: String, accept: Bool) throws {
+    public func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) throws {
         _ = try router.execute(
             accept ? "assets.accept_candidate" : "assets.reject_candidate",
             params: [
                 "candidateId": .string(candidateId),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ]
         )
     }
@@ -268,11 +282,11 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         return try response.decoded(as: [AssetVolumeData].self)
     }
 
-    public func relinkAssetRoot(oldRoot: String, newRoot: String) throws -> Int {
+    public func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) throws -> Int {
         let response = try router.execute("assets.relink_root", params: [
             "oldRoot": .string(oldRoot),
             "newRoot": .string(newRoot),
-            "confirmed": .bool(true),
+            "confirmed": .bool(confirmed),
         ])
         return Int(response.numberValue ?? 0)
     }
@@ -284,14 +298,15 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
 
     public func resolveMetadataOrphan(
         xmpPath: String,
-        action: MetadataOrphanAction
+        action: MetadataOrphanAction,
+        confirmed: Bool
     ) async throws -> [MetadataOrphan] {
         let response = try await NativeCommandClient(router: router).executeAsync(
             "metadata.resolve_orphan",
             params: [
                 "xmpPath": .string(xmpPath),
                 "action": .string(action.rawValue),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ]
         )
         return try response.decoded(as: [MetadataOrphan].self)
@@ -302,13 +317,6 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
 @MainActor
 @Observable
 public final class LibraryViewModel {
-    /// 首屏加载阶段。
-    public enum LoadPhase: Equatable {
-        case loading
-        case loaded
-        case failed(String)
-    }
-
     /// TS: PAGE_SIZE = 60。
     public static let pageSize = 60
 
@@ -396,6 +404,7 @@ public final class LibraryViewModel {
                 criteria: buildLibraryCriteria(self.committed)
             )
             self.albums = try self.provider.listAlbums()
+            Self.postLibraryChange()
         }
     }
 
@@ -407,51 +416,103 @@ public final class LibraryViewModel {
                 criteria: buildLibraryCriteria(self.committed)
             )
             self.albums = try self.provider.listAlbums()
+            Self.postLibraryChange()
             await self.reload()
         }
     }
 
-    public func deleteSelectedAlbum() async {
-        guard let albumId = selectedAlbumId else { return }
+    /// 删除智能相册（破坏性：删除相册规则本身，不删除照片文件）。
+    /// confirmed 由视图确认弹窗注入：true 只能从确认分支到达（见 LibraryView
+    /// 的 pendingDeleteAlbum + gatherDestructiveConfirm）。
+    public func deleteAlbum(id: String, confirmed: Bool) async {
         await performSupportMutation {
-            try self.provider.deleteAlbum(albumId: albumId)
-            self.selectedAlbumId = nil
+            try self.provider.deleteAlbum(albumId: id, confirmed: confirmed)
+            if self.selectedAlbumId == id { self.selectedAlbumId = nil }
             self.albums = try self.provider.listAlbums()
+            Self.postLibraryChange()
             await self.reload()
         }
     }
 
-    public func updateCandidate(_ candidate: AssetLinkCandidateData, accept: Bool) async {
+    /// 关联候选决策（accept = 合并为一个资产；reject = 拒绝/拆分）。
+    /// 两者都在命令层受 confirmed 门控，故同样由确认动作注入。
+    public func updateCandidate(
+        _ candidate: AssetLinkCandidateData,
+        accept: Bool,
+        confirmed: Bool
+    ) async {
         await performSupportMutation {
-            try self.provider.updateAssetCandidate(candidateId: candidate.id, accept: accept)
+            try self.provider.updateAssetCandidate(
+                candidateId: candidate.id,
+                accept: accept,
+                confirmed: confirmed
+            )
             self.assetCandidates = try self.provider.listAssetCandidates()
             self.assetVolumes = try self.provider.listAssetVolumes()
+            Self.postLibraryChange()
             await self.reload()
         }
     }
 
-    public func resolveOrphan(_ orphan: MetadataOrphan, action: MetadataOrphanAction) async {
+    /// 孤立 XMP 处置。restore（恢复原片）会用备份覆盖照片文件、不可撤销 →
+    /// 必须来自确认弹窗；retry/keep 是可逆决策，按下的按钮本身就是用户决定。
+    public func resolveOrphan(
+        _ orphan: MetadataOrphan,
+        action: MetadataOrphanAction,
+        confirmed: Bool
+    ) async {
         await performSupportMutation {
             self.metadataOrphans = try await self.provider.resolveMetadataOrphan(
                 xmpPath: orphan.xmpPath,
-                action: action
+                action: action,
+                confirmed: confirmed
             )
+            Self.postMetadataChange()
         }
     }
 
-    /// 让用户选择新根目录后执行受确认保护的 relink_root。
-    public func relinkVolume(root oldRoot: String) async {
+    /// 只负责让用户选新根目录并返回结果，**不发命令**：调用方拿到新旧根后再弹
+    /// 确认（确认文案需要同时写清 oldRoot → newRoot 与影响范围）。
+    public func chooseRelinkRoot() async -> String? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = GatherLocalization.l("选择新目录")
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
+    }
+
+    /// 重新关联存储卷根（破坏性：改写该根下全部文件的路径记录）。
+    public func relinkVolume(root oldRoot: String, newRoot: String, confirmed: Bool) async {
         await performSupportMutation {
-            _ = try self.provider.relinkAssetRoot(oldRoot: oldRoot, newRoot: url.path)
+            _ = try self.provider.relinkAssetRoot(
+                oldRoot: oldRoot,
+                newRoot: newRoot,
+                confirmed: confirmed
+            )
             self.assetVolumes = try self.provider.listAssetVolumes()
+            Self.postLibraryChange()
             await self.reload()
         }
+    }
+
+    /// 本页发出的事件标识：监听方据此跳过自己触发的刷新（避免自触发重查）。
+    public static let changeOrigin = "library"
+
+    /// 库级写成功后的广播（相册/资产/离线卷）：常驻页按域刷新自己的数据。
+    private static func postLibraryChange() {
+        GatherEventCenter.postDomainChange(.library, sessionId: nil, origin: Self.changeOrigin)
+    }
+
+    /// 元数据写成功后的广播（孤立 XMP 处置等 XMP 写回族）。
+    private static func postMetadataChange() {
+        GatherEventCenter.postDomainChange(.metadata, sessionId: nil, origin: Self.changeOrigin)
+    }
+
+    /// 用户取消破坏性操作：写可见文案（不静默 return），且**不发任何命令**。
+    public func reportActionCancelled() {
+        actionError = GatherLocalization.l("已取消：未执行任何破坏性操作。")
     }
 
     private func performSupportMutation(_ operation: @escaping () async throws -> Void) async {
@@ -633,11 +694,47 @@ public final class LibraryViewModel {
 
     // MARK: 错误 message（对齐 DashboardViewModel.message）
 
+    /// 用户可见文案的**唯一漏斗**：错误码 → 本地化模板；其余原始诊断只进
+    /// 日志，界面回退通用文案（审查 P3：不得把非错误码诊断直显给用户）。
     static func message(for error: Error) -> String {
         if let sessionError = error as? SessionServiceError {
             return GatherLocalization.errorText(sessionError.gatherCode.rawValue)
         }
+        if let routerError = error as? RouterCommandError {
+            return userFacingText(for: routerError.message)
+        }
+        if let nativeError = error as? NativeCommandError {
+            return userFacingText(for: nativeError.description)
+        }
+        if let bridgeError = error as? BridgeError {
+            return userFacingText(for: bridgeError.description)
+        }
         let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        let raw = nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        return userFacingText(for: raw)
+    }
+
+    /// 错误码（全大写 ASCII + _ . : -）→ errorText 表；其它一律记日志 + 通用文案。
+    static func userFacingText(for raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return GatherLocalization.l("发生未知错误，请稍后重试") }
+        let code = trimmed.components(separatedBy: "::")[0]
+        let looksLikeCode = !code.isEmpty
+            && code.allSatisfy { $0.isUppercase || $0.isNumber || "_.:-".contains($0) }
+        // 码形门槛只认大写 ASCII：Core 侧「已知码: 参数」（如
+        // XMP_CONFIRM_OTHER_SESSION_PENDING: s1）会被误判成散文而丢掉 {{param}}
+        // 插值，故补一条「首冒号前段命中错误表」的判定（与 errorText 同构）。
+        // 未知码/散文仍不猜（负例见 LibraryViewModelTests 的两个参数化用例）。
+        let parameterizedCode = GatherLocalization.isParameterizedErrorCode(trimmed)
+        guard looksLikeCode || parameterizedCode else {
+            GatherLogger.log("library error is not an error code: \(trimmed)", level: .warn)
+            return GatherLocalization.l("发生未知错误，请稍后重试")
+        }
+        let generic = GatherLocalization.l("发生未知错误，请稍后重试")
+        let text = GatherLocalization.errorText(trimmed)
+        if text == generic {
+            GatherLogger.log("library error code not mapped: \(trimmed)", level: .warn)
+        }
+        return text
     }
 }

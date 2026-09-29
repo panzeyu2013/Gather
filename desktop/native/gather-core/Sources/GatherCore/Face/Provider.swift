@@ -62,6 +62,11 @@ public struct FaceInferenceConfig: Equatable, Sendable {
     public var encodeInputSize: Int
     /// 质量不达标回退 ONNX 开关（0.3c 对账门未过时置 true，上层决定路由）。
     public var fallbackToOnnxEnabled: Bool
+    /// 专用人脸嵌入模型路径（settings face_embedding_model_path；空 = 内置 Vision 特征）。
+    /// 非空但不可加载时推理直接报错——禁止静默回退（会混用两套向量空间，见 EmbeddingModel）。
+    public var faceEmbeddingModelPath: String
+    /// 模型版本标签（settings face_embedding_model_version），写进 observation 供追溯。
+    public var faceEmbeddingModelVersion: String
 
     public init(
         confidenceThreshold: Double = 0.5,
@@ -71,7 +76,9 @@ public struct FaceInferenceConfig: Equatable, Sendable {
         primaryInputSize: Int = 640,
         secondaryInputSize: Int = 128,
         encodeInputSize: Int = 112,
-        fallbackToOnnxEnabled: Bool = false
+        fallbackToOnnxEnabled: Bool = false,
+        faceEmbeddingModelPath: String = "",
+        faceEmbeddingModelVersion: String = ""
     ) {
         self.confidenceThreshold = confidenceThreshold
         self.nmsThreshold = nmsThreshold
@@ -81,5 +88,7 @@ public struct FaceInferenceConfig: Equatable, Sendable {
         self.secondaryInputSize = secondaryInputSize
         self.encodeInputSize = encodeInputSize
         self.fallbackToOnnxEnabled = fallbackToOnnxEnabled
+        self.faceEmbeddingModelPath = faceEmbeddingModelPath
+        self.faceEmbeddingModelVersion = faceEmbeddingModelVersion
     }
 }

@@ -11,13 +11,14 @@
 //   - sequential：clusterSequentially（cluster-engine.ts:240-275）
 //   - 小输入 bitset：clusterGloballyWithBitsets + waveBfsOverRows（283-322 / 501-579）
 //   - 大输入重算：clusterGloballyRecomputed + recomputedBfs（327-361 / 420-495）
-//   - 多阈值：clusterByHashMulti + clusterGloballyRecomputedMulti（166-236 / 367-411）
+//   - 多阈值：clusterByHashMulti + clusterGloballyWithBitsetsMulti（单趟共享距离
+//     遍历，§4.2 P1 性能修复）/ clusterGloballyRecomputedMulti（166-236 / 367-411）
 //
 // 移植说明：
 //   - TS 用 BigInt(`0x${hash}`) 解析 hex 再按大端展开为字节；Swift 直接按大端
 //     从 hex 串解析字节对（支持奇数字符数/大写字母，语义与 BigInt 一致）；
 //     空串/非法 hex 在 TS 侧 BigInt 抛 SyntaxError，Swift 侧抛 invalidHash。
-//   - popcount 查表（8/16 位）、bitPositions 表与 TS 相同；Uint16/Uint32 视图
+//   - popcount 查表（8/16 位）与 TS 相同；Uint16/Uint32 视图
 //     按小端打包，逐位 XOR/OR 运算与分组方式无关（同 TS 注释 cluster-engine.ts:71-72）。
 //   - onProgress 进度回调按 TS 原样保留（不影响分组结果）。
 
@@ -72,20 +73,6 @@ public enum ClusterEngine {
             table[value] = table[value >> 1] + UInt16(value & 1)
         }
         return table
-    }()
-
-    // TS:38-49
-    private static let bitPositions: [[UInt8]] = {
-        var positions: [[UInt8]] = []
-        positions.reserveCapacity(256)
-        for byte in 0..<256 {
-            var list: [UInt8] = []
-            for bit in 0..<8 where byte & (1 << bit) != 0 {
-                list.append(UInt8(bit))
-            }
-            positions.append(list)
-        }
-        return positions
     }()
 
     // TS:99-147
@@ -171,15 +158,17 @@ public enum ClusterEngine {
                     progressForTier(tierIndex, perTierUnits)
                     return result
                 }
-            case .global:
+        case .global:
             if count <= maxBitsetEntries {
-                return thresholds.enumerated().map { tierIndex, tier in
-                    let result = clusterGloballyWithBitsets(
-                        ids: ids, data: data, threshold: tier, minGroupSize: minGroupSize,
-                        bytesPerHash: bytesPerHash, onProgress: { current, _ in progressForTier(tierIndex, current) })
-                    progressForTier(tierIndex, perTierUnits)
-                    return result
-                }
+                // §4.2 P1 性能修复：全部档位共享一趟 pair 距离遍历（见
+                // clusterGloballyWithBitsetsMulti），不再逐档调用单档 bitset 路径。
+                let results = clusterGloballyWithBitsetsMulti(
+                    ids: ids, data: data, thresholds: unique, minGroupSize: minGroupSize,
+                    bytesPerHash: bytesPerHash, onProgress: onProgress,
+                    progressForTier: progressForTier)
+                // 映射回调用方阈值顺序（含重复阈值），同 TS:233-235
+                let byTier = Dictionary(uniqueKeysWithValues: zip(unique, results))
+                return thresholds.map { byTier[$0]! }
             }
             let results = clusterGloballyRecomputedMulti(
                 ids: ids, data: data, thresholds: unique, minGroupSize: minGroupSize,
@@ -267,6 +256,177 @@ public enum ClusterEngine {
         // 最终进度值（同 TS:320）
         onProgress?(count, count)
         return grouped
+    }
+
+    // §4.2 P1 性能修复：多档位共享一趟距离遍历的 bitset 路径。
+    //
+    // 旧实现逐档调用 clusterGloballyWithBitsets：主档 + 4 档各跑一趟 O(n²) 距离
+    // 遍历（n ≤ maxBitsetEntries 时 ADR-027 的增量收益被端到端吃掉）。现在：
+    //   1) 一次 pair 遍历，每个 pair 只算一次汉明距离；
+    //   2) 按距离同时累加各档的节点度（regionSizes，稠密/稀疏门控用）；
+    //   3) 最高档的边写入一张并集 bitset（低档边集是其子集）。
+    // 随后每档只做一次 wave BFS：邻接行取自并集 bitset，再按当前档阈值逐位二次
+    // 核验（并集行 ⊇ 档位行），得到的有效邻接与逐档独立 bitset 完全一致，分组
+    // 结果逐位相同（对账 fixture 门禁覆盖）。峰值内存与旧单档路径同阶：同时只
+    // 保留一张 count ≤ maxBitsetEntries 的位图。
+    private static func clusterGloballyWithBitsetsMulti(
+        ids: [String],
+        data: [UInt8],
+        thresholds: [Int],
+        minGroupSize: Int,
+        bytesPerHash: Int,
+        onProgress: ((Int, Int) -> Void)?,
+        progressForTier: @escaping (Int, Int) -> Void
+    ) -> [ClusterResult] {
+        let count = ids.count
+        let tiers = thresholds.count
+        if count == 0 || tiers == 0 {
+            return thresholds.map { _ in ClusterResult(groups: [], ungrouped: []) }
+        }
+        let maxTier = thresholds.max() ?? 0
+
+        // 对齐 32-bit 词（同 TS:297）
+        let rowBytes = (((count + 7) >> 3) + 3) & ~3
+        let rowWords = rowBytes >> 2
+        var rowView = [UInt32](repeating: 0, count: count * rowWords)
+        var regionSizesByTier = thresholds.map { _ in [Int](repeating: 0, count: count) }
+        let step = max(512, Int(Double(count) * 0.02))
+
+        for i in 0..<count {
+            if (i + 1) % step == 0 || i + 1 == count {
+                onProgress?(i + 1, count)
+            }
+            let offsetA = i * bytesPerHash
+            let rowBase = i * rowWords
+            for j in (i + 1)..<count {
+                let distance = hammingDistanceAt(
+                    data, offsetA: offsetA, offsetB: j * bytesPerHash, byteCount: bytesPerHash)
+                for tierIndex in 0..<tiers where distance <= thresholds[tierIndex] {
+                    regionSizesByTier[tierIndex][i] += 1
+                    regionSizesByTier[tierIndex][j] += 1
+                }
+                if distance <= maxTier {
+                    rowView[rowBase + (j >> 5)] |= UInt32(1) << UInt32(j & 31)
+                    rowView[j * rowWords + (i >> 5)] |= UInt32(1) << UInt32(i & 31)
+                }
+            }
+        }
+
+        return thresholds.enumerated().map { tierIndex, tier in
+            let grouped = waveBfsOverFilteredRows(
+                ids: ids, rowView: rowView, rowWords: rowWords,
+                data: data, bytesPerHash: bytesPerHash, threshold: tier,
+                regionSizes: regionSizesByTier[tierIndex], minGroupSize: minGroupSize,
+                count: count,
+                onProgress: { current, _ in progressForTier(tierIndex, current) })
+            progressForTier(tierIndex, count)
+            return grouped
+        }
+    }
+
+    // TS:501-579 的档位过滤变体：邻接行 = 最高档并集 bitset ∩ 当前档阈值。
+    // 位枚举顺序（节点号升序）与 waveBfsOverRows 完全一致，分组顺序不变。
+    private static func waveBfsOverFilteredRows(
+        ids: [String],
+        rowView: [UInt32],
+        rowWords: Int,
+        data: [UInt8],
+        bytesPerHash: Int,
+        threshold: Int,
+        regionSizes: [Int],
+        minGroupSize: Int,
+        count: Int,
+        onProgress: ((Int, Int) -> Void)?
+    ) -> ClusterResult {
+        var inGroup = [Bool](repeating: false, count: count)
+        var groups: [[String]] = []
+        var ungrouped: [String] = []
+        var assigned = 0
+
+        var member = [UInt32](repeating: 0, count: rowWords)
+        var frontier = [UInt32](repeating: 0, count: rowWords)
+        var next = [UInt32](repeating: 0, count: rowWords)
+        var rowScratch = [UInt32](repeating: 0, count: rowWords)
+
+        /// 并集行 → 当前档有效行：并集是 maxTier 超集，逐位核验汉明距离后清除
+        /// 超阈位。位序按节点号升序（trailingZeroBitCount 迭代）。
+        func loadTierRow(_ node: Int, into target: inout [UInt32]) {
+            let rowBase = node * rowWords
+            for word in 0..<rowWords { target[word] = rowView[rowBase + word] }
+            let offsetA = node * bytesPerHash
+            for word in 0..<rowWords {
+                var bits = target[word]
+                while bits != 0 {
+                    let bit = UInt32(bits.trailingZeroBitCount)
+                    let other = (word << 5) | Int(bit)
+                    if other >= count || hammingDistanceAt(
+                        data, offsetA: offsetA, offsetB: other * bytesPerHash,
+                        byteCount: bytesPerHash
+                    ) > threshold {
+                        target[word] &= ~(UInt32(1) << bit)
+                    }
+                    bits &= bits - 1
+                }
+            }
+        }
+
+        for seed in 0..<count {
+            if inGroup[seed] { continue }
+            if regionSizes[seed] + 1 < minGroupSize { continue }
+
+            var group = [ids[seed]]
+            inGroup[seed] = true
+            member = [UInt32](repeating: 0, count: rowWords)
+            next = [UInt32](repeating: 0, count: rowWords)
+            member[seed >> 5] |= 1 << UInt32(seed & 31)
+            // 初始 frontier = seed 行 ∩ 当前档（TS:536）
+            loadTierRow(seed, into: &frontier)
+
+            var hasFrontier = true
+            while hasFrontier {
+                next = [UInt32](repeating: 0, count: rowWords)
+                // 采纳每个 frontier 节点，密集节点的行 OR 进下一 frontier；
+                // 稀疏节点随组但不扩张（同 TS:542-562）
+                for word in 0..<rowWords {
+                    var bits = frontier[word]
+                    var bit = 0
+                    while bits != 0 {
+                        if bits & 1 != 0 {
+                            let node = word * 32 + bit
+                            if !inGroup[node] {
+                                inGroup[node] = true
+                                member[node >> 5] |= 1 << UInt32(node & 31)
+                                group.append(ids[node])
+                                assigned += 1
+                                if regionSizes[node] + 1 >= minGroupSize {
+                                    loadTierRow(node, into: &rowScratch)
+                                    for w in 0..<rowWords {
+                                        next[w] |= rowScratch[w]
+                                    }
+                                }
+                            }
+                        }
+                        bits >>= 1
+                        bit += 1
+                    }
+                }
+                // 下一 frontier：本波发现的、尚未入组的邻居（同 TS:565-570）
+                hasFrontier = false
+                for word in 0..<rowWords {
+                    let nextWord = next[word] & ~member[word]
+                    frontier[word] = nextWord
+                    if nextWord != 0 { hasFrontier = true }
+                }
+            }
+            groups.append(group)
+            onProgress?(assigned, count)
+        }
+
+        for i in 0..<count where !inGroup[i] {
+            ungrouped.append(ids[i])
+        }
+        onProgress?(count, count)
+        return ClusterResult(groups: groups, ungrouped: ungrouped)
     }
 
     // TS:327-361

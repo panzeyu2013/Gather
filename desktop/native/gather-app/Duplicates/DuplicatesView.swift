@@ -15,6 +15,72 @@ import GatherCore
 private let defaultMemberLimit = 12
 private let groupPageSize = 100
 
+/// 待确认的重复组处置：影响范围（保留/丢弃的数量与文件）在弹窗 message 中呈现。
+private struct PendingGroupResolution: Identifiable {
+    let group: DuplicateGroup
+    let resolution: DupResolution
+    /// 推荐保留文件名：由视图层（MainActor）预计算后带入，文件级确认上下文
+    /// 不直接调用 DuplicatesViewModel 的隔离静态方法。
+    let recommendedFilename: String?
+
+    var id: String { "\(group.id)-\(resolution.rawValue)" }
+
+    var confirmLabel: String {
+        resolution == .keepOne ? GatherLocalization.l("保留最佳，丢弃其余") : GatherLocalization.l("全部保留")
+    }
+
+    var confirmRole: ButtonRole? { resolution == .keepOne ? .destructive : nil }
+
+    var scopeText: String {
+        let total = group.memberCount
+        switch resolution {
+        case .keepOne:
+            let kept = recommendedFilename ?? GatherLocalization.l("推荐照片")
+            return String(
+                format: GatherLocalization.l("组 #%lld 共 %lld 张：仅保留推荐「%@」，其余 %lld 张标记为丢弃；被丢弃的照片会在导出时被排除，不会删除文件。"),
+                group.id, total, kept, max(0, total - 1)
+            )
+        case .keepAll:
+            return String(
+                format: GatherLocalization.l("组 #%lld 共 %lld 张全部标记为保留，不再从导出中排除任何成员。"),
+                group.id, total
+            )
+        }
+    }
+
+    var cancelCopy: String {
+        resolution == .keepOne
+            ? String(format: GatherLocalization.l("保留最佳（组 #%lld）"), group.id)
+            : String(format: GatherLocalization.l("全部保留（组 #%lld）"), group.id)
+    }
+}
+
+/// 待确认的成员保留状态：目标状态由点击时的意图决定，不在命令层翻转。
+private struct PendingMemberDecision: Identifiable {
+    let member: DuplicateGroupMember
+    let isKept: Bool
+
+    var id: String { "\(member.id)-\(isKept)" }
+
+    var confirmLabel: String {
+        isKept ? GatherLocalization.l("保留此照片") : GatherLocalization.l("丢弃此照片")
+    }
+
+    var confirmRole: ButtonRole? { isKept ? nil : .destructive }
+
+    var scopeText: String {
+        isKept
+            ? String(format: GatherLocalization.l("将「%@」（%@）改回保留，重新参与导出。"), member.filename, member.filepath)
+            : String(format: GatherLocalization.l("将「%@」（%@）标记为丢弃；该照片会从重复组中排除并在导出时被跳过，不会删除文件。"), member.filename, member.filepath)
+    }
+
+    var cancelCopy: String {
+        isKept
+            ? String(format: GatherLocalization.l("保留「%@」"), member.filename)
+            : String(format: GatherLocalization.l("丢弃「%@」"), member.filename)
+    }
+}
+
 // 对齐 TS DUP_THRESHOLD_PRESETS：严格 2 / 均衡 4 / 宽松 7（Duplicates.tsx:160-166）。
 public enum VisualPreset: String, CaseIterable {
     case strict
@@ -150,15 +216,19 @@ public final class DuplicatesViewModel {
     }
 
     // MARK: - 组 / 成员操作（本地 patch，对齐 TS L201-270）
+    // dup.resolve / dup.resolve_member 是命令层 confirmed 门控的破坏性命令：
+    // `confirmed` 只能由视图层确认弹窗传入 true；取消路径根本不会调用这里。
 
-    public func resolveGroup(_ group: DuplicateGroup, resolution: DupResolution) {
+    public func resolveGroup(_ group: DuplicateGroup, resolution: DupResolution, confirmed: Bool) {
         do {
             _ = try client.execute("dup.resolve", params: [
                 "groupId": .number(Double(group.id)),
                 "resolution": .string(resolution.rawValue),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ])
             notice = String(format: GatherLocalization.l("已处理重复组 #%lld"), group.id)
+            // 处置会改变导出过滤（removed/丢弃语义），广播供常驻页按域刷新。
+            GatherEventCenter.postDomainChange(.duplicates, sessionId: sessionId)
             guard let index = groups.firstIndex(where: { $0.id == group.id }) else { return }
             var updated = groups[index]
             updated.resolution = resolution.rawValue
@@ -175,17 +245,19 @@ public final class DuplicatesViewModel {
         }
     }
 
-    public func toggle(_ member: DuplicateGroupMember) {
+    /// 成员保留状态（用户确认后的目标状态；旧实现「无参翻转」在确认前就改变
+    /// 语义，已删除）。`confirmed` 由确认弹窗传入。
+    public func setMemberKept(_ member: DuplicateGroupMember, isKept: Bool, confirmed: Bool) {
         do {
             _ = try client.execute("dup.resolve_member", params: [
                 "memberId": .number(Double(member.id)),
-                "isKept": .bool(!member.isKept),
-                "confirmed": .bool(true),
+                "isKept": .bool(isKept),
+                "confirmed": .bool(confirmed),
             ])
+            GatherEventCenter.postDomainChange(.duplicates, sessionId: sessionId)
             guard let groupIndex = groups.firstIndex(where: { $0.members.contains(where: { $0.id == member.id }) }),
                   let memberIndex = groups[groupIndex].members.firstIndex(where: { $0.id == member.id })
             else { return }
-            let isKept = !groups[groupIndex].members[memberIndex].isKept
             groups[groupIndex].members[memberIndex].isKept = isKept
             groups[groupIndex].members[memberIndex].resolution = isKept
                 ? DupResolution.keepAll.rawValue
@@ -193,6 +265,12 @@ public final class DuplicatesViewModel {
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
+    }
+
+    /// 取消破坏性动作：给出可见文案（不静默 return，也不发命令）。
+    public func reportCancellation(_ action: String) {
+        notice = GatherLocalization.cancellationNotice(action)
+        errorMessage = nil
     }
 
     // MARK: - 分页 / 展开折叠
@@ -294,6 +372,9 @@ public struct DuplicatesView: View {
     private let onOpenTab: (String, SessionTab) -> Void
     private let onOpenGallery: (String) -> Void
     private let onOpenSettings: () -> Void
+    /// 破坏性动作的待确认上下文：非空即弹确认框；命令只在确认分支发出。
+    @State private var pendingResolution: PendingGroupResolution?
+    @State private var pendingMemberDecision: PendingMemberDecision?
 
     init(
         sessionId: String,
@@ -357,6 +438,34 @@ public struct DuplicatesView: View {
             guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.applyJobEvent(event)
         }
+        // 组处置 / 成员保留状态：确认后才发 dup.resolve / dup.resolve_member，
+        // 取消只写可见文案（不发命令）。
+        .gatherDestructiveConfirm(
+            pending: $pendingResolution,
+            title: GatherLocalization.l("确认处理这个重复组？"),
+            confirmLabel: { $0.confirmLabel },
+            confirmRole: { $0.confirmRole },
+            message: { $0.scopeText },
+            onConfirm: { pending in
+                viewModel.resolveGroup(pending.group, resolution: pending.resolution, confirmed: true)
+            },
+            onCancel: { pending in
+                viewModel.reportCancellation(pending.cancelCopy)
+            }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingMemberDecision,
+            title: GatherLocalization.l("确认更改这张照片的保留状态？"),
+            confirmLabel: { $0.confirmLabel },
+            confirmRole: { $0.confirmRole },
+            message: { $0.scopeText },
+            onConfirm: { pending in
+                viewModel.setMemberKept(pending.member, isKept: pending.isKept, confirmed: true)
+            },
+            onCancel: { pending in
+                viewModel.reportCancellation(pending.cancelCopy)
+            }
+        )
     }
 
     private var header: some View {
@@ -479,14 +588,33 @@ public struct DuplicatesView: View {
     }
 
     private func groupCard(_ group: DuplicateGroup) -> some View {
-        GroupCardView(group: group, viewModel: viewModel)
+        // 推荐保留与卡片徽章同源；在视图（MainActor）上下文预计算，供确认弹窗
+        // 展示影响范围（保留哪一张、丢弃几张）。
+        let recommendedFilename = DuplicatesViewModel.recommendation(in: group)?.filename
+        return GroupCardView(
+            group: group,
+            viewModel: viewModel,
+            onResolve: { group, resolution in
+                pendingResolution = PendingGroupResolution(
+                    group: group,
+                    resolution: resolution,
+                    recommendedFilename: recommendedFilename
+                )
+            },
+            onSetMemberKept: { member, isKept in
+                pendingMemberDecision = PendingMemberDecision(member: member, isKept: isKept)
+            }
+        )
     }
 }
 
 /// 分组卡（对齐旧版 .groupCard：surface + 1px 边框 + radius-md + hover 反馈）。
+/// 处置动作只上抛意图，确认弹窗与命令由 DuplicatesView 统一门控。
 private struct GroupCardView: View {
     let group: DuplicateGroup
     let viewModel: DuplicatesViewModel
+    let onResolve: (DuplicateGroup, DupResolution) -> Void
+    let onSetMemberKept: (DuplicateGroupMember, Bool) -> Void
 
     @State private var hovering = false
 
@@ -503,8 +631,8 @@ private struct GroupCardView: View {
                 }
                 Spacer()
                 Menu(GatherLocalization.l("处理")) {
-                    Button(GatherLocalization.l("保留最佳")) { viewModel.resolveGroup(group, resolution: .keepOne) }
-                    Button(GatherLocalization.l("保留全部")) { viewModel.resolveGroup(group, resolution: .keepAll) }
+                    Button(GatherLocalization.l("保留最佳")) { onResolve(group, .keepOne) }
+                    Button(GatherLocalization.l("保留全部")) { onResolve(group, .keepAll) }
                 }
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
@@ -569,8 +697,10 @@ private struct GroupCardView: View {
                 Text(String(format: GatherLocalization.l("%.1f MB"), Double(fileSize) / 1024 / 1024))
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Button(member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃")) { viewModel.toggle(member) }
-                .buttonStyle(.bordered)
+            Button(member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃")) {
+                onSetMemberKept(member, !member.isKept)
+            }
+            .buttonStyle(.bordered)
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(GatherTheme.surface.opacity(0.5)))
@@ -582,10 +712,10 @@ private struct GroupCardView: View {
         )
         .contextMenu {
             Button(GatherLocalization.l("保留")) {
-                if !member.isKept { viewModel.toggle(member) }
+                if !member.isKept { onSetMemberKept(member, true) }
             }
             Button(GatherLocalization.l("丢弃")) {
-                if member.isKept { viewModel.toggle(member) }
+                if member.isKept { onSetMemberKept(member, false) }
             }
         }
         .opacity(member.isKept ? 1 : 0.72)

@@ -203,10 +203,6 @@ public final class MetadataCacheRepo {
         _ = try connection.prepare("DELETE FROM photo_metadata_cache WHERE session_id = ?").run([.text(sessionId)])
     }
 
-    public func deleteByPhotoId(_ photoId: String) throws {
-        _ = try connection.prepare("DELETE FROM photo_metadata_cache WHERE photo_id = ?").run([.text(photoId)])
-    }
-
     public func updateRating(photoId: String, rating: Int64) throws {
         let now = nowISOString()
         _ = try connection.prepare("""

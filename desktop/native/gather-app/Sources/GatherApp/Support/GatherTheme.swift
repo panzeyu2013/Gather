@@ -27,11 +27,6 @@ public enum GatherTheme {
     public static let error = dynamic(light: "#B3403F", dark: "#E0706F")
     public static let warning = dynamic(light: "#D4944F", dark: "#E5B27B")
 
-    // MARK: - 语义色柔和填充（浅色按 14% / 深色按 16% 叠在表面色上）
-    public static let successSoft = dynamic(light: "#DEE4D9", dark: "#384233")
-    public static let errorSoft = dynamic(light: "#F0DDD9", dark: "#4A3530")
-    public static let warningSoft = dynamic(light: "#F5E9DB", dark: "#4B4032")
-
     // MARK: - 查看器深色面板（始终深色，不随外观模式切换）
     public static let viewerBackground = Color(hex: 0x080808)
     public static let viewerSurface = Color(hex: 0x191919)
@@ -48,14 +43,6 @@ public enum GatherTheme {
         public static let sm: CGFloat = 6
         public static let md: CGFloat = 8
         public static let lg: CGFloat = 10
-    }
-
-    // MARK: - 间距阶梯
-    public enum Spacing {
-        public static let xs: CGFloat = 4
-        public static let sm: CGFloat = 8
-        public static let md: CGFloat = 12
-        public static let lg: CGFloat = 16
     }
 
     // MARK: - 表单标签列统一宽度

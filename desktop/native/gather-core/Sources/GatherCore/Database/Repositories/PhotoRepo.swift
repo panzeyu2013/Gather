@@ -158,15 +158,32 @@ public final class PhotoRepo {
     """
 
     /// TS: RAW_EXTENSIONS —— 原始格式扩展名列表（RAW+JPEG 配对时优先变体）。
-    public static let rawExtensions: [String] = [
-        ".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw",
-    ]
+    /// 唯一真相源是 AssetRepo.rawExtensions（此处仅排序别名：SQL 文本稳定，
+    /// 便于语句缓存；不再本地维护字面量清单）。
+    public static let rawExtensions: [String] = AssetRepo.rawExtensions.sorted()
 
     /// TS: RAW_EXTENSION_LIKE_SQL —— 由 RAW_EXTENSIONS 推导的 SQL 片段
-    /// （`LOWER(p2.filename) LIKE '%.nef' OR ...`，需 p2 表别名）。
-    public static let rawExtensionLikeSQL: String = PhotoRepo.rawExtensions
-        .map { "LOWER(p2.filename) LIKE '%\($0)'" }
-        .joined(separator: " OR ")
+    /// （`(LOWER(p2.filename) LIKE '%.nef' OR ...)`，需 p2 表别名）。
+    /// RAW 变体判定（按文件名扩展名）的**唯一**定义，别名可换。
+    /// 整个 OR 链外包一层括号：嵌入 AND/OR 复合表达式时优先级才正确
+    /// （CASE WHEN / ORDER BY 单表达式位置本可省略，收敛为一种安全形态）。
+    public static func rawVariantSQL(alias: String) -> String {
+        let clauses = rawExtensions
+            .map { "LOWER(\(alias).filename) LIKE '%\($0)'" }
+            .joined(separator: " OR ")
+        return "(\(clauses))"
+    }
+
+    /// 资产组代表行的**唯一**排序规则：RAW 变体优先，其次最小 rowid
+    /// （rowid = 导入顺序 ⇒ 展示顺序稳定）。
+    ///
+    /// 必须全仓共用：图库全局查询（FilterEngine.filterGlobally 的
+    /// representatives）与挑片分组（CullingService.preferredRowPredicate）若各写
+    /// 一份，同一资产在两页会显示成不同的照片（RAW/JPEG 变体各自的缩略图与
+    /// 元数据），且筛选计数与页内容会互相矛盾。
+    public static func preferredRowOrderSQL(alias: String) -> String {
+        "CASE WHEN \(rawVariantSQL(alias: alias)) THEN 1 ELSE 0 END DESC, \(alias).rowid"
+    }
 
     private let connection: DBConnection
 
@@ -258,7 +275,7 @@ public final class PhotoRepo {
 
     /// 批量添加照片；返回 added/skipped 计数与逐路径 id（重复路径为 ""）。
     public func addPhotos(sessionId: String, filepaths: [PhotoAddInput], _ source: String) throws -> PhotoAddResult {
-        let now = nowISO()
+        let now = nowISOString()
         var added = 0
         var skipped = 0
         var ids: [String] = []
@@ -266,17 +283,15 @@ public final class PhotoRepo {
         let insertStmt = try connection.prepare(
             "INSERT OR IGNORE INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, width, height, created_at, updated_at) VALUES (?, ?, ?, ?, '', 'pending', '{}', '{}', ?, ?, ?, ?)"
         )
-        let existsStmt = try connection.prepare("SELECT 1 FROM photos WHERE session_id = ? AND filepath = ? LIMIT 1")
-
+        // 去重判据只有 idx_photos_session_filepath（迁移末尾无条件创建：
+        // ensurePhotoPathUniqueness 建不出唯一索引就回滚并让迁移失败，故不存在
+        // "无该索引" 的库）。命中唯一索引时 INSERT OR IGNORE 的 changes == 0，
+        // 由下方 else 分支给出 skipped/"" 语义；旧实现另加一次 SELECT 点查，
+        // 等于在约束之外把同一条规则再抄一遍，已删除。
         try connection.transaction {
             for input in filepaths {
-                if try existsStmt.get([.text(sessionId), .text(input.filepath)]) != nil {
-                    skipped += 1
-                    ids.append("")
-                    continue
-                }
                 let filename = input.filepath.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? input.filepath
-                let id = newUUID()
+                let id = newUUIDString()
                 let changes = try insertStmt.run([
                     .text(id), .text(sessionId), .text(input.filepath), .text(filename),
                     .int(Int64(input.width)), .int(Int64(input.height)), .text(now), .text(now),
@@ -306,7 +321,7 @@ public final class PhotoRepo {
             .int(changed ? 1 : 0),
             .int(changed ? 1 : 0),
             .int(changed ? 1 : 0),
-            .text(nowISO()),
+            .text(nowISOString()),
             .text(photoId),
         ])
     }
@@ -314,13 +329,13 @@ public final class PhotoRepo {
     public func updateChecksum(photoId: String, checksum: String, fileSize: Int, fileMtimeMs: Double) throws {
         _ = try connection.prepare(
             "UPDATE photos SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?, updated_at = ? WHERE id = ?"
-        ).run([.text(checksum), .int(Int64(fileSize)), .real(fileMtimeMs), .text(nowISO()), .text(photoId)])
+        ).run([.text(checksum), .int(Int64(fileSize)), .real(fileMtimeMs), .text(nowISOString()), .text(photoId)])
     }
 
     public func markMissing(photoIds: [String]) throws {
         let statement = try connection.prepare("UPDATE photos SET status = 'missing', updated_at = ? WHERE id = ?")
         try connection.transaction {
-            let now = nowISO()
+            let now = nowISOString()
             for id in photoIds {
                 _ = try statement.run([.text(now), .text(id)])
             }
@@ -328,12 +343,4 @@ public final class PhotoRepo {
     }
 }
 
-private func newUUID() -> String {
-    UUID().uuidString.lowercased()
-}
 
-private func nowISO() -> String {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.string(from: Date())
-}

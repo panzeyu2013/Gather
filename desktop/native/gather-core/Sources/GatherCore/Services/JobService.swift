@@ -1,17 +1,39 @@
 // desktop/native/gather-core/Sources/GatherCore/Services/JobService.swift
-// TS 源: desktop/src/main/services/jobs/job.service.ts（重写）
-// 分析任务服务：租约执行、进度节流、心跳看门狗、取消传播、结果等待。
-// 并发模型：class + NSLock（TS 为单线程事件循环，Swift 以锁保护共享状态）；
-// 取消为协作式（executor 经 throwIfCancelled/signal 检查），与 TS AbortSignal
-// 语义一致；心跳与超时用 Task.sleep 循环（对齐 setInterval 语义）。
+// 后台任务唯一执行器：入队、准入、心跳、取消宽限、恢复、终态收尾全部在这里定义。
+// 旧 JobScheduler（第二套 weight 调度）与 AnalysisWorker（未被生产引用的包装）已删除，
+// 其预算准入语义并入本文件的 weightBudget 调度。
+//
+// ── 状态机（迁移只发生在 AnalysisJobRepo；本文件是唯一驱动者）──
+//   queued     --claim-->            running
+//   queued     --cancel-->           cancelled（不需要执行器参与）
+//   running    --cancel-->           cancelling --执行器收尾/宽限兜底--> cancelled
+//   running    --work throw-->       failed（真实错误码+消息）
+//   running    --work ok-->          succeeded
+//   running    --停机兜底/stale-->   interrupted（可恢复类型由看门狗自动 requeue）
+//   interrupted/failed/cancelled --retry--> queued（checkpoint 保留=续跑）
+//
+// ── 三条关键语义 ──
+// 1) 心跳：SQL 抛错（瞬时 BUSY 等）≠ 租约丢失。抛错只累计并重试，读回确认租约
+//    仍属本进程就继续 running；只有 heartbeat 返回 0 行（对端已迁移/回收/删除）
+//    才中止执行，且不再由本执行器改写对端状态（interrupted 由 recoverStale 负责）。
+// 2) 取消：queued 直接终态；running 转 cancelling 并 abort signal，同时挂宽限定时器
+//    （cancelGraceMs），即使执行器无视取消，宽限到点也由本执行器以租约收尾为
+//    cancelled —— cancelling 永远不会是终点。
+// 3) 恢复：看门狗周期性 recoverStale 后，对已注册且允许自动恢复的类型调用
+//    resumeInterrupted(maxAttempts:)，超过尝试上限的行保持 interrupted 等用户重试；
+//    明确的不恢复集合见 nonAutoResumableTypes。
 import Foundation
 
+/// 执行器观察到的取消（协作式，与 TS AbortSignal 语义一致）。
 public struct JobCancelledError: Error, Equatable {
     public init() {}
 }
 
 /// 取消信号（TS AbortSignal 的等价物）。
-public final class JobAbortSignal {
+/// 线程安全说明（Swift 6 `Sendable`）：可变状态 `_aborted`/`handlers` 只在
+/// `lock`（NSLock）临界区内读写（abort 在锁外回调 handler，避免反向取锁死锁）。
+/// 锁纪律无法被编译器静态验证，故标注 `@unchecked`。
+public final class JobAbortSignal: @unchecked Sendable {
     private let lock = NSLock()
     private var _aborted = false
     private var handlers: [() -> Void] = []
@@ -34,11 +56,8 @@ public final class JobAbortSignal {
         handlers.forEach { $0() }
     }
 
-    /// TS AbortSignal.addEventListener（abort 监听；宿主 executor 用于把
-    /// job 取消传播给服务的自持 controller，如 fkw.analyze）。
+    /// TS AbortSignal.addEventListener：已 abort 时锁外立即回调（避免反向取锁死锁）。
     public func addHandler(_ handler: @escaping () -> Void) {
-        // 审计 P1-并发：已 abort 时不得持锁回调（handler 可能反向取锁 →
-        // 非递归锁死锁）。与 abort() 的"拷贝后锁外调用"模式一致。
         lock.lock()
         if _aborted {
             lock.unlock()
@@ -51,7 +70,11 @@ public final class JobAbortSignal {
 }
 
 /// 任务执行上下文（TS JobRunContext）。
-public final class JobRunContext {
+/// 线程安全说明（Swift 6 `Sendable`）：可变状态 `pendingProgress`/
+/// `lastProgressWriteAt`/`cancelCheckCalls`/`lastCancelDbCheckAt` 只在 `lock`（NSLock）
+/// 临界区内读写；其余存储属性构造后不可变。锁纪律无法被编译器静态验证，
+/// 故标注 `@unchecked`（与同仓 MetadataSyncCoordinator 的既有约定一致）。
+public final class JobRunContext: @unchecked Sendable {
     public let signal: JobAbortSignal
 
     private let lock = NSLock()
@@ -59,9 +82,9 @@ public final class JobRunContext {
     private var lastProgressWriteAt: Int64 = 0
     private var cancelCheckCalls = 0
     private var lastCancelDbCheckAt: Int64 = 0
-    private let cancelCheckEvery = 50
-    private let cancelCheckIntervalMs: Int64 = 500
-    private let progressWriteIntervalMs: Int64 = 250
+    private let cancelCheckEvery = JobService.cancelDbCheckEvery
+    private let cancelCheckIntervalMs = JobService.cancelDbCheckIntervalMs
+    private let progressWriteIntervalMs = JobService.progressWriteIntervalMs
 
     private let repo: AnalysisJobRepo
     private let jobId: String
@@ -85,23 +108,24 @@ public final class JobRunContext {
         self.progressSink = progressSink
     }
 
-    /// 进度上报：250ms 节流合并；current >= total 视为完成立即落库。
+    /// 进度上报：250ms 节流合并；current >= total（total > 0）视为完成立即 flush。
     public func updateProgress(_ update: JobProgressUpdate) {
         let now = Self.nowMs()
         lock.lock()
         let merged = merge(pendingProgress ?? JobProgressUpdate(), update)
         pendingProgress = merged
-        let completed =
-            update.current != nil && update.total != nil &&
-            update.total! > 0 && update.current! >= update.total!
+        let completed: Bool
+        if let current = update.current, let total = update.total, total > 0 {
+            completed = current >= total
+        } else {
+            completed = false
+        }
         let shouldFlush = completed || now - lastProgressWriteAt >= progressWriteIntervalMs
         lock.unlock()
-        if shouldFlush {
-            flushProgress()
-        }
+        if shouldFlush { flushProgress() }
     }
 
-    /// checkpoint 落库：先 flush 旧进度，写 checkpoint，再 flush（TS 语义）。
+    /// checkpoint 落库：先 flush 旧进度，写 checkpoint，再 flush。
     public func updateCheckpoint(_ checkpoint: [String: JSONValue]) {
         flushProgress()
         lock.lock()
@@ -110,7 +134,8 @@ public final class JobRunContext {
         flushProgress()
     }
 
-    /// 取消检查：信号同步检查 + DB 'cancelling' 状态节流检查（每 50 次或 500ms）。
+    /// 取消检查：信号同步检查 + DB 'cancelling'/'cancelled' 节流检查。
+    /// DB 读取失败（瞬时错误）不判定取消。
     public func throwIfCancelled(forceDbCheck: Bool = false) throws {
         if signal.aborted { throw JobCancelledError() }
         let now = Self.nowMs()
@@ -119,37 +144,43 @@ public final class JobRunContext {
         let due = forceDbCheck ||
             cancelCheckCalls % cancelCheckEvery == 0 ||
             now - lastCancelDbCheckAt >= cancelCheckIntervalMs
+        if due { lastCancelDbCheckAt = now }
         lock.unlock()
         if !due { return }
-        lock.lock()
-        lastCancelDbCheckAt = now
-        lock.unlock()
         if let latest = try? repo.get(jobId),
            latest.status == .cancelling || latest.status == .cancelled {
             throw JobCancelledError()
         }
     }
 
-    /// runInternal 成功/失败路径的收尾 flush（对齐 TS context.flushProgress 调用点）。
+    /// 写进度；收尾由 JobService 调用。
+    /// - 抛错：保留 pending，等下一次 flush 重试（瞬时 DB 错误不是取消）。
+    /// - 返回 false（0 行）：租约已丢失，abort 执行并丢弃 pending。
     func flushProgress() {
-        flushProgressInternal()
-    }
-
-    private func flushProgressInternal() {
         lock.lock()
         guard let update = pendingProgress else {
             lock.unlock()
             return
         }
-        pendingProgress = nil
-        lastProgressWriteAt = Self.nowMs()
-        let jobId = self.jobId
-        let leaseOwner = self.leaseOwner
         lock.unlock()
-        let ok = (try? updateProgress(jobId, leaseOwner, update)) ?? false
-        if !ok { signal.abort() }
-        if let latest = try? repo.get(jobId) {
-            progressSink?(latest, update)
+        do {
+            let ok = try updateProgress(jobId, leaseOwner, update)
+            if !ok {
+                lock.lock()
+                pendingProgress = nil
+                lock.unlock()
+                signal.abort()
+                return
+            }
+            lock.lock()
+            if pendingProgress == update { pendingProgress = nil }
+            lastProgressWriteAt = Self.nowMs()
+            lock.unlock()
+            if let latest = try? repo.get(jobId) {
+                progressSink?(latest, update)
+            }
+        } catch {
+            return
         }
     }
 
@@ -174,20 +205,35 @@ private struct CompletedResult {
     let expiresAt: Int64
 }
 
+/// 完成结果的值盒子。`Any?` 本身不是 Sendable，无法直接作为 continuation 的
+/// `sending` 载荷（Swift 6 region isolation）。盒子构造时写入、此后只读
+/// （唯一存储是 `let value`，无锁、无写者）；载荷的生命周期由 JobService.lock
+/// 串行化（CompletedResult 只在锁内登记/取出）。故标注 `@unchecked`——
+/// 这里承诺的是「不可变载体 + 既有锁纪律」，不是新增锁。
+private struct JobResultValue: @unchecked Sendable {
+    let value: Any?
+}
+
 /// 结果等待者（class 包装，按身份比较，替代无 Equatable 的 continuation）。
 private final class Waiter: @unchecked Sendable {
-    let continuation: CheckedContinuation<Any?, Error>
+    let continuation: CheckedContinuation<JobResultValue, Error>
 
-    init(_ continuation: CheckedContinuation<Any?, Error>) {
+    init(_ continuation: CheckedContinuation<JobResultValue, Error>) {
         self.continuation = continuation
     }
 }
 
-public final class JobService {
+/// 单一后台任务执行器。
+/// 线程安全说明（Swift 6 `Sendable`）：全部可变状态（`executors`/`activeRuns`/
+/// `controllers`/`resultWaiters`/`completedResults`/`cancelGraceTasks`/`watchdog`/
+/// `stopped`/`pumping`/`pumpRequested`/`progressSink`）只在 `lock`（NSLock）临界区内
+/// 读写；其余存储属性构造后不可变。锁纪律无法被编译器静态验证，故标注
+/// `@unchecked`（与同仓 MetadataSyncCoordinator/BatchCursor 一致）。
+public final class JobService: @unchecked Sendable {
     public typealias JobExecutor = (AnalysisJobData, JobRunContext) async throws -> Any?
     public typealias JobProgressSink = (AnalysisJobData, JobProgressUpdate) -> Void
 
-    public static let maxConcurrentJobs = 2
+    // 时间与容量常量
     public static let progressWriteIntervalMs: Int64 = 250
     public static let waitForResultTimeoutMs: Int64 = 60 * 60_000
     public static let cancelDbCheckEvery = 50
@@ -195,32 +241,86 @@ public final class JobService {
     public static let completedResultTtlMs: Int64 = 5 * 60_000
     public static let heartbeatIntervalMs: Int64 = 5_000
     public static let watchdogIntervalMs: Int64 = 5_000
-    /// 终态行同时是 workspace 阶段证据（workspace-status latestScanJob /
-    /// hasSuccessfulExport），clearCompleted 排除，避免「清理已完成」把
-    /// 已索引/已导出的工作区退回 imported（job.service.ts:33-41 注释）。
-    public static let clearCompletedStageEvidenceTypes: [AnalysisJobType] = [.metadataScan, .exportExecute]
+    /// 心跳超时：超过该时长无心跳的行由 recoverStale 回收。
+    public static let leaseTimeoutMs: Int64 = 30_000
+    /// 取消宽限期：cancelling 行最迟在此时间后被强制收尾为 cancelled。
+    public static let cancelGraceMs: Int64 = 15_000
+    /// stop() 等待执行器自然退出的上限，超时后强制迁移未终态行。
+    public static let stopTimeoutMs: Int64 = 10_000
+    /// 自动恢复的尝试上限：超过后保持 interrupted，等用户显式重试。
+    public static let maxAutoResumeAttempts = 3
+    /// 明确的不自动恢复集合：缩略图预热是纯缓存任务，崩溃/停机后按需重建更省资源。
+    public static let nonAutoResumableTypes: Set<AnalysisJobType> = [.thumbnailBuild]
+    /// 终态行同时是 workspace 阶段证据（latestScanJob / hasSuccessfulExport），
+    /// 清理默认排除它们。
+    public static let stageEvidenceTypes: [AnalysisJobType] = [.metadataScan, .exportExecute]
+    /// 准入预算：进程级 weight 预算（替代旧 JobScheduler 的共享预算与旧 maxConcurrentJobs=2）。
+    public static let defaultWeightBudget: Int = max(2, min(6, ProcessInfo.processInfo.processorCount - 1))
+
+    /// 类型默认 weight（重计算任务吃 2 个单位，I/O 与短任务吃 1）。
+    public static func defaultWeight(for type: AnalysisJobType) -> Int {
+        switch type {
+        case .faceAnalyze, .similarityAnalyze, .duplicateScan:
+            return 2
+        case .metadataScan, .qualityScore, .exportExecute, .thumbnailBuild, .checksumBackfill:
+            return 1
+        }
+    }
+
+    /// 执行器注册项。`JobExecutor` 闭包类型未标 `@Sendable`（公开 API，注册点
+    /// 含跨包调用方，本轮不动其签名）；本结构全部为 `let`，注册后不再变更，
+    /// 且按契约执行器本就由 JobService 在后台任务里调用。故标注 `@unchecked`。
+    private struct Registration: @unchecked Sendable {
+        let executor: JobExecutor
+        let weight: Int
+        let autoResume: Bool
+    }
+
+    private struct ActiveRun {
+        let controller: JobAbortSignal
+        var task: Task<Void, Never>?
+        let weight: Int
+    }
 
     private let lock = NSLock()
     private let repo: AnalysisJobRepo
     public let leaseOwner: String
     /// 心跳间隔（默认 5000 对齐 TS；测试可注入短间隔）。
     public let heartbeatIntervalMs: Int64
+    private let weightBudget: Int
+    private let leaseTimeoutMs: Int64
+    private let cancelGraceMs: Int64
+    private let stopTimeoutMs: Int64
+    private let maxAutoResumeAttempts: Int
 
-    private var executors: [AnalysisJobType: JobExecutor] = [:]
-    private var autoResumeTypes: Set<AnalysisJobType> = []
+    private var executors: [AnalysisJobType: Registration] = [:]
+    private var activeRuns: [String: ActiveRun] = [:]
     private var controllers: [String: JobAbortSignal] = [:]
-    private var activeRuns: [String: Task<Void, Never>] = [:]
     private var resultWaiters: [String: [Waiter]] = [:]
     private var completedResults: [String: CompletedResult] = [:]
+    private var cancelGraceTasks: [String: Task<Void, Never>] = [:]
     private var watchdog: Task<Void, Never>?
-    private var drainScheduled = false
-    private var isDraining = false
     private var stopped = true
+    private var pumping = false
+    private var pumpRequested = false
     private var progressSink: JobProgressSink?
 
-    public init(repo: AnalysisJobRepo, heartbeatIntervalMs: Int64 = JobService.heartbeatIntervalMs) {
+    public init(
+        repo: AnalysisJobRepo,
+        heartbeatIntervalMs: Int64 = JobService.heartbeatIntervalMs,
+        weightBudget: Int = JobService.defaultWeightBudget,
+        leaseTimeoutMs: Int64 = JobService.leaseTimeoutMs,
+        cancelGraceMs: Int64 = JobService.cancelGraceMs,
+        stopTimeoutMs: Int64 = JobService.stopTimeoutMs,
+        maxAutoResumeAttempts: Int = JobService.maxAutoResumeAttempts
+    ) {
         self.repo = repo
         self.heartbeatIntervalMs = heartbeatIntervalMs
+        self.weightBudget = max(1, weightBudget)
+        self.leaseTimeoutMs = leaseTimeoutMs
+        self.cancelGraceMs = cancelGraceMs
+        self.stopTimeoutMs = stopTimeoutMs
+        self.maxAutoResumeAttempts = max(1, maxAutoResumeAttempts)
         self.leaseOwner = "main-\(ProcessInfo.processInfo.processIdentifier)"
     }
 
@@ -230,7 +330,7 @@ public final class JobService {
         lock.unlock()
     }
 
-    // ── 生命周期 ──
+    // MARK: - 生命周期
 
     public func start() {
         lock.lock()
@@ -239,82 +339,112 @@ public final class JobService {
             return
         }
         stopped = false
-        lock.unlock()
-        try? repo.recoverStale()
-        _ = try? repo.resumeInterrupted(types: autoResumeTypes.sorted { $0.rawValue < $1.rawValue })
-        scheduleDrain()
-        lock.lock()
-        guard watchdog == nil else {
-            lock.unlock()
-            return
-        }
-        let watchdogTask = Task { [weak self] in
+        let task = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(JobService.watchdogIntervalMs))
+                if Task.isCancelled { break }
                 guard let self else { break }
-                try? self.repo.recoverStale()
-                self.scheduleDrain()
+                self.recoverAndResume()
             }
         }
-        watchdog = watchdogTask
+        watchdog = task
         lock.unlock()
+        recoverAndResume()
     }
 
+    /// 停机：停止调度与看门狗、abort 全部执行器，限时等待自然退出，
+    /// 超时后把仍由本租约持有的行强制迁移（cancelling→cancelled，running→interrupted）。
     public func stop() async {
-        takeDownControllers()
-        let runs = snapshotActiveRuns()
-        for run in runs {
-            await run.value
+        let handoff = beginStopLocked()
+        handoff.graceTasks.forEach { $0.cancel() }
+        handoff.controllers.forEach { $0.abort() }
+
+        let deadline = Date().addingTimeInterval(Double(stopTimeoutMs) / 1000)
+        while Date() < deadline {
+            if activeRunCountLocked() == 0 { return }
+            try? await Task.sleep(for: .milliseconds(50))
         }
+        forceFinalizeAbandoned()
     }
 
-    /// 置 stopped、取消看门狗与全部控制器（同步辅助，供 async 上下文调用）。
-    private func takeDownControllers() {
+    /// stop() 首段临界区的产物（多值判定 → 私有 struct，同 ScanSlotDecision）。
+    private struct StopHandoff {
+        let graceTasks: [Task<Void, Never>]
+        let controllers: [JobAbortSignal]
+    }
+
+    /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
+    private func beginStopLocked() -> StopHandoff {
         lock.lock()
+        defer { lock.unlock() }
         stopped = true
         watchdog?.cancel()
         watchdog = nil
-        let controllers = self.controllers.values
-        self.controllers.removeAll()
-        lock.unlock()
-        controllers.forEach { $0.abort() }
+        let graceTasks = Array(cancelGraceTasks.values)
+        cancelGraceTasks.removeAll()
+        let controllers = Array(self.controllers.values)
+        return StopHandoff(graceTasks: graceTasks, controllers: controllers)
     }
 
-    private func snapshotActiveRuns() -> [Task<Void, Never>] {
+    /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
+    private func activeRunCountLocked() -> Int {
         lock.lock()
         defer { lock.unlock() }
-        return Array(activeRuns.values)
+        return activeRuns.count
     }
 
+    /// 看门狗：回收 stale 租约 → 按类型策略自动恢复 interrupted → 驱动队列。
+    private func recoverAndResume() {
+        _ = try? repo.recoverStale(leaseTimeoutMs: Int(leaseTimeoutMs))
+        resumeInterruptedForRegisteredTypes()
+        pump()
+    }
+
+    private func resumeInterruptedForRegisteredTypes() {
+        lock.lock()
+        let running = !stopped
+        let types = executors
+            .filter { $0.value.autoResume && !JobService.nonAutoResumableTypes.contains($0.key) }
+            .map(\.key)
+            .sorted { $0.rawValue < $1.rawValue }
+        let cap = maxAutoResumeAttempts
+        lock.unlock()
+        guard running, !types.isEmpty else { return }
+        _ = try? repo.resumeInterrupted(types: types, maxAttempts: cap)
+    }
+
+    // MARK: - 执行器注册
+
+    /// 注册唯一执行器。
+    /// - Parameters:
+    ///   - weight: 准入预算单位（nil = 类型默认值，见 defaultWeight(for:)）。
+    ///   - autoResume: 是否允许 interrupted 自动恢复；nonAutoResumableTypes 始终覆盖为 false。
     public func registerExecutor(
         type: AnalysisJobType,
-        executor: @escaping JobExecutor,
-        autoResume: Bool = true
+        weight: Int? = nil,
+        autoResume: Bool = true,
+        executor: @escaping JobExecutor
     ) {
+        let effectiveAutoResume = autoResume && !JobService.nonAutoResumableTypes.contains(type)
         lock.lock()
-        executors[type] = executor
-        if autoResume {
-            autoResumeTypes.insert(type)
-        } else {
-            autoResumeTypes.remove(type)
-        }
+        executors[type] = Registration(
+            executor: executor,
+            weight: max(1, weight ?? JobService.defaultWeight(for: type)),
+            autoResume: effectiveAutoResume)
         let running = !stopped
-        let shouldResume = running && autoResumeTypes.contains(type)
         lock.unlock()
-        if shouldResume {
-            _ = try? repo.resumeInterrupted(types: [type])
-        }
         if running {
-            scheduleDrain()
+            resumeInterruptedForRegisteredTypes()
+            pump()
         }
     }
 
-    // ── 任务 API（直通 repo）──
+    // MARK: - 任务 API
 
     @discardableResult
     public func create(_ params: JobCreateParams) throws -> AnalysisJobData {
         let job = try repo.create(params)
-        scheduleDrain()
+        pump()
         return job
     }
 
@@ -322,28 +452,36 @@ public final class JobService {
         try repo.list(status: status)
     }
 
+    /// 取消：返回是否受理。queued 直接终态并补发终态帧；running 转 cancelling
+    /// 并挂宽限定时器；cancelling 幂等重放；终态/不存在返回 false。
     @discardableResult
     public func cancel(_ id: String) throws -> Bool {
-        let wasQueued = try repo.get(id)?.status == .queued
-        let cancelled = try repo.requestCancel(id)
-        if cancelled {
+        switch try repo.requestCancel(id) {
+        case .cancelledQueued:
+            completeResult(id: id, error: JobCancelledError())
+            emitTerminal(id: id)
+            clearGraceTask(id: id)
+            pump()
+            return true
+        case .cancellationRequested:
             controller(for: id)?.abort()
-            if wasQueued {
-                // queued 取消不经过 runInternal，不会产生终态进度帧；补发
-                // 以让依赖 jobs:progress 的客户端离开「扫描中…」（TS 注释）。
-                completeResult(id: id, completed: .error(JobCancelledError()))
-                emitTerminal(id: id, status: .cancelled)
-            }
+            scheduleCancelGrace(id: id)
+            return true
+        case .alreadyCancelling:
+            scheduleCancelGrace(id: id)
+            return true
+        case .notCancellable:
+            return false
         }
-        return cancelled
     }
 
+    /// 按 scope 批量取消（幂等）。
     @discardableResult
     public func cancelScope(type: AnalysisJobType, scopeId: String) throws -> Int {
         var cancelledCount = 0
         for job in try repo.list() {
             if job.type == type && job.scopeId == scopeId &&
-               [.queued, .running, .cancelling].contains(job.status),
+               activeAnalysisJobStatuses.contains(job.status),
                try cancel(job.id) {
                 cancelledCount += 1
             }
@@ -351,6 +489,7 @@ public final class JobService {
         return cancelledCount
     }
 
+    /// 重试：仅 failed/interrupted/cancelled → queued（checkpoint 保留=续跑）。
     @discardableResult
     public func retry(_ id: String) throws -> Bool {
         let retried = try repo.retry(id)
@@ -358,36 +497,22 @@ public final class JobService {
             lock.lock()
             completedResults.removeValue(forKey: id)
             lock.unlock()
-            scheduleDrain()
+            pump()
         }
         return retried
     }
 
+    /// 清理终态行：默认只清成功终态并保护阶段证据；失败/中断/取消行及其错误
+    /// 原因只有调用方显式点名 statuses 时才会被删除。
     @discardableResult
-    public func clearCompleted() throws -> Int {
-        try repo.clearCompleted(excludeTypes: JobService.clearCompletedStageEvidenceTypes)
+    public func clearCompleted(
+        statuses: [AnalysisJobStatus] = [.succeeded],
+        excludeTypes: [AnalysisJobType] = JobService.stageEvidenceTypes
+    ) throws -> Int {
+        try repo.clearTerminal(statuses: statuses, excludeTypes: excludeTypes)
     }
 
-    public func claim(id: String, leaseOwner: String) throws -> Bool {
-        try repo.claim(id: id, leaseOwner: leaseOwner)
-    }
-
-    @discardableResult
-    public func heartbeat(id: String, leaseOwner: String) throws -> Bool {
-        try repo.heartbeat(id: id, leaseOwner: leaseOwner)
-    }
-
-    @discardableResult
-    public func updateProgress(id: String, leaseOwner: String, update: JobProgressUpdate) throws -> Bool {
-        try repo.updateProgress(id: id, leaseOwner: leaseOwner, update: update)
-    }
-
-    @discardableResult
-    public func finish(id: String, leaseOwner: String, status: AnalysisJobStatus, error: (code: String, message: String)? = nil) throws -> Bool {
-        try repo.finish(id: id, leaseOwner: leaseOwner, status: status, error: error)
-    }
-
-    // ── 结果等待 ──
+    // MARK: - 结果等待
 
     /// 等待任务结果。succeeded 且内存结果已过期时返回 nil（持久行是权威记录）。
     public func waitForResult<T>(jobId: String, timeoutMs: Int64? = nil) async throws -> T? {
@@ -406,22 +531,20 @@ public final class JobService {
             if persisted.status == .cancelled {
                 throw JobCancelledError()
             }
-            throw JobServiceError.jobFailed(jobId, persisted.errorMessage.isEmpty ? "Analysis job \(persisted.status.rawValue)" : persisted.errorMessage)
+            throw JobServiceError.jobFailed(
+                jobId,
+                persisted.errorMessage.isEmpty ? "Analysis job \(persisted.status.rawValue)" : persisted.errorMessage)
         }
 
         let timeout = timeoutMs ?? JobService.waitForResultTimeoutMs
-        let result: Any? = try await withCheckedThrowingContinuation { continuation in
+        let result: JobResultValue = try await withCheckedThrowingContinuation { continuation in
             let waiter = Waiter(continuation)
-            // 竞态修复：「检查完成结果」与「注册 waiter」必须同一临界区。
-            // 修复前为两个临界区——任务在 takeCompletedResult(nil) 与
-            // appendWaiter 之间完成时（completeResult 已 removeValue 并 resume
-            // 先到的等待者），新等待者永不 resume，挂满 60 分钟超时。
-            // 现在注册时若结果已登记则直接取回立即返回。
+            // 「检查已完成结果」与「注册 waiter」同一临界区，避免完成竞态挂死。
             if let completed = registerWaiterOrTakeCompletedResult(jobId: jobId, waiter: waiter) {
                 if let error = completed.error {
                     continuation.resume(throwing: error)
                 } else {
-                    continuation.resume(returning: completed.value)
+                    continuation.resume(returning: JobResultValue(value: completed.value))
                 }
                 return
             }
@@ -434,7 +557,7 @@ public final class JobService {
                 }
             }
         }
-        return result as? T
+        return result.value as? T
     }
 
     private func takeCompletedResult(jobId: String) -> CompletedResult? {
@@ -443,8 +566,6 @@ public final class JobService {
         return completedResults[jobId]
     }
 
-    /// 原子操作：同一临界区内「检查已完成结果」并「注册 waiter」。
-    /// 返回已登记结果时 waiter 未注册（调用方直接取回结果）；nil 表示已注册等待。
     private func registerWaiterOrTakeCompletedResult(jobId: String, waiter: Waiter) -> CompletedResult? {
         lock.lock()
         if let completed = completedResults[jobId] {
@@ -456,329 +577,6 @@ public final class JobService {
         resultWaiters[jobId] = waiters
         lock.unlock()
         return nil
-    }
-
-    /// 测试接缝（@testable 专用）：把已完成结果登记进内存表，模拟
-    /// 「任务已完成、结果尚未被取走」。生产路径经 drain/execute 的
-    /// completeResult 登记，此处只是等价直通。
-    internal func completeResultForTesting(id: String, value: Any? = nil, error: Error? = nil) {
-        if let error {
-            completeResult(id: id, completed: .error(error))
-        } else {
-            completeResult(id: id, completed: .value(value))
-        }
-    }
-
-    // ── 执行 ──
-
-    public func run<T>(
-        job: AnalysisJobData,
-        leaseOwner: String,
-        work: (JobRunContext) async throws -> T
-    ) async throws -> T {
-        // 同步前缀（claim + controller 注册）——与 TS 语义一致：JS 的 async
-        // 函数在首个 await 前同步执行，drain 的并发上限依赖 controller 立即注册。
-        let controller = try beginRun(job: job, leaseOwner: leaseOwner)
-        return try await execute(job: job, leaseOwner: leaseOwner, controller: controller, work: work)
-    }
-
-    /// 同步执行 run 的前缀：claim 租约 + 注册取消控制器。
-    /// claim 失败抛 notClaimable（调用方决定是否继续调度）。
-    private func beginRun(job: AnalysisJobData, leaseOwner: String) throws -> JobAbortSignal {
-        guard try claim(id: job.id, leaseOwner: leaseOwner) else {
-            throw JobServiceError.notClaimable(job.id)
-        }
-        let controller = JobAbortSignal()
-        setController(jobId: job.id, controller: controller)
-        return controller
-    }
-
-    private func execute<T>(
-        job: AnalysisJobData,
-        leaseOwner: String,
-        controller: JobAbortSignal,
-        work: (JobRunContext) async throws -> T
-    ) async throws -> T {
-        let heartbeat = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(self?.heartbeatIntervalMs ?? JobService.heartbeatIntervalMs))
-                guard let self else { break }
-                let ok = (try? self.heartbeat(id: job.id, leaseOwner: leaseOwner)) ?? false
-                if !ok {
-                    controller.abort()
-                    break
-                }
-            }
-        }
-
-        let context = JobRunContext(
-            signal: controller,
-            repo: repo,
-            jobId: job.id,
-            leaseOwner: leaseOwner,
-            updateProgress: { id, owner, update in
-                try self.updateProgress(id: id, leaseOwner: owner, update: update)
-            },
-            progressSink: { job, update in
-                self.emitProgress(job: job, update: update)
-            })
-
-        do {
-            let result = try await work(context)
-            context.flushProgress()
-            try context.throwIfCancelled(forceDbCheck: true)
-            guard try finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded) else {
-                throw JobServiceError.leaseLost(job.id)
-            }
-            emitTerminal(id: job.id, status: .succeeded)
-            heartbeat.cancel()
-            removeController(jobId: job.id)
-            return result
-        } catch {
-            context.flushProgress()
-            heartbeat.cancel()
-            removeController(jobId: job.id)
-            let cancelled = error is JobCancelledError || controller.aborted
-            let latest = try? repo.get(job.id)
-            let interruptedByShutdown = cancelled && isStopped && latest?.status == .running
-            if interruptedByShutdown {
-                _ = try? repo.interrupt(id: job.id, leaseOwner: leaseOwner)
-                emitTerminal(id: job.id, status: .interrupted)
-            } else {
-                let message = String(describing: error)
-                let code: String
-                if cancelled {
-                    code = ""
-                } else {
-                    code = Self.isGatherErrorCode(message) ? message : "worker_error"
-                }
-                _ = try? finish(
-                    id: job.id, leaseOwner: leaseOwner,
-                    status: cancelled ? .cancelled : .failed,
-                    error: cancelled ? nil : (code, message))
-                emitTerminal(id: job.id, status: cancelled ? .cancelled : .failed)
-            }
-            throw error
-        }
-    }
-
-    private var isStopped: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stopped
-    }
-
-    /// 同步辅助：注册/移除运行中任务的取消控制器。
-    private func setController(jobId: String, controller: JobAbortSignal) {
-        lock.lock()
-        controllers[jobId] = controller
-        lock.unlock()
-    }
-
-    private func removeController(jobId: String) {
-        lock.lock()
-        controllers.removeValue(forKey: jobId)
-        lock.unlock()
-    }
-
-    private func controllerCount() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return controllers.count
-    }
-
-    private func controller(for id: String) -> JobAbortSignal? {
-        lock.lock()
-        defer { lock.unlock() }
-        return controllers[id]
-    }
-
-    private func drainSnapshot(jobId: String, type: AnalysisJobType) -> (atCapacity: Bool, alreadyRunning: Bool, executor: JobExecutor?) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (
-            atCapacity: controllers.count >= JobService.maxConcurrentJobs,
-            alreadyRunning: controllers[jobId] != nil,
-            executor: executors[type]
-        )
-    }
-
-    private func emitProgress(job: AnalysisJobData, update: JobProgressUpdate) {
-        lock.lock()
-        let sink = progressSink
-        lock.unlock()
-        sink?(job, update)
-    }
-
-    /// 推送终态进度帧：恢复期客户端依赖事件而非轮询（TS 注释 234-248）。
-    private func emitTerminal(id: String, status: AnalysisJobStatus) {
-        guard let latest = try? repo.get(id) else { return }
-        emitProgress(job: latest, update: JobProgressUpdate(current: 1, total: 1, message: status.rawValue))
-    }
-
-    // ── 调度 ──
-
-    private func scheduleDrain() {
-        lock.lock()
-        if stopped || drainScheduled {
-            lock.unlock()
-            return
-        }
-        drainScheduled = true
-        lock.unlock()
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.drain()
-            } catch {
-                // repo.list 可抛（如关机时 DB 关闭）；fire-and-forget 调用方
-                // 不应产生未处理错误（TS 注释 368-374 语义）。
-                print("Background job drain failed: \(error)")
-            }
-            // 在 drain 完成（而非 Task 启动）后清除：多个 drain Task 并发会
-            // 交错 beginRun，导致并发上限（controllers 计数）失效。
-            self.clearDrainScheduled()
-        }
-    }
-
-    private func clearDrainScheduled() {
-        lock.lock()
-        drainScheduled = false
-        lock.unlock()
-    }
-
-    private func drain() async throws {
-        lock.lock()
-        if stopped || isDraining {
-            lock.unlock()
-            return
-        }
-        isDraining = true
-        lock.unlock()
-        defer {
-            lock.lock()
-            isDraining = false
-            lock.unlock()
-        }
-
-        let queued: [AnalysisJobData]
-        do {
-            queued = try repo.list(status: .queued)
-        } catch {
-            return
-        }
-
-        for job in queued {
-            let snapshot = drainSnapshot(jobId: job.id, type: job.type)
-            if snapshot.atCapacity { break }
-            if snapshot.alreadyRunning { continue }
-            guard let executor = snapshot.executor else { continue }
-
-            // 同步前缀：claim + controller 注册立即生效，并发上限精确。
-            let controller: JobAbortSignal
-            do {
-                controller = try beginRun(job: job, leaseOwner: leaseOwner)
-            } catch {
-                // claim 失败（跨进程竞态等）按 TS drain 的 catch 路径分发结果；
-                // 排队取消已登记 JobCancelledError 时跳过覆盖（等待者必须收到
-                // 取消错误而非 notClaimable）。
-                self.handleClaimFailure(id: job.id, error: error)
-                continue
-            }
-
-            let task = Task { [weak self] in
-                guard let self else { return }
-                do {
-                    let result = try await self.execute(
-                        job: job,
-                        leaseOwner: self.leaseOwner,
-                        controller: controller,
-                        work: { context in
-                            try await executor(job, context)
-                        })
-                    self.completeResult(id: job.id, completed: .value(result))
-                } catch {
-                    let hasResult = self.hasCompletedResult(id: job.id)
-                    if !hasResult {
-                        self.completeResult(id: job.id, completed: .error(error))
-                    }
-                    if !(error is JobCancelledError) {
-                        print("Background job \(job.id) failed: \(error)")
-                    }
-                }
-                self.removeActiveRun(id: job.id)
-                self.scheduleDrain()
-            }
-            recordActiveRun(id: job.id, task: task)
-        }
-    }
-
-    private func recordActiveRun(id: String, task: Task<Void, Never>) {
-        lock.lock()
-        activeRuns[id] = task
-        lock.unlock()
-    }
-
-    private func hasCompletedResult(id: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return completedResults[id] != nil
-    }
-
-    /// drain 的 claim 失败分支：分发 notClaimable 完成结果；排队取消已登记
-    /// JobCancelledError（cancel → completeResult）时跳过覆盖，否则等待者
-    /// 会收到错误类型漂移（notClaimable 替代 JobCancelledError）。
-    /// internal 供 @testable 直接驱动该分支做确定性测试。
-    internal func handleClaimFailure(id: String, error: Error) {
-        if !hasCompletedResult(id: id) {
-            completeResult(id: id, completed: .error(error))
-        }
-    }
-
-    private func removeActiveRun(id: String) {
-        lock.lock()
-        activeRuns.removeValue(forKey: id)
-        lock.unlock()
-    }
-
-    private func completeResult(id: String, completed: Completion) {
-        let value: Any?
-        let error: Error?
-        switch completed {
-        case .value(let v):
-            value = v
-            error = nil
-        case .error(let e):
-            value = nil
-            error = e
-        }
-        let expiry = Self.nowMs() + JobService.completedResultTtlMs
-        lock.lock()
-        completedResults[id] = CompletedResult(
-            value: value, error: error, expiresAt: expiry)
-        let waiters = resultWaiters.removeValue(forKey: id) ?? []
-        lock.unlock()
-        for waiter in waiters {
-            if let error {
-                waiter.continuation.resume(throwing: error)
-            } else {
-                waiter.continuation.resume(returning: value)
-            }
-        }
-        // 5 分钟过期删除（TS timer.unref 语义）。
-        Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(JobService.completedResultTtlMs))
-            guard let self else { return }
-            self.expireCompletedResultIfDue(id: id)
-        }
-    }
-
-    private func expireCompletedResultIfDue(id: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        if let entry = completedResults[id], entry.expiresAt <= Self.nowMs() {
-            completedResults.removeValue(forKey: id)
-        }
     }
 
     private func removeWaiter(jobId: String, waiter: Waiter) -> Bool {
@@ -797,8 +595,404 @@ public final class JobService {
         return false
     }
 
-    private static func isGatherErrorCode(_ message: String) -> Bool {
-        GatherErrorCode.allCases.contains { $0.rawValue == message }
+    // MARK: - 调度（唯一准入控制）
+
+    private func pump() {
+        lock.lock()
+        if stopped {
+            lock.unlock()
+            return
+        }
+        pumpRequested = true
+        if pumping {
+            lock.unlock()
+            return
+        }
+        pumping = true
+        lock.unlock()
+        Task { [weak self] in
+            await self?.pumpLoop()
+        }
+    }
+
+    /// pumpLoop 每轮的锁内判定（多值判定 → 私有 enum，同 ScanSlotDecision）。
+    private enum PumpLoopStep {
+        /// 已停机：复位 pumping/pumpRequested 后退出。
+        case stop
+        /// 有待处理请求：复位 pumpRequested 后继续下一轮。
+        case continueLoop
+        /// 无待处理请求：复位 pumping 后退出。
+        case idle
+    }
+
+    /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
+    private func pumpLoopStepLocked() -> PumpLoopStep {
+        lock.lock()
+        defer { lock.unlock() }
+        if stopped {
+            pumping = false
+            pumpRequested = false
+            return .stop
+        }
+        if pumpRequested {
+            pumpRequested = false
+            return .continueLoop
+        }
+        pumping = false
+        return .idle
+    }
+
+    private func pumpLoop() async {
+        while true {
+            startEligibleJobs()
+            switch pumpLoopStepLocked() {
+            case .stop:
+                return
+            case .continueLoop:
+                continue
+            case .idle:
+                return
+            }
+        }
+    }
+
+    /// 队列顺序 = repo 的唯一口径（priority ASC, updated_at ASC, rowid ASC）；
+    /// 逐个按 weight 预算准入，claim 失败（跨进程竞争）直接跳过。
+    private func startEligibleJobs() {
+        let queued: [AnalysisJobData]
+        do {
+            queued = try repo.list(status: .queued)
+        } catch {
+            return
+        }
+        for job in queued {
+            lock.lock()
+            guard !stopped else {
+                lock.unlock()
+                return
+            }
+            guard let registration = executors[job.type], activeRuns[job.id] == nil else {
+                lock.unlock()
+                continue
+            }
+            let used = activeRuns.values.reduce(0) { $0 + $1.weight }
+            guard used + registration.weight <= weightBudget else {
+                lock.unlock()
+                continue
+            }
+            let controller = JobAbortSignal()
+            activeRuns[job.id] = ActiveRun(controller: controller, task: nil, weight: registration.weight)
+            lock.unlock()
+
+            let claimed: Bool
+            do {
+                claimed = try repo.claim(id: job.id, leaseOwner: leaseOwner)
+            } catch {
+                removeActiveRun(id: job.id)
+                continue
+            }
+            guard claimed else {
+                removeActiveRun(id: job.id)
+                continue
+            }
+
+            let task = Task { [weak self] in
+                guard let self else { return }
+                await self.runClaimedJob(job: job, registration: registration, controller: controller)
+            }
+            lock.lock()
+            controllers[job.id] = controller
+            if var run = activeRuns[job.id] {
+                run.task = task
+                activeRuns[job.id] = run
+            } else {
+                // 执行任务已先一步收尾并移除记录：取消刚创建的任务，避免悬挂。
+                task.cancel()
+            }
+            lock.unlock()
+        }
+    }
+
+    private func removeActiveRun(id: String) {
+        lock.lock()
+        activeRuns.removeValue(forKey: id)
+        controllers.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    private func clearGraceTask(id: String) {
+        lock.lock()
+        let task = cancelGraceTasks.removeValue(forKey: id)
+        lock.unlock()
+        task?.cancel()
+    }
+
+    private func controller(for id: String) -> JobAbortSignal? {
+        lock.lock()
+        defer { lock.unlock() }
+        return controllers[id]
+    }
+
+    // MARK: - 执行
+
+    private func runClaimedJob(job: AnalysisJobData, registration: Registration, controller: JobAbortSignal) async {
+        let context = JobRunContext(
+            signal: controller,
+            repo: repo,
+            jobId: job.id,
+            leaseOwner: leaseOwner,
+            updateProgress: { [weak self] id, owner, update in
+                guard let self else { return false }
+                return try self.repo.updateProgress(id: id, leaseOwner: owner, update: update)
+            },
+            progressSink: { [weak self] job, update in
+                self?.emitProgress(job: job, update: update)
+            })
+
+        let heartbeat = Task { [weak self] in
+            await self?.heartbeatLoop(job: job, controller: controller, context: context)
+        }
+
+        var outcome: Result<Any?, Error>
+        do {
+            let value = try await registration.executor(job, context)
+            context.flushProgress()
+            // 成功路径也要尊重取消：用户已取消时按 cancelled 收尾，不写 succeeded。
+            do {
+                try context.throwIfCancelled(forceDbCheck: true)
+                outcome = .success(value)
+            } catch {
+                outcome = .failure(error)
+            }
+        } catch {
+            context.flushProgress()
+            outcome = .failure(error)
+        }
+        heartbeat.cancel()
+        settle(job: job, outcome: outcome, controller: controller)
+        removeActiveRun(id: job.id)
+        clearGraceTask(id: job.id)
+        pump()
+    }
+
+    /// 心跳循环：0 行 = 租约丢失（中止）；SQL 抛错 = 重试并保持 running。
+    private func heartbeatLoop(job: AnalysisJobData, controller: JobAbortSignal, context: JobRunContext) async {
+        var consecutiveErrors = 0
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(heartbeatIntervalMs))
+            if Task.isCancelled || controller.aborted { return }
+            context.flushProgress()
+            do {
+                let ok = try repo.heartbeat(id: job.id, leaseOwner: leaseOwner)
+                consecutiveErrors = 0
+                if !ok {
+                    // 0 行：行已被对端迁移（回收/取消/删除）或租约被夺；
+                    // 本执行器放弃，不再改写对端状态。
+                    controller.abort()
+                    return
+                }
+            } catch {
+                consecutiveErrors += 1
+                guard consecutiveErrors >= 3 else { continue }
+                if let row = try? repo.get(job.id),
+                   row.leaseOwner == leaseOwner,
+                   activeAnalysisJobStatuses.contains(row.status) {
+                    // 读回确认租约仍属本进程：瞬时 DB 错误，继续 running。
+                    consecutiveErrors = 0
+                }
+                // 读回也失败：不 abort（SQL 错误 ≠ 用户取消），继续重试心跳。
+            }
+        }
+    }
+
+    /// 终态收尾：先写库（原子条件 UPDATE），成功才登记结果并广播真实终态帧。
+    private func settle(job: AnalysisJobData, outcome: Result<Any?, Error>, controller: JobAbortSignal) {
+        let value: Any?
+        let error: Error?
+        switch outcome {
+        case .success(let result):
+            value = result
+            error = nil
+        case .failure(let resultError):
+            value = nil
+            error = resultError
+        }
+        var cancelled = controller.aborted
+        if let error, error is JobCancelledError { cancelled = true }
+        let stoppedNow = isStopped
+
+        if let error, !cancelled {
+            let message = String(describing: error)
+            let code = Self.gatherErrorCode(from: message) ?? "worker_error"
+            if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .failed, error: (code, message))) == true {
+                completeResult(id: job.id, error: error)
+                emitTerminal(id: job.id)
+            } else {
+                finishMiss(id: job.id)
+            }
+            return
+        }
+
+        if cancelled {
+            // 应用停机导致的取消不是用户取消 → interrupted，供下次启动恢复。
+            if stoppedNow,
+               (try? repo.interrupt(id: job.id, leaseOwner: leaseOwner)) == true {
+                completeResult(id: job.id, error: JobServiceError.jobFailed(job.id, "Application stopped during execution"))
+                emitTerminal(id: job.id)
+                return
+            }
+            if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+                completeResult(id: job.id, error: JobCancelledError())
+                emitTerminal(id: job.id)
+            } else {
+                finishMiss(id: job.id)
+            }
+            return
+        }
+
+        if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded)) == true {
+            completeResult(id: job.id, value: value)
+            emitTerminal(id: job.id)
+        } else {
+            finishMiss(id: job.id)
+        }
+    }
+
+    /// 条件 UPDATE 未命中：行已不由本租约持有（对端已迁移/删除）。
+    /// 只登记等待者结果（first-wins，不覆盖已有终态），不广播终态帧。
+    private func finishMiss(id: String) {
+        completeResult(id: id, error: JobServiceError.leaseLost(id))
+    }
+
+    /// settle 用（无参函数，避免与同名属性歧义）。
+    private var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    // MARK: - 取消宽限
+
+    /// 挂取消宽限定时器：到时仍为 cancelling（本租约）则强制收尾为 cancelled，
+    /// 保证 cancelling 永远能离开；执行器稍后自然退出时结果 first-wins 不覆盖。
+    private func scheduleCancelGrace(id: String) {
+        lock.lock()
+        cancelGraceTasks[id]?.cancel()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .milliseconds(self.cancelGraceMs))
+            if Task.isCancelled { return }
+            self.forceCancel(id: id)
+        }
+        cancelGraceTasks[id] = task
+        lock.unlock()
+    }
+
+    private func forceCancel(id: String) {
+        guard let row = try? repo.get(id),
+              row.status == .cancelling,
+              row.leaseOwner == leaseOwner else { return }
+        if (try? repo.finish(id: id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+            completeResult(id: id, error: JobCancelledError())
+            emitTerminal(id: id)
+        }
+        clearGraceTask(id: id)
+    }
+
+    /// 停机超时兜底：按行真实状态迁移（cancelling→cancelled，running→interrupted）。
+    private func forceFinalizeAbandoned() {
+        lock.lock()
+        let ids = Array(activeRuns.keys)
+        lock.unlock()
+        for id in ids {
+            guard let row = try? repo.get(id),
+                  row.leaseOwner == leaseOwner,
+                  activeAnalysisJobStatuses.contains(row.status) else { continue }
+            if row.status == .cancelling {
+                if (try? repo.finish(id: id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+                    completeResult(id: id, error: JobCancelledError())
+                    emitTerminal(id: id)
+                }
+            } else if row.status == .running {
+                if (try? repo.interrupt(id: id, leaseOwner: leaseOwner)) == true {
+                    completeResult(id: id, error: JobServiceError.jobFailed(id, "Application stopped during execution"))
+                    emitTerminal(id: id)
+                }
+            }
+        }
+    }
+
+    // MARK: - 结果与事件
+
+    private func completeResult(id: String, value: Any?) {
+        registerResult(id: id, value: value, error: nil)
+    }
+
+    private func completeResult(id: String, error: Error) {
+        registerResult(id: id, value: nil, error: error)
+    }
+
+    /// first-wins：已登记的终态结果不被迟到者覆盖（取消宽限 vs 执行器自然退出）。
+    private func registerResult(id: String, value: Any?, error: Error?) {
+        let expiry = Self.nowMs() + JobService.completedResultTtlMs
+        lock.lock()
+        if completedResults[id] != nil {
+            lock.unlock()
+            return
+        }
+        completedResults[id] = CompletedResult(value: value, error: error, expiresAt: expiry)
+        let waiters = resultWaiters.removeValue(forKey: id) ?? []
+        lock.unlock()
+        for waiter in waiters {
+            if let error {
+                waiter.continuation.resume(throwing: error)
+            } else {
+                waiter.continuation.resume(returning: JobResultValue(value: value))
+            }
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(JobService.completedResultTtlMs))
+            guard let self else { return }
+            self.expireCompletedResultIfDue(id: id)
+        }
+    }
+
+    private func expireCompletedResultIfDue(id: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let entry = completedResults[id], entry.expiresAt <= Self.nowMs() {
+            completedResults.removeValue(forKey: id)
+        }
+    }
+
+    private func emitProgress(job: AnalysisJobData, update: JobProgressUpdate) {
+        lock.lock()
+        let sink = progressSink
+        lock.unlock()
+        sink?(job, update)
+    }
+
+    /// 终态帧：payload 与进度必须来自持久行的真实执行结果（不再用期望状态拼 1/1）。
+    private func emitTerminal(id: String) {
+        guard let latest = try? repo.get(id) else { return }
+        let message: String?
+        if !latest.errorMessage.isEmpty {
+            message = latest.errorMessage
+        } else if !latest.progressMessage.isEmpty {
+            message = latest.progressMessage
+        } else {
+            message = nil
+        }
+        emitProgress(job: latest, update: JobProgressUpdate(
+            current: latest.progressCurrent,
+            total: latest.progressTotal,
+            phase: latest.progressMessage.isEmpty ? nil : latest.progressMessage,
+            message: message,
+            checkpoint: latest.checkpoint))
+    }
+
+    private static func gatherErrorCode(from message: String) -> String? {
+        GatherErrorCode.allCases.first { $0.rawValue == message }?.rawValue
     }
 
     private static func nowMs() -> Int64 {
@@ -810,12 +1004,5 @@ public enum JobServiceError: Error, Equatable {
     case jobNotFound(String)
     case jobFailed(String, String)
     case waitForResultTimeout(String)
-    case notClaimable(String)
     case leaseLost(String)
-}
-
-/// 完成结果（value 或 error 二选一）。
-private enum Completion {
-    case value(Any?)
-    case error(Error)
 }

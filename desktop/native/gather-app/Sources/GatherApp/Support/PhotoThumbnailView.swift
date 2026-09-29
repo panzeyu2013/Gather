@@ -129,30 +129,41 @@ public enum PhotoThumbnailDecoder {
     }
 }
 
-/// 缩略图加载缓存（进程内，键 = 模式 + path + size）。
-public enum PhotoThumbnailCache {
-    /// 审计 P1-性能：2048px preview ≈16MB/张，浏览 1 万张可致 GB 级内存。
-    /// 按解码尺寸计入 cost：256 桶 ≈1MB、1024 ≈4MB、2048 ≈16MB（粗估
-    /// NSImage 位深/缩放开销），全缓存上限 512MB 后按 LRU 淘汰。
-    private static let cache: NSCache<NSString, NSImage> = {
+/// 缩略图缓存盒子：NSCache 非 Sendable，不能直接作为静态属性持有。
+/// 线程安全说明（Swift 6 `Sendable`）：可变状态 `cache`（条目与
+/// totalCostLimit）只在 `lock`（NSLock）临界区内读写，读接口
+/// `object(forKey:)` 与写接口 `setObject(_:forKey:cost:)` 均不回调外部代码，
+/// 因此不会在锁内重入。锁纪律无法被编译器静态验证，故标注 `@unchecked`。
+private final class PhotoThumbnailCacheBox: @unchecked Sendable {
+    let cache: NSCache<NSString, NSImage>
+    let lock = NSLock()
+
+    init() {
+        // 审计 P1-性能：2048px preview ≈16MB/张，浏览 1 万张可致 GB 级内存。
+        // 按解码尺寸计入 cost：256 桶 ≈1MB、1024 ≈4MB、2048 ≈16MB（粗估
+        // NSImage 位深/缩放开销），全缓存上限 512MB 后按 LRU 淘汰。
         let cache = NSCache<NSString, NSImage>()
         cache.totalCostLimit = 512 * 1024 * 1024
-        return cache
-    }()
-    private static let lock = NSLock()
+        self.cache = cache
+    }
+}
+
+/// 缩略图加载缓存（进程内，键 = 模式 + path + size）。
+public enum PhotoThumbnailCache {
+    private static let box = PhotoThumbnailCacheBox()
 
     public static func image(for key: String) -> NSImage? {
-        lock.lock()
-        defer { lock.unlock() }
-        return cache.object(forKey: key as NSString)
+        box.lock.lock()
+        defer { box.lock.unlock() }
+        return box.cache.object(forKey: key as NSString)
     }
 
     public static func setImage(_ image: NSImage, for key: String) {
-        lock.lock()
-        defer { lock.unlock() }
+        box.lock.lock()
+        defer { box.lock.unlock() }
         let size = image.size.width * image.size.height
         // 粗估：RGBA 4B/像素 + 20% 元数据开销；小图下限 256KB 防过度淘汰。
         let cost = max(256 * 1024, Int(size * 4 * 1.2))
-        cache.setObject(image, forKey: key as NSString, cost: cost)
+        box.cache.setObject(image, forKey: key as NSString, cost: cost)
     }
 }

@@ -240,6 +240,7 @@ public struct SessionControlView: View {
                     } else if viewModel.workspaceStatus == nil && viewModel.errorMessage == nil {
                         VStack(spacing: 10) {
                             Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
                             Text(GatherLocalization.l("暂无工作区状态")).foregroundStyle(.secondary)
                             Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
                         }
@@ -290,6 +291,14 @@ public struct SessionControlView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
+            viewModel.load()
+        }
+        // 写路径广播（XMP/同步队列、重复处置、人脸簇变化）：按会话命中后刷新
+        // 控制中心的相应域，不再只靠轮询/任务终态。
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
+            guard let change = notification.object as? GatherDomainChange,
+                  change.matches(sessionId: viewModel.sessionId),
+                  [.metadata, .duplicates, .faceKeywording].contains(change.domain) else { return }
             viewModel.load()
         }
     }
@@ -489,6 +498,7 @@ public struct SessionControlView: View {
                 if items.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(GatherTheme.success)
+                            .accessibilityHidden(true)
                         Text(GatherLocalization.l("全部正常")).foregroundStyle(.secondary)
                     }
                 } else {
@@ -505,6 +515,7 @@ public struct SessionControlView: View {
         HStack(alignment: .center, spacing: 10) {
             let icon = inboxIcon(item.kind)
             Image(systemName: icon.name).foregroundStyle(icon.color).frame(width: 16)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.label)
                 if let detail = item.detail {
@@ -631,6 +642,7 @@ public struct SessionControlView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "lightbulb").foregroundStyle(GatherTheme.warning)
+                            .accessibilityHidden(true)
                         Text(GatherLocalization.l("推荐下一步")).font(.title3.weight(.semibold))
                     }
                     HStack(alignment: .top) {
@@ -791,6 +803,7 @@ public struct SessionControlView: View {
                 ForEach(viewModel.jobs, id: \.id) { job in
                     HStack(spacing: 8) {
                         Image(systemName: job.status == .succeeded ? "checkmark.circle.fill" : "circle.dotted")
+                            .accessibilityHidden(true)
                             .foregroundStyle(job.status == .failed
                                 ? GatherTheme.error
                                 : (job.status == .succeeded ? GatherTheme.success : GatherTheme.primary))

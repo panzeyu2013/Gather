@@ -16,34 +16,25 @@
 //   （响应含 reloadAckedAt）接线，非占位。
 // - 模型路径编辑：detector_model_path/encoder_model_path 可编辑输入框 + 保存后
 //   重查 settings.get_ml_status。
+// - 人脸算法参数（ADR-029 原生扩展）：核心点质量门槛/二遍最小样本数/歧义判定间隔三个
+//   滑杆 + 「人脸模型」分组（专用模型路径/版本标签/增量聚类开关）。这些键都必须在
+//   SettingsService.getDefaults() 里注册，否则 settings.set 会按白名单拒绝——由
+//   Tests/GatherAppTests/SettingsCatalogTests 守住。
 // - 语言切换：settings.set_language 持久化后本页文案跟随 ui_language，并广播
 //   languageChanged 由 GatherAppDelegate 重建菜单（全站文案联动）。
 import SwiftUI
 import AppKit
 import GatherCore
 
-// MARK: - 页面文案（zh-CN.json settings.* / c1.health.* 键 + 英文对照）
-
-public struct PageCopy {
-    public let zh: String
-    public let en: String
-    public init(zh: String, en: String) {
-        self.zh = zh
-        self.en = en
-    }
-}
-
 // MARK: - 分组设置与滑杆定义（对齐 TS Settings/index.tsx GROUPS / 滑杆段）
 
 public struct SelectOption: Identifiable, Equatable {
     public let value: String
     public let labelZh: String
-    public let labelEn: String
     public var id: String { value }
-    public init(value: String, labelZh: String, labelEn: String) {
+    public init(value: String, labelZh: String) {
         self.value = value
         self.labelZh = labelZh
-        self.labelEn = labelEn
     }
 }
 
@@ -57,29 +48,23 @@ public struct SettingField: Identifiable {
     public let key: String
     public let type: SettingFieldType
     public let zhLabel: String
-    public let enLabel: String
     public let zhDesc: String
-    public let enDesc: String
     public var id: String { key }
-    public init(key: String, type: SettingFieldType, zhLabel: String, enLabel: String, zhDesc: String, enDesc: String) {
+    public init(key: String, type: SettingFieldType, zhLabel: String, zhDesc: String) {
         self.key = key
         self.type = type
         self.zhLabel = zhLabel
-        self.enLabel = enLabel
         self.zhDesc = zhDesc
-        self.enDesc = enDesc
     }
 }
 
 public struct SettingGroup: Identifiable {
     public let id: String
     public let titleZh: String
-    public let titleEn: String
     public let fields: [SettingField]
-    public init(id: String, titleZh: String, titleEn: String, fields: [SettingField]) {
+    public init(id: String, titleZh: String, fields: [SettingField]) {
         self.id = id
         self.titleZh = titleZh
-        self.titleEn = titleEn
         self.fields = fields
     }
 }
@@ -92,11 +77,9 @@ public struct SliderSetting: Identifiable {
     public let isInteger: Bool
     public let defaultValue: Double
     public let zhLabel: String
-    public let enLabel: String
     public let zhDesc: String
-    public let enDesc: String
     public var id: String { key }
-    public init(key: String, min: Double, max: Double, step: Double, isInteger: Bool, defaultValue: Double, zhLabel: String, enLabel: String, zhDesc: String, enDesc: String) {
+    public init(key: String, min: Double, max: Double, step: Double, isInteger: Bool, defaultValue: Double, zhLabel: String, zhDesc: String) {
         self.key = key
         self.min = min
         self.max = max
@@ -104,9 +87,7 @@ public struct SliderSetting: Identifiable {
         self.isInteger = isInteger
         self.defaultValue = defaultValue
         self.zhLabel = zhLabel
-        self.enLabel = enLabel
         self.zhDesc = zhDesc
-        self.enDesc = enDesc
     }
 }
 
@@ -166,13 +147,6 @@ public final class SettingsViewModel {
         self.client = NativeCommandClient(router: router)
         self.captureOne = CaptureOneBridge(router: router)
     }
-
-    public var isChinese: Bool { language == "zh-CN" }
-
-    public func text(_ copy: PageCopy) -> String {
-        isChinese ? copy.zh : copy.en
-    }
-
     // MARK: - 数据加载
 
     public func load() {
@@ -239,30 +213,78 @@ public final class SettingsViewModel {
 
     public func saveField(_ field: SettingField) {
         let raw = (edits[field.key] ?? values[field.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else {
-            errorMessage = String(format: GatherLocalization.l("「%@」不能为空"), field.zhLabel)
+        if raw.isEmpty {
+            // 空值规则：只有"默认值本身为空"的键才允许清空——例如
+            // face_embedding_model_path 清空 = 回到内置 Vision 特征（合法操作），
+            // 而 detector_model_path 留空没有语义，仍按无效输入拒绝。
+            guard Self.defaultValueIsEmpty(field.key) else {
+                errorMessage = String(format: GatherLocalization.l("「%@」不能为空"), GatherLocalization.l(field.zhLabel))
+                return
+            }
+            save(key: field.key, value: "")
             return
         }
         switch field.type {
         case .text:
+            // 专用人脸模型路径：保存时只做**廉价**校验（展开 ~、解析软链、存在性、
+            // 扩展名），不加载模型、不做整包哈希——256 MiB 模型在 @MainActor 上
+            // 加载+哈希实测 48.4s，界面会假死（对抗审查 V1 探针 I）。
+            // 失败原因复用 core 的 FaceEmbeddingError.description（逐字一致）；
+            // "能否真正加载"由分析路径负责（fkw.analyze 的错误现在已能上屏）。
+            if field.key == FaceEmbeddingModelFactory.modelPathSetting,
+               let reason = Self.faceEmbeddingModelPathError(raw) {
+                errorMessage = reason
+                return
+            }
             save(key: field.key, value: raw)
         case .number(let min, let max):
             guard let parsed = Double(raw), parsed.isFinite else {
-                errorMessage = String(format: GatherLocalization.l("「%@」必须是数字"), field.zhLabel)
+                errorMessage = String(format: GatherLocalization.l("「%@」必须是数字"), GatherLocalization.l(field.zhLabel))
                 return
             }
             if let min, parsed < min {
-                errorMessage = String(format: GatherLocalization.l("「%@」不能小于 %@"), field.zhLabel, Self.numberText(min))
+                errorMessage = String(format: GatherLocalization.l("「%@」不能小于 %@"), GatherLocalization.l(field.zhLabel), Self.numberText(min))
                 return
             }
             if let max, parsed > max {
-                errorMessage = String(format: GatherLocalization.l("「%@」不能大于 %@"), field.zhLabel, Self.numberText(max))
+                errorMessage = String(format: GatherLocalization.l("「%@」不能大于 %@"), GatherLocalization.l(field.zhLabel), Self.numberText(max))
                 return
             }
             save(key: field.key, value: raw)
         case .select:
             break
         }
+    }
+
+    /// 人脸嵌入模型路径的廉价校验（纯 FileManager/URL，不加载、不哈希）：
+    /// 返回 nil = 可保存；否则是与 core 逐字一致的中文拒绝原因。
+    /// 规则对齐 core FaceEmbeddingModelFactory.make / CoreMLFaceEmbedder：
+    /// 空/纯空白 → 合法（回到内置 Vision，由调用方空值分支处理）；
+    /// 展开 `~` → 解析软链 → 文件必须存在 → 扩展名必须 .mlmodel/.mlmodelc；
+    /// 目录为空（core 的 stat 指纹为空）同样按"模型不存在"拒绝。
+    /// 不做的事：MLModel.compileModel / MLModel(contentsOf:) / 内容指纹哈希。
+    static func faceEmbeddingModelPathError(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        let url = URL(fileURLWithPath: expanded).resolvingSymlinksInPath()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return FaceEmbeddingError.modelNotFound(url.path).description
+        }
+        switch url.pathExtension {
+        case "mlmodel", "mlmodelc":
+            break
+        default:
+            return FaceEmbeddingError.unsupportedModelFormat(url.pathExtension).description
+        }
+        if isDirectory.boolValue {
+            let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+            if contents.isEmpty {
+                return FaceEmbeddingError.modelNotFound(url.path).description
+            }
+        }
+        return nil
     }
 
     public func saveSelect(_ field: SettingField, value: String) {
@@ -300,7 +322,9 @@ public final class SettingsViewModel {
             ])
             values[key] = value
             edits[key] = value
-            notice = String(format: GatherLocalization.l("已保存 %@"), key)
+            // 提示用人类可读标签（zhLabel），不是内部键：审查发现「已保存 thumbnail_size」
+            // 这类提示让用户无法确认自己改的是哪一项。
+            notice = String(format: GatherLocalization.l("已保存 %@"), Self.label(for: key))
             errorMessage = nil
             if key == "detector_model_path" || key == "encoder_model_path" || key == "onnx_provider" {
                 modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
@@ -335,7 +359,13 @@ public final class SettingsViewModel {
         NSWorkspace.shared.open(URL(fileURLWithPath: parent, isDirectory: true))
     }
 
-    public func reset() {
+    /// 恢复默认（破坏性：模型路径、推理后端、缓存、写回参数等全部设置重置）。
+    /// `confirmed` 只能由确认弹窗传入 true；未确认不发命令。
+    public func reset(confirmed: Bool) {
+        guard confirmed else {
+            notice = GatherLocalization.l("未确认，已取消恢复默认设置")
+            return
+        }
         do {
             values = try client.execute("settings.reset").decoded(as: [String: String].self)
             language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
@@ -343,10 +373,18 @@ public final class SettingsViewModel {
             edits = values
             seedSliderValues()
             notice = GatherLocalization.l("设置已恢复默认值")
+            // 不广播 .settings：设置写入无常驻页消费者（各页在重新可见/加载时
+            // 自行读取最新设置值），发布只会留下无人订阅的死事件。
             modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
+    }
+
+    /// 取消破坏性动作：可见文案（不静默 return，也不发命令）。
+    public func reportCancellation(_ action: String) {
+        notice = GatherLocalization.cancellationNotice(action)
+        errorMessage = nil
     }
 
     // MARK: - Capture One 四层预检
@@ -373,7 +411,7 @@ public final class SettingsViewModel {
                 lastError: nil
             )
             do {
-                _ = try await runAppleScript(Self.documentProbeScript(appName: appName), timeout: 3)
+                _ = try await runAppleScript(CaptureOneBridge.documentProbeScript(appName: appName), timeout: 3)
                 snapshot.documentOpen = true
                 snapshot.automationAuthorized = true
             } catch let probe as C1ProbeError {
@@ -440,14 +478,6 @@ public final class SettingsViewModel {
         }
     }
 
-    private static func documentProbeScript(appName: String) -> String {
-        """
-        tell application "\(appName)"
-          get name of current document
-        end tell
-        """
-    }
-
     /// 对齐 TS capture-one/errors.ts 的 classifyCaptureOneError：timeout 优先于
     /// denied 判定（hung app 不能误判为拒绝）。
     nonisolated private static func classifyProbe(_ message: String) -> C1ProbeError {
@@ -496,27 +526,17 @@ public final class SettingsViewModel {
     /// 语义为 Capture One 最后一次 reload 确认时间），否则回退队列项
     /// updatedAt 的最大值（最后一次写回活动的近似）。
     public var lastSyncDate: Date? {
-        if let ack = syncReloadAckedAt, !ack.isEmpty, let date = Self.parseISO8601(ack) {
+        if let ack = syncReloadAckedAt, !ack.isEmpty, let date = parseISO8601Date(ack) {
             return date
         }
         guard let syncStatus else { return nil }
-        return syncStatus.items.compactMap { Self.parseISO8601($0.updatedAt) }.max()
+        return syncStatus.items.compactMap { parseISO8601Date($0.updatedAt) }.max()
     }
 
     private static func mostRecentSession(_ sessions: [SessionData]) -> SessionData? {
         sessions.max { a, b in
-            (parseISO8601(a.updatedAt) ?? .distantPast) < (parseISO8601(b.updatedAt) ?? .distantPast)
+            (parseISO8601Date(a.updatedAt) ?? .distantPast) < (parseISO8601Date(b.updatedAt) ?? .distantPast)
         }
-    }
-
-    /// ISO8601（含/不含小数秒）解析，对齐 DashboardView.parseISO8601。
-    public static func parseISO8601(_ iso: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: iso) { return date }
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        return plain.date(from: iso)
     }
 
     /// 本地化时间文案：zh 环境 `yyyy年M月d日 HH:mm`，其余按系统区域模板
@@ -563,7 +583,10 @@ public final class SettingsViewModel {
             reconcileDownloadPhaseWithModelStatus()
         } catch {
             downloadPhase = .error
-            errorMessage = String(format: GatherLocalization.l("模型下载失败：%@"), error.localizedDescription)
+            // 诊断不直显：非错误码走 errorText 通用回退（与全局错误漏斗一致）。
+            let nsError = error as NSError
+            let raw = nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+            errorMessage = String(format: GatherLocalization.l("模型下载失败：%@"), GatherLocalization.errorText(raw))
         }
     }
 
@@ -585,22 +608,41 @@ public final class SettingsViewModel {
         value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)
     }
 
+    /// 设置键 → 界面标签（滑杆或分组字段里找到就用 zhLabel；否则退回键名）。
+    /// 用于保存提示，避免把内部键暴露给用户。
+    public static func label(for key: String) -> String {
+        if let slider = (generalSliders + advancedSliders).first(where: { $0.key == key }) {
+            return GatherLocalization.l(slider.zhLabel)
+        }
+        for group in settingGroups {
+            if let field = group.fields.first(where: { $0.key == key }) {
+                return GatherLocalization.l(field.zhLabel)
+            }
+        }
+        return key
+    }
+
+    /// 该键在 core 默认表里是否为空串（决定"清空输入框"是否为合法操作）。
+    public static func defaultValueIsEmpty(_ key: String) -> Bool {
+        (SettingsService.getDefaults()[key] ?? "").isEmpty
+    }
+
     /// 人脸分析常规参数（TS index.tsx L227-286）。
     public static let generalSliders: [SliderSetting] = [
         SliderSetting(
             key: "detect_confidence", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.5,
-            zhLabel: "检测敏感度", enLabel: "Detection confidence",
-            zhDesc: "低于此置信度的人脸将被忽略", enDesc: "Faces below this confidence are ignored"
+            zhLabel: "检测敏感度",
+            zhDesc: "低于此置信度的人脸将被忽略"
         ),
         SliderSetting(
             key: "default_eps", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.6,
-            zhLabel: "聚类半径", enLabel: "Cluster radius",
-            zhDesc: "值越大，不同人脸越容易被归为同一人", enDesc: "Higher values cluster different faces together more easily"
+            zhLabel: "同一人相似度下限",
+            zhDesc: "仅相似度不低于该值的人脸才归为同一人；值越大越严格"
         ),
         SliderSetting(
             key: "default_min_samples", min: 1, max: 20, step: 1, isInteger: true, defaultValue: 2,
-            zhLabel: "最小样本数", enLabel: "Min samples",
-            zhDesc: "一个人至少出现 N 张照片才形成聚类", enDesc: "A person must appear in at least N photos to form a cluster"
+            zhLabel: "最小样本数",
+            zhDesc: "一个人至少出现 N 张照片才形成聚类"
         ),
     ]
 
@@ -608,144 +650,172 @@ public final class SettingsViewModel {
     public static let advancedSliders: [SliderSetting] = [
         SliderSetting(
             key: "nms_threshold", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.4,
-            zhLabel: "NMS 阈值", enLabel: "NMS threshold",
-            zhDesc: "重叠人脸的过滤阈值", enDesc: "Overlap filtering threshold for detections"
+            zhLabel: "NMS 阈值",
+            zhDesc: "重叠人脸的过滤阈值"
         ),
         SliderSetting(
             key: "max_detections", min: 1, max: 500, step: 1, isInteger: true, defaultValue: 100,
-            zhLabel: "最大检测数", enLabel: "Max detections",
-            zhDesc: "单张图片最多检测的人脸数", enDesc: "Maximum faces detected per image"
+            zhLabel: "最大检测数",
+            zhDesc: "单张图片最多检测的人脸数"
         ),
         SliderSetting(
             key: "onnx_threads", min: 1, max: 16, step: 1, isInteger: true, defaultValue: 4,
-            zhLabel: "ONNX 线程", enLabel: "ONNX threads",
-            zhDesc: "推理并行线程数", enDesc: "Parallel inference threads"
+            zhLabel: "ONNX 线程",
+            zhDesc: "推理并行线程数"
+        ),
+        // 原生扩展参数（ADR-029 算法对标改造；TS 无对应键）。
+        SliderSetting(
+            key: "face_core_quality", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.35,
+            zhLabel: "核心点质量门槛",
+            zhDesc: "质量低于此值的人脸不能带动聚类（只可能被并入），0 = 不设限；调高可减少模糊/侧脸造成的误聚"
+        ),
+        SliderSetting(
+            key: "face_core_retry_min_samples", min: 1, max: 10, step: 1, isInteger: true, defaultValue: 2,
+            zhLabel: "二遍最小样本数",
+            zhDesc: "首遍漏掉的小簇在二遍中恢复；小于 2 视为关闭"
+        ),
+        SliderSetting(
+            key: "face_match_margin", min: 0, max: 0.2, step: 0.005, isInteger: false, defaultValue: 0.01,
+            zhLabel: "歧义判定间隔",
+            zhDesc: "最相似与次相似人物的差距小于此值时不自动绑定身份，留给人工确认；0 = 总是绑定最相似者"
         ),
     ]
 
     /// 分组设置（TS index.tsx L25-74；min/max 抄 input 约束 + 描述文案约束）。
     public static let settingGroups: [SettingGroup] = [
-        SettingGroup(id: "cache", titleZh: "缓存", titleEn: "Cache", fields: [
+        SettingGroup(id: "cache", titleZh: "缓存", fields: [
             SettingField(
                 key: "memory_cache_size", type: .number(min: 1, max: nil),
-                zhLabel: "内存缓存条目数", enLabel: "Memory cache entries",
-                zhDesc: "内存中缓存的缩略图最大数量", enDesc: "Maximum thumbnails cached in memory"
+                zhLabel: "内存缓存条目数",
+                zhDesc: "内存中缓存的缩略图最大数量"
             ),
             SettingField(
                 key: "memory_cache_max_size_mb", type: .number(min: 32, max: 2048),
-                zhLabel: "内存缓存上限 (MB)", enLabel: "Memory cache cap (MB)",
-                zhDesc: "缩略图和预览内存缓存的最大空间，防止高分辨率图片占满内存",
-                enDesc: "Maximum memory for thumbnails and previews, preventing high-res images from exhausting RAM"
+                zhLabel: "内存缓存上限 (MB)",
+                zhDesc: "缩略图和预览内存缓存的最大空间，防止高分辨率图片占满内存"
             ),
             SettingField(
                 key: "disk_cache_dir", type: .text,
-                zhLabel: "磁盘缓存目录", enLabel: "Disk cache directory",
-                zhDesc: "磁盘缓存存储路径（留空使用默认）", enDesc: "Disk cache storage path (empty for default)"
+                zhLabel: "磁盘缓存目录",
+                zhDesc: "磁盘缓存存储路径（留空使用默认）"
             ),
             SettingField(
                 key: "disk_cache_max_size_gb", type: .number(min: 0, max: nil),
-                zhLabel: "磁盘缓存上限 (GB)", enLabel: "Disk cache cap (GB)",
-                zhDesc: "磁盘缓存占用硬盘的最大空间", enDesc: "Maximum disk space used by the cache"
+                zhLabel: "磁盘缓存上限 (GB)",
+                zhDesc: "磁盘缓存占用硬盘的最大空间"
             ),
             SettingField(
                 key: "disk_cache_eviction_policy", type: .select([
-                    SelectOption(value: "lru", labelZh: "LRU（最近最少使用）", labelEn: "LRU (least recently used)"),
-                    SelectOption(value: "fifo", labelZh: "FIFO（先进先出）", labelEn: "FIFO (first in, first out)"),
-                    SelectOption(value: "lfu", labelZh: "LFU（最不经常使用）", labelEn: "LFU (least frequently used)"),
+                    SelectOption(value: "lru", labelZh: "LRU（最近最少使用）"),
+                    SelectOption(value: "fifo", labelZh: "FIFO（先进先出）"),
+                    SelectOption(value: "lfu", labelZh: "LFU（最不经常使用）"),
                 ]),
-                zhLabel: "淘汰策略", enLabel: "Eviction policy",
-                zhDesc: "lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）",
-                enDesc: "lru=LRU (least recently used), fifo=FIFO (first in, first out), lfu=LFU (least frequently used)"
+                zhLabel: "淘汰策略",
+                zhDesc: "lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）"
             ),
         ]),
-        SettingGroup(id: "image", titleZh: "图片处理", titleEn: "Image Processing", fields: [
+        SettingGroup(id: "image", titleZh: "图片处理", fields: [
             SettingField(
                 key: "thumbnail_size", type: .number(min: 256, max: 2048),
-                zhLabel: "缩略图尺寸", enLabel: "Thumbnail size",
-                zhDesc: "画廊缓存分辨率（建议 1024；内部按 256/1024/2048 三级复用）",
-                enDesc: "Gallery cache resolution (1024 recommended; reused at 256/1024/2048)"
+                zhLabel: "缩略图尺寸",
+                zhDesc: "画廊缓存分辨率（建议 1024；内部按 256/1024/2048 三级复用）"
             ),
             SettingField(
                 key: "thumbnail_quality", type: .number(min: 0, max: 100),
-                zhLabel: "缩略图质量", enLabel: "Thumbnail quality",
-                zhDesc: "缩略图的 JPEG 压缩质量 (0-100)", enDesc: "JPEG compression quality of thumbnails (0-100)"
+                zhLabel: "缩略图质量",
+                zhDesc: "缩略图的 JPEG 压缩质量 (0-100)"
             ),
             SettingField(
                 key: "thumbnail_concurrency", type: .number(min: 1, max: maxConcurrency),
-                zhLabel: "缩略图生成并发数", enLabel: "Thumbnail concurrency",
-                zhDesc: "同时生成缩略图的任务数（RAW 建议 2-4，最大 8）",
-                enDesc: "Concurrent thumbnail tasks (2-4 for RAW, max 8)"
+                zhLabel: "缩略图生成并发数",
+                zhDesc: "同时生成缩略图的任务数（RAW 建议 2-4，最大 8）"
             ),
             SettingField(
                 key: "face_thumbnail_size", type: .number(min: 1, max: nil),
-                zhLabel: "人脸缩略图尺寸", enLabel: "Face thumbnail size",
-                zhDesc: "人脸缩略图的宽高像素值", enDesc: "Width/height in pixels of face thumbnails"
+                zhLabel: "人脸缩略图尺寸",
+                zhDesc: "人脸缩略图的宽高像素值"
             ),
             SettingField(
                 key: "face_thumbnail_quality", type: .number(min: 0, max: 100),
-                zhLabel: "人脸缩略图质量", enLabel: "Face thumbnail quality",
-                zhDesc: "人脸缩略图的 JPEG 压缩质量 (0-100)", enDesc: "JPEG compression quality of face thumbnails (0-100)"
+                zhLabel: "人脸缩略图质量",
+                zhDesc: "人脸缩略图的 JPEG 压缩质量 (0-100)"
             ),
         ]),
-        SettingGroup(id: "db", titleZh: "数据库", titleEn: "Database", fields: [
+        SettingGroup(id: "db", titleZh: "数据库", fields: [
             SettingField(
                 key: "db_cache_size_mb", type: .number(min: 1, max: nil),
-                zhLabel: "缓存大小 (MB)", enLabel: "Cache size (MB)",
-                zhDesc: "SQLite 数据库的页面缓存大小", enDesc: "SQLite page cache size"
+                zhLabel: "缓存大小 (MB)",
+                zhDesc: "SQLite 数据库的页面缓存大小"
             ),
             SettingField(
                 key: "db_synchronous", type: .select([
-                    SelectOption(value: "off", labelZh: "OFF（关闭）", labelEn: "OFF"),
-                    SelectOption(value: "normal", labelZh: "NORMAL（正常）", labelEn: "NORMAL"),
-                    SelectOption(value: "full", labelZh: "FULL（完整）", labelEn: "FULL"),
+                    SelectOption(value: "off", labelZh: "OFF（关闭）"),
+                    SelectOption(value: "normal", labelZh: "NORMAL（正常）"),
+                    SelectOption(value: "full", labelZh: "FULL（完整）"),
                 ]),
-                zhLabel: "同步模式", enLabel: "Sync mode",
-                zhDesc: "off=OFF（关闭）, normal=NORMAL（正常）, full=FULL（完整）",
-                enDesc: "off=OFF, normal=NORMAL, full=FULL"
+                zhLabel: "同步模式",
+                zhDesc: "off=OFF（关闭）, normal=NORMAL（正常）, full=FULL（完整）"
             ),
         ]),
-        SettingGroup(id: "c1", titleZh: "Capture One 集成", titleEn: "Capture One Integration", fields: [
+        SettingGroup(id: "c1", titleZh: "Capture One 集成", fields: [
             SettingField(
                 key: "c1_timeout_ms", type: .number(min: 1, max: nil),
-                zhLabel: "超时时间 (ms)", enLabel: "Timeout (ms)",
-                zhDesc: "与 Capture One 通信的超时毫秒数", enDesc: "Communication timeout with Capture One, in milliseconds"
+                zhLabel: "超时时间 (ms)",
+                zhDesc: "与 Capture One 通信的超时毫秒数"
             ),
             SettingField(
                 key: "c1_retries", type: .number(min: 0, max: nil),
-                zhLabel: "重试次数", enLabel: "Retries",
-                zhDesc: "与 Capture One 通信的最大重试次数", enDesc: "Maximum retries when communicating with Capture One"
+                zhLabel: "重试次数",
+                zhDesc: "与 Capture One 通信的最大重试次数"
             ),
             SettingField(
                 key: "c1_reload_delay_ms", type: .number(min: 0, max: nil),
-                zhLabel: "重载延迟 (ms)", enLabel: "Reload delay (ms)",
-                zhDesc: "重载元数据后的等待延迟毫秒数", enDesc: "Wait delay in milliseconds after reloading metadata"
+                zhLabel: "重载延迟 (ms)",
+                zhDesc: "重载元数据后的等待延迟毫秒数"
             ),
         ]),
-        SettingGroup(id: "metadata", titleZh: "元数据", titleEn: "Metadata", fields: [
+        SettingGroup(id: "metadata", titleZh: "元数据", fields: [
             SettingField(
                 key: "metadata_write_mode", type: .select([
-                    SelectOption(value: "auto", labelZh: "自动（RAW侧边栏，成品格式内嵌）", labelEn: "Auto (sidecar for RAW, embedded for finished formats)"),
-                    SelectOption(value: "sidecar", labelZh: "XMP Sidecar", labelEn: "XMP Sidecar"),
-                    SelectOption(value: "embedded", labelZh: "Embedded", labelEn: "Embedded"),
+                    SelectOption(value: "auto", labelZh: "自动（RAW侧边栏，成品格式内嵌）"),
+                    SelectOption(value: "sidecar", labelZh: "XMP Sidecar"),
+                    SelectOption(value: "embedded", labelZh: "Embedded"),
                 ]),
-                zhLabel: "写入方式", enLabel: "Write mode",
-                zhDesc: "auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded",
-                enDesc: "auto=sidecar for RAW and embedded for finished formats, sidecar=XMP Sidecar, embedded=Embedded"
+                zhLabel: "写入方式",
+                zhDesc: "auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded"
             ),
             SettingField(
                 key: "metadata_write_debounce_ms", type: .number(min: 1, max: nil),
-                zhLabel: "后台写入防抖 (ms)", enLabel: "Writeback debounce (ms)",
-                zhDesc: "连续评级或改色后等待多久合并写入，建议 300-800",
-                enDesc: "Debounce for coalescing consecutive rating or color edits; 300-800 recommended"
+                zhLabel: "后台写入防抖 (ms)",
+                zhDesc: "连续评级或改色后等待多久合并写入，建议 300-800"
             ),
             SettingField(
                 key: "capture_one_color_compatibility", type: .select([
-                    SelectOption(value: "label_and_urgency", labelZh: "Label + Urgency（推荐，兼容更多版本）", labelEn: "Label + Urgency (recommended, more compatible)"),
-                    SelectOption(value: "label_only", labelZh: "仅标准 xmp:Label", labelEn: "Standard xmp:Label only"),
+                    SelectOption(value: "label_and_urgency", labelZh: "Label + Urgency（推荐，兼容更多版本）"),
+                    SelectOption(value: "label_only", labelZh: "仅标准 xmp:Label"),
                 ]),
-                zhLabel: "Capture One 颜色兼容", enLabel: "C1 color compatibility",
-                zhDesc: "label_and_urgency=Label + Urgency（推荐，兼容更多版本）, label_only=仅标准 xmp:Label",
-                enDesc: "label_and_urgency=Label + Urgency (recommended), label_only=standard xmp:Label only"
+                zhLabel: "Capture One 颜色兼容",
+                zhDesc: "label_and_urgency=Label + Urgency（推荐，兼容更多版本）, label_only=仅标准 xmp:Label"
+            ),
+        ]),
+        SettingGroup(id: "face", titleZh: "人脸模型", fields: [
+            SettingField(
+                key: "face_embedding_model_path", type: .text,
+                zhLabel: "专用人脸模型路径",
+                zhDesc: "留空 = 内置 Vision 特征（通用图像特征）；填入 ArcFace/SFace 等 .mlmodel 或 .mlmodelc 即切换为专用人脸模型（需 112×112 图像输入）。填了但加载失败会直接报错，不会退回内置特征——两套向量空间混用会让相似度阈值失去意义"
+            ),
+            SettingField(
+                key: "face_embedding_model_version", type: .text,
+                zhLabel: "模型版本标签",
+                zhDesc: "仅用于记录与追溯（写入人脸观测，便于区分换模型前后的数据）；换模型时建议同时更新，例如 arcface-r100-w600k"
+            ),
+            SettingField(
+                key: "face_incremental_clustering", type: .select([
+                    SelectOption(value: "1", labelZh: "开（推荐，保留已绑定身份）"),
+                    SelectOption(value: "0", labelZh: "关（每次全量重聚类）"),
+                ]),
+                zhLabel: "增量聚类",
+                zhDesc: "开=只对新增照片做增量聚类，已有簇与用户绑定身份不会被重算冲掉；关=每次分析都全量重聚类（慢，但会收敛到全局最优）"
             ),
         ]),
     ]
@@ -919,9 +989,39 @@ private enum ModelInstaller {
 
 // MARK: - 页面
 
+/// 模型覆盖安装确认：下载解压会覆盖模型目录中的同名文件。
+private struct PendingModelInstall: Identifiable {
+    let modelDir: String
+
+    var id: String { "model-install-\(modelDir)" }
+
+    var scopeText: String {
+        String(
+            format: GatherLocalization.l("将从网络下载模型包并解压到 %@；同名模型文件会被覆盖，旧文件不可恢复。取消不会下载任何内容。"),
+            modelDir
+        )
+    }
+}
+
+/// 恢复默认设置的确认上下文：影响范围 = 将被重置的设置项数量。
+private struct PendingSettingsReset: Identifiable {
+    let keyCount: Int
+
+    var id: String { "settings-reset-\(keyCount)" }
+
+    var scopeText: String {
+        String(
+            format: GatherLocalization.l("将把当前 %lld 项设置恢复为默认值（模型路径、推理后端、缓存与写回参数等）；不会删除照片或 XMP 文件。取消不改变任何设置。"),
+            keyCount
+        )
+    }
+}
+
 public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
-    @State private var confirmReset = false
+    /// 破坏性设置的待确认上下文：非空即弹确认框；命令只在确认分支发出。
+    @State private var pendingReset: PendingSettingsReset?
+    @State private var pendingModelInstall: PendingModelInstall?
 
     public init(router: CommandRouter) {
         _viewModel = State(initialValue: SettingsViewModel(router: router))
@@ -956,14 +1056,29 @@ public struct SettingsView: View {
                 viewModel.refreshSyncState()
             }
         }
-        .alert(GatherLocalization.l("恢复所有设置默认值？"), isPresented: $confirmReset) {
-            Button(GatherLocalization.l("恢复默认"), role: .destructive) {
-                viewModel.reset()
-            }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("模型路径、后端、缓存和写回参数都会恢复默认值。"))
+        // 写路径广播（XMP/同步队列）：立即刷新 C1 写回队列，不再等 12s 轮询。
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
+            guard let change = notification.object as? GatherDomainChange,
+                  change.domain == .metadata else { return }
+            viewModel.refreshSyncState()
         }
+        .gatherDestructiveConfirm(
+            pending: $pendingReset,
+            title: GatherLocalization.l("恢复所有设置默认值？"),
+            confirmLabel: { _ in GatherLocalization.l("恢复默认") },
+            message: { $0.scopeText },
+            onConfirm: { _ in viewModel.reset(confirmed: true) },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("恢复默认设置")) }
+        )
+        // 模型覆盖安装：同名文件会被覆盖且不可恢复，先确认。
+        .gatherDestructiveConfirm(
+            pending: $pendingModelInstall,
+            title: GatherLocalization.l("确认下载并安装人脸模型？"),
+            confirmLabel: { _ in GatherLocalization.l("下载并覆盖") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.startModelDownload() } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("下载并安装人脸模型")) }
+        )
     }
 
     private var header: some View {
@@ -979,7 +1094,7 @@ public struct SettingsView: View {
                 viewModel.load()
             }
             Button(GatherLocalization.l("恢复默认"), systemImage: "arrow.counterclockwise") {
-                confirmReset = true
+                pendingReset = PendingSettingsReset(keyCount: viewModel.values.count)
             }
         }
         .padding(24)
@@ -1119,7 +1234,7 @@ public struct SettingsView: View {
                     viewModel.openModelDirectory()
                 }
                 Button(downloadButtonTitle) {
-                    Task { await viewModel.startModelDownload() }
+                    pendingModelInstall = PendingModelInstall(modelDir: model.modelResourcesDir)
                 }
                 .disabled(viewModel.isDownloading)
             }

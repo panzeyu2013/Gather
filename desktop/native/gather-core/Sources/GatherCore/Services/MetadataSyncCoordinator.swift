@@ -1,22 +1,92 @@
 // desktop/native/gather-core/Sources/GatherCore/Services/MetadataSyncCoordinator.swift
-// TS 源: desktop/src/main/services/metadata/metadata-sync-coordinator.ts（804 行，
-// 状态机逐字段对齐）
+// 写回内核的唯一协调器（R4 重写）。
 //
-// 协调状态机：outbox 行（metadata_outbox）是唯一持久真相源；本服务负责
-// 去抖调度 → 基线快照 → 冲突检测 → 备份写回 → 自动重试（5 档退避）→ 摘要推送。
-// 关键语义与 TS 逐字一致：
-// - schedule() 先失效 reload-ack 再排程（cleanup 不得恢复 C1 从未加载过的备份）
-// - processUntilCurrent 循环直至当前 revision 的 pending 被消费
-// - 全局写并发上限 2（MAX_CONCURRENCY），withSlot 排队
-// - 崩溃窗口：备份存在 + 指纹与基线不符 + 当前内容恰为 patch → 补写 markWritten
-// - 每次 schedule 即新写入活动 → clearReloadAckForXmpPath（数据丢失修复）
-// - confirm/cleanup 主侧守卫 requireReloadAck（GATHER_TEST_SKIP_RELOAD_ACK →
-//   skipReloadAck，测试注入）
+// 真相源与顺序：
+//   变更（MetadataMutationService）→ metadata_outbox 行（先落库）
+//     → 本协调器 claim 租约 → XMP provider 写盘（唯一写入路径）→ markWritten
+//   任何绕过 provider 直接改 XMP 的路径都已被删除；任何"先写盘后落库"的顺序都不存在。
 //
-// 并发注记：NSLock 只在同步辅助方法内使用（Swift 6 并发检查下 async 上下文
-// 直接 lock() 是错误），模式与 DuplicateService 一致。
+// 状态机（MetadataOutboxStatus，见 MetadataOutboxRepo）：
+//   pending → writing → written → synced →（cleanup/finalize 删除）
+//                 ↓失败            ↓外部修改
+//               failed ←→ pending   conflict → pending / 删除
+//   writing 是租约态：进程启动 recoverInterrupted 全量归位；运行期每轮 drain 回收过期租约。
+//   => writing 永远有出口，"必须由调用方记得先 start()"的隐式契约已被取消（首次使用即恢复）。
+//
+// 错误：一律经 MetadataWritebackFailure 落库为「稳定错误码 + xmpPath + 字段 + 原因」，
+// UI 报告卡可渲染错误码与路径（不再是 NSError 散文）。
+//
+// 并发：本类的可变调度状态由 lock 保护；写并发上限 2（SlotGate）；同一 xmpPath 单飞。
 
 import Foundation
+
+/// 宿主 XMP provider 的错误可被内核结构化的最小面（gather-app 的 SidecarXMPError 已实现）。
+public protocol MetadataCodedError: Error, Sendable {
+    var code: String { get }
+    var xmpPath: String { get }
+    /// 结构化字段名（rating/label/keywords）；nil = 整行或非字段级失败。
+    var field: String? { get }
+}
+
+public extension MetadataCodedError {
+    var field: String? { nil }
+}
+
+/// 落库的失败记录：稳定错误码 + 结构化字段。
+public struct MetadataWritebackFailure: Error, Equatable, Sendable, CustomStringConvertible {
+    public let code: String
+    public let xmpPath: String
+    public let field: String?
+    public let reason: String
+
+    public init(code: String, xmpPath: String, field: String?, reason: String) {
+        self.code = code
+        self.xmpPath = xmpPath
+        self.field = field
+        self.reason = reason
+    }
+
+    /// 任意 Error → 类型化失败记录（优先宿主投递的错误码/字段，其次是内核错误码）。
+    /// - Parameter fallbackField: 调用方已知的字段名兜底（如单字段行的 dirty field）。
+    public static func from(
+        _ error: Error,
+        xmpPath: String,
+        field fallbackField: String? = nil
+    ) -> MetadataWritebackFailure {
+        if let coded = error as? any MetadataCodedError {
+            return MetadataWritebackFailure(
+                code: coded.code,
+                xmpPath: coded.xmpPath.isEmpty ? xmpPath : coded.xmpPath,
+                field: coded.field ?? fallbackField,
+                reason: String(describing: error))
+        }
+        if let sync = error as? MetadataSyncError {
+            // 落库 code 用精确错误码（不再拼 description）；reason 保留可读细节（如阻塞会话 id）。
+            return MetadataWritebackFailure(
+                code: sync.gatherCode.rawValue,
+                xmpPath: xmpPath,
+                field: fallbackField,
+                reason: sync.description)
+        }
+        if let outbox = error as? MetadataOutboxError {
+            return MetadataWritebackFailure(code: outbox.code, xmpPath: xmpPath, field: nil, reason: String(describing: error))
+        }
+        if error is MetadataFingerprintError {
+            return MetadataWritebackFailure(
+                code: "XMP_FINGERPRINT_FAILED", xmpPath: xmpPath, field: nil,
+                reason: String(describing: error))
+        }
+        return MetadataWritebackFailure(
+            code: "XMP_WRITE_FAILED", xmpPath: xmpPath, field: nil, reason: String(describing: error))
+    }
+
+    public var description: String {
+        var text = code + ": " + xmpPath
+        if let field { text += " field=" + field }
+        text += " reason=" + reason
+        return text
+    }
+}
 
 /// TS: metadata-sync-coordinator.ts 抛出的全部错误码（description 与 TS 逐字一致）。
 public enum MetadataSyncError: Error, Equatable, CustomStringConvertible {
@@ -33,6 +103,9 @@ public enum MetadataSyncError: Error, Equatable, CustomStringConvertible {
     case conflictDetailsUnavailable // XMP_CONFLICT_DETAILS_UNAVAILABLE
     case choiceMissing // XMP_CHOICE_MISSING
     case conflictDetailsInvalid // XMP_CONFLICT_DETAILS_INVALID
+    /// 同一侧车被多个会话共享，且（除当前会话外的）关联会话尚未确认。
+    /// 关联会话 id 放在 description 之外（结构化）：见 confirmSync 抛错时的参数。
+    case otherSessionNotConfirmed(sessionId: String) // XMP_CONFIRM_OTHER_SESSION_PENDING
     case orphanNotFound // XMP_ORPHAN_NOT_FOUND
     case orphanNotRetryable // XMP_ORPHAN_NOT_RETRYABLE
     case writerTimeout // XMP_WRITER_TIMEOUT
@@ -52,16 +125,38 @@ public enum MetadataSyncError: Error, Equatable, CustomStringConvertible {
         case .conflictDetailsUnavailable: "XMP_CONFLICT_DETAILS_UNAVAILABLE"
         case .choiceMissing: "XMP_CHOICE_MISSING"
         case .conflictDetailsInvalid: "XMP_CONFLICT_DETAILS_INVALID"
+        case .otherSessionNotConfirmed(let sessionId): "XMP_CONFIRM_OTHER_SESSION_PENDING: " + sessionId
         case .orphanNotFound: "XMP_ORPHAN_NOT_FOUND"
         case .orphanNotRetryable: "XMP_ORPHAN_NOT_RETRYABLE"
         case .writerTimeout: "XMP_WRITER_TIMEOUT"
         }
     }
+
+    /// 本地化漏斗：每个错误码都映射到 GatherErrorCode（UI 不再解析 description 字符串）。
+    public var gatherCode: GatherErrorCode {
+        switch self {
+        case .conflictResolutionRequired: .XMP_CONFLICT_RESOLUTION_REQUIRED
+        case .confirmIncomplete: .XMP_CONFIRM_INCOMPLETE
+        case .cleanupRequiresLoaded: .XMP_CLEANUP_REQUIRES_LOADED
+        case .confirmRequiresSync: .XMP_CONFIRM_REQUIRES_SYNC
+        case .otherSessionNotConfirmed: .XMP_CONFIRM_OTHER_SESSION_PENDING
+        case .externallyModified: .XMP_EXTERNALLY_MODIFIED
+        case .backupMissing: .XMP_BACKUP_MISSING
+        case .cleanupAbortedExternalEdit: .XMP_CLEANUP_ABORTED_EXTERNAL_EDIT
+        case .externalEditConflict: .XMP_EXTERNAL_EDIT_CONFLICT
+        case .reloadNotAcked: .XMP_RELOAD_NOT_ACKED
+        case .conflictNotFound: .XMP_CONFLICT_NOT_FOUND
+        case .conflictDetailsUnavailable: .XMP_CONFLICT_DETAILS_UNAVAILABLE
+        case .choiceMissing: .XMP_CHOICE_MISSING
+        case .conflictDetailsInvalid: .XMP_CONFLICT_DETAILS_INVALID
+        case .orphanNotFound: .XMP_ORPHAN_NOT_FOUND
+        case .orphanNotRetryable: .XMP_ORPHAN_NOT_RETRYABLE
+        case .writerTimeout: .XMP_WRITER_TIMEOUT
+        }
+    }
 }
 
-/// TS: WritebackService 依赖的协调器最小面（`Pick<MetadataSyncCoordinator,
-/// 'waitForIdle' | 'flushSession' | 'confirmSync' | 'cleanup'>`）——
-/// 3.4 CullingService / WritebackService 均只依赖该端口，测试可注入替身。
+/// WritebackService / CullingService 依赖的协调器最小面。
 public protocol MetadataSyncPort: Sendable {
     func waitForIdle(xmpPath: String, timeoutMs: Int) async throws
     func flushSession(sessionId: String) async throws -> MetadataSyncSummary
@@ -69,35 +164,38 @@ public protocol MetadataSyncPort: Sendable {
     func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult
 }
 
-/// TS: MetadataSyncCoordinator。
-public final class MetadataSyncCoordinator: MetadataSyncPort {
+/// 写回协调器。
+/// 线程安全说明（Swift 6 `Sendable`）：全部可变状态（`timers`/`queued`/`queuedSet`/
+/// `active`/`baselineTasks`/`summaryEmitTimers`/`summaryEmitCounts`/`stopped`/
+/// `startupRecoveryDone`）都在 `lock`（NSLock）临界区内，`_eventSink` 由 `eventSinkLock` 保护，
+/// 其余存储属性构造后不可变。锁纪律无法被编译器静态验证，故标注 `@unchecked`
+/// （与同文件 `SlotGate`、`BatchCursor` 的既有约定一致）。
+public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendable {
     /// TS: MAX_CONCURRENCY。
     public static let maxConcurrency = 2
-    /// TS: MAX_AUTOMATIC_ATTEMPTS。
-    public static let maxAutomaticAttempts = 5
+    /// TS: MAX_AUTOMATIC_ATTEMPTS（与仓库共享同一常量）。
+    public static let maxAutomaticAttempts = MetadataSyncLimits.maxAutomaticAttempts
     /// TS: RETRY_DELAYS_MS。
-    public static let retryDelaysMs: [Int] = [1_000, 2_000, 5_000, 15_000, 30_000]
-    /// TS: SUMMARY_EMIT_THROTTLE_MS —— 后台逐行摘要推送的合并窗口。
+    public static let retryDelaysMs = MetadataSyncLimits.retryDelaysMs
+    /// TS: SUMMARY_EMIT_THROTTLE_MS。
     public static let summaryEmitThrottleMs = 100
-    /// TS: SUMMARY_EMIT_BURST_THRESHOLD —— 窗口内完成行数达到该值立即推送。
+    /// TS: SUMMARY_EMIT_BURST_THRESHOLD。
     public static let summaryEmitBurstThreshold = 50
-
     /// TS: settings.getNumber('metadata_write_debounce_ms', 500)。
     public static let defaultWriteDebounceMs = 500
-    /// TS: waitForIdle 的默认超时（5000ms）。
+    /// waitForIdle 默认超时（5000ms）。
     public static let defaultWaitTimeoutMs = 5_000
+    /// writing 租约窗口（超过即可被安全重新 claim）。
+    public static let writingLeaseMs = MetadataOutboxRepo.defaultLeaseMs
 
     private let outboxRepo: MetadataOutboxRepo
     private let writebackRepo: WritebackRepo
     private let xmp: any XMPProvider
     private let getNumber: (String, Double) -> Double
     private let connection: DBConnection
-    /// TS: process.env.GATHER_TEST_SKIP_RELOAD_ACK === '1'（e2e/单测跳过 reload-ack 守卫）。
+    /// TS: process.env.GATHER_TEST_SKIP_RELOAD_ACK === '1'。
     public let skipReloadAck: Bool
 
-    /// TS: eventSink（summary push 回调，宿主组合根接线）。
-    /// 审计 P1-并发：后台 writer 线程读、MainActor（Router 接线处）写 →
-    /// 锁保护；调用时先取副本再回调（锁内回调可能反向调用协调器而死锁）。
     private let eventSinkLock = NSLock()
     private var _eventSink: ((MetadataSyncSummary) -> Void)?
     public var eventSink: ((MetadataSyncSummary) -> Void)? {
@@ -105,22 +203,16 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         set { eventSinkLock.withLock { _eventSink = newValue } }
     }
 
-    /// TS: timers（Map<xmpPath, Timeout>）→ 可取消 Task。
+    private let lock = NSLock()
     private var timers: [String: Task<Void, Never>] = [:]
-    /// TS: queued（Set，插入序）—— drain 顺序即排队顺序。
     private var queued: [String] = []
     private var queuedSet: Set<String> = []
-    /// TS: active（Map<xmpPath, Promise>）。
     private var active: [String: Task<Void, Never>] = [:]
-    /// TS: baselineTasks（Map<xmpPath, Promise>，单飞去重）。
     private var baselineTasks: [String: Task<Void, Never>] = [:]
-    /// TS: summaryEmitTimers / summaryEmitCounts（会话级合并推送）。
     private var summaryEmitTimers: [String: Task<Void, Never>] = [:]
     private var summaryEmitCounts: [String: Int] = [:]
     private var stopped = false
-
-    private let lock = NSLock()
-    /// TS: activeCount + slotWaiters 的等价物（全局写并发上限）。
+    private var startupRecoveryDone = false
     private let slotGate = SlotGate(max: MetadataSyncCoordinator.maxConcurrency)
 
     public init(
@@ -139,57 +231,49 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         self.skipReloadAck = skipReloadAck
     }
 
-    // MARK: - 公开 API（与 TS 方法一一对应）
+    // MARK: - 公开 API
 
-    /// TS: start —— 恢复被中断的行并重新排程 recoverable active 行。
+    /// 组合根接线：设置摘要回调并立即执行一次恢复 + 重排。
+    /// 注意：恢复不依赖本调用（首次使用时也会执行），本方法只是让启动即恢复显式化。
     public func start(eventSink: ((MetadataSyncSummary) -> Void)? = nil) {
         lock.lock()
         stopped = false
         lock.unlock()
-        self.eventSink = eventSink
-        // Orphan（创建会话已删除的行）有意保留：它们是可通过全局恢复 UI 找回的
-        // XMP 工作，不是垃圾；但绝不在此自动重试（已删会话的 pending 工作不得
-        // 在后台无 UI 记录地写 XMP）。Orphan 只能经 resolveOrphan('retry') 显式重试。
-        try? outboxRepo.recoverInterrupted()
-        for row in (try? outboxRepo.getRecoverableActive()) ?? [] {
-            schedule(xmpPath: row.xmpPath, delayMs: 0)
-        }
+        if let eventSink { self.eventSink = eventSink }
+        ensureRecovery()
     }
 
-    /// TS: schedule —— 排程一次写入；取消旧计时器并失效 reload-ack。
+    /// 排程一次写入；取消旧计时器并失效 reload-ack。
     public func schedule(xmpPath: String, delayMs: Int? = nil) {
-        let stoppedNow = {
-            lock.lock()
-            defer { lock.unlock() }
-            return stopped
-        }()
+        let stoppedNow = { lock.lock(); defer { lock.unlock() }; return stopped }()
         if stoppedNow { return }
-        // 每次 schedule() 都是新写入活动（行刚插入或转入 pending/writing/failed）：
-        // 会话上一次 reload ack 不再覆盖该文件。在行可能变为 written/synced 之前
-        // 失效之，使渲染门控与 confirm/cleanup 守卫永远看不到陈旧 ack
-        // （数据丢失修复：cleanup 不得恢复 C1 从未加载过的备份）。
-        clearReloadAckForXmpPath(xmpPath)
-        // TS: void this.ensureBaseline(xmpPath) —— 基线快照立即（去抖窗口前）启动。
+        // 恢复也挂在最高频入口上：并发/崩溃残留不会因为"没人先调 start()"而卡住。
+        // （ensureRecovery 幂等；其内部对恢复行的 schedule 递归到这里时 startup 分支已关闭。）
+        ensureRecovery()
+        let path = MetadataOutboxPath.normalize(xmpPath)
+        // 新写入活动 → 会话 reload-ack 失效（cleanup 不得恢复 C1 从未加载过的备份）。
+        clearReloadAckForXmpPath(path)
         Task { [weak self] in
             guard let self else { return }
-            await self.ensureBaseline(xmpPath)
+            await self.ensureBaseline(path)
         }
-        let delay = delayMs ?? max(0, Int(getNumber("metadata_write_debounce_ms", Double(MetadataSyncCoordinator.defaultWriteDebounceMs))))
+        let delay = delayMs ?? max(0, getNumber("metadata_write_debounce_ms", Double(MetadataSyncCoordinator.defaultWriteDebounceMs)).safeInt(fallback: MetadataSyncCoordinator.defaultWriteDebounceMs))
         lock.lock()
-        timers[xmpPath]?.cancel()
+        timers[path]?.cancel()
         let task = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay)) * 1_000_000)
             guard let self else { return }
-            await self.ensureBaseline(xmpPath)
-            self.enqueueQueued(xmpPath)
+            await self.ensureBaseline(path)
+            self.enqueueQueued(path)
             self.drain()
         }
-        timers[xmpPath] = task
+        timers[path] = task
         lock.unlock()
     }
 
-    /// TS: getSummary —— 轻投影 + 分组计数（countBySession 为主，逐行过滤兜底）。
+    /// 轻投影 + 分组计数（真实计数，不做乐观修正）。
     public func getSummary(sessionId: String) throws -> MetadataSyncSummary {
+        ensureRecovery()
         let rows = try outboxRepo.getSummaryRowsBySession(sessionId)
         let items: [MetadataSyncItem] = rows.map { row in
             MetadataSyncItem(
@@ -219,75 +303,114 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         )
     }
 
-    /// TS: getConflicts —— 每个冲突行读一次磁盘上的 sidecar，并发与写入管线一致。
+    /// 冲突列表：可裁决字段来自行内持久数据（dirty/local/remote 快照），文件读不到也不为空。
     public func getConflicts(sessionId: String) async throws -> [MetadataConflict] {
+        ensureRecovery()
         let rows = try outboxRepo.getBySession(sessionId).filter { $0.status == "conflict" }
-        return try await batchAsync(rows, concurrency: MetadataSyncCoordinator.maxConcurrency) { row in
-            let current = try await self.xmp.readAttributes(photoPath: row.photoPath)
+        var result: [MetadataConflict] = []
+        for row in rows {
+            let dirty = MetadataConflictFields.parseDirtyFields(row.dirtyFields)
             let base = safeObject(row.baseValuesJSON)
             let local = safeObject(row.patchJSON)
-            let dirtyFields = MetadataConflictFields.parseDirtyFields(row.dirtyFields)
-            let fields = MetadataConflictFields.fieldConflicts(
-                base: base, local: local, current: current, dirtyFields: dirtyFields
-            )
-            return MetadataConflict(
-                xmpPath: row.xmpPath,
-                photoPath: row.photoPath,
-                revision: Int(row.revision),
-                fields: fields
-            )
+            let remote: MetadataWriteAttributes
+            if let snapshot = row.remoteSnapshot {
+                remote = MetadataWriteAttributes(jsonValue: snapshot)
+            } else if let live = try? await xmp.readAttributes(photoPath: row.photoPath) {
+                remote = live
+            } else {
+                remote = MetadataWriteAttributes()
+            }
+            var fields = MetadataConflictFields.fieldConflicts(
+                base: base, local: local, current: remote, dirtyFields: dirty)
+            // 无字段级差异也必须给出可裁决项：冲突行必然有 dirty 字段与出口。
+            for field in dirty where !fields.contains(where: { $0.field == field }) {
+                fields.append(MetadataConflictField(
+                    field: field,
+                    baseline: .null,
+                    local: local[field.rawValue] ?? .null,
+                    remote: remote.asJSONValue[field.rawValue] ?? .null))
+            }
+            result.append(MetadataConflict(
+                xmpPath: row.xmpPath, photoPath: row.photoPath,
+                revision: Int(row.revision), fields: fields))
         }
+        return result
     }
 
-    /// TS: resolveConflict —— 逐字段裁决；全 use_remote 时删除行并同步缓存/决策表。
+    /// 冲突裁决。三条出口都能离开 conflict：
+    /// - 逐字段 use_remote → 该字段丢弃；全部丢弃 → 结清删行（保留磁盘上的远程值）。
+    /// - 逐字段 keep_local（或 choices 为空 = 显式结清）→ 以当前磁盘状态为新基线重写本地值。
+    /// - 行内快照缺失/文件不可读时依然可裁决（不抛 conflictDetailsUnavailable）。
     public func resolveConflict(
         sessionId: String,
         xmpPath: String,
         choices: [MetadataField: MetadataConflictChoice]
     ) async throws -> MetadataSyncSummary {
-        let row = try outboxRepo.getBySession(sessionId).first { $0.xmpPath == xmpPath }
-        guard let row, row.status == "conflict" else { throw MetadataSyncError.conflictNotFound }
-        let conflict = try await getConflicts(sessionId: sessionId).first { $0.xmpPath == xmpPath }
-        guard let conflict, !conflict.fields.isEmpty else { throw MetadataSyncError.conflictDetailsUnavailable }
-        for field in conflict.fields where choices[field.field] == nil {
-            GatherLogger.log("Missing conflict choice for field \(field.field.rawValue)", level: .warn)
-            throw MetadataSyncError.choiceMissing
+        ensureRecovery()
+        let path = MetadataOutboxPath.normalize(xmpPath)
+        let rows = try outboxRepo.getBySession(sessionId)
+        guard let row = rows.first(where: { $0.xmpPath == path || $0.xmpPath == xmpPath }),
+              row.status == "conflict" else {
+            throw MetadataSyncError.conflictNotFound
         }
-        let current = try await xmp.readAttributes(photoPath: row.photoPath)
-        var patch = safeObject(row.patchJSON)
-        guard var dirtyFields = MetadataConflictFields.tryParseDirtyFields(row.dirtyFields) else {
+        guard let dirtyFields = MetadataConflictFields.tryParseDirtyFields(row.dirtyFields) else {
             throw MetadataSyncError.conflictDetailsInvalid
         }
+        if !choices.isEmpty {
+            for field in dirtyFields where choices[field] == nil {
+                throw MetadataSyncError.choiceMissing
+            }
+            for (field, _) in choices where !dirtyFields.contains(field) {
+                // 未知字段的裁决无意义但不得静默：直接按不存在处理并在摘要中体现真实计数。
+                GatherLogger.log("Ignoring conflict choice for untouched field \(field.rawValue) at \(path)", level: .warn)
+            }
+        }
+        let remote: MetadataWriteAttributes
+        if let snapshot = row.remoteSnapshot {
+            remote = MetadataWriteAttributes(jsonValue: snapshot)
+        } else if let live = try? await xmp.readAttributes(photoPath: row.photoPath) {
+            remote = live
+        } else {
+            remote = MetadataWriteAttributes()
+        }
+
+        var patch = safeObject(row.patchJSON)
+        var remaining = dirtyFields
         for (field, choice) in choices where choice == .useRemote {
             if case .object(var dict) = patch {
                 dict.removeValue(forKey: field.rawValue)
                 patch = .object(dict)
             }
-            dirtyFields.removeAll { $0 == field }
+            remaining.removeAll { $0 == field }
         }
-        let acceptRemote = dirtyFields.isEmpty
-        if acceptRemote {
-            _ = try writebackRepo.discardPendingByXmpPath(xmpPath: xmpPath)
-            // 保持 metadata 缓存与 culling 决策与用户选择保留的值一致，
-            // 否则 UI 会一直显示本地 rating/label/keywords。
-            syncAcceptedRemoteValues(photoPath: row.photoPath, remote: current)
+        if remaining.isEmpty {
+            // 接受远程：结清事务，并把本地投影同步为磁盘真实值。
+            _ = try writebackRepo.discardPendingByXmpPath(xmpPath: row.xmpPath)
+            syncAcceptedRemoteValues(photoPath: row.photoPath, remote: remote)
+            try outboxRepo.resolveConflict(
+                xmpPath: row.xmpPath, patch: patch, dirtyFields: [],
+                baselineFingerprint: row.baseFingerprint,
+                baselineValues: remote.asJSONValue,
+                acceptRemote: true)
+            return try emitSummary(sessionId: sessionId)
         }
-        let fingerprint = try await MetadataFingerprint.contentFingerprint(xmpPath)
+        // 保留本地：把当前磁盘状态（或快照）设为新基线后重写。
+        let currentFingerprint = (try? await MetadataFingerprint.contentFingerprint(row.xmpPath)) ?? ""
+        let liveAttributes = try? await xmp.readAttributes(photoPath: row.photoPath)
+        let baselineValues: JSONValue = liveAttributes?.asJSONValue ?? remote.asJSONValue
         try outboxRepo.resolveConflict(
-            xmpPath: xmpPath,
-            patch: patch,
-            dirtyFields: dirtyFields.map(\.rawValue),
-            baselineFingerprint: fingerprint.isEmpty ? "__missing__" : fingerprint,
-            baselineValues: current.asJSONValue,
-            acceptRemote: acceptRemote
-        )
-        if !acceptRemote { schedule(xmpPath: xmpPath, delayMs: 0) }
+            xmpPath: row.xmpPath, patch: patch, dirtyFields: remaining.map(\.rawValue),
+            baselineFingerprint: currentFingerprint.isEmpty ? "__missing__" : currentFingerprint,
+            baselineValues: baselineValues,
+            acceptRemote: false)
+        schedule(xmpPath: row.xmpPath, delayMs: 0)
         return try emitSummary(sessionId: sessionId)
     }
 
     /// TS: listOrphans。
     public func listOrphans() throws -> [MetadataOrphan] {
-        try outboxRepo.getOrphans().map { row in
+        ensureRecovery()
+        return try outboxRepo.getOrphans().map { row in
             MetadataOrphan(
                 xmpPath: row.xmpPath,
                 photoPath: row.photoPath,
@@ -301,22 +424,24 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
 
     /// TS: resolveOrphan（'keep' | 'restore' | 'retry'）。
     public func resolveOrphan(xmpPath: String, action: MetadataOrphanAction) async throws -> [MetadataOrphan] {
-        let row = try outboxRepo.getOrphans().first { $0.xmpPath == xmpPath }
+        ensureRecovery()
+        let path = MetadataOutboxPath.normalize(xmpPath)
+        let row = try outboxRepo.getOrphans().first { $0.xmpPath == path || $0.xmpPath == xmpPath }
         guard let row else { throw MetadataSyncError.orphanNotFound }
         if action == .retry {
             if row.status == "conflict" { throw MetadataSyncError.conflictResolutionRequired }
             if row.status == "failed" {
-                try outboxRepo.resetForRetry(xmpPath)
+                try outboxRepo.resetForRetry(row.xmpPath)
             } else if row.status != "pending" {
                 throw MetadataSyncError.orphanNotRetryable
             }
-            schedule(xmpPath: xmpPath, delayMs: 0)
+            schedule(xmpPath: row.xmpPath, delayMs: 0)
             return try listOrphans()
         }
-        try await waitForIdle(xmpPath: xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
+        try await waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
         if action == .restore {
             if !row.backupPath.isEmpty {
-                if !xmp.fileExists(row.backupPath) {
+                guard xmp.fileExists(row.backupPath) else {
                     GatherLogger.log("XMP backup is missing for orphan restore: \(row.backupPath)", level: .warn)
                     throw MetadataSyncError.backupMissing
                 }
@@ -324,32 +449,34 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
             } else if xmp.fileExists(row.xmpPath) {
                 try await xmp.removeFile(row.xmpPath)
             }
-        } else if !row.backupPath.isEmpty && xmp.fileExists(row.backupPath) {
-            try await xmp.removeFile(row.backupPath)
         }
-        try outboxRepo.delete(xmpPath)
+        try outboxRepo.delete(row.xmpPath)
+        // 备份文件在行删除成功之后清理（同 finalize：避免删备份成功 + 删行失败 → 永久 backupMissing）。
+        removeBackupBestEffort(row.backupPath)
         return try listOrphans()
     }
 
-    /// TS: flushSession —— 取消会话内全部计时器后并行跑 pending/writing/failed 行。
+    /// 整会话 flush：逐行隔离，任何单行失败都不影响其它行（结果取真实 summary）。
     public func flushSession(sessionId: String) async throws -> MetadataSyncSummary {
+        ensureRecovery()
         let paths = try outboxRepo.getBySession(sessionId)
-            .filter { ["pending", "writing", "failed"].contains($0.status) }
+            .filter { ["pending", "writing", "failed", "conflict"].contains($0.status) }
             .map(\.xmpPath)
         cancelTimers(paths: paths)
-        // 同步登记 active（对齐 TS `Promise.all(paths.map(runPath))` 的先登记语义）。
-        let tasks = paths.map { runPath($0) }
+        // conflict 行不写盘但必须先离开 writing/失败态：交给租约恢复与裁决出口。
+        let tasks = paths.filter { path in
+            (try? outboxRepo.get(path))?.status != "conflict"
+        }.map { runPath($0) }
         await withTaskGroup(of: Void.self) { group in
-            for task in tasks {
-                group.addTask { await task.value }
-            }
+            for task in tasks { group.addTask { await task.value } }
             await group.waitForAll()
         }
         return try getSummary(sessionId: sessionId)
     }
 
-    /// TS: retrySession —— failed 行重置后整体 flush。
+    /// 失败行整体重排后 flush（真实结果）。
     public func retrySession(sessionId: String) async throws -> MetadataSyncSummary {
+        ensureRecovery()
         for row in try outboxRepo.getBySession(sessionId) where row.status == "failed" {
             try outboxRepo.resetForRetry(row.xmpPath)
             clearReloadAckForXmpPath(row.xmpPath)
@@ -357,53 +484,73 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         return try await flushSession(sessionId: sessionId)
     }
 
-    /// TS: confirmSync —— 主侧守卫（reload-ack）通过后整会话置 synced。
+    /// 会话确认：返回真实计数；有未完成行时抛 XMP_CONFIRM_INCOMPLETE（不谎报成功）。
     public func confirmSync(sessionId: String, sourceModule: String) throws -> MetadataSyncSummary {
+        ensureRecovery()
         let summary = try getSummary(sessionId: sessionId)
         if summary.pending > 0 || summary.writing > 0 || summary.failed > 0 || summary.conflict > 0 {
             throw MetadataSyncError.confirmIncomplete
         }
-        // 主侧守卫（闭合渲染层陈旧视图竞态）：确认同步把行提升到 synced
-        // （解锁 cleanup），因此 C1 必须已加载元数据——即必须存在 reload ack。
-        // 缺失时 cleanup 可能恢复 C1 从未加载过的 XMP 备份。
         try requireReloadAck(sessionId)
+        // 跨会话门：同一侧车可能被多个会话共享（§11 双会话）。任一关联会话未确认时，
+        // markSessionSynced 不会把行推进 synced —— 若此处仍返回成功，用户会被误导，
+        // 且 cleanup 恒抛 XMP_CLEANUP_REQUIRES_LOADED（行永远停在 written）。
+        // 因此：显式不完整 + 指名阻塞会话（不返回成功）。裁决/修复出口：
+        //   另一会话完成 confirmSync（其自身需 reload-ack）→ 行才转 synced。
+        // 本会话的确认先落地（进度可累积，避免"谁都无法先确认"的死锁）；
+        // 随后只认真实结果：只要还有 written 行就**不返回成功**。
         try outboxRepo.markSessionSynced(sessionId: sessionId, sourceModule: sourceModule)
+        let after = try getSummary(sessionId: sessionId)
+        if after.written > 0 {
+            let blockers = try outboxRepo.unconfirmedLinkedSessions(
+                sessionId: sessionId, requireReloadAck: !skipReloadAck)
+            if let blocker = blockers.first {
+                throw MetadataSyncError.otherSessionNotConfirmed(sessionId: blocker)
+            }
+            throw MetadataSyncError.confirmIncomplete
+        }
         return try emitSummary(sessionId: sessionId)
     }
 
-    /// TS: cleanup —— 只恢复本模块写入的行（另一模块未确认的 XMP 不得被恢复）。
+    /// 清理：逐行隔离 + 真实删除计数与逐行失败原因（synced 行的唯一删除出口）。
     public func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult {
+        ensureRecovery()
         let rows = try outboxRepo.getBySession(sessionId)
-        let eligible = rows.filter { $0.status == "synced" && $0.sourceModule == sourceModule }
+        let eligible = rows.filter { $0.status == "synced" && $0.isOwned(byModule: sourceModule) }
         if eligible.isEmpty && !rows.isEmpty {
             throw MetadataSyncError.cleanupRequiresLoaded
         }
-        // cleanup 会恢复备份，同样受 reload-ack 门控；无可恢复行时不要求 ack。
         if !eligible.isEmpty { try requireReloadAck(sessionId) }
-        // 每行序列（waitForIdle → 指纹复核 → 恢复/删除 → 标记 cleaned）只在本行
-        // 内有顺序敏感性，无关行可并行。
         let results = try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row -> (deleted: Bool, error: String?) in
             do {
-                // 快照后可能排入新变更：恢复/删除文件前等待在飞写入并复核行仍 synced，
-                // 以免并发编辑被静默还原。
                 try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
-                guard let latest = try self.outboxRepo.get(row.xmpPath), latest.status == "synced" else { return (false, nil) }
-                let currentFingerprint = try await MetadataFingerprint.contentFingerprint(row.xmpPath)
+                guard let latest = try self.outboxRepo.get(row.xmpPath), latest.status == "synced" else {
+                    return (false, nil)
+                }
+                let currentFingerprint = try await MetadataFingerprint.contentFingerprint(latest.xmpPath)
                 if !latest.baseFingerprint.isEmpty && currentFingerprint != latest.baseFingerprint {
-                    try self.outboxRepo.markStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT")
+                    let remote = (try? await self.xmp.readAttributes(photoPath: latest.photoPath)) ?? MetadataWriteAttributes()
+                    _ = try? self.outboxRepo.markConflict(
+                        xmpPath: latest.xmpPath, remote: remote.asJSONValue,
+                        reason: MetadataSyncError.cleanupAbortedExternalEdit.description)
                     throw MetadataSyncError.externallyModified
                 }
                 if !latest.backupPath.isEmpty {
                     guard self.xmp.fileExists(latest.backupPath) else { throw MetadataSyncError.backupMissing }
+                    // 顺序（幂等可重试）：restore 是拷贝语义且不消费备份 → 删行失败可原样重试。
                     try await self.xmp.restore(photoPath: latest.photoPath, backupPath: latest.backupPath)
+                    try self.outboxRepo.delete(latest.xmpPath)
+                    // 行已删除后才清理备份文件；失败只留下无引用文件（日志可见），不回滚。
+                    self.removeBackupBestEffort(latest.backupPath)
                 } else if self.xmp.fileExists(latest.xmpPath) {
                     try await self.xmp.removeFile(latest.xmpPath)
+                    try self.outboxRepo.delete(latest.xmpPath)
+                } else {
+                    try self.outboxRepo.delete(latest.xmpPath)
                 }
-                try self.outboxRepo.markStatus(xmpPath: latest.xmpPath, status: "cleaned")
-                try self.outboxRepo.delete(latest.xmpPath)
                 return (true, nil)
             } catch {
-                return (false, "\(row.xmpPath): \(String(describing: error))")
+                return (false, MetadataWritebackFailure.from(error, xmpPath: row.xmpPath).description)
             }
         }
         var deletedCount = 0
@@ -416,80 +563,139 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         return CleanupResult(deletedCount: deletedCount, errors: errors)
     }
 
-    /// TS: finalizeSession —— 删除恢复备份并 revision 守卫地删除行。
-    public func finalizeSession(sessionId: String) async throws -> MetadataSyncSummary {
+    /// 收尾（带真实计数）：revision 守卫删除行 → 清理备份文件。
+    /// 顺序刻意与旧实现相反：先删备份会让"删行失败"的行永久 backupMissing；
+    /// 先删行则删备份失败只留下无引用文件（幂等：重复收尾只会少删一次文件）。
+    @discardableResult
+    public func finalizeSessionReporting(sessionId: String) async throws -> CleanupResult {
+        ensureRecovery()
         let rows = try outboxRepo.getBySession(sessionId)
         let eligible = rows.filter { $0.status == "synced" }
         if eligible.isEmpty && !rows.isEmpty {
             throw MetadataSyncError.confirmRequiresSync
         }
-        // 行内顺序敏感（先删备份后删行：unlink 失败必须保留行以便重试，
-        // 避免 .gather-backup 永久泄漏）；无关行可并行。
-        try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row in
-            try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
-            guard let latest = try self.outboxRepo.get(row.xmpPath), latest.status == "synced" else { return }
-            let backupPath = latest.backupPath
-            if !backupPath.isEmpty && self.xmp.fileExists(backupPath) {
-                try await self.xmp.removeFile(backupPath)
-            }
-            // revision 守卫删除：备份移除期间排入的变更会 bump revision，
-            // 只删恰被 finalize 的行，新事务存活。
-            try self.outboxRepo.deleteByRevision(xmpPath: latest.xmpPath, revision: latest.revision)
-            // 存活的同路径行不得继续指向已删除的备份（后续写入会跳过新建备份、
-            // cleanup 会因悬空路径失败），陈旧引用清除。
-            if !backupPath.isEmpty {
-                try self.outboxRepo.clearBackupPath(xmpPath: latest.xmpPath, backupPath: backupPath)
+        let results = try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row -> (deleted: Bool, error: String?) in
+            do {
+                try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
+                guard let latest = try self.outboxRepo.get(row.xmpPath), latest.status == "synced" else {
+                    return (false, nil)
+                }
+                let backupPath = latest.backupPath
+                try self.outboxRepo.deleteByRevision(xmpPath: latest.xmpPath, revision: latest.revision)
+                let removed = (try? self.outboxRepo.get(latest.xmpPath)) == nil
+                self.removeBackupBestEffort(backupPath)
+                return (removed, nil)
+            } catch {
+                return (false, MetadataWritebackFailure.from(error, xmpPath: row.xmpPath).description)
             }
         }
+        var deletedCount = 0
+        var errors: [String] = []
+        for result in results {
+            if result.deleted { deletedCount += 1 }
+            else if let error = result.error { errors.append(error) }
+        }
+        _ = try? emitSummary(sessionId: sessionId)
+        return CleanupResult(deletedCount: deletedCount, errors: errors)
+    }
+
+    /// 协议兼容入口（CullingSyncPort 声明返回 summary）：委托给带计数的实现。
+    public func finalizeSession(sessionId: String) async throws -> MetadataSyncSummary {
+        _ = try await finalizeSessionReporting(sessionId: sessionId)
         return try emitSummary(sessionId: sessionId)
     }
 
-    /// TS: shutdown —— 停排程、取消计时器、等待全部在飞任务与槽位等待者排空。
+    /// 停止：取消计时器并等待所有在飞任务与槽位等待者排空。
+    /// 刻意不执行 ensureRecovery：停止路径上恢复会重新排程写入，与"停止"矛盾；
+    /// 残留 writing 行由下一次 start/任何公开入口的启动恢复处理（writing 不是终态，无需在此清理）。
     public func shutdown() async {
-        lock.lock()
-        stopped = true
-        for timer in timers.values { timer.cancel() }
-        timers.removeAll()
-        for timer in summaryEmitTimers.values { timer.cancel() }
-        summaryEmitTimers.removeAll()
-        summaryEmitCounts.removeAll()
-        queued.removeAll()
-        queuedSet.removeAll()
-        lock.unlock()
-        // 快照后仍可能新增任务（槽位等待者被唤醒后启动自己的任务；并发
-        // flushSession 可直接调用 runPath）——循环等待直至 active 为空
-        // 且无 parked 等待者，保证 shutdown 返回后没有任务再碰数据库。
+        stopSchedulingLocked()
         while true {
             let tasks = snapshotTasks()
             if tasks.isEmpty && slotGate.isIdle { break }
             await withTaskGroup(of: Void.self) { group in
-                for task in tasks {
-                    group.addTask { await task.value }
-                }
+                for task in tasks { group.addTask { await task.value } }
                 await group.waitForAll()
             }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 
-    /// TS: waitForIdle(xmpPath, timeoutMs = 5000) —— 等待该路径在飞写入结束。
+    /// 等待该路径在飞写入结束（含租约恢复；超时抛 XMP_WRITER_TIMEOUT）。
     public func waitForIdle(xmpPath: String, timeoutMs: Int) async throws {
+        // 先做租约恢复：陈旧 writing 行不能在"等待在飞写入"里变成假超时。
+        ensureRecovery()
+        let path = MetadataOutboxPath.normalize(xmpPath)
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
         while true {
-            let activeTask = activeTask(for: xmpPath)
-            if let activeTask { await activeTask.value }
-            guard let row = try? outboxRepo.get(xmpPath), row.status == "writing" else { return }
+            if let activeTask = activeTask(for: path) { await activeTask.value }
+            guard let row = try? outboxRepo.get(path), row.status == "writing" else { return }
             if Date() >= deadline {
-                GatherLogger.log("Timed out waiting for metadata writer: \(xmpPath)", level: .warn)
+                GatherLogger.log("Timed out waiting for metadata writer: \(path)", level: .warn)
                 throw MetadataSyncError.writerTimeout
             }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 
-    // MARK: - 内部（与 TS 私有方法一一对应）
+    // MARK: - 恢复（唯一入口，首次使用即执行）
+
+    /// 启动恢复（幂等）：进程启动时不存在任何租约，全部 writing 行归位为 pending 并重排。
+    /// 本方法在每个公开入口与每轮 drain 前调用，因此不存在"外部忘记调 start()"的隐式契约。
+    private func ensureRecovery() {
+        let needsStartup: Bool = {
+            lock.lock()
+            defer { lock.unlock() }
+            return !startupRecoveryDone && !stopped
+        }()
+        if needsStartup {
+            lock.lock()
+            startupRecoveryDone = true
+            lock.unlock()
+            do {
+                let recovered = try outboxRepo.recoverInterrupted()
+                for path in recovered {
+                    GatherLogger.log("Recovered interrupted metadata write \(path) -> pending", level: .warn)
+                    schedule(xmpPath: path, delayMs: 0)
+                }
+                for row in try outboxRepo.getRecoverableActive() {
+                    schedule(xmpPath: row.xmpPath, delayMs: 0)
+                }
+            } catch {
+                GatherLogger.log("Metadata outbox startup recovery failed: \(error)", level: .error)
+            }
+        }
+        recoverExpiredLeases()
+    }
+
+    /// 运行期租约回收：过期且非本进程在飞的 writing 行归位（pending / failed+原因）。
+    private func recoverExpiredLeases() {
+        let activePaths = currentActivePaths()
+        do {
+            let recovered = try outboxRepo.recoverExpiredLeases(
+                activePaths: activePaths,
+                leaseMs: MetadataSyncCoordinator.writingLeaseMs,
+                maxAttempts: MetadataSyncCoordinator.maxAutomaticAttempts)
+            for entry in recovered {
+                GatherLogger.log(
+                    "Metadata lease expired for \(entry.xmpPath) -> \(entry.newStatus.rawValue)", level: .warn)
+                if entry.newStatus == .pending { enqueueQueued(entry.xmpPath) }
+            }
+        } catch {
+            GatherLogger.log("Metadata lease recovery failed: \(error)", level: .error)
+        }
+    }
+
+    private func currentActivePaths() -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(active.keys)
+    }
+
+    // MARK: - 调度内部
 
     private func drain() {
+        recoverExpiredLeases()
         while true {
             let next: String? = {
                 lock.lock()
@@ -505,32 +711,28 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     }
 
     private func runPath(_ xmpPath: String) -> Task<Void, Never> {
+        let path = MetadataOutboxPath.normalize(xmpPath)
         lock.lock()
-        guard !stopped else {
+        if stopped {
             lock.unlock()
             return Task {}
         }
-        if let existing = active[xmpPath] {
+        if let existing = active[path] {
             lock.unlock()
             return existing
         }
         let task = Task { [weak self] in
             guard let self else { return }
-            do {
-                await self.withSlot {
-                    await self.processUntilCurrent(xmpPath)
-                }
-            } catch {
-                GatherLogger.log("Metadata sync failed for \(xmpPath): \(error)", level: .error)
+            await self.withSlot {
+                await self.processUntilCurrent(path)
             }
-            self.finishRun(xmpPath)
+            self.finishRun(path)
         }
-        active[xmpPath] = task
+        active[path] = task
         lock.unlock()
         return task
     }
 
-    /// TS: runPath 的 .finally 段（从 active 摘除并继续 drain）。
     private func finishRun(_ xmpPath: String) {
         lock.lock()
         active.removeValue(forKey: xmpPath)
@@ -544,14 +746,11 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         await operation()
     }
 
-    /// TS: processUntilCurrent —— 循环处理直至当前 revision 消费完毕。
+    /// 循环处理直至当前 revision 消费完毕（每轮先回收过期租约）。
     private func processUntilCurrent(_ xmpPath: String) async {
         while true {
-            let stoppedNow = {
-                lock.lock()
-                defer { lock.unlock() }
-                return stopped
-            }()
+            recoverExpiredLeases()
+            let stoppedNow = { lock.lock(); defer { lock.unlock() }; return stopped }()
             if stoppedNow { return }
             await ensureBaseline(xmpPath)
             guard let row = try? outboxRepo.get(xmpPath),
@@ -562,36 +761,33 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         }
     }
 
-    /// TS: processRow —— 单行处理：claim → 崩溃窗口补写/冲突检测 → 备份写回 → markWritten。
+    /// 单行处理：claim（租约）→ 崩溃窗口补写/冲突检测 → 备份写盘 → markWritten。
     private func processRow(_ row: MetadataOutboxRow) async -> Bool {
-        guard (try? outboxRepo.claim(xmpPath: row.xmpPath, expectedRevision: row.revision)) ?? false else { return false }
-        // 行现在处于 writing：队列与 claim 之间幸存的任何 reload-ack
-        // （崩溃窗口）都必须在行可达 written 前失效。
+        guard (try? outboxRepo.claim(xmpPath: row.xmpPath, expectedRevision: row.revision)) ?? false else {
+            return false
+        }
         clearReloadAckForXmpPath(row.xmpPath)
-
+        let patch = safeObject(row.patchJSON)
         do {
             let currentFingerprint = try await MetadataFingerprint.contentFingerprint(row.xmpPath)
             let currentToken = currentFingerprint.isEmpty ? "__missing__" : currentFingerprint
-            // 原子 rename 与 markWritten 之间的崩溃会把文件留在"已含本次写入"状态，
-            // 而基线仍描述原始内容。检测该情况并补完事务，而不是误报外部冲突。
-            if !row.backupPath.isEmpty, !row.baseFingerprint.isEmpty, currentToken != row.baseFingerprint {
+            if !row.baseFingerprint.isEmpty, currentToken != row.baseFingerprint {
                 let current = try await xmp.readAttributes(photoPath: row.photoPath)
-                if attributesMatchPatch(current, safeObject(row.patchJSON)) {
-                    try outboxRepo.markWritten(
-                        xmpPath: row.xmpPath,
-                        revision: row.revision,
-                        fingerprint: currentToken,
-                        baseValues: current.asJSONValue,
-                        backupPath: row.backupPath
-                    )
+                // 原子 rename 与 markWritten 之间的崩溃：文件已含本次写入 → 补完事务。
+                if !row.backupPath.isEmpty, attributesMatchPatch(current, patch) {
+                    _ = try outboxRepo.markWritten(
+                        xmpPath: row.xmpPath, revision: row.revision, fingerprint: currentToken,
+                        baseValues: current.asJSONValue, backupPath: row.backupPath)
                     emitPathSummaries(row.xmpPath)
                     return true
                 }
-            }
-            if !row.baseFingerprint.isEmpty, currentToken != row.baseFingerprint, try await hasDirtyFieldConflict(row) {
-                try outboxRepo.markStatus(xmpPath: row.xmpPath, status: "conflict", errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
-                emitPathSummaries(row.xmpPath)
-                return false
+                if hasFieldConflict(row, current: current) {
+                    _ = try outboxRepo.markConflict(
+                        xmpPath: row.xmpPath, remote: current.asJSONValue,
+                        reason: MetadataSyncError.externalEditConflict.description)
+                    emitPathSummaries(row.xmpPath)
+                    return false
+                }
             }
 
             let backupPath: String
@@ -601,75 +797,80 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                 backupPath = try await xmp.backup(photoPath: row.photoPath)
                 try outboxRepo.setBackupPath(xmpPath: row.xmpPath, backupPath: backupPath)
             }
-            let patch = safeObject(row.patchJSON)
             try await xmp.writeAttributes(photoPath: row.photoPath, attributes: MetadataWriteAttributes(
                 keywords: patch["keywords"]?.arrayElements?.compactMap { $0.stringValue },
                 rating: patch["rating"]?.numberValue,
                 label: patch["label"]?.stringValue
             ))
+            // 写后回读 + 指纹（provider 内部也已校验；这里落库的是磁盘真实状态）。
             let persistedValues = try await xmp.readAttributes(photoPath: row.photoPath)
             let writtenFingerprint = try await MetadataFingerprint.contentFingerprint(row.xmpPath)
-            try outboxRepo.markWritten(
-                xmpPath: row.xmpPath,
-                revision: row.revision,
-                fingerprint: writtenFingerprint,
-                baseValues: persistedValues.asJSONValue,
-                backupPath: backupPath
-            )
+            let applied = try outboxRepo.markWritten(
+                xmpPath: row.xmpPath, revision: row.revision, fingerprint: writtenFingerprint,
+                baseValues: persistedValues.asJSONValue, backupPath: backupPath)
+            if !applied {
+                GatherLogger.log("Metadata row superseded while writing: \(row.xmpPath)", level: .warn)
+            }
             emitPathSummaries(row.xmpPath)
-            return true
+            return applied
         } catch {
-            let message = String(describing: error)
-            try? outboxRepo.markStatus(xmpPath: row.xmpPath, status: "failed", errorMessage: message)
-            let latest = try? outboxRepo.get(row.xmpPath)
-            if let latest, latest.attemptCount < MetadataSyncCoordinator.maxAutomaticAttempts {
-                let retryIndex = min(Int(latest.attemptCount) - 1, MetadataSyncCoordinator.retryDelaysMs.count - 1)
-                schedule(xmpPath: row.xmpPath, delayMs: MetadataSyncCoordinator.retryDelaysMs[max(0, retryIndex)])
+            // 单字段行：把字段名结构化进失败记录（不是只写进 reason 文本）。
+            let singleField = row.dirty.count == 1 ? row.dirty[0] : nil
+            let failure = MetadataWritebackFailure.from(
+                error, xmpPath: row.xmpPath, field: singleField)
+            guard let updated = try? outboxRepo.markFailed(xmpPath: row.xmpPath, reason: failure.description) else {
+                GatherLogger.log("Failed to record metadata failure for \(row.xmpPath): \(failure)", level: .error)
+                return false
+            }
+            if updated.attemptCount < Int64(MetadataSyncCoordinator.maxAutomaticAttempts) {
+                let index = min(max(0, Int(updated.attemptCount) - 1), MetadataSyncCoordinator.retryDelaysMs.count - 1)
+                schedule(xmpPath: row.xmpPath, delayMs: MetadataSyncCoordinator.retryDelaysMs[index])
             }
             emitPathSummaries(row.xmpPath)
             return false
         }
     }
 
-    /// TS: hasDirtyFieldConflict。
-    private func hasDirtyFieldConflict(_ row: MetadataOutboxRow) async throws -> Bool {
-        let current = try await xmp.readAttributes(photoPath: row.photoPath)
+    private func hasFieldConflict(_ row: MetadataOutboxRow, current: MetadataWriteAttributes) -> Bool {
         let base = safeObject(row.baseValuesJSON)
-        let dirtyFields = MetadataConflictFields.tryParseDirtyFields(row.dirtyFields)
-        // 损坏的 stored dirty-fields 保守地视为冲突；合法空列表 = 无冲突。
-        guard let dirtyFields else { return true }
+        guard let dirtyFields = MetadataConflictFields.tryParseDirtyFields(row.dirtyFields) else {
+            // 损坏的 stored dirty-fields 保守地视为冲突。
+            return true
+        }
         return MetadataConflictFields.hasFieldConflict(base: base, current: current, dirtyFields: dirtyFields)
     }
 
-    /// TS: ensureBaseline —— 单飞；行无基线时快照内容指纹与属性基线。
+    /// 单飞基线：行无基线时快照内容指纹与属性基线（失败必须可见，不再伪造 __missing__ 之外的静默）。
     private func ensureBaseline(_ xmpPath: String) async {
+        let path = MetadataOutboxPath.normalize(xmpPath)
         let task: Task<Void, Never> = {
             lock.lock()
             defer { lock.unlock() }
-            if let existing = baselineTasks[xmpPath] { return existing }
+            if let existing = baselineTasks[path] { return existing }
             let task = Task { [weak self] in
                 guard let self else { return }
-                guard let row = try? self.outboxRepo.get(xmpPath), row.baseFingerprint.isEmpty else { return }
-                let baselineFingerprint = (try? await MetadataFingerprint.contentFingerprint(row.xmpPath)) ?? ""
+                guard let row = try? self.outboxRepo.get(path), row.baseFingerprint.isEmpty else { return }
+                let baselineFingerprint = (try? await MetadataFingerprint.contentFingerprint(path)) ?? ""
                 var baselineValues = JSONValue.object([:])
                 do {
-                    baselineValues = (try await self.xmp.readAttributes(photoPath: row.photoPath)).asJSONValue
+                    baselineValues = try await self.xmp.readAttributes(photoPath: row.photoPath).asJSONValue
                 } catch {
-                    // 损坏的 sidecar 在此被指纹化并由 writer 拒绝。
+                    GatherLogger.log("Baseline read failed for \(path): \(error)", level: .warn)
                 }
-                try? self.outboxRepo.initializeBaseline(
-                    xmpPath: xmpPath,
-                    baselineFingerprint: baselineFingerprint.isEmpty ? "__missing__" : baselineFingerprint,
-                    baselineValues: baselineValues
-                )
+                do {
+                    try self.outboxRepo.initializeBaseline(
+                        xmpPath: path,
+                        baselineFingerprint: baselineFingerprint.isEmpty ? "__missing__" : baselineFingerprint,
+                        baselineValues: baselineValues)
+                } catch {
+                    GatherLogger.log("Baseline persist failed for \(path): \(error)", level: .error)
+                }
             }
-            baselineTasks[xmpPath] = task
+            baselineTasks[path] = task
             return task
         }()
         await task.value
-        lock.lock()
-        baselineTasks.removeValue(forKey: xmpPath)
-        lock.unlock()
+        finishBaselineTaskLocked(path)
     }
 
     private func emitSummary(sessionId: String) throws -> MetadataSyncSummary {
@@ -679,8 +880,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         return summary
     }
 
-    /// TS: clearReloadAck —— 新写入活动使会话 reload-ack 失效（耐久半部的
-    /// safeToCleanup 门，数据丢失修复）。
+    /// 新写入活动使会话 reload-ack 失效（cleanup 的数据丢失门）。
     private func clearReloadAck(_ sessionId: String) throws {
         _ = try connection.prepare(
             "UPDATE sessions SET reload_acked_at = NULL, updated_at = ? WHERE id = ? AND reload_acked_at IS NOT NULL"
@@ -690,11 +890,14 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     private func clearReloadAckForXmpPath(_ xmpPath: String) {
         let sessionIds = (try? outboxRepo.getSessionIds(xmpPath)) ?? []
         for sessionId in sessionIds {
-            try? clearReloadAck(sessionId)
+            do {
+                try clearReloadAck(sessionId)
+            } catch {
+                GatherLogger.log("Failed to clear reload-ack for session \(sessionId): \(error)", level: .warn)
+            }
         }
     }
 
-    /// TS: requireReloadAck —— 主侧守卫；GATHER_TEST_SKIP_RELOAD_ACK 等价跳过。
     private func requireReloadAck(_ sessionId: String) throws {
         if skipReloadAck { return }
         let row = try connection.prepare("SELECT reload_acked_at FROM sessions WHERE id = ?")
@@ -704,7 +907,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         }
     }
 
-    /// TS: emitPathSummaries —— 每行完成后的会话级合并推送（100ms 窗口 + 突发阈值）。
+    /// 每行完成后的会话级合并推送（100ms 窗口 + 突发阈值）。
     private func emitPathSummaries(_ xmpPath: String) {
         let sessionIds = (try? outboxRepo.getSessionIds(xmpPath)) ?? []
         for sessionId in sessionIds {
@@ -734,7 +937,6 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         }
     }
 
-    /// 摘除已触发的合并推送计时器并返回是否已停止（sync helper）。
     private func consumeEmitTimer(_ sessionId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -744,10 +946,11 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
     }
 
     private func enqueueQueued(_ xmpPath: String) {
+        let path = MetadataOutboxPath.normalize(xmpPath)
         lock.lock()
         defer { lock.unlock() }
-        if queuedSet.insert(xmpPath).inserted {
-            queued.append(xmpPath)
+        if queuedSet.insert(path).inserted {
+            queued.append(path)
         }
     }
 
@@ -772,17 +975,50 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
         return Array(baselineTasks.values) + Array(active.values)
     }
 
-    /// TS: syncAcceptedRemoteValues —— 用户选择保留的外部值回写 metadata 缓存与
-    /// culling 决策表（钳制到 CHECK 约束，非标准外部 label/rating 不得回滚事务）。
+    // MARK: - 同步锁临界区辅助（Swift 6：async 上下文不得直接 lock/unlock）
+
+    /// shutdown 的停止态临界区：置 stopped 并清空全部调度状态（锁内不含 await）。
+    private func stopSchedulingLocked() {
+        lock.lock()
+        defer { lock.unlock() }
+        stopped = true
+        for timer in timers.values { timer.cancel() }
+        timers.removeAll()
+        for timer in summaryEmitTimers.values { timer.cancel() }
+        summaryEmitTimers.removeAll()
+        summaryEmitCounts.removeAll()
+        queued.removeAll()
+        queuedSet.removeAll()
+    }
+
+    /// 基线单飞任务收尾：清除该路径的登记（锁内不含 await）。
+    private func finishBaselineTaskLocked(_ path: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        baselineTasks.removeValue(forKey: path)
+    }
+
+    /// 备份文件清理（行已删除后的收尾）。失败只记日志：不产生悬空行，也不回滚已完成的删除。
+    private func removeBackupBestEffort(_ backupPath: String) {
+        guard !backupPath.isEmpty else { return }
+        do {
+            if FileManager.default.fileExists(atPath: backupPath) {
+                try FileManager.default.removeItem(atPath: backupPath)
+            }
+        } catch {
+            GatherLogger.log("Failed to remove metadata backup \(backupPath): \(error)", level: .warn)
+        }
+    }
+
+    /// 接受远程值：把本地投影（缓存/挑片决策）对齐磁盘真实值。
+    /// 这不是 XMP 写入路径（XMP 已由外部软件写成），只是投影刷新；失败必须可见。
     private func syncAcceptedRemoteValues(photoPath: String, remote: MetadataWriteAttributes) {
         do {
-            // 损坏的 sidecar 让 readAttributes 返回空对象：镜像 metadata.service
-            // 守卫，空读取不得清空先前有效缓存值。
             if remote.isEmpty && xmp.fileExists(TSPath.xmpSidecarPath(photoPath)) {
                 return
             }
             let photos = try connection.prepare("SELECT id, session_id FROM photos WHERE filepath = ?")
-                .query([.text(photoPath)])
+                .query([.text(ScanPath.canonical(photoPath))])
             let now = nowISOString()
             let keywords = remote.keywords ?? []
             let rating = clampRating(remote.rating)
@@ -807,7 +1043,7 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                             .int(Int64(rating)),
                             .text(label),
                             .text(now),
-                        ])
+                          ])
                         _ = try connection.prepare("""
                             UPDATE culling_decisions
                             SET rating = ?, color_label = ?, updated_at = ?
@@ -818,10 +1054,11 @@ public final class MetadataSyncCoordinator: MetadataSyncPort {
                             .text(now),
                             .text(photo[0].textValue ?? ""),
                             .text(photo[1].textValue ?? ""),
-                        ])
+                          ])
                     } catch {
-                        // 单张照片失败不得阻塞其余批次。
-                        GatherLogger.log("Failed to sync accepted remote values for photo \(photo[0].textValue ?? ""): \(error)", level: .warn)
+                        GatherLogger.log(
+                            "Failed to sync accepted remote values for photo \(photo[0].textValue ?? ""): \(error)",
+                            level: .warn)
                     }
                 }
             }
@@ -859,10 +1096,9 @@ private func attributesMatchPatch(_ current: MetadataWriteAttributes, _ patch: J
     return true
 }
 
-/// TS: CULLING_COLOR_LABELS。
-private let cullingColorLabels: Set<String> = [
-    "None", "Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple",
-]
+/// TS: CULLING_COLOR_LABELS —— 唯一真相源是协议层枚举（与 metadata-contract 的
+/// LABELS 同域，只是此处不接受空串：空/未知值一律归一为 "None"）。
+private let cullingColorLabels: Set<String> = Set(CaptureOneColorLabel.allCases.map(\.rawValue))
 
 /// TS: sanitizeCullingLabel。
 private func sanitizeCullingLabel(_ value: String?) -> String {
@@ -876,65 +1112,7 @@ private func clampRating(_ value: Double?) -> Double {
     return min(5, max(0, num.rounded()))
 }
 
-/// TS: batchAsync（utils/async.ts）—— 固定数量常驻 runner 从共享游标取任务；
-/// 结果按输入索引收集；首个失败停止调度、在飞项跑完，错误按完成序取第一个。
-private func batchAsync<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = BatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    collected.sort { $0.index < $1.index }
-    return collected.map(\.value)
-}
-
-/// 共享取号游标（对齐 DuplicateService.swift 的 BatchCursor）。
-private final class BatchCursor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var next = 0
-    private var failed = false
-    private let count: Int
-
-    init(count: Int) { self.count = count }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failed || next >= count { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
-}
-
-/// TS: withSlot 的并发上限器（activeCount + slotWaiters 等价物）。
+/// 写并发上限器。
 private final class SlotGate: @unchecked Sendable {
     private let max: Int
     private var active = 0
@@ -944,24 +1122,33 @@ private final class SlotGate: @unchecked Sendable {
     init(max: Int) { self.max = max }
 
     func acquire() async {
+        if acquireSlotLocked() { return }
+        await withCheckedContinuation { continuation in
+            waitForSlotLocked(continuation)
+        }
+    }
+
+    /// 立即取槽（true = 已取到，active 已 +1）。同步临界区辅助
+    /// （Swift 6：async 上下文不得直接 lock/unlock）。
+    private func acquireSlotLocked() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard active < max else { return false }
+        active += 1
+        return true
+    }
+
+    /// 满员后挂起：复查并补取槽，否则登记等待者。resume 在锁外（与原实现一致）。
+    private func waitForSlotLocked(_ continuation: CheckedContinuation<Void, Never>) {
         lock.lock()
         if active < max {
             active += 1
             lock.unlock()
+            continuation.resume()
             return
         }
+        waiters.append(continuation)
         lock.unlock()
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if active < max {
-                active += 1
-                lock.unlock()
-                continuation.resume()
-                return
-            }
-            waiters.append(continuation)
-            lock.unlock()
-        }
     }
 
     func release() {

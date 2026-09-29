@@ -67,6 +67,50 @@ struct AssetRepoTests {
         #expect(candidate?[1].textValue == "pending")
     }
 
+    // 缺陷④：配对召回只认 .jpg/.jpeg，实际存在的 RAW+HEIC（新机型）与
+    // RAW+TIFF（机内渲染）完全召回不到。分类必须走同一份扩展名真相源。
+    @Test func backfillSessionPairsRawWithHeicAndTiffCounterparts() throws {
+        let (db, repo) = try makeRepo()
+        let dir = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+
+        let nef = try writeTempFile(in: dir, name: "IMG_0001.nef")
+        let heic = try writeTempFile(in: dir, name: "IMG_0001.heic")
+        let tiff = try writeTempFile(in: dir, name: "IMG_0002.tif")
+        let cr3 = try writeTempFile(in: dir, name: "IMG_0002.cr3")
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: nef)
+        try insertPhoto(db, id: "p2", sessionId: "s1", filepath: heic)
+        try insertPhoto(db, id: "p3", sessionId: "s1", filepath: tiff)
+        try insertPhoto(db, id: "p4", sessionId: "s1", filepath: cr3)
+
+        let result = try repo.backfillSession("s1")
+        #expect(result.candidates == 2, "RAW+HEIC 与 RAW+TIFF 都必须生成候选")
+
+        // 角色分类：HEIC 记 camera_jpeg，TIFF 记 rendered_tiff。
+        let heicRole = try db.prepare("""
+            SELECT member_role FROM asset_members am
+            JOIN asset_files af ON af.id = am.file_id WHERE af.filename = 'IMG_0001.heic'
+        """).get()
+        #expect(heicRole?[0].textValue == "camera_jpeg")
+        let tiffRole = try db.prepare("""
+            SELECT member_role FROM asset_members am
+            JOIN asset_files af ON af.id = am.file_id WHERE af.filename = 'IMG_0002.tif'
+        """).get()
+        #expect(tiffRole?[0].textValue == "rendered_tiff")
+
+        // 证据里写清具体配对侧角色（手动确认时能看到是 RAW+HEIC 还是 RAW+TIFF）。
+        let roles = try db.prepare("""
+            SELECT evidence_json FROM asset_link_candidates
+            WHERE relation_type = 'raw_jpeg' ORDER BY confidence DESC, id
+        """).query().map { $0[0].textValue ?? "" }
+        #expect(roles.count == 2)
+        #expect(roles.contains { $0.contains("\"rightRole\":\"camera_jpeg\"") })
+        #expect(roles.contains { $0.contains("\"rightRole\":\"rendered_tiff\"") })
+    }
+
     @Test func backfillSessionOfflinePhotos() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
@@ -263,11 +307,12 @@ struct AssetRepoTests {
             try? FileManager.default.removeItem(atPath: oldRoot)
             try? FileManager.default.removeItem(atPath: newRoot)
         }
-        // 旧路径文件不存在（已移动），新路径文件真实存在
+        // 旧路径文件不存在（已移动），新路径文件真实存在；
+        // 身份按新路径的真实 (dev, ino) 登记 —— 同一物理文件移动后 inode 不变。
         let oldPath = oldRoot + "/DSC_0001.jpg"
         let newPath = try writeTempFile(in: newRoot, name: "DSC_0001.jpg")
 
-        try insertAssetFile(db, id: "f1", normalizedPath: oldPath, checksum: "abc")
+        try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: newPath, checksum: "abc")
         // 用真实 photos 行：插入新照片并直接链接
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
         _ = try db.prepare("INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES ('a1', '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
@@ -299,7 +344,7 @@ struct AssetRepoTests {
         #expect(try rowCount(db, "SELECT COUNT(*) FROM navigation_groups") == 0)
     }
 
-    @Test func relinkRootRelocatesOutboxAndNotifiesSink() throws {
+    @Test func relinkRootRelocatesOutbox() throws {
         let (db, repo) = try makeRepo()
         let oldRoot = try makeTempDir()
         let newRoot = try makeTempDir()
@@ -310,7 +355,7 @@ struct AssetRepoTests {
         }
         let oldPath = oldRoot + "/DSC_0001.jpg"
         let newPath = try writeTempFile(in: newRoot, name: "DSC_0001.jpg")
-        try insertAssetFile(db, id: "f1", normalizedPath: oldPath, checksum: "abc")
+        try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: newPath, checksum: "abc")
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
         _ = try db.prepare("INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES ('a1', '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
         _ = try db.prepare("UPDATE photos SET asset_id = 'a1', asset_file_id = 'f1' WHERE id = 'p1'").run()
@@ -323,11 +368,7 @@ struct AssetRepoTests {
         """).run([.text(oldRoot + "/DSC_0001.xmp"), .text(oldPath)])
         _ = try db.prepare("INSERT INTO metadata_outbox_sessions (xmp_path, session_id, confirmed_at, linked_at) VALUES (?, 's1', '', '2026-01-01T00:00:00.000Z')").run([.text(oldRoot + "/DSC_0001.xmp")])
 
-        var notified: [String] = []
-        repo.setMetadataRelocationSink { notified.append($0) }
-
         #expect(try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot) == 1)
-        #expect(notified == [newRoot + "/DSC_0001.xmp"])
         let outbox = try db.prepare("SELECT photo_path, status, attempt_count FROM metadata_outbox WHERE xmp_path = ?").get([.text(newRoot + "/DSC_0001.xmp")])
         #expect(outbox != nil, "旧 outbox 行已迁移到新 XMP 路径")
         #expect(outbox?[0].textValue == newPath)
@@ -389,5 +430,70 @@ struct AssetRepoTests {
         #expect(try repo.relinkMovedFile(newPath: newPath, checksum: "nope", fileSize: 0, fileMtimeMs: 0) == nil)
         // 新路径文件不存在 → nil
         #expect(try repo.relinkMovedFile(newPath: dir + "/missing.jpg", checksum: "other-checksum", fileSize: 0, fileMtimeMs: 0) == nil)
+    }
+
+    // ── 重链接安全：验证不过就不许改写（旧实现无条件改写）──
+
+    @Test func relinkRootRejectsDirectoryWithSameNamesButDifferentFiles() throws {
+        let (db, repo) = try makeRepo()
+        let oldRoot = try makeTempDir()
+        let wrongRoot = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: oldRoot)
+            try? FileManager.default.removeItem(atPath: wrongRoot)
+        }
+        // 旧根的真实文件（登记身份）随后被删除。
+        let oldPath = oldRoot + "/DSC_0001.jpg"
+        try Data("original-content".utf8).write(to: URL(fileURLWithPath: oldPath))
+        try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: oldPath, checksum: "abc")
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
+        _ = try db.prepare("UPDATE photos SET asset_file_id = 'f1' WHERE id = 'p1'").run()
+        _ = try db.prepare("INSERT INTO similarity_results (session_id, groups_json, param_threshold, created_at) VALUES ('s1', '[]', 1, '2026-01-01T00:00:00.000Z')").run()
+        try FileManager.default.removeItem(atPath: oldPath)
+
+        // 用户选错目录：同名文件，但内容/大小/mtime/inode 都不是同一个。
+        _ = try writeTempFile(
+            in: wrongRoot,
+            name: "DSC_0001.jpg",
+            content: Data("a different photo entirely with other bytes".utf8)
+        )
+
+        #expect(throws: (any Error).self) {
+            _ = try repo.relinkRoot(oldRoot: oldRoot, newRoot: wrongRoot)
+        }
+        // 原状完全不变：路径未改写，会话分析结果未被作废。
+        let file = try db.prepare("SELECT normalized_path, volume_id FROM asset_files WHERE id = 'f1'").get()
+        #expect(file?[0].textValue == oldPath)
+        #expect(file?[1].textValue != "dev:0")
+        let photo = try db.prepare("SELECT filepath, status FROM photos WHERE id = 'p1'").get()
+        #expect(photo?[0].textValue == oldPath)
+        #expect(try rowCount(db, "SELECT COUNT(*) FROM similarity_results") == 1)
+    }
+
+    @Test func relinkRootRejectsSameRootAndNestedRoots() throws {
+        let (db, repo) = try makeRepo()
+        let root = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: root)
+        }
+        let nested = root + "/inner"
+        try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
+        #expect(throws: (any Error).self) { _ = try repo.relinkRoot(oldRoot: root, newRoot: root) }
+        #expect(throws: (any Error).self) { _ = try repo.relinkRoot(oldRoot: root, newRoot: nested) }
+        #expect(throws: (any Error).self) { _ = try repo.relinkRoot(oldRoot: nested, newRoot: root) }
+    }
+
+    @Test func relinkRootReportsWhenNothingIsRegisteredUnderTheRoot() throws {
+        let (db, repo) = try makeRepo()
+        let root = try makeTempDir()
+        let other = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: other)
+        }
+        #expect(throws: (any Error).self) { _ = try repo.relinkRoot(oldRoot: root, newRoot: other) }
     }
 }

@@ -26,7 +26,9 @@ public enum MetadataServiceError: Error, Equatable, CustomStringConvertible {
 }
 
 /// TS: metadata.service.ts 的 photos 轻查询行。
-public struct MetadataPhotoLookup {
+/// Swift 6：batchAsync 的 worker 子任务会捕获本行（T: Sendable 约束），
+/// 全字段均为不可变值类型，补上 Sendable 是纯增量的编译期事实。
+public struct MetadataPhotoLookup: Sendable {
     public let id: String
     public let sessionId: String
     public let filepath: String
@@ -38,8 +40,103 @@ public struct MetadataPhotoLookup {
     }
 }
 
+/// getMetadata 的并发收集盒子：batchAsync 的 body 由多个 worker 并发调用，
+/// 捕获的可变集合必须串行写入（Dictionary/Array 并发写会内存损坏）。
+/// `@unchecked Sendable` 的依据：全部可变状态（`fingerprints`/`result`/
+/// `pendingUpserts`）只在 `lock`（NSLock）临界区内通过同步方法读写；
+/// 并发阶段结束后由调用方经 snapshot 一次性取走（此后无写者）。
+private final class MetadataCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fingerprints: [String: (size: Int, value: String)] = [:]
+    private var result: [String: MetadataTags] = [:]
+    private var pendingUpserts: [(photoId: String, sessionId: String, input: MetadataCacheInput)] = []
+
+    func recordFingerprint(photoId: String, fingerprint: (size: Int, value: String)) {
+        lock.lock()
+        defer { lock.unlock() }
+        fingerprints[photoId] = fingerprint
+    }
+
+    func recordResult(photoId: String, tags: MetadataTags) {
+        lock.lock()
+        defer { lock.unlock() }
+        result[photoId] = tags
+    }
+
+    func recordExtraction(photoId: String, sessionId: String, tags: MetadataTags, cacheInput: MetadataCacheInput) {
+        lock.lock()
+        defer { lock.unlock() }
+        result[photoId] = tags
+        pendingUpserts.append((photoId, sessionId, cacheInput))
+    }
+
+    func snapshotFingerprints() -> [String: (size: Int, value: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return fingerprints
+    }
+
+    func snapshotPendingUpserts() -> [(photoId: String, sessionId: String, input: MetadataCacheInput)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingUpserts
+    }
+
+    func snapshotResult() -> [String: MetadataTags] {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
+    }
+}
+
+/// batchSet 的并发收集盒子（计数/错误串行写入，否则计数会被静默丢失）。
+/// `@unchecked Sendable` 的依据：`success`/`failed`/`errors` 只在 `lock`（NSLock）
+/// 临界区内通过同步方法与快照属性访问。
+private final class BatchSetCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var success = 0
+    private var failed = 0
+    private var errors: [String] = []
+
+    func recordSuccess() {
+        lock.lock()
+        defer { lock.unlock() }
+        success += 1
+    }
+
+    func recordFailure(photoId: String, error: Error) {
+        lock.lock()
+        defer { lock.unlock() }
+        failed += 1
+        errors.append("\(photoId): \(String(describing: error))")
+    }
+
+    var successCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return success
+    }
+
+    var failureCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return failed
+    }
+
+    var failureMessages: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return errors
+    }
+}
+
 /// TS: MetadataService。
-public final class MetadataService {
+/// 线程安全说明（Swift 6 `Sendable`）：本类无任何可变状态——全部存储属性
+/// （`metadataCacheRepo`/`xmp`/`connection`/`mutations`/`assetResolver`/`exif`/
+/// `dimensions`/`embeddedReader`）都是 `let`，构造后不可变，故无需锁。
+/// 标注 `@unchecked` 仅因为依赖的仓库/协议存在类型未标 `Sendable`；
+/// 并发收集状态全部收在上面两个锁盒子里。
+public final class MetadataService: @unchecked Sendable {
     private let metadataCacheRepo: MetadataCacheRepo
     private let xmp: any XMPProvider
     private let connection: DBConnection
@@ -259,15 +356,18 @@ public final class MetadataService {
     /// TS: getMetadata —— 指纹失效检查 → 缓存命中 / 缺失提取（EXIF → sharp 兜底）
     /// → 批量事务 upsert。
     public func getMetadata(photoIds: [String]) async throws -> [String: MetadataTags] {
-        var result: [String: MetadataTags] = [:]
         let allPhotos = try getPhotosByIds(photoIds)
         let photoById = Dictionary(uniqueKeysWithValues: allPhotos.map { ($0.id, $0) })
-        var fingerprints: [String: (size: Int, value: String)] = [:]
-        try await batchAsync(allPhotos, concurrency: 16) { photo in
+        // batchAsync 的 body 由多个 worker 并发调用：捕获的可变集合必须串行写入。
+        // Swift 的 Dictionary/Array 非线程安全，并发下标写/append 会内存损坏
+        // （实测 SIGSEGV 或静默丢行），故收集动作统一收进 MetadataCollector 的锁内。
+        let collector = MetadataCollector()
+        _ = try await batchAsync(allPhotos, concurrency: 16) { photo in
             if let fingerprint = try? await MetadataFingerprint.cacheStalenessKey(photo.filepath) {
-                fingerprints[photo.id] = fingerprint
+                collector.recordFingerprint(photoId: photo.id, fingerprint: fingerprint)
             }
         }
+        let fingerprints = collector.snapshotFingerprints()
         let cached = try metadataCacheRepo.getBatch(photoIds).filter { row in
             guard let fingerprint = fingerprints[row.photoId] else { return false }
             return row.fileSize == Int64(fingerprint.size) && row.fileMtime == fingerprint.value
@@ -276,16 +376,14 @@ public final class MetadataService {
         let missingIds = photoIds.filter { !cachedIds.contains($0) }
 
         for row in cached {
-            result[row.photoId] = cacheRowToTags(row)
+            collector.recordResult(photoId: row.photoId, tags: cacheRowToTags(row))
         }
 
         if !missingIds.isEmpty {
             let photos = missingIds.compactMap { photoById[$0] }
             // upsert 在并发提取期间缓冲、结束后单事务落库（metadataCacheRepo.upsert
             // 是裸语句无内部事务，包裹安全）；每照片 try/catch 隔离提取失败。
-            var pendingUpserts: [(photoId: String, sessionId: String, input: MetadataCacheInput)] = []
-
-            try await batchAsync(photos, concurrency: 10) { photo in
+            _ = try await batchAsync(photos, concurrency: 10) { photo in
                 do {
                     var tags = MetadataTags()
                     var cacheInput = MetadataCacheInput()
@@ -348,8 +446,12 @@ public final class MetadataService {
                                 cacheInput.label = writerAttributes.label
                             }
 
-                            result[photo.id] = tags
-                            pendingUpserts.append((photo.id, photo.sessionId, cacheInput))
+                            collector.recordExtraction(
+                                photoId: photo.id,
+                                sessionId: photo.sessionId,
+                                tags: tags,
+                                cacheInput: cacheInput
+                            )
                             return
                         }
                     }
@@ -382,14 +484,19 @@ public final class MetadataService {
                     if existingAttributes.rating != nil { cacheInput.rating = existingAttributes.rating.map { Int64($0) } }
                     if existingAttributes.label != nil { cacheInput.label = existingAttributes.label }
 
-                    result[photo.id] = tags
-                    pendingUpserts.append((photo.id, photo.sessionId, cacheInput))
+                    collector.recordExtraction(
+                        photoId: photo.id,
+                        sessionId: photo.sessionId,
+                        tags: tags,
+                        cacheInput: cacheInput
+                    )
                 } catch {
                     GatherLogger.log("Failed to extract metadata for \(photo.filepath): \(error)", level: .warn)
-                    result[photo.id] = MetadataTags()
+                    collector.recordResult(photoId: photo.id, tags: MetadataTags())
                 }
             }
 
+            let pendingUpserts = collector.snapshotPendingUpserts()
             if !pendingUpserts.isEmpty {
                 try connection.transaction {
                     for entry in pendingUpserts {
@@ -399,12 +506,12 @@ public final class MetadataService {
             }
         }
 
-        return result
+        return collector.snapshotResult()
     }
 
     /// TS: setMetadata —— 校验可写字段、合并缓存基线、入队 manual 变更、写缓存。
     public func setMetadata(photoId: String, tags: MetadataTags) async throws -> MetadataTags {
-        let supported: Set<String> = ["rating", "label", "keywords"]
+        let supported = MetadataField.writableNames
         let overlay = tagsDictionary(tags)
         let unsupported = overlay.keys.filter { !supported.contains($0) }.sorted()
         if !unsupported.isEmpty {
@@ -419,7 +526,7 @@ public final class MetadataService {
         let photo = photos.first
         let sessionId = photo?.sessionId ?? existing?.sessionId ?? ""
 
-        if let photo, tags.keywords != nil || tags.rating != nil || tags.label != nil {
+        if photo != nil, tags.keywords != nil || tags.rating != nil || tags.label != nil {
             var patch = MetadataPatch()
             if let rating = tags.rating { patch.rating = MetadataRatingPatch(value: rating) }
             if let label = tags.label { patch.label = MetadataLabelPatch(value: label) }
@@ -441,9 +548,7 @@ public final class MetadataService {
     /// TS: batchSet —— 按侧车路径分组串行（RAW+JPEG 共享一侧车时严格按输入序），
     /// 不同侧车并行。
     public func batchSet(updates: [(photoId: String, tags: MetadataTags)]) async throws -> BatchMetadataResult {
-        var success = 0
-        var failed = 0
-        var errors: [String] = []
+        let collector = BatchSetCollector()
 
         // 批量预载照片（失败时退化为逐项查找，单块失败不 abort 整批）。
         var photosById: [String: MetadataPhotoLookup]? = nil
@@ -498,51 +603,24 @@ public final class MetadataService {
             bySidecar[groupKey(update.photoId), default: []].append(update)
         }
 
-        try await batchAsync(Array(bySidecar.values), concurrency: 4) { group in
+        // 同上：并发 body 内的计数/错误收集必须串行（否则计数会被静默丢失），
+        // 故统一收进 BatchSetCollector 的锁内。
+        _ = try await batchAsync(Array(bySidecar.values), concurrency: 4) { group in
             for update in group {
                 do {
                     _ = try await self.setMetadata(photoId: update.photoId, tags: update.tags)
-                    success += 1
+                    collector.recordSuccess()
                 } catch {
-                    failed += 1
-                    errors.append("\(update.photoId): \(String(describing: error))")
+                    collector.recordFailure(photoId: update.photoId, error: error)
                 }
             }
         }
 
-        return BatchMetadataResult(success: success, failed: failed, errors: errors)
-    }
-
-    /// TS: populateCache —— sharp 尺寸/文件大小回填（无注入 provider 时 no-op）。
-    public func populateCache(sessionId: String, photoIds: [String]) async throws {
-        guard let dimensions else { return }
-        var photoById: [String: MetadataPhotoLookup]? = nil
-        do {
-            photoById = Dictionary(
-                uniqueKeysWithValues: try getPhotosByIds(photoIds).map { ($0.id, $0) }
-            )
-        } catch {
-            GatherLogger.log("Failed to batch-load photos for cache populate: \(error)", level: .warn)
-        }
-        try await batchAsync(photoIds, concurrency: 10) { photoId in
-            do {
-                var photo = photoById?[photoId]
-                if photo == nil, photoById == nil {
-                    photo = (try? self.getPhotosByIds([photoId]))?.first
-                }
-                guard let photo else { return }
-                guard let metadata = try await dimensions.metadata(filePath: photo.filepath) else { return }
-                let input = MetadataCacheInput(
-                    sessionId: sessionId,
-                    width: metadata.width.map { Int64($0) },
-                    height: metadata.height.map { Int64($0) },
-                    fileSize: metadata.size.map { Int64($0) }
-                )
-                try self.metadataCacheRepo.upsert(photoId: photoId, sessionId: sessionId, data: input)
-            } catch {
-                GatherLogger.log("Failed to populate cache for photo \(photoId): \(error)", level: .warn)
-            }
-        }
+        return BatchMetadataResult(
+            success: collector.successCount,
+            failed: collector.failureCount,
+            errors: collector.failureMessages
+        )
     }
 
     // MARK: - JSON 辅助
@@ -579,60 +657,4 @@ private func stringValue(_ value: JSONValue?) -> String? {
     if let string = value.stringValue { return string }
     if let number = value.numberValue { return String(number) }
     return nil
-}
-
-/// TS: batchAsync（utils/async.ts）—— 与 DuplicateService / coordinator 同款滑动窗口。
-private func batchAsync<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = MetadataBatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    collected.sort { $0.index < $1.index }
-    return collected.map(\.value)
-}
-
-private final class MetadataBatchCursor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var next = 0
-    private var failed = false
-    private let count: Int
-
-    init(count: Int) { self.count = count }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failed || next >= count { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
 }

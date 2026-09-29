@@ -5,7 +5,6 @@ import AppKit
 import GatherCore
 
 public enum GatherAppNotification {
-    public static let deepLink = Notification.Name("gather.deep-link")
     public static let menuNewWorkspace = Notification.Name("gather.menu.new-workspace")
     public static let menuImportFolder = Notification.Name("gather.menu.import-folder")
     public static let menuToggleSidebar = Notification.Name("gather.menu.toggle-sidebar")
@@ -318,7 +317,7 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
                 if files.isEmpty {
                     NotificationCenter.default.post(
                         name: GatherAppNotification.captureOneError,
-                        object: "C1_NO_SELECTED_PHOTOS"
+                        object: GatherErrorCode.C1_NO_SELECTED_PHOTOS.rawValue
                     )
                 } else if let onCaptureOneImportFiles {
                     onCaptureOneImportFiles(files)

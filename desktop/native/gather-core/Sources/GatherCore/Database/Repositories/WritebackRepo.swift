@@ -61,7 +61,7 @@ public struct WritebackItemInput {
     }
 }
 
-public final class WritebackRepo {
+public final class WritebackRepo: Sendable {
     private let connection: DBConnection
 
     public init(connection: DBConnection) {
@@ -70,7 +70,7 @@ public final class WritebackRepo {
 
     /// 先删掉该 (session, module) 下 pending/failed 的旧行，再批量插入。
     public func saveItems(sessionId: String, module: String, items: [WritebackItemInput]) throws {
-        let now = nowISO()
+        let now = nowISOString()
         try connection.transaction {
             _ = try connection.prepare(
                 "DELETE FROM writeback_items WHERE session_id = ? AND module = ? AND xmp_status IN ('pending', 'failed')"
@@ -113,15 +113,8 @@ public final class WritebackRepo {
         return try rows.map { try WritebackItemRow(row: $0) }
     }
 
-    public func getItem(itemId: Int64) throws -> WritebackItemRow? {
-        guard let row = try connection.prepare("SELECT * FROM writeback_items WHERE id = ?").get([.int(itemId)]) else {
-            return nil
-        }
-        return try WritebackItemRow(row: row)
-    }
-
     public func updateStatus(itemId: Int64, status: String, error: String? = nil) throws {
-        let now = nowISO()
+        let now = nowISOString()
         _ = try connection.prepare(
             "UPDATE writeback_items SET xmp_status = ?, error_message = ?, attempt_count = attempt_count + 1, last_attempt_at = ? WHERE id = ?"
         ).run([.text(status), .text(error ?? ""), .text(now), .int(itemId)])
@@ -136,15 +129,6 @@ public final class WritebackRepo {
         }
         let row = try connection.prepare(sql).get(params)
         return Int(row?[0].intValue ?? 0)
-    }
-
-    public func deleteItems(sessionId: String, module: String? = nil) throws {
-        if let module, !module.isEmpty {
-            _ = try connection.prepare("DELETE FROM writeback_items WHERE session_id = ? AND module = ?")
-                .run([.text(sessionId), .text(module)])
-            return
-        }
-        _ = try connection.prepare("DELETE FROM writeback_items WHERE session_id = ?").run([.text(sessionId)])
     }
 
     /// 只删除指定 (session, module) 下状态为 synced 且 id 在列表中的行
@@ -165,16 +149,6 @@ public final class WritebackRepo {
             _ = try connection.prepare("DELETE FROM writeback_items WHERE id IN (\(placeholders))")
                 .run(chunk.map { .int($0) })
         }
-    }
-
-    public func updateBackupPath(itemId: Int64, path: String) throws {
-        _ = try connection.prepare("UPDATE writeback_items SET backup_path = ? WHERE id = ?")
-            .run([.text(path), .int(itemId)])
-    }
-
-    public func updateAttributes(itemId: Int64, attributes: [String: Any]) throws {
-        _ = try connection.prepare("UPDATE writeback_items SET attributes_json = ? WHERE id = ?")
-            .run([.text(jsonString(attributes)), .int(itemId)])
     }
 
     public func updateKeywords(itemId: Int64, keywords: [String]) throws {
@@ -206,19 +180,6 @@ public final class WritebackRepo {
         ).run([.text(sessionId), .text(module)])
     }
 
-    public func updateStatusByXmpPath(sessionId: String, module: String, xmpPath: String, status: String) throws {
-        _ = try connection.prepare(
-            "UPDATE writeback_items SET xmp_status = ?, error_message = '' WHERE session_id = ? AND module = ? AND xmp_path = ?"
-        ).run([.text(status), .text(sessionId), .text(module), .text(xmpPath)])
-    }
-
-    public func hasActiveForXmpPath(xmpPath: String) throws -> Bool {
-        let row = try connection.prepare(
-            "SELECT 1 FROM writeback_items WHERE xmp_path = ? AND xmp_status IN ('pending', 'writing', 'written', 'synced') LIMIT 1"
-        ).get([.text(xmpPath)])
-        return row != nil
-    }
-
     /// 返回删除行数（TS: run(...).changes）。
     @discardableResult
     public func discardPendingByXmpPath(xmpPath: String) throws -> Int {
@@ -241,8 +202,4 @@ private func jsonString(_ attributes: [String: Any]) -> String {
     return String(decoding: data, as: UTF8.self)
 }
 
-private func nowISO() -> String {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.string(from: Date())
-}
+

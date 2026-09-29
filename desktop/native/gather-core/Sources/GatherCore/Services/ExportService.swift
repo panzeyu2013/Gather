@@ -299,9 +299,12 @@ public final class ExportService {
             return ReportData(path: "", content: content, format: .md)
 
         case "person":
+            // 成员数唯一真相 = COUNT(face_cluster_members)（face_clusters.member_count
+            // 只是派生缓存，可能与实时成员表漂移）；与 FaceRepo 同一口径。
             let rows = try connection.prepare(
                 """
-                SELECT rb.role_name, rb.keywords, fc.label, fc.member_count
+                SELECT rb.role_name, rb.keywords, fc.label,
+                       (SELECT COUNT(*) FROM face_cluster_members m WHERE m.cluster_id = fc.id) AS member_count
                 FROM role_bindings rb
                 JOIN face_clusters fc ON rb.cluster_id = fc.id
                 WHERE rb.session_id = ? ORDER BY rb.role_name
@@ -400,19 +403,43 @@ public final class ExportService {
         let policy = options.variantPolicy ?? .preferred
         if policy == .all { return scoped }
 
-        let raw: Set<String> = [".3fr", ".arw", ".cr2", ".cr3", ".dng", ".fff", ".gpr", ".iiq", ".mos", ".nef", ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f"]
-        let jpeg: Set<String> = [".jpg", ".jpeg"]
+        // RAW 判定复用全仓唯一真相源 AssetRepo.rawExtensions：media_type 分类、
+        // RAW+JPEG 配对候选、相似度逻辑资产折叠（PhotoAssets）与图库/挑片的代表行
+        // （PhotoRepo.preferredRowOrderSQL）全部引用本清单。此处原先内联的第三份
+        // 字面量已漂移：.eip/.mef/.kdc/.mrw/.erf 被判成非 RAW（.preferred 误选
+        // JPEG），.gpr/.raw/.rwl/.sr2 被判成 RAW（选出全仓其余规则都不承认的
+        // "RAW"，且 RAWDecoder 也不支持这些扩展名 → jpeg/tiff 转换直接失败）。
+        let rawExtensions = AssetRepo.rawExtensions
+        let jpegExtensions: Set<String> = [".jpg", ".jpeg"]
+        // 组顺序 = 导入序（资产首次出现），与 TS 的 Map 插入序一致。Swift
+        // Dictionary 的遍历顺序随进程哈希种子变化，直接遍历 .values 会让
+        // {counter} 命名与导出计划每次运行都不同（counter = counterStart + 计划下标）。
         var groups: [String: [PhotoProjectionRow]] = [:]
-        for photo in scoped { groups[photo.assetId ?? photo.id, default: []].append(photo) }
-        return groups.values.compactMap { variants in
-            let isRaw: (PhotoProjectionRow) -> Bool = { raw.contains(URL(fileURLWithPath: $0.filename).pathExtension.lowercased().isEmpty ? "" : ".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
-            let isJPEG: (PhotoProjectionRow) -> Bool = { jpeg.contains(".\(URL(fileURLWithPath: $0.filename).pathExtension.lowercased())") }
-            switch policy {
-            case .raw: return variants.first(where: isRaw)
-            case .jpeg: return variants.first(where: isJPEG)
-            case .preferred: return variants.first(where: isRaw) ?? variants.first(where: isJPEG) ?? variants.first
-            case .all: return variants.first
+        var assetOrder: [String] = []
+        for photo in scoped {
+            let key = photo.assetId ?? photo.id
+            if groups[key] == nil { assetOrder.append(key) }
+            groups[key, default: []].append(photo)
+        }
+        // 扩展名取法与上方原实现逐字相同（URL.pathExtension 去前导点后补 '.'，
+        // 无扩展名 → 空串），只把「表」换成共享清单。
+        let extensionWithDot: (String) -> String = { filename in
+            let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
+            return ext.isEmpty ? "" : ".\(ext)"
+        }
+        return assetOrder.compactMap { key -> PhotoProjectionRow? in
+            guard let variants = groups[key] else { return nil }
+            // policy == .all 已被上方早退覆盖，故这里只有三个可达分支
+            //（原 switch 的 .all 分支不可达，已删除）。
+            if policy == .raw {
+                return variants.first { rawExtensions.contains(extensionWithDot($0.filename)) }
             }
+            if policy == .jpeg {
+                return variants.first { jpegExtensions.contains(extensionWithDot($0.filename)) }
+            }
+            return variants.first { rawExtensions.contains(extensionWithDot($0.filename)) }
+                ?? variants.first { jpegExtensions.contains(extensionWithDot($0.filename)) }
+                ?? variants.first
         }
     }
 

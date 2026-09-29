@@ -75,30 +75,77 @@ struct SessionRepoTests {
         #expect(rows.map(\.id) == ["new", "old"])
     }
 
+    /// analysis_status 已删列（方案 A）：状态纯派生自 analysis_jobs，无读列回退。
+    @Test func analysisStatusIsDerivedFromAnalysisJobs() throws {
+        let db = try makeDB()
+        let repo = SessionRepo(connection: db)
+        let row = try repo.create(name: "Derive", source: "folder")
+
+        func insertJob(_ id: String, _ status: String, updatedAt: String) throws {
+            _ = try db.prepare("""
+                INSERT INTO analysis_jobs (id, type, scope_type, scope_id, dedupe_key, status, created_at, updated_at)
+                VALUES (?, 'face.analyze', 'session', ?, ?, ?, '2026-01-01T00:00:00.000Z', ?)
+            """).run([.text(id), .text(row.id), .text(id), .text(status), .text(updatedAt)])
+        }
+
+        #expect(try repo.get(id: row.id)?.analysisStatus == "idle", "无 job → idle")
+        try insertJob("j1", "succeeded", updatedAt: "2026-01-02T00:00:00.000Z")
+        #expect(try repo.get(id: row.id)?.analysisStatus == "done")
+        try insertJob("j2", "failed", updatedAt: "2026-01-03T00:00:00.000Z")
+        #expect(try repo.get(id: row.id)?.analysisStatus == "failed", "取最近终态")
+        try insertJob("j3", "running", updatedAt: "2026-01-01T00:00:00.000Z")
+        #expect(try repo.get(id: row.id)?.analysisStatus == "running",
+            "存在未终结 job 时优先 running（与时间无关）")
+        // j3 原本是**最早**的 job，直接改状态后"最近终态"仍是 j2(failed)；
+        // 要验证 cancelled→cancelled 的映射，必须同时把它推成最近的终态。
+        _ = try db.prepare("""
+            UPDATE analysis_jobs SET status = 'cancelled', updated_at = '2026-01-04T00:00:00.000Z'
+            WHERE id = 'j3'
+        """).run()
+        #expect(try repo.get(id: row.id)?.analysisStatus == "cancelled", "最近终态为 cancelled")
+    }
+
+    /// 排序语义（显式决策）：分析也算会话活动 —— 最近 job 时间参与排序，
+    /// 否则"分析完成把会话顶到最前"会随删列一起悄悄消失。
+    @Test func listOrdersByLatestActivityIncludingAnalysisJobs() throws {
+        let db = try makeDB()
+        let repo = SessionRepo(connection: db)
+        let older = try repo.create(name: "Older", source: "folder")
+        let newer = try repo.create(name: "Newer", source: "folder")
+        _ = try db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .run([.text("2026-01-01T00:00:00.000Z"), .text(older.id)])
+        _ = try db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .run([.text("2026-01-05T00:00:00.000Z"), .text(newer.id)])
+
+        #expect(try repo.list().map(\.id) == [newer.id, older.id])
+        _ = try db.prepare("""
+            INSERT INTO analysis_jobs (id, type, scope_type, scope_id, dedupe_key, status, created_at, updated_at)
+            VALUES ('j9', 'similarity.analyze', 'session', ?, 'j9', 'succeeded',
+                    '2026-01-09T00:00:00.000Z', '2026-01-09T00:00:00.000Z')
+        """).run([.text(older.id)])
+        #expect(try repo.list().map(\.id) == [older.id, newer.id],
+            "刚完成分析的会话必须排到最前（分析算活动）")
+    }
+
     @Test func updateMethodsPersistFields() throws {
         let db = try makeDB()
         let repo = SessionRepo(connection: db)
         let row = try repo.create(name: "Trip", source: "folder")
 
         #expect(try repo.updateName(id: row.id, name: "Renamed"))
-        #expect(try repo.updateSourcePath(id: row.id, sourcePath: "/new/path"))
         try repo.updateStatus(id: row.id, status: "review")
         try repo.updatePhotoCount(id: row.id, count: 42)
-        try repo.updateAnalysisStatus(id: row.id, status: "done")
         try repo.updateWritebackStatus(id: row.id, status: "partial")
         try repo.updateFailedWritebackCount(id: row.id, count: 3)
 
         let updated = try repo.get(id: row.id)
         #expect(updated?.name == "Renamed")
-        #expect(updated?.sourcePath == "/new/path")
         #expect(updated?.status == "review")
         #expect(updated?.photoCount == 42)
-        #expect(updated?.analysisStatus == "done")
         #expect(updated?.writebackStatus == "partial")
         #expect(updated?.failedWritebackCount == 3)
 
         #expect(try repo.updateName(id: "missing", name: "X") == false)
-        #expect(try repo.updateSourcePath(id: "missing", sourcePath: "/x") == false)
     }
 
     @Test func reloadAckedAtRoundTrip() throws {
@@ -106,9 +153,9 @@ struct SessionRepoTests {
         let repo = SessionRepo(connection: db)
         let row = try repo.create(name: "Trip", source: "folder")
 
-        #expect(try repo.getReloadAckedAt(sessionId: row.id) == nil)
+        #expect(try repo.get(id: row.id)?.reloadAckedAt == nil)
         #expect(try repo.setReloadAckedAt(sessionId: row.id, iso: "2026-01-02T03:04:05.000Z"))
-        #expect(try repo.getReloadAckedAt(sessionId: row.id) == "2026-01-02T03:04:05.000Z")
+        #expect(try repo.get(id: row.id)?.reloadAckedAt == "2026-01-02T03:04:05.000Z")
         #expect(try repo.setReloadAckedAt(sessionId: "missing", iso: "2026-01-02T03:04:05.000Z") == false)
     }
 

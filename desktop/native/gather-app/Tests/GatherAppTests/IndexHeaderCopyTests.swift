@@ -5,6 +5,7 @@ import Testing
 import GatherCore
 @testable import GatherApp
 
+@MainActor
 @Suite("IndexHeaderCopy 推导（对齐 index-progress.test.ts）")
 struct IndexHeaderCopyTests {
     private func status(
@@ -41,10 +42,14 @@ struct IndexHeaderCopyTests {
 
     /// 通过 SessionControlView 实例调用（推导为实例方法，参数化后与 session 解耦）。
     private func copy(_ status: WorkspaceStatus, _ session: SessionData?) -> IndexHeaderCopy {
-        SessionControlView(
-            sessionId: "s1",
-            router: StubCommandRouter.empty()
-        ).indexHeaderCopy(status, session: session)
+        // 文案在 AppLanguageLock 内以 zh-CN 生成：否则并行套件临时切到 en
+        // （或系统语言为 en）时会与下面的中文断言不一致（既有 flake 根因）。
+        AppLanguageLock.withCopy("zh-CN") {
+            SessionControlView(
+                sessionId: "s1",
+                router: StubCommandRouter.empty()
+            ).indexHeaderCopy(status, session: session)
+        }
     }
 
     @Test("无任务且无计数 → 暂无照片（旧版 null 的 Swift 等价）")
@@ -62,31 +67,24 @@ struct IndexHeaderCopyTests {
         #expect(c1.percent == nil)
     }
 
-    @Test("运行中且有数值 → 实时进度 + 百分比")
-    func liveProgressWithPercent() {
+    // 原 3 条用例（实时进度含文案 / 向下取整 / 上限 100）：同一换算仅输入不同。
+    // 断言等值保留；`Int(c.percent!.rounded())` 改写为 map 形式，失败时给断言
+    // 而不是崩溃（非 nil 仍由下一行的 #expect 保证）。
+    @Test("百分比换算：实时进度文案 / round / 上限 100", arguments: [
+        (12547, 12847, 97.7, 98, "正在索引 12547 / 12847" as String?),
+        (1, 3, 33.3, 33, nil as String?),
+        (5, 2, 250, 100, nil as String?),
+    ])
+    private func percentMatrix(
+        done: Int, total: Int, percent: Double, expectedRounded: Int, expectedText: String?
+    ) {
         let c = copy(
-            status(indexing: indexing(.active, total: 12847, done: 12547, percent: 97.7)),
+            status(indexing: indexing(.active, total: total, done: done, percent: percent)),
             session(photoCount: 0))
         #expect(c.mode == .scanning)
-        #expect(c.text == "正在索引 12547 / 12847")
         #expect(c.percent != nil)
-        #expect(Int(c.percent!.rounded()) == 98)
-    }
-
-    @Test("百分比向下取整（旧版 round）")
-    func percentRounding() {
-        let c = copy(
-            status(indexing: indexing(.active, total: 3, done: 1, percent: 33.3)),
-            session(photoCount: 0))
-        #expect(Int(c.percent!.rounded()) == 33)
-    }
-
-    @Test("百分比上限 100")
-    func percentClamped() {
-        let c = copy(
-            status(indexing: indexing(.active, total: 2, done: 5, percent: 250)),
-            session(photoCount: 0))
-        #expect(Int(c.percent!.rounded()) == 100)
+        #expect(c.percent.map { Int($0.rounded()) } == expectedRounded)
+        if let expectedText { #expect(c.text == expectedText) }
     }
 
     @Test("失败 → 索引失败")
@@ -99,31 +97,36 @@ struct IndexHeaderCopyTests {
         #expect(c.percent == nil)
     }
 
-    @Test("截断导入索引完成 → 精确计数（去掉 ≥）")
-    func truncatedSucceededExact() {
-        let c = copy(
-            status(stage: .indexed, indexing: indexing(.idle)),
-            session(photoCount: 12847, truncatedImport: true))
-        #expect(c.mode == .count)
-        #expect(c.text == "已索引 12847 张照片")
+    // created 窗口（一跳化导入）：即使 photoCount 为 0（或已有计数但索引未开始），
+    // 也必须报「扫描中…」，不得退化成「暂无照片」/计数文案。
+    // 守卫此窗口的是本用例：删掉 indexHeaderCopy 的 `status.stage == .created`
+    // 分支后本用例变红（Gallery 侧同窗口另有 createdWindowScanning 对账）。
+    @Test("created 窗口（一跳化导入）→ 扫描中…，优先于计数分支")
+    func createdWindowIsScanning() {
+        let zero = copy(status(stage: .created, indexing: indexing(.idle)), session(photoCount: 0))
+        #expect(zero.mode == .scanning)
+        #expect(zero.text == "扫描中…")
+        #expect(zero.percent == nil)
+
+        let counted = copy(status(stage: .created, indexing: indexing(.idle)), session(photoCount: 12))
+        #expect(counted.mode == .scanning)
+        #expect(counted.text == "扫描中…")
     }
 
-    @Test("截断导入未索引完成 → 保留 ≥")
-    func truncatedUnknownKeepsGE() {
+    // 原 3 条用例（截断已索引 / 截断未索引 / 非截断）：同一计数文案仅输入不同。
+    @Test("计数文案：精确计数 / 截断保留 ≥", arguments: [
+        (WorkspaceStage.indexed, 12847, true, "已索引 12847 张照片"),
+        (WorkspaceStage.imported, 50000, true, "已索引 ≥50000 张照片"),
+        (WorkspaceStage.imported, 12, false, "已索引 12 张照片"),
+    ])
+    private func countCopyMatrix(
+        stage: WorkspaceStage, photoCount: Int, truncatedImport: Bool, expectedText: String
+    ) {
         let c = copy(
-            status(stage: .imported, indexing: indexing(.idle)),
-            session(photoCount: 50000, truncatedImport: true))
+            status(stage: stage, indexing: indexing(.idle)),
+            session(photoCount: photoCount, truncatedImport: truncatedImport))
         #expect(c.mode == .count)
-        #expect(c.text == "已索引 ≥50000 张照片")
-    }
-
-    @Test("非截断会话无任务 → 精确计数")
-    func nonTruncatedExact() {
-        let c = copy(
-            status(indexing: indexing(.idle)),
-            session(photoCount: 12))
-        #expect(c.mode == .count)
-        #expect(c.text == "已索引 12 张照片")
+        #expect(c.text == expectedText)
     }
 }
 
@@ -161,11 +164,13 @@ struct GalleryIndexHeaderCopyTests {
         photoCount: Int,
         truncatedImport: Bool = false
     ) -> GalleryIndexHeaderCopy? {
-        GalleryViewModel.indexHeaderCopy(
-            status: status,
-            photoCount: photoCount,
-            truncatedImport: truncatedImport
-        )
+        AppLanguageLock.withCopy("zh-CN") {
+            GalleryViewModel.indexHeaderCopy(
+                status: status,
+                photoCount: photoCount,
+                truncatedImport: truncatedImport
+            )
+        }
     }
 
     @Test("无任务且无计数 → 不渲染（nil，而非「暂无照片」）")
@@ -182,6 +187,17 @@ struct GalleryIndexHeaderCopyTests {
         #expect(c?.percent == nil)
     }
 
+    // 扫描已开始但尚无进度帧（total 已知、done == 0）：仍显示「扫描中…」，
+    // 不得内联「正在索引 0 / N（0%）」占位文案与 0% 进度条。
+    // 去掉 `status.indexing.done > 0` 守卫后本用例变红。
+    @Test("active 且 total>0、done==0 → 扫描中…（不显示 0% 进度）")
+    func activeTotalKnownButNoProgressYet() {
+        let c = copy(status(indexing: indexing(.active, total: 500, done: 0)), photoCount: 0)
+        #expect(c?.kind == .scanning)
+        #expect(c?.text == "扫描中…")
+        #expect(c?.percent == nil)
+    }
+
     @Test("created 窗口（一跳化导入）→ 扫描中…")
     func createdWindowScanning() {
         let c = copy(status(stage: .created, indexing: indexing(.idle)), photoCount: 0)
@@ -190,30 +206,19 @@ struct GalleryIndexHeaderCopyTests {
         #expect(c?.percent == nil)
     }
 
-    @Test("运行中有数值 → 文案内联百分比（自算 round，12547/12847 → 98%）")
-    func liveInlinePercent() {
-        let c = copy(
-            status(indexing: indexing(.active, total: 12847, done: 12547)),
-            photoCount: 0)
+    // 原 3 条用例（内联文案 / 向下取整 / 上限 100）：同一换算仅输入不同。
+    @Test("百分比换算：内联文案 / round / 上限 100", arguments: [
+        (12547, 12847, 98, "正在索引 12547 / 12847（98%）" as String?),
+        (1, 3, 33, nil as String?),
+        (5, 2, 100, nil as String?),
+    ])
+    private func inlinePercentMatrix(
+        done: Int, total: Int, expectedPercent: Int, expectedText: String?
+    ) {
+        let c = copy(status(indexing: indexing(.active, total: total, done: done)), photoCount: 0)
         #expect(c?.kind == .scanning)
-        #expect(c?.text == "正在索引 12547 / 12847（98%）")
-        #expect(c?.percent == 98)
-    }
-
-    @Test("百分比向下取整（旧版 round 语义）")
-    func percentRounds() {
-        let c = copy(
-            status(indexing: indexing(.active, total: 3, done: 1)),
-            photoCount: 0)
-        #expect(c?.percent == 33)
-    }
-
-    @Test("百分比上限 100")
-    func percentClamped() {
-        let c = copy(
-            status(indexing: indexing(.active, total: 2, done: 5)),
-            photoCount: 0)
-        #expect(c?.percent == 100)
+        #expect(c?.percent == expectedPercent)
+        if let expectedText { #expect(c?.text == expectedText) }
     }
 
     @Test("失败 → 索引失败（视图附重试按钮）")
@@ -224,29 +229,20 @@ struct GalleryIndexHeaderCopyTests {
         #expect(c?.percent == nil)
     }
 
-    @Test("索引成功（stage indexed）→ 精确计数（截断导入也去 ≥）")
-    func succeededExact() {
-        let c = copy(
-            status(stage: .indexed, indexing: indexing(.idle)),
-            photoCount: 12847, truncatedImport: true)
+    // 原 3 条用例（截断已索引 / 截断未索引 / 非截断）：同一计数文案仅输入不同。
+    // 三条都补上 `percent == nil`（原本只有第一条有），断言只增不减。
+    @Test("计数文案：精确计数 / 截断保留 ≥", arguments: [
+        (WorkspaceStage.indexed, 12847, true, "已索引 12847 张照片"),
+        (WorkspaceStage.imported, 50000, true, "已索引 ≥50000 张照片"),
+        (WorkspaceStage.imported, 12, false, "已索引 12 张照片"),
+    ])
+    private func countCopyMatrix(
+        stage: WorkspaceStage, photoCount: Int, truncatedImport: Bool, expectedText: String
+    ) {
+        let c = copy(status(stage: stage, indexing: indexing(.idle)),
+                     photoCount: photoCount, truncatedImport: truncatedImport)
         #expect(c?.kind == .count)
-        #expect(c?.text == "已索引 12847 张照片")
+        #expect(c?.text == expectedText)
         #expect(c?.percent == nil)
-    }
-
-    @Test("截断导入未索引完成 → 保留 ≥")
-    func truncatedUnknownKeepsGE() {
-        let c = copy(
-            status(stage: .imported, indexing: indexing(.idle)),
-            photoCount: 50000, truncatedImport: true)
-        #expect(c?.kind == .count)
-        #expect(c?.text == "已索引 ≥50000 张照片")
-    }
-
-    @Test("非截断会话无任务 → 精确计数")
-    func nonTruncatedExact() {
-        let c = copy(status(indexing: indexing(.idle)), photoCount: 12)
-        #expect(c?.kind == .count)
-        #expect(c?.text == "已索引 12 张照片")
     }
 }

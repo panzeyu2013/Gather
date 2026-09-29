@@ -21,6 +21,9 @@ import Testing
 /// 9x8 均匀灰度像素网格（DHash 输出 64 个 0）。
 private let uniformPixels = [UInt8](repeating: 128, count: 72)
 
+/// 9x8 交替灰度像素网格（与 uniformPixels 的 dHash 距离远大于阈值）。
+private let alternatePixels = (0..<72).map { $0 % 2 == 0 ? UInt8(0) : UInt8(255) }
+
 /// 真实 1x1 JPEG / PNG fixture（校验过 file 可识别，仅作文件字节用——
 /// 缩略图由注入的 thumbnailProvider 提供）。
 private let jpegFixtureBytes = Data(base64Encoded: "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q==")!
@@ -38,7 +41,10 @@ private func setMtime(_ path: String, _ timeIntervalSince1970: TimeInterval) thr
     )
 }
 
-private final class AsyncGate {
+/// 线程安全说明（Swift 6 `Sendable`）：`continuations`/`released` 只在
+/// `lock`（NSLock）临界区内读写；门会被 @Sendable 的 thumbnailProvider 闭包捕获，
+/// 故标注 `@unchecked`（锁纪律无法被编译器静态验证）。
+private final class AsyncGate: @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private var released = false
@@ -69,6 +75,26 @@ private final class AsyncGate {
 }
 
 /// 线程安全计数器（provider 调用次数等断言用）。
+/// scanDuplicates 的进度回调在服务自持的 Task 里执行（ProgressHandler 为
+/// `@Sendable`），测试用本盒子收集进度。`@unchecked Sendable` 的依据：
+/// 唯一可变状态 `entries` 只在 `lock`（NSLock）临界区内读写。
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [(message: String, current: Int, total: Int)] = []
+
+    func append(message: String, current: Int, total: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.append((message, current, total))
+    }
+
+    var value: [(message: String, current: Int, total: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries
+    }
+}
+
 private final class CallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -348,16 +374,16 @@ struct DuplicateScanTests {
                 .text(hexSHA256(jpegFixtureBytes)), .int(statA.size + 1), .real(statA.mtimeMs), .text("b"),
             ])
 
-        var progress: [(message: String, current: Int, total: Int)] = []
+        let progress = ProgressRecorder()
         let result = try await harness.service.scanDuplicates(
             sessionId: harness.sessionId,
             onProgress: { current, total, message in
-                progress.append((message, current, total))
+                progress.append(message: message, current: current, total: total)
             }
         )
 
         // 2 张照片 + 1 个候选（仅 b 重算）。
-        #expect(progress.contains { $0.message == "duplicate.hash" && $0.current == 3 && $0.total == 6 })
+        #expect(progress.value.contains { $0.message == "duplicate.hash" && $0.current == 3 && $0.total == 6 })
         // 复用路径下精确组照常由已存 checksum 聚合。
         #expect(result.exactGroups.count == 1)
         #expect(result.exactGroups[0].memberCount == 2)
@@ -409,6 +435,82 @@ struct DuplicateScanTests {
         #expect(groups[1].members.map(\.filename).sorted() == ["v1.png", "v2.txt"].sorted())
     }
 
+    @Test("视觉阈值校验：越界/非整数/NaN 全部拒绝，边界值接受")
+    func thresholdValidationRejectsOutOfRange() async throws {
+        let harness = try makeDuplicateHarness()
+        try addPhoto(harness, id: "a", name: "a.jpg", content: jpegFixtureBytes)
+
+        for bad in [100.0, -1.0, 64.5, Double.nan, Double.infinity] {
+            #expect(throws: DuplicateServiceError.thresholdInvalid) {
+                try harness.service.validateDuplicateThreshold(bad)
+            }
+            await #expect(throws: DuplicateServiceError.thresholdInvalid) {
+                try await harness.service.scanDuplicates(sessionId: harness.sessionId, visualThreshold: bad)
+            }
+        }
+
+        // 边界：0（仅完全同 hash 连边）与 64（dHash 全位）都合法。
+        try harness.service.validateDuplicateThreshold(0)
+        try harness.service.validateDuplicateThreshold(64)
+        let result = try await harness.service.scanDuplicates(
+            sessionId: harness.sessionId, visualThreshold: 64)
+        #expect(result.totalDuplicates >= 0)
+    }
+
+    /// 单飞守卫的失败模式是"阻塞"而非"抛错"：若单飞键被改坏（例如忽略 threshold），
+    /// 本该 busy 的调用会一直等在在飞扫描上，用例就**永久挂起**而不是失败（变异测试
+    /// 实测），既无诊断价值又会拖死整包。这里把等待变有界：超时即返回 `.timedOut`，
+    /// 断言随即可失败并指出原因。
+    private enum BoundedOutcome: Sendable, Equatable {
+        case succeeded
+        case busy
+        case timedOut
+        case otherError
+    }
+
+    /// 一次性恢复守卫：完成路径与超时路径竞争同一个 continuation，只允许恢复一次。
+    private final class ResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<BoundedOutcome, Never>?
+
+        init(_ continuation: CheckedContinuation<BoundedOutcome, Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ outcome: BoundedOutcome) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: outcome)
+        }
+    }
+
+    /// 非结构化竞速（**不能用 withTaskGroup**：结构化作用域返回时会等待全部子任务，
+    /// 而被取消的等待子任务仍会阻塞在 `Task.value` 上 → 反而永久挂起，实测已复现）。
+    private func boundedOutcome<T: Sendable>(
+        of task: Task<T, Error>,
+        timeout: Duration = .seconds(3)
+    ) async -> BoundedOutcome {
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            Task {
+                do {
+                    _ = try await task.value
+                    once.resume(.succeeded)
+                } catch let error as DuplicateServiceError {
+                    once.resume(error == .scanBusy ? .busy : .otherError)
+                } catch {
+                    once.resume(.otherError)
+                }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                once.resume(.timedOut)
+            }
+        }
+    }
+
     @Test("scan 单飞：同参数共享在飞结果，不同参数抛 DUPLICATE_SCAN_BUSY")
     func scanIsSingleFlight() async throws {
         let gate = AsyncGate()
@@ -429,18 +531,21 @@ struct DuplicateScanTests {
         #expect(entered)
 
         // 不同参数 → busy（经 Task 包装制造真实挂起点，避免无 async 操作警告）。
+        // 用有界等待断言：busy 守卫若失效，调用会阻塞在在飞扫描上，超时即失败（不再挂起）。
         let busyOther = Task {
             try await harness.service.scanDuplicates(sessionId: "other-session")
         }
-        await #expect(throws: DuplicateServiceError.scanBusy) {
-            try await busyOther.value
-        }
+        #expect(
+            await boundedOutcome(of: busyOther) == .busy,
+            "不同会话应立刻抛 DUPLICATE_SCAN_BUSY；超时 = 单飞守卫未生效"
+        )
         let busyThreshold = Task {
             try await harness.service.scanDuplicates(sessionId: harness.sessionId, visualThreshold: 8)
         }
-        await #expect(throws: DuplicateServiceError.scanBusy) {
-            try await busyThreshold.value
-        }
+        #expect(
+            await boundedOutcome(of: busyThreshold) == .busy,
+            "同会话不同阈值应立刻抛 DUPLICATE_SCAN_BUSY；超时 = 单飞键忽略阈值"
+        )
         #expect(try await DuplicateServiceError.scanBusy.gatherCode == .DUPLICATE_SCAN_BUSY)
 
         // 同参数 → 与在飞扫描共享同一结果（不触发第二次扫描）。
@@ -490,18 +595,18 @@ struct DuplicateScanTests {
         try addPhoto(harness, id: "p1", name: "p1.jpg", content: jpegFixtureBytes)
         try addPhoto(harness, id: "p2", name: "p2.png", content: pngFixtureBytes)
 
-        var progress: [(message: String, current: Int, total: Int)] = []
+        let progress = ProgressRecorder()
         _ = try await harness.service.scanDuplicates(
             sessionId: harness.sessionId,
             onProgress: { current, total, message in
-                progress.append((message, current, total))
+                progress.append(message: message, current: current, total: total)
             }
         )
 
         // 2 张照片：total 恒为 6；hash 阶段无候选（size 不同）current = 2。
-        #expect(progress.map(\.message) == ["duplicate.read", "duplicate.hash", "duplicate.done"])
-        #expect(progress.map(\.current) == [2, 2, 6])
-        #expect(progress.map(\.total) == [6, 6, 6])
+        #expect(progress.value.map(\.message) == ["duplicate.read", "duplicate.hash", "duplicate.done"])
+        #expect(progress.value.map(\.current) == [2, 2, 6])
+        #expect(progress.value.map(\.total) == [6, 6, 6])
     }
 
     @Test("二次扫描完全复用已落库的 checksum 与视觉 hash")
@@ -517,16 +622,16 @@ struct DuplicateScanTests {
         let first = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
         #expect(calls.value == 2)
 
-        var progress: [(message: String, current: Int)] = []
+        let progress = ProgressRecorder()
         let second = try await harness.service.scanDuplicates(
             sessionId: harness.sessionId,
-            onProgress: { current, _, message in
-                progress.append((message, current))
+            onProgress: { current, total, message in
+                progress.append(message: message, current: current, total: total)
             }
         )
 
         #expect(calls.value == 2)
-        #expect(progress.contains { $0.message == "duplicate.hash" && $0.current == 2 })
+        #expect(progress.value.contains { $0.message == "duplicate.hash" && $0.current == 2 })
         // 重扫重建分组：组/成员 id 更新，但分组语义与成员集合一致。
         #expect(second.exactGroups.map(\.memberCount) == first.exactGroups.map(\.memberCount))
         #expect(second.visualGroups.map(\.memberCount) == first.visualGroups.map(\.memberCount))
@@ -574,18 +679,24 @@ struct DuplicateResolveTests {
         ).query([.text(harness.sessionId)]).map { ($0[0].textValue ?? "", $0[1].textValue ?? "") }
         #expect(statuses.map(\.1) == ["removed", "ready"])
 
-        // 重扫：removed 照片复位 ready（unremove 路径），分组重建且 resolution 重置。
+        // 重扫：组/成员行整体重建（id 全变），但决策以 photo_id 为稳定身份
+        // 存续——a 仍被丢弃、b 仍保留，photos.status 不被清空。
         let rescanned = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
         #expect(rescanned.exactGroups.count == 1)
-        #expect(rescanned.exactGroups[0].members.allSatisfy { $0.isKept })
-        let afterRescan = try harness.db.prepare(
-            "SELECT status FROM photos WHERE id = ?"
-        ).get([.text("a")])?[0].textValue
-        #expect(afterRescan == "ready")
+        let afterMembers = rescanned.exactGroups[0].members
+        let afterByPhoto = Dictionary(uniqueKeysWithValues: afterMembers.map { ($0.photoId, $0) })
+        #expect(afterByPhoto["a"]?.isKept == false)
+        #expect(afterByPhoto["b"]?.isKept == true)
+        #expect(afterByPhoto["a"]?.resolution == "keep_one")
+        let afterStatuses = try harness.db.prepare(
+            "SELECT id, status FROM photos WHERE session_id = ? ORDER BY id"
+        ).query([.text(harness.sessionId)]).map { ($0[0].textValue ?? "", $0[1].textValue ?? "") }
+        #expect(afterStatuses.map(\.1) == ["removed", "ready"])
+        // 组级 resolution 由成员决策派生（全成员已决 → keep_one）。
         let groupResolution = try harness.db.prepare(
             "SELECT resolution FROM duplicate_groups WHERE session_id = ?"
         ).get([.text(harness.sessionId)])?[0].textValue
-        #expect(groupResolution == nil)
+        #expect(groupResolution == "keep_one")
     }
 
     @Test("keep_one 分数公式：size 分量可压过 mtime 分量")
@@ -618,6 +729,38 @@ struct DuplicateResolveTests {
         // score: p1 = 100000000*1000 + 2024ms > p2 = 500*1000 + 2025ms
         //（size 分量压过一年 mtime 差：1e11 > 3.16e10）。
         #expect(flags.map(\.1) == [1, 0])
+    }
+
+    /// 平局规则：score 严格大于才替换 ⇒ 同分时保留先出现的成员（首个 member 行）。
+    /// 变异验证：> 改 >= 后既有用例全绿（它们构造不出同分），本用例是唯一守卫。
+    @Test("keep_one 平分时保留先出现的成员（确定性平局规则）")
+    func resolveGroupKeepOneTieKeepsFirstMember() throws {
+        let db = try makeMigratedDB()
+        try insertSession(db, "session")
+        _ = try db.prepare("""
+            INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at)
+            VALUES ('p1', 'session', '/p1.jpg', 'p1.jpg', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+                   ('p2', 'session', '/p2.jpg', 'p2.jpg', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            """).run()
+        _ = try db.prepare("""
+            INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at)
+            VALUES ('session', 'exact', 'abc', NULL, 2, NULL, '2026-01-01T00:00:00.000Z')
+            """).run()
+        let groupId = Int(db.lastInsertRowid)
+        // 同 size 同 mtime ⇒ score 完全相同（1000*1000 + 1700000000000）。
+        _ = try db.prepare("""
+            INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime)
+            VALUES (?, 'p1', 'session', 1, 1000, '2023-11-14T22:13:20.000Z'),
+                   (?, 'p2', 'session', 1, 1000, '2023-11-14T22:13:20.000Z')
+            """).run([.int(Int64(groupId)), .int(Int64(groupId))])
+
+        try DuplicateService(connection: db).resolveGroup(groupId: groupId, resolution: .keepOne)
+
+        let flags = try db.prepare(
+            "SELECT photo_id, is_kept FROM duplicate_group_members WHERE group_id = ? ORDER BY id"
+        ).query([.int(Int64(groupId))]).map { ($0[0].textValue ?? "", $0[1].intValue ?? 0) }
+        #expect(flags.map(\.0) == ["p1", "p2"])
+        #expect(flags.map(\.1) == [1, 0], "同分必须保留先出现者（score > bestScore 的严格大于语义）")
     }
 
     @Test("keep_all 保留全部成员并复位照片状态")
@@ -715,4 +858,109 @@ struct DuplicateResolveTests {
             try service.resolveMember(memberId: 9999, isKept: false)
         }
     }
+}
+
+// MARK: - 决策持久与「丢弃」后果（§4.2 P1 修复）
+
+@Suite("DuplicateService 决策持久与丢弃后果")
+struct DuplicateDecisionPersistenceTests {
+    private func scanExactPair(_ harness: DuplicateHarness) async throws -> DuplicateScanResult {
+        try addPhoto(harness, id: "a", name: "a.jpg", content: jpegFixtureBytes)
+        try addPhoto(harness, id: "b", name: "b.jpg", content: jpegFixtureBytes)
+        return try await harness.service.scanDuplicates(sessionId: harness.sessionId)
+    }
+
+    @Test("重扫保留 resolve_member 的逐照片决策（稳定身份 = photo_id）")
+    func rescanPreservesMemberDecision() async throws {
+        let harness = try makeDuplicateHarness()
+        let result = try await scanExactPair(harness)
+        let memberA = result.exactGroups[0].members.first { $0.photoId == "a" }!
+        try harness.service.resolveMember(memberId: memberA.id, isKept: false)
+
+        let rescanned = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
+
+        // 组/成员行 id 全部重建，决策仍按 photo_id 恢复。
+        #expect(rescanned.exactGroups[0].id != result.exactGroups[0].id)
+        let byPhoto = Dictionary(uniqueKeysWithValues: rescanned.exactGroups[0].members.map { ($0.photoId, $0) })
+        #expect(byPhoto["a"]?.isKept == false)
+        #expect(byPhoto["a"]?.resolution == "keep_one")
+        #expect(byPhoto["b"]?.isKept == true)
+        let statusA = try harness.db.prepare(
+            "SELECT status FROM photos WHERE id = ?"
+        ).get([.text("a")])?[0].textValue
+        #expect(statusA == "removed")
+    }
+
+    @Test("丢弃决策跨分组类型变化（exact → visual）仍存续")
+    func decisionSurvivesGroupTypeChange() async throws {
+        let harness = try makeDuplicateHarness()
+        let pathA = try addPhoto(harness, id: "a", name: "a.jpg", content: jpegFixtureBytes)
+        try addPhoto(harness, id: "b", name: "b.jpg", content: jpegFixtureBytes)
+        let first = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
+        #expect(first.exactGroups.count == 1)
+        let memberA = first.exactGroups[0].members.first { $0.photoId == "a" }!
+        try harness.service.resolveMember(memberId: memberA.id, isKept: false)
+
+        // a 内容变化：不再精确重复，但仍与 b 视觉同 hash（provider 恒 uniform）。
+        try Data("changed-content-for-visual-group".utf8).write(to: URL(fileURLWithPath: pathA))
+        let second = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
+
+        #expect(second.exactGroups.isEmpty)
+        #expect(second.visualGroups.count == 1)
+        let byPhoto = Dictionary(uniqueKeysWithValues: second.visualGroups[0].members.map { ($0.photoId, $0) })
+        #expect(byPhoto["a"]?.isKept == false)
+        #expect(byPhoto["a"]?.resolution == "keep_one")
+    }
+
+    @Test("照片离开重复集合后丢弃残影复位 ready")
+    func orphanedDiscardRestored() async throws {
+        // 缩略图由文件内容决定：内容相同的文件视觉 hash 相同。
+        let harness = try makeDuplicateHarness(thumbnail: { filepath, _ in
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: filepath)) else { return nil }
+            return data == jpegFixtureBytes ? uniformPixels : alternatePixels
+        })
+        let pathA = try addPhoto(harness, id: "a", name: "a.jpg", content: jpegFixtureBytes)
+        let pathB = try addPhoto(harness, id: "b", name: "b.jpg", content: jpegFixtureBytes)
+        let result = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
+        #expect(result.exactGroups.count == 1)
+        let memberA = result.exactGroups[0].members.first { $0.photoId == "a" }!
+        try harness.service.resolveMember(memberId: memberA.id, isKept: false)
+        #expect(try harness.db.prepare("SELECT status FROM photos WHERE id = ?")
+            .get([.text("a")])?[0].textValue == "removed")
+
+        // b 内容变化 → 不再是 a 的精确/视觉重复：a 脱离所有组，丢弃残影复位。
+        try Data("no-longer-a-duplicate-pair".utf8).write(to: URL(fileURLWithPath: pathB))
+        let rescanned = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
+
+        #expect(rescanned.exactGroups.isEmpty)
+        #expect(rescanned.visualGroups.isEmpty)
+        let statusA = try harness.db.prepare(
+            "SELECT status FROM photos WHERE id = ?"
+        ).get([.text("a")])?[0].textValue
+        #expect(statusA == "ready")
+        let removedA = try harness.db.prepare(
+            "SELECT COUNT(*) FROM photos WHERE session_id = ? AND status = 'removed'"
+        ).get([.text(harness.sessionId)])?[0].intValue ?? 0
+        #expect(removedA == 0)
+        _ = pathA
+    }
+
+    @Test("keep_all 重扫后保持已决：成员全保留、组计入 resolved")
+    func keepAllSurvivesRescan() async throws {
+        let harness = try makeDuplicateHarness()
+        let result = try await scanExactPair(harness)
+        try harness.service.resolveGroup(groupId: result.exactGroups[0].id, resolution: .keepAll)
+
+        _ = try await harness.service.scanDuplicates(sessionId: harness.sessionId)
+
+        let removedA = try harness.db.prepare(
+            "SELECT COUNT(*) FROM photos WHERE session_id = ? AND status = 'removed'"
+        ).get([.text(harness.sessionId)])?[0].intValue ?? 0
+        #expect(removedA == 0)
+        let groupResolution = try harness.db.prepare(
+            "SELECT resolution FROM duplicate_groups WHERE session_id = ?"
+        ).get([.text(harness.sessionId)])?[0].textValue
+        #expect(groupResolution == "keep_all")
+    }
+
 }

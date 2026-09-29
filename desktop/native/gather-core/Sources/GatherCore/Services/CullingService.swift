@@ -25,6 +25,20 @@
 // 缓存注记：TTL 缓存（sessionLookup/sessionUpdate）与 TS 同语义——主进程单线程
 // 同步 SQLite，Swift 侧服务实例同样按会话单线程使用，Map 无需加锁（与
 // SimilarityResultRepo 的 photoGroupMapCache 同款决策）。
+//
+// ── 挑片状态单一真相源（禁止双真相源）────────────────────────────────
+// 星级 / 色标：唯一真相源是 photo_metadata_cache（全应用范围的 XMP 投影）。
+//   读取（rowToState / list / listPage / getSummary）、写入（updateState /
+//   applyHistory）、reset、写回计划全部围绕它；culling_decisions.rating /
+//   color_label 只是同事务写下的镜像列，任何读取路径都不得读它们
+//   （见 CullingDecisionRepo 文件头注）。
+// 取舍（pick/reject/pending）：唯一真相源是 culling_decisions.decision。
+//
+// ── 侧车/xmp 路径口径（写回内核已冻结）────────────────────────────
+// 一切 outbox 键、linkedByXmp 键、schedule(xmpPath) 键统一走
+// MetadataOutboxPath.sidecar(photo) = TSPath.xmpSidecarPath(ScanPath.canonical(photo))。
+// 禁止裸拼 TSPath.xmpSidecarPath（符号链接/相对路径/已是侧车三种输入下与内核键
+// 不一致，会查不到行或造出重复行）。
 
 import Foundation
 
@@ -269,7 +283,9 @@ public final class CullingService {
         .none, .red, .orange, .yellow, .green, .blue, .pink, .purple,
     ]
 
-    /// TS: PREFERRED_RAW_EXTENSIONS（预编译小写 RAW 扩展名集合，O(1) 探测）。
+    /// TS: PREFERRED_RAW_EXTENSIONS —— RAW 判定只用共享表 PhotoRepo.rawExtensions
+    ///（与 preferredRowOrderSQL 里 LIKE 链的同一份数据），本文件不另立扩展名表。
+    /// 内存态代表行选择为何不能直接调用 SQL 排序，见 assembleAssets 的注释。
     private static let preferredRawExtensions: Set<String> = Set(PhotoRepo.rawExtensions)
 
     /// TS: LOOKUP_TTL_MS / LOOKUP_CACHE_MAX / UPDATE_TTL_MS / UPDATE_CACHE_MAX。
@@ -347,7 +363,8 @@ public final class CullingService {
             assembleAssets(photos: photos, lookup: lookup),
             scope: scope,
             filters: filters,
-            requestedGroupId: requestedGroupId
+            requestedGroupId: requestedGroupId,
+            conflictingPhotoPaths: try conflictPhotoPaths(sessionId: sessionId, filters: filters)
         )
     }
 
@@ -373,7 +390,8 @@ public final class CullingService {
         let lookup = try buildRichLookup(photos: page.photos, sessionId: sessionId, mode: .page)
         let assets = filterVisible(
             assembleAssets(photos: page.photos, lookup: lookup),
-            scope: scope, filters: filters, requestedGroupId: requestedGroupId
+            scope: scope, filters: filters, requestedGroupId: requestedGroupId,
+            conflictingPhotoPaths: try conflictPhotoPaths(sessionId: sessionId, filters: filters)
         )
         let total = try countForScope(
             sessionId: sessionId, scope: scope, filters: filters,
@@ -397,8 +415,9 @@ public final class CullingService {
             photos: entry.photos,
             photoById: entry.photoById,
             photosByAssetId: entry.photosByAssetId,
-            groupMap: entry.groupMap!,
-            linkedByXmp: entry.linkedByXmp!
+            // ensureUpdateExtras 保证两者已构建；这里显式兜底而不是强解包。
+            groupMap: entry.groupMap ?? [:],
+            linkedByXmp: entry.linkedByXmp ?? [:]
         )
     }
 
@@ -445,7 +464,7 @@ public final class CullingService {
             )
         }
 
-        let targetXmpPath = TSPath.xmpSidecarPath(target.filepath)
+        let targetXmpPath = MetadataOutboxPath.sidecar(target.filepath)
         let changesSharedMetadata = patch.rating != nil || patch.colorLabel != nil
         // 完整的调用方上下文（IPC/batch）已过 ensureUpdateExtras；只有直连路径与
         // 新鲜读回退（丢弃了上下文映射）之后才需要按点击做版本检查。
@@ -470,7 +489,8 @@ public final class CullingService {
             addAffected(target)
         }
         if changesSharedMetadata {
-            for photo in (contextLinkedByXmp ?? entry.linkedByXmp!)[targetXmpPath] ?? [] {
+            let linkedByXmp = contextLinkedByXmp ?? entry.linkedByXmp ?? [:]
+            for photo in linkedByXmp[targetXmpPath] ?? [] {
                 addAffected(photo)
             }
         }
@@ -505,8 +525,8 @@ public final class CullingService {
                 let existing = existingRows[photo.id]
                 let cache = cacheRows[photo.id]
                 let existingState = rowToState(
-                    photoId: photo.id, row: existing,
-                    fallbackRating: cache?.rating ?? 0, fallbackLabel: cache?.label ?? "None"
+                    photoId: photo.id, decisionRow: existing,
+                    cachedRating: cache?.rating ?? 0, cachedLabel: cache?.label
                 )
                 beforeStates.append(existingState)
                 let isPickTarget = pickTargets.contains(photo.id)
@@ -517,6 +537,8 @@ public final class CullingService {
                 let nextColorLabel = patch.colorLabel ?? existingState.colorLabel
                 let nextRevision = existingState.revision + 1
 
+                // 决策行的 rating/color_label 只是镜像列：真相源是同一事务里紧接着
+                // 写入的 photo_metadata_cache（读取路径从不读这两列）。
                 try cullingDecisionRepo.upsertState(
                     sessionId: sessionId,
                     photoId: photo.id,
@@ -625,16 +647,19 @@ public final class CullingService {
         try ensureUpdateExtras(entry: entry, sessionId: sessionId)
         let photos = entry.photos
         let photoById = entry.photoById
-        let groupMap = entry.groupMap!
-        let linkedByXmp = entry.linkedByXmp!
+        let groupMap = entry.groupMap ?? [:]
+        let linkedByXmp = entry.linkedByXmp ?? [:]
         // pick 更新按逻辑资产合并（同一资产的变体只更新一次），否则按共享侧车
         // 合并（RAW+JPEG 对的 rating/label 一次入队）。
         var operationIds: [String] = []
         var operationKeys: Set<String> = []
         for photoId in uniqueIds {
-            let photo = photoById[photoId]!
+            // 上面已校验并刷新过上下文；这里仍显式处理，禁止对外部数据强解包。
+            guard let photo = photoById[photoId] else {
+                throw CullingServiceError.photosNotInSession
+            }
             let key = patch.pickState == nil
-                ? TSPath.xmpSidecarPath(photo.filepath)
+                ? MetadataOutboxPath.sidecar(photo.filepath)
                 : (photo.assetId ?? "photo:\(photo.id)")
             if operationKeys.insert(key).inserted {
                 operationIds.append(photoId)
@@ -734,20 +759,50 @@ public final class CullingService {
             refreshSessionUpdateContext(sessionId: sessionId, entry: updateEntry)
         }
         let photoById = updateEntry.photoById
+        // 历史载荷是**外部数据**（库行里的 operation_json，可能残留已删除照片的 id：
+        // 迁移去重、用户删片）。禁止强解包，也禁止静默整条丢弃：
+        // - 历史重放（undo/redo）→ 跳过缺失照片的条目，其余条目照常应用并记 warn；
+        // - 直接调用（renderer 重建补丁）→ 契约错误 CULLING_PHOTO_NOT_IN_SESSION。
+        // 存在性以**库**为准（photos.session_id），不依赖可能过期的 TTL 上下文：
+        // 被删照片仍留在缓存里会让分歧判定误报，整条 undo 无谓失败。
+        let existingPhotoIds = try existingSessionPhotoIds(
+            sessionId: sessionId, photoIds: entries.map(\.photoId)
+        )
+        var applicableEntries: [CullingHistoryApplyEntry] = []
+        var skippedHistoryPhotoIds: [String] = []
+        for entry in entries {
+            guard existingPhotoIds.contains(entry.photoId) else {
+                if historyOperationId != nil {
+                    skippedHistoryPhotoIds.append(entry.photoId)
+                    continue
+                }
+                throw CullingServiceError.photoNotInSession
+            }
+            applicableEntries.append(entry)
+        }
+        if !skippedHistoryPhotoIds.isEmpty {
+            GatherLogger.log(
+                "culling.apply_history 跳过 \(skippedHistoryPhotoIds.count) 条照片已不存在的历史条目："
+                    + skippedHistoryPhotoIds.joined(separator: ","),
+                level: .warn
+            )
+        }
+        if applicableEntries.isEmpty {
+            // 全部条目都已失效：给出可读的分歧错误（「重置挑片」是清栈出口），
+            // 绝不静默成功把栈推到无法解释的状态。
+            throw CullingServiceError.historyDiverged
+        }
         let currentRows = Dictionary(
             uniqueKeysWithValues: try cullingDecisionRepo
-                .getByPhotoIds(sessionId: sessionId, photoIds: entries.map(\.photoId))
+                .getByPhotoIds(sessionId: sessionId, photoIds: applicableEntries.map(\.photoId))
                 .map { ($0.photoId, $0) }
         )
         let cacheRows = Dictionary(
             uniqueKeysWithValues: try metadataCacheRepo
-                .getBatch(entries.map(\.photoId))
+                .getBatch(applicableEntries.map(\.photoId))
                 .map { ($0.photoId, $0) }
         )
-        for entry in entries {
-            guard photoById[entry.photoId] != nil else {
-                throw CullingServiceError.photoNotInSession
-            }
+        for entry in applicableEntries {
             let currentRevision = currentRows[entry.photoId]?.revision ?? 0
             if historyOperationId == nil && currentRevision != Int64(entry.expectedRevision) {
                 throw CullingServiceError.revisionConflict(
@@ -758,11 +813,14 @@ public final class CullingService {
         if let historyOperationId, let direction {
             let operation = try cullingHistoryRepo?.get(sessionId: sessionId, operationId: historyOperationId)
             for historical in operation?.entries ?? [] {
+                // 与上面的跳过规则一致：照片已不存在的历史条目不参与分歧判定
+                //（否则会误报 CULLING_HISTORY_DIVERGED，让可应用的其余条目一起失败）。
+                guard existingPhotoIds.contains(historical.photoId) else { continue }
                 let row = currentRows[historical.photoId]
                 let cache = cacheRows[historical.photoId]
                 let current = rowToState(
-                    photoId: historical.photoId, row: row,
-                    fallbackRating: cache?.rating ?? 0, fallbackLabel: cache?.label ?? "None"
+                    photoId: historical.photoId, decisionRow: row,
+                    cachedRating: cache?.rating ?? 0, cachedLabel: cache?.label
                 )
                 let expected = direction == .undo ? historical.after : historical.before
                 for field in historical.fields {
@@ -773,7 +831,7 @@ public final class CullingService {
             }
         }
         try ensureUpdateExtras(entry: updateEntry, sessionId: sessionId)
-        let groupMap = updateEntry.groupMap!
+        let groupMap = updateEntry.groupMap ?? [:]
 
         // outbox 每会话读一次而非每条目两次（1 万次 undo 就是 2 万次单行查询）：
         // 行按 xmp 路径键控，事务内的 syncStatus 读取全部发生在
@@ -791,13 +849,14 @@ public final class CullingService {
         var historyEntries: [CullingHistoryEntry] = []
         var xmpPatches: [String: (photoId: String, values: [String: JSONValue])] = [:]
         try connection.transaction {
-            for entry in entries {
-                let photo = photoById[entry.photoId]!
+            for entry in applicableEntries {
+                // applicableEntries 已保证照片存在；仍显式处理（外部数据不强解包）。
+                guard let photo = photoById[entry.photoId] else { continue }
                 let existing = currentRows[entry.photoId]
                 let cache = cacheRows[entry.photoId]
                 let before = rowToState(
-                    photoId: entry.photoId, row: existing,
-                    fallbackRating: cache?.rating ?? 0, fallbackLabel: cache?.label ?? "None"
+                    photoId: entry.photoId, decisionRow: existing,
+                    cachedRating: cache?.rating ?? 0, cachedLabel: cache?.label
                 )
                 let after = AssetCullingState(
                     photoId: entry.photoId,
@@ -808,6 +867,7 @@ public final class CullingService {
                     revision: before.revision + 1,
                     updatedAt: nowISOString()
                 )
+                // rating/color_label 是镜像列（真相源为紧随其后的 cache 写入）。
                 try cullingDecisionRepo.upsertState(
                     sessionId: sessionId,
                     photoId: entry.photoId,
@@ -825,7 +885,7 @@ public final class CullingService {
                 if entry.patch.colorLabel != nil {
                     try metadataCacheRepo.updateLabel(photoId: entry.photoId, label: after.colorLabel.rawValue)
                 }
-                let xmpPath = TSPath.xmpSidecarPath(photo.filepath)
+                let xmpPath = MetadataOutboxPath.sidecar(photo.filepath)
                 var values = xmpPatches[xmpPath]?.values ?? [:]
                 if entry.patch.rating != nil { values["rating"] = .number(after.rating) }
                 if entry.patch.colorLabel != nil {
@@ -978,7 +1038,7 @@ public final class CullingService {
                     photoId: photoId,
                     filepath: photo.filepath,
                     filename: photo.filename,
-                    decision: LegacyCullingDecision(rawValue: decision) ?? .pending
+                    decision: CullingDecisionValue(rawValue: decision) ?? .pending
                 ))
             }
             groups.append((index: parsedIndex, insertion: insertion, group: CullingGroup(
@@ -998,7 +1058,7 @@ public final class CullingService {
     }
 
     /// TS: decide —— 旧版 renderer 的单张决策命令。
-    public func decide(sessionId: String, photoId: String, decision: LegacyCullingDecision) throws {
+    public func decide(sessionId: String, photoId: String, decision: CullingDecisionValue) throws {
         let current = try cullingDecisionRepo.getDecision(sessionId: sessionId, photoId: photoId)
         try updateState(
             sessionId: sessionId,
@@ -1009,8 +1069,8 @@ public final class CullingService {
     }
 
     /// TS: batchDecide —— 旧版 renderer 的批量决策命令。
-    public func batchDecide(sessionId: String, photoIds: [String], decision: LegacyCullingDecision) throws {
-        try batchUpdate(
+    public func batchDecide(sessionId: String, photoIds: [String], decision: CullingDecisionValue) throws {
+        _ = try batchUpdate(
             sessionId: sessionId,
             photoIds: photoIds,
             patch: CullingUpdatePatch(pickState: decisionToPickState(decision))
@@ -1023,8 +1083,26 @@ public final class CullingService {
     }
 
     /// TS: getHistory —— 历史栈（limit 缺省 100，仓库内 clamp 到 500）。
+    ///
+    /// 契约：返回数组（id DESC）**必然包含当前 undo/redo 栈顶**——窗口外只剩栈顶
+    /// 时把它补进来。读取方据此可以用「MAX(id) 未撤销 / MIN(id) 已撤销」这条唯一
+    /// 规则推导按钮可用性与目标操作；旧实现只给最近 limit 条，深度撤销后重做栈顶
+    /// 落在窗口外，UI 会误报「没有可撤销/可重做的挑片操作」。
     public func getHistory(sessionId: String, limit: Int = 100) throws -> [CullingHistoryOperation] {
-        try cullingHistoryRepo?.list(sessionId: sessionId, limit: limit) ?? []
+        guard let cullingHistoryRepo else { return [] }
+        var operations = try cullingHistoryRepo.list(sessionId: sessionId, limit: limit)
+        let tops = try cullingHistoryRepo.stackTops(sessionId: sessionId)
+        let loaded = Set(operations.map(\.id))
+        var extras: [CullingHistoryOperation] = []
+        for id in [tops.undoId, tops.redoId].compactMap({ $0 }) where !loaded.contains(id) {
+            if let operation = try cullingHistoryRepo.get(sessionId: sessionId, operationId: id) {
+                extras.append(operation)
+            }
+        }
+        if !extras.isEmpty {
+            operations = (operations + extras).sorted { $0.id > $1.id }
+        }
+        return operations
     }
 
     /// TS: getSummary —— 徽标计数（决策 + 缓存 fallback + 相似度组数）。
@@ -1042,12 +1120,14 @@ public final class CullingService {
         var rated = 0
         var labeled = 0
         for photo in photos {
+            // 取舍只读决策行；星级/色标只读唯一真相源 cache（决策行的 rating/
+            // color_label 是镜像列，读取它们会造出第二真相源）。
             let row = decisionByPhoto[photo.id]
             let cache = cacheByPhoto[photo.id]
             if row?.decision == "keep" { kept += 1 }
             if row?.decision == "reject" { rejected += 1 }
-            if ((row?.rating ?? cache?.rating ?? 0) > 0) { rated += 1 }
-            let label = row?.colorLabel ?? cache?.label ?? "None"
+            if (cache?.rating ?? 0) > 0 { rated += 1 }
+            let label = cache?.label ?? "None"
             if let parsed = CaptureOneColorLabel(rawValue: label),
                Self.colorLabels.contains(parsed), parsed != .none {
                 labeled += 1
@@ -1057,9 +1137,9 @@ public final class CullingService {
         // 替代多 MB 的 groups_json 解析，结果按 (session, result id) 缓存。
         let lookup = try getSessionLookup(sessionId: sessionId)
         var totalGroups = 0
-        if lookup.resultRow != nil {
+        if let resultRow = lookup.resultRow {
             if !lookup.groupCountResolved {
-                lookup.groupCount = parseTotalGroups(lookup.resultRow!)
+                lookup.groupCount = parseTotalGroups(resultRow)
                 lookup.groupCountResolved = true
             }
             totalGroups = lookup.groupCount
@@ -1076,18 +1156,41 @@ public final class CullingService {
     }
 
     /// TS: reset —— 清空会话决策（可选按组）。
+    ///
+    /// 「挑片状态」= 取舍决策行 + 唯一真相源里的星级/色标投影 + 触及这些照片的
+    /// 历史操作，三者必须一起清（旧实现只删决策行 → 页面仍显示旧星级、summary
+    /// 仍报 rated/labeled）。单事务；只改 Gather 数据库，不写 XMP、不删文件：
+    /// 磁盘上的外部值不变，后续导入扫描按 XMP 重建投影属预期。
     public func reset(sessionId: String, groupId: String? = nil) throws {
-        if let groupId {
-            try cullingDecisionRepo.deleteBySessionAndGroup(sessionId: sessionId, groupId: groupId)
-        } else {
-            try cullingDecisionRepo.deleteBySession(sessionId)
+        try connection.transaction {
+            let photoIds: [String]
+            if let groupId {
+                photoIds = try cullingDecisionRepo.deleteBySessionAndGroup(
+                    sessionId: sessionId, groupId: groupId)
+            } else {
+                photoIds = try cullingDecisionRepo.deleteBySession(sessionId)
+            }
+            guard !photoIds.isEmpty else { return }
+            try clearCullingProjection(photoIds: photoIds)
+            try cullingHistoryRepo?.deleteOperationsTouching(
+                sessionId: sessionId, photoIds: Set(photoIds)
+            )
         }
+        // 决策行/历史变了：照片级更新上下文整体失效一次（下次访问重建）。
+        sessionUpdateCache.removeValue(forKey: sessionId)
     }
 
-    /// TS: invalidateSessionLookup —— 后台分析服务（quality/face-keyword）跑完
-    /// 一轮后调用：缓存的质量/人脸/人物映射不得在 TTL 窗口内保持陈旧。
-    public func invalidateSessionLookup(sessionId: String) {
-        sessionLookupCache.removeValue(forKey: sessionId)
+    /// 撤回挑片对唯一真相源（photo_metadata_cache 的 rating/label）的投影。
+    /// 只清这两个字段，不触碰 cached_at（缓存新鲜度标记留给导入扫描判断）。
+    private func clearCullingProjection(photoIds: [String]) throws {
+        for chunk in photoIds.chunked(by: 800) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            _ = try connection.prepare("""
+                UPDATE photo_metadata_cache
+                SET rating = 0, label = 'None'
+                WHERE photo_id IN (\(placeholders))
+              """).run(chunk.map { .text($0) })
+        }
     }
 
     // MARK: - IPC 命令面（culling.ipc.ts 逐命令对齐）
@@ -1116,17 +1219,19 @@ public final class CullingService {
 
     /// TS: culling.writeback —— 决策计划 → preview → 属性合并 → execute。
     /// 写回引擎由注入的 WritebackService 承担，本方法只组装计划与合并关键词。
+    ///
+    /// 计划的值来自唯一真相源：评分/色标读 photo_metadata_cache（用户设的 3 星就写
+    /// 3 星，不是 keep→5/reject→1 的派生常量——execute 落盘后会按写入值刷新 cache，
+    /// 写派生常量会反过来污染真相源），关键词来自决策本身。
     public func writeback(
         sessionId: String,
         target: CullingWritebackTarget,
         confirmed: Bool
     ) async throws -> WritebackResult {
         guard confirmed else { throw CullingServiceError.writebackConfirmRequired }
-        let plan = buildCullingWritebackPlan(
-            decisions: try getDecisions(sessionId: sessionId)
-                .map { (photoId: $0.photoId, decision: $0.decision) },
-            target: target
-        )
+        let decisions = try getDecisions(sessionId: sessionId).filter { $0.decision != "pending" }
+        if decisions.isEmpty { throw CullingServiceError.noDecisions }
+        let plan = try buildCullingWritebackPlan(decisions: decisions, target: target)
         if plan.isEmpty { throw CullingServiceError.noDecisions }
 
         let decidedPhotoIds = Set(plan.keys)
@@ -1189,6 +1294,42 @@ public final class CullingService {
     public func resetCommand(sessionId: String, groupId: String? = nil, confirmed: Bool) throws {
         guard confirmed else { throw CullingServiceError.resetConfirmRequired }
         try reset(sessionId: sessionId, groupId: groupId)
+    }
+
+    /// culling 写回计划：决策集 → 每照片的目标属性。
+    /// 评分/色标的值来自唯一真相源 photo_metadata_cache；关键词来自决策本身。
+    private func buildCullingWritebackPlan(
+        decisions: [CullingDecisionLiteRow],
+        target: CullingWritebackTarget
+    ) throws -> [String: WritebackAttributes] {
+        var cacheByPhoto: [String: MetadataCacheRow] = [:]
+        if target != .keyword {
+            cacheByPhoto = Dictionary(
+                uniqueKeysWithValues: try metadataCacheRepo
+                    .getBatch(decisions.map(\.photoId))
+                    .map { ($0.photoId, $0) }
+            )
+        }
+        var plan: [String: WritebackAttributes] = [:]
+        for decision in decisions {
+            switch target {
+            case .rating:
+                let cache = cacheByPhoto[decision.photoId]
+                let rating = Swift.min(5, Swift.max(0, cache?.rating ?? 0))
+                plan[decision.photoId] = WritebackAttributes(rating: Double(rating))
+            case .colorLabel:
+                let label = Self.colorLabel(cacheByPhoto[decision.photoId]?.label)
+                // 写盘标签语义：None → 空串（清空色标），与 culling.update 一致。
+                plan[decision.photoId] = WritebackAttributes(
+                    label: label == .none ? "" : label.rawValue
+                )
+            case .keyword:
+                plan[decision.photoId] = WritebackAttributes(
+                    keywords: ["culling:\(decision.decision)"]
+                )
+            }
+        }
+        return plan
     }
 
     // MARK: - 分页（TS pagePhotosQuery / loadAssetRows / preferredRowPredicate /
@@ -1254,6 +1395,9 @@ public final class CullingService {
     }
 
     /// TS: loadAssetRows —— 取给定资产组的全部行（分块，SQLite 参数上限内）。
+    /// 这里按 rowid（导入序）返回组内全部行，与 getAssetPage 一致：变体顺序在三个
+    /// scope 下必须同一种（UI 切换器顺序不该随筛选变化），代表行由 assembleAssets
+    /// 用共享 RAW 表选出并标 primary——代表行的 SQL 规则见 preferredRowPredicate。
     private func loadAssetRows(
         sessionId: String,
         groups: [(gid: String, firstRowid: Int64)]
@@ -1274,22 +1418,28 @@ public final class CullingService {
         return rows
     }
 
-    /// TS: preferredRowPredicate —— 每个资产组限定到首选行的 SQL 谓词：RAW 变体
-    /// 优先（与 JS 侧 assembleAssets 的偏好同一扩展名表），其次最小 rowid。谓词
-    /// 对未分组照片是 no-op（gid = id ⇒ 子查询返回自身）。
+    /// TS: preferredRowPredicate —— 每个资产组限定到首选行的 SQL 谓词。代表行
+    /// 规则不再本地重写：唯一真相源是 PhotoRepo.preferredRowOrderSQL（RAW 变体
+    /// 优先，其次最小 rowid），与图库/导出的代表行规则同源；各写一份会让同一资产
+    /// 在不同页面显示成不同变体。谓词对未分组照片是 no-op
+    ///（gid = id ⇒ 子查询返回自身）。
     private func preferredRowPredicate() -> String {
         "p.id = (" +
             "SELECT p2.id FROM photos p2" +
             " WHERE p2.session_id = p.session_id" +
             " AND COALESCE(NULLIF(p2.asset_id, ''), p2.id) = COALESCE(NULLIF(p.asset_id, ''), p.id)" +
-            " ORDER BY CASE WHEN \(PhotoRepo.rawExtensionLikeSQL) THEN 1 ELSE 0 END DESC, p2.rowid" +
+            " ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p2"))" +
             " LIMIT 1" +
         ")"
     }
 
-    /// TS: buildFilteredWhere —— matchesFilters 的精确超集（除 metadataConflictOnly
-    /// —— 它依赖 JS 计算的 XMP 侧车路径）。谓词作用于构建资产组的照片，页面游标
-    /// 留在组查询的 HAVING 里。
+    /// TS: buildFilteredWhere —— matchesFilters 的精确下推。谓词作用于构建资产组的
+    /// 首选行，页面游标留在组查询的 HAVING 里；total 用同一 WHERE（countForScope），
+    /// 因此 filtered 范围的 total 与页内容永远同一口径。
+    ///
+    /// metadataConflictOnly 同样下推（旧实现只在 JS 层过滤 → total 虚高、可空页）：
+    /// 判定规则与 matchesFilters 一致，都是「首选变体的 photo_path 有 status='conflict'
+    /// 的 outbox 行」。
     private func buildFilteredWhere(
         sessionId: String,
         filters: CullingFilters?
@@ -1312,17 +1462,30 @@ public final class CullingService {
                 clauses.append("COALESCE(d.decision, 'pending') IN (\(placeholders))")
                 params.append(contentsOf: decisions.map { .text($0) })
             }
+            // 星级/色标只读唯一真相源 c（photo_metadata_cache）；d.rating /
+            // d.color_label 是镜像列，读它们会恢复双真相源。
             if let ratings = filters.ratings, !ratings.isEmpty {
                 let placeholders = ratings.map { _ in "?" }.joined(separator: ",")
-                clauses.append("COALESCE(d.rating, c.rating, 0) IN (\(placeholders))")
+                clauses.append("COALESCE(c.rating, 0) IN (\(placeholders))")
                 params.append(contentsOf: ratings.map { DBValue.real($0) })
             }
             if let colorLabels = filters.colorLabels, !colorLabels.isEmpty {
                 let placeholders = colorLabels.map { _ in "?" }.joined(separator: ",")
                 clauses.append("""
-                    COALESCE(NULLIF(d.color_label, ''), NULLIF(c.label, ''), 'None') IN (\(placeholders))
+                    COALESCE(NULLIF(c.label, ''), 'None') IN (\(placeholders))
                     """)
                 params.append(contentsOf: colorLabels.map { .text($0.rawValue) })
+            }
+            if filters.metadataConflictOnly == true {
+                clauses.append("""
+                    EXISTS (
+                      SELECT 1 FROM metadata_outbox o
+                      JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
+                      WHERE os.session_id = ? AND o.status = 'conflict'
+                        AND o.photo_path = p.filepath
+                    )
+                    """)
+                params.append(.text(sessionId))
             }
             if filters.qualityStatus == .analysed || filters.qualityStatus == .failed {
                 // json_valid() 防护历史行 result_json 非法的情形：
@@ -1469,8 +1632,7 @@ public final class CullingService {
         xmpPaths: [String]
     ) throws -> [String: MetadataOutboxRow] {
         let unique = Array(Set(xmpPaths))
-        var rows: [MetadataOutboxRow] = []
-        try withChunkedIds(unique) { chunk in
+        let rows: [MetadataOutboxRow] = try withChunkedIds(unique) { chunk in
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             return try connection.prepare("""
                 SELECT o.*
@@ -1664,7 +1826,7 @@ public final class CullingService {
         } else {
             outboxByPath = try loadOutboxByPaths(
                 sessionId: sessionId,
-                xmpPaths: photos.map { TSPath.xmpSidecarPath($0.filepath) }
+                xmpPaths: photos.map { MetadataOutboxPath.sidecar($0.filepath) }
             )
         }
         let similarityMap = try getLatestSimilarityMap(sessionId: sessionId)
@@ -1697,7 +1859,7 @@ public final class CullingService {
         }
         var linkedCounts: [String: Int] = [:]
         for photo in photos {
-            let xmpPath = TSPath.xmpSidecarPath(photo.filepath)
+            let xmpPath = MetadataOutboxPath.sidecar(photo.filepath)
             linkedCounts[xmpPath, default: 0] += 1
         }
 
@@ -1712,7 +1874,7 @@ public final class CullingService {
         for (_, members) in qualityGroups {
             let sorted = members.sorted { $0.quality.score > $1.quality.score }
             for (index, member) in sorted.enumerated() {
-                var updated = qualityByPhoto[member.photoId]!
+                guard var updated = qualityByPhoto[member.photoId] else { continue }
                 updated.relativeRank = Double(index + 1)
                 qualityByPhoto[member.photoId] = updated
             }
@@ -1738,7 +1900,7 @@ public final class CullingService {
         let assets: [CullingAsset] = photos.map { photo in
             let decision = lookup.decisions[photo.id]
             let cache = lookup.cacheRows[photo.id]
-            let xmpPath = TSPath.xmpSidecarPath(photo.filepath)
+            let xmpPath = MetadataOutboxPath.sidecar(photo.filepath)
             let outbox = lookup.outboxByPath[xmpPath]
             var metadataSource: MetadataMutationSource?
             if let parsed = try? JSONValue.parse(outbox?.patchJSON ?? "{}"),
@@ -1779,9 +1941,9 @@ public final class CullingService {
                 ),
                 state: rowToState(
                     photoId: photo.id,
-                    row: decision,
-                    fallbackRating: cache?.rating ?? 0,
-                    fallbackLabel: cache?.label ?? "None"
+                    decisionRow: decision,
+                    cachedRating: cache?.rating ?? 0,
+                    cachedLabel: cache?.label
                 ),
                 xmpPath: xmpPath,
                 syncStatus: MetadataSyncStatus(rawValue: outbox?.status ?? "") ?? .clean,
@@ -1806,6 +1968,15 @@ public final class CullingService {
             assetsByAssetId[assetId, default: []].append(asset)
         }
         return assetIdOrder.compactMap { assetsByAssetId[$0] }.map { variants in
+            // 代表行=「RAW 变体优先，其次最小 rowid」，与 SQL 的
+            // PhotoRepo.preferredRowOrderSQL 是同一条规则，这里是它的内存态实现：
+            // 输入数组按 rowid 升序（getBySession / getAssetPage / loadAssetRows 都
+            // 是），故「首个 RAW，否则首个」≡「RAW 优先，其次最小 rowid」。
+            // 不能直接调用 SQL 排序的原因：list() 走 getBySession 全量读、不经过
+            // 任何组查询（scope: .all 的分页也不选代表行），shared 规则只有 SQL 串
+            // 形态；RAW 判定本身已复用共享表 PhotoRepo.rawExtensions。
+            // 两条路径的一致性由 CullingRepresentativeRowRuleTests 双向钉住
+            //（list 与 filtered 分页在 JPEG 先入时都必须给 RAW）。
             let preferred = variants.first(where: {
                 isPreferredRawVariant(filename: $0.photo.filename)
             }) ?? variants[0]
@@ -1826,25 +1997,34 @@ public final class CullingService {
     }
 
     /// TS: filterVisible —— SQL 下推之上的最终安全网。已下推的过滤器
-    /// （pick/rating/label/quality/similarity）SQL 谓词已作用在首选行，此 JS 遍
-    /// 恒通过；未下推的 metadataConflictOnly 在这里应用。
+    /// （pick/rating/label/quality/similarity/metadataConflictOnly）SQL 谓词已作用
+    /// 在首选行，此 JS 遍恒通过（同一 photo_path 判定规则，见 conflictPhotoPaths）。
     private func filterVisible(
         _ assets: [CullingAsset],
         scope: CullingScope,
         filters: CullingFilters?,
-        requestedGroupId: String?
+        requestedGroupId: String?,
+        conflictingPhotoPaths: Set<String>
     ) -> [CullingAsset] {
         assets.filter { asset in
             if scope == .similarityGroup {
                 guard let similarityGroupId = asset.similarityGroupId else { return false }
                 if let requestedGroupId, similarityGroupId != requestedGroupId { return false }
             }
-            return scope != .filtered || matchesFilters(asset, filters: filters)
+            return scope != .filtered
+                || matchesFilters(asset, filters: filters, conflictingPhotoPaths: conflictingPhotoPaths)
         }
     }
 
     /// TS: matchesFilters。
-    private func matchesFilters(_ asset: CullingAsset, filters: CullingFilters?) -> Bool {
+    /// metadataConflictOnly 与 SQL 下推用**同一条规则**：该资产首选变体的 photo_path
+    /// 存在 status='conflict' 的 outbox 行。用 syncStatus（每资产首选的侧车行）会让
+    /// 两遍在「变体与首选不同行」时发散，故这里显式用同一集合。
+    private func matchesFilters(
+        _ asset: CullingAsset,
+        filters: CullingFilters?,
+        conflictingPhotoPaths: Set<String>
+    ) -> Bool {
         guard let filters else { return true }
         if filters.unreviewedOnly == true && asset.state.pickState != .unreviewed { return false }
         if let ratings = filters.ratings, !ratings.isEmpty,
@@ -1856,8 +2036,25 @@ public final class CullingService {
         if filters.qualityStatus == .analysed && asset.quality?.status != .succeeded { return false }
         if filters.qualityStatus == .failed && asset.quality?.status != .failed { return false }
         if filters.qualityStatus == .unanalysed && asset.quality != nil { return false }
-        if filters.metadataConflictOnly == true && asset.syncStatus != .conflict { return false }
+        if filters.metadataConflictOnly == true
+            && !conflictingPhotoPaths.contains(asset.photo.filepath) { return false }
         return true
+    }
+
+    /// metadataConflictOnly 的冲突照片路径集合（SQL 下推与 JS 安全网共用的唯一规则）。
+    /// 未启用该过滤时返回空集合（不额外查询）。
+    private func conflictPhotoPaths(
+        sessionId: String,
+        filters: CullingFilters?
+    ) throws -> Set<String> {
+        guard filters?.metadataConflictOnly == true else { return [] }
+        let rows = try connection.prepare("""
+            SELECT DISTINCT o.photo_path
+            FROM metadata_outbox o
+            JOIN metadata_outbox_sessions os ON os.xmp_path = o.xmp_path
+            WHERE os.session_id = ? AND o.status = 'conflict'
+          """).query([.text(sessionId)])
+        return Set(rows.compactMap { $0[0].textValue })
     }
 
     // MARK: - 会话更新上下文缓存（TS getSessionUpdateContext /
@@ -1865,6 +2062,22 @@ public final class CullingService {
 
     /// TS: getSessionUpdateContext —— 会话照片 + id 索引，TTL 缓存。更新路径
     /// 用它让点击突发不再每次重读整个会话（轻投影跳过重 JSON 列）。
+    /// 库侧存在性查询（分块 IN，避免 SQLite 变量上限）：历史重放的跳过规则与
+    /// 直接调用的契约错误共用。
+    private func existingSessionPhotoIds(sessionId: String, photoIds: [String]) throws -> Set<String> {
+        var found = Set<String>()
+        for chunk in photoIds.chunked(by: 800) where !chunk.isEmpty {
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let rows = try connection.prepare(
+                "SELECT id FROM photos WHERE session_id = ? AND id IN (\(placeholders))"
+            ).query([.text(sessionId)] + chunk.map { .text($0) })
+            for row in rows {
+                if let id = row[0].textValue { found.insert(id) }
+            }
+        }
+        return found
+    }
+
     private func getSessionUpdateContext(sessionId: String) -> SessionUpdateEntry {
         let now = Date()
         if let cached = sessionUpdateCache[sessionId], cached.expiresAt > now {
@@ -1922,7 +2135,7 @@ public final class CullingService {
         entry.groupMapResultId = lookup.resultRow?.id
         var linkedByXmp: [String: [CullingPhotoRow]] = [:]
         for photo in entry.photos {
-            let xmpPath = TSPath.xmpSidecarPath(photo.filepath)
+            let xmpPath = MetadataOutboxPath.sidecar(photo.filepath)
             linkedByXmp[xmpPath, default: []].append(photo)
         }
         entry.linkedByXmp = linkedByXmp
@@ -2086,37 +2299,34 @@ public final class CullingService {
         return 0
     }
 
-    /// TS: rowToState —— 决策行 + 缓存兜底 → AssetCullingState。
+    /// TS: rowToState —— 决策行（取舍/版本/来源）+ 唯一真相源（星级/色标）→
+    /// AssetCullingState。
+    ///
+    /// 禁止在决策行存在时改读 row.rating / row.colorLabel：那两列是镜像列，
+    /// 读取它们等于恢复「读 A 走 B」的双真相源（见文件头注）。
     private func rowToState(
         photoId: String,
-        row: CullingDecisionRow?,
-        fallbackRating: Int64,
-        fallbackLabel: String
+        decisionRow: CullingDecisionRow?,
+        cachedRating: Int64,
+        cachedLabel: String?
     ) -> AssetCullingState {
-        let colorLabel: CaptureOneColorLabel
-        if let parsed = CaptureOneColorLabel(rawValue: fallbackLabel),
-           Self.colorLabels.contains(parsed) {
-            colorLabel = parsed
-        } else {
-            colorLabel = .none
-        }
-        let rating = (0...5).contains(fallbackRating) ? fallbackRating : 0
-        let rowColorLabel: CaptureOneColorLabel
-        if let parsed = CaptureOneColorLabel(rawValue: row?.colorLabel ?? ""),
-           Self.colorLabels.contains(parsed) {
-            rowColorLabel = parsed
-        } else {
-            rowColorLabel = .none
-        }
+        let rating = (0...5).contains(cachedRating) ? cachedRating : 0
         return AssetCullingState(
             photoId: photoId,
-            pickState: decisionToPickState(row?.decision),
-            rating: Double(row?.rating ?? rating),
-            colorLabel: row != nil ? rowColorLabel : colorLabel,
-            source: sourceFromDecisionRow(row),
-            revision: Int(row?.revision ?? 0),
-            updatedAt: row?.updatedAt ?? ""
+            pickState: decisionToPickState(decisionRow?.decision),
+            rating: Double(rating),
+            colorLabel: Self.colorLabel(cachedLabel),
+            source: sourceFromDecisionRow(decisionRow),
+            revision: Int(decisionRow?.revision ?? 0),
+            updatedAt: decisionRow?.updatedAt ?? ""
         )
+    }
+
+    /// 合法色标解析：nil / 未知 / 非法值一律归 .none（唯一真相源里可能有历史脏值）。
+    private static func colorLabel(_ raw: String?) -> CaptureOneColorLabel {
+        guard let raw, let parsed = CaptureOneColorLabel(rawValue: raw),
+              colorLabels.contains(parsed) else { return .none }
+        return parsed
     }
 
     /// TS: rowToState 的 source 分支（决策行存在时取合法 decision_source，缺省
@@ -2154,8 +2364,8 @@ public final class CullingService {
         }
     }
 
-    /// TS: decisionToPickState（LegacyCullingDecision 入参版，decide/batchDecide）。
-    private func decisionToPickState(_ decision: LegacyCullingDecision) -> PickState {
+    /// TS: decisionToPickState（CullingDecisionValue 入参版，decide/batchDecide）。
+    private func decisionToPickState(_ decision: CullingDecisionValue) -> PickState {
         switch decision {
         case .keep: .picked
         case .reject: .rejected
@@ -2164,7 +2374,7 @@ public final class CullingService {
     }
 
     /// TS: pickStateToDecision。
-    private func pickStateToDecision(_ pickState: PickState) -> LegacyCullingDecision {
+    private func pickStateToDecision(_ pickState: PickState) -> CullingDecisionValue {
         switch pickState {
         case .picked: .keep
         case .rejected: .reject
@@ -2239,7 +2449,8 @@ public final class CullingService {
     }
 
     /// TS: isPreferredRawVariant —— 首选 RAW 变体探测（小写扩展名集合的 O(1)
-    /// 探测替代 per-candidate `some(...endsWith)` 扫描）。
+    /// 探测替代 per-candidate `some(...endsWith)` 扫描）。扩展名表来自共享的
+    /// PhotoRepo.rawExtensions，与 preferredRowOrderSQL 的 LIKE 链同源。
     private func isPreferredRawVariant(filename: String) -> Bool {
         let lower = filename.lowercased()
         guard let dot = lower.lastIndex(of: ".") else { return false }

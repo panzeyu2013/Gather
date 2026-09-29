@@ -5,6 +5,32 @@
 import Foundation
 import GatherCore
 
+/// 进程级界面语言的存储盒子。
+/// Swift 6：`nonisolated` 全局可变状态非法（#MutableGlobalVariable），原先的
+/// `static var appLanguage` 改为锁保护盒子 + 计算属性，读写语义与原子性不变。
+/// `@unchecked Sendable` 的依据：唯一可变状态 `value` 只在 `lock` 临界区内读写。
+private final class AppLanguageStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String
+
+    init(_ initial: String) {
+        value = initial
+    }
+
+    var current: String {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            value = newValue
+        }
+    }
+}
+
 public enum GatherLocalization {
     // MARK: - 错误码 → 中文文案（error.* 键，156 项）
     public static let errorMessages: [String: String] = [
@@ -13,7 +39,6 @@ public enum GatherLocalization {
     "C1_NOT_AUTHORIZED": "缺少自动化权限。请在 系统设置 → 隐私与安全性 → 自动化 中允许 Gather 控制 Capture One，然后重试。",
     "C1_SCRIPT_FAILED": "与 Capture One 通信失败，请重试。",
     "C1_SCRIPT_TIMEOUT": "与 Capture One 通信超时，请重试。",
-    "C1_NOT_CONFIGURED": "尚未配置 Capture One 导入，请先在 Capture One 中选择照片后重试。",
     "C1_NO_SELECTED_PHOTOS": "请先在 Capture One 中选择至少一张照片",
     "SCAN_INVALID_DIR": "所选路径不是有效目录",
     "SCAN_READ_FAILED": "读取目录失败",
@@ -30,9 +55,17 @@ public enum GatherLocalization {
     "XMP_CONFLICT_DETAILS_UNAVAILABLE": "无法读取冲突详情，请刷新后重试",
     "XMP_CHOICE_MISSING": "请为每个冲突字段选择保留或恢复",
     "XMP_CONFLICT_DETAILS_INVALID": "冲突详情已损坏，无法处理",
+    "XMP_CONFIRM_OTHER_SESSION_PENDING": "同一 XMP 侧车文件仍被其他工作区占用且尚未确认同步（{{session}}）。请先在该工作区完成「加载元数据并确认同步」，再回来结清。",
     "XMP_ORPHAN_NOT_FOUND": "未找到该恢复项",
     "XMP_ORPHAN_NOT_RETRYABLE": "只有待处理或失败的项目可以重试",
     "XMP_WRITER_TIMEOUT": "等待 XMP 写入超时，请重试",
+    "XMP_DOCUMENT_CORRUPT": "照片旁的 XMP 侧车文件已损坏，无法解析。请先备份该 .xmp 文件，用支持 XMP 的软件修复或重建后再重试写回。",
+    "XMP_DOCUMENT_UNSUPPORTED": "XMP 侧车文件的结构不受支持（不是可识别的 RDF/XMP 文档）。请确认该 .xmp 文件内容，或替换为标准 XMP 文档后重试。",
+    "XMP_DOCUMENT_READ_FAILED": "无法读取 XMP 侧车文件。请检查文件是否存在、磁盘是否可访问，以及当前用户是否有读取权限，然后重试。",
+    "XMP_WRITE_FAILED": "写入 XMP 侧车文件失败。请检查磁盘剩余空间、文件写入权限，以及该文件是否被其他软件占用，然后重试。",
+    "XMP_WRITE_VERIFICATION_FAILED": "XMP 写入后校验未通过，内容可能未完整落盘。请检查磁盘空间与文件权限后重试；若反复失败，请先备份该 .xmp 文件再排查磁盘错误。",
+    "XMP_BACKUP_FAILED": "创建 XMP 备份失败，已停止写入以保护原文件。请检查备份目录的磁盘空间与写入权限，然后重试。",
+    "XMP_RESTORE_FAILED": "从备份恢复 XMP 失败，原文件未被改动。请确认备份文件存在且可写、磁盘空间充足，然后重试恢复。",
     "WRITEBACK_OTHER_MODULE_ACTIVE": "请先完成其他模块的 Capture One 同步和清理，再开始新的写回",
     "WRITEBACK_UNDO_FACE_FAILED": "撤销人脸关键词失败",
     "WRITEBACK_FAILURES_PENDING": "仍有 XMP 写入失败项，请先重试或处理失败项",
@@ -80,6 +113,10 @@ public enum GatherLocalization {
     "ASSET_RELINK_XMP_BUSY": "XMP 正在写入，暂时不能重连照片；请稍后重新扫描",
     "ASSET_RELINK_OUTBOX_CONFLICT": "新旧路径都存在未完成的 XMP 操作，请先在恢复中心处理",
     "ASSET_RELINK_XMP_CONFLICT": "目标路径已有不同的 XMP 元数据状态，请先人工确认后再重连",
+    "ASSET_RELINK_SAME_ROOT": "新资源根目录与当前根目录相同，无需重连",
+    "ASSET_RELINK_NESTED_ROOT": "新旧资源根目录存在嵌套关系，不能互相重连",
+    "ASSET_RELINK_NO_FILES_REGISTERED": "该资源根目录下没有已登记的资产文件，无法重连",
+    "ASSET_RELINK_NO_VERIFIED_FILE": "没有通过身份校验的资产文件，无法重连",
     "FACE_EPS_INVALID": "人脸聚类相似度必须是 0 到 1 之间的数字",
     "FACE_MIN_CLUSTER_INVALID": "人脸聚类最小样本数必须是大于等于 1 的整数",
     "FACE_NO_PHOTOS": "当前工作区没有可分析的照片",
@@ -131,6 +168,7 @@ public enum GatherLocalization {
     "SIM_GROUPING_MODE_INVALID": "无效的分组方式",
     "DUP_RESOLVE_CONFIRM_REQUIRED": "处理重复组前需要明确确认",
     "DUP_RESOLVE_MEMBER_CONFIRM_REQUIRED": "处理重复照片前需要明确确认",
+    "DUP_THRESHOLD_INVALID": "视觉相似度阈值必须是 0 到 64 之间的整数",
     "METADATA_SET_CONFIRM_REQUIRED": "写入元数据前需要明确确认",
     "METADATA_BATCH_SET_CONFIRM_REQUIRED": "批量写入元数据前需要明确确认",
     "METADATA_RESOLVE_CONFLICT_CONFIRM_REQUIRED": "裁决元数据冲突前需要明确确认",
@@ -153,12 +191,14 @@ public enum GatherLocalization {
     "METADATA_KEYWORDS_OP_INVALID": "关键词操作无效（仅支持追加/替换/移除）",
     "METADATA_PATCH_EMPTY": "元数据修改内容为空",
     "METADATA_MUTATION_EMPTY": "没有可更新的元数据字段",
+    "FILTER_CRITERIA_INVALID": "筛选条件无效",
     "FILTER_FIELD_UNKNOWN": "未知的筛选字段：{{field}}",
     "FILTER_SCHEMA_UNSUPPORTED": "不支持的筛选条件版本：{{version}}",
     "TEMPLATE_NOT_FOUND": "模板不存在",
     "TEMPLATE_CONFIG_INVALID": "模板配置格式无效",
     "TEMPLATE_DELETE_CONFIRM_REQUIRED": "删除模板前需要明确确认",
     "TEMPLATE_APPLY_CONFIRM_REQUIRED": "应用模板前需要明确确认",
+    "ALBUM_DELETE_CONFIRM_REQUIRED": "删除相册前需要明确确认",
     "ALBUM_NOT_FOUND": "智能相册不存在",
     "PERSON_NOT_FOUND": "人物不存在",
     "PERSON_DELETE_CONFIRM_REQUIRED": "删除人物前需要明确确认",
@@ -173,18 +213,43 @@ public enum GatherLocalization {
     /// 支持参数化错误码（路由返回 "CODE::p1::p2" 形式）：按模板中
     /// {{field}}/{{expected}}/{{current}} 占位符出现顺序依次插值。
     public static func errorText(_ code: String) -> String {
-        guard let template = resolvedTemplate(for: code) else { return "发生未知错误，请稍后重试" }
+        guard let template = resolvedTemplate(for: code) else { return l("发生未知错误，请稍后重试") }
         return template
     }
 
-    /// 错误码 → 模板（含参数插值）；非错误码返回 nil（调用方决定回退）。
+    /// 错误码 → 模板（先本地化、再参数插值）；非错误码返回 nil（调用方回退）。
+    /// 支持两种参数形态：路由的 `CODE::p1::p2`，以及 Core 侧 description 的
+    /// `CODE: 参数`（如 XMP_CONFIRM_OTHER_SESSION_PENDING: <会话>）。
+    /// 插值必须在本地化之后：否则中文模板 + 参数拼出的字符串查不到 en 表。
     private static func resolvedTemplate(for code: String) -> String? {
         let parts = code.components(separatedBy: "::")
-        guard let template = errorMessages[parts[0]] else { return nil }
-        var result = template
-        var paramIndex = 1
+        if let template = errorMessages[parts[0]] {
+            return interpolate(template, params: Array(parts.dropFirst()))
+        }
+        guard let colon = code.firstIndex(of: ":") else { return nil }
+        let head = String(code[code.startIndex..<colon])
+        let tail = String(code[code.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        guard !tail.isEmpty, let template = errorMessages[head] else { return nil }
+        return interpolate(template, params: [tail])
+    }
+
+    /// 「已知码 + 单冒号参数」形态判定：首冒号前段是错误表收录的码，且其后参数
+    /// 非空。与 resolvedTemplate 第二分支严格同构（同一冒号切分、同样 trim 后要求
+    /// 非空），故命中即一定可插值。用于补 Library 的码形门槛：该门槛只认大写 ASCII
+    /// 形态，会把 "XMP_CONFIRM_OTHER_SESSION_PENDING: s1" 误判为散文并丢掉插值。
+    public static func isParameterizedErrorCode(_ raw: String) -> Bool {
+        guard let colon = raw.firstIndex(of: ":") else { return false }
+        let head = String(raw[raw.startIndex..<colon])
+        guard errorMessages[head] != nil else { return false }
+        let tail = String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        return !tail.isEmpty
+    }
+
+    private static func interpolate(_ template: String, params: [String]) -> String {
+        var result = l(template)
+        var paramIndex = 0
         while let range = result.range(of: #"\{\{[a-zA-Z]+\}\}"#, options: .regularExpression) {
-            let replacement = paramIndex < parts.count ? parts[paramIndex] : ""
+            let replacement = paramIndex < params.count ? params[paramIndex] : ""
             result.replaceSubrange(range, with: replacement)
             paramIndex += 1
         }
@@ -205,9 +270,9 @@ public enum GatherLocalization {
     /// 对齐 TS translateJobErrorMessage：任务错误消息仅错误码才展示对应文案，
     /// 其余（原始诊断/英文不变量）一律回退通用文案，原始细节保留给 tooltip。
     public static func jobErrorMessage(_ message: String?) -> String {
-        guard let message, !message.isEmpty else { return "发生未知错误，请稍后重试" }
+        guard let message, !message.isEmpty else { return l("发生未知错误，请稍后重试") }
         if let translated = resolvedTemplate(for: message) { return translated }
-        return "发生未知错误，请稍后重试"
+        return l("发生未知错误，请稍后重试")
     }
 
     /// 翻译任意 Error/字符串：消息是错误码则翻译（含参数化错误码插值），
@@ -225,68 +290,81 @@ public enum GatherLocalization {
         return resolvedTemplate(for: raw) ?? raw
     }
 
-    // MARK: - 任务状态（jobs.status.*）
+    /// 破坏性动作被用户取消时的统一可见文案（「已取消“%@”，未执行任何更改」）：
+    /// Duplicates/Settings/FaceKeywording/Similarity 四处逐字同款，收敛为单一出口；
+    /// 各自的状态面（notice/writebackMessage、附带清理的字段）仍在调用点。
+    /// Culling 的取消文案是另一句（「已取消：%@」），语义不同，不并入此处。
+    public static func cancellationNotice(_ action: String) -> String {
+        String(format: l("已取消“%@”，未执行任何更改"), action)
+    }
+
+    // MARK: - 任务状态/类型/进度相位（jobs.* / progress.*）
+    // 旧 switch 表恒中文；现统一收敛为「码 → 中文 key」表，显示语言由 l()
+    // 决定（zh 命中 key 本身，en 查 .lproj；en 表缺项回退中文，不再有无条件中文）。
+
+    private static let jobStatusKeys: [String: String] = [
+        "queued": "排队中",
+        "running": "运行中",
+        "cancelling": "取消中",
+        "succeeded": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "interrupted": "已中断",
+    ]
+
     public static func jobStatusText(_ status: String) -> String {
-        switch status {
-        case "queued": "排队中"
-        case "running": "运行中"
-        case "cancelling": "取消中"
-        case "succeeded": "已完成"
-        case "failed": "失败"
-        case "cancelled": "已取消"
-        case "interrupted": "已中断"
-        default: status
-        }
+        guard let key = jobStatusKeys[status] else { return status }
+        return l(key)
     }
 
-    // MARK: - 任务类型（jobs.type.*）
+    private static let jobTypeKeys: [String: String] = [
+        "metadata.scan": "照片索引与元数据",
+        "checksum.backfill": "文件校验和补全",
+        "similarity.analyze": "相似照片分析",
+        "face.analyze": "人脸分析",
+        "duplicate.scan": "重复照片扫描",
+        "quality.score": "技术质量分析",
+        "export.execute": "照片导出",
+        "thumbnail.build": "缩略图生成",
+    ]
+
     public static func jobTypeText(_ type: String) -> String {
-        switch type {
-        case "metadata.scan": "照片索引与元数据"
-        case "checksum.backfill": "文件校验和补全"
-        case "similarity.analyze": "相似照片分析"
-        case "face.analyze": "人脸分析"
-        case "duplicate.scan": "重复照片扫描"
-        case "quality.score": "技术质量分析"
-        case "export.execute": "照片导出"
-        case "thumbnail.build": "缩略图生成"
-        default: type
-        }
+        guard let key = jobTypeKeys[type] else { return type }
+        return l(key)
     }
 
-    // MARK: - 进度相位（progress.*）
+    // 相位码 → 中文 key（TS 原文省略号为 "..."，全站统一为 "…"）。
+    private static let progressPhaseKeys: [String: String] = [
+        "export.processing": "正在导出照片…",
+        "index.scanning": "正在增量扫描文件",
+        "index.checksum": "正在后台补齐文件校验和",
+        "index.done": "索引完成",
+        "index.metadata-read": "正在读取拍摄元数据",
+        "index.metadata-done": "索引与元数据完成",
+        "similarity.hash": "正在计算感知哈希…",
+        "similarity.hash-done": "哈希计算完成",
+        "similarity.cluster": "正在聚类相似照片…",
+        "similarity.cluster-done": "聚类完成",
+        "similarity.thresholds": "正在预计算邻居阈值…",
+        "similarity.analyzing": "正在计算哈希并聚类…",
+        "face.init": "正在初始化人脸检测器…",
+        "face.detect": "正在检测人脸…",
+        "face.detecting": "正在检测人脸…",
+        "face.cached-clusters": "正在复用缓存的人脸聚类…",
+        "face.cached-faces": "正在复用缓存的人脸…",
+        "face.cluster": "正在聚类人脸…",
+        "face.done": "分析完成",
+        "duplicate.read": "正在读取文件信息",
+        "duplicate.hash": "正在计算内容校验和",
+        "duplicate.done": "重复扫描完成",
+        "quality.scoring": "正在分析技术质量",
+        "thumbnail.building": "正在生成缩略图",
+        "models.installed": "人脸模型已安装",
+    ]
+
     public static func progressPhaseText(_ phase: String?) -> String {
-        guard let phase else { return "正在处理…" }
-        return switch phase {
-        case "export.processing": "正在导出照片…"
-        case "index.scanning": "正在增量扫描文件"
-        case "index.checksum": "正在后台补齐文件校验和"
-        case "index.done": "索引完成"
-        case "index.metadata-read": "正在读取拍摄元数据"
-        case "index.metadata-done": "索引与元数据完成"
-        case "similarity.hash": "正在计算感知哈希…"
-        case "similarity.hash-done": "哈希计算完成"
-        case "similarity.cluster": "正在聚类相似照片…"
-        case "similarity.cluster-done": "聚类完成"
-        case "similarity.thresholds": "正在预计算邻居阈值…"
-        // TS 原文为 "正在计算哈希并聚类..."，全站省略号统一为 "…"。
-        case "similarity.analyzing": "正在计算哈希并聚类…"
-        case "face.init": "正在初始化人脸检测器…"
-        case "face.detect": "正在检测人脸…"
-        // TS 原文为 "正在检测人脸..."，全站省略号统一为 "…"。
-        case "face.detecting": "正在检测人脸…"
-        case "face.cached-clusters": "正在复用缓存的人脸聚类…"
-        case "face.cached-faces": "正在复用缓存的人脸…"
-        case "face.cluster": "正在聚类人脸…"
-        case "face.done": "分析完成"
-        case "duplicate.read": "正在读取文件信息"
-        case "duplicate.hash": "正在计算内容校验和"
-        case "duplicate.done": "重复扫描完成"
-        case "quality.scoring": "正在分析技术质量"
-        case "thumbnail.building": "正在生成缩略图"
-        case "models.installed": "人脸模型已安装"
-        default: "正在处理…"
-        }
+        guard let phase, let key = progressPhaseKeys[phase] else { return l("正在处理…") }
+        return l(key)
     }
 
     // MARK: - 界面语言（settings.ui_language 共享访问；对齐 SettingsViewModel
@@ -295,7 +373,12 @@ public enum GatherLocalization {
     /// 当前界面语言（"zh-CN"/"en"）。设置页 settings.set_language 后经
     /// languageChanged 通知刷新（DashboardView 订阅）；启动时未收到通知 →
     /// 回退系统语言检测（对齐 effectiveAppLocale 未设置 ui_language 分支）。
-    public static var appLanguage: String = Self.detectSystemLanguage()
+    private static let appLanguageStorage = AppLanguageStorage(Self.detectSystemLanguage())
+
+    public static var appLanguage: String {
+        get { appLanguageStorage.current }
+        set { appLanguageStorage.current = newValue }
+    }
 
     /// 显式设置界面语言（对齐 effectiveAppLocale：仅接受 zh-CN/en，
     /// 其余回退系统检测）。

@@ -29,9 +29,10 @@
 //   XMP + 共享数 + 外部冲突 + 来源，前 50 行，max-height 240）+ 预览/执行 +
 //   写回报告（已写入/失败/已跳过三色统计卡 28pt + 失败项 + 重试/确认同步/清理 +
 //   reload 行；预览生成后即显示操作行）。
-// - 保留合理增益：2 个 confirmationDialog（确认写回/清理；解除绑定为可逆
-//   操作即时执行、移除成员对齐旧版即时执行）、GatherEmptyState 空态、
-//   顶部错误/提示横幅、审核动作失败的内联错误块。
+// - 破坏性命令（fkw.unbind / fkw.writeback / fkw.cleanup）一律经确认弹窗后
+//   才带 confirmed: true（取消只写可见文案、不发命令）；移除成员/合并仍对齐
+//   旧版即时执行（命令面无 confirmed 门控）；GatherEmptyState 空态、顶部
+//   错误/提示横幅、审核动作失败的内联错误块。
 import Combine
 import SwiftUI
 import GatherCore
@@ -83,12 +84,18 @@ public final class FaceKeywordingViewModel {
     private(set) public var isLoading = true
     private(set) public var isWritingBack = false
     private(set) public var errorMessage: String?
+    /// 分析错误原文（tooltip）：仅当 errorMessage 回落通用文案（英文散文等不可读
+    /// 诊断）时非空；中文可读原因/错误码已直接上屏，不再重复。
+    private(set) public var errorDetail: String?
     private(set) public var notice: String?
     private(set) public var analysisPhase: AnalysisPhase = .idle
     private(set) public var progressCurrent = 0
     private(set) public var progressTotal = 0
     private(set) public var progressPhase = "face.detecting"
     private(set) public var modelsMissing = false
+    /// 部分失败可见警示：status == "done" 但 encodingFailures > 0（有脸没编码成功，
+    /// 下次分析自动重试）——不得显示成"一切正常"（对抗审查新增高风险）。
+    private(set) public var encodingFailureWarning: String?
     private(set) public var isSyncConfirmed = false
     /// 分析 succeeded 快照：0 簇时也保持已完成，仅首屏无分析历史才回退 idle。
     private var analysisSucceeded = false
@@ -128,9 +135,16 @@ public final class FaceKeywordingViewModel {
 
     public var analysisDone: Bool { analysisPhase == .done }
 
+    /// 错误 tooltip 原文：仅分析失败态携带。动作类错误（绑定/写回/清理等）会覆盖
+    /// errorMessage，此时不得复用上一次分析的诊断原文。
+    public var errorTooltip: String? {
+        analysisPhase == .failed ? errorDetail : nil
+    }
+
     public var canWriteback: Bool {
         // TS StepWriteback.tsx:195-203：仅分析未完成或正在写回时禁用；
-        // 无预览时执行会自动补一次预览（handleExecute 语义）。
+        // 无预览时由 requestWritebackConfirmation 先补一次预览再弹出确认
+        // （handleExecute 语义，但确认前不写盘）。
         analysisDone && !isWritingBack
     }
 
@@ -207,6 +221,23 @@ public final class FaceKeywordingViewModel {
         step = .review
     }
 
+    /// analyze 成功后的可见结果：encodingFailures > 0 时不显示「分析完成」，
+    /// 改为 warning 警示（这些脸没被编码，下次分析会自动重试——core 语义），
+    /// 避免"部分失败"在 UI 上被伪装成一切正常。
+    private func applyEncodingFailures(_ result: FaceAnalysisResult?) {
+        let failures = result?.encodingFailures ?? 0
+        guard failures > 0 else {
+            encodingFailureWarning = nil
+            notice = GatherLocalization.l("人脸分析完成")
+            return
+        }
+        encodingFailureWarning = String(
+            format: GatherLocalization.l("有 %lld 张人脸编码失败，相关照片可能未被完整处理；下次分析会自动重试。"),
+            failures
+        )
+        notice = nil
+    }
+
     public func analyze() async {
         guard analysisPhase != .running else { return }
         analysisPhase = .running
@@ -214,6 +245,8 @@ public final class FaceKeywordingViewModel {
         progressTotal = 0
         progressPhase = "face.detecting"
         errorMessage = nil
+        errorDetail = nil
+        encodingFailureWarning = nil
         do {
             let data = try await client.executeAsync("fkw.analyze", params: [
                 "sessionId": .string(sessionId),
@@ -233,7 +266,7 @@ public final class FaceKeywordingViewModel {
                 return
             }
             finishAnalysis()
-            notice = GatherLocalization.l("人脸分析完成")
+            applyEncodingFailures(analysisResult)
             load()
         } catch {
             if Self.rawMessage(for: error).localizedCaseInsensitiveContains("cancelled") {
@@ -241,7 +274,9 @@ public final class FaceKeywordingViewModel {
                 notice = GatherLocalization.l("人脸分析已取消")
             } else {
                 analysisPhase = .failed
-                errorMessage = NativeCommandClient.message(for: error) + guidanceSuffix
+                let failure = Self.analysisFailure(for: error)
+                errorMessage = failure.text + guidanceSuffix
+                errorDetail = failure.detail
             }
         }
     }
@@ -255,10 +290,20 @@ public final class FaceKeywordingViewModel {
         }
     }
 
+    /// 「仅重新聚类」的影响面（破坏性确认文案用）：簇总数与其中已绑定人物/角色的簇数。
+    /// 纯查询、无副作用，供 UI 在弹确认框前取真实计数。
+    public func reclusterImpact() -> (clusterCount: Int, boundClusterCount: Int) {
+        (
+            clusters.count,
+            clusters.filter { $0.binding != nil || $0.matchedPersonId != nil }.count
+        )
+    }
+
     public func recluster() async {
         guard analysisPhase != .running else { return }
         analysisPhase = .running
         errorMessage = nil
+        errorDetail = nil
         do {
             _ = try await client.executeAsync("fkw.recluster", params: [
                 "sessionId": .string(sessionId),
@@ -273,7 +318,9 @@ public final class FaceKeywordingViewModel {
                 analysisPhase = .cancelled
             } else {
                 analysisPhase = .failed
-                errorMessage = NativeCommandClient.message(for: error) + guidanceSuffix
+                let failure = Self.analysisFailure(for: error)
+                errorMessage = failure.text + guidanceSuffix
+                errorDetail = failure.detail
             }
         }
     }
@@ -295,6 +342,7 @@ public final class FaceKeywordingViewModel {
                 "roleName": .string(role),
                 "keywords": .array(words.map(JSONValue.string)),
             ])
+            publishChange(.faceKeywording, .persons)
             notice = String(format: GatherLocalization.l("已绑定簇 #%lld"), cluster.id)
             reviewActionError = nil
             load()
@@ -304,13 +352,20 @@ public final class FaceKeywordingViewModel {
         }
     }
 
-    public func unbind(_ cluster: FaceClusterData) async {
+    /// 解除绑定：命令层 FKW_UNBIND_CONFIRM_REQUIRED 门控，`confirmed` 只能由
+    /// 确认弹窗传入 true（旧实现恒 true 已删除）。
+    public func unbind(_ cluster: FaceClusterData, confirmed: Bool) async {
+        guard confirmed else {
+            notice = GatherLocalization.l("未确认，已取消解除绑定")
+            return
+        }
         do {
             _ = try await client.executeAsync("fkw.unbind", params: [
                 "sessionId": .string(sessionId),
                 "clusterId": .number(Double(cluster.id)),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ])
+            publishChange(.faceKeywording, .persons)
             notice = String(format: GatherLocalization.l("已解除簇 #%lld 的绑定"), cluster.id)
             reviewActionError = nil
             load()
@@ -327,6 +382,7 @@ public final class FaceKeywordingViewModel {
                 "clusterId": .number(Double(cluster.id)),
                 "memberId": .number(Double(member.memberId)),
             ])
+            publishChange(.faceKeywording)
             notice = String(format: GatherLocalization.l("已从簇 #%lld 移除成员"), cluster.id)
             reviewActionError = nil
             load()
@@ -352,6 +408,7 @@ public final class FaceKeywordingViewModel {
                 "source": .number(Double(cluster.id)),
                 "target": .number(Double(target)),
             ])
+            publishChange(.faceKeywording)
             notice = String(format: GatherLocalization.l("已将簇 #%lld 合并到簇 #%lld"), cluster.id, target)
             mergeTargetId = nil
             reviewActionError = nil
@@ -389,51 +446,58 @@ public final class FaceKeywordingViewModel {
         }
     }
 
-    /// TS handleExecute（StepWriteback.tsx:53-69）：确认写回时若尚无预览，
-    /// 先自动生成一次预览，再按预览项执行写回（一键直写语义）。
-    public func writeback() async {
+    /// 写回确认准备：无预览时先生成一次预览，让确认弹窗展示真实影响范围
+    /// （绑定簇 / 受影响照片 / XMP 项与示例路径）。返回是否存在可确认的写回项。
+    public func prepareWritebackConfirmation() async -> Bool {
         guard analysisDone else {
             errorMessage = GatherLocalization.l("请先完成人脸分析")
+            return false
+        }
+        if preview == nil { await previewWriteback() }
+        guard let preview = preview, !preview.items.isEmpty else {
+            if self.preview != nil {
+                errorMessage = GatherLocalization.l("预览没有可写回项")
+            }
+            return false
+        }
+        return true
+    }
+
+    /// TS handleExecute（StepWriteback.tsx:53-69）：用户确认后按预览项执行写回。
+    /// `confirmed` 只能由确认弹窗传入 true；旧实现「无预览自动补预览 + 恒 true」
+    /// 已删除（预览改由 prepareWritebackConfirmation 负责）。
+    public func writeback(confirmed: Bool) async {
+        guard confirmed else {
+            notice = GatherLocalization.l("未确认，已取消写回")
+            return
+        }
+        guard let preview = preview, !preview.items.isEmpty else {
+            errorMessage = GatherLocalization.l("请先生成写回预览并确认影响范围")
             return
         }
         isWritingBack = true
         defer { isWritingBack = false }
         do {
-            let preview: FaceKwWritebackPreview
-            if let existing = self.preview {
-                preview = existing
-            } else {
-                let options = FaceKwWritebackOptions(
-                    createAlbums: false,
-                    addPrefix: false,
-                    markUngrouped: false,
-                    writeIPTC: false
-                )
-                let data = try await client.executeAsync("fkw.preview", params: [
-                    "sessionId": .string(sessionId),
-                    "options": try JSONValue(from: options),
-                ])
-                preview = try data.decoded(as: FaceKwWritebackPreview.self)
-                self.preview = preview
-            }
-            guard !preview.items.isEmpty else {
-                errorMessage = GatherLocalization.l("预览没有可写回项")
-                return
-            }
             let data = try await client.executeAsync("fkw.writeback", params: [
                 "sessionId": .string(sessionId),
                 "items": .array(try preview.items.map { try JSONValue(from: $0) }),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ])
             writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
             isSyncConfirmed = false
+            publishChange(.metadata)
             notice = String(format: GatherLocalization.l("已写回 %lld 项；请先让 Capture One 重新加载元数据"), writebackResult?.written ?? 0)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func retryFailed() async {
+    /// 重试失败项：同样是 WRITEBACK_CONFIRM_REQUIRED 门控的破坏性命令。
+    public func retryFailed(confirmed: Bool) async {
+        guard confirmed else {
+            notice = GatherLocalization.l("未确认，已取消重试")
+            return
+        }
         guard let items = writebackResult?.failedItems, !items.isEmpty else {
             errorMessage = GatherLocalization.l("没有可重试的失败项")
             return
@@ -442,10 +506,11 @@ public final class FaceKeywordingViewModel {
             let data = try await client.executeAsync("fkw.writeback", params: [
                 "sessionId": .string(sessionId),
                 "items": .array(try items.map { try JSONValue(from: $0) }),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ])
             writebackResult = try data.decoded(as: FaceKwWritebackResult.self)
             isSyncConfirmed = false
+            publishChange(.metadata)
             notice = GatherLocalization.l("已重试失败写回项")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
@@ -465,21 +530,50 @@ public final class FaceKeywordingViewModel {
         do {
             _ = try await client.executeAsync("fkw.confirm_sync", params: ["sessionId": .string(sessionId)])
             isSyncConfirmed = true
+            publishChange(.metadata)
             notice = GatherLocalization.l("已确认人脸关键字同步")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func cleanup() async {
+    /// 清理备份：FKW_CLEANUP_CONFIRM_REQUIRED 门控，`confirmed` 只能由确认弹窗
+    /// 传入 true（旧实现恒 true 已删除）。
+    public func cleanup(confirmed: Bool) async {
+        guard confirmed else {
+            notice = GatherLocalization.l("未确认，已取消清理")
+            return
+        }
         do {
             _ = try await client.executeAsync("fkw.cleanup", params: [
                 "sessionId": .string(sessionId),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ])
+            publishChange(.metadata)
             notice = GatherLocalization.l("已清理人脸写回备份")
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
+        }
+    }
+
+    /// 取消破坏性动作：可见文案（不静默 return，也不发命令）。
+    public func reportCancellation(_ action: String) {
+        notice = GatherLocalization.cancellationNotice(action)
+        errorMessage = nil
+        reviewActionError = nil
+    }
+
+    /// 合并目标无效时的内联错误（UI 侧不再用 merge() 做校验，避免静默执行）。
+    public func reportInvalidMergeTarget() {
+        let text = GatherLocalization.l("请选择有效的目标簇")
+        errorMessage = text
+        reviewActionError = text
+    }
+
+    /// 写路径统一广播：人脸域；绑定/解绑同时命中人物域（person_photos 变化）。
+    private func publishChange(_ domains: GatherDomain...) {
+        for domain in domains {
+            GatherEventCenter.postDomainChange(domain, sessionId: sessionId)
         }
     }
 
@@ -501,8 +595,11 @@ public final class FaceKeywordingViewModel {
                 notice = GatherLocalization.l("人脸分析已取消")
             case .interrupted, .failed:
                 analysisPhase = .failed
-                errorMessage = GatherLocalization.jobErrorMessage(
-                    event.job.errorMessage.isEmpty ? nil : event.job.errorMessage)
+                // 与 analyze 的 catch 同一判定：中文可读原因直接上屏，
+                // 英文散文回落通用文案并留在 tooltip。
+                let failure = Self.analysisFailure(forMessage: event.job.errorMessage)
+                errorMessage = failure.text
+                errorDetail = failure.detail
             case .queued, .running, .cancelling:
                 break
             }
@@ -549,6 +646,62 @@ public final class FaceKeywordingViewModel {
         progressPhase = job.progressMessage.isEmpty ? "face.detecting" : job.progressMessage
     }
 
+    /// 分析类错误 → 用户可见文案 + tooltip 原文（对抗审查高 4 的复现点：
+    /// 中文可读原因此前被 errorText 一律吞成「发生未知错误，请稍后重试」）。
+    ///
+    /// 判定规则（优先级）：
+    /// 1. 已知错误码（含 `CODE::p1::p2` / `CODE: 参数`）→ errorText 本地化模板；
+    /// 2. 原文含中日韩字符（FaceEmbeddingError.description 这类已经是人话的原因）→ 原样上屏；
+    /// 3. 其余（英文 NSError/系统诊断/内部不变量）→ 通用回退文案，原文只进 tooltip。
+    ///
+    /// 为什么不泄露英文：分支 3 的门槛是"不含 CJK 即视为不可读诊断"，
+    /// 英文散文（如 "Failed to load model at /x: ..."）永远进不了上屏文案；
+    /// 它只出现在 .help() 悬停提示里，供排查而非阅读。
+    static func analysisFailure(for error: Error) -> (text: String, detail: String?) {
+        // FaceEmbeddingError 是 core 的中文可读错误（CustomStringConvertible）；
+        // 它不是 LocalizedError，NSError 桥接会丢掉 description，必须显式取。
+        if let embeddingError = error as? FaceEmbeddingError {
+            return analysisFailure(forMessage: embeddingError.description)
+        }
+        return analysisFailure(forMessage: rawMessage(for: error))
+    }
+
+    static func analysisFailure(forMessage raw: String) -> (text: String, detail: String?) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = GatherLocalization.errorText(Self.unknownDiagnosticMarker)
+        guard !trimmed.isEmpty else { return (fallback, nil) }
+        // errorText 命中已知码 → 本地化模板（与既有错误漏斗一致）。
+        let translated = GatherLocalization.errorText(trimmed)
+        if translated != fallback { return (translated, nil) }
+        if containsCJK(trimmed) { return (trimmed, nil) }
+        return (fallback, trimmed)
+    }
+
+    /// 仅为触发 errorText 的未知码回退分支（该字符串不是错误表里的码）。
+    private static let unknownDiagnosticMarker = "__GATHER_UNKNOWN_DIAGNOSTIC__"
+
+    /// 中日韩字符判定：汉字/假名/谚文/全角标点任一命中即认为原文是"人话"。
+    /// 纯英文 NSError 散文（ASCII + 拉丁扩展）永不命中，故不会泄露给用户。
+    static func containsCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3000...0x303F,   // CJK 标点（：（）「」，。等）
+                 0x3040...0x30FF,   // 平假名/片假名
+                 0x3400...0x4DBF,   // 汉字扩展 A
+                 0x4E00...0x9FFF,   // 汉字基本区
+                 0xF900...0xFAFF,   // 兼容汉字
+                 0xFE30...0xFE4F,   // CJK 兼容形式
+                 0xFF00...0xFFEF,   // 全角/半角形式
+                 0x1100...0x11FF,   // 韩文字母
+                 0xAC00...0xD7AF,   // 韩文音节
+                 0x20000...0x2FA1F: // 汉字扩展 B 及以后
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
     private static func rawMessage(for error: Error) -> String {
         if let native = error as? NativeCommandError { return native.description }
         if let router = error as? RouterCommandError { return router.message }
@@ -570,6 +723,132 @@ private struct FaceModelsStatusData: Codable {
     let downloading: Bool
 }
 
+// MARK: - 破坏性动作确认上下文（fkw.unbind / fkw.writeback / fkw.cleanup）
+
+/// 写回确认：影响范围 = 绑定簇 / 受影响照片 / XMP 项与示例路径。
+private struct PendingFaceWriteback: Identifiable {
+    let clusterCount: Int
+    let affectedPhotos: Int
+    let itemCount: Int
+    let samplePath: String?
+
+    var id: String { "writeback-\(itemCount)-\(affectedPhotos)" }
+
+    var scopeText: String {
+        var text = String(
+            format: GatherLocalization.l("将 %lld 个已绑定簇、%lld 张受影响照片写入 XMP，共 %lld 个文件（新建或更新）。"),
+            clusterCount, affectedPhotos, itemCount
+        )
+        if let samplePath, !samplePath.isEmpty {
+            text += String(format: GatherLocalization.l("例如：%@。"), samplePath)
+        }
+        text += GatherLocalization.l("写入后必须重新加载 Capture One 再确认同步；取消不会写入任何文件。")
+        return text
+    }
+}
+
+/// 重试失败项确认：范围 = 失败项数量与路径。
+private struct PendingFaceRetry: Identifiable {
+    let paths: [String]
+
+    var id: String { "retry-\(paths.count)-\(paths.first ?? "")" }
+
+    var scopeText: String {
+        let sample = paths.prefix(3).joined(separator: GatherLocalization.l("、"))
+        let more = paths.count > 3 ? GatherLocalization.l(" 等") : ""
+        return String(
+            format: GatherLocalization.l("将重试写入 %lld 个失败项：%@%@。取消不会重写任何文件。"),
+            paths.count, sample, more
+        )
+    }
+}
+
+/// 解除绑定确认：范围 = 簇、角色与成员数。
+private struct PendingFaceUnbind: Identifiable {
+    let cluster: FaceClusterData
+
+    var id: Int { cluster.id }
+
+    var scopeText: String {
+        let role = cluster.binding?.roleName ?? GatherLocalization.l("未知角色")
+        return String(
+            format: GatherLocalization.l("将解除簇 #%lld「%@」的绑定（%lld 名成员），并撤销已写入该角色的人脸关键词；此操作不可撤销。"),
+            cluster.id, role, cluster.size
+        )
+    }
+}
+
+/// 确认同步（fkw.confirm_sync）：与 sim.confirm_sync 对称，结清后不可回退。
+private struct PendingFaceConfirmSync: Identifiable {
+    var id: String { "face-confirm-sync" }
+
+    var scopeText: String {
+        GatherLocalization.l("确认后 Gather 认为 Capture One 已完成「加载元数据」，之后才会开放清理备份。若尚未在 Capture One 中加载，请取消。")
+    }
+}
+
+/// 成员移除确认：范围 = 成员文件名/路径与所属簇（命令面无 confirmed 门控，
+/// UI 仍需先确认不可逆影响）。
+private struct PendingFaceMemberRemoval: Identifiable {
+    let member: ClusterMember
+    let cluster: FaceClusterData
+
+    var id: String { "remove-member-\(member.memberId)" }
+
+    var scopeText: String {
+        String(
+            format: GatherLocalization.l("将把「%@」（%@）从簇 #%lld「%@」中移除；照片本身不会删除，但该成员不再参与这个簇的写回。"),
+            member.filename, member.photoPath, cluster.id, cluster.label
+        )
+    }
+}
+
+/// 合并确认：范围 = 源/目标簇与张数（合并后源簇消失）。
+private struct PendingFaceMerge: Identifiable {
+    let cluster: FaceClusterData
+    let target: FaceClusterData
+
+    var id: String { "face-merge-\(cluster.id)-\(target.id)" }
+
+    var scopeText: String {
+        String(
+            format: GatherLocalization.l("将把簇 #%lld「%@」（%lld 张）合并进簇 #%lld「%@」（%lld 张）；源簇随即消失，界面暂不提供撤销入口。"),
+            cluster.id, cluster.label, cluster.size, target.id, target.label, target.size
+        )
+    }
+}
+
+/// 清理备份确认：范围 = 已写入项数。
+private struct PendingFaceCleanup: Identifiable {
+    let writtenCount: Int
+
+    var id: String { "cleanup-\(writtenCount)" }
+
+    var scopeText: String {
+        String(
+            format: GatherLocalization.l("将恢复或移除本次人脸写回生成的 %lld 个备份 sidecar 文件；只应在 Capture One 已重新加载并确认同步后执行。取消不会改动任何文件。"),
+            writtenCount
+        )
+    }
+}
+
+/// 重新聚类确认：范围 = 现有簇数与其中已绑定人物/角色的簇数。
+/// 全量重聚类会重建簇行，人工绑定与合并随之还原（增量分析不会）——命令面无 confirmed
+/// 门控，所以必须在 UI 侧拦住；文案要给出"只想处理新照片"的正确入口。
+struct PendingFaceRecluster: Identifiable {
+    let clusterCount: Int
+    let boundClusterCount: Int
+
+    var id: String { "recluster-\(clusterCount)-\(boundClusterCount)" }
+
+    var scopeText: String {
+        String(
+            format: GatherLocalization.l("将重新计算全部人脸簇（当前 %lld 个，其中 %lld 个已绑定人物或角色）。现有簇行会被重建，人工绑定与合并会被还原，且界面暂不提供撤销入口。只想处理新照片，请改用「开始分析」——增量模式会保留现有绑定。"),
+            clusterCount, boundClusterCount
+        )
+    }
+}
+
 public struct FaceKeywordingView: View {
     @State private var viewModel: FaceKeywordingViewModel
     private let router: CommandRouter
@@ -579,8 +858,15 @@ public struct FaceKeywordingView: View {
     private let onOpenGallery: (String) -> Void
     /// 前往设置回调：可选（RootView 由外部接线）；nil 时页面内按钮禁用。
     private let onOpenSettings: (() -> Void)?
-    @State private var confirmWriteback = false
-    @State private var confirmCleanup = false
+    /// 破坏性动作的待确认上下文：非空即弹确认框；命令只在确认分支发出。
+    @State private var pendingWriteback: PendingFaceWriteback?
+    @State private var pendingRetry: PendingFaceRetry?
+    @State private var pendingUnbind: PendingFaceUnbind?
+    @State private var pendingCleanup: PendingFaceCleanup?
+    @State private var pendingConfirmSync: PendingFaceConfirmSync?
+    @State private var pendingMemberRemoval: PendingFaceMemberRemoval?
+    @State private var pendingMerge: PendingFaceMerge?
+    @State private var pendingRecluster: PendingFaceRecluster?
     @State private var visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
     @State private var hoveredClusterId: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -627,8 +913,15 @@ public struct FaceKeywordingView: View {
             // 同源），避免横幅双提示；其余操作错误仍走横幅。
             if let error = viewModel.errorMessage, viewModel.reviewActionError == nil {
                 NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
+                    // 通用回退文案时，不可读的原文（英文诊断）留在悬停提示里。
+                    .help(viewModel.errorTooltip ?? "")
             }
             if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
+            // 部分失败（encodingFailures > 0）：页面级 warning 常驻，分析成功后
+            // 自动跳到审核步骤也能看见，避免"有脸没被处理"被伪装成一切正常。
+            if let warning = viewModel.encodingFailureWarning {
+                NativeBanner(text: warning, color: GatherTheme.warning)
+            }
             ScrollView {
                 Group {
                     switch viewModel.step {
@@ -656,18 +949,92 @@ public struct FaceKeywordingView: View {
         .onChange(of: viewModel.roleFilter) { _, _ in
             visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
         }
-        .confirmationDialog(GatherLocalization.l("确认写回人脸关键字？"), isPresented: $confirmWriteback, titleVisibility: .visible) {
-            Button(GatherLocalization.l("确认写回")) { Task { await viewModel.writeback() } }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("写回前请检查预览；写入后必须重新加载 Capture One，再确认同步。"))
-        }
-        .confirmationDialog(GatherLocalization.l("确认清理人脸写回备份？"), isPresented: $confirmCleanup, titleVisibility: .visible) {
-            Button(GatherLocalization.l("清理"), role: .destructive) { Task { await viewModel.cleanup() } }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("只应在 Capture One 已重载并确认同步后执行。"))
-        }
+        // 破坏性命令统一门控：确认后才带 confirmed: true，取消只写可见文案。
+        .gatherDestructiveConfirm(
+            pending: $pendingWriteback,
+            title: GatherLocalization.l("确认写回人脸关键字？"),
+            confirmLabel: { _ in GatherLocalization.l("确认写回") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.writeback(confirmed: true) } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("写回人脸关键字")) }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingRetry,
+            title: GatherLocalization.l("确认重试失败的写回项？"),
+            confirmLabel: { _ in GatherLocalization.l("重试写入") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.retryFailed(confirmed: true) } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("重试失败写回项")) }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingUnbind,
+            title: GatherLocalization.l("确认解除人脸绑定？"),
+            confirmLabel: { _ in GatherLocalization.l("解除绑定") },
+            message: { $0.scopeText },
+            onConfirm: { pending in Task { await viewModel.unbind(pending.cluster, confirmed: true) } },
+            onCancel: { pending in
+                viewModel.reportCancellation(String(format: GatherLocalization.l("解除簇 #%lld 的绑定"), pending.cluster.id))
+            }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingCleanup,
+            title: GatherLocalization.l("确认清理人脸写回备份？"),
+            confirmLabel: { _ in GatherLocalization.l("清理") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.cleanup(confirmed: true) } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("清理人脸写回备份")) }
+        )
+        // 确认同步：与 sim.confirm_sync 对称的结清不可回退动作。
+        .gatherDestructiveConfirm(
+            pending: $pendingConfirmSync,
+            title: GatherLocalization.l("确认人脸关键字同步？"),
+            confirmLabel: { _ in GatherLocalization.l("确认同步") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.confirmSync() } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("确认人脸关键字同步")) }
+        )
+        // 重新聚类：全量重建会还原人工绑定/合并（命令面无 confirmed 门控）。
+        .gatherDestructiveConfirm(
+            pending: $pendingRecluster,
+            title: GatherLocalization.l("确认重新聚类？"),
+            confirmLabel: { _ in GatherLocalization.l("重建全部簇") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.recluster() } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("重新聚类")) }
+        )
+        // 移除成员 / 合并：命令面无 confirmed 门控，UI 仍需确认不可逆影响。
+        .gatherDestructiveConfirm(
+            pending: $pendingMemberRemoval,
+            title: GatherLocalization.l("确认移除该成员？"),
+            confirmLabel: { _ in GatherLocalization.l("移除成员") },
+            message: { $0.scopeText },
+            onConfirm: { pending in viewModel.removeMember(pending.member, from: pending.cluster) },
+            onCancel: { pending in
+                viewModel.reportCancellation(String(format: GatherLocalization.l("移除成员「%@」"), pending.member.filename))
+            }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingMerge,
+            title: GatherLocalization.l("确认合并这两个人脸簇？"),
+            confirmLabel: { _ in GatherLocalization.l("合并") },
+            message: { $0.scopeText },
+            onConfirm: { pending in viewModel.merge(pending.cluster) },
+            onCancel: { pending in
+                viewModel.reportCancellation(String(format: GatherLocalization.l("合并簇 #%lld"), pending.cluster.id))
+            }
+        )
+    }
+
+    /// 先准备预览（无预览自动生成），再弹出带真实影响范围的确认框。
+    private func requestWritebackConfirmation() async {
+        guard await viewModel.prepareWritebackConfirmation(),
+              let preview = viewModel.preview else { return }
+        pendingWriteback = PendingFaceWriteback(
+            clusterCount: viewModel.boundClusters.count,
+            affectedPhotos: preview.affectedPhotos,
+            itemCount: preview.items.count,
+            samplePath: preview.items.first?.xmpPath
+        )
     }
 
     // MARK: - 外壳
@@ -774,7 +1141,7 @@ public struct FaceKeywordingView: View {
                         // TS range slider（渐变轨道）+ 数字输入（SliderInput）。
                         SliderInputView(title: GatherLocalization.l("人脸相似度"), value: bindable.eps, range: 0.3...0.95, step: 0.01)
                             .disabled(viewModel.analysisPhase == .running)
-                        Text(GatherLocalization.l("eps 范围 0.30–0.95，数值越小分组越严格。"))
+                        Text(GatherLocalization.l("人脸相似度下限 0.30–0.95：只有相似度不低于该值才归为同一人，数值越大分组越严格。"))
                             .font(.footnote).foregroundStyle(.secondary)
                         SliderInputIntView(title: GatherLocalization.l("最少出现次数"), value: bindable.minSamples, range: 2...20)
                             .disabled(viewModel.analysisPhase == .running)
@@ -792,6 +1159,8 @@ public struct FaceKeywordingView: View {
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.12)))
+                        // 回落通用文案时，原始诊断只在此 tooltip 出现。
+                        .help(viewModel.errorTooltip ?? "")
                 }
                 if viewModel.analysisPhase == .running { analysisProgress }
                 HStack(spacing: 12) {
@@ -800,7 +1169,12 @@ public struct FaceKeywordingView: View {
                             .foregroundStyle(GatherTheme.error)
                     } else if viewModel.analysisPhase == .done {
                         Button(GatherLocalization.l("仅重新聚类"), systemImage: "arrow.triangle.2.circlepath") {
-                            Task { await viewModel.recluster() }
+                            // 先弹确认（影响面真实计数），确认分支才发 fkw.recluster。
+                            let impact = viewModel.reclusterImpact()
+                            pendingRecluster = PendingFaceRecluster(
+                                clusterCount: impact.clusterCount,
+                                boundClusterCount: impact.boundClusterCount
+                            )
                         }
                         .buttonStyle(.borderedProminent)
                     } else {
@@ -1167,13 +1541,13 @@ public struct FaceKeywordingView: View {
     }
 
     /// TS memberList：max-height 210px 滚动，每行 #idx + 文件名 + 置信度% +
-    /// 红色「移除」（TS StepReview.tsx:108-117：点击即移除，无确认）。
+    /// 红色「移除」。移除不可逆，先弹确认（旧版「点击即移除」已删除）。
     private func memberList(_ cluster: FaceClusterData) -> some View {
         ScrollView {
             VStack(spacing: 0) {
                 ForEach(Array(cluster.members.enumerated()), id: \.element.memberId) { index, member in
                     MemberRowView(index: index, member: member) {
-                        viewModel.removeMember(member, from: cluster)
+                        pendingMemberRemoval = PendingFaceMemberRemoval(member: member, cluster: cluster)
                     }
                     Divider().opacity(0.5)
                 }
@@ -1182,8 +1556,8 @@ public struct FaceKeywordingView: View {
         .frame(maxHeight: 210)
     }
 
-    /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（可逆操作，
-    /// 即时执行，成功经 notice 反馈）。
+    /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（解除绑定撤销
+    /// 已写入关键词，经确认弹窗后才执行）。
     private func editor(_ cluster: FaceClusterData) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(GatherLocalization.l("角色名称")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
@@ -1200,7 +1574,7 @@ public struct FaceKeywordingView: View {
                 .frame(maxWidth: .infinity)
                 if cluster.binding != nil {
                     Button(GatherLocalization.l("解除绑定")) {
-                        Task { await viewModel.unbind(cluster) }
+                        pendingUnbind = PendingFaceUnbind(cluster: cluster)
                     }
                     .buttonStyle(.bordered)
                     .foregroundStyle(GatherTheme.error)
@@ -1229,7 +1603,12 @@ public struct FaceKeywordingView: View {
                 .accessibilityLabel(GatherLocalization.l("合并目标"))
                 .frame(maxWidth: .infinity)
                 Button(GatherLocalization.l("合并")) {
-                    viewModel.merge(cluster)
+                    guard let targetId = viewModel.mergeTargetId,
+                          let target = candidates.first(where: { $0.id == targetId }) else {
+                        viewModel.reportInvalidMergeTarget()
+                        return
+                    }
+                    pendingMerge = PendingFaceMerge(cluster: cluster, target: target)
                 }
                 .buttonStyle(.bordered)
                 .disabled(viewModel.mergeTargetId == nil)
@@ -1255,7 +1634,9 @@ public struct FaceKeywordingView: View {
                     .help(viewModel.analysisDone ? "" : GatherLocalization.l("请先完成人脸分析"))
                 // 确认写回：分析完成后恒可用；无预览时自动补一次预览再写回
                 // （TS handleExecute，StepWriteback.tsx:53-69, 195-203）。
-                Button(GatherLocalization.l("确认写回"), systemImage: "square.and.arrow.down") { confirmWriteback = true }
+                Button(GatherLocalization.l("确认写回"), systemImage: "square.and.arrow.down") {
+                    Task { await requestWritebackConfirmation() }
+                }
                     .buttonStyle(.borderedProminent)
                     .disabled(!viewModel.canWriteback)
                     .help(viewModel.analysisDone ? "" : GatherLocalization.l("请先完成人脸分析"))
@@ -1429,18 +1810,24 @@ public struct FaceKeywordingView: View {
     private var reportActionsRow: some View {
         HStack(spacing: 8) {
             if let result = viewModel.writebackResult, !result.failedItems.isEmpty {
-                Button(GatherLocalization.l("重试失败项")) { Task { await viewModel.retryFailed() } }
-                    .disabled(viewModel.isWritingBack)
-                    .help(GatherLocalization.l("没有失败项"))
+                Button(GatherLocalization.l("重试失败项")) {
+                    pendingRetry = PendingFaceRetry(
+                        paths: result.failedItems.map { $0.xmpPath.isEmpty ? $0.photoPath : $0.xmpPath }
+                    )
+                }
+                .disabled(viewModel.isWritingBack)
+                .help(GatherLocalization.l("没有失败项"))
             }
             Button(GatherLocalization.l("Capture One 重新加载")) { Task { await viewModel.reloadCaptureOne() } }
                 .disabled(viewModel.isWritingBack)
-            Button(GatherLocalization.l("确认同步")) { Task { await viewModel.confirmSync() } }
+            Button(GatherLocalization.l("确认同步")) { pendingConfirmSync = PendingFaceConfirmSync() }
                 .disabled(viewModel.isWritingBack)
             if viewModel.isSyncConfirmed {
-                Button(GatherLocalization.l("清理备份"), role: .destructive) { confirmCleanup = true }
-                    .disabled(viewModel.isWritingBack)
-                    .help(GatherLocalization.l("请先在 Capture One 中加载元数据并确认同步"))
+                Button(GatherLocalization.l("清理备份"), role: .destructive) {
+                    pendingCleanup = PendingFaceCleanup(writtenCount: viewModel.writebackResult?.written ?? 0)
+                }
+                .disabled(viewModel.isWritingBack)
+                .help(GatherLocalization.l("请先在 Capture One 中加载元数据并确认同步"))
             }
         }
     }

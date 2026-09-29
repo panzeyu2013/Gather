@@ -83,7 +83,10 @@ public struct GalleryVariantData: Codable, Equatable, Sendable {
 
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
 /// 真实路由（LiveGalleryDataProvider + 临时 SQLite）。
-public protocol GalleryDataProvider {
+/// Swift 6 迁移：协议继承 Sendable（实现类构造后不再变更存储状态——
+/// Live 实现仅持有不可变 router），使 @MainActor ViewModel 可在 async 调用中
+/// 安全地把 provider existential 送出当前隔离域。
+public protocol GalleryDataProvider: Sendable {
     func getSession(_ sessionId: String) throws -> SessionData?
     /// TS: sessionApi.getPhotosPage → { rows, cursor }。
     /// async：分页投影经 executeAsync 后台执行（避免 @MainActor 主线程阻塞）。
@@ -98,6 +101,10 @@ public protocol GalleryDataProvider {
     func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus?
     /// 重新入队索引扫描（TS indexerApi.scan / SessionDetail handleRetryIndex）。
     func retryIndex(sessionId: String) async throws
+    /// 网格缩略图目标解码尺寸（settings thumbnail_size 分桶）。**必须作为 requirement
+    /// 声明**：ViewModel 持有 existential，只在 extension 给默认实现会让 Live 实现
+    /// 永远不被调用（用户设置失效）。
+    func thumbnailSize() -> Int
 }
 
 public extension GalleryDataProvider {
@@ -206,12 +213,6 @@ public struct GalleryIndexHeaderCopy: Equatable, Sendable {
 @MainActor
 @Observable
 public final class GalleryViewModel {
-    public enum LoadPhase: Equatable {
-        case loading
-        case loaded
-        case failed(String)
-    }
-
     /// TS: PAGE_SIZE = 200（非搜索态）；搜索/筛选态链式拉满用 1000。
     public static let pageSize = 200
     public static let chainFetchLimit = 1_000
@@ -514,7 +515,8 @@ public final class GalleryViewModel {
             }
         }
         fetchTask = task
-        try? await task.value
+        // Task 的失败类型为 Never（内部 do/catch 已吞掉取消），无需 try?
+        await task.value
     }
 
     /// 取下一页（键集游标）；返回是否还有更多页。
@@ -564,12 +566,12 @@ public final class GalleryViewModel {
 
     // MARK: 错误 message（对齐 DashboardViewModel.message）
 
+    /// 与 Dashboard/Similarity 同一漏斗：码 → 本地化文案，未知回退通用文案。
+    /// 旧实现走 NSError.localizedDescription，会丢 NativeCommandError/BridgeError
+    /// 的码值（非 LocalizedError 枚举桥接后退化成 "The operation couldn't be
+    /// completed…"），已知码也被显示成通用文案。
     static func message(for error: Error) -> String {
-        if let sessionError = error as? SessionServiceError {
-            return GatherLocalization.errorText(sessionError.gatherCode.rawValue)
-        }
-        let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        NativeCommandClient.userFacingMessage(for: error)
     }
 
     // MARK: 终态事件刷新（对齐 TS 事件失效语义）

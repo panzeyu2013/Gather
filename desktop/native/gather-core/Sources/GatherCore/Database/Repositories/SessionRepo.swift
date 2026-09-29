@@ -45,18 +45,48 @@ public final class SessionRepo {
         self.connection = connection
     }
 
+    /// 会话行的显式投影：analysis_status 已删列，分析状态**派生**自
+    /// analysis_jobs（方案 A：job 表是唯一真相源，无"读列再回退"的双读）。
+    /// running = 存在 queued/running/cancelling/interrupted；否则最近终态
+    /// succeeded→done / failed→failed / cancelled→cancelled；无行 → idle。
+    static let projectionSQL = """
+        SELECT id, name, status,
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM analysis_jobs j
+              WHERE j.scope_id = sessions.id
+                AND j.status IN ('queued', 'running', 'cancelling', 'interrupted')
+            ) THEN 'running'
+            ELSE COALESCE((
+              SELECT CASE j2.status
+                       WHEN 'succeeded' THEN 'done'
+                       WHEN 'failed' THEN 'failed'
+                       WHEN 'cancelled' THEN 'cancelled'
+                       ELSE 'idle' END
+              FROM analysis_jobs j2
+              WHERE j2.scope_id = sessions.id
+              ORDER BY j2.updated_at DESC, j2.rowid DESC
+              LIMIT 1
+            ), 'idle')
+          END AS analysis_status,
+          writeback_status, import_source, source_path, truncated_import,
+          reload_acked_at, index_seq, photo_count, failed_writeback_count,
+          created_at, updated_at
+        FROM sessions
+        """
+
     public func get(id: String) throws -> SessionRow? {
-        guard let row = try connection.prepare("SELECT * FROM sessions WHERE id = ?").get([.text(id)]) else {
+        guard let row = try connection.prepare("\(Self.projectionSQL) WHERE id = ?").get([.text(id)]) else {
             return nil
         }
         return try SessionRow(row: row)
     }
 
     public func create(name: String, source: String, sourcePath: String = "", truncatedImport: Bool = false) throws -> SessionRow {
-        let id = newUUID()
-        let now = nowISO()
+        let id = newUUIDString()
+        let now = nowISOString()
         _ = try connection.prepare(
-            "INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, source_path, truncated_import, photo_count, failed_writeback_count, created_at, updated_at) VALUES (?, ?, 'draft', 'idle', 'idle', ?, ?, ?, 0, 0, ?, ?)"
+            "INSERT INTO sessions (id, name, status, writeback_status, import_source, source_path, truncated_import, photo_count, failed_writeback_count, created_at, updated_at) VALUES (?, ?, 'draft', 'idle', ?, ?, ?, 0, 0, ?, ?)"
         ).run([.text(id), .text(name), .text(source), .text(sourcePath), .int(truncatedImport ? 1 : 0), .text(now), .text(now)])
         return try get(id: id)!
     }
@@ -83,58 +113,51 @@ public final class SessionRepo {
     }
 
     public func list() throws -> [SessionRow] {
-        let rows = try connection.prepare("SELECT * FROM sessions ORDER BY updated_at DESC").query()
+        // 排序语义（显式决策）："分析也是会话活动" —— 取最近一次分析 job 的
+        // updated_at 与会话自身 updated_at 的较大者，保住"分析完成把会话顶到
+        // 最前"（delete updateAnalysisStatus 曾顺带写 sessions.updated_at 的
+        // 副作用不能再悄悄丢失）。同刻按 rowid 兜底，顺序确定。
+        let rows = try connection.prepare("""
+            \(Self.projectionSQL)
+            ORDER BY COALESCE(
+              NULLIF((SELECT MAX(j.updated_at) FROM analysis_jobs j WHERE j.scope_id = sessions.id), ''),
+              updated_at
+            ) DESC, rowid DESC
+            """).query()
         return try rows.map { try SessionRow(row: $0) }
     }
 
     @discardableResult
     public func updateName(id: String, name: String) throws -> Bool {
         let changes = try connection.prepare("UPDATE sessions SET name = ?, updated_at = ? WHERE id = ?")
-            .run([.text(name), .text(nowISO()), .text(id)])
-        return changes > 0
-    }
-
-    @discardableResult
-    public func updateSourcePath(id: String, sourcePath: String) throws -> Bool {
-        let changes = try connection.prepare("UPDATE sessions SET source_path = ?, updated_at = ? WHERE id = ?")
-            .run([.text(sourcePath), .text(nowISO()), .text(id)])
+            .run([.text(name), .text(nowISOString()), .text(id)])
         return changes > 0
     }
 
     public func updateStatus(id: String, status: String) throws {
         _ = try connection.prepare("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?")
-            .run([.text(status), .text(nowISO()), .text(id)])
+            .run([.text(status), .text(nowISOString()), .text(id)])
     }
 
     public func updatePhotoCount(id: String, count: Int) throws {
         _ = try connection.prepare("UPDATE sessions SET photo_count = ?, updated_at = ? WHERE id = ?")
-            .run([.int(Int64(count)), .text(nowISO()), .text(id)])
-    }
-
-    public func updateAnalysisStatus(id: String, status: String) throws {
-        _ = try connection.prepare("UPDATE sessions SET analysis_status = ?, updated_at = ? WHERE id = ?")
-            .run([.text(status), .text(nowISO()), .text(id)])
+            .run([.int(Int64(count)), .text(nowISOString()), .text(id)])
     }
 
     public func updateWritebackStatus(id: String, status: String) throws {
         _ = try connection.prepare("UPDATE sessions SET writeback_status = ?, updated_at = ? WHERE id = ?")
-            .run([.text(status), .text(nowISO()), .text(id)])
+            .run([.text(status), .text(nowISOString()), .text(id)])
     }
 
     public func updateFailedWritebackCount(id: String, count: Int) throws {
         _ = try connection.prepare("UPDATE sessions SET failed_writeback_count = ?, updated_at = ? WHERE id = ?")
-            .run([.int(Int64(count)), .text(nowISO()), .text(id)])
-    }
-
-    public func getReloadAckedAt(sessionId: String) throws -> String? {
-        let row = try connection.prepare("SELECT reload_acked_at FROM sessions WHERE id = ?").get([.text(sessionId)])
-        return row?[0].textValue
+            .run([.int(Int64(count)), .text(nowISOString()), .text(id)])
     }
 
     @discardableResult
     public func setReloadAckedAt(sessionId: String, iso: String) throws -> Bool {
         let changes = try connection.prepare("UPDATE sessions SET reload_acked_at = ?, updated_at = ? WHERE id = ?")
-            .run([.text(iso), .text(nowISO()), .text(sessionId)])
+            .run([.text(iso), .text(nowISOString()), .text(sessionId)])
         return changes > 0
     }
 
@@ -146,21 +169,11 @@ public final class SessionRepo {
     public func bumpIndexSeq(id: String) throws -> Int {
         try connection.transaction {
             _ = try connection.prepare("UPDATE sessions SET index_seq = index_seq + 1, updated_at = ? WHERE id = ?")
-                .run([.text(nowISO()), .text(id)])
+                .run([.text(nowISOString()), .text(id)])
             let row = try connection.prepare("SELECT index_seq FROM sessions WHERE id = ?").get([.text(id)])
             return Int(row?[0].intValue ?? 0)
         }
     }
 }
 
-/// TS: crypto.randomUUID()（小写，与 Node 输出一致）。
-private func newUUID() -> String {
-    UUID().uuidString.lowercased()
-}
 
-/// TS: new Date().toISOString()（毫秒级小数秒 + Z）。
-private func nowISO() -> String {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.string(from: Date())
-}

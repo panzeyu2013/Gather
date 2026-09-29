@@ -7,12 +7,16 @@
 //   clusterProvider 接入，本文件零图片/线程依赖，Linux 可单测。
 // - thumbnailProvider 返回 9x8 灰度像素网格（72 字节），对应 TS
 //   computeBatchDHash 的输入（sharp resize 9x8 + grayscale 之后）。
-// - 取消语义对齐：pre-cluster 阶段 abort 后直接 return（TS 早退路径，
-//   cancel() 已写 'cancelled'）；cluster 期间 abort 以 JobCancelledError 抛出
-//   （对齐 TS worker 拒绝路径），catch 写 'cancelled'。唯一竞态差异：
-//   abort 恰在 cluster 结束后、落库前发生——TS 会保存结果并写 'done'
-//   （worker 已 settle），Swift 在 cluster 返回后补查 signal 抛取消、
-//   不落库（更严格，保留）。
+// - 取消语义对齐：pre-cluster 阶段 abort 后直接 return；cluster 期间 abort 以
+//   JobCancelledError 抛出（对齐 TS worker 拒绝路径）。唯一竞态差异：abort 恰在
+//   cluster 结束后、落库前发生——TS 会保存结果，Swift 在 cluster 返回后补查
+//   signal 抛取消、不落库（更严格，保留）。
+// - 状态真相源（§4.2 P1 修复，方案 A）：本服务**不写** sessions.analysis_status。
+//   相似度状态由 analysis_jobs 的 (type='similarity.analyze', status) 派生；
+//   analyze 与 recluster 互斥由会话占用槽（OperationSlot）保证，占用中抛
+//   SIM_ANALYSIS_RUNNING。analysis_runs 仅保留分析 run 记录/过期检测用途。
+// - recluster 与 analyze 同级：共用占用槽、支持 job 信号（进度/取消）、结果与
+//   簇状态单事务原子写；它不重算哈希、不写 analysis_runs（不改变会话的分析新鲜度）。
 // - 聚类为同步 CPU 调用（ClusterEngine 为纯函数），helper 层可自行派发后台；
 //   TS worker 的 no-progress 超时（60s~15min）属 worker 层职责，Swift 侧
 //   由 AnalysisWorker/helper 层补等价看门狗，不在本服务内。
@@ -91,7 +95,9 @@ extension HashGroupingMode {
 /// TS: validateSimilarityParameters。参数类型为 Double 对齐 TS number：
 /// Number.isInteger 校验（拒绝 NaN/∞/小数），通过后调用方再安全转 Int。
 public func validateSimilarityParameters(threshold: Double, minGroupSize: Double) throws {
-    if threshold.isNaN || threshold.isInfinite || threshold.rounded() != threshold || threshold < 0 || threshold > 64 {
+    // 阈值域判定与 DuplicateService.validateDuplicateThreshold 共用
+    // DHash.isValidThreshold（dHash 64 位 → 0...64 整数）。
+    if !DHash.isValidThreshold(threshold) {
         throw SimilarityServiceError.thresholdInvalid
     }
     if minGroupSize.isNaN || minGroupSize.isInfinite || minGroupSize.rounded() != minGroupSize || minGroupSize < 2 {
@@ -106,7 +112,9 @@ public final class SimilarityService {
     private static let neighborTierSteps = [8, 4, -4, -8]
 
     /// TS: (filepath, maxDimension) → 9x8 灰度像素网格（72 字节），失败返回 nil。
-    public typealias ThumbnailProvider = (String, Int) async -> [UInt8]?
+    /// Swift 6：解码阶段的子任务（withTaskGroup 的 sending 闭包）并发调用本
+    /// provider，闭包会被捕获进子任务，故类型必须可跨并发域（@Sendable）。
+    public typealias ThumbnailProvider = @Sendable (String, Int) async -> [UInt8]?
     /// TS: clusterHashesInWorker。
     public typealias ClusterProvider = ([HashEntry], Int, Int, HashGroupingMode, ((Int, Int) -> Void)?) throws -> ClusterResult
     /// TS: clusterHashesInWorkerMulti。
@@ -125,29 +133,48 @@ public final class SimilarityService {
     private let clusterProvider: ClusterProvider
     private let multiClusterProvider: MultiClusterProvider
 
-    /// TS: controllers（Map<sessionId, AbortController>）。
-    private var controllers: [String: JobAbortSignal] = [:]
-    private let controllersLock = NSLock()
+    /// 会话级占用（analyze/recluster 互斥）：同一会话任一时刻只允许一个相似度
+    /// 操作在飞；占用内的取消信号由本服务持有，外部 job 信号（analyze/recluster
+    /// 的 context.signal）经 addHandler 链接进来。
+    ///
+    /// analysis_status 不再由本服务读写（§4.2 P1 修复，方案 A）：状态真相源是
+    /// analysis_jobs 的 (type, status) —— analyze 与 recluster 都以
+    /// type='similarity.analyze' 入队（recluster 经 checkpoint.operation 区分），
+    /// 跨模块交叉写 sessions.analysis_status 的路径已整段删除。
+    private final class OperationSlot {
+        let signal = JobAbortSignal()
+    }
+
+    private var slots: [String: OperationSlot] = [:]
+    private let slotsLock = NSLock()
 
     /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
-    private func controller(for sessionId: String) -> JobAbortSignal? {
-        controllersLock.lock()
-        defer { controllersLock.unlock() }
-        return controllers[sessionId]
+    private func acquireSlot(sessionId: String) throws -> OperationSlot {
+        slotsLock.lock()
+        defer { slotsLock.unlock() }
+        if slots[sessionId] != nil { throw SimilarityServiceError.analysisRunning }
+        let slot = OperationSlot()
+        slots[sessionId] = slot
+        return slot
     }
 
-    private func registerController(_ signal: JobAbortSignal, for sessionId: String) {
-        controllersLock.lock()
-        controllers[sessionId] = signal
-        controllersLock.unlock()
+    private func releaseSlot(_ slot: OperationSlot, for sessionId: String) {
+        slotsLock.lock()
+        if slots[sessionId] === slot { slots.removeValue(forKey: sessionId) }
+        slotsLock.unlock()
     }
 
-    private func removeControllerIfCurrent(_ signal: JobAbortSignal, for sessionId: String) {
-        controllersLock.lock()
-        if controllers[sessionId] === signal {
-            controllers.removeValue(forKey: sessionId)
-        }
-        controllersLock.unlock()
+    private func currentSlot(for sessionId: String) -> OperationSlot? {
+        slotsLock.lock()
+        defer { slotsLock.unlock() }
+        return slots[sessionId]
+    }
+
+    /// 外部 job 信号 → 占用信号（任一取消都能中断在飞操作）。
+    private func linkExternalSignal(_ external: JobAbortSignal?, to slot: OperationSlot) {
+        guard let external else { return }
+        if external.aborted { slot.signal.abort() }
+        external.addHandler { slot.signal.abort() }
     }
 
     public init(
@@ -188,14 +215,11 @@ public final class SimilarityService {
         threshold: Double? = nil,
         minGroupSize: Double? = nil,
         groupingMode: SimilarityGroupingMode? = nil,
+        signal externalSignal: JobAbortSignal? = nil,
         onProgress: ProgressHandler? = nil
     ) async throws {
-        // 占用检查保持 TS 顺序；参数校验移到 controller 注册之前。
-        // TS 源在注册之后才 validate（validate 在 try/defer 之外）——校验
-        // 失败时 controller 不清理，该会话永久 SIM_ANALYSIS_RUNNING。
-        // 此处为有意修复（与 TS 的差异：非法参数不会泄漏占用）。
-        if controller(for: sessionId) != nil { throw SimilarityServiceError.analysisRunning }
-
+        // 参数校验先于占用获取（TS 源在校验前注册占用，非法参数会永久泄漏占用；
+        // 这里保留此前的有意修复）。
         let thresholdValue = threshold ?? getNumber("default_threshold", 10)
         let minGroupSizeValue = minGroupSize ?? getNumber("default_min_group_size", 2)
         let groupingMode = groupingMode ?? .global
@@ -204,8 +228,9 @@ public final class SimilarityService {
         let threshold = Int(thresholdValue)
         let minGroupSize = Int(minGroupSizeValue)
 
-        let signal = JobAbortSignal()
-        registerController(signal, for: sessionId)
+        let slot = try acquireSlot(sessionId: sessionId)
+        let signal = slot.signal
+        linkExternalSignal(externalSignal, to: slot)
 
         var runId: Int64 = 0
         var runStatus: String = "failed"
@@ -214,10 +239,10 @@ public final class SimilarityService {
             if runId != 0 {
                 try? finalizeAnalysisRun(runId: runId, status: runStatus)
             }
-            removeControllerIfCurrent(signal, for: sessionId)
+            releaseSlot(slot, for: sessionId)
         }
         do {
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "running")
+            if signal.aborted { return }
 
             // 照片与 index_seq 快照共享一个读事务（design §8）：
             // 快照保证 run.index_seq 与本次分析的照片一致。
@@ -289,8 +314,8 @@ public final class SimilarityService {
                       file_mtime_ms = excluded.file_mtime_ms
                   """)
 
-                let decodeBatchSize = min(32, max(1, Int(getNumber("similarity_decode_concurrency", 4))))
-                let previewMaxDimension = min(2048, max(64, Int(getNumber("similarity_preview_max_dimension", 256))))
+                let decodeBatchSize = min(32, max(1, getNumber("similarity_decode_concurrency", 4).safeInt(fallback: 4)))
+                let previewMaxDimension = min(2048, max(64, getNumber("similarity_preview_max_dimension", 256).safeInt(fallback: 256)))
 
                 var offset = 0
                 while offset < uncachedPhotos.count {
@@ -362,7 +387,7 @@ public final class SimilarityService {
             onProgress?(0, entries.count, "similarity.cluster")
             // ROADMAP 1.3：参数匹配且未达收敛间隔时走邻域增量聚类，
             // 否则全量重聚类（首次 / 参数变化 / 定期全局收敛）。
-            let clustered = try clusterEntries(
+            let decision = try decideCluster(
                 sessionId: sessionId,
                 entries: entries,
                 threshold: threshold,
@@ -376,8 +401,8 @@ public final class SimilarityService {
 
             let pathMap = Dictionary(uniqueKeysWithValues: snapshot.photos.map { ($0.id, $0.filepath) })
             let built = buildStoredResult(
-                rawGroups: clustered.groups,
-                rawUngrouped: clustered.ungrouped,
+                rawGroups: decision.result.groups,
+                rawUngrouped: decision.result.ungrouped,
                 pathMap: pathMap,
                 threshold: threshold,
                 minGroupSize: minGroupSize,
@@ -385,16 +410,15 @@ public final class SimilarityService {
                 precomputed: false
             )
 
-            _ = try similarityResultRepo.replace(
+            // 结果 + 簇状态单事务原子写（§4.2 修复）：不再出现「结果已替换、
+            // 增量状态还是上一次」的错配窗口。
+            _ = try persistClusterOutcome(
                 sessionId: sessionId,
-                groupsJson: built.groupsJson,
-                statsJson: built.statsJson,
                 threshold: threshold,
                 minGroupSize: minGroupSize,
-                memberships: built.memberships
+                built: built,
+                stateUpdate: decision.stateUpdate
             )
-
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
             runStatus = "ok"
 
             // 邻域阈值档 best-effort：同一批 hash 再聚几次很便宜，失败/取消
@@ -414,12 +438,6 @@ public final class SimilarityService {
                 if signal.aborted { return }
                 GatherLogger.log("Similarity neighbor threshold precomputation failed: \(error)", level: .warn)
             }
-        } catch {
-            try? sessionRepo.updateAnalysisStatus(
-                id: sessionId,
-                status: signal.aborted ? "cancelled" : "failed"
-            )
-            throw error
         }
     }
 
@@ -526,11 +544,13 @@ public final class SimilarityService {
                 throw SimilarityServiceError.noResults
             }
             let stored = try JSONDecoder().decode(StoredGroupsJSON.self, from: data)
-            return SimilarityResult(
-                groups: stored.groups,
-                ungrouped: stored.ungrouped ?? [],
-                stats: stats
-            )
+            let ungrouped = stored.ungrouped ?? []
+            // 统计实时化（§4.2 P2）：旧行没有成员表，无法重算“未分析的新导入”，
+            // 但计数至少必须与本响应实际返回的 payload 一致（不读快照计数）。
+            var liveStats = stats
+            liveStats.totalGroups = stored.groups.count
+            liveStats.totalUngrouped = ungrouped.count
+            return SimilarityResult(groups: stored.groups, ungrouped: ungrouped, stats: liveStats)
         }
 
         var groupsByIndex: [Int: Int] = [:]
@@ -563,31 +583,42 @@ public final class SimilarityService {
         .filter { !memberPhotoIds.contains($0.id) }
         .map { SimilarityImage(path: $0.filepath) }
 
-        return SimilarityResult(groups: groups, ungrouped: ungrouped, stats: stats)
+        // 统计实时化（§4.2 P2）：成员表是组结构权威来源，计数必须与本次实时
+        // 重建的 groups/ungrouped 一致——落库快照在分析后新导入照片时会虚低。
+        var liveStats = stats
+        liveStats.totalGroups = groups.count
+        liveStats.totalUngrouped = ungrouped.count
+        return SimilarityResult(groups: groups, ungrouped: ungrouped, stats: liveStats)
     }
 
-    /// TS: cancel —— analysis_status 是与人脸分析共享的单列；只有本模块确有
-    /// 在飞 run 时才写 'cancelled'（排队的 job 取消或人脸分析期间的取消
-    /// 不得翻转人脸状态）。
-    public func cancel(sessionId: String, markStatus: Bool = false) throws {
-        let signal = controller(for: sessionId)
-        let hadController = signal != nil
-        signal?.abort()
-        if hadController || markStatus {
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "cancelled")
-        }
+    /// TS: cancel —— 只中断本服务在飞的相似度操作（analyze/recluster 共用占用
+    /// 槽）。不再写 sessions.analysis_status：状态由 analysis_jobs 派生（方案 A）。
+    public func cancel(sessionId: String) throws {
+        currentSlot(for: sessionId)?.signal.abort()
     }
 
-    /// 阈值重聚类：复用已有 hash，不重算。
+    /// 阈值重聚类（job 化，§4.2 修复）：复用已有 hash，不重算；与 analyze 共用
+    /// 会话占用槽（互斥，占用中抛 SIM_ANALYSIS_RUNNING）。进度相位
+    /// similarity.cluster → similarity.thresholds；取消在分段边界协作式检查
+    /// （主结果提交前的取消不落库，提交后的档位预计算按 best-effort 提前退出）。
+    /// 结果与簇状态单事务原子写；不写 sessions.analysis_status。
     public func recluster(
         sessionId: String,
         threshold: Double,
         minGroupSize: Double,
-        groupingMode: SimilarityGroupingMode = .global
+        groupingMode: SimilarityGroupingMode = .global,
+        signal externalSignal: JobAbortSignal? = nil,
+        onProgress: ProgressHandler? = nil
     ) async throws -> SimilarityResult {
         try validateSimilarityParameters(threshold: threshold, minGroupSize: minGroupSize)
         let threshold = Int(threshold)
         let minGroupSize = Int(minGroupSize)
+
+        let slot = try acquireSlot(sessionId: sessionId)
+        let signal = slot.signal
+        linkExternalSignal(externalSignal, to: slot)
+        defer { releaseSlot(slot, for: sessionId) }
+        if signal.aborted { throw JobCancelledError() }
 
         let existing = try similarityResultRepo.getLatest(sessionId: sessionId)
         if existing == nil { throw SimilarityServiceError.noResults }
@@ -608,18 +639,22 @@ public final class SimilarityService {
         }
         if entries.isEmpty { throw SimilarityServiceError.noHashRecluster }
 
-        let clustered = try clusterEntries(
+        onProgress?(0, entries.count, "similarity.cluster")
+        let decision = try decideCluster(
             sessionId: sessionId,
             entries: entries,
             threshold: threshold,
             minGroupSize: minGroupSize,
             groupingMode: groupingMode,
-            onProgress: nil
+            onProgress: onProgress
         )
+        if signal.aborted { throw JobCancelledError() }
+        onProgress?(entries.count, entries.count, "similarity.cluster-done")
+
         let pathMap = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.filepath) })
         let built = buildStoredResult(
-            rawGroups: clustered.groups,
-            rawUngrouped: clustered.ungrouped,
+            rawGroups: decision.result.groups,
+            rawUngrouped: decision.result.ungrouped,
             pathMap: pathMap,
             threshold: threshold,
             minGroupSize: minGroupSize,
@@ -627,16 +662,13 @@ public final class SimilarityService {
             precomputed: false
         )
 
-        _ = try similarityResultRepo.replace(
+        _ = try persistClusterOutcome(
             sessionId: sessionId,
-            groupsJson: built.groupsJson,
-            statsJson: built.statsJson,
             threshold: threshold,
             minGroupSize: minGroupSize,
-            memberships: built.memberships
+            built: built,
+            stateUpdate: decision.stateUpdate
         )
-
-        try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
 
         do {
             try await precomputeNeighborTiers(
@@ -646,10 +678,11 @@ public final class SimilarityService {
                 threshold: threshold,
                 minGroupSize: minGroupSize,
                 groupingMode: groupingMode,
-                signal: nil,
-                onProgress: nil
+                signal: signal,
+                onProgress: onProgress
             )
         } catch {
+            if signal.aborted { return built.result }
             GatherLogger.log("Similarity neighbor threshold precomputation failed: \(error)", level: .warn)
         }
 
@@ -658,25 +691,35 @@ public final class SimilarityService {
 
     // MARK: - 聚类决策（增量 / 全量）
 
-    /// 簇状态版本（ROADMAP 1.3）：该会话的增量聚类状态元数据；无状态返回 nil。
-    /// 供诊断与上层观测（版本号 / 连续增量次数 / 参数指纹）。
-    public func clusterVersion(sessionId: String) throws -> SimilarityClusterMetaRow? {
-        try clusterStateRepo.load(sessionId: sessionId)?.meta
+    /// 聚类决策产物：簇结果 + 待与结果同事务落库的簇状态变更。
+    private struct ClusterDecision {
+        let result: ClusterResult
+        let stateUpdate: ClusterStateUpdate?
+    }
+
+    /// 簇状态变更（与结果同事务提交，§4.2 原子性修复）。
+    private enum ClusterStateUpdate {
+        case replace(
+            threshold: Int, minGroupSize: Int, groupingMode: String,
+            version: Int, incrementalUpdates: Int, state: ClusterState
+        )
+        case delete
     }
 
     /// 聚类决策：状态参数匹配且连续增量次数未达收敛间隔时，走 IncrementalClusterer
-    /// 的邻域局部更新；否则全量重聚类并重建状态。两条路径都落库簇状态与版本号。
+    /// 的邻域局部更新；否则全量重聚类并重建状态。**不在本方法内落库**——状态变更
+    /// 随结果由调用方在同一事务提交（见 persistClusterOutcome）。
     /// 增量失败（状态损坏/非法哈希）退化为全量，不阻塞分析。
-    private func clusterEntries(
+    private func decideCluster(
         sessionId: String,
         entries: [HashEntry],
         threshold: Int,
         minGroupSize: Int,
         groupingMode: SimilarityGroupingMode,
         onProgress: ProgressHandler?
-    ) throws -> ClusterResult {
+    ) throws -> ClusterDecision {
         let snapshot = try clusterStateRepo.load(sessionId: sessionId)
-        let convergenceInterval = max(1, Int(getNumber("similarity_cluster_convergence_interval", 10)))
+        let convergenceInterval = max(1, getNumber("similarity_cluster_convergence_interval", 10).safeInt(fallback: 10))
 
         if groupingMode == .global,
            let snapshot,
@@ -696,21 +739,22 @@ public final class SimilarityService {
                 let result = IncrementalClusterer.result(
                     state: outcome.state, entries: entries, minGroupSize: minGroupSize
                 )
-                try clusterStateRepo.replace(
-                    sessionId: sessionId,
-                    threshold: threshold,
-                    minGroupSize: minGroupSize,
-                    groupingMode: groupingMode.rawValue,
-                    version: snapshot.meta.version + 1,
-                    incrementalUpdates: snapshot.meta.incrementalUpdates + 1,
-                    state: outcome.state
-                )
                 let summary = outcome.summary
                 GatherLogger.log(
                     "Similarity incremental clustering: added=\(summary.addedCount) removed=\(summary.removedCount) changed=\(summary.changedCount) recomputed=\(summary.recomputedComponentCount) reused=\(summary.reusedComponentCount) version=\(snapshot.meta.version + 1)",
                     level: .info
                 )
-                return result
+                return ClusterDecision(
+                    result: result,
+                    stateUpdate: .replace(
+                        threshold: threshold,
+                        minGroupSize: minGroupSize,
+                        groupingMode: groupingMode.rawValue,
+                        version: snapshot.meta.version + 1,
+                        incrementalUpdates: snapshot.meta.incrementalUpdates + 1,
+                        state: outcome.state
+                    )
+                )
             } catch {
                 GatherLogger.log("Similarity incremental clustering fell back to full: \(error)", level: .warn)
             }
@@ -720,13 +764,17 @@ public final class SimilarityService {
             entries, threshold, minGroupSize, HashGroupingMode(groupingMode),
             { current, total in onProgress?(current, total, "similarity.cluster") }
         )
-        if groupingMode == .global {
-            do {
-                let state = try IncrementalClusterer.buildState(
-                    entries: entries, minGroupSize: minGroupSize, threshold: threshold
-                )
-                try clusterStateRepo.replace(
-                    sessionId: sessionId,
+        guard groupingMode == .global else {
+            // sequential 模式没有增量设施（前缀 run 语义），清状态强制下次全量。
+            return ClusterDecision(result: clustered, stateUpdate: .delete)
+        }
+        do {
+            let state = try IncrementalClusterer.buildState(
+                entries: entries, minGroupSize: minGroupSize, threshold: threshold
+            )
+            return ClusterDecision(
+                result: clustered,
+                stateUpdate: .replace(
                     threshold: threshold,
                     minGroupSize: minGroupSize,
                     groupingMode: groupingMode.rawValue,
@@ -734,16 +782,61 @@ public final class SimilarityService {
                     incrementalUpdates: 0,
                     state: state
                 )
-            } catch {
-                // 状态落库属于加速设施：失败不影响已算出的结果（下次全量重来）。
-                GatherLogger.log("Similarity cluster state persist failed: \(error)", level: .warn)
-                try? clusterStateRepo.delete(sessionId: sessionId)
-            }
-        } else {
-            // sequential 模式没有增量设施（前缀 run 语义），清状态强制下次全量。
-            try? clusterStateRepo.delete(sessionId: sessionId)
+            )
+        } catch {
+            // 状态构建属于加速设施：失败就清空（下次全量），结果照常落库；
+            // 结果与状态仍在同一事务内提交，原子性不受影响。
+            GatherLogger.log("Similarity cluster state build failed: \(error)", level: .warn)
+            return ClusterDecision(result: clustered, stateUpdate: .delete)
         }
-        return clustered
+    }
+
+    /// 结果 + 簇状态单事务原子写：两写要么一起可见、要么一起不可见（§4.2 修复）。
+    private func persistClusterOutcome(
+        sessionId: String,
+        threshold: Int,
+        minGroupSize: Int,
+        built: StoredResultPayload,
+        stateUpdate: ClusterStateUpdate?
+    ) throws -> Int64 {
+        try connection.transaction {
+            let resultId = try similarityResultRepo.replace(
+                sessionId: sessionId,
+                groupsJson: built.groupsJson,
+                statsJson: built.statsJson,
+                threshold: threshold,
+                minGroupSize: minGroupSize,
+                memberships: built.memberships
+            )
+            try applyClusterStateUpdate(stateUpdate, sessionId: sessionId)
+            return resultId
+        }
+    }
+
+    /// 簇状态变更落库（调用方事务内）。状态写入失败降级为清空（下次全量重来），
+    /// 不因加速设施拖垮主结果；降级动作与结果同事务提交。
+    private func applyClusterStateUpdate(_ update: ClusterStateUpdate?, sessionId: String) throws {
+        switch update {
+        case .none:
+            return
+        case .delete:
+            try clusterStateRepo.delete(sessionId: sessionId)
+        case .replace(let threshold, let minGroupSize, let groupingMode, let version, let incrementalUpdates, let state):
+            do {
+                try clusterStateRepo.replace(
+                    sessionId: sessionId,
+                    threshold: threshold,
+                    minGroupSize: minGroupSize,
+                    groupingMode: groupingMode,
+                    version: version,
+                    incrementalUpdates: incrementalUpdates,
+                    state: state
+                )
+            } catch {
+                GatherLogger.log("Similarity cluster state persist failed, clearing state: \(error)", level: .warn)
+                try clusterStateRepo.delete(sessionId: sessionId)
+            }
+        }
     }
 
     // MARK: - 内部
@@ -767,9 +860,8 @@ public final class SimilarityService {
         return connection.lastInsertRowid
     }
 
-    // 取消的 run 在此以 'failed' 终态（sessions.analysis_status 在 catch 写
-    // 'cancelled'）：run 记录按设计只区分 ok/failed，该分歧是刻意的——
-    // 过期检测（1.4.2）一律忽略非 ok run。
+    // 取消/失败的 run 在此以 'failed' 终态：run 记录按设计只区分 ok/failed；
+    // 取消态由 analysis_jobs（type+status）表达，过期检测（1.4.2）一律忽略非 ok run。
     private func finalizeAnalysisRun(runId: Int64, status: String) throws {
         _ = try connection.prepare("UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?")
             .run([.text(status), .text(nowISOString()), .int(runId)])
@@ -785,7 +877,7 @@ public final class SimilarityService {
         groupingMode: SimilarityGroupingMode,
         precomputed: Bool,
         compactGroupsJson: Bool = false
-    ) -> (result: SimilarityResult, groupsJson: String, statsJson: String, memberships: [(photoId: String, groupIndex: Int)]) {
+    ) -> StoredResultPayload {
         let groups: [SimilarityGroup] = rawGroups.enumerated().map { idx, memberIds in
             SimilarityGroup(
                 id: idx + 1,
@@ -822,7 +914,7 @@ public final class SimilarityService {
             encoding: .utf8
         ) ?? "{}"
 
-        return (
+        return StoredResultPayload(
             result: SimilarityResult(
                 groups: groups,
                 ungrouped: ungrouped,
@@ -913,6 +1005,14 @@ public final class SimilarityService {
 }
 
 // MARK: - 私有载荷类型
+
+/// buildStoredResult 产物：相似度结果 + 落库载荷（结果与成员表）。
+private struct StoredResultPayload {
+    let result: SimilarityResult
+    let groupsJson: String
+    let statsJson: String
+    let memberships: [(photoId: String, groupIndex: Int)]
+}
 
 /// TS: analysis_runs.params。
 private struct AnalysisRunParams: Codable {

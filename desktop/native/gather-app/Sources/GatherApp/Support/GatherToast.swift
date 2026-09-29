@@ -60,7 +60,17 @@ public final class GatherToastCenter {
 
     public private(set) var toasts: [ToastItem] = []
 
-    private init() {}
+    /// 自动消失时长。生产固定 5s；测试通过 `init(autoDismissDelay:)` 注入更短值，
+    /// 以免"等满 5 秒"成为整个 app 测试套件的墙钟下界。
+    let autoDismissDelay: Duration
+
+    private init() {
+        autoDismissDelay = .seconds(5)
+    }
+
+    init(autoDismissDelay: Duration) {
+        self.autoDismissDelay = autoDismissDelay
+    }
 
     public func show(type: ToastType, message: String) {
         show(type: type, message: message, actionTitle: nil, action: nil)
@@ -72,8 +82,9 @@ public final class GatherToastCenter {
         let element = NSAccessibilityElement()
         element.setAccessibilityLabel(message)
         NSAccessibility.post(element: element, notification: .announcementRequested)
+        let delay = autoDismissDelay
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             self?.dismiss(id: item.id)
         }

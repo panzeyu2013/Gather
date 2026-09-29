@@ -5,41 +5,6 @@
 
 import Foundation
 
-/// asset_files 表行（列序与 SELECT * 一致，见 Schema.swift）。
-public struct AssetFileRow {
-    public let id: String
-    public let volumeId: String
-    public let fileIdentity: String
-    public let normalizedPath: String
-    public let filename: String
-    public let fileExtension: String
-    public let mediaType: String
-    public let fileSize: Int64
-    public let fileMtimeMs: Double
-    public let checksum: String
-    public let onlineStatus: String
-    public let lastSeenAt: String
-    public let createdAt: String
-    public let updatedAt: String
-
-    public init(row: DBRow) {
-        id = row[0].textValue ?? ""
-        volumeId = row[1].textValue ?? ""
-        fileIdentity = row[2].textValue ?? ""
-        normalizedPath = row[3].textValue ?? ""
-        filename = row[4].textValue ?? ""
-        fileExtension = row[5].textValue ?? ""
-        mediaType = row[6].textValue ?? ""
-        fileSize = row[7].intValue ?? 0
-        fileMtimeMs = row[8].doubleValue ?? 0
-        checksum = row[9].textValue ?? ""
-        onlineStatus = row[10].textValue ?? ""
-        lastSeenAt = row[11].textValue ?? ""
-        createdAt = row[12].textValue ?? ""
-        updatedAt = row[13].textValue ?? ""
-    }
-}
-
 /// 轻量引用（SELECT id, normalized_path）。
 public struct AssetFileRefRow {
     public let id: String
@@ -65,11 +30,6 @@ public struct PhotoBackfillRow {
         checksum = row[5].textValue ?? ""
         status = row[8].textValue ?? ""
     }
-}
-
-/// asset_backfill_state 的 last_photo_rowid 投影。
-public struct BackfillStateRow {
-    public let lastPhotoRowid: Int64
 }
 
 /// 链接候选行（listCandidates 的 SELECT 列清单）。
@@ -152,14 +112,9 @@ public struct RelinkMovedFileResult {
 /// 资产仓库（TS AssetRepository）。
 public final class AssetRepo {
     private let connection: DBConnection
-    private var metadataRelocationSink: ((String) -> Void)?
 
     public init(connection: DBConnection) {
         self.connection = connection
-    }
-
-    public func setMetadataRelocationSink(_ sink: @escaping (String) -> Void) {
-        metadataRelocationSink = sink
     }
 
     // ─────────────────────────── 回填 ───────────────────────────
@@ -355,37 +310,109 @@ public final class AssetRepo {
 
     // ─────────────────────────── 重链接 ───────────────────────────
 
+    /// 重新关联目录：把 oldRoot 下**已验证身份**的文件改指到 newRoot 的同名相对路径。
+    ///
+    /// 与旧实现的区别（旧实现不校验任何证据就改写路径 —— 用户选错目录就会把整库
+    /// 指向另一批同名文件；且 (volume_id, normalized_path) 与
+    /// (volume_id, file_identity) 都是唯一索引，撞索引还会在事务中途失败）：
+    /// 1. oldRoot == newRoot、或两者互相嵌套 → 显式报错，不做任何改写；
+    /// 2. 每个候选文件必须通过身份校验才改写，证据按强度排序：
+    ///    (dev, ino) 同一物理文件 → 通过；size 且 mtime 一致 → 通过；
+    ///    size 一致且已存 checksum → 现算 sha256 比对通过；
+    ///    其余（新位置缺失、未通过校验、新位置已被另一行占用）一律跳过并保持原状；
+    /// 3. 一个都没通过 → 抛错（"0" 不再等同于"成功但什么都没做"）；
+    /// 4. 只有验证通过的文件所属会话才会被作废相似度/导航分组并 +index_seq。
     public func relinkRoot(oldRoot: String, newRoot: String) throws -> Int {
-        let resolvedOld = TSPath.resolve(oldRoot)
-        let resolvedNew = TSPath.resolve(newRoot)
-        let escaped = resolvedOld.map { ch -> String in
-            if ch == "\\" || ch == "%" || ch == "_" { return "\\\(ch)" }
-            return String(ch)
-        }.joined()
+        let resolvedOld = ScanPath.canonical(oldRoot)
+        let resolvedNew = ScanPath.canonical(newRoot)
+        guard resolvedOld != resolvedNew else {
+            throw DBError.message("ASSET_RELINK_SAME_ROOT")
+        }
+        guard !ScanPath.isWithin(candidate: resolvedNew, root: resolvedOld),
+              !ScanPath.isWithin(candidate: resolvedOld, root: resolvedNew)
+        else {
+            throw DBError.message("ASSET_RELINK_NESTED_ROOT")
+        }
+
+        // 历史行可能存 /private/var 或 /var 两种拼写：两种前缀都捞出候选，
+        // 再用 ScanPath.relative 做权威判定。
+        let spelledOld = (resolvedOld.hasPrefix("/var/") || resolvedOld.hasPrefix("/tmp/"))
+            ? "/private" + resolvedOld
+            : resolvedOld
+        func escapeLike(_ value: String) -> String {
+            value.map { ch -> String in
+                if ch == "\\" || ch == "%" || ch == "_" { return "\\\(ch)" }
+                return String(ch)
+            }.joined()
+        }
         let rows = try connection.prepare("""
-            SELECT id, normalized_path FROM asset_files
-            WHERE normalized_path = ? OR normalized_path LIKE ? ESCAPE '\\'
-          """).query([.text(resolvedOld), .text("\(escaped)\(TSPath.separator)%")])
+            SELECT id, volume_id, file_identity, normalized_path, file_size, file_mtime_ms, checksum
+            FROM asset_files
+            WHERE normalized_path = ? OR normalized_path = ?
+               OR normalized_path LIKE ? ESCAPE '\\' OR normalized_path LIKE ? ESCAPE '\\'
+          """).query([
+            .text(resolvedOld), .text(spelledOld),
+            .text("\(escapeLike(resolvedOld))\(TSPath.separator)%"),
+            .text("\(escapeLike(spelledOld))\(TSPath.separator)%"),
+        ])
 
         var changes: [(id: String, oldPath: String, newPath: String, volumeId: String, fileIdentity: String)] = []
+        var scanned = 0
         for row in rows {
             let id = row[0].textValue ?? ""
-            let normalizedPath = row[1].textValue ?? ""
-            let relativePath = TSPath.relative(resolvedOld, to: normalizedPath)
-            if relativePath.hasPrefix("..") || TSPath.isAbsolute(relativePath) { continue }
-            let newPath = TSPath.join([resolvedNew, relativePath])
+            let storedVolumeId = row[1].textValue ?? ""
+            let storedIdentity = row[2].textValue ?? ""
+            let normalizedPath = row[3].textValue ?? ""
+            let storedSize = row[4].intValue ?? 0
+            let storedMtime = row[5].doubleValue ?? 0
+            let storedChecksum = row[6].textValue ?? ""
+            guard let relativePath = ScanPath.relative(path: normalizedPath, root: resolvedOld) else {
+                continue
+            }
+            scanned += 1
+            let newPath = relativePath.isEmpty
+                ? resolvedNew
+                : TSPath.join([resolvedNew, relativePath])
             guard let info = tsStat(newPath), info.isFile else { continue }
+
+            let volumeId = "dev:\(info.dev)"
+            let fileIdentity = String(info.ino)
+            let identityMatches = !storedIdentity.isEmpty &&
+                storedVolumeId == volumeId &&
+                storedIdentity == fileIdentity
+            let sizeMatches = storedSize > 0 && storedSize == info.size
+            let mtimeMatches = storedMtime > 0 && abs(storedMtime - info.mtimeMs) <= 1
+            var verified = identityMatches || (sizeMatches && mtimeMatches)
+            if !verified, sizeMatches, !storedChecksum.isEmpty {
+                verified = (try? IndexerService.sha256File(newPath)) == storedChecksum
+            }
+            guard verified else { continue }
+            // 新位置不能被另一行占用（两个唯一索引都会拒绝）。
+            let occupied = try connection.prepare("""
+                SELECT 1 FROM asset_files
+                WHERE id <> ? AND (normalized_path = ? OR (volume_id = ? AND file_identity = ?))
+                LIMIT 1
+              """).get([
+                .text(id), .text(newPath), .text(volumeId), .text(fileIdentity),
+            ])
+            guard occupied == nil else { continue }
+
             changes.append((
                 id: id,
                 oldPath: normalizedPath,
                 newPath: newPath,
-                volumeId: "dev:\(info.dev)",
-                fileIdentity: String(info.ino)
+                volumeId: volumeId,
+                fileIdentity: fileIdentity
             ))
+        }
+        guard scanned > 0 else {
+            throw DBError.message("ASSET_RELINK_NO_FILES_REGISTERED")
+        }
+        guard !changes.isEmpty else {
+            throw DBError.message("ASSET_RELINK_NO_VERIFIED_FILE")
         }
 
         let timestamp = nowISOString()
-        var relocatedOutboxPaths: [String] = []
         try connection.transaction {
             let affectedSessions: [String]
             if changes.isEmpty {
@@ -400,13 +427,11 @@ public final class AssetRepo {
                 affectedSessions = rows.compactMap { $0[0].textValue }
             }
             for change in changes {
-                if let relocated = try relocateMetadataState(
+                _ = try relocateMetadataState(
                     oldPhotoPath: change.oldPath,
                     newPhotoPath: change.newPath,
                     timestamp: timestamp
-                ) {
-                    relocatedOutboxPaths.append(relocated)
-                }
+                )
                 _ = try connection.prepare("""
                     UPDATE asset_files
                     SET volume_id = ?, file_identity = ?, normalized_path = ?, filename = ?,
@@ -417,13 +442,7 @@ public final class AssetRepo {
                     .text(TSPath.basename(change.newPath)), .text(timestamp), .text(timestamp),
                     .text(change.id),
                 ])
-                _ = try connection.prepare("""
-                    UPDATE photos SET filepath = ?, filename = ?, status = 'pending', updated_at = ?
-                    WHERE asset_file_id = ?
-                  """).run([
-                    .text(change.newPath), .text(TSPath.basename(change.newPath)),
-                    .text(timestamp), .text(change.id),
-                ])
+                try retargetPhotosPath(assetFileId: change.id, path: change.newPath, timestamp: timestamp)
                 try relocateSidecarBinding(
                     oldPhotoPath: change.oldPath,
                     newPhotoPath: change.newPath,
@@ -457,7 +476,6 @@ public final class AssetRepo {
                 ).run([.text(timestamp), .text(sessionId)])
             }
         }
-        relocatedOutboxPaths.forEach { metadataRelocationSink?($0) }
         return changes.count
     }
 
@@ -507,9 +525,8 @@ public final class AssetRepo {
         ).query([.text(match.id)]).compactMap { $0[0].textValue }
 
         let timestamp = nowISOString()
-        var relocatedOutboxPath: String?
         try connection.transaction {
-            relocatedOutboxPath = try relocateMetadataState(
+            _ = try relocateMetadataState(
                 oldPhotoPath: match.normalizedPath,
                 newPhotoPath: resolvedPath,
                 timestamp: timestamp
@@ -526,21 +543,13 @@ public final class AssetRepo {
                 .int(fileSize), .real(fileMtimeMs), .text(timestamp), .text(timestamp),
                 .text(match.id),
             ])
-            _ = try connection.prepare("""
-                UPDATE photos
-                SET filepath = ?, filename = ?, status = 'pending', updated_at = ?
-                WHERE asset_file_id = ?
-              """).run([
-                .text(resolvedPath), .text(TSPath.basename(resolvedPath)), .text(timestamp),
-                .text(match.id),
-            ])
+            try retargetPhotosPath(assetFileId: match.id, path: resolvedPath, timestamp: timestamp)
             try relocateSidecarBinding(
                 oldPhotoPath: match.normalizedPath,
                 newPhotoPath: resolvedPath,
                 timestamp: timestamp
             )
         }
-        if let relocatedOutboxPath { metadataRelocationSink?(relocatedOutboxPath) }
         return RelinkMovedFileResult(fileId: match.id, photoIds: photoIds)
     }
 
@@ -688,7 +697,7 @@ public final class AssetRepo {
         if oldOutbox?[0].textValue == "writing" {
             throw DBError.message("ASSET_RELINK_XMP_BUSY")
         }
-        if let oldOutbox {
+        if oldOutbox != nil {
             let targetExists = try connection.prepare("SELECT 1 FROM metadata_outbox WHERE xmp_path = ?")
                 .get([.text(newXmp)])
             if targetExists != nil {
@@ -826,7 +835,8 @@ public final class AssetRepo {
             FROM asset_files af
             JOIN asset_members am ON am.file_id = af.id
             JOIN session_assets sa ON sa.asset_id = am.asset_id
-            WHERE sa.session_id = ? AND af.extension IN ('.nef', '.arw', '.cr2', '.cr3', '.dng', '.raf', '.orf', '.rw2', '.pef', '.srw', '.jpg', '.jpeg')
+            WHERE sa.session_id = ?
+              AND af.extension IN (\(Self.sqlExtensionList(Self.rawExtensions.union(Self.rawPairingExtensions))))
           """).query([.text(sessionId)]).map { row in
             RawJpegFileRow(
                 id: row[0].textValue ?? "",
@@ -857,27 +867,27 @@ public final class AssetRepo {
                 existingPairs.insert("\(right)\u{0}\(left)")
             }
         }
-        var candidatesByStem: [String: (raws: [RawJpegFileRow], jpegs: [RawJpegFileRow])] = [:]
+        var candidatesByStem: [String: (raws: [RawJpegFileRow], counterparts: [RawJpegFileRow])] = [:]
         for file in files {
             let directory = TSPath.dirname(file.normalizedPath).lowercased()
             // TS: path.basename(file.filename, file.extension).toLowerCase()
             let stem = TSPath.stem(file.filename).lowercased()
             let key = "\(directory)\u{0}\(stem)"
-            var group = candidatesByStem[key] ?? (raws: [], jpegs: [])
-            if mediaType(file.fileExtension) == "raw" {
+            var group = candidatesByStem[key] ?? (raws: [], counterparts: [])
+            if Self.rawExtensions.contains(file.fileExtension) {
                 group.raws.append(file)
-            } else if [".jpg", ".jpeg"].contains(file.fileExtension) {
-                group.jpegs.append(file)
+            } else if Self.rawPairingExtensions.contains(file.fileExtension) {
+                group.counterparts.append(file)
             }
             candidatesByStem[key] = group
         }
         var created: Int64 = 0
         for (groupKey, group) in candidatesByStem {
             for raw in group.raws {
-                for jpeg in group.jpegs {
+                for jpeg in group.counterparts {
                     if existingPairs.contains("\(raw.id)\u{0}\(jpeg.id)") { continue }
                     let timestamp = nowISOString()
-                    let unambiguous = group.raws.count == 1 && group.jpegs.count == 1
+                    let unambiguous = group.raws.count == 1 && group.counterparts.count == 1
                     let candidateId = newUUIDString()
                     let evidence = JSONValue.object([
                         "basename": JSONValue.string(String(groupKey.suffix(from: groupKey.index(groupKey.firstIndex(of: "\u{0}")!, offsetBy: 1)))),
@@ -885,6 +895,10 @@ public final class AssetRepo {
                         "sameSession": JSONValue.bool(true),
                         "unambiguous": .bool(unambiguous),
                         "requiresManualConfirmation": JSONValue.bool(true),
+                        // 配对侧的实际角色：RAW+HEIC / RAW+TIFF 与 RAW+JPEG 语义不同，
+                        // 手动确认时需要看到到底是哪一对。
+                        "leftRole": JSONValue.string(memberRole(raw.fileExtension)),
+                        "rightRole": JSONValue.string(memberRole(jpeg.fileExtension)),
                     ])
                     _ = try connection.prepare("""
                         INSERT INTO asset_link_candidates (id, left_file_id, right_file_id, relation_type, confidence, evidence_json, status, created_at, updated_at)
@@ -908,9 +922,20 @@ public final class AssetRepo {
 
     // ─────────────────────────── 私有：合并/拆分 ───────────────────────────
 
-    /// 合并两个文件的资产（TS 内层 transaction 在 better-sqlite3 中为 savepoint；
-    /// Swift DB 层不支持嵌套事务，故本方法扁平化，调用方（acceptCandidate/
-    /// reconcileRawJpegLinks）保证外层事务）。
+    /// 资产文件换路径后同步 photos 的「路径投影」列（唯一实现）。
+    /// 三处调用（relinkRoot / relinkMovedFile / ensurePhoto）原本各抄一份逐字相同的
+    /// SQL；文件名恒为该路径的 basename，状态回到 pending 触发重新索引。
+    private func retargetPhotosPath(assetFileId: String, path: String, timestamp: String) throws {
+        _ = try connection.prepare("""
+            UPDATE photos SET filepath = ?, filename = ?, status = 'pending', updated_at = ?
+            WHERE asset_file_id = ?
+          """).run([
+            .text(path), .text(TSPath.basename(path)), .text(timestamp), .text(assetFileId),
+          ])
+    }
+
+    /// 合并两个文件的资产。调用方（acceptCandidate / reconcileRawJpegLinks）已持有
+    /// 外层事务，故本方法扁平化、不另开 savepoint；原子性由外层事务保证。
     private func mergeFileAssets(primaryFileId: String, secondaryFileId: String) throws {
         let primary = try connection.prepare(
             "SELECT asset_id FROM asset_members WHERE file_id = ?"
@@ -1070,13 +1095,7 @@ public final class AssetRepo {
                 .text(file.id),
             ])
             if !previousPath.isEmpty && previousPath != normalizedPath && !tsExists(previousPath) {
-                _ = try connection.prepare("""
-                    UPDATE photos SET filepath = ?, filename = ?, status = 'pending', updated_at = ?
-                    WHERE asset_file_id = ?
-                  """).run([
-                    .text(normalizedPath), .text(TSPath.basename(normalizedPath)),
-                    .text(timestamp), .text(file.id),
-                ])
+                try retargetPhotosPath(assetFileId: file.id, path: normalizedPath, timestamp: timestamp)
             }
         } else {
             let fileId = newUUIDString()
@@ -1159,15 +1178,41 @@ public final class AssetRepo {
 
     // ─────────────────────────── 私有：扩展名分类 ───────────────────────────
 
+    // 扩展名分类的**唯一真相源**：media_type / member_role / 配对候选查询
+    // 三处共用（旧实现各自内联一个字面量列表，配对查询漏了 heic/heif/tif/tiff，
+    // 导致 RAW+HEIC、RAW+TIFF 这类实际存在的配对完全召回不到）。
+
+    /// 相机 RAW —— **全仓唯一真相源**：media_type 分类、RAW+JPEG 配对候选、
+    /// 相似度逻辑资产折叠（PhotoAssets）与图库/挑片的代表行规则（PhotoRepo）
+    /// 全部引用本清单，不再各自维护字面量（旧实现三份清单，.x3f/.iiq 这类
+    /// 扩展名在相似度与图库会选出不同代表行）。
+    /// 覆盖 TS 两份来源的并集（logical-photo-assets RAW_EXTENSIONS ∪ 配对分类）。
+    static let rawExtensions: Set<String> = [
+        ".nef", ".nrw", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".orf",
+        ".rw2", ".pef", ".srw", ".srf", ".x3f", ".3fr", ".fff", ".mef",
+        ".mos", ".iiq", ".eip", ".erf", ".kdc", ".mrw",
+    ]
+    /// 位图（含相机直出 JPEG/HEIC）。
+    static let bitmapExtensions: Set<String> = [".jpg", ".jpeg", ".heic", ".heif", ".png", ".webp"]
+    /// 渲染位图。
+    static let renderedExtensions: Set<String> = [".tif", ".tiff", ".psd"]
+    /// 可作为 RAW 配对侧的扩展名：相机 JPEG/HEIC + 渲染 TIFF。
+    static let rawPairingExtensions: Set<String> = [".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff"]
+
+    /// Set → SQL IN 列表（排序保证 SQL 文本稳定，便于语句缓存）。
+    private static func sqlExtensionList(_ values: Set<String>) -> String {
+        values.sorted().map { "'\($0)'" }.joined(separator: ", ")
+    }
+
     private func mediaType(_ extensionWithDot: String) -> String {
-        if [".jpg", ".jpeg", ".heic", ".heif", ".png", ".webp"].contains(extensionWithDot) { return "image" }
-        if [".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"].contains(extensionWithDot) { return "raw" }
-        if [".tif", ".tiff", ".psd"].contains(extensionWithDot) { return "image" }
+        if Self.bitmapExtensions.contains(extensionWithDot) { return "image" }
+        if Self.rawExtensions.contains(extensionWithDot) { return "raw" }
+        if Self.renderedExtensions.contains(extensionWithDot) { return "image" }
         return "unknown"
     }
 
     private func memberRole(_ extensionWithDot: String) -> String {
-        if mediaType(extensionWithDot) == "raw" { return "raw" }
+        if Self.rawExtensions.contains(extensionWithDot) { return "raw" }
         if [".jpg", ".jpeg", ".heic", ".heif"].contains(extensionWithDot) { return "camera_jpeg" }
         if [".tif", ".tiff"].contains(extensionWithDot) { return "rendered_tiff" }
         return "unknown"

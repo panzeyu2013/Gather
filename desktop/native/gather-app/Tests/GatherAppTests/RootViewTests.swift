@@ -22,9 +22,15 @@ struct RootNavigationTests {
     @Test func selectingPersonsUsesNativePersonsRoute() {
         let navigation = RootNavigation()
         navigation.selectWeb(.persons)
-        #expect(navigation.destination == .persons)
+        // 单一表示：.page(.persons)（旧 .persons 枚举已删除，页面真实可达）。
+        #expect(navigation.destination == .page(.persons))
         #expect(navigation.isPersons)
         #expect(navigation.selectedWebPage == .persons)
+        // 切走再回来仍可达（不残留不可达枚举值）。
+        navigation.selectDashboard()
+        #expect(!navigation.isPersons)
+        navigation.selectWeb(.persons)
+        #expect(navigation.isPersons)
     }
 
     @Test func openingSessionRoutesToControlCenter() {
@@ -77,7 +83,11 @@ struct RootNavigationTests {
     @Test func sidebarCasesRemainStable() {
         // 产品决策：任务中心并入 Dashboard，删除独立 jobs 路由与侧栏项。
         #expect(RootNavigation.WebPage.allCases.map(\.rawValue) == ["persons", "settings"])
-        #expect(RootNavigation.WebPage.persons.title == "人脸库")
-        #expect(RootNavigation.WebPage.settings.title == "设置")
+        // 标题经 l() 出当前语言：断言用同源查询，避免绑定本机语言。
+        // 文案断言与切语言的套件互斥（appLanguage 是进程级全局量）。
+        AppLanguageLock.withStableCopy {
+            #expect(RootNavigation.WebPage.persons.title == GatherLocalization.l("人脸库"))
+            #expect(RootNavigation.WebPage.settings.title == GatherLocalization.l("设置"))
+        }
     }
 }

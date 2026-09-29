@@ -85,6 +85,9 @@ struct GatherApp: App {
             try MigrationRunner(databaseFilePath: dbURL.path).migrate(db)
 
             let router = SessionCommandRouter.makeDefault(db: db)
+            // 冷启动应用持久化界面语言：settings.ui_language 是唯一真相源；
+            // 未设置时保持系统语言检测（不再「设置显示中文、界面是英文」）。
+            router.applyStoredInterfaceLanguage()
             router.jobService.start()
             // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
             GatherEventCenter.shared.wire(jobService: router.jobService)
@@ -176,9 +179,18 @@ struct GatherApp: App {
         }
     }
 
-    /// 文件打开、菜单导入和 deep-link 共用同一条原生导入路径：创建工作区、
-    /// 写入已选照片、入队 metadata.scan。导入失败的文件保留在结果日志中，
-    /// 不会因为单个损坏文件使整个工作区创建失败。
+    /// 文件打开、菜单导入和 deep-link 共用同一条原生导入路径。
+    ///
+    /// **导入范围 === 用户显式选择集合**，目录导入与文件导入是两条明确语义：
+    ///   · 目录导入：选择集合恰好是一个目录 → source_path = 该目录（唯一允许
+    ///     递归的范围），扫描集合 = 该目录全树（job 不带 requestedPaths）；
+    ///     照片由索引 job 发现，此处不预写照片行。
+    ///   · 文件导入：其余情况（含「文件 + 目录」混合选择）→ source_path 留空，
+    ///     扫描集合 = 用户选择的路径集合，由 job checkpoint 的 requestedPaths
+    ///     携带；目录条目由索引器在其自身范围内展开。
+    /// 历史缺陷：以所选文件的公共父目录充当 source_path，再入队不带路径的
+    /// metadata.scan → 选 3 张照片等于递归扫描整个目录树（可上溯到 home）。
+    /// 公共父目录现在**只用于取名**，绝不落库为 source_path。
     ///
     /// source/sourceLabel：C1 菜单导入传 "capture-one"/"Capture One 文件"
     /// （对齐旧版 c1:plugin-import 的来源标记与失败提示文案）；其余为
@@ -196,33 +208,55 @@ struct GatherApp: App {
         let normalized = normalizeImportFilepaths(files)
         guard !normalized.isEmpty else { return }
         do {
-            let sourcePath = commonParentDirectory(filepaths: normalized)
-            let name: String
-            if sourcePath.isEmpty {
-                name = URL(fileURLWithPath: normalized[0]).deletingPathExtension().lastPathComponent
+            let session: SessionData
+            var failedFiles: [String] = []
+            var added = 0
+            var requestedPaths: [String]?
+            if normalized.count == 1, isDirectory(normalized[0]) {
+                // 目录作用域：name 传空 → 由目录 basename 命名。
+                session = try router.sessionService.createFromDirectory(
+                    name: "", sourcePath: normalized[0], source: source
+                )
+                requestedPaths = nil
             } else {
-                name = URL(fileURLWithPath: sourcePath).lastPathComponent
+                // 目录条目不写照片行（避免把目录当成一张「解码失败的照片」上报），
+                // 交给索引器在 requestedPaths 范围内展开。
+                let filepaths = normalized.filter { !isDirectory($0) }
+                let parent = commonParentDirectory(filepaths: normalized)
+                let name = parent.isEmpty
+                    ? URL(fileURLWithPath: normalized[0]).deletingPathExtension().lastPathComponent
+                    : URL(fileURLWithPath: parent).lastPathComponent
+                // source_path 留空（= 显式文件集合作用域）：公共父目录只用于取名。
+                // 若把 sanitizeSessionSourcePath 通过的父目录落库，监听器与
+                // 「全量兜底」扫描（requestedPaths == nil）会绕开本 job 的
+                // requestedPaths 重新递归该目录，重新引入「导入范围失控」。
+                // 需要目录作用域的用户请走目录导入（拖入/打开文件夹）。
+                session = try router.sessionService.createSession(
+                    name: name.isEmpty ? Self.defaultImportName(source: source) : name,
+                    source: source
+                )
+                if !filepaths.isEmpty {
+                    let result = try router.sessionService.addPhotos(
+                        sessionId: session.id,
+                        filepaths: filepaths,
+                        source: "import"
+                    )
+                    added = result.added
+                    failedFiles = result.failedFiles
+                }
+                requestedPaths = normalized
             }
-            let session = try router.sessionService.createSession(
-                name: name.isEmpty ? Self.defaultImportName(source: source) : name,
-                source: source,
-                sourcePath: sourcePath
-            )
-            let result = try router.sessionService.addPhotos(
-                sessionId: session.id,
-                filepaths: normalized,
-                source: "import"
-            )
             _ = try router.jobService.create(JobCreateParams(
                 type: .metadataScan,
                 scopeType: "session",
                 scopeId: session.id,
-                dedupeKey: "metadata.scan:\(session.id)"
+                dedupeKey: "metadata.scan:\(session.id)",
+                checkpoint: Self.scanScopeCheckpoint(requestedPaths: requestedPaths)
             ))
-            if !result.failedFiles.isEmpty {
-                GatherLogger.log("import skipped \(result.failedFiles.count) files", level: .warn)
+            if !failedFiles.isEmpty {
+                GatherLogger.log("import skipped \(failedFiles.count) files", level: .warn)
             }
-            let examples = result.failedFiles
+            let examples = failedFiles
                 .prefix(3)
                 .map { URL(fileURLWithPath: $0).lastPathComponent }
                 .joined(separator: "、")
@@ -231,8 +265,8 @@ struct GatherApp: App {
                 object: nil,
                 userInfo: [
                     GatherAppImportUserInfoKey.sessionId: session.id,
-                    GatherAppImportUserInfoKey.failedCount: result.failedFiles.count,
-                    GatherAppImportUserInfoKey.addedCount: result.added,
+                    GatherAppImportUserInfoKey.failedCount: failedFiles.count,
+                    GatherAppImportUserInfoKey.addedCount: added,
                     GatherAppImportUserInfoKey.sourceLabel: sourceLabel,
                     GatherAppImportUserInfoKey.examples: examples,
                 ]
@@ -240,6 +274,24 @@ struct GatherApp: App {
         } catch {
             GatherLogger.log("native import failed: \(error)", level: .error)
         }
+    }
+
+    /// metadata.scan 的扫描范围载荷：键名必须与 executor（SessionCommandRouter
+    /// 的 metadata.scan）读取的键逐字一致。非空数组 = 显式集合作用域（只扫这些
+    /// 路径）；缺省或空 = 目录全树作用域。
+    /// nonisolated：与 scanScopeCheckpoint 同属 metadata.scan 作用域契约，被该
+    /// nonisolated 纯函数读取（GatherApp: App 会把成员默认推断为 @MainActor）。
+    nonisolated static let scanRequestedPathsKey = "requestedPaths"
+
+    nonisolated static func scanScopeCheckpoint(requestedPaths: [String]?) -> [String: JSONValue] {
+        guard let requestedPaths, !requestedPaths.isEmpty else { return [:] }
+        return [scanRequestedPathsKey: .array(requestedPaths.map { .string($0) })]
+    }
+
+    private static func isDirectory(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     /// 对齐旧版 app.c1ImportName：C1 导入无公共父目录时使用

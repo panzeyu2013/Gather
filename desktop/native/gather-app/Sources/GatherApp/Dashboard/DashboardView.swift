@@ -111,7 +111,8 @@ struct DashboardView: View {
         ) {
             Button(GatherLocalization.l("删除"), role: .destructive) {
                 if let target = deleteTarget {
-                    Task { await viewModel.deleteSession(target.id) }
+                    // confirmed: true 只能从这个确认分支到达。
+                    Task { await viewModel.deleteSession(target.id, confirmed: true) }
                 }
                 deleteTarget = nil
             }
@@ -127,7 +128,8 @@ struct DashboardView: View {
             Button(GatherLocalization.l("删除全部"), role: .destructive) {
                 let ids = Array(selectedIds)
                 Task {
-                    if await viewModel.deleteSessions(ids) {
+                    // confirmed: true 只能从这个确认分支到达。
+                    if await viewModel.deleteSessions(ids, confirmed: true) {
                         exitSelectMode()
                     }
                 }
@@ -563,19 +565,10 @@ private struct SessionCardView: View {
         formatter.locale = GatherLocalization.appLocale
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        if let date = Self.parseISO8601(iso) {
+        if let date = parseISO8601Date(iso) {
             return formatter.string(from: date)
         }
         return iso
-    }
-
-    private static func parseISO8601(_ iso: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: iso) { return date }
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        return plain.date(from: iso)
     }
 }
 
@@ -657,11 +650,12 @@ private struct JobRowView: View {
                     .foregroundStyle(.secondary)
             }
             if !job.errorMessage.isEmpty {
+                // 错误码经漏斗翻译；tooltip 同样不直显原始诊断（细节只进日志）。
                 Text(GatherLocalization.jobErrorMessage(job.errorMessage))
                     .font(.footnote)
                     .foregroundStyle(GatherTheme.error)
                     .lineLimit(1)
-                    .help(job.errorMessage)
+                    .help(GatherLocalization.jobErrorMessage(job.errorMessage))
             }
         }
     }
@@ -747,6 +741,9 @@ private struct NewSessionSheet: View {
                 c1PreflightSection
             }
             if let error = viewModel.createError {
+                // createError 只可能是 GatherLocalization.l(...) 引导文案或
+                // errorText(code) 输出（DashboardViewModel.message/c1Message 漏斗），
+                // 原始诊断只进日志，不经 UI 直显。
                 Text(error)
                     .font(.callout)
                     .foregroundStyle(GatherTheme.error)
@@ -811,19 +808,13 @@ private struct NewSessionSheet: View {
             Button(GatherLocalization.l("选择文件夹"), action: chooseFolder)
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first(where: { Self.isDirectoryURL($0) }) else { return false }
+            guard let url = urls.first(where: { isDirectoryURL($0) }) else { return false }
             folderPath = url.path
             if !nameEdited {
                 name = url.lastPathComponent
             }
             return true
         }
-    }
-
-    /// 拖放目录判定：Finder 拖入的目录 URL 通常带尾斜杠；无尾斜杠时回退资源值探测。
-    private static func isDirectoryURL(_ url: URL) -> Bool {
-        if url.hasDirectoryPath { return true }
-        return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
     }
 
     /// TS Dialog c1Preflight 区块：检查清单（✓/✗）+ 通过/引导文案。

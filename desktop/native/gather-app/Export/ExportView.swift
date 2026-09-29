@@ -161,14 +161,37 @@ public final class ExportViewModel {
         }
     }
 
-    public func executeExport() async {
+    /// 组装「开始导出」确认载荷：先跑与 executeExport 同一套参数校验，
+    /// 失败就地写行内错误并返回 nil（不弹确认、不发命令）。
+    public func exportConfirmation() -> ExportConfirmation? {
+        do {
+            _ = try parameters()
+        } catch {
+            fieldError = Self.fieldError(for: error)
+            errorMessage = NativeCommandClient.message(for: error)
+            return nil
+        }
+        return ExportConfirmation(destination: destination, fileCount: preview?.files.count ?? 0)
+    }
+
+    /// 确认弹窗取消：写可见文案（不静默 return），不发命令。
+    public func reportExportCancelled() {
+        notice = GatherLocalization.l("已取消导出")
+        fieldError = nil
+    }
+
+    /// 执行导出。confirmed 只能由视图确认分支传 true；未确认时不下发确认载荷，
+    /// 由路由门禁拒绝（EXPORT_CONFIRMATION_REQUIRED）——UI 不得自证确认。
+    public func executeExport(confirmed: Bool) async {
         exportProgress = nil
         currentFileName = nil
         await run {
             self.isExporting = true
             defer { self.isExporting = false }
             var params = try self.parameters()
-            params["confirmed"] = .bool(true)
+            if confirmed {
+                params["confirmed"] = .bool(true)
+            }
             let data = try await self.client.executeAsync("export.execute", params: params)
             self.result = try data.decoded(as: ExportResult.self)
             self.notice = GatherLocalization.l("导出任务已完成")
@@ -225,9 +248,12 @@ public final class ExportViewModel {
     }
 
     /// 对齐 TS translateErrorLine：`filename: <错误码>` 行尾错误码翻译。
+    /// 无法解析结构的行也整体走 errorText（未知诊断回退通用文案），
+    /// 原始细节由 ExportService/日志承载，不经 UI 直显。
     public static func translateErrorLine(_ line: String) -> String {
-        let separator = line.range(of: ": ")
-        guard let separator else { return line }
+        guard let separator = line.range(of: ": ") else {
+            return GatherLocalization.errorText(line)
+        }
         let tail = line[separator.upperBound...]
         return "\(line[..<separator.lowerBound]): \(GatherLocalization.errorText(String(tail)))"
     }
@@ -313,7 +339,9 @@ public final class ExportViewModel {
             break
         }
         // 路由/桥接层错误按错误码前缀兜底（如 EXPORT_DIR_INSIDE_SESSION）。
-        let text = (error as? CustomStringConvertible)?.description ?? String(describing: error)
+        // 注：Error 到 CustomStringConvertible 的条件转换恒成功（编译器 #alwaysSucceeds），
+        // 且 String(describing:) 对实现了 description 的类型即取该 description，语义等价。
+        let text = String(describing: error)
         if text.contains("EXPORT_DIR") || text.contains("DESTINATION") { return .destination }
         if text.contains("QUALITY") { return .quality }
         if text.contains("MAX_DIMENSION") { return .maxDimension }
@@ -353,8 +381,22 @@ private struct ProgressBar: View {
     }
 }
 
+/// 「开始导出」确认载荷：弹窗文案的事实来源（目的地 + 本次将写入的文件数）。
+public struct ExportConfirmation: Equatable, Identifiable {
+    public var destination: String
+    public var fileCount: Int
+    public var id: String { destination }
+
+    public init(destination: String, fileCount: Int) {
+        self.destination = destination
+        self.fileCount = fileCount
+    }
+}
+
 public struct ExportView: View {
     @State private var viewModel: ExportViewModel
+    /// 非空即弹确认；confirmed 载荷只在确认分支写出（UI 不得自证确认）。
+    @State private var pendingExport: ExportConfirmation?
     @FocusState private var maxDimensionFocused: Bool
     @FocusState private var watermarkFontSizeFocused: Bool
     private let router: CommandRouter
@@ -410,6 +452,23 @@ public struct ExportView: View {
             guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.applyJobEvent(event)
         }
+        .gatherDestructiveConfirm(
+            pending: $pendingExport,
+            title: GatherLocalization.l("开始导出？"),
+            confirmLabel: { _ in GatherLocalization.l("开始导出") },
+            message: { request in
+                String(
+                    format: GatherLocalization.l("将向「%@」写入 %lld 个文件；重名文件会自动改名，不会覆盖已有文件。"),
+                    request.destination,
+                    request.fileCount
+                )
+            },
+            onConfirm: { _ in
+                // confirmed: true 只能从这个确认分支到达。
+                Task { await viewModel.executeExport(confirmed: true) }
+            },
+            onCancel: { _ in viewModel.reportExportCancelled() }
+        )
     }
 
     private var header: some View {
@@ -456,7 +515,8 @@ public struct ExportView: View {
             .disabled(viewModel.isWorking || viewModel.destinationIsEmpty)
             // 对齐旧版 export.tsx:192：仅导出进行中禁用，预览不互斥（旧版可并发）。
             Button(viewModel.isExporting ? GatherLocalization.l("正在导出…") : GatherLocalization.l("开始导出"), systemImage: "square.and.arrow.up.fill") {
-                Task { await viewModel.executeExport() }
+                // 参数校验通过才弹确认；确认载荷只在 onConfirm 分支下发。
+                pendingExport = viewModel.exportConfirmation()
             }
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.isExporting || viewModel.destinationIsEmpty)
@@ -481,12 +541,6 @@ public struct ExportView: View {
         case .jpeg: return "JPEG"
         case .tiff: return "TIFF"
         }
-    }
-
-    /// 拖放目录判定：Finder 拖入的目录 URL 通常带尾斜杠；无尾斜杠时回退资源值探测。
-    private static func isDirectoryURL(_ url: URL) -> Bool {
-        if url.hasDirectoryPath { return true }
-        return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
     }
 
     /// 导出中实时进度（TS export.tsx:334-346）：8px 自绘进度条 + 百分比 +
@@ -645,7 +699,7 @@ public struct ExportView: View {
                         .textFieldStyle(.roundedBorder)
                         .accessibilityLabel(GatherLocalization.l("导出目录"))
                         .dropDestination(for: URL.self) { urls, _ in
-                            guard let url = urls.first(where: { Self.isDirectoryURL($0) }) else { return false }
+                            guard let url = urls.first(where: { isDirectoryURL($0) }) else { return false }
                             viewModel.setDestinationPath(url.path)
                             return true
                         }

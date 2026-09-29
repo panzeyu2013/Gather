@@ -200,6 +200,7 @@ public struct GatherEmptyState: View {
             Image(systemName: icon)
                 .font(.system(size: iconSize))
                 .foregroundStyle(iconColor)
+                .accessibilityHidden(true)
             if let title {
                 Text(title)
                     .font(.headline)
@@ -215,5 +216,68 @@ public struct GatherEmptyState: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - 破坏性动作确认
+
+extension View {
+    /// 破坏性动作的二次确认（外壳统一门控）。
+    ///
+    /// 语义：
+    /// - `pending` 非空即弹出 `.confirmationDialog`；`message` 必须写清
+    ///   「会发生什么 + 影响范围（数量 / 路径）」；
+    /// - 只有确认按钮会调用 `onConfirm` —— 命令层的 `confirmed: true` 只能
+    ///   从确认分支到达；
+    /// - 「取消」按钮调用 `onCancel` 写入可见文案（不静默 return），取消不发命令。
+    func gatherDestructiveConfirm<Item>(
+        pending: Binding<Item?>,
+        title: String,
+        confirmLabel: @escaping (Item) -> String,
+        confirmRole: @escaping (Item) -> ButtonRole? = { _ in .destructive },
+        message: @escaping (Item) -> String,
+        onConfirm: @escaping (Item) -> Void,
+        onCancel: @escaping (Item) -> Void
+    ) -> some View {
+        modifier(GatherDestructiveConfirmModifier(
+            pending: pending,
+            title: title,
+            confirmLabel: confirmLabel,
+            confirmRole: confirmRole,
+            message: message,
+            onConfirm: onConfirm,
+            onCancel: onCancel
+        ))
+    }
+}
+
+private struct GatherDestructiveConfirmModifier<Item>: ViewModifier {
+    @Binding var pending: Item?
+    let title: String
+    let confirmLabel: (Item) -> String
+    let confirmRole: (Item) -> ButtonRole?
+    let message: (Item) -> String
+    let onConfirm: (Item) -> Void
+    let onCancel: (Item) -> Void
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            title,
+            isPresented: Binding(
+                get: { pending != nil },
+                set: { if !$0 { pending = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pending
+        ) { item in
+            // 弹窗按钮显式启用：宿主页隐藏时会 .disabled(!isActive)，sheet/弹窗
+            // 继承该环境值会把对话框按钮一并禁用（打开后无法确认/取消）。
+            Button(confirmLabel(item), role: confirmRole(item)) { onConfirm(item) }
+                .disabled(false)
+            Button(GatherLocalization.l("取消"), role: .cancel) { onCancel(item) }
+                .disabled(false)
+        } message: { item in
+            Text(message(item))
+        }
     }
 }

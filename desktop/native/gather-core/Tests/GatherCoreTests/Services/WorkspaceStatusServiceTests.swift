@@ -7,7 +7,8 @@
 //   "folds failed xmp rows into pending" 用例改为种子 outbox 行断言同一投影。
 // - clear_completed 两用例：TS 走 JobService.clearCompleted()（排除
 //   metadata.scan / export.execute 证据行），Swift 等价于
-//   AnalysisJobRepo.clearCompleted(excludeTypes:) 直接调用。
+//   AnalysisJobRepo.clearTerminal(statuses:excludeTypes:)（状态集合必填；
+//   只清点名的终态，失败原因不会被顺手删除）。
 
 import Foundation
 import Testing
@@ -470,7 +471,7 @@ struct WorkspaceStatusServiceTests {
             updatedAt: "2026-08-08T00:04:00.000Z"
         ))
 
-        let cleared = try jobs.clearCompleted(excludeTypes: [.metadataScan, .exportExecute])
+        let cleared = try jobs.clearTerminal(statuses: [.succeeded], excludeTypes: [.metadataScan, .exportExecute])
         #expect(cleared == 1)
 
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
@@ -494,7 +495,8 @@ struct WorkspaceStatusServiceTests {
             updatedAt: "2026-08-08T00:02:00.000Z", errorMessage: "boom"
         ))
 
-        _ = try jobs.clearCompleted(excludeTypes: [.metadataScan, .exportExecute])
+        // 显式点名清理失败终态：quality 行被清，failed metadata.scan 作为证据保留。
+        _ = try jobs.clearTerminal(statuses: [.failed], excludeTypes: [.metadataScan, .exportExecute])
 
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
         let unwrapped = try #require(status)
@@ -504,5 +506,22 @@ struct WorkspaceStatusServiceTests {
             WorkspaceFailedJob(id: "scan-1", type: "metadata.scan", code: "", message: "io"),
         ])
         #expect(unwrapped.indexing.status == .failed)
+    }
+
+    /// TTL 是「严格小于」才命中缓存：恰好等于 TTL 必须失效重查。
+    /// 变异「now - cachedAt < TTL 改成 <=」可杀。
+    @Test func offlinePhotosCacheExpiresExactlyAtTTL() throws {
+        var now = 2_000_000
+        let harness = try makeHarness(clock: { now })
+        try addPhoto(harness.db, harness.sessionId, "photo-1")
+
+        let first = try harness.service.getStatus(sessionId: harness.sessionId)
+        #expect(try #require(first).offlinePhotos == 0)
+        _ = try harness.db.prepare("UPDATE photos SET status = 'missing' WHERE id = 'photo-1'").run()
+
+        // 恰好到达 TTL（不是 TTL-1，也不是 TTL+1）：边界必须判失效。
+        now += WorkspaceStatusService.offlinePhotosTTLMs
+        let atTTL = try harness.service.getStatus(sessionId: harness.sessionId)
+        #expect(try #require(atTTL).offlinePhotos == 1, "恰好到达 TTL 时必须重新查库，实际缓存值被复用")
     }
 }

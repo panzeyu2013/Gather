@@ -29,7 +29,8 @@ public struct FaceInferenceBatchItem: Equatable, Sendable {
     /// 单图失败信息（其余图片不受影响）；nil 表示成功。
     public let error: String?
     public let observations: [FaceEncodeResult]
-    /// 编码失败数（Vision 管线恒为 0，保留字段对齐 TS 契约）。
+    /// 检测到但嵌入失败的人脸数（模型不可用/输入不受支持/输出维度不符时为非零；
+    /// 上层据此避免把"编码全失败"当成"这张照片没有脸"）。
     public let encodingFailures: Int
 
     public init(error: String? = nil, observations: [FaceEncodeResult] = [], encodingFailures: Int = 0) {
@@ -49,9 +50,17 @@ public enum FaceInferenceError: Error, Equatable {
 /// 排队 + 池化的语义）。
 public actor FaceInferenceEngine {
     private let config: FaceInferenceConfig
+    /// 服务层注入的嵌入实例（nil = 按 config 自行解析）。
+    private let injectedEmbedder: FaceEmbeddingProvider?
 
-    public init(config: FaceInferenceConfig = FaceInferenceConfig()) {
+    /// - Parameter embedder: 可选注入的嵌入实例。由服务层每次运行创建一次并透传，
+    ///   保证"写进 analysis_signature 的规格"与"真正用来推理的模型"是**同一个对象**：
+    ///   否则签名算完后模型文件被替换，本次运行会用 A 的签名标注 B 的向量（对抗验证 V1
+    ///   指出的混写窗口）。为 nil 时按 config 自行解析（空路径 → 内置 Vision）。
+    public init(config: FaceInferenceConfig = FaceInferenceConfig(),
+                embedder: FaceEmbeddingProvider? = nil) {
         self.config = config
+        self.injectedEmbedder = embedder
     }
 
     /// 推理一批图片。图片为 ImageIO 可解码字节（如上层 getPreview 的
@@ -61,19 +70,30 @@ public actor FaceInferenceEngine {
         images: [Data],
         onProgress: ((current: Int, total: Int)) -> Void = { _ in }
     ) async throws -> [FaceInferenceBatchItem] {
+        // 嵌入实例：优先用服务层注入的（与 analysis_signature 同源）；否则按配置解析
+        // （空路径 = 内置 Vision 特征；配置了模型却不可加载 → 抛错，绝不静默回退：
+        // 混用两套向量空间会让后续所有阈值失去意义且不报错）。
+        let embedder = try injectedEmbedder ?? FaceEmbeddingModelFactory.make(
+            modelPath: config.faceEmbeddingModelPath,
+            modelVersion: config.faceEmbeddingModelVersion
+        )
         var results: [FaceInferenceBatchItem] = []
         results.reserveCapacity(images.count)
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
             let item: FaceInferenceBatchItem
             do {
-                let faces = try FaceEncoder.encodeFaces(
+                // 用带失败计数的入口：失败数要一路带到服务层（判断"这张照片编码全失败"，
+                // 从而不写 analysis_state、不删旧簇与绑定——见 Encoder.FaceEncodeBatch）。
+                let batch = try FaceEncoder.encodeFacesDetailed(
                     in: image,
                     confidenceThreshold: config.confidenceThreshold,
                     maxDetections: config.maxDetections,
-                    embeddingDim: config.embeddingDim
+                    embeddingDim: config.embeddingDim,
+                    embedder: embedder
                 )
-                item = FaceInferenceBatchItem(observations: faces)
+                item = FaceInferenceBatchItem(
+                    observations: batch.faces, encodingFailures: batch.encodeFailures)
             } catch {
                 item = FaceInferenceBatchItem(error: "\(error)")
             }

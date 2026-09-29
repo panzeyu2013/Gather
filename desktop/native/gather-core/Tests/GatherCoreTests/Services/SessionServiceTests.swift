@@ -55,7 +55,7 @@ struct SessionServiceCreateFromDirectoryTests {
 
         #expect(session.name == "Wedding")
         #expect(session.importSource == "local")
-        #expect(session.sourcePath == TSPath.resolve(dir))
+        #expect(session.sourcePath == ScanPath.canonical(dir))
         #expect(session.photoCount == 0)
         #expect(session.truncatedImport == false)
         // 照片不在创建时插入——metadata.scan 索引 job 后台填充。
@@ -164,11 +164,13 @@ struct SessionServiceAddPhotosTests {
         )
 
         #expect(result.added == 2)
-        #expect(result.failedFiles == [TSPath.resolve(dir + "/broken.jpg")])
+        #expect(result.failedFiles == [ScanPath.canonical(dir + "/broken.jpg")])
         #expect(result.total == 2)
         let updated = try harness.sessionRepo.get(id: session.id)
         #expect(updated?.status == "photos_loaded")
-        #expect(updated?.sourcePath == TSPath.resolve(dir))
+        // 导入文件绝不回填 source_path：扫描范围由调用方显式给出（历史缺陷是
+        // 用这些照片的公共父目录当扫描根，把一次文件导入变成目录全树扫描）。
+        #expect(updated?.sourcePath == "")
     }
 }
 
@@ -222,8 +224,11 @@ struct SessionServiceDeleteAndQueryTests {
         #expect(try sessionRepo.get(id: session.id) != nil)
     }
 
-    @Test("getSession derives and persists the source path from multiple photos")
-    func getSessionDerivesSourcePath() throws {
+    /// source_path 是扫描/监听作用域的唯一判据：空 = 显式文件集合作用域。
+    /// getSession 绝不允许用已导入照片的公共父目录回填它——那会把一次文件导入
+    /// 永久升级为对某个目录的全树扫描（历史 P0：可上溯到 home）。
+    @Test("getSession never derives a source path from imported photos")
+    func getSessionDoesNotDeriveSourcePath() throws {
         let db = try makeMigratedDB()
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
@@ -244,9 +249,14 @@ struct SessionServiceDeleteAndQueryTests {
 
         let data = try service.getSession(session.id)
 
-        #expect(data?.sourcePath == TSPath.resolve(dir))
-        // 已持久化，再次读取不靠内存。
-        #expect(try sessionRepo.get(id: session.id)?.sourcePath == TSPath.resolve(dir))
+        #expect(data?.sourcePath == "")
+        #expect(try sessionRepo.get(id: session.id)?.sourcePath == "")
+
+        // 目录作用域的会话则保持它自己的根不变（不被照片路径改写）。
+        _ = try db.prepare("UPDATE sessions SET source_path = ? WHERE id = ?")
+            .run([.text(ScanPath.canonical(subA)), .text(session.id)])
+        let scoped = try service.getSession(session.id)
+        #expect(scoped?.sourcePath == ScanPath.canonical(subA))
     }
 }
 
@@ -260,21 +270,28 @@ struct SessionPathUtilityTests {
         let b = root + "/shoot-a/IMG_0002.CR2"
         let c = root + "/shoot-b/IMG_0003.CR2"
 
-        #expect(commonParentDirectory(filepaths: [a, b]) == TSPath.resolve(root + "/shoot-a"))
-        #expect(commonParentDirectory(filepaths: [a, c]) == TSPath.resolve(root))
-        #expect(commonParentDirectory(filepaths: [a]) == TSPath.resolve(root + "/shoot-a"))
+        #expect(commonParentDirectory(filepaths: [a, b]) == ScanPath.canonical(root + "/shoot-a"))
+        #expect(commonParentDirectory(filepaths: [a, c]) == ScanPath.canonical(root))
+        #expect(commonParentDirectory(filepaths: [a]) == ScanPath.canonical(root + "/shoot-a"))
         #expect(commonParentDirectory(filepaths: []) == "")
         // 文件系统根不是有意义的照片源。
         #expect(commonParentDirectory(filepaths: ["/a.jpg", "/b.jpg"]) == "")
     }
 
     @Test("normalizeImportFilepaths trims, dedupes and resolves")
-    func normalizeImportFilepathsBehavior() {
+    func normalizeImportFilepathsBehavior() throws {
         #expect(normalizeImportFilepaths(["  /a/x.jpg  ", "/a/x.jpg", "", "  ", "/a/y.jpg"]) == [
-            TSPath.resolve("/a/x.jpg"), TSPath.resolve("/a/y.jpg"),
+            ScanPath.canonical("/a/x.jpg"), ScanPath.canonical("/a/y.jpg"),
         ])
         // trim 覆盖换行（TS String.prototype.trim 行为）。
-        #expect(normalizeImportFilepaths(["\n/a/z.jpg\n"]) == [TSPath.resolve("/a/z.jpg")])
+        #expect(normalizeImportFilepaths(["\n/a/z.jpg\n"]) == [ScanPath.canonical("/a/z.jpg")])
+        // 归一化口径与扫描侧逐字一致：同一个文件的词法变体（/./、//、a/../）
+        // 必须收敛到同一个键，否则同一张照片会入库两行而唯一索引拦不住。
+        #expect(ScanPath.canonical("/tmp/./x.jpg") == ScanPath.canonical("/tmp/x.jpg"))
+        #expect(ScanPath.canonical("//tmp/x.jpg") == ScanPath.canonical("/tmp/x.jpg"))
+        #expect(normalizeImportFilepaths(["/tmp/x.jpg", "/tmp/./x.jpg"]).count == 1)
+        // 幂等。
+        #expect(ScanPath.canonical(ScanPath.canonical("/tmp/./x.jpg")) == ScanPath.canonical("/tmp/./x.jpg"))
     }
 
     @Test("sanitizeSessionSourcePath only accepts the real common parent of 2+ photos")
@@ -284,11 +301,14 @@ struct SessionPathUtilityTests {
         let a = root + "/x/IMG_0001.CR2"
         let b = root + "/x/IMG_0002.CR2"
 
-        #expect(sanitizeSessionSourcePath(sourcePath: root + "/x", filepaths: [a, b]) == TSPath.resolve(root + "/x"))
+        #expect(sanitizeSessionSourcePath(sourcePath: root + "/x", filepaths: [a, b]) == ScanPath.canonical(root + "/x"))
         // 单文件不构成有效源。
         #expect(sanitizeSessionSourcePath(sourcePath: root + "/x", filepaths: [a]) == "")
-        // 根目录拒绝。
+        // 根目录 / 主目录 / 祖先目录一律拒绝（递归它们 = 导入整个卷或主目录）。
         #expect(sanitizeSessionSourcePath(sourcePath: "/", filepaths: [a, b]) == "")
+        #expect(sanitizeSessionSourcePath(sourcePath: NSHomeDirectory(), filepaths: [
+            NSHomeDirectory() + "/a.jpg", NSHomeDirectory() + "/b.jpg",
+        ]) == "")
         // 非公共父目录拒绝。
         #expect(sanitizeSessionSourcePath(sourcePath: root + "/y", filepaths: [a, b]) == "")
     }

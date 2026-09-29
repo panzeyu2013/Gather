@@ -327,6 +327,10 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case C1_NO_DOCUMENT
     case C1_NOT_AUTHORIZED
     case C1_SCRIPT_FAILED
+    /// Capture One AppleScript 调用超时（宿主桥 `.timedOut`）。
+    case C1_SCRIPT_TIMEOUT
+    /// 导入时 Capture One 未选中任何照片（AppDelegate 通知载荷）。
+    case C1_NO_SELECTED_PHOTOS
     case SCAN_INVALID_DIR
     case SCAN_READ_FAILED
     // XMP / metadata 同步协调 + writeback
@@ -334,8 +338,18 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case XMP_CONFIRM_INCOMPLETE
     case XMP_CLEANUP_REQUIRES_LOADED
     case XMP_CONFIRM_REQUIRES_SYNC
+    /// 结清时仍有未确认的关联会话：不得谎报成功（审查 N2/声明 12）。
+    case XMP_CONFIRM_OTHER_SESSION_PENDING
     case XMP_EXTERNALLY_MODIFIED
     case XMP_BACKUP_MISSING
+    // 侧车文档本身的读写故障（SidecarXMPProvider 抛出，客户端按键分流处理）
+    case XMP_DOCUMENT_CORRUPT
+    case XMP_DOCUMENT_UNSUPPORTED
+    case XMP_DOCUMENT_READ_FAILED
+    case XMP_WRITE_FAILED
+    case XMP_WRITE_VERIFICATION_FAILED
+    case XMP_BACKUP_FAILED
+    case XMP_RESTORE_FAILED
     case XMP_CLEANUP_ABORTED_EXTERNAL_EDIT
     case XMP_EXTERNAL_EDIT_CONFLICT
     case XMP_RELOAD_NOT_ACKED
@@ -401,6 +415,12 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case ASSET_RELINK_XMP_BUSY
     case ASSET_RELINK_OUTBOX_CONFLICT
     case ASSET_RELINK_XMP_CONFLICT
+    /// 重链接根目录校验（缺陷⑥）：同根 / 两向嵌套 / 根下无登记文件 / 无候选
+    /// 通过身份校验 —— 一律显式失败，绝不用 0 冒充成功。
+    case ASSET_RELINK_SAME_ROOT
+    case ASSET_RELINK_NESTED_ROOT
+    case ASSET_RELINK_NO_FILES_REGISTERED
+    case ASSET_RELINK_NO_VERIFIED_FILE
     // Face 关键字服务 + 模型下载
     case FACE_EPS_INVALID
     case FACE_MIN_CLUSTER_INVALID
@@ -456,6 +476,8 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     // Duplicate / metadata / jobs / settings / quality / index / asset
     case DUP_RESOLVE_CONFIRM_REQUIRED
     case DUP_RESOLVE_MEMBER_CONFIRM_REQUIRED
+    /// 视觉阈值非法（§4.2 P2）：必须是 0...64 的整数。
+    case DUP_THRESHOLD_INVALID
     case DUPLICATE_SCAN_BUSY
     case METADATA_SET_CONFIRM_REQUIRED
     case METADATA_BATCH_SET_CONFIRM_REQUIRED
@@ -478,12 +500,14 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case SESSION_DELETE_NOT_CONFIRMED
     case MODEL_EXTRACT_FAILED
     case FACE_WORKERS_INIT_FAILED
+    case FILTER_CRITERIA_INVALID
     case FILTER_FIELD_UNKNOWN
     case FILTER_SCHEMA_UNSUPPORTED
     case TEMPLATE_NOT_FOUND
     case TEMPLATE_CONFIG_INVALID
     case TEMPLATE_DELETE_CONFIRM_REQUIRED
     case TEMPLATE_APPLY_CONFIRM_REQUIRED
+    case ALBUM_DELETE_CONFIRM_REQUIRED
     case ALBUM_NOT_FOUND
     case PERSON_NOT_FOUND
     case PERSON_DELETE_CONFIRM_REQUIRED

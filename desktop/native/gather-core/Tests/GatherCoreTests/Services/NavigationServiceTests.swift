@@ -18,9 +18,9 @@ private func makeHarness() throws -> Harness {
     let now = "2026-07-30T10:00:00.000Z"
     _ = try db.prepare("""
         INSERT INTO sessions (
-          id, name, status, analysis_status, writeback_status, import_source,
+          id, name, status, writeback_status, import_source,
           source_path, photo_count, failed_writeback_count, created_at, updated_at
-        ) VALUES ('session', 'Navigation', 'photos_loaded', 'idle', 'idle',
+        ) VALUES ('session', 'Navigation', 'photos_loaded', 'idle',
           'folder', '/photos', 3, 0, ?, ?)
       """).run([.text(now), .text(now)])
     let insertPhoto = try db.prepare("""
@@ -74,6 +74,30 @@ struct NavigationServiceTests {
         // 合法参数不抛错。
         #expect(throws: Never.self) {
             try validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 1_800)
+        }
+    }
+
+    /// TS 边界：sceneGap == burstGap 合法（只有 `sceneGap < burstGap` 才是倒挂），
+    /// burstGap 的闭区间两端 0.1 / 300 合法、越界非法。
+    /// 变异「sceneGapSeconds < burstGapSeconds 改成 <=」可杀。
+    @Test func equalSceneAndBurstGapIsLegalAtClosedBoundaries() {
+        #expect(throws: Never.self) {
+            try validateNavigationParameters(burstGapSeconds: 2, sceneGapSeconds: 2)
+        }
+        #expect(throws: Never.self) {
+            try validateNavigationParameters(burstGapSeconds: 0.1, sceneGapSeconds: 0.1)
+        }
+        #expect(throws: Never.self) {
+            try validateNavigationParameters(burstGapSeconds: 300, sceneGapSeconds: 86_400)
+        }
+        #expect(throws: (any Error).self) {
+            try validateNavigationParameters(burstGapSeconds: 0.099, sceneGapSeconds: 10)
+        }
+        #expect(throws: (any Error).self) {
+            try validateNavigationParameters(burstGapSeconds: 300.1, sceneGapSeconds: 86_400)
+        }
+        #expect(throws: (any Error).self) {
+            try validateNavigationParameters(burstGapSeconds: 300, sceneGapSeconds: 86_400.5)
         }
     }
 

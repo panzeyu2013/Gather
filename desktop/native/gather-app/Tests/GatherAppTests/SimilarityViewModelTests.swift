@@ -45,70 +45,193 @@ private final class AsyncGate {
 
 // MARK: - Stub（状态机注入）
 
+/// Swift 6 迁移：SimilarityDataProvider 现经协议继承 Sendable，测试替身必须可跨隔离域。
+/// 可变状态全部收归 LockedBox（NSLock 保护的 @unchecked Sendable 锁盒）：result/tiers/
+/// jobs/resultError/analyzeError/reclusterError/analyzeGate/reclusterResults/各类
+/// Calls 记录/previewItems/syncItems/syncItemsError。对外属性一律经锁内 get/set 转发
+/// （测试调用点不变）；stub 方法在临界区内取快照后立即释放锁，唯一 await（analyzeGate）
+/// 在锁外执行，绝不持锁 await。
 private final class StubSimilarityProvider: SimilarityDataProvider {
-    var result: SimilarityResult?
-    var tiers: [Int: SimilarityResult] = [:]
-    var jobs: [AnalysisJobData] = []
-    var resultError: String?
-    var analyzeError: String?
-    var reclusterError: String?
-    var analyzeGate: AsyncGate?
-    var reclusterResults: [SimilarityResult] = []
-    private(set) var analyzeCalls: [(threshold: Int?, minGroupSize: Int?, groupingMode: SimilarityGroupingMode)] = []
-    private(set) var cancelCalls: [String] = []
-    private(set) var reclusterCalls: [(threshold: Int, minGroupSize: Int, groupingMode: SimilarityGroupingMode)] = []
-    private(set) var resultCalls: [(sessionId: String, threshold: Int?)] = []
+    private final class LockedBox: @unchecked Sendable {
+        let lock = NSLock()
+        var result: SimilarityResult?
+        var tiers: [Int: SimilarityResult] = [:]
+        var jobs: [AnalysisJobData] = []
+        var resultError: String?
+        var analyzeError: String?
+        var reclusterError: String?
+        var analyzeGate: AsyncGate?
+        var reclusterResults: [SimilarityResult] = []
+        var analyzeCalls: [(threshold: Int?, minGroupSize: Int?, groupingMode: SimilarityGroupingMode)] = []
+        var cancelCalls: [String] = []
+        var reclusterCalls: [(threshold: Int, minGroupSize: Int, groupingMode: SimilarityGroupingMode)] = []
+        var resultCalls: [(sessionId: String, threshold: Int?)] = []
+        var writebackCalls: [(itemIds: [Int], threshold: Int?, confirmed: Bool)] = []
+        var retryCalls: [Bool] = []
+        var cleanupCalls: [Bool] = []
+        var previewItems: [WritebackItem] = []
+        var syncItems: [WritebackItem] = []
+        var syncItemsError: Error?
+    }
+
+    private let box = LockedBox()
+
+    var result: SimilarityResult? {
+        get { box.lock.withLock { box.result } }
+        set { box.lock.withLock { box.result = newValue } }
+    }
+
+    var tiers: [Int: SimilarityResult] {
+        get { box.lock.withLock { box.tiers } }
+        set { box.lock.withLock { box.tiers = newValue } }
+    }
+
+    var jobs: [AnalysisJobData] {
+        get { box.lock.withLock { box.jobs } }
+        set { box.lock.withLock { box.jobs = newValue } }
+    }
+
+    var resultError: String? {
+        get { box.lock.withLock { box.resultError } }
+        set { box.lock.withLock { box.resultError = newValue } }
+    }
+
+    var analyzeError: String? {
+        get { box.lock.withLock { box.analyzeError } }
+        set { box.lock.withLock { box.analyzeError = newValue } }
+    }
+
+    var reclusterError: String? {
+        get { box.lock.withLock { box.reclusterError } }
+        set { box.lock.withLock { box.reclusterError = newValue } }
+    }
+
+    var analyzeGate: AsyncGate? {
+        get { box.lock.withLock { box.analyzeGate } }
+        set { box.lock.withLock { box.analyzeGate = newValue } }
+    }
+
+    var reclusterResults: [SimilarityResult] {
+        get { box.lock.withLock { box.reclusterResults } }
+        set { box.lock.withLock { box.reclusterResults = newValue } }
+    }
+
+    var analyzeCalls: [(threshold: Int?, minGroupSize: Int?, groupingMode: SimilarityGroupingMode)] {
+        box.lock.withLock { box.analyzeCalls }
+    }
+
+    var cancelCalls: [String] {
+        box.lock.withLock { box.cancelCalls }
+    }
+
+    var reclusterCalls: [(threshold: Int, minGroupSize: Int, groupingMode: SimilarityGroupingMode)] {
+        box.lock.withLock { box.reclusterCalls }
+    }
+
+    var resultCalls: [(sessionId: String, threshold: Int?)] {
+        box.lock.withLock { box.resultCalls }
+    }
+
+    /// 确认语义：记录破坏性命令的调用与 confirmed 取值。
+    var writebackCalls: [(itemIds: [Int], threshold: Int?, confirmed: Bool)] {
+        box.lock.withLock { box.writebackCalls }
+    }
+
+    var retryCalls: [Bool] {
+        box.lock.withLock { box.retryCalls }
+    }
+
+    var cleanupCalls: [Bool] {
+        box.lock.withLock { box.cleanupCalls }
+    }
+
+    var previewItems: [WritebackItem] {
+        get { box.lock.withLock { box.previewItems } }
+        set { box.lock.withLock { box.previewItems = newValue } }
+    }
+
+    /// sim.writeback_items 行（syncControls 状态机数据源）：默认空（→ synced），
+    /// 可注入行状态驱动 syncing/c1Read/failed/conflict；可注入错误驱动错误态。
+    /// 协议默认实现恒返回 [] —— 不覆写会让整个 syncControls 门控矩阵 0 覆盖。
+    var syncItems: [WritebackItem] {
+        get { box.lock.withLock { box.syncItems } }
+        set { box.lock.withLock { box.syncItems = newValue } }
+    }
+
+    var syncItemsError: Error? {
+        get { box.lock.withLock { box.syncItemsError } }
+        set { box.lock.withLock { box.syncItemsError = newValue } }
+    }
 
     func getResult(sessionId: String, threshold: Int?) throws -> SimilarityResult? {
-        resultCalls.append((sessionId, threshold))
-        if let resultError {
-            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: resultError])
+        let (error, tier, result): (String?, SimilarityResult?, SimilarityResult?) = box.lock.withLock {
+            box.resultCalls.append((sessionId, threshold))
+            let tier = threshold.flatMap { box.tiers[$0] }
+            return (box.resultError, tier, box.result)
         }
-        if let threshold, let tier = tiers[threshold] { return tier }
+        if let error {
+            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
+        }
+        if let tier { return tier }
         return result
     }
 
     func analyze(sessionId: String, threshold: Int?, minGroupSize: Int?, groupingMode: SimilarityGroupingMode) async throws {
-        analyzeCalls.append((threshold, minGroupSize, groupingMode))
-        if let analyzeGate { await analyzeGate.wait() }
-        if let analyzeError {
-            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: analyzeError])
+        let (gate, error): (AsyncGate?, String?) = box.lock.withLock {
+            box.analyzeCalls.append((threshold, minGroupSize, groupingMode))
+            return (box.analyzeGate, box.analyzeError)
+        }
+        if let gate { await gate.wait() }
+        if let error {
+            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
         }
     }
 
     func cancelAnalysis(sessionId: String) async throws -> Bool {
-        cancelCalls.append(sessionId)
+        box.lock.withLock { box.cancelCalls.append(sessionId) }
         return true
     }
 
     func recluster(sessionId: String, threshold: Int, minGroupSize: Int, groupingMode: SimilarityGroupingMode) async throws -> SimilarityResult {
-        reclusterCalls.append((threshold, minGroupSize, groupingMode))
-        if let reclusterError {
-            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: reclusterError])
+        try box.lock.withLock {
+            box.reclusterCalls.append((threshold, minGroupSize, groupingMode))
+            if let reclusterError = box.reclusterError {
+                throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: reclusterError])
+            }
+            return box.reclusterResults.removeFirst()
         }
-        return reclusterResults.removeFirst()
     }
 
     func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData] {
-        jobs
+        box.lock.withLock { box.jobs }
     }
 
     func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) async throws -> WritebackPreview {
-        WritebackPreview(items: [], totalCount: 0, affectedPhotos: 0)
+        let items = box.lock.withLock { box.previewItems }
+        return WritebackPreview(items: items, totalCount: items.count, affectedPhotos: items.count)
     }
 
-    func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult {
-        WritebackResult(totalAffected: 0, written: 0, failed: 0, skipped: 0, errors: [], failedItems: [], report: "")
+    func writeback(sessionId: String, itemIds: [Int], threshold: Int?, confirmed: Bool) async throws -> WritebackResult {
+        box.lock.withLock { box.writebackCalls.append((itemIds, threshold, confirmed)) }
+        return WritebackResult(totalAffected: 0, written: 0, failed: 0, skipped: 0, errors: [], failedItems: [], report: "")
     }
 
-    func retryFailedWriteback(sessionId: String) async throws -> WritebackResult {
-        WritebackResult(totalAffected: 0, written: 0, failed: 0, skipped: 0, errors: [], failedItems: [], report: "")
+    func retryFailedWriteback(sessionId: String, confirmed: Bool) async throws -> WritebackResult {
+        box.lock.withLock { box.retryCalls.append(confirmed) }
+        return WritebackResult(totalAffected: 0, written: 0, failed: 0, skipped: 0, errors: [], failedItems: [], report: "")
     }
 
     func confirmSync(sessionId: String) async throws {}
 
-    func cleanupWriteback(sessionId: String) async throws -> CleanupResult {
-        CleanupResult(deletedCount: 0, errors: [])
+    func syncStateItems(sessionId: String) throws -> [WritebackItem] {
+        let (error, items): (Error?, [WritebackItem]) = box.lock.withLock { (box.syncItemsError, box.syncItems) }
+        if let error { throw error }
+        return items
+    }
+
+    func cleanupWriteback(sessionId: String, confirmed: Bool) async throws -> CleanupResult {
+        box.lock.withLock { box.cleanupCalls.append(confirmed) }
+        return CleanupResult(deletedCount: 0, errors: [])
     }
 
     static func result(
@@ -142,6 +265,33 @@ private final class StubSimilarityProvider: SimilarityDataProvider {
         )
     }
 
+    /// 可写回的预览项（含 id，供 sim.writeback 的 itemIds 断言）。
+    /// syncControls 矩阵用的最简行（仅 xmpStatus 参与状态机）。
+    static func writebackItem(status: String) -> WritebackItem {
+        WritebackItem(
+            id: 1, photoId: "photo-1", photoPath: "/vault/photo-1.NEF", sessionId: "s1",
+            module: "similarity", keywords: ["旅行"], xmpPath: "/vault/photo-1.xmp",
+            backupPath: "", xmpStatus: status, errorMessage: "", attemptCount: 0,
+            lastAttemptAt: "", preview: nil
+        )
+    }
+
+    static let previewItem = WritebackItem(
+        id: 1,
+        photoId: "photo-1",
+        photoPath: "/vault/photo-1.NEF",
+        sessionId: "s1",
+        module: "similarity",
+        keywords: ["旅行"],
+        xmpPath: "/vault/photo-1.xmp",
+        backupPath: "",
+        xmpStatus: "pending",
+        errorMessage: "",
+        attemptCount: 0,
+        lastAttemptAt: "",
+        preview: nil
+    )
+
     static func job(id: String, status: AnalysisJobStatus, current: Int = 0, total: Int = 0, message: String = "") -> AnalysisJobData {
         AnalysisJobData(
             id: id, type: .similarityAnalyze, scopeType: "session", scopeId: "s1",
@@ -155,20 +305,8 @@ private final class StubSimilarityProvider: SimilarityDataProvider {
     }
 }
 
-/// 轮询等待条件成立（async 版：不阻塞 MainActor，防抖 Task 才能推进）。
-@discardableResult
-private func waitUntilAsync(
-    timeout: TimeInterval = 5,
-    interval: TimeInterval = 0.01,
-    _ condition: () -> Bool
-) async -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(interval * 1000))
-    }
-    return condition()
-}
+// 条件等待 waitUntilAsync / awaitNegativeWindow 已抽到
+// Support/AsyncWait.swift（本 target 共享）。
 
 @MainActor
 private func makeStubVM(
@@ -193,8 +331,8 @@ private func makeLiveProvider() throws -> (LiveSimilarityDataProvider, DBConnect
 
 private func insertSession(_ db: DBConnection, _ id: String) throws {
     _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, '工作区', 'photos_loaded', 'idle', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
+        VALUES (?, '工作区', 'photos_loaded', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([.text(id)])
 }
 
@@ -260,7 +398,8 @@ struct SimilarityViewModelTests {
         let (viewModel, stub) = makeStubVM()
         stub.resultError = "SIM_QUERY_FAILED"
         await viewModel.load()
-        #expect(viewModel.phase == .error("SIM_QUERY_FAILED"))
+        // 统一漏斗：未知码不再原样透出，回退通用文案（errorText 语义）。
+        #expect(viewModel.phase == .error(GatherLocalization.errorText("SIM_QUERY_FAILED")))
     }
 
     // 挂载恢复：jobs 中存在活跃 similarity.analyze → 恢复分析中状态与进度。
@@ -291,8 +430,8 @@ struct SimilarityViewModelTests {
 
         viewModel.startAnalyze()
         #expect(viewModel.isAnalyzing == true)
-        // 轮询首帧即读到进度（poll 循环先读后睡）。
-        try? await Task.sleep(for: .milliseconds(30))
+        // 轮询首帧即读到进度（poll 循环先读后睡）：条件等待首帧，满足即返回。
+        #expect(await waitUntilAsync { viewModel.progressCurrent == 7 })
         #expect(viewModel.progressCurrent == 7)
         #expect(viewModel.progressTotal == 21)
         #expect(viewModel.progressMessage == "similarity.hash")
@@ -301,10 +440,8 @@ struct SimilarityViewModelTests {
         stub.jobs = []
         stub.result = StubSimilarityProvider.result(threshold: 12, minGroupSize: 2)
         gate.release()
-        let deadline = Date().addingTimeInterval(2)
-        while viewModel.isAnalyzing && Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        // 等终态：phase 在 isAnalyzing=false 之后的 refreshResult 里才置位。
+        #expect(await waitUntilAsync { viewModel.phase == .result })
         #expect(viewModel.isAnalyzing == false)
         #expect(viewModel.phase == .result)
         #expect(viewModel.threshold == 12)
@@ -319,12 +456,9 @@ struct SimilarityViewModelTests {
         let (viewModel, stub) = makeStubVM()
         stub.analyzeError = "SIM_NO_HASH_DATA"
         viewModel.startAnalyze()
-        let deadline = Date().addingTimeInterval(2)
-        while viewModel.isAnalyzing && Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        #expect(await waitUntilAsync { viewModel.isAnalyzing == false })
         #expect(viewModel.isAnalyzing == false)
-        #expect(viewModel.phase == .error("SIM_NO_HASH_DATA"))
+        #expect(viewModel.phase == .error(GatherLocalization.errorText("SIM_NO_HASH_DATA")))
     }
 
     // 取消：cancelAnalysis 委托 + 停止轮询 + 退出分析中。
@@ -335,15 +469,20 @@ struct SimilarityViewModelTests {
         stub.jobs = [StubSimilarityProvider.job(id: "j1", status: .running)]
 
         viewModel.startAnalyze()
-        try? await Task.sleep(for: .milliseconds(20))
+        // 等分析任务真正起跑（analyze 已记录，随后挂在闸上）再断言运行态。
+        #expect(await waitUntilAsync { stub.analyzeCalls.count == 1 })
         #expect(viewModel.isAnalyzing == true)
 
         await viewModel.cancelAnalysis()
         #expect(viewModel.isAnalyzing == false)
         #expect(stub.cancelCalls == ["s1"])
-        // 进度轮询已停止：进度不再被推进。
+        // 进度轮询已停止：把任务进度改成 9/9，跨过 ≥3 个轮询周期（10ms）后，
+        // 进度不得再被写进 VM。原实现只 sleep 40ms 却没有任何断言，这里补上
+        // 真正的竞态断言（负向断言无法「满足即返回」，只能用有界窗口）。
         stub.jobs = [StubSimilarityProvider.job(id: "j1", status: .running, current: 9, total: 9)]
-        try? await Task.sleep(for: .milliseconds(40))
+        await awaitNegativeWindow(.milliseconds(30))
+        #expect(viewModel.progressCurrent == 0, "取消后进度轮询必须停止")
+        #expect(viewModel.progressTotal == 0)
         gate.release()
     }
 
@@ -376,7 +515,7 @@ struct SimilarityViewModelTests {
         stub.reclusterError = "SIM_NO_HASH_RECLUSTER"
         await viewModel.recluster()
         #expect(viewModel.result != nil)
-        #expect(viewModel.errorMessage == "SIM_NO_HASH_RECLUSTER")
+        #expect(viewModel.errorMessage == GatherLocalization.errorText("SIM_NO_HASH_RECLUSTER"))
         #expect(viewModel.phase == .result, "既有结果不被重聚类失败推翻")
     }
 
@@ -408,9 +547,9 @@ struct SimilarityViewModelTests {
 
         viewModel.threshold = 8
         viewModel.thresholdDraftChanged()
-        // 防抖（5ms）后提交：无匹配档 → 不采纳（result 保持 10）。
-        #expect(await waitUntilAsync { viewModel.threshold == 8 })
-        try? await Task.sleep(for: .milliseconds(30))
+        // 防抖（5ms）后必然发起一次档位查询（resultCalls 记录），查询即判定：
+        // 等它落定后断言「无匹配档 → 不采纳（result 保持 10）」。
+        #expect(await waitUntilAsync { stub.resultCalls.contains { $0.threshold == 8 } })
         #expect(viewModel.result?.stats.threshold == 10)
         #expect(viewModel.threshold == 8, "草稿值保留")
     }
@@ -436,16 +575,22 @@ struct SimilarityViewModelTests {
 
     // 阈值回到结果档位 → 取消挂起请求。
     @Test func thresholdBackToResultCancelsPendingTier() async {
-        let (viewModel, stub) = makeStubVM(tierDelay: .milliseconds(20))
+        let (viewModel, stub) = makeStubVM(tierDelay: .milliseconds(10))
         stub.result = StubSimilarityProvider.result(threshold: 10)
         await viewModel.load()
+        // 档 6 必须**真的有**预计算档：否则「没被采纳」与「取消生效」不可区分，
+        // 断言恒真。补上该档后，若取消失效 result 会被改写成 6 → 断言可失败。
+        stub.tiers[6] = StubSimilarityProvider.result(totalGroups: 4, threshold: 6)
 
         viewModel.threshold = 6
         viewModel.thresholdDraftChanged()
         viewModel.threshold = 10
         viewModel.thresholdDraftChanged()
-        try? await Task.sleep(for: .milliseconds(50))
+        // 跨过 ≥3 个防抖周期（10ms）再断言：负向窗口必须等满。
+        await awaitNegativeWindow(.milliseconds(30))
         #expect(viewModel.result?.stats.threshold == 10)
+        #expect(stub.resultCalls.contains { $0.threshold == 6 } == false,
+                "回到结果档位必须取消挂起请求")
     }
 
     // ── 预设（TS strict/balanced/loose）──
@@ -480,6 +625,38 @@ struct SimilarityViewModelTests {
         #expect(viewModel.selectedGroupIds == [1, 2, 3])
         viewModel.setAllGroupsSelected(false)
         #expect(viewModel.selectedGroupIds.isEmpty)
+    }
+
+    // ── 确认语义（假确认防线：取消不发命令，确认后才送 confirmed: true）──
+
+    // sim.writeback：未确认（用户取消）绝不发命令；先预览再确认才真正写回。
+    @Test func writebackRequiresConfirmation() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.result = StubSimilarityProvider.result()
+        stub.previewItems = [StubSimilarityProvider.previewItem]
+        await viewModel.load()
+        viewModel.toggleGroupSelection(1)
+        viewModel.writebackKeywords = "旅行"
+
+        await viewModel.executeKeywordWriteback(confirmed: false)
+        #expect(stub.writebackCalls.isEmpty, "用户取消后不得发出 sim.writeback")
+
+        await viewModel.previewKeywordWriteback()
+        #expect(viewModel.writebackPreview != nil, "确认弹窗必须先拿到可展示影响范围的预览")
+
+        await viewModel.executeKeywordWriteback(confirmed: true)
+        #expect(stub.writebackCalls.count == 1)
+        #expect(stub.writebackCalls[0].confirmed == true, "确认后必须真的发出写回")
+        #expect(stub.writebackCalls[0].itemIds == [1])
+    }
+
+    // sim.retry_failed_writeback / sim.cleanup：未确认不发命令。
+    @Test func retryAndCleanupRequireConfirmation() async {
+        let (viewModel, stub) = makeStubVM()
+        await viewModel.retryKeywordWriteback(confirmed: false)
+        await viewModel.cleanupKeywordWriteback(confirmed: false)
+        #expect(stub.retryCalls.isEmpty, "用户取消后不得发出 sim.retry_failed_writeback")
+        #expect(stub.cleanupCalls.isEmpty, "用户取消后不得发出 sim.cleanup")
     }
 
     // ── 真实服务集成 ──
@@ -535,11 +712,8 @@ struct SimilarityViewModelTests {
         viewModel.threshold = 0
         viewModel.startAnalyze()
 
-        let deadline = Date().addingTimeInterval(10)
-        while viewModel.isAnalyzing && Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(viewModel.isAnalyzing == false, "分析应在 10s 内完成")
+        #expect(await waitUntilAsync(timeout: 10) { viewModel.isAnalyzing == false },
+                "分析应在 10s 超时内完成")
         #expect(viewModel.phase == .result)
         let result = viewModel.result
         #expect(result?.stats.totalGroups == 1)
@@ -547,5 +721,101 @@ struct SimilarityViewModelTests {
         #expect(result?.stats.threshold == 0)
         // 进度帧断言不做：快路径下轮询必然错过（进度轮询行为已由
         // stub analyzeGate 测试覆盖，见 makeStubVM 进度用例）。
+    }
+
+    // ── C1 同步状态机（sim.writeback_items 行计数 → aggregateSessionState）──
+    //
+    // 期望值与 CullingSyncFlowTests 的门控矩阵同源（TS deriveSyncControls），
+    // 但 Similarity 走 core 的 aggregateSessionState：终态行在未 ack 时仍是
+    // c1Read（而非 Culling 的 safeToCleanup）—— 这是有意的语义分歧，钉在此。
+
+    /// 便捷构造：大多数期望值只关心三个布尔 + 状态文案。
+    private func controls(
+        _ load: Bool, _ confirm: Bool, _ cleanup: Bool,
+        loadHint: String?, confirmHint: String?, cleanupHint: String?, status: String
+    ) -> SimilaritySyncControls {
+        SimilaritySyncControls(
+            canLoadMetadata: load, canConfirmSync: confirm, canCleanup: cleanup,
+            loadHint: loadHint, confirmHint: confirmHint, cleanupHint: cleanupHint,
+            statusText: status)
+    }
+
+    @Test("syncControls：行状态 → 门控/提示/文案矩阵（含未加载与 core c1Read 语义）")
+    func syncControlsMatrix() async {
+        // 未加载（syncView == nil）→ 保守全禁用。
+        let (fresh, _) = makeStubVM()
+        AppLanguageLock.withCopy("zh-CN") {
+            let loading = fresh.syncControls
+            #expect(loading.canLoadMetadata == false)
+            #expect(loading.canConfirmSync == false)
+            #expect(loading.canCleanup == false)
+            #expect(loading.statusText == "同步状态加载中…")
+        }
+
+        let confirmAckHint = "请先在 Capture One 中加载元数据，再确认同步"
+        let cleanupWaitHint = "请先加载元数据并确认同步，再执行清理"
+        let cases: [(label: String, rows: [String], expected: SimilaritySyncControls)] = [
+            ("空行 → synced（全禁用）",
+             [],
+             controls(false, false, false,
+                      loadHint: "已完成同步，无需再次加载元数据",
+                      confirmHint: "已完成同步", cleanupHint: "已完成清理", status: "已同步")),
+            ("pending → syncing（仅可加载）",
+             ["pending"],
+             controls(true, false, false,
+                      loadHint: nil, confirmHint: confirmAckHint, cleanupHint: cleanupWaitHint,
+                      status: "同步中：Gather 正在写入 XMP…")),
+            ("written → c1Read（未 ack 不可确认/清理）",
+             ["written"],
+             controls(true, false, false,
+                      loadHint: nil, confirmHint: confirmAckHint, cleanupHint: cleanupWaitHint,
+                      status: "Gather 已写入，等待 C1 读取")),
+            ("全终态行（synced）无 ack → c1Read（core 语义，非 safeToCleanup）",
+             ["synced"],
+             controls(true, false, false,
+                      loadHint: nil, confirmHint: confirmAckHint, cleanupHint: cleanupWaitHint,
+                      status: "Gather 已写入，等待 C1 读取")),
+            ("未知状态行 → c1Read（保守：绝不声称可清理）",
+             ["weird"],
+             controls(true, false, false,
+                      loadHint: nil, confirmHint: confirmAckHint, cleanupHint: cleanupWaitHint,
+                      status: "Gather 已写入，等待 C1 读取")),
+            ("failed → 全禁用 + 重试引导",
+             ["failed"],
+             controls(false, false, false,
+                      loadHint: "存在写入失败项，请先重试",
+                      confirmHint: confirmAckHint, cleanupHint: cleanupWaitHint,
+                      status: "有写入失败项，请先重试")),
+            ("conflict → 全禁用 + 裁决引导",
+             ["conflict"],
+             controls(false, false, false,
+                      loadHint: "存在 XMP 冲突，请先裁决",
+                      confirmHint: confirmAckHint, cleanupHint: cleanupWaitHint,
+                      status: "存在 XMP 冲突，请先裁决")),
+        ]
+        // 回归用例：`syncStateItems` 曾只在协议扩展里定义、不是 protocol requirement，
+        // 而 VM 的 provider 是 existential → 调用永远静态分发到扩展默认 []，注入的行
+        // 读不到、syncView 恒 .synced、C1 同步面板永久全禁用（T4 变异审查发现的 P0）。
+        // 现已声明为 requirement；本用例严格断言（不再用 withKnownIssue 包装）。
+        for item in cases {
+            let (viewModel, stub) = makeStubVM()
+            stub.syncItems = item.rows.map(StubSimilarityProvider.writebackItem(status:))
+            await viewModel.load()
+            AppLanguageLock.withCopy("zh-CN") {
+                #expect(viewModel.syncControls == item.expected, Comment(rawValue: item.label))
+            }
+        }
+    }
+
+    @Test("syncControls：行查询失败 → 保留全禁用 + 可见 errorMessage（不静默）")
+    func syncControlsQueryFailureSurfaces() async {
+        // 回归用例：requirement 化后 stub 的 throw 才会真正冒泡（修复前静态分发到默认 []）。
+        let (viewModel, stub) = makeStubVM()
+        stub.syncItemsError = NativeCommandError.failed("SIM_SYNC_ITEMS_FAILED")
+        await viewModel.load()
+        #expect(viewModel.errorMessage == GatherLocalization.errorText("SIM_SYNC_ITEMS_FAILED"))
+        #expect(viewModel.syncControls.canLoadMetadata == false)
+        #expect(viewModel.syncControls.canConfirmSync == false)
+        #expect(viewModel.syncControls.canCleanup == false)
     }
 }

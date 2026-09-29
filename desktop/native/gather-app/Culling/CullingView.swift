@@ -101,6 +101,8 @@ public final class CullingViewModel {
     private(set) public var qualityJob: AnalysisJobData?
     private(set) public var errorMessage: String?
     private(set) public var notice: String?
+    /// 隐藏期间收到领域变更只登记，回可见再补刷（外壳约定：隐藏页不发命令）。
+    private(set) public var pendingDomainRefresh = false
     /// 同步状态/辅助查询（groups/sync_status/history/conflicts）失败时记录，
     /// 用于 UI 提示"同步状态加载失败"（业务查询失败不阻断主列表）。
     private(set) public var lastSyncError: String?
@@ -180,13 +182,91 @@ public final class CullingViewModel {
             acked: reloadAcked
         ).canCleanup
     }
+    /// culling.sync_status 的唯一解码入口：摘要 + 耐久 reload-ack 字段。
+    ///
+    /// 路由器在摘要对象上附 `reloadAckedAt`（sessions.reload_acked_at）。旧实现只解
+    /// MetadataSyncSummary（未知键被忽略）→ 内存 reloadAcked 冷启动即丢，确认同步
+    /// 按钮永久不可用。这里必须把耐久字段解出来，内存值只是它的投影。
+    nonisolated static func decodeSyncStatus(_ data: JSONValue) throws -> (summary: MetadataSyncSummary, reloadAckedAt: String?) {
+        let summary = try data.decoded(as: MetadataSyncSummary.self)
+        let ack = data.objectValue?["reloadAckedAt"]?.stringValue
+        return (summary, (ack?.isEmpty == false) ? ack : nil)
+    }
+
+    /// 领域广播标识：监听端跳过自己发出的事件（GatherDomainChange.origin）。
+    static let changeOrigin = "culling"
+
+    /// 挑片决策写入成功后广播（图库/画廊的星级与色标消费）。
+    private func postCullingChange() {
+        GatherEventCenter.postDomainChange(.culling, sessionId: sessionId, origin: Self.changeOrigin)
+    }
+
+    /// 写回/结清/同步队列变化后广播（设置页/C1 胶囊/控制中心消费）。
+    private func postMetadataChange() {
+        GatherEventCenter.postDomainChange(.metadata, sessionId: sessionId, origin: Self.changeOrigin)
+    }
+
+    /// 跨页领域变更：命中本会话的挑片/元数据/图库变更时刷新自己的数据源；
+    /// 隐藏或正忙时只登记，回可见/空闲后由 flushDeferredDomainRefresh 补刷
+    ///（隐藏页不发命令是外壳既有约定）。自身 origin 跳过，避免自触发重查。
+    public func handleDomainChange(_ change: GatherDomainChange) {
+        guard change.matches(sessionId: sessionId),
+              change.origin != Self.changeOrigin,
+              [.culling, .metadata, .library].contains(change.domain) else { return }
+        guard isActive, !isLoading else {
+            pendingDomainRefresh = true
+            return
+        }
+        refreshSilently()
+    }
+
+    /// 页面重新可见 / 当前刷新结束后的补刷出口（幂等）。
+    public func flushDeferredDomainRefresh() {
+        guard pendingDomainRefresh, isActive, !isLoading else { return }
+        pendingDomainRefresh = false
+        refreshSilently()
+    }
+
+    /// 已记过的质量失败诊断（去重；超过上限清空，避免无限增长）。
+    private var loggedQualityDiagnostics: Set<String> = []
+
+    /// 同步摘要统一入口：状态赋值 + 把失败/冲突行的**原始诊断**写日志
+    ///（UI 只展示漏斗后的文案，见 CullingView.displayedReason）。
+    private func applySyncStatus(_ summary: MetadataSyncSummary?) {
+        syncStatus = summary
+        guard let summary else { return }
+        for item in summary.items where item.status == .failed || item.status == .conflict {
+            guard !item.errorMessage.isEmpty else { continue }
+            GatherLogger.log(
+                "culling sync \(item.status.rawValue) \(item.xmpPath): \(item.errorMessage)",
+                level: .warn
+            )
+        }
+    }
+
+    /// 质量分析失败行的原始诊断写日志（每次页面落地一次；UI 只显示漏斗文案，
+    /// 见 qualityHelpText / CullingViewModel.funnelErrorText）。
+    private func logQualityFailures(_ page: CullingPage) {
+        for asset in page.assets {
+            guard let quality = asset.quality, quality.status == .failed,
+                  let raw = quality.errorMessage, !raw.isEmpty else { continue }
+            // 去重：页面每次落地都会走这里，同一照片的同一条诊断只记一次。
+            if loggedQualityDiagnostics.count > 200 { loggedQualityDiagnostics.removeAll() }
+            let key = "\(asset.photo.id)|\(raw)"
+            guard loggedQualityDiagnostics.insert(key).inserted else { continue }
+            GatherLogger.log("culling quality failed \(asset.photo.id): \(raw)", level: .warn)
+        }
+    }
+
     /// c1SyncStatus 事件（GatherEventCenter.c1SyncStatus，object 为 sessionId）的轻量刷新。
     public func refreshSyncStatus() {
         var failure: String?
         do {
-            syncStatus = try client.execute("culling.sync_status", params: [
+            let decoded = try Self.decodeSyncStatus(client.execute("culling.sync_status", params: [
                 "sessionId": .string(sessionId),
-            ]).decoded(as: MetadataSyncSummary.self)
+            ]))
+            applySyncStatus(decoded.summary)
+            reloadAcked = decoded.reloadAckedAt != nil
         } catch {
             failure = NativeCommandClient.message(for: error)
         }
@@ -198,6 +278,24 @@ public final class CullingViewModel {
             failure = failure ?? NativeCommandClient.message(for: error)
         }
         lastSyncError = failure
+    }
+
+    /// 失败写回行（coordinator 写入的真实原因；UI 必须展示，不允许只报计数）。
+    public var failedSyncItems: [MetadataSyncItem] {
+        (syncStatus?.items ?? []).filter { $0.status == .failed }
+    }
+
+    /// 某个 xmp 行的失败/冲突原因（空串视为无原因）；上屏前走错误码漏斗。
+    public func syncFailureReason(xmpPath: String) -> String? {
+        guard let item = syncStatus?.items.first(where: { $0.xmpPath == xmpPath }),
+              !item.errorMessage.isEmpty else { return nil }
+        return Self.funnelErrorText(item.errorMessage)
+    }
+
+    /// 已决策（keep/reject）照片数：破坏性写回确认弹窗展示影响范围用。
+    public var decidedPhotoCount: Int {
+        guard let summary else { return 0 }
+        return summary.kept + summary.rejected
     }
 
     /// 测试注入：直接设置同步摘要，绕开命令层（CullingSyncFlowTests 直测状态机推导）。
@@ -295,14 +393,6 @@ public final class CullingViewModel {
     public func selectNavigationGroup(_ groupId: String) {
         guard navigationGroups.contains(where: { $0.id == groupId }) else { return }
         selectedNavigationGroupId = groupId
-    }
-
-    public func toggleNavigationGroup(_ groupId: String) {
-        if selectedNavigationGroupIds.contains(groupId) {
-            selectedNavigationGroupIds.remove(groupId)
-        } else {
-            selectedNavigationGroupIds.insert(groupId)
-        }
     }
 
     public func splitNavigation(beforePhotoId: String) {
@@ -405,6 +495,10 @@ public final class CullingViewModel {
         var summary: CullingSummary?
         var groups: [CullingGroup]?
         var syncStatus: MetadataSyncSummary?
+        /// 耐久 reload-ack（sessions.reload_acked_at）；reloadAckResolved 区分
+        /// 「未查询」与「查询到 nil」。
+        var reloadAckedAt: String?
+        var reloadAckResolved = false
         var history: [CullingHistoryOperation]?
         var conflicts: [MetadataConflict]?
         var pageError: String?
@@ -453,6 +547,9 @@ public final class CullingViewModel {
             )
         }
         guard !entries.isEmpty else { return }
+        // 与 cullingHistoryRepo.append 同语义：新操作落地即删除已撤销分支
+        //（redo 栈作废）。内存列表不同步会让重做指向已被删除的操作。
+        history.removeAll { $0.undone }
         history.insert(CullingHistoryOperation(
             id: id,
             sessionId: sessionId,
@@ -460,6 +557,20 @@ public final class CullingViewModel {
             undone: false,
             createdAt: Date().ISO8601Format()
         ), at: 0)
+    }
+
+    /// 历史栈可见窗口：仓库 list 的 clamp 上限 = 路由器 culling.history 的 limit 上限
+    ///（500）。读取方据此保证栈顶在窗口内（服务端还会补栈顶，见 CullingService.getHistory）。
+    nonisolated private static let historyWindow = 500
+
+    /// 撤销栈顶 = MAX(id) 未撤销（唯一规则，见 CullingHistoryRepo 文件头注）。
+    public var undoOperation: CullingHistoryOperation? {
+        history.filter { !$0.undone }.max { $0.id < $1.id }
+    }
+
+    /// 重做栈顶 = MIN(id) 已撤销（不是列表里第一个 undone —— 列表是 id DESC）。
+    public var redoOperation: CullingHistoryOperation? {
+        history.filter { $0.undone }.min { $0.id < $1.id }
     }
 
     private func patchFields(_ patch: CullingUpdatePatch) -> [CullingUpdatePatchField] {
@@ -489,7 +600,7 @@ public final class CullingViewModel {
         let filters = filtersForCurrentState()
         let groupId = selectedSimilarityGroupId
         refreshTask = Task.detached { [client, sessionId, scope, filters, groupId, version] in
-            let snapshot = Self.fetchSnapshot(
+            let snapshot = await Self.fetchSnapshot(
                 client: client,
                 sessionId: sessionId,
                 scope: scope,
@@ -511,6 +622,7 @@ public final class CullingViewModel {
             selectedPhotoIds.formIntersection(loadedPhotoIds)
             loadedPhotoIds = Set(page.assets.map(\.photo.id))
             self.page = page
+            logQualityFailures(page)
             if let current = currentPhotoId, !page.assets.contains(where: { $0.photo.id == current }) {
                 currentPhotoId = page.assets.first?.photo.id
             }
@@ -524,7 +636,8 @@ public final class CullingViewModel {
         if !similarityGroups.contains(where: { $0.groupId == selectedSimilarityGroupId }) {
             selectedSimilarityGroupId = ""
         }
-        if let syncStatus = snapshot.syncStatus { self.syncStatus = syncStatus }
+        if let syncStatus = snapshot.syncStatus { applySyncStatus(syncStatus) }
+        if snapshot.reloadAckResolved { reloadAcked = snapshot.reloadAckedAt != nil }
         if let history = snapshot.history { self.history = history }
         if let conflicts = snapshot.conflicts { self.conflicts = conflicts }
     }
@@ -535,7 +648,7 @@ public final class CullingViewModel {
         scope: CullingScope,
         filters: CullingFilters?,
         groupId: String
-    ) -> RefreshSnapshot {
+    ) async -> RefreshSnapshot {
         var snapshot = RefreshSnapshot()
         var params: [String: JSONValue] = [
             "sessionId": .string(sessionId),
@@ -571,9 +684,12 @@ public final class CullingViewModel {
         }
         guard !Task.isCancelled else { return snapshot }
         do {
-            snapshot.syncStatus = try client.execute("culling.sync_status", params: [
+            let decoded = try Self.decodeSyncStatus(client.execute("culling.sync_status", params: [
                 "sessionId": .string(sessionId),
-            ]).decoded(as: MetadataSyncSummary.self)
+            ]))
+            snapshot.syncStatus = decoded.summary
+            snapshot.reloadAckedAt = decoded.reloadAckedAt
+            snapshot.reloadAckResolved = true
         } catch {
             snapshot.auxError = snapshot.auxError ?? NativeCommandClient.message(for: error)
         }
@@ -581,14 +697,14 @@ public final class CullingViewModel {
         do {
             snapshot.history = try client.execute("culling.history", params: [
                 "sessionId": .string(sessionId),
-                "limit": .number(100),
+                "limit": .number(Double(Self.historyWindow)),
             ]).decoded(as: [CullingHistoryOperation].self)
         } catch {
             snapshot.auxError = snapshot.auxError ?? NativeCommandClient.message(for: error)
         }
         guard !Task.isCancelled else { return snapshot }
         do {
-            snapshot.conflicts = try client.execute("metadata.conflicts", params: [
+            snapshot.conflicts = try await client.executeAsync("metadata.conflicts", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: [MetadataConflict].self)
         } catch {
@@ -665,31 +781,37 @@ public final class CullingViewModel {
                 selectedSimilarityGroupId = ""
             }
             do {
-                syncStatus = try client.execute("culling.sync_status", params: [
+                let decoded = try Self.decodeSyncStatus(client.execute("culling.sync_status", params: [
                     "sessionId": .string(sessionId),
-                ]).decoded(as: MetadataSyncSummary.self)
+                ]))
+                applySyncStatus(decoded.summary)
+                reloadAcked = decoded.reloadAckedAt != nil
             } catch {
-                syncStatus = nil
+                applySyncStatus(nil)
                 lastSyncError = NativeCommandClient.message(for: error)
             }
             do {
                 history = try client.execute("culling.history", params: [
                     "sessionId": .string(sessionId),
-                    "limit": .number(100),
+                    "limit": .number(Double(Self.historyWindow)),
                 ]).decoded(as: [CullingHistoryOperation].self)
             } catch {
                 history = []
                 lastSyncError = NativeCommandClient.message(for: error)
             }
-            do {
-                conflicts = try client.execute("metadata.conflicts", params: [
+            Task { @MainActor in
+                do {
+                    conflicts = try await client.executeAsync("metadata.conflicts", params: [
                     "sessionId": .string(sessionId),
-                ]).decoded(as: [MetadataConflict].self)
-            } catch {
+                    ]).decoded(as: [MetadataConflict].self)
+                } catch {
                 conflicts = []
                 lastSyncError = NativeCommandClient.message(for: error)
+                }
             }
+            if let page { logQualityFailures(page) }
             errorMessage = nil
+            flushDeferredDomainRefresh()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -752,6 +874,7 @@ public final class CullingViewModel {
                 "keepPhotoIds": .array(keepPhotoIds.map(JSONValue.string)),
             ])
             notice = GatherLocalization.l("已更新相似度组挑片决策")
+            postCullingChange()
             loadPage(reset: true)
             if shouldAdvance && autoAdvance {
                 jumpToNextGroup(after: group)
@@ -786,10 +909,6 @@ public final class CullingViewModel {
         } else {
             selectedPhotoIds.insert(photoId)
         }
-    }
-
-    public func selectAllLoaded() {
-        selectedPhotoIds = Set(page?.assets.map { $0.photo.id } ?? [])
     }
 
     public func clearSelection() {
@@ -827,6 +946,7 @@ public final class CullingViewModel {
                 )
             }
             if let nextPhotoId { currentPhotoId = nextPhotoId }
+            postCullingChange()
             refreshSilently()
         } catch {
             pageVersion += 1
@@ -871,6 +991,7 @@ public final class CullingViewModel {
                 )
             }
             notice = String(format: GatherLocalization.l("已更新 %lld 张照片"), selectedPhotoIds.count)
+            postCullingChange()
             refreshSilently()
         } catch {
             pageVersion += 1
@@ -930,7 +1051,8 @@ public final class CullingViewModel {
     }
 
     public func undo() {
-        guard let operation = history.first(where: { !$0.undone }) else {
+        // 唯一规则：撤销栈顶 = MAX(id) 未撤销（见 undoOperation）。
+        guard let operation = undoOperation else {
             notice = GatherLocalization.l("没有可撤销的挑片操作")
             return
         }
@@ -938,7 +1060,8 @@ public final class CullingViewModel {
     }
 
     public func redo() {
-        guard let operation = history.first(where: { $0.undone }) else {
+        // 唯一规则：重做栈顶 = MIN(id) 已撤销（见 redoOperation）。
+        guard let operation = redoOperation else {
             notice = GatherLocalization.l("没有可重做的挑片操作")
             return
         }
@@ -970,6 +1093,7 @@ public final class CullingViewModel {
             applyDecisionStates(results.flatMap { $0.states })
             markHistoryOperation(operation.id, undone: direction == .undo)
             notice = direction == .undo ? GatherLocalization.l("已撤销上一次挑片操作") : GatherLocalization.l("已重做挑片操作")
+            postCullingChange()
             refreshSilently()
         } catch {
             pageVersion += 1
@@ -977,24 +1101,89 @@ public final class CullingViewModel {
         }
     }
 
-    public func writeback(target: CullingWritebackTarget) async {
+    /// culling.writeback 的返回类型是 WritebackResult（不是 MetadataSyncSummary）。
+    /// 旧实现按 MetadataSyncSummary 解码 → 成功写回也走 catch 并吞掉失败明细。
+    public func writeback(target: CullingWritebackTarget, confirmed: Bool) async {
+        guard confirmed else {
+            errorMessage = GatherLocalization.l("写回必须先经确认")
+            return
+        }
         do {
             let data = try await client.executeAsync("culling.writeback", params: [
                 "sessionId": .string(sessionId),
                 "target": .string(target.rawValue),
                 "confirmed": .bool(true),
             ])
-            do {
-                syncStatus = try data.decoded(as: MetadataSyncSummary.self)
-                notice = String(format: GatherLocalization.l("已写回 %@；请让 Capture One 重新加载元数据后确认同步"), targetLabel(target))
-            } catch {
-                syncStatus = nil
-                notice = String(format: GatherLocalization.l("已写回 %@，但同步状态读取失败，请刷新页面确认"), targetLabel(target))
-            }
+            let result = try data.decoded(as: WritebackResult.self)
+            // loadPage 末尾会清 errorMessage：先刷新页面，再落结果文案，
+            // 否则「写回成功但 3 项失败」的原因会被刚刷新的页面清掉。
+            postMetadataChange()
             loadPage(reset: true)
+            applyWritebackResult(result, label: targetLabel(target))
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
+    }
+
+    /// 写回结果逐项可见：失败数 > 0 或存在逐条原因时进 errorMessage（不吞），
+    /// 全成功才进 notice。
+    private func applyWritebackResult(_ result: WritebackResult, label: String) {
+        let counts = String(
+            format: GatherLocalization.l("%@：成功 %lld，失败 %lld，跳过 %lld"),
+            label, result.written, result.failed, result.skipped
+        )
+        if result.failed > 0 || !result.errors.isEmpty {
+            logWritebackFailures(label: label, errors: result.errors)
+            notice = nil
+            errorMessage = result.errors.isEmpty
+                ? String(format: GatherLocalization.l("%@（请展开失败项查看原因）"), counts)
+                : counts + "；" + Self.reasonSummary(result.errors)
+        } else {
+            errorMessage = nil
+            notice = String(format: GatherLocalization.l("%@；请让 Capture One 重新加载元数据后确认同步"), counts)
+        }
+    }
+
+    /// 写回失败明细写日志（原始诊断不上屏，界面只展示漏斗后的文案）。
+    private func logWritebackFailures(label: String, errors: [String]) {
+        guard !errors.isEmpty else { return }
+        GatherLogger.log(
+            "culling.writeback \(label) errors: \(errors.joined(separator: " | "))",
+            level: .warn
+        )
+    }
+
+    /// 原因摘要：最多 3 条漏斗后文案 + 其余计数（完整明细在日志与失败面板）。
+    static func reasonSummary(_ reasons: [String]) -> String {
+        let head = reasons.prefix(3).map { funnelErrorText($0) }
+        var text = head.joined(separator: "；")
+        if reasons.count > head.count {
+            text += String(format: GatherLocalization.l("；另有 %lld 条"), reasons.count - head.count)
+        }
+        return text
+    }
+
+    /// 错误码漏斗：从「路径: XMP_WRITE_FAILED / 原因」这类结构化描述里抽出错误码
+    /// token 走 GatherLocalization.errorText（本地化文案）；抽不到码值时交回
+    /// errorText 的通用文案。诊断原文只进日志（见 applySyncStatus/applyWritebackResult），
+    /// 不直接铺在界面上。
+    static func funnelErrorText(_ raw: String) -> String {
+        GatherLocalization.errorText(errorCode(in: raw) ?? raw)
+    }
+
+    private static func errorCode(in raw: String) -> String? {
+        // 手工扫描最大的「大写 + 数字 + 下划线」连续段（≥4 字符）作为码值候选：
+        // 比 split 的泛型重载更确定，且不会把路径/散文误当码值。
+        var candidate = ""
+        for character in raw {
+            if character.isUppercase || character.isNumber || character == "_" {
+                candidate.append(character)
+            } else {
+                if candidate.count >= 4 { return candidate }
+                candidate = ""
+            }
+        }
+        return candidate.count >= 4 ? candidate : nil
     }
 
     public func flush(retry: Bool = false) async {
@@ -1003,32 +1192,34 @@ public final class CullingViewModel {
                 "sessionId": .string(sessionId),
             ])
             do {
-                syncStatus = try data.decoded(as: MetadataSyncSummary.self)
+                applySyncStatus(try data.decoded(as: MetadataSyncSummary.self))
                 notice = retry ? GatherLocalization.l("已重试同步队列") : GatherLocalization.l("已刷新同步队列")
             } catch {
-                syncStatus = nil
+                applySyncStatus(nil)
                 notice = retry ? GatherLocalization.l("已重试同步队列，但同步状态读取失败") : GatherLocalization.l("已刷新同步队列，但同步状态读取失败")
             }
+            postMetadataChange()
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func retryFailedWriteback() async {
+    /// retry_failed_writeback 同样返回 WritebackResult（旧实现按摘要解码 → 静默失败）。
+    public func retryFailedWriteback(confirmed: Bool) async {
+        guard confirmed else {
+            errorMessage = GatherLocalization.l("重试失败写回必须先经确认")
+            return
+        }
         do {
             let data = try await client.executeAsync("culling.retry_failed_writeback", params: [
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            do {
-                syncStatus = try data.decoded(as: MetadataSyncSummary.self)
-                notice = GatherLocalization.l("已重试失败写回项")
-            } catch {
-                syncStatus = nil
-                notice = GatherLocalization.l("已重试失败写回项，但同步状态读取失败")
-            }
+            let result = try data.decoded(as: WritebackResult.self)
+            postMetadataChange()
             loadPage(reset: true)
+            applyWritebackResult(result, label: GatherLocalization.l("重试写回"))
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
@@ -1037,82 +1228,146 @@ public final class CullingViewModel {
     public func reloadCaptureOne() async {
         do {
             try await captureOne.reloadMetadata(sessionId: sessionId)
+            // 桥接层已耐久写入 sessions.reload_acked_at；内存值只是投影，
+            // 随后 refreshSyncStatus 会从耐久字段重建（冷启动同样有效）。
             reloadAcked = true
             notice = GatherLocalization.l("Capture One 已重新加载元数据，现在可以确认同步")
+            postMetadataChange()
+            refreshSyncStatus()
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func confirmSync() {
+    public func confirmSync() async {
         do {
-            _ = try client.execute("culling.confirm_sync", params: ["sessionId": .string(sessionId)])
+            _ = try await client.executeAsync("culling.confirm_sync", params: ["sessionId": .string(sessionId)])
             notice = GatherLocalization.l("已确认 Capture One 同步")
+            postMetadataChange()
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func finalizeSync() async {
+    public func finalizeSync(confirmed: Bool) async {
+        guard confirmed else {
+            errorMessage = GatherLocalization.l("结束同步必须先经确认")
+            return
+        }
         do {
-            _ = try client.execute("culling.finalize_sync", params: [
+            let data = try await client.executeAsync("culling.finalize_sync", params: [
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            notice = GatherLocalization.l("已完成元数据同步")
+            let summary = try data.decoded(as: MetadataSyncSummary.self)
+            applySyncStatus(summary)
+            notice = String(format: GatherLocalization.l("已完成元数据同步（%lld 项已确认加载）"), summary.synced)
+            postMetadataChange()
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func cleanup() async {
+    /// import 返回 CleanupResult：deletedCount 与逐条 errors 都必须呈现
+    ///（旧实现丢弃返回值 → cleanup 标 conflict 后用户看不到任何原因）。
+    public func cleanup(confirmed: Bool) async {
+        guard confirmed else {
+            errorMessage = GatherLocalization.l("清理备份必须先经确认")
+            return
+        }
         do {
-            _ = try await client.executeAsync("culling.cleanup", params: [
+            let data = try await client.executeAsync("culling.cleanup", params: [
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
-            notice = GatherLocalization.l("已清理可安全删除的备份")
+            let result = try data.decoded(as: CleanupResult.self)
+            if !result.errors.isEmpty {
+                GatherLogger.log(
+                    "culling.cleanup errors: \(result.errors.joined(separator: " | "))",
+                    level: .warn
+                )
+            }
+            // 同上：先刷新页面再落文案。
+            postMetadataChange()
             loadPage(reset: true)
+            if result.errors.isEmpty {
+                notice = String(format: GatherLocalization.l("已清理 %lld 项可安全删除的备份"), result.deletedCount)
+                errorMessage = nil
+            } else {
+                notice = nil
+                errorMessage = String(
+                    format: GatherLocalization.l("清理了 %lld 项，%lld 项失败：%@"),
+                    result.deletedCount, result.errors.count, Self.reasonSummary(result.errors)
+                )
+            }
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func reset() {
+    public func reset(confirmed: Bool) {
+        guard confirmed else {
+            errorMessage = GatherLocalization.l("重置挑片状态必须先经确认")
+            return
+        }
         do {
             _ = try client.execute("culling.reset", params: [
                 "sessionId": .string(sessionId),
                 "confirmed": .bool(true),
             ])
             notice = GatherLocalization.l("已重置挑片状态")
+            postCullingChange()
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func resolve(_ conflict: MetadataConflict, choices: [MetadataField: MetadataConflictChoice]) {
+    /// 冲突裁决（唯一出口）：confirmed 只能来自确认弹窗；choices 为空 =
+    /// 显式结清（保留 Gather 值并以当前磁盘状态为新基线重写）。
+    public func resolve(
+        _ conflict: MetadataConflict,
+        choices: [MetadataField: MetadataConflictChoice],
+        confirmed: Bool
+    ) async {
+        guard confirmed else {
+            errorMessage = GatherLocalization.l("冲突裁决必须先经确认")
+            return
+        }
         do {
             let rawChoices = Dictionary(uniqueKeysWithValues: choices.map {
                 ($0.key.rawValue, JSONValue.string($0.value.rawValue))
             })
-            _ = try client.execute("metadata.resolve_conflict", params: [
+            _ = try await client.executeAsync("metadata.resolve_conflict", params: [
                 "sessionId": .string(sessionId),
                 "xmpPath": .string(conflict.xmpPath),
                 "choices": .object(rawChoices),
                 "confirmed": .bool(true),
             ])
             notice = GatherLocalization.l("已处理元数据冲突")
+            errorMessage = nil
+            postMetadataChange()
             loadPage(reset: true)
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
     }
 
-    public func resolve(_ conflict: MetadataConflict, choice: MetadataConflictChoice) {
-        resolve(conflict, choices: Dictionary(uniqueKeysWithValues: conflict.fields.map { ($0.field, choice) }))
+    /// 逐字段选择一次应用（面板「应用选择」）。
+    public func resolve(_ conflict: MetadataConflict, choice: MetadataConflictChoice, confirmed: Bool) async {
+        await resolve(
+            conflict,
+            choices: Dictionary(uniqueKeysWithValues: conflict.fields.map { ($0.field, choice) }),
+            confirmed: confirmed
+        )
+    }
+
+    /// 确认弹窗取消时的可见文案（不静默 return，也不发命令）。
+    public func noteCancelledAction(_ action: String) {
+        errorMessage = nil
+        notice = String(format: GatherLocalization.l("已取消：%@"), action)
     }
 
     private func targetLabel(_ target: CullingWritebackTarget) -> String {
@@ -1132,8 +1387,8 @@ public struct CullingView: View {
     private let onOpenTab: (String, SessionTab) -> Void
     private let onOpenGallery: (String) -> Void
     private let onOpenSettings: () -> Void
-    @State private var confirmReset = false
-    @State private var confirmCleanup = false
+    /// 破坏性命令的唯一确认载体：命令层的 confirmed:true 只能从确认弹窗分支到达。
+    @State private var pendingAction: PendingCullingAction?
     @State private var conflictChoices: [String: MetadataConflictChoice] = [:]
     @State private var compareCount = 1
     @State private var faceAlign = false
@@ -1199,6 +1454,8 @@ public struct CullingView: View {
         .onAppear {
             viewModel.isActive = true
             installKeyDownMonitor()
+            // 隐藏期间登记的领域变更在这里补刷（隐藏页不发命令的约定）。
+            viewModel.flushDeferredDomainRefresh()
         }
         .onDisappear {
             viewModel.isActive = false
@@ -1209,25 +1466,141 @@ public struct CullingView: View {
             guard (notification.object as? String) == viewModel.sessionId else { return }
             viewModel.refreshSyncStatus()
         }
+        // 跨页领域变更（挑片/元数据/图库）：可见时按域补刷，隐藏时只登记，
+        // 回可见由 onAppear 统一补一次；自身 origin 在 VM 内跳过。
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
+            guard let change = notification.object as? GatherDomainChange else { return }
+            viewModel.handleDomainChange(change)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .gatherMenuUndo)) { _ in
             viewModel.undo()
         }
         .onReceive(NotificationCenter.default.publisher(for: .gatherMenuRedo)) { _ in
             viewModel.redo()
         }
-        // 对齐旧版 UX：写回/组决策等高频操作无确认弹窗（由 API 层 confirmed:true 承担）；
-        // 仅保留两个破坏性操作的确认（重置挑片 / 清理备份）。
-        .alert(GatherLocalization.l("确认重置挑片状态？"), isPresented: $confirmReset) {
-            Button(GatherLocalization.l("重置"), role: .destructive) { viewModel.reset() }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("重置只清除 Gather 中的挑片决策，不删除照片文件。"))
+        // 破坏性命令（重置/清理/写回/重试失败项/结束同步/冲突裁决）一律先经真实
+        // 确认弹窗，再由确认分支传 confirmed: true；不存在「无弹窗硬编码 true」。
+        .gatherDestructiveConfirm(
+            pending: $pendingAction,
+            title: GatherLocalization.l("确认执行此操作？"),
+            confirmLabel: { $0.actionLabel },
+            confirmRole: { action in
+                if case .resolveConflict(_, let choices) = action,
+                   !choices.isEmpty, choices.values.allSatisfy({ $0 == .useRemote }) {
+                    return nil
+                }
+                return .destructive
+            },
+            message: { confirmationMessage($0) },
+            onConfirm: { perform($0) },
+            onCancel: { viewModel.noteCancelledAction($0.actionLabel) }
+        )
+    }
+
+    /// 破坏性动作集合。id 参与弹窗身份判定，必须包含影响参数（目标/字段选择）。
+    private enum PendingCullingAction: Identifiable {
+        case reset
+        case cleanup
+        case writeback(CullingWritebackTarget)
+        case retryFailedWriteback
+        case finalizeSync
+        case resolveConflict(MetadataConflict, [MetadataField: MetadataConflictChoice])
+
+        var id: String {
+            switch self {
+            case .reset: "reset"
+            case .cleanup: "cleanup"
+            case .writeback(let target): "writeback:\(target.rawValue)"
+            case .retryFailedWriteback: "retry_failed_writeback"
+            case .finalizeSync: "finalize_sync"
+            case .resolveConflict(let conflict, let choices):
+                "resolve:\(conflict.xmpPath):" + choices
+                    .map { "\($0.key.rawValue)=\($0.value.rawValue)" }
+                    .sorted()
+                    .joined(separator: ",")
+            }
         }
-        .alert(GatherLocalization.l("确认清理写回备份？"), isPresented: $confirmCleanup) {
-            Button(GatherLocalization.l("清理"), role: .destructive) { Task { await viewModel.cleanup() } }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("仅在 Capture One 已重新加载并确认同步后清理备份。"))
+
+        var actionLabel: String {
+            switch self {
+            case .reset: return GatherLocalization.l("重置挑片状态")
+            case .cleanup: return GatherLocalization.l("清理写回备份")
+            case .writeback(let target):
+                switch target {
+                case .rating: return GatherLocalization.l("写回评分到 XMP")
+                case .colorLabel: return GatherLocalization.l("写回颜色标签到 XMP")
+                case .keyword: return GatherLocalization.l("写回挑片关键词到 XMP")
+                }
+            case .retryFailedWriteback: return GatherLocalization.l("重试失败写回项")
+            case .finalizeSync: return GatherLocalization.l("保留 XMP 并结束同步")
+            case .resolveConflict: return GatherLocalization.l("裁决 XMP 冲突")
+            }
+        }
+    }
+
+    private func confirmationMessage(_ action: PendingCullingAction) -> String {
+        switch action {
+        case .reset:
+            return String(
+                format: GatherLocalization.l("将清空本会话 %lld 张照片的挑片决策、星级与色标（只改 Gather 数据库，不写 XMP、不删除照片文件）。"),
+                viewModel.summary?.totalPhotos ?? 0
+            )
+        case .cleanup:
+            return String(
+                format: GatherLocalization.l("将删除 %lld 项已确认同步的备份；未确认的项会恢复原 XMP 并标记冲突，原因会显示在面板里。"),
+                viewModel.syncStatus?.synced ?? 0
+            )
+        case .writeback(let target):
+            switch target {
+            case .rating:
+                return String(
+                    format: GatherLocalization.l("将把 %lld 张已决策照片的当前星级写入 XMP 侧车（会创建备份，可在同步完成后清理）。"),
+                    viewModel.decidedPhotoCount
+                )
+            case .colorLabel:
+                return String(
+                    format: GatherLocalization.l("将把 %lld 张已决策照片的当前颜色标签写入 XMP 侧车（会创建备份）。"),
+                    viewModel.decidedPhotoCount
+                )
+            case .keyword:
+                return String(
+                    format: GatherLocalization.l("将把 %lld 张已决策照片的 culling:keep / culling:reject 关键词合并进 XMP（不覆盖其它关键词）。"),
+                    viewModel.decidedPhotoCount
+                )
+            }
+        case .retryFailedWriteback:
+            return String(
+                format: GatherLocalization.l("将重试 %lld 个失败写回项并覆盖对应 XMP 侧车。"),
+                viewModel.failedSyncItems.count
+            )
+        case .finalizeSync:
+            return String(
+                format: GatherLocalization.l("将确认同步并删除 %lld 项备份，之后无法再从备份恢复原 XMP。"),
+                viewModel.syncStatus?.synced ?? 0
+            )
+        case .resolveConflict(let conflict, let choices):
+            let name = URL(fileURLWithPath: conflict.xmpPath).lastPathComponent
+            let usesRemote = !choices.isEmpty && choices.values.allSatisfy({ $0 == .useRemote })
+            return usesRemote
+                ? String(format: GatherLocalization.l("将丢弃 Gather 待写入值、采用外部值，结清 %@ 的冲突。"), name)
+                : String(format: GatherLocalization.l("将把 Gather 的值写回 %@（覆盖外部修改）并结清冲突。"), name)
+        }
+    }
+
+    private func perform(_ action: PendingCullingAction) {
+        switch action {
+        case .reset:
+            viewModel.reset(confirmed: true)
+        case .cleanup:
+            Task { await viewModel.cleanup(confirmed: true) }
+        case .writeback(let target):
+            Task { await viewModel.writeback(target: target, confirmed: true) }
+        case .retryFailedWriteback:
+            Task { await viewModel.retryFailedWriteback(confirmed: true) }
+        case .finalizeSync:
+            Task { await viewModel.finalizeSync(confirmed: true) }
+        case .resolveConflict(let conflict, let choices):
+            Task { await viewModel.resolve(conflict, choices: choices, confirmed: true) }
         }
     }
 
@@ -1452,14 +1825,14 @@ public struct CullingView: View {
                 Image(systemName: "arrow.uturn.backward")
             }
             .labelStyle(.iconOnly)
-            .disabled(viewModel.history.first(where: { !$0.undone }) == nil || isBusy)
+            .disabled(viewModel.undoOperation == nil || isBusy)
             .help(GatherLocalization.l("撤销（⌘Z）"))
             .nonFocusable()
             Button { viewModel.redo() } label: {
                 Image(systemName: "arrow.uturn.forward")
             }
             .labelStyle(.iconOnly)
-            .disabled(viewModel.history.first(where: { $0.undone }) == nil || isBusy)
+            .disabled(viewModel.redoOperation == nil || isBusy)
             .help(GatherLocalization.l("重做（⇧⌘Z）"))
             .nonFocusable()
         }
@@ -1733,22 +2106,31 @@ public struct CullingView: View {
             Menu {
                 Button(GatherLocalization.l("立即写入 XMP")) { Task { await viewModel.flush() } }
                     .disabled(isBusy)
+                Menu {
+                    Button(GatherLocalization.l("评分")) { pendingAction = .writeback(.rating) }
+                    Button(GatherLocalization.l("颜色标签")) { pendingAction = .writeback(.colorLabel) }
+                    Button(GatherLocalization.l("挑片关键词")) { pendingAction = .writeback(.keyword) }
+                } label: {
+                    Label(GatherLocalization.l("写回 XMP…"), systemImage: "square.and.arrow.up")
+                }
+                .disabled(!hasDecisions || isBusy)
+                .help(GatherLocalization.l("把已决策照片的当前评分/色标/挑片关键词写回 XMP"))
                 if (viewModel.syncStatus?.written ?? 0) > 0 {
                     Button(GatherLocalization.l("在 Capture One 中加载元数据")) { Task { await viewModel.reloadCaptureOne() } }
                         .disabled(!viewModel.canLoadMetadata || isBusy)
                         .help(syncLoadHint)
-                    Button(GatherLocalization.l("已在 Capture One 加载")) { viewModel.confirmSync() }
+                    Button(GatherLocalization.l("已在 Capture One 加载")) { Task { await viewModel.confirmSync() } }
                         .disabled(!viewModel.canConfirmSync || isBusy)
                         .help(syncConfirmHint)
                 }
                 if (viewModel.syncStatus?.failed ?? 0) > 0 {
-                    Button(GatherLocalization.l("重试失败项")) { Task { await viewModel.retryFailedWriteback() } }
+                    Button(GatherLocalization.l("重试失败项")) { pendingAction = .retryFailedWriteback }
                         .disabled(isBusy)
                 }
                 if (viewModel.syncStatus?.synced ?? 0) > 0 {
-                    Button(GatherLocalization.l("保留 XMP 并结束")) { Task { await viewModel.finalizeSync() } }
+                    Button(GatherLocalization.l("保留 XMP 并结束")) { pendingAction = .finalizeSync }
                         .disabled(isBusy)
-                    Button(GatherLocalization.l("恢复原 XMP"), role: .destructive) { confirmCleanup = true }
+                    Button(GatherLocalization.l("恢复原 XMP"), role: .destructive) { pendingAction = .cleanup }
                         .disabled(!viewModel.canCleanup)
                         .help(syncCleanupHint)
                 }
@@ -1758,7 +2140,7 @@ public struct CullingView: View {
             .controlSize(.small)
             .nonFocusable()
             .help(GatherLocalization.l("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步"))
-            Button(GatherLocalization.l("重置挑片"), role: .destructive) { confirmReset = true }
+            Button(GatherLocalization.l("重置挑片"), role: .destructive) { pendingAction = .reset }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(GatherTheme.error)
@@ -1773,6 +2155,11 @@ public struct CullingView: View {
 
     private var isBusy: Bool {
         viewModel.isLoading || viewModel.isNavigationBusy || viewModel.isQualityBusy
+    }
+
+    /// 写回入口可用性：没有已决策照片就没有可写回的计划（服务端会抛 CULLING_NO_DECISIONS）。
+    private var hasDecisions: Bool {
+        viewModel.decidedPhotoCount > 0
     }
 
     private func qualityProgressPercent(_ job: AnalysisJobData) -> Int {
@@ -1882,64 +2269,14 @@ public struct CullingView: View {
 
     @ViewBuilder
     private var conflictPanel: some View {
-        if let conflict = viewModel.conflicts.first {
+        if viewModel.conflicts.first != nil || !viewModel.failedSyncItems.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(GatherLocalization.l("XMP 字段冲突")).font(.headline)
-                    Spacer()
-                    Text(URL(fileURLWithPath: conflict.xmpPath).lastPathComponent)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .help(conflict.xmpPath)
+                if let conflict = viewModel.conflicts.first {
+                    conflictBlock(conflict)
                 }
-                ForEach(conflict.fields, id: \.field.rawValue) { field in
-                    let key = "\(conflict.xmpPath)|\(field.field.rawValue)"
-                    HStack(spacing: 8) {
-                        Text(metadataFieldTitle(field.field))
-                            .font(.callout.weight(.semibold))
-                            .frame(width: 44, alignment: .leading)
-                        Text(String(format: GatherLocalization.l("Gather：%@"), valueLabel(field.local)))
-                            .font(.callout)
-                            .lineLimit(1)
-                            .help(valueLabel(field.local))
-                        Text(String(format: GatherLocalization.l("外部：%@"), valueLabel(field.remote)))
-                            .font(.callout)
-                            .lineLimit(1)
-                            .help(valueLabel(field.remote))
-                        Text(GatherLocalization.l("处理"))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Picker(GatherLocalization.l("处理"), selection: Binding(
-                            get: { conflictChoices[key] ?? .keepLocal },
-                            set: { conflictChoices[key] = $0 }
-                        )) {
-                            Text(GatherLocalization.l("保留 Gather")).tag(MetadataConflictChoice.keepLocal)
-                            Text(GatherLocalization.l("采用外部值")).tag(MetadataConflictChoice.useRemote)
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .fixedSize()
-                        .nonFocusable()
-                    }
-                    .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
-                }
-                HStack {
-                    Text(viewModel.conflicts.count > 1
-                        ? String(format: GatherLocalization.l("还有 %lld 个冲突"), viewModel.conflicts.count - 1)
-                        : GatherLocalization.l("这是最后一个冲突"))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button(GatherLocalization.l("应用并继续写入")) {
-                        let choices = Dictionary(uniqueKeysWithValues: conflict.fields.map { field in
-                            (field.field, conflictChoices["\(conflict.xmpPath)|\(field.field.rawValue)"] ?? .keepLocal)
-                        })
-                        viewModel.resolve(conflict, choices: choices)
-                    }
-                    .font(.footnote)
-                    .nonFocusable()
+                if !viewModel.failedSyncItems.isEmpty {
+                    if viewModel.conflicts.first != nil { Divider() }
+                    failureBlock
                 }
             }
             .padding(12)
@@ -1950,6 +2287,145 @@ public struct CullingView: View {
             )
             .shadow(color: GatherTheme.shadowMd, radius: 12, y: 6)
         }
+    }
+
+    /// 单个冲突：展示逐字段差异 + 失败原因 + 两条无障碍出口
+    /// （采用外部值 / 保留 Gather 并显式结清）。所有出口都经确认弹窗。
+    @ViewBuilder
+    private func conflictBlock(_ conflict: MetadataConflict) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(GatherLocalization.l("XMP 字段冲突")).font(.headline)
+                Spacer()
+                Text(URL(fileURLWithPath: conflict.xmpPath).lastPathComponent)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(conflict.xmpPath)
+            }
+            if let reason = viewModel.syncFailureReason(xmpPath: conflict.xmpPath) {
+                Text(String(format: GatherLocalization.l("原因：%@"), reason))
+                    .font(.footnote)
+                    .foregroundStyle(GatherTheme.error)
+                    .lineLimit(3)
+                    .help(reason)
+            }
+            if conflict.fields.isEmpty {
+                Text(GatherLocalization.l("该冲突行没有可逐字段裁决的差异：直接结清即可（保留 Gather 值并以当前磁盘状态为新基线重写）。"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(conflict.fields, id: \.field.rawValue) { field in
+                let key = "\(conflict.xmpPath)|\(field.field.rawValue)"
+                HStack(spacing: 8) {
+                    Text(metadataFieldTitle(field.field))
+                        .font(.callout.weight(.semibold))
+                        .frame(width: 44, alignment: .leading)
+                    Text(String(format: GatherLocalization.l("Gather：%@"), valueLabel(field.local)))
+                        .font(.callout)
+                        .lineLimit(1)
+                        .help(valueLabel(field.local))
+                    Text(String(format: GatherLocalization.l("外部：%@"), valueLabel(field.remote)))
+                        .font(.callout)
+                        .lineLimit(1)
+                        .help(valueLabel(field.remote))
+                    Text(GatherLocalization.l("处理"))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Picker(GatherLocalization.l("处理"), selection: Binding(
+                        get: { conflictChoices[key] ?? .keepLocal },
+                        set: { conflictChoices[key] = $0 }
+                    )) {
+                        Text(GatherLocalization.l("保留 Gather")).tag(MetadataConflictChoice.keepLocal)
+                        Text(GatherLocalization.l("采用外部值")).tag(MetadataConflictChoice.useRemote)
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .nonFocusable()
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+            }
+            HStack {
+                Text(viewModel.conflicts.count > 1
+                    ? String(format: GatherLocalization.l("还有 %lld 个冲突"), viewModel.conflicts.count - 1)
+                    : GatherLocalization.l("这是最后一个冲突"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(GatherLocalization.l("采用外部值")) {
+                    pendingAction = .resolveConflict(conflict, choicesForConflict(conflict, .useRemote))
+                }
+                .font(.footnote)
+                .nonFocusable()
+                .help(GatherLocalization.l("丢弃 Gather 待写入值，接受磁盘上的外部修改"))
+                Button(GatherLocalization.l("保留 Gather 并结清")) {
+                    // 空 choices = 显式结清（coordinator 的第三条出口），字段为空时同样可达。
+                    pendingAction = .resolveConflict(conflict, [:])
+                }
+                .font(.footnote)
+                .nonFocusable()
+                .help(GatherLocalization.l("把 Gather 的值写回 XMP，以当前磁盘状态为新基线"))
+                if !conflict.fields.isEmpty {
+                    Button(GatherLocalization.l("应用选择并继续写入")) {
+                        pendingAction = .resolveConflict(conflict, selectedChoices(conflict))
+                    }
+                    .font(.footnote)
+                    .nonFocusable()
+                }
+            }
+        }
+    }
+
+    /// 失败写回清单：逐条展示路径与 coordinator 写入的真实原因 + 重试出口。
+    private var failureBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(String(format: GatherLocalization.l("写回失败 %lld 项"), viewModel.failedSyncItems.count))
+                    .font(.headline)
+                    .foregroundStyle(GatherTheme.error)
+                Spacer()
+                Button(GatherLocalization.l("重试失败项")) { pendingAction = .retryFailedWriteback }
+                    .font(.footnote)
+                    .nonFocusable()
+            }
+            ForEach(Array(viewModel.failedSyncItems.prefix(3)), id: \.xmpPath) { item in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
+                        .font(.footnote.weight(.medium))
+                    // 上屏走错误码漏斗；原始诊断已由 applySyncStatus 写日志。
+                    Text(item.errorMessage.isEmpty
+                        ? GatherLocalization.l("未记录原因")
+                        : CullingViewModel.funnelErrorText(item.errorMessage))
+                        .font(.footnote)
+                        .foregroundStyle(GatherTheme.error)
+                        .lineLimit(3)
+                        .help(item.errorMessage.isEmpty ? "" : CullingViewModel.funnelErrorText(item.errorMessage))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.gatherBackground))
+            }
+            if viewModel.failedSyncItems.count > 3 {
+                Text(String(format: GatherLocalization.l("另有 %lld 项失败"), viewModel.failedSyncItems.count - 3))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func choicesForConflict(
+        _ conflict: MetadataConflict,
+        _ choice: MetadataConflictChoice
+    ) -> [MetadataField: MetadataConflictChoice] {
+        Dictionary(uniqueKeysWithValues: conflict.fields.map { ($0.field, choice) })
+    }
+
+    private func selectedChoices(_ conflict: MetadataConflict) -> [MetadataField: MetadataConflictChoice] {
+        Dictionary(uniqueKeysWithValues: conflict.fields.map { field in
+            (field.field, conflictChoices["\(conflict.xmpPath)|\(field.field.rawValue)"] ?? .keepLocal)
+        })
     }
 
     // MARK: 键盘快捷键（对齐 Culling.tsx:1109-1149 window keydown handler）。
@@ -2269,7 +2745,7 @@ private struct CullingFilmThumbView: View {
             Button(GatherLocalization.l("未处理")) {
                 viewModel.update(asset, patch: CullingUpdatePatch(pickState: .unreviewed))
             }
-            if let url = Self.finderURL(for: asset.photo.filepath) {
+            if let url = finderURLForPath(asset.photo.filepath) {
                 Divider()
                 Button(GatherLocalization.l("在 Finder 中显示")) {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -2285,12 +2761,6 @@ private struct CullingFilmThumbView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(thumbAccessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    /// 右键「在 Finder 中显示」的 URL：路径为空时返回 nil（跳过该项）。
-    private static func finderURL(for path: String) -> URL? {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed)
     }
 
     private var thumbAccessibilityLabel: String {
@@ -2584,7 +3054,12 @@ private struct CullingWorkbenchViewer: View {
 
     private func qualityHelpText(_ quality: CullingQuality) -> String {
         if quality.status == .failed {
-            return quality.errorMessage ?? GatherLocalization.l("质量分析失败")
+            // 上屏走错误码漏斗（原始诊断已由 logQualityFailures 写日志），
+            // 不把分析器的结构化描述直接铺在 tooltip 里。
+            guard let raw = quality.errorMessage, !raw.isEmpty else {
+                return GatherLocalization.l("质量分析失败")
+            }
+            return CullingViewModel.funnelErrorText(raw)
         }
         let sharpness = Int((quality.subjectSharpness ?? quality.sharpness) * 100)
         let exposure = Int(quality.exposure * 100)

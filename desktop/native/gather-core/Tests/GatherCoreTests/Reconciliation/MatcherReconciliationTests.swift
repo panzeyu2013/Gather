@@ -87,12 +87,6 @@ struct MatcherReconciliationTests {
                     #expect(deviation < 1e-4, "case \(c.name): query \(queryIndex) confidence 偏差 \(deviation) >= 1e-4")
                 }
             }
-            // 路径选择与 fixture 标注一致（空库不走任何分支，debugUsedLsh=false）
-            if c.path == "lsh" {
-                #expect(matcher.debugUsedLsh, "case \(c.name): 应走 LSH 分支")
-            } else {
-                #expect(!matcher.debugUsedLsh, "case \(c.name): 应走精确扫描分支")
-            }
         }
     }
 
@@ -206,21 +200,6 @@ struct MatcherReconciliationTests {
         #expect(throws: MatcherError.vectorLengthMismatch(expected: 4, received: 5)) {
             _ = try lsh.matchAgainstLibrary([[1, 0, 0, 0, 0]], threshold: 0.9)
         }
-    }
-
-    // face-matcher.ts:57-61（invalidateCache 释放索引，下次匹配重建）
-    @Test func invalidateCacheResetsAndRebuilds() throws {
-        let matcher = FaceMatcher(
-            library: [LibraryEmbedding(personId: "p1", embedding: [1, 0, 0, 0])],
-            lshMinPoints: 0)
-        let first = try matcher.matchAgainstLibrary([[1, 0, 0, 0]], threshold: 0.9)
-        #expect(first.matched[0] != nil)
-        #expect(matcher.debugUsedLsh, "lshMinPoints=0 时应建 LSH 索引")
-        matcher.invalidateCache()
-        #expect(!matcher.debugUsedLsh, "invalidateCache 后索引应释放")
-        let second = try matcher.matchAgainstLibrary([[1, 0, 0, 0]], threshold: 0.9)
-        #expect(second.matched[0] != nil, "失效后再次匹配应重建索引")
-        #expect(matcher.debugUsedLsh)
     }
 
     // 非单位查询（5 倍幅值）在精确路径下余弦仍正确（face-matcher.ts:70-77 测试场景）

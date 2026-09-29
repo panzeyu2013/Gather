@@ -19,6 +19,12 @@
 //   - 精确路径的余弦按 face-matcher.ts:127-142 逐项顺序累加（非 4 维展开，
 //     与 LSH 路径 verifyCandidates 的展开循环是两种浮点顺序）——Swift 侧
 //     同样分别实现，与 TS 同序，避免阈值边界位级翻转风险。
+//   - MATCH_MARGIN（本次新增，PhotoPrism 同义）：best >= threshold 且
+//     best - second >= margin 才匹配；best >= threshold 但差距不足则记入
+//     ambiguous（歧义不猜，既不匹配也不算未命中）。second 只在「达阈候选」中求：
+//     精确路径取 score >= threshold 的行，LSH 路径取 neighbors(threshold:) 的命中
+//     （只返回 >= 阈值的候选）——两路径判定一致。margin <= 0 时完全跳过 second
+//     （默认 0 ⇒ 与旧行为逐位一致，并列仍取先出现者）。
 //   - 空库：全部查询进 unmatched（face-matcher.ts:71-76）。
 //   - 数据源解耦：TS 构造注入 PersonRepository、首次匹配经 getAllEmbeddings()
 //     惰性取数（face-matcher.ts:36-55）；Swift 版本由调用方直接喂入嵌入数组
@@ -58,14 +64,18 @@ public struct PersonMatch: Equatable, Sendable {
 
 /// matchAgainstLibrary 的返回（TS face-matcher.ts:63-66：
 /// { matched: Map<number, PersonMatch>, unmatched: number[] }）。
-/// matched 的键是查询下标。
+/// matched 的键是查询下标；ambiguous 为本次新增的歧义查询下标（按查询顺序）。
 public struct FaceMatchResult: Equatable, Sendable {
     public let matched: [Int: PersonMatch]
     public let unmatched: [Int]
+    /// best >= threshold 但 best - second < margin 的查询下标（歧义不猜）。
+    /// 默认空数组：既有的 matched/unmatched 二元调用点零改动。
+    public let ambiguous: [Int]
 
-    public init(matched: [Int: PersonMatch], unmatched: [Int]) {
+    public init(matched: [Int: PersonMatch], unmatched: [Int], ambiguous: [Int] = []) {
         self.matched = matched
         self.unmatched = unmatched
+        self.ambiguous = ambiguous
     }
 }
 
@@ -97,8 +107,8 @@ public final class FaceMatcher {
     }
 
     // TS face-matcher.ts:36-55（loadLibrary）：惰性加载库并按规模决定路径。
-    // Swift 侧库数据由构造注入，此处只做首次建索引（索引可经 invalidateCache
-    // 释放重建，语义与 TS 一致）。
+    // Swift 侧库数据由构造注入，此处只做首次建索引（索引随实例生命周期存在，
+    // 重建需重新构造实例，语义与 TS 一致）。
     private func loadLibrary() throws -> [LibraryEmbedding] {
         if loaded { return libraryEmbeddings }
         if libraryEmbeddings.count > lshMinPoints {
@@ -122,25 +132,76 @@ public final class FaceMatcher {
         return libraryEmbeddings
     }
 
-    // TS face-matcher.ts:57-61（invalidateCache：释放库/索引缓存）
-    public func invalidateCache() {
-        loaded = false
-        libraryFlat = nil
-        lshIndex = nil
-        libraryDim = 0
+    // 择优折叠：best 的选取与旧实现完全相同（起点 0.0、严格大于、并列取先出现者），
+    // 同时记录次优达阈候选 secondScore（无则 nil）。candidateFloor 是「可计为歧义竞争者
+    // 的最低分」：精确路径传 threshold（达阈才算竞争者），LSH 路径传 -infinity
+    // （hits 已被 neighbors(threshold:) 按阈值过滤，命中即候选）。
+    private struct Ranking {
+        var bestIndex = -1
+        var bestScore = 0.0
+        var secondScore: Double?
+
+        mutating func consider(index: Int, score: Double, candidateFloor: Double) {
+            if score > bestScore {
+                if bestIndex >= 0 && bestScore >= candidateFloor {
+                    secondScore = max(secondScore ?? -Double.infinity, bestScore)
+                }
+                bestScore = score
+                bestIndex = index
+            } else if score >= candidateFloor {
+                secondScore = max(secondScore ?? -Double.infinity, score)
+            }
+        }
     }
 
-    /// 对账测试专用（@testable）：本次加载是否走了 LSH 分支。
-    internal var debugUsedLsh: Bool { lshIndex != nil }
+    // 决定一个查询的去向：margin > 0 且存在与 best 差距 < margin 的达阈竞争者 →
+    // ambiguous（不猜）；否则 matched。margin <= 0 时短路、完全不看 secondScore ⇒
+    // 与引入 margin 前的匹配结果逐位一致。
+    private static func recordOutcome(
+        queryIndex: Int,
+        bestPersonId: String,
+        ranking: Ranking,
+        margin: Double,
+        matched: inout [Int: PersonMatch],
+        ambiguous: inout [Int]
+    ) {
+        if margin > 0, let second = ranking.secondScore, ranking.bestScore - second < margin {
+            ambiguous.append(queryIndex)
+        } else {
+            matched[queryIndex] = PersonMatch(personId: bestPersonId, confidence: ranking.bestScore)
+        }
+    }
 
-    // TS face-matcher.ts:63-124（matchAgainstLibrary：查询批对库匹配）
+    /// 按人物聚合的最佳相似度（人物 id → 该人全部样本中的最高分）。
+    /// 用途：歧义 margin 需要"人物级亚军"——`matchAgainstLibrary` 每个查询只返回
+    /// 单一最佳**行**，而库里同一人常有多条样本，无法据此判断亚军人物。
+    /// 余弦语义与精确扫描路径一致（逐项顺序累加，非 4 维展开）。
+    public static func bestScoresPerPerson(
+        query: [Float],
+        library: [LibraryEmbedding]
+    ) throws -> [String: Double] {
+        var best: [String: Double] = [:]
+        for row in library {
+            let score = try cosineSimilarity(query, row.embedding)
+            if score > (best[row.personId] ?? -.infinity) {
+                best[row.personId] = score
+            }
+        }
+        return best
+    }
+
+    // TS face-matcher.ts:63-124（matchAgainstLibrary：查询批对库匹配）。
+    // margin（PhotoPrism MATCH_MARGIN 同义）：best >= threshold 且 best - second >= margin
+    // 才匹配；best >= threshold 但差距不足 → ambiguous；否则 unmatched。
     public func matchAgainstLibrary(
         _ embeddings: [[Float]],
-        threshold: Double
+        threshold: Double,
+        margin: Double = 0
     ) throws -> FaceMatchResult {
         let library = try loadLibrary()
         var matched: [Int: PersonMatch] = [:]
         var unmatched: [Int] = []
+        var ambiguous: [Int] = []
 
         // 空库：全部查询进 unmatched（face-matcher.ts:71-76）
         if library.isEmpty {
@@ -150,50 +211,60 @@ public final class FaceMatcher {
 
         if let lshIndex, libraryFlat != nil {
             // LSH 路径（face-matcher.ts:78-101）：桶并集候选已按阈值过滤，
-            // 择优 score > bestScore、并列取先出现者
+            // 择优 score > bestScore、并列取先出现者；第二高分只在命中中求
+            // （neighbors(threshold:) 只返回 >= 阈值的候选）。
             for i in 0..<embeddings.count {
                 let inputEmb = embeddings[i]
                 guard inputEmb.count == libraryDim else {
                     throw MatcherError.vectorLengthMismatch(expected: libraryDim, received: inputEmb.count)
                 }
                 let hits = try lshIndex.neighbors(query: inputEmb, queryOffset: 0, threshold: threshold)
-                var bestIndex = -1
-                var bestScore = 0.0
+                var ranking = Ranking()
                 for h in 0..<hits.count {
-                    let score = Double(hits.scores[h])
-                    if score > bestScore {
-                        bestScore = score
-                        bestIndex = hits.indices[h]
-                    }
+                    ranking.consider(
+                        index: hits.indices[h],
+                        score: Double(hits.scores[h]),
+                        candidateFloor: -Double.infinity)
                 }
-                if bestIndex >= 0 {
-                    matched[i] = PersonMatch(personId: library[bestIndex].personId, confidence: bestScore)
+                if ranking.bestIndex >= 0 {
+                    Self.recordOutcome(
+                        queryIndex: i,
+                        bestPersonId: library[ranking.bestIndex].personId,
+                        ranking: ranking,
+                        margin: margin,
+                        matched: &matched,
+                        ambiguous: &ambiguous)
                 } else {
                     unmatched.append(i)
                 }
             }
-            return FaceMatchResult(matched: matched, unmatched: unmatched)
+            return FaceMatchResult(matched: matched, unmatched: unmatched, ambiguous: ambiguous)
         }
 
-        // 精确扫描路径（face-matcher.ts:103-121）
+        // 精确扫描路径（face-matcher.ts:103-121）；次优候选取 score >= threshold 的行，
+        // 与 LSH 路径的「达阈命中」同语义。
         for i in 0..<embeddings.count {
             let inputEmb = embeddings[i]
-            var bestPersonId = ""
-            var bestScore = 0.0
+            var ranking = Ranking()
             for j in 0..<library.count {
                 let score = try Self.cosineSimilarity(inputEmb, library[j].embedding)
-                if score > bestScore {
-                    bestScore = score
-                    bestPersonId = library[j].personId
-                }
+                ranking.consider(index: j, score: score, candidateFloor: threshold)
             }
-            if bestScore >= threshold && !bestPersonId.isEmpty {
-                matched[i] = PersonMatch(personId: bestPersonId, confidence: bestScore)
+            if ranking.bestIndex >= 0, ranking.bestScore >= threshold,
+                !library[ranking.bestIndex].personId.isEmpty
+            {
+                Self.recordOutcome(
+                    queryIndex: i,
+                    bestPersonId: library[ranking.bestIndex].personId,
+                    ranking: ranking,
+                    margin: margin,
+                    matched: &matched,
+                    ambiguous: &ambiguous)
             } else {
                 unmatched.append(i)
             }
         }
-        return FaceMatchResult(matched: matched, unmatched: unmatched)
+        return FaceMatchResult(matched: matched, unmatched: unmatched, ambiguous: ambiguous)
     }
 
     // TS face-matcher.ts:127-142（cosineSimilarity：逐项顺序累加，非 4 维展开）
@@ -218,22 +289,16 @@ public final class FaceMatcher {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 数据源对接（与 PersonRepo.swift）
+// 生产调用点（唯一一处，勿在别处再造一条匹配链）
 // ─────────────────────────────────────────────────────────────────────────────
-// TS 侧 FaceMatcher 构造注入 PersonRepository，matchAgainstLibrary 首次调用经
-// loadLibrary() 惰性读 personRepo.getAllEmbeddings()（face-matcher.ts:36-55），
-// 每行 { person_id, embedding(blob) } 解出 Float32Array。Swift 侧 FaceMatcher
-// 不依赖 PersonRepo：调用方先取数再喂入，即
-//
-//   let refs = try personRepo.getAllEmbeddings()          // [PersonEmbeddingRef]
-//   let library = refs.map {
-//       LibraryEmbedding(personId: $0.personId, embedding: float32Array(from: $0.embedding))
-//   }
-//   let matcher = FaceMatcher(library: library)           // lshMinPoints 默认 20_000
-//   let result = try matcher.matchAgainstLibrary(queries, threshold: t)
-//
-// 其中 float32Array 把 blob Data 按小端 Float32 读出（float32Data 的逆操作，
-// PersonRepo.swift:576-579）。TS 的 loadLibrary 缓存语义由 Swift 侧惰性建索引
-// 对应：invalidateCache() 后下次匹配重建索引。PersonRepo 有 getEmbeddingsByPerson
-// 等增量接口，调用方可在数据变更后重建 FaceMatcher 或 invalidateCache + 重喂
-// 新库（本类设计为不可变库快照，与 TS 的私有缓存字段语义一致）。
+//   FaceKwService.matchClustersAgainstLibrary(sessionId:clusters:)
+//     · 库来源 personRepo.getAllEmbeddings() → LibraryEmbedding（小端 Float32 blob）
+//     · 查询向量 = 新簇成员的 face_observations.embedding（clusterStoredObservations
+//       内存中的 entries，与 FaceRepo.getClusterMemberEmbeddings 同口径）
+//     · 合格线 = 该人物 persons.match_threshold（缺省 0.65），取最高分写
+//       face_clusters.matched_person_id / match_confidence
+//   向量写入口：FaceKwService.bindCluster → FaceRepo.getClusterMemberEmbeddings
+//   → PersonRepo.saveEmbeddings；观察被删除时 FaceRepo 同事务清掉对应向量，
+//   保证库与观察同生命周期（不会匹配到已删除的人脸）。
+//   FaceMatcher 设计为不可变库快照：一次匹配建一个实例（TS loadLibrary 惰性
+//   建索引语义），无需 invalidateCache 重喂。

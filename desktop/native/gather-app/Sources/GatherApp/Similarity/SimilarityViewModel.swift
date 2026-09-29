@@ -22,7 +22,10 @@ import GatherCore
 
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态/时序门）或
 /// 真实路由（LiveSimilarityDataProvider + 临时 SQLite）。
-public protocol SimilarityDataProvider {
+/// Swift 6 迁移：协议继承 Sendable（Live 实现仅持有不可变 router；
+/// CaptureOneBridge 自身已是 @unchecked Sendable），使 @MainActor ViewModel
+/// 可在 async 调用中安全地把 provider existential 送出当前隔离域。
+public protocol SimilarityDataProvider: Sendable {
     /// TS: similarityApi.getResult → sim.result（threshold 缺省 = 最近档）。
     func getResult(sessionId: String, threshold: Int?) throws -> SimilarityResult?
     /// TS: similarityApi.analyze → sim.analyze（JobService 异步，完成即成功）。
@@ -44,10 +47,15 @@ public protocol SimilarityDataProvider {
     /// 分析进度轮询（TS jobsApi.list 过滤 similarity.analyze + scopeId）。
     func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData]
     func previewWriteback(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Int?) async throws -> WritebackPreview
-    func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult
-    func retryFailedWriteback(sessionId: String) async throws -> WritebackResult
+    /// 破坏性：`confirmed` 由用户确认弹窗决定，命令层校验失败即拒绝。
+    func writeback(sessionId: String, itemIds: [Int], threshold: Int?, confirmed: Bool) async throws -> WritebackResult
+    func retryFailedWriteback(sessionId: String, confirmed: Bool) async throws -> WritebackResult
     func confirmSync(sessionId: String) async throws
-    func cleanupWriteback(sessionId: String) async throws -> CleanupResult
+    func cleanupWriteback(sessionId: String, confirmed: Bool) async throws -> CleanupResult
+    /// TS: captureOneApi.syncState 的模块级数据源（sim.writeback_items 每行 xmpStatus）。
+    /// **必须作为 requirement 声明**：ViewModel 持有 existential，仅在 extension 里给默认实现
+    /// 会导致调用永远静态分发到默认值（Live 实现成死代码、同步面板恒禁用）。
+    func syncStateItems(sessionId: String) throws -> [WritebackItem]
 }
 
 extension SimilarityDataProvider {
@@ -141,8 +149,8 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
             "assignments": try .array(assignments.map { try JSONValue(from: $0) }),
         ]
         if let threshold { params["threshold"] = .number(Double(threshold)) }
-        // 经 executeAsync：sim.preview_writeback 在同步 execute 中的 awaitSync
-        // 信号量桥会阻塞 @MainActor 调用线程（XMP/DB I/O 期间 UI 冻结）。
+        // 经 executeAsync：该命令在同步 execute 路径下会在 XMP/DB I/O 期间
+        // 阻塞调用线程（UI 冻结），页面统一走异步入口。
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WritebackPreview, Error>) in
             router.executeAsync("sim.preview_writeback", params: params) { response in
                 guard response.ok, let data = response.data else {
@@ -155,11 +163,11 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         }
     }
 
-    public func writeback(sessionId: String, itemIds: [Int], threshold: Int?) async throws -> WritebackResult {
+    public func writeback(sessionId: String, itemIds: [Int], threshold: Int?, confirmed: Bool) async throws -> WritebackResult {
         var params: [String: JSONValue] = [
             "sessionId": .string(sessionId),
             "itemIds": .array(itemIds.map { .number(Double($0)) }),
-            "confirmed": .bool(true),
+            "confirmed": .bool(confirmed),
         ]
         if let threshold { params["threshold"] = .number(Double(threshold)) }
         return try await withCheckedThrowingContinuation { continuation in
@@ -174,11 +182,11 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         }
     }
 
-    public func retryFailedWriteback(sessionId: String) async throws -> WritebackResult {
+    public func retryFailedWriteback(sessionId: String, confirmed: Bool) async throws -> WritebackResult {
         try await withCheckedThrowingContinuation { continuation in
             router.executeAsync("sim.retry_failed_writeback", params: [
                 "sessionId": .string(sessionId),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ]) { response in
                 guard response.ok, let data = response.data else {
                     continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_RETRY_WRITEBACK_FAILED"))
@@ -191,7 +199,8 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
     }
 
     public func confirmSync(sessionId: String) async throws {
-        // 经 executeAsync：同步 execute 的 awaitSync 桥会阻塞 @MainActor 调用线程。
+        // 经 executeAsync：同步 execute 路径会在 I/O 期间阻塞调用线程，页面
+        // 统一走异步入口避免 UI 冻结。
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             router.executeAsync("sim.confirm_sync", params: ["sessionId": .string(sessionId)]) { response in
                 if response.ok {
@@ -203,11 +212,11 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
         }
     }
 
-    public func cleanupWriteback(sessionId: String) async throws -> CleanupResult {
+    public func cleanupWriteback(sessionId: String, confirmed: Bool) async throws -> CleanupResult {
         try await withCheckedThrowingContinuation { continuation in
             router.executeAsync("sim.cleanup", params: [
                 "sessionId": .string(sessionId),
-                "confirmed": .bool(true),
+                "confirmed": .bool(confirmed),
             ]) { response in
                 guard response.ok, let data = response.data else {
                     continuation.resume(throwing: RouterCommandError(message: response.error ?? "SIM_CLEANUP_FAILED"))
@@ -490,9 +499,10 @@ public final class SimilarityViewModel {
         } catch {
             stopProgressPolling()
             isAnalyzing = false
-            errorMessage = Self.message(for: error)
+            let text = Self.message(for: error)
+            errorMessage = text
             if result == nil {
-                phase = .error(errorMessage ?? "SIM_ANALYZE_FAILED")
+                phase = .error(text)
             }
         }
     }
@@ -715,62 +725,87 @@ public final class SimilarityViewModel {
     }
 
     public func previewKeywordWriteback() async {
+        _ = await ensureWritebackPreview()
+    }
+
+    /// 写回确认准备：无预览时先生成预览（取消/失败都会写可见文案），
+    /// 让确认弹窗展示真实影响范围；返回是否存在可确认的预览。
+    @discardableResult
+    public func prepareWritebackConfirmation() async -> WritebackPreview? {
+        await ensureWritebackPreview()
+    }
+
+    /// 预览的唯一实现：给出「不发生任何写入」的影响范围。
+    private func ensureWritebackPreview() async -> WritebackPreview? {
         guard canPreviewWriteback else {
             if selectedGroupIds.isEmpty {
                 errorMessage = GatherLocalization.l("请选择至少一个相似度分组")
             } else if parsedWritebackKeywords.isEmpty {
                 errorMessage = GatherLocalization.l("请输入要写回的关键字")
             }
-            return
+            return nil
         }
+        if let writebackPreview = writebackPreview { return writebackPreview }
         isSyncBusy = true
         defer { isSyncBusy = false }
         do {
-            let assignments = selectedGroupIds.sorted().map { SimilarityKeywordAssignment(groupId: $0, keywords: parsedWritebackKeywords) }
-            writebackPreview = try await provider.previewWriteback(
+            let preview = try await provider.previewWriteback(
                 sessionId: sessionId,
-                assignments: assignments,
+                assignments: writebackAssignments,
                 threshold: writebackThreshold
             )
-            writebackMessage = String(format: GatherLocalization.l("预览完成：%lld 张照片将合并这些关键词。"), writebackPreview?.affectedPhotos ?? 0)
+            writebackPreview = preview
             errorMessage = nil
+            guard !preview.items.isEmpty else {
+                writebackMessage = GatherLocalization.l("预览没有可写回项")
+                return nil
+            }
+            writebackMessage = String(format: GatherLocalization.l("预览完成：%lld 张照片将合并这些关键词。"), preview.affectedPhotos)
+            return preview
         } catch {
             let text = Self.message(for: error)
             errorMessage = text
             writebackMessage = String(format: GatherLocalization.l("预览失败：%@"), text)
+            return nil
         }
     }
 
-    public func executeKeywordWriteback() async {
-        guard canPreviewWriteback else { return }
+    private var writebackAssignments: [SimilarityKeywordAssignment] {
+        selectedGroupIds.sorted().map { SimilarityKeywordAssignment(groupId: $0, keywords: parsedWritebackKeywords) }
+    }
+
+    /// 用户确认后执行写回（sim.writeback 是 confirmed 门控的破坏性命令；
+    /// `confirmed` 只能由确认弹窗传入 true，旧实现恒 true 已删除）。
+    public func executeKeywordWriteback(confirmed: Bool) async {
+        guard confirmed else {
+            writebackMessage = GatherLocalization.l("未确认，已取消写入")
+            return
+        }
+        guard let preview = writebackPreview, !selectedGroupIds.isEmpty, !parsedWritebackKeywords.isEmpty else {
+            errorMessage = GatherLocalization.l("请先生成写回预览并确认影响范围")
+            return
+        }
         isSyncBusy = true
         defer {
             isSyncBusy = false
             refreshSyncState()
         }
         do {
-            // TS: preview ?? await previewWriteback(...)（无预览时自动补一次）。
-            let preview: WritebackPreview
-            if let existing = writebackPreview {
-                preview = existing
-            } else {
-                let assignments = selectedGroupIds.sorted().map { SimilarityKeywordAssignment(groupId: $0, keywords: parsedWritebackKeywords) }
-                preview = try await provider.previewWriteback(
-                    sessionId: sessionId,
-                    assignments: assignments,
-                    threshold: writebackThreshold
-                )
-                writebackPreview = preview
-            }
             let ids = preview.items.compactMap(\.id)
             guard !ids.isEmpty else {
                 writebackMessage = GatherLocalization.l("预览没有可写回项")
                 return
             }
-            let nextResult = try await provider.writeback(sessionId: sessionId, itemIds: ids, threshold: writebackThreshold)
+            let nextResult = try await provider.writeback(
+                sessionId: sessionId,
+                itemIds: ids,
+                threshold: writebackThreshold,
+                confirmed: confirmed
+            )
             writebackResult = nextResult
             // 新写入活动使会话 reload-ack 失效（DB clearReloadAck 语义）。
             reloadAcked = false
+            publishMetadataChange()
             writebackMessage = String(format: GatherLocalization.l("XMP 写入完成：成功 %lld，失败 %lld，跳过 %lld。"), nextResult.written, nextResult.failed, nextResult.skipped)
             errorMessage = nil
         } catch {
@@ -780,16 +815,26 @@ public final class SimilarityViewModel {
         }
     }
 
-    public func retryKeywordWriteback() async {
+    /// 重试失败项（sim.retry_failed_writeback 同为 confirmed 门控）。
+    public func retryKeywordWriteback(confirmed: Bool) async {
+        guard confirmed else {
+            writebackMessage = GatherLocalization.l("未确认，已取消重试")
+            return
+        }
+        guard let failedItems = writebackResult?.failedItems, !failedItems.isEmpty else {
+            errorMessage = GatherLocalization.l("没有可重试的失败项")
+            return
+        }
         isSyncBusy = true
         defer {
             isSyncBusy = false
             refreshSyncState()
         }
         do {
-            let nextResult = try await provider.retryFailedWriteback(sessionId: sessionId)
+            let nextResult = try await provider.retryFailedWriteback(sessionId: sessionId, confirmed: confirmed)
             writebackResult = nextResult
             reloadAcked = false
+            publishMetadataChange()
             writebackMessage = String(format: GatherLocalization.l("重试完成：成功 %lld，失败 %lld。"), nextResult.written, nextResult.failed)
             errorMessage = nil
         } catch {
@@ -797,6 +842,17 @@ public final class SimilarityViewModel {
             errorMessage = text
             writebackMessage = String(format: GatherLocalization.l("重试失败：%@"), text)
         }
+    }
+
+    /// 取消破坏性动作：可见文案（不静默 return，也不发命令）。
+    public func reportCancellation(_ action: String) {
+        writebackMessage = GatherLocalization.cancellationNotice(action)
+        errorMessage = nil
+    }
+
+    /// 写路径统一广播：XMP/同步队列域（设置页、C1 胶囊、控制中心按域刷新）。
+    private func publishMetadataChange() {
+        GatherEventCenter.postDomainChange(.metadata, sessionId: sessionId)
     }
 
     /// 第一步：Capture One 加载元数据（成功才写入持久 ack；绝不自动确认）。
@@ -821,6 +877,7 @@ public final class SimilarityViewModel {
     public func confirmSync() async {
         do {
             try await provider.confirmSync(sessionId: sessionId)
+            publishMetadataChange()
             writebackMessage = GatherLocalization.l("已确认 Capture One 完成「加载元数据」，现在可以安全清理临时 XMP 变更。")
             errorMessage = nil
         } catch {
@@ -831,9 +888,15 @@ public final class SimilarityViewModel {
         refreshSyncState()
     }
 
-    public func cleanupKeywordWriteback() async {
+    /// 清理临时 XMP 变更（sim.cleanup 同为 confirmed 门控）。
+    public func cleanupKeywordWriteback(confirmed: Bool) async {
+        guard confirmed else {
+            writebackMessage = GatherLocalization.l("未确认，已取消清理")
+            return
+        }
         do {
-            let cleanup = try await provider.cleanupWriteback(sessionId: sessionId)
+            let cleanup = try await provider.cleanupWriteback(sessionId: sessionId, confirmed: confirmed)
+            publishMetadataChange()
             writebackResult = nil
             writebackPreview = nil
             writebackMessage = String(format: GatherLocalization.l("清理完成：已恢复或移除 %lld 个 sidecar 文件。"), cleanup.deletedCount)
@@ -940,16 +1003,11 @@ public final class SimilarityViewModel {
         )
     }
 
-    // MARK: 错误 message（对齐 DashboardViewModel.message）
+    // MARK: 错误 message（统一走 GatherLocalization.errorText 漏斗）
 
+    /// 错误 → 用户文案：凡带错误码者经 errorText 翻译（附带错误码语义），
+    /// 否则回退通用文案。不再自建映射（旧实现会把错误码/英文诊断直接透给用户）。
     static func message(for error: Error) -> String {
-        if error is RouterCommandError {
-            return GatherLocalization.message(for: error)
-        }
-        if let sessionError = error as? SessionServiceError {
-            return sessionError.gatherCode.rawValue
-        }
-        let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? nsError.localizedDescription
+        NativeCommandClient.userFacingMessage(for: error)
     }
 }

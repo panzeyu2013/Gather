@@ -1,7 +1,17 @@
 // desktop/native/gather-core/Sources/GatherCore/Database/Repositories/FaceRepo.swift
-// TS 源: desktop/src/main/db/repositories/face.repo.ts
-// 偏差：TS 侧 SettingsService/app.getPath('userData') 尚未移植，缩略图目录改为
-// 构造参数注入（faceThumbnailDir），缺省时回落用户主目录下的 face-thumbnails。
+// 人脸域仓储（全量重写；TS face.repo.ts 时代的存档计数与整会话删绑定已删除）。
+//
+// 核心约定：
+// 1. 用户数据 vs 派生数据。role_bindings / face_clusters.matched_person_id 是用户
+//    身份数据；face_observations / face_cluster_members / face_cluster_state 是派生
+//    数据。内容/路径变化只销毁派生数据（invalidateDerivedResults），**绝不**删除
+//    role_bindings、face_clusters 或 metadata_keyword_origins —— 绑定只能由用户
+//    显式解绑（deleteBinding）或人物身份生命周期（PersonRepo）变更。
+// 2. 成员计数唯一真相 = COUNT(face_cluster_members)。member_count 列降级为派生缓存
+//    （成员变更后按成员表重算，读取一律忽略它）；成员清单用 LEFT JOIN photos，
+//    照片行缺失的成员不再静默消失 → 计数与清单恒一致。
+// 3. 孤儿绑定（成员为 0 但仍有 role_bindings）必须可读（getClusters 返回），
+//    这是「解绑路径独立于簇成员身份」的载体，也是 XMP 人物关键词的清理入口。
 import Foundation
 
 /// face_observations 表行（列序与 SELECT * 一致，见 Schema.swift）。
@@ -18,6 +28,14 @@ public struct FaceObservationRow {
     public let sourceFileSize: Int64
     public let sourceFileMtimeMs: Double
     public let analysisSignature: String
+    /// v34：对齐后的综合质量（[0,1]）与 bbox 短边像素、滚转角（度）。
+    public let quality: Double
+    public let faceSizePx: Double
+    public let rollDegrees: Double
+    /// 产生该向量的模型标识/版本与维度（embedding_dim 与 embedding blob 同源）。
+    public let modelId: String
+    public let modelVersion: String
+    public let embeddingDim: Int
 
     public init(row: DBRow) {
         id = row[0].intValue ?? 0
@@ -35,18 +53,30 @@ public struct FaceObservationRow {
         sourceFileSize = row[9].intValue ?? 0
         sourceFileMtimeMs = row[10].doubleValue ?? 0
         analysisSignature = row[11].textValue ?? ""
+        quality = row[13].doubleValue ?? 0
+        faceSizePx = row[14].doubleValue ?? 0
+        rollDegrees = row[15].doubleValue ?? 0
+        modelId = row[16].textValue ?? ""
+        modelVersion = row[17].textValue ?? ""
+        embeddingDim = Int(row[18].intValue ?? 0)
     }
 }
 
-/// face_clusters 表行（列序与 SELECT * 一致）。
+/// face_clusters 行 + 实时成员计数 + 身份匹配建议。
+/// 列序: id(0), session_id(1), label(2), member_count(3), status(4),
+///       thumbnail_base64(5), thumbnail_path(6), matched_person_id(7), match_confidence(8)。
 public struct FaceClusterRow {
     public let id: Int64
     public let sessionId: String
     public let label: String
+    /// 实时 COUNT(face_cluster_members)，不是存档列。
     public let memberCount: Int64
     public let status: String
     public let thumbnailBase64: String
     public let thumbnailPath: String
+    /// 身份链接（PersonRepo.bindRole / 跨会话匹配写入）。
+    public let matchedPersonId: String?
+    public let matchConfidence: Double?
     public var members: [FaceClusterMemberRow]?
     public var binding: FaceBindingData?
 
@@ -58,13 +88,16 @@ public struct FaceClusterRow {
         status = row[4].textValue ?? ""
         thumbnailBase64 = row[5].textValue ?? ""
         thumbnailPath = row[6].textValue ?? ""
+        matchedPersonId = row.count > 7 ? row[7].textValue : nil
+        matchConfidence = row.count > 8 ? row[8].doubleValue : nil
         members = nil
         binding = nil
     }
 }
 
-/// face_cluster_members JOIN photos 的行（fm.id, fm.cluster_id, fm.session_id,
+/// face_cluster_members LEFT JOIN photos 的行（fm.id, fm.cluster_id, fm.session_id,
 /// fm.photo_id, p.filepath AS photo_path, fm.bbox, fm.confidence, fm.observation_id）。
+/// 照片行缺失时 photoPath 为空字符串（成员仍在计数与清单中，不再被 JOIN 丢掉）。
 public struct FaceClusterMemberRow {
     public let id: Int64
     public let clusterId: Int64
@@ -123,6 +156,14 @@ public struct FaceObservationInput {
     public var sourceFileSize: Int64?
     public var sourceFileMtimeMs: Double?
     public var analysisSignature: String?
+    /// v34 人脸质量/几何/模型版本。全部带默认值：既有调用点零改动即可编译。
+    public var quality: Double
+    public var faceSizePx: Double
+    public var rollDegrees: Double
+    public var modelId: String
+    public var modelVersion: String
+    /// 向量维度。0 表示"未声明"，写入路径回退为 embedding.count（如实记录）。
+    public var embeddingDim: Int
 
     public init(
         photoId: String,
@@ -134,7 +175,13 @@ public struct FaceObservationInput {
         confidence: Double,
         sourceFileSize: Int64? = nil,
         sourceFileMtimeMs: Double? = nil,
-        analysisSignature: String? = nil
+        analysisSignature: String? = nil,
+        quality: Double = 0,
+        faceSizePx: Double = 0,
+        rollDegrees: Double = 0,
+        modelId: String = "",
+        modelVersion: String = "",
+        embeddingDim: Int = 0
     ) {
         self.photoId = photoId
         self.bboxX = bboxX
@@ -146,6 +193,12 @@ public struct FaceObservationInput {
         self.sourceFileSize = sourceFileSize
         self.sourceFileMtimeMs = sourceFileMtimeMs
         self.analysisSignature = analysisSignature
+        self.quality = quality
+        self.faceSizePx = faceSizePx
+        self.rollDegrees = rollDegrees
+        self.modelId = modelId
+        self.modelVersion = modelVersion
+        self.embeddingDim = embeddingDim
     }
 }
 
@@ -205,6 +258,55 @@ public struct ClusterMemberLite {
     public let confidence: Double
 }
 
+/// 簇成员的观察向量：跨会话匹配的查询集，也是 person_embeddings 的入库来源
+/// （两者共用同一读取口径，避免"写入的向量"与"匹配读的向量"分叉）。
+public struct ClusterMemberEmbedding {
+    public let memberId: Int64
+    public let photoId: String
+    public let sessionId: String
+    public let observationId: Int64
+    public let embedding: [Float]
+    public let bbox: [Double]
+    public let confidence: Double
+    /// v34：观察行的质量/几何/模型元数据（跨会话匹配的加权依据）。
+    public let quality: Double
+    public let faceSizePx: Double
+    public let rollDegrees: Double
+    public let modelId: String
+    public let modelVersion: String
+    public let embeddingDim: Int
+
+    public init(
+        memberId: Int64,
+        photoId: String,
+        sessionId: String,
+        observationId: Int64,
+        embedding: [Float],
+        bbox: [Double],
+        confidence: Double,
+        quality: Double = 0,
+        faceSizePx: Double = 0,
+        rollDegrees: Double = 0,
+        modelId: String = "",
+        modelVersion: String = "",
+        embeddingDim: Int = 0
+    ) {
+        self.memberId = memberId
+        self.photoId = photoId
+        self.sessionId = sessionId
+        self.observationId = observationId
+        self.embedding = embedding
+        self.bbox = bbox
+        self.confidence = confidence
+        self.quality = quality
+        self.faceSizePx = faceSizePx
+        self.rollDegrees = rollDegrees
+        self.modelId = modelId
+        self.modelVersion = modelVersion
+        self.embeddingDim = embeddingDim
+    }
+}
+
 /// getBindingsBySession 的绑定详情。
 public struct FaceBindingDetail {
     public let clusterId: Int64
@@ -224,35 +326,6 @@ public final class FaceRepo {
     }
 
     // ─────────────────────────── 观察 ───────────────────────────
-
-    public func saveObservations(sessionId: String, observations: [FaceObservationInput]) throws -> [Int64] {
-        var ids: [Int64] = []
-        let stmt = try connection.prepare("""
-            INSERT INTO face_observations
-             (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
-              source_file_size, source_file_mtime_ms, analysis_signature)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          """)
-        try connection.transaction {
-            for obs in observations {
-                _ = try stmt.run([
-                    .text(obs.photoId),
-                    .text(sessionId),
-                    .real(obs.bboxX),
-                    .real(obs.bboxY),
-                    .real(obs.bboxW),
-                    .real(obs.bboxH),
-                    .blob(Self.embeddingData(obs.embedding)),
-                    .real(obs.confidence),
-                    .int(obs.sourceFileSize ?? 0),
-                    .real(obs.sourceFileMtimeMs ?? 0),
-                    .text(obs.analysisSignature ?? ""),
-                ])
-                ids.append(connection.lastInsertRowid)
-            }
-        }
-        return ids
-    }
 
     public func getObservations(_ sessionId: String) throws -> [FaceObservationRow] {
         let rows = try connection.prepare(
@@ -338,13 +411,22 @@ public final class FaceRepo {
         let deleteStmt = try connection.prepare(
             "DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?"
         )
+        // 观察被替换前先删其 person_embeddings：该列无 FK（见 Schema 注释），
+        // 残留向量会被 FaceMatcher 的库查询读到。
+        let deleteEmbeddingsStmt = try connection.prepare("""
+            DELETE FROM person_embeddings WHERE face_observation_id IN (
+              SELECT id FROM face_observations WHERE session_id = ? AND photo_id = ?
+            )
+            """)
         let copyStmt = try connection.prepare("""
             INSERT INTO face_observations (
               photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
-              source_file_size, source_file_mtime_ms, analysis_signature, created_at
+              source_file_size, source_file_mtime_ms, analysis_signature, created_at,
+              quality, face_size_px, roll_degrees, model_id, model_version, embedding_dim
             )
             SELECT ?, ?, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
-                   source_file_size, source_file_mtime_ms, analysis_signature, ?
+                   source_file_size, source_file_mtime_ms, analysis_signature, ?,
+                   quality, face_size_px, roll_degrees, model_id, model_version, embedding_dim
             FROM face_observations
             WHERE photo_id = ?
               AND session_id = (SELECT session_id FROM photos WHERE id = ?)
@@ -360,6 +442,7 @@ public final class FaceRepo {
             guard let source else { continue }
             var faceCount: Int64 = 0
             try connection.transaction {
+                _ = try deleteEmbeddingsStmt.run([.text(sessionId), .text(target.photoId)])
                 _ = try deleteStmt.run([.text(sessionId), .text(target.photoId)])
                 let copied = try copyStmt.run([
                     .text(target.photoId), .text(sessionId), .text(nowISOString()),
@@ -447,13 +530,13 @@ public final class FaceRepo {
           """).run([.text(sessionId), .text(signature), .text(nowISOString())])
     }
 
-    public func updateEmbedding(observationId: Int64, embedding: [Float]) throws {
-        _ = try connection.prepare("UPDATE face_observations SET embedding = ? WHERE id = ?")
-            .run([.blob(Self.embeddingData(embedding)), .int(observationId)])
-    }
-
     public func deleteObservationsBySession(_ sessionId: String) throws {
         try connection.transaction {
+            _ = try connection.prepare("""
+                DELETE FROM person_embeddings WHERE face_observation_id IN (
+                  SELECT id FROM face_observations WHERE session_id = ?
+                )
+                """).run([.text(sessionId)])
             _ = try connection.prepare("DELETE FROM face_observations WHERE session_id = ?").run([.text(sessionId)])
             _ = try connection.prepare("DELETE FROM face_analysis_state WHERE session_id = ?").run([.text(sessionId)])
             _ = try connection.prepare("DELETE FROM face_cluster_state WHERE session_id = ?").run([.text(sessionId)])
@@ -461,9 +544,16 @@ public final class FaceRepo {
     }
 
     public func deleteObservationsByPhoto(sessionId: String, photoId: String) throws {
-        _ = try connection.prepare(
-            "DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?"
-        ).run([.text(sessionId), .text(photoId)])
+        try connection.transaction {
+            _ = try connection.prepare("""
+                DELETE FROM person_embeddings WHERE face_observation_id IN (
+                  SELECT id FROM face_observations WHERE session_id = ? AND photo_id = ?
+                )
+                """).run([.text(sessionId), .text(photoId)])
+            _ = try connection.prepare(
+                "DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?"
+            ).run([.text(sessionId), .text(photoId)])
+        }
     }
 
     public func deleteAnalysisStateByPhoto(sessionId: String, photoId: String) throws {
@@ -482,15 +572,26 @@ public final class FaceRepo {
         let deleteStmt = try connection.prepare(
             "DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?"
         )
+        // 同 reuseObservationsForAssetFile：替换观察必须先清向量（无 FK，见 Schema 注释）。
+        let deleteEmbeddingsStmt = try connection.prepare("""
+            DELETE FROM person_embeddings WHERE face_observation_id IN (
+              SELECT id FROM face_observations WHERE session_id = ? AND photo_id = ?
+            )
+            """)
         let insertStmt = try connection.prepare("""
             INSERT INTO face_observations
              (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence,
-              source_file_size, source_file_mtime_ms, analysis_signature)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              source_file_size, source_file_mtime_ms, analysis_signature,
+              quality, face_size_px, roll_degrees, model_id, model_version, embedding_dim)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           """)
         try connection.transaction {
+            _ = try deleteEmbeddingsStmt.run([.text(sessionId), .text(photoId)])
             _ = try deleteStmt.run([.text(sessionId), .text(photoId)])
             for obs in observations {
+                // embedding_dim 如实记录写入的向量长度：显式 >0 的声明维度优先，
+                // 默认 0（既有调用点）回退到 embedding.count，避免旧调用点写 0。
+                let embeddingDim = obs.embeddingDim > 0 ? obs.embeddingDim : obs.embedding.count
                 _ = try insertStmt.run([
                     .text(obs.photoId),
                     .text(sessionId),
@@ -503,6 +604,12 @@ public final class FaceRepo {
                     .int(obs.sourceFileSize ?? 0),
                     .real(obs.sourceFileMtimeMs ?? 0),
                     .text(obs.analysisSignature ?? ""),
+                    .real(obs.quality),
+                    .real(obs.faceSizePx),
+                    .real(obs.rollDegrees),
+                    .text(obs.modelId),
+                    .text(obs.modelVersion),
+                    .int(Int64(embeddingDim)),
                 ])
                 ids.append(connection.lastInsertRowid)
             }
@@ -510,13 +617,60 @@ public final class FaceRepo {
         return ids
     }
 
-    // ─────────────────────────── 缩略图 ───────────────────────────
+    // ─────────────────────────── 派生结果失效 ───────────────────────────
 
-    public func getFaceThumbDir() throws -> String {
-        let dir = resolveFaceThumbDir()
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return dir
+    /// 内容/路径变化后的派生结果失效（Indexer 唯一入口）。
+    ///
+    /// 与旧实现的关键差异：**不删簇、不删绑定**。照片行仍存在时保留其成员行
+    /// （绑定的照片集合不随派生数据消失，只解除对观察的外键引用）；照片行已消失
+    /// 时该成员行是孤儿，删除。随后只清观察/分析状态/聚类签名。
+    /// role_bindings、face_clusters、metadata_keyword_origins、person_* 一律不动。
+    public func invalidateDerivedResults(sessionId: String, photoIds: [String]) throws {
+        try connection.transaction {
+            for chunk in photoIds.chunked(by: 400) where !chunk.isEmpty {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                // 1) 先解除成员对观察的引用（否则删除观察会破坏外键）。
+                _ = try connection.prepare("""
+                    UPDATE face_cluster_members SET observation_id = NULL
+                    WHERE session_id = ? AND photo_id IN (\(placeholders)) AND observation_id IS NOT NULL
+                    """).run([.text(sessionId)] + chunk.map { .text($0) })
+                // 2) 照片行已消失 → 成员行是孤儿，删除。
+                _ = try connection.prepare("""
+                    DELETE FROM face_cluster_members
+                    WHERE session_id = ? AND photo_id IN (\(placeholders))
+                      AND photo_id NOT IN (SELECT id FROM photos)
+                    """).run([.text(sessionId)] + chunk.map { .text($0) })
+                // 3) 观察消失前先删除其 person_embeddings 向量：否则跨会话匹配
+                // 会命中已不存在的人脸（库与观察必须同生命周期）。
+                _ = try connection.prepare("""
+                    DELETE FROM person_embeddings WHERE face_observation_id IN (
+                      SELECT id FROM face_observations WHERE session_id = ? AND photo_id IN (\(placeholders))
+                    )
+                    """).run([.text(sessionId)] + chunk.map { .text($0) })
+                // 4) 派生观察与缓存状态。
+                _ = try connection.prepare(
+                    "DELETE FROM face_observations WHERE session_id = ? AND photo_id IN (\(placeholders))"
+                ).run([.text(sessionId)] + chunk.map { .text($0) })
+                _ = try connection.prepare(
+                    "DELETE FROM face_analysis_state WHERE session_id = ? AND photo_id IN (\(placeholders))"
+                ).run([.text(sessionId)] + chunk.map { .text($0) })
+            }
+            _ = try connection.prepare("DELETE FROM face_cluster_state WHERE session_id = ?").run([.text(sessionId)])
+            try recomputeMemberCounts(sessionId: sessionId)
+        }
     }
+
+    /// member_count 派生缓存重算（唯一真相是 face_cluster_members）。
+    private func recomputeMemberCounts(sessionId: String) throws {
+        _ = try connection.prepare("""
+            UPDATE face_clusters
+            SET member_count = (SELECT COUNT(*) FROM face_cluster_members m WHERE m.cluster_id = face_clusters.id),
+                updated_at = ?
+            WHERE session_id = ?
+            """).run([.text(nowISOString()), .text(sessionId)])
+    }
+
+    // ─────────────────────────── 缩略图 ───────────────────────────
 
     private func resolveFaceThumbDir() -> String {
         if let faceThumbnailDir, !faceThumbnailDir.isEmpty { return faceThumbnailDir }
@@ -531,11 +685,6 @@ public final class FaceRepo {
         if thumbnailPath.isEmpty { return }
         let fullPath = TSPath.join([resolveFaceThumbDir(), thumbnailPath])
         try? FileManager.default.removeItem(atPath: fullPath)
-    }
-
-    public func updateClusterThumbnail(clusterId: Int64, thumbnailPath: String) throws {
-        _ = try connection.prepare("UPDATE face_clusters SET thumbnail_path = ? WHERE id = ?")
-            .run([.text(thumbnailPath), .int(clusterId)])
     }
 
     // ─────────────────────────── 聚类 ───────────────────────────
@@ -571,10 +720,23 @@ public final class FaceRepo {
         return ids
     }
 
+    /// 会话簇清单。
+    /// - memberCount 恒为实时 COUNT(face_cluster_members)；
+    /// - 成员清单 LEFT JOIN photos（孤儿成员保留，photoPath 为空）；
+    /// - **有绑定但无成员的孤儿绑定同样返回**（size=0），作为清理入口。
     public func getClusters(_ sessionId: String, includeMembers: Bool = false) throws -> [FaceClusterRow] {
-        let clusters = try connection.prepare(
-            "SELECT * FROM face_clusters WHERE session_id = ? AND member_count > 0 ORDER BY id"
-        ).query([.text(sessionId)]).map { FaceClusterRow(row: $0) }
+        let clusters = try connection.prepare("""
+            SELECT c.id, c.session_id, c.label,
+                   (SELECT COUNT(*) FROM face_cluster_members m WHERE m.cluster_id = c.id) AS member_count,
+                   c.status, c.thumbnail_base64, c.thumbnail_path, c.matched_person_id, c.match_confidence
+            FROM face_clusters c
+            WHERE c.session_id = ?
+              AND (
+                (SELECT COUNT(*) FROM face_cluster_members m WHERE m.cluster_id = c.id) > 0
+                OR EXISTS (SELECT 1 FROM role_bindings rb WHERE rb.cluster_id = c.id)
+              )
+            ORDER BY c.id
+            """).query([.text(sessionId)]).map { FaceClusterRow(row: $0) }
         if !includeMembers || clusters.isEmpty { return clusters }
         let clusterIds = clusters.map(\.id)
 
@@ -583,9 +745,9 @@ public final class FaceRepo {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
             let rows = try connection.prepare("""
                 SELECT fm.id, fm.cluster_id, fm.session_id, fm.photo_id,
-                       p.filepath as photo_path, fm.bbox, fm.confidence, fm.observation_id
+                       COALESCE(p.filepath, '') AS photo_path, fm.bbox, fm.confidence, fm.observation_id
                 FROM face_cluster_members fm
-                JOIN photos p ON fm.photo_id = p.id
+                LEFT JOIN photos p ON fm.photo_id = p.id
                 WHERE fm.cluster_id IN (\(placeholders))
                 ORDER BY fm.id
               """).query(chunk.map { .int($0) })
@@ -636,6 +798,53 @@ public final class FaceRepo {
         return row[0].textValue
     }
 
+    /// 簇成员及其观察向量（仅 observation_id 非空且观察仍存在的成员）。
+    public func getClusterMemberEmbeddings(_ clusterId: Int64) throws -> [ClusterMemberEmbedding] {
+        let rows = try connection.prepare("""
+            SELECT fm.id, fm.photo_id, fm.session_id, fo.id, fo.embedding, fm.bbox, fm.confidence,
+                   fo.quality, fo.face_size_px, fo.roll_degrees,
+                   fo.model_id, fo.model_version, fo.embedding_dim
+            FROM face_cluster_members fm
+            JOIN face_observations fo ON fo.id = fm.observation_id
+            WHERE fm.cluster_id = ?
+            ORDER BY fm.id
+            """).query([.int(clusterId)])
+        return rows.compactMap { row in
+            guard let observationId = row[3].intValue else { return nil }
+            let embedding: Data = {
+                if case .blob(let data) = row[4] { return data }
+                return Data()
+            }()
+            return ClusterMemberEmbedding(
+                memberId: row[0].intValue ?? 0,
+                photoId: row[1].textValue ?? "",
+                sessionId: row[2].textValue ?? "",
+                observationId: observationId,
+                embedding: Self.floats(from: embedding),
+                bbox: Self.parseBbox(row[5].textValue ?? ""),
+                confidence: row[6].doubleValue ?? 0,
+                quality: row[7].doubleValue ?? 0,
+                faceSizePx: row[8].doubleValue ?? 0,
+                rollDegrees: row[9].doubleValue ?? 0,
+                modelId: row[10].textValue ?? "",
+                modelVersion: row[11].textValue ?? "",
+                embeddingDim: Int(row[12].intValue ?? 0)
+            )
+        }
+    }
+
+    /// 写入/清除簇的身份匹配建议（跨会话重识别；显式绑定经 PersonRepo 写同一列）。
+    public func setClusterMatch(clusterId: Int64, personId: String?, confidence: Double?) throws {
+        _ = try connection.prepare("""
+            UPDATE face_clusters SET matched_person_id = ?, match_confidence = ?, updated_at = ? WHERE id = ?
+            """).run([
+            personId.map { .text($0) },
+            confidence.map { .real($0) },
+            .text(nowISOString()),
+            .int(clusterId),
+        ])
+    }
+
     public func getClusterMembers(_ clusterId: Int64) throws -> [ClusterMemberLite] {
         let rows = try connection.prepare(
             "SELECT photo_id, bbox, confidence FROM face_cluster_members WHERE cluster_id = ?"
@@ -649,10 +858,13 @@ public final class FaceRepo {
         }
     }
 
+    /// 有成员的簇的缩略图文件（孤儿绑定没有缩略图）。
     public func getThumbnailPathsBySession(_ sessionId: String) throws -> [String] {
-        let rows = try connection.prepare(
-            "SELECT thumbnail_path FROM face_clusters WHERE session_id = ? AND thumbnail_path != '' AND member_count > 0"
-        ).query([.text(sessionId)])
+        let rows = try connection.prepare("""
+            SELECT thumbnail_path FROM face_clusters c
+            WHERE c.session_id = ? AND c.thumbnail_path != ''
+              AND EXISTS (SELECT 1 FROM face_cluster_members m WHERE m.cluster_id = c.id)
+            """).query([.text(sessionId)])
         return rows.compactMap { $0[0].textValue }
     }
 
@@ -691,79 +903,37 @@ public final class FaceRepo {
             .run([.int(clusterId)])
     }
 
-    public func restoreBinding(clusterId: Int64, sessionId: String, roleName: String, keywords: [String]) throws {
-        try connection.transaction {
-            _ = try connection.prepare(
-                "INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)"
-            ).run([
-                .int(clusterId),
-                .text(sessionId),
-                .text(roleName),
-                .text(try JSONValue.stringify(JSONValue.array(keywords.map { JSONValue.string($0) }))),
-            ])
-            _ = try connection.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?")
-                .run([.int(clusterId)])
-        }
-    }
-
+    /// 合并簇：成员并入目标，源绑定删除、源簇保留为空行（调用方决定删除源簇还是
+    /// 保留为孤儿绑定），源缩略图文件删除，计数按成员表重算。
+    /// 注：撤销合并需要调用方持有 sourceMemberIds/sourceBinding 日志，本仓库不再
+    /// 提供 restoreMerge（全仓无生产记录点，日志能力超出本域）。
     public func mergeClusters(sourceId: Int64, targetId: Int64) throws {
         let sourcePath = try getClusterThumbnailPath(sourceId)
         try connection.transaction {
-            let sourceMembers = try connection.prepare(
-                "SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?"
-            ).get([.int(sourceId)])
             _ = try connection.prepare("UPDATE face_cluster_members SET cluster_id = ? WHERE cluster_id = ?")
                 .run([.int(targetId), .int(sourceId)])
-            _ = try connection.prepare("UPDATE face_clusters SET member_count = member_count + ? WHERE id = ?")
-                .run([.int(sourceMembers?[0].intValue ?? 0), .int(targetId)])
             _ = try connection.prepare("DELETE FROM role_bindings WHERE cluster_id = ?").run([.int(sourceId)])
-            _ = try connection.prepare("UPDATE face_clusters SET member_count = 0, status = ? WHERE id = ?")
-                .run([.text("unbound"), .int(sourceId)])
+            _ = try connection.prepare("UPDATE face_clusters SET status = 'unbound', updated_at = ? WHERE id = ?")
+                .run([.text(nowISOString()), .int(sourceId)])
+            var sessions = Set<String>()
+            if let source = try getClusterSessionId(sourceId) { sessions.insert(source) }
+            if let target = try getClusterSessionId(targetId) { sessions.insert(target) }
+            for sessionId in sessions {
+                try recomputeMemberCounts(sessionId: sessionId)
+            }
         }
         deleteThumbnailFile(sourcePath)
     }
 
-    public func restoreMerge(
-        sourceId: Int64,
-        targetId: Int64,
-        sessionId: String,
-        sourceMemberIds: [Int64],
-        sourceMemberCount: Int64,
-        sourceBinding: FaceBindingData?
-    ) throws {
-        try connection.transaction {
-            for memberId in sourceMemberIds {
-                _ = try connection.prepare("UPDATE face_cluster_members SET cluster_id = ? WHERE id = ?")
-                    .run([.int(sourceId), .int(memberId)])
-            }
-            let targetCount = try connection.prepare(
-                "SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?"
-            ).get([.int(targetId)])
-            _ = try connection.prepare("UPDATE face_clusters SET member_count = ? WHERE id = ?")
-                .run([.int(sourceMemberCount), .int(sourceId)])
-            _ = try connection.prepare("UPDATE face_clusters SET member_count = ?, status = ? WHERE id = ?")
-                .run([.int(max(0, targetCount?[0].intValue ?? 0)), .text("unbound"), .int(targetId)])
-            if let sourceBinding {
-                _ = try connection.prepare(
-                    "INSERT OR REPLACE INTO role_bindings (cluster_id, session_id, role_name, keywords) VALUES (?, ?, ?, ?)"
-                ).run([
-                    .int(sourceId),
-                    .text(sessionId),
-                    .text(sourceBinding.roleName),
-                    .text(try JSONValue.stringify(JSONValue.array(sourceBinding.keywords.map { JSONValue.string($0) }))),
-                ])
-                _ = try connection.prepare("UPDATE face_clusters SET status = 'bound' WHERE id = ?")
-                    .run([.int(sourceId)])
-            }
-        }
-    }
-
+    /// 会话删除专用：整会话簇/绑定/成员清理。**不得**用于内容/路径变化后的失效
+    /// （那必须走 invalidateDerivedResults，绑定必须保留）。
     public func deleteClustersBySession(_ sessionId: String) throws {
         let paths = try getThumbnailPathsBySession(sessionId)
         try connection.transaction {
             _ = try connection.prepare("DELETE FROM face_cluster_members WHERE session_id = ?").run([.text(sessionId)])
             _ = try connection.prepare("DELETE FROM role_bindings WHERE session_id = ?").run([.text(sessionId)])
             _ = try connection.prepare("DELETE FROM face_clusters WHERE session_id = ?").run([.text(sessionId)])
+            _ = try connection.prepare("DELETE FROM face_cluster_state WHERE session_id = ?").run([.text(sessionId)])
         }
         for path in paths { deleteThumbnailFile(path) }
     }
@@ -800,28 +970,26 @@ public final class FaceRepo {
         }
     }
 
+    /// 移除成员。最后一个成员被移除时：
+    /// - 还有绑定 → 保留簇行与绑定（孤儿绑定，供 UI 解绑并清理 XMP 关键词）；
+    /// - 无绑定 → 删除簇行。
     public func removeMemberFromCluster(clusterId: Int64, memberId: Int64) throws -> Bool {
-        let memberCount = try connection.prepare(
-            "SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?"
-        ).get([.int(clusterId)])
-        let thumbnailPathToDelete = (memberCount?[0].intValue ?? 0) == 1
-            ? try getClusterThumbnailPath(clusterId)
-            : ""
+        let liveCountBefore = try memberCount(clusterId: clusterId)
+        let hasBinding = try bindingExists(clusterId: clusterId)
+        let thumbnailPathToDelete = liveCountBefore == 1 ? try getClusterThumbnailPath(clusterId) : ""
 
         let deleted: Bool = try connection.transaction {
             let removed = try connection.prepare(
                 "DELETE FROM face_cluster_members WHERE cluster_id = ? AND id = ?"
             ).run([.int(clusterId), .int(memberId)])
             if removed == 0 { return false }
-            let remaining = try connection.prepare(
-                "SELECT COUNT(*) as count FROM face_cluster_members WHERE cluster_id = ?"
-            ).get([.int(clusterId)])
-            if (remaining?[0].intValue ?? 0) == 0 {
+            let remaining = try memberCount(clusterId: clusterId)
+            if remaining == 0 && !hasBinding {
                 _ = try connection.prepare("DELETE FROM role_bindings WHERE cluster_id = ?").run([.int(clusterId)])
                 _ = try connection.prepare("DELETE FROM face_clusters WHERE id = ?").run([.int(clusterId)])
             } else {
-                _ = try connection.prepare("UPDATE face_clusters SET member_count = ? WHERE id = ?")
-                    .run([.int(remaining?[0].intValue ?? 0), .int(clusterId)])
+                _ = try connection.prepare("UPDATE face_clusters SET member_count = ?, updated_at = ? WHERE id = ?")
+                    .run([.int(remaining), .text(nowISOString()), .int(clusterId)])
             }
             return true
         }
@@ -830,6 +998,16 @@ public final class FaceRepo {
     }
 
     // ─────────────────────────── 辅助 ───────────────────────────
+
+    private func memberCount(clusterId: Int64) throws -> Int64 {
+        try connection.prepare("SELECT COUNT(*) FROM face_cluster_members WHERE cluster_id = ?")
+            .get([.int(clusterId)])?[0].intValue ?? 0
+    }
+
+    private func bindingExists(clusterId: Int64) throws -> Bool {
+        try connection.prepare("SELECT 1 FROM role_bindings WHERE cluster_id = ? LIMIT 1")
+            .get([.int(clusterId)]) != nil
+    }
 
     private struct FaceReuseSource {
         let photoId: String
@@ -844,6 +1022,17 @@ public final class FaceRepo {
             if case .number(let v) = $0 { return v }
             return nil
         }
+    }
+
+    /// 存储 BLOB 的 Float32 视图（与 FaceKwService.floats 同语义）。
+    private static func floats(from data: Data) -> [Float] {
+        guard !data.isEmpty else { return [] }
+        let count = data.count / MemoryLayout<Float>.size
+        var floats = [Float](repeating: 0, count: count)
+        _ = floats.withUnsafeMutableBytes { buffer in
+            data.copyBytes(to: buffer)
+        }
+        return floats
     }
 
     /// TS `Buffer.from(new Float32Array(floats).buffer)`：原生字节序的 Float32 序列。

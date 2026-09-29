@@ -51,7 +51,6 @@ struct CullingDecisionRepoTests {
         #expect(lite.count == 2)
         #expect(lite.contains(CullingDecisionLiteRow(photoId: "p1", decision: "keep")))
 
-        #expect(try repo.getDecisionsFull("s1").count == 2)
         #expect(try repo.getBySession("s1").count == 2)
         #expect(try repo.getDecision(sessionId: "s1", photoId: "missing") == nil)
         #expect(try repo.getDecisions("other-session").isEmpty)
@@ -117,45 +116,6 @@ struct CullingDecisionRepoTests {
         }
     }
 
-    @Test func upsertManyRunsInTransaction() throws {
-        let (db, repo) = try makeRepo()
-        defer { db.close() }
-
-        let decisions = [
-            CullingDecisionRepo.DecisionInput(photoId: "p1", groupId: "g1", decision: "keep"),
-            CullingDecisionRepo.DecisionInput(photoId: "p2", groupId: "g1", decision: "reject"),
-        ]
-        try repo.upsertMany(sessionId: "s1", decisions: decisions)
-        #expect(try rowCount(db, "SELECT COUNT(*) FROM culling_decisions") == 2)
-
-        // 再次 upsertMany 走 ON CONFLICT
-        try repo.upsertMany(sessionId: "s1", decisions: [decisions[0]])
-        #expect(try rowCount(db, "SELECT COUNT(*) FROM culling_decisions") == 2)
-    }
-
-    @Test func resultPrefixQueries() throws {
-        let (db, repo) = try makeRepo()
-        defer { db.close() }
-
-        try repo.upsert(sessionId: "s1", photoId: "p1", groupId: "42:0", decision: "keep")
-        try repo.upsert(sessionId: "s1", photoId: "p2", groupId: "42:1", decision: "reject")
-        try insertPhoto(db, id: "p3", sessionId: "s1")
-        try repo.upsert(sessionId: "s1", photoId: "p3", groupId: "7:0", decision: "keep")
-
-        let prefix = try repo.getByResultPrefix(sessionId: "s1", resultId: 42)
-        #expect(prefix.count == 2)
-
-        let counts = try repo.getCountsByResultPrefix(sessionId: "s1", resultId: 42)
-        #expect(counts == [
-            CullingDecisionCountRow(decision: "keep", cnt: 1),
-            CullingDecisionCountRow(decision: "reject", cnt: 1),
-        ])
-
-        let total = try repo.getDecisionCounts("s1")
-        #expect(total.contains(CullingDecisionCountRow(decision: "keep", cnt: 2)))
-        #expect(total.contains(CullingDecisionCountRow(decision: "reject", cnt: 1)))
-    }
-
     @Test func deleteBySessionAndGroup() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
@@ -168,27 +128,6 @@ struct CullingDecisionRepoTests {
 
         try repo.deleteBySession("s1")
         #expect(try rowCount(db, "SELECT COUNT(*) FROM culling_decisions") == 0)
-    }
-
-    @Test func batchRestoreDecisions() throws {
-        let (db, repo) = try makeRepo()
-        defer { db.close() }
-
-        try repo.upsert(sessionId: "s1", photoId: "p1", groupId: "g1", decision: "keep")
-        try repo.upsertState(
-            sessionId: "s1",
-            photoId: "p2",
-            groupId: "g1",
-            state: CullingDecisionStateInput(decision: "keep", rating: 3, colorLabel: "Blue", revision: 1)
-        )
-
-        try repo.batchRestoreDecisions(decisions: [
-            CullingDecisionRepo.RestoreDecisionInput(sessionId: "s1", photoId: "p1", decision: "reject"),
-            CullingDecisionRepo.RestoreDecisionInput(sessionId: "s1", photoId: "p2", decision: "reject"),
-        ])
-        #expect(try repo.getDecision(sessionId: "s1", photoId: "p1")?.decision == "reject")
-        #expect(try repo.getDecision(sessionId: "s1", photoId: "p2")?.decision == "reject")
-        #expect(try repo.getDecision(sessionId: "s1", photoId: "p2")?.rating == 3, "restore 只改 decision 列")
     }
 
     @Test func photoCascadeDeletesDecision() throws {

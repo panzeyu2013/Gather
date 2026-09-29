@@ -146,6 +146,8 @@ public struct FaceClusterBinding: Codable, Equatable, Sendable {
 
 /// TS: FaceClusterData（fkw.clusters 返回；members 截断至预览窗口 4 条，
 /// size 保持精确总数——见 face-kw.service.ts:756-783 注释）。
+/// matchedPersonId/matchedPersonName/matchConfidence 是跨会话重识别建议
+/// （person_embeddings 匹配所得），可选字段：未匹配时为 nil。
 public struct FaceClusterData: Codable, Equatable, Sendable {
     public let id: Int
     public let sessionId: String
@@ -156,6 +158,9 @@ public struct FaceClusterData: Codable, Equatable, Sendable {
     public let binding: FaceClusterBinding?
     public let thumbnailPhotoId: String?
     public let members: [ClusterMember]
+    public let matchedPersonId: String?
+    public let matchedPersonName: String?
+    public let matchConfidence: Double?
 
     public init(
         id: Int,
@@ -166,7 +171,10 @@ public struct FaceClusterData: Codable, Equatable, Sendable {
         thumbnailBase64: String,
         binding: FaceClusterBinding?,
         thumbnailPhotoId: String?,
-        members: [ClusterMember]
+        members: [ClusterMember],
+        matchedPersonId: String? = nil,
+        matchedPersonName: String? = nil,
+        matchConfidence: Double? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -177,6 +185,9 @@ public struct FaceClusterData: Codable, Equatable, Sendable {
         self.binding = binding
         self.thumbnailPhotoId = thumbnailPhotoId
         self.members = members
+        self.matchedPersonId = matchedPersonId
+        self.matchedPersonName = matchedPersonName
+        self.matchConfidence = matchConfidence
     }
 }
 
@@ -196,11 +207,34 @@ public struct FaceInferenceObservation: Equatable, Sendable {
     public let bbox: [Double]
     public let confidence: Double
     public let embedding: [Double]
+    /// 综合质量 [0,1]（FaceQuality.composite；假推理 provider 可用默认值 0）。
+    public let quality: Double
+    /// bbox 短边像素（PhotoPrism FACE_SIZE 同义）。
+    public let faceSizePx: Double
+    /// 头部滚转角（度）；无关键点时 0。
+    public let rollDegrees: Double
+    /// 产出该 embedding 的模型标识/版本（FaceEmbeddingSpec；假推理 provider 可用默认值）。
+    public let modelId: String
+    public let modelVersion: String
 
-    public init(bbox: [Double], confidence: Double, embedding: [Double]) {
+    public init(
+        bbox: [Double],
+        confidence: Double,
+        embedding: [Double],
+        quality: Double = 0,
+        faceSizePx: Double = 0,
+        rollDegrees: Double = 0,
+        modelId: String = FaceEncoder.modelId,
+        modelVersion: String = FaceEncoder.modelVersion
+    ) {
         self.bbox = bbox
         self.confidence = confidence
         self.embedding = embedding
+        self.quality = quality
+        self.faceSizePx = faceSizePx
+        self.rollDegrees = rollDegrees
+        self.modelId = modelId
+        self.modelVersion = modelVersion
     }
 }
 
@@ -437,10 +471,31 @@ public final class FaceKwService {
     /// 逐图 FaceInferenceBatchItem（与输入序对齐；单图失败不拖垮整批）。
     public typealias FaceInferenceProvider = ([Data], FaceInferenceConfig, JobAbortSignal?) async throws -> [FaceInferenceItem]
     /// TS: clusterFacesInWorker（eps/minPts 聚类，同步 CPU 实现）。
-    public typealias FaceClusterProvider = ([EmbeddingEntry], Double, Int, ((Int, Int) -> Void)?) throws -> FaceClusterResult
+    /// options 携带"质量核心点门槛 / 二遍核心点阈值"（竞品对标新增，语义见 FaceClusterOptions）。
+    public typealias FaceClusterProvider = ([EmbeddingEntry], Double, Int, FaceClusterOptions, ((Int, Int) -> Void)?) throws -> FaceClusterResult
+
+    /// 聚类调参（竞品对标：PhotoPrism 的 CLUSTER_CORE / CLUSTER_CORE_RETRY）。
+    /// 默认 `disabled` 使既有调用语义逐位不变；服务层按 settings 组装具体值。
+    public struct FaceClusterOptions: Sendable {
+        /// 只有 quality ≥ 此值的点能成为核心点或扩展簇（0 = 不设门槛）。
+        /// 低质量点仍可被吸收为边界点——不会从结果里消失，只是不能"带簇"。
+        public var coreQualityFloor: Double
+        /// 第二遍核心点 minPts（≥ 2；nil = 关闭）。用于恢复被严格首遍漏掉的小簇。
+        public var retryMinSamples: Int?
+
+        public static let disabled = FaceClusterOptions(coreQualityFloor: 0, retryMinSamples: nil)
+
+        public init(coreQualityFloor: Double = 0, retryMinSamples: Int? = nil) {
+            self.coreQualityFloor = coreQualityFloor
+            self.retryMinSamples = retryMinSamples
+        }
+    }
 
     /// TS: MAX_PREVIEW_MEMBERS（getClusters 的成员截断窗口）。
-    private static let maxPreviewMembers = 4
+    /// 簇卡片携带的成员上限。仓库层已把成员全量取出（ClusterMember 不含缩略图，
+    /// 单条约 250 B），12 ≈ 3 KB/簇，远小于一张预览图；上限只影响**载荷裁剪**，
+    /// 不影响聚类/合并/绑定语义（按成员计数的地方都在仓库层）。
+    private static let maxPreviewMembers = 12
 
     private let photoRepo: PhotoRepo
     private let sessionRepo: SessionRepo
@@ -495,9 +550,14 @@ public final class FaceKwService {
         getString: @escaping (String, String) -> String = { _, defaultValue in defaultValue },
         decodeProvider: DecodeProvider? = nil,
         inferenceProvider: FaceInferenceProvider? = nil,
-        clusterProvider: @escaping FaceClusterProvider = { entries, eps, minPts, onProgress in
+        clusterProvider: @escaping FaceClusterProvider = { entries, eps, minPts, options, onProgress in
             try FaceClusterer.clusterEmbeddings(
-                entries: entries, eps: eps, minPts: minPts, onProgress: onProgress)
+                entries: entries,
+                eps: eps,
+                minPts: minPts,
+                coreQualityFloor: options.coreQualityFloor,
+                retryMinSamples: options.retryMinSamples,
+                onProgress: onProgress)
         },
         writebackProvider: FaceWritebackProvider? = nil
     ) {
@@ -529,12 +589,15 @@ public final class FaceKwService {
         let epsValue = eps ?? getNumber("default_eps", 0.6)
         let minPtsValue = minPts ?? getNumber("default_min_samples", 2)
         try validateFaceClusteringParameters(eps: epsValue, minPts: minPtsValue)
+        let clusterOptions = Self.clusterOptions(from: getNumber)
         if controller(for: sessionId) != nil { throw FaceKwServiceError.analysisRunning }
         let signal = JobAbortSignal()
         registerController(signal, for: sessionId)
 
         var detectionFailures = 0
         var encodingFailures = 0
+        /// 检测到脸但一张都没编码成功的照片数（保留旧观测/旧状态，见写入分支）。
+        var encodingFailedPhotos = 0
         var totalFaces = 0
         var runId: Int64 = 0
         var runStatus = "failed"
@@ -551,13 +614,14 @@ public final class FaceKwService {
             guard try sessionRepo.get(id: sessionId) != nil else {
                 throw FaceKwServiceError.sessionNotFound
             }
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "running")
+            // sessions.analysis_status 不再由本服务写入：分析状态真相源是
+            // analysis_jobs（派生读），run 终态在 analysis_runs。
             onProgress?(0, 0, "face.init")
 
             // TS 的 onnx_threads 用于 worker 线程预算分摊；Vision 无 ONNX
             // 线程池，该设置在此保留读取语义（见文件头差异说明）但不消费。
-            let encoderInputSize = Int(getNumber("encoder_input_size", 112))
-            let embeddingDim = Int(getNumber("embedding_dim", 512))
+            let encoderInputSize = getNumber("encoder_input_size", 112).safeInt(fallback: 112)
+            let embeddingDim = getNumber("embedding_dim", 512).safeInt(fallback: 512)
             // 照片与 index_seq 快照共享一个读事务（design §8）。
             let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try connection.transaction {
                 (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
@@ -578,10 +642,19 @@ public final class FaceKwService {
                 )
             )
 
-            let primaryDetectionSize = Int(getNumber("detect_input_size", 640))
-            let secondaryDetectionSize = Int(getNumber("detect_secondary_input_size", 128))
+            let primaryDetectionSize = getNumber("detect_input_size", 640).safeInt(fallback: 640)
+            let secondaryDetectionSize = getNumber("detect_secondary_input_size", 128).safeInt(fallback: 128)
             let confidenceThreshold = getNumber("detect_confidence", 0.5)
-            let previewMaxDimension = max(640, Int(getNumber("face_preview_max_dimension", 2048)))
+            let previewMaxDimension = max(640, getNumber("face_preview_max_dimension", 2048).safeInt(fallback: 2048))
+            // 嵌入模型规格：空路径 = 内置 Vision 特征；配置了专用模型则必须可加载——
+            // 配置错误在这里就失败，而不是把两种向量空间混进同一列（见 EmbeddingModel）。
+            // 一次运行只创建**一个**嵌入实例，签名与推理共用（见 FaceInferenceEngine.init）：
+            // 否则"签名算完后模型文件被替换"会让本次运行用 A 的签名标注 B 的向量。
+            let embedder = try FaceEmbeddingModelFactory.make(
+                modelPath: getString(FaceEmbeddingModelFactory.modelPathSetting, ""),
+                modelVersion: getString(FaceEmbeddingModelFactory.modelVersionSetting, "")
+            )
+            let embeddingSpec = embedder.spec
             let analysisSignature = Self.makeAnalysisSignature(
                 detectorPath: detectorPath,
                 encoderPath: encoderPath,
@@ -590,7 +663,8 @@ public final class FaceKwService {
                 confidenceThreshold: confidenceThreshold,
                 encoderInputSize: encoderInputSize,
                 embeddingDim: embeddingDim,
-                previewMaxDimension: previewMaxDimension
+                previewMaxDimension: previewMaxDimension,
+                embeddingSpec: embeddingSpec.signature
             )
 
             var cachedByPhoto: [String: [FaceObservationRow]] = [:]
@@ -676,26 +750,28 @@ public final class FaceKwService {
                     analysisSignature: analysisSignature
                 )
             }
-            let clusterSignature = "\(epsValue):\(Int(minPtsValue))"
+            let clusterSignature = Self.clusterSignature(
+                eps: epsValue, minPts: Int(minPtsValue), options: clusterOptions)
             let signatureMatches = (try? faceRepo.getClusterSignature(sessionId)) == clusterSignature
             let hasClusters = try !faceRepo.getClusters(sessionId).isEmpty
             if missingPhotoIds.isEmpty && photosNeedingAnalysis.isEmpty && signatureMatches && hasClusters {
                 onProgress?(totalPhotos, totalPhotos, "face.cached-clusters")
-                try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
                 runStatus = "ok"
                 return FaceAnalysisResult(status: "done", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
             }
 
-            let requestedWorkers = max(1, min(2, Int(getNumber("face_inference_parallel_workers", 1))))
+            let requestedWorkers = max(1, min(2, getNumber("face_inference_parallel_workers", 1).safeInt(fallback: 1)))
             let inferenceConfig = FaceInferenceConfig(
                 confidenceThreshold: confidenceThreshold,
                 nmsThreshold: getNumber("nms_threshold", 0.4),
-                maxDetections: Int(getNumber("max_detections", 100)),
+                maxDetections: getNumber("max_detections", 100).safeInt(fallback: 100),
                 embeddingDim: embeddingDim,
                 primaryInputSize: primaryDetectionSize,
                 secondaryInputSize: secondaryDetectionSize,
                 encodeInputSize: encoderInputSize,
-                fallbackToOnnxEnabled: false
+                fallbackToOnnxEnabled: false,
+                faceEmbeddingModelPath: getString(FaceEmbeddingModelFactory.modelPathSetting, ""),
+                faceEmbeddingModelVersion: getString(FaceEmbeddingModelFactory.modelVersionSetting, "")
             )
             // 旧集群与角色绑定刻意保留到新结果就绪（TS 注释 270-272）：失败
             // 的推理不得摧毁用户已绑定的集群与角色名。
@@ -704,7 +780,7 @@ public final class FaceKwService {
             }
             let provider: FaceInferenceProvider = try inferenceProvider ?? {
                 guard Self.visionAvailable else { throw FaceKwServiceError.workersInitFailed }
-                return Self.makeDefaultProvider(config: inferenceConfig)
+                return Self.makeDefaultProvider(config: inferenceConfig, embedder: embedder)
             }()
             let decode: DecodeProvider = decodeProvider ?? { path, maxDimension in
                 await Self.defaultDecode(path: path, maxDimension: maxDimension)
@@ -712,7 +788,7 @@ public final class FaceKwService {
 
             onProgress?(0, totalPhotos, "face.detect")
 
-            let decodeWindow = max(1, min(8, Int(getNumber("face_decode_concurrency", 4))))
+            let decodeWindow = max(1, min(8, getNumber("face_decode_concurrency", 4).safeInt(fallback: 4)))
 
             // TS: applyInferenceResult（替换旧观察只在推理成功之后；失败批次
             // 不得摧毁该照片先前有效的检测）。
@@ -736,21 +812,54 @@ public final class FaceKwService {
                             confidence: face.confidence,
                             sourceFileSize: size,
                             sourceFileMtimeMs: mtimeMs,
+                            analysisSignature: analysisSignature,
+                            quality: face.quality,
+                            faceSizePx: face.faceSizePx,
+                            rollDegrees: face.rollDegrees,
+                            modelId: face.modelId,
+                            modelVersion: face.modelVersion,
+                            embeddingDim: face.embedding.count
+                        )
+                    }
+                    // "检测到脸但一张都没编码成功"的照片：**保留**旧观测与旧分析状态，
+                    // 既不 replaceObservationsByPhoto 也不 upsertAnalysisState。
+                    // 为什么：把这种情况当成"这张照片没有脸"会删掉旧观测、写下 analysis_state
+                    // 使其永不再重试，随后重聚类还会连带清掉旧簇与人工绑定——即"模型配错一次
+                    // 就静默摧毁用户工作"（对抗审查阻断项 2）。保留旧状态后，下次运行仍会
+                    // 重试这张照片，而本次 run 会带上 encodingFailures 让失败可见。
+                    let detectedFaces = item.observations.count + item.encodingFailures
+                    let photoEncodingsAllFailed = item.observations.isEmpty && item.encodingFailures > 0
+                    encodingFailures += item.encodingFailures
+                    if detectedFaces > 0 {
+                        totalFaces += detectedFaces
+                    }
+                    // 只要有**任何**脸编码失败：这张照片就不算"分析完"，不写 analysis_state
+                    // （下次运行重试）。部分失败时仍然落库成功的脸（部分结果可见），全失败时
+                    // 连观测都不替换（保留旧数据）。
+                    // 反面教材（对抗验证 V1 实测）：1 成功 + 1 失败也写 state、且失败的脸被静默
+                    // 丢弃，第二次运行直接跳过这张照片 ⇒ 那些脸永不重试。
+                    let hasEncodingFailures = item.encodingFailures > 0
+                    if !photoEncodingsAllFailed {
+                        _ = try faceRepo.replaceObservationsByPhoto(
+                            sessionId: sessionId, photoId: photo.id, observations: observations)
+                    }
+                    if hasEncodingFailures {
+                        encodingFailedPhotos += 1
+                        GatherLogger.log(
+                            "Face encoding failed for \(item.encodingFailures)/\(detectedFaces) face(s) in "
+                                + "\(photo.filepath); keeping previous analysis state so it is retried "
+                                + "(observations replaced: \(!photoEncodingsAllFailed))",
+                            level: .warn
+                        )
+                    } else {
+                        try faceRepo.upsertAnalysisState(
+                            sessionId: sessionId,
+                            photoId: photo.id,
+                            sourceFileSize: size,
+                            sourceFileMtimeMs: mtimeMs,
                             analysisSignature: analysisSignature
                         )
                     }
-                    _ = try faceRepo.replaceObservationsByPhoto(
-                        sessionId: sessionId, photoId: photo.id, observations: observations)
-                    if !item.observations.isEmpty {
-                        totalFaces += item.observations.count
-                    }
-                    try faceRepo.upsertAnalysisState(
-                        sessionId: sessionId,
-                        photoId: photo.id,
-                        sourceFileSize: size,
-                        sourceFileMtimeMs: mtimeMs,
-                        analysisSignature: analysisSignature
-                    )
                 } catch {
                     detectionFailures += 1
                     GatherLogger.log("Face detection failed for \(photo.filepath) \(error)", level: .warn)
@@ -820,6 +929,13 @@ public final class FaceKwService {
                 try await flushBatch(w)
             }
             if signal.aborted { throw JobCancelledError() }
+            if encodingFailedPhotos > 0 {
+                GatherLogger.log(
+                    "Face analysis kept previous observations/state for \(encodingFailedPhotos) "
+                        + "photo(s) whose faces all failed to encode (will retry next run)",
+                    level: .warn
+                )
+            }
 
             // 重聚类前先判定失败：全失败 run 不得清掉先前绑定的集群与角色名。
             let allDetectionsFailed = detectionFailures == totalPhotos && totalPhotos > 0
@@ -827,31 +943,34 @@ public final class FaceKwService {
             let analysisFailed = allDetectionsFailed || allEncodingsFailed
 
             onProgress?(0, 0, "face.cluster")
+            // 增量资格在 run 开始时的状态上判定（signatureMatches / hasClusters 取
+            // 分析前的快照）：设置开启（face_incremental_clustering，默认 "1"）+ 聚类
+            // 签名未变 + 库里已有簇 + 本次分析没有整体失败。recluster 命令恒走全量。
+            let incrementalEligible = Self.incrementalClusteringEnabled(getString)
+                && signatureMatches && hasClusters && !analysisFailed
             try await clusterStoredObservations(
                 sessionId: sessionId,
                 photos: snapshot.photos,
                 eps: epsValue,
                 minPts: Int(minPtsValue),
+                options: clusterOptions,
                 signal: signal,
                 clearOnEmpty: !analysisFailed,
+                incremental: incrementalEligible,
                 onProgress: { current, total in onProgress?(current, total, "face.cluster") }
             )
             try faceRepo.upsertClusterSignature(sessionId: sessionId, signature: clusterSignature)
 
             if analysisFailed {
-                try sessionRepo.updateAnalysisStatus(id: sessionId, status: "failed")
                 return FaceAnalysisResult(status: "failed", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
             }
             onProgress?(0, 0, "face.done")
-            try sessionRepo.updateAnalysisStatus(id: sessionId, status: "done")
             runStatus = "ok"
             return FaceAnalysisResult(status: "done", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
         } catch {
             if error is JobCancelledError {
-                try? sessionRepo.updateAnalysisStatus(id: sessionId, status: "cancelled")
                 return FaceAnalysisResult(status: "cancelled", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
             }
-            try? sessionRepo.updateAnalysisStatus(id: sessionId, status: "failed")
             throw error
         }
     }
@@ -866,15 +985,22 @@ public final class FaceKwService {
             throw FaceKwServiceError.noObservations
         }
         let photos = PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId))
+        let clusterOptions = Self.clusterOptions(from: getNumber)
         try await clusterStoredObservations(
             sessionId: sessionId, photos: photos, eps: eps, minPts: Int(minPts),
-            signal: nil, clearOnEmpty: true, onProgress: nil)
-        try faceRepo.upsertClusterSignature(sessionId: sessionId, signature: "\(eps):\(Int(minPts))")
+            options: clusterOptions, signal: nil, clearOnEmpty: true, onProgress: nil)
+        try faceRepo.upsertClusterSignature(
+            sessionId: sessionId,
+            signature: Self.clusterSignature(eps: eps, minPts: Int(minPts), options: clusterOptions))
     }
 
     /// TS: getClusters（fkw.clusters）。成员截断至预览窗口，size 保持精确总数。
+    /// 建议字段：matchedPersonId 来自 face_clusters 匹配列，名字按身份批量解析
+    /// （解析失败只丢名字，不影响簇清单）。
     public func getClusters(sessionId: String) throws -> [FaceClusterData] {
         let clusters = try faceRepo.getClusters(sessionId, includeMembers: true)
+        let matchedIds = Array(Set(clusters.compactMap(\.matchedPersonId)))
+        let summaries = (try? personRepo.summaries(ids: matchedIds)) ?? [:]
         return clusters.map { cluster in
             let previewMembers = Array((cluster.members ?? []).prefix(Self.maxPreviewMembers))
             return FaceClusterData(
@@ -895,7 +1021,10 @@ public final class FaceKwService {
                         bbox: Self.parseBbox(member.bbox),
                         confidence: member.confidence
                     )
-                }
+                },
+                matchedPersonId: cluster.matchedPersonId,
+                matchedPersonName: cluster.matchedPersonId.flatMap { summaries[$0]?.name },
+                matchConfidence: cluster.matchConfidence
             )
         }
     }
@@ -922,18 +1051,35 @@ public final class FaceKwService {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
         try faceRepo.updateBinding(clusterId: clusterId, roleName: normalizedRoleName, keywords: dedupedKeywords)
-        // 角色桥接进人物库（「人脸库」页不孤立）：按角色名 upsert 人物并挂接
-        // 集群照片。Best-effort —— 桥接失败不得使绑定本身失败。
+        // 身份链接 + 人物库投影 + 跨会话向量入库（单一身份入口 PersonRepo.bindRole
+        // 负责 adopt-or-create、照片桥接与 matched_person_id 链接；随后把该簇成员的
+        // 观察向量写入 person_embeddings，作为其它会话 analyze/recluster 的匹配库）。
+        // Best-effort —— 桥接失败不得使绑定本身失败。
         do {
             let members = try faceRepo.getClusterMembers(clusterId)
-            let personId = try personRepo.upsertByName(name: normalizedRoleName, keywords: dedupedKeywords)
-            try personRepo.addPhotos(
-                personId: personId,
+            let outcome = try personRepo.bindRole(
+                clusterId: clusterId,
                 sessionId: sessionId,
-                photos: members.map { member in
+                roleName: normalizedRoleName,
+                keywords: dedupedKeywords,
+                members: members.map { member in
                     PersonPhotoInput(photoId: member.photoId, faceBbox: member.bbox, confidence: member.confidence)
                 }
             )
+            if let personId = outcome.personId {
+                let embeddings = try faceRepo.getClusterMemberEmbeddings(clusterId)
+                try personRepo.saveEmbeddings(embeddings: embeddings.map { member in
+                    SaveEmbeddingInput(
+                        personId: personId,
+                        embedding: member.embedding,
+                        photoId: member.photoId,
+                        sessionId: member.sessionId,
+                        faceObservationId: member.observationId,
+                        faceBbox: member.bbox,
+                        quality: member.confidence
+                    )
+                })
+            }
         } catch {
             GatherLogger.log("Failed to link bound role into person library \(error)", level: .warn)
         }
@@ -1083,13 +1229,18 @@ public final class FaceKwService {
 
     /// TS: clusterStoredObservations（analyze / recluster 共用）。
     /// clearOnEmpty=false 时（全失败 run）保留旧集群与角色绑定。
+    /// incremental=true 且本次确有观测时走增量落库（保留已有簇 id / matched_person_id /
+    /// role_bindings，只追加成员与新簇，见 clusterStoredObservationsIncrementally）；
+    /// 其余情况（关闭、首次、签名变化、recluster、全失败 run、本次无观测）逐位走原全量路径。
     private func clusterStoredObservations(
         sessionId: String,
         photos: [PhotoProjectionRow],
         eps: Double,
         minPts: Int,
+        options: FaceClusterOptions,
         signal: JobAbortSignal?,
         clearOnEmpty: Bool,
+        incremental: Bool = false,
         onProgress: ((Int, Int) -> Void)?
     ) async throws {
         let observations = try faceRepo.getObservations(sessionId)
@@ -1103,12 +1254,32 @@ public final class FaceKwService {
                 entries.append(EmbeddingEntry(
                     observationId: Int(observation.id),
                     photoId: observation.photoId,
-                    embedding: embedding
+                    embedding: embedding,
+                    // quality ≤ 0 = v34 迁移的旧行（或注入式假推理未提供质量）：按"不设限"
+                    // 处理，否则升级后旧库会被质量门槛整库判成噪声；真实质量分恒 > 0
+                    // （0.4·采集质量 + 0.4·尺寸 + 0.2·滚转，最小也 > 0）。
+                    quality: observation.quality > 0 ? observation.quality : 1
                 ))
             }
         }
 
-        let clustered = try clusterProvider(entries, eps, minPts, onProgress)
+        // 增量分支：保留已有簇只处理新增。无观测时不进增量——全失败/空结果必须
+        // 由全量路径的 clearOnEmpty 语义处理（该分支逐位不变）。
+        if incremental && !entries.isEmpty {
+            try await clusterStoredObservationsIncrementally(
+                sessionId: sessionId,
+                entries: entries,
+                observationById: observationById,
+                photoById: photoById,
+                eps: eps,
+                minPts: minPts,
+                options: options,
+                signal: signal,
+                onProgress: onProgress)
+            return
+        }
+
+        let clustered = try clusterProvider(entries, eps, minPts, options, onProgress)
         if signal?.aborted ?? false { throw JobCancelledError() }
 
         let clusterInputs = clustered.clusters.enumerated().map { index, cluster in
@@ -1138,20 +1309,281 @@ public final class FaceKwService {
         }
 
         // 新结果就绪才替换旧集群（TS 注释 689-693）：用户绑定的角色经成员
-        // 重叠迁移，否则重新聚类后绑定会静默消失。
+        // 重叠迁移，否则重新聚类后绑定会静默消失。删旧 + 建新 + 迁移同事务，
+        // 避免中途失败留下半套簇（审计 P1「聚类替换非原子」）。
         let previousBindings = try faceRepo.getBindingsBySession(sessionId)
-        try faceRepo.deleteClustersBySession(sessionId)
-        let newClusterIds = try faceRepo.saveClusters(sessionId: sessionId, clusters: clusterInputs)
-        if !previousBindings.isEmpty {
-            let membersByCluster = newClusterIds.enumerated().map { index, clusterId in
-                (
-                    clusterId: clusterId,
-                    photoIds: Set(
-                        clusterInputs[index].members.map(\.photoId).filter { !$0.isEmpty }
+        let newClusterIds: [Int64] = try connection.transaction {
+            try faceRepo.deleteClustersBySession(sessionId)
+            let ids = try faceRepo.saveClusters(sessionId: sessionId, clusters: clusterInputs)
+            if !previousBindings.isEmpty {
+                let membersByCluster = ids.enumerated().map { index, clusterId in
+                    (
+                        clusterId: clusterId,
+                        photoIds: Set(
+                            clusterInputs[index].members.map(\.photoId).filter { !$0.isEmpty }
+                        )
                     )
-                )
+                }
+                migrateBindings(previousBindings, newMembers: membersByCluster)
             }
-            migrateBindings(previousBindings, newMembers: membersByCluster)
+            return ids
+        }
+        // 身份链接（迁移后的绑定按角色名挂回人物）+ 跨会话重识别建议。
+        // Best-effort：分析结果已落库，人物库桥接失败只记日志（下次重算可复原）。
+        do {
+            try personRepo.reconcileSession(sessionId: sessionId)
+            try matchClustersAgainstLibrary(
+                sessionId: sessionId,
+                clusters: newClusterIds.enumerated().map { index, clusterId in
+                    (clusterId: clusterId, embeddings: clustered.clusters[index].map(\.embedding))
+                }
+            )
+        } catch {
+            GatherLogger.log("Failed to bridge re-clustered faces into person library \(error)", level: .warn)
+        }
+    }
+
+    /// 增量聚类落库（analyze 且 face_incremental_clustering = "1"、签名未变、
+    /// 库里已有簇时）。语义：
+    /// - 已有簇行、id、matched_person_id、role_bindings 一律保留（不删不重建，
+    ///   因此用户绑定不会像全量那样被冲掉）；
+    /// - 本次读到、且未被任何已有簇成员引用的观测是"新增/变化"集合：命中某簇质心
+    ///   的追加为该簇成员，未命中的只对彼此跑全量同参 DBSCAN 产出新簇；
+    /// - 引用已消失观测的"幽灵成员行"在**落库事务内**清理（删除推迟到最后，取消
+    ///   不落库）：重推理会替换观察行（新 id），不清理会让同一张照片同时留下旧成员
+    ///   行与新成员行（簇大小虚高），而全量路径本来就会丢弃这些行；
+    /// - 跨会话身份匹配只对新簇做，已有簇的 matched_person_id 不重算；
+    ///   person_photos 由 reconcileSession 按绑定+成员幂等重放（best-effort）。
+    private func clusterStoredObservationsIncrementally(
+        sessionId: String,
+        entries: [EmbeddingEntry],
+        observationById: [Int64: FaceObservationRow],
+        photoById: [String: String],
+        eps: Double,
+        minPts: Int,
+        options: FaceClusterOptions,
+        signal: JobAbortSignal?,
+        onProgress: ((Int, Int) -> Void)?
+    ) async throws {
+        if signal?.aborted ?? false { throw JobCancelledError() }
+        let entryByObservationId = Dictionary(
+            uniqueKeysWithValues: entries.map { (Int64($0.observationId), $0) })
+
+        // 1) 已有簇及其"现存"成员（observation_id 仍在当前观察集合 → 转 EmbeddingEntry）；
+        //    引用 NULL/已消失观察的成员行收集为幽灵，随后在落库事务内一并删除。
+        //    同一观察只会被一个簇认领（covered），重复成员行按幽灵处理。
+        let existingRows = try faceRepo.getClusters(sessionId, includeMembers: true)
+        var covered = Set<Int64>()
+        var ghostMemberIds: [Int64] = []
+        var existing: [(clusterId: Int, entries: [EmbeddingEntry])] = []
+        for row in existingRows {
+            var members: [EmbeddingEntry] = []
+            for member in row.members ?? [] {
+                guard let observationId = member.observationId,
+                      let entry = entryByObservationId[observationId],
+                      covered.insert(observationId).inserted
+                else {
+                    ghostMemberIds.append(member.id)
+                    continue
+                }
+                members.append(entry)
+            }
+            existing.append((clusterId: Int(row.id), entries: members))
+        }
+        let newEntries = entries.filter { !covered.contains(Int64($0.observationId)) }
+        if newEntries.isEmpty {
+            // 没有新增观测就不需要聚类；只有确有幽灵行时才落一次清理事务。
+            guard !ghostMemberIds.isEmpty else { return }
+            if signal?.aborted ?? false { throw JobCancelledError() }
+            try connection.transaction {
+                try deleteClusterMembers(ids: ghostMemberIds)
+                try refreshClusterMemberCounts(sessionId: sessionId)
+            }
+            return
+        }
+
+        let incremental = try FaceClusterer.assignIncrementally(
+            existingClusters: existing,
+            newEntries: newEntries,
+            eps: eps,
+            minPts: minPts,
+            coreQualityFloor: options.coreQualityFloor,
+            retryMinSamples: options.retryMinSamples,
+            // 歧义不猜：与 matchClustersAgainstLibrary 的 face_match_margin 同源同语义，
+            // 冠军/亚军近似并列时宁可另立新簇，也不把脸塞进可能错误的人。
+            ambiguityMargin: max(0, getNumber("face_match_margin", 0.01)),
+            onProgress: onProgress)
+        if signal?.aborted ?? false { throw JobCancelledError() }
+
+        // 2) 落库：清理幽灵成员 + 追加新成员 + 建新簇（同一事务）。已有簇行与其
+        //    绑定/匹配列不动。
+        var appendedMembers: [(clusterId: Int64, members: [FaceClusterMemberInput])] = []
+        var newClusters: [FaceClusterInput] = []
+        var newClusterEntries: [[EmbeddingEntry]] = []
+        let labelBase = existingRows.count
+        for assignment in incremental.assignments {
+            let members = assignment.entries.map {
+                memberInput(for: $0, observationById: observationById, photoById: photoById)
+            }
+            if let clusterId = assignment.clusterId {
+                appendedMembers.append((Int64(clusterId), members))
+            } else {
+                newClusters.append(FaceClusterInput(
+                    label: "Person \(labelBase + newClusters.count + 1)", members: members))
+                newClusterEntries.append(assignment.entries)
+            }
+        }
+        var createdClusterIds: [Int64] = []
+        try connection.transaction {
+            if !ghostMemberIds.isEmpty {
+                try deleteClusterMembers(ids: ghostMemberIds)
+            }
+            if !appendedMembers.isEmpty {
+                let insertMember = try connection.prepare("""
+                    INSERT INTO face_cluster_members
+                     (cluster_id, session_id, photo_id, bbox, confidence, observation_id)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                    """)
+                for item in appendedMembers {
+                    for member in item.members {
+                        let bboxJSON = try JSONValue.stringify(
+                            JSONValue.array(member.bbox.map { JSONValue.real($0) }))
+                        _ = try insertMember.run([
+                            .int(item.clusterId),
+                            .text(sessionId),
+                            .text(member.photoId),
+                            .text(bboxJSON),
+                            .real(member.confidence),
+                            optDB(member.observationId),
+                        ])
+                    }
+                }
+            }
+            if !newClusters.isEmpty {
+                createdClusterIds = try faceRepo.saveClusters(sessionId: sessionId, clusters: newClusters)
+            }
+            try refreshClusterMemberCounts(sessionId: sessionId)
+        }
+
+        // 3) 身份桥接与跨会话建议只针对新簇；已有簇的 matched_person_id 不被覆盖。
+        //    Best-effort：落库已完成，桥接失败只记日志（下次重算可复原）。
+        do {
+            try personRepo.reconcileSession(sessionId: sessionId)
+            try matchClustersAgainstLibrary(
+                sessionId: sessionId,
+                clusters: createdClusterIds.enumerated().map { index, clusterId in
+                    (clusterId: clusterId, embeddings: newClusterEntries[index].map(\.embedding))
+                }
+            )
+        } catch {
+            GatherLogger.log("Failed to bridge incrementally clustered faces into person library \(error)", level: .warn)
+        }
+    }
+
+    /// 增量成员落库输入（bbox/confidence 取自观察行；照片路径缺失回落空串，同全量）。
+    private func memberInput(
+        for entry: EmbeddingEntry,
+        observationById: [Int64: FaceObservationRow],
+        photoById: [String: String]
+    ) -> FaceClusterMemberInput {
+        let observation = observationById[Int64(entry.observationId)]
+        return FaceClusterMemberInput(
+            photoId: entry.photoId,
+            photoPath: photoById[entry.photoId] ?? "",
+            bbox: [
+                observation?.bboxX ?? 0,
+                observation?.bboxY ?? 0,
+                observation?.bboxW ?? 0,
+                observation?.bboxH ?? 0,
+            ],
+            confidence: observation?.confidence ?? 0,
+            observationId: Int64(entry.observationId))
+    }
+
+    /// 按成员行 id 删除（幽灵成员清理；分批防 SQLite 参数上限）。
+    private func deleteClusterMembers(ids: [Int64]) throws {
+        for chunk in ids.chunked(by: 400) where !chunk.isEmpty {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            _ = try connection.prepare(
+                "DELETE FROM face_cluster_members WHERE id IN (\(placeholders))"
+            ).run(chunk.map { .int($0) })
+        }
+    }
+
+    /// face_clusters.member_count 派生缓存刷新（真相源是 face_cluster_members）。
+    /// FaceRepo.recomputeMemberCounts 是 private（文件作用域），增量路径只追加成员，
+    /// 这里用等价 SQL 刷新，避免列值与实时 COUNT 不一致。
+    private func refreshClusterMemberCounts(sessionId: String) throws {
+        _ = try connection.prepare("""
+            UPDATE face_clusters
+            SET member_count = (SELECT COUNT(*) FROM face_cluster_members m WHERE m.cluster_id = face_clusters.id),
+                updated_at = ?
+            WHERE session_id = ?
+            """).run([.text(nowISOString()), .text(sessionId)])
+    }
+
+    /// 人员匹配兜底阈值（与 persons.match_threshold 列默认值 0.65 一致）。
+    static let defaultPersonMatchThreshold = 0.65
+
+    /// 跨会话重识别：把新簇的成员向量与 person_embeddings 库比对，写入建议
+    /// （face_clusters.matched_person_id / match_confidence）。
+    /// - 已绑定的簇（matched_person_id 非空，含刚迁移回来的绑定）不被建议覆盖；
+    /// - 阈值取该人物自己的 persons.match_threshold，取不到用 0.65；
+    /// - 库为空、维度不一致或没有合格候选时静默跳过（建议是可选增强，
+    ///   不是分析结果的必要条件）。
+    private func matchClustersAgainstLibrary(
+        sessionId: String,
+        clusters: [(clusterId: Int64, embeddings: [[Float]])]
+    ) throws {
+        guard !clusters.isEmpty else { return }
+        let library = try personRepo.getAllEmbeddings().compactMap { ref -> LibraryEmbedding? in
+            let floats = Self.floats(from: ref.embedding)
+            guard !floats.isEmpty else { return nil }
+            return LibraryEmbedding(personId: ref.personId, embedding: floats)
+        }
+        guard let libraryDim = library.first?.embedding.count else { return }
+        let usable = library.filter { $0.embedding.count == libraryDim }
+        let linkedClusterIds = Set(
+            try faceRepo.getClusters(sessionId).filter { $0.matchedPersonId != nil }.map(\.id)
+        )
+        let summaries = (try? personRepo.summaries(ids: Array(Set(usable.map(\.personId))))) ?? [:]
+        let matcher = FaceMatcher(library: usable)
+        for cluster in clusters where !linkedClusterIds.contains(cluster.clusterId) {
+            let queries = cluster.embeddings.filter { $0.count == libraryDim }
+            guard !queries.isEmpty else { continue }
+            let result = try matcher.matchAgainstLibrary(queries, threshold: 0)
+            var bestByPerson: [String: Double] = [:]
+            for match in result.matched.values {
+                bestByPerson[match.personId] = max(bestByPerson[match.personId] ?? 0, match.confidence)
+            }
+            let eligible = bestByPerson.filter { personId, score in
+                score >= (summaries[personId]?.matchThreshold ?? Self.defaultPersonMatchThreshold)
+            }
+            guard let winner = eligible.max(by: { $0.value < $1.value }) else { continue }
+            // 歧义不猜（PhotoPrism MATCH_MARGIN 同义）：冠军与**人物级亚军**差距小于 margin
+            // 时不写建议，留给人工审核；否则"像张三 0.80、像李四 0.79"会被静默绑成张三。
+            // 亚军必须按人物聚合后再比：库里同一人常有多条样本（person_embeddings），
+            // 用行级次优会把同一人的另一张脸误当竞争者。
+            let margin = max(0, getNumber("face_match_margin", 0.01))
+            if margin > 0 {
+                var personScores: [String: Double] = [:]
+                for query in queries {
+                    let perPerson = try FaceMatcher.bestScoresPerPerson(query: query, library: usable)
+                    for (personId, score) in perPerson {
+                        personScores[personId] = max(personScores[personId] ?? -.infinity, score)
+                    }
+                }
+                let ranked = personScores
+                    .filter { personId, score in
+                        score >= (summaries[personId]?.matchThreshold ?? Self.defaultPersonMatchThreshold)
+                    }
+                    .sorted { $0.value > $1.value }
+                if ranked.count > 1, winner.value - ranked[1].value < margin {
+                    continue
+                }
+            }
+            try faceRepo.setClusterMatch(
+                clusterId: cluster.clusterId, personId: winner.key, confidence: winner.value)
         }
     }
 
@@ -1214,9 +1646,9 @@ public final class FaceKwService {
         return connection.lastInsertRowid
     }
 
-    // 取消的 run 在此以 'failed' 终态（sessions.analysis_status 在 catch 写
-    // 'cancelled'）：run 记录按设计只区分 ok/failed，该分歧是刻意的（TS 注释
-    // 603-606；过期检测 1.4.2 一律忽略非 ok run）。
+    // 取消的 run 在此以 'failed' 终态：run 记录按设计只区分 ok/failed，取消态由
+    // analysis_jobs（JobService 的 status 机）表达（TS 注释 603-606；过期检测
+    // 1.4.2 一律忽略非 ok run；sessions.analysis_status 已不再写入）。
     private func finalizeAnalysisRun(runId: Int64, status: String) throws {
         _ = try connection.prepare("UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?")
             .run([.text(status), .text(nowISOString()), .int(runId)])
@@ -1244,6 +1676,33 @@ public final class FaceKwService {
 
     /// TS: analysisSignature 构造（face-kw.service.ts:139-158）。键序与 TS
     /// JSON.stringify 的插入序逐字一致；preprocessingVersion 恒为 2。
+    /// 聚类调参（竞品对标：PhotoPrism CLUSTER_CORE / CLUSTER_CORE_RETRY）：
+    /// - `face_core_quality`（默认 0.35）：低于此质量的脸不能成为核心点。0.35 的标定依据——
+    ///   96px 以上清晰正脸 ≈ 0.9，30px 但清晰 ≈ 0.6，明显模糊/侧倾 < 0.3；门槛只影响
+    ///   "谁能带簇"，低质量脸仍会被吸收为边界点（见 FaceClusterer）。
+    /// - `face_core_retry_min_samples`（默认 2）：二遍核心点阈值，用于恢复被严格首遍漏掉的
+    ///   小簇；< 2 视为关闭——= 1 会让单张噪声脸各自成簇（PhotoPrism 的 retry 不产生单点簇）。
+    static func clusterOptions(from getNumber: (String, Double) -> Double) -> FaceClusterOptions {
+        let floor = min(max(getNumber("face_core_quality", 0.35), 0), 1)
+        let retry = getNumber("face_core_retry_min_samples", 2).safeInt(fallback: 2)
+        return FaceClusterOptions(coreQualityFloor: floor, retryMinSamples: retry >= 2 ? retry : nil)
+    }
+
+    /// `face_incremental_clustering`（默认 "1" = 开；只有逐字 "1" 视为开，其余
+    /// （含 "0"/"true"/空串）一律关闭）：开启且聚类签名未变、库里已有簇时，analyze
+    /// 走增量路径保留已有簇 id 与用户绑定；首次分析、签名变化、recluster 命令与
+    /// 全失败 run 仍走全量。用字符串而非 getNumber 判定：避免 "true"/"1" 两种写法
+    /// 的解析歧义（键值由设置界面下拉写入，取值域就是 "1"/"0"）。
+    static func incrementalClusteringEnabled(_ getString: (String, String) -> String) -> Bool {
+        getString("face_incremental_clustering", "1") == "1"
+    }
+
+    /// 聚类签名（缓存键）：除 eps/minPts 外必须包含质量门槛与二遍阈值——
+    /// 否则改了 face_core_quality 之后旧簇会被判定"仍然有效"而跳过重聚类。
+    static func clusterSignature(eps: Double, minPts: Int, options: FaceClusterOptions) -> String {
+        "\(eps):\(minPts):q\(options.coreQualityFloor):r\(options.retryMinSamples.map(String.init) ?? "-")"
+    }
+
     static func makeAnalysisSignature(
         detectorPath: String,
         encoderPath: String,
@@ -1252,11 +1711,15 @@ public final class FaceKwService {
         confidenceThreshold: Double,
         encoderInputSize: Int,
         embeddingDim: Int,
-        previewMaxDimension: Int
+        previewMaxDimension: Int,
+        embeddingSpec: String
     ) -> String {
         let fields = [
             jsonField("detector", Self.modelFingerprint(detectorPath)),
             jsonField("encoder", Self.modelFingerprint(encoderPath)),
+            // 对齐方式/特征模型的指纹：换 embedding 规格必须让旧 observation 过期
+            //（否则 768 维旧向量会与新对齐向量混在同一簇里）。
+            jsonField("embeddingSpec", embeddingSpec),
             "\(jsonKey("primaryDetectionSize")):\(primaryDetectionSize)",
             "\(jsonKey("secondaryDetectionSize")):\(secondaryDetectionSize)",
             "\(jsonKey("confidenceThreshold")):\(confidenceThreshold)",
@@ -1378,8 +1841,11 @@ public final class FaceKwService {
 
     #if canImport(Vision)
     /// 默认推理 provider：单引擎逐图处理，单图失败不拖垮整批；取消点在图边界。
-    private static func makeDefaultProvider(config: FaceInferenceConfig) -> FaceInferenceProvider {
-        let engine = FaceInferenceEngine(config: config)
+    private static func makeDefaultProvider(
+        config: FaceInferenceConfig,
+        embedder: FaceEmbeddingProvider
+    ) -> FaceInferenceProvider {
+        let engine = FaceInferenceEngine(config: config, embedder: embedder)
         return { images, _, signal in
             var results: [FaceInferenceItem] = []
             results.reserveCapacity(images.count)
@@ -1396,7 +1862,16 @@ public final class FaceKwService {
         FaceInferenceItem(
             error: item.error,
             observations: item.observations.map {
-                FaceInferenceObservation(bbox: $0.bbox, confidence: $0.confidence, embedding: $0.embedding)
+                FaceInferenceObservation(
+                    bbox: $0.bbox,
+                    confidence: $0.confidence,
+                    embedding: $0.embedding,
+                    quality: $0.quality,
+                    faceSizePx: $0.faceSizePx,
+                    rollDegrees: $0.rollDegrees,
+                    modelId: $0.modelId,
+                    modelVersion: $0.modelVersion
+                )
             },
             encodingFailures: item.encodingFailures
         )

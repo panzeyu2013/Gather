@@ -99,10 +99,21 @@ struct SettingsServiceTests {
         #expect(try harness.repo.get(key: "thumbnail_size")?.value == "1024")
     }
 
-    // TS: 默认值表规模与关键值对齐（40 键 + lazy_checksum 字符串 "true"）。
+    // TS: 默认值表规模与关键值对齐（TS 40 键 + lazy_checksum 字符串 "true"；
+    // 另有 6 个原生扩展键——set 的键校验直接由此表派生，
+    // 少一个键就意味着对应设置永远写不进去）。第 6 个是
+    // face_incremental_clustering（ADR-029 增量聚类开关，"1" = 开）。
     @Test func defaultsMatchTS() {
         let defaults = SettingsService.getDefaults()
-        #expect(defaults.count == 40)
+        #expect(defaults.count == 46)
+        #expect(defaults["face_core_quality"] == "0.35")
+        #expect(defaults["face_core_retry_min_samples"] == "2")
+        #expect(defaults["face_match_margin"] == "0.01")
+        // 增量聚类默认开（"1"；界面下拉的推荐项同值）。
+        #expect(defaults["face_incremental_clustering"] == "1")
+        // 嵌入模型键默认空 = 内置 Vision 特征（不强制用户准备模型文件）。
+        #expect(defaults["face_embedding_model_path"] == "")
+        #expect(defaults["face_embedding_model_version"] == "")
         #expect(defaults["lazy_checksum"] == "true")
         #expect(defaults["db_synchronous"] == "normal")
         #expect(defaults["metadata_write_mode"] == "sidecar")

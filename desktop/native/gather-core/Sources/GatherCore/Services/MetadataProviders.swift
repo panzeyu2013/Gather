@@ -11,7 +11,6 @@
 //   读取，exiftool 池），仅供 MetadataService 的有效属性合成使用。
 // - ExifProvider / ImageDimensionsProvider：TS `exifr.parse` / `sharp(path).metadata()`
 //   的宿主职责（EXIF 解析与缩略图尺寸提取）。
-// - C1BridgeProvider：capture-one osascript 桥契约（见 CaptureOneSyncState.swift）。
 //
 // TS MetadataWriteAttributes 的键集与 MetadataWriteAttributes 的 Codable JSON 形状
 // 逐字一致（keywords/rating/label/dateTaken/latitude/longitude）。

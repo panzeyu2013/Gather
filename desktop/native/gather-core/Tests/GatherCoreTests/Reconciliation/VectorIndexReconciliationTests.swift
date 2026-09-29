@@ -140,36 +140,6 @@ struct VectorIndexReconciliationTests {
         }
     }
 
-    // PRNG 流对账：层级分配来自固定种子 mulberry32，Swift 与 TS 必须一致
-    //（任何 UInt32 复刻偏差都会在此暴露）。
-    @Test func hnswLevelsMatchFixture() throws {
-        let fixture = try Self.loadFixture()
-        let index = try Self.makeHnswIndex(fixture)
-        try Self.insertRows(fixture, into: index)
-        #expect(index.debugLevels == fixture.hnsw.levels, "各节点层级与 TS（PRNG 流）不一致")
-    }
-
-    // searchByThreshold 抽查：同 hnsw-recall.test.ts:153-177 口径（>= 阈值、
-    // 降序、逐条与暴力点积比对）。
-    @Test func searchByThresholdMatchesBruteForce() throws {
-        let fixture = try Self.loadFixture()
-        let index = try Self.makeHnswIndex(fixture)
-        try Self.insertRows(fixture, into: index)
-
-        let query = Array(fixture.queries[0..<fixture.dim])
-        let hits = try index.searchByThreshold(query: query, threshold: 0.7)
-        #expect(hits.count > 0, "同簇查询应命中 0.7 阈值")
-        var previous = Float.infinity
-        for s in 0..<hits.count {
-            #expect(hits.scores[s] >= 0.7, "hit \(s): 得分低于阈值")
-            #expect(hits.scores[s] <= previous, "hit \(s): 得分未降序")
-            previous = hits.scores[s]
-            let id = hits.indices[s]
-            let dot = Self.dot(fixture.queries, 0, fixture.rows, id * fixture.dim, fixture.dim)
-            #expect(abs(hits.scores[s] - Float(dot)) < 1e-4, "hit \(s): 与暴力点积偏差过大")
-        }
-    }
-
     // MARK: LSH 对账
 
     @Test func lshRecallAtEpsMatchesFixture() throws {
@@ -293,9 +263,6 @@ struct VectorIndexReconciliationTests {
         }
         _ = try index.insert([Float](repeating: 0, count: 128))
         #expect(throws: VectorIndexError.queryShapeMismatch(expected: 128, received: 127)) {
-            _ = try index.searchByThreshold(query: [Float](repeating: 0, count: 127), threshold: 0.9)
-        }
-        #expect(throws: VectorIndexError.queryShapeMismatch(expected: 128, received: 127)) {
             _ = try index.searchTopK(query: [Float](repeating: 0, count: 127), k: 1)
         }
     }
@@ -344,23 +311,7 @@ struct VectorIndexReconciliationTests {
         #expect(CosineLshIndex.lshMinPoints == 20_000)
     }
 
-    // FaceVector 基础 API 抽查（点积/余弦与 fixture 数据一致）
-    @Test func faceVectorDotAndCosine() throws {
-        let fixture = try Self.loadFixture()
-        let a = FaceVector(values: Array(fixture.rows[0..<fixture.dim]))
-        let b = FaceVector(values: Array(fixture.rows[fixture.dim..<(2 * fixture.dim)]))
-        let expectedDot = Self.dot(fixture.rows, 0, fixture.dim, fixture.dim)
-        #expect(abs(a.dot(b) - expectedDot) < 1e-9, "点积与参照不一致")
-        // 余弦 = dot / (sqrt(magQ) * sqrt(magR))（TS lsh-index.ts:337 同式）
-        var magA = 0.0
-        var magB = 0.0
-        for k in 0..<fixture.dim {
-            magA += Double(fixture.rows[k]) * Double(fixture.rows[k])
-            magB += Double(fixture.rows[fixture.dim + k]) * Double(fixture.rows[fixture.dim + k])
-        }
-        let expectedCosine = expectedDot / (sqrt(magA) * sqrt(magB))
-        #expect(abs(a.cosineSimilarity(to: b) - expectedCosine) < 1e-9, "余弦与参照不一致")
-        // 语料行均为单位向量（float32 归一化误差量级 ~1e-7）：余弦 ≈ 点积
-        #expect(abs(a.cosineSimilarity(to: b) - a.dot(b)) < 1e-5, "单位向量下余弦应约等于点积")
-    }
+    // 注：原 faceVectorDotAndCosine 用例测的是 FaceVector 的公开点积/余弦工具方法，
+    // 那两个方法无生产消费者（检索热路径用连续缓冲内联计算），已随无用代码清理删除；
+    // 检索数学由本文件其余用例（neighbors / searchTopK 与 fixture 对账）覆盖。
 }

@@ -13,8 +13,8 @@ func makeMigratedDB() throws -> DBConnection {
 
 func insertSession(_ db: DBConnection, _ id: String) throws {
     _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, '', 'draft', 'idle', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
+        VALUES (?, '', 'draft', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([.text(id)])
 }
 
@@ -39,15 +39,38 @@ func insertAssetFile(
     normalizedPath: String,
     checksum: String = "",
     volumeId: String = "dev:1",
-    fileIdentity: String = ""
+    fileIdentity: String = "",
+    fileSize: Int64 = 0,
+    fileMtimeMs: Double = 0
 ) throws {
     _ = try db.prepare("""
         INSERT INTO asset_files (id, volume_id, file_identity, normalized_path, filename, extension, media_type, file_size, file_mtime_ms, checksum, online_status, last_seen_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, '', 'unknown', 0, 0, ?, 'online', '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        VALUES (?, ?, ?, ?, ?, '', 'unknown', ?, ?, ?, 'online', '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([
         .text(id), .text(volumeId), .text(fileIdentity), .text(normalizedPath),
-        .text((normalizedPath as NSString).lastPathComponent), .text(checksum),
+        .text((normalizedPath as NSString).lastPathComponent),
+        .int(fileSize), .real(fileMtimeMs), .text(checksum),
     ])
+}
+
+/// 按**真实文件**的身份登记 asset_files 行：storedPath 是登记路径（可以已不存在，
+/// 模拟"文件被移走"），statPath 是磁盘上取身份证据（dev/ino/size/mtime）的文件。
+/// relinkRoot 只接受通过身份校验的行，故重链接用例必须用本函数而非裸 insertAssetFile。
+func insertTrackedFile(
+    _ db: DBConnection,
+    id: String,
+    storedPath: String,
+    statPath: String,
+    checksum: String = ""
+) throws {
+    guard let info = tsStat(statPath) else {
+        preconditionFailure("fixture file missing: \(statPath)")
+    }
+    try insertAssetFile(
+        db, id: id, normalizedPath: storedPath, checksum: checksum,
+        volumeId: "dev:\(info.dev)", fileIdentity: String(info.ino),
+        fileSize: info.size, fileMtimeMs: info.mtimeMs
+    )
 }
 
 /// assets 行（session_assets.asset_id / photos.asset_id 外键）。

@@ -11,34 +11,77 @@ import Testing
 
 // MARK: - Stub（错误态与调用记录）
 
-/// 轮询等待条件成立（async 版本：Task.sleep 不阻塞 MainActor，viewModel 的
-/// debounceTask/commitSearch 才能推进；swift-testing 并行时调度延迟明显）。
-@discardableResult
-private func waitUntilAsync(
-    timeout: TimeInterval = 5,
-    interval: TimeInterval = 0.01,
-    _ condition: () -> Bool
-) async -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(interval * 1000))
-    }
-    return condition()
-}
+// 条件等待 waitUntilAsync 已抽到 Support/AsyncWait.swift（本 target 共享）。
 
+/// Swift 6 迁移：GalleryDataProvider 现经协议继承 Sendable，测试替身必须可跨隔离域。
+/// 可变状态全部收归 LockedBox（NSLock 保护的 @unchecked Sendable 锁盒）：
+/// session/rows/pageError/sessionError/thrownError/workspaceStatusValue/
+/// workspaceStatusError/pageCalls。对外属性一律经锁内 get/set 转发（测试调用点不变），
+/// stub 方法在临界区内取快照后立即释放锁，绝不持锁 await（无锁内 await）。
 private final class StubGalleryProvider: GalleryDataProvider {
-    var session: SessionData?
+    private final class LockedBox: @unchecked Sendable {
+        let lock = NSLock()
+        var session: SessionData?
+        var rows: [GalleryPhotoData] = []
+        var pageError: String?
+        var sessionError: String?
+        var thrownError: Error?
+        var workspaceStatusValue: WorkspaceStatus?
+        var workspaceStatusError: String?
+        var pageCalls: [(afterFirstRowid: Int64?, limit: Int, expandVariants: Bool)] = []
+    }
+
+    private let box = LockedBox()
+
+    var session: SessionData? {
+        get { box.lock.withLock { box.session } }
+        set { box.lock.withLock { box.session = newValue } }
+    }
+
     /// 模拟库中全部照片（键集语义：cursor = 已取行数，按序切片）。
-    var rows: [GalleryPhotoData] = []
-    var pageError: String?
-    var sessionError: String?
+    var rows: [GalleryPhotoData] {
+        get { box.lock.withLock { box.rows } }
+        set { box.lock.withLock { box.rows = newValue } }
+    }
+
+    var pageError: String? {
+        get { box.lock.withLock { box.pageError } }
+        set { box.lock.withLock { box.pageError = newValue } }
+    }
+
+    var sessionError: String? {
+        get { box.lock.withLock { box.sessionError } }
+        set { box.lock.withLock { box.sessionError = newValue } }
+    }
+
+    /// 类型化错误注入（NativeCommandError/BridgeError/SessionServiceError 等）：
+    /// NSError 形态覆盖不到「非 LocalizedError 枚举经 NSError 桥接丢码」的回归。
+    var thrownError: Error? {
+        get { box.lock.withLock { box.thrownError } }
+        set { box.lock.withLock { box.thrownError = newValue } }
+    }
+
     /// workspace.status 桩（索引头数据源）。
-    var workspaceStatusValue: WorkspaceStatus?
-    var workspaceStatusError: String?
-    private(set) var pageCalls: [(afterFirstRowid: Int64?, limit: Int, expandVariants: Bool)] = []
+    var workspaceStatusValue: WorkspaceStatus? {
+        get { box.lock.withLock { box.workspaceStatusValue } }
+        set { box.lock.withLock { box.workspaceStatusValue = newValue } }
+    }
+
+    var workspaceStatusError: String? {
+        get { box.lock.withLock { box.workspaceStatusError } }
+        set { box.lock.withLock { box.workspaceStatusError = newValue } }
+    }
+
+    /// 调用记录：只读（写入只在下方 stub 方法的锁内完成）。
+    var pageCalls: [(afterFirstRowid: Int64?, limit: Int, expandVariants: Bool)] {
+        box.lock.withLock { box.pageCalls }
+    }
 
     func getSession(_ sessionId: String) throws -> SessionData? {
+        let (thrown, sessionError, session): (Error?, String?, SessionData?) = box.lock.withLock {
+            (box.thrownError, box.sessionError, box.session)
+        }
+        if let thrown { throw thrown }
         if let sessionError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: sessionError])
         }
@@ -46,10 +89,14 @@ private final class StubGalleryProvider: GalleryDataProvider {
     }
 
     func photoPage(sessionId: String, afterFirstRowid: Int64?, limit: Int, expandVariants: Bool) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
+        let (thrown, pageError, rows): (Error?, String?, [GalleryPhotoData]) = box.lock.withLock {
+            (box.thrownError, box.pageError, box.rows)
+        }
+        if let thrown { throw thrown }
         if let pageError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: pageError])
         }
-        pageCalls.append((afterFirstRowid, limit, expandVariants))
+        box.lock.withLock { box.pageCalls.append((afterFirstRowid, limit, expandVariants)) }
         let startIndex = Int(afterFirstRowid ?? 0)
         guard startIndex < rows.count else { return ([], nil) }
         let end = min(startIndex + limit, rows.count)
@@ -58,15 +105,19 @@ private final class StubGalleryProvider: GalleryDataProvider {
     }
 
     func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus? {
-        if let workspaceStatusError {
-            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: workspaceStatusError])
+        let (error, value): (String?, WorkspaceStatus?) = box.lock.withLock {
+            (box.workspaceStatusError, box.workspaceStatusValue)
         }
-        return workspaceStatusValue
+        if let error {
+            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
+        }
+        return value
     }
 
     func retryIndex(sessionId: String) async throws {
-        if let workspaceStatusError {
-            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: workspaceStatusError])
+        let error = box.lock.withLock { box.workspaceStatusError }
+        if let error {
+            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
         }
     }
 
@@ -106,8 +157,8 @@ private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection
 
 private func insertSession(_ db: DBConnection, _ id: String) throws {
     _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, '工作区', 'photos_loaded', 'idle', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
+        VALUES (?, '工作区', 'photos_loaded', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([.text(id)])
 }
 
@@ -268,14 +319,14 @@ struct GalleryViewModelTests {
         stub.rows = [StubGalleryProvider.photo("with", faceCount: 2), StubGalleryProvider.photo("without", faceCount: 0)]
         await viewModel.load()
 
+        // filterOrVariantChanged → commitSearch 同步写入 committedFilter，
+        // filteredPhotos 立即反映新过滤（客户端过滤，不依赖取数落定）。
         viewModel.filter = .hasFace
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.filteredPhotos.map(\.id) == ["with"])
 
         viewModel.filter = .noFace
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.filteredPhotos.map(\.id) == ["without"])
     }
 
@@ -288,9 +339,12 @@ struct GalleryViewModelTests {
 
         viewModel.expandVariants = true
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(200))
+        // 等「整页重取已完成」：reload 先清空 pages 再取首页，故条件同时覆盖
+        // 取页已发生（expandVariants=true）与首页已重新装载（200 行）。
+        #expect(await waitUntilAsync {
+            stub.pageCalls.last?.expandVariants == true && viewModel.loadedPhotos.count == 200
+        })
 
-        #expect(stub.pageCalls.last?.expandVariants == true)
         #expect(stub.pageCalls.last?.afterFirstRowid == nil)
         #expect(viewModel.loadedPhotos.count == 200)
     }
@@ -315,7 +369,11 @@ struct GalleryViewModelTests {
         let (viewModel, stub) = makeStubVM()
         stub.pageError = "PAGE_FAILED"
         await viewModel.load()
-        #expect(viewModel.phase == .failed("PAGE_FAILED"))
+        // 统一漏斗：非错误码诊断不再原样透出，经 errorText 回退通用文案。
+        // 文案断言与切语言的套件互斥（appLanguage 是进程级全局量）。
+        AppLanguageLock.withStableCopy {
+            #expect(viewModel.phase == .failed(GatherLocalization.errorText("PAGE_FAILED")))
+        }
     }
 
     @Test func paginationFailureShowsActionError() async {
@@ -329,7 +387,65 @@ struct GalleryViewModelTests {
         stub.pageError = "NEXT_PAGE_FAILED"
         await viewModel.loadMoreIfNeeded()
         #expect(viewModel.phase == .loaded)
-        #expect(viewModel.actionError == "NEXT_PAGE_FAILED")
+        AppLanguageLock.withStableCopy {
+            #expect(viewModel.actionError == GatherLocalization.errorText("NEXT_PAGE_FAILED"))
+        }
+    }
+
+    // 回归（审查 A）：码型错误必须被翻译，不得退化成通用文案。
+    // 旧漏斗走 NSError.localizedDescription，NativeCommandError/BridgeError 不满足
+    // LocalizedError → 桥接后退化为 "The operation couldn't be completed…" → 已知码
+    // 也被显示成通用文案。断言逐条钉住「码被正确翻译」。
+    @Test func typedCodeErrorsAreTranslated() async {
+        let cases: [(label: String, error: Error, code: String)] = [
+            ("NativeCommandError 已知码", NativeCommandError.failed("SESSION_NOT_FOUND"), "SESSION_NOT_FOUND"),
+            ("BridgeError 已知码（router person.get 同款构造）", BridgeError.notFound("PERSON_NOT_FOUND"), "PERSON_NOT_FOUND"),
+        ]
+        for item in cases {
+            let (viewModel, stub) = makeStubVM()
+            stub.thrownError = item.error
+            await viewModel.load()
+            AppLanguageLock.withStableCopy {
+                let generic = GatherLocalization.errorText("NOT_A_CODE")
+                #expect(
+                    viewModel.phase == .failed(GatherLocalization.errorText(item.code)),
+                    Comment(rawValue: item.label)
+                )
+                if case .failed(let text) = viewModel.phase {
+                    #expect(text != generic, Comment(rawValue: item.label + " 不得回退通用文案"))
+                } else {
+                    Issue.record("应进入 failed 相位：\(item.label)")
+                }
+            }
+        }
+    }
+
+    /// 参数化码（单冒号 CODE: 参数 与双冒号 CODE::p1）经漏斗后参数不得丢失。
+    @Test func parameterizedCodeErrorsKeepParameters() async {
+        let raws = ["XMP_CONFIRM_OTHER_SESSION_PENDING: s1", "FILTER_FIELD_UNKNOWN::rating"]
+        let params = ["s1", "rating"]
+        for index in raws.indices {
+            let (viewModel, stub) = makeStubVM()
+            stub.thrownError = NativeCommandError.failed(raws[index])
+            await viewModel.load()
+            AppLanguageLock.withStableCopy {
+                let expected = GatherLocalization.errorText(raws[index])
+                #expect(viewModel.phase == .failed(expected))
+                #expect(expected.contains(params[index]), Comment(rawValue: raws[index]))
+                #expect(viewModel.phase != .failed(GatherLocalization.errorText("NOT_A_CODE")))
+            }
+        }
+    }
+
+    // TS: Gallery.tsx:50-55 —— settings thumbnail_size 分桶（≤320→256、
+    // ≤1280→1024、>1280→2048）。边界值各自独立钉住（321/1280/1281）。
+    @Test func thumbnailSizeBucketsMatchTS() {
+        #expect(LiveGalleryDataProvider.thumbnailBucket(0) == 256)
+        #expect(LiveGalleryDataProvider.thumbnailBucket(320) == 256)
+        #expect(LiveGalleryDataProvider.thumbnailBucket(321) == 1024)
+        #expect(LiveGalleryDataProvider.thumbnailBucket(1280) == 1024)
+        #expect(LiveGalleryDataProvider.thumbnailBucket(1281) == 2048)
+        #expect(LiveGalleryDataProvider.thumbnailBucket(4096) == 2048)
     }
 
     // ── 真实服务集成 ──
@@ -359,8 +475,7 @@ struct GalleryViewModelTests {
         // 展开：3 行（变体逐行展示）。
         collapsed.expandVariants = true
         collapsed.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(200))
-        #expect(collapsed.loadedPhotos.count == 3)
+        #expect(await waitUntilAsync { collapsed.loadedPhotos.count == 3 })
     }
 
     // 真实库：键集分页（450 张 → 200/200/50，滚动加载三页 + 空页确认）。
@@ -410,7 +525,6 @@ struct GalleryViewModelTests {
 
         viewModel.filter = .hasFace
         viewModel.filterOrVariantChanged()
-        try? await Task.sleep(for: .milliseconds(200))
         #expect(viewModel.filteredPhotos.map(\.id) == ["faced"])
     }
 

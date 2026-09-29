@@ -146,12 +146,6 @@ struct PersonRepoTests {
         let before = row
         try repo.update(id: id, fields: PersonUpdateFields())
         #expect(try repo.get(id: id) == before)
-
-        // 缩略图。
-        #expect(try repo.getThumbnailBase64(personId: id) == "")
-        try repo.updateThumbnail(id: id, base64: "data:image/jpeg;base64,xx")
-        #expect(try repo.getThumbnailBase64(personId: id) == "data:image/jpeg;base64,xx")
-        #expect(try repo.getThumbnailBase64(personId: "missing") == "")
     }
 
     @Test func deleteRemovesPerson() throws {
@@ -173,7 +167,9 @@ struct PersonRepoTests {
 
         let source = try repo.create(name: "Src", keywords: ["a", "b"])
         let target = try repo.create(name: "Tgt", keywords: ["b", "c"])
-        try repo.addPhoto(personId: source, photoId: "p1", sessionId: "s1", faceBbox: [0, 0, 1, 1], confidence: 0.9)
+        try repo.addPhotos(personId: source, sessionId: "s1", photos: [
+            PersonPhotoInput(photoId: "p1", faceBbox: [0, 0, 1, 1], confidence: 0.9),
+        ])
         try repo.saveEmbeddings(embeddings: [
             SaveEmbeddingInput(personId: source, embedding: [1, 2, 3, 4], photoId: "p1", sessionId: "s1", faceObservationId: 7, faceBbox: [0, 0, 1, 1], quality: 0.8),
         ])
@@ -183,15 +179,15 @@ struct PersonRepoTests {
         // 来源删除，目标获得转移后的数据。
         #expect(try repo.get(id: source) == nil)
         #expect(try repo.countPhotos(personId: target) == 1)
-        #expect(try repo.getEmbeddingsByPerson(personId: target).count == 1)
-        #expect(try repo.countEmbeddings(personId: source) == 0)
+        #expect(try repo.getAllEmbeddings().filter { $0.personId == target }.count == 1)
+        #expect(try repo.getAllEmbeddings().filter { $0.personId == source }.isEmpty)
 
         // 关键词并集（去重，源在前）。
         let keywords = try repo.get(id: target)?.keywords
         #expect(keywords == "[\"a\",\"b\",\"c\"]")
     }
 
-    @Test func addPhotoAndAddPhotosBridgeAndDedupe() throws {
+    @Test func addPhotosBridgeAndDedupe() throws {
         let db = try makeDB()
         try insertSession(db, id: "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: "/a.jpg")
@@ -200,14 +196,17 @@ struct PersonRepoTests {
         let alice = try repo.create(name: "Alice")
 
         // 单条。
-        try repo.addPhoto(personId: alice, photoId: "p1", sessionId: "s1", faceBbox: [0, 0, 1, 1], confidence: 0.9)
-        let link = try repo.getPersonPhoto(personId: alice, photoId: "p1")
+        try repo.addPhotos(personId: alice, sessionId: "s1", photos: [
+            PersonPhotoInput(photoId: "p1", faceBbox: [0, 0, 1, 1], confidence: 0.9),
+        ])
+        let link = try repo.getPhotosWithDetails(personId: alice).photos
+            .first { $0.photo.photoId == "p1" }?.photo
         #expect(link != nil)
         let faceBbox = link?.faceBbox
         #expect(faceBbox == "[0,0,1,1]")
         #expect(link?.confidence == 0.9)
         #expect(link?.sessionId == "s1")
-        #expect(try repo.getPersonPhoto(personId: alice, photoId: "p2") == nil)
+        #expect(try repo.countPhotos(personId: alice) == 1)
 
         // 批量 + 重复（INSERT OR IGNORE）。
         try repo.addPhotos(personId: alice, sessionId: "s1", photos: [
@@ -216,44 +215,13 @@ struct PersonRepoTests {
         ])
         #expect(try repo.countPhotos(personId: alice) == 2)
         // 重复绑定未覆盖原行（confidence 保持首次 0.9）。
-        #expect(try repo.getPersonPhoto(personId: alice, photoId: "p1")?.confidence == 0.9)
+        let p1 = try repo.getPhotosWithDetails(personId: alice).photos
+            .first { $0.photo.photoId == "p1" }?.photo
+        #expect(p1?.confidence == 0.9)
 
         // 空批量 no-op。
         try repo.addPhotos(personId: alice, sessionId: "s1", photos: [])
         #expect(try repo.countPhotos(personId: alice) == 2)
-    }
-
-    @Test func getPhotosFiltersBySessionsAndPagination() throws {
-        let db = try makeDB()
-        try insertSession(db, id: "s1")
-        try insertSession(db, id: "s2")
-        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: "/a.jpg")
-        try insertPhoto(db, id: "p2", sessionId: "s1", filepath: "/b.jpg")
-        try insertPhoto(db, id: "p3", sessionId: "s2", filepath: "/c.jpg")
-        let repo = PersonRepo(connection: db)
-        let alice = try repo.create(name: "Alice")
-
-        try insertPersonPhoto(db, personId: alice, photoId: "p1", sessionId: "s1", createdAt: "2026-01-01T00:00:00.000Z")
-        try insertPersonPhoto(db, personId: alice, photoId: "p2", sessionId: "s1", createdAt: "2026-02-01T00:00:00.000Z")
-        try insertPersonPhoto(db, personId: alice, photoId: "p3", sessionId: "s2", createdAt: "2026-03-01T00:00:00.000Z")
-
-        // 全量按 created_at DESC。
-        let all = try repo.getPhotos(personId: alice)
-        #expect(all.map(\.photoId) == ["p3", "p2", "p1"])
-
-        // 会话过滤。
-        let s1Only = try repo.getPhotos(personId: alice, sessionIds: ["s1"])
-        #expect(s1Only.map(\.photoId) == ["p2", "p1"])
-        // 空数组视为无过滤（TS 语义）。
-        #expect(try repo.getPhotos(personId: alice, sessionIds: []).count == 3)
-        // 不存在的会话 → 空结果（边界）。
-        #expect(try repo.getPhotos(personId: alice, sessionIds: ["nope"]).isEmpty)
-
-        // limit/offset。
-        let page = try repo.getPhotos(personId: alice, limit: 2, offset: 1)
-        #expect(page.map(\.photoId) == ["p2", "p1"])
-        let tail = try repo.getPhotos(personId: alice, limit: 2, offset: 2)
-        #expect(tail.map(\.photoId) == ["p1"])
     }
 
     @Test func removePhotoCleansBridgeAndEmbeddings() throws {
@@ -263,16 +231,17 @@ struct PersonRepoTests {
         let repo = PersonRepo(connection: db)
         let alice = try repo.create(name: "Alice")
 
-        try repo.addPhoto(personId: alice, photoId: "p1", sessionId: "s1", faceBbox: [0, 0, 1, 1], confidence: 0.9)
+        try repo.addPhotos(personId: alice, sessionId: "s1", photos: [
+            PersonPhotoInput(photoId: "p1", faceBbox: [0, 0, 1, 1], confidence: 0.9),
+        ])
         try repo.saveEmbeddings(embeddings: [
             SaveEmbeddingInput(personId: alice, embedding: [1, 2], photoId: "p1", sessionId: "s1", faceObservationId: 1, faceBbox: [0, 0, 1, 1], quality: 0.9),
         ])
-        #expect(try repo.countEmbeddings(personId: alice) == 1)
+        #expect(try repo.getAllEmbeddings().filter { $0.personId == alice }.count == 1)
 
         try repo.removePhoto(personId: alice, photoId: "p1")
-        #expect(try repo.getPersonPhoto(personId: alice, photoId: "p1") == nil)
         #expect(try repo.countPhotos(personId: alice) == 0)
-        #expect(try repo.countEmbeddings(personId: alice) == 0)
+        #expect(try repo.getAllEmbeddings().filter { $0.personId == alice }.isEmpty)
     }
 
     @Test func saveEmbeddingsRoundTripsFloat32AndReplaceByObservation() throws {
@@ -289,46 +258,42 @@ struct PersonRepoTests {
             SaveEmbeddingInput(personId: alice, embedding: [7], photoId: "p2", sessionId: "s1", faceObservationId: nil, faceBbox: [0, 0, 1, 1], quality: 0.5),
         ])
 
-        let rows = try repo.getEmbeddingsByPerson(personId: alice)
+        let rows = try repo.getAllEmbeddings().filter { $0.personId == alice }
         #expect(rows.count == 2)
-        #expect(rows[0].id < rows[1].id, "ORDER BY id 升序")
-        #expect(rows[0].personId == alice)
         // Float32 BLOB 长度 = 4 字节 × 元素数。
-        #expect(rows[0].embedding.count == 16)
-        #expect(rows[1].embedding.count == 4)
-        let roundTripped = rows[0].embedding.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        let row10 = try #require(rows.first { $0.faceObservationId == 10 })
+        let rowNil = try #require(rows.first { $0.faceObservationId == nil })
+        #expect(row10.embedding.count == 16)
+        #expect(rowNil.embedding.count == 4)
+        let roundTripped = row10.embedding.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
         #expect(roundTripped == floats)
-        #expect(rows[0].faceObservationId == 10)
-        #expect(rows[1].faceObservationId == nil)
-        #expect(rows[0].quality == 0.95)
-        #expect(rows[0].faceBbox == "[0,0,1,1]")
 
-        // countEmbeddings / getAllEmbeddings。
-        #expect(try repo.countEmbeddings(personId: alice) == 2)
+        // 全部向量合并视图（getAllEmbeddings）覆盖同一行数据。
         let all = try repo.getAllEmbeddings()
         #expect(all.count == 2)
         let hasEmbedding10 = all.contains { $0.personId == alice && $0.faceObservationId == 10 && $0.embedding.count == 16 }
         #expect(hasEmbedding10)
 
+        // quality/faceBbox 仍落库（getAllEmbeddings 投影不含这两列，走原始行校验）。
+        let cached = try db.prepare(
+            "SELECT quality, face_bbox FROM person_embeddings WHERE person_id = ? AND face_observation_id = 10"
+        ).get([.text(alice)])
+        guard case .real(let quality)? = cached?[0], case .text(let faceBbox)? = cached?[1] else {
+            Issue.record("person_embeddings 行缺失或类型不符")
+            return
+        }
+        #expect(quality == 0.95)
+        #expect(faceBbox == "[0,0,1,1]")
+
         // 相同 face_observation_id 再次保存 → INSERT OR REPLACE 覆盖（唯一索引）。
         try repo.saveEmbeddings(embeddings: [
             SaveEmbeddingInput(personId: alice, embedding: [9, 9], photoId: "p1", sessionId: "s1", faceObservationId: 10, faceBbox: [0, 0, 1, 1], quality: 0.99),
         ])
-        #expect(try repo.countEmbeddings(personId: alice) == 2)
-        let replaced = try repo.getEmbeddingsByPerson(personId: alice).first { $0.faceObservationId == 10 }
-        #expect(replaced?.embedding.count == 8)
-        #expect(replaced?.quality == 0.99)
-
-        // 按 observation id 删除。
-        try repo.deleteEmbeddingsByObservationIds(observationIds: [10])
-        #expect(try repo.countEmbeddings(personId: alice) == 1)
-        // 空数组 no-op。
-        try repo.deleteEmbeddingsByObservationIds(observationIds: [])
-        #expect(try repo.countEmbeddings(personId: alice) == 1)
-
-        // 按人删除。
-        try repo.deleteEmbeddingsByPerson(personId: alice)
-        #expect(try repo.countEmbeddings(personId: alice) == 0)
+        #expect(try repo.getAllEmbeddings().filter { $0.personId == alice }.count == 2)
+        let replaced = try #require(
+            try repo.getAllEmbeddings().first { $0.personId == alice && $0.faceObservationId == 10 }
+        )
+        #expect(replaced.embedding.count == 8)
     }
 
     @Test func getSessionCountCountsDistinctSessions() throws {
@@ -408,16 +373,16 @@ struct PersonRepoTests {
 
         // Alice 人物被创建，p1/p2 链接按绑定数据写入。
         let alice = try repo.upsertByName(name: "Alice")
-        let aliceLinks = try repo.getPhotos(personId: alice, sessionIds: ["s1"])
+        let aliceLinks = try repo.getPhotosWithDetails(personId: alice, sessionIds: ["s1"]).photos.map(\.photo)
         #expect(aliceLinks.map(\.photoId).sorted() == ["p1", "p2"])
         #expect(aliceLinks.first { $0.photoId == "p1" }?.confidence == 0.9)
         #expect(aliceLinks.first { $0.photoId == "p1" }?.faceBbox == "[0,0,1,1]")
 
         // Bob 的 s1 链接被清除（角色中已无 Bob）。
-        #expect(try repo.getPersonPhoto(personId: bob, photoId: "p1") == nil)
+        #expect(try repo.getPhotosWithDetails(personId: bob).photos.allSatisfy { $0.photo.photoId != "p1" })
         // Charlie 的 s1 链接也被清除，但其 other 会话链接不受影响。
-        #expect(try repo.getPersonPhoto(personId: charlie, photoId: "p1") == nil)
-        #expect(try repo.getPersonPhoto(personId: charlie, photoId: "p4") != nil)
+        #expect(try repo.getPhotosWithDetails(personId: charlie).photos.allSatisfy { $0.photo.photoId != "p1" })
+        #expect(try repo.getPhotosWithDetails(personId: charlie).photos.contains { $0.photo.photoId == "p4" })
 
         // 无任何绑定/链接时 no-op。
         try insertSession(db, id: "empty")

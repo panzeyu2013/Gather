@@ -13,8 +13,8 @@
 // - MetadataSyncPort = TS Pick<MetadataSyncCoordinator, ...>（waitForIdle /
 //   flushSession / confirmSync / cleanup）—— 3.4 CullingService 与测试可注入替身。
 // - MetadataMutationPort = TS MetadataMutationService（queuePhotoValues）。
-// - C1 相关：本服务不直接触碰 Capture One（reload-ack 由宿主 C1BridgeProvider
-//   的 recordReloadAck 写入，coordinator 的 requireReloadAck 读 sessions 表）。
+// - C1 相关：本服务不直接触碰 Capture One（reload-ack 由宿主侧直接写
+//   sessions.reload_acked_at，coordinator 的 requireReloadAck 读该表）。
 
 import Foundation
 
@@ -51,8 +51,64 @@ public func mutationSource(_ module: String) -> MetadataMutationSource {
     }
 }
 
+/// execute Phase 1 并发 body 的收集盒子（prepared/errors/failedItems/failed
+/// 串行写入；并发 append 会 SIGSEGV 或静默丢项）。
+/// `@unchecked Sendable` 的依据：四个可变字段只在 `lock`（NSLock）临界区内通过
+/// 同步方法与快照属性读写；锁内不含 await，并发阶段结束后转单线程消费快照。
+private final class PhaseOneCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var prepared: [PreparedEntry] = []
+    private var errors: [String] = []
+    private var failedItems: [WritebackItem] = []
+    private var failed = 0
+
+    func recordPrepared(_ entry: PreparedEntry) {
+        lock.lock()
+        defer { lock.unlock() }
+        prepared.append(entry)
+    }
+
+    func recordFailure(message: String, item: WritebackItem) {
+        lock.lock()
+        defer { lock.unlock() }
+        errors.append(message)
+        failedItems.append(item)
+        failed += 1
+    }
+
+    var preparedSnapshot: [PreparedEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return prepared
+    }
+
+    var errorsSnapshot: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return errors
+    }
+
+    var failedItemsSnapshot: [WritebackItem] {
+        lock.lock()
+        defer { lock.unlock() }
+        return failedItems
+    }
+
+    var failedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return failed
+    }
+}
+
 /// TS: WritebackService。
-public final class WritebackService {
+/// 线程安全说明（Swift 6 `Sendable`）：本类无任何可变状态——全部存储属性
+/// （`writebackRepo`/`xmp`/`photoRepo`/`sessionRepo`/`metadataCacheRepo`/
+/// `metadataSync`/`metadataMutations`/`outboxRepo`/`keywordOrigins`/
+/// `assetResolver`）都是 `let`，构造后不可变，故无需锁。标注 `@unchecked`
+/// 仅因为依赖仓库/协议存在类型未标 `Sendable`；execute 的并发收集状态
+/// 全部收在 PhaseOneCollector 的锁内。
+public final class WritebackService: @unchecked Sendable {
     private let writebackRepo: WritebackRepo
     private let xmp: any XMPProvider
     private let photoRepo: PhotoRepo
@@ -199,7 +255,16 @@ public final class WritebackService {
         // culling 是连续同步模块：其 pending outbox 行可能携带用户交互式的
         // rating/label 编辑，与关键词 preview 无关——删除它们会静默丢失工作。
         if module != "culling" {
-            try? outboxRepo?.discardModulePending(sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
+            // 只丢弃本模块拥有的字段（仓库按 __owners__ 判定）；结果可观测、不吞错。
+            if let outboxRepo {
+                let discarded = try outboxRepo.discardModulePending(
+                    sessionId: sessionId, sourceModule: mutationSource(module).rawValue)
+                if discarded.deleted > 0 || discarded.trimmed > 0 {
+                    GatherLogger.log(
+                        "Writeback preview dropped \(discarded.deleted) rows / trimmed \(discarded.trimmed) for module \(module)",
+                        level: .info)
+                }
+            }
         }
 
         // 轻投影：preview 只需要照片身份与 filepath，重 JSON 列从不读取。
@@ -233,8 +298,13 @@ public final class WritebackService {
             let sidecarPath = resolvedByPhoto[photo.id]?.xmpPath ?? ""
             if !seenSidecars.insert(sidecarPath).inserted { continue }
             var existingKeywords: [String] = []
-            if let read = try? await xmp.readKeywords(photoPath: photo.filepath) {
-                existingKeywords = read
+            do {
+                existingKeywords = try await xmp.readKeywords(photoPath: photo.filepath)
+            } catch {
+                // 缺失侧车 = 空；读取失败必须可见（否则会把外部关键词静默当空列表）。
+                if xmp.fileExists(sidecarPath) {
+                    GatherLogger.log("Writeback preview keyword read failed for \(sidecarPath): \(error)", level: .warn)
+                }
             }
             let merged = orderedUnion(existingKeywords, additionsBySidecar[sidecarPath] ?? [])
             let preview = WritebackItemPreview(
@@ -319,7 +389,11 @@ public final class WritebackService {
             groups[groupKey, default: []].append(item)
         }
 
-        try await batchAsync(groups.map { ($0.key, $0.value) }, concurrency: 4) { group in
+        // batchAsync 的 body 并发执行：prepared/errors/failedItems/failed 都是共享可变
+        // 状态，必须串行写入（实测并发 append 会 SIGSEGV 或静默丢项）——统一收进
+        // PhaseOneCollector 的锁内，快照在 await 返回后转单线程合并。
+        let phaseOne = PhaseOneCollector()
+        _ = try await batchAsync(groups.map { ($0.key, $0.value) }, concurrency: 4) { group in
             for item in group.1 {
                 guard let itemId = item.id, let dbRow = rowById[itemId] else { continue }
 
@@ -332,12 +406,14 @@ public final class WritebackService {
                 }
                 guard !photoPath.isEmpty else {
                     let message = "Missing photo path for writeback item"
-                    try self.writebackRepo.updateStatus(itemId: Int64(itemId), status: "failed", error: message)
-                    errors.append("\(itemId): \(message)")
+                    do {
+                        try self.writebackRepo.updateStatus(itemId: Int64(itemId), status: "failed", error: message)
+                    } catch {
+                        GatherLogger.log("Failed to record writeback item failure: \(error)", level: .error)
+                    }
                     var failedItem = item
                     failedItem.photoPath = ""
-                    failedItems.append(failedItem)
-                    failed += 1
+                    phaseOne.recordFailure(message: "\(itemId): \(message)", item: failedItem)
                     continue
                 }
                 let persistedItem = try self.rowToItem(dbRow)
@@ -370,7 +446,7 @@ public final class WritebackService {
                         source: mutationSource(module),
                         schedule: false
                     )
-                    prepared.append(PreparedEntry(
+                    phaseOne.recordPrepared(PreparedEntry(
                         itemId: Int64(itemId),
                         dbRow: dbRow,
                         persistedItem: persistedItem,
@@ -379,14 +455,23 @@ public final class WritebackService {
                         keywordsBeforeWrite: keywordsBeforeWrite
                     ))
                 } catch {
-                    let message = String(describing: error)
-                    try self.writebackRepo.updateStatus(itemId: Int64(itemId), status: "failed", error: message)
-                    errors.append("\(photoPath): \(message)")
-                    failedItems.append(persistedItem)
-                    failed += 1
+                    // 逐项隔离：本项失败只影响本项，错误以「错误码 + 路径 + 原因」上报。
+                    let message = MetadataWritebackFailure.from(error, xmpPath: group.0).description
+                    do {
+                        try self.writebackRepo.updateStatus(itemId: Int64(itemId), status: "failed", error: message)
+                    } catch {
+                        GatherLogger.log("Failed to record writeback item failure: \(error)", level: .error)
+                    }
+                    phaseOne.recordFailure(message: "\(photoPath): \(message)", item: persistedItem)
                 }
             }
         }
+
+        // 并发阶段结束：把锁内收集的状态并入单线程局部量（此后只有本任务读写）。
+        prepared.append(contentsOf: phaseOne.preparedSnapshot)
+        errors.append(contentsOf: phaseOne.errorsSnapshot)
+        failedItems.append(contentsOf: phaseOne.failedItemsSnapshot)
+        failed += phaseOne.failedCount
 
         // Phase 2：整会话队列一次 flush，然后逐项对照 summary 核验。
         var summary: MetadataSyncSummary? = nil
@@ -394,8 +479,10 @@ public final class WritebackService {
             do {
                 summary = try await metadataSync.flushSession(sessionId: sessionId)
             } catch {
-                let message = String(describing: error)
+                // 与 Phase 1 同一套结构化失败（稳定错误码 + 侧车路径 + 字段 + 原因）：
+                // 同一失败不允许在两条路径上分别落「散文」与「错误码」。
                 for entry in prepared {
+                    let message = MetadataWritebackFailure.from(error, xmpPath: entry.dbRow.xmpPath).description
                     try writebackRepo.updateStatus(itemId: entry.itemId, status: "failed", error: message)
                     errors.append("\(entry.photoPath): \(message)")
                     failedItems.append(entry.persistedItem)
@@ -419,26 +506,8 @@ public final class WritebackService {
                 if let syncItem, syncItem.status == .written || syncItem.status == .synced {
                     try writebackRepo.updateStatus(itemId: entry.itemId, status: "written")
                     let attrs = entry.writeAttrs
-                    if let rating = attrs["rating"]?.numberValue {
-                        try? metadataCacheRepo.updateRating(photoId: entry.dbRow.photoId, rating: Int64(rating))
-                    }
-                    if let label = attrs["label"]?.stringValue {
-                        try? metadataCacheRepo.updateLabel(photoId: entry.dbRow.photoId, label: label)
-                    }
-                    if let keywords = attrs["keywords"]?.arrayElements?.compactMap({ $0.stringValue }) {
-                        try? metadataCacheRepo.updateKeywords(photoId: entry.dbRow.photoId, keywords: keywords)
-                        if module == "face_kw" {
-                            // keywordsBeforeWrite 是 phase 1 的写前快照：写入前
-                            // 不在文件上的关键词即本模块引入的。
-                            let existing = Set(entry.keywordsBeforeWrite)
-                            let introduced = keywords.filter { !existing.contains($0) }
-                            try? keywordOrigins?.markIntroduced(
-                                xmpPath: entry.dbRow.xmpPath,
-                                source: "face-keyword",
-                                keywords: introduced
-                            )
-                        }
-                    }
+                    // 本地投影失败不得静默：逐条进报告 errors（XMP 已落盘，不改判 written）。
+                    errors.append(contentsOf: updateLocalProjection(entry: entry, attrs: attrs, module: module))
                     written += 1
                 } else {
                     let message = syncItem?.errorMessage.isEmpty == false
@@ -593,6 +662,50 @@ public final class WritebackService {
         return result
     }
 
+    /// 写盘成功后的本地投影刷新（元数据缓存 + 人脸关键词归属）。
+    /// XMP 已经落盘，因此投影失败不改判 written，但必须逐条可见（禁止 try? 吞写失败）。
+    private func updateLocalProjection(entry: PreparedEntry, attrs: [String: JSONValue], module: String) -> [String] {
+        var failures: [String] = []
+        func record(_ operation: String, _ error: Error) {
+            let failure = MetadataWritebackFailure.from(error, xmpPath: entry.dbRow.xmpPath)
+            failures.append(failure.description + " operation=" + operation)
+            GatherLogger.log("Writeback projection failed (\(operation)) for \(entry.dbRow.xmpPath): \(error)", level: .warn)
+        }
+        if let rating = attrs["rating"]?.numberValue {
+            do {
+                try metadataCacheRepo.updateRating(photoId: entry.dbRow.photoId, rating: Int64(rating))
+            } catch {
+                record("cache.updateRating", error)
+            }
+        }
+        if let label = attrs["label"]?.stringValue {
+            do {
+                try metadataCacheRepo.updateLabel(photoId: entry.dbRow.photoId, label: label)
+            } catch {
+                record("cache.updateLabel", error)
+            }
+        }
+        if let keywords = attrs["keywords"]?.arrayElements?.compactMap({ $0.stringValue }) {
+            do {
+                try metadataCacheRepo.updateKeywords(photoId: entry.dbRow.photoId, keywords: keywords)
+            } catch {
+                record("cache.updateKeywords", error)
+            }
+            if module == "face_kw", let keywordOrigins {
+                // keywordsBeforeWrite 是 phase 1 的写前快照：写入前不在文件上的关键词即本模块引入的。
+                let existing = Set(entry.keywordsBeforeWrite)
+                let introduced = keywords.filter { !existing.contains($0) }
+                do {
+                    try keywordOrigins.markIntroduced(
+                        xmpPath: entry.dbRow.xmpPath, source: "face-keyword", keywords: introduced)
+                } catch {
+                    record("origin.markIntroduced", error)
+                }
+            }
+        }
+        return failures
+    }
+
     // MARK: - 行映射
 
     /// TS: rowToItem。
@@ -672,85 +785,9 @@ private func jsonScalar(_ value: JSONValue) -> Any {
     }
 }
 
-/// TS: batchAsync（utils/async.ts）—— 与 coordinator / metadata.service 同款滑动窗口。
-private func batchAsync<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = WritebackBatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    collected.sort { $0.index < $1.index }
-    return collected.map(\.value)
-}
-
-private final class WritebackBatchCursor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var next = 0
-    private var failed = false
-    private let count: Int
-
-    init(count: Int) { self.count = count }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failed || next >= count { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
-}
-
 // ────────────────────────────────────────────────────────────
 // writeback-planners.ts（writeback-planners.ts 全量）
 // ────────────────────────────────────────────────────────────
-
-/// TS: buildCullingWritebackPlan —— culling 决策 → XMP 属性计划。
-public func buildCullingWritebackPlan(
-    decisions: [(photoId: String, decision: String)],
-    target: CullingWritebackTarget
-) -> [String: WritebackAttributes] {
-    var plan: [String: WritebackAttributes] = [:]
-    for item in decisions {
-        if item.decision == "pending" { continue }
-        switch target {
-        case .rating:
-            plan[item.photoId] = WritebackAttributes(rating: item.decision == "keep" ? 5 : 1)
-        case .colorLabel:
-            plan[item.photoId] = WritebackAttributes(label: item.decision == "keep" ? "Green" : "Red")
-        case .keyword:
-            plan[item.photoId] = WritebackAttributes(keywords: ["culling:\(item.decision)"])
-        }
-    }
-    return plan
-}
 
 /// TS: buildSimilarityKeywordPlan —— 相似度分组关键词 → 按侧车聚合 + 受影响路径集。
 public func buildSimilarityKeywordPlan(

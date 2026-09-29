@@ -29,15 +29,9 @@ struct DHashReconciliationTests {
         }
     }
 
-    // 手工边界 case：全零网格 → left < right 恒为 false → hash 全零。
-    @Test func allZeroGridProducesZeroHash() {
-        let pixels = [UInt8](repeating: 0, count: 72)
-        #expect(DHash.compute(pixels9x8: pixels) == "0000000000000000")
-    }
-
-    // 手工边界 case：全一网格 → left < right 恒为 false → hash 全零。
-    @Test func allOneGridProducesZeroHash() {
-        let pixels = [UInt8](repeating: 255, count: 72)
-        #expect(DHash.compute(pixels9x8: pixels) == "0000000000000000")
-    }
+    // 说明（2026-09 测试精简）：原先的「全零网格」「全一网格」两条手工边界用例
+    // 已删除——fixture 的 case 0（全零像素）/ case 1（全 255 像素）与它们输入
+    // 完全相同、期望 hex 同为 "0000000000000000"，且 fixture 用例额外断言
+    // 像素数 == 72 与 hex 长度 == 16（覆盖严格更强）。
+    // 承接覆盖：fixtureMatchesTSGeneratorOutput 的 case 0 / case 1。
 }

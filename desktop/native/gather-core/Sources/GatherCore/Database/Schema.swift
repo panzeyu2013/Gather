@@ -8,7 +8,6 @@ public enum SchemaSQL {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'draft',
-      analysis_status TEXT NOT NULL DEFAULT 'idle',
       writeback_status TEXT NOT NULL DEFAULT 'idle',
       import_source TEXT NOT NULL DEFAULT 'unknown',
       source_path TEXT NOT NULL DEFAULT '',
@@ -221,7 +220,17 @@ public enum SchemaSQL {
       source_file_size INTEGER NOT NULL DEFAULT 0,
       source_file_mtime_ms REAL NOT NULL DEFAULT 0,
       analysis_signature TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT ''
+      created_at TEXT NOT NULL DEFAULT '',
+      -- v34 人脸质量/几何/模型版本（竞品算法改造）。新列必须声明在既有列之后：
+      -- ALTER TABLE ADD COLUMN 只能追加到行尾，若新库声明顺序不同，会让
+      -- SELECT * 的 FaceObservationRow 行映射在新库与升级库之间分叉
+      -- （MigrationTests.legacyV33UpgradesFaceObservationQualityColumns 列级同形断言）。
+      quality REAL NOT NULL DEFAULT 0,
+      face_size_px REAL NOT NULL DEFAULT 0,
+      roll_degrees REAL NOT NULL DEFAULT 0,
+      model_id TEXT NOT NULL DEFAULT '',
+      model_version TEXT NOT NULL DEFAULT '',
+      embedding_dim INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS face_analysis_state (
@@ -362,6 +371,14 @@ public enum SchemaSQL {
       embedding BLOB NOT NULL,
       photo_id TEXT NOT NULL REFERENCES photos(id),
       session_id TEXT NOT NULL REFERENCES sessions(id),
+      -- 刻意不建 FK（除非有级联顺序保证）：face_observations 是派生数据，
+      -- 失效/重分析时整批 DELETE 再 INSERT；若此处有 FK，删观察就必须先解除
+      -- 引用或依赖级联顺序，脆弱且会阻断「先删向量再删观察」的写法。代价是
+      -- 删除观察的每一处都必须**同事务**显式删掉本列对应的行
+      -- （FaceRepo.invalidateDerivedResults / deleteObservationsBySession /
+      -- deleteObservationsByPhoto / replaceObservationsByPhoto /
+      -- reuseObservationsForAssetFile —— 全仓仅这 5 处产生删除），
+      -- 否则残留向量会被 FaceMatcher 的库查询读到。
       face_observation_id INTEGER,
       face_bbox TEXT NOT NULL,
       quality REAL NOT NULL DEFAULT 0.0,
@@ -530,6 +547,15 @@ public enum SchemaSQL {
     );
     """
 
+    /// 活跃 job 状态集合的 **SQL 字面量唯一真相源**（顺序是语义的一部分）：
+    /// SQLite 的部分索引匹配是语法级的 —— EQP 实测把这里的顺序换成
+    /// ('cancelling','queued','running')、或改写成绑定参数，都会让
+    /// AnalysisJobRepo.activeRow 失去 idx_analysis_jobs_active_dedupe，
+    /// 退化为 idx_analysis_jobs_status_priority + TEMP B-TREE。
+    /// 因此本常量必须与 idx_analysis_jobs_active_dedupe 的 WHERE 子句逐字一致，
+    /// 且被 AnalysisJobRepo 直接插值（而不是各自维护一份字面量）。
+    public static let activeAnalysisJobStatusSQLList = "'queued', 'running', 'cancelling'"
+
     public static let indexSQL = """
     CREATE INDEX IF NOT EXISTS idx_photos_session ON photos(session_id);
     CREATE INDEX IF NOT EXISTS idx_photos_filepath ON photos(filepath);
@@ -558,7 +584,7 @@ public enum SchemaSQL {
     CREATE INDEX IF NOT EXISTS idx_asset_analysis_file_type ON asset_analysis(asset_file_id, analysis_type);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_jobs_active_dedupe
       ON analysis_jobs(dedupe_key)
-      WHERE status IN ('queued', 'running', 'cancelling');
+      WHERE status IN (\(activeAnalysisJobStatusSQLList));
     CREATE INDEX IF NOT EXISTS idx_face_observations_session ON face_observations(session_id);
     CREATE INDEX IF NOT EXISTS idx_face_observations_photo ON face_observations(photo_id);
     CREATE INDEX IF NOT EXISTS idx_face_analysis_state_session ON face_analysis_state(session_id);

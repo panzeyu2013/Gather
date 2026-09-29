@@ -8,54 +8,100 @@ import GatherCore
 
 @Suite("GatherLocalization", .serialized)
 struct GatherLocalizationTests {
-    @Test("已知错误码返回中文文案")
-    func knownCode() {
-        #expect(GatherLocalization.errorText("SESSION_NOT_FOUND") == "工作区不存在")
-        #expect(GatherLocalization.errorText("C1_NOT_RUNNING").contains("Capture One"))
-        #expect(GatherLocalization.errorText("C1_NO_SELECTED_PHOTOS").contains("选择"))
+    /// 中文断言前钉死语言：本机系统语言可能是 en，文案层已随 appLanguage 变化。
+    /// 切语言必须在 AppLanguageLock 内：否则并行套件会读到临时语言（既有 flake）。
+    private func withChineseCopy(_ body: () -> Void) {
+        AppLanguageLock.withCopy("zh-CN", body)
     }
 
-    @Test("未知错误码回退通用文案")
-    func unknownCodeFallsBack() {
-        #expect(GatherLocalization.errorText("NOT_A_REAL_CODE") == "发生未知错误，请稍后重试")
+    // 原 2 条用例（已知错误码 / 未知码回退）：同一函数仅输入不同 → 参数化。
+    // exact=false 对应原 `.contains(...)` 断言，语义逐条保留。
+    @Test("errorText：已知错误码返回中文文案 / 未知码回退通用文案", arguments: [
+        ("SESSION_NOT_FOUND", "工作区不存在", true),
+        ("C1_NOT_RUNNING", "Capture One", false),
+        ("C1_NO_SELECTED_PHOTOS", "选择", false),
+        ("NOT_A_REAL_CODE", "发生未知错误，请稍后重试", true),
+    ])
+    private func errorTextMatrix(code: String, expected: String, exact: Bool) {
+        withChineseCopy {
+            let text = GatherLocalization.errorText(code)
+            if exact {
+                #expect(text == expected)
+            } else {
+                #expect(text.contains(expected))
+            }
+        }
     }
 
     @Test("参数化错误码按模板插值（CODE::p1::p2）")
     func parameterizedCodesInterpolate() {
-        #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN::rating") == "未知的筛选字段：rating")
-        #expect(GatherLocalization.errorText("CULLING_REVISION_CONFLICT::3::5") == "挑片版本冲突：期望 3，当前 5")
-        #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN") == "未知的筛选字段：")
-        #expect(GatherLocalization.message(for: RouterCommandError(message: "FILTER_FIELD_UNKNOWN::label")) == "未知的筛选字段：label")
+        withChineseCopy {
+            #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN::rating") == "未知的筛选字段：rating")
+            #expect(GatherLocalization.errorText("CULLING_REVISION_CONFLICT::3::5") == "挑片版本冲突：期望 3，当前 5")
+            #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN") == "未知的筛选字段：")
+            #expect(GatherLocalization.message(for: RouterCommandError(message: "FILTER_FIELD_UNKNOWN::label")) == "未知的筛选字段：label")
+        }
     }
 
     @Test("jobErrorMessage 仅翻译错误码，诊断原文回退")
     func jobErrorMessageSemantics() {
-        #expect(GatherLocalization.jobErrorMessage("SIM_NO_PHOTOS") == "当前工作区没有照片")
-        #expect(GatherLocalization.jobErrorMessage("worker_error") == "发生未知错误，请稍后重试")
-        #expect(GatherLocalization.jobErrorMessage(nil) == "发生未知错误，请稍后重试")
+        withChineseCopy {
+            #expect(GatherLocalization.jobErrorMessage("SIM_NO_PHOTOS") == "当前工作区没有照片")
+            #expect(GatherLocalization.jobErrorMessage("worker_error") == "发生未知错误，请稍后重试")
+            #expect(GatherLocalization.jobErrorMessage(nil) == "发生未知错误，请稍后重试")
+        }
     }
 
     @Test("message(for:) 翻译 RouterCommandError 中的错误码")
     func messageForTranslatesCode() {
-        #expect(GatherLocalization.message(for: RouterCommandError(message: "PERSON_NOT_FOUND")) == "人物不存在")
-        #expect(GatherLocalization.message(for: RouterCommandError(message: "诊断信息")) == "诊断信息")
+        withChineseCopy {
+            #expect(GatherLocalization.message(for: RouterCommandError(message: "PERSON_NOT_FOUND")) == "人物不存在")
+            #expect(GatherLocalization.message(for: RouterCommandError(message: "诊断信息")) == "诊断信息")
+        }
     }
 
-    @Test("任务状态/类型/进度相位映射")
+    @Test("cancellationNotice：四处取消文案逐字一致，且与 Culling 变体不同")
+    func cancellationNoticeCopy() {
+        withChineseCopy {
+            // 合并前 Duplicates/Settings/FaceKeywording/Similarity 的原文案。
+            #expect(GatherLocalization.cancellationNotice("写入 XMP") == "已取消“写入 XMP”，未执行任何更改")
+            #expect(GatherLocalization.cancellationNotice("") == "已取消“”，未执行任何更改")
+            // Culling 的 noteCancelledAction 是另一句，不得被并入。
+            #expect(GatherLocalization.cancellationNotice("写入 XMP")
+                != String(format: GatherLocalization.l("已取消：%@"), "写入 XMP"))
+        }
+    }
+
+    @Test("任务状态/类型/进度相位映射（zh）")
     func jobLabels() {
-        #expect(GatherLocalization.jobStatusText("running") == "运行中")
-        #expect(GatherLocalization.jobStatusText("unknown") == "unknown")
-        #expect(GatherLocalization.jobTypeText("face.analyze") == "人脸分析")
-        #expect(GatherLocalization.progressPhaseText("similarity.cluster") == "正在聚类相似照片…")
-        #expect(GatherLocalization.progressPhaseText(nil) == "正在处理…")
-        #expect(GatherLocalization.progressPhaseText("no.such.phase") == "正在处理…")
+        withChineseCopy {
+            #expect(GatherLocalization.jobStatusText("running") == "运行中")
+            #expect(GatherLocalization.jobStatusText("unknown") == "unknown")
+            #expect(GatherLocalization.jobTypeText("face.analyze") == "人脸分析")
+            #expect(GatherLocalization.progressPhaseText("similarity.cluster") == "正在聚类相似照片…")
+            #expect(GatherLocalization.progressPhaseText(nil) == "正在处理…")
+            #expect(GatherLocalization.progressPhaseText("no.such.phase") == "正在处理…")
+        }
+    }
+
+    @Test("任务文案/通用回退跟随 appLanguage（en 表齐全，不再恒中文）")
+    func jobLabelsFollowLanguage() {
+        AppLanguageLock.withCopy("en") {
+        #expect(GatherLocalization.jobStatusText("running") == "Running")
+        #expect(GatherLocalization.jobStatusText("queued") == "Queued")
+        #expect(GatherLocalization.jobTypeText("face.analyze") == "Face Analysis")
+        #expect(GatherLocalization.progressPhaseText("similarity.cluster") == "Clustering similar photos…")
+        #expect(GatherLocalization.progressPhaseText(nil) == "Processing…")
+        #expect(GatherLocalization.jobErrorMessage(nil) == "Something went wrong. Please try again later.")
+        #expect(GatherLocalization.errorText("NOT_A_REAL_CODE") == "Something went wrong. Please try again later.")
+        }
     }
 
     @Test("l() 查 Apple 本地化表：zh 回退 key、en 返回翻译、未知 key 回退")
     func localizedLookup() {
+        AppLanguageLock.withStableCopy {
         let original = GatherLocalization.appLanguage
         defer { GatherLocalization.setAppLanguage(original) }
-
         GatherLocalization.setAppLanguage("zh-CN")
         #expect(GatherLocalization.l("挑片与写回") == "挑片与写回")
         #expect(GatherLocalization.l("不存在的文案") == "不存在的文案")
@@ -67,6 +113,41 @@ struct GatherLocalizationTests {
 
         #expect(GatherLocalization.l(" 等 %d 个") == " and %d more")
         #expect(String(format: GatherLocalization.l("写回队列：%d 项"), 3) == "Writeback Queue: 3 Items")
+        }
+    }
+}
+
+/// 观察者闭包在 @Sendable 上下文执行（NotificationCenter），不能捕获可变局部
+/// 变量做累加。线程安全说明（Swift 6 `Sendable`）：可变状态
+/// `terminalEvents`/`progressCount` 只在 `lock`（NSLock）临界区内读写，
+/// 观察者队列固定为 .main，读写不重入；锁纪律无法被编译器静态验证，故 @unchecked。
+private final class JobEventSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var terminalEvents: [GatherJobEvent] = []
+    private var progressCount = 0
+
+    func appendTerminal(_ event: GatherJobEvent) {
+        lock.lock()
+        terminalEvents.append(event)
+        lock.unlock()
+    }
+
+    func bumpProgress() {
+        lock.lock()
+        progressCount += 1
+        lock.unlock()
+    }
+
+    var terminalSnapshot: [GatherJobEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return terminalEvents
+    }
+
+    var progress: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return progressCount
     }
 }
 
@@ -84,33 +165,33 @@ struct GatherEventCenterTests {
         )
     }
 
-    @Test("终态帧判定：update.message == status.rawValue 且状态为终态")
+    @Test("终态判定：只看 job.status；message 为真实进度/错误文案时不漏判")
     func terminalDetection() {
         let succeeded = Self.job(id: "j1", status: .succeeded)
-        let terminal = GatherJobEvent(job: succeeded, update: JobProgressUpdate(current: 1, total: 1, message: "succeeded"))
-        #expect(terminal.isTerminal)
-        let progress = GatherJobEvent(job: succeeded, update: JobProgressUpdate(current: 1, total: 5, message: "index.scanning"))
-        #expect(!progress.isTerminal)
+        #expect(GatherJobEvent(job: succeeded, update: JobProgressUpdate(current: 1, total: 1, message: "succeeded")).isTerminal)
+        // 终态帧的 update.message 是真实 progressMessage/errorMessage（不再等于
+        // status.rawValue），判定必须只看状态，否则漏判。
+        let terminalWithRealMessage = GatherJobEvent(job: succeeded, update: JobProgressUpdate(current: 1, total: 5, message: "index.done"))
+        #expect(terminalWithRealMessage.isTerminal)
         let running = Self.job(id: "j2", status: .running)
-        #expect(!GatherJobEvent(job: running, update: JobProgressUpdate(message: "running")).isTerminal)
+        #expect(!GatherJobEvent(job: running, update: JobProgressUpdate(message: "index.scanning")).isTerminal)
     }
 
-    // MARK: - 终态转移检测（GatherEventCenter emit 路径；状态机判定补 message 启发式）
+    // MARK: - 终态事件发射（GatherEventCenter emit 路径；状态机判定）
 
     @MainActor
-    @Test("非终态帧只发 jobProgress；running→succeeded 转移（message 不匹配）发 jobTerminal")
+    @Test("非终态帧只发 jobProgress；running→succeeded 转移（message 是真实文案）发 jobTerminal")
     func terminalTransitionEmitsTerminal() {
         let center = GatherEventCenter.shared
-        var terminalEvents: [GatherJobEvent] = []
-        var progressCount = 0
+        let sink = JobEventSink()
         let terminalToken = NotificationCenter.default.addObserver(
             forName: GatherEventCenter.jobTerminal, object: nil, queue: .main
         ) { note in
-            if let event = note.object as? GatherJobEvent { terminalEvents.append(event) }
+            if let event = note.object as? GatherJobEvent { sink.appendTerminal(event) }
         }
         let progressToken = NotificationCenter.default.addObserver(
             forName: GatherEventCenter.jobProgress, object: nil, queue: .main
-        ) { _ in progressCount += 1 }
+        ) { _ in sink.bumpProgress() }
         defer {
             NotificationCenter.default.removeObserver(terminalToken)
             NotificationCenter.default.removeObserver(progressToken)
@@ -120,40 +201,44 @@ struct GatherEventCenterTests {
 
         // 非终态帧：仅 jobProgress，不发 jobTerminal。
         center.post(job: Self.job(id: jobId, status: .running), update: JobProgressUpdate(current: 4, total: 5, message: "index.scanning"))
-        #expect(progressCount == 1)
-        #expect(terminalEvents.isEmpty)
+        #expect(sink.progress == 1)
+        #expect(sink.terminalSnapshot.isEmpty)
 
-        // 终态转移：status 已 succeeded 但 message 不匹配（旧 message 启发式
-        // 漏判场景）→ 状态机判定仍发 jobTerminal。
+        // 终态转移：status 已 succeeded（message 仍是上一帧的真实进度文案）
+        // → 按状态判定发 jobTerminal。
         center.post(job: Self.job(id: jobId, status: .succeeded), update: JobProgressUpdate(current: 5, total: 5, message: "index.scanning"))
-        #expect(progressCount == 2)
-        #expect(terminalEvents.count == 1)
-        #expect(terminalEvents[0].job.id == jobId)
-        #expect(terminalEvents[0].job.status == .succeeded)
+        #expect(sink.progress == 2)
+        #expect(sink.terminalSnapshot.count == 1)
+        #expect(sink.terminalSnapshot[0].job.id == jobId)
+        #expect(sink.terminalSnapshot[0].job.status == .succeeded)
     }
 
     @MainActor
-    @Test("首次见到即终态（emitTerminal 约定帧）同样发 jobTerminal")
+    @Test("首次见到即终态帧同样发 jobTerminal")
     func firstSightingTerminalEmitsTerminal() {
         let center = GatherEventCenter.shared
-        var terminalEvents: [GatherJobEvent] = []
+        let sink = JobEventSink()
         let terminalToken = NotificationCenter.default.addObserver(
             forName: GatherEventCenter.jobTerminal, object: nil, queue: .main
         ) { note in
-            if let event = note.object as? GatherJobEvent { terminalEvents.append(event) }
+            if let event = note.object as? GatherJobEvent { sink.appendTerminal(event) }
         }
         defer {
             NotificationCenter.default.removeObserver(terminalToken)
         }
 
         let jobId = "first-seen-\(UUID().uuidString)"
-        center.post(job: Self.job(id: jobId, status: .succeeded), update: JobProgressUpdate(current: 1, total: 1, message: "succeeded"))
-        #expect(terminalEvents.count == 1)
-        #expect(terminalEvents[0].job.status == .succeeded)
+        center.post(job: Self.job(id: jobId, status: .succeeded), update: JobProgressUpdate(current: 1, total: 1, message: "index.done"))
+        #expect(sink.terminalSnapshot.count == 1)
+        #expect(sink.terminalSnapshot[0].job.status == .succeeded)
     }
 }
 
-@Suite("GatherToast")
+// .serialized：三个用例共用进程级单例 GatherToastCenter.shared。并行执行时
+// autoDismiss 在 5s 睡眠期间，manualDismiss 会留下 "a"、stacking 会整体清空 ——
+// 「toasts 为空」的结论会退化成对调度顺序的依赖（本来就是脆的）。串行化后该
+// 断言只反映被测行为；用例本身都是毫秒级，串行化不增加墙钟时间。
+@Suite("GatherToast", .serialized)
 struct GatherToastTests {
     @MainActor
     private func freshCenter() -> GatherToastCenter {
@@ -163,12 +248,23 @@ struct GatherToastTests {
     }
 
     @MainActor
-    @Test("show 入列且 5s 后自动移除")
+    @Test("生产默认自动消失时长为 5s")
+    func productionDefaultAutoDismissDelay() {
+        #expect(GatherToastCenter.shared.autoDismissDelay == .seconds(5))
+    }
+
+    @MainActor
+    @Test("show 入列且到达注入的自动消失时长后移除")
     func autoDismiss() async throws {
-        let center = freshCenter()
+        // 注入 50ms 而非等满生产默认的 5s：被测行为（到期后自动移除）不变，
+        // 但不再让这个用例成为整个 app 套件的墙钟下界。
+        let center = GatherToastCenter(autoDismissDelay: .milliseconds(50))
         center.show(type: .success, message: "测试")
         #expect(center.toasts.count == 1)
-        try await Task.sleep(for: .seconds(5.2))
+        let shownId = try #require(center.toasts.first?.id)
+        #expect(await waitUntilAsync(timeout: 2) { !center.toasts.contains { $0.id == shownId } },
+                "该 toast 应在注入的 50ms 后自动移除")
+        #expect(!center.toasts.contains { $0.id == shownId })
         #expect(center.toasts.isEmpty)
     }
 

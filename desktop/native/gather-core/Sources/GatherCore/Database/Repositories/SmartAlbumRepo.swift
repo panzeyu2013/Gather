@@ -89,8 +89,8 @@ public final class SmartAlbumRepo {
     }
 
     public func create(data: SmartAlbumCreateData) throws -> SmartAlbumRow {
-        let id = newUUID()
-        let now = nowISO()
+        let id = newUUIDString()
+        let now = nowISOString()
         _ = try connection.prepare(
             "INSERT INTO smart_albums (id, schema_version, name, description, filter_criteria, sort_by, sort_order, icon, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).run([
@@ -108,7 +108,7 @@ public final class SmartAlbumRepo {
     }
 
     public func update(id: String, data: SmartAlbumUpdateData) throws {
-        let now = nowISO()
+        let now = nowISOString()
         var sets: [String] = []
         var values: [DBValue?] = []
 
@@ -158,12 +158,4 @@ private func filterCriteriaJSON(_ group: FilterGroup) -> String {
     return String(decoding: data, as: UTF8.self)
 }
 
-private func newUUID() -> String {
-    UUID().uuidString.lowercased()
-}
 
-private func nowISO() -> String {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.string(from: Date())
-}

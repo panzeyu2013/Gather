@@ -37,7 +37,12 @@ public enum DBError: Error, Equatable {
 }
 
 /// SQLite 连接（对应 TS 侧 better-sqlite3 Database）。
-public final class DBConnection {
+///
+/// 线程安全说明（Swift 6 `Sendable`）：对 sqlite handle 的一切访问都在内部的
+/// `connectionLock`（NSRecursiveLock）之下——`withConnectionLock` 供语句执行期持有，
+/// 公开 API 全部经由它。因此本类可安全跨并发域传递；锁纪律无法被编译器静态验证，
+/// 故显式标注 `@unchecked`（这是本仓唯一的共享句柄）。
+public final class DBConnection: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let reopenPath: String?
 
@@ -111,19 +116,6 @@ public final class DBConnection {
         withConnectionLock {
             guard let handle else { return 0 }
             return Int(sqlite3_changes(handle))
-        }
-    }
-
-    /// user_version pragma（迁移版本号）。
-    public var userVersion: Int {
-        get {
-            withConnectionLock {
-                guard let row = try? prepare("PRAGMA user_version").get() else { return 0 }
-                return Int(row[0].intValue ?? 0)
-            }
-        }
-        set {
-            _ = try? exec("PRAGMA user_version = \(newValue)")
         }
     }
 

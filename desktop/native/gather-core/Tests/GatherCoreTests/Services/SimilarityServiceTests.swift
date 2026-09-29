@@ -19,8 +19,8 @@ private let uniformPixels = [UInt8](repeating: 128, count: 72)
 /// 幂等外键种子（photos.session_id / photos.asset_id / photos.asset_file_id）。
 private func seedSessionRow(_ db: DBConnection, _ sessionId: String) throws {
     _ = try db.prepare("""
-        INSERT OR IGNORE INTO sessions (id, name, status, analysis_status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, '', 'draft', 'idle', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT OR IGNORE INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
+        VALUES (?, '', 'draft', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
       """).run([.text(sessionId)])
 }
 
@@ -39,7 +39,10 @@ private func seedAssetFileRow(_ db: DBConnection, _ id: String) throws {
       """).run([.text(id), .text("/vault/\(id).NEF"), .text("\(id).NEF")])
 }
 
-private final class AsyncGate {
+/// 线程安全说明（Swift 6 `Sendable`）：`continuations`/`released` 只在
+/// `lock`（NSLock）临界区内读写；门被 @Sendable 的 thumbnailProvider 闭包捕获，
+/// 故标注 `@unchecked`（锁纪律无法被编译器静态验证）。
+private final class AsyncGate: @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private var released = false
@@ -82,7 +85,11 @@ private func waitUntil(
     return try condition()
 }
 
-private struct SimilarityHarness {
+/// 线程安全说明（Swift 6 `Sendable`）：全部存储属性构造后不可变（db/service/
+/// sessionRepo/sessionId/photoPath），Task 会按值捕获整个 harness；DBConnection 自带
+/// 连接锁、SimilarityService 的并发调用由会话占用槽串行化。结构无锁、无写者，
+/// 故标注 `@unchecked`（不可变性即此处的人工承诺）。
+private struct SimilarityHarness: @unchecked Sendable {
     let db: DBConnection
     let service: SimilarityService
     let sessionRepo: SessionRepo
@@ -186,7 +193,8 @@ struct SimilarityControllerValidationTests {
         await #expect(throws: Never.self) {
             try await harness.service.analyze(sessionId: harness.sessionId, threshold: 10, minGroupSize: 2)
         }
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "done")
+        // 状态真相源是 analysis_jobs：相似度不再写 sessions.analysis_status（方案 A）。
+        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "idle")
     }
 }
 
@@ -277,8 +285,15 @@ struct ReuseSimilarityHashesTests {
         for i in 0..<404 {
             try addPhoto(db, "r\(i)", "session", "asset-\(i)")
         }
-        // r404 与 r403 共享资产：其候选落在第二分块。
+        // r403 与 r402/r404 共享资产：r403 自身被跳过，候选 = r402（id 小，旧 hash）
+        // + r404（id 大，新 hash），二者 size/mtime 都匹配 ⇒ 必须按 "取 id 最大者"
+        // 选中 r404。变异验证：此前只有 r404 一个候选，"最新候选" 与 "首个候选"
+        // 不可区分（> 改 < 曾无人杀）；r404 的候选落在第二分块。
         try addPhoto(db, "r404", "session", "asset-403")
+        // r402 已由上面的循环创建（asset-402）：改挂到 asset-403，使其成为第二个
+        // 合格候选（id 比 r404 小、hash 是旧的）。
+        _ = try db.prepare("UPDATE photos SET asset_file_id = 'asset-403' WHERE id = 'r402'").run()
+        try addHash(db, "session", "r402", "olderhash", 300, 3000)
         try addHash(db, "session", "r403", "stalehash", 300, 3000)
         try addHash(db, "session", "r404", "freshhash", 300, 3000)
 
@@ -340,7 +355,7 @@ struct SimilarityRunRecordTests {
             return row[6].textValue == "running"
         }
         #expect(runningSeen)
-        let running = try runRow(harness.db, harness.sessionId)!
+        let running = try #require(try runRow(harness.db, harness.sessionId))
         #expect(running[0].textValue == "similarity")
         #expect(running[1].intValue == 1)
         #expect(running[2].intValue == 0)
@@ -355,7 +370,7 @@ struct SimilarityRunRecordTests {
         gate.release()
         try await task.value
 
-        let finalized = try runRow(harness.db, harness.sessionId)!
+        let finalized = try #require(try runRow(harness.db, harness.sessionId))
         #expect(finalized[6].textValue == "ok")
         #expect(finalized[5].textValue != "")
     }
@@ -371,11 +386,12 @@ struct SimilarityRunRecordTests {
             try await harness.service.analyze(sessionId: harness.sessionId)
         }
 
-        let row = try runRow(harness.db, harness.sessionId)!
+        let row = try #require(try runRow(harness.db, harness.sessionId))
         #expect(row[6].textValue == "failed")
         #expect(row[5].textValue != "")
+        // run 记录保留 ok/failed；会话列不再由相似度写入（job 表=真相源）。
         let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
-        #expect(session?.analysisStatus == "failed")
+        #expect(session?.analysisStatus == "idle")
     }
 
     @Test("records the index_seq snapshot from the session cursor")
@@ -385,9 +401,24 @@ struct SimilarityRunRecordTests {
 
         try await harness.service.analyze(sessionId: harness.sessionId)
 
-        let row = try runRow(harness.db, harness.sessionId)!
+        let row = try #require(try runRow(harness.db, harness.sessionId))
         #expect(row[2].intValue == 1)
         #expect(row[6].textValue == "ok")
+    }
+
+    /// 解码全部失败（缩略图 provider 返回 nil，等价损坏/不可读文件）→
+    /// SIM_NO_HASH_DATA，run 终态 failed，不落任何结果。此前只有错误码映射
+    /// 用例提到 noHashData，没有任何行为用例走到该分支（覆盖空洞）。
+    @Test("all thumbnails failing throws SIM_NO_HASH_DATA without persisting a result")
+    func allDecodeFailuresThrowNoHashData() async throws {
+        let harness = try makeHarness(thumbnail: { _, _ in nil })
+
+        await #expect(throws: SimilarityServiceError.noHashData) {
+            try await harness.service.analyze(sessionId: harness.sessionId)
+        }
+
+        #expect(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId) == nil)
+        #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "failed")
     }
 }
 
@@ -472,6 +503,36 @@ struct SimilarityGetResultTests {
         #expect(result!.stats.precomputed == false)
     }
 
+    @Test("stats 计数实时化：分析后新导入的照片计入 ungrouped，不用落库快照")
+    func statsCountsAreLive() throws {
+        let db = try makeMigratedDB()
+        try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
+        try addPhoto(db, "p2", "session", "/shoot/p2.jpg", nil)
+        let resultRepo = SimilarityResultRepo(connection: db)
+        let service = SimilarityService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            similarityResultRepo: resultRepo,
+            clusterStateRepo: SimilarityClusterStateRepo(connection: db),
+            connection: db
+        )
+        // 落库快照是分析当时的 0 组 / 0 未分组。
+        _ = try resultRepo.replace(
+            sessionId: "session",
+            groupsJson: "{\"groups\":[]}",
+            statsJson: "{\"totalGroups\":0,\"totalUngrouped\":0,\"threshold\":10,\"minGroupSize\":2,\"groupingMode\":\"global\"}",
+            threshold: 10, minGroupSize: 2,
+            memberships: [(photoId: "p1", groupIndex: 0)]
+        )
+
+        // p2 是分析后新导入（不在成员表）→ 实时 ungrouped 与计数都必须含它。
+        let result = try #require(try service.getResult(sessionId: "session"))
+        #expect(result.groups.map(\.count) == [1])
+        #expect(result.ungrouped.map(\.path) == ["/shoot/p2.jpg"])
+        #expect(result.stats.totalGroups == 1)
+        #expect(result.stats.totalUngrouped == 1)
+    }
+
     @Test("keeps the legacy groups_json path for rows without members")
     func legacyGroupsJsonPath() throws {
         let db = try makeMigratedDB()
@@ -486,8 +547,9 @@ struct SimilarityGetResultTests {
               {"path":"/shoot/legacy.jpg","representative":false}]}],
              "ungrouped":[{"path":"/shoot/alone.jpg"}]}
             """),
+            // 落库快照的未分组计数故意写错（0）：返回必须以 payload 实时计数为准。
             .text("""
-            {"totalGroups":1,"totalUngrouped":1,"threshold":10,"minGroupSize":2,"groupingMode":"sequential"}
+            {"totalGroups":1,"totalUngrouped":0,"threshold":10,"minGroupSize":2,"groupingMode":"sequential"}
             """),
         ])
         let service = SimilarityService(
@@ -500,13 +562,15 @@ struct SimilarityGetResultTests {
 
         let result = try service.getResult(sessionId: "session")
 
-        // 旧行（无成员）逐字解析 groups_json。
+        // 旧行（无成员）逐字解析 groups_json；计数由 payload 实时给出。
         #expect(result != nil)
         #expect(result!.groups[0].images == [
             SimilarityImage(path: "/shoot/p1.jpg", representative: true),
             SimilarityImage(path: "/shoot/legacy.jpg", representative: false),
         ])
         #expect(result!.ungrouped == [SimilarityImage(path: "/shoot/alone.jpg")])
+        #expect(result!.stats.totalGroups == 1)
+        #expect(result!.stats.totalUngrouped == 1)
         #expect(result!.stats.groupingMode == .sequential)
         #expect(result!.stats.precomputed == false)
     }
@@ -601,8 +665,9 @@ struct SimilarityCancellationTests {
         }
         #expect(runningSeen)
         try harness.service.cancel(sessionId: harness.sessionId)
+        // 取消只中断在飞操作，不写会话列（取消态由 job 表表达）。
         let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
-        #expect(session?.analysisStatus == "cancelled")
+        #expect(session?.analysisStatus == "idle")
 
         // 首跑仍在飞：再次 analyze 必须拒绝。
         await #expect(throws: SimilarityServiceError.analysisRunning) {
@@ -612,11 +677,11 @@ struct SimilarityCancellationTests {
         gate.release()
         try await task.value
 
-        // 早退路径：run 记录终态 failed（cancel 已写 cancelled），占用已释放。
-        let row = try runRow(harness.db, harness.sessionId)!
+        // 早退路径：run 记录终态 failed，占用已释放。
+        let row = try #require(try runRow(harness.db, harness.sessionId))
         #expect(row[6].textValue == "failed")
         let sessionAfter = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
-        #expect(sessionAfter?.analysisStatus == "cancelled")
+        #expect(sessionAfter?.analysisStatus == "idle")
         // 占用已释放：第三次 analyze 可进入。
         let gate2 = AsyncGate()
         let harness2 = try makeHarness(thumbnail: { _, _ in
@@ -629,13 +694,13 @@ struct SimilarityCancellationTests {
         try await task2.value
     }
 
-    @Test("cancel without an in-flight run does not flip the shared analysis status")
+    @Test("cancel without an in-flight run is a no-op and never touches sessions.analysis_status")
     func cancelWithoutRunKeepsStatus() throws {
         let harness = try makeHarness()
         let session = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
         #expect(session?.analysisStatus == "idle")
 
-        try harness.service.cancel(sessionId: harness.sessionId, markStatus: false)
+        try harness.service.cancel(sessionId: harness.sessionId)
 
         let after = try SessionRepo(connection: harness.db).get(id: harness.sessionId)
         #expect(after?.analysisStatus == "idle")
@@ -703,5 +768,266 @@ struct SimilarityServiceRobustnessTests {
         await #expect(throws: SimilarityServiceError.thresholdInvalid) {
             try await harness.service.recluster(sessionId: harness.sessionId, threshold: 10.5, minGroupSize: 2)
         }
+    }
+}
+
+// MARK: - recluster job 化：进度 / 取消 / 互斥 / 原子写（§4.2 P1 修复）
+
+/// clusterProvider 调用次数门（线程安全）：按第 N 次调用触发副作用。
+private final class ProviderCallGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private let action: (Int) -> Void
+
+    init(_ action: @escaping (Int) -> Void) { self.action = action }
+
+    func fire() {
+        lock.lock()
+        count += 1
+        let current = count
+        lock.unlock()
+        action(current)
+    }
+}
+
+/// 跨线程可见的布尔标记。
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+
+    func set() {
+        lock.lock()
+        flag = true
+        lock.unlock()
+    }
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return flag
+    }
+}
+
+@Suite("SimilarityService recluster job 语义")
+struct SimilarityReclusterJobTests {
+    private typealias ClusterProvider = SimilarityService.ClusterProvider
+
+    /// 纯函数（无捕获状态）：以静态方法引用表达而非 static let 闭包——非 Sendable
+    /// 闭包类型的全局常量在 Swift 6 下不可表达，而方法引用不需要 Sendable。
+    private static func defaultCluster(
+        _ entries: [HashEntry],
+        _ threshold: Int,
+        _ minGroupSize: Int,
+        _ mode: HashGroupingMode,
+        _ onProgress: ((Int, Int) -> Void)?
+    ) throws -> ClusterResult {
+        try ClusterEngine.clusterByHash(
+            entries: entries, threshold: threshold, minGroupSize: minGroupSize,
+            mode: mode, onProgress: onProgress)
+    }
+
+    /// 首轮 analyze 建结果与簇状态：photo-1（真实文件 → uniform hash 0）+
+    /// p2（预置 checksum 统计与 hash 0）→ 同 hash 一组两张。
+    private func makeReadyHarness(
+        cluster: @escaping ClusterProvider = SimilarityReclusterJobTests.defaultCluster,
+        analyze: Bool = true
+    ) async throws -> SimilarityHarness {
+        let harness = try makeHarness(cluster: cluster)
+        try insertPhoto(harness.db, id: "p2", sessionId: harness.sessionId)
+        _ = try harness.db.prepare(
+            "UPDATE photos SET checksum_file_size = 100, checksum_file_mtime_ms = 1000 WHERE id = ?"
+        ).run([.text("p2")])
+        _ = try harness.db.prepare("""
+            INSERT INTO similarity_hashes (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
+            VALUES (?, 'p2', '0000000000000000', 100, 1000)
+            """).run([.text(harness.sessionId)])
+        if analyze {
+            try await harness.service.analyze(sessionId: harness.sessionId, threshold: 10, minGroupSize: 2)
+        }
+        return harness
+    }
+
+    @Test("recluster 回传 cluster/thresholds 相位，结果与簇状态同版本切换")
+    func progressPhasesAndAtomicPersist() async throws {
+        let harness = try await makeReadyHarness()
+        let beforeMeta = try #require(
+            try SimilarityClusterStateRepo(connection: harness.db).load(sessionId: harness.sessionId)?.meta
+        )
+
+        var phases: [String] = []
+        let result = try await harness.service.recluster(
+            sessionId: harness.sessionId,
+            threshold: 4,
+            minGroupSize: 2,
+            groupingMode: .global,
+            onProgress: { _, _, phase in phases.append(phase) }
+        )
+
+        #expect(result.stats.threshold == 4)
+        #expect(result.groups.map(\.count) == [2])
+        #expect(phases.contains("similarity.cluster"))
+        #expect(phases.contains("similarity.cluster-done"))
+        #expect(phases.contains("similarity.thresholds"))
+
+        // 结果与簇状态在同一事务提交：参数指纹与版本号一致推进。
+        let stored = try #require(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId))
+        #expect(stored.paramThreshold == 4)
+        let meta = try #require(
+            try SimilarityClusterStateRepo(connection: harness.db).load(sessionId: harness.sessionId)?.meta
+        )
+        #expect(meta.paramThreshold == 4)
+        #expect(meta.version == beforeMeta.version + 1)
+    }
+
+    @Test("recluster 前置条件：无既有结果抛 SIM_NO_RESULTS")
+    func reclusterRequiresExistingResult() async throws {
+        let harness = try makeHarness()
+        await #expect(throws: SimilarityServiceError.noResults) {
+            try await harness.service.recluster(sessionId: harness.sessionId, threshold: 4, minGroupSize: 2)
+        }
+    }
+
+    @Test("job 信号取消：cluster 返回后才取消 → 抛取消且结果/簇状态零变更")
+    func externalSignalCancellationDoesNotPersist() async throws {
+        let signal = JobAbortSignal()
+        // 第 2 次 cluster 调用（recluster）返回前 abort 外部长信号。
+        let gate = ProviderCallGate { call in
+            if call == 2 { signal.abort() }
+        }
+        let harness = try await makeReadyHarness(cluster: { entries, threshold, minGroupSize, mode, onProgress in
+            gate.fire()
+            return try ClusterEngine.clusterByHash(
+                entries: entries, threshold: threshold, minGroupSize: minGroupSize,
+                mode: mode, onProgress: onProgress)
+        })
+        let before = try #require(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId))
+        let beforeVersion = try #require(
+            try SimilarityClusterStateRepo(connection: harness.db).load(sessionId: harness.sessionId)?.meta.version
+        )
+
+        await #expect(throws: JobCancelledError()) {
+            try await harness.service.recluster(
+                sessionId: harness.sessionId, threshold: 4, minGroupSize: 2,
+                groupingMode: .global, signal: signal
+            )
+        }
+
+        let after = try #require(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId))
+        #expect(after.id == before.id)
+        #expect(after.paramThreshold == before.paramThreshold)
+        #expect(
+            try SimilarityClusterStateRepo(connection: harness.db).load(sessionId: harness.sessionId)?.meta.version
+                == beforeVersion
+        )
+    }
+
+    /// analyze 侧的对称契约：cluster 已返回、结果尚未落库时取消 → 抛取消且
+    /// 结果/簇状态零变更，run 终态 failed。变异验证：删掉 analyze 里 cluster
+    /// 返回后的 signal.aborted 检查曾无人杀（recluster 侧有守卫，analyze 侧没有）。
+    @Test("analyze：cluster 返回后才取消 → 抛取消且结果/簇状态零变更")
+    func analyzeExternalSignalCancellationDoesNotPersist() async throws {
+        let signal = JobAbortSignal()
+        // 第 1 次（也是唯一一次）cluster 调用返回前 abort 外部长信号。
+        let gate = ProviderCallGate { call in
+            if call == 1 { signal.abort() }
+        }
+        let harness = try await makeReadyHarness(cluster: { entries, threshold, minGroupSize, mode, onProgress in
+            gate.fire()
+            return try ClusterEngine.clusterByHash(
+                entries: entries, threshold: threshold, minGroupSize: minGroupSize,
+                mode: mode, onProgress: onProgress)
+        }, analyze: false)
+
+        await #expect(throws: JobCancelledError()) {
+            try await harness.service.analyze(
+                sessionId: harness.sessionId, threshold: 10, minGroupSize: 2, signal: signal
+            )
+        }
+
+        #expect(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId) == nil)
+        #expect(try SimilarityClusterStateRepo(connection: harness.db).load(sessionId: harness.sessionId) == nil)
+        #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "failed")
+    }
+
+    @Test("recluster 与 analyze 互斥：占用中抛 SIM_ANALYSIS_RUNNING（双向）")
+    func reclusterAndAnalyzeAreMutuallyExclusive() async throws {
+        // 方向 A：analyze 在飞 → recluster 被拒。
+        let gate = AsyncGate()
+        let harness = try makeHarness(thumbnail: { _, _ in
+            await gate.wait()
+            return uniformPixels
+        })
+        let analyzeTask = Task { try await harness.service.analyze(sessionId: harness.sessionId) }
+        let runningSeen = try waitUntil {
+            guard let row = try runRow(harness.db, harness.sessionId) else { return false }
+            return row[6].textValue == "running"
+        }
+        #expect(runningSeen)
+        await #expect(throws: SimilarityServiceError.analysisRunning) {
+            try await harness.service.recluster(sessionId: harness.sessionId, threshold: 4, minGroupSize: 2)
+        }
+        gate.release()
+        try await analyzeTask.value
+
+        // 方向 B：recluster 在飞（阻塞在 clusterProvider）→ analyze 被拒。
+        let blocked = LockedFlag()
+        let release = DispatchSemaphore(value: 0)
+        let calls = ProviderCallGate { call in
+            if call >= 2 {
+                blocked.set()
+                release.wait()
+            }
+        }
+        let harness2 = try await makeReadyHarness(cluster: { entries, threshold, minGroupSize, mode, onProgress in
+            calls.fire()
+            return try ClusterEngine.clusterByHash(
+                entries: entries, threshold: threshold, minGroupSize: minGroupSize,
+                mode: mode, onProgress: onProgress)
+        })
+        let reclusterTask = Task {
+            try await harness2.service.recluster(sessionId: harness2.sessionId, threshold: 4, minGroupSize: 2)
+        }
+        #expect(try waitUntil { blocked.value })
+        await #expect(throws: SimilarityServiceError.analysisRunning) {
+            try await harness2.service.analyze(sessionId: harness2.sessionId)
+        }
+        release.signal()
+        _ = try await reclusterTask.value
+    }
+
+    @Test("结果与簇状态单事务原子写：状态落库失败时结果一并回滚")
+    func resultAndStatePersistAtomically() async throws {
+        let harness = try await makeReadyHarness()
+        let before = try #require(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId))
+
+        // 阻断簇状态的全部删除路径（replace 失败后的降级 delete 也会失败）：
+        // persistClusterOutcome 的事务必须整体回滚，主结果不得被替换。
+        _ = try harness.db.prepare("""
+            CREATE TRIGGER block_meta_delete BEFORE DELETE ON similarity_cluster_meta
+            BEGIN SELECT RAISE(ABORT, 'blocked'); END;
+            """).run()
+
+        await #expect(throws: (any Error).self) {
+            try await harness.service.recluster(sessionId: harness.sessionId, threshold: 4, minGroupSize: 2)
+        }
+
+        let after = try #require(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId))
+        #expect(after.id == before.id)
+        #expect(after.paramThreshold == before.paramThreshold)
+        #expect(after.statsJson == before.statsJson)
+    }
+
+    @Test("analyze 链接 job 信号：预取消的外部长信号 → 零落库退出并释放占用")
+    func analyzeLinksExternalSignal() async throws {
+        let harness = try makeHarness()
+        let signal = JobAbortSignal()
+        signal.abort()
+
+        try await harness.service.analyze(sessionId: harness.sessionId, signal: signal)
+
+        #expect(try runRow(harness.db, harness.sessionId) == nil)
+        // 占用已释放：随后无信号的分析正常执行。
+        try await harness.service.analyze(sessionId: harness.sessionId)
+        #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
     }
 }

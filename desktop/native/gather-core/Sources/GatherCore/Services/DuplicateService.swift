@@ -16,19 +16,27 @@
 // - sha256File：TS 流式读文件（createReadStream），Swift 整文件读入内存后
 //   SHA256（FIPS 180-4 纯 Swift 实现，ImageCache.swift）——结果逐字节一致，
 //   大文件内存占用更高，属于有意取舍。
-// - batchAsync（TS utils/async.ts）为滑动窗口实现（并发 32/2/8 与 TS 逐位
-//   对齐）：首个失败后停止调度、在飞项跑完；Swift 侧等待在飞项结束后再抛
-//   首个错误（TS 立即 reject），错误时序稍有差异，可观察行为一致。
+// - batchAsync 为共享实现（Concurrent/BatchRunner.swift；TS utils/async.ts 同款
+//   滑动窗口，并发 32/2/8 与 TS 逐位对齐）：首个失败停止调度、在飞项按各自取消
+//   语义收尾后再抛错误（本文件的 stat/读文件不感知取消，等价于跑完；TS 立即
+//   reject），错误时序稍有差异，可观察行为一致。
 // - 单飞（scanPromise/scanSessionId/scanThreshold）语义与 TS 完全一致：
-//   busy 时同参数返回同一在飞 Task，不同参数抛 scanBusy。
+//   busy 时同参数返回同一在飞 Task，不同参数抛 scanBusy。视觉阈值入参为
+//   Double：必须通过 0...64 整数校验（§4.2 P2），再规范化为 Int 作为单飞键。
 // - similarity_hashes 写路径与 SimilarityService 协调：同一 UPSERT
 //   ON CONFLICT(session_id, photo_id)（唯一索引 idx_similarity_hashes_session_photo
 //   为冲突目标），两服务共享该表互不覆盖。
+// - 决策持久（§4.2 P1 修复，有意偏离 TS）：重扫重建组与成员行，但用户的
+//   keep/discard 决策以 photo_id 为身份存续，不再被重扫清空；「丢弃」的
+//   下游后果（导出排除）由 photos.status='removed' 唯一承载（ExportService
+//   据此过滤；需要该视图时从该唯一载体派生）。
 import Foundation
 
 public enum DuplicateServiceError: Error, Equatable {
     /// TS: throw new Error('DUPLICATE_SCAN_BUSY')
     case scanBusy
+    /// 视觉阈值非法（§4.2 P2 修复）：dHash 64 位，必须是 0...64 的整数。
+    case thresholdInvalid
     /// TS: throw new Error(`Duplicate group ${groupId} was not found or has no members`)
     case groupNotFound(Int)
     /// TS: throw new Error(`Duplicate member ${memberId} was not found`)
@@ -41,6 +49,7 @@ extension DuplicateServiceError: CustomStringConvertible {
     public var description: String {
         switch self {
         case .scanBusy: "DUPLICATE_SCAN_BUSY"
+        case .thresholdInvalid: "DUP_THRESHOLD_INVALID"
         case .groupNotFound(let groupId): "Duplicate group \(groupId) was not found or has no members"
         case .memberNotFound(let memberId): "Duplicate member \(memberId) was not found"
         }
@@ -51,11 +60,21 @@ extension DuplicateServiceError: CustomStringConvertible {
 extension DuplicateServiceError {
     public var gatherCode: GatherErrorCode? {
         switch self {
+        // 两个可本地化的协议码；groupNotFound/memberNotFound 为普通 Error。
         case .scanBusy: .DUPLICATE_SCAN_BUSY
+        case .thresholdInvalid: .DUP_THRESHOLD_INVALID
         case .groupNotFound, .memberNotFound: nil
         }
     }
 }
+
+// 「丢弃」决策的下游后果语义（仍然有效，唯一载体是落库的 photos.status）：
+//   - 成员行 is_kept=0 ⇔ 用户丢弃该重复副本；
+//   - DuplicateService 是 photos.status='removed' 的唯一写者（决策回填后重算）；
+//   - ExportService 以 status != 'removed' 过滤 → 这些照片不会导出；
+//   - 文件从不移动/删除，决策也不因子库缺失而消失——撤销决策即恢复导出。
+// （原先据此语义导出的 DuplicateDiscardImpact 快照结构与 discardedPhotoIds 查询
+//   无任何生产消费者，已在无用代码清查中删除；需要该视图时请按上面的唯一载体重新派生。）
 
 /// TS: excludeExactDuplicateHashes —— 从视觉 hash 行里剔除精确重复照片。
 public func excludeExactDuplicateHashes(
@@ -69,7 +88,7 @@ public func excludeExactDuplicateHashes(
 /// nil）静默跳过（不影响精确重复检测），结果按输入序收集。
 public func computeVisualHashes(
     photos: [(id: String, filepath: String)],
-    thumbnailProvider: @escaping (String, Int) async -> [UInt8]?
+    thumbnailProvider: @escaping @Sendable (String, Int) async -> [UInt8]?
 ) async -> [String: String] {
     let computed = (try? await batchAsync(photos, concurrency: 8) { photo -> (String, String)? in
         guard let pixels = await thumbnailProvider(photo.filepath, 256) else { return nil }
@@ -84,13 +103,22 @@ public func computeVisualHashes(
     return hashes
 }
 
-public final class DuplicateService {
+/// 线程安全说明（Swift 6 `Sendable`）：单飞登记的全部可变状态
+/// （`scanPromise`/`scanSessionId`/`scanThreshold`）只在 `lock`（NSLock）临界区内
+/// 读写；其余存储属性（connection 与注入的两个 provider）构造后不可变。
+/// 锁纪律无法被编译器静态验证，故标注 `@unchecked`（与同仓 BatchCursor/
+/// MetadataSyncCoordinator 的既有约定一致）。
+public final class DuplicateService: @unchecked Sendable {
     /// TS: ImageService.getThumbnail(filepath, 256) → 9x8 灰度像素网格。
-    public typealias ThumbnailProvider = (String, Int) async -> [UInt8]?
+    /// Swift 6：provider 会被 batchAsync 的 worker 子任务捕获并发调用，
+    /// 闭包类型必须可跨并发域（@Sendable）。
+    public typealias ThumbnailProvider = @Sendable (String, Int) async -> [UInt8]?
     /// TS: clusterHashesInWorker（threshold, minGroupSize=2, mode='global'）。
     public typealias ClusterProvider = ([HashEntry], Int, Int, HashGroupingMode, ((Int, Int) -> Void)?) throws -> ClusterResult
     /// TS: onProgress(current, total, message)。
-    public typealias ProgressHandler = (Int, Int, String) -> Void
+    /// Swift 6：单飞扫描会把本回调捕获进自持 Task（scanDuplicates 的
+    /// 注册/复用语义要求），回调在后台任务里执行，故类型必须可跨并发域。
+    public typealias ProgressHandler = @Sendable (Int, Int, String) -> Void
 
     private let connection: DBConnection
     private let thumbnailProvider: ThumbnailProvider
@@ -122,21 +150,35 @@ public final class DuplicateService {
         self.clusterProvider = clusterProvider
     }
 
+    /// 视觉阈值校验（§4.2 P2 修复）：dHash 为 64 位，阈值必须是 0...64 的整数。
+    /// 100 会让全库连成一组、非整数此前被 Int.init 静默截断——两者都在此拒绝。
+    /// router 在建 job 前可用同一实现校验原始 Double（服务入口会再校验一次）。
+    public func validateDuplicateThreshold(_ value: Double) throws {
+        // 与 validateSimilarityParameters 的阈值域判定共用同一函数
+        //（DHash 64 位 → 0...64 整数；有限性拒绝 NaN/±∞）。
+        if !DHash.isValidThreshold(value) {
+            throw DuplicateServiceError.thresholdInvalid
+        }
+    }
+
     /// TS: scanDuplicates —— 单飞扫描。busy 时同参数返回同一在飞结果，
-    /// 不同参数抛 scanBusy。
+    /// 不同参数抛 scanBusy。visualThreshold 为 Double（对齐 TS number）：
+    /// 校验通过后转 Int；单飞键用规范化后的 Int（10.0 与 10 视为同参数）。
     public func scanDuplicates(
         sessionId: String,
-        visualThreshold: Int? = nil,
+        visualThreshold: Double? = nil,
         signal: JobAbortSignal? = nil,
         onProgress: ProgressHandler? = nil
     ) async throws -> DuplicateScanResult {
+        if let visualThreshold { try validateDuplicateThreshold(visualThreshold) }
+        let threshold = visualThreshold.map { Int($0) }
         // 同步前缀（TS 首个 await 之前的语义）：占用检查与登记。
         switch beginScan(
             sessionId: sessionId,
-            visualThreshold: visualThreshold,
+            visualThreshold: threshold,
             task: Task {
                 try await self._scanDuplicates(
-                    sessionId: sessionId, visualThreshold: visualThreshold,
+                    sessionId: sessionId, visualThreshold: threshold,
                     signal: signal, onProgress: onProgress)
             }
         ) {
@@ -389,19 +431,17 @@ public final class DuplicateService {
             components = []
         }
 
-        // TS:292-329 —— 重建分组事务：先复位旧成员（removed → ready）再整组
-        // 删除重插，保证扫描结果幂等。
+        // 重建分组事务（§4.2 P1 修复，有意偏离 TS 的「重扫即重置决策」）：
+        // 组 id 与成员行 id 每次扫描都变，因此决策**不挂在组上**；稳定身份是
+        // (session_id, photo_id) —— photo_id 在会话内可变不了，且与分组类型
+        // (exact ↔ visual)、组结构变化全部解耦。流程：同事务内读旧决策 →
+        // 重建组/成员 → 按 photo_id 回填 is_kept/resolution → 重算 photos.status。
+        // 读-改-写单事务保证并发扫描不会互相清空：后写者读到的是先写者已提交
+        // 的决策并原样继承。
         let groupIds = try connection.transaction { () -> (exact: [Int], visual: [Int]) in
-            _ = try connection.prepare("""
-                UPDATE photos
-                SET status = 'ready'
-                WHERE id IN (
-                  SELECT photo_id
-                  FROM duplicate_group_members
-                  WHERE session_id IN (?)
-                )
-                AND status = 'removed'
-                """).run([.text(sessionId)])
+            let carriedDecisions = try fetchMemberDecisions(sessionId: sessionId)
+            let previousMemberIds = Set(carriedDecisions.keys)
+
             _ = try connection.prepare(
                 "DELETE FROM duplicate_group_members WHERE session_id IN (?)"
             ).run([.text(sessionId)])
@@ -413,8 +453,9 @@ public final class DuplicateService {
                 "INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)"
             )
             let insertMember = try connection.prepare(
-                "INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime) VALUES (?, ?, ?, 1, ?, ?)"
+                "INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime, resolution) VALUES (?, ?, ?, ?, ?, ?, ?)"
             )
+            var currentMemberIds = Set<String>()
             var exactGroupIds: [Int] = []
             for row in exactRows {
                 let photoIds = (row[2].textValue ?? "").split(separator: ",").map(String.init)
@@ -426,10 +467,14 @@ public final class DuplicateService {
                 exactGroupIds.append(groupId)
                 for photoId in photoIds {
                     let meta = photoMeta[photoId]
+                    let decision = carriedDecisions[photoId]
+                    currentMemberIds.insert(photoId)
                     _ = try insertMember.run([
                         .int(Int64(groupId)), .text(photoId), .text(sessionId),
+                        .int(decision?.isKept == false ? 0 : 1),
                         meta.map { .int($0.size) } ?? .null,
                         meta.map { .text($0.mtimeISO) } ?? .null,
+                        decision?.resolution.map { DBValue.text($0) } ?? .null,
                     ])
                 }
             }
@@ -445,13 +490,24 @@ public final class DuplicateService {
                 visualGroupIds.append(groupId)
                 for photoId in memberIds {
                     let meta = photoMeta[photoId]
+                    let decision = carriedDecisions[photoId]
+                    currentMemberIds.insert(photoId)
                     _ = try insertMember.run([
                         .int(Int64(groupId)), .text(photoId), .text(sessionId),
+                        .int(decision?.isKept == false ? 0 : 1),
                         meta.map { .int($0.size) } ?? .null,
                         meta.map { .text($0.mtimeISO) } ?? .null,
+                        decision?.resolution.map { DBValue.text($0) } ?? .null,
                     ])
                 }
             }
+            // 组级 resolution 从成员决策派生（全部成员已决才落值）。
+            try syncGroupResolutions(groupIds: exactGroupIds + visualGroupIds)
+            // 决策落库：携带 is_kept=0 的成员置 'removed'（导出排除的唯一载体）；
+            // 旧成员中已无丢弃决策的（组消失/照片脱组）复位 'ready'。未决成员
+            // 保持原 status（pending/missing 不被本模块改写）。
+            try markDiscarded(Array(currentMemberIds))
+            try restoreOrphanedRemoved(ids: Array(previousMemberIds))
             return (exactGroupIds, visualGroupIds)
         }
 
@@ -552,7 +608,95 @@ public final class DuplicateService {
 
     // MARK: - 内部
 
-    /// TS: recomputePhotoStatuses —— 任一 is_kept=0 成员 → 'removed'，否则 'ready'。
+    /// 决策载体（稳定身份 = photo_id）。
+    private struct MemberDecision {
+        let isKept: Bool
+        let resolution: String?
+    }
+
+    /// 读取该会话既有决策：photo_id → (is_kept, resolution)。会话隔离。
+    private func fetchMemberDecisions(sessionId: String) throws -> [String: MemberDecision] {
+        let rows = try connection.prepare("""
+            SELECT photo_id, is_kept, resolution
+            FROM duplicate_group_members
+            WHERE session_id IN (?)
+            ORDER BY id
+            """).query([.text(sessionId)])
+        var decisions: [String: MemberDecision] = [:]
+        for row in rows {
+            guard let photoId = row[0].textValue else { continue }
+            decisions[photoId] = MemberDecision(
+                isKept: (row[1].intValue ?? 1) != 0,
+                resolution: row[2].textValue
+            )
+        }
+        return decisions
+    }
+
+    /// 组级 resolution 派生：全部成员已决 → keep_all（全保留）/ keep_one（仅留 1）；
+    /// 有未决成员 → 保持 NULL（未处理）。成员各自的 resolution 才是决策真相。
+    private func syncGroupResolutions(groupIds: [Int]) throws {
+        let update = try connection.prepare(
+            "UPDATE duplicate_groups SET resolution = ? WHERE id = ?"
+        )
+        for groupId in groupIds {
+            let rows = try connection.prepare(
+                "SELECT is_kept, resolution FROM duplicate_group_members WHERE group_id = ? ORDER BY id"
+            ).query([.int(Int64(groupId))])
+            guard !rows.isEmpty else { continue }
+            var allResolved = true
+            var keptCount = 0
+            for row in rows {
+                if row[1].textValue == nil { allResolved = false }
+                if (row[0].intValue ?? 1) != 0 { keptCount += 1 }
+            }
+            guard allResolved else { continue }
+            let resolution: String?
+            if keptCount == rows.count { resolution = "keep_all" }
+            else if keptCount == 1 { resolution = "keep_one" }
+            else { resolution = nil }
+            guard let resolution else { continue }
+            _ = try update.run([.text(resolution), .int(Int64(groupId))])
+        }
+    }
+
+    /// 决策落库（'removed' 的唯一写入点之一）：携带 is_kept=0 决策的成员照片
+    /// 置为 'removed' = 排除出导出；未决/保留成员不触碰。
+    private func markDiscarded(_ photoIds: [String]) throws {
+        if photoIds.isEmpty { return }
+        let seen = Set(photoIds)
+        let placeholders = seen.map { _ in "?" }.joined(separator: ",")
+        _ = try connection.prepare("""
+            UPDATE photos
+            SET status = 'removed'
+            WHERE id IN (\(placeholders))
+              AND EXISTS (
+                SELECT 1 FROM duplicate_group_members dgm
+                WHERE dgm.photo_id = photos.id AND dgm.is_kept = 0
+              )
+            """).run(seen.map { .text($0) })
+    }
+
+    /// 组消失后的丢弃残影复位：仅当照片已无任何 is_kept=0 成员时，把本模块
+    /// 写入的 'removed' 复位 'ready'；其他模块的 status（pending/missing）不动。
+    private func restoreOrphanedRemoved(ids: [String]) throws {
+        if ids.isEmpty { return }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        _ = try connection.prepare("""
+            UPDATE photos
+            SET status = 'ready'
+            WHERE id IN (\(placeholders))
+              AND status = 'removed'
+              AND NOT EXISTS (
+                SELECT 1 FROM duplicate_group_members dgm
+                WHERE dgm.photo_id = photos.id AND dgm.is_kept = 0
+              )
+            """).run(ids.map { .text($0) })
+    }
+
+    /// recomputePhotoStatuses（TS 语义保留）—— 任一 is_kept=0 成员 → 'removed'
+    /// （导出排除的唯一落库载体），否则 'ready'。本方法是 photos.status
+    /// 'removed' 的唯一写者。
     private func recomputePhotoStatuses(_ photoIds: [String]) throws {
         if photoIds.isEmpty { return }
         var seen = Set<String>()
@@ -674,65 +818,4 @@ private struct PhotoStat {
     let size: Int64
     let mtimeMs: Double
     let mtimeISO: String
-}
-
-// MARK: - 并发批量（TS utils/async.ts batchAsync 的滑动窗口实现）
-
-/// 共享取号游标：worker 从游标取下一个未分配项索引；失败后停止调度。
-private final class BatchCursor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var next = 0
-    private var failed = false
-    private let count: Int
-
-    init(count: Int) { self.count = count }
-
-    func nextIndex() -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failed || next >= count { return nil }
-        defer { next += 1 }
-        return next
-    }
-
-    func markFailed() {
-        lock.lock()
-        failed = true
-        lock.unlock()
-    }
-}
-
-/// TS: batchAsync —— 固定数量常驻 runner 从共享游标取任务（滑动窗口，慢项不
-/// 阻塞整批）；结果按输入索引收集保持顺序；首个失败停止调度、在飞项跑完，
-/// 错误按完成序取第一个（与 TS 语义一致）。
-fileprivate func batchAsync<T, R>(
-    _ items: [T],
-    concurrency: Int,
-    body: @escaping (T) async throws -> R
-) async throws -> [R] {
-    let limit = max(1, concurrency)
-    guard !items.isEmpty else { return [] }
-    let cursor = BatchCursor(count: items.count)
-    var collected: [(index: Int, value: R)] = []
-    try await withThrowingTaskGroup(of: [(Int, R)].self) { group in
-        for _ in 0..<min(limit, items.count) {
-            group.addTask {
-                var local: [(Int, R)] = []
-                while !Task.isCancelled, let index = cursor.nextIndex() {
-                    do {
-                        local.append((index, try await body(items[index])))
-                    } catch {
-                        cursor.markFailed()
-                        throw error
-                    }
-                }
-                return local
-            }
-        }
-        for try await chunk in group {
-            collected.append(contentsOf: chunk)
-        }
-    }
-    collected.sort { $0.index < $1.index }
-    return collected.map(\.value)
 }

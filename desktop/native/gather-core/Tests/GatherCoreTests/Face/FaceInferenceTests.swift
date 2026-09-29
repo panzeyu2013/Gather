@@ -1,17 +1,12 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Face/FaceInferenceTests.swift
-// Phase 2 任务 2.2（macOS 专属）：Provider/Detector/Encoder/Inference 测试。
-// TS 源对照: face-kw/provider.ts + face-detector.ts + face-encoder.ts
+// Phase 2 任务 2.2（macOS 专属）：Provider/Encoder/Inference 测试。
+// TS 源对照: face-kw/provider.ts + face-encoder.ts
 //          + face-inference-worker(-client).ts
 // 验证点：
 //   - FaceProvider.resolve：auto/vision/coreml/cpu 解析与未知值抛错；
 //   - FaceInferenceConfig 默认值与对齐（640/128/112/512）；
-//   - Detector：空图（纯色）→ 空数组；无法解码数据 → 错误码；
 //   - Encoder：空图 → 空数组；错误输入 → 错误码；
 //   - Inference：批处理逐图独立（坏图不拖垮批次）+ 进度流 + 取消。
-//
-// 注：Vision 检测需要真实人脸照片才有非空结果；合成纯色图只能验证
-// 「无脸 → 空结果」路径。真实人脸质量对账（0.3c 门）在基准环境用
-// 真实数据集执行（docs/ROADMAP.md 0.3c）。
 
 import Foundation
 import Testing
@@ -73,27 +68,6 @@ struct FaceInferenceTests {
         #expect(config.secondaryInputSize == 128)
         #expect(config.encodeInputSize == 112)
         #expect(!config.fallbackToOnnxEnabled)
-    }
-
-    // ── Detector（Vision 空图路径）──
-
-    @Test func detectorReturnsEmptyForSolidImage() throws {
-        let image = try makeSolidJPEG()
-        let faces = try FaceDetector.detectFaces(in: image)
-        #expect(faces.isEmpty)
-    }
-
-    @Test func detectorThrowsOnGarbageData() {
-        #expect(throws: FaceDetectorError.self) {
-            _ = try FaceDetector.detectFaces(in: Data("not an image".utf8))
-        }
-    }
-
-    @Test func detectorFiltersByConfidenceThreshold() throws {
-        // 纯色图无脸：阈值无论高低都是空数组（Vision 不会产生低置信度假阳性）。
-        let image = try makeSolidJPEG()
-        #expect(try FaceDetector.detectFaces(in: image, confidenceThreshold: 0.0).isEmpty)
-        #expect(try FaceDetector.detectFaces(in: image, confidenceThreshold: 0.99).isEmpty)
     }
 
     // ── Encoder（Vision 空图路径）──

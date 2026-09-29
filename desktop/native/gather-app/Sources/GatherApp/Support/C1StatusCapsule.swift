@@ -24,6 +24,7 @@ final class C1StatusService {
     private var pollTask: Task<Void, Never>?
     private var client: NativeCommandClient?
     private var eventObserver: NSObjectProtocol?
+    private var domainObserver: NSObjectProtocol?
 
     private init() {
         eventObserver = NotificationCenter.default.addObserver(
@@ -35,6 +36,24 @@ final class C1StatusService {
             Task { @MainActor [weak self] in
                 guard let self, self.activeSessions.contains(sessionId) else { return }
                 await self.refresh(sessionId: sessionId)
+            }
+        }
+        // 写路径广播（XMP/同步队列）：订阅中的会话立即重拉，胶囊不再等 12s 轮询。
+        domainObserver = NotificationCenter.default.addObserver(
+            forName: GatherEventCenter.domainChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let change = notification.object as? GatherDomainChange,
+                  change.domain == .metadata else { return }
+            Task { @MainActor [weak self] in
+                guard let self, !self.activeSessions.isEmpty else { return }
+                if let sessionId = change.sessionId {
+                    guard self.activeSessions.contains(sessionId) else { return }
+                    await self.refresh(sessionId: sessionId)
+                } else {
+                    await self.refreshActive()
+                }
             }
         }
     }

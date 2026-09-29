@@ -9,6 +9,70 @@ import SwiftUI
 import AppKit
 import GatherCore
 
+// MARK: - 破坏性动作确认上下文（sim.writeback / sim.retry_failed_writeback / sim.cleanup）
+
+/// 写回确认：影响范围 = 组数 / 照片数 / 关键词 / XMP 项与示例路径。
+private struct PendingSimilarityWriteback: Identifiable {
+    let groupCount: Int
+    let affectedPhotos: Int
+    let itemCount: Int
+    let keywords: [String]
+    let samplePath: String?
+
+    var id: String { "writeback-\(itemCount)-\(affectedPhotos)" }
+
+    var scopeText: String {
+        var text = String(
+            format: GatherLocalization.l("将 %lld 个相似组、%lld 张照片的关键词「%@」合并写入 XMP（共 %lld 个文件，新建或更新），不修改原图。"),
+            groupCount, affectedPhotos, keywords.joined(separator: "、"), itemCount
+        )
+        if let samplePath, !samplePath.isEmpty {
+            text += String(format: GatherLocalization.l("例如：%@。"), samplePath)
+        }
+        text += GatherLocalization.l("取消不会写入任何文件。")
+        return text
+    }
+}
+
+/// 重试失败项确认：范围 = 失败项数量与路径。
+private struct PendingSimilarityRetry: Identifiable {
+    let paths: [String]
+
+    var id: String { "retry-\(paths.count)-\(paths.first ?? "")" }
+
+    var scopeText: String {
+        let sample = paths.prefix(3).joined(separator: GatherLocalization.l("、"))
+        let more = paths.count > 3 ? GatherLocalization.l(" 等") : ""
+        return String(
+            format: GatherLocalization.l("将重试写入 %lld 个失败项：%@%@。取消不会重写任何文件。"),
+            paths.count, sample, more
+        )
+    }
+}
+
+/// 清理确认：范围 = 本次已写入的 XMP 项数。
+private struct PendingSimilarityCleanup: Identifiable {
+    let writtenCount: Int
+
+    var id: String { "cleanup-\(writtenCount)" }
+
+    var scopeText: String {
+        String(
+            format: GatherLocalization.l("将恢复或移除本次相似度写回生成的 %lld 个临时 XMP sidecar 文件；只应在 Capture One 已加载元数据并确认同步后执行。取消不会改动任何文件。"),
+            writtenCount
+        )
+    }
+}
+
+/// 确认同步：用户在弹窗中声明 Capture One 已完成 Load Metadata。
+private struct PendingSimilarityConfirmSync: Identifiable {
+    var id: String { "confirm-sync" }
+
+    var scopeText: String {
+        GatherLocalization.l("确认后 Gather 认为 Capture One 已读取 XMP 临时变更，之后才可执行清理。若尚未在 Capture One 中执行「加载元数据」，请取消。")
+    }
+}
+
 struct SimilarityView: View {
     @Bindable var viewModel: SimilarityViewModel
     let router: CommandRouter
@@ -37,9 +101,11 @@ struct SimilarityView: View {
     /// 状态在卡片滚出后不丢失）。
     @State private var expandedIds: Set<Int> = []
     @State private var showAllIds: Set<Int> = []
-    /// 清理/确认同步的确认弹窗（对齐 Culling/FaceKw 门控）。
-    @State private var confirmSyncRequested = false
-    @State private var confirmCleanupRequested = false
+    /// 破坏性动作的待确认上下文：非空即弹确认框；命令只在确认分支发出。
+    @State private var pendingWriteback: PendingSimilarityWriteback?
+    @State private var pendingRetry: PendingSimilarityRetry?
+    @State private var pendingCleanup: PendingSimilarityCleanup?
+    @State private var pendingConfirmSync: PendingSimilarityConfirmSync?
 
     var body: some View {
         // 外层 GeometryReader 取窗口高度：分组网格高度自适应（旧版 70vh），
@@ -94,6 +160,9 @@ struct SimilarityView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.gatherBackground)
         }
+        // 隐藏页一致性：disabled / hit-testing 同源（RootView 另有 opacity 掩盖）。
+        .disabled(!isActive)
+        .allowsHitTesting(isActive)
         // RootView 以 opacity 常驻本视图且视图身份不随 VM 替换改变：
         // .task 只执行一次 → 以 sessionId 为 id，换会话（VM 替换）时重新加载。
         .task(id: viewModel.sessionId) {
@@ -105,25 +174,63 @@ struct SimilarityView: View {
         }
         // 写回协调器 emitSummary 后刷新同步状态视图（TS useEvent('culling:sync-status')）。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
-            guard (notification.object as? String) == viewModel.sessionId else { return }
+            // 隐藏页不发命令：不可见时直接丢弃，重新可见由 onChange 补一次。
+            guard isActive, (notification.object as? String) == viewModel.sessionId else { return }
             viewModel.refreshSyncState()
+        }
+        .onChange(of: isActive) { _, active in
+            // 重新可见：补一次同步状态查询（隐藏期间的事件已被丢弃）。
+            if active { viewModel.refreshSyncState() }
         }
         // 关键词变化 → 清空旧预览/旧写回结果（TS effect [keywordInput, ...]）。
         .onChange(of: viewModel.writebackKeywords) { _, _ in
             viewModel.markWritebackDraftChanged()
         }
-        .confirmationDialog(GatherLocalization.l("确认同步 Capture One？"), isPresented: $confirmSyncRequested, titleVisibility: .visible) {
-            Button(GatherLocalization.l("确认同步")) { Task { await viewModel.confirmSync() } }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("仅在 Capture One 已加载元数据并确认关键词进入目录后确认；确认后才可安全清理临时 XMP 变更。"))
-        }
-        .confirmationDialog(GatherLocalization.l("确认清理 XMP 临时变更？"), isPresented: $confirmCleanupRequested, titleVisibility: .visible) {
-            Button(GatherLocalization.l("清理"), role: .destructive) { Task { await viewModel.cleanupKeywordWriteback() } }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
-        } message: {
-            Text(GatherLocalization.l("清理会恢复或移除 sidecar 文件中的临时变更；请先确认同步完成。"))
-        }
+        // 破坏性命令统一门控：确认后才带 confirmed: true，取消只写可见文案。
+        .gatherDestructiveConfirm(
+            pending: $pendingWriteback,
+            title: GatherLocalization.l("确认写入 XMP？"),
+            confirmLabel: { _ in GatherLocalization.l("写入 XMP") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.executeKeywordWriteback(confirmed: true) } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("写入 XMP")) }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingRetry,
+            title: GatherLocalization.l("确认重试失败项？"),
+            confirmLabel: { _ in GatherLocalization.l("重试写入") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.retryKeywordWriteback(confirmed: true) } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("重试失败写入项")) }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingCleanup,
+            title: GatherLocalization.l("确认清理 XMP 临时变更？"),
+            confirmLabel: { _ in GatherLocalization.l("清理") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.cleanupKeywordWriteback(confirmed: true) } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("清理 XMP 临时变更")) }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingConfirmSync,
+            title: GatherLocalization.l("确认同步 Capture One？"),
+            confirmLabel: { _ in GatherLocalization.l("确认同步") },
+            message: { $0.scopeText },
+            onConfirm: { _ in Task { await viewModel.confirmSync() } },
+            onCancel: { _ in viewModel.reportCancellation(GatherLocalization.l("确认同步 Capture One")) }
+        )
+    }
+
+    /// 先准备预览（无预览自动生成），再弹出带真实影响范围的确认框。
+    private func requestWritebackConfirmation() async {
+        guard let preview = await viewModel.prepareWritebackConfirmation(), !preview.items.isEmpty else { return }
+        pendingWriteback = PendingSimilarityWriteback(
+            groupCount: viewModel.selectedGroupIds.count,
+            affectedPhotos: preview.affectedPhotos,
+            itemCount: preview.items.count,
+            keywords: viewModel.parsedWritebackKeywords,
+            samplePath: preview.items.first?.xmpPath
+        )
     }
 
     private var header: some View {
@@ -266,7 +373,7 @@ struct SimilarityView: View {
                 .disabled(!viewModel.canPreviewWriteback)
                 // 写回：busy 时禁用并显示处理中文案。
                 Button(viewModel.isSyncBusy ? GatherLocalization.l("处理中…") : GatherLocalization.l("写入 XMP")) {
-                    Task { await viewModel.executeKeywordWriteback() }
+                    Task { await requestWritebackConfirmation() }
                 }
                 .buttonStyle(.bordered)
                 .disabled(!viewModel.canPreviewWriteback)
@@ -371,19 +478,21 @@ struct SimilarityView: View {
             HStack(spacing: 12) {
                 if !result.failedItems.isEmpty {
                     Button(GatherLocalization.l("重试失败项")) {
-                        Task { await viewModel.retryKeywordWriteback() }
+                        pendingRetry = PendingSimilarityRetry(
+                            paths: result.failedItems.map { $0.xmpPath.isEmpty ? $0.photoPath : $0.xmpPath }
+                        )
                     }
                     .disabled(viewModel.isSyncBusy)
                 }
                 // 确认同步：仅 c1Read + 已写入 + ack（或 safeToCleanup）可用。
                 Button(GatherLocalization.l("确认同步")) {
-                    confirmSyncRequested = true
+                    pendingConfirmSync = PendingSimilarityConfirmSync()
                 }
                 .disabled(viewModel.isSyncBusy || !controls.canConfirmSync)
                 .help(controls.confirmHint ?? "")
                 // 清理：仅 safeToCleanup 可用。
                 Button(GatherLocalization.l("清理"), role: .destructive) {
-                    confirmCleanupRequested = true
+                    pendingCleanup = PendingSimilarityCleanup(writtenCount: viewModel.syncView?.written ?? 0)
                 }
                 .disabled(viewModel.isSyncBusy || !controls.canCleanup)
                 .help(controls.cleanupHint ?? "")
@@ -850,7 +959,7 @@ private struct MemberCellView: View {
         )
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
         .contextMenu {
-            if let url = Self.finderURL(for: path) {
+            if let url = finderURLForPath(path) {
                 Button(GatherLocalization.l("在 Finder 中显示")) {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
@@ -859,11 +968,5 @@ private struct MemberCellView: View {
         .onHover { hovering in
             isHovered = hovering
         }
-    }
-
-    /// 右键「在 Finder 中显示」的 URL：路径为空时返回 nil（跳过该项）。
-    private static func finderURL(for path: String) -> URL? {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed)
     }
 }

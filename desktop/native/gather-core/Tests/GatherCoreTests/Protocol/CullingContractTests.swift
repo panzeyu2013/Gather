@@ -20,7 +20,7 @@ struct CullingContractTests {
             #expect(value.rawValue == raw)
         }
 
-        let decisions: [(LegacyCullingDecision, String)] = [
+        let decisions: [(CullingDecisionValue, String)] = [
             (.keep, "keep"), (.reject, "reject"), (.pending, "pending"),
         ]
         for (value, raw) in decisions {

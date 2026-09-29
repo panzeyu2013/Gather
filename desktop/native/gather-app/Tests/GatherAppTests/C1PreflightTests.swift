@@ -49,6 +49,8 @@ struct C1PreflightTests {
 
     @Test("guidance 优先级：timeout > reachable > automationAuthorized > appRunning > documentOpen")
     func guidancePriority() {
+        // guidance 经 l() 出当前语言：锁内钉死 zh-CN。
+        AppLanguageLock.withCopy("zh-CN") {
         // 超时优先于其他失败。
         let timeout = C1PreflightResult.build(from: status(reachable: false, timedOut: true))
         #expect(timeout.guidance == "检测超时，请重试")
@@ -60,6 +62,7 @@ struct C1PreflightTests {
         #expect(app.guidance?.contains("启动 Capture One") == true)
         let doc = C1PreflightResult.build(from: status(documentOpen: false))
         #expect(doc.guidance?.contains("文档") == true)
+        }
     }
 
     @Test("超时额外追加一格（5 格）")

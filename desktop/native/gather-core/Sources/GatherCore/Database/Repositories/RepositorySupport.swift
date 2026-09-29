@@ -27,15 +27,20 @@ public func newUUIDString() -> String {
     UUID().uuidString.lowercased()
 }
 
-/// TS `Date.parse(isoString)`：解析失败返回 nil。
-public func tsDateParse(_ string: String) -> Double? {
+/// ISO8601 时间戳解析（带毫秒优先，回退不带毫秒）的唯一实现；解析失败返回 nil。
+/// 全仓只有这一处构造解析器（tsDateParse / MetadataOutboxRepo.parseTimestamp 共用）。
+public func tsParseISODate(_ string: String) -> Date? {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = formatter.date(from: string) { return date.timeIntervalSince1970 * 1000 }
+    if let date = formatter.date(from: string) { return date }
     let plain = ISO8601DateFormatter()
     plain.formatOptions = [.withInternetDateTime]
-    if let date = plain.date(from: string) { return date.timeIntervalSince1970 * 1000 }
-    return nil
+    return plain.date(from: string)
+}
+
+/// TS `Date.parse(isoString)`：解析失败返回 nil。
+public func tsDateParse(_ string: String) -> Double? {
+    tsParseISODate(string).map { $0.timeIntervalSince1970 * 1000 }
 }
 
 /// 任意 JSON 值（Protocol/Core.swift 的 JSONValue，键与 TS `JSON.stringify` 一致，

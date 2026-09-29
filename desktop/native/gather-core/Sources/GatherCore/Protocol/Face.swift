@@ -11,7 +11,10 @@ import Foundation
 // TS: FkwAnalyzeParams
 public struct FkwAnalyzeParams: Codable, Equatable, Sendable {
     public var sessionId: String
-    public var eps: Double? // TS: eps?
+    /// TS: eps? —— **人脸相似度下限**（不是半径）：仅 cosine 相似度
+    /// >= eps 的两张脸视为同簇，因此 eps 越大越严格。实现与默认值见
+    /// Face/Clusterer.swift 的文件头「相似度阈值语义」（default 0.6，域 0...1）。
+    public var eps: Double?
     public var minSamples: Int? // TS: minSamples?
     public var detectorPath: String? // TS: detectorPath?
     public var encoderPath: String? // TS: encoderPath?

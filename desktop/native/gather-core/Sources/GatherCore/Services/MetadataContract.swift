@@ -29,21 +29,17 @@ public enum MetadataContractError: Error, Equatable, CustomStringConvertible {
 }
 
 /// TS: LABELS —— 合法 Capture One 颜色标签值集。
-private let metadataLabels: Set<String> = [
-    "", "None", "Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple",
-]
+/// 唯一真相源是协议层的 CaptureOneColorLabel 枚举（原本在此与 CullingService /
+/// MetadataSyncCoordinator 各抄一份字面量）；此处额外允许空串（"未设标签"）。
+private let metadataLabels: Set<String> = Set(CaptureOneColorLabel.allCases.map(\.rawValue)).union([""])
 
 /// TS: normalizeKeywords —— 非数组抛 METADATA_KEYWORDS_INVALID；
 /// 字符串化、trim、去空、按首次出现顺序去重。TS 的 filter(type guard)
 /// 静默丢弃非字符串元素，此处同样不抛错。
 public func normalizeKeywords(_ values: [JSONValue]) throws -> [String] {
     // TS 入参是 unknown 的 values；此处接受 JSONValue 数组（宿主已按 unknown 语义传入）。
-    let strings = values.compactMap { $0.stringValue }
-    var seen = Set<String>()
-    return strings
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-        .filter { !$0.isEmpty }
-        .filter { seen.insert($0).inserted }
+    // 规则本体只有下面一处（字符串数组重载），本重载只做 JSONValue → String 投影。
+    try normalizeKeywords(values.compactMap { $0.stringValue })
 }
 
 /// TS: normalizeKeywords —— 字符串数组直传（queueMutation 的 patch.keywords 已是 string[]）。
@@ -53,6 +49,12 @@ public func normalizeKeywords(_ values: [String]) throws -> [String] {
         .map { $0.trimmingCharacters(in: .whitespaces) }
         .filter { !$0.isEmpty }
         .filter { seen.insert($0).inserted }
+}
+
+public extension MetadataField {
+    /// 可写元数据字段名的唯一真相源（rating/label/keywords）。
+    /// 契约层的 MetadataField 就是这份集合本身：调用方不再重抄字面量数组。
+    static let writableNames: Set<String> = Set(allCases.map(\.rawValue))
 }
 
 /// TS: validateMetadataPatch —— 逐字段校验并规范化；空 patch 抛 METADATA_PATCH_EMPTY。
@@ -75,11 +77,12 @@ public func validateMetadataPatch(_ patch: MetadataPatch) throws -> MetadataPatc
         normalized.label = MetadataLabelPatch(op: .set, value: label.value)
     }
     if let keywords = patch.keywords {
+        // MetadataOp 只有 append/replace/remove 三个 case，这里无需 default——
+        // 曾有的 `default: throw .keywordsOpInvalid` 被编译器判定为不可达
+        // （#will never be executed），已删除；该错误码保留在错误面（TS 契约）中。
         switch keywords.op {
         case .append, .replace, .remove:
             break
-        default:
-            throw MetadataContractError.keywordsOpInvalid
         }
         normalized.keywords = MetadataKeywordsPatch(
             op: keywords.op,
@@ -90,36 +93,4 @@ public func validateMetadataPatch(_ patch: MetadataPatch) throws -> MetadataPatc
         throw MetadataContractError.patchEmpty
     }
     return normalized
-}
-
-/// TS: dirtyFieldsForPatch —— patch 中出现的字段序（rating/label/keywords 固定序）。
-public func dirtyFieldsForPatch(_ patch: MetadataPatch) -> [MetadataField] {
-    [MetadataField.rating, .label, .keywords].filter { field in
-        switch field {
-        case .rating: patch.rating != nil
-        case .label: patch.label != nil
-        case .keywords: patch.keywords != nil
-        }
-    }
-}
-
-/// TS: patchToOutboxValues —— patch → outbox values（keywords 保留 op/values 结构）。
-public func patchToOutboxValues(_ patch: MetadataPatch) -> [String: JSONValue] {
-    var values: [String: JSONValue] = [:]
-    if let rating = patch.rating { values["rating"] = .number(rating.value) }
-    if let label = patch.label { values["label"] = .string(label.value) }
-    if let keywords = patch.keywords {
-        values["keywords"] = .object([
-            "op": .string(keywords.op.rawValue),
-            "values": .array(keywords.values.map { .string($0) }),
-        ])
-    }
-    return values
-}
-
-/// TS: assertMutationSource —— 非法来源抛错。
-public func assertMutationSource(_ source: String) throws {
-    guard MetadataMutationSource(rawValue: source) != nil else {
-        throw MetadataContractError.unsupportedSource(source)
-    }
 }

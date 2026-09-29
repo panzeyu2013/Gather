@@ -18,8 +18,10 @@ public enum PickState: String, Codable, CaseIterable, Equatable, Sendable {
     case rejected
 }
 
-// TS: LegacyCullingDecision
-public enum LegacyCullingDecision: String, Codable, CaseIterable, Equatable, Sendable {
+/// `culling.decide` / `culling.batch_decide` 的 **decision 字段取值**（线上契约，
+/// raw 值 keep/reject/pending 不可改）。TS 侧曾名 LegacyCullingDecision，原生侧改名为
+/// 事实描述：它是这两个命令的载荷值类型，不是"旧实现"。
+public enum CullingDecisionValue: String, Codable, CaseIterable, Equatable, Sendable {
     case keep
     case reject
     case pending
@@ -78,7 +80,10 @@ public struct CullingFilters: Codable, Equatable, Sendable {
     public var colorLabels: [CaptureOneColorLabel]? // TS: colorLabels?
     public var unreviewedOnly: Bool? // TS: unreviewedOnly?
     public var qualityStatus: CullingFilterQualityStatus? // TS: qualityStatus?
-    public var metadataConflictOnly: Bool? // TS: metadataConflictOnly?
+    /// TS: metadataConflictOnly?。
+    /// 服务端已下推 SQL（判定规则：首选变体的 photo_path 存在 status='conflict'
+    /// 的 outbox 行），JS 安全网用同一规则，故 filtered 范围的 total 与页内容同口径。
+    public var metadataConflictOnly: Bool?
 
     public init(
         ratings: [Double]? = nil,
@@ -98,6 +103,12 @@ public struct CullingFilters: Codable, Equatable, Sendable {
 }
 
 // TS: AssetCullingState
+//
+// 真相源（挑片域，禁止双真相源）：
+// - pickState ← culling_decisions.decision（取舍唯一拥有者）；
+// - rating / colorLabel ← photo_metadata_cache（全应用 XMP 投影，唯一真相源）；
+//   culling_decisions.rating / color_label 是同事务写下的镜像列，任何读取路径
+//   都不得读它们（见 CullingDecisionRepo 文件头注）。
 public struct AssetCullingState: Codable, Equatable, Sendable {
     public var photoId: String
     public var pickState: PickState
@@ -525,9 +536,9 @@ public struct CullingGroupsParams: Codable, Equatable, Sendable {
 public struct CullingDecideParams: Codable, Equatable, Sendable {
     public var sessionId: String
     public var photoId: String
-    public var decision: LegacyCullingDecision
+    public var decision: CullingDecisionValue
 
-    public init(sessionId: String, photoId: String, decision: LegacyCullingDecision) {
+    public init(sessionId: String, photoId: String, decision: CullingDecisionValue) {
         self.sessionId = sessionId
         self.photoId = photoId
         self.decision = decision
@@ -538,9 +549,9 @@ public struct CullingDecideParams: Codable, Equatable, Sendable {
 public struct CullingBatchDecideParams: Codable, Equatable, Sendable {
     public var sessionId: String
     public var photoIds: [String]
-    public var decision: LegacyCullingDecision
+    public var decision: CullingDecisionValue
 
-    public init(sessionId: String, photoIds: [String], decision: LegacyCullingDecision) {
+    public init(sessionId: String, photoIds: [String], decision: CullingDecisionValue) {
         self.sessionId = sessionId
         self.photoIds = photoIds
         self.decision = decision
@@ -644,9 +655,9 @@ public struct CullingImage: Codable, Equatable, Sendable {
     public var photoId: String
     public var filepath: String
     public var filename: String
-    public var decision: LegacyCullingDecision
+    public var decision: CullingDecisionValue
 
-    public init(photoId: String, filepath: String, filename: String, decision: LegacyCullingDecision) {
+    public init(photoId: String, filepath: String, filename: String, decision: CullingDecisionValue) {
         self.photoId = photoId
         self.filepath = filepath
         self.filename = filename

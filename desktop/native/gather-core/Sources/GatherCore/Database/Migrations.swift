@@ -11,7 +11,7 @@ import Foundation
 import CSQLite
 
 public struct MigrationRunner {
-    public static let currentSchemaVersion = 33
+    public static let currentSchemaVersion = 34
 
     /// 数据库文件路径（TS: app.getPath('userData')/gather.db）。为 nil 时跳过
     /// 备份/回滚（内存库或测试场景），迁移仍正常执行。
@@ -80,13 +80,7 @@ public struct MigrationRunner {
 
     private func setSchemaVersion(_ db: DBConnection, _ version: Int) throws {
         _ = try db.prepare("INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)")
-            .run([.int(Int64(version)), .text(nowISO())])
-    }
-
-    private func nowISO() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: Date())
+            .run([.int(Int64(version)), .text(nowISOString())])
     }
 
     // ─────────────────────────────── 辅助 ───────────────────────────────
@@ -104,7 +98,7 @@ public struct MigrationRunner {
 
     private func fillTimestamp(_ db: DBConnection, _ table: String, _ column: String) throws {
         _ = try db.prepare("UPDATE \(table) SET \(column) = ? WHERE \(column) = '' OR \(column) IS NULL")
-            .run([.text(nowISO())])
+            .run([.text(nowISOString())])
     }
 
     private func tableExists(_ db: DBConnection, _ table: String) -> Bool {
@@ -952,6 +946,33 @@ public struct MigrationRunner {
             currentVersion = 33
         }
 
+        // ── Version 34: 人脸质量/几何/模型版本持久化（竞品算法改造）──
+        // 每条观察记录综合质量（对齐后的 [0,1]）、bbox 短边像素、滚转角，以及
+        // 产生该向量的模型标识与维度，供聚类/匹配按质量与模型版本读取。
+        // addColumn 自带 PRAGMA table_info 幂等 guard（与 match_confidence
+        // 同一条写法）：存量 33 库只 ALTER 追加、不重建表、不触碰既有行；
+        // 新库由 SchemaSQL 直接建（列已存在 → 全部 no-op）。
+        if currentVersion < 34 {
+            try db.transaction {
+                _ = try addColumn(db, "face_observations", "quality", "REAL NOT NULL DEFAULT 0")
+                _ = try addColumn(db, "face_observations", "face_size_px", "REAL NOT NULL DEFAULT 0")
+                _ = try addColumn(db, "face_observations", "roll_degrees", "REAL NOT NULL DEFAULT 0")
+                _ = try addColumn(db, "face_observations", "model_id", "TEXT NOT NULL DEFAULT ''")
+                _ = try addColumn(db, "face_observations", "model_version", "TEXT NOT NULL DEFAULT ''")
+                _ = try addColumn(db, "face_observations", "embedding_dim", "INTEGER NOT NULL DEFAULT 0")
+                try assertColumns(db, "face_observations", [
+                    "quality",
+                    "face_size_px",
+                    "roll_degrees",
+                    "model_id",
+                    "model_version",
+                    "embedding_dim",
+                ])
+                try setSchemaVersion(db, 34)
+            }
+            currentVersion = 34
+        }
+
         if currentVersion != Self.currentSchemaVersion {
             throw DBError.message("Unexpected schema version \(currentVersion)")
         }
@@ -959,6 +980,20 @@ public struct MigrationRunner {
         try db.exec(SchemaSQL.indexSQL)
         try ensurePhotoPathUniqueness(db)
         try migratePendingFaceThumbnails(db)
+        try dropSessionsAnalysisStatus(db)
+    }
+
+    /// 删列：sessions.analysis_status（方案 A 终局）。
+    ///
+    /// 分析状态的唯一真相源是 analysis_jobs（SessionRepo.analysisStatus 按
+    /// (type, scope_id) 派生）；列留着只会诱使调用方再写一份会漂移的状态。
+    /// 幂等：只在列确实存在时执行（新库由 Schema 直接建无此列的表）；该列无
+    /// 索引/视图/触发器依赖，SQLite 的 DROP COLUMN 可直接执行。
+    private func dropSessionsAnalysisStatus(_ db: DBConnection) throws {
+        let columns = try db.prepare("PRAGMA table_info(sessions)").query()
+        let hasColumn = columns.contains { $0.count > 1 && $0[1].textValue == "analysis_status" }
+        guard hasColumn else { return }
+        try db.exec("ALTER TABLE sessions DROP COLUMN analysis_status")
     }
 
     // ─────────────────────── face_cluster_members 重建 ───────────────────────
@@ -1017,25 +1052,209 @@ public struct MigrationRunner {
 
     // ─────────────────────── 唯一照片路径索引 ───────────────────────
 
+    /// 唯一照片路径索引是扫描期「归一化路径 → 照片行」映射的前提。历史实现发现
+    /// 同会话重复 filepath 时**跳过**索引并只写日志，于是唯一索引缺失、重复行
+    /// 永久留在库里（IndexerService 曾用 Dictionary(uniqueKeysWithValues:) 构造
+    /// 路径表，脏数据直接 trap）。这里改为确定性收敛，收敛后必须建索引，建不出来
+    /// 就抛错（由 migrate() 的备份/恢复路径回滚整个迁移），绝不降级放过。
+    ///
+    /// 收敛规则：同一 (session_id, filepath) 组保留 rowid 最小（最早导入）的行，
+    /// 其余为重复行；重复行的全部引用改指向保留行，改指向会撞唯一约束的行随后
+    /// 删除，最后删除重复行本身。
+    /// 保留 rowid 最小者的理由见报告「可见影响」一节：photos.rowid 同时是导入
+    /// 顺序（session_assets.import_order 与 asset_backfill_state 游标都由它派生），
+    /// 保留最早的行不会让既有会话的显示顺序跳变。
     private func ensurePhotoPathUniqueness(_ db: DBConnection) throws {
-        let duplicate = try db.prepare("""
-            SELECT session_id, filepath, COUNT(*) AS count
-            FROM photos
-            GROUP BY session_id, filepath
-            HAVING COUNT(*) > 1
-            LIMIT 1
-            """).get()
-        if let duplicate {
-            let sessionId = duplicate[0].textValue ?? "?"
-            let filepath = duplicate[1].textValue ?? "?"
-            let count = duplicate[2].intValue ?? 0
-            GatherLogger.log(
-                "Skipping unique photo-path index: session \(sessionId) contains \(count) rows for \(filepath)",
-                level: .warn
-            )
-            return
+        try db.transaction {
+            // 廉价探针：唯一索引已存在时该 GROUP BY 走索引，干净库每次启动只付
+            // 一次索引扫描；只有真的发现重复才进入合并与 PRAGMA 枚举。
+            let hasDuplicates = try db.prepare("""
+                SELECT 1 FROM (
+                  SELECT 1 FROM photos GROUP BY session_id, filepath HAVING COUNT(*) > 1
+                ) LIMIT 1
+              """).get() != nil
+            if hasDuplicates {
+                let references = try photoReferencingColumns(db)
+                let jsonColumns = try photoIdJsonColumns(db)
+                let groups = try duplicatePhotoGroups(db)
+                for group in groups {
+                    for duplicateId in group.duplicateIds {
+                        try mergeDuplicatePhoto(
+                            db,
+                            duplicateId: duplicateId,
+                            canonicalId: group.canonicalId,
+                            references: references,
+                            jsonColumns: jsonColumns
+                        )
+                    }
+                    // photo_count 是缓存计数：删行后同事务内重算，避免迁移完成后
+                    // 一段时间的计数虚高（下一次扫描也会重算，但不能依赖它）。
+                    _ = try db.prepare("""
+                        UPDATE sessions
+                        SET photo_count = (SELECT COUNT(*) FROM photos WHERE photos.session_id = sessions.id)
+                        WHERE id = ?
+                      """).run([.text(group.sessionId)])
+                }
+            }
+            let remaining = Int((try db.prepare("""
+                SELECT COUNT(*) FROM (
+                  SELECT 1 FROM photos GROUP BY session_id, filepath HAVING COUNT(*) > 1
+                )
+              """).get()?[0].intValue) ?? 0)
+            if remaining > 0 {
+                throw DBError.message(
+                    "Migration invariant failed: \(remaining) duplicate (session_id, filepath) groups remain in photos"
+                )
+            }
+            try db.exec(SchemaSQL.uniquePhotoPathIndexSQL)
         }
-        try db.exec(SchemaSQL.uniquePhotoPathIndexSQL)
+    }
+
+    /// 重复组：canonicalId = 组内 rowid 最小者，duplicateIds = 其余行（按 rowid 升序）。
+    private func duplicatePhotoGroups(_ db: DBConnection) throws -> [
+        (sessionId: String, canonicalId: String, duplicateIds: [String])
+    ] {
+        let rows = try db.prepare("""
+            SELECT p.session_id, p.id, p.rowid, (
+              SELECT MIN(k.rowid) FROM photos k
+              WHERE k.session_id = p.session_id AND k.filepath = p.filepath
+            ) AS first_rowid
+            FROM photos p
+            WHERE (SELECT COUNT(*) FROM photos d
+                   WHERE d.session_id = p.session_id AND d.filepath = p.filepath) > 1
+            ORDER BY p.session_id, p.filepath, p.rowid
+          """).query()
+        var groups: [(sessionId: String, canonicalId: String, duplicateIds: [String])] = []
+        var currentKey: String?
+        for row in rows {
+            guard let sessionId = row[0].textValue, let photoId = row[1].textValue else { continue }
+            let rowid = row[2].intValue ?? 0
+            let firstRowid = row[3].intValue ?? 0
+            let key = "\(sessionId)\u{0}\(firstRowid)"
+            if key != currentKey {
+                groups.append((sessionId: sessionId, canonicalId: "", duplicateIds: []))
+                currentKey = key
+            }
+            if rowid == firstRowid {
+                groups[groups.count - 1].canonicalId = photoId
+            } else {
+                groups[groups.count - 1].duplicateIds.append(photoId)
+            }
+        }
+        return groups.filter { !$0.canonicalId.isEmpty && !$0.duplicateIds.isEmpty }
+    }
+
+    /// 把一行重复照片的所有引用改指向保留行，然后删除重复行本身。
+    private func mergeDuplicatePhoto(
+        _ db: DBConnection,
+        duplicateId: String,
+        canonicalId: String,
+        references: [(table: String, column: String)],
+        jsonColumns: [(table: String, column: String)]
+    ) throws {
+        for reference in references {
+            // 改指向后若违反该表的唯一约束（OR IGNORE），保留行优先，重复行的
+            // 副本由紧随其后的清扫删除。
+            _ = try db.prepare(
+                "UPDATE OR IGNORE \(reference.table) SET \(reference.column) = ? WHERE \(reference.column) = ?"
+            ).run([.text(canonicalId), .text(duplicateId)])
+            _ = try db.prepare(
+                "DELETE FROM \(reference.table) WHERE \(reference.column) = ?"
+            ).run([.text(duplicateId)])
+        }
+        // similarity_cluster_state 故意不声明 photos 外键（残留行是增量 diff 的
+        // “已移除”依据），但它以 photo_id 为主键的一部分 → 显式改指向。
+        _ = try db.prepare(
+            "UPDATE OR IGNORE similarity_cluster_state SET photo_id = ? WHERE photo_id = ?"
+        ).run([.text(canonicalId), .text(duplicateId)])
+        _ = try db.prepare("DELETE FROM similarity_cluster_state WHERE photo_id = ?")
+            .run([.text(duplicateId)])
+        // 引用 photos.id 的 JSON/文本列：整词替换（两侧带引号）——photo.id 是
+        // UUID，带引号边界保证 p2 不会命中 p20，也不会误伤其它字符串。
+        for column in jsonColumns {
+            rewritePhotoIdToken(
+                db, table: column.table, column: column.column,
+                from: duplicateId, to: canonicalId
+            )
+        }
+        _ = try db.prepare("DELETE FROM photos WHERE id = ?").run([.text(duplicateId)])
+    }
+
+    /// 引用 photos.id 的 JSON/文本列：**运行时枚举**（所有 TEXT 且列名以
+    /// _json / _ids 结尾的列）减去下面的显式豁免表。与 photoReferencingColumns
+    /// 同一思路 —— 写死清单会随 schema 漂移，漏一列就会让合并后的库里留下
+    /// 悬空 id（undo / 恢复 / 重跑分析都会指向已删除的照片行）。
+    ///
+    /// 默认是「重写」而不是「跳过」：新加的同名列会自动被重写，只有语义上
+    /// 确认不含 photos.id 的列才需要进豁免表并写明理由。
+    private func photoIdJsonColumns(_ db: DBConnection) throws -> [(table: String, column: String)] {
+        let tables = try db.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).query().compactMap { $0[0].textValue }
+        var columns: [(table: String, column: String)] = []
+        for table in tables {
+            let tableInfo = try db.prepare("PRAGMA table_info(\(table))").query()
+            for row in tableInfo {
+                guard row.count > 2 else { continue }
+                let name = row[1].textValue ?? ""
+                let type = (row[2].textValue ?? "").uppercased()
+                guard type.contains("TEXT") else { continue }
+                guard name.hasSuffix("_json") || name.hasSuffix("_ids") else { continue }
+                guard !Self.exemptPhotoIdJsonColumns.contains("\(table).\(name)") else { continue }
+                columns.append((table, name))
+            }
+        }
+        return columns
+    }
+
+    /// 显式豁免（列 → 理由）。每条都必须说明为什么这类列**语义上不含
+    /// photos.id**，因此合并重复照片时不需要重写。
+    private static let exemptPhotoIdJsonColumns: Set<String> = [
+        // 关联候选证据：内容是两个 asset_files.id + basename/相机/时间，不引用照片行。
+        "asset_link_candidates.evidence_json",
+        // 写回条目属性：XMP 字段补丁（rating/label/keywords…），行身份由 photo_id 列承担。
+        "writeback_items.attributes_json",
+        // 元数据 outbox：XMP 字段补丁与基值快照，outbox 行身份由 photo_path 列承担
+        // （photo_path 的重定位由 AssetRepo.relocateMetadataState 负责）。
+        "metadata_outbox.patch_json",
+        "metadata_outbox.base_values_json",
+    ]
+
+    /// 在单列的 JSON/文本里把 id 令牌 \"from\" 整词换成 \"to\"。
+    /// 用 instr 预筛（不用 LIKE，省掉通配符转义），只改动真正含令牌的行。
+    private func rewritePhotoIdToken(
+        _ db: DBConnection,
+        table: String,
+        column: String,
+        from: String,
+        to: String
+    ) {
+        let token = "\"\(from)\""
+        _ = try? db.prepare("""
+            UPDATE \(table) SET \(column) = REPLACE(\(column), ?, ?)
+            WHERE instr(\(column), ?) > 0
+          """).run([.text(token), .text("\"\(to)\""), .text(token)])
+    }
+
+    /// 运行时发现所有声明 REFERENCES photos(id) 的子表与列（PRAGMA
+    /// foreign_key_list：第 2 列 = 被引用表，第 3 列 = 本表列）。写死清单会随
+    /// schema 漂移，故此处动态枚举。
+    private func photoReferencingColumns(_ db: DBConnection) throws -> [(table: String, column: String)] {
+        let tables = try db.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).query().compactMap { $0[0].textValue }
+        var references: [(table: String, column: String)] = []
+        for table in tables {
+            let foreignKeys = try db.prepare("PRAGMA foreign_key_list(\(table))").query()
+            for foreignKey in foreignKeys {
+                guard foreignKey.count > 4,
+                      foreignKey[2].textValue == "photos",
+                      let column = foreignKey[3].textValue
+                else { continue }
+                references.append((table: table, column: column))
+            }
+        }
+        return references
     }
 
     // ─────────────────────── 人脸缩略图落盘 ───────────────────────

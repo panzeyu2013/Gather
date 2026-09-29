@@ -1,6 +1,24 @@
 // desktop/native/gather-core/Sources/GatherCore/Database/Repositories/AnalysisJobRepo.swift
-// TS 源: desktop/src/main/db/repositories/analysis-job.repo.ts
-// 类型说明：AnalysisJobData/JobCreateParams/JobProgressUpdate/类型枚举复用 Protocol/Jobs.swift。
+// analysis_jobs 唯一仓储：状态机迁移、去重语义、队列排序、清理口径都在此显式定义。
+//
+// ── 状态机（唯一迁移表，其它层只能经本文件的原子 UPDATE 迁移）──
+//   queued    → running（claim）/ cancelled（requestCancel）
+//   running   → succeeded | failed（finish）/ cancelling（requestCancel）
+//               | interrupted（interrupt / recoverStale）
+//   cancelling→ cancelled（cancelled 请求兑现 / recoverStale）/ failed（finish）
+//   interrupted → queued（resumeInterrupted / retry）
+//   failed | cancelled → queued（retry）
+//   succeeded：终态，不可再迁移（重跑=新建行，见 create）
+//
+// ── 三条语义规则 ──
+// 1) 去重：活跃状态 = {queued, running, cancelling}。create 先显式查询同 dedupeKey 的
+//    活跃行（按 rowid 最旧）并复用；无活跃行则新建行，并在 inheritCheckpoint 时
+//    把「最近一条终态行」的 checkpoint 作为续跑基线（调用方键优先覆盖）。
+//    终态行不参与活跃索引，但 checkpoint 可被续跑复用 → 取消后重开不产生副本。
+// 2) 优先级：数值越小越紧急（与 heavy-task-scheduler 一致；缩略图 -1 先于默认 0）。
+//    队列排序唯一口径：priority ASC, updated_at ASC, rowid ASC（同优先级 FIFO）。
+// 3) 清理：clearTerminal(statuses:excludeTypes:) 必须显式给出终态集合；只删调用方
+//    点名的状态，失败/中断原因不会被顺手删除。
 
 import Foundation
 
@@ -59,7 +77,31 @@ public struct AnalysisJobRow {
     }
 }
 
-/// analysis_jobs 仓库（TS AnalysisJobRepository）。
+/// 终态集合（状态机唯一入口用它校验，调用方不得自行拼字符串）。
+public let terminalAnalysisJobStatuses: Set<AnalysisJobStatus> = [.succeeded, .failed, .cancelled, .interrupted]
+
+/// 活跃集合（同一 dedupeKey 只允许一条）。
+public let activeAnalysisJobStatuses: Set<AnalysisJobStatus> = [.queued, .running, .cancelling]
+
+public enum AnalysisJobRepoError: Error, Equatable {
+    /// finish/clearTerminal 收到了非终态目标（编程错误，不得静默接受）。
+    case nonTerminalStatus(AnalysisJobStatus)
+    /// 写入后读回缺失（写成功但没落盘＝必须显式失败，禁止静默）。
+    case writeNotPersisted(String)
+}
+
+/// requestCancel 的结果（替代 Bool：调用方据此决定是否需要等执行器收尾）。
+public enum JobCancelOutcome: Equatable, Sendable {
+    /// queued → cancelled，未进入执行器的排队任务已直接终结。
+    case cancelledQueued
+    /// running → cancelling，已受理取消请求，等待执行器观察并收尾。
+    case cancellationRequested
+    /// 已是 cancelling（幂等重放，不产生二次迁移）。
+    case alreadyCancelling
+    /// 终态或不存在，无可取消内容。
+    case notCancellable
+}
+
 public final class AnalysisJobRepo {
     private let connection: DBConnection
 
@@ -67,10 +109,26 @@ public final class AnalysisJobRepo {
         self.connection = connection
     }
 
-    public func create(_ params: JobCreateParams) throws -> AnalysisJobData {
+    // MARK: - 创建 / 查询
+
+    /// 创建任务（去重见文件头规则 1）。
+    /// - Parameter inheritCheckpoint: 无活跃行时，是否把最近终态行的 checkpoint 作为
+    ///   续跑基线（调用方本次显式提供的键优先）。调用方对「参数型 checkpoint」
+    ///   可传 false 关闭继承。
+    @discardableResult
+    public func create(_ params: JobCreateParams, inheritCheckpoint: Bool = true) throws -> AnalysisJobData {
+        if let active = try activeRow(dedupeKey: params.dedupeKey) {
+            return toData(active)
+        }
+        var checkpoint = params.checkpoint ?? [:]
+        if inheritCheckpoint, let previous = try latestTerminalRow(dedupeKey: params.dedupeKey) {
+            for (key, value) in toData(previous).checkpoint where checkpoint[key] == nil {
+                checkpoint[key] = value
+            }
+        }
         let now = nowISOString()
         let id = newUUIDString()
-        let checkpoint = try JSONValue.stringify(JSONValue.object(params.checkpoint ?? [:]))
+        let checkpointJSON = try JSONValue.stringify(JSONValue.object(checkpoint))
         do {
             _ = try connection.prepare("""
                 INSERT INTO analysis_jobs (
@@ -81,34 +139,19 @@ public final class AnalysisJobRepo {
                 .text(id), .text(params.type.rawValue), .text(params.scopeType), .text(params.scopeId),
                 .text(params.dedupeKey), params.priority.map { .int(Int64($0)) } ?? .int(0),
                 .text(params.inputFingerprint ?? ""), .text(params.modelId ?? ""),
-                .text(params.modelVersion ?? ""), .text(checkpoint), .text(now), .text(now),
+                .text(params.modelVersion ?? ""), .text(checkpointJSON), .text(now), .text(now),
             ])
-        } catch DBError.message(let message) where message.contains("UNIQUE") {
-            if let row = try? connection.prepare("""
-                SELECT * FROM analysis_jobs WHERE dedupe_key = ?
-                  AND status IN ('queued', 'running', 'cancelling')
-              """).get([.text(params.dedupeKey)]) {
-                return toData(AnalysisJobRow(row: row))
-            }
-            // The only other row with this dedupe key is in a terminal state
-            // (failed/cancelled/succeeded). Re-run reuses the row as an automatic retry.
-            if let row = try? connection.prepare("""
-                SELECT * FROM analysis_jobs WHERE dedupe_key = ?
-                  AND status IN ('failed', 'cancelled', 'interrupted', 'succeeded')
-              """).get([.text(params.dedupeKey)]) {
-                let terminal = AnalysisJobRow(row: row)
-                _ = try connection.prepare("""
-                    UPDATE analysis_jobs
-                    SET status = 'queued', error_code = '', error_message = '', cancel_requested_at = '',
-                        lease_owner = '', heartbeat_at = '', progress_current = 0,
-                        progress_total = 0, progress_message = '', finished_at = '', updated_at = ?
-                    WHERE id = ?
-                  """).run([.text(nowISOString()), .text(terminal.id)])
-                return try get(terminal.id)!
+        } catch DBError.message(let message) where message.uppercased().contains("UNIQUE") {
+            // 跨进程竞态：另一写者抢先插入同 dedupeKey 活跃行（唯一索引兜底）。
+            if let active = try activeRow(dedupeKey: params.dedupeKey) {
+                return toData(active)
             }
             throw DBError.message(message)
         }
-        return try get(id)!
+        guard let created = try get(id) else {
+            throw AnalysisJobRepoError.writeNotPersisted(id)
+        }
+        return created
     }
 
     public func get(_ id: String) throws -> AnalysisJobData? {
@@ -118,34 +161,96 @@ public final class AnalysisJobRepo {
         return toData(AnalysisJobRow(row: row))
     }
 
+    /// 队列读取（唯一排序口径：priority ASC, updated_at ASC, rowid ASC）。
     public func list(status: AnalysisJobStatus? = nil) throws -> [AnalysisJobData] {
         let rows: [DBRow]
         if let status {
-            rows = try connection.prepare(
-                "SELECT * FROM analysis_jobs WHERE status = ? ORDER BY priority DESC, updated_at DESC"
-            ).query([.text(status.rawValue)])
+            rows = try connection.prepare("""
+                SELECT * FROM analysis_jobs WHERE status = ?
+                ORDER BY priority ASC, updated_at ASC, rowid ASC
+                """).query([.text(status.rawValue)])
         } else {
-            rows = try connection.prepare("SELECT * FROM analysis_jobs ORDER BY updated_at DESC").query()
+            // 无状态筛选用于展示（最近更新在前）；队列必须走 status == .queued。
+            rows = try connection.prepare(
+                "SELECT * FROM analysis_jobs ORDER BY updated_at DESC, rowid DESC"
+            ).query()
         }
         return rows.map { toData(AnalysisJobRow(row: $0)) }
     }
 
-    public func listByType(_ type: AnalysisJobType) throws -> [AnalysisJobData] {
-        let rows = try connection.prepare(
-            "SELECT * FROM analysis_jobs WHERE type = ? ORDER BY updated_at DESC"
-        ).query([.text(type.rawValue)])
-        return rows.map { toData(AnalysisJobRow(row: $0)) }
-    }
-
-    public func requestCancel(_ id: String) throws -> Bool {
+    /// 字面量来自 SchemaSQL.activeAnalysisJobStatusSQLList：与部分唯一索引
+    /// idx_analysis_jobs_active_dedupe 的 WHERE 子句逐字一致（写死两份会漂移，
+    /// 顺序/参数化任一变化都会让该查询丢掉部分索引，见 Schema 注释的 EQP 证据）。
+    private func activeRow(dedupeKey: String) throws -> AnalysisJobRow? {
         try connection.prepare("""
-            UPDATE analysis_jobs
-            SET status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'cancelling' END,
-                cancel_requested_at = ?, updated_at = ?
-            WHERE id = ? AND status IN ('queued', 'running')
-          """).run([.text(nowISOString()), .text(nowISOString()), .text(id)]) == 1
+            SELECT * FROM analysis_jobs
+            WHERE dedupe_key = ? AND status IN (\(SchemaSQL.activeAnalysisJobStatusSQLList))
+            ORDER BY rowid ASC LIMIT 1
+            """).get([.text(dedupeKey)]).map(AnalysisJobRow.init)
     }
 
+    private func latestTerminalRow(dedupeKey: String) throws -> AnalysisJobRow? {
+        try connection.prepare("""
+            SELECT * FROM analysis_jobs
+            WHERE dedupe_key = ? AND status IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+            ORDER BY updated_at DESC, rowid DESC LIMIT 1
+            """).get([.text(dedupeKey)]).map(AnalysisJobRow.init)
+    }
+
+    // MARK: - 状态迁移
+
+    /// 取消请求：queued 直接终态；running 转 cancelling（等执行器收尾）；幂等。
+    public func requestCancel(_ id: String) throws -> JobCancelOutcome {
+        guard let row = try connection.prepare("SELECT * FROM analysis_jobs WHERE id = ?").get([.text(id)]) else {
+            return .notCancellable
+        }
+        return try requestCancel(AnalysisJobRow(row: row))
+    }
+
+    private func requestCancel(_ row: AnalysisJobRow) throws -> JobCancelOutcome {
+        let now = nowISOString()
+        switch AnalysisJobStatus(rawValue: row.status) {
+        case .queued:
+            let changed = try connection.prepare("""
+                UPDATE analysis_jobs
+                SET status = 'cancelled', cancel_requested_at = ?, finished_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'queued'
+                """).run([.text(now), .text(now), .text(now), .text(row.id)]) == 1
+            if changed { return .cancelledQueued }
+            return try requestCancelAfterLostRace(row.id)
+        case .running:
+            let changed = try connection.prepare("""
+                UPDATE analysis_jobs
+                SET status = 'cancelling', cancel_requested_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """).run([.text(now), .text(now), .text(row.id)]) == 1
+            if changed { return .cancellationRequested }
+            return try requestCancelAfterLostRace(row.id)
+        case .cancelling:
+            return .alreadyCancelling
+        default:
+            return .notCancellable
+        }
+    }
+
+    /// 条件 UPDATE 未命中（并发迁移抢先）：重读一次按真实状态归类，不猜测。
+    private func requestCancelAfterLostRace(_ id: String) throws -> JobCancelOutcome {
+        guard let latest = try connection.prepare("SELECT * FROM analysis_jobs WHERE id = ?").get([.text(id)]) else {
+            return .notCancellable
+        }
+        let row = AnalysisJobRow(row: latest)
+        switch AnalysisJobStatus(rawValue: row.status) {
+        case .queued, .running:
+            return try requestCancel(row)
+        case .cancelling:
+            return .alreadyCancelling
+        default:
+            return .notCancellable
+        }
+    }
+
+    /// 重试：仅 failed/interrupted/cancelled → queued；checkpoint 保留（续跑），
+    /// 进度/错误/租约/取消标记全部清零。
     public func retry(_ id: String) throws -> Bool {
         try connection.prepare("""
             UPDATE analysis_jobs
@@ -156,32 +261,45 @@ public final class AnalysisJobRepo {
           """).run([.text(nowISOString()), .text(id)]) == 1
     }
 
+    /// 租约超时回收：
+    /// - running 心跳超时 → interrupted / worker_lost（可自动恢复）；
+    /// - cancelling 心跳超时 → cancelled（用户已请求取消，绝不允许恢复执行）。
     public func recoverStale(leaseTimeoutMs: Int = 30_000) throws -> Int {
+        let now = nowISOString()
         let cutoff = isoString(Date().addingTimeInterval(-Double(leaseTimeoutMs) / 1000))
         return try connection.prepare("""
             UPDATE analysis_jobs
-            SET status = 'interrupted', error_code = 'worker_lost',
-                error_message = 'Worker heartbeat expired', finished_at = ?, updated_at = ?
+            SET status = CASE WHEN status = 'cancelling' THEN 'cancelled' ELSE 'interrupted' END,
+                error_code = CASE WHEN status = 'cancelling' THEN '' ELSE 'worker_lost' END,
+                error_message = CASE WHEN status = 'cancelling' THEN '' ELSE 'Worker heartbeat expired' END,
+                finished_at = ?, updated_at = ?
             WHERE status IN ('running', 'cancelling')
               AND (heartbeat_at = '' OR heartbeat_at < ?)
-          """).run([.text(nowISOString()), .text(nowISOString()), .text(cutoff)])
+          """).run([.text(now), .text(now), .text(cutoff)])
     }
 
-    public func resumeInterrupted(types: [AnalysisJobType]) throws -> Int {
+    /// 自动恢复：interrupted → queued（checkpoint 保留）。
+    /// - Parameter maxAttempts: 非 nil 时仅恢复 attempt_count < maxAttempts 的行，
+    ///   防止崩溃-重启死循环；超限行保持 interrupted 等用户显式重试。
+    public func resumeInterrupted(types: [AnalysisJobType], maxAttempts: Int? = nil) throws -> Int {
         if types.isEmpty { return 0 }
         let placeholders = types.map { _ in "?" }.joined(separator: ", ")
-        let now = nowISOString()
-        var values: [DBValue?] = [.text(now)]
+        let attemptClause = maxAttempts == nil ? "" : " AND attempt_count < ?"
+        var values: [DBValue?] = [.text(nowISOString())]
         values.append(contentsOf: types.map { .text($0.rawValue) })
+        if let maxAttempts {
+            values.append(.int(Int64(maxAttempts)))
+        }
         return try connection.prepare("""
             UPDATE analysis_jobs
             SET status = 'queued', error_code = '', error_message = '',
                 cancel_requested_at = '', lease_owner = '', heartbeat_at = '',
                 finished_at = '', updated_at = ?
-            WHERE status = 'interrupted' AND type IN (\(placeholders))
+            WHERE status = 'interrupted' AND type IN (\(placeholders))\(attemptClause)
           """).run(values)
     }
 
+    /// 认领：仅 queued → running，attempt_count 自增，started_at 只写一次。
     public func claim(id: String, leaseOwner: String) throws -> Bool {
         let now = nowISOString()
         return try connection.prepare("""
@@ -192,6 +310,7 @@ public final class AnalysisJobRepo {
           """).run([.text(leaseOwner), .text(now), .text(now), .text(now), .text(id)]) == 1
     }
 
+    /// 心跳：仅 running/cancelling 且租约匹配；返回 false = 租约已丢失。
     public func heartbeat(id: String, leaseOwner: String) throws -> Bool {
         try connection.prepare("""
             UPDATE analysis_jobs SET heartbeat_at = ?, updated_at = ?
@@ -199,6 +318,7 @@ public final class AnalysisJobRepo {
           """).run([.text(nowISOString()), .text(nowISOString()), .text(id), .text(leaseOwner)]) == 1
     }
 
+    /// 进度/checkpoint：checkpoint 缺省继承库中现值；租约或状态不符返回 false。
     public func updateProgress(id: String, leaseOwner: String, update: JobProgressUpdate) throws -> Bool {
         guard let current = try get(id) else { return false }
         let checkpoint = update.checkpoint ?? current.checkpoint
@@ -217,12 +337,16 @@ public final class AnalysisJobRepo {
           """).run(values) == 1
     }
 
+    /// 终态收尾：仅 running/cancelling 且租约匹配；目标状态必须是终态。
     public func finish(
         id: String,
         leaseOwner: String,
         status: AnalysisJobStatus,
         error: (code: String, message: String)? = nil
     ) throws -> Bool {
+        guard terminalAnalysisJobStatuses.contains(status) else {
+            throw AnalysisJobRepoError.nonTerminalStatus(status)
+        }
         let now = nowISOString()
         return try connection.prepare("""
             UPDATE analysis_jobs SET status = ?, error_code = ?, error_message = ?, finished_at = ?, updated_at = ?
@@ -230,9 +354,10 @@ public final class AnalysisJobRepo {
           """).run([
             .text(status.rawValue), .text(error?.code ?? ""), .text(error?.message ?? ""),
             .text(now), .text(now), .text(id), .text(leaseOwner),
-        ]) == 1
+          ]) == 1
     }
 
+    /// 进程停止兜底：running → interrupted（下次启动按类型策略恢复）。
     public func interrupt(id: String, leaseOwner: String, message: String = "Application stopped during execution") throws -> Bool {
         let now = nowISOString()
         return try connection.prepare("""
@@ -243,18 +368,28 @@ public final class AnalysisJobRepo {
           """).run([.text(message), .text(now), .text(now), .text(id), .text(leaseOwner)]) == 1
     }
 
-    /// Terminal rows in every status are cleared so failed/interrupted jobs
-    /// do not accumulate; stage-evidence types may be excluded via `excludeTypes`.
-    public func clearCompleted(excludeTypes: [AnalysisJobType] = []) throws -> Int {
-        let exclusion = excludeTypes.isEmpty
-            ? ""
-            : " AND type NOT IN (\(excludeTypes.map { _ in "?" }.joined(separator: ", ")))"
-        let values: [DBValue?] = excludeTypes.map { .text($0.rawValue) }
-        let sql = "DELETE FROM analysis_jobs WHERE status IN ('succeeded', 'cancelled', 'failed', 'interrupted')\(exclusion)"
-        return try connection.prepare(sql).run(values)
+    /// 显式清理：只删除调用方点名的终态集合（默认由调用方传 [.succeeded]），
+    /// excludeTypes 用于保护 workspace 阶段证据（metadata.scan / export.execute）。
+    /// 失败/中断/取消行及其错误原因不会被隐式删除。
+    public func clearTerminal(statuses: [AnalysisJobStatus], excludeTypes: [AnalysisJobType] = []) throws -> Int {
+        for status in statuses where !terminalAnalysisJobStatuses.contains(status) {
+            throw AnalysisJobRepoError.nonTerminalStatus(status)
+        }
+        guard !statuses.isEmpty else { return 0 }
+        let statusPlaceholders = statuses.map { _ in "?" }.joined(separator: ", ")
+        var values: [DBValue?] = statuses.map { .text($0.rawValue) }
+        var exclusion = ""
+        if !excludeTypes.isEmpty {
+            exclusion = " AND type NOT IN (\(excludeTypes.map { _ in "?" }.joined(separator: ", ")))"
+            values.append(contentsOf: excludeTypes.map { .text($0.rawValue) })
+        }
+        return try connection.prepare(
+            "DELETE FROM analysis_jobs WHERE status IN (\(statusPlaceholders))\(exclusion)"
+        ).run(values)
     }
 
-    /// TS toData：checkpoint_json → 对象；未知枚举值回退到默认值（仅在脏数据时发生）。
+    /// 行 → 契约类型；checkpoint_json 解析失败（脏数据）按空对象处理，
+    /// 未知枚举值回退默认值——仅在库被外部改写时发生。
     public func toData(_ row: AnalysisJobRow) -> AnalysisJobData {
         let parsed = (try? JSONValue.parse(row.checkpointJSON)) ?? JSONValue.object([:])
         let checkpoint: [String: JSONValue] = {

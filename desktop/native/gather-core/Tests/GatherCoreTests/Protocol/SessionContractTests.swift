@@ -255,10 +255,16 @@ struct SessionContractTests {
 
     // MARK: - GatherErrorCode
 
-    @Test func gatherErrorCodeCountMatchesTS() {
-        // packages/shared/src/errors.ts 的 GATHER_ERROR_CODES 当前为 156 项；
-        // TS 侧增删错误码时必须同步此断言。
-        #expect(GatherErrorCode.allCases.count == 156)
+    @Test func gatherErrorCodeCountIsPinned() {
+        // TS 参考实现（packages/shared/src/errors.ts）已随原生迁移删除，156 项
+        // 是其历史清单。原生新增 7 个侧车文档故障码（XMP_DOCUMENT_CORRUPT /
+        // _UNSUPPORTED / _READ_FAILED、XMP_WRITE_FAILED / _VERIFICATION_FAILED、
+        // XMP_BACKUP_FAILED、XMP_RESTORE_FAILED）后总数 163。
+        // 审查修复轮再补 6 个结构化码：XMP_CONFIRM_OTHER_SESSION_PENDING、
+        // DUP_THRESHOLD_INVALID、ASSET_RELINK_SAME_ROOT / _NESTED_ROOT /
+        // _NO_FILES_REGISTERED / _NO_VERIFIED_FILE → 169。
+        // 增删错误码时必须同步此断言与 GatherLocalization.errorMessages。
+        #expect(GatherErrorCode.allCases.count == 173)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

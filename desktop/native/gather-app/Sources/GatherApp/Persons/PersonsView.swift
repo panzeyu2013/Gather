@@ -30,16 +30,21 @@ struct PersonsView: View {
     /// 对齐旧版 PersonDetail「前往人脸审核」：跳转到人脸关键词页并按角色名
     /// （person.name, sessionId）预筛选。由 RootView 注入；nil 时回退 onReview(sessionId)。
     var onReviewFaceRole: ((String, String) -> Void)? = nil
+    /// 可见性门控（opacity 常驻页）：不可见时不发命令、不建加载 Task；重新可见
+    /// 时由 .task(id:) 补一次加载。
+    var isActive: Bool = true
     @State private var showCreate = false
 
     init(
         viewModel: PersonsViewModel,
         onReview: @escaping (String) -> Void = { _ in },
-        onReviewFaceRole: ((String, String) -> Void)? = nil
+        onReviewFaceRole: ((String, String) -> Void)? = nil,
+        isActive: Bool = true
     ) {
         self.viewModel = viewModel
         self.onReview = onReview
         self.onReviewFaceRole = onReviewFaceRole
+        self.isActive = isActive
     }
 
     var body: some View {
@@ -56,11 +61,32 @@ struct PersonsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.gatherBackground)
-        .task { await viewModel.load() }
+        // 隐藏页一致性：disabled / hit-testing / 无障碍三者同源（RootView 亦按
+        // isPersons 覆盖，双保险）。
+        .disabled(!isActive)
+        .allowsHitTesting(isActive)
+        .accessibilityHidden(!isActive)
+        // 隐藏时不建加载 Task（启动即跑 person.list/person.get 的旧行为删除）；
+        // 重新可见 → id 变化触发一次加载。
+        .task(id: isActive) {
+            guard isActive else { return }
+            await viewModel.load()
+        }
+        // 写路径广播（person.* 与 fkw 绑定/解绑 → 人物域）：可见时按域刷新，
+        // 隐藏时不发请求（重新可见由上面的 .task 统一补一次）。
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
+            guard let change = notification.object as? GatherDomainChange,
+                  change.domain == .persons,
+                  change.origin != PersonsViewModel.changeOrigin,
+                  isActive else { return }
+            Task { await viewModel.load() }
+        }
         .sheet(isPresented: $showCreate) {
             CreatePersonSheet(viewModel: viewModel) { name in
                 await viewModel.create(name: name)
             }
+            // 页面隐藏时 .disabled(true) 会随环境下沉到 sheet：显式启用。
+            .disabled(false)
             .onAppear { viewModel.clearActionError() }
         }
     }
@@ -76,6 +102,7 @@ struct PersonsView: View {
                     Button { showCreate = true } label: {
                         Image(systemName: "plus")
                     }
+                    .accessibilityLabel(GatherLocalization.l("新建人物"))
                     .help(GatherLocalization.l("新建人物"))
                 }
             }
@@ -109,6 +136,7 @@ struct PersonsView: View {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 28))
                     .foregroundStyle(GatherTheme.warning)
+                    .accessibilityHidden(true)
                 Text(String(format: GatherLocalization.l("加载失败：%@"), error))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -182,6 +210,7 @@ struct PersonsView: View {
                 Image(systemName: "person.2")
                     .font(.system(size: 40))
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 Text(GatherLocalization.l("选择一个人物"))
                     .foregroundStyle(.secondary)
                 Button(GatherLocalization.l("新建人物")) { showCreate = true }
@@ -248,7 +277,7 @@ private struct PersonDetailView: View {
                 viewModel.deselect()
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "arrow.left")
+                    Image(systemName: "arrow.left").accessibilityHidden(true)
                     Text(GatherLocalization.l("返回人脸库"))
                 }
                 .font(.callout)
@@ -357,9 +386,10 @@ private struct PersonDetailView: View {
             notes = person.notes
         }
         .alert(GatherLocalization.l("删除人物？"), isPresented: $showDelete) {
+            // 与共享确认弹窗同理：宿主页隐藏时不能被 isActive 的 disabled 连坐。
             Button(GatherLocalization.l("删除"), role: .destructive) {
                 Task {
-                    let ok = await viewModel.deleteSelected()
+                    let ok = await viewModel.deleteSelected(confirmed: true)
                     if ok {
                         GatherToastCenter.shared.show(type: .success, message: GatherLocalization.l("人物已删除"))
                     } else {
@@ -370,9 +400,16 @@ private struct PersonDetailView: View {
                     }
                 }
             }
-            Button(GatherLocalization.l("取消"), role: .cancel) {}
+            .disabled(false)
+            Button(GatherLocalization.l("取消"), role: .cancel) {
+                GatherToastCenter.shared.show(
+                    type: .info,
+                    message: String(format: GatherLocalization.l("已取消删除「%@」，未执行任何更改"), person.name)
+                )
+            }
+            .disabled(false)
         } message: {
-            Text(String(format: GatherLocalization.l("确定要删除「%@」吗？此操作将从人脸库中移除该人物及其所有关联的人脸数据。"), person.name))
+            Text(String(format: GatherLocalization.l("确定要删除「%@」吗？将从人脸库移除该人物及其 %lld 张关联照片、%lld 个工作区的人脸绑定数据。此操作不可撤销。"), person.name, person.totalPhotoCount, person.sessionCount))
         }
     }
 
@@ -406,7 +443,7 @@ private struct PersonDetailView: View {
     /// （zh 判定与 SettingsViewModel.dateText 的 Locale.preferredLanguages
     /// 前缀检查同源；页面无 ui_language 访问通道，沿用系统区域近似）。
     private static func dateText(_ iso: String) -> String {
-        guard let date = parseISO8601(iso) else { return iso }
+        guard let date = parseISO8601Date(iso) else { return iso }
         let formatter = DateFormatter()
         formatter.locale = Locale.current
         if Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true {
@@ -415,15 +452,6 @@ private struct PersonDetailView: View {
             formatter.setLocalizedDateFormatFromTemplate("yMd")
         }
         return formatter.string(from: date)
-    }
-
-    private static func parseISO8601(_ iso: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: iso) { return date }
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        return plain.date(from: iso)
     }
 }
 

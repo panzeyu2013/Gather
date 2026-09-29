@@ -12,6 +12,9 @@
 //   - directory：仅 eq/starts_with，其余抛 "Unsupported operator..."；
 //     escapeLike 转义 \ % _
 //   - has_face/person/volume/has_duplicates：EXISTS/NOT EXISTS 专属 SQL
+//   - has_duplicates 绑定决策状态（§4.2 修复）：仅「仍有未决成员的重复组」命中；
+//     已处理（全部成员已决策）的组不命中。全部消费方（filterPhotos/filterGlobally/
+//     countPhotos/countGlobally/智能相册）共用本 SQL 生成器，语义单点。
 //   - filterPhotos 引擎内不钳制 limit/offset；filterGlobally 钳制
 //     1..500 / ≥0（不对称，与 TS 一致）；countPhotos 全局模式 asset 去重
 //   - rowToPhotoData 硬编码 hasExistingXmp: false
@@ -121,8 +124,16 @@ public final class FilterEngine {
             "SELECT p.rowid AS photo_rowid, COALESCE(NULLIF(p.asset_id, ''), p.id) AS asset_key",
             "FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id",
             "WHERE (\(clause.sql.isEmpty ? "1=1" : clause.sql)) \(membershipFilter)",
+            "), ranked AS (",
+            // 代表行规则（唯一真相源 PhotoRepo.preferredRowOrderSQL）：RAW 变体优先、
+            // 其次最小 rowid。排序只作用于 matching 集 —— 变体一旦不满足筛选条件就
+            // 不能当代表（否则会返回一条不匹配的照片，页内容与计数互相矛盾）。
+            "SELECT matching.asset_key, matching.photo_rowid,",
+            "ROW_NUMBER() OVER (PARTITION BY matching.asset_key",
+            "  ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p"))) AS preference_rank",
+            "FROM matching JOIN photos p ON p.rowid = matching.photo_rowid",
             "), representatives AS (",
-            "SELECT asset_key, MIN(photo_rowid) AS photo_rowid FROM matching GROUP BY asset_key",
+            "SELECT asset_key, photo_rowid FROM ranked WHERE preference_rank = 1",
             ")",
             "SELECT p.id AS photo_id, COALESCE(NULLIF(p.asset_id, ''), p.id) AS asset_id,",
             "p.session_id, s.name AS session_name, p.filename, p.filepath, p.status,",
@@ -281,17 +292,33 @@ public final class FilterEngine {
                 params: [.text(stringValue(value))]
             )
         case "has_duplicates":
-            let existsSql = """
+            // 语义（§4.2 P1 修复，与 DuplicateService 单事务后状态一致）：
+            // 照片仍存在**未决**的重复关系才命中。一个组「已处理」⇔ 组内不存在
+            // resolution IS NULL 的成员——成员行的 resolution 是决策真相，
+            // duplicate_groups.resolution 只是重扫/整组决策时落下的派生值，不再
+            // 作为第二判据（消除双真相源）。
+            // 部分处理：同组只要还有未决成员，组内所有成员继续命中。重复关系的
+            // 处理是组级动作（保留谁/丢弃谁），存在未决成员时「这组重复处理了吗」
+            // 仍未回答；某成员是否被丢弃（is_kept／导出排除）是另一维度，不影响
+            // 本判据。
+            let pendingSql = """
                 EXISTS (
                   SELECT 1 FROM duplicate_group_members dgm
-                  JOIN duplicate_groups dg ON dg.id = dgm.group_id
-                  WHERE dgm.photo_id = p.id AND dg.member_count > 1
+                  WHERE dgm.photo_id = p.id
+                    AND EXISTS (
+                      SELECT 1 FROM duplicate_group_members other
+                      WHERE other.group_id = dgm.group_id AND other.photo_id != dgm.photo_id
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM duplicate_group_members pending
+                      WHERE pending.group_id = dgm.group_id AND pending.resolution IS NULL
+                    )
                 )
             """
             if value.boolValue == false {
-                return (sql: "NOT \(existsSql)", params: [])
+                return (sql: "NOT \(pendingSql)", params: [])
             }
-            return (sql: existsSql, params: [])
+            return (sql: pendingSql, params: [])
         default:
             break
         }
@@ -518,7 +545,7 @@ public enum FilterEngineError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .fieldUnknown(let field): return "FILTER_FIELD_UNKNOWN"
+        case .fieldUnknown: return "FILTER_FIELD_UNKNOWN"
         case .unsupportedOperatorForField(let field, let op):
             return "Unsupported operator for \(field) field: \(op)"
         }

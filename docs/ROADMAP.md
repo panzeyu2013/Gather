@@ -56,8 +56,6 @@
   （`similarity_cluster_convergence_interval`，默认 10）到期后全量收敛；
 - ✅ 增量 vs 全量对账矩阵（1.6）：随机 200 步增删改/重命名 × 5 组参数，逐步比对
   划分、组顺序、代表图与未成组集合；
-- 文件系统监控已原生化：FSEvents 递归 watcher + 750ms 去抖 + 15s 轮询对账 +
-  丢事件矩阵（`Watch/Coordinator.swift`，随机 200 次增删改对账连续全绿）。
 
 ### 决策 C：平台扩展——已落定为 macOS 独占原生
 
@@ -74,26 +72,24 @@
 
 ---
 
-## 三、当前实现状态与基线（2026-08-12 快照）
+## 三、当前实现状态与基线（2026-09-28 快照）
 
 ### 3.1 已完成（原生代码在主干，有单测覆盖）
 
 | 项 | 位置 | 说明 |
 |---|---|---|
-| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（边界扫描门禁）；gather-core 772 测试 / 102 suites，gather-app 172 / 19 suites（2026-08-13 台账，含写回协调器/写回服务直测） |
-| 命令面 118/118 | `gather-app/Host/SessionCommandRouter.swift` | 同步 103 + 异步 33 case（18 双注册），destructive 确认 37+ 处 |
-| 磁盘缓存 SQLite 化 | `gather-core/Database/ImageCache.swift` | WAL + 惰性淘汰 + 损坏/只读降级（ADR-007） |
+| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（`scripts/check-no-legacy.sh` 门禁）；最近一次台账（2026-09-28 本机 `swift test` 自报数）：gather-core 795 / 112 suites，gather-app 173 / 20 suites |
+| 命令面 118/118 | `gather-app/Host/SessionCommandRouter.swift` | 同步 82 + 异步 36 case（双注册 0，并集 118）；确认门禁由 `scripts/check-command-surface.sh` 校验（载荷硬编码 7 处 / `confirmed: true` 实参 49 处） |
 | Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
 | 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
-| 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 未任务化（ADR-024） |
+| 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 已任务化（ADR-024） |
 | 相似 hash 批量复用 | `SimilarityService` | 分块 `IN` 查询，消除 N+1 |
 | Vision 人脸管线 | `gather-core/Face/` | 检测 + 768 维特征编码 + Inference 调度；ONNX 仅质量门回退（ADR-026） |
 | 聚类/向量对账 | `Face/Clusterer` / `VectorIndex` | 8 case DBSCAN+LSH 对账；topK 逐位一致 |
-| 文件监控 | `Watch/Coordinator.swift` | FSEvents + 去抖 + 全量兜底 + 丢事件矩阵 |
-| 写回可靠性 | `WritebackService` + `MetadataSyncCoordinator` + `CaptureOneSyncState` | 冲突检测/备份/重试/确认/清理状态机（ADR-015） |
+| 写回可靠性 | `MetadataSyncCoordinator` + `WritebackService` + 纯函数 `aggregateSessionState` | 冲突检测/备份/重试/确认/清理状态机（ADR-015；`CaptureOneSyncState` 类已删，见 ADR-028） |
 | 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
 | 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `GatherLocalization` + `.lproj` | 156 项错误码 + 任务/相位文案；菜单即时重建（ADR-016/019/020） |
+| 本地化 | `GatherLocalization` + `.lproj` | 173 项错误码 + 任务/相位文案；菜单即时重建（ADR-016/019/020） |
 | 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
 | 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 
@@ -110,7 +106,7 @@
 | 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、HNSW、LSH） |
 | 聚类对账 | 25k 合成 8 簇 eps=0.6：ARI=1.0000 / NMI=1.0000 / 加速 3.1x（unit 级） |
 | HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008 |
-| 迁移/快照 | 空库迁移后与 `docs/fixtures/schema.snapshot.json` 41 表全对 |
+| 迁移/快照 | 空库迁移后与 `docs/fixtures/schema.snapshot.json` 43 表全对（schema 34） |
 
 > 以上只证明单元/组件层面，不能替代真实素材的应用级验收（Stretch 门）。
 
@@ -119,7 +115,14 @@
 - 真实 RAW/JPEG 混合导入的端到端耗时与峰值内存（实材归因，范围外）；
 - 10 万规模下聚类/检索/缓存的真实表现（Stretch 门）；
 - 人脸推理与聚类在真实照片集上的吞吐与质量（范围外，见 3.2）；
-- 增量 vs 全量的结果一致性（对账矩阵 1.6 未建）。
+
+### 3.5 技术债与未决项（指针）
+
+工程侧技术债清单、不可再删清单与残余风险维护在
+[reviews/functional-design-review.md](reviews/functional-design-review.md)：含 6 份重复的
+并发游标类、8 组 app 重复函数、schema 单源化、公共基础设施抽取、查询性能项，以及
+"写回内核外 ~11 处裸 sidecar 路径""`MetadataWritebackFailure` 未进 UI""无真实路由 ×
+118 命令的运行时契约测试"等已知限制。未接线资产的删除裁决见 ADR-028。
 
 ---
 
@@ -219,7 +222,7 @@ Phase 0（止血）✅ → Phase 1（增量索引）──┬─> 里程碑 V（
 
 原生迁移后基准由 `gather-core-benchmarks`（`desktop/native/gather-core/Sources/
 GatherCoreBenchmarks/`）承担：2 万/5 万两档全过（dHash、embedding、HNSW、LSH），
-合成数据驱动，随 `GATHER_TELEMETRY=1` 可输出 NDJSON 指标。
+合成数据驱动（原 `GATHER_TELEMETRY` 已无读取点，Telemetry 模块已删，见 ADR-028）。
 
 | 基准 | 场景 | 关键指标 | 验收对象 |
 |---|---|---|---|
@@ -243,6 +246,7 @@ GatherCoreBenchmarks/`）承担：2 万/5 万两档全过（dHash、embedding、
 | 2026-08-12 | unit | — | 原生全量测试 | core 765 / app 92 全绿 | 迁移 + 对账收尾台账 |
 | 2026-08-13 | unit | — | 验收修复轮全量回归 | core 772 / app 172 全绿 | 深色徽标/awaitSync/键盘焦点 + 组件统一 + 写回直测 |
 | 2026-09-22 | unit | 2 万 | 增量聚类（真实分布 +100 张） | 0.21s（预算 <10s）；全量状态构建 27s | core 789 / app 172 全绿；对账矩阵 5 配置 × 200 步 |
+| 2026-09-28 | unit | — | 清理后全量回归 | core 795 / app 173 全绿 | 未接线资产删除（ADR-028）；两条门禁 exit 0 |
 
 ---
 

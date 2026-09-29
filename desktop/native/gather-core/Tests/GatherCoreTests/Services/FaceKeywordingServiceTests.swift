@@ -85,7 +85,10 @@ private func waitUntil(
     return try condition()
 }
 
-private struct FaceKwHarness {
+/// 线程安全说明（Swift 6 `Sendable`）：全部存储属性构造后不可变，Task 会按值
+/// 捕获整个 harness；DBConnection 自带连接锁，FaceKwService 的并发调用由会话
+/// 占用槽串行化。结构无锁、无写者，故标注 `@unchecked`（不可变性即此处承诺）。
+private struct FaceKwHarness: @unchecked Sendable {
     let db: DBConnection
     let service: FaceKwService
     let sessionRepo: SessionRepo
@@ -103,7 +106,9 @@ private func makeFaceKwHarness(
     inference: FaceKwService.FaceInferenceProvider? = nil,
     cluster: FaceKwService.FaceClusterProvider? = nil,
     writeback: FaceWritebackProvider? = nil,
-    settings: [String: Double] = [:]
+    settings: [String: Double] = [:],
+    settingsProvider: ((String, Double) -> Double)? = nil,
+    stringSettings: [String: String] = [:]
 ) throws -> FaceKwHarness {
     let db = try makeMigratedDB()
     let sessionRepo = SessionRepo(connection: db)
@@ -121,12 +126,25 @@ private func makeFaceKwHarness(
         faceRepo: FaceRepo(connection: db),
         personRepo: PersonRepo(connection: db),
         connection: db,
-        getNumber: { key, defaultValue in settings[key] ?? defaultValue },
+        getNumber: { key, defaultValue in
+            // settingsProvider 优先：供"同一次运行中改设置"的用例（见 FaceAlgorithmWiringTests）。
+            if let settingsProvider { return settingsProvider(key, defaultValue) }
+            return settings[key] ?? defaultValue
+        },
+        getString: { key, defaultValue in
+            // 字符串设置（模型路径/版本/增量开关）此前无法注入，导致"服务是否真的读设置"没有覆盖。
+            stringSettings[key] ?? defaultValue
+        },
         decodeProvider: { _, _ in Data("jpeg".utf8) },
         inferenceProvider: inference ?? defaultFakeInference(),
-        clusterProvider: cluster ?? { entries, eps, minPts, onProgress in
+        clusterProvider: cluster ?? { entries, eps, minPts, options, onProgress in
             try FaceClusterer.clusterEmbeddings(
-                entries: entries, eps: eps, minPts: minPts, onProgress: onProgress)
+                entries: entries,
+                eps: eps,
+                minPts: minPts,
+                coreQualityFloor: options.coreQualityFloor,
+                retryMinSamples: options.retryMinSamples,
+                onProgress: onProgress)
         },
         writebackProvider: writeback
     )
@@ -191,7 +209,7 @@ private let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
     detectorPath: "det.onnx", encoderPath: "enc.onnx",
     primaryDetectionSize: 640, secondaryDetectionSize: 128,
     confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
-    previewMaxDimension: 2048
+    previewMaxDimension: 2048, embeddingSpec: FaceEncoder.embeddingSpec
 )
 
 // MARK: - 参数校验（TS: face-parameters.test.ts）
@@ -232,7 +250,7 @@ struct FaceKwObservationRetentionTests {
                 images.map { _ in FaceInferenceItem(error: "inference failed") }
             }
         )
-        let oldIds = try harness.faceRepo.saveObservations(sessionId: harness.sessionId, observations: [
+        let oldIds = try harness.faceRepo.replaceObservationsByPhoto(sessionId: harness.sessionId, photoId: "photo-1", observations: [
             FaceObservationInput(
                 photoId: "photo-1", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4,
                 embedding: [0.1, 0.2, 0.3], confidence: 0.9,
@@ -272,7 +290,8 @@ struct FaceKwObservationRetentionTests {
         #expect(observations[0].confidence == 0.95)
         let state = try harness.faceRepo.getAnalysisStates(harness.sessionId)
         #expect(state["photo-1"]?.analysisSignature == analysisSignatureForDefaults)
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "done")
+        // 终态真相源是 analysis_runs（sessions.analysis_status 无人写）。
+        #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
     }
 }
 
@@ -318,7 +337,6 @@ struct FaceKwRunRecordTests {
         let row = try runRow(harness.db, harness.sessionId)!
         #expect(row[6].textValue == "failed")
         #expect(row[5].textValue != "")
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "failed")
     }
 }
 
@@ -333,7 +351,7 @@ struct FaceKwAnalyzeFlowTests {
             probe.set()
             throw FaceKwServiceError.analysisRunning
         })
-        _ = try harness.faceRepo.saveObservations(sessionId: harness.sessionId, observations: [
+        _ = try harness.faceRepo.replaceObservationsByPhoto(sessionId: harness.sessionId, photoId: "photo-1", observations: [
             FaceObservationInput(
                 photoId: "photo-1", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4,
                 embedding: [0.1, 0.2, 0.3], confidence: 0.9),
@@ -346,7 +364,12 @@ struct FaceKwAnalyzeFlowTests {
             sessionId: harness.sessionId, photoId: "photo-1",
             sourceFileSize: stat.size, sourceFileMtimeMs: stat.mtimeMs,
             analysisSignature: analysisSignatureForDefaults)
-        try harness.faceRepo.upsertClusterSignature(sessionId: harness.sessionId, signature: "0.6:2")
+        // 聚类签名（缓存键）含质量门槛与二遍阈值：用生产同一构造函数，避免格式漂移导致
+        // 该用例悄悄退化为"重聚类"（本测试断言的是缓存快路径）。
+        let seededClusterOptions = FaceKwService.clusterOptions(from: { _, defaultValue in defaultValue })
+        try harness.faceRepo.upsertClusterSignature(
+            sessionId: harness.sessionId,
+            signature: FaceKwService.clusterSignature(eps: 0.6, minPts: 2, options: seededClusterOptions))
         try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
@@ -358,11 +381,10 @@ struct FaceKwAnalyzeFlowTests {
         #expect(result.status == "done")
         #expect(probe.value == false)  // 推理未被调用
         #expect(phases.contains("face.cached-clusters"))
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "done")
         #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
     }
 
-    @Test("cancels an in-flight analysis and writes cancelled status")
+    @Test("cancels an in-flight analysis and reports cancelled")
     func cancelsInFlightAnalysis() async throws {
         let gate = AsyncGate()
         let entered = LockedFlag()
@@ -382,9 +404,8 @@ struct FaceKwAnalyzeFlowTests {
 
         let result = try await task.value
         #expect(result.status == "cancelled")
-        #expect(try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "cancelled")
-        // 取消的 run 以 'failed' 终态（sessions.analysis_status 为 'cancelled'，
-        // 与 TS 语义一致）。
+        // 取消的 run 以 'failed' 终态（run 记录只区分 ok/failed）；取消态由
+        // analysis_jobs 表达，sessions.analysis_status 已不再写入。
         #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "failed")
     }
 
@@ -401,7 +422,7 @@ struct FaceKwAnalyzeFlowTests {
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
         _ = try waitUntil {
-            try harness.sessionRepo.get(id: harness.sessionId)?.analysisStatus == "running"
+            try runRow(harness.db, harness.sessionId)?[6].textValue == "running"
         }
 
         await #expect(throws: FaceKwServiceError.analysisRunning) {
@@ -458,7 +479,7 @@ struct FaceKwAnalyzeFlowTests {
             images.map { _ in FaceInferenceItem(error: "all failed") }
         })
         // 全零 embedding 的观察：聚类输入为空（TS 的 some(value !== 0) 过滤）。
-        _ = try harness.faceRepo.saveObservations(sessionId: harness.sessionId, observations: [
+        _ = try harness.faceRepo.replaceObservationsByPhoto(sessionId: harness.sessionId, photoId: "photo-1", observations: [
             FaceObservationInput(
                 photoId: "photo-1", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4,
                 embedding: [0, 0, 0], confidence: 0.9),
@@ -538,11 +559,14 @@ struct FaceKwBindingMigrationTests {
             try insertPhoto(db, id: id, sessionId: sessionId, filepath: "/photos/\(id).jpg")
         }
         let faceRepo = FaceRepo(connection: db)
-        let obs = try faceRepo.saveObservations(sessionId: sessionId, observations: [
+        let obs1 = try faceRepo.replaceObservationsByPhoto(sessionId: sessionId, photoId: "p1", observations: [
             FaceObservationInput(photoId: "p1", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4, embedding: [0.1, 0.2, 0.3], confidence: 0.9),
+        ])
+        let obs2 = try faceRepo.replaceObservationsByPhoto(sessionId: sessionId, photoId: "p2", observations: [
             FaceObservationInput(photoId: "p2", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4, embedding: [0.1, 0.2, 0.3], confidence: 0.9),
         ])
-        let observationIds = [Int(obs[0]), Int(obs[1])]
+        // 观测 id 由 seedCluster 的成员行引用，这里不再单独持有。
+        _ = (obs1, obs2)
         for binding in bindings {
             try seedCluster(
                 db, id: binding.clusterId, sessionId: sessionId, label: "Person \(binding.clusterId)",
@@ -556,7 +580,7 @@ struct FaceKwBindingMigrationTests {
             faceRepo: faceRepo,
             personRepo: PersonRepo(connection: db),
             connection: db,
-            clusterProvider: { entries, _, _, _ in
+            clusterProvider: { entries, _, _, _, _ in
                 FaceClusterResult(
                     clusters: clusterResult.map { group in
                         group.compactMap { entry in
@@ -643,13 +667,14 @@ struct FaceKwGetClustersTests {
         let db = try makeMigratedDB()
         let sessionId = "session-1"
         try insertSession(db, sessionId)
-        for i in 1...5 {
+        // 成员数刻意超过预览窗口上限（12），才能验证"截断但仍报全量 size"。
+        for i in 1...14 {
             try insertPhoto(db, id: "photo-\(i)", sessionId: sessionId, filepath: "/photos/photo-\(i).jpg")
         }
         let faceRepo = FaceRepo(connection: db)
         try seedCluster(
-            db, id: 1, sessionId: sessionId, label: "Person 1", memberCount: 5, status: "bound",
-            members: (1...5).map { (photoId: "photo-\($0)", bbox: [Double($0), 2, 3, 4], confidence: 0.9) })
+            db, id: 1, sessionId: sessionId, label: "Person 1", memberCount: 14, status: "bound",
+            members: (1...14).map { (photoId: "photo-\($0)", bbox: [Double($0), 2, 3, 4], confidence: 0.9) })
         try faceRepo.updateBinding(clusterId: 1, roleName: "Alice", keywords: ["kw1", "kw2"])
 
         let service = FaceKwService(
@@ -666,13 +691,14 @@ struct FaceKwGetClustersTests {
         #expect(cluster.id == 1)
         #expect(cluster.sessionId == sessionId)
         #expect(cluster.label == "Person 1")
-        #expect(cluster.size == 5)
+        #expect(cluster.size == 14, "size 是全量成员数，不受预览截断影响")
         #expect(cluster.status == "bound")
         #expect(cluster.thumbnailBase64 == "")
         #expect(cluster.binding?.roleName == "Alice")
         #expect(cluster.binding?.keywords == ["kw1", "kw2"])
-        // 网格卡片只渲染前 4 个成员（ClusterThumb 的 MAX_PREVIEW_MEMBERS）。
-        #expect(cluster.members.count == 4)
+        // 网格卡片只渲染前 maxPreviewMembers 个成员（FaceKwService 内，当前 12）：
+        // 载荷裁剪，不影响聚类/绑定语义。
+        #expect(cluster.members.count == 12)
         #expect(cluster.thumbnailPhotoId == "photo-1")
         #expect(cluster.members[0].memberId == 1)
         #expect(cluster.members[0].filename == "photo-1.jpg")
@@ -701,7 +727,7 @@ struct FaceKwClusterCommandTests {
         let persons = try harness.personRepo.list()
         #expect(persons.count == 1)
         #expect(persons[0].name == "Alice")
-        #expect(try harness.personRepo.getPhotos(personId: persons[0].id).count == 1)
+        #expect(try harness.personRepo.getPhotosWithDetails(personId: persons[0].id).photos.count == 1)
     }
 
     @Test("throws FKW_CLUSTER_NOT_FOUND and FKW_CLUSTER_NOT_IN_SESSION on bind")
@@ -744,7 +770,7 @@ struct FaceKwClusterCommandTests {
         #expect(try harness.faceRepo.getBindingsBySession(harness.sessionId).isEmpty)
         #expect(try harness.faceRepo.getClusters(harness.sessionId)[0].status == "unbound")
         // 人物库对账：绑定移除后链接摘除。
-        #expect(try harness.personRepo.getPhotos(personId: personId).isEmpty)
+        #expect(try harness.personRepo.getPhotosWithDetails(personId: personId).photos.isEmpty)
     }
 
     @Test("merges clusters moving members and dropping the source binding")
@@ -875,10 +901,41 @@ private final class FakeWritebackProvider: FaceWritebackProvider, @unchecked Sen
         return _cleanupCalls
     }
 
-    func removeOwnedFaceKeywords(sessionId: String, entries: [FaceKeywordEntry]) async throws -> [String] {
+    /// 同步锁临界区辅助（Swift 6：async 上下文不得直接 lock/unlock）。
+    private func setRemovedEntries(_ entries: [FaceKeywordEntry]) {
         lock.lock()
+        defer { lock.unlock() }
         _removedEntries = entries
-        lock.unlock()
+    }
+
+    private func setPreviewArgs(
+        options: FaceKwWritebackOptions?, boundPhotoIds: Set<String>, additions: [String: [String]]
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        _previewArgs = (options, boundPhotoIds, additions)
+    }
+
+    private func setExecutedItems(_ items: [FaceKwWritebackItem]) {
+        lock.lock()
+        defer { lock.unlock() }
+        _executedItems = items
+    }
+
+    private func appendSyncedSessionId(_ sessionId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        _syncedSessionIds.append(sessionId)
+    }
+
+    private func appendCleanupCall(_ sessionId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        _cleanupCalls.append(sessionId)
+    }
+
+    func removeOwnedFaceKeywords(sessionId: String, entries: [FaceKeywordEntry]) async throws -> [String] {
+        setRemovedEntries(entries)
         return removedKeywords
     }
 
@@ -888,29 +945,21 @@ private final class FakeWritebackProvider: FaceWritebackProvider, @unchecked Sen
         boundPhotoIds: Set<String>,
         additions: [String: [String]]
     ) async throws -> FaceKwWritebackPreview {
-        lock.lock()
-        _previewArgs = (options, boundPhotoIds, additions)
-        lock.unlock()
+        setPreviewArgs(options: options, boundPhotoIds: boundPhotoIds, additions: additions)
         return previewResult
     }
 
     func execute(sessionId: String, items: [FaceKwWritebackItem]) async throws -> FaceKwWritebackResult {
-        lock.lock()
-        _executedItems = items
-        lock.unlock()
+        setExecutedItems(items)
         return executeResult
     }
 
     func confirmSync(sessionId: String) async throws {
-        lock.lock()
-        _syncedSessionIds.append(sessionId)
-        lock.unlock()
+        appendSyncedSessionId(sessionId)
     }
 
     func cleanup(sessionId: String) async throws -> FaceKwCleanupResult {
-        lock.lock()
-        _cleanupCalls.append(sessionId)
-        lock.unlock()
+        appendCleanupCall(sessionId)
         return cleanupResult
     }
 }
@@ -1115,14 +1164,14 @@ struct PersonLibraryTests {
             PersonPhotoInput(photoId: photoIds[0], faceBbox: [1, 2, 3, 4], confidence: 0.9),
             PersonPhotoInput(photoId: photoIds[1], faceBbox: [5, 6, 7, 8], confidence: 0.8),
         ])
-        let photos = try repo.getPhotos(personId: first)
+        let photos = try repo.getPhotosWithDetails(personId: first).photos.map(\.photo)
         #expect(photos.map(\.photoId) == ["photo-1", "photo-2"])
         #expect(try repo.countPhotos(personId: first) == 2)
         #expect(try repo.getSessionCount(personId: first) == 1)
         #expect(try repo.listWithCounts()[0].photoCount == 2)
 
         try repo.removePhoto(personId: first, photoId: "photo-1")
-        #expect(try repo.getPhotos(personId: first).map(\.photoId) == ["photo-2"])
+        #expect(try repo.getPhotosWithDetails(personId: first).photos.map(\.photo.photoId) == ["photo-2"])
     }
 
     @Test("merge transfers photos to the target and deletes the source")
@@ -1140,7 +1189,7 @@ struct PersonLibraryTests {
         try repo.merge(sourceId: alice, targetId: bob)
 
         #expect(try repo.get(id: alice) == nil)
-        #expect(Set(try repo.getPhotos(personId: bob).map(\.photoId)) == ["photo-1", "photo-2"])
+        #expect(Set(try repo.getPhotosWithDetails(personId: bob).photos.map(\.photo.photoId)) == ["photo-1", "photo-2"])
     }
 
     @Test("reconcileSession mirrors role bindings into person_photos and back")
@@ -1160,11 +1209,367 @@ struct PersonLibraryTests {
         let persons = try personRepo.list()
         #expect(persons.count == 1)
         #expect(persons[0].name == "Alice")
-        #expect(try personRepo.getPhotos(personId: persons[0].id).count == 1)
+        #expect(try personRepo.getPhotosWithDetails(personId: persons[0].id).photos.count == 1)
 
         // 绑定消失后对账摘除链接。
         try faceRepo.deleteBinding(clusterId: 1)
         try personRepo.reconcileSession(sessionId: session.id)
-        #expect(try personRepo.getPhotos(personId: persons[0].id).isEmpty)
+        #expect(try personRepo.getPhotosWithDetails(personId: persons[0].id).photos.isEmpty)
+    }
+}
+// MARK: - 跨会话重识别（person_embeddings + FaceMatcher 端到端）
+
+/// 一个库两个会话、每会话两张照片。向量由测试注入（测试夹具，不是产品逻辑）：
+/// 同一人物 → 会话内两两 cosine = 1.0（>= eps 0.6，成 2 人脸簇）；跨会话对
+/// Alice 库中向量的 cosine 同为 1.0（>= persons.match_threshold 0.65 → 出建议）。
+private struct CrossSessionHarness {
+    let db: DBConnection
+    let service: FaceKwService
+    let faceRepo: FaceRepo
+    let personRepo: PersonRepo
+    let sessionA: String
+    let sessionB: String
+}
+
+private func makeCrossSessionHarness(
+    embedding: [Double] = [1, 0, 0, 0]
+) throws -> CrossSessionHarness {
+    let db = try makeMigratedDB()
+    let sessionRepo = SessionRepo(connection: db)
+    let sessionA = try sessionRepo.create(name: "A", source: "folder")
+    let sessionB = try sessionRepo.create(name: "B", source: "folder")
+    let dir = try makeTempDir()
+    for (sessionId, prefix) in [(sessionA.id, "a"), (sessionB.id, "b")] {
+        for index in 1...2 {
+            let path = try writeTempFile(in: dir, name: "\(prefix)\(index).jpg")
+            try insertPhoto(db, id: "\(prefix)-\(index)", sessionId: sessionId, filepath: path)
+        }
+    }
+    let faceRepo = FaceRepo(connection: db)
+    let personRepo = PersonRepo(connection: db)
+    let service = FaceKwService(
+        photoRepo: PhotoRepo(connection: db),
+        sessionRepo: sessionRepo,
+        faceRepo: faceRepo,
+        personRepo: personRepo,
+        connection: db,
+        decodeProvider: { _, _ in Data("jpeg".utf8) },
+        inferenceProvider: { images, _, _ in
+            images.map { _ in
+                FaceInferenceItem(observations: [
+                    FaceInferenceObservation(bbox: [1, 2, 3, 4], confidence: 0.95, embedding: embedding),
+                ])
+            }
+        }
+    )
+    return CrossSessionHarness(
+        db: db, service: service, faceRepo: faceRepo, personRepo: personRepo,
+        sessionA: sessionA.id, sessionB: sessionB.id
+    )
+}
+
+@Suite("FaceKwService cross-session re-identification")
+struct FaceKwCrossSessionTests {
+    @Test("suggests the person bound in another session, then binds to that same identity")
+    func crossSessionSuggestionAndBind() async throws {
+        let harness = try makeCrossSessionHarness()
+
+        // 会话 A：分析 → 绑定 Alice（bind 必须把两张脸的向量写进 person_embeddings）。
+        let resultA = try await harness.service.analyze(
+            sessionId: harness.sessionA, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        #expect(resultA.status == "done")
+        let clustersA = try harness.service.getClusters(sessionId: harness.sessionA)
+        #expect(clustersA.count == 1)
+        #expect(clustersA[0].size == 2)
+        try harness.service.bindCluster(
+            sessionId: harness.sessionA, clusterId: Int64(clustersA[0].id),
+            roleName: "Alice", keywords: ["family"])
+
+        let alice = try #require(try harness.personRepo.list().first { $0.name == "Alice" })
+        #expect(try harness.personRepo.getAllEmbeddings().filter { $0.personId == alice.id }.count == 2,
+                "bind 必须把该簇成员的观察向量写入 person_embeddings")
+
+        // 会话 B：分析 → 用库匹配出建议（只是建议，不是绑定）。
+        let resultB = try await harness.service.analyze(
+            sessionId: harness.sessionB, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        #expect(resultB.status == "done")
+        let clustersB = try harness.service.getClusters(sessionId: harness.sessionB)
+        #expect(clustersB.count == 1)
+        #expect(clustersB[0].binding == nil)
+        #expect(clustersB[0].matchedPersonId == alice.id)
+        #expect(clustersB[0].matchedPersonName == "Alice")
+        #expect((clustersB[0].matchConfidence ?? 0) > 0.99)
+
+        // 用户确认绑定 → 复用同一身份（不产生第二个 Alice），投影合并为 4 张。
+        try harness.service.bindCluster(
+            sessionId: harness.sessionB, clusterId: Int64(clustersB[0].id),
+            roleName: "Alice", keywords: ["family"])
+        #expect(try harness.personRepo.list().filter { $0.name == "Alice" }.count == 1)
+        #expect(try harness.personRepo.countPhotos(personId: alice.id) == 4)
+        #expect(try harness.personRepo.getPhotosWithDetails(personId: alice.id, sessionIds: [harness.sessionB]).photos.count == 2)
+        #expect(try harness.personRepo.getAllEmbeddings().filter { $0.personId == alice.id }.count == 4)
+
+        // recluster 与 analyze 共用 clusterStoredObservations：绑定迁移回来后
+        // 身份链接必须保持（建议不得覆盖显式绑定）。
+        try await harness.service.recluster(sessionId: harness.sessionB, eps: 0.6, minPts: 2)
+        let reclustered = try harness.service.getClusters(sessionId: harness.sessionB)
+        #expect(reclustered.count == 1)
+        #expect(reclustered[0].binding?.roleName == "Alice")
+        #expect(reclustered[0].matchedPersonId == alice.id)
+    }
+}
+
+// MARK: - 算法改造接线（质量核心点 / 歧义 margin / 嵌入规格签名）
+
+/// 可在运行中修改的设置箱（`@unchecked Sendable` 依据：唯一可变状态就是 values 本身，
+/// 只在 lock 临界区内读写；服务侧只读调用）。
+private final class MutableSettings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Double]
+
+    init(_ values: [String: Double] = [:]) {
+        self.values = values
+    }
+
+    func value(_ key: String, _ defaultValue: Double) -> Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key] ?? defaultValue
+    }
+
+    func set(_ key: String, _ value: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        values[key] = value
+    }
+}
+
+@Suite("face algorithm wiring")
+struct FaceAlgorithmWiringTests {
+    /// 两张照片、同一向量、指定质量：核心点质量门槛的最小场景。
+    private func makeQualityHarness(
+        _ settings: MutableSettings,
+        quality: Double
+    ) throws -> FaceKwHarness {
+        try makeFaceKwHarness(
+            photoCount: 2,
+            inference: { images, _, _ in
+                images.map { _ in
+                    FaceInferenceItem(observations: [
+                        FaceInferenceObservation(
+                            bbox: [10, 20, 30, 40], confidence: 0.95,
+                            embedding: [0.5, 0.6],
+                            quality: quality, faceSizePx: 40, rollDegrees: 0),
+                    ])
+                }
+            },
+            settingsProvider: { key, defaultValue in settings.value(key, defaultValue) })
+    }
+
+    @Test("face_core_quality：低质量脸不成簇但不丢观测；门槛归零后同一批观测成簇")
+    func coreQualityFloorGatesClustering() async throws {
+        let settings = MutableSettings(["face_core_quality": 0.5])
+        let harness = try makeQualityHarness(settings, quality: 0.2)
+
+        _ = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        // 质量 0.2 < 门槛 0.5：没有核心点 → 零簇。
+        #expect(try harness.service.getClusters(sessionId: harness.sessionId).isEmpty)
+        // 观测照常入库（门槛只影响"谁能带簇"，不丢数据），且质量分如实落库。
+        let observations = try harness.faceRepo.getObservations(harness.sessionId)
+        #expect(observations.count == 2)
+        #expect(observations.allSatisfy { abs($0.quality - 0.2) < 1e-9 })
+
+        // 门槛归零 → 同一批观测（无需重新推理）重聚类出 1 簇 2 成员。
+        // 该例同时证明聚类签名包含质量门槛：否则缓存快路径会直接返回旧（空）簇。
+        settings.set("face_core_quality", 0)
+        _ = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        let clusters = try harness.service.getClusters(sessionId: harness.sessionId)
+        #expect(clusters.count == 1)
+        #expect(clusters.first?.members.count == 2)
+    }
+
+    @Test("face_match_margin：近似并列的双人库不再自动绑定；margin=0 时绑定最接近者")
+    func personMatchMarginAvoidsAmbiguousBinding() async throws {
+        /// 返回该次运行后簇的建议绑定人物 id（nil = 未绑定）与 Alice 的 id。
+        func run(margin: Double) async throws -> (matched: String?, aliceId: String) {
+            let settings = MutableSettings(["face_match_margin": margin])
+            // 两张照片：DBSCAN 需要 ≥2 个点才能成簇（单点脸是噪声，不会有簇可匹配）。
+            let harness = try makeFaceKwHarness(
+                photoCount: 2,
+                settingsProvider: { key, defaultValue in settings.value(key, defaultValue) })
+            let alice = try harness.personRepo.create(name: "Alice")
+            let bob = try harness.personRepo.create(name: "Bob")
+            // 查询向量 [0.5, 0.6]：Alice 完全一致（相似度 1.0），Bob 差约 1.6e-4 → 近似并列。
+            try harness.personRepo.saveEmbeddings(embeddings: [
+                SaveEmbeddingInput(
+                    personId: alice, embedding: [0.5, 0.6], photoId: "photo-1",
+                    sessionId: harness.sessionId, faceObservationId: nil,
+                    faceBbox: [], quality: 1),
+                SaveEmbeddingInput(
+                    personId: bob, embedding: [0.51, 0.59], photoId: "photo-1",
+                    sessionId: harness.sessionId, faceObservationId: nil,
+                    faceBbox: [], quality: 1),
+            ])
+            _ = try await harness.service.analyze(
+                sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+            let cluster = try harness.faceRepo.getClusters(harness.sessionId).first
+            return (cluster?.matchedPersonId, alice)
+        }
+
+        // 差距 < margin：不猜（PhotoPrism MATCH_MARGIN 语义），留给人工审核。
+        let ambiguous = try await run(margin: 0.01)
+        #expect(ambiguous.matched == nil)
+        // margin = 0：与改造前语义一致，绑定最接近者（回归护栏）。
+        let decided = try await run(margin: 0)
+        #expect(decided.matched == decided.aliceId)
+    }
+
+    @Test("分析签名包含 embedding 规格：换对齐/模型指纹必然让旧观测过期")
+    func analysisSignatureTracksEmbeddingSpec() {
+        func signature(_ spec: String) -> String {
+            FaceKwService.makeAnalysisSignature(
+                detectorPath: "det.onnx", encoderPath: "enc.onnx",
+                primaryDetectionSize: 640, secondaryDetectionSize: 128,
+                confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
+                previewMaxDimension: 2048, embeddingSpec: spec)
+        }
+        #expect(signature("vision-v1") != signature("vision-v2"))
+        // 生产走 FaceEncoder.embeddingSpec；测试里的默认签名常量必须与之一致，
+        // 否则"缓存快路径"用例会悄悄退化成重推理。
+        #expect(signature(FaceEncoder.embeddingSpec) == analysisSignatureForDefaults)
+    }
+}
+
+
+// MARK: - 编码全失败：不得摧毁既有状态（对抗审查阻断项 2）
+
+/// 对抗审查阻断项 2 的回归：模型不可用/输入不受支持时，逐脸嵌入会全部抛错。
+/// 旧行为是「静默跳过 → 这张照片被当成没有脸 → 删旧观测 + 写 analysis_state（永不重试）
+/// + 重聚类 clearOnEmpty 连带清掉旧簇与人工绑定」。本套件钉死修复后的行为。
+@Suite("人脸编码全失败保护")
+struct FaceEncodingFailureGuardTests {
+    @Test("编码全失败：保留旧观测与旧分析状态，run 报 failed 且失败数可见")
+    func allEncodingsFailedKeepsPreviousState() async throws {
+        let harness = try makeFaceKwHarness(inference: { images, _, _ in
+            // 每张图检测到 3 张脸，但一张也编码不出来。
+            images.map { _ in FaceInferenceItem(observations: [], encodingFailures: 3) }
+        })
+        let inserted = try harness.faceRepo.replaceObservationsByPhoto(
+            sessionId: harness.sessionId, photoId: "photo-1",
+            observations: [FaceObservationInput(
+                photoId: "photo-1", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4,
+                embedding: [0.1, 0.2, 0.3], confidence: 0.9,
+                sourceFileSize: 1, sourceFileMtimeMs: 1, analysisSignature: "old")])
+
+        let result = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+
+        #expect(result.status == "failed", "全部人脸编码失败 = 整次运行失败")
+        #expect(result.encodingFailures == 3, "失败数必须上报（此前恒 0）")
+        let observations = try harness.faceRepo.getObservations(harness.sessionId)
+        #expect(observations.map(\.id) == inserted, "旧观测必须原样保留（不能被空结果替换）")
+        #expect(observations.first?.analysisSignature == "old")
+        #expect(
+            try harness.faceRepo.getAnalysisStates(harness.sessionId)["photo-1"] == nil,
+            "编码全失败不能写 analysis_state，否则这张照片永远不再重试")
+
+        // 再跑一次：没有 analysis_state ⇒ 这张照片必须**重新**被处理（旧行为写下了状态行，
+        // 第二次运行会直接跳过它，失败从此静默）。这是"永不重试"症状的直接回归断言。
+        let second = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        #expect(second.encodingFailures == 3, "失败照片必须在下次运行重试")
+        #expect(
+            try harness.faceRepo.getObservations(harness.sessionId).map(\.id) == inserted,
+            "重试期间旧观测仍不得被替换")
+    }
+
+
+    @Test("配置了不可加载的模型路径：分析直接失败（服务真的读设置，不是硬编码 Vision）")
+    func unloadableConfiguredModelFailsAnalysis() async throws {
+        // 对抗审查缺口：此前没有任何用例设置过 face_embedding_model_path，
+        // 于是"服务层把设置丢了、永远用内置 Vision"也能全绿。
+        let missing = "/tmp/gather-missing-\(UUID().uuidString).mlmodelc"
+        let harness = try makeFaceKwHarness(stringSettings: [
+            FaceEmbeddingModelFactory.modelPathSetting: missing,
+        ])
+        await #expect(throws: FaceEmbeddingError.self) {
+            _ = try await harness.service.analyze(
+                sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        }
+        // 配置错误必须发生在"任何落库之前"：不能因为整批抛错就留下半截状态。
+        #expect(try harness.faceRepo.getObservations(harness.sessionId).isEmpty)
+        #expect(try harness.faceRepo.getAnalysisStates(harness.sessionId).isEmpty)
+    }
+
+    @Test("被手改成 inf 的重试阈值：分析不得崩溃（Int(inf) 曾直接 trap 进程）")
+    func infiniteRetrySettingDoesNotTrap() async throws {
+        let harness = try makeFaceKwHarness(settings: ["face_core_retry_min_samples": .infinity])
+        let result = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        #expect(result.status == "done", "非有限设置必须回退默认值，而不是让进程崩掉")
+    }
+
+    @Test("部分失败：成功的脸落库，但不写 analysis_state（失败的脸下次必须重试）")
+    func partialEncodingFailureIsRetried() async throws {
+        // 对抗验证 V1 探针 A 的场景：1 张成功 + 1 张失败。旧行为是写 state、丢弃失败的脸，
+        // 第二次运行直接跳过这张照片 ⇒ 那些脸永远没有机会被处理。
+        let calls = EncodingCallCounter()
+        let harness = try makeFaceKwHarness(inference: { images, _, _ in
+            calls.increment()
+            return images.map { _ in
+                FaceInferenceItem(
+                    observations: [FaceInferenceObservation(
+                        bbox: [10, 20, 30, 40], confidence: 0.95, embedding: [0.5, 0.6])],
+                    encodingFailures: 1)
+            }
+        })
+        let first = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        #expect(first.status == "done", "还有成功的脸，整次运行不算失败")
+        #expect(first.encodingFailures == 1, "失败数必须上报（UI 据此提示而不是假装完成）")
+        #expect(try harness.faceRepo.getObservations(harness.sessionId).count == 1, "成功的脸必须落库")
+        #expect(
+            try harness.faceRepo.getAnalysisStates(harness.sessionId)["photo-1"] == nil,
+            "部分失败也不能写 analysis_state，否则失败的脸永不重试")
+        let callsAfterFirst = calls.value
+        _ = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        #expect(calls.value > callsAfterFirst, "第二次运行必须重新处理这张照片")
+    }
+
+    @Test("编码成功时正常写入（守卫不能把成功路径也挡掉）")
+    func successfulEncodingStillPersists() async throws {
+        let harness = try makeFaceKwHarness(inference: { images, _, _ in
+            images.map { _ in
+                FaceInferenceItem(observations: [FaceInferenceObservation(
+                    bbox: [10, 20, 30, 40], confidence: 0.95, embedding: [0.5, 0.6])])
+            }
+        })
+        let result = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        #expect(result.status == "done")
+        #expect(result.encodingFailures == 0)
+        #expect(try harness.faceRepo.getObservations(harness.sessionId).count == 1)
+        #expect(try harness.faceRepo.getAnalysisStates(harness.sessionId)["photo-1"] != nil)
+    }
+}
+
+/// 推理调用计数（部分失败用例要证明"下次真的重试"）。
+private final class EncodingCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
     }
 }

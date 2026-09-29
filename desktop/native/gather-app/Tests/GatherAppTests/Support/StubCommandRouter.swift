@@ -8,6 +8,8 @@ import GatherCore
 final class StubCommandRouter: CommandRouter, @unchecked Sendable {
     /// 命令名 → 返回值的映射（execute 读表，未命中返回 .null）。
     var responses: [String: GatherCore.JSONValue]
+    /// 已执行命令的记录（写入类断言用，例如 settings.set 实际发了什么）。
+    private(set) var executed: [(command: String, params: [String: GatherCore.JSONValue])] = []
     /// executeAsync 与 execute 同表（页面异步命令测试用）。
     var asyncResponses: [String: GatherCore.JSONValue]?
 
@@ -21,13 +23,14 @@ final class StubCommandRouter: CommandRouter, @unchecked Sendable {
         _ command: String,
         params: [String: GatherCore.JSONValue]
     ) throws -> GatherCore.JSONValue {
-        responses[command] ?? .null
+        executed.append((command, params))
+        return responses[command] ?? .null
     }
 
     func executeAsync(
         _ command: String,
         params: [String: GatherCore.JSONValue],
-        completion: @escaping (WebResponse) -> Void
+        completion: @escaping @Sendable (WebResponse) -> Void
     ) {
         let table = asyncResponses ?? responses
         completion(WebResponse(ok: true, data: table[command] ?? .null))

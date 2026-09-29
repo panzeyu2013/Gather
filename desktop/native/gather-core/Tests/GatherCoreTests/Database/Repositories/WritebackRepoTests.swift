@@ -75,10 +75,6 @@ struct WritebackRepoTests {
         #expect(try repo.getItems(sessionId: "s1", module: "other").isEmpty)
         #expect(try repo.getItems(sessionId: "s1", status: "pending").count == 2)
         #expect(try repo.getItems(sessionId: "s1", status: "failed").isEmpty)
-
-        // getItem。
-        #expect(try repo.getItem(itemId: rows[0].id) == rows[0])
-        #expect(try repo.getItem(itemId: 999) == nil)
     }
 
     @Test func saveItemsReplacesPendingAndFailedButKeepsSynced() throws {
@@ -114,14 +110,14 @@ struct WritebackRepoTests {
         let row = try repo.getItems(sessionId: "s1")[0]
 
         try repo.updateStatus(itemId: row.id, status: "failed", error: "IO error")
-        var after = try repo.getItem(itemId: row.id)
+        var after = try repo.getItems(sessionId: "s1").first { $0.id == row.id }
         #expect(after?.xmpStatus == "failed")
         #expect(after?.errorMessage == "IO error")
         #expect(after?.attemptCount == 2)
 
         // 再次失败：attempt_count 继续 +1，error 可覆盖。
         try repo.updateStatus(itemId: row.id, status: "failed", error: "retry")
-        after = try repo.getItem(itemId: row.id)
+        after = try repo.getItems(sessionId: "s1").first { $0.id == row.id }
         #expect(after?.attemptCount == 3)
         #expect(after?.errorMessage == "retry")
     }
@@ -143,24 +139,6 @@ struct WritebackRepoTests {
         #expect(try repo.getFailedCount(sessionId: "s1", module: "culling") == 1)
         #expect(try repo.getFailedCount(sessionId: "s1", module: "face") == 1)
         #expect(try repo.getFailedCount(sessionId: "empty") == 0)
-    }
-
-    @Test func deleteItemsRemovesByModuleOrAll() throws {
-        let db = try makeDB()
-        try insertSession(db, id: "s1")
-        try insertPhoto(db, id: "p1", sessionId: "s1")
-        try insertPhoto(db, id: "p2", sessionId: "s1")
-        let repo = WritebackRepo(connection: db)
-
-        try repo.saveItems(sessionId: "s1", module: "culling", items: [item("p1")])
-        try repo.saveItems(sessionId: "s1", module: "face", items: [item("p2")])
-
-        try repo.deleteItems(sessionId: "s1", module: "culling")
-        #expect(try repo.getItems(sessionId: "s1", module: "culling").isEmpty)
-        #expect(try repo.getItems(sessionId: "s1", module: "face").count == 1)
-
-        try repo.deleteItems(sessionId: "s1")
-        #expect(try repo.getItems(sessionId: "s1").isEmpty)
     }
 
     @Test func deleteItemsByIdsOnlyDeletesSyncedRows() throws {
@@ -209,27 +187,6 @@ struct WritebackRepoTests {
         #expect(try repo.getItems(sessionId: "s1").isEmpty, "450 条 synced 行应全部被清理（含末块）")
     }
 
-    @Test func updateBackupPathAttributesKeywords() throws {
-        let db = try makeDB()
-        try insertSession(db, id: "s1")
-        try insertPhoto(db, id: "p1", sessionId: "s1")
-        let repo = WritebackRepo(connection: db)
-
-        try repo.saveItems(sessionId: "s1", module: "culling", items: [item("p1")])
-        let row = try repo.getItems(sessionId: "s1")[0]
-
-        try repo.updateBackupPath(itemId: row.id, path: "/backup/xmp.bak")
-        try repo.updateAttributes(itemId: row.id, attributes: ["rating": 5, "label": "Best"])
-        try repo.updateKeywords(itemId: row.id, keywords: ["only"])
-
-        let updated = try repo.getItem(itemId: row.id)
-        #expect(updated?.backupPath == "/backup/xmp.bak")
-        let attributes = try JSONSerialization.jsonObject(with: Data((updated?.attributesJson ?? "").utf8)) as? [String: Any]
-        #expect(attributes?["rating"] as? Int == 5)
-        #expect(attributes?["label"] as? String == "Best")
-        #expect(updated?.keywords == "[\"only\"]")
-    }
-
     @Test func updateAttributesAndKeywordsMany() throws {
         let db = try makeDB()
         try insertSession(db, id: "s1")
@@ -276,38 +233,20 @@ struct WritebackRepoTests {
         #expect(after[1].xmpStatus == "pending")
     }
 
-    @Test func updateStatusByXmpPathClearsError() throws {
+    @Test func discardPendingByXmpPathRemovesOnlyPendingAndFailed() throws {
         let db = try makeDB()
         try insertSession(db, id: "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1")
         let repo = WritebackRepo(connection: db)
 
-        try repo.saveItems(sessionId: "s1", module: "culling", items: [item("p1", xmpPath: "/x1.xmp")])
-        let row = try repo.getItems(sessionId: "s1")[0]
-        try repo.updateStatus(itemId: row.id, status: "failed", error: "boom")
-
-        try repo.updateStatusByXmpPath(sessionId: "s1", module: "culling", xmpPath: "/x1.xmp", status: "written")
-        let updated = try repo.getItem(itemId: row.id)
-        #expect(updated?.xmpStatus == "written")
-        #expect(updated?.errorMessage == "")
-    }
-
-    @Test func hasActiveForXmpPathAndDiscardPending() throws {
-        let db = try makeDB()
-        try insertSession(db, id: "s1")
-        try insertPhoto(db, id: "p1", sessionId: "s1")
-        let repo = WritebackRepo(connection: db)
-
-        #expect(try repo.hasActiveForXmpPath(xmpPath: "/x1.xmp") == false)
+        #expect(try repo.getItems(sessionId: "s1").isEmpty)
 
         try repo.saveItems(sessionId: "s1", module: "culling", items: [item("p1", xmpPath: "/x1.xmp")])
-        let row = try repo.getItems(sessionId: "s1")[0]
-        #expect(try repo.hasActiveForXmpPath(xmpPath: "/x1.xmp"))
+        #expect(try repo.getItems(sessionId: "s1").count == 1)
 
         // pending 被丢弃，返回删除行数。
         #expect(try repo.discardPendingByXmpPath(xmpPath: "/x1.xmp") == 1)
         #expect(try repo.getItems(sessionId: "s1").isEmpty)
-        #expect(try repo.hasActiveForXmpPath(xmpPath: "/x1.xmp") == false)
 
         // failed 同样可丢弃。
         try repo.saveItems(sessionId: "s1", module: "culling", items: [item("p1", xmpPath: "/x1.xmp")])
@@ -321,6 +260,5 @@ struct WritebackRepoTests {
         try repo.updateStatus(itemId: syncedRow.id, status: "synced")
         #expect(try repo.discardPendingByXmpPath(xmpPath: "/x1.xmp") == 0)
         #expect(try repo.getItems(sessionId: "s1").count == 1)
-        #expect(try repo.hasActiveForXmpPath(xmpPath: "/x1.xmp"))
     }
 }

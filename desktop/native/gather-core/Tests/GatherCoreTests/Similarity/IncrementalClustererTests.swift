@@ -356,22 +356,31 @@ struct IncrementalClustererPerformanceTests {
     /// 极端情形说明：若整库同属一个巨型分量（2 万张两两在阈值内），受影响分量
     /// 需要 O(k²) 局部重算，增量不会优于全量重聚类（与 ClusterEngine 同阶）；
     /// 该情形在真实 dHash 分布下不出现，后续可用 LSH 候选桶把邻域探测降到亚二次。
-    @Test("2 万张真实分布 + 新增 100 张在 10s 内完成局部更新")
+    /// 规模说明（2026-09 测试提速）：原语料为 2000 簇 × 10 张 = 2 万张，
+    /// 但 buildState 走 ClusterEngine 的 bitset 路径（count ≤ 32768），
+    /// 在 Debug 构建下是 O(n²) 全对遍历（2 万²/2 ≈ 2 亿次汉明距离），单测耗时
+    /// 24.6s（占全量 swift test 墙钟的 95%）。现按 1/10 规模下采样为
+    /// 200 簇 × 10 张 = 2 千张 + 新增 100 张：断言的不变量（划分/组数、
+    /// 只重算被触及的 100 个分量、复用其余分量、增量耗时门）与规模无关，
+    /// 且仍走同一条 bitset 代码路径（2000 ≤ 32768，阈值 8、minGroupSize 2 不变）。
+    /// 生产 2 万张规模的 Release 验收由 benchmark 目标（gather-core-benchmarks）
+    /// 承担，不在 Debug 单测里重复。
+    @Test("2 千张真实分布 + 新增 100 张在 10s 内完成局部更新")
     func incrementalUpdateWithinBudget() throws {
         var list: [HashEntry] = []
-        list.reserveCapacity(20_100)
-        // 2000 个 10 张的小簇（连拍/同场景），簇间哈希互不相邻。
-        for clusterIndex in 0..<2_000 {
+        list.reserveCapacity(2_100)
+        // 200 个 10 张的小簇（连拍/同场景），簇间哈希互不相邻。
+        for clusterIndex in 0..<200 {
             let clusterBase = UInt64(clusterIndex) &* 0x9E37_79B9_7F4A_7C15
             for member in 0..<10 {
                 list.append(HashEntry(photoId: "c\(clusterIndex)-\(member)", hash: hex(clusterBase ^ UInt64(member % 4))))
             }
         }
         let state = try IncrementalClusterer.buildState(entries: list, minGroupSize: 2, threshold: 8)
-        #expect(state.components.count == 2_000)
+        #expect(state.components.count == 200)
 
         for index in 0..<100 {
-            let clusterBase = UInt64(index % 2_000) &* 0x9E37_79B9_7F4A_7C15
+            let clusterBase = UInt64(index % 200) &* 0x9E37_79B9_7F4A_7C15
             list.append(HashEntry(photoId: "new-\(index)", hash: hex(clusterBase ^ UInt64(index % 4))))
         }
         let started = Date()
@@ -380,9 +389,9 @@ struct IncrementalClustererPerformanceTests {
         )
         let elapsed = Date().timeIntervalSince(started)
         let result = IncrementalClusterer.result(state: outcome.state, entries: list, minGroupSize: 2)
-        #expect(result.groups.count == 2_000)
+        #expect(result.groups.count == 200)
         #expect(outcome.summary.recomputedComponentCount == 100, "只重算新照片触及的分量")
-        #expect(outcome.summary.reusedComponentCount == 1_900, "其余分量直接复用")
+        #expect(outcome.summary.reusedComponentCount == 100, "其余分量直接复用")
         #expect(elapsed < 10, "增量更新超预算: \(elapsed)s")
     }
 }

@@ -9,7 +9,8 @@ public protocol PersonsDataProvider {
     func get(_ personId: String) throws -> PersonDetailData
     func create(name: String) throws -> String
     func update(personId: String, name: String, notes: String) throws
-    func delete(personId: String) throws
+    /// 破坏性：`confirmed` 由用户确认弹窗决定（person.delete 命令层校验）。
+    func delete(personId: String, confirmed: Bool) throws
 }
 
 public final class LivePersonsDataProvider: PersonsDataProvider {
@@ -43,10 +44,10 @@ public final class LivePersonsDataProvider: PersonsDataProvider {
         ])
     }
 
-    public func delete(personId: String) throws {
+    public func delete(personId: String, confirmed: Bool) throws {
         _ = try router.execute("person.delete", params: [
             "personId": .string(personId),
-            "confirmed": .bool(true),
+            "confirmed": .bool(confirmed),
         ])
     }
 }
@@ -54,12 +55,6 @@ public final class LivePersonsDataProvider: PersonsDataProvider {
 @MainActor
 @Observable
 public final class PersonsViewModel {
-    public enum LoadPhase: Equatable {
-        case loading
-        case loaded
-        case failed(String)
-    }
-
     private let provider: PersonsDataProvider
     private(set) public var phase: LoadPhase = .loading
     private(set) public var persons: [PersonData] = []
@@ -111,6 +106,7 @@ public final class PersonsViewModel {
         do {
             let id = try provider.create(name: name.trimmingCharacters(in: .whitespacesAndNewlines))
             try await reloadAndSelect(id)
+            publishChange()
             return true
         } catch {
             actionError = Self.message(error)
@@ -130,6 +126,7 @@ public final class PersonsViewModel {
         do {
             try provider.update(personId: personId, name: name, notes: notes)
             try await reloadAndSelect(personId)
+            publishChange()
             return true
         } catch {
             actionError = Self.message(error)
@@ -137,18 +134,33 @@ public final class PersonsViewModel {
         }
     }
 
+    /// 删除人物（破坏性命令 person.delete）：`confirmed` 只能由确认弹窗传入
+    /// true（旧实现恒 true 已删除）；未确认时不发命令。
     @discardableResult
-    public func deleteSelected() async -> Bool {
+    public func deleteSelected(confirmed: Bool) async -> Bool {
+        guard confirmed else {
+            actionError = GatherLocalization.l("未确认，已取消删除人物")
+            return false
+        }
         guard let personId = selected?.id else { return false }
         do {
-            try provider.delete(personId: personId)
+            try provider.delete(personId: personId, confirmed: confirmed)
             selected = nil
             try await reloadAndSelect(nil)
+            publishChange()
             return true
         } catch {
             actionError = Self.message(error)
             return false
         }
+    }
+
+    /// 写路径广播的发布者标识：本页监听器据此跳过自触发重查。
+    public static let changeOrigin = "persons"
+
+    /// 写路径统一广播：常驻页（人脸库/人脸绑定侧）监听 .persons 后按域刷新。
+    private func publishChange() {
+        GatherEventCenter.postDomainChange(.persons, origin: Self.changeOrigin)
     }
 
     private func reloadAndSelect(_ personId: String?) async throws {
@@ -172,9 +184,11 @@ public final class PersonsViewModel {
         phase = .loaded
     }
 
-    /// 对齐 TS translateError（utils/errors.ts）：错误码翻译为中文文案，
-    /// 未知错误码回退通用文案，其余原样展示。
+    /// 统一错误漏斗：带错误码者经 errorText 翻译；原始诊断只进日志、不上屏
+    /// （非错误码按当前界面语言回退通用文案）。旧实现走 NSError 桥接，会丢
+    /// NativeCommandError/BridgeError 的码值（如 person.get 的 PERSON_NOT_FOUND）。
     private static func message(_ error: Error) -> String {
-        GatherLocalization.message(for: error)
+        GatherLogger.log("persons error diagnostic: \(error)", level: .warn)
+        return NativeCommandClient.userFacingMessage(for: error)
     }
 }

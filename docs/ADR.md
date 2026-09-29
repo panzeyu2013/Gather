@@ -5,7 +5,7 @@
 > **仍具规范性的决策与门禁**。实现细节以代码为准，本文只记录"为什么"与
 > "何时允许改变"。
 > 2026-08-12 修订：合并 Electron→原生迁移（原 `NATIVE-DEVELOPMENT-ANALYSIS.md`
-> 已归档删除）后，**本文件底部新增 ADR-021~026**：性能架构决议（已实现）与
+> 已归档删除）后，**本文件底部新增 ADR-021~028**：性能架构决议（已实现）与
 > 四项遗留方案、人脸推理演进。原 ADR-001~020 中引用的 Electron 时代实现路径
 > 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
 > `desktop/native/gather-core` / `gather-app` 代码为准）。
@@ -14,13 +14,13 @@
 
 | ADR | Electron 时代路径（已删除） | 原生实现（迁移后） |
 |---|---|---|
-| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherCore/Database/Migrations.swift`、`Schema.swift`；快照校验 `Tests/GatherCoreTests/Database/MigrationTests.swift`（`docs/fixtures/schema.snapshot.json` 41 表） |
-| 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherCore/Database/ImageCache.swift` |
+| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherCore/Database/Migrations.swift`、`Schema.swift`；快照校验 `Tests/GatherCoreTests/Database/MigrationTests.swift`（`docs/fixtures/schema.snapshot.json`，schema 34 / 43 表） |
+| 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherCore/Database/ImageCache.swift`（**ImageCache 类已删除**，见 ADR-028；文件仅保留 `SHA256` 等生产在用的工具） |
 | 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherCore/Services/WorkspaceStatusService.swift` |
 | 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherCore/Services/SessionService.swift` |
-| 015 | `services/capture-one/sync-state.ts` | `gather-core/Sources/GatherCore/Services/CaptureOneSyncState.swift` |
+| 015 | `services/capture-one/sync-state.ts` | `gather-core/Sources/GatherCore/Services/CaptureOneSyncState.swift`（**`CaptureOneSyncState` 类与 `C1BridgeProvider` 已删除**，见 ADR-028；保留纯函数 `aggregateSessionState`） |
 | 016/019/020 | `renderer/locales/`（i18next）、`main/menu.ts`、`main/locale.ts` | `gather-app/Sources/GatherApp/Support/GatherLocalization.swift` + `Resources/{en,zh-Hans}.lproj`；`Host/GatherAppDelegate.swift`（`installMenu` 两语言重建，`languageChanged` 驱动） |
-| 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `GatherLocalization.errorText`（156 项映射） |
+| 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `GatherLocalization.errorText`（173 项映射） |
 | 018 | `renderer/components/Dialog/Dialog.tsx` | 历史记录：自研 APG 焦点管理仅存在于 Electron 版；原生版由系统 sheet/`confirmationDialog` 天然覆盖（见 DEVELOPMENT.md HIG 约定），"拒绝 roving tabindex"的结论对原生列表仍成立 |
 
 ---
@@ -70,12 +70,12 @@
 
 - 当前 schema 快照：`docs/fixtures/schema.snapshot.json`（记录表名集合）。
 - 由 `Tests/GatherCoreTests/Database/MigrationTests.swift` 校验空库迁移后与其一致
-  （41 表全对）；任何表级 schema 变更必须同步更新该快照。
+  （43 表全对，`CURRENT_SCHEMA_VERSION` 34）；任何表级 schema 变更必须同步更新该快照。
 - 索引的"单一规范定义"由迁移实现强制（迁移块内不得重复索引 DDL）。
 
 ---
 
-## ADR-007 磁盘缓存元数据：SQLite + 惰性淘汰
+## ADR-007 磁盘缓存元数据：SQLite + 惰性淘汰（实现已删除，见 ADR-028）
 
 - 缩略图磁盘缓存元数据（hash → lastAccess/createdAt/accessCount/fileSize）持久化在
   `cache-meta.db`（better-sqlite3 + WAL，原生为 SQLite.swift 等价实现），替代全量
@@ -88,8 +88,11 @@
   （LRU=lastAccess / FIFO=createdAt / LFU=accessCount）。
 - 降级不变量：DB 损坏 → 改名 `.corrupt-<ts>` 重建空库；仍失败（只读目录）→
   `:memory:` 纯内存模式；`waitUntilReady` 永不 reject；退出前 `flush()` 落盘。
-- 实现以 `gather-core/Sources/GatherCore/Database/ImageCache.swift` 为准；修改持久化
-  格式必须保留损坏/只读降级与重启对账（`readdir` 差集 + 仅对孤儿文件 stat）语义。
+- **现状（2026-09-28）：本条实现已删除（ADR-028）。** `Database/ImageCache.swift` 的
+  `ImageCache` 类无生产实例化（仅被自身测试引用），已随未接线资产清理删除；同文件的
+  `SHA256`/`UInt64.bigEndianBytes` 被生产消费，**文件保留**。缩略图缓存现由
+  `Support/PhotoThumbnailView.swift` 的 NSCache 承担。以下不变量仅作为"当时为什么这样
+  设计"的历史记录保留，不再约束实现。
 
 ## ADR-008 Culling 分页按逻辑资产分组（不变量）
 
@@ -152,6 +155,8 @@
 - 并发约束：`index_seq` 自增走单事务；分析读取用事务快照。
 - 后果：新增照片 → Inbox 出现 `analysis_stale`；删图不误报；阶段判定 `indexed`
   以索引 job 成功记录为准。
+- **现状（2026-09-28）**：`sessions.analysis_status` 列已删除（方案 A）；分析运行态
+  统一从 `analysis_jobs` 的最新终态派生，不再由相似度/人脸两处交叉写同一无 owner 列。
 
 ## ADR-013 WorkspaceStatusService：只读聚合 + 离线复核 TTL
 
@@ -178,7 +183,7 @@
   分批落库，去重键 `metadata.scan:<sessionId>`；截断导入 UI 显示 "≥" 前缀与
   "扫描中…" 直至索引终态帧。
 
-## ADR-015 CaptureOneSyncState：会话级聚合 + `reload_acked_at` 重启重推导
+## ADR-015 CaptureOneSyncState：会话级聚合 + `reload_acked_at` 重启重推导（类已删除，见 ADR-028）
 
 - 机器状态在内存、易失：重启后从 **outbox 行状态 + `reload_acked_at` 重推导**，
   行是持久真相源、机器状态是派生值，不落库整个状态机。
@@ -190,6 +195,9 @@
 - 协调器每次 emitSummary 后重推导会话状态并记录状态转换日志，状态机转换全部可观测。
 - 后果：重启后跨会话恢复 `safeToCleanup` 而不误清理；清理动作永远不早于 C1
   确认读取。
+- **现状（2026-09-28）**：`CaptureOneSyncState` 类与 `C1BridgeProvider` 协议已删除
+  （ADR-028）；上述聚合规则保留为纯函数 `aggregateSessionState`，会话级机器状态由
+  `MetadataSyncCoordinator` 从 outbox 行状态 + `reload_acked_at` 推导。
 
 ## ADR-016 i18n：类型化 key + 主进程只抛错误码
 
@@ -271,15 +279,16 @@
 
 ### 方案
 
-1. **挑片乐观更新**（`gather-app/Culling/CullingView.swift:599-649`）：
+1. **挑片乐观更新**（`gather-app/Culling/CullingView.swift` 的 `commit(patch:shouldAdvance:)`
+   / `update(_:patch:nextPhotoId:)`）：
    决策命令（`culling.update` / `batch_update` / `decide_group`）为同进程直连的
    同步短事务，毫秒级落库；成功后**立即整页刷新**而非等待推送事件。乐观语义
    体现在：自动前进目标 `nextPhotoId` 在刷新前预置到 `currentPhotoId`（刷新期间
    位置不丢）；`commit` 以 `isLoading` 门控拒绝重入（连击不再排队风暴）；
-   刷新后选择集按 `loadedPhotoIds` 交集保留（`loadPage`，`CullingView.swift:428-448`）。
+   刷新后选择集按 `loadedPhotoIds` 交集保留（`loadPage`）。
 2. **C1 状态胶囊单例化**（`Support/C1StatusCapsule.swift`）：
    `C1StatusCapsuleHost` 为自包含宿主，页面只需传入 sessionId + router：内部订阅
-   进程级 `C1StatusService`（`C1StatusCapsule.swift:11-98`）——按 sessionId 分键
+   进程级 `C1StatusService`（`C1StatusCapsuleHost`；12s 轮询在 `C1StatusCapsule.swift`）——按 sessionId 分键
    缓存状态、活跃订阅计数门控**单一 12s 轮询任务**（多页常驻不再每实例空转）；
    sessionId 变化时切换订阅（opacity 常驻页切换会话不显示旧状态）、
    `isActive=false` 时取消订阅（隐藏页不轮询）；`culling:sync-status` 事件
@@ -312,9 +321,9 @@
 
 ### 现状
 
-`RootView.swift:432-570`（`SidebarView`）自绘 **200pt 固定宽度**侧栏
-（`frame(width: 200)`），配合 HStack + opacity 常驻页面切换；⌘0/菜单"隐藏侧栏"
-经 `menuToggleSidebar` 通知手工切换（`GatherAppDelegate.swift:292-296`）。
+`RootView.swift` 的 `SidebarView`（`:469`）自绘侧栏，宽度可拖拽调整（160–320pt 钳制，
+不再固定 200pt），配合 HStack + opacity 常驻页面切换；⌘0/菜单"隐藏侧栏"
+经 `menuToggleSidebar` 通知手工切换（`GatherAppDelegate.swift:299`）。
 
 ### 方案（分期）
 
@@ -332,7 +341,7 @@
 - 回归面大：RootView 全部导航/窗口标题/无障碍逻辑都耦合当前装配方式。
 - 收合状态持久化后，"隐藏侧栏"菜单项与系统状态的同步需要新接线。
 
-## ADR-023 遗留方案 2：applicationShouldTerminate 优雅停机（暂缓）
+## ADR-023 遗留方案 2：applicationShouldTerminate 优雅停机（原暂缓，2026-09 已实现）
 
 ### 动机
 
@@ -340,12 +349,12 @@
 半写文件。现有 outbox/checkpoint 保证重启后可恢复，但缺少"退出前确认+让活跃任务
 收尾"的用户可见闭环。
 
-### 现状
+### 现状（2026-09-28：已实现）
 
-`GatherAppDelegate.swift`（`:110-335`）**无 jobService 引用**：装配只发生在
-`GatherApp.swift:73-80`（`router.jobService.start()`、`GatherEventCenter.wire`、
-`DashboardViewModel` 注入）；退出路径 `NSApp.terminate`（`GatherAppDelegate.swift:332-334`）
-直接终止，无拦截。
+原暂缓理由已不成立：`GatherAppDelegate.applicationShouldTerminate(_:)` 返回
+`.terminateLater` 并等待 `onPrepareForTermination` 回调；`GatherApp.swift` 装配处把该
+回调指向 `router.prepareForTermination()`（排空写回 + 关闭 SQLite）后再真正终止。
+下方"方案"保留为实现设计记录。
 
 ### 方案
 
@@ -363,7 +372,7 @@
 - 写回已有 outbox 恢复，停机拦截是体验优化而非正确性修复——排期应低于
   数据正确性项；`reply(toApplicationShouldTerminate:)` 的双阶段时序需真机验证。
 
-## ADR-024 遗留方案 3：相似度 recluster 任务化（暂缓）
+## ADR-024 遗留方案 3：相似度 recluster 任务化（原暂缓，2026-09 已实现）
 
 ### 动机
 
@@ -371,20 +380,21 @@
 无任务记录**：失败只能看到错误码，无法重试，也与 `sim.analyze` 的任务化体验
 不一致。
 
-### 现状
+### 现状（2026-09-28：已实现）
 
-`sim.recluster` 路由直接 `Task { await similarityService.recluster(...) }`
-（`SessionCommandRouter.swift:1731-1760`），不创建 JobService job；recluster
-复用已有 hash（`SimilarityService.swift:572-609`），只做聚类 + 档位预计算，不重算
-哈希。
+`sim.recluster` 已任务化：`executeAsync` 创建 job（去重键
+`similarity.recluster:<sessionId>:<threshold>:<minGroupSize>:<groupingMode>`，
+checkpoint 标记 `operation=recluster`），与 `sim.analyze` 共用 `.similarityAnalyze`
+executor 并按 checkpoint 分派；取消/进度/重试与 analyze 同链路。recluster 复用已有
+hash，只做聚类 + 档位预计算，不重算哈希。
 
 ### 方案
 
 - 复用 `sim.analyze` 的任务化链路：`executeAsync` 建 job（类型 `similarity.analyze`
   或独立 `similarity.recluster`）→ executor 内调用 `recluster` → checkpoint/
   dedupeKey/进度复用，UI 经现有 `jobs.list` 轮询展示相位与取消。
-- 与 analyze 的互斥沿用 `analysis_status` 保护（analyze 占用时 recluster 报
-  `SIM_ANALYSIS_RUNNING`）。
+- 与 analyze 的互斥沿用会话级分析占用槽（`sessions.analysis_status` 列已删除，
+  占用态由 `analysis_jobs` 派生；冲突时报 `SIM_ANALYSIS_RUNNING`）。
 - 进度语义：recluster 无哈希阶段，相位单一（`similarity.cluster` → 档位预计算），
   进度可作不定进度或按聚类步长回传。
 
@@ -395,14 +405,14 @@
 - 与档位预计算并发写 `similarity_results` 的替换语义已有单写者约束，接线时不得
   绕过。
 
-## ADR-025 遗留方案 4：语言切换整树重建取舍（暂缓，记录取舍）
+## ADR-025 遗留方案 4：语言切换整树重建取舍（原暂缓；现状改为子树重建，见现状节）
 
-### 现状
+### 现状（2026-09-28：已收敛为子树重建）
 
-语言切换经 `.id(languageVersion)` 整树重建（`RootView.swift:242-248`）：
-`languageChanged` 通知 → `setAppLanguage` → `languageVersion += 1`，整棵视图树
-按新语言重渲染。**正确但重置页面本地状态**（滚动位置、选择集、展开态、轮询
-相位显示）。
+`.id(languageVersion)` 现只挂在**无状态外壳子树**（`RootView.swift` 的侧栏
+`SidebarView`）：`languageChanged` → `setAppLanguage` → `languageVersion += 1`。
+页面子树的 `@State`/滚动位置/选择集保留；旧实现挂在 ZStack 根上会重建整棵树并丢
+页面状态，已删除并在 `RootView.swift` 注释中记录该决策。
 
 ### 候选
 
@@ -430,18 +440,23 @@
 
 ### 现状（已实现）
 
-- **全 Vision 原生管线**：检测 `VNDetectFaceRectanglesRequest`，编码
-  `VNGenerateImageFeaturePrintRequest` rev2（**768 维**）——`gather-core/
-  Sources/GatherCore/Face/{Detector,Encoder,Inference}.swift`。
+- **全 Vision 原生管线**：检测 `VNDetectFaceRectanglesRequest`（`Face/Encoder.swift`），
+  编码 `VNGenerateImageFeaturePrintRequest` rev2（**768 维**）——`gather-core/
+  Sources/GatherCore/Face/{Encoder,Inference}.swift`（原 `Detector.swift`、
+  `Preprocessing.swift` 已删除，见 ADR-028）。
 - 无模型资产、无下载/更新链路，`FaceProvider` 仅保留 `.vision/.cpu` 枚举语义
   （`Provider.swift:21-40`）；ONNX（SCRFD + ArcFace，512 维）时代模型文件与
   downloader/validator 已删除。
-- **ONNX 为质量门回退**：`fallbackToOnnxEnabled` 开关（`Provider.swift:46-60`）
+- **ONNX 为质量门回退**：`fallbackToOnnxEnabled` 开关（`Face/Provider.swift:64`）
   在 0.3c 质量对账（ARI/NMI）未过时打开，供上层决定是否仍走旧 ONNX 管线；
   当前真实数据集质量门按范围外跳过，故开关保持关闭。
 - 首次启动按数据库写入 768 维 marker 并为既有工作区装配带 dedupe/checkpoint 的
   `face.analyze` 重跑任务（`GatherApp.prepareNativeEmbeddingRerun`），特征空间
   迁移不静默。
+- **遗留不一致（2026-09-28）**：设置页仍保留旧 ONNX 模型下载入口
+  （`Settings/SettingsView.swift` 的 `startModelDownload`/`ModelInstaller`，下载
+  `buffalo_l.zip`），与“无模型资产、无下载链路”不符；属未接线遗留，待产品裁决
+  （删除或接线），处置原则见 ADR-028。
 
 ### 事实依据
 
@@ -509,4 +524,84 @@ ROADMAP 决策 B（1.3/1.6）：重分析此前按签名复用只重算变更照
   状态构建 27s（低于引擎全量聚类 35s，单趟位集图 + 内联邻居遍历）。
 - 不变量由 1.6 对账矩阵门禁：随机 200 步增删改/重命名 × 5 组参数，逐步比对
   增量与全量，并对账状态自身（分量与簇逐位相等）。
+
+
+---
+
+## ADR-028 未接线资产删除裁决：删除而非接线（2026-09-28）
+
+### 背景
+
+原生迁移后遗留一批"已实现但生产零引用"的模块与类型。清理审计（"声明 × 引用计数"，
+含插值感知与 `.strings` 转义感知）逐条核实后裁决**删除**，判据三条同时成立：
+
+1. **生产零引用**：无实例化/无调用点（仅测试引用、注释引用不计；协议 witness、
+   自由函数与动态分发单独复核，避免把活代码判死）；
+2. **无协议 witness 依赖**：删除后不破坏任何被 `any Protocol` 消费的实现；
+3. **有活替代实现或能力已撤销**：能力若仍属产品承诺则接线，否则连同文档承诺一并删除。
+
+### 删除清单
+
+| 对象 | 规模 | 判据 | 替代/去向 |
+|---|---|---|---|
+| `Watch/Coordinator.swift`（FSEvents 目录监听） | 351 行 | 生产零实例化；缺 `kFSEventStreamCreateFlagWatchRoot` 使 RootChanged 分支不可达 | 能力未接线，ROADMAP 的"已完成"叙事一并删除；需要时重新立项 |
+| `Logging/Telemetry.swift` | 158 行 | 生产零调用；`GATHER_TELEMETRY` 无读取点 | 日志统一走 `GatherLogger` |
+| `Face/Detector.swift`、`Face/Preprocessing.swift` | 322 行 | 生产零调用；`Encoder` 自建 Vision 请求 | 检测/编码合并入 `Face/Encoder.swift` |
+| `ImageCache` 类（含 `SerialChain`） | 782→102 行 | 无生产实例化，唯一使用者是自身测试 | 缩略图走 `PhotoThumbnailView` 的 NSCache；同文件 `SHA256`/`UInt64.bigEndianBytes` 被生产消费，**文件保留** |
+| `CaptureOneSyncState` 类、`C1BridgeProvider`/`DefaultC1BridgeProvider` | ~130 行 | 零实例化，仅两个纯函数被调用 | 保留 `aggregateSessionState` 等纯函数；机器状态由 `MetadataSyncCoordinator` 推导（ADR-015） |
+| 零引用仓储/服务方法与类型（`CullingDecisionRepo`/`FaceRepo`/`PersonRepo`/`WritebackRepo`/`MetadataOutboxRepo`/`SessionRepo`/`MetadataCacheRepo`/`FaceMatcher`/`CosineHnswIndex` 等约 49 个方法、约 440 行） | — | 无调用点、无协议 witness | 清单以删除提交的 diff 为准；需要时按 git 历史恢复 |
+| 陈旧产物：`release/Gather.app`、`.DS_Store`、空目录、孤儿夹具 | ~21 MB | 非源码 | 已由 `.gitignore`/构建脚本覆盖 |
+
+### 后果
+
+- **不改变线上契约**：被删对象均不在命令面、数据库 schema 或事件载荷中；命令面仍为
+  118 条，`scripts/check-command-surface.sh` 与 `scripts/check-no-legacy.sh` 均通过；
+- **同文件活代码保护**：`SHA256` 与 `aggregateSessionState` 属"同文件活代码"，不得随类
+  删除——本条固化了此前两次误判的结论；
+- **恢复路径**：以上对象均可从删除前的 git 历史恢复。未来需要目录监听或磁盘缓存时按
+  新需求重新立项，而不是直接接线旧实现（旧实现自带已知缺陷：FSEvents 缺 WatchRoot、
+  ImageCache 与主库双 SQLite 文件）。
+
+## ADR-029 人脸管线算法改造：5 点对齐 + 质量核心点 + 歧义不猜（schema 34）
+
+**背景**：对标 Immich（ArcFace 5 点 → 112×112）、PhotoPrism（YuNet 5 关键点、
+`CLUSTER_CORE`/`CLUSTER_CORE_RETRY`、`MATCH_MARGIN`）与 digiKam 后确认：本仓骨架
+（表结构、状态机、写回影响面预览、断点恢复）不弱于竞品，**差距在算法**——此前
+embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、聚类没有"核心点"概念，
+且匹配是"最近且 ≥ 阈值即绑定"（会把夹在两人之间的脸猜错）。
+（对标详情与可学项见 `docs/reviews/face-clustering-benchmark.md`。）
+
+**决策**（2026-09-28）
+
+1. **对齐**：`VNDetectFaceLandmarksRequest` 取 5 点（双眼中心、鼻尖、双嘴角），
+   `FaceAligner` 做最小二乘相似变换（含尺度、不镜像）到 ArcFace 112×112 模板，
+   在**对齐图**上取特征；关键点缺失回退 bbox 裁剪并标记 `aligned = false`。
+   Vision 无专用人脸嵌入 API，特征仍为 FeaturePrint rev2（768 维）；接口不变，
+   将来换 CoreML 的 ArcFace/SFace 只需替换 `featurePrintEmbedding` 实现并更新
+   `FaceEncoder.embeddingSpec`。
+2. **质量**：`FaceQuality.composite = 0.4·采集质量 + 0.4·尺寸分 + 0.2·滚转分`，
+   采集体质量来自 `VNDetectFaceCaptureQualityRequest`（按 bbox IoU ≥ 0.5 配对，
+   两次 perform 顺序不保证一致），落 `face_observations.quality/face_size_px/roll_degrees`。
+3. **核心点**：`FaceClusterer.coreQualityFloor`（服务默认 0.35）——低于门槛的脸不能
+   成为核心点/扩展簇，但仍会被吸收为边界点（**不丢数据**）；`retryMinSamples`
+   （服务默认 2）做二遍聚类恢复被严格首遍漏掉的小簇。参数经
+   `FaceClusterOptions` 注入，`disabled` 使既有调用语义逐位不变。
+4. **歧义不猜**：`face_match_margin`（默认 0.01）——冠军与**人物级**亚军差距不足时
+   不写建议。亚军必须按人物聚合（`FaceMatcher.bestScoresPerPerson`）：库里同一人
+   常有多条样本，行级次优会把同一人的另一张脸误当竞争者。
+5. **缓存失效**：`FaceEncoder.embeddingSpec` 进入 `analysis_signature`；聚类签名
+   含 eps/minPts/质量门槛/二遍阈值。换模型或改门槛后旧结果自动判过期并重算，
+   无需单独命令（对比 PhotoPrism 的 `faces migrate`）。
+6. **schema 34**：`face_observations` 追加 6 列（quality / face_size_px /
+   roll_degrees / model_id / model_version / embedding_dim）；迁移幂等，旧行默认 0/''。
+   快照 `docs/fixtures/schema.snapshot.json` 同步为 34（43 表不变）。
+
+**兼容性**：`quality = 0` 视为"旧行 / 未提供质量"，聚类按不设限处理——否则升级后
+旧库会被门槛整库判成噪声；所有新参数都有默认值，新增字段均带默认值。
+
+**已知限制**：FeaturePrint 是通用图像特征，与 ArcFace/SFace 特征空间不兼容（仍需
+P4 全量重算）；`coreQualityFloor` 过高会"溶解"以低质量脸为唯一桥点的连通分量
+（默认 0.35 按 96px≈0.9 / 30px≈0.6 / 明显模糊或侧倾 <0.3 标定）；无标注集准确率
+基线，只有性能基准与召回对账。
+
 
