@@ -258,7 +258,7 @@ public enum FaceAligner {
     ) -> CGImage? {
         let side = CGFloat(size)
         guard side >= 1 else { return nil }
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         guard let context = CGContext(
             data: nil,
             width: size,

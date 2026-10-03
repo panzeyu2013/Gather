@@ -2,7 +2,7 @@
 // 人脸嵌入模型接缝（ADR-029 决策 1 的**模型层**：把"通用图像特征"换成可选的专业人脸模型）。
 //
 // 三个实现/入口：
-//   · VisionFeaturePrintEmbedder —— 默认（无外部模型）：VNGenerateImageFeaturePrintRequest
+//   · VisionFeaturePrintEmbedder —— 仅供旧方案对照评测：VNGenerateImageFeaturePrintRequest
 //     revision 2，768 维，作用于 112×112 对齐图；
 //   · CoreMLFaceEmbedder         —— 专用人脸模型（ArcFace/SFace 等 .mlmodel/.mlmodelc，
 //     112×112 图像输入、输出 N 维向量），推理后 L2 归一化；
@@ -21,6 +21,7 @@
 #if canImport(Vision)
 import Foundation
 import CoreGraphics
+import CryptoKit
 import Vision
 #if canImport(CoreML)
 import CoreML
@@ -34,7 +35,7 @@ public struct FaceEmbeddingSpec: Equatable, Sendable {
     public let dimension: Int
     /// analysis_signature 用的规格指纹：必须随模型/权重/对齐方式任何变化而变。
     public let signature: String
-    /// 权重指纹（SHA-256 前 8 字节十六进制）；内置模型（Vision）为 nil。
+    /// 权重指纹（SHA-256 前 8 字节十六进制）；旧 Vision 对照模型为 nil。
     public let weightHash: String?
 
     public init(
@@ -62,7 +63,7 @@ public struct FaceEmbeddingSpec: Equatable, Sendable {
             modelId: "coreml-\(modelId)",
             modelVersion: modelVersion,
             dimension: dimension,
-            signature: "coreml-\(modelId)@\(modelVersion):d\(dimension):h\(weightHash)",
+            signature: "coreml-\(modelId)@\(modelVersion):d\(dimension):h\(weightHash):srgb-align112-v1",
             weightHash: weightHash
         )
     }
@@ -89,9 +90,9 @@ public enum FaceEmbeddingError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case let .modelNotFound(path):
-            return "人脸嵌入模型不存在：\(path)（设置 face_embedding_model_path 指向 .mlmodel 或 .mlmodelc；留空则用内置 Vision 特征）"
+            return "人脸嵌入模型不存在：\(path)（支持 .mlmodel、.mlpackage 或 .mlmodelc；留空使用内置 SFace 身份模型）"
         case let .unsupportedModelFormat(ext):
-            return "不支持的人脸嵌入模型扩展名：.\(ext)（只接受 .mlmodel / .mlmodelc）"
+            return "不支持的人脸嵌入模型扩展名：.\(ext)（只接受 .mlmodel / .mlpackage / .mlmodelc）"
         case let .modelLoadFailed(reason):
             return "人脸嵌入模型加载失败：\(reason)"
         case let .unsupportedInput(kind):
@@ -321,7 +322,7 @@ public enum FaceEmbeddingFingerprint {
             guard let chunk, !chunk.isEmpty else { break }
             var payload = Data(digest)
             payload.append(chunk)
-            digest = SHA256.hash(payload)
+            digest = Array(CryptoKit.SHA256.hash(data: payload))
         }
         return digest
     }
@@ -333,7 +334,7 @@ public enum FaceEmbeddingFingerprint {
         func absorb(_ text: String) {
             var payload = Data(digest)
             payload.append(Data(text.utf8))
-            digest = SHA256.hash(payload)
+            digest = Array(CryptoKit.SHA256.hash(data: payload))
         }
         let files = files(of: modelURL)
         guard !files.isEmpty else { return "" }
@@ -352,7 +353,7 @@ public enum FaceEmbeddingFingerprint {
         func absorb(_ data: Data) {
             var payload = Data(digest)
             payload.append(data)
-            digest = SHA256.hash(payload)
+            digest = Array(CryptoKit.SHA256.hash(data: payload))
         }
         let files = files(of: modelURL)
         guard !files.isEmpty else { return "" }
@@ -382,11 +383,12 @@ public enum FaceEmbeddingFingerprint {
 public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
     public let spec: FaceEmbeddingSpec
     private let model: MLModel
+    private let visionModel: VNCoreMLModel
     /// 被选中的输出名（VNCoreMLFeatureValueObservation.featureName 用它挑结果，
     /// 多输出模型下不能靠 results.first 的顺序）。
     private let outputName: String
 
-    public init(modelURL: URL, modelVersion: String) throws {
+    public init(modelURL: URL, modelVersion: String, computeUnits: String = "auto") throws {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: modelURL.path) else {
             throw FaceEmbeddingError.modelNotFound(modelURL.path)
@@ -395,7 +397,7 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
         switch modelURL.pathExtension {
         case "mlmodelc":
             compiledURL = modelURL
-        case "mlmodel":
+        case "mlmodel", "mlpackage":
             do {
                 compiledURL = try MLModel.compileModel(at: modelURL)
             } catch {
@@ -405,12 +407,18 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
             throw FaceEmbeddingError.unsupportedModelFormat(modelURL.pathExtension)
         }
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
+        configuration.computeUnits = computeUnits == "cpu" ? .cpuOnly : .all
         let model: MLModel
         do {
             model = try MLModel(contentsOf: compiledURL, configuration: configuration)
         } catch {
             throw FaceEmbeddingError.modelLoadFailed("\(error)")
+        }
+        let imageInputs = model.modelDescription.inputDescriptionsByName.values.filter { $0.type == .image }
+        guard imageInputs.count == 1, model.modelDescription.inputDescriptionsByName.count == 1,
+              let constraint = imageInputs.first?.imageConstraint,
+              constraint.pixelsWide == 112, constraint.pixelsHigh == 112 else {
+            throw FaceEmbeddingError.unsupportedInput("需要唯一的 112×112 图像输入")
         }
         let selected = try FaceEmbeddingShapeValidator.output(
             for: Self.shape(of: model.modelDescription))
@@ -432,15 +440,11 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
         )
         self.outputName = selected.name
         self.model = model
+        do { self.visionModel = try VNCoreMLModel(for: model) }
+        catch { throw FaceEmbeddingError.modelLoadFailed("\(error)") }
     }
 
     public func embed(alignedFace: CGImage) throws -> [Double] {
-        let visionModel: VNCoreMLModel
-        do {
-            visionModel = try VNCoreMLModel(for: model)
-        } catch {
-            throw FaceEmbeddingError.modelLoadFailed("\(error)")
-        }
         let request = VNCoreMLRequest(model: visionModel)
         request.imageCropAndScaleOption = .scaleFill
         let handler = VNImageRequestHandler(cgImage: alignedFace, options: [:])
@@ -451,7 +455,7 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
         }
         // 按输出名挑结果：多输出模型的 results 顺序不保证，first 可能拿到 logits。
         let observations = (request.results ?? []).compactMap { $0 as? VNCoreMLFeatureValueObservation }
-        let observation = observations.first { $0.featureName == outputName } ?? observations.first
+        let observation = observations.first { $0.featureName == outputName }
         guard let multiArray = observation?.featureValue.multiArrayValue else {
             throw FaceEmbeddingError.emptyOutput
         }
@@ -545,22 +549,31 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
 // MARK: - 工厂（设置 → 提供者）
 
 public enum FaceEmbeddingModelFactory {
-    /// TS/原生设置键：模型路径（空 = 内置 Vision 特征）。
+    public static let bundledModelVersion = "2021dec-coreml-v1"
+    public static var bundledModelURL: URL? {
+        Bundle.module.url(forResource: "SFace", withExtension: "mlpackage", subdirectory: "FaceModels")
+    }
+    /// TS/原生设置键：模型路径（空 = 随应用分发的 SFace）。
     public static let modelPathSetting = "face_embedding_model_path"
     /// 用户可读的模型版本标签（写进 model_version，便于事后追溯；不参与缓存键的语义判断）。
     public static let modelVersionSetting = "face_embedding_model_version"
 
-    /// 由设置解析嵌入提供者。路径为空 → Vision；否则必须可加载（失败抛错，禁止静默回退）。
+    /// 由设置解析嵌入提供者。路径为空 → 内置 SFace；否则必须可加载（失败抛错，禁止静默回退）。
     ///
     /// 路径规范化（对抗审查实测问题）：`~` 必须展开（fileExists 不认 "~"，否则永远
     /// modelNotFound）、软链要解析到目标（否则 stat 的是链接本身，替换目标不会失效）、
     /// 相对路径按进程 CWD 解释——统一成绝对真实路径后再做缓存键与加载。
-    public static func make(modelPath: String, modelVersion: String) throws -> FaceEmbeddingProvider {
+    public static func make(modelPath: String, modelVersion: String, computeUnits: String = "auto") throws -> FaceEmbeddingProvider {
         let trimmed = modelPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return VisionFeaturePrintEmbedder() }
+        if trimmed.isEmpty {
+            guard let url = bundledModelURL else {
+                throw FaceEmbeddingError.modelNotFound("内置 SFace.mlpackage")
+            }
+            return try cache.provider(forPath: url.path, version: bundledModelVersion, computeUnits: computeUnits)
+        }
         let expanded = (trimmed as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded).resolvingSymlinksInPath()
-        return try cache.provider(forPath: url.path, version: modelVersion)
+        return try cache.provider(forPath: url.path, version: modelVersion, computeUnits: computeUnits)
     }
 
     /// 只取规格（服务层建 analysis_signature 用）：与 `make` 共用缓存与错误语义，
@@ -569,10 +582,7 @@ public enum FaceEmbeddingModelFactory {
         try make(modelPath: modelPath, modelVersion: modelVersion).spec
     }
 
-    /// 模型缓存：`@unchecked Sendable` 依据——唯一可变状态是 providers 字典（键 = 路径 +
-    /// 版本 + 文件指纹），全部读写都在 lock 临界区内完成；loader（模型加载，可能耗秒级）
-    /// 刻意在锁外调用，避免加载期间阻塞其他键的查询——代价是同一键并发未命中时可能重复
-    /// 加载一次（幂等，最坏多读一次文件，不产生错误状态）。
+    /// 加载与缓存读写共用锁：同一规格只编译一次，运行时每次推理创建独立请求。
     static let cache = Cache()
 
     final class Cache: @unchecked Sendable {
@@ -587,8 +597,7 @@ public enum FaceEmbeddingModelFactory {
         ///
         /// **已知边界**：指纹是 stat 而不是内容——若有人把权重换成同尺寸文件并刻意把
         /// mtime 改回原值（`touch -r`），缓存不会失效（进程内继续用已加载的旧模型）。
-        /// 不用内容指纹做键是因为代价：256 MiB 模型在 Debug 下整包哈希约 48s，不能放在
-        /// 每次分析的路径上。内容指纹仍然决定 `spec.signature`（换权重 → 新签名 →
+        /// 内容指纹只在加载时计算，缓存查询只读取文件属性。内容指纹仍然决定 `spec.signature`（换权重 → 新签名 →
         /// 旧观测判过期重算），且一次运行只用**一个**嵌入实例（见 FaceInferenceEngine.init），
         /// 所以"签名与推理不同源"的混写窗口不存在。
         static func key(path: String, version: String, fingerprint: String) -> String {
@@ -598,6 +607,7 @@ public enum FaceEmbeddingModelFactory {
         func provider(
             forPath path: String,
             version: String,
+            computeUnits: String = "auto",
             loader: Loader? = nil
         ) throws -> FaceEmbeddingProvider {
             let url = URL(fileURLWithPath: path)
@@ -605,24 +615,23 @@ public enum FaceEmbeddingModelFactory {
             guard !fingerprint.isEmpty else {
                 throw FaceEmbeddingError.modelNotFound(path)
             }
-            let cacheKey = Self.key(path: path, version: version, fingerprint: fingerprint)
+            let cacheKey = Self.key(path: path, version: version, fingerprint: fingerprint) + "|" + computeUnits
+            // Single-flight loading avoids compiling the same weights hundreds of times
+            // when multiple sessions start concurrently.
             lock.lock()
-            let cached = providers[cacheKey]
-            lock.unlock()
-            if let cached { return cached }
+            defer { lock.unlock() }
+            if let cached = providers[cacheKey] { return cached }
             let provider: FaceEmbeddingProvider
             if let loader {
                 provider = try loader(url, version)
             } else {
 #if canImport(CoreML)
-                provider = try CoreMLFaceEmbedder(modelURL: url, modelVersion: version)
+                provider = try CoreMLFaceEmbedder(modelURL: url, modelVersion: version, computeUnits: computeUnits)
 #else
                 throw FaceEmbeddingError.unsupportedInput("当前平台没有 CoreML，无法加载专用人脸模型")
 #endif
             }
-            lock.lock()
             providers[cacheKey] = provider
-            lock.unlock()
             return provider
         }
 

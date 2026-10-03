@@ -1,0 +1,26 @@
+{
+  "model": "SFace",
+  "version": "2021dec-coreml-v1",
+  "dimension": 128,
+  "license": "Apache-2.0",
+  "source": "https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+  "source_commit": "47534e27c9851bb1128ccc0102f1145e27f23f98",
+  "source_sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+  "input": "aligned RGB uint8 112x112",
+  "precision": "float32",
+  "runtime": "CoreML MLProgram",
+  "conversion_parity": [
+    {
+      "cosine": 1.0,
+      "max_abs": 1.7583370208740234e-06
+    },
+    {
+      "cosine": 0.9999999403953552,
+      "max_abs": 1.2516975402832031e-06
+    },
+    {
+      "cosine": 1.0,
+      "max_abs": 1.7285346984863281e-06
+    }
+  ]
+}

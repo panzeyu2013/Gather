@@ -8,7 +8,7 @@
 //   · 阈值越大越严格 —— 越难归为同一人，簇更小更多；
 //   · 阈值越小越宽松 —— 越容易归为同一人，簇更大更少。
 // 「半径 = 1 - 相似度」是反号刻度：调用方不得把本参数当半径反向换算。
-// 默认 defaultSimilarityThreshold = 0.6，值域 similarityThresholdRange = 0...1；
+// 默认 defaultSimilarityThreshold = 0.65，值域 similarityThresholdRange = 0...1；
 // settings key default_eps、模板 face.eps、IPC 字段 eps 与本参数同义同刻度。
 //
 // 大语料（n > minPoints 且启用）走 angular-LSH 桶 + 多探针 + 精确复核的 ANN
@@ -120,7 +120,7 @@ public struct ClusterLshOptions: Sendable {
 
 public enum FaceClusterer {
     /// 相似度下限默认值（与 settings default_eps 的初始值同刻度，均为 0.6）。
-    public static let defaultSimilarityThreshold = 0.6
+    public static let defaultSimilarityThreshold = 0.65
     /// DBSCAN minPts 默认值（与 settings default_min_samples 的初始值同刻度）。
     public static let defaultMinSamples = 2
     /// 相似度下限合法值域（与 IPC validateFaceClusteringParameters 的 0...1 一致）。
@@ -447,7 +447,7 @@ public enum FaceClusterer {
                 leftovers.append(entry)
                 continue
             }
-            if margin > 0, runnerUpSimilarity >= similarityThreshold,
+            if margin > 0, runnerUpSimilarity.isFinite,
                bestSimilarity - runnerUpSimilarity < margin {
                 // 近似并列：归入任何一簇都是猜测，转新簇路径（见文件头偏差 1/2）。
                 leftovers.append(entry)

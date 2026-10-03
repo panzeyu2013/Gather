@@ -443,6 +443,7 @@ public final class FaceRepo {
             var faceCount: Int64 = 0
             try connection.transaction {
                 _ = try deleteEmbeddingsStmt.run([.text(sessionId), .text(target.photoId)])
+                try detachObservationMembers(sessionId: sessionId, photoId: target.photoId)
                 _ = try deleteStmt.run([.text(sessionId), .text(target.photoId)])
                 let copied = try copyStmt.run([
                     .text(target.photoId), .text(sessionId), .text(nowISOString()),
@@ -530,6 +531,15 @@ public final class FaceRepo {
           """).run([.text(sessionId), .text(signature), .text(nowISOString())])
     }
 
+    /// 保留成员几何和人工标签，但在替换派生观测前解除旧外键。
+    private func detachObservationMembers(sessionId: String, photoId: String? = nil) throws {
+        let suffix = photoId == nil ? "" : " AND photo_id = ?"
+        var values: [DBValue] = [.text(sessionId)]
+        if let photoId { values.append(.text(photoId)) }
+        _ = try connection.prepare("UPDATE face_cluster_members SET observation_id = NULL WHERE observation_id IN (SELECT id FROM face_observations WHERE session_id = ?\(suffix))")
+            .run(values)
+    }
+
     public func deleteObservationsBySession(_ sessionId: String) throws {
         try connection.transaction {
             _ = try connection.prepare("""
@@ -537,6 +547,7 @@ public final class FaceRepo {
                   SELECT id FROM face_observations WHERE session_id = ?
                 )
                 """).run([.text(sessionId)])
+            try detachObservationMembers(sessionId: sessionId)
             _ = try connection.prepare("DELETE FROM face_observations WHERE session_id = ?").run([.text(sessionId)])
             _ = try connection.prepare("DELETE FROM face_analysis_state WHERE session_id = ?").run([.text(sessionId)])
             _ = try connection.prepare("DELETE FROM face_cluster_state WHERE session_id = ?").run([.text(sessionId)])
@@ -550,6 +561,7 @@ public final class FaceRepo {
                   SELECT id FROM face_observations WHERE session_id = ? AND photo_id = ?
                 )
                 """).run([.text(sessionId), .text(photoId)])
+            try detachObservationMembers(sessionId: sessionId, photoId: photoId)
             _ = try connection.prepare(
                 "DELETE FROM face_observations WHERE session_id = ? AND photo_id = ?"
             ).run([.text(sessionId), .text(photoId)])
@@ -587,6 +599,7 @@ public final class FaceRepo {
           """)
         try connection.transaction {
             _ = try deleteEmbeddingsStmt.run([.text(sessionId), .text(photoId)])
+            try detachObservationMembers(sessionId: sessionId, photoId: photoId)
             _ = try deleteStmt.run([.text(sessionId), .text(photoId)])
             for obs in observations {
                 // embedding_dim 如实记录写入的向量长度：显式 >0 的声明维度优先，

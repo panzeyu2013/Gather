@@ -166,14 +166,13 @@ struct FaceEmbeddingModelTests {
 
     // ── 工厂 ──
 
-    @Test func factoryFallsBackToVisionForEmptyPath() throws {
-        #expect(try FaceEmbeddingModelFactory.make(modelPath: "", modelVersion: "").spec
-            == VisionFeaturePrintEmbedder().spec)
-        // 纯空白也算"未配置"。
-        #expect(try FaceEmbeddingModelFactory.make(modelPath: "   ", modelVersion: "x").spec
-            == VisionFeaturePrintEmbedder().spec)
-        #expect(try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "")
-            .signature == FaceEncoder.embeddingSpec)
+    @Test func factoryUsesBundledIdentityModelForEmptyPath() throws {
+        let spec = try FaceEmbeddingModelFactory.make(modelPath: "", modelVersion: "").spec
+        #expect(spec.modelId == "coreml-SFace")
+        #expect(spec.dimension == 128)
+        #expect(spec.weightHash != nil)
+        #expect(try FaceEmbeddingModelFactory.make(modelPath: "   ", modelVersion: "x").spec == spec)
+        #expect(try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature == spec.signature)
     }
 
     @Test func factoryThrowsForMissingOrWrongFormatModel() throws {

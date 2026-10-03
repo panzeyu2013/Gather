@@ -233,6 +233,17 @@ public enum SchemaSQL {
       embedding_dim INTEGER NOT NULL DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS face_identity_feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      photo_id TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+      bbox_x REAL NOT NULL, bbox_y REAL NOT NULL, bbox_w REAL NOT NULL, bbox_h REAL NOT NULL,
+      person_id TEXT REFERENCES persons(id) ON DELETE CASCADE,
+      decision TEXT NOT NULL CHECK(decision IN ('confirmed', 'rejected')),
+      keywords TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS face_analysis_state (
       photo_id TEXT PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -587,6 +598,7 @@ public enum SchemaSQL {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_jobs_active_dedupe
       ON analysis_jobs(dedupe_key)
       WHERE status IN (\(activeAnalysisJobStatusSQLList));
+    CREATE INDEX IF NOT EXISTS idx_face_identity_feedback_session ON face_identity_feedback(session_id, photo_id);
     CREATE INDEX IF NOT EXISTS idx_face_observations_session ON face_observations(session_id);
     CREATE INDEX IF NOT EXISTS idx_face_observations_photo ON face_observations(photo_id);
     CREATE INDEX IF NOT EXISTS idx_face_analysis_state_session ON face_analysis_state(session_id);

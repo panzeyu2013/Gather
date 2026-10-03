@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 34,
+  "schemaVersion": 35,
   "tables": [
     "analysis_jobs",
     "analysis_runs",
@@ -19,6 +19,7 @@
     "face_cluster_members",
     "face_cluster_state",
     "face_clusters",
+    "face_identity_feedback",
     "face_observations",
     "metadata_keyword_origins",
     "metadata_outbox",

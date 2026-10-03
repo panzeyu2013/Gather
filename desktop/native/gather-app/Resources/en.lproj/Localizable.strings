@@ -1465,3 +1465,14 @@
 "目标照片在已加载范围之外，请用搜索缩小范围后再试。" = "The photo is beyond the loaded range; narrow the search and try again.";
 "定位照片时中断，请重试。" = "Locating the photo was interrupted. Please try again.";
 "导出完成：成功 %lld 张，失败 %lld 张，请在结果中查看失败原因。" = "Export finished: %lld succeeded, %lld failed. See the results for failure reasons.";
+
+"Vision 人脸检测 · CoreML 身份识别 · 112×112 对齐输入 · %lld 维特征" = "Vision face detection · CoreML identity recognition · aligned 112×112 input · %lld dimensions";
+"Vision 人脸检测 · CoreML 身份识别 · 112×112 对齐输入 · 自定义模型" = "Vision face detection · CoreML identity recognition · aligned 112×112 input · custom model";
+"人脸模型未找到。请恢复内置 SFace，或选择有效的 CoreML 模型。" = "Face model not found. Restore the bundled SFace model or choose a valid CoreML model.";
+"使用内置 SFace" = "Use bundled SFace";
+"未找到可用的人脸身份模型" = "No usable face identity model was found";
+"人脸模型不可用，请前往设置恢复内置模型或重新选择。" = "Face model unavailable. Open Settings to restore the bundled model or choose another.";
+"照片解码并发数" = "Photo decoding concurrency";
+"同时准备的照片数；内存紧张时调低" = "Number of photos prepared at once; lower this if memory is limited";
+"留空使用应用内置 SFace 身份模型；也可选择 112×112 图像输入的 CoreML 模型。换模型后需要全量重新分析，已有人工身份与纠错记录会保留。" = "Leave empty to use bundled SFace, or choose a CoreML model with 112×112 image input. Changing models requires reanalysis; manual identities and corrections are preserved.";
+"开=优先处理新增照片；模型或人工约束变化时会重新聚类。关=每次重新聚类。两种方式都会保留人工身份与纠错记录。" = "On: prioritize new photos; rebuild clusters when models or manual constraints change. Off: rebuild clusters every time. Both preserve manual identities and corrections.";

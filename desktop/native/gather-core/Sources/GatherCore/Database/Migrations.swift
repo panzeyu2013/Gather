@@ -11,7 +11,7 @@ import Foundation
 import CSQLite
 
 public struct MigrationRunner {
-    public static let currentSchemaVersion = 34
+    public static let currentSchemaVersion = 35
 
     /// 数据库文件路径（TS: app.getPath('userData')/gather.db）。为 nil 时跳过
     /// 备份/回滚（内存库或测试场景），迁移仍正常执行。
@@ -971,6 +971,25 @@ public struct MigrationRunner {
                 try setSchemaVersion(db, 34)
             }
             currentVersion = 34
+        }
+
+        if currentVersion < 35 {
+            try db.transaction {
+                try db.exec("""
+                    CREATE TABLE IF NOT EXISTS face_identity_feedback (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                      photo_id TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                      bbox_x REAL NOT NULL, bbox_y REAL NOT NULL, bbox_w REAL NOT NULL, bbox_h REAL NOT NULL,
+                      person_id TEXT REFERENCES persons(id) ON DELETE CASCADE,
+                      decision TEXT NOT NULL CHECK(decision IN ('confirmed', 'rejected')),
+                      keywords TEXT NOT NULL DEFAULT '[]',
+                      updated_at TEXT NOT NULL
+                    );
+                    """)
+                try setSchemaVersion(db, 35)
+            }
+            currentVersion = 35
         }
 
         if currentVersion != Self.currentSchemaVersion {

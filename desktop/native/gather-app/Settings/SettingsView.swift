@@ -154,7 +154,7 @@ public final class SettingsViewModel {
             values = try client.execute("settings.get_all").decoded(as: [String: String].self)
             modelStatus = try client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
             language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
-            backend = values["onnx_provider"] ?? "auto"
+            backend = values["face_compute_units"] ?? "auto"
             edits = values
             seedSliderValues()
             reconcileDownloadPhaseWithModelStatus()
@@ -197,11 +197,11 @@ public final class SettingsViewModel {
     public func setBackend(_ value: String) {
         do {
             _ = try client.execute("settings.set", params: [
-                "key": .string("onnx_provider"),
+                "key": .string("face_compute_units"),
                 "value": .string(value),
             ])
             backend = value
-            values["onnx_provider"] = value
+            values["face_compute_units"] = value
             modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
             notice = GatherLocalization.l("推理后端已保存")
         } catch {
@@ -228,7 +228,7 @@ public final class SettingsViewModel {
         let raw = (edits[field.key] ?? values[field.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.isEmpty {
             // 空值规则：只有"默认值本身为空"的键才允许清空——例如
-            // face_embedding_model_path 清空 = 回到内置 Vision 特征（合法操作），
+            // face_embedding_model_path 清空 = 回到内置 SFace 身份模型（合法操作），
             // 而 detector_model_path 留空没有语义，仍按无效输入拒绝。
             guard Self.defaultValueIsEmpty(field.key) else {
                 errorMessage = String(format: GatherLocalization.l("「%@」不能为空"), GatherLocalization.l(field.zhLabel))
@@ -286,7 +286,7 @@ public final class SettingsViewModel {
             return FaceEmbeddingError.modelNotFound(url.path).description
         }
         switch url.pathExtension {
-        case "mlmodel", "mlmodelc":
+        case "mlmodel", "mlpackage", "mlmodelc":
             break
         default:
             return FaceEmbeddingError.unsupportedModelFormat(url.pathExtension).description
@@ -308,8 +308,13 @@ public final class SettingsViewModel {
 
     public func saveModelPath(key: String) {
         let raw = (edits[key] ?? values[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else {
+        guard !raw.isEmpty || key == "face_embedding_model_path" else {
             errorMessage = GatherLocalization.l("模型路径不能为空")
+            return
+        }
+        if key == FaceEmbeddingModelFactory.modelPathSetting, !raw.isEmpty,
+           let reason = Self.faceEmbeddingModelPathError(raw) {
+            errorMessage = reason
             return
         }
         save(key: key, value: raw)
@@ -327,7 +332,7 @@ public final class SettingsViewModel {
         save(key: slider.key, value: formatted)
     }
 
-    private func save(key: String, value: String) {
+    func save(key: String, value: String) {
         // F11：文本框改为「失焦或回车」提交后，保存会被频繁触发（用户 Tab 穿过
         // 一个没改过的字段也会触发）。值没变就什么都不做：不写库、不弹提示。
         if values[key] == value, edits[key] == value { return }
@@ -342,7 +347,7 @@ public final class SettingsViewModel {
             // 这类提示让用户无法确认自己改的是哪一项。
             notice = String(format: GatherLocalization.l("已保存 %@"), Self.label(for: key))
             errorMessage = nil
-            if key == "detector_model_path" || key == "encoder_model_path" || key == "onnx_provider" {
+            if key == FaceEmbeddingModelFactory.modelPathSetting || key == "face_compute_units" || key == "face_embedding_model_version" {
                 modelStatus = try? client.execute("settings.get_ml_status").decoded(as: MLStatusData.self)
             }
         } catch {
@@ -385,7 +390,7 @@ public final class SettingsViewModel {
         do {
             values = try client.execute("settings.reset").decoded(as: [String: String].self)
             language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
-            backend = values["onnx_provider"] ?? "auto"
+            backend = values["face_compute_units"] ?? "auto"
             edits = values
             seedSliderValues()
             notice = GatherLocalization.l("设置已恢复默认值")
@@ -663,7 +668,7 @@ public final class SettingsViewModel {
             zhDesc: "低于此置信度的人脸将被忽略"
         ),
         SliderSetting(
-            key: "default_eps", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.6,
+            key: "default_eps", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.65,
             zhLabel: "同一人相似度下限",
             zhDesc: "仅相似度不低于该值的人脸才归为同一人；值越大越严格"
         ),
@@ -674,24 +679,18 @@ public final class SettingsViewModel {
         ),
     ]
 
-    /// 人脸分析高级参数（TS index.tsx L457-512）。
+    /// 原生分析实际使用的高级参数；旧 ONNX/NMS 设置仅保留存储兼容。
     public static let advancedSliders: [SliderSetting] = [
-        SliderSetting(
-            key: "nms_threshold", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.4,
-            zhLabel: "NMS 阈值",
-            zhDesc: "重叠人脸的过滤阈值"
-        ),
         SliderSetting(
             key: "max_detections", min: 1, max: 500, step: 1, isInteger: true, defaultValue: 100,
             zhLabel: "最大检测数",
             zhDesc: "单张图片最多检测的人脸数"
         ),
         SliderSetting(
-            key: "onnx_threads", min: 1, max: 16, step: 1, isInteger: true, defaultValue: 4,
-            zhLabel: "ONNX 线程",
-            zhDesc: "推理并行线程数"
+            key: "face_decode_concurrency", min: 1, max: 8, step: 1, isInteger: true, defaultValue: 4,
+            zhLabel: "照片解码并发数", zhDesc: "同时准备的照片数；内存紧张时调低"
         ),
-        // 原生扩展参数（ADR-029 算法对标改造；TS 无对应键）。
+        // 原生质量与匹配参数。
         SliderSetting(
             key: "face_core_quality", min: 0, max: 1, step: 0.05, isInteger: false, defaultValue: 0.35,
             zhLabel: "核心点质量门槛",
@@ -830,7 +829,7 @@ public final class SettingsViewModel {
             SettingField(
                 key: "face_embedding_model_path", type: .text,
                 zhLabel: "专用人脸模型路径",
-                zhDesc: "留空 = 内置 Vision 特征（通用图像特征）；填入 ArcFace/SFace 等 .mlmodel 或 .mlmodelc 即切换为专用人脸模型（需 112×112 图像输入）。填了但加载失败会直接报错，不会退回内置特征——两套向量空间混用会让相似度阈值失去意义"
+                zhDesc: "留空使用应用内置 SFace 身份模型；也可选择 112×112 图像输入的 CoreML 模型。换模型后需要全量重新分析，已有人工身份与纠错记录会保留。"
             ),
             SettingField(
                 key: "face_embedding_model_version", type: .text,
@@ -843,7 +842,7 @@ public final class SettingsViewModel {
                     SelectOption(value: "0", labelZh: "关（每次全量重聚类）"),
                 ]),
                 zhLabel: "增量聚类",
-                zhDesc: "开=只对新增照片做增量聚类，已有簇与用户绑定身份不会被重算冲掉；关=每次分析都全量重聚类（慢，但会收敛到全局最优）"
+                zhDesc: "开=优先处理新增照片；模型或人工约束变化时会重新聚类。关=每次重新聚类。两种方式都会保留人工身份与纠错记录。"
             ),
         ]),
     ]
@@ -1194,7 +1193,7 @@ public struct SettingsView: View {
                 get: { pickingModelPathKey != nil },
                 set: { if !$0 { pickingModelPathKey = nil } }
             ),
-            allowedContentTypes: [.item],
+            allowedContentTypes: [.item, .folder],
             allowsMultipleSelection: false
         ) { result in
             guard let key = pickingModelPathKey else { return }
@@ -1317,8 +1316,7 @@ public struct SettingsView: View {
                 presenceRow(GatherLocalization.l("检测模型"), presence: model.detectorModel)
                 presenceRow(GatherLocalization.l("编码模型"), presence: model.encoderModel)
 
-                modelPathRow(key: "detector_model_path", label: GatherLocalization.l("检测模型路径"))
-                modelPathRow(key: "encoder_model_path", label: GatherLocalization.l("编码模型路径"))
+                modelPathRow(key: FaceEmbeddingModelFactory.modelPathSetting, label: GatherLocalization.l("专用人脸模型路径"))
 
                 if !model.detectorModel.exists || !model.encoderModel.exists {
                     installBlock(model)
@@ -1368,17 +1366,11 @@ public struct SettingsView: View {
     }
 
     private func modelInfoText(_ model: MLStatusData) -> String {
-        String(
-            format: GatherLocalization.l("双尺度检测 %lld×%lld + %lld×%lld，分析预览最长边 %lldpx，编码输入 %lld×%lld，特征维度 %lld"),
-            model.modelInfo.secondaryDetectInputSize,
-            model.modelInfo.secondaryDetectInputSize,
-            model.modelInfo.detectInputSize,
-            model.modelInfo.detectInputSize,
-            model.modelInfo.previewMaxDimension,
-            model.modelInfo.encoderInputSize,
-            model.modelInfo.encoderInputSize,
-            model.modelInfo.embeddingDim
-        )
+        if model.modelInfo.embeddingDim > 0 {
+            return String(format: GatherLocalization.l("Vision 人脸检测 · CoreML 身份识别 · 112×112 对齐输入 · %lld 维特征"),
+                          Int64(model.modelInfo.embeddingDim))
+        }
+        return GatherLocalization.l("Vision 人脸检测 · CoreML 身份识别 · 112×112 对齐输入 · 自定义模型")
     }
 
     /// 模型存在性：Label + SF Symbol + 语义色（不再是 ✓/✗ 字形 + 纯颜色信号）。
@@ -1425,7 +1417,7 @@ public struct SettingsView: View {
     private func installBlock(_ model: MLStatusData) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(
-                GatherLocalization.l("模型文件未找到。请将 ONNX 模型文件放入以下文件夹："),
+                GatherLocalization.l("人脸模型未找到。请恢复内置 SFace，或选择有效的 CoreML 模型。"),
                 systemImage: "exclamationmark.triangle.fill"
             )
             .symbolRenderingMode(.hierarchical)
@@ -1440,10 +1432,9 @@ public struct SettingsView: View {
                 Button(GatherLocalization.l("打开模型文件夹")) {
                     viewModel.openModelDirectory()
                 }
-                Button(downloadButtonTitle) {
-                    pendingModelInstall = PendingModelInstall(modelDir: model.modelResourcesDir)
+                Button(GatherLocalization.l("使用内置 SFace")) {
+                    viewModel.save(key: FaceEmbeddingModelFactory.modelPathSetting, value: "")
                 }
-                .disabled(viewModel.isDownloading)
             }
 
             switch viewModel.downloadPhase {

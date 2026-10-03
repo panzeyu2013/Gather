@@ -209,7 +209,7 @@ private let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
     detectorPath: "det.onnx", encoderPath: "enc.onnx",
     primaryDetectionSize: 640, secondaryDetectionSize: 128,
     confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
-    previewMaxDimension: 2048, embeddingSpec: FaceEncoder.embeddingSpec
+    previewMaxDimension: 2048, embeddingSpec: try! FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature
 )
 
 // MARK: - 参数校验（TS: face-parameters.test.ts）
@@ -369,7 +369,7 @@ struct FaceKwAnalyzeFlowTests {
         let seededClusterOptions = FaceKwService.clusterOptions(from: { _, defaultValue in defaultValue })
         try harness.faceRepo.upsertClusterSignature(
             sessionId: harness.sessionId,
-            signature: FaceKwService.clusterSignature(eps: 0.6, minPts: 2, options: seededClusterOptions))
+            signature: FaceKwService.clusterSignature(eps: 0.65, minPts: 2, options: seededClusterOptions))
         try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
@@ -617,7 +617,7 @@ struct FaceKwBindingMigrationTests {
         #expect(memberPhotos == ["p1", "p2"])
     }
 
-    @Test("lets the binding with the larger overlap win when two compete for one cluster")
+    @Test("manual identities remain separate even when automatic clustering would merge them")
     func largerOverlapWinsCompetition() async throws {
         let harness = try makeMigrationHarness(
             bindings: [
@@ -638,12 +638,12 @@ struct FaceKwBindingMigrationTests {
         try await harness.service.recluster(sessionId: harness.sessionId, eps: 0.6, minPts: 2)
 
         let bindings = try harness.faceRepo.getBindingsBySession(harness.sessionId)
-        #expect(bindings.count == 1)
-        #expect(bindings[0].roleName == "Alice")
+        #expect(bindings.count == 2)
+        #expect(Set(bindings.map(\.roleName)) == ["Alice", "Bob"])
         #expect(bindings[0].keywords == [])
     }
 
-    @Test("drops a binding whose faces vanished from the new result")
+    @Test("manual identity survives automatic clustering classifying its faces as noise")
     func dropsVanishedBinding() async throws {
         let harness = try makeMigrationHarness(
             bindings: [(clusterId: 7, roleName: "Alice", keywords: ["kw"], photoIds: ["p1"])],
@@ -654,7 +654,7 @@ struct FaceKwBindingMigrationTests {
 
         try await harness.service.recluster(sessionId: harness.sessionId, eps: 0.6, minPts: 2)
 
-        #expect(try harness.faceRepo.getBindingsBySession(harness.sessionId).isEmpty)
+        #expect(try harness.faceRepo.getBindingsBySession(harness.sessionId).first?.roleName == "Alice")
     }
 }
 
@@ -1401,17 +1401,20 @@ struct FaceAlgorithmWiringTests {
                 settingsProvider: { key, defaultValue in settings.value(key, defaultValue) })
             let alice = try harness.personRepo.create(name: "Alice")
             let bob = try harness.personRepo.create(name: "Bob")
-            // 查询向量 [0.5, 0.6]：Alice 完全一致（相似度 1.0），Bob 差约 1.6e-4 → 近似并列。
-            try harness.personRepo.saveEmbeddings(embeddings: [
-                SaveEmbeddingInput(
-                    personId: alice, embedding: [0.5, 0.6], photoId: "photo-1",
-                    sessionId: harness.sessionId, faceObservationId: nil,
-                    faceBbox: [], quality: 1),
-                SaveEmbeddingInput(
-                    personId: bob, embedding: [0.51, 0.59], photoId: "photo-1",
-                    sessionId: harness.sessionId, faceObservationId: nil,
-                    faceBbox: [], quality: 1),
-            ])
+            let librarySession = try SessionRepo(connection: harness.db).create(name: "Library", source: "folder")
+            try insertPhoto(harness.db, id: "library-face", sessionId: librarySession.id, filepath: "/tmp/library.jpg")
+            let spec = try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "")
+            let signature = "{\"embeddingSpec\":\"\(spec.signature)\"}"
+            let vectors: [[Double]] = [[0.5, 0.6], [0.51, 0.59]]
+            let ids = try harness.faceRepo.replaceObservationsByPhoto(sessionId: librarySession.id,
+                photoId: "library-face", observations: vectors.map { vector in
+                    FaceObservationInput(photoId: "library-face", bboxX: 0.1, bboxY: 0.1, bboxW: 0.2, bboxH: 0.3,
+                        embedding: vector.map(Float.init), confidence: 1, analysisSignature: signature, quality: 1)
+                })
+            try harness.personRepo.saveEmbeddings(embeddings: [alice, bob].enumerated().map { index, person in
+                SaveEmbeddingInput(personId: person, embedding: vectors[index].map(Float.init), photoId: "library-face",
+                    sessionId: librarySession.id, faceObservationId: ids[index], faceBbox: [0.1, 0.1, 0.2, 0.3], quality: 1)
+            })
             _ = try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
             let cluster = try harness.faceRepo.getClusters(harness.sessionId).first
@@ -1427,7 +1430,7 @@ struct FaceAlgorithmWiringTests {
     }
 
     @Test("分析签名包含 embedding 规格：换对齐/模型指纹必然让旧观测过期")
-    func analysisSignatureTracksEmbeddingSpec() {
+    func analysisSignatureTracksEmbeddingSpec() throws {
         func signature(_ spec: String) -> String {
             FaceKwService.makeAnalysisSignature(
                 detectorPath: "det.onnx", encoderPath: "enc.onnx",
@@ -1438,7 +1441,7 @@ struct FaceAlgorithmWiringTests {
         #expect(signature("vision-v1") != signature("vision-v2"))
         // 生产走 FaceEncoder.embeddingSpec；测试里的默认签名常量必须与之一致，
         // 否则"缓存快路径"用例会悄悄退化成重推理。
-        #expect(signature(FaceEncoder.embeddingSpec) == analysisSignatureForDefaults)
+        #expect(signature(try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature) == analysisSignatureForDefaults)
     }
 }
 

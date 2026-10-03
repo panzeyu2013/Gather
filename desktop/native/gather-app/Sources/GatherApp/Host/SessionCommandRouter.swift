@@ -1427,11 +1427,13 @@ public final class SessionCommandRouter: CommandRouter {
                 sessionId: sessionId, reportType: reportType, format: format))
 
         case "face.models_status":
-            // 2.2 决议：Vision 无需模型资产 → 恒 vision provider、无需下载。
+            let path = settingsService.get(FaceEmbeddingModelFactory.modelPathSetting, defaultValue: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = path.isEmpty ? FaceEmbeddingModelFactory.bundledModelURL
+                : URL(fileURLWithPath: (path as NSString).expandingTildeInPath).resolvingSymlinksInPath()
             return .object([
-                "provider": .string(FaceProvider.vision.rawValue),
-                "fallbackToOnnxEnabled": .bool(FaceInferenceConfig().fallbackToOnnxEnabled),
-                "modelsPresent": .bool(true),
+                "provider": .string("coreml"), "fallbackToOnnxEnabled": .bool(false),
+                "modelsPresent": .bool(url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false),
                 "downloading": .bool(false),
             ])
 
@@ -2784,40 +2786,23 @@ public final class SessionCommandRouter: CommandRouter {
     /// - resolveModelPath 无 process.resourcesPath 候选（Swift 无等价物）
     /// - autoBackendLabel 内联 mainCopy 双语文案（locale-copy.ts:107/164）
     private func buildMLStatus() throws -> MLStatusData {
-        let provider = settingsService.get("onnx_provider", defaultValue: "auto")
-        let modelsDir = modelResourcesDir()
-        let detectorPath = settingsService.get("detector_model_path", defaultValue: "models/face_detector.onnx")
-        let encoderPath = settingsService.get("encoder_model_path", defaultValue: "models/face_encoder.onnx")
-        let detectorResolved = resolveModelPath(detectorPath, modelsDir: modelsDir)
-        let encoderResolved = resolveModelPath(encoderPath, modelsDir: modelsDir)
+        let provider = settingsService.get("face_compute_units", defaultValue: "auto")
+        let custom = settingsService.get(FaceEmbeddingModelFactory.modelPathSetting, defaultValue: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let encoderURL = custom.isEmpty ? FaceEmbeddingModelFactory.bundledModelURL
+            : URL(fileURLWithPath: (custom as NSString).expandingTildeInPath).resolvingSymlinksInPath()
+        let encoderPath = encoderURL?.path ?? "SFace.mlpackage"
         return MLStatusData(
-            platform: "darwin",
-            autoBackend: "coreml",
-            autoBackendLabel: GatherLocalization.l("CoreML（失败自动回退 CPU）"),
-            provider: provider,
-            isAuto: provider == "auto",
-            availableBackends: [
-                MLBackendOption(value: "coreml", label: "CoreML"),
-                MLBackendOption(value: "cpu", label: "CPU"),
-            ],
-            modelResourcesDir: modelsDir,
-            detectorModel: MLModelPresence(
-                path: detectorPath,
-                resolvedPath: detectorResolved,
-                exists: modelUsable(detectorResolved)
-            ),
-            encoderModel: MLModelPresence(
-                path: encoderPath,
-                resolvedPath: encoderResolved,
-                exists: modelUsable(encoderResolved)
-            ),
-            modelInfo: MLModelInfo(
-                detectInputSize: clampedInt(settingsService.getNumber("detect_input_size", defaultValue: 640), fallback: 640, range: 64...8192),
-                secondaryDetectInputSize: clampedInt(settingsService.getNumber("detect_secondary_input_size", defaultValue: 128), fallback: 128, range: 32...8192),
+            platform: "darwin", autoBackend: "coreml",
+            autoBackendLabel: "Vision + CoreML SFace", provider: provider, isAuto: provider == "auto",
+            availableBackends: [MLBackendOption(value: "cpu", label: "CPU")],
+            modelResourcesDir: encoderURL?.deletingLastPathComponent().path ?? modelResourcesDir(),
+            detectorModel: MLModelPresence(path: "Apple Vision", resolvedPath: nil, exists: true),
+            encoderModel: MLModelPresence(path: custom.isEmpty ? "内置 SFace" : custom,
+                resolvedPath: encoderPath, exists: FileManager.default.fileExists(atPath: encoderPath)),
+            modelInfo: MLModelInfo(detectInputSize: 0, secondaryDetectInputSize: 0,
                 previewMaxDimension: clampedInt(settingsService.getNumber("face_preview_max_dimension", defaultValue: 2048), fallback: 2048, range: 256...8192),
-                encoderInputSize: clampedInt(settingsService.getNumber("encoder_input_size", defaultValue: 112), fallback: 112, range: 32...2048),
-                embeddingDim: clampedInt(settingsService.getNumber("embedding_dim", defaultValue: 512), fallback: 512, range: 32...4096)
-            )
+                encoderInputSize: 112, embeddingDim: custom.isEmpty ? 128 : 0)
         )
     }
 

@@ -26,9 +26,10 @@ public final class SettingsService {
             "detect_secondary_input_size": "128",
             "face_preview_max_dimension": "2048",
             "encoder_input_size": "112",
-            "embedding_dim": "512",
+            "embedding_dim": "128",
+            "face_compute_units": "auto",
 
-            "default_eps": "0.6",
+            "default_eps": "0.65",
             "default_min_samples": "2",
 
             // 原生扩展（TS 无对应键；算法对标改造，见 ADR-029）：

@@ -361,7 +361,7 @@ struct FaceKwIncrementalServiceTests {
         let phases = PhaseCollector()
         _ = try await harness.service.analyze(
             sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx",
-            onProgress: { _, _, phase in phases.append(phase) })
+            eps: 0.6, onProgress: { _, _, phase in phases.append(phase) })
         #expect(phases.last == "face.cached-clusters")
         #expect(try clusterSnapshots(harness).map(\.id) == afterIncremental.map(\.id))
 

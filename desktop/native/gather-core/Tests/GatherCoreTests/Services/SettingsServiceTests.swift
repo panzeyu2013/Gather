@@ -105,7 +105,7 @@ struct SettingsServiceTests {
     // face_incremental_clustering（ADR-029 增量聚类开关，"1" = 开）。
     @Test func defaultsMatchTS() {
         let defaults = SettingsService.getDefaults()
-        #expect(defaults.count == 46)
+        #expect(defaults.count == 47)
         #expect(defaults["face_core_quality"] == "0.35")
         #expect(defaults["face_core_retry_min_samples"] == "2")
         #expect(defaults["face_match_margin"] == "0.01")

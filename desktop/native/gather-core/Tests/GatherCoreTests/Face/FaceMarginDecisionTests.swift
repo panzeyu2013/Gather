@@ -158,9 +158,10 @@ private func runProductionMargin(
     let dir = try makeTempDir()
     defer { try? FileManager.default.removeItem(atPath: dir) }
 
-    // 库照片只承载 person_embeddings 外键，不产脸（推理返回空观测）。
+    // 独立人物库会话和可追溯观测，禁止使用无模型来源的向量。
+    let librarySession = try sessionRepo.create(name: "Library", source: "folder")
     try insertPhoto(
-        db, id: "library-photo", sessionId: session.id,
+        db, id: "library-photo", sessionId: librarySession.id,
         filepath: try writeTempFile(in: dir, name: "library.jpg"))
 
     var pathToEmbedding: [String: [Double]] = [:]
@@ -183,13 +184,18 @@ private func runProductionMargin(
             id: personId, fields: PersonUpdateFields(matchThreshold: threshold))
         personIds.append(personId)
     }
-    try personRepo.saveEmbeddings(
-        embeddings: library.map { item in
-            SaveEmbeddingInput(
-                personId: personIds[item.identityIndex], embedding: item.embedding,
-                photoId: "library-photo", sessionId: session.id, faceObservationId: nil,
-                faceBbox: [], quality: 1)
+    let model = try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "")
+    let signature = "{\"embeddingSpec\":\"\(model.signature)\"}"
+    let observationIds = try FaceRepo(connection: db).replaceObservationsByPhoto(
+        sessionId: librarySession.id, photoId: "library-photo", observations: library.map { item in
+            FaceObservationInput(photoId: "library-photo", bboxX: 0.1, bboxY: 0.1, bboxW: 0.2, bboxH: 0.3,
+                embedding: item.embedding, confidence: 1, analysisSignature: signature, quality: 1)
         })
+    try personRepo.saveEmbeddings(embeddings: library.enumerated().map { index, item in
+        SaveEmbeddingInput(personId: personIds[item.identityIndex], embedding: item.embedding,
+            photoId: "library-photo", sessionId: librarySession.id, faceObservationId: observationIds[index],
+            faceBbox: [0.1, 0.1, 0.2, 0.3], quality: 1)
+    })
 
     let faceRepo = FaceRepo(connection: db)
     let service = FaceKwService(

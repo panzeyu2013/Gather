@@ -34,7 +34,7 @@ let testLinkerSettings: [LinkerSetting] = []
 let package = Package(
     name: "gather-core",
     platforms: [
-        // 2.2 人脸推理依赖 VNGenerateFaceEmbeddingsRequest（macOS 14+）。
+        // 默认 SFace ML Program 的最低部署目标为 macOS 14。
         .macOS(.v14),
     ],
     products: [
@@ -43,11 +43,13 @@ let package = Package(
         .executable(name: "gather-core-helper", targets: ["GatherCoreHelper"]),
         // Similarity 基准（2.3 验收 2 万/5 万）：产出 JSON 行指标（对齐 scripts/*.mjs 风格）。
         .executable(name: "gather-core-benchmarks", targets: ["GatherCoreBenchmarks"]),
+        .executable(name: "gather-face-benchmarks", targets: ["GatherFaceBenchmarks"]),
     ],
     targets: [
         .target(
             name: "GatherCore",
             dependencies: ["CSQLite"],
+            resources: [.copy("Resources/FaceModels")],
             swiftSettings: swift6Settings
         ),
         // 系统 SQLite3 的 C 模块 shim（module.modulemap），Linux/macOS 双平台。
@@ -63,6 +65,7 @@ let package = Package(
             exclude: ["README.md"],
             swiftSettings: swift6Settings
         ),
+        .executableTarget(name: "GatherFaceBenchmarks", dependencies: ["GatherCore"], swiftSettings: swift6Settings),
         .testTarget(
             name: "GatherCoreTests",
             dependencies: ["GatherCore"],

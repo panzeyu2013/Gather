@@ -1,32 +1,7 @@
-// desktop/native/gather-core/Sources/GatherCore/Face/Encoder.swift
-// Phase 2 任务 2.2「人脸推理（ONNX → Vision）」：Vision 人脸编码器。
-//
-// TS 源：desktop/src/main/services/face-kw/face-encoder.ts（重写）
-//   能力契约对齐：输入人脸 → L2 归一化 embedding（供聚类/匹配）；
-//   FaceInferenceObservation { bbox, confidence, embedding }。
-//
-// 2026-09-28 算法改造（竞品对标：Immich ArcFace 5 点 → 112×112、PhotoPrism YuNet 5 关键点 → 112×112）：
-//   本机 macOS SDK 无 VNGenerateFaceEmbeddingsRequest，故嵌入仍用
-//   VNGenerateImageFeaturePrintRequest（revision 2，实测 768 维 float32）。
-//   但**不再直接按 bbox 裁剪整脸**：改为
-//     ① VNDetectFaceLandmarksRequest 取 5 点（双眼中心、鼻尖、双嘴角）；
-//     ② FaceAligner 做最小二乘相似变换（含尺度、不镜像）到 ArcFace 112×112 模板；
-//     ③ 在 112×112 对齐图上取特征（关键点缺失才回退 bbox 裁剪）。
-//   同时用 VNDetectFaceCaptureQualityRequest 取系统人脸采集质量，与尺寸/滚转合成为
-//   quality（见 FaceQuality）——供聚类核心点判定与低质量过滤。
-//
-// 缓存失效：`FaceEncoder.embeddingSpec` 必须随"对齐方式/特征模型"任何变化而变，
-// 它写入 face_observations.model_id/model_version 并参与 analysis_signature；
-// 旧 observation 因此被判定过期并重算（PhotoPrism 的 faces migrate 语义，
-// 但不需要单独命令：下一次分析即迁移）。
-//
-// 已知偏差（文档化）：默认 FeaturePrint 是通用图像特征，与 ArcFace/SFace 特征空间
-// 不兼容；维度 768 与 TS 契约 512 不同属预期（Matcher/Clusterer 按输入维度工作，
-// 且 embedding_dim 落库可检测换模型）。
-//
-// 模型层已可插拔（见 EmbeddingModel.swift）：设置 face_embedding_model_path 指向
-// ArcFace/SFace 的 .mlmodel(c) 即切换为专用模型，无需改编码器；规格指纹随模型与
-// 权重变化，旧观测自动判过期重算。
+// Swift 人脸编码：Vision 检测、五点几何对齐与采集质量 → SFace CoreML 身份特征。
+// 默认模型随应用离线分发；自定义 CoreML 模型必须满足 112×112 图像输入契约。
+// 运行时规格包含权重、预处理和版本；换模型必须重编码，不能混用向量空间。
+// VisionFeaturePrintEmbedder 仅用于旧方案基准对照。
 
 #if canImport(Vision)
 import Foundation
@@ -38,7 +13,7 @@ public struct FaceEncodeResult: Equatable, Sendable {
     /// 归一化 x, y, width, height（左上原点）。
     public let bbox: [Double]
     public let confidence: Double
-    /// L2 归一化 embedding（Vision feature print，768 维；维度以实际为准）。
+    /// L2 归一化身份 embedding（内置 SFace 为 128 维；自定义模型以实际为准）。
     public let embedding: [Double]
     /// 综合质量 [0,1]（FaceQuality.composite）。
     public let quality: Double
@@ -88,7 +63,7 @@ public enum FaceEncoderError: Error, Equatable {
 
 /// Vision 人脸编码器（重写自 face-encoder.ts 的 ArcFace ONNX 编码）。
 public enum FaceEncoder {
-    /// 嵌入规格指纹（写入 model_id/model_version 并参与 analysis_signature）。
+    /// 历史 FeaturePrint 标识，供旧数据与显式基准读取；生产规格来自 embedder.spec。
     public static let embeddingSpec = "vision-featureprint-rev2-aligned112-v1"
     public static let modelId = "vision-featureprint"
     public static let modelVersion = "rev2-aligned112-v1"
@@ -118,7 +93,7 @@ public enum FaceEncoder {
         confidenceThreshold: Double = 0.5,
         maxDetections: Int = 100,
         embeddingDim: Int = 512,
-        embedder: FaceEmbeddingProvider = VisionFeaturePrintEmbedder()
+        embedder: FaceEmbeddingProvider? = nil
     ) throws -> [FaceEncodeResult] {
         try encodeFacesDetailed(
             in: imageData, confidenceThreshold: confidenceThreshold,
@@ -132,7 +107,7 @@ public enum FaceEncoder {
         confidenceThreshold: Double = 0.5,
         maxDetections: Int = 100,
         embeddingDim: Int = 512,
-        embedder: FaceEmbeddingProvider = VisionFeaturePrintEmbedder()
+        embedder: FaceEmbeddingProvider? = nil
     ) throws -> FaceEncodeBatch {
         guard let source = CGImageSourceCreateWithData(imageData as CFData, nil),
             let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -151,7 +126,7 @@ public enum FaceEncoder {
         confidenceThreshold: Double = 0.5,
         maxDetections: Int = 100,
         embeddingDim: Int = 512,
-        embedder: FaceEmbeddingProvider = VisionFeaturePrintEmbedder()
+        embedder: FaceEmbeddingProvider? = nil
     ) throws -> [FaceEncodeResult] {
         try encodeFacesDetailed(
             in: image, confidenceThreshold: confidenceThreshold, maxDetections: maxDetections,
@@ -165,8 +140,9 @@ public enum FaceEncoder {
         confidenceThreshold: Double = 0.5,
         maxDetections: Int = 100,
         embeddingDim: Int = 512,
-        embedder: FaceEmbeddingProvider = VisionFeaturePrintEmbedder()
+        embedder: FaceEmbeddingProvider? = nil
     ) throws -> FaceEncodeBatch {
+        let embedder = try embedder ?? FaceEmbeddingModelFactory.make(modelPath: "", modelVersion: "")
         let width = CGFloat(image.width)
         let height = CGFloat(image.height)
 

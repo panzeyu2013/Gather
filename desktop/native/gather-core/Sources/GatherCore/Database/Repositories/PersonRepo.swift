@@ -375,64 +375,78 @@ public final class PersonRepo {
     /// 按会话对账角色绑定与人物库投影；同时把按名归属的簇补上显式链接
     /// （rename/delete 的归属判据）。
     public func reconcileSession(sessionId: String) throws {
-        let bindingRows = try connection.prepare(
-            "SELECT rb.role_name, fcm.photo_id, fcm.bbox, fcm.confidence FROM role_bindings rb JOIN face_cluster_members fcm ON fcm.cluster_id = rb.cluster_id WHERE rb.session_id = ?"
-        ).query([.text(sessionId)])
-
-        var desiredByRole: [String: [String: (bbox: [Double], confidence: Double)]] = [:]
-        for row in bindingRows {
-            let roleName = row[0].textValue ?? ""
-            let photoId = row[1].textValue ?? ""
-            let bbox = decodeBbox(row[2].textValue ?? "")
-            let confidence = row[3].doubleValue ?? 0
-            if desiredByRole[roleName] == nil {
-                desiredByRole[roleName] = [:]
-            }
-            desiredByRole[roleName]?[photoId] = (bbox, confidence)
-        }
-
-        var affected: Set<String> = []
-        for roleName in desiredByRole.keys {
-            let personId = try upsertByName(name: roleName)
-            affected.insert(personId)
-            try linkClusters(named: roleName, sessionId: sessionId, personId: personId)
-        }
-        let linkedRows = try connection.prepare("SELECT DISTINCT person_id FROM person_photos WHERE session_id = ?")
-            .query([.text(sessionId)])
-        for row in linkedRows {
-            if let personId = row[0].textValue {
-                affected.insert(personId)
-            }
-        }
-        if affected.isEmpty { return }
-
-        let now = nowISOString()
-        let insertStmt = try connection.prepare(
-            "INSERT OR IGNORE INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-        )
         try connection.transaction {
-            for personId in affected {
-                let roleName = try getPersonName(personId) ?? ""
-                guard let desired = desiredByRole[roleName], !desired.isEmpty else {
-                    _ = try connection.prepare("DELETE FROM person_photos WHERE person_id = ? AND session_id = ?")
-                        .run([.text(personId), .text(sessionId)])
-                    continue
+            let bindingRows = try connection.prepare(
+                "SELECT rb.role_name, fcm.photo_id, fcm.bbox, fcm.confidence, rb.cluster_id, fc.matched_person_id FROM role_bindings rb JOIN face_cluster_members fcm ON fcm.cluster_id = rb.cluster_id JOIN face_clusters fc ON fc.id = rb.cluster_id WHERE rb.session_id = ?"
+            ).query([.text(sessionId)])
+
+
+            var desiredByPerson: [String: [String: (bbox: [Double], confidence: Double)]] = [:]
+            for row in bindingRows {
+                let roleName = row[0].textValue ?? ""
+                let personId = try row[5].textValue ?? upsertByName(name: roleName)
+                try linkClusters([row[4].intValue ?? 0], personId: personId)
+                let photoId = row[1].textValue ?? ""
+                let bbox = decodeBbox(row[2].textValue ?? "")
+                let confidence = row[3].doubleValue ?? 0
+                if desiredByPerson[personId] == nil {
+                    desiredByPerson[personId] = [:]
                 }
-                let existingRows = try connection.prepare(
-                    "SELECT photo_id FROM person_photos WHERE person_id = ? AND session_id = ?"
-                ).query([.text(personId), .text(sessionId)])
-                for existing in existingRows {
-                    if let existingPhotoId = existing[0].textValue, desired[existingPhotoId] == nil {
-                        _ = try connection.prepare(
-                            "DELETE FROM person_photos WHERE person_id = ? AND session_id = ? AND photo_id = ?"
-                        ).run([.text(personId), .text(sessionId), .text(existingPhotoId)])
+                desiredByPerson[personId]?[photoId] = (bbox, confidence)
+            }
+
+            var affected: Set<String> = []
+            affected.formUnion(desiredByPerson.keys)
+            try connection.transaction {
+                _ = try connection.prepare("DELETE FROM person_embeddings WHERE session_id = ?").run([.text(sessionId)])
+                _ = try connection.prepare("""
+                    INSERT OR REPLACE INTO person_embeddings
+                    (person_id, embedding, photo_id, session_id, face_observation_id, face_bbox, quality, created_at)
+                    SELECT fc.matched_person_id, fo.embedding, fo.photo_id, fo.session_id, fo.id,
+                           fcm.bbox, fo.quality, ?
+                    FROM face_cluster_members fcm JOIN face_clusters fc ON fc.id = fcm.cluster_id
+                    JOIN role_bindings rb ON rb.cluster_id = fc.id
+                    JOIN face_observations fo ON fo.id = fcm.observation_id
+                    WHERE fc.session_id = ? AND fc.matched_person_id IS NOT NULL
+                    """).run([.text(nowISOString()), .text(sessionId)])
+            }
+
+            let linkedRows = try connection.prepare("SELECT DISTINCT person_id FROM person_photos WHERE session_id = ?")
+                .query([.text(sessionId)])
+            for row in linkedRows {
+                if let personId = row[0].textValue {
+                    affected.insert(personId)
+                }
+            }
+            if affected.isEmpty { return }
+
+            let now = nowISOString()
+            let insertStmt = try connection.prepare(
+                "INSERT OR IGNORE INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            try connection.transaction {
+                for personId in affected {
+                    guard let desired = desiredByPerson[personId], !desired.isEmpty else {
+                        _ = try connection.prepare("DELETE FROM person_photos WHERE person_id = ? AND session_id = ?")
+                            .run([.text(personId), .text(sessionId)])
+                        continue
                     }
-                }
-                for (photoId, info) in desired {
-                    _ = try insertStmt.run([
-                        .text(personId), .text(photoId), .text(sessionId),
-                        .text(jsonString(info.bbox)), .real(info.confidence), .text(now),
-                    ])
+                    let existingRows = try connection.prepare(
+                        "SELECT photo_id FROM person_photos WHERE person_id = ? AND session_id = ?"
+                    ).query([.text(personId), .text(sessionId)])
+                    for existing in existingRows {
+                        if let existingPhotoId = existing[0].textValue, desired[existingPhotoId] == nil {
+                            _ = try connection.prepare(
+                                "DELETE FROM person_photos WHERE person_id = ? AND session_id = ? AND photo_id = ?"
+                            ).run([.text(personId), .text(sessionId), .text(existingPhotoId)])
+                        }
+                    }
+                    for (photoId, info) in desired {
+                        _ = try insertStmt.run([
+                            .text(personId), .text(photoId), .text(sessionId),
+                            .text(jsonString(info.bbox)), .real(info.confidence), .text(now),
+                        ])
+                    }
                 }
             }
         }
@@ -492,6 +506,8 @@ public final class PersonRepo {
             let deprecated = [sourceName] + (try bindingKeywords(clusterIds: clusterIds))
             let cleanup = try cleanupPlan(sessions: try sessions(of: clusterIds), keywords: deprecated)
             try connection.transaction {
+                _ = try connection.prepare("UPDATE face_identity_feedback SET person_id = ? WHERE person_id = ?")
+                    .run([.text(targetId), .text(sourceId)])
                 _ = try connection.prepare("UPDATE person_embeddings SET person_id = ? WHERE person_id = ?")
                     .run([.text(targetId), .text(sourceId)])
                 _ = try connection.prepare("UPDATE person_photos SET person_id = ? WHERE person_id = ?")
@@ -724,7 +740,21 @@ public final class PersonRepo {
         }
     }
 
-    public func getAllEmbeddings() throws -> [PersonEmbeddingRef] {
+    public func getAllEmbeddings(modelSpace: String? = nil) throws -> [PersonEmbeddingRef] {
+        if modelSpace?.isEmpty == true { return [] }
+        if let modelSpace {
+            // Observation provenance is authoritative. Orphaned legacy vectors cannot enter
+            // a new model's index merely because their dimensions happen to match.
+            let rows = try connection.prepare("""
+                SELECT pe.person_id, pe.embedding, pe.face_observation_id, fo.analysis_signature
+                FROM person_embeddings pe JOIN face_observations fo ON fo.id = pe.face_observation_id
+                WHERE pe.photo_id = fo.photo_id AND pe.session_id = fo.session_id
+                AND (fo.quality = 0 OR fo.quality >= 0.35)
+                """).query()
+            return rows.filter { FaceIdentityPolicy.modelSpace(analysisSignature: $0[3].textValue ?? "") == modelSpace }
+                .map { PersonEmbeddingRef(personId: $0[0].textValue ?? "",
+                                         embedding: $0[1].blobValue ?? Data(), faceObservationId: $0[2].intValue) }
+        }
         let rows = try connection.prepare(
             "SELECT person_id, embedding, face_observation_id FROM person_embeddings"
         ).query()
@@ -843,5 +873,4 @@ private func jsonString(_ bbox: [Double]) -> String {
 private func float32Data(_ floats: [Float]) -> Data {
     floats.withUnsafeBytes { Data($0) }
 }
-
 

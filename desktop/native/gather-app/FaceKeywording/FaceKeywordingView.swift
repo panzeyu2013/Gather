@@ -6,7 +6,7 @@
 //   切换步骤仅渲染当前步骤内容。
 // - Step 1 分析（StepAnalyze.tsx）：模型缺失引导条（warning 边框 +「前往设置」
 //   按钮，onOpenSettings 为 nil 时禁用）+ 匹配强度预设三按钮（strict 0.72/3、
-//   balanced 0.6/3、loose 0.5/2）+ 高级参数（eps：SliderInputView 渐变滑块 +
+//   balanced 0.65/3、loose 0.5/2）+ 高级参数（eps：SliderInputView 渐变滑块 +
 //   数字输入 0.3–0.95 step 0.01；minSamples：SliderInputIntView 2–20）+
 //   错误块（error 色 12% 底）+ 自定义 8pt 圆角进度条（相位 + (n/N) + 0.2s 过渡，
 //   min(100, ratio) 宽度）+ 动作区（开始分析 / 仅重新聚类 / 取消红字）。
@@ -64,10 +64,10 @@ public final class FaceKeywordingViewModel {
         public var id: String { name }
     }
 
-    /// TS StepAnalyze applyPreset：strict 0.72/3、balanced 0.6/3、loose 0.5/2。
+    /// TS StepAnalyze applyPreset：strict 0.72/3、balanced 0.65/3、loose 0.5/2。
     public static let presets: [Preset] = [
         Preset(name: "strict", title: GatherLocalization.l("严格"), eps: 0.72, minSamples: 3),
-        Preset(name: "balanced", title: GatherLocalization.l("均衡"), eps: 0.6, minSamples: 3),
+        Preset(name: "balanced", title: GatherLocalization.l("均衡"), eps: 0.65, minSamples: 3),
         Preset(name: "loose", title: GatherLocalization.l("宽松"), eps: 0.5, minSamples: 2),
     ]
     /// TS StepReview CLUSTER_PAGE_SIZE。
@@ -103,7 +103,7 @@ public final class FaceKeywordingViewModel {
     public var step: Step = .analyze
     public var roleName = ""
     public var keywords = ""
-    public var eps = 0.6
+    public var eps = 0.65
     public var minSamples = 3
     /// TS StepReview mergeTargetId：合并目标簇下拉（自由文本输入改为下拉选择）。
     public var mergeTargetId: Int?
@@ -180,7 +180,7 @@ public final class FaceKeywordingViewModel {
 
     public var activePreset: String? {
         if eps == 0.72 && minSamples == 3 { return "strict" }
-        if eps == 0.6 && minSamples == 3 { return "balanced" }
+        if eps == 0.65 && minSamples == 3 { return "balanced" }
         if eps == 0.5 && minSamples == 2 { return "loose" }
         return nil
     }
@@ -665,15 +665,14 @@ public final class FaceKeywordingViewModel {
     }
 
     private var guidanceSuffix: String {
-        modelsMissing ? "\n" + GatherLocalization.l("人脸推理当前使用系统内置引擎") : ""
+        modelsMissing ? "\n" + GatherLocalization.l("未找到可用的人脸身份模型") : ""
     }
 
     private func refreshModelsStatus() {
         do {
             let data = try client.execute("face.models_status").decoded(as: FaceModelsStatusData.self)
-            // 2.2 决议：Vision provider 恒可用（无 ONNX 模型资产）→
-            // modelsPresent 恒 true → modelsMissing 恒 false。横幅/引导分支
-            // 为防御性保留（若未来引入 cpu provider 回退则自然生效）。
+            // Swift 使用 Vision 检测和随应用分发的 CoreML 身份模型。
+            // 缺少打包资产或自定义路径失效时显示真实缺失状态。
             modelsMissing = !data.modelsPresent
         } catch {
             modelsMissing = false
@@ -1357,7 +1356,7 @@ public struct FaceKeywordingView: View {
         if viewModel.modelsMissing {
             HStack(spacing: 8) {
                 NativeBanner(
-                    text: GatherLocalization.l("人脸推理当前使用系统内置引擎，建议前往设置确认模型状态。"),
+                    text: GatherLocalization.l("人脸模型不可用，请前往设置恢复内置模型或重新选择。"),
                     systemImage: "exclamationmark.triangle.fill",
                     color: GatherTheme.warning
                 )

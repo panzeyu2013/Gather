@@ -172,7 +172,7 @@ struct QualityAnalyzeTests {
         #expect(result.confidence == 0.55)
         #expect(result.warnings == ["motion_blur"])
         #expect(result.modelId == "technical-quality")
-        #expect(result.modelVersion == "1")
+        #expect(result.modelVersion == "2")
         #expect(result.inputFingerprint == "\(stat.size):\(stat.mtimeMs.rounded())")
         #expect(result.relativeRank == nil)
 
@@ -305,8 +305,8 @@ struct QualityAnalyzeTests {
         #expect(row?[0].textValue?.hasPrefix("failed:") == true)
     }
 
-    @Test("computes subject/eye metrics from the largest face observation")
-    func faceRegionMetrics() async throws {
+    @Test("computes subject/eye metrics from pixel and normalized face coordinates", arguments: [false, true])
+    func faceRegionMetrics(normalized: Bool) async throws {
         let harness = try makeHarness(imageProvider: { _, _ in (checkerboardPreview8x8(), 8, 8) })
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -316,8 +316,8 @@ struct QualityAnalyzeTests {
         // bbox 覆盖分析图 (0,0,50,20) → 预览 8x8 的 (0,0,8,4) = 前 4 行棋盘格。
         _ = try harness.db.prepare("""
             INSERT INTO face_observations (photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h, embedding, confidence, analysis_signature, created_at)
-            VALUES ('p1', ?, 0, 0, 50, 20, X'00', 0.9, '{"previewMaxDimension":50}', '2026-01-01T00:00:00.000Z')
-          """).run([.text(harness.sessionId)])
+            VALUES ('p1', ?, 0, 0, ?, ?, X'00', 0.9, '{"previewMaxDimension":50}', '2026-01-01T00:00:00.000Z')
+          """).run([.text(harness.sessionId), .real(normalized ? 1 : 50), .real(normalized ? 0.5 : 20)])
 
         let results = try await harness.service.analyze(sessionId: harness.sessionId)
 
@@ -336,6 +336,28 @@ struct QualityAnalyzeTests {
         // 分明显高于平图基线（0.25）。
         #expect(result.qualityScore == 0.591)
     }
+
+    @Test("face analysis invalidates quality cached before faces were available")
+    func newFaceInvalidatesQualityCache() async throws {
+        let probe = ImageCallBox()
+        let harness = try makeHarness(imageProvider: { _, _ in
+            probe.increment()
+            return (checkerboardPreview8x8(), 8, 8)
+        })
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = try writeTempFile(in: dir, name: "photo.jpg")
+        try seedPhotoWithAssetFile(harness.db, photoId: "p1", sessionId: harness.sessionId, filepath: path, assetFileId: "af-1")
+        let first = try await harness.service.analyze(sessionId: harness.sessionId)
+        #expect(first.first?.subjectSharpness == nil)
+        _ = try FaceRepo(connection: harness.db).replaceObservationsByPhoto(sessionId: harness.sessionId,
+            photoId: "p1", observations: [.init(photoId: "p1", bboxX: 0, bboxY: 0, bboxW: 1, bboxH: 0.5,
+                embedding: [1, 0], confidence: 0.9)])
+        let second = try await harness.service.analyze(sessionId: harness.sessionId)
+        #expect(second.first?.subjectSharpness != nil)
+        #expect(probe.value == 2)
+    }
+
 
     @Test("emits progress frames with the photoIds checkpoint")
     func progressFrames() async throws {

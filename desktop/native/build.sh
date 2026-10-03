@@ -39,13 +39,19 @@ cp "$APP_PACKAGE/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 # SPM 资源 bundle（本地化表 .lproj 等）随可执行文件进入 app bundle，
 # Bundle.module 运行时按 Contents/Resources/gather-app_GatherApp.bundle 解析。
 RESOURCE_BUNDLE="$BIN_DIR/gather-app_GatherApp.bundle"
+CORE_RESOURCE_BUNDLE="$BIN_DIR/gather-core_GatherCore.bundle"
+if [[ ! -d "$CORE_RESOURCE_BUNDLE/FaceModels/SFace.mlpackage" && ! -d "$CORE_RESOURCE_BUNDLE/Contents/Resources/FaceModels/SFace.mlpackage" ]]; then
+  echo "required bundled SFace identity model is missing" >&2
+  exit 1
+fi
+cp -R "$CORE_RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
 if [[ -n "$RESOURCE_BUNDLE" ]]; then
   cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
   # N08：系统菜单文案（关于/隐藏/服务/窗口/帮助）由 macOS 按**主 bundle** 的
   # 本地化集合渲染。.lproj 只躺在 SPM 资源 bundle 里时，主 bundle 看起来是
   # 英文单语，于是中文界面配英文系统菜单。把本地化目录同时放进主 bundle，
   # 并在 Info.plist 声明 CFBundleLocalizations，两边才一致。
-  for lproj in "$RESOURCE_BUNDLE"/*.lproj; do
+  for lproj in "$RESOURCE_BUNDLE"/*.lproj "$RESOURCE_BUNDLE"/Contents/Resources/*.lproj; do
     [[ -d "$lproj" ]] && cp -R "$lproj" "$APP_BUNDLE/Contents/Resources/"
   done
 else

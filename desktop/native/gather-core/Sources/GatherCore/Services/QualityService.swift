@@ -114,7 +114,7 @@ private func regionPixels(
 public final class QualityService: @unchecked Sendable {
     /// TS: MODEL_ID / MODEL_VERSION。
     public static let modelId = "technical-quality"
-    public static let modelVersion = "1"
+    public static let modelVersion = "2"
     /// TS: ANALYZE_CONCURRENCY —— 解码/stat/像素计算的并发窗口。
     public static let analyzeConcurrency = 6
     /// TS: IN_CHUNK_SIZE —— IN 列表分块，避免 SQLite 变量上限。
@@ -226,7 +226,10 @@ public final class QualityService: @unchecked Sendable {
             var insert: QualityInsert?
             do {
                 let source = try self.statProvider(photo.filepath)
-                let inputFingerprint = "\(source.size):\(source.mtimeMs.rounded())"
+                var inputFingerprint = "\(source.size):\(source.mtimeMs.rounded())"
+                if let face = facesByPhoto[photo.id] {
+                    inputFingerprint += "|face:\(face.x),\(face.y),\(face.w),\(face.h):\(face.analysisSignature)"
+                }
                 var cached: QualityResult?
                 for entry in cachedByPhoto[photo.id] ?? [] where entry.fingerprint == inputFingerprint {
                     cached = entry.result
@@ -254,11 +257,16 @@ public final class QualityService: @unchecked Sendable {
                         // TS 保持浮点（Math.max(1, width * scale)），不做整数截断。
                         let analysisWidth = max(1.0, Double(photo.width) * analysisScale)
                         let analysisHeight = max(1.0, Double(photo.height) * analysisScale)
+                        // Swift 编码器输出归一化坐标；保留旧像素坐标的读取兼容。
+                        let normalized = face.x >= 0 && face.y >= 0 && face.w > 0 && face.h > 0
+                            && face.x <= 1 && face.y <= 1 && face.w <= 1 && face.h <= 1
+                        let boxWidth = normalized ? 1.0 : analysisWidth
+                        let boxHeight = normalized ? 1.0 : analysisHeight
                         let faceBox = (
-                            x: face.x / analysisWidth * Double(preview.width),
-                            y: face.y / analysisHeight * Double(preview.height),
-                            width: face.w / analysisWidth * Double(preview.width),
-                            height: face.h / analysisHeight * Double(preview.height)
+                            x: face.x / boxWidth * Double(preview.width),
+                            y: face.y / boxHeight * Double(preview.height),
+                            width: face.w / boxWidth * Double(preview.width),
+                            height: face.h / boxHeight * Double(preview.height)
                         )
                         if let subject = regionPixels(
                             data: preview.pixels, width: preview.width, height: preview.height, box: faceBox
