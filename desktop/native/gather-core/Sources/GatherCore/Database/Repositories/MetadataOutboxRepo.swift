@@ -852,6 +852,18 @@ public final class MetadataOutboxRepo: Sendable {
         return result
     }
 
+    /// 条件删除（D3 深审）：只有 revision 未变时才删除整行及其会话关联。
+    /// 返回 false = 期间产生了新 revision（新输入必须保留，不能清掉）。
+    @discardableResult
+    public func deleteIfRevision(_ xmpPath: String, revision: Int64) throws -> Bool {
+        let changes = try connection.prepare(
+            "DELETE FROM metadata_outbox WHERE xmp_path = ? AND revision = ?"
+        ).run([.text(xmpPath), .int(revision)])
+        guard changes > 0 else { return false }
+        try connection.prepare("DELETE FROM metadata_outbox_sessions WHERE xmp_path = ?").run([.text(xmpPath)])
+        return true
+    }
+
     public func delete(_ xmpPath: String) throws {
         let path = MetadataOutboxPath.normalize(xmpPath)
         try connection.transaction {

@@ -451,11 +451,17 @@ public protocol FaceWritebackProvider: Sendable {
 
 /// TS: validateFaceClusteringParameters。minPts 为 Double 对齐 TS number：
 /// Number.isInteger 校验（拒绝 NaN/∞/小数），通过后调用方再安全转 Int。
+/// 最小簇大小的业务上界（D8）：超过它没有实际意义，且能保证 Int 转换安全。
+let maxMinClusterSize = 1_000_000
+
 public func validateFaceClusteringParameters(eps: Double, minPts: Double) throws {
     if eps.isNaN || eps.isInfinite || eps < 0 || eps > 1 {
         throw FaceKwServiceError.epsInvalid
     }
-    if minPts.isNaN || minPts.isInfinite || minPts.rounded() != minPts || minPts < 1 {
+    // D8（深审）：除有限/整数外还要有**业务上界** —— 1e30 是有限且整数，
+    // 但后续 Int(minPts) 会 trap，且这种规模没有业务含义。
+    if minPts.isNaN || minPts.isInfinite || minPts.rounded() != minPts || minPts < 1
+        || minPts > Double(maxMinClusterSize) {
         throw FaceKwServiceError.minClusterInvalid
     }
 }

@@ -13,13 +13,25 @@ SWIFT_FLAGS := -F "$(FRAMEWORK_PATH)" -framework CaptureOnePlugins -framework Co
 
 all: $(PRODUCT)
 
-$(PRODUCT):
-	mkdir -p "$@/Contents/MacOS"
-	cp GatherLink/Info.plist "$@/Contents/"
+# 问题 11（第三轮审查）：旧规则没有前置依赖 —— 产物目录一存在就不再重编译，
+# 改源码/改 plist/切架构都复用旧插件。这里以二进制与架构戳为真实目标。
+$(PRODUCT): $(PRODUCT)/Contents/MacOS/GatherLink $(PRODUCT)/Contents/Info.plist $(PRODUCT)/.arch-$(TARGET_ARCH)
+
+$(PRODUCT)/.arch-$(TARGET_ARCH):
+	@mkdir -p "$(PRODUCT)/Contents/MacOS"
+	@rm -f "$(PRODUCT)"/.arch-*
+	@touch "$@"
+
+$(PRODUCT)/Contents/MacOS/GatherLink: GatherLink/GatherLink.swift $(PRODUCT)/.arch-$(TARGET_ARCH)
+	@mkdir -p "$(PRODUCT)/Contents/MacOS"
 	swiftc $(SWIFT_FLAGS) \
 		-target $(TARGET) \
-		-o "$@/Contents/MacOS/GatherLink" \
+		-o "$@" \
 		GatherLink/GatherLink.swift
+
+$(PRODUCT)/Contents/Info.plist: GatherLink/Info.plist
+	@mkdir -p "$(PRODUCT)/Contents"
+	cp "$<" "$@"
 
 install: $(PRODUCT)
 	@C1_PLUGINS_DIR="$$HOME/Library/Application Support/Capture One/Plug-ins"; \

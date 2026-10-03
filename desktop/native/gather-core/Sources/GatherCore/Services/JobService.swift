@@ -442,14 +442,20 @@ public final class JobService: @unchecked Sendable {
     // MARK: - 任务 API
 
     @discardableResult
+    /// 最近一次同 dedupeKey 终态任务的 checkpoint（只读）。
+    /// 导出预览用它复用与执行一致的续跑基线（见 AnalysisJobRepo.latestTerminalCheckpoint）。
+    public func latestTerminalCheckpoint(dedupeKey: String) throws -> [String: JSONValue]? {
+        try repo.latestTerminalCheckpoint(dedupeKey: dedupeKey)
+    }
+
     public func create(_ params: JobCreateParams) throws -> AnalysisJobData {
         let job = try repo.create(params)
         pump()
         return job
     }
 
-    public func list(status: AnalysisJobStatus? = nil) throws -> [AnalysisJobData] {
-        try repo.list(status: status)
+    public func list(status: AnalysisJobStatus? = nil, includeCheckpoint: Bool = true) throws -> [AnalysisJobData] {
+        try repo.list(status: status, includeCheckpoint: includeCheckpoint)
     }
 
     /// 取消：返回是否受理。queued 直接终态并补发终态帧；running 转 cancelling

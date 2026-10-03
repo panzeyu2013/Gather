@@ -31,6 +31,33 @@ private final class AppLanguageStorage: @unchecked Sendable {
     }
 }
 
+/// `.lproj` Bundle 缓存。
+///
+/// 旧实现在**每次查找**时都做一次 `Bundle.module.url(forResource:withExtension:)`
+/// （文件系统查询）并新建一个 `Bundle` 实例。网格/列表每帧调用数百次，
+/// 是滚动掉帧的主要来源之一。语言只有两种且不常变，缓存即可消除。
+/// Swift 6：可变全局状态仍需隔离，沿用锁保护盒子的既有做法。
+private final class LocalizationBundleCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String: Bundle] = [:]
+    /// 缓存"查不到"，避免每次都重新走一遍失败的资源查找。
+    private var missing: Set<String> = []
+
+    func bundle(for language: String) -> Bundle? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = storage[language] { return cached }
+        if missing.contains(language) { return nil }
+        guard let url = Bundle.module.url(forResource: language, withExtension: "lproj"),
+              let bundle = Bundle(url: url) else {
+            missing.insert(language)
+            return nil
+        }
+        storage[language] = bundle
+        return bundle
+    }
+}
+
 public enum GatherLocalization {
     // MARK: - 错误码 → 中文文案（error.* 键，156 项）
     public static let errorMessages: [String: String] = [
@@ -40,6 +67,9 @@ public enum GatherLocalization {
     "C1_SCRIPT_FAILED": "与 Capture One 通信失败，请重试。",
     "C1_SCRIPT_TIMEOUT": "与 Capture One 通信超时，请重试。",
     "C1_NO_SELECTED_PHOTOS": "请先在 Capture One 中选择至少一张照片",
+    // V2 审计：GatherAppDelegate 在启动早期触发 C1 导入时会发这个码，
+    // 此前不在表里 → 用户看到「发生未知错误」，而注释承诺的是「正在初始化」。
+    "GATHER_BOOTSTRAPPING": "应用正在初始化，请稍候再试。",
     "SCAN_INVALID_DIR": "所选路径不是有效目录",
     "SCAN_READ_FAILED": "读取目录失败",
     "XMP_CONFLICT_RESOLUTION_REQUIRED": "冲突项目必须选择保留当前 XMP 或恢复写入前状态",
@@ -93,6 +123,10 @@ public enum GatherLocalization {
     "EXPORT_PATH_INVALID": "照片的导出路径无效",
     "EXPORT_SCOPE_UNSUPPORTED": "暂不支持该导出范围，请导出当前工作区的全部照片。",
     "EXPORT_SCOPE_UNKNOWN": "未知导出范围",
+    /// D02：全失败曾经被记成「任务成功 + 已导出」，现在按失败上报（与写回同一约定）。
+    "EXPORT_ALL_FAILED": "本次导出没有产生任何文件，请在导出结果中查看失败原因。",
+    "EXPORT_SOURCE_MISSING": "源文件不存在",
+    "EXPORT_SOURCE_UNREADABLE": "源文件不可读（权限或所在卷离线）",
     "EXPORT_RAW_CONVERT_UNSUPPORTED": "暂不支持将此文件类型转换为全分辨率文件，请选择“保持原格式”。",
     "EXPORT_UNKNOWN_ERROR": "未知错误",
     "NAV_BURST_GAP_INVALID": "连拍间隔必须在 0.1 到 300 秒之间",
@@ -261,8 +295,7 @@ public enum GatherLocalization {
     /// en 表提供英文翻译（en 界面命中返回英文，未翻译的 key 仍回退中文）。
     public static func l(_ key: String) -> String {
         let lang = appLanguage == "zh-CN" ? "zh-hans" : "en"
-        guard let url = Bundle.module.url(forResource: lang, withExtension: "lproj"),
-              let bundle = Bundle(url: url) else { return key }
+        guard let bundle = bundleCache.bundle(for: lang) else { return key }
         let value = bundle.localizedString(forKey: key, value: nil, table: "Localizable")
         return value == key ? key : value
     }
@@ -373,6 +406,8 @@ public enum GatherLocalization {
     /// 当前界面语言（"zh-CN"/"en"）。设置页 settings.set_language 后经
     /// languageChanged 通知刷新（DashboardView 订阅）；启动时未收到通知 →
     /// 回退系统语言检测（对齐 effectiveAppLocale 未设置 ui_language 分支）。
+    private static let bundleCache = LocalizationBundleCache()
+
     private static let appLanguageStorage = AppLanguageStorage(Self.detectSystemLanguage())
 
     public static var appLanguage: String {

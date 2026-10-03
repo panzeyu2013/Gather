@@ -1497,18 +1497,45 @@ public struct MigrationRunner {
         }
     }
 
-    private func restoreBackup(_ connection: DBConnection, dbPath: String, backupPath: String) throws {
-        // 审计 P1：先复制到临时文件再原子 rename——此前"先删活库再复制"在
-        // copyItem 失败（磁盘满等）时活动库已删除、连接永久失效，只剩备份。
+    /// internal：第三轮验收测试直接驱动「恢复失败保持原库 / 成功替换」两条路径。
+    func restoreBackup(_ connection: DBConnection, dbPath: String, backupPath: String) throws {
+        // 问题 3（第三轮审查）：旧实现虽然先复制到临时文件，但替换时
+        // 「removeItem(dbPath) 后再 moveItem」之间有窗口 —— 此间进程退出/移动失败
+        // 会让活动数据库路径为空（只能手工从备份恢复）。
+        // 另外 -wal/-shm 原先在替换**之前**删除：替换若失败，老库会丢掉 WAL。
+        // 这里改为：完整复制到临时文件 → 同卷原子替换 → 成功后才清理旧 WAL。
         connection.close()
         let tmpPath = dbPath + ".restore-tmp"
-        _ = try? FileManager.default.removeItem(atPath: tmpPath)
-        try FileManager.default.copyItem(atPath: backupPath, toPath: tmpPath)
-        for suffix in ["-wal", "-shm"] {
-            try? FileManager.default.removeItem(atPath: dbPath + suffix)
+        // 验收（问题 3）：**任何**失败路径都必须把原库重新打开——此前 copyItem
+        // 抛错（备份缺失/磁盘满）落在 try/catch 之外，连接会一直处于关闭状态。
+        do {
+            _ = try? FileManager.default.removeItem(atPath: tmpPath)
+            try FileManager.default.copyItem(atPath: backupPath, toPath: tmpPath)
+            // 基本完整性校验：0 字节的临时库不应替换活库。
+            let attributes = try FileManager.default.attributesOfItem(atPath: tmpPath)
+            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            guard size > 0 else {
+                try? FileManager.default.removeItem(atPath: tmpPath)
+                throw DBError.message("备份恢复失败：临时数据库为空（已保留原库）")
+            }
+            let dbURL = URL(fileURLWithPath: dbPath)
+            let tmpURL = URL(fileURLWithPath: tmpPath)
+            if FileManager.default.fileExists(atPath: dbPath) {
+                // 同卷原子替换：失败时原库保持不变（不会出现「路径为空」的窗口）。
+                _ = try FileManager.default.replaceItemAt(dbURL, withItemAt: tmpURL)
+            } else {
+                try FileManager.default.moveItem(atPath: tmpPath, toPath: dbPath)
+            }
+            // 只有替换成功后才清理旧库的 WAL/SHM（它们是旧库的，此时已无意义）。
+            for suffix in ["-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: dbPath + suffix)
+            }
+        } catch {
+            try? FileManager.default.removeItem(atPath: tmpPath)
+            // 恢复失败：原库仍在（replaceItemAt 语义），重开连接并保留诊断。
+            try? connection.reopen()
+            throw error
         }
-        _ = try? FileManager.default.removeItem(atPath: dbPath)
-        try FileManager.default.moveItem(atPath: tmpPath, toPath: dbPath)
         try connection.reopen()
     }
 

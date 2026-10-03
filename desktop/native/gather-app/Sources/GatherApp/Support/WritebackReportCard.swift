@@ -48,31 +48,33 @@ public struct WritebackReportCard: View {
             if !failedItems.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(String(format: GatherLocalization.l("失败项（%lld）"), failedItems.count))
-                        .font(.footnote.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                     ForEach(failedItems) { item in
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(item.path)
-                                .font(.footnote)
+                                .font(.callout)
                                 .lineLimit(1)
+                                .truncationMode(.middle)
                                 .textSelection(.enabled)
                                 .help(item.path)
                             Spacer(minLength: 8)
                             if !item.message.isEmpty {
                                 Text(GatherLocalization.errorText(item.message))
-                                    .font(.footnote)
-                                    .foregroundStyle(GatherTheme.error)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
                                     .multilineTextAlignment(.trailing)
                             }
                         }
                         if item.id != failedItems.last?.id {
-                            Rectangle()
-                                .fill(Color.gatherBorder.opacity(0.5))
-                                .frame(height: 1)
+                            Divider()
                         }
                     }
                 }
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.08)))
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                        .fill(GatherTheme.error.opacity(0.08))
+                )
             }
         }
     }

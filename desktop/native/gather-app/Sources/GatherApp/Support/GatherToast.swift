@@ -152,27 +152,20 @@ private struct ToastRow: View {
                 .allowsHitTesting(true)
             }
             Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
+                Label(GatherLocalization.l("关闭"), systemImage: "xmark")
+                    .labelStyle(.iconOnly)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
             .allowsHitTesting(true)
-            .accessibilityLabel(GatherLocalization.l("关闭"))
-            .accessibilityAddTraits(.isButton)
+            .help(GatherLocalization.l("关闭"))
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(toast.type.color.opacity(0.14))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(toast.type.color.opacity(0.3), lineWidth: 1)
-        )
-        .shadow(color: GatherTheme.shadowSm, radius: 8, y: 3)
+        .padding(.vertical, 10)
+        // 功能层浮面：macOS 26+ 用 Liquid Glass，更早版本用 .regularMaterial。
+        // toast 是典型的「浮在内容之上的瞬时控件」，正是 Apple 允许用玻璃的场景；
+        // 卡片等**内容层**表面则一律保持标准材质（见 GatherGlass 的说明）。
+        .gatherFunctionalSurface(cornerRadius: GatherTheme.Radius.group, bordered: false)
+        .shadow(color: GatherTheme.shadowMd, radius: 12, y: 4)
     }
 }

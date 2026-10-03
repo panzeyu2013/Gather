@@ -41,6 +41,13 @@ cp "$APP_PACKAGE/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 RESOURCE_BUNDLE="$BIN_DIR/gather-app_GatherApp.bundle"
 if [[ -n "$RESOURCE_BUNDLE" ]]; then
   cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
+  # N08：系统菜单文案（关于/隐藏/服务/窗口/帮助）由 macOS 按**主 bundle** 的
+  # 本地化集合渲染。.lproj 只躺在 SPM 资源 bundle 里时，主 bundle 看起来是
+  # 英文单语，于是中文界面配英文系统菜单。把本地化目录同时放进主 bundle，
+  # 并在 Info.plist 声明 CFBundleLocalizations，两边才一致。
+  for lproj in "$RESOURCE_BUNDLE"/*.lproj; do
+    [[ -d "$lproj" ]] && cp -R "$lproj" "$APP_BUNDLE/Contents/Resources/"
+  done
 else
   echo "warning: SPM resource bundle not found; localization tables will be missing" >&2
 fi

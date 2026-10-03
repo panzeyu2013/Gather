@@ -218,6 +218,16 @@ public final class PhotoRepo {
         return try rows.map { try PhotoPageRow(row: $0) }
     }
 
+    /// 待补校验和照片数（E-5 性能审计）：旧实现在服务层 flatMap 整个会话行
+    ///（含 metadata/result 大列）只为得到一个整数，这里下沉为一条 COUNT(*)。
+    public func pendingChecksumCount(sessionId: String) throws -> Int {
+        let row = try connection.prepare("""
+            SELECT COUNT(*) AS count FROM photos
+            WHERE session_id = ? AND (checksum IS NULL OR checksum = '') AND status != 'missing'
+            """).get([.text(sessionId)])
+        return Int(row?[0].intValue ?? 0)
+    }
+
     public func countBySession(sessionId: String) throws -> Int {
         let row = try connection.prepare("SELECT COUNT(*) as count FROM photos WHERE session_id = ?")
             .get([.text(sessionId)])

@@ -12,14 +12,18 @@ import Testing
 private final class StubPersonsProvider: PersonsDataProvider {
     var listError: Error?
     var getError: Error?
+    /// B4 回归用：可控的人物列表与详情。
+    var persons: [PersonData] = []
+    var details: [String: PersonDetailData] = [:]
 
     func list() throws -> [PersonData] {
         if let listError { throw listError }
-        return []
+        return persons
     }
 
     func get(_ personId: String) throws -> PersonDetailData {
         if let getError { throw getError }
+        if let detail = details[personId] { return detail }
         throw NativeCommandError.failed("NOT_A_CODE")
     }
 
@@ -87,5 +91,52 @@ struct PersonsViewModelTests {
         AppLanguageLock.withStableCopy {
             #expect(viewModel.phase == .failed(GatherLocalization.errorText("NOT_A_CODE")))
         }
+    }
+
+    // MARK: 9-30 审查 B4：选择必须随列表收敛
+
+    private func person(_ id: String, name: String) -> PersonData {
+        PersonData(
+            id: id, name: name, keywords: [], notes: "", matchThreshold: 0.5,
+            photoCount: 0, sessionCount: 0,
+            createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z"
+        )
+    }
+
+    private func detail(_ id: String, name: String) -> PersonDetailData {
+        PersonDetailData(
+            id: id, name: name, keywords: [], notes: "", matchThreshold: 0.5,
+            photoCount: 0, sessionCount: 0,
+            createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+            photos: [], totalPhotoCount: 0
+        )
+    }
+
+    @Test("B4：选中的人物被别处删除后，重新加载必须清空选择而不是留着旧详情")
+    func reloadClearsSelectionForDeletedPerson() async {
+        let stub = StubPersonsProvider()
+        stub.persons = [person("p1", name: "A")]
+        stub.details = ["p1": detail("p1", name: "A")]
+        let viewModel = PersonsViewModel(provider: stub)
+        await viewModel.load()
+        #expect(viewModel.selected?.id == "p1")
+
+        // 另一个窗口删除了 p1，列表刷新后为空。
+        stub.persons = []
+        stub.details = [:]
+        await viewModel.load()
+        #expect(viewModel.selected == nil, "被删除的人物不得继续留在详情栏（会拿失效 ID 发命令）")
+    }
+
+    @Test("B4：选中的人物仍在列表里时保持选择")
+    func reloadKeepsExistingSelection() async {
+        let stub = StubPersonsProvider()
+        stub.persons = [person("p1", name: "A"), person("p2", name: "B")]
+        stub.details = ["p1": detail("p1", name: "A"), "p2": detail("p2", name: "B")]
+        let viewModel = PersonsViewModel(provider: stub)
+        await viewModel.load()
+        viewModel.select("p2")
+        await viewModel.load()
+        #expect(viewModel.selected?.id == "p2", "重新加载不得把用户选的人物换成第一个")
     }
 }

@@ -29,6 +29,10 @@ private final class StubGalleryProvider: GalleryDataProvider {
         var workspaceStatusValue: WorkspaceStatus?
         var workspaceStatusError: String?
         var pageCalls: [(afterFirstRowid: Int64?, limit: Int, expandVariants: Bool)] = []
+        /// D05：把**失败**也算进去的请求尝试数（pageCalls 只在成功时记录）。
+        var pageAttempts = 0
+        /// D04：可注入的响应延迟（模拟悬挂请求，用来构造乱序/过期响应）。
+        var pageDelay: Duration = .zero
     }
 
     private let box = LockedBox()
@@ -77,6 +81,17 @@ private final class StubGalleryProvider: GalleryDataProvider {
         box.lock.withLock { box.pageCalls }
     }
 
+    /// 含失败在内的请求尝试数（D05 断言用：失败也要能被数到）。
+    var pageAttempts: Int {
+        box.lock.withLock { box.pageAttempts }
+    }
+
+    /// 请求延迟（D04：构造在途悬挂的旧响应）。
+    var pageDelay: Duration {
+        get { box.lock.withLock { box.pageDelay } }
+        set { box.lock.withLock { box.pageDelay = newValue } }
+    }
+
     func getSession(_ sessionId: String) throws -> SessionData? {
         let (thrown, sessionError, session): (Error?, String?, SessionData?) = box.lock.withLock {
             (box.thrownError, box.sessionError, box.session)
@@ -89,8 +104,12 @@ private final class StubGalleryProvider: GalleryDataProvider {
     }
 
     func photoPage(sessionId: String, afterFirstRowid: Int64?, limit: Int, expandVariants: Bool) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        let (thrown, pageError, rows): (Error?, String?, [GalleryPhotoData]) = box.lock.withLock {
-            (box.thrownError, box.pageError, box.rows)
+        let (thrown, pageError, rows, delay): (Error?, String?, [GalleryPhotoData], Duration) = box.lock.withLock {
+            box.pageAttempts += 1
+            return (box.thrownError, box.pageError, box.rows, box.pageDelay)
+        }
+        if delay > .zero {
+            try? await Task.sleep(for: delay)
         }
         if let thrown { throw thrown }
         if let pageError {
@@ -290,6 +309,130 @@ struct GalleryViewModelTests {
         // 客户端过滤：filename contains 'p9'（p9/p90-99 = 11）。
         #expect(viewModel.filteredPhotos.count == 11)
         #expect(viewModel.filteredPhotos.allSatisfy { $0.filename.contains("p9") })
+    }
+
+    // MARK: 深度审查 D08（目标照片定位）
+
+    @Test("D08：目标在第 200 张之后时主动取页定位，不靠用户滚到目标")
+    func locateTargetBeyondFirstPage() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = (0..<600).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        #expect(viewModel.loadedPhotos.count == 200, "初始只有首屏 200 张（本用例前提）")
+
+        let outcome = await viewModel.locatePendingPhoto(photoId: "p450", photoPath: nil)
+        #expect(outcome == .found, "目标在第二页之后必须被主动取页找到")
+        #expect(viewModel.loadedPhotos.contains { $0.id == "p450" })
+        #expect(viewModel.actionError == nil, "找到时不得报错")
+    }
+
+    @Test("D08：只带 filepath 的目标同样能定位（相似度成员行入口）")
+    func locateTargetByPath() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = (0..<400).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        let target = "/tmp/p350.jpg"
+        #expect(!viewModel.loadedPhotos.contains { $0.filepath == target })
+        let outcome = await viewModel.locatePendingPhoto(photoId: nil, photoPath: target)
+        #expect(outcome == .found, "路径入口必须能定位到首屏之外的目标")
+        #expect(viewModel.loadedPhotos.contains { $0.filepath == target })
+    }
+
+    @Test("D08：目标不存在时返回 false 并给出明确反馈（不静默等待）")
+    func locateMissingTargetReportsFailure() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = (0..<300).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        let outcome = await viewModel.locatePendingPhoto(photoId: "does-not-exist", photoPath: nil)
+        #expect(outcome == .notFound)
+        // 接线断言走真实报告方法（审计 5：测试自己调 setter 等于只测 setter）。
+        viewModel.reportPhotoTargetMissing()
+        #expect(viewModel.actionError != nil, "找不到目标必须给出可见反馈")
+    }
+
+    @Test("D08：取页失败时定位立即停止（不无限拉取）")
+    func locateStopsWhenPagingFails() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = (0..<600).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        stub.pageError = "boom"
+        let outcome = await viewModel.locatePendingPhoto(photoId: "p500", photoPath: nil)
+        #expect(outcome == .failed, "取页失败必须与「不存在」区分（审计 2 P2-4）")
+        #expect(viewModel.loadedPhotos.count == 200, "失败后不得继续拉取")
+    }
+
+    // MARK: 深度审查 D04 / D05 / D07（异步数据边界）
+
+    @Test("D05：链式取页遇到错误立即停止，不得无限重试")
+    func chainFetchStopsOnFailure() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = (0..<600).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+
+        // 激活搜索 → 走链式拉取路径。
+        viewModel.search = "p"
+        viewModel.searchChanged()
+        try? await Task.sleep(for: .milliseconds(500))
+        let attemptsAfterChain = stub.pageAttempts
+
+        // 之后每一次请求都失败：链必须在第一个错误处终止。
+        stub.pageError = "boom"
+        await viewModel.loadMoreIfNeeded()
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(
+            stub.pageAttempts <= attemptsAfterChain + 1,
+            "失败后不得继续自动重试同一页（旧实现忽略返回值，会连发 21+ 次）"
+        )
+    }
+
+    @Test("D07：普通搜索提交路径也要清空选择集")
+    func searchCommitClearsSelection() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = (0..<10).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        viewModel.toggleSelection("p1")
+        #expect(viewModel.selectedIds.contains("p1"))
+
+        // 普通搜索不经过 reload（旧实现只在 reload 里清选择）。
+        viewModel.search = "p9"
+        viewModel.searchChanged()
+        try? await Task.sleep(for: .milliseconds(500))
+        #expect(viewModel.selectedIds.isEmpty, "查询条件变化后不得保留屏幕上已不存在的选择")
+    }
+
+    @Test("D04：切变体让在途分页响应作废，不得把旧页写入新数据集")
+    func stalePageResponseIsDropped() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = (0..<600).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        let firstPageCount = viewModel.filteredPhotos.count
+        #expect(firstPageCount == 200, "初始页大小应为 200（本用例前提）")
+
+        // 在途「取下一页」被挂起，随后切换变体（reload 递增数据代数）。
+        stub.pageDelay = .milliseconds(200)
+        let pending = Task { await viewModel.loadMoreIfNeeded() }
+        try? await Task.sleep(for: .milliseconds(20))
+        viewModel.expandVariants = true
+        viewModel.filterOrVariantChanged()
+        await pending.value
+        try? await Task.sleep(for: .milliseconds(400))
+
+        // 审计 5（测试有效性）：只断言「张数 == 200」是**假阴性**——旧实现把
+        // 旧页 append 进空数组后同样是 200 行（只是内容从 p200 开始）。必须断言
+        // 数据集**身份**：首行仍是首页首行，且不含旧页的行。
+        #expect(viewModel.filteredPhotos.count == firstPageCount)
+        #expect(viewModel.filteredPhotos.first?.id == "p0", "切变体后首屏必须是新首页 p0，而不是旧页 p200")
+        #expect(
+            !viewModel.filteredPhotos.contains { $0.id == "p200" },
+            "旧代数的分页响应不得进入新数据集"
+        )
     }
 
     // 退出搜索：丢弃链式拉取的额外页，仅保留首页（200 行）。

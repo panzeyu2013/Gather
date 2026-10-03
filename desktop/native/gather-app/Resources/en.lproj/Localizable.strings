@@ -1103,7 +1103,7 @@
 "分析进度" = "Analysis progress";
 "、" = ", ";
 "重试失败写入项" = "Retry failed write items";
-"将 %lld 个相似组、%lld 张照片的关键词「%@」合并写入 XMP（共 %lld 个文件，新建或更新），不修改原图。" = "Write the keyword “%@” for %lld similar groups and %lld photos into XMP (%lld files, created or updated) without modifying the originals.";
+"将 %lld 个相似组、%lld 张照片的关键词「%@」合并写入 XMP（共 %lld 个文件，新建或更新），不修改原图。" = "Write the keyword of %lld similar groups and %lld photos (“%@”) into XMP (%lld files, created or updated) without modifying the originals.";
 "取消不会写入任何文件。" = "Cancelling writes nothing.";
 "将恢复或移除本次相似度写回生成的 %lld 个临时 XMP sidecar 文件；只应在 Capture One 已加载元数据并确认同步后执行。取消不会改动任何文件。" = "Restore or remove the %lld temporary XMP sidecar files created by this similarity writeback; only run this after Capture One has loaded the metadata and you have confirmed sync. Cancelling changes nothing.";
 "确认后 Gather 认为 Capture One 已读取 XMP 临时变更，之后才可执行清理。若尚未在 Capture One 中执行「加载元数据」，请取消。" = "After confirming, Gather treats Capture One as having read the temporary XMP changes, which is what unlocks cleanup. If you have not run Load Metadata in Capture One yet, cancel.";
@@ -1226,3 +1226,242 @@
 "重新聚类" = "Recluster";
 "将重新计算全部人脸簇（当前 %lld 个，其中 %lld 个已绑定人物或角色）。现有簇行会被重建，人工绑定与合并会被还原，且界面暂不提供撤销入口。只想处理新照片，请改用「开始分析」——增量模式会保留现有绑定。" = "All face clusters will be recomputed (%lld currently, %lld bound to a person or role). Cluster rows are rebuilt, so manual bindings and merges are reverted, and the UI has no undo. To process only new photos, use Start Analysis instead — incremental mode keeps existing bindings.";
 
+/* Native macOS redesign: keys used by the refactored views. */
+"%@ 张" = "%@ items";
+"%@ 线程" = "%@ threads";
+"%@（快捷键 %@）" = "%@ (shortcut %@)";
+"%lld%% 滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放" = "%lld%% — scroll to zoom · drag to pan · double-click to reset · ⌘−/⌘= to zoom";
+"XMP 写回项 %@" = "XMP write-back item %@";
+"「清理备份」会在确认同步后开放。" = "“Clean up backups” becomes available once sync is confirmed.";
+"上一张（←）" = "Previous (←)";
+"上次处理失败" = "Last attempt failed";
+"下一张（→）" = "Next (→)";
+"为照片计算技术质量评分" = "Compute technical quality scores for photos";
+"人物列表" = "People list";
+"人脸关键词步骤" = "Face keyword steps";
+"人脸库不可用" = "People library unavailable";
+"从左侧列表选择一个人物" = "Select a person from the list on the left";
+"会把「%@」下已登记的文件路径改写为「%@」（该卷共 %lld 个离线文件），并重新索引这些文件。原目录不会被修改或删除。" = "Rewrites the registered file paths under “%@” to “%@” (%lld offline files on that volume) and re-indexes them. The original directory is not modified or deleted.";
+"会用备份覆盖照片文件「%@」，当前内容将被替换，此操作不可撤销。" = "Overwrites the photo file “%@” with the backup. The current contents will be replaced and this cannot be undone.";
+"停止正在运行的人脸分析" = "Stop the running face analysis";
+"全部角色" = "All roles";
+"冲突处理方式" = "Conflict handling";
+"切换到「全部照片」或清除筛选条件。" = "Switch to “All photos” or clear the filters.";
+"切换到人脸关键词页面" = "Switch to the face keywords page";
+"切换到分析步骤" = "Switch to the analysis step";
+"切换到挑片页面" = "Switch to the culling page";
+"列出将写入的 XMP 项，不写盘" = "List the XMP entries that would be written, without writing";
+"初始化失败" = "Initialization failed";
+"删除人物" = "Delete person";
+"删除本次写回生成的 XMP 备份文件" = "Delete the XMP backup files created by this write-back";
+"删除该人物及其人脸绑定数据" = "Delete this person and their face bindings";
+"刷新人脸簇" = "Refresh face clusters";
+"刷新工作区状态" = "Refresh workspace status";
+"刷新重复照片" = "Refresh duplicates";
+"加载失败" = "Failed to load";
+"加载结果失败" = "Failed to load results";
+"取消正在进行的导出" = "Cancel the running export";
+"只看某个角色的簇" = "Show clusters for one role only";
+"可适当放宽匹配强度后重新扫描。" = "You can loosen the matching strength and rescan.";
+"图库" = "Gallery";
+"在分析、审核、写回之间切换" = "Switch between analyze, review and write-back";
+"在访达中显示" = "Reveal in Finder";
+"在访达中显示该模型所在目录" = "Reveal the model directory in Finder";
+"实际大小" = "Actual size";
+"实际大小（⌘0）" = "Actual size (⌘0)";
+"对新增照片运行人脸检测与聚类" = "Run face detection and clustering on new photos";
+"将删除智能相册「%@」及其筛选规则。只删除相册规则，不会删除任何照片文件。" = "Deletes the smart album “%@” and its filter rules. Only the album rule is removed; no photo files are deleted.";
+"将向「%@」写入 %lld 个文件；重名文件会自动改名，不会覆盖已有文件。" = "Writes files to “%@” (%lld in total). Name collisions are renamed automatically; existing files are never overwritten."; 
+"将把「%@」与「%@」合并为同一个资产（RAW + JPEG 变体）：图库与导出中只保留一个条目，另一个作为变体保留在磁盘上。" = "Merges “%@” and “%@” into a single asset (RAW + JPEG variant): only one entry appears in the gallery and exports, while the other stays on disk as a variant.";
+"将拆分「%@」与「%@」：两张文件重新作为独立照片出现在图库中。" = "Splits “%@” and “%@”: both files reappear in the gallery as independent photos.";
+"将拒绝「%@」与「%@」的关联：两张文件保持独立，自动关联不会再合并它们。" = "Rejects the link between “%@” and “%@”: both files stay independent and automatic linking will not merge them again.";
+"工作区页面" = "Workspace pages";
+"已取消导出" = "Export canceled";
+"已取消：未执行任何破坏性操作。" = "Canceled: no destructive action was performed.";
+"已处理" = "Processed";
+"已展开" = "Expanded";
+"已折叠" = "Collapsed";
+"已载入 %lld 张，共 %lld 张" = "Loaded %lld of %lld";
+"已选中" = "Selected";
+"开始导出？" = "Start the export?";
+"当前工作区没有内容完全一致的文件。" = "This workspace has no byte-identical files.";
+"当前窗口没有设置入口" = "No settings entry point in this window";
+"当前范围没有照片" = "No photos in the current scope";
+"快捷键 %@" = "Shortcut: %@";
+"打开设置检查人脸模型" = "Open Settings to check the face models";
+"扫描索引与质量分析会入队后台任务，进度显示在「当前任务」中；失败的任务可重试。" = "Scanning, indexing and quality analysis run as background jobs; progress appears under “Current jobs” and failed jobs can be retried.";
+"把当前簇合并到选中的目标簇" = "Merge the current cluster into the selected target cluster";
+"把所有设置项恢复为默认值（会先确认）" = "Reset all settings to their defaults (asks first)";
+"拆分资产" = "Split asset";
+"拒绝关联" = "Reject link";
+"拒绝资产关联？" = "Reject the asset link?";
+"按当前参数重建全部人脸簇（会还原人工绑定）" = "Rebuild all face clusters with the current parameters (restores manual bindings)";
+"按统一格式、命名规则导出照片及元数据" = "Export photos and metadata with a consistent format and naming rule";
+"按角色筛选簇" = "Filter clusters by role";
+"按预设调整相似度下限与最少出现次数" = "Adjust the similarity threshold and minimum occurrences by preset";
+"接受并合并" = "Accept and merge";
+"接受资产关联？" = "Accept the asset link?";
+"撤销该簇已写入的人脸关键词" = "Revert the face keywords written for this cluster";
+"放大（⌘=）" = "Zoom in (⌘=)";
+"无法读取该工作区的状态，请刷新后重试。" = "Could not read this workspace’s status. Refresh and try again.";
+"未打开工作区" = "No workspace open";
+"未选中" = "Not selected";
+"未选择人物" = "No person selected";
+"未选择人脸簇" = "No face cluster selected";
+"未通过" = "Failed";
+"查看成员" = "Show members";
+"模型状态" = "Model status";
+"步骤" = "Steps";
+"没有其他簇可合并。" = "No other clusters to merge with.";
+"用角色名称与关键字绑定该簇" = "Bind this cluster with a role name and keywords";
+"确认后写入 XMP 侧车文件；不修改原始照片" = "Writes XMP sidecar files after confirmation; original photos are not modified";
+"第 %lld 张，共 %lld 张" = "Photo %lld of %lld";
+"筛选" = "Filter";
+"簇成员" = "Cluster members";
+"索引进度" = "Indexing progress";
+"绑定角色" = "Bind role";
+"结清本次写回，之后才可清理备份" = "Finish this write-back before backups can be cleaned up";
+"继续加载剩余的人脸簇" = "Load the remaining face clusters";
+"缩小（⌘−）" = "Zoom out (⌘−)";
+"网格尺寸" = "Grid size";
+"置信度 %@" = "Confidence %@";
+"自定义" = "Custom";
+"角色筛选" = "Role filter";
+"让 Capture One 重新读取已写入的元数据" = "Make Capture One re-read the written metadata";
+"设置当前照片的颜色标签" = "Set the color label for the current photo";
+"请先完成人脸分析，再进入后续步骤。" = "Finish the face analysis before moving to the next steps.";
+"请确认应用的数据目录可访问。" = "Make sure the app’s data directory is accessible.";
+"载入挑片工作台失败" = "Failed to load the culling workbench";
+"载入重复照片失败" = "Failed to load duplicates";
+"进度" = "Progress";
+"进行中" = "In progress";
+"选择" = "Select";
+"选择分组" = "Select group";
+"选择当前筛选下的全部照片" = "Select all photos under the current filter";
+"通过" = "Passed";
+"重复类型" = "Duplicate type";
+"重新关联" = "Re-link";
+"重新关联离线存储卷？" = "Re-link the offline volume?";
+"重新写入 %lld 个失败项" = "Rewrite %lld failed items";
+"重新扫描工作区，让索引保持最新" = "Rescan the workspace to keep the index up to date";
+"重新排队索引扫描" = "Re-queue the index scan";
+"重新排队该任务" = "Re-queue this job";
+"重新读取人脸库" = "Reload the people library";
+"重新读取全部设置项" = "Reload all settings";
+"重新读取工作区状态" = "Reload workspace status";
+"重新载入挑片工作台" = "Reload the culling workbench";
+"重试 %@" = "Retry %@";
+"预览本次导出的文件清单与空间占用" = "Preview the file list and disk usage for this export";
+"选择管理" = "Selection";
+"未选择照片" = "No photo selected";
+"已选 %lld 张" = "%lld selected";
+"统计" = "Statistics";
+
+/* ── UI 审查修复轮（2026-09-29）：见 docs/reviews/ui-review-2026-09-29-fixes.md ── */
+
+/* F04 导出范围 */
+"导出范围" = "Export range";
+"保留片（挑片决策为保留）" = "Picks only (culling decision: keep)";
+"工作区全部照片" = "All photos in the workspace";
+"所选照片" = "Selected photos";
+"本次将导出" = "This export";
+"%lld 个文件" = "%lld files";
+"选择导出目录后显示本次将导出的文件数。" = "Choose an export folder to see how many files this export will write.";
+"正在计算本次导出的文件数…" = "Calculating the file count for this export…";
+"无法计算导出计划：%@" = "Cannot compute the export plan: %@";
+"当前没有「保留」的照片：请先在挑片页做出保留决策，或把范围改为「工作区全部照片」。" = "There are no photos marked Keep yet. Mark photos in Culling first, or switch the range to All photos in the workspace.";
+"范围「%@」：将向「%@」写入 %lld 个文件；重名文件会自动改名，不会覆盖已有文件。" = "Range “%@”: destination “%@”, %lld files; duplicate names are renamed automatically and existing files are never overwritten.";
+
+/* F07 / F08 控制中心 */
+"没有进行中的任务。" = "No jobs are running.";
+"已完成任务（%lld）" = "Completed jobs (%lld)";
+"存在 XMP 冲突，请先裁决" = "There are XMP conflicts to resolve first";
+"有写入失败项，请先重试" = "Some writes failed; retry them first";
+"Gather 正在写入 XMP…" = "Gather is writing XMP…";
+"待写入 %lld 项：Gather 尚未写入 XMP" = "%lld items pending: Gather has not written XMP yet";
+"已写入待读取：等待 Capture One 读取元数据" = "Written, awaiting read: waiting for Capture One to read the metadata";
+"已同步：Capture One 已读取" = "Synced: Capture One has read the metadata";
+"没有待同步的元数据" = "Nothing to sync";
+
+/* F05 / F13 人脸计数与裁切 */
+"%lld 个人脸样本" = "%lld face samples";
+"%@（%lld 个人脸样本）" = "%@ (%lld face samples)";
+"%@ · %lld 张照片" = "%@ · %lld photos";
+
+/* F13 重复扫描分层 */
+"高级：相似阈值" = "Advanced: similarity threshold";
+"当前档位：%@" = "Current preset: %@";
+"尚未扫描" = "Not scanned yet";
+"用上方的「开始扫描」检测内容完全一致的文件与视觉近似候选。" = "Use “Start Scan” above to detect byte-identical files and visually similar candidates.";
+
+/* F11 设置分块与保存规则 */
+"文本与数字在离开输入框或按回车时保存；下拉选择立即保存，结果会显示在顶部提示条。" = "Text and number fields are saved when you leave the field or press Return; pop-up choices are saved immediately. The result appears in the banner at the top.";
+"模型、推理与性能参数" = "Model, inference and performance settings";
+
+"清除评分" = "Clear rating";
+"资料库" = "Library";
+
+/* ── UI 验收第二轮修复（2026-09-29）：见 docs/reviews/ui-review-2026-09-29-round2-fixes.md ── */
+
+/* N08 菜单 */
+"新建工作区" = "New Workspace";
+"显示/隐藏侧栏" = "Show/Hide Sidebar";
+"Gather 帮助" = "Gather Help";
+"切换工作区页面" = "Switch workspace page";
+
+/* N09 图库筛选字段名 */
+"星级" = "Rating";
+"颜色" = "Color";
+"在线状态" = "Online status";
+"存储卷" = "Volume";
+"重复状态" = "Duplicate status";
+"导入时间" = "Import date";
+"全部" = "All";
+
+/* N07 图库照片动作 */
+"打开照片" = "Open Photo";
+"打开所在工作区" = "Open Workspace";
+
+/* N10 人脸库空态与新建表单 */
+"人脸库还是空的" = "The people library is empty";
+"新建人物后，就可以把工作区里的人脸簇绑定到角色上。" = "Create a person first, then bind face clusters from your workspaces to that role.";
+"自动生成" = "Generated automatically";
+"默认用文件夹名" = "Defaults to the folder name";
+"选择文件夹后名称会自动生成，也可以先手动输入。" = "The name is generated from the folder after you choose it; you can also type one now.";
+"留空则使用选中照片所在的文件夹名称。" = "Leave it empty to use the folder name of the selected photos.";
+
+
+/* ── 第三轮审计修复：返回按钮文案与语义（E-P0） ── */
+"返回" = "Back";
+"返回到上一页" = "Back to the previous page";
+"图库还没有照片" = "The library has no photos yet";
+"导入一个文件夹后，这里会汇总所有工作区的照片。" = "Import a folder and photos from all workspaces will be collected here.";
+"可以放宽阈值或改用「宽松」预设后重新聚类。" = "Loosen the threshold or use the Loose preset, then re-cluster.";
+"当前匹配强度为 %lld，上面的结果来自 %lld；请重新扫描。" = "The current matching strength is %lld but the results above came from %lld; please scan again.";
+"按工作区筛选" = "Filter by workspace";
+"无色标" = "No color label";
+
+/* ── 第三轮审计：成员/照片直达（E） ── */
+"打开这张照片" = "Open this photo";
+"在图库中打开这张照片" = "Open this photo in the gallery";
+
+/* ── 深度审查 D01–D03：交付真实性 ── */
+"导出完成：成功 %lld 张，失败 %lld 张，请在结果中查看失败原因。" = "Export finished: %lld succeeded, %lld failed. See the results for failure reasons.";
+"导出参数已变化，请确认新的导出计划" = "The export settings changed; please confirm the updated export plan.";
+"在「%@」复核人脸" = "Review faces in \"%@\"";
+"在该工作区的人脸审核页按角色「%@」复核" = "Review this role (\"%@\") on that workspace's face review page";
+"复核人脸" = "Review faces";
+"查看照片" = "View photo";
+"当前范围没有可导出的照片，未写入任何文件。" = "There are no photos to export in the current scope; no files were written.";
+
+/* ── 审计修复：错误文案的英文条目必须按**中文原文**作 key
+   （errorText 的查表路径是 errorMessages[code] → l(中文值)；
+     按错误码作 key 的条目永远查不到 —— 见 ErrorLocalizationCoverageTests） ── */
+"应用正在初始化，请稍候再试。" = "The app is still starting up. Please try again in a moment.";
+"本次导出没有产生任何文件，请在导出结果中查看失败原因。" = "This export produced no files at all. See the export result for the failure details.";
+"源文件不存在" = "Source file is missing";
+"源文件不可读（权限或所在卷离线）" = "Source file is unreadable (permissions or the volume is offline)";
+"分组参数已变更，上面的分组来自旧参数；请重新聚类。" = "The grouping settings changed; the groups above were computed with the previous settings. Please re-cluster.";
+"目标照片在已加载范围之外，请用搜索缩小范围后再试。" = "The photo is beyond the loaded range; narrow the search and try again.";
+"定位照片时中断，请重试。" = "Locating the photo was interrupted. Please try again.";
+"导出完成：成功 %lld 张，失败 %lld 张，请在结果中查看失败原因。" = "Export finished: %lld succeeded, %lld failed. See the results for failure reasons.";

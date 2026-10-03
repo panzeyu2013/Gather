@@ -21,6 +21,10 @@ struct GatherApp: App {
     @State private var personsProvider: LivePersonsDataProvider?
     /// bootstrap 失败态：展示错误并提供重试（不再永久停留「初始化中…」）。
     @State private var bootstrapError: String?
+    /// 菜单语言版本（V2 审计）：SwiftUI Commands 的文案在 App.body 求值时读取
+    /// GatherLocalization，没有 Observation；语言切换时递增这个值让场景重建，
+    /// 菜单才会跟着换语言（AppKit 菜单已不再参与，避免两套菜单互相覆盖）。
+    @State private var commandsLanguageVersion = 0
 
     var body: some Scene {
         WindowGroup {
@@ -43,12 +47,13 @@ struct GatherApp: App {
                         Button(GatherLocalization.l("重试")) {
                             Task { await bootstrap() }
                         }
-                        .buttonStyle(.borderedProminent)
+                        .gatherPrimaryActionButton()
                     }
-                    .frame(minWidth: 1100, minHeight: 720)
+                    .frame(minWidth: 520, minHeight: 380)
                 } else {
-                    Text(GatherLocalization.l("初始化中…"))
-                        .frame(minWidth: 1100, minHeight: 720)
+                    ProgressView(GatherLocalization.l("初始化中…"))
+                        .controlSize(.large)
+                        .frame(minWidth: 520, minHeight: 380)
                 }
             }
             .task {
@@ -57,8 +62,29 @@ struct GatherApp: App {
             .onOpenURL { url in
                 appDelegate.handle(url)
             }
+            .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.languageChanged)) { _ in
+                commandsLanguageVersion += 1
+            }
         }
+        // N08：菜单必须声明在 SwiftUI 场景里。SwiftUI 会用自己构建的主菜单替换
+        // NSApp.mainMenu，AppDelegate.installMenu 建的「文件/编辑」在运行态不生效
+        // （现象：只有 Gather/View/Window/Help，⌘N/⌘O 无响应）。
+        .commands { GatherAppCommands(languageVersion: commandsLanguageVersion) }
         .windowStyle(.automatic)
+        // 原生默认窗口尺寸：不再依赖 .frame(minWidth:) 撑开窗口。
+        .defaultSize(width: 1180, height: 780)
+        // 原生「设置」窗口：⌘, 由系统提供，最小化/缩放按钮自动变灰，
+        // 窗口位置与打开的 pane 由系统记忆。取代旧版在内容区切换设置页。
+        Settings {
+            if let router {
+                SettingsView(router: router)
+            } else {
+                ProgressView(GatherLocalization.l("初始化中…"))
+                    .controlSize(.large)
+                    .frame(width: 580, height: 480)
+            }
+        }
+        .defaultSize(width: 640, height: 620)
     }
 
     /// 启动装配：打开/迁移数据库 → 构建服务 → 创建原生路由。
@@ -79,7 +105,15 @@ struct GatherApp: App {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o700], ofItemAtPath: appDir.path)
             let dbURL = appDir.appendingPathComponent("gather.sqlite")
+            // A-3：打开持久化缩略图缓存（测试默认关闭）。
+            ThumbnailDiskCache.isEnabled = true
             let db = try DBConnection(path: dbURL.path)
+            // F-5：让 db_synchronous / db_cache_size_mb 设置真正生效（DB 层不反向
+            // 依赖 Services，这里注入一个只读的设置读取钩子）。
+            let settingsRepo = SettingsRepo(connection: db)
+            db.settingsProvider = { [weak settingsRepo] key in
+                (try? settingsRepo?.get(key: key))??.value
+            }
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
             try MigrationRunner(databaseFilePath: dbURL.path).migrate(db)

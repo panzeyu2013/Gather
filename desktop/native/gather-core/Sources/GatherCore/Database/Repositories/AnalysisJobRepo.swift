@@ -162,7 +162,10 @@ public final class AnalysisJobRepo {
     }
 
     /// 队列读取（唯一排序口径：priority ASC, updated_at ASC, rowid ASC）。
-    public func list(status: AnalysisJobStatus? = nil) throws -> [AnalysisJobData] {
+    /// - Parameter includeCheckpoint: 列表展示路径可传 false（B-4/D-1/E-P0-2 性能审计）：
+    ///   旧实现每行都 JSONValue.parse 整个 checkpoint_json（导出任务可达 ~1MB），
+    ///   而展示侧只用进度/状态字段。默认 true 保持 IPC 契约不变。
+    public func list(status: AnalysisJobStatus? = nil, includeCheckpoint: Bool = true) throws -> [AnalysisJobData] {
         let rows: [DBRow]
         if let status {
             rows = try connection.prepare("""
@@ -175,7 +178,7 @@ public final class AnalysisJobRepo {
                 "SELECT * FROM analysis_jobs ORDER BY updated_at DESC, rowid DESC"
             ).query()
         }
-        return rows.map { toData(AnalysisJobRow(row: $0)) }
+        return rows.map { toData(AnalysisJobRow(row: $0), includeCheckpoint: includeCheckpoint) }
     }
 
     /// 字面量来自 SchemaSQL.activeAnalysisJobStatusSQLList：与部分唯一索引
@@ -187,6 +190,15 @@ public final class AnalysisJobRepo {
             WHERE dedupe_key = ? AND status IN (\(SchemaSQL.activeAnalysisJobStatusSQLList))
             ORDER BY rowid ASC LIMIT 1
             """).get([.text(dedupeKey)]).map(AnalysisJobRow.init)
+    }
+
+    /// 最近一次同键终态行的 checkpoint（公开只读视图）。
+    ///
+    /// 供**只读**路径复用续跑基线：导出预览要展示"续跑实际会写的名字"，
+    /// 必须看到与执行相同的 destinations/completedPhotoIds，否则预览会按
+    /// 全新交付算名字（已存在的目标 → 多加 _2 后缀），与实际写出不符。
+    public func latestTerminalCheckpoint(dedupeKey: String) throws -> [String: JSONValue]? {
+        try latestTerminalRow(dedupeKey: dedupeKey).map { toData($0).checkpoint }
     }
 
     private func latestTerminalRow(dedupeKey: String) throws -> AnalysisJobRow? {
@@ -390,12 +402,14 @@ public final class AnalysisJobRepo {
 
     /// 行 → 契约类型；checkpoint_json 解析失败（脏数据）按空对象处理，
     /// 未知枚举值回退默认值——仅在库被外部改写时发生。
-    public func toData(_ row: AnalysisJobRow) -> AnalysisJobData {
-        let parsed = (try? JSONValue.parse(row.checkpointJSON)) ?? JSONValue.object([:])
-        let checkpoint: [String: JSONValue] = {
-            if case .object(let dict) = parsed { return dict }
-            return [:]
-        }()
+    public func toData(_ row: AnalysisJobRow, includeCheckpoint: Bool = true) -> AnalysisJobData {
+        let checkpoint: [String: JSONValue]
+        if includeCheckpoint {
+            let parsed = (try? JSONValue.parse(row.checkpointJSON)) ?? JSONValue.object([:])
+            if case .object(let dict) = parsed { checkpoint = dict } else { checkpoint = [:] }
+        } else {
+            checkpoint = [:]
+        }
         return AnalysisJobData(
             id: row.id,
             type: AnalysisJobType(rawValue: row.type) ?? .metadataScan,

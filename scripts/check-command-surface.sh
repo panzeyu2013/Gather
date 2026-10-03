@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# B6（9-30 审查）：脚本此前在 LC_ALL=C.UTF-8 下因「变量紧接全角括号」被解析成
+# 变量名的一部分而报 unbound variable。这里显式固定 locale，避免门禁结果依赖调用环境。
+export LC_ALL=en_US.UTF-8
 # 命令面与单一真相源门禁（docs/reviews/functional-design-review.md §7、§8.1、§9）。
 # 违规项：① 同一命令注册两次（P0-1 类）② UI 调用未注册命令 ③ 阻塞桥/双执行器复活
 #        ④ 归一化口径分叉 ⑤ 硬编码假确认（仅统计，供人工裁决）
@@ -87,7 +90,7 @@ fi
 PAYLOAD_LINES="$(grep -rnE '\["confirmed"\] *= *\.bool\(true\)|"confirmed": *\.bool\(true\)' "${UI_DIRS[@]}" --include='*.swift' 2>/dev/null | grep -v Tests || true)"
 PAYLOAD_COUNT="$(printf '%s\n' "$PAYLOAD_LINES" | grep -c . || true)"
 ARG_COUNT="$(grep -rnE 'confirmed: *true' "${UI_DIRS[@]}" --include='*.swift' 2>/dev/null | grep -v Tests | grep -c . || true)"
-echo "· 确认载荷硬编码处数：$PAYLOAD_COUNT（目标 0；出现即必须伴随真实确认弹窗）／confirmed: true 实参处数：$ARG_COUNT（只统计，供人工裁决）"
+echo "· 确认载荷硬编码处数：${PAYLOAD_COUNT}（目标 0；出现即必须伴随真实确认弹窗）／confirmed: true 实参处数：${ARG_COUNT}（只统计，供人工裁决）"
 if [ -n "$PAYLOAD_LINES" ]; then
   PAYLOAD_FILES="$(printf '%s\n' "$PAYLOAD_LINES" | cut -d: -f1 | sort -u)"
   BAD_FILES=""

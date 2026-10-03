@@ -53,7 +53,7 @@ private final class StubDashboardProvider: DashboardDataProvider {
         statuses[sessionId]
     }
 
-    func listJobs() throws -> [AnalysisJobData] {
+    func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData] {
         if let jobListError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: jobListError])
         }
@@ -373,7 +373,8 @@ struct DashboardViewModelTests {
 
         let selected = normalizeImportFilepaths([a, b])
         try provider.enqueueIndexScan(sessionId: outcome.session.id, requestedPaths: selected)
-        let jobs = try provider.listJobs()
+        // 契约断言需要完整 checkpoint（Dashboard 运行时走轻投影）。
+        let jobs = try provider.listJobs(includeCheckpoint: true)
         let scan = try #require(jobs.first {
             $0.type == .metadataScan && $0.scopeId == outcome.session.id
         })
@@ -397,7 +398,7 @@ struct DashboardViewModelTests {
         #expect(viewModel.hasClearableJobs == true)
 
         await viewModel.clearCompletedJobs()
-        let remaining = try provider.listJobs()
+        let remaining = try provider.listJobs(includeCheckpoint: true)
         #expect(remaining.map(\.id) == ["scan1"])
         #expect(viewModel.hasClearableJobs == false)
     }

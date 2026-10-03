@@ -5,6 +5,18 @@ import SwiftUI
 import AppKit
 import GatherCore
 
+/// 进入导出页的入口意图（N05）：决定首次打开时的默认导出范围。
+///
+/// 为什么需要它：控制中心的「已挑片但尚未导出 → 去导出」在语义上是
+/// 「把挑片成果导出」，但页面默认范围是「工作区全部照片」——用户点着
+/// 「挑片成果」进来，看到的却是包含未决策照片的全量范围。
+public enum ExportRangeIntent: Equatable, Sendable {
+    /// 挑片成果入口：默认只导出保留片（挑片决策 = keep）。
+    case picks
+    /// 通用入口（工具栏页签直接进入）：默认工作区全部照片，由用户显式选择。
+    case allPhotos
+}
+
 @MainActor
 @Observable
 public final class ExportViewModel {
@@ -36,6 +48,10 @@ public final class ExportViewModel {
 
     public var format: ExportFormat = .original
     public var variantPolicy: ExportVariantPolicy = .preferred
+    /// 导出范围（F04）。默认「保留片」不可行（未挑片时会导出 0 张），
+    /// 因此默认「工作区全部照片」，由界面把两个范围与张数摆在一起让用户显式选择；
+    /// 从控制中心「挑片已完成」进入时页面会突出保留片范围（见 ExportRangeSection）。
+    public var scope: ExportScope = .session
     public var quality = "85"
     public var maxDimension = ""
     public var includeXmp = true
@@ -51,6 +67,18 @@ public final class ExportViewModel {
     public init(sessionId: String, router: CommandRouter) {
         self.sessionId = sessionId
         self.client = NativeCommandClient(router: router)
+    }
+
+    /// 应用一次入口意图（N05 / V2 审计 P1）。
+    ///
+    /// 语义是「事件」而不是「一次性播种」：外壳在每次入口点击时把意图交给页面，
+    /// 页面应用后立刻通知外壳清空。这样
+    ///   · 先前经过页签进过导出页，不会让之后的「去导出」失效；
+    ///   · 后续从页签进入（意图为 nil）不会重复套用上一次的意图；
+    ///   · 用户手动改过范围后再点「去导出」，仍然按这次点击的意图走。
+    public func applyRangeIntent(_ intent: ExportRangeIntent?) {
+        guard intent == .picks else { return }
+        scope = .filtered
     }
 
     public var destinationIsEmpty: Bool {
@@ -119,9 +147,33 @@ public final class ExportViewModel {
             exportProgress = nil
             currentFileName = nil
             if event.job.status == .succeeded {
-                notice = GatherLocalization.l("导出任务已完成")
+                // F2/E-2（审计 1/5）：终态帧只应在**本次结果还没落地**时兜一句文案。
+                // 旧实现无条件改写：部分失败（任务状态仍是 succeeded）的
+                //「成功 N 失败 M」会被事后覆盖成「导出任务已完成」，零项文案同理；
+                // 同一 session 的其它导出终态帧也会污染本页 notice。
+                if result == nil {
+                    notice = Self.succeededNotice(from: event.update.checkpoint)
+                }
             }
         }
+    }
+
+    /// 终态帧的完成文案（F3）：有交付摘要时按实际计数说清楚，而不是笼统一句「已完成」。
+    private static func succeededNotice(from checkpoint: [String: GatherCore.JSONValue]?) -> String {
+        let exported = Int(checkpoint?["exported"]?.numberValue ?? 0)
+        let failed = Int(checkpoint?["failed"]?.numberValue ?? 0)
+        let totalFiles = Int(checkpoint?["totalFiles"]?.numberValue ?? 0)
+        if failed > 0 {
+            return String(
+                format: GatherLocalization.l("导出完成：成功 %lld 张，失败 %lld 张，请在结果中查看失败原因。"),
+                exported,
+                failed
+            )
+        }
+        if totalFiles == 0 {
+            return GatherLocalization.l("当前范围没有可导出的照片，未写入任何文件。")
+        }
+        return GatherLocalization.l("导出任务已完成")
     }
 
     private static func fileName(from checkpoint: [String: GatherCore.JSONValue]?) -> String? {
@@ -138,7 +190,11 @@ public final class ExportViewModel {
         panel.allowsMultipleSelection = false
         panel.prompt = GatherLocalization.l("选择导出目录")
         panel.message = GatherLocalization.l("请勿选择工作区导入目录或其子目录，否则导出的文件会被重新导入当前工作区")
-        if panel.runModal() == .OK, let url = panel.url {
+        // 非阻塞：不再用 runModal()（会阻塞主线程并开嵌套 runloop），
+        // 改用 begin 的 async 形式，返回后在 MainActor 上回填字段。
+        Task { @MainActor in
+            let response = await panel.begin()
+            guard response == .OK, let url = panel.url else { return }
             destination = url.path
             errorMessage = nil
             fieldError = nil
@@ -152,26 +208,161 @@ public final class ExportViewModel {
         fieldError = nil
     }
 
+    /// 手动「预览」：B3（9-30 审查）——必须与自动刷新走**同一套**参数快照 + 请求序号，
+    /// 否则「慢的手动预览 A」会覆盖「已经生效的自动预览 B」，屏幕上的清单属于旧参数，
+    /// 而 isPlanStale 还认为计划有效（plannedSignature 也没被 A 更新）。
     public func previewExport() async {
+        guard !destinationIsEmpty else {
+            await run(isPreviewing: true) { throw ExportServiceError.destinationInvalid }
+            return
+        }
+        let signature = planSignature
+        let request: [String: GatherCore.JSONValue]
+        do {
+            request = try parameters()
+        } catch {
+            fieldError = Self.fieldError(for: error)
+            errorMessage = NativeCommandClient.message(for: error)
+            return
+        }
+        planGeneration += 1
+        let generation = planGeneration
         await run(isPreviewing: true) {
-            let data = try await self.client.executeAsync("export.preview", params: try self.parameters())
+            let data = try await self.client.executeAsync("export.preview", params: request)
+            // 过期响应（期间用户改了参数或已有更新的预览请求）整份丢弃。
+            guard self.planGeneration == generation, self.planSignature == signature else { return }
             self.preview = try data.decoded(as: ExportPreview.self)
+            self.plannedSignature = signature
+            self.planError = nil
             self.result = nil
             self.notice = GatherLocalization.l("预览已更新")
         }
     }
 
+    /// 计划计算中（范围/目录变化后的静默刷新）。
+    private(set) public var isPlanning = false
+    /// 计划计算失败原因（行内展示，不进横幅：目录未设置是正常状态）。
+    private(set) public var planError: String?
+    /// 已计算出的计划的参数指纹（nil = 还没有有效计划）。
+    private(set) public var plannedSignature: String?
+    /// 请求代数：过期响应直接丢弃，避免「先发的慢请求」覆盖后发的新选择（N03）。
+    private var planGeneration = 0
+
+    /// 影响导出计划的全部参数指纹（N03）。
+    ///
+    /// 旧实现只监听范围和目录：把「变体」从首选改成 JPEG 后，页面仍显示上一个
+    /// 计划的 NEF 与数量，直到手动点「预览」。凡是能改变导出文件集合的参数
+    /// （范围/变体/格式/目录/命名/水印/XMP）都必须进入指纹。
+    public var planSignature: String {
+        let destinationKey = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        let watermarkKey = (watermarkEnabled && transformsAllowed)
+            ? "w:\(watermarkText):\(watermarkPosition.rawValue):\(watermarkOpacity):\(watermarkFontSize)"
+            : "w:-"
+        return [
+            scope.rawValue,
+            variantPolicy.rawValue,
+            format.rawValue,
+            destinationKey,
+            namingPattern,
+            includeXmp ? "xmp:1" : "xmp:0",
+            watermarkKey,
+        ].joined(separator: "|")
+    }
+
+    /// 当前屏幕上的计划是否已经过期（参数变过但还没重算完）。
+    public var isPlanStale: Bool {
+        preview == nil || plannedSignature != planSignature
+    }
+
+    /// 静默刷新导出计划（F04 / N03）：任何影响计划的参数变化后重算
+    /// 「本次将导出多少张 + 文件清单」。
+    ///
+    /// 与 previewExport 的区别：不改写 notice、不弹错误横幅，失败只在范围区
+    /// 行内说明。先把上一次的 preview 作废——宁可短暂显示「正在计算」，
+    /// 也不能把旧参数的文件数留在屏幕上冒充当前选择。
+    /// 去抖窗口内为 true（D-9 文案缺口：pending 期间摘要行会整行消失）。
+    private(set) public var isPlanRefreshScheduled = false
+
+    /// 视图的 300ms 去抖一调度就置位（refreshPlan 开始时清位）。
+    func markPlanRefreshScheduled() {
+        isPlanRefreshScheduled = true
+    }
+
+    public func refreshPlan() async {
+        isPlanRefreshScheduled = false
+        preview = nil
+        plannedSignature = nil
+        planError = nil
+        guard !destinationIsEmpty else { return }
+        let signature = planSignature
+        planGeneration += 1
+        let generation = planGeneration
+        isPlanning = true
+        defer { if planGeneration == generation { isPlanning = false } }
+        do {
+            let data = try await client.executeAsync("export.preview", params: try parameters())
+            // 过期响应（用户已经改了参数）直接丢弃，绝不覆盖更新的选择。
+            guard planGeneration == generation, planSignature == signature else { return }
+            preview = try data.decoded(as: ExportPreview.self)
+            plannedSignature = signature
+            result = nil
+        } catch {
+            guard planGeneration == generation, planSignature == signature else { return }
+            planError = NativeCommandClient.message(for: error)
+        }
+    }
+
     /// 组装「开始导出」确认载荷：先跑与 executeExport 同一套参数校验，
     /// 失败就地写行内错误并返回 nil（不弹确认、不发命令）。
-    public func exportConfirmation() -> ExportConfirmation? {
+    ///
+    /// F04：确认弹窗里的文件数必须来自**当前范围**的真实导出计划。
+    /// 旧实现直接取上次手动「预览」的缓存（没预览过就是 0），用户可能据此
+    /// 确认一个与范围不符的导出。现在先重算计划，算不出来就不弹确认。
+    /// 确认流程是否在进行中（D03：确认计算期间禁止重复发起）。
+    private(set) public var isConfirming = false
+
+    public func exportConfirmation() async -> ExportConfirmation? {
+        // D03：先把**完整请求参数**冻结成一份快照，之后预览、展示、执行全部只用它。
+        // 旧实现在 await 前后各读一次可变状态：等待预览期间用户改了目录/范围，弹窗
+        // 就会把新目录和旧文件数拼在一起，执行时又读第三份参数。
+        let request: [String: GatherCore.JSONValue]
         do {
-            _ = try parameters()
+            request = try parameters()
         } catch {
             fieldError = Self.fieldError(for: error)
             errorMessage = NativeCommandClient.message(for: error)
             return nil
         }
-        return ExportConfirmation(destination: destination, fileCount: preview?.files.count ?? 0)
+        let signature = planSignature
+        let destinationSnapshot = destination
+        let scopeSnapshot = scope
+        guard !isConfirming else { return nil }
+        isConfirming = true
+        defer { isConfirming = false }
+        do {
+            let data = try await client.executeAsync("export.preview", params: request)
+            // 计划返回后参数又被改过：这份计划已经不是用户点确认时看到的那份，
+            // 丢弃确认并让自动刷新去算新计划（下一次点击会用新快照）。
+            guard signature == planSignature else {
+                errorMessage = nil
+                notice = GatherLocalization.l("导出参数已变化，请确认新的导出计划")
+                return nil
+            }
+            preview = try data.decoded(as: ExportPreview.self)
+            plannedSignature = signature
+        } catch {
+            errorMessage = NativeCommandClient.message(for: error)
+            fieldError = Self.fieldError(for: error)
+            return nil
+        }
+        return ExportConfirmation(
+            destination: destinationSnapshot,
+            // D09：确认文案用物理文件数（照片 + 边车）。
+            fileCount: preview?.physicalFileCount ?? 0,
+            scopeLabel: ExportConfirmation.scopeLabel(for: scopeSnapshot),
+            planSignature: signature,
+            request: request
+        )
     }
 
     /// 确认弹窗取消：写可见文案（不静默 return），不发命令。
@@ -182,19 +373,35 @@ public final class ExportViewModel {
 
     /// 执行导出。confirmed 只能由视图确认分支传 true；未确认时不下发确认载荷，
     /// 由路由门禁拒绝（EXPORT_CONFIRMATION_REQUIRED）——UI 不得自证确认。
-    public func executeExport(confirmed: Bool) async {
+    /// - Parameter request: 确认弹窗冻结的参数（D03）。传入时执行的就是被确认的
+    ///   那一份，不再重新读界面状态；为 nil（无确认路径）则现读当前参数。
+    public func executeExport(confirmed: Bool, request: [String: GatherCore.JSONValue]? = nil) async {
         exportProgress = nil
         currentFileName = nil
         await run {
             self.isExporting = true
             defer { self.isExporting = false }
-            var params = try self.parameters()
+            var params = try request ?? self.parameters()
+            // 防御：调用方（视图）只能在确认分支传 confirmed: true；未确认时不下发载荷，
+            // 由路由门禁拒绝（EXPORT_CONFIRMATION_REQUIRED）——UI 不得自证确认。
             if confirmed {
                 params["confirmed"] = .bool(true)
             }
             let data = try await self.client.executeAsync("export.execute", params: params)
-            self.result = try data.decoded(as: ExportResult.self)
-            self.notice = GatherLocalization.l("导出任务已完成")
+            let result = try data.decoded(as: ExportResult.self)
+            self.result = result
+            // D02：部分失败不得只报「已完成」——成功/失败数量都要说清楚，否则用户会
+            // 以为本次交付完整（全失败由 EXPORT_ALL_FAILED 走错误横幅）。
+            self.notice = result.failed > 0
+                ? String(
+                    format: GatherLocalization.l("导出完成：成功 %lld 张，失败 %lld 张，请在结果中查看失败原因。"),
+                    result.exported,
+                    result.failed
+                )
+                : (result.totalFiles == 0
+                    // 零项（范围为空）：说「已完成」会让用户以为交付过了——明确说明没导出任何东西。
+                    ? GatherLocalization.l("当前范围没有可导出的照片，未写入任何文件。")
+                    : GatherLocalization.l("导出任务已完成"))
         }
         exportProgress = nil
         currentFileName = nil
@@ -284,7 +491,7 @@ public final class ExportViewModel {
             throw ExportServiceError.maxDimensionInvalid
         }
         let options = ExportOptions(
-            scope: .session,
+            scope: scope,
             variantPolicy: variantPolicy,
             format: format,
             quality: parsedQuality,
@@ -367,34 +574,55 @@ public final class ExportViewModel {
     }
 }
 
-/// 8px 自绘导出进度条（对齐旧版 export.module.css .progressBar/.progressFill：
-/// 8px 高、4px 圆角、primary 填充、0.3s ease 过渡）。
-private struct ProgressBar: View {
-    let fraction: Double
-
-    var body: some View {
-        GatherProgressBar(
-            fraction: fraction,
-            track: Color.gatherBorder.opacity(0.7),
-            accessibilityText: GatherLocalization.l("导出进度")
-        )
-    }
-}
-
-/// 「开始导出」确认载荷：弹窗文案的事实来源（目的地 + 本次将写入的文件数）。
+/// 「开始导出」确认载荷：弹窗文案的事实来源（目的地 + 范围 + 本次将写入的文件数）。
 public struct ExportConfirmation: Equatable, Identifiable {
     public var destination: String
     public var fileCount: Int
-    public var id: String { destination }
+    /// 范围文案（F04）：导出范围必须出现在确认文案里，不能让用户靠猜。
+    public var scopeLabel: String
+    /// 计划指纹（D03）：确认的是**哪一份计划**；执行前参数若已变化，这份确认作废。
+    public var planSignature: String
+    /// **冻结的请求参数**（D03）：确认后执行的就是这一份，不再重新读界面状态。
+    ///
+    /// 旧实现只保存展示用的目录/数目/范围文案，确认回调再调 executeExport，由它
+    /// 重新读一遍 ViewModel 的可变参数：用户在预览等待期间改了目录或范围，
+    /// 弹窗显示「新目录 + 旧文件数」，执行的又是第三份参数。
+    public var request: [String: GatherCore.JSONValue]
+    public var id: String { destination + "|" + scopeLabel + "|" + planSignature }
 
-    public init(destination: String, fileCount: Int) {
+    public init(
+        destination: String,
+        fileCount: Int,
+        scopeLabel: String,
+        planSignature: String,
+        request: [String: GatherCore.JSONValue]
+    ) {
         self.destination = destination
         self.fileCount = fileCount
+        self.scopeLabel = scopeLabel
+        self.planSignature = planSignature
+        self.request = request
+    }
+
+    public static func scopeLabel(for scope: ExportScope) -> String {
+        switch scope {
+        case .filtered: return GatherLocalization.l("保留片（挑片决策为保留）")
+        case .session: return GatherLocalization.l("工作区全部照片")
+        case .selected: return GatherLocalization.l("所选照片")
+        }
     }
 }
 
 public struct ExportView: View {
+    /// 由外壳注入（N04：跨页签保留导出草稿），或本页自建（独立预览/测试）。
+    /// 计划重算去抖任务（D-9）。
+    @State private var planDebounceTask: Task<Void, Never>?
+
     @State private var viewModel: ExportViewModel
+    /// 入口意图（N05）：控制中心的「去导出」= 挑片成果，默认保留片。
+    private let rangeIntent: ExportRangeIntent?
+    /// 消费完意图后通知外壳清空（V2 审计 P1：意图是「每次入口点击」的事件）。
+    private let onConsumeRangeIntent: () -> Void
     /// 非空即弹确认；confirmed 载荷只在确认分支写出（UI 不得自证确认）。
     @State private var pendingExport: ExportConfirmation?
     @FocusState private var maxDimensionFocused: Bool
@@ -406,9 +634,35 @@ public struct ExportView: View {
     private let onOpenGallery: (String) -> Void
     private let onOpenSettings: () -> Void
 
+    /// 外壳注入 VM 的初始化器：同一工作区的导出草稿（目录/格式/命名/范围/预览）
+    /// 在切换页签后原样恢复（N04），而不是每次重新建一个 ViewModel。
+    init(
+        viewModel: ExportViewModel,
+        router: CommandRouter,
+        rangeIntent: ExportRangeIntent? = nil,
+        onConsumeRangeIntent: @escaping () -> Void = {},
+        onBack: @escaping () -> Void = {},
+        onOpenSimilarity: @escaping (String) -> Void = { _ in },
+        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
+        onOpenGallery: @escaping (String) -> Void = { _ in },
+        onOpenSettings: @escaping () -> Void = {}
+    ) {
+        _viewModel = State(initialValue: viewModel)
+        self.rangeIntent = rangeIntent
+        self.onConsumeRangeIntent = onConsumeRangeIntent
+        self.router = router
+        self.onBack = onBack
+        self.onOpenSimilarity = onOpenSimilarity
+        self.onOpenTab = onOpenTab
+        self.onOpenGallery = onOpenGallery
+        self.onOpenSettings = onOpenSettings
+    }
+
     init(
         sessionId: String,
         router: CommandRouter,
+        rangeIntent: ExportRangeIntent? = nil,
+        onConsumeRangeIntent: @escaping () -> Void = {},
         onBack: @escaping () -> Void = {},
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
@@ -416,6 +670,8 @@ public struct ExportView: View {
         onOpenSettings: @escaping () -> Void = {}
     ) {
         _viewModel = State(initialValue: ExportViewModel(sessionId: sessionId, router: router))
+        self.rangeIntent = rangeIntent
+        self.onConsumeRangeIntent = onConsumeRangeIntent
         self.router = router
         self.onBack = onBack
         self.onOpenSimilarity = onOpenSimilarity
@@ -426,28 +682,56 @@ public struct ExportView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            actionBar
-                .padding(.horizontal, 24)
-                .padding(.bottom, 10)
             // 行内字段错误已就近定位（fieldError），横幅仅展示行内不可见的一般错误，
             // 避免同源重复提示。
             if let error = viewModel.errorMessage, viewModel.fieldError == nil {
                 NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
             }
-            if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    exportProgressCard
-                    optionsCard
-                    previewCard
-                    resultCard
-                }
-                .padding(24)
+            if let notice = viewModel.notice {
+                NativeBanner(text: notice, color: GatherTheme.success)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
+            // 导出选项/预览/结果全部走系统分组表单（行标签由系统对齐）。
+            Form {
+                exportProgressSection
+                // 范围先于输出细节（F04）：先回答「导出哪些照片」，再问格式/命名。
+                rangeSection
+                optionsSection
+                previewSection
+                resultSection
+            }
+            .formStyle(.grouped)
+        }
+        .background(GatherTheme.windowBackground)
+        .task {
+            viewModel.loadSessionName()
+            // N05：应用本次入口意图（挑片成果 → 默认保留片），随后通知外壳清空。
+            viewModel.applyRangeIntent(rangeIntent)
+            onConsumeRangeIntent()
+            await viewModel.refreshPlan()
+        }
+        // F04 + N03：任何影响导出计划的参数变化都重算计划
+        //（范围 / 变体 / 格式 / 目录 / 命名 / 水印 / 复制 XMP），
+        // 保证摘要、清单、确认弹窗与实际输出始终同源。
+        // D-9/C-P0-2（性能审计）：planSignature 含命名模式与水印文字，旧实现
+        // 每键入一个字符就全量 export.preview（1 万张 ≈5 万次 syscall/字符）。
+        // 这里 300ms 去抖：停止输入后才重算；预览/确认按钮仍会即时刷新。
+        // P1：离开页面即取消挂起的计划重算（否则切页后仍会发一次全量 preview）。
+        .onDisappear {
+            planDebounceTask?.cancel()
+        }
+        .onChange(of: viewModel.planSignature) { _, _ in
+            planDebounceTask?.cancel()
+            viewModel.markPlanRefreshScheduled()
+            planDebounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                await viewModel.refreshPlan()
             }
         }
-        .background(Color.gatherBackground)
-        .task { viewModel.loadSessionName() }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
             guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.applyJobEvent(event)
@@ -457,123 +741,108 @@ public struct ExportView: View {
             title: GatherLocalization.l("开始导出？"),
             confirmLabel: { _ in GatherLocalization.l("开始导出") },
             message: { request in
+                // D09：承诺的文件数必须是**物理文件数**（照片 + XMP 边车），
+                // 旧实现只报照片数，勾选「复制 XMP」时承诺与实际不符。
                 String(
-                    format: GatherLocalization.l("将向「%@」写入 %lld 个文件；重名文件会自动改名，不会覆盖已有文件。"),
+                    format: GatherLocalization.l("范围「%@」：将向「%@」写入 %lld 个文件；重名文件会自动改名，不会覆盖已有文件。"),
+                    request.scopeLabel,
                     request.destination,
                     request.fileCount
                 )
             },
-            onConfirm: { _ in
-                // confirmed: true 只能从这个确认分支到达。
-                Task { await viewModel.executeExport(confirmed: true) }
+            onConfirm: { confirmation in
+                // confirmed: true 只能从这个确认分支到达；执行的参数就是用户确认的
+                // 那份快照（D03），不再重读界面状态。
+                Task { await viewModel.executeExport(confirmed: true, request: confirmation.request) }
             },
             onCancel: { _ in viewModel.reportExportCancelled() }
         )
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(GatherLocalization.l("批量导出")).font(.largeTitle.weight(.bold))
-                    Text(String(format: GatherLocalization.l("工作区 %@ · 按统一格式、命名规则导出照片及元数据"), String(viewModel.sessionId.prefix(8))))
-                        .foregroundStyle(.secondary)
+        .sessionPageChrome(
+            subtitle: GatherLocalization.l("按统一格式、命名规则导出照片及元数据"),
+            selection: .tab(.export),
+            onBrowse: { onOpenGallery(viewModel.sessionId) },
+            onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
+            onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
+        )
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    onBack()
+                } label: {
+                    Label(GatherLocalization.l("返回"), systemImage: "chevron.backward")
                 }
-                Spacer()
+                .help(GatherLocalization.l("返回到上一页"))
+            }
+            // 页面级动作（预览 / 开始导出 / 取消导出）上移到工具栏，
+            // 取代旧版自绘 sticky actionBar 卡片。
+            ToolbarItemGroup(placement: .primaryAction) {
                 C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
             }
-            SessionTabBar(
-                selection: .tab(.export),
-                onBrowse: { onOpenGallery(viewModel.sessionId) },
-                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-            )
-        }
-        .padding(24)
-        .background(Color.gatherSurface)
-    }
-
-    /// 顶部固定操作栏（对齐旧版 sticky actionBar：格式摘要 + 目标目录 + 预览/
-    /// 开始导出/取消导出三按钮），替代原先沉底于选项卡底部的按钮行。
-    private var actionBar: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(formatSummary)
-                    .font(.callout.weight(.semibold))
-                Text(viewModel.destination.isEmpty ? GatherLocalization.l("未选择导出目录") : viewModel.destination)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
             }
-            .frame(maxWidth: 300, alignment: .leading)
-            Spacer()
-            Button(viewModel.isPreviewing ? GatherLocalization.l("正在计算…") : GatherLocalization.l("预览"), systemImage: "eye") {
-                Task { await viewModel.previewExport() }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button(viewModel.isPreviewing ? GatherLocalization.l("正在计算…") : GatherLocalization.l("预览"), systemImage: "eye") {
+                    // P1（第二轮验证）：预览会自己在 VM 里发起 preview，若留着
+                    // 待触发的去抖任务，它 300ms 后还会 refreshPlan（入口先清空 preview）
+                    // → 用户看到清单「自己消失一个往返」。
+                    planDebounceTask?.cancel()
+                    Task { await viewModel.previewExport() }
+                }
+                .disabled(viewModel.isWorking || viewModel.destinationIsEmpty)
+                .help(GatherLocalization.l("预览本次导出的文件清单与空间占用"))
+                // 对齐旧版 export.tsx:192：仅导出进行中禁用，预览不互斥（旧版可并发）。
+                Button(viewModel.isExporting ? GatherLocalization.l("正在导出…") : GatherLocalization.l("开始导出"), systemImage: "square.and.arrow.up.fill") {
+                    // 参数校验通过、且当前范围能算出导出计划，才弹确认；
+                    // 确认载荷只在 onConfirm 分支下发（F04：文件数与范围同源）。
+                    Task { pendingExport = await viewModel.exportConfirmation() }
+                }
+                // 唯一的 primary action，固定放尾侧（HIG Toolbars）。
+                .gatherPrimaryActionButton()
+                .disabled(viewModel.isExporting || viewModel.destinationIsEmpty)
+                // 对齐旧版 export.tsx:195：取消仅在导出进行中可用（预览期间禁用）。
+                // F06：改为只在导出进行中出现——禁用态常驻只会白白占掉工具栏预算。
+                if viewModel.isExporting {
+                    Button(GatherLocalization.l("取消导出"), systemImage: "stop.circle") {
+                        viewModel.cancelExport()
+                    }
+                    .help(GatherLocalization.l("取消正在进行的导出"))
+                }
             }
-            .disabled(viewModel.isWorking || viewModel.destinationIsEmpty)
-            // 对齐旧版 export.tsx:192：仅导出进行中禁用，预览不互斥（旧版可并发）。
-            Button(viewModel.isExporting ? GatherLocalization.l("正在导出…") : GatherLocalization.l("开始导出"), systemImage: "square.and.arrow.up.fill") {
-                // 参数校验通过才弹确认；确认载荷只在 onConfirm 分支下发。
-                pendingExport = viewModel.exportConfirmation()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.isExporting || viewModel.destinationIsEmpty)
-            // 对齐旧版 export.tsx:195：取消仅在导出进行中可用（预览期间禁用）。
-            Button(GatherLocalization.l("取消导出"), systemImage: "stop.circle") {
-                viewModel.cancelExport()
-            }
-            .disabled(!viewModel.isExporting)
-        }
-        .padding(12)
-        .background(Color.gatherSurface.opacity(0.92))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.gatherBorder.opacity(0.8), lineWidth: 1)
-        )
-    }
-
-    private var formatSummary: String {
-        switch viewModel.format {
-        case .original: return GatherLocalization.l("原图")
-        case .jpeg: return "JPEG"
-        case .tiff: return "TIFF"
         }
     }
 
-    /// 导出中实时进度（TS export.tsx:334-346）：8px 自绘进度条 + 百分比 +
+    /// 导出中实时进度（TS export.tsx:334-346）：原生线性 ProgressView + 百分比 +
     /// `第 N/N 张 · 文件名`；executeExport 进行中但首帧进度未到（exportProgress
     /// == nil）时显示「正在准备导出…」。
     @ViewBuilder
-    private var exportProgressCard: some View {
+    private var exportProgressSection: some View {
         if let progress = viewModel.exportProgress {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(GatherLocalization.l("正在导出照片…")).font(.headline)
-                    Spacer()
-                    if let percent = viewModel.progressPercent {
-                        Text("\(percent)%")
-                            .font(.headline.monospacedDigit())
-                            .foregroundStyle(GatherTheme.primary)
-                    }
+            Section(GatherLocalization.l("正在导出照片…")) {
+                LabeledContent(GatherLocalization.l("进度")) {
+                    Text(percentText)
+                        .monospacedDigit()
+                        .foregroundStyle(GatherTheme.accent)
                 }
-                ProgressBar(
-                    fraction: Double(progress.current) / Double(max(1, progress.total))
-                )
+                ProgressView(value: Double(progress.current) / Double(max(1, progress.total)))
+                    .progressViewStyle(.linear)
+                    .accessibilityLabel(GatherLocalization.l("导出进度"))
+                    .accessibilityValue(Text(percentText))
                 Text(String(format: GatherLocalization.l("第 %lld/%lld 张%@"), progress.current, progress.total, currentFileSuffix))
-                    .font(.footnote.monospacedDigit())
+                    .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            .gatherCard()
         } else if viewModel.isExporting {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(GatherLocalization.l("正在准备导出…")).font(.headline)
-                ProgressBar(fraction: 0)
+            Section(GatherLocalization.l("正在准备导出…")) {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .accessibilityLabel(GatherLocalization.l("导出进度"))
             }
-            .gatherCard()
         }
+    }
+
+    private var percentText: String {
+        viewModel.progressPercent.map { "\($0)%" } ?? ""
     }
 
     private var currentFileSuffix: String {
@@ -581,122 +850,167 @@ public struct ExportView: View {
         return " · \(name)"
     }
 
-    private var optionsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(GatherLocalization.l("导出选项")).font(.title3.weight(.semibold))
-            HStack {
-                HStack(spacing: 6) {
-                    Text(GatherLocalization.l("格式")).font(.callout).frame(width: 60, alignment: .trailing)
-                    Picker(GatherLocalization.l("格式"), selection: $viewModel.format) {
-                        Text(GatherLocalization.l("原图")).tag(ExportFormat.original)
-                        Text("JPEG").tag(ExportFormat.jpeg)
-                        Text("TIFF").tag(ExportFormat.tiff)
-                    }
-                    .frame(width: 180)
+    /// 导出范围（F04）：范围决定「哪些照片会被写出」，必须在格式/命名之前先回答，
+    /// 并给出与预览、确认弹窗、实际输出**同源**的张数摘要（都来自同一次
+    /// export.preview 计划）。旧实现固定发送整个工作区范围，界面却引导用户
+    /// 「挑片完成后导出最终成品」，承诺与结果不符。
+    private var rangeSection: some View {
+        Section(GatherLocalization.l("导出范围")) {
+            Picker(GatherLocalization.l("导出范围"), selection: $viewModel.scope) {
+                Text(ExportConfirmation.scopeLabel(for: .filtered))
+                    .tag(ExportScope.filtered)
+                Text(ExportConfirmation.scopeLabel(for: .session))
+                    .tag(ExportScope.session)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .accessibilityLabel(GatherLocalization.l("导出范围"))
+
+            // 张数摘要只在计划与当前参数同源时显示（N03）：参数一变，
+            // refreshPlan 会立刻把 preview 作废，这里不会残留旧范围的数字。
+            if let preview = viewModel.preview, !viewModel.isPlanStale {
+                LabeledContent(GatherLocalization.l("本次将导出")) {
+                    Text(String(format: GatherLocalization.l("%lld 个文件"), preview.totalFiles))
+                        .monospacedDigit()
                 }
-                HStack(spacing: 6) {
-                    Text(GatherLocalization.l("变体")).font(.callout).frame(width: 60, alignment: .trailing)
-                    Picker(GatherLocalization.l("变体"), selection: $viewModel.variantPolicy) {
-                        Text(GatherLocalization.l("首选")).tag(ExportVariantPolicy.preferred)
-                        Text("RAW").tag(ExportVariantPolicy.raw)
-                        Text("JPEG").tag(ExportVariantPolicy.jpeg)
-                        Text(GatherLocalization.l("全部")).tag(ExportVariantPolicy.all)
-                    }
-                    .frame(width: 180)
+                if viewModel.scope == .filtered, preview.totalFiles == 0 {
+                    Text(GatherLocalization.l("当前没有「保留」的照片：请先在挑片页做出保留决策，或把范围改为「工作区全部照片」。"))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
+            } else if viewModel.destinationIsEmpty {
+                Text(GatherLocalization.l("选择导出目录后显示本次将导出的文件数。"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if viewModel.isPlanning || viewModel.isPlanRefreshScheduled {
+                // 去抖 pending 期间也要占位（否则参数一变摘要行整行消失、无任何提示）。
+                Text(GatherLocalization.l("正在计算本次导出的文件数…"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if let planError = viewModel.planError {
+                Text(String(format: GatherLocalization.l("无法计算导出计划：%@"), planError))
+                    .font(.callout)
+                    .foregroundStyle(GatherTheme.error)
+            }
+        }
+    }
+
+    /// 导出选项：系统分组表单。每行一个 LabeledContent，标签由系统对齐；
+    /// Picker 自带标签一律 .labelsHidden()，避免「Text("格式") + Picker("格式")」重复。
+    private var optionsSection: some View {
+        Section(GatherLocalization.l("导出选项")) {
+            LabeledContent(GatherLocalization.l("格式")) {
+                Picker(GatherLocalization.l("格式"), selection: $viewModel.format) {
+                    Text(GatherLocalization.l("原图")).tag(ExportFormat.original)
+                    Text("JPEG").tag(ExportFormat.jpeg)
+                    Text("TIFF").tag(ExportFormat.tiff)
+                }
+                .labelsHidden()
+            }
+            LabeledContent(GatherLocalization.l("变体")) {
+                Picker(GatherLocalization.l("变体"), selection: $viewModel.variantPolicy) {
+                    Text(GatherLocalization.l("首选")).tag(ExportVariantPolicy.preferred)
+                    Text("RAW").tag(ExportVariantPolicy.raw)
+                    Text("JPEG").tag(ExportVariantPolicy.jpeg)
+                    Text(GatherLocalization.l("全部")).tag(ExportVariantPolicy.all)
+                }
+                .labelsHidden()
             }
             if viewModel.format == .jpeg {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(GatherLocalization.l("JPEG 质量"))
+                LabeledContent(GatherLocalization.l("JPEG 质量")) {
+                    HStack(spacing: 10) {
                         Slider(value: Binding(
                             get: { Double(viewModel.quality) ?? 85 },
                             set: { viewModel.quality = String(Int($0)) }
                         ), in: 1...100, step: 1)
                         .accessibilityLabel(GatherLocalization.l("JPEG 质量"))
                         Text(String(format: GatherLocalization.l("质量： %@"), viewModel.quality))
-                            .font(.footnote.monospacedDigit())
-                            .frame(width: 70)
+                            .font(.callout.monospacedDigit())
+                            .frame(width: 70, alignment: .trailing)
                     }
-                    fieldError(.quality)
                 }
+                fieldError(.quality)
             }
             if viewModel.transformsAllowed {
-                VStack(alignment: .leading, spacing: 4) {
+                LabeledContent(GatherLocalization.l("最长边")) {
                     // 对齐旧版 export.tsx:251：placeholder「不限制」、min=1（提交时钳制）。
                     TextField(GatherLocalization.l("不限制"), text: $viewModel.maxDimension)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 180)
+                        .labelsHidden()
+                        .frame(width: 120)
+                        .multilineTextAlignment(.trailing)
                         .accessibilityLabel(GatherLocalization.l("最长边"))
                         .focused($maxDimensionFocused)
                         .onSubmit { viewModel.commitMaxDimension() }
                         .onChange(of: maxDimensionFocused) { _, isFocused in
                             if !isFocused { viewModel.commitMaxDimension() }
                         }
-                    fieldError(.maxDimension)
                 }
+                fieldError(.maxDimension)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                TextField(GatherLocalization.l("命名模式（{date}/{time}/{counter}/{original}/{session}）"), text: $viewModel.namingPattern)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel(GatherLocalization.l("命名模式"))
-                Text(String(format: GatherLocalization.l("示例：%@"), viewModel.namingPreview))
-                    .font(.footnote.monospaced())
-                    .foregroundStyle(.secondary)
+            LabeledContent(GatherLocalization.l("命名模式")) {
+                TextField(
+                    GatherLocalization.l("命名模式"),
+                    text: $viewModel.namingPattern,
+                    prompt: Text("{date}/{time}/{counter}/{original}/{session}")
+                )
+                .labelsHidden()
             }
+            Text(String(format: GatherLocalization.l("示例：%@"), viewModel.namingPreview))
+                .font(.callout.monospaced())
+                .foregroundStyle(.secondary)
             if viewModel.format == .tiff {
-                Picker(GatherLocalization.l("TIFF 压缩"), selection: $viewModel.tiffCompression) {
-                    Text(GatherLocalization.l("无压缩")).tag(ExportTiffCompression.none)
-                    Text("LZW").tag(ExportTiffCompression.lzw)
-                    Text("Deflate").tag(ExportTiffCompression.deflate)
+                LabeledContent(GatherLocalization.l("TIFF 压缩")) {
+                    Picker(GatherLocalization.l("TIFF 压缩"), selection: $viewModel.tiffCompression) {
+                        Text(GatherLocalization.l("无压缩")).tag(ExportTiffCompression.none)
+                        Text("LZW").tag(ExportTiffCompression.lzw)
+                        Text("Deflate").tag(ExportTiffCompression.deflate)
+                    }
+                    .labelsHidden()
                 }
-                .frame(width: 220)
             }
             Toggle(GatherLocalization.l("复制 XMP 侧车文件"), isOn: $viewModel.includeXmp)
             if viewModel.transformsAllowed {
                 Toggle(GatherLocalization.l("添加文字水印"), isOn: $viewModel.watermarkEnabled)
                 if viewModel.watermarkEnabled {
-                    HStack {
-                        TextField(GatherLocalization.l("水印文字"), text: $viewModel.watermarkText)
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityLabel(GatherLocalization.l("水印文字"))
-                        HStack(spacing: 6) {
-                            Text(GatherLocalization.l("位置")).font(.callout)
-                            Picker(GatherLocalization.l("位置"), selection: $viewModel.watermarkPosition) {
-                                Text(GatherLocalization.l("居中")).tag(ExportWatermarkPosition.center)
-                                Text(GatherLocalization.l("右下")).tag(ExportWatermarkPosition.bottomRight)
-                                Text(GatherLocalization.l("左下")).tag(ExportWatermarkPosition.bottomLeft)
-                            }
-                            .frame(width: 140)
+                    TextField(GatherLocalization.l("水印文字"), text: $viewModel.watermarkText)
+                        .accessibilityLabel(GatherLocalization.l("水印文字"))
+                    LabeledContent(GatherLocalization.l("位置")) {
+                        Picker(GatherLocalization.l("位置"), selection: $viewModel.watermarkPosition) {
+                            Text(GatherLocalization.l("居中")).tag(ExportWatermarkPosition.center)
+                            Text(GatherLocalization.l("右下")).tag(ExportWatermarkPosition.bottomRight)
+                            Text(GatherLocalization.l("左下")).tag(ExportWatermarkPosition.bottomLeft)
                         }
-                        HStack(spacing: 6) {
-                            Text(GatherLocalization.l("字号")).font(.callout)
-                            TextField(GatherLocalization.l("字号"), text: $viewModel.watermarkFontSize)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 70)
-                                .accessibilityLabel(GatherLocalization.l("字号"))
-                                .focused($watermarkFontSizeFocused)
-                                .onSubmit { viewModel.commitWatermarkFontSize() }
-                                .onChange(of: watermarkFontSizeFocused) { _, isFocused in
-                                    if !isFocused { viewModel.commitWatermarkFontSize() }
-                                }
-                        }
+                        .labelsHidden()
                     }
-                    HStack {
-                        Text(GatherLocalization.l("透明度"))
-                        Slider(value: $viewModel.watermarkOpacity, in: 0.1...1, step: 0.1)
-                            .accessibilityLabel(GatherLocalization.l("透明度"))
-                        Text("\(Int(viewModel.watermarkOpacity * 100))%")
-                            .font(.footnote.monospacedDigit())
-                            .frame(width: 42)
+                    LabeledContent(GatherLocalization.l("字号")) {
+                        TextField(GatherLocalization.l("字号"), text: $viewModel.watermarkFontSize)
+                            .labelsHidden()
+                            .frame(width: 70)
+                            .multilineTextAlignment(.trailing)
+                            .accessibilityLabel(GatherLocalization.l("字号"))
+                            .focused($watermarkFontSizeFocused)
+                            .onSubmit { viewModel.commitWatermarkFontSize() }
+                            .onChange(of: watermarkFontSizeFocused) { _, isFocused in
+                                if !isFocused { viewModel.commitWatermarkFontSize() }
+                            }
+                    }
+                    LabeledContent(GatherLocalization.l("透明度")) {
+                        HStack(spacing: 10) {
+                            Slider(value: $viewModel.watermarkOpacity, in: 0.1...1, step: 0.1)
+                                .accessibilityLabel(GatherLocalization.l("透明度"))
+                            Text("\(Int(viewModel.watermarkOpacity * 100))%")
+                                .font(.callout.monospacedDigit())
+                                .frame(width: 42, alignment: .trailing)
+                        }
                     }
                     fieldError(.watermark)
                 }
             }
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    TextField(GatherLocalization.l("导出目录（不要选择导入目录）"), text: $viewModel.destination)
-                        .textFieldStyle(.roundedBorder)
+            LabeledContent(GatherLocalization.l("导出目录")) {
+                HStack(spacing: 8) {
+                    // E 报告：占位与下方脚注重复，且过长会在窄窗口被截断。
+                    TextField(GatherLocalization.l("选择导出目录"), text: $viewModel.destination)
+                        .labelsHidden()
                         .accessibilityLabel(GatherLocalization.l("导出目录"))
                         .dropDestination(for: URL.self) { urls, _ in
                             guard let url = urls.first(where: { isDirectoryURL($0) }) else { return false }
@@ -705,68 +1019,107 @@ public struct ExportView: View {
                         }
                     Button(GatherLocalization.l("选择…"), action: viewModel.chooseDestination)
                 }
-                // 对齐旧版 export.folderHint 警告（TS L301-303）。
-                Text(GatherLocalization.l("请选择导出文件夹。不要选择工作区导入目录，否则导出的文件会被重新导入当前工作区。"))
-                    .font(.footnote).foregroundStyle(.secondary)
-                fieldError(.destination)
             }
+            // 对齐旧版 export.folderHint 警告（TS L301-303）。
+            Text(GatherLocalization.l("请选择导出文件夹。不要选择工作区导入目录，否则导出的文件会被重新导入当前工作区。"))
+                .font(.callout).foregroundStyle(.secondary)
+            fieldError(.destination)
         }
-        .gatherCard()
     }
 
+    /// 行内错误（旧版 export.module.css .error 行内红字）；Banner 保留，
+    /// 对应字段附近再重复提示一次以就近定位。
     /// 行内错误（旧版 export.module.css .error 行内红字）；Banner 保留，
     /// 对应字段附近再重复提示一次以就近定位。
     @ViewBuilder
     private func fieldError(_ field: ExportViewModel.ExportFieldError) -> some View {
         if viewModel.fieldError == field, let message = viewModel.errorMessage {
             Text(message)
-                .font(.footnote)
+                .font(.callout)
                 .foregroundStyle(GatherTheme.error)
         }
     }
 
     @ViewBuilder
-    private var previewCard: some View {
-        if let preview = viewModel.preview {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(GatherLocalization.l("预览")).font(.title3.weight(.semibold))
-                HStack(spacing: 22) {
-                    LabeledContent(GatherLocalization.l("文件"), value: "\(preview.totalFiles)")
-                    LabeledContent(GatherLocalization.l("大小"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.totalSizeBytes), countStyle: .file))
-                    // TS export.tsx:320-325：freeSpaceBytes<0 时隐藏该行且无警告。
-                    if preview.freeSpaceBytes >= 0 {
-                        LabeledContent(GatherLocalization.l("可用空间"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.freeSpaceBytes), countStyle: .file))
-                    }
+    private var previewSection: some View {
+        // P1：去抖窗口内旧参数的文件清单不得继续显示（张数摘要行已有同款守卫）。
+        if let preview = viewModel.preview, !viewModel.isPlanStale {
+            Section(GatherLocalization.l("预览")) {
+                LabeledContent(GatherLocalization.l("文件"), value: "\(preview.totalFiles)")
+                LabeledContent(GatherLocalization.l("大小"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.totalSizeBytes), countStyle: .file))
+                // TS export.tsx:320-325：freeSpaceBytes<0 时隐藏该行且无警告。
+                if preview.freeSpaceBytes >= 0 {
+                    LabeledContent(GatherLocalization.l("可用空间"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.freeSpaceBytes), countStyle: .file))
                 }
                 if viewModel.spaceInsufficient {
-                    Text(GatherLocalization.l("导出文件所需空间超过磁盘可用空间，请更换目标目录"))
-                        .font(.callout)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(GatherTheme.warning)
+                    // warning 对比度不足以做正文前景色：改用原生提示条（图标 + 低透明度底色）。
+                    NativeBanner(
+                        text: GatherLocalization.l("导出文件所需空间超过磁盘可用空间，请更换目标目录"),
+                        systemImage: "exclamationmark.triangle.fill",
+                        color: GatherTheme.warning
+                    )
+                }
+                // D09：清单描述**输出**（目标名 + 格式 + 边车），并给出逐项可执行性诊断；
+                // 旧实现列的是源文件名 + 源大小，与真正写出的文件无关。
+                if preview.sidecarCount > 0 {
+                    Text(String(
+                        format: GatherLocalization.l("将写入 %lld 张照片 + %lld 个 XMP 边车，共 %lld 个文件。"),
+                        preview.photoCount,
+                        preview.sidecarCount,
+                        preview.physicalFileCount
+                    ))
+                    .font(.callout)
+                }
+                if preview.issueCount > 0 {
+                    Label(
+                        String(format: GatherLocalization.l("其中 %lld 项存在问题，导出时会失败。"), preview.issueCount),
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(GatherTheme.warning)
                 }
                 ForEach(preview.files.prefix(8), id: \.photoId) { file in
-                    Text("\(file.filename) · \(ByteCountFormatter.string(fromByteCount: Int64(file.fileSize), countStyle: .file))")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(file.outputName)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if file.includesXmp {
+                            Text("+XMP")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let issue = file.issue {
+                            Text(GatherLocalization.errorText(issue))
+                                .font(.caption)
+                                .foregroundStyle(GatherTheme.warning)
+                        }
+                        Spacer(minLength: 0)
+                        Text("\(file.isSizeEstimate ? "≈" : "")" + ByteCountFormatter.string(fromByteCount: Int64(file.fileSize), countStyle: .file))
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
                 }
                 if preview.files.count > 8 {
-                    Text(String(format: GatherLocalization.l("还有 %lld 个文件…"), preview.files.count - 8)).font(.footnote).foregroundStyle(.secondary)
+                    Text(String(format: GatherLocalization.l("还有 %lld 个文件…"), preview.files.count - 8))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .gatherCard()
         }
     }
 
     @ViewBuilder
-    private var resultCard: some View {
+    private var resultSection: some View {
         if let result = viewModel.result {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(GatherLocalization.l("结果")).font(.title3.weight(.semibold))
+            Section(GatherLocalization.l("结果")) {
                 Text(String(format: GatherLocalization.l("导出完成：成功 %lld，失败 %lld，跳过 %lld"), result.exported, result.failed, result.skipped))
+                    .font(.callout)
                     .foregroundStyle(result.failed > 0 ? GatherTheme.error : GatherTheme.success)
                 // 对齐 TS export.tsx:91：错误明细最多 3 条。
                 ForEach(result.errors.prefix(3), id: \.self) { error in
-                    Text(ExportViewModel.translateErrorLine(error)).font(.footnote).foregroundStyle(GatherTheme.error)
+                    Text(ExportViewModel.translateErrorLine(error))
+                        .font(.callout)
+                        .foregroundStyle(GatherTheme.error)
                 }
                 HStack(spacing: 8) {
                     Button(GatherLocalization.l("生成 CSV 报告")) { viewModel.generateReport(format: .csv) }
@@ -774,14 +1127,13 @@ public struct ExportView: View {
                 }
                 if let report = viewModel.report {
                     Text(report.path)
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
                 }
             }
-            .gatherCard()
         }
     }
 }

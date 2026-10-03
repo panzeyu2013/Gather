@@ -541,7 +541,8 @@ struct SimilarityViewModelTests {
 
     // 无匹配档 → 保留草稿（不采纳、不报错）。
     @Test func thresholdDraftWithoutTierKeepsDraft() async {
-        let (viewModel, stub) = makeStubVM(tierDelay: .milliseconds(5))
+        // 同上：轮询不参与本用例断言，拉长以避免并行负载下的假失败。
+        let (viewModel, stub) = makeStubVM(poll: .seconds(3600), tierDelay: .milliseconds(5))
         stub.result = StubSimilarityProvider.result(threshold: 10)
         await viewModel.load()
 
@@ -556,7 +557,10 @@ struct SimilarityViewModelTests {
 
     // 快速连续拖动：仅最新请求采纳（tierRequestID 守卫）。
     @Test func rapidThresholdChangesAdoptOnlyLatest() async {
-        let (viewModel, stub) = makeStubVM(tierDelay: .milliseconds(5))
+        // 轮询拉长到 1 小时：本用例断言的是「只采纳最新档」的守卫，而不是轮询刷新。
+        // 10ms 轮询在并行重负载下会把 stub 的默认结果写回来，使断言偶发失败
+        //（把「时序竞争」误报成「守卫失效」）。
+        let (viewModel, stub) = makeStubVM(poll: .seconds(3600), tierDelay: .milliseconds(5))
         stub.result = StubSimilarityProvider.result(threshold: 10)
         await viewModel.load()
 
@@ -575,7 +579,8 @@ struct SimilarityViewModelTests {
 
     // 阈值回到结果档位 → 取消挂起请求。
     @Test func thresholdBackToResultCancelsPendingTier() async {
-        let (viewModel, stub) = makeStubVM(tierDelay: .milliseconds(10))
+        // 同上：取消语义与轮询无关，轮询拉长避免干扰。
+        let (viewModel, stub) = makeStubVM(poll: .seconds(3600), tierDelay: .milliseconds(10))
         stub.result = StubSimilarityProvider.result(threshold: 10)
         await viewModel.load()
         // 档 6 必须**真的有**预计算档：否则「没被采纳」与「取消生效」不可区分，
@@ -817,5 +822,47 @@ struct SimilarityViewModelTests {
         #expect(viewModel.syncControls.canLoadMetadata == false)
         #expect(viewModel.syncControls.canConfirmSync == false)
         #expect(viewModel.syncControls.canCleanup == false)
+    }
+
+    // MARK: 审计 5：浏览状态跨页签保留（C-1）与结果参数过期标记（B-2）
+
+    @Test("C-1：展开态/显示全部在 VM 上保留（页面条件构建销毁不影响）")
+    func browseStateSurvivesPageRebuild() async {
+        let (viewModel, stub) = makeStubVM(poll: .seconds(3600))
+        stub.result = StubSimilarityProvider.result(threshold: 10)
+        await viewModel.load()
+        viewModel.expandedGroupIds = [3]
+        viewModel.showAllMemberGroupIds = [7]
+        // 页面按目的地条件构建：离开即销毁、回来重建同一个 VM。
+        // 状态在 VM 上所以仍然在（旧实现在视图 @State 上，重建即丢）。
+        #expect(viewModel.expandedGroupIds == [3])
+        #expect(viewModel.showAllMemberGroupIds == [7])
+    }
+
+    @Test("C-1：结果被替换时清空展开态（分组 id 可能已变）")
+    func resultReplacementClearsBrowseState() async {
+        let (viewModel, stub) = makeStubVM(poll: .seconds(3600), tierDelay: .milliseconds(5))
+        stub.result = StubSimilarityProvider.result(threshold: 10)
+        await viewModel.load()
+        viewModel.expandedGroupIds = [1]
+        stub.result = StubSimilarityProvider.result(totalGroups: 4, threshold: 10)
+        await viewModel.load()
+        #expect(viewModel.expandedGroupIds.isEmpty, "新结果不得沿用旧展开态")
+    }
+
+    @Test("B-2：改最小组合/分组范围后结果标记过期，回到原参数则不再过期")
+    func resultGoesStaleOnGroupingParameterChange() async {
+        let (viewModel, stub) = makeStubVM(poll: .seconds(3600))
+        stub.result = StubSimilarityProvider.result(threshold: 10)
+        await viewModel.load()
+        #expect(!viewModel.isResultStale, "刚采纳的结果不该是过期状态")
+        let originalMin = viewModel.minGroupSize
+        viewModel.minGroupSize = originalMin + 3
+        #expect(viewModel.isResultStale, "改最小组合后旧分组必须标记过期（B-2）")
+        viewModel.minGroupSize = originalMin
+        #expect(!viewModel.isResultStale)
+        let originalMode = viewModel.groupingMode
+        viewModel.groupingMode = originalMode == .global ? .sequential : .global
+        #expect(viewModel.isResultStale, "改分组范围后同样应标记过期")
     }
 }

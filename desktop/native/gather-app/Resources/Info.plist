@@ -4,6 +4,13 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<!-- N08：声明应用支持的本地化。缺失时 macOS 只把 app 当成英文单语，
+	     中文界面下系统菜单（关于/隐藏/服务/窗口/帮助）仍是英文。 -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>zh-Hans</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Gather</string>
 	<key>CFBundleExecutable</key>

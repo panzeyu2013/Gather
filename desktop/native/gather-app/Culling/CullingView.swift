@@ -323,7 +323,7 @@ public final class CullingViewModel {
                     return
                 }
                 if !isActive { return }
-                let jobs = try client.execute("jobs.list", params: [:]).decoded(as: [AnalysisJobData].self)
+                let jobs = try client.execute("jobs.list", params: ["includeCheckpoint": .bool(false)]).decoded(as: [AnalysisJobData].self)
                 guard let latest = jobs.first(where: { $0.id == job.id }) else { return }
                 qualityJob = latest
                 switch latest.status {
@@ -799,14 +799,21 @@ public final class CullingViewModel {
                 history = []
                 lastSyncError = NativeCommandClient.message(for: error)
             }
+            // P2-8（审计 2）：detached 任务必须带版本守卫（同 refreshSilently 的惯例）。
+            // 连续改筛选会并发多个 conflicts 请求，旧请求后到会覆盖新列表；
+            // 旧请求失败还会把 conflicts 清空并写入过期的 lastSyncError。
+            let conflictsVersion = pageVersion
             Task { @MainActor in
                 do {
-                    conflicts = try await client.executeAsync("metadata.conflicts", params: [
-                    "sessionId": .string(sessionId),
+                    let fetched = try await client.executeAsync("metadata.conflicts", params: [
+                        "sessionId": .string(sessionId),
                     ]).decoded(as: [MetadataConflict].self)
+                    guard conflictsVersion == pageVersion else { return }
+                    conflicts = fetched
                 } catch {
-                conflicts = []
-                lastSyncError = NativeCommandClient.message(for: error)
+                    guard conflictsVersion == pageVersion else { return }
+                    conflicts = []
+                    lastSyncError = NativeCommandClient.message(for: error)
                 }
             }
             if let page { logQualityFailures(page) }
@@ -1387,17 +1394,43 @@ public struct CullingView: View {
     private let onOpenTab: (String, SessionTab) -> Void
     private let onOpenGallery: (String) -> Void
     private let onOpenSettings: () -> Void
+    /// D10：「逐条裁决」入口意图（进入后把筛选收敛到 XMP 冲突）。
+    private let conflictsIntent: Bool
+    private let onConsumeConflictsIntent: () -> Void
     /// 破坏性命令的唯一确认载体：命令层的 confirmed:true 只能从确认弹窗分支到达。
     @State private var pendingAction: PendingCullingAction?
     @State private var conflictChoices: [String: MetadataConflictChoice] = [:]
     @State private var compareCount = 1
     @State private var faceAlign = false
-    /// 窗口级 keyDown 监听（对齐旧版 window keydown 与 Gallery 灯箱模式）：
-    /// 快捷键不依赖 SwiftUI 焦点，任何控件抢焦点都不会让 P/X/U/空格/方向键失效。
-    @State private var keyDownMonitor: Any?
-    /// 承载本页的窗口（keyDown 监听命中判断用）。引用类型盒子保证监听闭包
-    /// 读到的始终是最新窗口（struct 捕获副本无法感知后续赋值）。
-    @State private var windowBox = WeakWindowBox()
+    /// 右侧检查器（系统 .inspector）的展开状态：Bridge/Capture One 式，
+    /// 选项面板默认可见，工具栏开关由系统提供。可见性用 @SceneStorage 按页
+    /// 记忆（跨导航重建 / 新窗口保持；参考 darktable 各视图独立存储面板可见性）。
+    @SceneStorage("culling.inspectorVisible") private var showInspector = true
+
+    /// 外壳注入 VM（第三轮审计 D-P0）：挑片的范围/筛选/当前照片/多选/逐字段裁决
+    /// 草稿都挂在 VM 上；页面按目的地条件构建，切页签会销毁页面，只有注入同一个
+    /// VM 才能保住这些「用户已经投入过输入」的状态。
+    init(
+        viewModel: CullingViewModel,
+        router: CommandRouter,
+        onBack: @escaping () -> Void = {},
+        onOpenSimilarity: @escaping (String) -> Void = { _ in },
+        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
+        onOpenGallery: @escaping (String) -> Void = { _ in },
+        onOpenSettings: @escaping () -> Void = {},
+        conflictsIntent: Bool = false,
+        onConsumeConflictsIntent: @escaping () -> Void = {}
+    ) {
+        _viewModel = State(initialValue: viewModel)
+        self.router = router
+        self.onBack = onBack
+        self.onOpenSimilarity = onOpenSimilarity
+        self.onOpenTab = onOpenTab
+        self.onOpenGallery = onOpenGallery
+        self.onOpenSettings = onOpenSettings
+        self.conflictsIntent = conflictsIntent
+        self.onConsumeConflictsIntent = onConsumeConflictsIntent
+    }
 
     init(
         sessionId: String,
@@ -1415,16 +1448,44 @@ public struct CullingView: View {
         self.onOpenTab = onOpenTab
         self.onOpenGallery = onOpenGallery
         self.onOpenSettings = onOpenSettings
+        self.conflictsIntent = false
+        self.onConsumeConflictsIntent = {}
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
             if let error = viewModel.errorMessage { NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error) }
             if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
             if viewModel.sessionId.isEmpty {
-                emptyGuide(GatherLocalization.l("请先打开一个工作区，再进入挑片页。"))
-            } else if viewModel.page == nil && viewModel.errorMessage == nil {
+                emptyGuide(
+                    title: GatherLocalization.l("未打开工作区"),
+                    systemImage: "rectangle.stack",
+                    message: GatherLocalization.l("请先打开一个工作区，再进入挑片页。")
+                )
+            } else if let page = viewModel.page {
+                if page.assets.isEmpty {
+                    // TS Culling.tsx:1157-1173：空列表时保留工具/筛选栏 + 空态文案。
+                    VStack(spacing: 0) {
+                        toolbarRow
+                        emptyGuide(
+                            title: GatherLocalization.l("当前范围没有照片"),
+                            systemImage: "photo.on.rectangle.angled",
+                            message: GatherLocalization.l("切换到「全部照片」或清除筛选条件。")
+                        )
+                    }
+                } else {
+                    workbench
+                }
+            } else if let error = viewModel.errorMessage {
+                // 加载失败不留空面板/黑屏：系统空态 + 重试出口。
+                ContentUnavailableView {
+                    Label(GatherLocalization.l("载入挑片工作台失败"), systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button(GatherLocalization.l("重试")) { viewModel.load() }
+                }
+            } else {
                 HStack {
                     Spacer()
                     ProgressView(GatherLocalization.l("正在载入挑片工作台…"))
@@ -1432,34 +1493,39 @@ public struct CullingView: View {
                         .padding(.vertical, 60)
                     Spacer()
                 }
-            } else if let page = viewModel.page, page.assets.isEmpty {
-                // TS Culling.tsx:1157-1173：空列表时保留工具/筛选栏 + 空态文案。
-                VStack(spacing: 0) {
-                    toolbarRow
-                    emptyGuide(GatherLocalization.l("当前范围没有照片。切换到\u{201c}全部照片\u{201d}或清除筛选条件。"))
-                }
-            } else {
-                workbench
             }
         }
-        .background(Color.gatherBackground)
-        .background(WindowBridge { window in
-            windowBox.window = window
-        })
+        .background(GatherTheme.windowBackground)
         .task {
-            viewModel.load()
+            // D10：控制中心「N 个 XMP 冲突待裁决 → 逐条裁决」的入口意图。
+            // 旧实现只切到挑片页，用户还得自己找冲突；有缓存状态时甚至回到上一次
+            // 无关的筛选。这里在页面就位后把筛选一次性收敛到冲突，并消费意图
+            //（事件语义：每次入口点击生效一次，不重复套用）。
+            if conflictsIntent {
+                // A2（审计 4）：入口语义是「收敛到冲突」，不是「与上次的筛选求交」。
+                // 挑片 VM 跨页签缓存了上一次的未审/星级/色标等维度，只置位
+                // metadataConflictOnly 会变成 AND（很可能 0 行，与同屏「N 个冲突」矛盾）。
+                // 因此整份筛选重置为「只看冲突」再加载。
+                // A3（审计 4）：setFilterState 内部已经触发一次 loadPage(reset:)，
+                // 这里不再调用 load()，避免同一次进入跑两轮完整加载 + 两个 conflicts 请求。
+                viewModel.setFilterState { state in
+                    state = CullingViewModel.FilterState()
+                    state.metadataConflictOnly = true
+                }
+                onConsumeConflictsIntent()
+            } else {
+                viewModel.load()
+            }
         }
         // 可见性门控（审计 P1-并发）：条件渲染页离开即销毁，isActive=false
         // 让 analyzeQuality 轮询及时退出。
         .onAppear {
             viewModel.isActive = true
-            installKeyDownMonitor()
             // 隐藏期间登记的领域变更在这里补刷（隐藏页不发命令的约定）。
             viewModel.flushDeferredDomainRefresh()
         }
         .onDisappear {
             viewModel.isActive = false
-            removeKeyDownMonitor()
         }
         // 写回协调器 emitSummary 后刷新同步状态（TS useEvent('culling:sync-status')）。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
@@ -1495,6 +1561,41 @@ public struct CullingView: View {
             onConfirm: { perform($0) },
             onCancel: { viewModel.noteCancelledAction($0.actionLabel) }
         )
+        // 会话页窗口 chrome：标题副标题走系统，子导航分段控件在工具栏 principal 位置。
+        .sessionPageChrome(
+            subtitle: GatherLocalization.l("挑片与写回"),
+            selection: .tab(.culling),
+            onBrowse: { onOpenGallery(viewModel.sessionId) },
+            onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
+            onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
+        )
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    onBack()
+                } label: {
+                    Label(GatherLocalization.l("返回"), systemImage: "chevron.backward")
+                }
+                .help(GatherLocalization.l("返回到上一页"))
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") {
+                    viewModel.load()
+                }
+                .disabled(viewModel.isLoading)
+                .help(GatherLocalization.l("重新载入挑片工作台"))
+            }
+        }
+        // Bridge / Capture One 式：图片保持居中，选项面板交给系统 .inspector
+        // （工具栏开关由系统自动提供，不自绘按钮）。
+        .inspector(isPresented: $showInspector) {
+            inspectorContent
+                // 约束循环修复（N01）：SwiftUI 把**理想列宽**计入承载视图的最小宽度
+                //（实测 min 260 / ideal 300 时贡献 300pt）。收窄到 ideal 260，
+                // 让最小窗口下「页签行 + 内容 + 检查器」仍能装进内容区。
+                .inspectorColumnWidth(min: 220, ideal: 260, max: 360)
+        }
     }
 
     /// 破坏性动作集合。id 参与弹窗身份判定，必须包含影响参数（目标/字段选择）。
@@ -1604,72 +1705,50 @@ public struct CullingView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain).nonFocusable()
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(GatherLocalization.l("挑片与写回")).font(.largeTitle.weight(.bold))
-                    Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
-                }
-                Spacer()
-                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
-                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }.nonFocusable()
-            }
-            SessionTabBar(
-                selection: .tab(.culling),
-                onBrowse: { onOpenGallery(viewModel.sessionId) },
-                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-            )
-        }
-        .padding(24)
-        .background(Color.gatherSurface)
-    }
-
-    // MARK: 三栏工作台（对齐旧版 Culling.module.css:10-19 网格：
-    // 214px 工具列 | 查看器+infoBar | 196px 胶片条；顶部工具栏横贯）。
+    // MARK: 工作台（Bridge / Lightroom / darktable 式：查看器居中，
+    // 胶片条横贯底部——darktable 文档即写明胶片条 "at the bottom"；
+    // 原 214px 工具列已迁入系统 .inspector，顶部工具栏横贯内容区）。
 
     private var workbench: some View {
         VStack(spacing: 0) {
             toolbarRow
-            GeometryReader { geometry in
-                // 三栏宽度自适应（布局验收 P1 修复）：窄窗口下工具列/胶片条
-                // 按比例收缩，保证查看器最小可用宽度；宽窗口维持旧版 214/196。
-                // 下限 190/180：不破坏胶片条 180pt 缩略图与工具列按钮的最小宽度。
-                let toolsWidth = min(214, max(190, geometry.size.width * 0.17))
-                let stripWidth = min(196, max(180, geometry.size.width * 0.15))
-                HStack(spacing: 0) {
-                    toolsColumn
-                        .frame(width: toolsWidth)
-                    VStack(spacing: 0) {
-                        // 查看器：对比/人脸对齐/翻页变化经 onChange 显式复位缩放
-                        // （复用旧版 resetTransform 语义）。不使用 .id() 重建——
-                        // 整树销毁会扰动窗口焦点/事件监听，导致快捷键与后续
-                        // 点击异常。
-                        CullingWorkbenchViewer(
-                            viewModel: viewModel,
-                            compareCount: compareCount,
-                            faceAlign: faceAlign
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        infoBar
+            // 竖向分割：查看器 + infoBar 占据上半区，全宽胶片条固定在底部。
+            // （旧版把胶片条放在右侧，与右侧 .inspector 两栏夹击查看器。）
+            VStack(spacing: 0) {
+                // 查看器：对比/人脸对齐/翻页变化经 onChange 显式复位缩放
+                // （复用旧版 resetTransform 语义）。不使用 .id() 重建——
+                // 整树销毁会扰动窗口焦点/事件监听，导致快捷键与后续
+                // 点击异常。
+                CullingWorkbenchViewer(
+                    viewModel: viewModel,
+                    compareCount: compareCount,
+                    faceAlign: faceAlign
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                infoBar
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottomTrailing) {
+                // 浮动冲突面板（对齐旧版 .conflictPanel 定位：右下、infoBar 之上；
+                // 宽度不超过 540，且不超过窗口可用宽 - 32）。
+                // 锚在「查看器 + infoBar」区域而非整页：胶片条移到最底部后，
+                // 面板仍需浮在 infoBar 之上，不能压住胶片条。
+                GeometryReader { geometry in
+                    // 约束循环修复（F01）：geometry.size.width 在首帧/未定宽时为 0，
+                    // min(540, 0 - 32) = -32 会安装**负宽度约束**，AppKit 必须再跑
+                    // 一轮约束更新；叠加 .inspector 的列宽协商就耗尽 pass 预算。
+                    // 这里钳到非负，并且只在真的有冲突面板时下固定宽度
+                    //（conflicts 为空时 conflictPanel 是空视图，不该占宽度）。
+                    if !viewModel.conflicts.isEmpty {
+                        conflictPanel
+                            .frame(width: max(0, min(540, geometry.size.width - 32)))
+                            .padding(.trailing, 14)
+                            .padding(.bottom, 52)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     }
-                    filmstrip
-                        .frame(width: stripWidth)
                 }
             }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            // 浮动冲突面板（对齐旧版 .conflictPanel 定位：右下、infoBar 之上；
-            // 宽度不超过 540，且不超过窗口可用宽 - 32）。
-            GeometryReader { geometry in
-                conflictPanel
-                    .frame(width: min(540, geometry.size.width - 32))
-                    .padding(.trailing, 14)
-                    .padding(.bottom, 52)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            }
+            filmstrip
         }
     }
 
@@ -1681,49 +1760,64 @@ public struct CullingView: View {
 
     private var toolbarRow: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                undoRedoButtons
+            // 约束循环修复（N01）：本行原先是不带滚动的 HStack，它的最小宽度 =
+            // 所有控件最小宽度之和（实测 ≈ 876pt）。这个最小宽度会经
+            // SplitViewChildController.hostingView(_:didUpdateMinSize:maxSize:)
+            // 传给 NavigationSplitView；默认窗口减掉侧栏与检查器只剩 ≈720pt，
+            // AppKit 于是反复重算约束 → NSGenericException → SIGABRT。
+            // 放进横向滚动容器后，本行对外的**最小宽度**不再等于内容总宽
+            //（与下面第二行筛选栏同一处理），页面最小宽度回到预算内。
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    undoRedoButtons
 
-                Divider().frame(height: 18)
+                    Divider().frame(height: 18)
 
-                labeledPicker(GatherLocalization.l("范围")) {
-                    Picker(GatherLocalization.l("范围"), selection: scopeBinding) {
-                        ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
-                            Text(scope.title).tag(scope)
+                    labeledPicker(GatherLocalization.l("范围")) {
+                        Picker(GatherLocalization.l("范围"), selection: scopeBinding) {
+                            ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
+                                Text(scope.title).tag(scope)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        .frame(width: 240)
+                        .fixedSize()
+
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 240)
-                    .nonFocusable()
-                }
 
-                Toggle(GatherLocalization.l("自动前进"), isOn: autoAdvanceBinding)
-                    .toggleStyle(.checkbox)
-                    .nonFocusable()
+                    Toggle(GatherLocalization.l("自动前进"), isOn: autoAdvanceBinding)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
 
-                labeledPicker(GatherLocalization.l("对比")) {
-                    Picker(GatherLocalization.l("对比"), selection: $compareCount) {
-                        Text(GatherLocalization.l("单图")).tag(1)
-                        Text(GatherLocalization.l("2 图")).tag(2)
-                        Text(GatherLocalization.l("4 图")).tag(4)
+
+                    labeledPicker(GatherLocalization.l("对比")) {
+                        Picker(GatherLocalization.l("对比"), selection: $compareCount) {
+                            Text(GatherLocalization.l("单图")).tag(1)
+                            Text(GatherLocalization.l("2 图")).tag(2)
+                            Text(GatherLocalization.l("4 图")).tag(4)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 150)
+                        .fixedSize()
+
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 150)
-                    .nonFocusable()
+
+                    Divider().frame(height: 18)
+
+                    qualityAnalysisBlock
+                        .fixedSize()
                 }
-
-                Spacer(minLength: 12)
-
-                qualityAnalysisBlock
+                .padding(.horizontal, 24)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 6)
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            // 筛选行在窄窗口下会超出，保留横向滚动但**不再隐藏滚动条**：
+            // showsIndicators:false 会抹掉「右边还有控件」的唯一线索。
+            ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     Toggle(GatherLocalization.l("仅未处理"), isOn: unreviewedOnlyBinding)
                         .toggleStyle(.checkbox)
-                        .nonFocusable()
+
                     labeledPicker(GatherLocalization.l("状态")) {
                         Picker(GatherLocalization.l("状态"), selection: pickStateBinding) {
                             Text(GatherLocalization.l("全部状态")).tag(PickState?.none)
@@ -1732,7 +1826,7 @@ public struct CullingView: View {
                             }
                         }
                         .fixedSize()
-                        .nonFocusable()
+
                     }
                     labeledPicker(GatherLocalization.l("星级")) {
                         Picker(GatherLocalization.l("星级"), selection: ratingBinding) {
@@ -1742,7 +1836,7 @@ public struct CullingView: View {
                             }
                         }
                         .fixedSize()
-                        .nonFocusable()
+
                     }
                     labeledPicker(GatherLocalization.l("颜色")) {
                         Picker(GatherLocalization.l("颜色"), selection: colorFilterBinding) {
@@ -1752,7 +1846,7 @@ public struct CullingView: View {
                             }
                         }
                         .fixedSize()
-                        .nonFocusable()
+
                     }
                     labeledPicker(GatherLocalization.l("质量")) {
                         Picker(GatherLocalization.l("质量"), selection: qualityStatusBinding) {
@@ -1762,29 +1856,29 @@ public struct CullingView: View {
                             Text(GatherLocalization.l("分析失败")).tag(CullingFilterQualityStatus?.some(.failed))
                         }
                         .fixedSize()
-                        .nonFocusable()
+
                     }
                     Toggle(GatherLocalization.l("仅 XMP 冲突"), isOn: conflictOnlyBinding)
                         .toggleStyle(.checkbox)
-                        .nonFocusable()
-                    Button(GatherLocalization.l("重置")) { viewModel.resetFilters() }.nonFocusable()
+
+                    Button(GatherLocalization.l("重置")) { viewModel.resetFilters() }
 
                     Divider().frame(height: 18)
 
                     Toggle(GatherLocalization.l("人脸对齐"), isOn: $faceAlign)
                         .toggleStyle(.checkbox)
-                        .nonFocusable()
+
 
                     Button(GatherLocalization.l("保存 Burst/Scene 分组")) {
                         Task { await viewModel.analyzeNavigation(dryRun: false) }
                     }
                     .disabled(viewModel.isNavigationBusy)
-                    .nonFocusable()
+
                     Button(GatherLocalization.l("预览分组")) {
                         Task { await viewModel.analyzeNavigation(dryRun: true) }
                     }
                     .disabled(viewModel.isNavigationBusy)
-                    .nonFocusable()
+
 
                     if !viewModel.navigationGroups.isEmpty {
                         labeledPicker(String(format: GatherLocalization.l("导航组 (%lld)"), viewModel.navigationGroups.count)) {
@@ -1797,44 +1891,51 @@ public struct CullingView: View {
                                 }
                             }
                             .fixedSize()
-                            .nonFocusable()
+
                         }
                         Button(GatherLocalization.l("从当前照片拆分")) {
                             viewModel.splitCurrentFromNavigationGroup()
                         }
                         .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
-                        .nonFocusable()
+
                         Button(GatherLocalization.l("与前组合并")) {
                             viewModel.mergeCurrentWithPreviousSameType()
                         }
                         .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
-                        .nonFocusable()
+
                     }
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 6)
             }
         }
-        .background(Color.gatherSurface)
+        .background(GatherTheme.contentBackground)
         .overlay(alignment: .bottom) { Divider() }
     }
 
     private var undoRedoButtons: some View {
-                HStack(spacing: 4) {
+        HStack(spacing: 4) {
+            // ⌘Z / ⇧⌘Z 由宿主菜单（gatherMenuUndo/Redo 通知）承载，这里只做可见入口。
             Button { viewModel.undo() } label: {
                 Image(systemName: "arrow.uturn.backward")
             }
             .labelStyle(.iconOnly)
+            // V2 审计：宿主菜单的 undo:/redo: 走 NSUndoManager，而挑片撤销是自建栈，
+            // 只认 gatherMenuUndo/Redo 通知——那两个通知全仓没有发布者，tooltip 承诺
+            // 的 ⌘Z/⇧⌘Z 从未生效。直接挂在可见按钮上（挑片页无文本输入框，不冲突）。
+            .keyboardShortcut("z", modifiers: .command)
             .disabled(viewModel.undoOperation == nil || isBusy)
             .help(GatherLocalization.l("撤销（⌘Z）"))
-            .nonFocusable()
+            .accessibilityLabel(GatherLocalization.l("撤销"))
+
             Button { viewModel.redo() } label: {
                 Image(systemName: "arrow.uturn.forward")
             }
             .labelStyle(.iconOnly)
+            .keyboardShortcut("z", modifiers: [.command, .shift])
             .disabled(viewModel.redoOperation == nil || isBusy)
             .help(GatherLocalization.l("重做（⇧⌘Z）"))
-            .nonFocusable()
+            .accessibilityLabel(GatherLocalization.l("重做"))
         }
     }
 
@@ -1844,7 +1945,7 @@ public struct CullingView: View {
                 Task { await viewModel.analyzeQuality() }
             }
             .disabled(viewModel.isQualityBusy)
-            .nonFocusable()
+
             if let job = viewModel.qualityJob, job.progressTotal > 0,
                job.status == .queued || job.status == .running || job.status == .cancelling {
                 ProgressView(
@@ -1856,14 +1957,13 @@ public struct CullingView: View {
                 .frame(width: 150)
                 HStack(spacing: 6) {
                     Text("\(qualityProgressPercent(job))% \(GatherLocalization.progressPhaseText(job.progressMessage))")
-                        .font(.caption2)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Button(GatherLocalization.l("取消")) {
                         viewModel.cancelQualityAnalysis()
                     }
-                    .font(.caption2)
-                    .nonFocusable()
+                    .controlSize(.small)
                 }
             }
         }
@@ -1875,163 +1975,167 @@ public struct CullingView: View {
     ) -> some View {
         HStack(spacing: 4) {
             Text(title)
-                .font(.footnote)
+                .font(.callout)
                 .foregroundStyle(.secondary)
             picker().labelsHidden()
         }
     }
 
-    // MARK: 工具列（grid-column 1：决策条 / 星级 / 颜色 / 相似组决策 / 选择管理）。
+    // MARK: 右侧检查器（Bridge / Capture One 式：选项面板交给系统 .inspector，
+    // 内容区只留查看器 + 胶片；工具栏开关由系统自动提供，不自绘切换按钮）。
 
-    private var toolsColumn: some View {
+    private var inspectorContent: some View {
+        // 约束循环修复（F01）：grouped Form 挂在 .inspector 上会在 AppKit 的
+        // 约束更新阶段抛 NSGenericException（"more Update Constraints in
+        // Window passes than there are views"）。LibraryView.libraryInspector
+        // 已记录同一崩溃栈并改成 ScrollView + 分组容器，本页原先漏改。
+        // 检查器只承载决策与选择，GroupBox 与 Form Section 同样清晰。
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(GatherLocalization.l("挑片工具"))
-                    .font(.footnote.weight(.semibold))
-                    .kerning(0.4)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                // 决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）。
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.selectedPhotoIds.isEmpty ? GatherLocalization.l("当前照片") : String(format: GatherLocalization.l("批量 %lld 张"), viewModel.selectedPhotoIds.count))
-                        .controlLabelStyle()
-                    HStack(spacing: 6) {
-                        decisionButton(icon: "checkmark", iconColor: GatherTheme.success, title: GatherLocalization.l("保留"), shortcut: "P") {
-                            viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
-                        }
-                        decisionButton(icon: "xmark", iconColor: GatherTheme.error, title: GatherLocalization.l("淘汰"), shortcut: "X") {
-                            viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
-                        }
-                        decisionButton(icon: "circle", iconColor: .secondary, title: GatherLocalization.l("未处理"), shortcut: "U") {
-                            viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
-                        }
-                    }
-                }
-                .controlGroupStyle()
-
-                // 星级（对齐旧版 ratingButton 0-5 数字+星，当前照片星级高亮）。
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(GatherLocalization.l("星级")).controlLabelStyle()
-                    HStack(spacing: 6) {
-                        ForEach(0...5, id: \.self) { rating in
-                            let isCurrent = (viewModel.currentAsset?.state.rating ?? 0) == Double(rating)
-                            Button(rating == 0 ? "0" : "\(rating)★") {
-                                viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating)))
+            VStack(alignment: .leading, spacing: 14) {
+                // 当前照片：决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）
+                // + 星级 + 颜色。系统 bordered 按钮 + 裸键 .keyboardShortcut（取代手绘卡片描边）。
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(viewModel.selectedPhotoIds.isEmpty ? GatherLocalization.l("当前照片") : String(format: GatherLocalization.l("批量 %lld 张"), viewModel.selectedPhotoIds.count))
+                            .controlLabelStyle()
+                        VStack(spacing: 6) {
+                            decisionButton(icon: "checkmark", iconColor: GatherTheme.success, title: GatherLocalization.l("保留"), shortcut: "P", key: "p") {
+                                viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
                             }
-                            .buttonStyle(.plain)
-                            .font(.footnote)
-                            .frame(width: 26, height: 26)
-                            .background(
-                                RoundedRectangle(cornerRadius: GatherTheme.Radius.sm)
-                                    .fill(isCurrent ? GatherTheme.primarySoft : Color.clear)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: GatherTheme.Radius.sm)
-                                    .stroke(isCurrent ? GatherTheme.primary : Color.gatherBorder, lineWidth: 1)
-                            )
-                            .disabled(isBusy)
-                            .help(String(format: GatherLocalization.l("评分 %lld"), rating))
-                            .accessibilityLabel(String(format: GatherLocalization.l("评分 %lld"), rating))
-                            .accessibilityAddTraits(isCurrent ? .isSelected : [])
-                            .nonFocusable()
+                            decisionButton(icon: "xmark", iconColor: GatherTheme.error, title: GatherLocalization.l("淘汰"), shortcut: "X", key: "x") {
+                                viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
+                            }
+                            decisionButton(icon: "circle", iconColor: .secondary, title: GatherLocalization.l("未处理"), shortcut: "U", key: "u") {
+                                viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
+                            }
                         }
                     }
-                }
-                .controlGroupStyle()
 
-                // 颜色（对齐旧版 colorButton 圆形色钮 + 选中外环）。
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(GatherLocalization.l("颜色")).controlLabelStyle()
-                    HStack(spacing: 4) {
-                        ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
-                            let isCurrent = viewModel.currentAsset?.state.colorLabel == label
+                    // 星级：0–5 的**图标**按钮 + 累计填充的标准评分外观。
+                    //
+                    // 旧实现是 "1★"/"2★" 文字按钮：窄列宽下六个按钮会被压缩成「…」，
+                    // 整行不可读。图标按钮只占约 22pt/个，检查器任意列宽下都完整可见。
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(GatherLocalization.l("星级")).controlLabelStyle()
+                        HStack(spacing: 2) {
+                            let current = Int(viewModel.currentAsset?.state.rating ?? 0)
                             Button {
-                                viewModel.commit(patch: CullingUpdatePatch(colorLabel: label))
+                                viewModel.commit(patch: CullingUpdatePatch(rating: 0))
                             } label: {
-                                Circle()
-                                    .fill(Self.colorDot(label))
-                                    .frame(width: 18, height: 18)
-                                    .overlay(
-                                        Circle().stroke(Color.black.opacity(0.35), lineWidth: 2)
-                                    )
+                                Image(systemName: "star.slash")
                             }
-                            .buttonStyle(.plain)
-                            .overlay(
-                                Circle()
-                                    .stroke(isCurrent ? Color(nsColor: .secondaryLabelColor) : Color.clear, lineWidth: 2)
-                                    .padding(-3)
-                            )
-                            .help(Self.colorLabelTitle(label))
-                            .accessibilityLabel(Self.colorLabelTitle(label))
-                            .accessibilityAddTraits(isCurrent ? .isSelected : [])
+                            .buttonStyle(.borderless)
+                            .controlSize(.large)
+                            .foregroundStyle(current == 0 ? GatherTheme.accent : Color.secondary)
                             .disabled(isBusy)
-                            .nonFocusable()
+                            .help(GatherLocalization.l("清除评分"))
+                            .accessibilityLabel(GatherLocalization.l("清除评分"))
+
+                            ForEach(1...5, id: \.self) { rating in
+                                Button {
+                                    viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating)))
+                                } label: {
+                                    Image(systemName: rating <= current ? "star.fill" : "star")
+                                }
+                                .buttonStyle(.borderless)
+                                .controlSize(.large)
+                                .foregroundStyle(rating <= current ? GatherTheme.accent : Color.secondary)
+                                .disabled(isBusy)
+                                .help(String(format: GatherLocalization.l("评分 %lld"), rating))
+                                .accessibilityLabel(String(format: GatherLocalization.l("评分 %lld"), rating))
+                                .accessibilityAddTraits(rating == current ? .isSelected : [])
+                            }
                         }
                     }
+
+                    // 颜色标签：系统菜单选择器（取代手绘圆形色钮 + 选中外环）；
+                    // C1 色标是数据本身（非状态色），沿用固定色值。
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(GatherLocalization.l("颜色")).controlLabelStyle()
+                        Picker(GatherLocalization.l("颜色"), selection: colorSelectionBinding) {
+                            ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
+                                Label {
+                                    Text(Self.colorLabelTitle(label))
+                                } icon: {
+                                    Image(systemName: "circle.fill")
+                                        .foregroundStyle(Self.colorDot(label))
+                                }
+                                .tag(CaptureOneColorLabel?.some(label))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .disabled(isBusy)
+                        .help(GatherLocalization.l("设置当前照片的颜色标签"))
+                        .accessibilityLabel(GatherLocalization.l("颜色标签"))
+                    }
+                } label: {
+                    Text(GatherLocalization.l("当前照片"))
                 }
-                .controlGroupStyle()
 
                 // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
                 if currentGroupAssets.count > 1, let current = viewModel.currentAsset {
                     let groupIds = Set(currentGroupAssets.map(\.photo.id))
                     let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
                     let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < currentGroupAssets.count
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(String(format: GatherLocalization.l("相似组 · %lld 张"), currentGroupAssets.count)).controlLabelStyle()
+                    GroupBox {
                         Button(GatherLocalization.l("保留当前 1 张")) {
                             viewModel.keepInGroupRejectRest(
                                 current.similarityGroupId ?? "",
                                 keepPhotoIds: [current.photo.id]
                             )
                         }
+                        .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy)
-                        .nonFocusable()
+
                         Button(selectedInGroup.isEmpty ? GatherLocalization.l("保留已选 K 张") : String(format: GatherLocalization.l("保留已选 %lld 张"), selectedInGroup.count)) {
                             viewModel.keepInGroupRejectRest(
                                 current.similarityGroupId ?? "",
                                 keepPhotoIds: selectedInGroup.sorted()
                             )
                         }
+                        .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
                         .disabled(!keepValid || isBusy)
-                        .nonFocusable()
                         .help(keepValid ? "" : GatherLocalization.l("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
+                    } label: {
+                        Text(String(format: GatherLocalization.l("相似组 · %lld 张"), currentGroupAssets.count))
                         Text(GatherLocalization.l("其余照片自动淘汰"))
-                            .font(.footnote)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
+                    }
+                }
+
+                // 选择管理：批量决策对象（在胶片条中 ⌘/Ctrl 点选）。
+                GroupBox {
+                    if viewModel.selectedPhotoIds.isEmpty {
+                        Text(GatherLocalization.l("未选择照片"))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(String(format: GatherLocalization.l("已选 %lld 张"), viewModel.selectedPhotoIds.count))
+                            .controlLabelStyle()
+                        Button(GatherLocalization.l("取消选择")) { viewModel.clearSelection() }
+                            .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
                     }
-                    .controlGroupStyle()
-                    .padding(.top, 10)
+                } label: {
+                    Text(GatherLocalization.l("选择管理"))
                 }
-
-                if !viewModel.selectedPhotoIds.isEmpty {
-                    Button(GatherLocalization.l("取消选择")) { viewModel.clearSelection() }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 10)
-                        .nonFocusable()
-                }
-
-                Spacer(minLength: 12)
 
                 // 附加统计（对齐 summaryCard 的增强项：已评分/已标记）。
                 if let summary = viewModel.summary {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(String(format: GatherLocalization.l("评分 %lld"), summary.rated)).controlLabelStyle()
-                        Text(String(format: GatherLocalization.l("标记 %lld"), summary.labeled)).controlLabelStyle()
+                    GroupBox {
+                        Text(String(format: GatherLocalization.l("评分 %lld"), summary.rated))
+                        Text(String(format: GatherLocalization.l("标记 %lld"), summary.labeled))
+                    } label: {
+                        Text(GatherLocalization.l("统计"))
                     }
-                    .controlGroupStyle()
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
         }
-        .background(Color.gatherSurface)
-        .overlay(alignment: .trailing) { Divider() }
     }
 
     private func decisionButton(
@@ -2039,6 +2143,7 @@ public struct CullingView: View {
         iconColor: Color,
         title: String,
         shortcut: String,
+        key: KeyEquivalent,
         action: @escaping () -> Void
     ) -> some View {
         DecisionButtonView(
@@ -2046,54 +2151,84 @@ public struct CullingView: View {
             iconColor: iconColor,
             title: title,
             shortcut: shortcut,
+            key: key,
             isBusy: isBusy,
             action: action
         )
-        .nonFocusable()
     }
 
     // MARK: infoBar（grid-row 3：位置计数 + 保留/淘汰/未处理统计 + 同步状态 + 同步按钮）。
 
     private var infoBar: some View {
-        HStack(spacing: 12) {
+        // 约束循环修复（A1，与工具栏行同类）：本行原先是不带滚动的 HStack，
+        // 最小宽度 = 子控件 + 长文本之和——同步失败时的错误文案 + 重试按钮 +
+        // 「同名 RAW/JPEG 共用 XMP…」整句 + 4~5 位计数，这些**只在实际数据下
+        // 出现**的内容一旦同时出现就会顶破最小窗口的 680pt 预算。
+        // 放进横向滚动容器后，本行的最小宽度不再等于内容总宽。
+        ScrollView(.horizontal) {
+            HStack(spacing: 12) {
+            // 上一张/下一张：可见按钮承载 ←/→ 裸键快捷键（取代窗口级 NSEvent 监听）。
+            HStack(spacing: 2) {
+                Button { viewModel.retreatCurrent() } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .disabled(isBusy)
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .help(GatherLocalization.l("上一张（←）"))
+                .accessibilityLabel(GatherLocalization.l("上一张"))
+                Button { viewModel.advanceCurrent() } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .disabled(isBusy)
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .help(GatherLocalization.l("下一张（→）"))
+                .accessibilityLabel(GatherLocalization.l("下一张"))
+            }
             if let page = viewModel.page {
                 Text("\(currentIndex + 1) / \(viewModel.page?.total ?? page.assets.count)")
-                    .font(.footnote.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                     .monospacedDigit()
-                    .foregroundStyle(Color.gatherTextPrimary)
+                    .foregroundStyle(GatherTheme.primaryText)
+                    .accessibilityLabel(String(format: GatherLocalization.l("第 %lld 张，共 %lld 张"), currentIndex + 1, viewModel.page?.total ?? page.assets.count))
             }
             if let summary = viewModel.summary {
                 Text(String(format: GatherLocalization.l("保留 %lld"), summary.kept))
-                    .font(.footnote)
+                    .font(.callout)
                     .monospacedDigit()
                     .foregroundStyle(GatherTheme.success)
                 Text(String(format: GatherLocalization.l("淘汰 %lld"), summary.rejected))
-                    .font(.footnote)
+                    .font(.callout)
                     .monospacedDigit()
                     .foregroundStyle(GatherTheme.error)
                 Text(String(format: GatherLocalization.l("未处理 %lld"), summary.pending))
-                    .font(.footnote)
+                    .font(.callout)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
             // linkedNotice：同名 RAW/JPEG 共享 XMP 提示（对齐旧版 Culling.tsx:1393-1397）。
             if let current = viewModel.currentAsset, current.linkedVariantCount > 1 {
                 Text(String(format: GatherLocalization.l("同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 %lld 个条目"), current.linkedVariantCount))
-                    .font(.footnote)
+                    .font(.callout)
                     .monospacedDigit()
                     .foregroundStyle(GatherTheme.error)
                     .lineLimit(1)
             }
-            Spacer()
+            // 原为 Spacer()（把同步区推到最右）。横向滚动容器里 Spacer 没有
+            // 可分配空间，改为固定分隔线：语义上把「照片信息」与「同步动作」分开。
+            Divider().frame(height: 16)
             if let sync = viewModel.syncStatus {
                 Text(syncStatusText(sync))
-                    .font(.footnote.weight(.medium))
+                    .font(.callout.weight(.medium))
                     .monospacedDigit()
                     .foregroundStyle(sync.failed + sync.conflict > 0 ? GatherTheme.error : GatherTheme.success)
             }
             if let syncError = viewModel.lastSyncError {
                 Text(syncError)
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(GatherTheme.error)
                     .lineLimit(1)
                     .help(syncError)
@@ -2101,7 +2236,7 @@ public struct CullingView: View {
                     .buttonStyle(.borderless)
                     .controlSize(.small)
                     .tint(GatherTheme.error)
-                    .nonFocusable()
+
             }
             Menu {
                 Button(GatherLocalization.l("立即写入 XMP")) { Task { await viewModel.flush() } }
@@ -2138,18 +2273,19 @@ public struct CullingView: View {
                 Label(GatherLocalization.l("同步…"), systemImage: "arrow.triangle.2.circlepath")
             }
             .controlSize(.small)
-            .nonFocusable()
+
             .help(GatherLocalization.l("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步"))
             Button(GatherLocalization.l("重置挑片"), role: .destructive) { pendingAction = .reset }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(GatherTheme.error)
-                .nonFocusable()
+
+            }
+            .font(.callout)
+            .padding(.horizontal, 24)
+            .frame(minHeight: 36)
         }
-        .font(.footnote)
-        .padding(.horizontal, 24)
-        .frame(minHeight: 36)
-        .background(Color.gatherSurface)
+        .background(GatherTheme.contentBackground)
         .overlay(alignment: .top) { Divider() }
     }
 
@@ -2193,34 +2329,39 @@ public struct CullingView: View {
             : GatherLocalization.l("请先加载元数据并确认同步，再执行清理")
     }
 
-    // MARK: 胶片条（grid-column 3：122pt 缩略图 + 色标线 + 星级 + 决策圆点 + 文件名）。
+    // MARK: 胶片条（底部全宽横向条：122pt 缩略图 + 色标线 + 星级 + 决策圆点 + 文件名）。
+    // 约束：这一层只允许存在一个 ScrollView（横向滚动）。再套一层竖向
+    // ScrollView 会在 AppKit 约束更新阶段抛异常（与 Form(.grouped) 进
+    // .inspector 的崩溃同源），所以缩略图必须留在同一条横向 LazyHStack 里。
 
     private var filmstrip: some View {
         VStack(spacing: 0) {
             HStack {
                 Text(GatherLocalization.l("胶片"))
-                    .font(.footnote.weight(.semibold))
-                    .kerning(0.4)
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let page = viewModel.page {
                     Text("\(page.assets.count)\(page.total > page.assets.count ? " / \(page.total)" : "")")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
+                        .accessibilityLabel(String(format: GatherLocalization.l("已载入 %lld 张，共 %lld 张"), page.assets.count, page.total))
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 9)
-            .background(Color.gatherSurface)
+            .background(GatherTheme.contentBackground)
             .overlay(alignment: .bottom) { Divider() }
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 8) {
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 8) {
                         ForEach(Array((viewModel.page?.assets ?? []).enumerated()), id: \.element.photo.id) { index, asset in
                             CullingFilmThumbView(viewModel: viewModel, asset: asset)
                                 .id(asset.photo.id)
-                                // 滚动近底自动续页（对齐旧版胶片条 scrollTop < 400px 触发 loadMore）。
+                                // 横向滚动近尾自动续页（原竖向 scrollTop < 400px 的语义：
+                                // 尾部 4 个缩略图出现即 loadMore；LazyHStack 的 onAppear
+                                // 天然按横向可见性触发，无需改 VM）。
                                 .onAppear {
                                     let count = viewModel.page?.assets.count ?? 0
                                     if index >= count - 4, viewModel.page?.nextRowId != nil {
@@ -2232,15 +2373,17 @@ public struct CullingView: View {
                             Button(viewModel.isLoading ? GatherLocalization.l("加载中…") : GatherLocalization.l("加载更多")) {
                                 viewModel.loadMore()
                             }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                             .disabled(viewModel.isLoading)
-                            .font(.footnote)
-                            .frame(maxWidth: .infinity)
-                            .nonFocusable()
+                            // 横向 LazyHStack 里 maxWidth: .infinity 会撑满视口：
+                            // 改为与缩略图等高的一格按钮（仍是同一行的行尾出口）。
+                            .frame(width: 140, height: 122)
                         }
                     }
                     .padding(8)
                 }
-                // 当前照片自动滚动（对齐旧版 scrollIntoView block:nearest）。
+                // 当前照片自动滚动（对齐旧版 scrollIntoView block:nearest；横向居中）。
                 .onChange(of: viewModel.currentPhotoId) { _, newValue in
                     guard let newValue else { return }
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -2249,8 +2392,12 @@ public struct CullingView: View {
                 }
             }
         }
-        .background(Color.gatherSurface)
-        .overlay(alignment: .leading) { Divider() }
+        // 固定条高 176pt（150–190 区间）：查看器吃掉剩余高度，胶片条保持单行。
+        .frame(maxWidth: .infinity)
+        .frame(height: 176)
+        .background(GatherTheme.contentBackground)
+        // 与上方 infoBar 的分隔线（旧版胶片条在右侧时该分隔线在 leading）。
+        .overlay(alignment: .top) { Divider() }
     }
 
     private var currentIndex: Int {
@@ -2279,12 +2426,7 @@ public struct CullingView: View {
                     failureBlock
                 }
             }
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.gatherSurface))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(GatherTheme.error.opacity(0.55), lineWidth: 1)
-            )
+            .gatherCard()
             .shadow(color: GatherTheme.shadowMd, radius: 12, y: 6)
         }
     }
@@ -2295,24 +2437,26 @@ public struct CullingView: View {
     private func conflictBlock(_ conflict: MetadataConflict) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(GatherLocalization.l("XMP 字段冲突")).font(.headline)
+                Label(GatherLocalization.l("XMP 字段冲突"), systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(GatherTheme.error)
                 Spacer()
                 Text(URL(fileURLWithPath: conflict.xmpPath).lastPathComponent)
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .help(conflict.xmpPath)
             }
             if let reason = viewModel.syncFailureReason(xmpPath: conflict.xmpPath) {
                 Text(String(format: GatherLocalization.l("原因：%@"), reason))
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(GatherTheme.error)
                     .lineLimit(3)
                     .help(reason)
             }
             if conflict.fields.isEmpty {
                 Text(GatherLocalization.l("该冲突行没有可逐字段裁决的差异：直接结清即可（保留 Gather 值并以当前磁盘状态为新基线重写）。"))
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             ForEach(conflict.fields, id: \.field.rawValue) { field in
@@ -2329,9 +2473,6 @@ public struct CullingView: View {
                         .font(.callout)
                         .lineLimit(1)
                         .help(valueLabel(field.remote))
-                    Text(GatherLocalization.l("处理"))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                     Picker(GatherLocalization.l("处理"), selection: Binding(
                         get: { conflictChoices[key] ?? .keepLocal },
                         set: { conflictChoices[key] = $0 }
@@ -2342,37 +2483,34 @@ public struct CullingView: View {
                     .pickerStyle(.menu)
                     .labelsHidden()
                     .fixedSize()
-                    .nonFocusable()
+                    .accessibilityLabel(GatherLocalization.l("冲突处理方式"))
                 }
                 .padding(8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+                .background(
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                        .fill(GatherTheme.secondaryContentBackground)
+                )
             }
             HStack {
                 Text(viewModel.conflicts.count > 1
                     ? String(format: GatherLocalization.l("还有 %lld 个冲突"), viewModel.conflicts.count - 1)
                     : GatherLocalization.l("这是最后一个冲突"))
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(GatherLocalization.l("采用外部值")) {
                     pendingAction = .resolveConflict(conflict, choicesForConflict(conflict, .useRemote))
                 }
-                .font(.footnote)
-                .nonFocusable()
                 .help(GatherLocalization.l("丢弃 Gather 待写入值，接受磁盘上的外部修改"))
                 Button(GatherLocalization.l("保留 Gather 并结清")) {
                     // 空 choices = 显式结清（coordinator 的第三条出口），字段为空时同样可达。
                     pendingAction = .resolveConflict(conflict, [:])
                 }
-                .font(.footnote)
-                .nonFocusable()
                 .help(GatherLocalization.l("把 Gather 的值写回 XMP，以当前磁盘状态为新基线"))
                 if !conflict.fields.isEmpty {
                     Button(GatherLocalization.l("应用选择并继续写入")) {
                         pendingAction = .resolveConflict(conflict, selectedChoices(conflict))
                     }
-                    .font(.footnote)
-                    .nonFocusable()
                 }
             }
         }
@@ -2387,29 +2525,30 @@ public struct CullingView: View {
                     .foregroundStyle(GatherTheme.error)
                 Spacer()
                 Button(GatherLocalization.l("重试失败项")) { pendingAction = .retryFailedWriteback }
-                    .font(.footnote)
-                    .nonFocusable()
             }
             ForEach(Array(viewModel.failedSyncItems.prefix(3)), id: \.xmpPath) { item in
                 VStack(alignment: .leading, spacing: 2) {
                     Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
-                        .font(.footnote.weight(.medium))
+                        .font(.callout.weight(.medium))
                     // 上屏走错误码漏斗；原始诊断已由 applySyncStatus 写日志。
                     Text(item.errorMessage.isEmpty
                         ? GatherLocalization.l("未记录原因")
                         : CullingViewModel.funnelErrorText(item.errorMessage))
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(GatherTheme.error)
                         .lineLimit(3)
                         .help(item.errorMessage.isEmpty ? "" : CullingViewModel.funnelErrorText(item.errorMessage))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.gatherBackground))
+                .background(
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                        .fill(GatherTheme.secondaryContentBackground)
+                )
             }
             if viewModel.failedSyncItems.count > 3 {
                 Text(String(format: GatherLocalization.l("另有 %lld 项失败"), viewModel.failedSyncItems.count - 3))
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
@@ -2429,74 +2568,25 @@ public struct CullingView: View {
     }
 
     // MARK: 键盘快捷键（对齐 Culling.tsx:1109-1149 window keydown handler）。
-    // 0-5 评分、P/空格 保留、X 淘汰、U 未处理（不前进）、←/→ 翻页；
-    // Cmd+Z / Shift+Cmd+Z 由宿主菜单 post gatherMenuUndo/gatherMenuRedo 通知驱动。
-    // 实现为窗口级 NSEvent 局部监听（Gallery 灯箱同款模式）：与 SwiftUI 焦点
-    // 系统解耦——点击勾选框/按钮/弹窗后快捷键依然生效，对齐旧版 window keydown。
+    // 0-5 评分、P 保留、X 淘汰、U 未处理（不前进）、←/→ 翻页。
+    // 原生实现：可见控件上的 .keyboardShortcut（任意焦点下窗口级生效），
+    // 空格键由查看器的 .onKeyPress 处理；不再使用 NSEvent 局部监听，
+    // 也不再需要屏蔽控件焦点的 nonFocusable —— Tab 遍历恢复可用。
 
-    private func installKeyDownMonitor() {
-        removeKeyDownMonitor()
-        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard let window = self.windowBox.window,
-                  event.window === window,
-                  window.isKeyWindow else { return event }
-            return self.handleKeyDown(event)
+    private func emptyGuide(title: String, systemImage: String, message: String) -> some View {
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            Text(message)
         }
-    }
-
-    private func removeKeyDownMonitor() {
-        if let keyDownMonitor {
-            NSEvent.removeMonitor(keyDownMonitor)
-            self.keyDownMonitor = nil
-        }
-    }
-
-    /// 处理裸键快捷键；返回 nil 表示已消费该事件。
-    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
-        guard !viewModel.isLoading, !viewModel.isNavigationBusy, !viewModel.isQualityBusy else {
-            return event
-        }
-        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        guard flags.isEmpty else {
-            return event
-        }
-        if event.keyCode == 123 {
-            viewModel.retreatCurrent()
-            return nil
-        }
-        if event.keyCode == 124 {
-            viewModel.advanceCurrent()
-            return nil
-        }
-        let character = (event.charactersIgnoringModifiers ?? "").lowercased()
-        if character == " " || character == "p" {
-            viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
-            return nil
-        }
-        if character == "x" {
-            viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
-            return nil
-        }
-        if character == "u" {
-            viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
-            return nil
-        }
-        if character.count == 1, let rating = Int(character), (0...5).contains(rating) {
-            viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating)))
-            return nil
-        }
-        return event
-    }
-
-    private func emptyGuide(_ text: String) -> some View {
-        GatherEmptyState(icon: "photo.on.rectangle.angled", message: text)
-            .padding(.vertical, 48)
+        .padding(.vertical, 48)
     }
 
     /// 颜色标签色点（供胶片条/工具列/筛选卡共用）。
+    /// C1 色标本身是数据（非状态色），保留固定色值；「无」用语义标签色。
     fileprivate static func colorDot(_ label: CaptureOneColorLabel) -> Color {
         switch label {
-        case .none: return Color(hex: 0x777777)
+        case .none: return Color(nsColor: .secondaryLabelColor)
         case .red: return Color(hex: 0xef5350)
         case .orange: return Color(hex: 0xff9800)
         case .yellow: return Color(hex: 0xfdd835)
@@ -2542,8 +2632,15 @@ public struct CullingView: View {
 
     /// 对齐旧版 syncLabel 六档文案：已同步 / N 个冲突 / N 个失败 /
     /// N 待写入 / N 已写入 / N 已载入。
-    private func syncStatusText(_ sync: MetadataSyncSummary) -> String {
-        if sync.items.isEmpty { return GatherLocalization.l("XMP 已同步") }
+    ///
+    /// internal（非 private）供 SyncStatusCopyTests 直测。它与控制中心的
+    /// syncStatusText 是**两个语域**（这里是紧凑计数，控制中心是状态句），
+    /// 但结论必须一致——G 报告指出旧实现在 items 为空时**无条件**返回
+    /// 「XMP 已同步」：若计数查询与行查询不同步（counts 非零而 items 为空），
+    /// 同一份 outbox 状态会得到相反结论。
+    func syncStatusText(_ sync: MetadataSyncSummary) -> String {
+        let hasCounts = sync.conflict + sync.failed + sync.pending + sync.writing + sync.written + sync.synced > 0
+        if sync.items.isEmpty && !hasCounts { return GatherLocalization.l("XMP 已同步") }
         if sync.conflict > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 冲突"), sync.conflict) }
         if sync.failed > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 写入失败"), sync.failed) }
         if sync.pending + sync.writing > 0 { return String(format: GatherLocalization.l("%lld 个 XMP 等待写入"), sync.pending + sync.writing) }
@@ -2579,6 +2676,17 @@ public struct CullingView: View {
         Binding(
             get: { viewModel.filterState.colorLabel },
             set: { value in viewModel.setFilterState { $0.colorLabel = value } }
+        )
+    }
+
+    /// 当前照片的颜色标签（工具列菜单选择器；选中即写入当前照片）。
+    private var colorSelectionBinding: Binding<CaptureOneColorLabel?> {
+        Binding(
+            get: { viewModel.currentAsset?.state.colorLabel },
+            set: { value in
+                guard let value else { return }
+                viewModel.commit(patch: CullingUpdatePatch(colorLabel: value))
+            }
         )
     }
 
@@ -2618,45 +2726,39 @@ public struct CullingView: View {
     }
 }
 
-/// 决策按钮：SF Symbol 图标 + 快捷键字母，自绘卡片描边，hover 高亮。
+/// 决策按钮：系统 bordered 按钮（图标 + 标题 + 快捷键提示），
+/// 裸键快捷键在按钮自身上声明（任意焦点下窗口级生效）。
 private struct DecisionButtonView: View {
     let icon: String
     let iconColor: Color
     let title: String
     let shortcut: String
+    let key: KeyEquivalent
     let isBusy: Bool
     let action: () -> Void
-    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 14))
+                    .imageScale(.medium)
                     .foregroundStyle(iconColor)
+                Text(title)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Text(shortcut)
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 40)
+            .frame(maxWidth: .infinity, minHeight: 24)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: GatherTheme.Radius.md)
-                .fill(isHovering ? GatherTheme.primarySoft.opacity(0.4) : Color.gatherSurface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: GatherTheme.Radius.md)
-                .stroke(Color.gatherBorder, lineWidth: 1)
-        )
-        .onHover { hovering in
-            isHovering = hovering
-        }
+        .buttonStyle(.bordered)
+        .frame(maxWidth: .infinity)
+        // 裸键由查看器的 onKeyPress 统一注册（见 CullingWorkbenchViewer），
         .disabled(isBusy)
-        .help(title)
-        .accessibilityLabel("\(title) \(shortcut)")
+        .help(String(format: GatherLocalization.l("%@（快捷键 %@）"), title, shortcut))
+        .accessibilityLabel(title)
+        .accessibilityHint(String(format: GatherLocalization.l("快捷键 %@"), shortcut))
     }
 }
 
@@ -2675,8 +2777,9 @@ private struct CullingFilmThumbView: View {
     }
 
     private var borderColor: Color {
-        if isCurrent { return GatherTheme.primary }
-        if isSelected { return GatherTheme.warning }
+        // 当前 = 品牌 accent；多选 = accent 半透明（不使用 warning 语义色）。
+        if isCurrent { return GatherTheme.accent }
+        if isSelected { return GatherTheme.accent.opacity(0.55) }
         return .clear
     }
 
@@ -2702,10 +2805,13 @@ private struct CullingFilmThumbView: View {
                         .frame(height: 4)
                 }
                 if asset.state.rating > 0 {
+                    // 星级是内容语义（.callout），压在照片上时给深色底保证对比度。
                     Text("\(Int(asset.state.rating))★")
-                        .font(.footnote)
-                        .foregroundStyle(GatherTheme.warning)
-                        .shadow(color: .black.opacity(0.6), radius: 2, y: 1)
+                        .font(.callout)
+                        .foregroundStyle(GatherTheme.viewerTextPrimary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.8)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding(4)
                 }
@@ -2715,9 +2821,10 @@ private struct CullingFilmThumbView: View {
                         .frame(width: 9, height: 9)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .padding(4)
+                        .accessibilityHidden(true)
                 }
                 Text(asset.photo.filename)
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(GatherTheme.viewerTextPrimary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2753,14 +2860,16 @@ private struct CullingFilmThumbView: View {
             }
         }
         .frame(height: 122)
-        .nonFocusable()
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(borderColor, lineWidth: 2))
-        .opacity(isCurrent || isSelected ? 1 : 0.78)
+        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                .strokeBorder(borderColor, lineWidth: isCurrent ? 2.5 : 2)
+        )
         .help(asset.photo.filename)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(thumbAccessibilityLabel)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityValue(isSelected ? GatherLocalization.l("已选中") : GatherLocalization.l("未选中"))
+        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
     }
 
     private var thumbAccessibilityLabel: String {
@@ -2768,6 +2877,29 @@ private struct CullingFilmThumbView: View {
             ? String(format: GatherLocalization.l("%lld 星"), Int(asset.state.rating))
             : GatherLocalization.l("未评级")
         return "\(asset.photo.filename)，\(ratingText)，\(pickStateTitle(asset.state.pickState))"
+    }
+}
+
+/// 查看器图片上的深色底徽标：照片背景不可控，内容色固定用 viewerTextPrimary、
+/// 图标用语义色，底色用 viewerChrome，保证任何照片上都可读。
+private struct ViewerBadge: View {
+    let text: String
+    let systemImage: String
+    var tone: Color = GatherTheme.viewerTextPrimary
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .foregroundStyle(tone)
+            Text(text)
+                .foregroundStyle(GatherTheme.viewerTextPrimary)
+        }
+        .font(.callout)
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -2781,18 +2913,73 @@ private struct ViewerCell: Identifiable {
 /// 工作台内嵌查看器：对齐旧版查看器核心能力——1/2/4 张对比（4 张为 2x2 网格）、
 /// 滚轮缩放（1.15/0.87，范围 1..8）+ 任意缩放级拖拽平移 + 双击复位 + zoomHint、
 /// 每格字幕（文件名 + 来源 + 星级/未评级）+ 保留/淘汰徽标 + 无脸徽标 + 质量徽标。
+/// 人脸对齐：把 bbox 中心搬到单元格中心所需的位移。
+///
+/// 坐标模型（必须与 cellView 的修饰符顺序一致）：
+/// - 图像以 **aspect-fit 居中** 显示：显示尺寸 = fit(图像宽高比, 单元格)，两侧/上下留黑；
+/// - 修饰符是 .scaleEffect(zoom).offset(d)，即先缩放后平移，d 处于**未缩放的
+///   单元格空间**（不是图像空间）；
+/// - 因此缩放后点 p 的渲染位置 = center + zoom·(p − center) + d。
+/// 令 bbox 中心映射到 center，解得 d = zoom · (0.5 − face) ⊙ displayedFit。
+///
+/// 旧实现用 (0.5 − face) ⊙ cellSize 且不乘 zoom：竖构图欠平移约 1.6~2×，
+/// 任何缩放级下脸都不在中心（审计 B-C1）。
+enum FaceAlign {
+    static func offset(imageSize: CGSize, cellSize: CGSize, face: [Double], zoom: Double) -> CGSize {
+        guard face.count >= 4, cellSize.width > 0, cellSize.height > 0, zoom > 0 else { return .zero }
+        let centerX = min(max(face[0] + face[2] / 2, 0), 1)
+        let centerY = min(max(face[1] + face[3] / 2, 0), 1)
+        let displayed: CGSize
+        if imageSize.width > 0, imageSize.height > 0 {
+            let fit = min(cellSize.width / imageSize.width, cellSize.height / imageSize.height)
+            displayed = CGSize(width: imageSize.width * fit, height: imageSize.height * fit)
+        } else {
+            // 图像尺寸未知（老库/未索引）：退回单元格近似，保守且不放大误差。
+            displayed = cellSize
+        }
+        return CGSize(
+            width: zoom * (0.5 - centerX) * displayed.width,
+            height: zoom * (0.5 - centerY) * displayed.height
+        )
+    }
+}
+
+/// 拖拽平移的累积（审计 B-C2）：手势 translation 相对**本次手势起点**，
+/// 必须叠加本次手势开始时的位移，否则松手再拖会弹回原点。
+enum PanOffset {
+    static func apply(start: CGSize, translation: CGSize) -> CGSize {
+        CGSize(width: start.width + translation.width, height: start.height + translation.height)
+    }
+}
+
 private struct CullingWorkbenchViewer: View {
     let viewModel: CullingViewModel
     let compareCount: Int
     let faceAlign: Bool
 
     @State private var scale = 1.0
+    /// 底层整图位图（基准档）：细节由可见区域层提供，底层不随缩放抬高。
+    @State private var detailBaseSize = PhotoDetailTier.baseDimension
+    /// 最近一次单元格布局尺寸（A-6：细节层几何必须按单元格而非整窗计算）。
+    @State private var lastCellSize: CGSize = .zero
+    /// 可见区域细节层（去抖 150ms 后更新；缩放与平移都会改动它）。
+    @State private var detailTileState: PhotoViewerGeometry.DetailTile?
+    @State private var detailTileTask: Task<Void, Never>?
     @State private var gestureScale = 1.0
     @State private var offset = CGSize.zero
+    /// 本次拖拽开始时的位移基线（B-C2）：DragGesture.translation 是相对手势起点
+    /// 的累计量，直接赋给 offset 会让每次新手势从 0 起算——松手再拖就弹回原点。
+    @State private var dragStartOffset = CGSize.zero
     @State private var hoveredCellId: String?
-    @State private var imageFrame: CGRect = .zero
     @State private var wheelMonitor: Any?
     @State private var viewerWindow: NSWindow?
+    /// 查看器区域的 AppKit 代理视图（.background(WindowBridge)）。
+    ///
+    /// 约束循环修复（F01）：滚轮命中原先比较 GeometryReader 写回 @State 的
+    /// .global frame——每帧重排都写观察状态，持续放大约束更新次数。
+    /// 改为直接问代理视图「这个点在你 bounds 里吗」：位置由 AppKit 自己维护，
+    /// 不产生任何布局反馈。
+    @State private var viewerProxy: NSView?
 
     /// 当前已加载列表（viewModel.page 变化经 @Observable 自动回流）。
     private var assets: [CullingAsset] {
@@ -2834,45 +3021,88 @@ private struct CullingWorkbenchViewer: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onAppear {
-                // 记录图像区域在窗口坐标系中的位置，用于滚轮事件命中判断。
-                imageFrame = geometry.frame(in: .global)
-            }
-            .onChange(of: geometry.frame(in: .global)) { _, newFrame in
-                imageFrame = newFrame
-            }
         }
         .background(GatherTheme.viewerChrome)
         .clipped()
         .overlay(alignment: .top) {
-            // 缩放提示（对齐旧版 zoomHint：居中毛玻璃胶囊，百分比 + 操作提示）。
-            Text(String(format: GatherLocalization.l("%lld%% 滚轮缩放 · 拖动平移 · 双击复位 · ⌘+/⌘− 缩放"), Int(effectiveScale * 100)))
-                .font(.footnote)
-                .foregroundStyle(Color.white.opacity(0.75))
+            // 缩放提示（对齐旧版 zoomHint：居中胶囊，百分比 + 操作提示）。
+            Text(String(format: GatherLocalization.l("%lld%% 滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放"), Int(effectiveScale * 100)))
+                .font(.callout)
+                .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.9))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
-                .background(Capsule().fill(GatherTheme.viewerSurface.opacity(0.75)))
+                .background(Capsule().fill(GatherTheme.viewerSurface.opacity(0.85)))
                 .padding(.top, 8)
         }
-        .overlay(alignment: .topLeading) {
-            HStack(spacing: 0) {
-                Button("") { zoomOut() }
-                    .keyboardShortcut("-", modifiers: .command)
-                Button("") { resetTransform() }
-                    .keyboardShortcut("0", modifiers: .command)
-                Button("") { zoomIn() }
-                    .keyboardShortcut("=", modifiers: .command)
-                Button("") { zoomIn() }
-                    .keyboardShortcut("+", modifiers: .command)
+        .overlay(alignment: .bottomLeading) {
+            // 可见缩放控件承载 ⌘−/⌘0/⌘= 快捷键（取代零尺寸全透明的隐藏按钮）。
+            HStack(spacing: 4) {
+                Button { zoomOut() } label: {
+                    Image(systemName: "minus.magnifyingglass")
+                }
+                .keyboardShortcut("-", modifiers: .command)
+                .help(GatherLocalization.l("缩小（⌘−）"))
+                .accessibilityLabel(GatherLocalization.l("缩小"))
+
+                Button { resetTransform() } label: {
+                    Image(systemName: "1.magnifyingglass")
+                }
+                .keyboardShortcut("0", modifiers: .command)
+                .help(GatherLocalization.l("实际大小（⌘0）"))
+                .accessibilityLabel(GatherLocalization.l("实际大小"))
+
+                Button { zoomIn() } label: {
+                    Image(systemName: "plus.magnifyingglass")
+                }
+                .keyboardShortcut("=", modifiers: .command)
+                .help(GatherLocalization.l("放大（⌘=）"))
+                .accessibilityLabel(GatherLocalization.l("放大"))
             }
-            .frame(width: 0, height: 0)
-            .opacity(0)
-            .allowsHitTesting(false)
-            .focusable(false)
-            .accessibilityHidden(true)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            // 浮在照片之上的功能层控件：macOS 26+ 用 **clear** 玻璃
+            // （Apple：clear 专用于浮在照片/视频等媒体之上的组件），
+            // 下面本来就有 viewerChrome 深色底，满足「亮媒体需暗化」的前提。
+            // 低版本回退到原来的深色胶囊。
+            .modifier(ViewerZoomChrome())
         }
-        .background(WindowBridge { window in
-            viewerWindow = window
+        // 空格 = 保留当前照片（裸键不该占用系统快捷键，交给聚焦查看器的 onKeyPress）。
+        .focusable()
+        .focusEffectDisabled()
+        // 裸键（空格 / P / X / U / 0–5）统一挂在这里。
+        //
+        // 这些键原先注册在检查器里的按钮上，检查器一旦折叠就全部失效——
+        // 而 P/X/U 是挑片的主力操作，不能依赖某个面板是否展开。
+        // 查看器是本页唯一**始终存在**的控件，且已经为空格使用 onKeyPress。
+        .onKeyPress(phases: .down) { press in
+            switch press.characters.lowercased() {
+            case " ":
+                viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
+                return .handled
+            case "p":
+                viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
+                return .handled
+            case "x":
+                viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
+                return .handled
+            case "u":
+                viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed))
+                return .handled
+            case "0", "1", "2", "3", "4", "5":
+                guard let value = Int(press.characters) else { return .ignored }
+                viewModel.commit(patch: CullingUpdatePatch(rating: Double(value)))
+                return .handled
+            default:
+                return .ignored
+            }
+        }
+        .background(WindowBridge { window, view in
+            // 只在身份真正变化时写状态：updateNSView 每次布局都会回调，
+            // 无条件赋值等于每次布局都排一轮视图更新（又是新的反馈环）。
+            if viewerWindow !== window { viewerWindow = window }
+            if viewerProxy !== view { viewerProxy = view }
         })
         .onAppear {
             startWheelMonitor()
@@ -2891,83 +3121,136 @@ private struct CullingWorkbenchViewer: View {
         .onChange(of: viewModel.currentPhotoId) { _, _ in
             resetTransform()
         }
+        // 可见区域细节层：缩放或平移停止 150ms 后重算「可见矩形」，只重解那一块。
+        .onChange(of: scale) { _, _ in scheduleDetailTileUpdate() }
+        .onChange(of: offset) { _, _ in scheduleDetailTileUpdate() }
     }
 
     /// 对比单元格：黑底 + 缩放/平移手势 + 底部字幕条 + 徽标 + hover 主色描边 + 双击复位。
     private func cellView(_ cell: ViewerCell) -> some View {
         let asset = cell.asset
         return GeometryReader { cellGeometry in
-            let face = asset.faceBboxes.first
-            let faceX = face.map { min(max($0[0] + $0[2] / 2, 0), 1) } ?? 0.5
-            let faceY = face.map { min(max($0[1] + $0[3] / 2, 0), 1) } ?? 0.5
-            let alignOffset = faceAlign && face != nil
-                ? CGSize(
-                    width: (0.5 - faceX) * cellGeometry.size.width,
-                    height: (0.5 - faceY) * cellGeometry.size.height
+            // A-6：单元格尺寸只经生命周期回调写状态（**不在 body 求值期间写 @State**，
+            // 否则触发 SwiftUI「Modifying state during view update」与额外布局循环）。
+            Color.clear
+                .frame(width: 0, height: 0)
+                .onAppear {
+                    if cell.asset.photo.id == currentAsset?.photo.id { lastCellSize = cellGeometry.size }
+                }
+                .onChange(of: cellGeometry.size) { _, newSize in
+                    if cell.asset.photo.id == currentAsset?.photo.id {
+                        lastCellSize = newSize
+                        // A-6 残余（第二轮验证）：尺寸变化（拖窗口/切对比模式）后
+                        // 贴片几何也要重算，否则放大态下会错位到下次平移/缩放。
+                        scheduleDetailTileUpdate()
+                    }
+                }
+            // B-C1：人脸对齐必须按「fit 后的图像显示尺寸」算，并乘上缩放级。
+            // 旧实现用单元格尺寸且漏乘 zoom → 竖构图两轴欠平移 1.6~2×，
+            // 任何缩放级下脸都不在中心。
+            let alignOffset: CGSize = {
+                guard faceAlign, let face = asset.faceBboxes.first else { return .zero }
+                return FaceAlign.offset(
+                    imageSize: CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height)),
+                    cellSize: cellGeometry.size,
+                    face: face,
+                    zoom: max(2, scale)
                 )
-                : .zero
+            }()
             ZStack(alignment: .bottom) {
                 // 整图适配（对齐旧版 .viewerImage object-fit: contain）：窄容器
                 // 时整体缩放而非裁切，缩放级作用于完整画面。
                 // allowsHitTesting(false)：scaleEffect 放大后命中区域会外溢到
                 // 单元格之外（.clipped() 只裁剪渲染不裁剪命中），吞掉工具栏/
                 // 工具列/胶片条的点击——人脸对齐开启后必须把命中限定在单元格内。
-                PhotoThumbnailView(path: asset.photo.filepath, size: 2560, preview: true, contentMode: .fit)
+                // 底层：整图低分辨率位图（基准档），负责构图与手势，立即显示不闪。
+                // 放大后的真实细节由下面的**可见区域细节层**负责（只解可见区域，
+                // 不整图重解——Bridge / Capture One 的 tiled detail 语义）。
+                PhotoThumbnailView(
+                    path: asset.photo.filepath,
+                    size: detailBaseSize,
+                    preview: true,
+                    contentMode: .fit
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .scaleEffect(faceAlign && face != nil ? max(2, scale) : scale)
+                    .scaleEffect(effectiveZoom)
                     .offset(x: offset.width + alignOffset.width, y: offset.height + alignOffset.height)
                     .allowsHitTesting(false)
+                // 可见区域细节层：按同一套几何算出「真正可见的图像矩形」，
+                // 只解码这一块（detailTileState 由缩放/平移变化去抖驱动）。
+                // A-6 残余（第二轮验证）：detailTileState 是整页唯一状态，其几何来自
+                // currentAsset；非当前格把「当前照片的可见区域」贴到别人的底图上会错位
+                //（宽高比不同时明显）。只让当前格渲染贴片。
+                if let tile = detailTileState, cell.asset.photo.id == currentAsset?.photo.id {
+                    PhotoDetailTileView(
+                        path: asset.photo.filepath,
+                        normalizedRect: tile.normalizedRect,
+                        targetPixel: PhotoViewerGeometry.tilePixelSize(
+                            viewRect: tile.viewRect,
+                            budgetDimension: PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
+                        ),
+                        onUnavailable: {
+                            // 区域解码不可用 → 退回整图高档位（渐进档位逻辑保留为兜底）。
+                            detailBaseSize = PhotoDetailTier.target(
+                                fitPoints: Self.fitPoints(
+                                    imageSize: CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height)),
+                                    cellSize: cellGeometry.size
+                                ),
+                                zoom: effectiveZoom,
+                                backingScale: Double(NSScreen.main?.backingScaleFactor ?? 2),
+                                sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height))
+                            )
+                        }
+                    )
+                    .frame(width: max(0, tile.viewRect.width), height: max(0, tile.viewRect.height))
+                    .position(x: tile.viewRect.midX, y: tile.viewRect.midY)
+                    .allowsHitTesting(false)
+                }
                 // 底部字幕条（文件名 / 来源 / 星级）。
                 HStack(spacing: 8) {
                     Text(asset.photo.filename).lineLimit(1)
                     Spacer()
                     Text(sourceLabel(asset))
-                        .foregroundStyle(Color.white.opacity(0.7))
+                        .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.75))
                         .lineLimit(1)
                     Spacer()
                     Text(asset.state.rating > 0 ? "\(Int(asset.state.rating))★" : GatherLocalization.l("未评级"))
                 }
-                .font(.footnote)
-                .foregroundStyle(Color.white.opacity(0.85))
+                .font(.callout)
+                .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.92))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity)
                 .background(GatherTheme.viewerSurface.opacity(0.9))
                 // 右上保留/淘汰徽标。
                 if asset.state.pickState != .unreviewed {
-                    Text(asset.state.pickState == .picked ? GatherLocalization.l("保留") : GatherLocalization.l("淘汰"))
-                        .font(.footnote)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(
-                            asset.state.pickState == .picked ? GatherTheme.success : GatherTheme.error
-                        ))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(10)
+                    ViewerBadge(
+                        text: asset.state.pickState == .picked ? GatherLocalization.l("保留") : GatherLocalization.l("淘汰"),
+                        systemImage: asset.state.pickState == .picked ? "checkmark" : "xmark",
+                        tone: asset.state.pickState == .picked ? GatherTheme.success : GatherTheme.error
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(10)
                 }
                 // 左上无脸徽标（仅人脸对齐开启且该照片无检测结果时）。
-                if faceAlign && face == nil {
-                    Text(GatherLocalization.l("未检测到人脸"))
-                        .font(.footnote)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.65)))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(10)
+                if faceAlign && asset.faceBboxes.isEmpty {
+                    ViewerBadge(
+                        text: GatherLocalization.l("未检测到人脸"),
+                        systemImage: "person.crop.circle.badge.questionmark"
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(10)
                 }
                 // 右下质量徽标（对齐旧版 qualityBadge + warnings ⚠）。
                 if let quality = asset.quality {
-                    Text(qualityBadgeText(quality))
-                        .font(.footnote)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.65)))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .padding(8)
-                        .help(qualityHelpText(quality))
+                    ViewerBadge(
+                        text: qualityBadgeText(quality),
+                        systemImage: "sparkles",
+                        tone: GatherTheme.info
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(8)
+                    .help(qualityHelpText(quality))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2975,8 +3258,8 @@ private struct CullingWorkbenchViewer: View {
             .clipped()
             .background(GatherTheme.viewerBackground)
             .overlay(
-                RoundedRectangle(cornerRadius: GatherTheme.Radius.sm)
-                    .stroke(hoveredCellId == cell.id ? GatherTheme.primary.opacity(0.65) : Color(white: 0.16), lineWidth: 1)
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                    .stroke(hoveredCellId == cell.id ? GatherTheme.accent.opacity(0.65) : GatherTheme.viewerSurface, lineWidth: 1)
             )
             .onHover { hovering in
                 hoveredCellId = hovering ? cell.id : nil
@@ -2996,7 +3279,11 @@ private struct CullingWorkbenchViewer: View {
                 DragGesture()
                     .onChanged { value in
                         // 对齐旧版 onPointerDown：任意缩放级均可拖拽平移。
-                        offset = value.translation
+                        offset = PanOffset.apply(start: dragStartOffset, translation: value.translation)
+                    }
+                    .onEnded { _ in
+                        // 提交本次位移作为下次拖拽的基线（累积平移）。
+                        dragStartOffset = offset
                     }
             )
             .onTapGesture(count: 2) {
@@ -3070,7 +3357,65 @@ private struct CullingWorkbenchViewer: View {
         scale = 1
         gestureScale = 1
         offset = .zero
+        dragStartOffset = .zero
     }
+
+    /// 缩放/平移停止后重算可见区域细节层（150ms 去抖：拖动过程不排重解码队列）。
+    private func scheduleDetailTileUpdate() {
+        // A-6（性能审计）：几何必须用**当前单元格**的尺寸与**当前照片**的宽高。
+        // 旧实现取 viewerProxy 整窗尺寸 + page.assets.first：2×2 对比时可见区域
+        // 按整窗算（面积最多 4 倍），并把第一张照片的宽高套到其它格（贴片错位）。
+        let size = lastCellSize
+        guard size.width > 0, size.height > 0, let asset = currentAsset else { return }
+        let imageSize = CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height))
+        let zoom = effectiveZoom
+        let pan = CGSize(
+            width: offset.width + (faceAlign ? currentAlignOffset(imageSize: imageSize, cellSize: size).width : 0),
+            height: offset.height + (faceAlign ? currentAlignOffset(imageSize: imageSize, cellSize: size).height : 0)
+        )
+        let budget = PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
+        detailTileTask?.cancel()
+        detailTileTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            let tile = PhotoViewerGeometry.detailTile(
+                imageSize: imageSize,
+                viewSize: size,
+                zoom: Double(zoom),
+                panOffset: pan,
+                backingPixelBudget: detailBaseSize
+            )
+            // 缩回 1× 或细节层不再需要时清掉（避免留下过期贴片）。
+            detailTileState = tile
+        }
+    }
+
+    /// 当前渲染用的缩放级（人脸对齐时会把倍率抬到至少 2×）。
+    private var effectiveZoom: Double {
+        faceAlign ? max(2, scale) : scale
+    }
+
+    /// 当前人脸对齐位移（与 cellView 内计算的是同一个模型）。
+    private func currentAlignOffset(imageSize: CGSize, cellSize: CGSize) -> CGSize {
+        guard let asset = currentAsset, let face = asset.faceBboxes.first else { return .zero }
+        return FaceAlign.offset(
+            imageSize: imageSize,
+            cellSize: cellSize,
+            face: face,
+            zoom: max(2, scale)
+        )
+    }
+
+    /// 适配显示尺寸的最长边（pt）——与 contentMode .fit 的几何一致。
+    /// 用于「区域解码不可用」时的整图高档位兜底（见 cellView 的 onUnavailable）。
+    static func fitPoints(imageSize: CGSize, cellSize: CGSize) -> Double {
+        guard imageSize.width > 0, imageSize.height > 0, cellSize.width > 0, cellSize.height > 0 else { return 0 }
+        let fitScale = min(cellSize.width / imageSize.width, cellSize.height / imageSize.height)
+        return Double(max(imageSize.width, imageSize.height) * fitScale)
+    }
+
+    // （原「整图渐进档位」的调度已由可见区域细节层取代；整图高档位仅在区域解码
+    //   不可用时作为兜底，见 cellView 的 onUnavailable 回调。）
 
     private func zoomIn() {
         let next = min(8, max(1, scale * 1.15))
@@ -3101,12 +3446,13 @@ private struct CullingWorkbenchViewer: View {
     }
 
     private func handleWheel(_ event: NSEvent) {
-        // 仅响应查看器窗口内、指针位于图像区域上的滚动事件。
+        // 仅响应查看器窗口内、指针位于查看器区域上的滚动事件。
+        // 命中区域直接取代理视图的 bounds（AppKit 维护），不再读写
+        // GeometryReader 的坐标（见 viewerProxy 注）。
         guard let window = viewerWindow, event.window === window,
-              let contentView = window.contentView else { return }
-        let flippedY = contentView.bounds.height - event.locationInWindow.y
-        let point = CGPoint(x: event.locationInWindow.x, y: flippedY)
-        guard imageFrame.contains(point) else { return }
+              let proxy = viewerProxy, proxy.window === window else { return }
+        let point = proxy.convert(event.locationInWindow, from: nil)
+        guard proxy.bounds.contains(point) else { return }
         let next = min(8, max(1, scale * (event.scrollingDeltaY < 0 ? 1.15 : 0.87)))
         guard next != scale else { return }
         scale = next
@@ -3114,23 +3460,20 @@ private struct CullingWorkbenchViewer: View {
     }
 }
 
-/// 弱引用窗口盒：keyDown 监听闭包经它读取最新窗口（避免 struct 捕获副本陈旧）。
-private final class WeakWindowBox {
-    weak var window: NSWindow?
-}
-
 /// 获取承载视图的 NSWindow（滚轮事件监听的窗口归属判断用）。
 private struct WindowBridge: NSViewRepresentable {
-    let onResolve: (NSWindow?) -> Void
+    /// (window, proxyView)：proxyView 即本 representable 的宿主视图，
+    /// 其 bounds 就是查看器区域（滚轮命中的坐标系来源）。
+    let onResolve: (NSWindow?, NSView) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        DispatchQueue.main.async { onResolve(view.window) }
+        DispatchQueue.main.async { onResolve(view.window, view) }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { onResolve(nsView.window) }
+        DispatchQueue.main.async { onResolve(nsView.window, nsView) }
     }
 }
 
@@ -3148,29 +3491,35 @@ fileprivate func pickStateTitle(_ state: PickState) -> String {
     }
 }
 
-/// 工具列/胶片条控制组标签样式（对齐旧版 .controlLabel：10px/600/字距 0.04em）。
+/// 检查器 Section / 胶片条控制组标签样式（原生化：.callout 承载内容语义，中文不再加字距）。
 private extension View {
     func controlLabelStyle() -> some View {
-        font(.footnote.weight(.semibold))
-            .kerning(0.4)
+        font(.callout.weight(.semibold))
             .foregroundStyle(.secondary)
     }
 }
 
-/// 工具列控制组容器（对齐旧版 .controlGroup：下边框分隔 + 垂直间距）。
-private extension View {
-    func controlGroupStyle() -> some View {
-        padding(.vertical, 12)
-            .overlay(alignment: .bottom) { Divider() }
-            .padding(.bottom, 12)
-    }
-}
+// 注：旧版为让窗口级 NSEvent 快捷键生效，曾对整个挑片页控件施加
+// focusable(false)；快捷键已改为控件自身的 .keyboardShortcut + 查看器的
+// .onKeyPress，焦点屏蔽全部移除，Tab 遍历恢复系统默认行为。
 
-/// 键盘焦点屏蔽：挑片页主视图持有 onKeyPress 键盘焦点；页内控件一律
-/// 不可聚焦，避免点击按钮/勾选框后焦点被抢走导致快捷键失效
-/// （文本输入控件不存在，焦点天然不会落在输入框上）。
-private extension View {
-    func nonFocusable() -> some View {
-        focusable(false)
+
+// MARK: - 查看器缩放控件的功能层材质
+
+/// 缩放控件浮在照片之上，属于 Liquid Glass 的**功能层**。
+/// macOS 26+ 用 `.glass(.clear)`；更早版本保留原来的深色胶囊。
+private struct ViewerZoomChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.clear, in: .capsule)
+                .padding(.leading, 12)
+                .padding(.bottom, 40)
+        } else {
+            content
+                .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
+                .padding(.leading, 12)
+                .padding(.bottom, 40)
+        }
     }
 }

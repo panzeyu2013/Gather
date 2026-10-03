@@ -56,6 +56,8 @@ private struct JobSeed {
     var progressTotal: Int = 0
     var errorMessage: String = ""
     var errorCode: String = ""
+    /// checkpoint_json（D02：交付摘要就存在这里）。
+    var checkpointJSON: String = "{}"
 }
 
 /// TS: addJob。
@@ -66,7 +68,7 @@ private func addJob(_ db: DBConnection, _ sessionId: String, options: JobSeed) t
           progress_current, progress_total, progress_message, error_message, error_code,
           input_fingerprint, model_id, model_version, checkpoint_json, attempt_count,
           lease_owner, heartbeat_at, cancel_requested_at, created_at, started_at, finished_at, updated_at
-        ) VALUES (?, ?, 'session', ?, ?, ?, 0, ?, ?, '', ?, ?, '', '', '', '{}', 0, '', '', '', ?, '', ?, ?)
+        ) VALUES (?, ?, 'session', ?, ?, ?, 0, ?, ?, '', ?, ?, '', '', '', ?, 0, '', '', '', ?, '', ?, ?)
       """).run([
         .text(options.id),
         .text(options.type),
@@ -77,6 +79,7 @@ private func addJob(_ db: DBConnection, _ sessionId: String, options: JobSeed) t
         .int(Int64(options.progressTotal)),
         .text(options.errorMessage),
         .text(options.errorCode),
+        .text(options.checkpointJSON),
         .text(options.updatedAt),
         .text(options.updatedAt),
         .text(options.updatedAt),
@@ -523,5 +526,50 @@ struct WorkspaceStatusServiceTests {
         now += WorkspaceStatusService.offlinePhotosTTLMs
         let atTTL = try harness.service.getStatus(sessionId: harness.sessionId)
         #expect(try #require(atTTL).offlinePhotos == 1, "恰好到达 TTL 时必须重新查库，实际缓存值被复用")
+    }
+
+    // MARK: 深度审查 D02：已导出必须基于实际交付结果
+
+    @Test func allFailedExportDoesNotMarkWorkspaceExported() throws {
+        // 全失败的空交付：任务记录是 succeeded（执行器正常返回），但交付摘要
+        // exported == 0 —— 工作区不得因此显示「已导出」（阶段徽章/待办都会误报）。
+        let harness = try makeHarness()
+        try addJob(harness.db, harness.sessionId, options: JobSeed(
+            id: "export-all-failed",
+            type: "export.execute",
+            status: "succeeded",
+            updatedAt: nowISOString(),
+            checkpointJSON: "{\"exported\":0,\"failed\":3,\"skipped\":0,\"totalFiles\":3}"
+        ))
+        let status = try harness.service.getStatus(sessionId: harness.sessionId)
+        #expect(try #require(status).softFlags.exported == false, "零产出的 succeeded 任务不算已交付")
+    }
+
+    @Test func successfulExportWithDeliveriesMarksWorkspaceExported() throws {
+        let harness = try makeHarness()
+        try addJob(harness.db, harness.sessionId, options: JobSeed(
+            id: "export-partial",
+            type: "export.execute",
+            status: "succeeded",
+            updatedAt: nowISOString(),
+            checkpointJSON: "{\"exported\":2,\"failed\":1,\"skipped\":0,\"totalFiles\":3}"
+        ))
+        let status = try harness.service.getStatus(sessionId: harness.sessionId)
+        #expect(try #require(status).softFlags.exported, "至少产出一个文件才算交付（部分成功仍是交付）")
+    }
+
+    @Test func legacyExportWithoutDeliverySummaryKeepsOldSemantics() throws {
+        // 兼容：本次改动之前的历史成功任务没有交付摘要，无法回溯区分，
+        // 按原语义视为已导出（不因为一次审计把老用户的工作区状态清空）。
+        let harness = try makeHarness()
+        try addJob(harness.db, harness.sessionId, options: JobSeed(
+            id: "export-legacy",
+            type: "export.execute",
+            status: "succeeded",
+            updatedAt: nowISOString(),
+            checkpointJSON: "{}"
+        ))
+        let status = try harness.service.getStatus(sessionId: harness.sessionId)
+        #expect(try #require(status).softFlags.exported == true)
     }
 }

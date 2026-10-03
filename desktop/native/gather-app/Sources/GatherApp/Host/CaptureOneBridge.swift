@@ -217,20 +217,49 @@ public final class CaptureOneBridge: @unchecked Sendable {
     }
 
     private func runAppleScript(_ script: String, timeout: TimeInterval = 15) async throws -> String {
+        try await runProcess(executable: "/usr/bin/osascript", arguments: ["-e", script], timeout: timeout)
+    }
+
+    /// 运行子进程并返回 stdout（internal：问题 7 的验收测试直接驱动大输出场景）。
+    func runProcess(
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval = 15
+    ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             let outputPipe = Pipe()
             let errorPipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", script]
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
             process.standardOutput = outputPipe
             process.standardError = errorPipe
 
             let completion = CaptureOneCompletionGate(continuation: continuation)
 
+            // 问题 7（第三轮审查）：旧实现只在 terminationHandler 里读管道 ——
+            // 子进程输出超过管道容量（约 64KB）时会写阻塞、永远不退出，handler
+            // 也就永远不会执行。这里在 run 之前就并行持续排空两条管道。
+            let drain = PipeDrainBuffer()
+            outputPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return }
+                drain.appendStdout(chunk)
+            }
+            errorPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return }
+                drain.appendStderr(chunk)
+            }
+
             process.terminationHandler = { process in
-                let stdout = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let stderr = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                // 子进程已退出：摘掉 handler 并把剩余字节读干净。
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                errorPipe.fileHandleForReading.readabilityHandler = nil
+                drain.appendStdout(outputPipe.fileHandleForReading.readDataToEndOfFile())
+                drain.appendStderr(errorPipe.fileHandleForReading.readDataToEndOfFile())
+                let stdout = String(data: drain.stdout(), encoding: .utf8) ?? ""
+                let stderr = String(data: drain.stderr(), encoding: .utf8) ?? ""
                 if process.terminationStatus == 0 {
                     completion.finish(.success(stdout))
                 } else {
@@ -315,5 +344,32 @@ public final class CaptureOneBridge: @unchecked Sendable {
           reload metadata of current document
         end tell
         """
+    }
+}
+
+
+/// 管道排空缓冲（问题 7）：readabilityHandler 与 terminationHandler 都会写入，
+/// 用锁保护的引用盒子承载（Swift 6 不允许闭包捕获可变 var）。
+final class PipeDrainBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var out = Data()
+    private var err = Data()
+
+    func appendStdout(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock(); out.append(data); lock.unlock()
+    }
+
+    func appendStderr(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock(); err.append(data); lock.unlock()
+    }
+
+    func stdout() -> Data {
+        lock.lock(); defer { lock.unlock() }; return out
+    }
+
+    func stderr() -> Data {
+        lock.lock(); defer { lock.unlock() }; return err
     }
 }

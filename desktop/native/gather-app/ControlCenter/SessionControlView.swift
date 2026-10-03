@@ -49,7 +49,7 @@ public final class SessionControlViewModel {
             workspaceStatus = try client.execute("workspace.status", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: WorkspaceStatus.self)
-            jobs = try client.execute("jobs.list").decoded(as: [AnalysisJobData].self)
+            jobs = try client.execute("jobs.list", params: ["includeCheckpoint": .bool(false)]).decoded(as: [AnalysisJobData].self)
                 .filter { $0.scopeId == sessionId }
             syncStatus = try? client.execute("culling.sync_status", params: [
                 "sessionId": .string(sessionId),
@@ -58,6 +58,23 @@ public final class SessionControlViewModel {
         } catch {
             errorMessage = NativeCommandClient.message(for: error)
         }
+    }
+
+    /// 活跃任务（排队 / 进行中 / 取消中）：控制中心的「当前任务」只列这些（F07）。
+    /// 旧实现把 jobs.list 的结果（含全部历史）直接铺开，22 条已完成任务把
+    /// 真正在进行的工作推出首屏。
+    public var activeJobs: [AnalysisJobData] {
+        jobs.filter { [.queued, .running, .cancelling].contains($0.status) }
+    }
+
+    /// 需要用户处理的任务（失败 / 中断）：失败必须留在首屏可见，不能藏进历史。
+    public var attentionJobs: [AnalysisJobData] {
+        jobs.filter { [.failed, .interrupted].contains($0.status) }
+    }
+
+    /// 已完成历史（成功 / 取消）：默认折叠（与工作台的完成历史同一规则）。
+    public var historyJobs: [AnalysisJobData] {
+        jobs.filter { [.succeeded, .cancelled].contains($0.status) }
     }
 
     public func scanIndex() async {
@@ -144,6 +161,12 @@ enum InboxKind: Equatable {
 enum InboxAction: Equatable {
     case none
     case showStages
+    /// D10：进入挑片并只看 XMP 冲突（待办指向的是「某类问题」，不是「某个页面」）。
+    case reviewXmpConflicts
+    /// D10：进入图库并只看离线照片。
+    case reviewOfflinePhotos
+    /// D10：进入人脸页并直达分析步骤（分析已过期）。
+    case reviewStaleAnalysis
     case navigateTab(SessionTab)
     case navigateSimilarity
     case navigateGallery
@@ -194,7 +217,17 @@ public struct SessionControlView: View {
     private let onOpenTab: (String, SessionTab) -> Void
     private let onOpenGallery: (String) -> Void
     private let onOpenSettings: () -> Void
+    /// 导出入口专用回调（N05）：携带入口意图，决定导出页的默认范围。
+    private let onOpenExportTab: (String, ExportRangeIntent) -> Void
+    /// D10：XMP 冲突待办专用回调——进入挑片并只看冲突（未注入时退回普通挑片页）。
+    private let onReviewXmpConflicts: (String) -> Void
+    /// D10：离线照片待办——进入图库并只看离线（未注入时退回普通图库）。
+    private let onReviewOfflinePhotos: (String) -> Void
+    /// D10：分析过期待办——进入人脸页并直达分析步骤（未注入时退回人脸页）。
+    private let onReviewStaleAnalysis: (String) -> Void
     @State private var scrollToStagesRequested = false
+    /// 已完成任务历史默认折叠（F07：历史不占首屏）。
+    @State private var showJobHistory = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// TS: MAX_FAILED_JOB_ROWS —— 失败任务最多显示 3 行。
@@ -212,10 +245,18 @@ public struct SessionControlView: View {
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
         onOpenGallery: @escaping (String) -> Void = { _ in },
-        onOpenSettings: @escaping () -> Void = {}
+        onOpenSettings: @escaping () -> Void = {},
+        onOpenExportTab: ((String, ExportRangeIntent) -> Void)? = nil,
+        onReviewXmpConflicts: ((String) -> Void)? = nil,
+        onReviewOfflinePhotos: ((String) -> Void)? = nil,
+        onReviewStaleAnalysis: ((String) -> Void)? = nil
     ) {
         _viewModel = State(initialValue: SessionControlViewModel(sessionId: sessionId, router: router))
         self.router = router
+        self.onOpenExportTab = onOpenExportTab ?? { id, _ in onOpenTab(id, .export) }
+        self.onReviewXmpConflicts = onReviewXmpConflicts ?? { id in onOpenTab(id, .culling) }
+        self.onReviewOfflinePhotos = onReviewOfflinePhotos ?? { id in onOpenGallery(id) }
+        self.onReviewStaleAnalysis = onReviewStaleAnalysis ?? { id in onOpenTab(id, .faceKw) }
         self.onBack = onBack
         self.onOpenSimilarity = onOpenSimilarity
         self.onOpenTab = onOpenTab
@@ -226,40 +267,66 @@ public struct SessionControlView: View {
     public var body: some View {
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 0) {
-                header
-                if let error = viewModel.errorMessage { NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error) }
-                if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
+                if let error = viewModel.errorMessage {
+                    NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 12)
+                }
+                if let notice = viewModel.notice {
+                    NativeBanner(text: notice, color: GatherTheme.success)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 12)
+                }
                 ScrollView {
                     if viewModel.isLoading {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text(GatherLocalization.l("加载中…")).foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(24)
-                    } else if viewModel.workspaceStatus == nil && viewModel.errorMessage == nil {
-                        VStack(spacing: 10) {
-                            Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(.secondary)
-                                .accessibilityHidden(true)
-                            Text(GatherLocalization.l("暂无工作区状态")).foregroundStyle(.secondary)
-                            Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(40)
-                    } else {
+                        ProgressView(GatherLocalization.l("加载中…"))
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(24)
+                    } else if viewModel.workspaceStatus != nil {
                         VStack(alignment: .leading, spacing: 18) {
+                            // 分块顺序按「现在该做什么」（F07）：
+                            // 索引状态（内容，不是假标题栏）→ 阶段条 → 当前任务
+                            // →（与任务不重复的）待办与推荐 → 分析工具箱 → 同步详情。
+                            // 旧顺序把「当前任务」放在最后一张卡，首屏只能看到重复引导。
+                            indexRow
                             stagesCard.id("stages")
+                            jobsCard
                             inboxCard
                             recommendationCard
                             actionCard
                             syncCard
-                            jobsCard
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(24)
+                    } else {
+                        // 加载失败必须给出口（不再渲染空面板）。
+                        ContentUnavailableView {
+                            Label(
+                                viewModel.errorMessage == nil
+                                    ? GatherLocalization.l("暂无工作区状态")
+                                    : GatherLocalization.l("加载失败"),
+                                systemImage: "tray"
+                            )
+                        } description: {
+                            Text(viewModel.errorMessage ?? GatherLocalization.l("无法读取该工作区的状态，请刷新后重试。"))
+                        } actions: {
+                            Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
+                                .help(GatherLocalization.l("重新读取工作区状态"))
+                        }
                     }
                 }
             }
-            .background(Color.gatherBackground)
+            .background(GatherTheme.windowBackground)
+            // 窗口 chrome：副标题 + 工具栏 principal 位置的分段子导航。
+            .sessionPageChrome(
+                subtitle: GatherLocalization.l("工作区控制中心"),
+                selection: .tab(.control),
+                onBrowse: { onOpenGallery(viewModel.sessionId) },
+                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
+                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
+            )
+            .toolbar { toolbarItems }
             .onChange(of: scrollToStagesRequested) { _, requested in
                 guard requested else { return }
                 if reduceMotion {
@@ -303,35 +370,38 @@ public struct SessionControlView: View {
         }
     }
 
-    // MARK: 头部（含索引进度：对齐 index.tsx header + deriveWorkspaceHeaderCopy）
+    // MARK: 工具栏（窗口 chrome：返回 / 状态胶囊 / 刷新）
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(viewModel.session?.name ?? GatherLocalization.l("工作区控制中心")).font(.largeTitle.weight(.bold))
-                    Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
-                }
-                Spacer()
-                C1StatusCapsuleHost(
-                    sessionId: viewModel.sessionId,
-                    router: router,
-                    onOpenSettings: onOpenSettings
-                )
-                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                onBack()
+            } label: {
+                Label(GatherLocalization.l("返回"), systemImage: "chevron.backward")
             }
-            SessionTabBar(
-                selection: .tab(.control),
-                onBrowse: { onOpenGallery(viewModel.sessionId) },
-                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-            )
-            indexRow
+            .help(GatherLocalization.l("返回到上一页"))
+            .keyboardShortcut("[", modifiers: .command)
         }
-        .padding(24)
-        .background(Color.gatherSurface)
+        ToolbarItem(placement: .primaryAction) {
+            C1StatusCapsuleHost(
+                sessionId: viewModel.sessionId,
+                router: router,
+                onOpenSettings: onOpenSettings
+            )
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                viewModel.load()
+            } label: {
+                Label(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise")
+            }
+            .help(GatherLocalization.l("刷新工作区状态"))
+            .keyboardShortcut("r", modifiers: .command)
+        }
     }
+
+    // MARK: 索引进度（对齐 deriveWorkspaceHeaderCopy；内容行，不是页头）
 
     @ViewBuilder
     private var indexRow: some View {
@@ -341,22 +411,35 @@ public struct SessionControlView: View {
                 switch copy.mode {
                 case .scanning:
                     Text(copy.text).font(.callout)
-                    if let percent = copy.percent, copy.total > 0 {
-                        Text(String(format: GatherLocalization.l("已索引 %lld%%"), Int(percent.rounded()))).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
+                    if copy.total > 0 {
                         ProgressView(value: Double(copy.done), total: Double(copy.total))
-                            .frame(maxWidth: 220)
+                            .progressViewStyle(.linear)
+                        if let percent = copy.percent {
+                            Text(String(format: GatherLocalization.l("已索引 %lld%%"), Int(percent.rounded())))
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     } else {
                         ProgressView().controlSize(.small)
                     }
                 case .error:
-                    Text(copy.text).font(.callout).foregroundStyle(GatherTheme.error)
+                    // 状态色只落在图标上，正文保持系统前景色（彩色正文对比度不足）。
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(GatherTheme.error)
+                            .accessibilityHidden(true)
+                        Text(copy.text).font(.callout)
+                    }
                     Button(GatherLocalization.l("重试")) { Task { await viewModel.retryIndex() } }
-                        .buttonStyle(.bordered).controlSize(.small)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(GatherLocalization.l("重新排队索引扫描"))
                 case .count:
                     Text(copy.text).font(.callout).foregroundStyle(.secondary)
                 }
-                Spacer()
+                Spacer(minLength: 0)
             }
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -396,17 +479,11 @@ public struct SessionControlView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(GatherLocalization.l("阶段进度")).font(.title3.weight(.semibold))
             if let status = viewModel.workspaceStatus {
-                HStack(spacing: 10) {
-                    ForEach(Array(stageMarks(status.stage).enumerated()), id: \.element.id) { index, mark in
-                        if index > 0 { stageConnector(reached: mark.reached) }
-                        stageMark(mark)
-                    }
-                    Spacer()
-                }
+                stageTrack(stageMarks(status.stage))
                 if status.softFlags.culled || status.softFlags.exported {
                     HStack(spacing: 8) {
-                        if status.softFlags.culled { softFlagBadge(GatherLocalization.l("已挑片")) }
-                        if status.softFlags.exported { softFlagBadge(GatherLocalization.l("已导出")) }
+                        if status.softFlags.culled { GatherBadge(GatherLocalization.l("已挑片"), tone: .accent) }
+                        if status.softFlags.exported { GatherBadge(GatherLocalization.l("已导出"), tone: .accent) }
                     }
                 }
             }
@@ -442,46 +519,71 @@ public struct SessionControlView: View {
         }
     }
 
-    private func stageMark(_ mark: StageMark) -> some View {
-        VStack(spacing: 6) {
-            ZStack {
-                if mark.reached {
-                    Circle()
-                        .fill(GatherTheme.primary)
-                        .frame(width: 18, height: 18)
-                        .overlay(Circle().stroke(Color.gatherSurface, lineWidth: 2))
-                } else {
-                    // 未完成阶段：实线描边（对齐 OLD ControlCenter.module.css:87-101
-                    // .stageDot 2px solid border，非虚线软标记）。
-                    Circle()
-                        .strokeBorder(Color.secondary.opacity(0.55), lineWidth: 1.5)
-                        .frame(width: 18, height: 18)
+    /// 三阶段轨迹：等宽列 + 列内左右两段连接线，圆点与连接线共用同一垂直中心。
+    /// 旧实现把连接线放在列之间并各占 `maxWidth: .infinity`，连接线被拉伸后
+    /// 圆点位置取决于相邻标题宽度，标题与圆点必然错位；等宽列 + 列内线段
+    /// 让三个圆点等距、线段与圆点中心严格对齐（也去掉了手绘底色/发光）。
+    private func stageTrack(_ marks: [StageMark]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(marks.enumerated()), id: \.element.id) { index, mark in
+                VStack(spacing: 6) {
+                    ZStack {
+                        HStack(spacing: 0) {
+                            connectorSegment(filled: mark.reached, hidden: index == 0)
+                            Color.clear.frame(width: stageDotDiameter)
+                            connectorSegment(
+                                filled: marks.indices.contains(index + 1) ? marks[index + 1].reached : false,
+                                hidden: index == marks.count - 1
+                            )
+                        }
+                        stageDot(mark)
+                    }
+                    Text(mark.label)
+                        .font(.callout)
+                        .fontWeight(mark.current ? .semibold : .regular)
+                        .foregroundStyle(mark.reached || mark.current ? GatherTheme.primaryText : GatherTheme.secondaryText)
+                        .lineLimit(1)
                 }
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+                .accessibilityValue(stageAccessibilityValue(mark))
             }
-            .frame(width: 28, height: 28)
-            .background(Circle().fill(GatherTheme.primary.opacity(mark.current ? 0.15 : 0)))
-            .overlay(Circle().stroke(GatherTheme.primary.opacity(mark.current ? 0.65 : 0), lineWidth: 1.5))
-            Text(mark.label)
-                .font(.footnote)
-                .fontWeight(mark.current ? .semibold : .regular)
-                .foregroundStyle(mark.current ? Color.gatherPrimary : (mark.reached ? .primary : .secondary))
         }
+        .padding(.vertical, 2)
     }
 
-    private func stageConnector(reached: Bool) -> some View {
-        Rectangle()
-            .fill(reached ? Color.gatherPrimary : Color.secondary.opacity(0.35))
+    private var stageDotDiameter: CGFloat { 20 }
+
+    private func connectorSegment(filled: Bool, hidden: Bool) -> some View {
+        Capsule()
+            .fill(filled ? GatherTheme.accent : GatherTheme.separator)
             .frame(height: 2)
             .frame(maxWidth: .infinity)
+            .opacity(hidden ? 0 : 1)
     }
 
-    private func softFlagBadge(_ title: String) -> some View {
-        Text(title)
-            .font(.footnote)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(GatherTheme.primary.opacity(0.1)))
-            .foregroundStyle(GatherTheme.primary)
+    private func stageDot(_ mark: StageMark) -> some View {
+        Group {
+            if mark.reached {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(GatherTheme.success)
+            } else if mark.current {
+                Image(systemName: "circle.inset.filled")
+                    .foregroundStyle(GatherTheme.accent)
+            } else {
+                Image(systemName: "circle")
+                    .foregroundStyle(GatherTheme.secondaryText)
+            }
+        }
+        .font(.title3)
+        .frame(width: stageDotDiameter, height: stageDotDiameter)
+        .accessibilityHidden(true)
+    }
+
+    private func stageAccessibilityValue(_ mark: StageMark) -> String {
+        if mark.reached { return GatherLocalization.l("已完成") }
+        if mark.current { return GatherLocalization.l("进行中") }
+        return GatherLocalization.l("未开始")
     }
 
     // MARK: Action Inbox（对齐 deriveInboxItems：固定优先级序列表）
@@ -519,7 +621,8 @@ public struct SessionControlView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.label)
                 if let detail = item.detail {
-                    Text(detail).font(.footnote).foregroundStyle(.secondary)
+                    // 错误明细是内容语义：用 .callout 而不是 .footnote。
+                    Text(detail).font(.callout).foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -550,7 +653,7 @@ public struct SessionControlView: View {
             items.append(InboxItem(
                 id: "xmp_conflict", kind: .xmpConflict,
                 label: String(format: GatherLocalization.l("%lld 个 XMP 冲突待裁决"), status.xmp.conflict), detail: nil,
-                actionLabel: GatherLocalization.l("逐条裁决"), action: .navigateTab(.culling)
+                actionLabel: GatherLocalization.l("逐条裁决"), action: .reviewXmpConflicts
             ))
         }
 
@@ -563,7 +666,9 @@ public struct SessionControlView: View {
                 id: "analysis_stale", kind: .analysisStale,
                 label: String(format: GatherLocalization.l("%@分析已过期，新增照片未参与分析"), names), detail: nil,
                 actionLabel: GatherLocalization.l("重新分析"),
-                action: faceOnly ? .navigateTab(.faceKw) : .navigateSimilarity
+                // D10：人脸过期要直达**分析步骤**（旧实现只切页，用户还得自己找入口）；
+                // 相似度过期仍走相似度页（其分析入口就在页首）。
+                action: faceOnly ? .reviewStaleAnalysis : .navigateSimilarity
             ))
         }
 
@@ -579,7 +684,7 @@ public struct SessionControlView: View {
             items.append(InboxItem(
                 id: "offline_photos", kind: .offlinePhotos,
                 label: String(format: GatherLocalization.l("%lld 张照片离线（源文件不可读）"), status.offlinePhotos), detail: nil,
-                actionLabel: GatherLocalization.l("查看"), action: .navigateGallery
+                actionLabel: GatherLocalization.l("查看"), action: .reviewOfflinePhotos
             ))
         }
 
@@ -623,22 +728,38 @@ public struct SessionControlView: View {
 
     private func inboxIcon(_ kind: InboxKind) -> (name: String, color: Color) {
         switch kind {
-        case .scanIncomplete: return ("magnifyingglass", GatherTheme.primary)
+        case .scanIncomplete: return ("magnifyingglass", GatherTheme.accent)
         case .xmpConflict: return ("exclamationmark.triangle.fill", GatherTheme.error)
         case .analysisStale: return ("clock.arrow.circlepath", GatherTheme.warning)
-        case .xmpPending: return ("arrow.up.doc", GatherTheme.primary)
+        case .xmpPending: return ("arrow.up.doc", GatherTheme.accent)
         case .offlinePhotos: return ("photo", .secondary)
         case .jobFailed: return ("xmark.circle.fill", GatherTheme.error)
-        case .exportPending: return ("square.and.arrow.up", GatherTheme.primary)
+        case .exportPending: return ("square.and.arrow.up", GatherTheme.accent)
         }
     }
 
     // MARK: 推荐下一步（对齐 deriveRecommendedNextView）
 
+    /// 推荐下一步只在**不与「待处理事项」重复**时渲染（F07）。
+    ///
+    /// 旧实现让「待处理事项 · 已挑片但尚未导出」和「推荐下一步 · 导出成品」
+    /// 同时出现，两张卡都在说「去导出」；XMP 冲突、分析过期、失败任务同样成对
+    /// 出现。同一动作只保留优先级列表里的那一行，推荐卡专注它独有的建议
+    ///（例如「开始挑片」）。
+    private func isDuplicateRecommendation(_ next: RecommendedNextView, status: WorkspaceStatus) -> Bool {
+        // action == nil（一切正常）时也不重复渲染：inbox 已经给出「全部正常」。
+        guard let action = next.action else { return true }
+        let inbox = inboxItems(status, truncatedImport: viewModel.session?.truncatedImport ?? false)
+            .filter { $0.kind != .scanIncomplete }
+        return inbox.contains { $0.action == action }
+    }
+
+    @ViewBuilder
     private var recommendationCard: some View {
         Group {
             if let status = viewModel.workspaceStatus {
                 let view = recommendedNextView(status)
+                if !isDuplicateRecommendation(view, status: status) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "lightbulb").foregroundStyle(GatherTheme.warning)
@@ -653,9 +774,10 @@ public struct SessionControlView: View {
                         Spacer()
                         if let action = view.action {
                             Button(view.actionLabel) { perform(action) }
-                                .buttonStyle(.borderedProminent).controlSize(.small)
+                                .gatherPrimaryActionButton().controlSize(.small)
                         }
                     }
+                }
                 }
             }
         }
@@ -679,16 +801,22 @@ public struct SessionControlView: View {
                 actionLabel: GatherLocalization.l("查看进度"), action: .showStages
             )
         case "resolve_conflicts":
+            // G-1（审计 5）：推荐动作必须与待办**同一个枚举**，否则
+            // isDuplicateRecommendation 的「动作相等」判据失效 → 同屏两张同义卡，
+            // 两个按钮都叫「逐条裁决」，一个带筛选一个不带（D10 + F07 的合流回归）。
             return RecommendedNextView(
                 title: GatherLocalization.l("裁决 XMP 冲突"), detail: GatherLocalization.l("冲突会阻塞写回同步，先逐条裁决再继续"),
-                actionLabel: GatherLocalization.l("逐条裁决"), action: .navigateTab(.culling)
+                actionLabel: GatherLocalization.l("逐条裁决"), action: .reviewXmpConflicts
             )
         case "re_analyze":
             let faceOnly = status.staleAnalyses.allSatisfy { $0.kind == .face }
             return RecommendedNextView(
-                title: GatherLocalization.l("重新分析相似度"), detail: GatherLocalization.l("新增照片未参与分组，重新分析可合并剩余重复项"),
+                // 标题按真实落点生成：人脸过期时点的是「重新分析人脸」，
+                // 旧实现标题写死「重新分析相似度」而动作却去人脸页。
+                title: faceOnly ? GatherLocalization.l("重新分析人脸") : GatherLocalization.l("重新分析相似度"),
+                detail: GatherLocalization.l("新增照片未参与分组，重新分析可合并剩余重复项"),
                 actionLabel: GatherLocalization.l("重新分析"),
-                action: faceOnly ? .navigateTab(.faceKw) : .navigateSimilarity
+                action: faceOnly ? .reviewStaleAnalysis : .navigateSimilarity
             )
         case "retry_jobs":
             return RecommendedNextView(
@@ -721,8 +849,22 @@ public struct SessionControlView: View {
             break
         case .showStages:
             scrollToStagesRequested = true
+        case .reviewXmpConflicts:
+            // D10：待办指向「某类问题」——进入挑片时必须同时带上「只看冲突」，
+            // 否则用户到达的只是一个普通挑片页，还得自己再找一遍。
+            onReviewXmpConflicts(viewModel.sessionId)
+        case .reviewOfflinePhotos:
+            onReviewOfflinePhotos(viewModel.sessionId)
+        case .reviewStaleAnalysis:
+            onReviewStaleAnalysis(viewModel.sessionId)
         case .navigateTab(let tab):
-            onOpenTab(viewModel.sessionId, tab)
+            if tab == .export {
+                // N05：控制中心的导出引导语义是「导出挑片成果」——默认范围必须
+                // 是保留片，而不是退回「工作区全部照片」。
+                onOpenExportTab(viewModel.sessionId, .picks)
+            } else {
+                onOpenTab(viewModel.sessionId, tab)
+            }
         case .navigateSimilarity:
             onOpenSimilarity(viewModel.sessionId)
         case .navigateGallery:
@@ -742,12 +884,21 @@ public struct SessionControlView: View {
     private var actionCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(GatherLocalization.l("分析与索引")).font(.title3.weight(.semibold))
-            Text(GatherLocalization.l("后台任务可在任务中心查看、取消或重试。")).foregroundStyle(.secondary)
-            HStack {
+            // 文案只说真实存在的操作（旧版承诺「查看/取消」但界面没有这两个入口）。
+            Text(GatherLocalization.l("扫描索引与质量分析会入队后台任务，进度显示在「当前任务」中；失败的任务可重试。"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
                 Button(GatherLocalization.l("扫描索引"), systemImage: "magnifyingglass") { Task { await viewModel.scanIndex() } }
+                    .disabled(viewModel.isWorking)
+                    .help(GatherLocalization.l("重新扫描工作区，让索引保持最新"))
                 Button(GatherLocalization.l("分析质量"), systemImage: "wand.and.stars") { Task { await viewModel.analyzeQuality() } }
+                    .disabled(viewModel.isWorking)
+                    .help(GatherLocalization.l("为照片计算技术质量评分"))
                 Button(GatherLocalization.l("打开挑片")) { onOpenTab(viewModel.sessionId, .culling) }
+                    .help(GatherLocalization.l("切换到挑片页面"))
                 Button(GatherLocalization.l("打开人脸")) { onOpenTab(viewModel.sessionId, .faceKw) }
+                    .help(GatherLocalization.l("切换到人脸关键词页面"))
             }
         }
         .gatherCard()
@@ -767,11 +918,27 @@ public struct SessionControlView: View {
                     syncCount(GatherLocalization.l("冲突"), sync.conflict, emphasized: sync.conflict > 0)
                     Spacer()
                 }
-                Text(syncStatusText(sync))
-                    .font(.footnote)
-                    .foregroundStyle(sync.failed + sync.conflict > 0 ? GatherTheme.error : Color.secondary)
+                // 状态色只落在图标上；正文保持系统前景色（彩色正文对比度不足）。
+                HStack(spacing: 6) {
+                    // 只有「全部确认」才是绿色勾；待写入/写入中/待 C1 读取都是进行中
+                    //（黄色），与胶囊的四色调映射一致（F08）。
+                    if sync.failed + sync.conflict > 0 {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(GatherTheme.error)
+                            .accessibilityHidden(true)
+                    } else if sync.pending + sync.writing + sync.written > 0 {
+                        Image(systemName: "clock")
+                            .foregroundStyle(GatherTheme.warning)
+                            .accessibilityHidden(true)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(GatherTheme.success)
+                            .accessibilityHidden(true)
+                    }
+                    Text(syncStatusText(sync)).font(.callout)
+                }
             } else {
-                Text(GatherLocalization.l("暂无同步状态")).foregroundStyle(.secondary)
+                Text(GatherLocalization.l("暂无同步状态")).font(.callout).foregroundStyle(.secondary)
             }
         }
         .gatherCard()
@@ -781,49 +948,126 @@ public struct SessionControlView: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.footnote).foregroundStyle(.secondary)
             Text("\(value)")
-                .font(.callout.weight(.semibold).monospaced())
-                .foregroundStyle(emphasized ? GatherTheme.error : .primary)
+                .font(.callout.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(emphasized ? GatherTheme.error : GatherTheme.primaryText)
         }
+        .accessibilityElement(children: .combine)
     }
 
-    private func syncStatusText(_ sync: MetadataSyncSummary) -> String {
-        if sync.failed + sync.conflict > 0 { return GatherLocalization.l("存在失败或冲突的写入项，请先处理后再继续") }
-        if sync.pending + sync.writing > 0 { return GatherLocalization.l("正在等待 Capture One 确认写入…") }
-        return GatherLocalization.l("元数据已全部同步")
+    /// 同步状态文案（F08）：与 C1 状态胶囊同一套阶梯，同一屏不再出现互相矛盾的结论。
+    ///
+    /// 阶梯：待写入 → Gather 正在写入 → 已写入待读取（等 C1 读取）→ 已同步。
+    /// 旧实现只看 failed/conflict/pending/writing，written > 0（Gather 已写入但
+    /// Capture One 还没读回）时正文已经说「元数据已全部同步」，而同一屏顶部的
+    /// 胶囊写着「已写入待读取 1」。
+    /// internal（非 private）：SyncStatusCopyTests 直测状态阶梯。
+    func syncStatusText(_ sync: MetadataSyncSummary) -> String {
+        if sync.conflict > 0 { return GatherLocalization.l("存在 XMP 冲突，请先裁决") }
+        if sync.failed > 0 { return GatherLocalization.l("有写入失败项，请先重试") }
+        if sync.writing > 0 { return GatherLocalization.l("Gather 正在写入 XMP…") }
+        if sync.pending > 0 {
+            return String(format: GatherLocalization.l("待写入 %lld 项：Gather 尚未写入 XMP"), sync.pending)
+        }
+        if sync.written > 0 { return GatherLocalization.l("已写入待读取：等待 Capture One 读取元数据") }
+        if sync.synced > 0 { return GatherLocalization.l("已同步：Capture One 已读取") }
+        return GatherLocalization.l("没有待同步的元数据")
     }
 
     // MARK: 当前任务（本地化状态/类型/进度文案）
 
+    /// 当前任务（F07）：只列活跃任务与失败/中断任务；已完成历史默认折叠。
+    /// 没有活跃任务时只给一行说明，不再用大卡片承载一段历史。
     private var jobsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(GatherLocalization.l("当前任务")).font(.title3.weight(.semibold))
-            if viewModel.jobs.isEmpty {
-                Text(GatherLocalization.l("暂无工作区任务")).foregroundStyle(.secondary)
+            if viewModel.activeJobs.isEmpty && viewModel.attentionJobs.isEmpty {
+                Text(GatherLocalization.l("没有进行中的任务。"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             } else {
-                ForEach(viewModel.jobs, id: \.id) { job in
-                    HStack(spacing: 8) {
-                        Image(systemName: job.status == .succeeded ? "checkmark.circle.fill" : "circle.dotted")
-                            .accessibilityHidden(true)
-                            .foregroundStyle(job.status == .failed
-                                ? GatherTheme.error
-                                : (job.status == .succeeded ? GatherTheme.success : GatherTheme.primary))
-                        Text(GatherLocalization.jobTypeText(job.type.rawValue))
-                        Text(GatherLocalization.jobStatusText(job.status.rawValue))
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Spacer()
-                        if job.progressTotal > 0 {
-                            Text(GatherLocalization.progressPhaseText(job.progressMessage))
-                                .font(.footnote).foregroundStyle(.secondary)
-                            Text("\(job.progressCurrent)/\(job.progressTotal)").font(.footnote.monospaced())
-                        }
-                        if [.failed, .interrupted, .cancelled].contains(job.status) {
-                            Button(GatherLocalization.l("重试")) { viewModel.retry(job) }
-                                .buttonStyle(.bordered).controlSize(.small)
+                ForEach(viewModel.activeJobs, id: \.id) { job in
+                    jobRow(job)
+                }
+                // 失败任务最多 3 行（TS MAX_FAILED_JOB_ROWS 语义），其余在历史里。
+                ForEach(Array(viewModel.attentionJobs.prefix(Self.maxFailedJobRows)), id: \.id) { job in
+                    jobRow(job)
+                }
+            }
+            if !viewModel.historyJobs.isEmpty {
+                DisclosureGroup(isExpanded: $showJobHistory) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(viewModel.historyJobs, id: \.id) { job in
+                            jobRow(job)
                         }
                     }
+                    .padding(.top, 6)
+                } label: {
+                    Text(String(format: GatherLocalization.l("已完成任务（%lld）"), viewModel.historyJobs.count))
+                        .font(.callout)
                 }
             }
         }
         .gatherCard()
+    }
+
+    /// 任务行：状态图标逐态区分（旧实现除 succeeded 外全是 circle.dotted，
+    /// queued/running/cancelling/cancelled 视觉上不可分辨）+ 原生线性进度条。
+    private func jobRow(_ job: AnalysisJobData) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: jobStatusSymbol(job.status))
+                .foregroundStyle(jobStatusColor(job.status))
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(GatherLocalization.jobTypeText(job.type.rawValue))
+                    GatherBadge(status: job.status)
+                    Spacer(minLength: 0)
+                }
+                if job.progressTotal > 0 {
+                    HStack(spacing: 8) {
+                        ProgressView(value: Double(job.progressCurrent), total: Double(job.progressTotal))
+                            .progressViewStyle(.linear)
+                        Text("\(job.progressCurrent)/\(job.progressTotal)")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Text(GatherLocalization.progressPhaseText(job.progressMessage))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            if [.failed, .interrupted, .cancelled].contains(job.status) {
+                Button(GatherLocalization.l("重试")) { viewModel.retry(job) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(GatherLocalization.l("重新排队该任务"))
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func jobStatusSymbol(_ status: AnalysisJobStatus) -> String {
+        switch status {
+        case .queued: return "clock"
+        case .running: return "arrow.triangle.2.circlepath"
+        case .succeeded: return "checkmark.circle.fill"
+        case .failed: return "xmark.octagon.fill"
+        case .cancelled: return "slash.circle"
+        case .interrupted: return "pause.circle"
+        case .cancelling: return "stop.circle"
+        }
+    }
+
+    private func jobStatusColor(_ status: AnalysisJobStatus) -> Color {
+        switch status {
+        case .queued, .cancelled: return GatherTheme.secondaryText
+        case .running, .cancelling: return GatherTheme.accent
+        case .succeeded: return GatherTheme.success
+        case .failed: return GatherTheme.error
+        case .interrupted: return GatherTheme.warning
+        }
     }
 }

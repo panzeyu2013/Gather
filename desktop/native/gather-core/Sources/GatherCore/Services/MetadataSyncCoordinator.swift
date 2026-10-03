@@ -183,6 +183,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
     public static let summaryEmitBurstThreshold = 50
     /// TS: settings.getNumber('metadata_write_debounce_ms', 500)。
     public static let defaultWriteDebounceMs = 500
+    /// 写回防抖的**上界**（D8）：1 小时足够表达「批量结束再写」，避免溢出与病态等待。
+    public static let maxWriteDebounceMs = 3_600_000
     /// waitForIdle 默认超时（5000ms）。
     public static let defaultWaitTimeoutMs = 5_000
     /// writing 租约窗口（超过即可被安全重新 claim）。
@@ -205,6 +207,8 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
 
     private let lock = NSLock()
     private var timers: [String: Task<Void, Never>] = [:]
+    /// 计时器代数（D4）：同一路径多次 schedule 时只有最后一次能消费排程。
+    private var timerGenerations: [String: Int] = [:]
     private var queued: [String] = []
     private var queuedSet: Set<String> = []
     private var active: [String: Task<Void, Never>] = [:]
@@ -243,6 +247,12 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
         ensureRecovery()
     }
 
+    /// 当前登记的计时器是否就是这一次排程（D4 守卫）。
+    private func isCurrentTimer(path: String, generation: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return timerGenerations[path] == generation
+    }
+
     /// 排程一次写入；取消旧计时器并失效 reload-ack。
     public func schedule(xmpPath: String, delayMs: Int? = nil) {
         let stoppedNow = { lock.lock(); defer { lock.unlock() }; return stopped }()
@@ -254,15 +264,32 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
         // 新写入活动 → 会话 reload-ack 失效（cleanup 不得恢复 C1 从未加载过的备份）。
         clearReloadAckForXmpPath(path)
         Task { [weak self] in
-            guard let self else { return }
+            guard !Task.isCancelled, let self else { return }
+            let stoppedNow = { self.lock.lock(); defer { self.lock.unlock() }; return self.stopped }()
+            guard !stoppedNow else { return }
             await self.ensureBaseline(path)
         }
-        let delay = delayMs ?? max(0, getNumber("metadata_write_debounce_ms", Double(MetadataSyncCoordinator.defaultWriteDebounceMs)).safeInt(fallback: MetadataSyncCoordinator.defaultWriteDebounceMs))
+        // D8（深审）：先夹到业务上界再做纳秒乘法 —— 极大有限配置（如 1e30 经
+        // safeInt 变成 Int.max）会让 `* 1_000_000` 溢出。
+        let configured = getNumber("metadata_write_debounce_ms", Double(MetadataSyncCoordinator.defaultWriteDebounceMs))
+            .safeInt(fallback: MetadataSyncCoordinator.defaultWriteDebounceMs)
+        let delay = delayMs.map { min(max(0, $0), MetadataSyncCoordinator.maxWriteDebounceMs) }
+            ?? min(max(0, configured), MetadataSyncCoordinator.maxWriteDebounceMs)
         lock.lock()
         timers[path]?.cancel()
+        // D4（深审）：计时器代数 —— 被取消/被替换的旧任务不得继续执行写入。
+        let generation = (timerGenerations[path] ?? 0) + 1
+        timerGenerations[path] = generation
         let task = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(max(0, delay)) * 1_000_000)
-            guard let self else { return }
+            // 用 do/catch：**取消即返回**。旧实现用 try? 吞掉 CancellationError
+            // 后继续 ensureBaseline/enqueue/drain，导致「取消旧排程」反而立刻写盘。
+            do {
+                try await Task.sleep(nanoseconds: UInt64(max(0, delay)) * 1_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            guard self.isCurrentTimer(path: path, generation: generation) else { return }
             await self.ensureBaseline(path)
             self.enqueueQueued(path)
             self.drain()
@@ -439,20 +466,28 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
             return try listOrphans()
         }
         try await waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
+        // D2（深审）：等待期间写回可能已把**真实备份路径**落库（等待前的快照还是空）
+        // ⇒ 旧实现会走「删除原侧车」分支，把用户原始 XMP 删掉。
+        // 这里必须重取最新行，并确认它仍是孤儿（会话可能已被重新关联）。
+        guard let latest = try outboxRepo.getOrphans().first(where: { $0.xmpPath == row.xmpPath }) else {
+            throw MetadataSyncError.orphanNotFound
+        }
         if action == .restore {
-            if !row.backupPath.isEmpty {
-                guard xmp.fileExists(row.backupPath) else {
-                    GatherLogger.log("XMP backup is missing for orphan restore: \(row.backupPath)", level: .warn)
+            if !latest.backupPath.isEmpty {
+                guard xmp.fileExists(latest.backupPath) else {
+                    GatherLogger.log("XMP backup is missing for orphan restore: \(latest.backupPath)", level: .warn)
                     throw MetadataSyncError.backupMissing
                 }
-                try await xmp.restore(photoPath: row.photoPath, backupPath: row.backupPath)
-            } else if xmp.fileExists(row.xmpPath) {
-                try await xmp.removeFile(row.xmpPath)
+                try await xmp.restore(photoPath: latest.photoPath, backupPath: latest.backupPath)
+            } else if xmp.fileExists(latest.xmpPath) {
+                try await xmp.removeFile(latest.xmpPath)
             }
         }
-        try outboxRepo.delete(row.xmpPath)
+        // D3：删除同样带 revision 条件（恢复期间可能已产生新 revision）。
+        let deleted = try outboxRepo.deleteIfRevision(latest.xmpPath, revision: latest.revision)
+        if !deleted { return try listOrphans() }
         // 备份文件在行删除成功之后清理（同 finalize：避免删备份成功 + 删行失败 → 永久 backupMissing）。
-        removeBackupBestEffort(row.backupPath)
+        removeBackupBestEffort(latest.backupPath)
         return try listOrphans()
     }
 
@@ -523,8 +558,14 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
         if !eligible.isEmpty { try requireReloadAck(sessionId) }
         let results = try await batchAsync(eligible, concurrency: MetadataSyncCoordinator.maxConcurrency) { row -> (deleted: Bool, error: String?) in
             do {
+                // D3（深审）：整个清理阶段（等待 → 指纹 → 恢复 → 删行）都必须以
+                // **开始时的 revision** 为 CAS 条件。旧实现只在开头看 status=synced，
+                // 期间合并进来的新 revision 会被无条件删除（用户输入消失）。
+                let startRevision = row.revision
                 try await self.waitForIdle(xmpPath: row.xmpPath, timeoutMs: MetadataSyncCoordinator.defaultWaitTimeoutMs)
-                guard let latest = try self.outboxRepo.get(row.xmpPath), latest.status == "synced" else {
+                guard let latest = try self.outboxRepo.get(row.xmpPath),
+                      latest.status == "synced",
+                      latest.revision == startRevision else {
                     return (false, nil)
                 }
                 let currentFingerprint = try await MetadataFingerprint.contentFingerprint(latest.xmpPath)
@@ -539,14 +580,27 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
                     guard self.xmp.fileExists(latest.backupPath) else { throw MetadataSyncError.backupMissing }
                     // 顺序（幂等可重试）：restore 是拷贝语义且不消费备份 → 删行失败可原样重试。
                     try await self.xmp.restore(photoPath: latest.photoPath, backupPath: latest.backupPath)
-                    try self.outboxRepo.delete(latest.xmpPath)
+                    // D3：恢复是异步的，期间可能又合并了新修改 —— 删除前再校验一次
+                    //（revision/status），新 revision 必须保留给协调器重新排程。
+                    guard let afterRestore = try self.outboxRepo.get(latest.xmpPath),
+                          afterRestore.status == "synced",
+                          afterRestore.revision == startRevision else {
+                        return (false, nil)
+                    }
+                    guard try self.outboxRepo.deleteIfRevision(latest.xmpPath, revision: startRevision) else {
+                        return (false, nil)
+                    }
                     // 行已删除后才清理备份文件；失败只留下无引用文件（日志可见），不回滚。
                     self.removeBackupBestEffort(latest.backupPath)
                 } else if self.xmp.fileExists(latest.xmpPath) {
                     try await self.xmp.removeFile(latest.xmpPath)
-                    try self.outboxRepo.delete(latest.xmpPath)
+                    guard try self.outboxRepo.deleteIfRevision(latest.xmpPath, revision: startRevision) else {
+                        return (false, nil)
+                    }
                 } else {
-                    try self.outboxRepo.delete(latest.xmpPath)
+                    guard try self.outboxRepo.deleteIfRevision(latest.xmpPath, revision: startRevision) else {
+                        return (false, nil)
+                    }
                 }
                 return (true, nil)
             } catch {
@@ -626,15 +680,19 @@ public final class MetadataSyncCoordinator: MetadataSyncPort, @unchecked Sendabl
         // 先做租约恢复：陈旧 writing 行不能在"等待在飞写入"里变成假超时。
         ensureRecovery()
         let path = MetadataOutboxPath.normalize(xmpPath)
-        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+        // D5（深审）：旧实现先 await activeTask.value，只有它返回后才检查 deadline
+        // ⇒ writer 不返回时超时永远不生效。改为轮询「是否仍在写」，
+        // 用 deadline 独立结束等待者（**不等** writer 完成；它完成后不影响本函数）。
+        let deadline = Date().addingTimeInterval(Double(max(0, timeoutMs)) / 1000)
         while true {
-            if let activeTask = activeTask(for: path) { await activeTask.value }
-            guard let row = try? outboxRepo.get(path), row.status == "writing" else { return }
+            let active = activeTask(for: path)
+            let rowWriting = (try? outboxRepo.get(path))?.status == "writing"
+            if active == nil, !rowWriting { return }
             if Date() >= deadline {
                 GatherLogger.log("Timed out waiting for metadata writer: \(path)", level: .warn)
                 throw MetadataSyncError.writerTimeout
             }
-            try? await Task.sleep(nanoseconds: 20_000_000)
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
 

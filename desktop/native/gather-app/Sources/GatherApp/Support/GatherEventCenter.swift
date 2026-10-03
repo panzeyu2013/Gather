@@ -82,9 +82,19 @@ public final class GatherEventCenter {
         emit(job: job, update: update)
     }
 
-    /// 宿主启动装配调用一次：接 JobService 进度/终态帧。
+    /// 最近一次接线的 JobService 身份（第三轮审计 F：wire 曾是一次性的）。
+    ///
+    /// 旧实现 `guard !wired else { return }`：bootstrap 失败后重试会拿到**新的**
+    /// JobService，但 sink 已经挂在旧实例上 → 进度/终态事件从此静默消失
+    /// （界面看起来「任务卡住不动」）。改为「同一实例重复调用是 no-op，
+    /// 换了实例则重新接线」。
+    private var wiredJobService: ObjectIdentifier?
+
+    /// 宿主启动装配调用：接 JobService 进度/终态帧。可重复调用（幂等，按实例）。
     public func wire(jobService: JobService) {
-        guard !wired else { return }
+        let identity = ObjectIdentifier(jobService)
+        guard wiredJobService != identity else { return }
+        wiredJobService = identity
         wired = true
         jobService.setProgressSink { [weak self] job, update in
             Task { @MainActor in

@@ -24,10 +24,12 @@ class GatherLink: COPluginBase, COOpenWithPlugin {
             throw GatherLinkError.invalidURL
         }
 
-        NSWorkspace.shared.open(url)
-
-        let result = COPluginActionOpenWithResult(status: true)
-        result.suppressNotification = true
+        // 问题 10（第三轮审查）：旧实现忽略 NSWorkspace.open 的返回值、固定
+        // status=true 并抑制通知 —— 没有 URL handler 或 Launch Services 拒绝时
+        // 也会显示成功。这里如实上报。
+        let opened = NSWorkspace.shared.open(url)
+        let result = COPluginActionOpenWithResult(status: opened)
+        result.suppressNotification = opened
         return result
     }
 
@@ -41,8 +43,14 @@ class GatherLink: COPluginBase, COOpenWithPlugin {
     static let sendToGatherAction: COPluginAction = {
         let action = COPluginAction(displayName: "Send to Gather")
         action.identifier = "com.gather.capture-one-link.importAction"
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.gather.desktop") {
+        // 问题 10：原生应用的 bundle id 是 com.gather.desktop.native（旧的
+        // com.gather.desktop 是 Electron 版），优先原生、回退旧版避免无图标。
+        let bundleIDs = ["com.gather.desktop.native", "com.gather.desktop"]
+        for bundleID in bundleIDs {
+            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             action.image = NSWorkspace.shared.icon(forFile: appURL.path)
+                break
+            }
         }
         return action
     }()

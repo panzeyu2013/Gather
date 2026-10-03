@@ -138,7 +138,9 @@ public final class LiveSimilarityDataProvider: SimilarityDataProvider {
     }
 
     public func listSimilarityJobs(sessionId: String) throws -> [AnalysisJobData] {
-        try router.jobService.list().filter {
+        // B-4/D-1（第二轮验证闭环）：每秒一轮的轮询只需要状态/进度，
+        // 不需要逐行解析（导出任务可达 ~1MB 的）checkpoint。
+        try router.jobService.list(includeCheckpoint: false).filter {
             $0.type == .similarityAnalyze && $0.scopeType == "session" && $0.scopeId == sessionId
         }
     }
@@ -347,6 +349,48 @@ public final class SimilarityViewModel {
     public var threshold = SimilarityViewModel.defaultThreshold
     public var minGroupSize = SimilarityViewModel.defaultMinGroupSize
     public var groupingMode: SimilarityGroupingMode = .global
+
+    // MARK: 浏览状态（C-1 审计 5）
+
+    /// 分组展开 / 「显示全部成员」状态。
+    ///
+    /// 审计 5 C-1：这两个集合原先在视图里是 @State，而页面按目的地**条件构建**
+    /// （离开即销毁）——VM 的结果跨页签保留了，展开态却每次回到页面都被清空，
+    /// 文档此前声称的「返回保留浏览位置」名不副实。搬进 VM 才真的跨页签保留。
+    public var expandedGroupIds: Set<Int> = []
+    public var showAllMemberGroupIds: Set<Int> = []
+
+    /// 产出当前 result 的参数指纹（B-2 审计 5）：「最小组合 / 分组范围 / 阈值」
+    /// 改动后结果不再代表当前参数，必须显式标记过期——重复页已有同型范式
+    /// （scannedThreshold / isScanResultStale）。
+    private(set) public var resultParams: SimilarityResultParams?
+
+    public struct SimilarityResultParams: Equatable, Sendable {
+        public var threshold: Int
+        public var minGroupSize: Int
+        public var groupingMode: SimilarityGroupingMode
+
+        public init(threshold: Int, minGroupSize: Int, groupingMode: SimilarityGroupingMode) {
+            self.threshold = threshold
+            self.minGroupSize = minGroupSize
+            self.groupingMode = groupingMode
+        }
+    }
+
+    /// 当前参数与产出结果的参数是否一致（false = 屏幕上的分组来自旧参数）。
+    public var isResultStale: Bool {
+        guard let resultParams else { return false }
+        return resultParams != SimilarityResultParams(
+            threshold: threshold,
+            minGroupSize: minGroupSize,
+            groupingMode: groupingMode
+        )
+    }
+
+    /// 采纳结果时记录参数指纹（adoptResult 调用）。
+    func noteResultParams(_ params: SimilarityResultParams) {
+        resultParams = params
+    }
 
     public init(
         sessionId: String,
@@ -576,10 +620,19 @@ public final class SimilarityViewModel {
     }
 
     private func pollForResult() async {
+        // D-11（性能审计）：旧实现没有空闲上限 —— 长时间停在相似度页且从未分析时，
+        // 会每 2s 在主线程同步拉一次 sim.result（全量投影 + 两次序列化）。
+        // 与进度轮询一致，空转 30 轮（约 60s）后自行退出；有新结果时由事件/手动刷新唤醒。
+        var idleRounds = 0
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             if result != nil {
+                stopResultPolling()
+                return
+            }
+            idleRounds += 1
+            if idleRounds > Self.maxIdleProgressPollRounds {
                 stopResultPolling()
                 return
             }
@@ -605,7 +658,7 @@ public final class SimilarityViewModel {
     /// 活跃任务消失（clearCompleted/去重替换）时连续空轮上限：进度轮询
     /// 在此轮数内未再见到活跃任务即退出，防止循环永不结束（审计 5）。
     /// 查询失败同样以连续失败轮数计，单次失败不计入空闲轮数（审计 8）。
-    /// 默认轮询间隔 1s → 约 30s 兜底。
+    /// 进度轮询间隔 1s、结果轮询间隔 2s → 分别约 30s / 60s 兜底。
     private static let maxIdleProgressPollRounds = 30
 
     private func pollProgress() async {
@@ -627,9 +680,15 @@ public final class SimilarityViewModel {
                 } else {
                     idleRounds += 1
                     if idleRounds >= Self.maxIdleProgressPollRounds {
-                        // 任务已消失（clearCompleted/去重替换）：退出轮询，
-                        // 不再无限空转。
+                        // 任务已消失（clearCompleted/去重替换）：退出轮询，不再无限空转。
+                        //
+                        // 第二轮验证修正：上面 isTerminal 的分支实际不可达——
+                        // activeSimilarityJob 只返回 queued/running/cancelling，任务一旦
+                        // 终态就落到这里。若分析时长超过结果轮询的空闲上限（约 62s），
+                        // 两条轮询都已退出，页面会永远停在「无结果」直到手动刷新/重进。
+                        // 退出前补一次结果查询（走 adoptResult 代际守卫，安全）。
                         isAnalyzing = false
+                        await refreshResult()
                         break
                     }
                 }
@@ -671,11 +730,20 @@ public final class SimilarityViewModel {
         resultRequestID += 1
         result = newResult
         selectedGroupIds = []
+        // C-1：结果替换后旧的展开态没有意义（分组 id 可能已变）。
+        expandedGroupIds = []
+        showAllMemberGroupIds = []
         threshold = Int(newResult.stats.threshold)
         if newResult.stats.precomputed != true {
             minGroupSize = newResult.stats.minGroupSize
             groupingMode = newResult.stats.groupingMode
         }
+        // B-2：记录产出这份结果的参数（可能与上面的阈值同步后的草稿一致）。
+        resultParams = SimilarityResultParams(
+            threshold: threshold,
+            minGroupSize: minGroupSize,
+            groupingMode: groupingMode
+        )
     }
 
     // MARK: 分组选择（对齐 onSelectedChange / onSelectAll）

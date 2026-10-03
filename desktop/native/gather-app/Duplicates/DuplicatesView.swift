@@ -29,7 +29,8 @@ private struct PendingGroupResolution: Identifiable {
         resolution == .keepOne ? GatherLocalization.l("保留最佳，丢弃其余") : GatherLocalization.l("全部保留")
     }
 
-    var confirmRole: ButtonRole? { resolution == .keepOne ? .destructive : nil }
+    /// 保留最佳/全部保留都只改数据库标记（不删文件、可再改回），不使用红色破坏性语义。
+    var confirmRole: ButtonRole? { nil }
 
     var scopeText: String {
         let total = group.memberCount
@@ -66,7 +67,8 @@ private struct PendingMemberDecision: Identifiable {
         isKept ? GatherLocalization.l("保留此照片") : GatherLocalization.l("丢弃此照片")
     }
 
-    var confirmRole: ButtonRole? { isKept ? nil : .destructive }
+    /// 保留/丢弃都只改数据库标记（不删文件、可反向操作），不使用红色破坏性语义。
+    var confirmRole: ButtonRole? { nil }
 
     var scopeText: String {
         isKept
@@ -122,6 +124,16 @@ public final class DuplicatesViewModel {
     private(set) public var scanJobId: String?
     public var threshold = 4
     public var showExact = true
+    /// 产出当前 scanResult 时使用的阈值（第三轮审计 C-#7）。
+    /// 改阈值/预设后旧数字必须标记为过期——否则「视觉相似 N 组」是上一个档位的结论，
+    /// 却摆在新档位控件旁边冒充当前设置的结果（N03 的同类）。
+    private(set) public var scannedThreshold: Int?
+
+    /// 当前阈值与产出结果的阈值不一致（且确有结果）→ 数字已过期。
+    public var isScanResultStale: Bool {
+        guard scanResult != nil, let scannedThreshold else { return false }
+        return scannedThreshold != threshold
+    }
     private(set) public var visibleGroupCount = groupPageSize
     private var expandedGroupIds: Set<Int> = []
 
@@ -167,10 +179,13 @@ public final class DuplicatesViewModel {
         scanJobId = nil
         defer { isScanning = false }
         do {
+            let scannedAt = threshold
             scanResult = try await client.executeAsync("dup.scan", params: [
                 "sessionId": .string(sessionId),
                 "visualThreshold": .number(Double(threshold)),
             ]).decoded(as: DuplicateScanResult.self)
+            // 记录产生这份结果的阈值：之后改阈值时数字会被标记为过期（C-#7）。
+            scannedThreshold = scannedAt
             notice = GatherLocalization.l("重复扫描完成")
             await load()
         } catch {
@@ -208,7 +223,7 @@ public final class DuplicatesViewModel {
     }
 
     private func activeScanJobId() -> String? {
-        let jobs = (try? client.execute("jobs.list").decoded(as: [AnalysisJobData].self)) ?? []
+        let jobs = (try? client.execute("jobs.list", params: ["includeCheckpoint": .bool(false)]).decoded(as: [AnalysisJobData].self)) ?? []
         return jobs.first { job in
             job.type == .duplicateScan && job.scopeId == sessionId &&
                 ["queued", "running", "cancelling"].contains(job.status.rawValue)
@@ -372,9 +387,35 @@ public struct DuplicatesView: View {
     private let onOpenTab: (String, SessionTab) -> Void
     private let onOpenGallery: (String) -> Void
     private let onOpenSettings: () -> Void
+    /// 打开成员照片（第三轮审计 E）：透传到分组卡的成员行。
+    private let onOpenPhoto: ((String) -> Void)?
     /// 破坏性动作的待确认上下文：非空即弹确认框；命令只在确认分支发出。
     @State private var pendingResolution: PendingGroupResolution?
     @State private var pendingMemberDecision: PendingMemberDecision?
+    /// 高级扫描参数（阈值）的展开状态（F13：与相似度/人脸页同一套渐进披露规则）。
+    @State private var showAdvancedScan = false
+
+    /// 外壳注入 VM（第三轮审计 D-P0）：扫描结果/阈值/分组展开/分页都挂在 VM 上，
+    /// 页面切走即销毁——注入同一个 VM 才能在切回时保留这些状态。
+    init(
+        viewModel: DuplicatesViewModel,
+        router: CommandRouter,
+        onBack: @escaping () -> Void = {},
+        onOpenSimilarity: @escaping (String) -> Void = { _ in },
+        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
+        onOpenGallery: @escaping (String) -> Void = { _ in },
+        onOpenSettings: @escaping () -> Void = {},
+        onOpenPhoto: ((String) -> Void)? = nil
+    ) {
+        self.onOpenPhoto = onOpenPhoto
+        _viewModel = State(initialValue: viewModel)
+        self.router = router
+        self.onBack = onBack
+        self.onOpenSimilarity = onOpenSimilarity
+        self.onOpenTab = onOpenTab
+        self.onOpenGallery = onOpenGallery
+        self.onOpenSettings = onOpenSettings
+    }
 
     init(
         sessionId: String,
@@ -383,8 +424,10 @@ public struct DuplicatesView: View {
         onOpenSimilarity: @escaping (String) -> Void = { _ in },
         onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
         onOpenGallery: @escaping (String) -> Void = { _ in },
-        onOpenSettings: @escaping () -> Void = {}
+        onOpenSettings: @escaping () -> Void = {},
+        onOpenPhoto: ((String) -> Void)? = nil
     ) {
+        self.onOpenPhoto = onOpenPhoto
         _viewModel = State(initialValue: DuplicatesViewModel(sessionId: sessionId, router: router))
         self.router = router
         self.onBack = onBack
@@ -396,7 +439,6 @@ public struct DuplicatesView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
             if let error = viewModel.errorMessage { NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error) }
             if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
             ScrollView {
@@ -408,6 +450,16 @@ public struct DuplicatesView: View {
                     if let result = viewModel.scanResult {
                         Text(String(format: GatherLocalization.l("完全重复：%lld 组 · 视觉相似：%lld 组 · 总计重复：%lld 张"), result.exactGroups.count, result.visualGroups.count, result.totalDuplicates))
                             .font(.callout).foregroundStyle(.secondary)
+                        // C-#7：阈值改过之后旧数字必须显式标为过期，不能让上一个档位
+                        // 的结论冒充当前设置的结果。
+                        if viewModel.isScanResultStale {
+                            Label(
+                                String(format: GatherLocalization.l("当前匹配强度为 %lld，上面的结果来自 %lld；请重新扫描。"), viewModel.threshold, viewModel.scannedThreshold ?? viewModel.threshold),
+                                systemImage: "exclamationmark.triangle"
+                            )
+                            .font(.callout)
+                            .foregroundStyle(GatherTheme.warning)
+                        }
                     }
                     Text(GatherLocalization.l("扫描会先识别内容完全一致的文件，再查找视觉近似候选；不会删除照片。"))
                         .font(.footnote).foregroundStyle(.secondary)
@@ -431,8 +483,22 @@ public struct DuplicatesView: View {
                 }
                 .padding(24)
             }
+            // 成员保留状态确认挂在 ScrollView 节点：与组处置确认（外层 VStack）
+            // 分属不同视图节点，避免两个 confirmationDialog 抢同一呈现宿主。
+            .gatherDestructiveConfirm(
+                pending: $pendingMemberDecision,
+                title: GatherLocalization.l("确认更改这张照片的保留状态？"),
+                confirmLabel: { $0.confirmLabel },
+                message: { $0.scopeText },
+                onConfirm: { pending in
+                    viewModel.setMemberKept(pending.member, isKept: pending.isKept, confirmed: true)
+                },
+                onCancel: { pending in
+                    viewModel.reportCancellation(pending.cancelCopy)
+                }
+            )
         }
-        .background(Color.gatherBackground)
+        .background(GatherTheme.windowBackground)
         .task { await viewModel.load() }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
             guard let event = notification.object as? GatherJobEvent else { return }
@@ -453,42 +519,31 @@ public struct DuplicatesView: View {
                 viewModel.reportCancellation(pending.cancelCopy)
             }
         )
-        .gatherDestructiveConfirm(
-            pending: $pendingMemberDecision,
-            title: GatherLocalization.l("确认更改这张照片的保留状态？"),
-            confirmLabel: { $0.confirmLabel },
-            confirmRole: { $0.confirmRole },
-            message: { $0.scopeText },
-            onConfirm: { pending in
-                viewModel.setMemberKept(pending.member, isKept: pending.isKept, confirmed: true)
-            },
-            onCancel: { pending in
-                viewModel.reportCancellation(pending.cancelCopy)
-            }
+        .sessionPageChrome(
+            subtitle: GatherLocalization.l("重复照片检测"),
+            selection: .tab(.duplicates),
+            onBrowse: { onOpenGallery(viewModel.sessionId) },
+            onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
+            onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
         )
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(GatherLocalization.l("重复照片检测")).font(.largeTitle.weight(.bold))
-                    Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    onBack()
+                } label: {
+                    Label(GatherLocalization.l("返回"), systemImage: "chevron.backward")
                 }
-                Spacer()
-                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
-                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { Task { await viewModel.load() } }
+                .help(GatherLocalization.l("返回到上一页"))
             }
-            SessionTabBar(
-                selection: .tab(.duplicates),
-                onBrowse: { onOpenGallery(viewModel.sessionId) },
-                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-            )
+            ToolbarItemGroup(placement: .primaryAction) {
+                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings)
+                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") {
+                    Task { await viewModel.load() }
+                }
+                .disabled(viewModel.isLoading || viewModel.isScanning)
+                .help(GatherLocalization.l("刷新重复照片"))
+            }
         }
-        .padding(24)
-        .background(Color.gatherSurface)
     }
 
     /// 加载/扫描进度指示（对齐旧版 Duplicates.module.css .loading「加载中…」灰字）。
@@ -502,7 +557,7 @@ public struct DuplicatesView: View {
                     .foregroundStyle(.secondary)
                 if viewModel.scanProgressTotal > 0 {
                     Text("\(viewModel.scanProgressCurrent)/\(viewModel.scanProgressTotal)")
-                        .font(.footnote.monospacedDigit())
+                        .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -524,66 +579,111 @@ public struct DuplicatesView: View {
 
     private var scanControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Text(GatherLocalization.l("匹配强度")).font(.callout).foregroundStyle(.secondary)
-                ForEach(VisualPreset.allCases, id: \.self) { preset in
-                    Button(preset.label) { viewModel.selectPreset(preset) }
-                        .buttonStyle(.bordered)
-                        .tint(GatherTheme.primary)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(viewModel.activePreset == preset ? GatherTheme.primarySoft : Color.clear)
-                        )
-                        .foregroundStyle(viewModel.activePreset == preset ? GatherTheme.primary : Color.primary)
-                        .disabled(viewModel.isScanning)
+            // 三档预设 = 系统分段控件（取代手绘选中底色/描边的 Button 组）。
+            LabeledContent(GatherLocalization.l("匹配强度")) {
+                Picker(GatherLocalization.l("匹配强度"), selection: presetBinding) {
+                    ForEach(VisualPreset.allCases, id: \.self) { preset in
+                        Text(preset.label).tag(VisualPreset?.some(preset))
+                    }
                 }
-                Spacer()
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 240)
+                .disabled(viewModel.isScanning)
             }
-            HStack(spacing: 12) {
-                // 对齐旧版 range 滑块（0–10，18px thumb），替代 Stepper；
-                // 滑块始终可拖，预设仅负责置值（TS L332-340）。
+            // F13：阈值滑杆与范围说明属于高级参数——相似度、人脸、重复三页
+            // 统一「预设优先 → 高级按需展开」；旧实现三页规则各不相同，
+            // 重复页默认把滑杆、范围说明和预设一起摆在首屏。
+            // （滑块始终可拖，预设仅负责置值，对齐 TS L332-340。）
+            DisclosureGroup(isExpanded: $showAdvancedScan) {
                 HStack(spacing: 8) {
                     SliderInputIntView(title: GatherLocalization.l("视觉相似阈值"), value: $viewModel.threshold, range: 0...10)
                     Text(GatherLocalization.l("0 (严格) — 10 (宽松)"))
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.callout).foregroundStyle(.secondary)
                 }
+                .padding(.top, 4)
+            } label: {
+                Text(GatherLocalization.l("高级：相似阈值"))
+                    .font(.callout)
+            }
+            .disabled(viewModel.isScanning)
+
+            HStack(spacing: 12) {
+                // 本页唯一的「开始扫描」主动作（空态不再重复放一个同权按钮）。
                 Button(viewModel.isScanning ? GatherLocalization.l("扫描中…") : GatherLocalization.l("开始扫描"), systemImage: "magnifyingglass") {
                     Task { await viewModel.scan() }
                 }
-                .buttonStyle(.borderedProminent)
+                .gatherPrimaryActionButton()
                 .disabled(viewModel.isScanning)
+                if !viewModel.isScanning, let preset = viewModel.activePreset {
+                    Text(String(format: GatherLocalization.l("当前档位：%@"), preset.label))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
+        .gatherCard()
+    }
+
+    /// 预设选择绑定：阈值为非预设值时保持「无选中」（不虚报档位）。
+    private var presetBinding: Binding<VisualPreset?> {
+        Binding(
+            get: { viewModel.activePreset },
+            set: { preset in
+                guard let preset else { return }
+                viewModel.selectPreset(preset)
+            }
+        )
     }
 
     private var tabSelector: some View {
+        // 计数是内容语义：用普通文本（不再以 .footnote 10pt 承载）。
         Picker(GatherLocalization.l("类型"), selection: $viewModel.showExact) {
-            (Text(GatherLocalization.l("完全重复")) + Text(" · \(viewModel.exactGroupCount)").font(.footnote)).tag(true)
-            (Text(GatherLocalization.l("视觉相似")) + Text(" · \(viewModel.visualGroupCount)").font(.footnote)).tag(false)
+            Text("\(GatherLocalization.l("完全重复")) · \(viewModel.exactGroupCount)").tag(true)
+            Text("\(GatherLocalization.l("视觉相似")) · \(viewModel.visualGroupCount)").tag(false)
         }
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 300)
+        .accessibilityLabel(GatherLocalization.l("重复类型"))
         .onChange(of: viewModel.showExact) { _, _ in
             viewModel.resetPagination()
         }
     }
 
+    /// 空态 / 失败态：全部走系统 ContentUnavailableView；
+    /// 加载失败必须给重试出口（不渲染误导性的「先运行扫描」）。
     @ViewBuilder
     private var emptyState: some View {
-        if viewModel.scanResult == nil {
-            GatherEmptyState(
-                icon: "square.on.square",
-                title: GatherLocalization.l("先运行扫描"),
-                message: GatherLocalization.l("点击「开始扫描」按钮检测重复照片")
-            )
+        if let error = viewModel.errorMessage, viewModel.scanResult == nil {
+            ContentUnavailableView {
+                Label(GatherLocalization.l("载入重复照片失败"), systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error)
+            } actions: {
+                Button(GatherLocalization.l("重试")) { Task { await viewModel.load() } }
+                    .disabled(viewModel.isLoading)
+            }
+        } else if viewModel.scanResult == nil {
+            // F13：空态不再放第二个同权「开始扫描」——上面控制卡里的主动作就是它。
+            ContentUnavailableView {
+                Label(GatherLocalization.l("尚未扫描"), systemImage: "square.on.square")
+            } description: {
+                Text(GatherLocalization.l("用上方的「开始扫描」检测内容完全一致的文件与视觉近似候选。"))
+            }
         } else if viewModel.showExact {
-            GatherEmptyState(icon: "square.on.square", title: GatherLocalization.l("未发现完全重复的照片"))
+            ContentUnavailableView(
+                GatherLocalization.l("未发现完全重复的照片"),
+                systemImage: "square.on.square",
+                description: Text(GatherLocalization.l("当前工作区没有内容完全一致的文件。"))
+            )
         } else {
-            GatherEmptyState(icon: "square.on.square", title: GatherLocalization.l("未发现视觉相似的照片"))
+            ContentUnavailableView(
+                GatherLocalization.l("未发现视觉相似的照片"),
+                systemImage: "square.on.square",
+                description: Text(GatherLocalization.l("可适当放宽匹配强度后重新扫描。"))
+            )
         }
     }
 
@@ -603,7 +703,8 @@ public struct DuplicatesView: View {
             },
             onSetMemberKept: { member, isKept in
                 pendingMemberDecision = PendingMemberDecision(member: member, isKept: isKept)
-            }
+            },
+            onOpenPhoto: onOpenPhoto
         )
     }
 }
@@ -615,8 +716,9 @@ private struct GroupCardView: View {
     let viewModel: DuplicatesViewModel
     let onResolve: (DuplicateGroup, DupResolution) -> Void
     let onSetMemberKept: (DuplicateGroupMember, Bool) -> Void
-
-    @State private var hovering = false
+    /// 打开成员照片（第三轮审计 E）：成员卡原先只有「保留/丢弃」，
+    /// 用户看不到照片本体，无法判断该保留哪一张。
+    var onOpenPhoto: ((String) -> Void)? = nil
 
     var body: some View {
         let recommendedId = DuplicatesViewModel.recommendation(in: group)?.id
@@ -626,8 +728,12 @@ private struct GroupCardView: View {
                 Text(groupTitle)
                     .font(.headline)
                 if let resolution = group.resolution {
-                    Text(resolution == DupResolution.keepOne.rawValue ? GatherLocalization.l("· 保留最佳") : GatherLocalization.l("· 保留全部"))
-                        .font(.footnote).foregroundStyle(GatherTheme.success)
+                    GatherBadge(
+                        resolution == DupResolution.keepOne.rawValue
+                            ? GatherLocalization.l("保留最佳")
+                            : GatherLocalization.l("全部保留"),
+                        tone: .success
+                    )
                 }
                 Spacer()
                 Menu(GatherLocalization.l("处理")) {
@@ -652,11 +758,8 @@ private struct GroupCardView: View {
             }
         }
         .gatherCard()
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(hovering ? GatherTheme.primary.opacity(0.6) : Color.clear, lineWidth: 1)
-        )
-        .onHover { hovering = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(groupTitle)
     }
 
     private var groupTitle: String {
@@ -669,46 +772,53 @@ private struct GroupCardView: View {
             // 对齐旧版 .memberThumb：1:1 方形、256 解码、10px 圆角（css:319-325）。
             PhotoThumbnailView(path: member.filepath, size: 256, placeholderSize: CGSize(width: 150, height: 150))
                 .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous))
+                .accessibilityLabel(Text(member.filename))
                 .overlay(alignment: .topTrailing) {
                     if recommended {
-                        Text(GatherLocalization.l("推荐"))
-                            .font(.footnote.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(GatherTheme.primary))
+                        GatherBadge(GatherLocalization.l("推荐"), tone: .accent)
                             .padding(4)
                     }
                 }
                 .overlay(alignment: .topLeading) {
                     // 保留/丢弃文字徽标：红绿描边之外的冗余指示，
                     // 色弱/色盲用户可辨（复用成员按钮「保留/丢弃」词）。
-                    Text(member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃"))
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(member.isKept ? GatherTheme.success : GatherTheme.error))
-                        .padding(4)
+                    GatherBadge(
+                        member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃"),
+                        tone: member.isKept ? .success : .error
+                    )
+                    .padding(4)
                 }
-            Text(member.filename).font(.footnote).lineLimit(1)
+            Text(member.filename).font(.callout).lineLimit(1)
             if let fileSize = member.fileSize {
                 Text(String(format: GatherLocalization.l("%.1f MB"), Double(fileSize) / 1024 / 1024))
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(.secondary)
             }
-            Button(member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃")) {
-                onSetMemberKept(member, !member.isKept)
+            // 按钮文案 = 点击后执行的动作（不再显示当前状态，避免标签与动作相反）。
+            HStack(spacing: 6) {
+                if let onOpenPhoto {
+                    Button(GatherLocalization.l("查看照片")) { onOpenPhoto(member.photoId) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(GatherLocalization.l("在图库中打开这张照片"))
+                }
+                Button(member.isKept ? GatherLocalization.l("丢弃") : GatherLocalization.l("保留")) {
+                    onSetMemberKept(member, !member.isKept)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(member.isKept ? GatherLocalization.l("丢弃此照片") : GatherLocalization.l("保留此照片"))
             }
-            .buttonStyle(.bordered)
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 10).fill(GatherTheme.surface.opacity(0.5)))
+        .background(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                .fill(member.isKept ? GatherTheme.contentBackground : GatherTheme.secondaryContentBackground)
+        )
         .overlay(
-            // 对齐旧版 .memberKept/.memberRejected：1.5px 边框区分保留/排除，
-            // 排除态整卡 72% 透明（视觉降权）。
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder((member.isKept ? GatherTheme.success : GatherTheme.error).opacity(0.75), lineWidth: 1.5)
+            // 保留/排除用语义色描边区分；排除态不靠整卡降透明（可读性）。
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                .strokeBorder((member.isKept ? GatherTheme.success : GatherTheme.error).opacity(0.5), lineWidth: 1)
         )
         .contextMenu {
             Button(GatherLocalization.l("保留")) {
@@ -718,6 +828,7 @@ private struct GroupCardView: View {
                 if member.isKept { onSetMemberKept(member, false) }
             }
         }
-        .opacity(member.isKept ? 1 : 0.72)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(member.filename)，\(member.isKept ? GatherLocalization.l("保留") : GatherLocalization.l("丢弃"))")
     }
 }

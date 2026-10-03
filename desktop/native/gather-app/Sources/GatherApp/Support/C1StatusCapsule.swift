@@ -20,7 +20,10 @@ final class C1StatusService {
     }
 
     private(set) var statuses: [String: SessionState] = [:]
-    private var activeSessions: Set<String> = []
+    /// 订阅引用计数（第二轮验证）：外壳按目的地**条件构建**页面，同一会话可能同时
+    /// 有多个宿主（多窗口/转场重叠）。用计数而不是 Set —— 否则先消失的那个宿主会
+    /// 把仍在显示的宿主的订阅一起退掉（胶囊停更）。
+    private var activeSessions: [String: Int] = [:]
     private var pollTask: Task<Void, Never>?
     private var client: NativeCommandClient?
     private var eventObserver: NSObjectProtocol?
@@ -34,7 +37,7 @@ final class C1StatusService {
         ) { [weak self] notification in
             guard let sessionId = notification.object as? String else { return }
             Task { @MainActor [weak self] in
-                guard let self, self.activeSessions.contains(sessionId) else { return }
+                guard let self, self.activeSessions[sessionId] != nil else { return }
                 await self.refresh(sessionId: sessionId)
             }
         }
@@ -49,7 +52,7 @@ final class C1StatusService {
             Task { @MainActor [weak self] in
                 guard let self, !self.activeSessions.isEmpty else { return }
                 if let sessionId = change.sessionId {
-                    guard self.activeSessions.contains(sessionId) else { return }
+                    guard self.activeSessions[sessionId] != nil else { return }
                     await self.refresh(sessionId: sessionId)
                 } else {
                     await self.refreshActive()
@@ -64,7 +67,9 @@ final class C1StatusService {
     }
 
     func subscribe(sessionId: String) {
-        guard activeSessions.insert(sessionId).inserted else { return }
+        let count = (activeSessions[sessionId] ?? 0) + 1
+        activeSessions[sessionId] = count
+        guard count == 1 else { return }
         Task { await refresh(sessionId: sessionId) }
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
@@ -76,7 +81,14 @@ final class C1StatusService {
     }
 
     func unsubscribe(sessionId: String) {
-        activeSessions.remove(sessionId)
+        guard let count = activeSessions[sessionId] else { return }
+        if count > 1 {
+            activeSessions[sessionId] = count - 1
+            return
+        }
+        activeSessions[sessionId] = nil
+        // 归零时一并回收该会话的状态（旧实现 statuses 只增不减）。
+        statuses[sessionId] = nil
         if activeSessions.isEmpty {
             pollTask?.cancel()
             pollTask = nil
@@ -98,7 +110,7 @@ final class C1StatusService {
     }
 
     private func refreshActive() async {
-        for sessionId in activeSessions {
+        for sessionId in activeSessions.keys {
             await refresh(sessionId: sessionId)
         }
     }
@@ -128,6 +140,11 @@ struct C1StatusCapsuleHost: View {
                     C1StatusService.shared.subscribe(sessionId: newID)
                 }
             }
+            // D-10（性能审计）：外壳按目的地**条件构建**页面，销毁不会把 isActive
+            // 变成 false ⇒ 旧实现让访问过的每个会话永久留在 12s 轮询里。
+            .onDisappear {
+                C1StatusService.shared.unsubscribe(sessionId: sessionId)
+            }
             .onChange(of: isActive) { _, active in
                 if active {
                     C1StatusService.shared.subscribe(sessionId: sessionId)
@@ -143,43 +160,39 @@ struct C1StatusCapsule: View {
     let onOpenSettings: () -> Void
 
     var body: some View {
+        // 原生状态指示：语义色只出现在状态点上，文字保持系统前景色
+        // （彩色文字在浅色/深色下都会跌破对比度）。胶囊自身的底色与描边
+        // 已删除——它现在住在工具栏里，chrome 由系统提供。
         Button(action: onOpenSettings) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(capsule.tone)
                     .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
                 Text(capsule.label)
-                    .font(.footnote)
-                    .foregroundStyle(capsule.textColor)
+                    .font(.callout)
                 if queue > 0 {
-                    Text("\(queue)")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(capsule.textColor)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(capsule.tone.opacity(0.15)))
+                    Text(queue, format: .number)
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
                 if let time = syncedAtText {
                     Text("·")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
                     Text(time)
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(
-                Capsule().fill(Color.gatherSurface)
-            )
-            .overlay(
-                Capsule().strokeBorder(Color.gatherBorder, lineWidth: 1)
-            )
+            .contentShape(Rectangle())
             .help(tooltip)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .accessibilityLabel(capsule.label)
+        .accessibilityValue(queue > 0 ? "\(queue)" : "")
     }
 
     private var state: C1StatusService.SessionState? {

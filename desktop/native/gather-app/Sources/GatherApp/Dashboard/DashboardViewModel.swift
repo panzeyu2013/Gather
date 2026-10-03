@@ -30,7 +30,7 @@ protocol DashboardDataProvider {
     func deleteSession(_ sessionId: String, confirmed: Bool) throws
     func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws
     func workspaceStatus(sessionId: String) throws -> WorkspaceStatus?
-    func listJobs() throws -> [AnalysisJobData]
+    func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData]
     func cancelJob(_ jobId: String) throws -> Bool
     func retryJob(_ jobId: String) throws -> Bool
     func clearCompletedJobs() throws -> Int
@@ -133,8 +133,8 @@ final class LiveDashboardDataProvider: DashboardDataProvider {
         try workspaceStatusService.getStatus(sessionId: sessionId)
     }
 
-    func listJobs() throws -> [AnalysisJobData] {
-        try jobService.list()
+    func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData] {
+        try jobService.list(includeCheckpoint: includeCheckpoint)
     }
 
     func cancelJob(_ jobId: String) throws -> Bool {
@@ -354,7 +354,8 @@ final class DashboardViewModel {
 
     func refreshJobs() async {
         do {
-            let jobs = try provider.listJobs()
+            // 2s 轮询只用状态/进度（B-4/D-1）。
+            let jobs = try provider.listJobs(includeCheckpoint: false)
             self.jobs = jobs
             self.scanJobs = Self.seedScanJobs(from: jobs)
             self.jobsError = nil

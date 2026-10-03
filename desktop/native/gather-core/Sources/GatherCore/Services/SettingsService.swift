@@ -133,7 +133,9 @@ public final class SettingsService {
         guard let raw = cache[key] else { return defaultValue }
         let parsed = Double(raw)
         guard let parsed else { return defaultValue }
-        return parsed.isNaN ? defaultValue : parsed
+        // 问题 6（第三轮审查）：inf/-inf 也要回落默认值——Swift 把非有限 Double
+        // 转 Int 会直接 trap（导入/脚本写入的异常值会让页面崩溃）。
+        return parsed.isFinite ? parsed : defaultValue
     }
 
     /// TS: set(key, value) —— 未知 key 抛错；repo.upsert + cache 双写。

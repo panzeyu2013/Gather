@@ -17,6 +17,9 @@
 // - backfill 的 keyset 分页直接走 PhotoRepo.getBySessionPage（Swift 侧 repo
 //   恒定存在，无需 TS 的 feature-detection 回退）。
 import Foundation
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
 #if canImport(Glibc)
 import Glibc
 #elseif canImport(Darwin)
@@ -191,10 +194,36 @@ public final class IndexerService: @unchecked Sendable {
         #endif
     }
 
-    /// TS: sha256File —— 整文件 SHA256 hex（小写，逐字节对齐 createReadStream 流式）。
+    /// TS: sha256File —— SHA256 hex（小写）。macOS 走 CryptoKit 4MB 分块流式（F-6），
+    /// Linux 回退纯 Swift 一次性实现；两者输出逐字节一致（有 parity 测试守护）。
     public static func sha256File(_ filePath: String) throws -> String {
-        let data = try Data(contentsOf: URL(fileURLWithPath: filePath))
+        #if canImport(CryptoKit)
+        // F-6/B-3（性能审计）：旧实现整文件读入 + 纯 Swift 逐字节哈希
+        //（实测 342 MiB/s vs CryptoKit 3220 MiB/s = 9.4×），100MB RAW × 6 并发
+        // 瞬时分配可达 GB 级。这里改 4MB 分块流式喂给 CryptoKit，内存恒定。
+        // 输出与纯 Swift 实现逐字节一致（同算法），无需迁移。
+        #endif
+        let url = URL(fileURLWithPath: filePath)
+        #if canImport(CryptoKit)
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        defer { try? handle.close() }
+        var hasher = CryptoKit.SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        let digest = hasher.finalize()
+        var hex = String()
+        hex.reserveCapacity(64)
+        for byte in digest { hex += String(format: "%02x", byte) }
+        return hex
+        #else
+        let data = try Data(contentsOf: url)
         return SHA256.hash(data).map { String(format: "%02x", $0) }.joined()
+        #endif
     }
 
     /// TS: canonicalPath / textualPath / isWithin 三个纯函数已收敛到
@@ -747,9 +776,8 @@ public final class IndexerService: @unchecked Sendable {
     /// TS: pendingChecksums —— 会话内仍缺 checksum 的照片数（调用方决定是否
     /// 创建 checksum.backfill 任务）。
     public func pendingChecksums(sessionId: String) throws -> Int {
-        try self.photoRepo.getBySessionProjection(sessionId: sessionId)
-            .filter { $0.checksum.isEmpty && $0.status != "missing" }
-            .count
+        // E-5（性能审计）：下沉为 COUNT(*)（旧实现物化整会话行、含大列）。
+        try self.photoRepo.pendingChecksumCount(sessionId: sessionId)
     }
 
     /// TS: backfillChecksums —— 后台回填懒索引留下的空 checksum：循环直到无

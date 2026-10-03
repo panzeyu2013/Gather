@@ -87,10 +87,11 @@ struct InboxItemsTests {
         #expect(items(s).first?.kind == .scanIncomplete)
     }
 
-    @Test("分析过期：全部人脸 → 跳人脸页；含相似度 → 跳相似度")
+    @Test("分析过期：全部人脸 → 直达人脸分析步骤；含相似度 → 跳相似度")
     func staleAnalysisNavigation() {
         let faceOnly = status(stale: [.face])
-        #expect(items(faceOnly).first(where: { $0.kind == .analysisStale })?.action == .navigateTab(.faceKw))
+        // D10：只切到人脸页不够——用户还得自己找分析入口（有缓存时还会回到上次步骤）。
+        #expect(items(faceOnly).first(where: { $0.kind == .analysisStale })?.action == .reviewStaleAnalysis)
         let mixed = status(stale: [.face, .similarity])
         #expect(items(mixed).first(where: { $0.kind == .analysisStale })?.action == .navigateSimilarity)
         #expect(items(mixed).first(where: { $0.kind == .analysisStale })?.label.contains("人脸") == true)
@@ -116,5 +117,21 @@ struct InboxItemsTests {
         let s = status(pending: 2, conflict: 3)
         #expect(items(s).first(where: { $0.kind == .xmpConflict })?.label == "3 个 XMP 冲突待裁决")
         #expect(items(s).first(where: { $0.kind == .xmpPending })?.label == "2 个 XMP 待写入")
+    }
+
+    @Test("D10：待办动作必须携带「要处理的问题」，不只是目标页")
+    func todoActionsCarryIntent() {
+        // 冲突待办：走专用动作（进入挑片 + 只看冲突），而不是普通跳页。
+        // 旧实现 action == .navigateTab(.culling)：用户到达普通挑片页，还得自己找冲突。
+        let conflict = items(status(conflict: 3)).first { $0.kind == .xmpConflict }
+        #expect(conflict?.action == .reviewXmpConflicts)
+
+        // 导出待办：带 picks 范围意图（N05，已有的同型契约）。
+        let culled = items(status(culled: true)).first { $0.kind == .exportPending }
+        #expect(culled?.action == .navigateTab(.export))
+
+        // 离线照片：进入图库并只看离线（旧实现只是普通进图库，用户看不到离线照片）。
+        let offline = items(status(offlinePhotos: 2)).first { $0.kind == .offlinePhotos }
+        #expect(offline?.action == .reviewOfflinePhotos)
     }
 }

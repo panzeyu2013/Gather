@@ -331,6 +331,10 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case C1_SCRIPT_TIMEOUT
     /// 导入时 Capture One 未选中任何照片（AppDelegate 通知载荷）。
     case C1_NO_SELECTED_PHOTOS
+    /// 宿主初始化尚未完成时触发 C1 导入（菜单在启动早期即可用，回调还没挂上）。
+    /// 语义不是「Capture One 未配置」——UI 必须提示「正在初始化」，而不是未知错误。
+    /// 收进枚举而不是裸字符串：app 侧有一条「文案表不得含枚举之外的码」的契约测试。
+    case GATHER_BOOTSTRAPPING
     case SCAN_INVALID_DIR
     case SCAN_READ_FAILED
     // XMP / metadata 同步协调 + writeback
@@ -388,6 +392,12 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case EXPORT_PATH_INVALID
     case EXPORT_SCOPE_UNSUPPORTED
     case EXPORT_SCOPE_UNKNOWN
+    /// 本次交付零成功且存在失败项（审查 D02）：全失败不得被记成交付完成。
+    case EXPORT_ALL_FAILED
+    /// 逐项可执行性诊断（审查 D09）：导出计划里该源文件不存在。
+    case EXPORT_SOURCE_MISSING
+    /// 逐项可执行性诊断（审查 D09）：源文件存在但不可读（权限/卷离线）。
+    case EXPORT_SOURCE_UNREADABLE
     case EXPORT_RAW_CONVERT_UNSUPPORTED
     case EXPORT_UNKNOWN_ERROR
     // Navigation

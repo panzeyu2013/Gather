@@ -325,6 +325,13 @@ public final class LibraryViewModel {
     private var debounceTask: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
     private var eventRefreshTask: Task<Void, Never>?
+    /// 数据代数（D06）：筛选/相册/会话条件变化即递增，在途响应返回后代数不符就整份
+    /// 作废。旧实现依赖 `fetchTask?.cancel()`，而 NativeCommandClient 的 continuation
+    /// 请求无法被真正取消——慢的旧请求会覆盖新筛选的结果。
+    private var fetchGeneration = 0
+    /// 同代内的请求序号（P2-7）：最新请求胜出，旧响应不得回退用户翻页。
+    private var requestSequence = 0
+    private var latestRequestID = 0
     private var committed: LibraryFilterState = LibraryFilterState()
     /// 当前已提交的 criteriaKey（TS criteriaKey = JSON.stringify(criteria)）。
     private var criteriaKey = ""
@@ -389,6 +396,8 @@ public final class LibraryViewModel {
         guard selectedAlbumId != albumId else { return }
         selectedAlbumId = albumId
         page = 0
+        // D06：相册与筛选共用同一个写入入口，条件变化同样要作废在途响应。
+        fetchGeneration += 1
         fetchTask?.cancel()
         fetchTask = Task { [weak self] in
             await self?.fetchPage(0, isFirst: true)
@@ -479,7 +488,10 @@ public final class LibraryViewModel {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = GatherLocalization.l("选择新目录")
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        // 第三轮审计 F：runModal 会阻塞主线程并开嵌套 runloop（同库其它面板
+        // 早已改成 begin）。这里用 async 版本，等待期间界面保持响应。
+        let response = await panel.begin()
+        guard response == .OK, let url = panel.url else { return nil }
         return url.path
     }
 
@@ -589,6 +601,8 @@ public final class LibraryViewModel {
         guard newKey != criteriaKey else { return }
         criteriaKey = newKey
         page = 0
+        // D06：查询条件变化 → 在途响应作废（相册切换/事件刷新同理）。
+        fetchGeneration += 1
         fetchTask?.cancel()
         fetchTask = Task { [weak self] in
             await self?.fetchPage(0, isFirst: true)
@@ -638,8 +652,19 @@ public final class LibraryViewModel {
     // MARK: 取数
 
     private func fetchPage(_ target: Int, isFirst: Bool) async {
+        // D06：请求绑定数据代数。旧实现只 `fetchTask?.cancel()`——NativeCommandClient
+        // 的 continuation 请求不会被真正取消，旧筛选（星级 1）的响应会在新筛选
+        // （星级 5）之后返回并**无条件**覆盖 photos/total/page，界面筛选值是 5、
+        // 计数却是 1 的结果。
+        let generation = fetchGeneration
+        // P2-7（审计 2）：同代内也要防乱序——goToPage 与事件刷新/load 并发时，
+        // 旧请求返回会把用户刚翻到的页**静默回退**。用请求序号做「最新请求胜出」，
+        // isFetching 也只由最新请求负责收尾（旧请求完成不得提前关掉新请求的指示器）。
+        requestSequence += 1
+        let requestID = requestSequence
+        latestRequestID = requestID
         isFetching = true
-        defer { isFetching = false }
+        defer { if requestID == latestRequestID { isFetching = false } }
         do {
             let result: (photos: [GlobalPhotoResult], total: Int)
             if let selectedAlbumId {
@@ -656,14 +681,21 @@ public final class LibraryViewModel {
                     offset: target * Self.pageSize
                 )
             }
+            guard generation == fetchGeneration, requestID == latestRequestID else { return }
             photos = result.photos
             total = result.total
             page = target
             if phase == .loading { phase = .loaded }
+            actionError = nil
         } catch {
+            guard generation == fetchGeneration, requestID == latestRequestID else { return }
             if photos.isEmpty && phase == .loading {
                 phase = .failed(Self.message(for: error))
             } else {
+                // P2-7：有旧数据时刷新失败必须回到 loaded——旧实现把 phase 留在
+                // .loading，页面永久大 spinner，工具栏刷新按钮又因 phase == .loading
+                // 被禁用，用户只能靠改筛选/等事件自愈。
+                if phase == .loading { phase = .loaded }
                 actionError = Self.message(for: error)
             }
         }

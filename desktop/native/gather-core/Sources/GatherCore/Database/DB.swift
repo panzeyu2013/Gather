@@ -44,6 +44,10 @@ public enum DBError: Error, Equatable {
 /// 故显式标注 `@unchecked`（这是本仓唯一的共享句柄）。
 public final class DBConnection: @unchecked Sendable {
     private var handle: OpaquePointer?
+    /// 连接代数（D6 深审）：每次 open/close 自增。DBStatement 记录创建时的代数，
+    /// reopen 后旧语句（指针属于**旧** SQLite 连接）必须失效，不能在新连接上
+    /// 读出 affected-row 数。
+    private var connectionGeneration: Int64 = 0
     private let reopenPath: String?
 
     /// path 为 ":memory:" 时使用内存库（测试用）。
@@ -73,12 +77,35 @@ public final class DBConnection: @unchecked Sendable {
             throw DBError.message("无法打开数据库 \(path): \(String(cString: sqlite3_errstr(rc)))")
         }
         handle = db
+        connectionGeneration &+= 1
         try exec("PRAGMA journal_mode = WAL;")
         try exec("PRAGMA foreign_keys = ON;")
         // 审计 P1-1：多线程共用单连接（JobService worker/协调器/主线程 UI），
         // 无 busy_timeout 时并发写立即 SQLITE_BUSY 冒泡到 UI。5s 等待让
         // 短暂写锁竞争（WAL 单写者）退化为排队而非报错。
         try exec("PRAGMA busy_timeout = 5000;")
+        // F-5（性能审计的移植遗漏）：SettingsService 定义了 db_synchronous /
+        // db_cache_size_mb 并暴露在设置 UI，但全仓无消费者——用户改了不生效。
+        // 这里在打开连接时读取设置并落成 PRAGMA（缺省 normal / 64MB，与 TS 一致）。
+        applyPerformancePragmas()
+    }
+
+    /// 性能相关 PRAGMA（F-5）。open() 与 settingsProvider 注入后各调用一次：
+    /// 首次打开时宿主还没注入设置钩子，注入后必须重放，否则用户改的
+    /// db_synchronous / db_cache_size_mb 仍不生效。
+    private func applyPerformancePragmas() {
+        let storedSync = settingsProvider?("db_synchronous")
+        let allowedSync = ["off", "normal", "full", "extra"]
+        let syncValue = (storedSync ?? "normal").lowercased()
+        try? exec("PRAGMA synchronous = \(allowedSync.contains(syncValue) ? syncValue : "normal");")
+        let storedCache = Int(settingsProvider?("db_cache_size_mb") ?? "64") ?? 64
+        try? exec("PRAGMA cache_size = -\(max(1, min(1024, storedCache)) * 1024);")
+    }
+
+    /// 设置读取钩子（由宿主注入；nil = 用默认值）。DB 层不直接依赖 SettingsService，
+    /// 避免 Database → Services 的反向依赖。注入时立即重放 PRAGMA（F-5）。
+    public var settingsProvider: ((String) -> String?)? {
+        didSet { applyPerformancePragmas() }
     }
 
     /// 连接级串行化锁（审计 P1-1）：同一连接上所有 SQL 执行（事务与非事务）
@@ -96,10 +123,25 @@ public final class DBConnection: @unchecked Sendable {
     }
 
     public func close() {
-        if let handle {
-            sqlite3_close_v2(handle)
-            self.handle = nil
+        // 问题 4（第三轮审查）：close 原先不取连接锁 —— 与 SQL 执行并发时会出现
+        // 「句柄已释放但语句还在用」的窗口。这里纳入同一把锁（重入安全）。
+        withConnectionLock {
+            if let handle {
+                sqlite3_close_v2(handle)
+                self.handle = nil
+            }
+            connectionGeneration &+= 1
         }
+    }
+
+    /// 连接是否已关闭（供 DBStatement 校验；问题 4）。
+    public var isClosed: Bool {
+        withConnectionLock { handle == nil }
+    }
+
+    /// 当前连接代数（D6；供 DBStatement 校验创建时的代数）。
+    fileprivate var currentGeneration: Int64 {
+        withConnectionLock { connectionGeneration }
     }
 
     /// 供数据库层内部（如 sqlite3_backup 迁移备份）访问原始句柄。
@@ -143,7 +185,7 @@ public final class DBConnection: @unchecked Sendable {
             guard rc == SQLITE_OK, let stmt else {
                 throw DBError.message("SQL 编译失败: \(String(cString: sqlite3_errmsg(handle)))")
             }
-            return DBStatement(handle: stmt, owner: self)
+            return DBStatement(handle: stmt, owner: self, generation: connectionGeneration)
         }
     }
 
@@ -199,17 +241,32 @@ public final class DBConnection: @unchecked Sendable {
 public final class DBStatement {
     private let stmt: OpaquePointer
     private let owner: DBConnection
+    /// 创建该语句时的连接代数（D6）。reopen/close 之后与 owner 的当前代数不符即失效。
+    private let generation: Int64
 
-    fileprivate init(handle: OpaquePointer, owner: DBConnection) {
+    fileprivate init(handle: OpaquePointer, owner: DBConnection, generation: Int64) {
         self.stmt = handle
         self.owner = owner
+        self.generation = generation
     }
 
     deinit { sqlite3_finalize(stmt) }
 
+    /// 连接已关闭即拒绝（问题 4：旧实现会把 stmt 指针当成 db 指针去做
+    /// sqlite3_errmsg/sqlite3_changes，句柄类型错误；关闭后 prepare/run/query
+    /// 必须稳定失败而不是静默返回 0）。
+    private func requireOpenConnection() throws {
+        if owner.isClosed { throw DBError.message("数据库已关闭") }
+        // D6：连接代数不一致 = 语句属于已被 close/reopen 替换掉的旧连接。
+        guard owner.currentGeneration == generation else {
+            throw DBError.message("数据库连接已重开，语句已失效")
+        }
+    }
+
     /// 按顺序绑定位置参数（1-based，对应 SQL 中的 `?`）。
     public func bind(_ index: Int, _ value: DBValue?) throws {
         try owner.withConnectionLock {
+            try requireOpenConnection()
             let rc: Int32
         switch value ?? .null {
         case .null:
@@ -245,6 +302,7 @@ public final class DBStatement {
     /// 执行并取回全部行（连接级锁内执行，见 withConnectionLock）。
     public func query(_ values: [DBValue?] = []) throws -> [DBRow] {
         try owner.withConnectionLock {
+            try requireOpenConnection()
             try bind(values)
             defer { reset() }
             var rows: [DBRow] = []
@@ -255,7 +313,7 @@ public final class DBStatement {
                 } else if rc == SQLITE_DONE {
                     break
                 } else {
-                    throw DBError.message("查询失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+                    try throwQueryFailure("查询失败")
                 }
             }
             return rows
@@ -265,25 +323,29 @@ public final class DBStatement {
     /// 执行并返回受影响行数（连接级锁内执行，见 withConnectionLock）。
     public func run(_ values: [DBValue?] = []) throws -> Int {
         try owner.withConnectionLock {
+            try requireOpenConnection()
             try bind(values)
             defer { reset() }
             let rc = sqlite3_step(stmt)
             guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
-                throw DBError.message("执行失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+                try throwQueryFailure("执行失败")
             }
-            return Int(sqlite3_changes(ownerHandle))
+            try requireOpenConnection()
+            guard let dbHandle = owner.handlePublic else { throw DBError.message("数据库已关闭") }
+            return Int(sqlite3_changes(dbHandle))
         }
     }
 
     /// 取单行（无行返回 nil；连接级锁内执行，见 withConnectionLock）。
     public func get(_ values: [DBValue?] = []) throws -> DBRow? {
         try owner.withConnectionLock {
+            try requireOpenConnection()
             try bind(values)
             defer { reset() }
             let rc = sqlite3_step(stmt)
             if rc == SQLITE_ROW { return columns() }
             if rc == SQLITE_DONE { return nil }
-            throw DBError.message("查询失败: \(String(cString: sqlite3_errmsg(ownerHandle)))")
+            try throwQueryFailure("查询失败")
         }
     }
 
@@ -310,9 +372,13 @@ public final class DBStatement {
         }
     }
 
-    private var ownerHandle: OpaquePointer {
-        owner.handlePublic ?? stmt
+    /// 错误消息辅助：连接已关闭时不触碰任何句柄（问题 4），直接抛「数据库已关闭」。
+    private func throwQueryFailure(_ prefix: String) throws -> Never {
+        if owner.isClosed { throw DBError.message("数据库已关闭") }
+        guard let handle = owner.handlePublic else { throw DBError.message("数据库已关闭") }
+        throw DBError.message("\(prefix): \(String(cString: sqlite3_errmsg(handle)))")
     }
+
 }
 
 // SQLITE_TRANSIENT 是宏，模块映射不导出，用标准等价写法：
@@ -322,7 +388,8 @@ private let SQLITE_TRANSIENT_PTR: (@convention(c) (UnsafeMutableRawPointer?) -> 
 
 extension DBConnection {
     /// 供 DBStatement 读取错误消息（内部使用）。
-    fileprivate var handlePublic: OpaquePointer? { handle }
+    fileprivate var handlePublic: OpaquePointer? { withConnectionLock { handle } }
+
 }
 
 extension DBValue {

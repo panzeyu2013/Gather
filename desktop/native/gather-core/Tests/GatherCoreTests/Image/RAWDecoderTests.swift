@@ -178,4 +178,90 @@ struct RAWDecoderTests {
             _ = try RAWDecoder.getThumbnail(path: url.path, size: 256)
         }
     }
+
+    /// 四象限彩色 JPEG：左上红、右上绿、左下蓝、右下黄（区域解码要验证取到哪一块）。
+    private func makeQuadrantJPEG(width: Int, height: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-rawdecoder-quad-\(UUID().uuidString).jpg")
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw TestError("CGContext failed") }
+        let halfW = CGFloat(width) / 2
+        let halfH = CGFloat(height) / 2
+        // CGContext 原点在左下：y=0 是图像底部。
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: halfH, width: halfW, height: halfH))          // 图像左上 = 红
+        context.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1))
+        context.fill(CGRect(x: halfW, y: halfH, width: halfW, height: halfH))      // 右上 = 绿
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: halfW, height: halfH))              // 左下 = 蓝
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 0, alpha: 1))
+        context.fill(CGRect(x: halfW, y: 0, width: halfW, height: halfH))          // 右下 = 黄
+        guard let image = context.makeImage() else { throw TestError("makeImage failed") }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil)
+        else { throw TestError("destination failed") }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw TestError("finalize failed") }
+        try (data as Data).write(to: url)
+        return url
+    }
+
+    /// 读 JPEG 缓冲的中心像素（用于判断区域属于哪个象限）。
+    private func centerPixel(of jpeg: Data) -> (r: Int, g: Int, b: Int)? {
+        guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return (Int(pixel[0]), Int(pixel[1]), Int(pixel[2]))
+    }
+
+    /// 区域解码：只解可见区域（Bridge/C1 式 tiled detail）。
+    @Test func regionDecodeRendersOnlyVisibleArea() throws {
+        let url = try makeQuadrantJPEG(width: 4000, height: 3000)
+        defer { cleanup([url]) }
+        // 右上象限（绿）——归一化 (0.5, 0, 0.5, 0.5)，左上原点。
+        let region = try RAWDecoder.decodeRegion(
+            path: url.path,
+            normalizedRect: CGRect(x: 0.5, y: 0, width: 0.5, height: 0.5),
+            maxPixel: 512
+        )
+        // 只解区域：输出像素应接近 maxPixel，而不是整图的 4000。
+        #expect(region.regionWidth <= 512 && region.regionHeight <= 512)
+        #expect(region.regionWidth >= 256, "区域解码不得退化成极小缩略图：\(region.regionWidth)")
+        // 整图尺寸用于换算，必须是原始像素。
+        #expect(region.fullWidth == 4000 && region.fullHeight == 3000)
+        // 内容正确：中心像素是绿色象限（JPEG 有损，给出容差）。
+        let pixel = try #require(centerPixel(of: region.buffer))
+        #expect(pixel.g > 180 && pixel.r < 80 && pixel.b < 80, "区域内容必须是绿象限：\(pixel)")
+    }
+
+    @Test func regionDecodeClampsAndHandlesInvalidInput() throws {
+        let url = try makeQuadrantJPEG(width: 800, height: 600)
+        defer { cleanup([url]) }
+        // 越界矩形被钳制（不抛错、输出仍在界内）。
+        let clamped = try RAWDecoder.decodeRegion(
+            path: url.path,
+            normalizedRect: CGRect(x: 0.8, y: 0.8, width: 0.9, height: 0.9),
+            maxPixel: 256
+        )
+        #expect(clamped.regionWidth >= 1 && clamped.regionHeight >= 1)
+        #expect(clamped.regionWidth <= 256 && clamped.regionHeight <= 256)
+        // 不支持扩展名 → 明确错误码（非静默）。
+        #expect(throws: RAWDecoderError.self) {
+            _ = try RAWDecoder.decodeRegion(
+                path: "/tmp/gather-region.gif",
+                normalizedRect: CGRect(x: 0, y: 0, width: 1, height: 1),
+                maxPixel: 256
+            )
+        }
+    }
 }

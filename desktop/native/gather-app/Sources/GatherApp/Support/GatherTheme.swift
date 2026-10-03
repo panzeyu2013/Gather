@@ -1,86 +1,178 @@
-// Gather 主题令牌：整体偏向旧版暖橙品牌（primary #a54d2a / 背景 #f5f0eb），
-// 控件外观保持系统原生。通过 .tint(GatherTheme.primary) 挂到根视图后，
-// 现有 Color.accentColor 引用与系统控件自动跟随暖橙主色。
+// Gather 主题层（原生版）。
+//
+// 设计原则：
+// 1. **品牌色只做 accent**：暖橙只用于 tint / 选中 / 强调，绝不再充当表面色或正文色。
+//    与资产目录里的 Color Set 等价，显式提供「增强对比度」变体。
+// 2. **表面 / 文字 / 分隔线全部来自 AppKit 语义色**：自动跟随浅色、深色、
+//    增强对比度与降低透明度，不再硬编码 hex。
+// 3. **不再有 spacing / radius 的自造阶梯**：控件尺寸与圆角交给系统控件；
+//    仅在容器层保留一个最小的圆角常量。
 import SwiftUI
 import AppKit
 
 public enum GatherTheme {
-    // MARK: - 品牌主色（旧版 global.css --color-primary 系）
-    public static let primary = dynamic(light: "#A54D2A", dark: "#D98964")
-    public static let primaryHover = dynamic(light: "#9E4525", dark: "#E09A77")
-    public static let primarySoft = dynamic(light: "#F3DFD4", dark: "#4A3228")
+    // MARK: - 品牌 accent（唯一保留的自定义色，且只用于强调）
 
-    // MARK: - 背景 / 表面
-    public static let background = dynamic(light: "#F5F0EB", dark: "#221E1A")
-    public static let backgroundSecondary = dynamic(light: "#EDE6DC", dark: "#2A2621")
-    public static let surface = dynamic(light: "#FAF7F2", dark: "#2E2A24")
+    /// 品牌暖橙。等价于资产目录 Color Set：浅色/深色/增强对比度四态。
+    public static let accent = dynamic(
+        light: "#A54D2A",
+        dark: "#D98964",
+        highContrastLight: "#7E3517",
+        highContrastDark: "#F2B08C"
+    )
 
-    // MARK: - 文字
-    public static let textPrimary = dynamic(light: "#3D3833", dark: "#F0EAE2")
+    /// 选中态填充：accent 的低透明度叠色（对应系统选中高亮的强度）。
+    public static let selectionFill = accent.opacity(0.16)
 
-    // MARK: - 边框
-    public static let border = dynamic(light: "#E0D8CE", dark: "#3A352F")
+    // MARK: - 表面（语义色）
 
-    // MARK: - 语义色（旧版语义色值，深色模式取亮化版本）
-    public static let info = dynamic(light: "#2D6BA1", dark: "#6BA8D8")
-    public static let success = dynamic(light: "#31723D", dark: "#6FBF7F")
-    public static let error = dynamic(light: "#B3403F", dark: "#E0706F")
-    public static let warning = dynamic(light: "#D4944F", dark: "#E5B27B")
+    /// 窗口 / 页面底色。
+    public static let windowBackground = Color(nsColor: .windowBackgroundColor)
+    /// 分组内容（卡片、表格、列表）底色。
+    public static let contentBackground = Color(nsColor: .controlBackgroundColor)
+    /// 次级分组底色（嵌套面板）。
+    public static let secondaryContentBackground = Color(nsColor: .underPageBackgroundColor)
+    /// 分隔线 / 描边。
+    public static let separator = Color(nsColor: .separatorColor)
 
-    // MARK: - 查看器深色面板（始终深色，不随外观模式切换）
-    public static let viewerBackground = Color(hex: 0x080808)
-    public static let viewerSurface = Color(hex: 0x191919)
-    public static let viewerChrome = Color(hex: 0x202020)
-    /// 查看器/胶片条深色面板上的主文字（旧版 0xeee9e5）。
-    public static let viewerTextPrimary = Color(hex: 0xEEE9E5)
+    // MARK: - 文字（语义色）
 
-    // MARK: - 阴影（旧版暖色半透明阴影族）
-    public static let shadowSm = Color(red: 61 / 255, green: 56 / 255, blue: 51 / 255).opacity(0.12)
-    public static let shadowMd = Color(red: 61 / 255, green: 56 / 255, blue: 51 / 255).opacity(0.1)
+    public static let primaryText = Color.primary
+    public static let secondaryText = Color.secondary
 
-    // MARK: - 圆角阶梯
+    // MARK: - 语义状态色（系统色，自动适配深色与增强对比度）
+
+    public static let info = Color(nsColor: .systemBlue)
+    public static let success = Color(nsColor: .systemGreen)
+    public static let warning = Color(nsColor: .systemOrange)
+    public static let error = Color(nsColor: .systemRed)
+
+    // MARK: - 照片查看器（刻意常暗，与 Preview / 照片一致）
+
+    public static let viewerBackground = Color(white: 0.05)
+    public static let viewerSurface = Color(white: 0.10)
+    public static let viewerChrome = Color(white: 0.13)
+    /// 查看器深色面板上的主文字。
+    public static let viewerTextPrimary = Color(white: 0.93)
+
+    // MARK: - 阴影（中性，系统级强度）
+
+    public static let shadowSm = Color.black.opacity(0.08)
+    public static let shadowMd = Color.black.opacity(0.12)
+
+    // MARK: - 容器圆角
+
+    /// macOS 分组容器的标准圆角。控件圆角由系统控件自行决定。
     public enum Radius {
+        public static let group: CGFloat = 10
+        public static let panel: CGFloat = 8
+
+        // 旧名兼容：自造圆角阶梯已废弃，映射到分组/面板两级。
         public static let sm: CGFloat = 6
         public static let md: CGFloat = 8
         public static let lg: CGFloat = 10
     }
 
-    // MARK: - 表单标签列统一宽度
-    public static let formLabelWidth: CGFloat = 110
+    // MARK: - 动态色构造
 
-    // MARK: - 动态色
-    private static func dynamic(light: String, dark: String) -> Color {
+    /// 浅色 / 深色 / 增强对比度四态动态色。
+    private static func dynamic(
+        light: String,
+        dark: String,
+        highContrastLight: String? = nil,
+        highContrastDark: String? = nil
+    ) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            return NSColor(hex: isDark ? dark : light)
+            switch appearance.bestMatch(from: [
+                .accessibilityHighContrastDarkAqua,
+                .accessibilityHighContrastAqua,
+                .darkAqua,
+                .aqua,
+            ]) {
+            case .accessibilityHighContrastDarkAqua:
+                return NSColor(hex: highContrastDark ?? dark)
+            case .accessibilityHighContrastAqua:
+                return NSColor(hex: highContrastLight ?? light)
+            case .darkAqua:
+                return NSColor(hex: dark)
+            default:
+                return NSColor(hex: light)
+            }
         })
     }
 }
 
-public extension Color {
-    /// 主题主色（等价旧版 primary #a54d2a）。
-    static var gatherPrimary: Color { GatherTheme.primary }
-    /// 主题页面背景（等价旧版 #f5f0eb）。
-    static var gatherBackground: Color { GatherTheme.background }
-    /// 主题次级背景（等价旧版 #ede6dc）。
-    static var gatherBackgroundSecondary: Color { GatherTheme.backgroundSecondary }
-    /// 主题卡片表面（等价旧版 #faf7f2）。
-    static var gatherSurface: Color { GatherTheme.surface }
-    static var gatherBorder: Color { GatherTheme.border }
-    static var gatherTextPrimary: Color { GatherTheme.textPrimary }
+// MARK: - 兼容别名
+//
+// 旧名保留为「语义指向」，避免 400+ 处调用点一次性重命名带来的回归风险；
+// 取值已全部改为系统语义色。新代码请使用上面的语义名。
+
+public extension GatherTheme {
+    /// - Note: 语义 = accent。仅用于 tint / 强调，勿用作表面或正文色。
+    static var primary: Color { accent }
+    /// - Note: 语义 = accent（hover 不再单独调色，交由系统处理）。
+    static var primaryHover: Color { accent }
+    /// - Note: 语义 = 选中填充。
+    static var primarySoft: Color { selectionFill }
+    /// - Note: 语义 = 窗口底色。
+    static var background: Color { windowBackground }
+    /// - Note: 语义 = 分组内容底色。
+    static var backgroundSecondary: Color { contentBackground }
+    /// - Note: 语义 = 分组内容底色。
+    static var surface: Color { contentBackground }
+    /// - Note: 语义 = 主文字色。
+    static var textPrimary: Color { primaryText }
+    /// - Note: 语义 = 分隔线。
+    static var border: Color { separator }
+
+    /// 旧版固定标签列宽度。原生实现请改用 Form + LabeledContent。
+    static let formLabelWidth: CGFloat = 110
 }
 
+public extension Color {
+    /// 品牌强调色。
+    static var gatherAccent: Color { GatherTheme.accent }
+    /// 窗口底色。
+    static var gatherWindowBackground: Color { GatherTheme.windowBackground }
+    /// 分组内容底色。
+    static var gatherContentBackground: Color { GatherTheme.contentBackground }
+
+    // MARK: 兼容别名
+
+    static var gatherPrimary: Color { GatherTheme.accent }
+    static var gatherBackground: Color { GatherTheme.windowBackground }
+    static var gatherBackgroundSecondary: Color { GatherTheme.contentBackground }
+    static var gatherSurface: Color { GatherTheme.contentBackground }
+    static var gatherBorder: Color { GatherTheme.separator }
+    static var gatherTextPrimary: Color { GatherTheme.primaryText }
+}
+
+// MARK: - 原生分组容器
+
 public extension View {
-    /// 统一卡片样式：暖色表面 + 圆角 10（旧版 surface + radius 10）。
-    func gatherCard(cornerRadius: CGFloat = 10) -> some View {
-        padding(18)
+    /// 原生分组容器：语义内容底色 + 系统分隔线描边 + 连续圆角。
+    ///
+    /// 取代旧版 gatherCard() 的硬编码暖色卡片。与 macOS「内嵌分组」外观一致，
+    /// 自动跟随浅色 / 深色 / 增强对比度。
+    func gatherCard(cornerRadius: CGFloat = GatherTheme.Radius.group) -> some View {
+        modifier(GatherGroupBoxModifier(cornerRadius: cornerRadius))
+    }
+}
+
+private struct GatherGroupBoxModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(Color.gatherSurface)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(GatherTheme.contentBackground)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 1)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(GatherTheme.separator, lineWidth: 1)
             )
     }
 }

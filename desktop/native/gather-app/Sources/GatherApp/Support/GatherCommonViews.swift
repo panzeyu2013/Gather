@@ -1,27 +1,31 @@
-// 共享基础视图组件：统一各页自绘副本，消除实现分裂——
-// GatherStatCard（统计卡）、GatherProgressBar（进度条）、
-// GatherEmptyState（空态/无结果态）。
+// 共享基础视图组件（原生版）。
+//
+// 与旧版的区别：
+// - 数值不再用 `.system(size: 24, weight: .bold)`，改用系统文本样式，随文字大小设置缩放；
+// - 进度条改为原生 `ProgressView(value:)` + `.progressViewStyle(.linear)`；
+// - 空态改用系统文本样式与 `.imageScale`，尺寸不再硬编码；
+// - 一律使用语义色，跟随浅色 / 深色 / 增强对比度。
 import SwiftUI
 
-// MARK: - 统计卡
+// MARK: - 统计数字
 
-/// 数值 + 次级标签的统计卡。
-/// - .card：24pt bold 数值 + footnote 标签，暖色底 + 边框（写回报告/人脸簇统计）。
-/// - .compact：callout 数值 + footnote 标签，弱化底色（设置页队列计数）。
-/// - .plain：title2 数值 + footnote 标签，无底色（工作台汇总）。
+/// 数值 + 次级标签的统计单元。原生实现：数值走系统文本样式，标签走 `.caption`。
 public struct GatherStatCard: View {
     public enum Style {
+        /// 报告 / 统计区：较大的数值。
         case card
+        /// 队列计数等紧凑场景。
         case compact
+        /// 汇总条：内联数值。
         case plain
     }
 
     public let value: Int
     public let label: String
-    public var color: Color = Color.primary
+    public var color: Color = .primary
     public var style: Style = .card
 
-    public init(value: Int, label: String, color: Color = Color.primary, style: Style = .card) {
+    public init(value: Int, label: String, color: Color = .primary, style: Style = .card) {
         self.value = value
         self.label = label
         self.color = color
@@ -29,26 +33,40 @@ public struct GatherStatCard: View {
     }
 
     public var body: some View {
-        VStack(spacing: 2) {
-            valueText
+        VStack(spacing: style == .plain ? 2 : 4) {
+            // 状态色只出现在圆点上，数字始终用系统前景色。
+            // （systemGreen/systemRed 当正文色在浅色下只有 ~2:1 —— 这是
+            // macOS 设计语言里"颜色用于填充、不用于文字"的原因。）
+            HStack(spacing: 6) {
+                if style != .plain {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
+                }
+                Text(value, format: .number)
+                    .font(valueFont)
+                    .monospacedDigit()
+                    .foregroundStyle(style == .plain ? color : Color.primary)
+            }
             Text(label)
-                .font(.footnote)
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity)
         .applyStyle(style)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+        .accessibilityValue("\(value)")
     }
 
-    @ViewBuilder
-    private var valueText: some View {
-        let text = Text("\(value)")
-            .font(style == .plain ? .title2.weight(.semibold) : (style == .card ? .system(size: 24, weight: .bold) : .callout.monospaced().weight(.medium)))
-            .monospacedDigit()
-            .foregroundStyle(color)
-        if style == .plain {
-            text.frame(minWidth: 56, alignment: .center)
-        } else {
-            text
+    private var valueFont: Font {
+        switch style {
+        case .card: return .title2.weight(.semibold)
+        case .compact: return .callout.weight(.medium)
+        case .plain: return .title3.weight(.semibold)
         }
     }
 }
@@ -59,14 +77,17 @@ private extension View {
         switch style {
         case .card:
             self
-                .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.backgroundSecondary))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 1))
-        case .compact:
-            self
-                .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 6).fill(GatherTheme.backgroundSecondary.opacity(0.5)))
-        case .plain:
+                .padding(.vertical, 10)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                        .fill(GatherTheme.contentBackground)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
+                        .strokeBorder(GatherTheme.separator, lineWidth: 1)
+                )
+        case .compact, .plain:
             self
         }
     }
@@ -74,28 +95,33 @@ private extension View {
 
 // MARK: - 进度条
 
-/// 自绘进度条（对齐旧版 ProgressBar 语义：圆角轨道 + 主色填充）。
-/// 可选内嵌文本（label）、边框与固定宽度；默认 8pt 高、4pt 圆角。
+/// 原生进度指示器。
+///
+/// `fill` 映射为 tint；`label` 映射为 `ProgressView` 的原生标签（显示在条上方）。
+/// `track` / `border` / `height` / `cornerRadius` 为旧版 CSS 外观参数，现已忽略
+/// ——保留在签名里只为避免一次性改动大量调用点。
 public struct GatherProgressBar: View {
     public let fraction: Double
-    public var fill: Color = GatherTheme.primary
-    public var track: Color = GatherTheme.backgroundSecondary
+    public var fill: Color = GatherTheme.accent
+    @available(*, deprecated, message: "原生 ProgressView 系统自绘轨道")
+    public var track: Color = .clear
+    @available(*, deprecated, message: "原生 ProgressView 系统自绘边框")
     public var border: Color? = nil
-    public var height: CGFloat = 8
-    public var cornerRadius: CGFloat = 4
+    @available(*, deprecated, message: "原生 ProgressView 系统决定高度")
+    public var height: CGFloat = 0
+    @available(*, deprecated, message: "原生 ProgressView 系统决定圆角")
+    public var cornerRadius: CGFloat = 0
     public var width: CGFloat? = nil
     public var label: String? = nil
     public var accessibilityText: String? = nil
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     public init(
         fraction: Double,
-        fill: Color = GatherTheme.primary,
-        track: Color = GatherTheme.backgroundSecondary,
+        fill: Color = GatherTheme.accent,
+        track: Color = .clear,
         border: Color? = nil,
-        height: CGFloat = 8,
-        cornerRadius: CGFloat = 4,
+        height: CGFloat = 0,
+        cornerRadius: CGFloat = 0,
         width: CGFloat? = nil,
         label: String? = nil,
         accessibilityText: String? = nil
@@ -111,51 +137,44 @@ public struct GatherProgressBar: View {
         self.accessibilityText = accessibilityText
     }
 
+    private var clamped: Double { min(max(fraction, 0), 1) }
+
     public var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(track)
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(fill)
-                    .frame(width: max(0, geometry.size.width * min(max(fraction, 0), 1)))
-                if let label {
-                    Text(label)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(Color.gatherTextPrimary)
-                        .lineLimit(1)
-                        .padding(.leading, 9)
-                }
+        ProgressView(value: clamped) {
+            if let label {
+                Text(label)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            .overlay(
-                Group {
-                    if let border {
-                        RoundedRectangle(cornerRadius: cornerRadius)
-                            .strokeBorder(border, lineWidth: 1)
-                    }
-                }
-            )
         }
-        .frame(width: width, height: height)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: fraction)
-        .accessibilityElement(children: label == nil ? .ignore : .contain)
+        .progressViewStyle(.linear)
+        .tint(fill)
+        .frame(width: width)
+        .labelsHidden(if: label == nil)
         .accessibilityLabel(accessibilityText ?? label ?? "")
-        .accessibilityValue("\(Int((min(max(fraction, 0), 1) * 100).rounded()))%")
+        .accessibilityValue("\(Int((clamped * 100).rounded()))%")
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func labelsHidden(if condition: Bool) -> some View {
+        if condition { self.labelsHidden() } else { self }
     }
 }
 
 // MARK: - 空态
 
-/// 统一空态/无结果态：图标 + 标题 + 说明 + 可选操作按钮。
-/// 替代各页手搓 Image+Text 与 ContentUnavailableView 的两种写法。
+/// 统一空态 / 无结果态：SF Symbol + 标题 + 说明 + 可选操作。
+/// 视觉对齐系统 `ContentUnavailableView`（次要色符号、`headline` 标题、`callout` 说明）。
 public struct GatherEmptyState: View {
     public let icon: String
     public let title: String?
     public let message: String?
     public let actions: AnyView?
     public var iconColor: Color = .secondary
-    public var iconSize: CGFloat = 40
-    public var spacing: CGFloat = 8
+    public var iconSize: CGFloat = 44
+    public var spacing: CGFloat = 10
 
     public init(
         icon: String,
@@ -163,8 +182,8 @@ public struct GatherEmptyState: View {
         message: String? = nil,
         actions: AnyView? = nil,
         iconColor: Color = .secondary,
-        iconSize: CGFloat = 40,
-        spacing: CGFloat = 8
+        iconSize: CGFloat = 44,
+        spacing: CGFloat = 10
     ) {
         self.icon = icon
         self.title = title
@@ -180,8 +199,8 @@ public struct GatherEmptyState: View {
         title: String? = nil,
         message: String? = nil,
         iconColor: Color = .secondary,
-        iconSize: CGFloat = 40,
-        spacing: CGFloat = 8,
+        iconSize: CGFloat = 44,
+        spacing: CGFloat = 10,
         @ViewBuilder actions: () -> some View
     ) {
         self.init(
@@ -198,7 +217,8 @@ public struct GatherEmptyState: View {
     public var body: some View {
         VStack(spacing: spacing) {
             Image(systemName: icon)
-                .font(.system(size: iconSize))
+                .font(.system(size: iconSize, weight: .light))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(iconColor)
                 .accessibilityHidden(true)
             if let title {
@@ -210,12 +230,16 @@ public struct GatherEmptyState: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let actions {
                 actions
+                    .padding(.top, 2)
             }
         }
+        .frame(maxWidth: 320)
         .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
     }
 }
 
@@ -230,11 +254,14 @@ extension View {
     /// - 只有确认按钮会调用 `onConfirm` —— 命令层的 `confirmed: true` 只能
     ///   从确认分支到达；
     /// - 「取消」按钮调用 `onCancel` 写入可见文案（不静默 return），取消不发命令。
+    ///
+    /// - Important: `confirmRole` 默认为 `nil`（普通按钮）。**只有真正不可撤销的
+    ///   动作**才应传 `.destructive`；给可逆动作套红色按钮会稀释该信号。
     func gatherDestructiveConfirm<Item>(
         pending: Binding<Item?>,
         title: String,
         confirmLabel: @escaping (Item) -> String,
-        confirmRole: @escaping (Item) -> ButtonRole? = { _ in .destructive },
+        confirmRole: @escaping (Item) -> ButtonRole? = { _ in nil },
         message: @escaping (Item) -> String,
         onConfirm: @escaping (Item) -> Void,
         onCancel: @escaping (Item) -> Void

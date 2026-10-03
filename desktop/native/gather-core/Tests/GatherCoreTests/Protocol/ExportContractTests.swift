@@ -177,7 +177,33 @@ struct ExportContractTests {
         )
         let data = try JSONEncoder().encode(original)
         #expect(try JSONDecoder().decode(ExportPreview.self, from: data) == original)
-        #expect(Set(try jsonKeys(of: data)) == ["totalFiles", "totalSizeBytes", "freeSpaceBytes", "files"])
+        // D09：预览多了"输出计划"字段（输出名/格式/边车/逐项诊断 + 物理文件数），
+        // 键集合必须同步，否则跨端契约会静默漂移。
+        #expect(Set(try jsonKeys(of: data)) == [
+            "totalFiles", "totalSizeBytes", "freeSpaceBytes", "files",
+            "photoCount", "sidecarCount", "physicalFileCount", "issueCount",
+        ])
+        let fileData = try JSONEncoder().encode(original.files[0])
+        #expect(Set(try jsonKeys(of: fileData)) == [
+            "photoId", "filename", "fileSize", "outputName", "format",
+            "includesXmp", "isSizeEstimate", "willSkip",
+        ])
+    }
+
+    /// P2-6（审计 3）：新字段必须能解码**旧载荷**（没有这些键的 JSON）。
+    @Test func exportPreviewDecodesLegacyPayload() throws {
+        let legacyFile = #"{"photoId":"p1","filename":"a.jpg","fileSize":1024}"#
+        let legacyPreview = #"{"totalFiles":1,"totalSizeBytes":1024,"freeSpaceBytes":999,"files":["#
+            + legacyFile + "]}"
+        let decoded = try JSONDecoder().decode(ExportPreview.self, from: Data(legacyPreview.utf8))
+        #expect(decoded.files.first?.outputName == "a.jpg", "缺 outputName 时退回源文件名")
+        #expect(decoded.files.first?.format == "original")
+        #expect(decoded.files.first?.includesXmp == false)
+        #expect(decoded.files.first?.willSkip == false)
+        #expect(decoded.photoCount == 1, "缺 photoCount 时回退 totalFiles")
+        #expect(decoded.sidecarCount == 0)
+        #expect(decoded.physicalFileCount == 1)
+        #expect(decoded.issueCount == 0)
     }
 
     @Test func exportResultRoundTrip() throws {

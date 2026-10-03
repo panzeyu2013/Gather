@@ -15,13 +15,17 @@ permissions:
 
 jobs:
   boundary:
-    name: Legacy boundary scan
+    name: Legacy boundary scan + command surface
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: R0.3 legacy boundary scan
         run: ./scripts/check-no-legacy.sh
+      # B6（9-30 审查）：命令面门禁此前只在本地跑，CI 与开发文档不一致。
+      # 脚本自身已固定 locale（此前 LC_ALL=C.UTF-8 下会 unbound variable）。
+      - name: Command surface scan
+        run: ./scripts/check-command-surface.sh
 
   gather-core:
     name: gather-core tests

@@ -263,8 +263,14 @@ struct SessionContractTests {
         // 审查修复轮再补 6 个结构化码：XMP_CONFIRM_OTHER_SESSION_PENDING、
         // DUP_THRESHOLD_INVALID、ASSET_RELINK_SAME_ROOT / _NESTED_ROOT /
         // _NO_FILES_REGISTERED / _NO_VERIFIED_FILE → 169。
-        // 增删错误码时必须同步此断言与 GatherLocalization.errorMessages。
-        #expect(GatherErrorCode.allCases.count == 173)
+        // UI 审计第三轮补 1 个宿主启动码：GATHER_BOOTSTRAPPING（启动早期触发 C1
+        // 导入时发射；此前是裸字符串 → 用户看到「未知错误」，且文案表交叉契约测试
+        // 会把它当孤儿码挡下来）→ 174。
+        // 深度审查 D02 补 1 个交付失败码：EXPORT_ALL_FAILED（全失败不再谎报成功）
+        // → 175。深度审查 D09 再补 2 个计划诊断码（EXPORT_SOURCE_MISSING /
+        // EXPORT_SOURCE_UNREADABLE：逐项可执行性诊断进枚举，才能过本地化交叉契约）
+        // → 177。增删错误码时必须同步此断言与 GatherLocalization.errorMessages。
+        #expect(GatherErrorCode.allCases.count == 177)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

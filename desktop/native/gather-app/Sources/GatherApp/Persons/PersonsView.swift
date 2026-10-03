@@ -10,28 +10,18 @@ import SwiftUI
 import AppKit
 import GatherCore
 
-private let avatarInitialOnAccent = Color(nsColor: NSColor(name: nil) { appearance in
-    let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    return isDark
-        ? NSColor(srgbRed: 61 / 255, green: 56 / 255, blue: 51 / 255, alpha: 1)
-        : NSColor.white
-})
-
-private let avatarInitialOnSoft = Color(nsColor: NSColor(name: nil) { appearance in
-    let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    return isDark
-        ? NSColor.white
-        : NSColor(srgbRed: 61 / 255, green: 56 / 255, blue: 51 / 255, alpha: 1)
-})
-
 struct PersonsView: View {
     @Bindable var viewModel: PersonsViewModel
     let onReview: (String) -> Void
     /// 对齐旧版 PersonDetail「前往人脸审核」：跳转到人脸关键词页并按角色名
     /// （person.name, sessionId）预筛选。由 RootView 注入；nil 时回退 onReview(sessionId)。
     var onReviewFaceRole: ((String, String) -> Void)? = nil
-    /// 可见性门控（opacity 常驻页）：不可见时不发命令、不建加载 Task；重新可见
-    /// 时由 .task(id:) 补一次加载。
+    /// 打开人物关联照片（第三轮审计 E）：(sessionId, photoId)。
+    var onOpenPhoto: ((String, String) -> Void)? = nil
+    /// 当前工作区（D12）：复核按钮优先落在它上面；nil 时按钮文案带工作区名。
+    var currentSessionId: String? = nil
+    /// 可见性门控：外壳已改为按目的地条件构建页面，此参数只用于跳过不可见时的加载
+    /// （不再配合 .disabled/.allowsHitTesting/.accessibilityHidden 隐藏页面）。
     var isActive: Bool = true
     @State private var showCreate = false
 
@@ -39,11 +29,15 @@ struct PersonsView: View {
         viewModel: PersonsViewModel,
         onReview: @escaping (String) -> Void = { _ in },
         onReviewFaceRole: ((String, String) -> Void)? = nil,
+        onOpenPhoto: ((String, String) -> Void)? = nil,
+        currentSessionId: String? = nil,
         isActive: Bool = true
     ) {
         self.viewModel = viewModel
         self.onReview = onReview
         self.onReviewFaceRole = onReviewFaceRole
+        self.onOpenPhoto = onOpenPhoto
+        self.currentSessionId = currentSessionId
         self.isActive = isActive
     }
 
@@ -51,21 +45,37 @@ struct PersonsView: View {
         VStack(spacing: 0) {
             if let error = viewModel.actionError, !showCreate {
                 NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
             }
-            HStack(spacing: 0) {
+            // 两栏可拖拽（HSplitView）：删掉固定 300pt 与手绘选中态，
+            // 列表用系统 List(selection:).listStyle(.sidebar)。
+            HSplitView {
                 listPane
-                    .frame(width: 300)
-                Divider()
+                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 420)
                 detailPane
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.gatherBackground)
-        // 隐藏页一致性：disabled / hit-testing / 无障碍三者同源（RootView 亦按
-        // isPersons 覆盖，双保险）。
-        .disabled(!isActive)
-        .allowsHitTesting(isActive)
-        .accessibilityHidden(!isActive)
+        .background(GatherTheme.windowBackground)
+        // 页面名进窗口标题（旧版是列表栏里的 26pt H1，与侧栏条目重复）。
+        .navigationTitle(GatherLocalization.l("人脸库"))
+        // 搜索进工具栏：系统放大镜、清除按钮、Esc 取消；不再自绘圆角输入框。
+        .searchable(
+            text: $viewModel.searchText,
+            prompt: Text(GatherLocalization.l("搜索姓名…"))
+        )
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showCreate = true
+                } label: {
+                    Label(GatherLocalization.l("新建人物"), systemImage: "plus")
+                }
+                .help(GatherLocalization.l("新建人物"))
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+        }
         // 隐藏时不建加载 Task（启动即跑 person.list/person.get 的旧行为删除）；
         // 重新可见 → id 变化触发一次加载。
         .task(id: isActive) {
@@ -85,115 +95,79 @@ struct PersonsView: View {
             CreatePersonSheet(viewModel: viewModel) { name in
                 await viewModel.create(name: name)
             }
-            // 页面隐藏时 .disabled(true) 会随环境下沉到 sheet：显式启用。
-            .disabled(false)
             .onAppear { viewModel.clearActionError() }
         }
     }
 
     private var listPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(GatherLocalization.l("人脸库")).font(.largeTitle.weight(.bold))
-                Spacer()
-                // 对齐 TS Persons/index.tsx：搜索与新建按钮仅在有人物时展示，
-                // 空态由 emptyState 提供新建 CTA。
-                if !viewModel.persons.isEmpty {
-                    Button { showCreate = true } label: {
-                        Image(systemName: "plus")
-                    }
-                    .accessibilityLabel(GatherLocalization.l("新建人物"))
-                    .help(GatherLocalization.l("新建人物"))
-                }
-            }
-            .padding(16)
+        listContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
-            if !viewModel.persons.isEmpty {
-                TextField(GatherLocalization.l("搜索姓名…"), text: $viewModel.searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
+    /// 系统选中：外观、上下键、⌘ 取消选中交给 List。
+    private var selectionBinding: Binding<String?> {
+        Binding(
+            get: { viewModel.selected?.id },
+            set: { newValue in
+                guard let newValue else { return }
+                viewModel.select(newValue)
             }
-
-            listContent
-        }
-        .background(Color.gatherBackgroundSecondary)
+        )
     }
 
     @ViewBuilder
     private var listContent: some View {
         switch viewModel.phase {
         case .loading:
-            // 对齐 TS persons.loading = "加载中..."；省略号按全站风格统一为 "…"。
-            VStack(spacing: 10) {
-                ProgressView()
-                Text(GatherLocalization.l("加载中…"))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ProgressView(GatherLocalization.l("加载中…"))
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .failed(let error):
-            VStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 28))
-                    .foregroundStyle(GatherTheme.warning)
-                    .accessibilityHidden(true)
+            // 加载失败必须给出口（不再是自绘感叹号 + 裸按钮）。
+            ContentUnavailableView {
+                Label(GatherLocalization.l("加载失败"), systemImage: "exclamationmark.triangle")
+            } description: {
                 Text(String(format: GatherLocalization.l("加载失败：%@"), error))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Button(GatherLocalization.l("重试")) { Task { await viewModel.load() } }
+            } actions: {
+                Button(GatherLocalization.l("重试")) {
+                    Task { await viewModel.load() }
+                }
+                .help(GatherLocalization.l("重新读取人脸库"))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(24)
         case .loaded:
             if viewModel.persons.isEmpty {
                 emptyState
             } else if viewModel.filteredPersons.isEmpty {
                 noMatchState
             } else {
-                List(viewModel.filteredPersons, id: \.id) { person in
-                    Button {
-                        viewModel.select(person.id)
-                    } label: {
-                        PersonListRow(person: person, selected: viewModel.selected?.id == person.id)
+                List(selection: selectionBinding) {
+                    ForEach(viewModel.filteredPersons, id: \.id) { person in
+                        PersonListRow(person: person)
+                            .tag(person.id)
                     }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(GatherLocalization.l("打开")) {
-                            viewModel.select(person.id)
-                        }
-                    }
-                    .accessibilityLabel(person.name)
-                    .accessibilityAddTraits(viewModel.selected?.id == person.id ? [.isSelected] : [])
                 }
                 .listStyle(.sidebar)
+                .accessibilityLabel(GatherLocalization.l("人物列表"))
             }
         }
     }
 
     /// 对齐 TS persons.emptyTitle / persons.emptyHint / persons.new。
     private var emptyState: some View {
-        GatherEmptyState(
-            icon: "person.2",
-            title: GatherLocalization.l("暂无人物"),
-            message: GatherLocalization.l("新建人物以开始建立人脸库")
-        ) {
+        ContentUnavailableView {
+            Label(GatherLocalization.l("暂无人物"), systemImage: "person.2")
+        } description: {
+            Text(GatherLocalization.l("新建人物以开始建立人脸库"))
+        } actions: {
             Button(GatherLocalization.l("新建人物")) { showCreate = true }
-                .buttonStyle(.borderedProminent)
+                .gatherPrimaryActionButton()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
     }
 
-    /// 对齐 TS persons.noMatch / persons.noMatchHint。
+    /// 对齐 TS persons.noMatch / persons.noMatchHint：系统「搜索无结果」外观。
     private var noMatchState: some View {
-        GatherEmptyState(
-            icon: "magnifyingglass",
-            title: GatherLocalization.l("未找到匹配的人物"),
-            message: GatherLocalization.l("尝试其他关键词")
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
+        ContentUnavailableView.search(text: viewModel.searchText)
     }
 
     @ViewBuilder
@@ -203,59 +177,68 @@ struct PersonsView: View {
                 person: person,
                 viewModel: viewModel,
                 onReview: onReview,
-                onReviewFaceRole: onReviewFaceRole
+                onReviewFaceRole: onReviewFaceRole,
+                onOpenPhoto: onOpenPhoto,
+                currentSessionId: currentSessionId
             )
-        } else {
-            VStack(spacing: 12) {
-                Image(systemName: "person.2")
-                    .font(.system(size: 40))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                Text(GatherLocalization.l("选择一个人物"))
-                    .foregroundStyle(.secondary)
-                Button(GatherLocalization.l("新建人物")) { showCreate = true }
+        } else if viewModel.persons.isEmpty {
+            // N10：空库时的主动作只有一个——左侧空态已经给出「新建人物」，
+            // 右侧不再放第二个同权按钮（旧实现工具栏 + 左 + 右三处并列，
+            // 而右侧还写着「从左侧列表选择一个人物」，指向一个空列表）。
+            ContentUnavailableView {
+                Label(GatherLocalization.l("人脸库还是空的"), systemImage: "person.crop.circle")
+            } description: {
+                Text(GatherLocalization.l("新建人物后，就可以把工作区里的人脸簇绑定到角色上。"))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ContentUnavailableView {
+                Label(GatherLocalization.l("未选择人物"), systemImage: "person.crop.circle")
+            } description: {
+                Text(GatherLocalization.l("从左侧列表选择一个人物"))
+            }
         }
     }
 }
 
 private struct PersonListRow: View {
     let person: PersonData
-    let selected: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            // 对齐旧版 Persons 列表头像：圆形（64px→42px 适配原生侧栏行）。
+        HStack(spacing: 8) {
+            // 侧栏行保持紧凑：28pt 头像（42pt 圆形头像会把每行撑到 ~54pt）。
             avatar
-                .frame(width: 42, height: 42)
+                .frame(width: 28, height: 28)
                 .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(person.name).lineLimit(1)
                 Text(String(format: GatherLocalization.l("%lld 张照片 · %lld 个工作区"), person.photoCount, person.sessionCount))
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
-        .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 3)
+        .frame(minHeight: 24)
+        // 不再手绘选中底色（系统 List 选中外观自动跟随外观/增强对比度）；
+        // 行内容整体合并给辅助技术，计数不会被 label 覆盖掉。
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private var avatar: some View {
         if let path = person.thumbnailPath, !path.isEmpty {
-            PhotoThumbnailView(path: path, size: 96)
+            PhotoThumbnailView(path: path, size: 64)
         } else if let base64 = person.thumbnailBase64, let data = Data(base64Encoded: base64), let image = NSImage(data: data) {
             Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
         } else {
+            // 首字占位：品牌色只做低透明度底，文字用系统前景色
+            // （旧版按浅/深两态硬编码 RGB，且不会跟随增强对比度）。
             ZStack {
-                GatherTheme.primarySoft
+                GatherTheme.accent.opacity(0.18)
                 Text(String(person.name.prefix(1)))
-                    .font(.headline)
-                    .foregroundStyle(avatarInitialOnSoft)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(GatherTheme.primaryText)
             }
         }
     }
@@ -266,37 +249,49 @@ private struct PersonDetailView: View {
     @Bindable var viewModel: PersonsViewModel
     let onReview: (String) -> Void
     var onReviewFaceRole: ((String, String) -> Void)? = nil
+    /// 打开具体照片（第三轮审计 E）：「关联照片」网格原先只有缩略图 + 文件名，
+    /// 看得到却打不开——用户只能自己回工作区再找一遍。
+    var onOpenPhoto: ((String, String) -> Void)? = nil
+    /// 当前工作区（D12）：复核按钮优先落在它上面。
+    var currentSessionId: String? = nil
+
+    /// 复核落点（D12）：优先**当前工作区**，其次关联照片里的第一个工作区。
+    ///
+    /// 旧实现直接用 `person.photos.first?.sessionId`：人物跨多个工作区时，
+    /// 第一项不一定是用户当前所在的工作区，按钮却写着「在当前工作区复核」——
+    /// 文案与真实目标不一致。取不到当前工作区时按钮文案改为带工作区名，
+    /// 让用户知道会去哪里。
+    private var reviewTarget: (sessionId: String, sessionName: String)? {
+        if let current = currentSessionId,
+           let match = person.photos.first(where: { $0.sessionId == current }) {
+            return (match.sessionId, match.sessionName)
+        }
+        guard let first = person.photos.first else { return nil }
+        return (first.sessionId, first.sessionName)
+    }
+
+    private var reviewLabel: String {
+        guard let target = reviewTarget else { return GatherLocalization.l("复核人脸") }
+        if target.sessionId == currentSessionId { return GatherLocalization.l("在当前工作区复核人脸") }
+        return String(format: GatherLocalization.l("在「%@」复核人脸"), target.sessionName)
+    }
     @State private var name = ""
     @State private var notes = ""
     @State private var showDelete = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 对齐旧版 PersonDetail 顶部「← 返回人脸库」链接：点击清空选中回列表。
-            Button {
-                viewModel.deselect()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.left").accessibilityHidden(true)
-                    Text(GatherLocalization.l("返回人脸库"))
-                }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 24)
-            .padding(.top, 16)
-
+            // 详情栏标题：26pt H1 +「人物详情」眉标删除（页面名由窗口标题承载，
+            // 在列表里切换人物即可，不需要「返回人脸库」这种伪导航）。
             HStack(alignment: .center, spacing: 16) {
                 avatar
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(GatherLocalization.l("人物详情")).font(.footnote).foregroundStyle(.secondary)
-                    Text(person.name).font(.largeTitle.weight(.bold))
+                    Text(person.name).font(.title2.weight(.semibold))
                     Text(String(format: GatherLocalization.l("%lld 张照片 · %lld 个工作区"), person.totalPhotoCount, person.sessionCount))
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Button(GatherLocalization.l("删除"), role: .destructive) { showDelete = true }
+                Spacer(minLength: 0)
             }
             .padding(24)
 
@@ -331,51 +326,82 @@ private struct PersonDetailView: View {
                             .font(.callout)
                     }
                     LabeledContent(GatherLocalization.l("匹配阈值"), value: String(format: "%.2f", person.matchThreshold))
-                    if !person.photos.isEmpty {
-                        Button(GatherLocalization.l("在当前工作区复核人脸")) {
+                    if let target = reviewTarget {
+                        Button(reviewLabel) {
                             // 对齐旧版 PersonDetail.tsx:158-162：携带
                             // ?role=encodeURIComponent(person.name) 预筛选；
                             // 未注入 onReviewFaceRole 时回退旧行为。
                             if let onReviewFaceRole {
-                                if let sessionId = person.photos.first?.sessionId {
-                                    onReviewFaceRole(person.name, sessionId)
-                                }
-                            } else if let sessionId = person.photos.first?.sessionId {
-                                onReview(sessionId)
+                                onReviewFaceRole(person.name, target.sessionId)
+                            } else {
+                                onReview(target.sessionId)
                             }
                         }
+                        .help(String(
+                            format: GatherLocalization.l("在该工作区的人脸审核页按角色「%@」复核"),
+                            person.name
+                        ))
                     }
                 }
                 Section(GatherLocalization.l("记录")) {
                     LabeledContent(GatherLocalization.l("创建时间"), value: Self.dateText(person.createdAt))
                     LabeledContent(GatherLocalization.l("更新时间"), value: Self.dateText(person.updatedAt))
                 }
-            }
-            .formStyle(.grouped)
-
-            Divider()
-                .padding(.horizontal, 24)
-            Text(GatherLocalization.l("关联照片")).font(.headline)
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
-            if person.photos.isEmpty {
-                Text(GatherLocalization.l("暂无关联照片")).foregroundStyle(.secondary).padding(24)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
-                        ForEach(person.photos, id: \.photoId) { photo in
-                            VStack(alignment: .leading, spacing: 4) {
-                                PhotoThumbnailView(path: photo.filepath, size: 240, placeholderSize: CGSize(width: 150, height: 110))
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                Text(photo.filename).font(.footnote).lineLimit(1)
-                                Text(photo.sessionName).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                // 关联照片放进 Form 的 Section：整个详情栏只有一个滚动区
+                // （旧版 Form 与照片网格各自滚动，滚轮命中哪个区域不可预测）。
+                Section(GatherLocalization.l("关联照片")) {
+                    if person.photos.isEmpty {
+                        Text(GatherLocalization.l("暂无关联照片")).foregroundStyle(.secondary)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 10)], spacing: 10) {
+                            ForEach(person.photos, id: \.photoId) { photo in
+                                Button {
+                                    // 打开该照片所在工作区的图库并直接看这张（N07 通道）。
+                                    onOpenPhoto?(photo.sessionId, photo.photoId)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        PhotoThumbnailView(
+                                            path: photo.filepath,
+                                            size: 240,
+                                            placeholderSize: CGSize(width: 110, height: 74)
+                                        )
+                                        // 统一 3:2（多数 RAW 的宽高比），避免 .adaptive
+                                        // 列宽变化时留下右侧空隙与裁切比例不一致。
+                                        .aspectRatio(3 / 2, contentMode: .fill)
+                                        .frame(maxWidth: .infinity)
+                                        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.sm))
+                                        Text(photo.filename).font(.callout).lineLimit(1)
+                                        Text(photo.sessionName)
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(onOpenPhoto == nil)
+                                .help(GatherLocalization.l("打开这张照片"))
+                                .accessibilityElement(children: .combine)
                             }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(24)
+                }
+                // 破坏性动作用 Form 尾部的一个普通行，不再放在标题栏右侧最显眼处。
+                Section {
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button(role: .destructive) {
+                            showDelete = true
+                        } label: {
+                            Text(GatherLocalization.l("删除人物"))
+                        }
+                        .foregroundStyle(GatherTheme.error)
+                        .help(GatherLocalization.l("删除该人物及其人脸绑定数据"))
+                    }
                 }
             }
+            .formStyle(.grouped)
         }
         .onAppear {
             name = person.name
@@ -427,12 +453,13 @@ private struct PersonDetailView: View {
                 .frame(width: 80, height: 80)
                 .clipShape(Circle())
         } else {
+            // 首字占位：品牌色只做低透明度底，文字用系统前景色。
+            // （旧版主色实底 + 白字在深色模式约 2.7:1。）
             ZStack {
-                Circle().fill(Color.accentColor)
+                Circle().fill(GatherTheme.accent.opacity(0.18))
                 Text(String(person.name.prefix(1)))
-                    .font(.largeTitle.weight(.bold))
-                    // 首字对比色随外观切换：浅色白字，暗色主色为亮橙 → 深棕字。
-                    .foregroundStyle(avatarInitialOnAccent)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(GatherTheme.primaryText)
             }
             .frame(width: 80, height: 80)
         }
@@ -458,6 +485,7 @@ private struct PersonDetailView: View {
 private struct CreatePersonSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @FocusState private var nameFocused: Bool
     @Bindable var viewModel: PersonsViewModel
     let onCreate: (String) async -> Bool
 
@@ -466,12 +494,19 @@ private struct CreatePersonSheet: View {
             Text(GatherLocalization.l("新建人物")).font(.title2.weight(.semibold))
             TextField(GatherLocalization.l("输入人物姓名"), text: $name)
                 .textFieldStyle(.roundedBorder)
+                .focused($nameFocused)
+                // 打开即可直接输入（旧版需要先点一下输入框）。
+                .defaultFocus($nameFocused, true)
                 .onSubmit { submit() }
-            // 创建失败时 sheet 保持打开并在下方展示错误。
+            // 创建失败时 sheet 保持打开并在下方展示错误（状态色只落在图标上）。
             if let errorText = viewModel.actionError, !errorText.isEmpty {
-                Text(String(format: GatherLocalization.l("操作失败：%@"), errorText))
-                    .font(.footnote)
-                    .foregroundStyle(GatherTheme.error)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(GatherTheme.error)
+                        .accessibilityHidden(true)
+                    Text(String(format: GatherLocalization.l("操作失败：%@"), errorText))
+                        .font(.callout)
+                }
             }
             HStack {
                 Spacer()

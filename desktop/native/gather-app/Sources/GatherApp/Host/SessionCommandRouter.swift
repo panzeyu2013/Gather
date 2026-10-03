@@ -552,17 +552,59 @@ public final class SessionCommandRouter: CommandRouter {
             } ?? [:]
             var completedIds = Set(job.checkpoint["completedPhotoIds"]?.arrayElements?.compactMap(\.stringValue) ?? [])
             var completedSnapshot = Array(completedIds)
+            // 问题 1：完成记录必须带上当时的边车版本（键缺失 → 视为不可信，重新交付）。
+            var completedSidecarVersions = job.checkpoint["sidecarVersions"]?.objectValue?.compactMapValues { $0.stringValue } ?? [:]
+            // D01 交付身份：指纹已在 dedupeKey 里（export.execute:<session>:<指纹>），
+            // 任务仓库只会把**同一次交付**的完成清单继承过来；不同参数/照片集合拿到的是
+            // 不同键，天然不会继承。G-4（审计 5）指出：既然键已含指纹，执行器里再比一次
+            // stored != current 永远不成立（死代码）——已改为只兜「键内指纹缺失」：
+            // 老版本或手工构造的 checkpoint 不带指纹时，一律不信任继承的完成清单。
+            let currentFingerprint = try? exportService.deliveryFingerprint(sessionId: job.scopeId, options: options)
+            if currentFingerprint != nil,
+               job.checkpoint["deliveryFingerprint"]?.stringValue == nil {
+                destinations = [:]
+                completedIds = []
+                completedSnapshot = []
+            }
+            /// 交付摘要（D02）：写入 checkpoint，供工作区完成标记与任务中心读取**实际结果**，
+            /// 而不是只看 job.status == 'succeeded'。
+            var deliverySummary: [String: JSONValue] = [:]
+            // D-2/E-2/C-P2-3（性能审计）：checkpoint() 在**每张照片**的回调里被求值，
+            // 旧实现每次都重建整份 options + destinations + completedPhotoIds
+            //（1 万张 Σk ≈ 5×10⁷ 次装箱）。现在：options 只编码一次，
+            // 其余键按代数缓存——只有真正变化时才重算。
+            let optionsValue: JSONValue = (try? JSONValue(from: options)) ?? .object([:])
+            var checkpointCache: [String: JSONValue]?
+            var checkpointGeneration = 0
+            var builtGeneration = -1
             let checkpoint: () -> [String: JSONValue] = {
-                [
-                    "options": (try? JSONValue(from: options)) ?? .object([:]),
+                if builtGeneration == checkpointGeneration, let checkpointCache {
+                    return checkpointCache
+                }
+                var value: [String: JSONValue] = [
+                    "options": optionsValue,
                     "destinations": .object(destinations.mapValues(JSONValue.string)),
                     "completedPhotoIds": .array(completedSnapshot.map(JSONValue.string)),
+                    "sidecarVersions": .object(completedSidecarVersions.mapValues(JSONValue.string)),
                 ]
+                if let currentFingerprint { value["deliveryFingerprint"] = .string(currentFingerprint) }
+                for (key, item) in deliverySummary { value[key] = item }
+                checkpointCache = value
+                builtGeneration = checkpointGeneration
+                return value
             }
-            context.signal.addHandler { exportService.cancel(sessionId: job.scopeId) }
+            /// 目标名/完成清单变化时调用（唯一会改动 checkpoint 内容的两处）。
+            // 前提：导出执行器的回调（onPlanned/onCompleted/onProgress/onPlanReady）
+            // 由单线程串行触发（ExportService.execute 同步 for 循环）。若将来并行化
+            // 导出循环，这里的可变缓存需要加锁。
+            let invalidateCheckpoint: () -> Void = { checkpointGeneration += 1 }
+            // 问题 2（第三轮审查）：按 run（= job id）取消，不能按会话取消——
+            // 同会话并行导出两个目录时，取消一个不能中断另一个。
+            context.signal.addHandler { exportService.cancel(runId: job.id) }
             let result = try exportService.execute(
                 sessionId: job.scopeId,
                 options: options,
+                runId: job.id,
                 onProgress: { progress in
                     context.updateProgress(JobProgressUpdate(
                         current: progress.current,
@@ -574,15 +616,44 @@ public final class SessionCommandRouter: CommandRouter {
                 resume: NativeExportResumeState(
                     destinations: destinations,
                     completedPhotoIds: completedIds,
-                    onPlanned: { photoId, destinationName in destinations[photoId] = destinationName },
+                    sidecarVersions: completedSidecarVersions,
+                    onPlanned: { photoId, destinationName in
+                        destinations[photoId] = destinationName
+                        invalidateCheckpoint()
+                    },
                     onPlanReady: { context.updateCheckpoint(checkpoint()) },
-                    onCompleted: { photoId in
-                        if completedIds.insert(photoId).inserted { completedSnapshot.append(photoId) }
+                    onCompleted: { photoId, sidecarVersion in
+                        completedSidecarVersions[photoId] = sidecarVersion
+                        if completedIds.insert(photoId).inserted {
+                            completedSnapshot.append(photoId)
+                            invalidateCheckpoint()
+                        }
                         context.updateProgress(JobProgressUpdate(checkpoint: checkpoint()))
                     }
                 )
             )
+            deliverySummary = [
+                "exported": .number(Double(result.exported)),
+                "failed": .number(Double(result.failed)),
+                "skipped": .number(Double(result.skipped)),
+                "totalFiles": .number(Double(result.totalFiles)),
+                // F3（审计 1）：逐文件失败明细写进 checkpoint（截断 10 条）。
+                // 全失败时 ExportResult 不返回给前端，若不落盘，UI 只能显示一句
+                // 「请在导出结果中查看失败原因」而结果区是空的。
+                "errors": .array(result.errors.prefix(10).map(JSONValue.string)),
+            ]
+            // P0（第二轮验证）：deliverySummary 是**唯一**漏掉失效的写入点——不失效时
+            // 上面的 checkpoint 缓存命中，终态写库的字典里永远没有 exported/failed/
+            // errors，导致工作区「已导出」判定对零产出任务误报、导出页可能闪错文案。
+            invalidateCheckpoint()
             context.updateCheckpoint(checkpoint())
+            // D02：零成功 + 有失败 = 本次交付没有产出任何文件。执行器原先正常返回，
+            // JobService 因此写 'succeeded'、WorkspaceStatusService 推导出「已导出」，
+            // 任务中心也把它当成功任务——全失败被当成交付完成。与写回同一约定：
+            // 仍有未处理的失败就必须抛错误码，不得谎报成功。
+            if result.exported == 0, result.failed > 0 {
+                throw ExportServiceError.allFilesFailed(result.failed)
+            }
             return result
         }
     }
@@ -749,7 +820,10 @@ public final class SessionCommandRouter: CommandRouter {
         // ── jobs.*（3.1 服务层）──
 
         case "jobs.list":
-            let jobs = try jobService.list()
+            // B-4/D-1/E-P0-2：展示型调用可传 includeCheckpoint=false，避免把每个
+            // 任务的整份 checkpoint（导出可达 ~1MB）解析 + 序列化到主线程。
+            let includeCheckpoint = params["includeCheckpoint"]?.boolValue ?? true
+            let jobs = try jobService.list(includeCheckpoint: includeCheckpoint)
             return try GatherCore.JSONValue(from: jobs)
 
         // TS 源: jobs.ipc.ts:11 —— ok(jobs.cancel(jobId))。
@@ -993,6 +1067,10 @@ public final class SessionCommandRouter: CommandRouter {
                 id: row.id,
                 name: row.name,
                 keywords: parseKeywordsJSON(row.keywords),
+                // C-2 复核结论（第二轮验证）：这里其实是 person DTO，而
+                // persons.thumbnail_base64 全仓无写入点（恒为空），fkw.clusters 的
+                // DTO 在别处且其 base64 自迁移后也被清空 ⇒ 原审计前提不成立，
+                // 回退为原样透传（无效改动不留在代码里）。
                 thumbnailBase64: row.thumbnailBase64,
                 thumbnailPath: row.thumbnailPath,
                 notes: row.notes,
@@ -1288,7 +1366,7 @@ public final class SessionCommandRouter: CommandRouter {
         case "image.prioritize_thumbnail":
             let path = try requiredString(params, "path")
             try requirePhotoPath(path)
-            let size = Int((try? optionalNumber(params, "size")) ?? settingsService.getNumber("thumbnail_size", defaultValue: 1024))
+            let size = clampedInt((try? optionalNumber(params, "size")) ?? settingsService.getNumber("thumbnail_size", defaultValue: 1024), fallback: 1024, range: 64...8192)
             try imagePreloadService.prioritizeThumbnail(path: path, size: size)
             return .null
 
@@ -2203,7 +2281,37 @@ public final class SessionCommandRouter: CommandRouter {
             Task {
                 do {
                     let options = try self.decodeExportOptions(params["options"] ?? .object([:]))
-                    let preview = try self.exportService.preview(sessionId: sessionId, options: options)
+                    // D09：预览必须复用与执行**相同**的续跑基线——同指纹下若存在
+                    // 终态任务，执行会复用它的 destinations/completedPhotoIds（跳过已写
+                    // 文件、沿用旧名），预览若按"全新交付"算，就会显示 _2 后缀等与实际
+                    // 写出不符的名字。
+                    let deliveryFingerprint = try? self.exportService.deliveryFingerprint(
+                        sessionId: sessionId,
+                        options: options
+                    )
+                    var resumedNames: [String: String] = [:]
+                    var completedPhotoIds: Set<String> = []
+                    if let fingerprint = deliveryFingerprint,
+                       let checkpoint = try? self.jobService.latestTerminalCheckpoint(
+                           dedupeKey: "export.execute:\(sessionId):\(fingerprint)"
+                       ),
+                       // F6（审计 1）：只有 checkpoint 里记的指纹与本次请求一致才敢用它的
+                       // 完成清单——dedupeKey 与内容指纹可能因 create→claim 之间的集合变化
+                       // 而不一致，那时执行侧会重置，预览不能按旧基线显示「复用旧名」。
+                       checkpoint["deliveryFingerprint"]?.stringValue == fingerprint {
+                        resumedNames = checkpoint["destinations"]?.objectValue?.reduce(into: [String: String]()) { result, item in
+                            if let value = item.value.stringValue { result[item.key] = value }
+                        } ?? [:]
+                        completedPhotoIds = Set(
+                            checkpoint["completedPhotoIds"]?.arrayElements?.compactMap(\.stringValue) ?? []
+                        )
+                    }
+                    let preview = try self.exportService.preview(
+                        sessionId: sessionId,
+                        options: options,
+                        resumedNames: resumedNames,
+                        completedPhotoIds: completedPhotoIds
+                    )
                     completion(WebResponse(ok: true, data: try GatherCore.JSONValue(from: preview)))
                 } catch {
                     completion(WebResponse(ok: false, error: Self.errorMessage(error)))
@@ -2225,12 +2333,23 @@ public final class SessionCommandRouter: CommandRouter {
                     // makeDefault 的 router 可被 CLI/测试直接调用；start 是幂等的，
                     // 这里确保 export.execute 不会因宿主忘记启动 job service 而永久 queued。
                     self.jobService.start()
+                    // D01：交付身份 = 完整输出参数 + 参与导出的照片集合指纹。
+                    // 只有完全相同的请求才复用同一任务身份（=真续跑，允许继承完成记录）；
+                    // 改命名/格式/XMP/范围或照片集合变化都是**新交付**，任务仓库找不到
+                    // 同键终态行，因而不会把上次的 completedPhotoIds/destinations 补上。
+                    let deliveryFingerprint = try self.exportService.deliveryFingerprint(
+                        sessionId: sessionId,
+                        options: options
+                    )
                     let job = try self.jobService.create(JobCreateParams(
                         type: .exportExecute,
                         scopeType: "session",
                         scopeId: sessionId,
-                        dedupeKey: "export.execute:\(sessionId)",
-                        checkpoint: ["options": try GatherCore.JSONValue(from: options)]
+                        dedupeKey: "export.execute:\(sessionId):\(deliveryFingerprint)",
+                        checkpoint: [
+                            "options": try GatherCore.JSONValue(from: options),
+                            "deliveryFingerprint": .string(deliveryFingerprint),
+                        ]
                     ))
                     let result: ExportResult? = try await self.jobService.waitForResult(jobId: job.id)
                     guard let result else {
@@ -2693,11 +2812,11 @@ public final class SessionCommandRouter: CommandRouter {
                 exists: modelUsable(encoderResolved)
             ),
             modelInfo: MLModelInfo(
-                detectInputSize: Int(settingsService.getNumber("detect_input_size", defaultValue: 640)),
-                secondaryDetectInputSize: Int(settingsService.getNumber("detect_secondary_input_size", defaultValue: 128)),
-                previewMaxDimension: Int(settingsService.getNumber("face_preview_max_dimension", defaultValue: 2048)),
-                encoderInputSize: Int(settingsService.getNumber("encoder_input_size", defaultValue: 112)),
-                embeddingDim: Int(settingsService.getNumber("embedding_dim", defaultValue: 512))
+                detectInputSize: clampedInt(settingsService.getNumber("detect_input_size", defaultValue: 640), fallback: 640, range: 64...8192),
+                secondaryDetectInputSize: clampedInt(settingsService.getNumber("detect_secondary_input_size", defaultValue: 128), fallback: 128, range: 32...8192),
+                previewMaxDimension: clampedInt(settingsService.getNumber("face_preview_max_dimension", defaultValue: 2048), fallback: 2048, range: 256...8192),
+                encoderInputSize: clampedInt(settingsService.getNumber("encoder_input_size", defaultValue: 112), fallback: 112, range: 32...2048),
+                embeddingDim: clampedInt(settingsService.getNumber("embedding_dim", defaultValue: 512), fallback: 512, range: 32...4096)
             )
         )
     }
@@ -2750,6 +2869,17 @@ public final class SessionCommandRouter: CommandRouter {
 
 
     // MARK: 参数解析（TS helpers / ipc 校验语义）
+
+
+    /// 问题 6（第三轮审查）：Double → Int 必须分界安全（非有限/超范围会 trap）。
+    /// 仅用于设置/游标这类外部可写值。
+    private func clampedInt(_ value: Double, fallback: Int, range: ClosedRange<Int>) -> Int {
+        guard value.isFinite else { return fallback }
+        let rounded = value.rounded()
+        if rounded < Double(range.lowerBound) { return range.lowerBound }
+        if rounded > Double(range.upperBound) { return range.upperBound }
+        return Int(rounded)
+    }
 
     /// TS validateStringArray（person/quality/metadata 共用）。
     private func optionalStringArray(_ params: [String: GatherCore.JSONValue], _ key: String) throws -> [String]? {

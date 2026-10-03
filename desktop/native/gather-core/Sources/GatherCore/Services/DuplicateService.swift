@@ -301,8 +301,10 @@ public final class DuplicateService: @unchecked Sendable {
         // TS:155-168 —— sha256 阶段（并发 2），不可读文件跳过。
         let hashResults = try await batchAsync(candidatePhotos, concurrency: 2) { photo -> String? in
             if signal?.aborted ?? false { throw JobCancelledError() }
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: photo.filepath)) else { return nil }
-            return Self.sha256Hex(data)
+            // F-6 闭环（第二轮验证）：不再整文件读入 + 纯 Swift 哈希，
+            // 改走 IndexerService 的 CryptoKit 4MB 分块流式（内存恒定、约 9.4×）。
+            guard let checksum = try? IndexerService.sha256File(photo.filepath) else { return nil }
+            return checksum
         }
         for (index, photo) in candidatePhotos.enumerated() {
             if let checksum = hashResults[index] {

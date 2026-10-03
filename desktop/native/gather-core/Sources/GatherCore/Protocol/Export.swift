@@ -158,30 +158,116 @@ public struct ExportOptions: Codable, Equatable, Sendable {
 }
 
 // TS: ExportPreview.files 的元素（匿名对象 { photoId, filename, fileSize }）
+//
+// D09：预览的一项现在描述**输出**而不是源清单。旧实现只有源文件名 + 源大小：
+// 选 JPEG、改命名或遇到重名时，确认弹窗展示的清单与真正写出的文件无关。
 public struct ExportPreviewFile: Codable, Equatable, Sendable {
     public var photoId: String
+    /// 源文件名（保留旧字段名，不破坏既有消费者）。
     public var filename: String
+    /// 源文件字节数（转码时 isSizeEstimate = true，不能当输出体积）。
     public var fileSize: Int
+    /// 实际写出的文件名（重名已按策略改名）。
+    public var outputName: String
+    /// 输出格式：original / jpeg / tiff。
+    public var format: String
+    /// 是否会为该照片额外写出一个 .xmp 边车。
+    public var includesXmp: Bool
+    /// 逐项可执行性诊断（源文件缺失等）；nil = 可正常导出。
+    public var issue: String?
+    /// fileSize 是否为估算值（转码输出无法精确预测体积）。
+    public var isSizeEstimate: Bool
+    /// 断点续跑中已完成、本次会跳过的项（P2-1/P2-2 审计 3）：
+    /// 这类项不会失败也不会重写，UI 应说明「将跳过」而不是标成问题。
+    public var willSkip: Bool
 
-    public init(photoId: String, filename: String, fileSize: Int) {
+    public init(
+        photoId: String,
+        filename: String,
+        fileSize: Int,
+        outputName: String? = nil,
+        format: String = "original",
+        includesXmp: Bool = false,
+        issue: String? = nil,
+        isSizeEstimate: Bool = false,
+        willSkip: Bool = false
+    ) {
         self.photoId = photoId
         self.filename = filename
         self.fileSize = fileSize
+        self.outputName = outputName ?? filename
+        self.format = format
+        self.includesXmp = includesXmp
+        self.issue = issue
+        self.isSizeEstimate = isSizeEstimate
+        self.willSkip = willSkip
+    }
+
+    /// P2-6（审计 3）：新字段全部用 decodeIfPresent 兜默认值，旧 JSON 仍可解码
+    ///（合成 init(from:) 会把新字段当必需 key，旧载荷直接解不了）。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        photoId = try container.decode(String.self, forKey: .photoId)
+        filename = try container.decode(String.self, forKey: .filename)
+        fileSize = try container.decode(Int.self, forKey: .fileSize)
+        outputName = try container.decodeIfPresent(String.self, forKey: .outputName) ?? filename
+        format = try container.decodeIfPresent(String.self, forKey: .format) ?? "original"
+        includesXmp = try container.decodeIfPresent(Bool.self, forKey: .includesXmp) ?? false
+        issue = try container.decodeIfPresent(String.self, forKey: .issue)
+        isSizeEstimate = try container.decodeIfPresent(Bool.self, forKey: .isSizeEstimate) ?? false
+        willSkip = try container.decodeIfPresent(Bool.self, forKey: .willSkip) ?? false
     }
 }
 
 // TS: ExportPreview
 public struct ExportPreview: Codable, Equatable, Sendable {
+    /// 照片数（历史字段，语义未变）。
     public var totalFiles: Int
+    /// 源文件字节合计（转码时不等于输出体积）。
     public var totalSizeBytes: Int
     public var freeSpaceBytes: Int
     public var files: [ExportPreviewFile]
+    /// 照片数（= totalFiles，显式命名以避免"照片/文件"混用）。
+    public var photoCount: Int
+    /// 会写出的 XMP 边车数（只计源侧确实存在 sidecar 的项）。
+    public var sidecarCount: Int
+    /// 真正会写到磁盘的文件数 = photoCount + sidecarCount；确认文案必须用它。
+    public var physicalFileCount: Int
+    /// 有可执行性问题（源文件缺失等）的项数。
+    public var issueCount: Int
 
-    public init(totalFiles: Int, totalSizeBytes: Int, freeSpaceBytes: Int, files: [ExportPreviewFile]) {
+    public init(
+        totalFiles: Int,
+        totalSizeBytes: Int,
+        freeSpaceBytes: Int,
+        files: [ExportPreviewFile],
+        photoCount: Int? = nil,
+        sidecarCount: Int = 0,
+        physicalFileCount: Int? = nil,
+        issueCount: Int = 0
+    ) {
         self.totalFiles = totalFiles
         self.totalSizeBytes = totalSizeBytes
         self.freeSpaceBytes = freeSpaceBytes
         self.files = files
+        self.photoCount = photoCount ?? totalFiles
+        self.sidecarCount = sidecarCount
+        self.physicalFileCount = physicalFileCount ?? (self.photoCount + sidecarCount)
+        self.issueCount = issueCount
+    }
+
+    /// P2-6（审计 3）：新计数用 decodeIfPresent 兜默认值，旧 JSON 仍可解码。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalFiles = try container.decode(Int.self, forKey: .totalFiles)
+        totalSizeBytes = try container.decode(Int.self, forKey: .totalSizeBytes)
+        freeSpaceBytes = try container.decode(Int.self, forKey: .freeSpaceBytes)
+        files = try container.decode([ExportPreviewFile].self, forKey: .files)
+        photoCount = try container.decodeIfPresent(Int.self, forKey: .photoCount) ?? totalFiles
+        sidecarCount = try container.decodeIfPresent(Int.self, forKey: .sidecarCount) ?? 0
+        physicalFileCount = try container.decodeIfPresent(Int.self, forKey: .physicalFileCount)
+            ?? (photoCount + sidecarCount)
+        issueCount = try container.decodeIfPresent(Int.self, forKey: .issueCount) ?? 0
     }
 }
 

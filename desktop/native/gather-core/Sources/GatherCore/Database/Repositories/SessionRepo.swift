@@ -55,6 +55,7 @@ public final class SessionRepo {
             WHEN EXISTS (
               SELECT 1 FROM analysis_jobs j
               WHERE j.scope_id = sessions.id
+                AND j.type IN ('similarity.analyze', 'face.analyze')
                 AND j.status IN ('queued', 'running', 'cancelling', 'interrupted')
             ) THEN 'running'
             ELSE COALESCE((
@@ -65,6 +66,7 @@ public final class SessionRepo {
                        ELSE 'idle' END
               FROM analysis_jobs j2
               WHERE j2.scope_id = sessions.id
+                AND j2.type IN ('similarity.analyze', 'face.analyze')
               ORDER BY j2.updated_at DESC, j2.rowid DESC
               LIMIT 1
             ), 'idle')

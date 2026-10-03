@@ -28,10 +28,11 @@ public struct SliderInputView: View {
 
     public var body: some View {
         HStack(spacing: 10) {
+            // 标签自适应（旧版是 110pt 固定列宽 = CSS 栅格直译）。
             Text(title)
-                .font(.callout)
+                .font(.body)
                 .lineLimit(1)
-                .frame(width: GatherTheme.formLabelWidth, alignment: .leading)
+                .layoutPriority(1)
             Slider(value: $value, in: range, step: step ?? 0)
                 .accessibilityLabel(title)
                 .accessibilityValue(Text(format(value)))
@@ -39,9 +40,8 @@ public struct SliderInputView: View {
                     syncText(from: newValue)
                 }
             TextField(format(value), text: $text)
-                .textFieldStyle(.roundedBorder)
                 .frame(width: 80)
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(.trailing)
                 .monospacedDigit()
                 .accessibilityLabel(title)
                 .focused($focused)
@@ -87,8 +87,9 @@ public struct SliderInputIntView: View {
     public var body: some View {
         HStack(spacing: 10) {
             Text(title)
-                .font(.callout)
-                .frame(width: GatherTheme.formLabelWidth, alignment: .leading)
+                .font(.body)
+                .lineLimit(1)
+                .layoutPriority(1)
             Slider(value: Binding(
                 get: { Double(value) },
                 set: { value = Int($0.rounded()) }
@@ -96,9 +97,8 @@ public struct SliderInputIntView: View {
                 .accessibilityLabel(title)
                 .accessibilityValue(Text("\(value)"))
             TextField("\(value)", text: $text)
-                .textFieldStyle(.roundedBorder)
                 .frame(width: 72)
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(.trailing)
                 .accessibilityLabel(title)
                 .focused($focused)
                 .onSubmit { commitText() }

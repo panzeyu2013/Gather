@@ -84,8 +84,14 @@ public final class PersonsViewModel {
             phase = .loaded
             if let selectedId = selected?.id, persons.contains(where: { $0.id == selectedId }) {
                 select(selectedId)
-            } else if selected == nil, let first = persons.first {
+            } else if let first = persons.first {
+                // B4（9-30 审查）：这里覆盖「未选中」与「选中的人物已不存在」
+                //（例如另一个窗口把它删了）两种情况。旧实现只处理 selected == nil，
+                // 被删人物的详情会一直留在右栏，后续保存/删除会拿失效 ID 发命令。
                 select(first.id)
+            } else {
+                // 列表已空（人物被别处删光）：清空选择，不留旧详情。
+                selected = nil
             }
         } catch {
             phase = .failed(Self.message(error))

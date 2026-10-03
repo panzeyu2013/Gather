@@ -195,14 +195,32 @@ public final class WorkspaceStatusService {
         return viaOutbox != nil
     }
 
-    /// 存在成功导出的 job 记录：analysis_jobs type='export.execute' status='succeeded'。
+    /// 存在**实际交付了文件**的成功导出任务（审查 D02）。
+    ///
+    /// 旧实现只查 status='succeeded'。执行器把单文件失败收集进结果后正常返回，
+    /// 于是 exported=0 / failed=N 的全失败也被写成成功，工作区阶段徽章与待办随之
+    /// 误报「已导出」。现在读 checkpoint 里的交付摘要：exported > 0 才算交付完成。
+    ///
+    /// 兼容：本次改动之前的历史成功任务没有摘要键，无法回溯区分，按原语义视为
+    /// 已导出（不因为一次审计把老用户已有的工作区状态全部清掉）。
     private func hasSuccessfulExport(_ sessionId: String) throws -> Bool {
-        let row = try connection.prepare("""
-            SELECT 1 FROM analysis_jobs
+        let rows = try connection.prepare("""
+            SELECT checkpoint_json FROM analysis_jobs
             WHERE type = 'export.execute' AND scope_id = ? AND status = 'succeeded'
-            LIMIT 1
-          """).get([.text(sessionId)])
-        return row != nil
+            ORDER BY updated_at DESC
+            LIMIT 20
+          """).query([.text(sessionId)])
+        for row in rows {
+            let raw = row.first?.textValue ?? ""
+            guard !raw.isEmpty, let checkpoint = try? JSONValue.parse(raw) else {
+                return true
+            }
+            guard let exported = checkpoint.objectValue?["exported"]?.numberValue else {
+                return true
+            }
+            if exported > 0 { return true }
+        }
+        return false
     }
 
     /// TS: listFailedJobs —— scope_type='session' 的失败 job，按 updated_at 倒序，上限 10。

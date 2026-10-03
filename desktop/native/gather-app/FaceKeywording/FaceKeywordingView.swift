@@ -118,6 +118,8 @@ public final class FaceKeywordingViewModel {
     /// 深链播种只执行一次：后续 load()（分析完成/操作刷新）不再强制跳步骤，
     /// 避免用户在写回步骤时被拉回审核。
     private var initialRoleSeeded = false
+    /// F10 首屏落点只播种一次（后续 load 不打断用户当前步骤）。
+    private var initialStepSeeded = false
     /// TS StepReview actionError：审核步骤动作（绑定/移除/解除/合并）的内联
     /// 错误文案（旧版详情栏内联错误块，StepReview.tsx:216-218）。
     private(set) public var reviewActionError: String?
@@ -148,8 +150,20 @@ public final class FaceKeywordingViewModel {
         analysisDone && !isWritingBack
     }
 
-    public var boundClusters: [FaceClusterData] { clusters.filter { $0.binding != nil } }
-    public var unboundClusters: [FaceClusterData] { clusters.filter { $0.binding == nil } }
+    /// C-P1-6（性能审计）：派生数组改 stored。
+    /// 旧实现每次访问都 filter 全表，而视图一次 body 会访问多次
+    ///（boundClusters 甚至在 ForEach 行内再求值 ⇒ O(B×C)）。
+    public private(set) var boundClusters: [FaceClusterData] = []
+    public private(set) var unboundClusters: [FaceClusterData] = []
+    /// 角色集合（旧实现在 roleFilterPicker 里每次求值都重建 + 排序）。
+    public private(set) var roleNames: [String] = []
+
+    /// clusters 一经替换就调用：重算派生数组（只算一次）。
+    func recomputeDerivedClusters() {
+        boundClusters = clusters.filter { $0.binding != nil }
+        unboundClusters = clusters.filter { $0.binding == nil }
+        roleNames = Set(clusters.compactMap { $0.binding?.roleName }).sorted()
+    }
     public var totalAffected: Int { boundClusters.reduce(0) { $0 + $1.size } }
 
     /// TS StepReview selectedCluster：详情栏当前簇。
@@ -184,6 +198,7 @@ public final class FaceKeywordingViewModel {
             clusters = try client.execute("fkw.clusters", params: [
                 "sessionId": .string(sessionId),
             ]).decoded(as: [FaceClusterData].self)
+            recomputeDerivedClusters()
             if let selectedClusterId,
                let cluster = clusters.first(where: { $0.id == selectedClusterId }) {
                 select(cluster)
@@ -195,14 +210,52 @@ public final class FaceKeywordingViewModel {
         refreshModelsStatus()
         recoverAnalysis()
         seedInitialRoleFilter()
+        // F10：恢复完状态后再决定首屏落点（有结果 → 审核）。
+        seedInitialStep()
     }
 
+    /// 选中簇。**只在真正换簇时**用服务端值重置编辑字段。
+    ///
+    /// 第三轮审计 C-#1：load() 末尾会对当前选中簇再调一次 select()，而绑定/解绑/
+    /// 移除成员/合并之后都会 load() —— 无条件重置会把用户**还没提交**的角色名与
+    /// 关键字草稿冲掉（看起来像「界面自己改回去了」）。
     public func select(_ cluster: FaceClusterData) {
+        let isSameCluster = selectedClusterId == cluster.id
         selectedClusterId = cluster.id
-        roleName = cluster.binding?.roleName ?? ""
-        keywords = cluster.binding?.keywords.joined(separator: ", ") ?? ""
-        mergeTargetId = nil
+        if !isSameCluster {
+            roleName = cluster.binding?.roleName ?? ""
+            keywords = cluster.binding?.keywords.joined(separator: ", ") ?? ""
+            mergeTargetId = nil
+        }
         reviewActionError = nil
+    }
+
+    /// F10：已有分析结果时默认落在「审核」而不是「分析」。
+    ///
+    /// 旧行为：step 初值恒为 .analyze，恢复已有结果时只恢复 analysisPhase，
+    /// 于是每次进入一个已完成的工作区都停在分析页，主按钮还是「仅重新聚类」
+    ///（该动作会还原人工绑定）——用户很容易把重置动作当成继续流程。
+    ///
+    /// 只在首次 load 生效：后续 load（分析完成、动作刷新、事件回流）不得
+    /// 把用户从写回/审核步骤拉走。
+    private func seedInitialStep() {
+        guard !initialStepSeeded else { return }
+        initialStepSeeded = true
+        // 页面显式指定的步骤优先（例如深链或测试构造）。
+        guard step == .analyze else { return }
+        guard analysisDone || !clusters.isEmpty else { return }
+        step = .review
+    }
+
+    /// 深链角色过滤的应用入口（外壳在页面 .task 里调用，避免视图更新期改状态）。
+    ///
+    /// 与 seedInitialRoleFilter 的区别：后者只在首次 load 播种（initialRoleFilter
+    /// 构造参数）；本方法面向**已缓存 VM** 的二次深链（人物库「前往人脸审核」）。
+    public func applyRoleFilterFromDeepLink(_ role: String) {
+        guard roleFilter != role else { return }
+        roleFilter = role
+        reviewActionError = nil
+        if analysisDone { step = .review }
     }
 
     /// TS 深链（?role=）：播种角色过滤；分析已完成（done）时直接进入审核步骤
@@ -628,7 +681,7 @@ public final class FaceKeywordingViewModel {
     }
 
     private func recoverAnalysis() {
-        let jobs = (try? client.execute("jobs.list").decoded(as: [AnalysisJobData].self)) ?? []
+        let jobs = (try? client.execute("jobs.list", params: ["includeCheckpoint": .bool(false)]).decoded(as: [AnalysisJobData].self)) ?? []
         guard let job = jobs.first(where: { candidate in
             candidate.type == .faceAnalyze &&
                 candidate.scopeType == "session" &&
@@ -851,6 +904,14 @@ struct PendingFaceRecluster: Identifiable {
 
 public struct FaceKeywordingView: View {
     @State private var viewModel: FaceKeywordingViewModel
+    /// 深链角色过滤（V2 报告 P1）：由外壳传入、在 .task 里消费。
+    ///
+    /// 不能在 body 求值期调用 viewModel 的写方法——那是「视图更新期间改状态」，
+    /// 会让 SwiftUI 报未定义行为（此前正是在 RootView 的 ViewBuilder 里调的）。
+    private var pendingRoleFilter: String?
+    /// D10：控制中心「重新分析」入口意图（进入后直达分析步骤）。
+    private var analyzeIntent: Bool = false
+    private var onConsumeAnalyzeIntent: () -> Void = {}
     private let router: CommandRouter
     private let onBack: () -> Void
     private let onOpenSimilarity: (String) -> Void
@@ -869,6 +930,8 @@ public struct FaceKeywordingView: View {
     @State private var pendingRecluster: PendingFaceRecluster?
     @State private var visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
     @State private var hoveredClusterId: Int?
+    /// 被门控拒绝的步骤切换提示（分段控件不能逐段禁用）。
+    @State private var stepGateHint: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct StepItem {
@@ -881,6 +944,32 @@ public struct FaceKeywordingView: View {
         StepItem(key: .review, label: GatherLocalization.l("审核")),
         StepItem(key: .writeback, label: GatherLocalization.l("写回")),
     ]
+
+    /// 外壳注入 VM（N04）：人脸页的步骤、选中簇、编辑中的角色名/关键字都挂在
+    /// VM 上；切换页签后重建视图但复用 VM，用户不会丢失正在进行的审核位置。
+    init(
+        viewModel: FaceKeywordingViewModel,
+        router: CommandRouter,
+        pendingRoleFilter: String? = nil,
+        analyzeIntent: Bool = false,
+        onConsumeAnalyzeIntent: @escaping () -> Void = {},
+        onBack: @escaping () -> Void = {},
+        onOpenSimilarity: @escaping (String) -> Void = { _ in },
+        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
+        onOpenGallery: @escaping (String) -> Void = { _ in },
+        onOpenSettings: (() -> Void)? = nil
+    ) {
+        self.pendingRoleFilter = pendingRoleFilter
+        self.analyzeIntent = analyzeIntent
+        self.onConsumeAnalyzeIntent = onConsumeAnalyzeIntent
+        _viewModel = State(initialValue: viewModel)
+        self.router = router
+        self.onBack = onBack
+        self.onOpenSimilarity = onOpenSimilarity
+        self.onOpenTab = onOpenTab
+        self.onOpenGallery = onOpenGallery
+        self.onOpenSettings = onOpenSettings
+    }
 
     init(
         sessionId: String,
@@ -907,40 +996,37 @@ public struct FaceKeywordingView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            stepIndicator
-            // 审核动作错误经内联错误块就近展示（reviewActionError 与 errorMessage
-            // 同源），避免横幅双提示；其余操作错误仍走横幅。
-            if let error = viewModel.errorMessage, viewModel.reviewActionError == nil {
-                NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
-                    // 通用回退文案时，不可读的原文（英文诊断）留在悬停提示里。
-                    .help(viewModel.errorTooltip ?? "")
-            }
-            if let notice = viewModel.notice { NativeBanner(text: notice, color: GatherTheme.success) }
-            // 部分失败（encodingFailures > 0）：页面级 warning 常驻，分析成功后
-            // 自动跳到审核步骤也能看见，避免"有脸没被处理"被伪装成一切正常。
-            if let warning = viewModel.encodingFailureWarning {
-                NativeBanner(text: warning, color: GatherTheme.warning)
-            }
-            ScrollView {
-                Group {
-                    switch viewModel.step {
-                    case .analyze:
-                        stepAnalyze.frame(maxWidth: 860, alignment: .leading)
-                    case .review:
-                        stepReview
-                    case .writeback:
-                        stepWriteback.frame(maxWidth: 800, alignment: .leading)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .top)
-                .padding(24)
+            stepPicker
+            bannerStack
+            stepContent
+        }
+        .task {
+            // 外壳传入的深链角色过滤：在这里（而不是 body 里）写入 VM。
+            if let role = pendingRoleFilter {
+                viewModel.applyRoleFilterFromDeepLink(role)
             }
         }
-        .background(Color.gatherBackground)
+        .background(GatherTheme.windowBackground)
+        // 窗口 chrome：副标题 + 工具栏 principal 位置的分段子导航。
+        .sessionPageChrome(
+            subtitle: GatherLocalization.l("人脸检测与聚类"),
+            selection: .tab(.faceKw),
+            onBrowse: { onOpenGallery(viewModel.sessionId) },
+            onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
+            onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
+        )
+        .toolbar { toolbarItems }
         .task {
             viewModel.load()
             visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
+            // A5（审计 4）：分析意图必须在 load() **之后**写 step。
+            // load() 里的 seedInitialStep() 见 analysisDone 为真就把 step 改回
+            // .review；旧实现在另一个 .task 里先写 step，两个 .task 的启动顺序无保证，
+            // 「首次进入该工作区人脸页」（最常见场景）会静默失效。
+            if analyzeIntent {
+                viewModel.step = .analyze
+                onConsumeAnalyzeIntent()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
             guard let event = notification.object as? GatherJobEvent else { return }
@@ -948,6 +1034,10 @@ public struct FaceKeywordingView: View {
         }
         .onChange(of: viewModel.roleFilter) { _, _ in
             visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
+        }
+        // 步骤真正切换后清掉门控提示（提示只针对被拒绝的那次选择）。
+        .onChange(of: viewModel.step) { _, _ in
+            stepGateHint = nil
         }
         // 破坏性命令统一门控：确认后才带 confirmed: true，取消只写可见文案。
         .gatherDestructiveConfirm(
@@ -1037,88 +1127,151 @@ public struct FaceKeywordingView: View {
         )
     }
 
-    // MARK: - 外壳
+    // MARK: - 工具栏（窗口 chrome）
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(GatherLocalization.l("返回"), systemImage: "chevron.left", action: onBack).buttonStyle(.plain)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(GatherLocalization.l("人脸检测与聚类")).font(.largeTitle.weight(.bold))
-                    Text(String(format: GatherLocalization.l("工作区 %@"), String(viewModel.sessionId.prefix(8)))).foregroundStyle(.secondary)
-                }
-                Spacer()
-                C1StatusCapsuleHost(sessionId: viewModel.sessionId, router: router, onOpenSettings: onOpenSettings ?? {})
-                Button(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise") { viewModel.load() }
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                onBack()
+            } label: {
+                Label(GatherLocalization.l("返回"), systemImage: "chevron.backward")
             }
-            SessionTabBar(
-                selection: .tab(.faceKw),
-                onBrowse: { onOpenGallery(viewModel.sessionId) },
-                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-            )
+            .help(GatherLocalization.l("返回到上一页"))
+            .keyboardShortcut("[", modifiers: .command)
         }
-        .padding(24)
-    }
-
-    /// TS index.tsx steps：胶囊 34pt 高 / 999px 圆角 / → 分隔；已过步骤可回点，
-    /// 下一步仅 analysisStatus === 'done' 时可点（其余 opacity 0.55 禁用）。
-    private var stepIndicator: some View {
-        HStack(spacing: 8) {
-            ForEach(Array(stepItems.enumerated()), id: \.offset) { index, item in
-                if index > 0 {
-                    Text("→").foregroundStyle(Color.gatherBorder)
-                }
-                stepChip(item, index: index)
+        // onOpenSettings 为 nil 时不渲染状态胶囊（旧版胶囊仍可悬停/按下但无去处）。
+        if onOpenSettings != nil {
+            ToolbarItem(placement: .primaryAction) {
+                C1StatusCapsuleHost(
+                    sessionId: viewModel.sessionId,
+                    router: router,
+                    onOpenSettings: onOpenSettings ?? {}
+                )
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .background(Color.gatherSurface)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.gatherBorder).frame(height: 1)
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                viewModel.load()
+            } label: {
+                Label(GatherLocalization.l("刷新"), systemImage: "arrow.clockwise")
+            }
+            .help(GatherLocalization.l("刷新人脸簇"))
+            .keyboardShortcut("r", modifiers: .command)
         }
     }
 
-    private var currentStepIndex: Int {
+    // MARK: - 页面骨架（横幅 / 步骤内容）
+
+    @ViewBuilder
+    private var bannerStack: some View {
+        // 审核动作错误经内联错误块就近展示（reviewActionError 与 errorMessage
+        // 同源），避免横幅双提示；其余操作错误仍走横幅。
+        if let error = viewModel.errorMessage, viewModel.reviewActionError == nil {
+            NativeBanner(text: String(format: GatherLocalization.l("操作失败：%@"), error), color: GatherTheme.error)
+                // 通用回退文案时，不可读的原文（英文诊断）留在悬停提示里。
+                .help(viewModel.errorTooltip ?? "")
+                .padding(.horizontal, 24)
+                .padding(.top, 10)
+        }
+        if let notice = viewModel.notice {
+            NativeBanner(text: notice, color: GatherTheme.success)
+                .padding(.horizontal, 24)
+                .padding(.top, 10)
+        }
+        // 部分失败（encodingFailures > 0）：页面级 warning 常驻，分析成功后
+        // 自动跳到审核步骤也能看见，避免"有脸没被处理"被伪装成一切正常。
+        if let warning = viewModel.encodingFailureWarning {
+            NativeBanner(text: warning, color: GatherTheme.warning)
+                .padding(.horizontal, 24)
+                .padding(.top, 10)
+        }
+    }
+
+    /// 内容宽度统一：旧版分析 860 / 写回 800 两个魔法宽度，切换步骤时页面
+    /// 左右边缘会跳动；审核步骤改由 HSplitView 占满可用宽度。
+    private static let contentMaxWidth: CGFloat = 900
+
+    @ViewBuilder
+    private var stepContent: some View {
         switch viewModel.step {
+        case .analyze:
+            ScrollView {
+                stepAnalyze
+                    .frame(maxWidth: Self.contentMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .padding(24)
+            }
+        case .review:
+            stepReview
+        case .writeback:
+            ScrollView {
+                stepWriteback
+                    .frame(maxWidth: Self.contentMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .padding(24)
+            }
+        }
+    }
+
+    // MARK: - 步骤选择（原生分段控件）
+
+    /// TS index.tsx steps 的三步向导：手绘胶囊换成系统分段控件；门控保留
+    /// （已过步骤与当前步骤可回点，下一步仅在分析完成后可进入）。
+    private var stepPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker(GatherLocalization.l("步骤"), selection: stepSelection) {
+                ForEach(stepItems, id: \.key) { item in
+                    Text(item.label).tag(item.key)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 420)
+            .accessibilityLabel(GatherLocalization.l("人脸关键词步骤"))
+            .help(GatherLocalization.l("在分析、审核、写回之间切换"))
+            if let stepGateHint {
+                Label(stepGateHint, systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.top, 12)
+    }
+
+    /// 分段控件无法逐段禁用：非法选择被拒绝并给出可见说明，而不是静默忽略
+    /// （旧版用 opacity 0.55 + tooltip 表达同样的门控）。
+    private var stepSelection: Binding<FaceKeywordingViewModel.Step> {
+        Binding(
+            get: { viewModel.step },
+            set: { newValue in
+                guard canEnter(newValue) else {
+                    stepGateHint = GatherLocalization.l("请先完成人脸分析，再进入后续步骤。")
+                    return
+                }
+                stepGateHint = nil
+                viewModel.setStep(newValue)
+            }
+        )
+    }
+
+    private func canEnter(_ step: FaceKeywordingViewModel.Step) -> Bool {
+        let target = stepIndex(step)
+        let current = currentStepIndex
+        if target <= current { return true }
+        return target == current + 1 && viewModel.analysisDone
+    }
+
+    private func stepIndex(_ step: FaceKeywordingViewModel.Step) -> Int {
+        switch step {
         case .analyze: return 0
         case .review: return 1
         case .writeback: return 2
         }
     }
 
-    private func stepChip(_ item: StepItem, index: Int) -> some View {
-        let isActive = index == currentStepIndex
-        let isPast = index < currentStepIndex
-        let isNext = index == currentStepIndex + 1
-        let isClickable = isPast || (isNext && viewModel.analysisDone)
-        let enabled = isClickable || isActive
-        return Button {
-            viewModel.setStep(item.key)
-        } label: {
-            Text(item.label)
-                .font(.body)
-                .foregroundStyle(isActive ? Color.accentColor : (isPast ? GatherTheme.success : Color.secondary))
-                .fontWeight(isActive ? .bold : (isPast ? .semibold : .regular))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .frame(minHeight: 34)
-                .background(Capsule().fill(isActive ? GatherTheme.primarySoft : Color.gatherSurface))
-                .overlay(
-                    Capsule().strokeBorder(
-                        isActive ? GatherTheme.primary : (isPast ? Color.gatherBorder : Color.gatherBorder.opacity(0.6)),
-                        lineWidth: 1
-                    )
-                )
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.55)
-        .accessibilityAddTraits(isActive ? .isSelected : [])
-        .help(isActive ? "" : (isClickable ? String(format: GatherLocalization.l("前往「%@」步骤"), item.label) : (isNext ? GatherLocalization.l("请先完成人脸分析") : GatherLocalization.l("请先完成上一步"))))
-    }
+    private var currentStepIndex: Int { stepIndex(viewModel.step) }
 
     private var bindable: Bindable<FaceKeywordingViewModel> { Bindable(viewModel) }
 
@@ -1131,42 +1284,45 @@ public struct FaceKeywordingView: View {
                 HStack {
                     Text(GatherLocalization.l("匹配强度")).font(.headline)
                     Spacer()
-                    phaseCapsule
+                    phaseBadge
                 }
                 presetSelector
                 Text(GatherLocalization.l("建议从「均衡」开始，之后可在审核阶段拆分或合并人物。"))
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(.secondary)
                 DisclosureGroup(GatherLocalization.l("高级参数")) {
                     VStack(alignment: .leading, spacing: 14) {
                         // TS range slider（渐变轨道）+ 数字输入（SliderInput）。
                         SliderInputView(title: GatherLocalization.l("人脸相似度"), value: bindable.eps, range: 0.3...0.95, step: 0.01)
                             .disabled(viewModel.analysisPhase == .running)
                         Text(GatherLocalization.l("人脸相似度下限 0.30–0.95：只有相似度不低于该值才归为同一人，数值越大分组越严格。"))
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.callout).foregroundStyle(.secondary)
                         SliderInputIntView(title: GatherLocalization.l("最少出现次数"), value: bindable.minSamples, range: 2...20)
                             .disabled(viewModel.analysisPhase == .running)
                         Text(GatherLocalization.l("每个簇最少包含的人脸数量（2–20）。"))
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.callout).foregroundStyle(.secondary)
                     }
                     .padding(.top, 4)
                 }
-                // TS error 块：error 色 12% 底，嵌在表单附近便于定位。
+                // 分析失败/取消：与页面横幅同源的原生提示条（不再是手绘 error 色块）。
                 if let error = viewModel.errorMessage,
-                   (viewModel.analysisPhase == .failed || viewModel.analysisPhase == .cancelled) {
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(GatherTheme.error)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.12)))
-                        // 回落通用文案时，原始诊断只在此 tooltip 出现。
-                        .help(viewModel.errorTooltip ?? "")
+                   viewModel.analysisPhase == .failed || viewModel.analysisPhase == .cancelled {
+                    NativeBanner(
+                        text: error,
+                        systemImage: "exclamationmark.triangle.fill",
+                        color: GatherTheme.error
+                    )
+                    // 回落通用文案时，原始诊断只在此 tooltip 出现。
+                    .help(viewModel.errorTooltip ?? "")
                 }
                 if viewModel.analysisPhase == .running { analysisProgress }
                 HStack(spacing: 12) {
                     if viewModel.analysisPhase == .running {
-                        Button(GatherLocalization.l("取消"), systemImage: "stop.fill") { viewModel.cancel() }
-                            .foregroundStyle(GatherTheme.error)
+                        Button(role: .destructive) {
+                            viewModel.cancel()
+                        } label: {
+                            Label(GatherLocalization.l("取消"), systemImage: "stop.fill")
+                        }
+                        .help(GatherLocalization.l("停止正在运行的人脸分析"))
                     } else if viewModel.analysisPhase == .done {
                         Button(GatherLocalization.l("仅重新聚类"), systemImage: "arrow.triangle.2.circlepath") {
                             // 先弹确认（影响面真实计数），确认分支才发 fkw.recluster。
@@ -1176,98 +1332,87 @@ public struct FaceKeywordingView: View {
                                 boundClusterCount: impact.boundClusterCount
                             )
                         }
-                        .buttonStyle(.borderedProminent)
+                        .gatherPrimaryActionButton()
+                        .help(GatherLocalization.l("按当前参数重建全部人脸簇（会还原人工绑定）"))
                     } else {
                         Button(GatherLocalization.l("开始分析"), systemImage: "play.fill") {
                             Task { await viewModel.analyze() }
                         }
-                        .buttonStyle(.borderedProminent)
+                        .gatherPrimaryActionButton()
+                        .help(GatherLocalization.l("对新增照片运行人脸检测与聚类"))
                     }
                 }
-                if let result = viewModel.analysisResult {
-                    Text(String(format: GatherLocalization.l("分析结果：%@，检测失败 %lld 张，编码失败 %lld 个人脸"), result.status, result.detectionFailures, result.encodingFailures))
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
+                // 旧版「分析结果：<core 枚举>…」行已删除：状态由 phaseBadge 与页面
+                // 横幅承载，不再把 done/failed/cancelled 原文插进中文界面。
             }
             .padding(18)
             .gatherCard()
         }
     }
 
-    /// TS StepAnalyze.guidance：warning 色边框横幅 +「前往设置」按钮
+    /// TS StepAnalyze.guidance：warning 提示条 +「前往设置」按钮
     /// （旧版导航 /settings；回调为 nil 时按钮禁用）。
     @ViewBuilder
     private var modelsGuidanceStrip: some View {
         if viewModel.modelsMissing {
-            HStack(spacing: 12) {
-                Text(GatherLocalization.l("人脸推理当前使用系统内置引擎，建议前往设置确认模型状态。"))
-                    .font(.callout)
-                Spacer()
+            HStack(spacing: 8) {
+                NativeBanner(
+                    text: GatherLocalization.l("人脸推理当前使用系统内置引擎，建议前往设置确认模型状态。"),
+                    systemImage: "exclamationmark.triangle.fill",
+                    color: GatherTheme.warning
+                )
                 Button(GatherLocalization.l("前往设置")) { onOpenSettings?() }
                     .disabled(onOpenSettings == nil)
-                    .buttonStyle(.borderedProminent)
+                    .gatherPrimaryActionButton()
                     .controlSize(.small)
+                    .help(onOpenSettings == nil
+                        ? GatherLocalization.l("当前窗口没有设置入口")
+                        : GatherLocalization.l("打开设置检查人脸模型"))
             }
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.warning.opacity(0.1)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(GatherTheme.warning.opacity(0.6), lineWidth: 1))
         }
     }
 
-    private var phaseCapsule: some View {
-        Text(viewModel.analysisPhase.label)
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(phaseColor)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(phaseColor.opacity(0.12)))
+    /// 分析阶段徽标（原生 GatherBadge；warning 不再充当正文前景色）。
+    private var phaseBadge: some View {
+        GatherBadge(viewModel.analysisPhase.label, tone: phaseTone)
     }
 
-    private var phaseColor: Color {
+    private var phaseTone: GatherBadgeTone {
         switch viewModel.analysisPhase {
-        case .idle: return .secondary
-        case .running: return .accentColor
-        case .done: return GatherTheme.success
-        case .failed: return GatherTheme.error
-        case .cancelled: return GatherTheme.warning
+        case .idle: return .neutral
+        case .running: return .accent
+        case .done: return .success
+        case .failed: return .error
+        case .cancelled: return .neutral
         }
     }
 
+    /// TS StepAnalyze presetSelector：三个手绘按钮 → 系统分段控件
+    /// （自动获得键盘遍历、系统选中高亮与正确的禁用渲染）。
     private var presetSelector: some View {
-        HStack(spacing: 8) {
+        Picker(GatherLocalization.l("匹配强度"), selection: presetSelection) {
             ForEach(FaceKeywordingViewModel.presets) { preset in
-                presetButton(preset)
+                Text(preset.title).tag(Optional(preset.name))
             }
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .disabled(viewModel.analysisPhase == .running)
+        .help(GatherLocalization.l("按预设调整相似度下限与最少出现次数"))
     }
 
-    private func presetButton(_ preset: FaceKeywordingViewModel.Preset) -> some View {
-        let isActive = viewModel.activePreset == preset.name
-        let isRunning = viewModel.analysisPhase == .running
-        return Button {
-            viewModel.applyPreset(preset.name)
-        } label: {
-            Text(preset.title)
-                .font(.callout)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isActive ? GatherTheme.primarySoft : Color.gatherBackgroundSecondary)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(isActive ? GatherTheme.primary : Color.gatherBorder, lineWidth: 1)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isRunning)
-        .opacity(isRunning ? 0.55 : 1)
-        .accessibilityAddTraits(isActive ? .isSelected : [])
+    /// 高级参数被手改后 activePreset 为 nil → 分段控件无选中项（合法状态）。
+    private var presetSelection: Binding<String?> {
+        Binding(
+            get: { viewModel.activePreset },
+            set: { name in
+                guard let name else { return }
+                viewModel.applyPreset(name)
+            }
+        )
     }
 
-    /// TS AnalyzeProgress：相位文本 + (n/N) + 8px 圆角 track 主色填充（0.2s 过渡）。
+    /// TS AnalyzeProgress：相位文本 + (n/N) + 系统线性进度条。
     private var analysisProgress: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -1276,17 +1421,15 @@ public struct FaceKeywordingView: View {
                 Spacer()
                 if viewModel.progressTotal > 0 {
                     Text("\(viewModel.progressCurrent)/\(viewModel.progressTotal)")
-                        .font(.footnote.monospacedDigit())
+                        .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
             }
             if viewModel.progressTotal > 0 {
-                GatherProgressBar(
-                    fraction: progressRatio,
-                    fill: Color.accentColor,
-                    track: Color.gatherBorder.opacity(0.35),
-                    accessibilityText: GatherLocalization.l("分析进度")
-                )
+                ProgressView(value: progressRatio)
+                    .progressViewStyle(.linear)
+                    .accessibilityLabel(GatherLocalization.l("分析进度"))
+                    .accessibilityValue("\(Int((progressRatio * 100).rounded()))%")
             } else {
                 // TS AnalyzeProgress：total == 0（indeterminate）时相位文本
                 // 恒显示，轨道省略；补处理中文案对齐旧版（StepAnalyze.tsx:26-29）。
@@ -1310,46 +1453,58 @@ public struct FaceKeywordingView: View {
     private var stepReview: some View {
         Group {
             if viewModel.isLoading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(GatherLocalization.l("加载中…")).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .gatherCard()
+                ProgressView(GatherLocalization.l("加载中…"))
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewModel.clusters.isEmpty {
-                GatherEmptyState(
-                    icon: "person.crop.circle.badge.questionmark",
-                    title: GatherLocalization.l("暂无人脸簇"),
-                    message: GatherLocalization.l("先运行人脸分析")
-                ) {
+                ContentUnavailableView {
+                    Label(
+                        GatherLocalization.l("暂无人脸簇"),
+                        systemImage: "person.crop.circle.badge.questionmark"
+                    )
+                } description: {
+                    Text(GatherLocalization.l("先运行人脸分析"))
+                } actions: {
                     Button(GatherLocalization.l("前往分析")) {
                         viewModel.setStep(.analyze)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .gatherPrimaryActionButton()
+                    .help(GatherLocalization.l("切换到分析步骤"))
                 }
             } else {
-                // 详情栏宽度自适应（布局验收 P2）：窄窗口收缩、宽窗口
-                // 上限 340，簇网格始终保有可用空间。
-                GeometryReader { geometry in
-                    HStack(alignment: .top, spacing: 18) {
+                // 两栏可拖拽（HSplitView）：删掉 GeometryReader 与 340pt 魔法宽度；
+                // 左右各一个滚动区（旧版在页面 ScrollView 里再嵌成员列表/预览的
+                // 内层滚动，滚轮命中哪个区域不可预测）。
+                HSplitView {
+                    ScrollView {
                         clusterPane
-                        detailPane
-                            .frame(width: min(340, max(280, geometry.size.width * 0.32)))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(20)
                     }
+                    // A2（第三轮审计）：HSplitView 的最小宽度 = 两栏最小宽度**相加**，
+                    // 320+280+分隔线已逼近最小窗口能给内容区的 680pt，detailPane 的内容
+                    //（成员行 40pt 人脸 + 文件名 + 置信度 + 两个按钮）再顶一下就会超。
+                    // 收紧到 280/240：分栏仍可拖拽，最小窗口下不再与 split view 抢宽度。
+                    .frame(minWidth: 280)
+                    detailPane
+                        .padding(20)
+                        .frame(minWidth: 240, idealWidth: 320, maxWidth: 460)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
 
-    /// TS StepReview.clusterPane：标题 + 组数 + 角色过滤条 + 簇网格 + 加载更多。
+    /// TS StepReview.clusterPane：标题 + 组数 + 角色过滤 + 簇网格 + 加载更多。
     private var clusterPane: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            HStack(spacing: 8) {
                 Text(GatherLocalization.l("人脸聚类")).font(.title3.weight(.semibold))
-                Text(String(format: GatherLocalization.l("%lld 组"), visibleClusters.count)).font(.footnote).foregroundStyle(.secondary)
-                Spacer()
-                roleFilterBar
+                Text(String(format: GatherLocalization.l("%lld 组"), visibleClusters.count))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                roleFilterPicker
             }
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 132), spacing: 10)],
@@ -1366,7 +1521,7 @@ public struct FaceKeywordingView: View {
                         visibleClusterCount += FaceKeywordingViewModel.clusterPageSize
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.regular)
+                    .help(GatherLocalization.l("继续加载剩余的人脸簇"))
                     Spacer(minLength: 0)
                 }
                 .padding(.top, 4)
@@ -1379,45 +1534,36 @@ public struct FaceKeywordingView: View {
         return viewModel.clusters.filter { $0.binding?.roleName == roleFilter }
     }
 
-    /// TS roleFilterBar（旧版 URL searchParam + 清除按钮）：本页用角色胶囊切换，
-    /// 再点当前角色胶囊即清除筛选。
-    private var roleFilterBar: some View {
-        let roles = Set(viewModel.clusters.compactMap { $0.binding?.roleName }).sorted()
-        return Group {
-            if roles.isEmpty {
-                EmptyView()
-            } else {
-                HStack(spacing: 6) {
-                    ForEach(roles, id: \.self) { role in
-                        Button {
-                            viewModel.roleFilter = (viewModel.roleFilter == role) ? nil : role
-                        } label: {
-                            Text(role)
-                                .font(.footnote)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(
-                                    Capsule().fill(viewModel.roleFilter == role ? GatherTheme.primarySoft : Color.clear)
-                                )
-                                .overlay(
-                                    Capsule().strokeBorder(
-                                        viewModel.roleFilter == role ? GatherTheme.primary : Color.gatherBorder,
-                                        lineWidth: 1
-                                    )
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(viewModel.roleFilter == role ? .isSelected : [])
-                        .help(viewModel.roleFilter == role ? String(format: GatherLocalization.l("清除「%@」筛选"), role) : String(format: GatherLocalization.l("仅显示角色「%@」的簇"), role))
-                    }
+    /// TS roleFilterBar：手绘胶囊（角色多时会溢出并把标题挤出视野）→ 原生菜单选择器，
+    /// 自动带选中态、键盘操作与「全部角色」清空入口。
+    @ViewBuilder
+    private var roleFilterPicker: some View {
+        // C-P1-6：用 VM 缓存的角色集合（一次 body 不再重建+排序）。
+        let roles = viewModel.roleNames
+        if !roles.isEmpty {
+            Picker(GatherLocalization.l("角色筛选"), selection: roleFilterSelection) {
+                Text(GatherLocalization.l("全部角色")).tag(String?.none)
+                ForEach(roles, id: \.self) { role in
+                    Text(role).tag(String?.some(role))
                 }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .accessibilityLabel(GatherLocalization.l("按角色筛选簇"))
+            .help(GatherLocalization.l("只看某个角色的簇"))
         }
     }
 
-    /// TS ClusterCard：10px padding、radius-md、hover 主色描边 + 底色微变、
-    /// 选中主色边框 + 外发光 + 上浮；2x2 蒙太奇（前 4 成员，圆角 8）+ label +
-    /// 成员数 + 绑定角色 success 胶囊。
+    private var roleFilterSelection: Binding<String?> {
+        Binding(
+            get: { viewModel.roleFilter },
+            set: { viewModel.roleFilter = $0 }
+        )
+    }
+
+    /// TS ClusterCard：2x2 蒙太奇 + label + 成员数 + 绑定角色徽标。
+    /// 选中/悬停不再用 translateY + 外发光（Web 惯用法），改为系统选中填充 + 描边，
+    /// 并补右键菜单（绑定/解除绑定）。
     private func clusterCard(_ cluster: FaceClusterData) -> some View {
         let isSelected = viewModel.selectedClusterId == cluster.id
         let isHovered = hoveredClusterId == cluster.id
@@ -1429,28 +1575,27 @@ public struct FaceKeywordingView: View {
                 Text(cluster.label)
                     .font(.body.weight(.semibold))
                     .lineLimit(1)
-                Text(String(format: GatherLocalization.l("%lld 张"), cluster.size))
-                    .font(.footnote)
+                // F13：size 是**人脸样本数**（face_cluster_members 行数），不是照片数；
+                // 同一张照片里的两张脸是两个样本。只有成员未被截断时才敢报照片数。
+                Text(cluster.sampleCountText())
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 if let binding = cluster.binding {
-                    Text(binding.roleName)
-                        .font(.footnote)
-                        .foregroundStyle(GatherTheme.success)
-                        .lineLimit(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(GatherTheme.success.opacity(0.14)))
+                    GatherBadge(binding.roleName, tone: .success)
                 }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(isHovered ? GatherTheme.primarySoft.opacity(0.3) : Color.gatherSurface))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(cardBorder(isSelected: isSelected, isHovered: isHovered), lineWidth: isSelected ? 1.5 : 1)
+            .background(
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
+                    .fill(isSelected
+                        ? GatherTheme.selectionFill
+                        : (isHovered ? GatherTheme.secondaryContentBackground : GatherTheme.contentBackground))
             )
-            .shadow(color: isSelected ? Color.accentColor.opacity(0.25) : .clear, radius: 3)
-            .offset(y: isSelected ? -1 : 0)
+            .overlay(
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
+                    .strokeBorder(isSelected ? GatherTheme.accent : GatherTheme.separator, lineWidth: isSelected ? 2 : 1)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1462,188 +1607,189 @@ public struct FaceKeywordingView: View {
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
-    }
-
-    private func cardBorder(isSelected: Bool, isHovered: Bool) -> Color {
-        if isSelected { return Color.accentColor }
-        if isHovered { return Color.accentColor.opacity(0.45) }
-        return Color.gatherBorder
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .contextMenu {
+            Button(GatherLocalization.l("查看成员")) { viewModel.select(cluster) }
+            if cluster.binding != nil {
+                Button(GatherLocalization.l("解除绑定"), role: .destructive) {
+                    pendingUnbind = PendingFaceUnbind(cluster: cluster)
+                }
+            }
+        }
     }
 
     /// TS ClusterThumb：2x2 蒙太奇网格（前 4 成员，gap 2，圆角 8），
     /// 空成员时显示簇大小。
+    /// 代表图：交给 FaceClusterMontage（显式正方形网格）。
+    ///
+    /// N02 回归点：原先这里是 LazyVGrid + 每个单元 .aspectRatio(1, .fit)。
+    /// 单元里的 FaceCropThumbnailView 由 GeometryReader 驱动、没有固有高度，
+    /// 网格行的理想高度于是退化成 GeometryReader 的默认值（约 10pt），
+    /// 蒙太奇塌成一条色带。正方形边长必须在**外层**算好再下发给单元。
     private func clusterMontage(_ cluster: FaceClusterData) -> some View {
-        Group {
-            if cluster.members.isEmpty {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackgroundSecondary)
-                    Text("\(cluster.size)")
-                        .font(.title.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
-            } else {
-                LazyVGrid(
-                    columns: [GridItem(.flexible(), spacing: 2), GridItem(.flexible(), spacing: 2)],
-                    spacing: 2
-                ) {
-                    ForEach(cluster.members.prefix(4), id: \.memberId) { member in
-                        PhotoThumbnailView(path: member.photoPath, size: 128)
-                            .aspectRatio(1, contentMode: .fit)
-                            .clipped()
-                    }
-                }
-                .background(Color.gatherBackgroundSecondary)
-            }
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        FaceClusterMontage(cluster: cluster)
     }
 
     /// TS StepReview.detailPane：详情栏（成员列表 + 编辑 + 合并面板）。
-    /// 宽度由调用方按可用宽自适应钳制（280–340），不再固定 340。
+    /// 宽度由 HSplitView 拖拽决定（280–460），不再用 GeometryReader 换算。
     private var detailPane: some View {
         Group {
             if let cluster = viewModel.selectedCluster {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(cluster.label)
-                            .font(.title3.weight(.semibold))
-                        Spacer()
-                        Text(String(format: GatherLocalization.l("%lld 名成员"), cluster.size))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                // 详情栏整体只有一个滚动区：成员行改用 LazyVStack + Divider，
+                // 不再嵌套 List/ScrollView（短窗口下不会把编辑区挤出可视范围）。
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(cluster.label)
+                                .font(.title3.weight(.semibold))
+                            Spacer()
+                            Text(cluster.sampleCountText())
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        memberList(cluster)
+                        // TS StepReview.tsx:216-218：审核动作失败的内联错误块
+                        // （绑定/移除/解除/合并），横幅错误保留。
+                        if let actionError = viewModel.reviewActionError {
+                            NativeBanner(
+                                text: actionError,
+                                systemImage: "exclamationmark.triangle.fill",
+                                color: GatherTheme.error
+                            )
+                        }
+                        editor(cluster)
+                        mergePanel(cluster)
                     }
-                    memberList(cluster)
-                    // TS StepReview.tsx:216-218：审核动作失败的内联错误块
-                    // （绑定/移除/解除/合并），横幅错误保留。
-                    if let actionError = viewModel.reviewActionError {
-                        Text(actionError)
-                            .font(.callout)
-                            .foregroundStyle(GatherTheme.error)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(GatherTheme.error.opacity(0.12)))
-                    }
-                    editor(cluster)
-                    mergePanel(cluster)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Text(GatherLocalization.l("点击左侧簇卡片查看成员与绑定编辑"))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxHeight: .infinity)
+                ContentUnavailableView {
+                    Label(GatherLocalization.l("未选择人脸簇"), systemImage: "person.crop.square")
+                } description: {
+                    Text(GatherLocalization.l("点击左侧簇卡片查看成员与绑定编辑"))
+                }
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherSurface))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 1))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    /// TS memberList：max-height 210px 滚动，每行 #idx + 文件名 + 置信度% +
-    /// 红色「移除」。移除不可逆，先弹确认（旧版「点击即移除」已删除）。
+    /// TS memberList：成员行（#序号 + 文件名 + 置信度% + 悬停显现的移除按钮）。
+    /// 移除不可逆：悬停显现的图标按钮 + 右键菜单两个入口，先弹确认
+    /// （旧版「点击即移除」已删除）。
     private func memberList(_ cluster: FaceClusterData) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                ForEach(Array(cluster.members.enumerated()), id: \.element.memberId) { index, member in
-                    MemberRowView(index: index, member: member) {
-                        pendingMemberRemoval = PendingFaceMemberRemoval(member: member, cluster: cluster)
-                    }
-                    Divider().opacity(0.5)
+        LazyVStack(spacing: 0) {
+            ForEach(Array(cluster.members.enumerated()), id: \.element.memberId) { index, member in
+                MemberRowView(index: index, member: member) {
+                    pendingMemberRemoval = PendingFaceMemberRemoval(member: member, cluster: cluster)
                 }
+                if index < cluster.members.count - 1 { Divider() }
             }
         }
-        .frame(maxHeight: 210)
+        .accessibilityLabel(GatherLocalization.l("簇成员"))
     }
 
     /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（解除绑定撤销
-    /// 已写入关键词，经确认弹窗后才执行）。
+    /// 已写入关键词，经确认弹窗后才执行）。表单行改用 LabeledContent。
     private func editor(_ cluster: FaceClusterData) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(GatherLocalization.l("角色名称")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
-            TextField(GatherLocalization.l("输入角色名称"), text: bindable.roleName)
-                .textFieldStyle(.roundedBorder)
-            Text(GatherLocalization.l("关键字")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
-            TextField(GatherLocalization.l("关键字，用逗号分隔"), text: bindable.keywords)
-                .textFieldStyle(.roundedBorder)
+            Text(GatherLocalization.l("绑定角色")).font(.headline)
+            LabeledContent(GatherLocalization.l("角色名称")) {
+                TextField(GatherLocalization.l("输入角色名称"), text: bindable.roleName)
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+            }
+            LabeledContent(GatherLocalization.l("关键字")) {
+                TextField(GatherLocalization.l("关键字，用逗号分隔"), text: bindable.keywords)
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+            }
             HStack(spacing: 8) {
                 Button(cluster.binding != nil ? GatherLocalization.l("更新绑定") : GatherLocalization.l("绑定")) {
                     viewModel.bind(cluster)
                 }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
+                .gatherPrimaryActionButton()
+                .help(GatherLocalization.l("用角色名称与关键字绑定该簇"))
                 if cluster.binding != nil {
-                    Button(GatherLocalization.l("解除绑定")) {
+                    Button(role: .destructive) {
                         pendingUnbind = PendingFaceUnbind(cluster: cluster)
+                    } label: {
+                        Text(GatherLocalization.l("解除绑定"))
                     }
-                    .buttonStyle(.bordered)
-                    .foregroundStyle(GatherTheme.error)
+                    .help(GatherLocalization.l("撤销该簇已写入的人脸关键词"))
                 }
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+        .gatherCard(cornerRadius: GatherTheme.Radius.panel)
     }
 
-    /// TS mergePanel：select 下拉（过滤当前簇，选项 label (n 张)）+ 合并按钮，
+    /// TS mergePanel：合并目标下拉（过滤当前簇，选项 label (n 张)）+ 合并按钮，
     /// 无目标时禁用。
     private func mergePanel(_ cluster: FaceClusterData) -> some View {
         let candidates = viewModel.clusters.filter { $0.id != cluster.id }
         return VStack(alignment: .leading, spacing: 8) {
-            Text(GatherLocalization.l("合并到")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                Picker(GatherLocalization.l("合并目标"), selection: bindable.mergeTargetId) {
-                    Text(GatherLocalization.l("选择目标簇")).tag(Int?.none)
-                    ForEach(candidates, id: \.id) { candidate in
-                        Text(String(format: GatherLocalization.l("%@（%lld 张）"), candidate.label, candidate.size))
-                            .tag(Int?.some(candidate.id))
+            Text(GatherLocalization.l("合并")).font(.headline)
+            if candidates.isEmpty {
+                Text(GatherLocalization.l("没有其他簇可合并。"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                LabeledContent(GatherLocalization.l("合并到")) {
+                    Picker(GatherLocalization.l("合并目标"), selection: bindable.mergeTargetId) {
+                        Text(GatherLocalization.l("选择目标簇")).tag(Int?.none)
+                        ForEach(candidates, id: \.id) { candidate in
+                            Text(String(format: GatherLocalization.l("%@（%lld 个人脸样本）"), candidate.label, candidate.size))
+                                .tag(Int?.some(candidate.id))
+                        }
                     }
+                    .labelsHidden()
+                    .accessibilityLabel(GatherLocalization.l("合并目标"))
                 }
-                .labelsHidden()
-                .accessibilityLabel(GatherLocalization.l("合并目标"))
-                .frame(maxWidth: .infinity)
-                Button(GatherLocalization.l("合并")) {
-                    guard let targetId = viewModel.mergeTargetId,
-                          let target = candidates.first(where: { $0.id == targetId }) else {
-                        viewModel.reportInvalidMergeTarget()
-                        return
+                HStack {
+                    Spacer(minLength: 0)
+                    Button(GatherLocalization.l("合并")) {
+                        guard let targetId = viewModel.mergeTargetId,
+                              let target = candidates.first(where: { $0.id == targetId }) else {
+                            viewModel.reportInvalidMergeTarget()
+                            return
+                        }
+                        pendingMerge = PendingFaceMerge(cluster: cluster, target: target)
                     }
-                    pendingMerge = PendingFaceMerge(cluster: cluster, target: target)
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.mergeTargetId == nil)
+                    .help(GatherLocalization.l("把当前簇合并到选中的目标簇"))
                 }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.mergeTargetId == nil)
-                .help(GatherLocalization.l("选择目标簇后合并当前簇到目标簇"))
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackground))
+        .gatherCard(cornerRadius: GatherTheme.Radius.panel)
     }
 
     // MARK: - Step 3 写回（TS StepWriteback）
 
     private var stepWriteback: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(GatherLocalization.l("关键字写回"))
-                .font(.title3.weight(.semibold))
+            Text(GatherLocalization.l("关键字写回")).font(.title3.weight(.semibold))
             writebackStats
             boundPreview
             if viewModel.preview != nil { xmpPreview }
             HStack(spacing: 9) {
                 Button(GatherLocalization.l("生成预览"), systemImage: "eye") { Task { await viewModel.previewWriteback() } }
                     .disabled(!viewModel.analysisDone)
-                    .help(viewModel.analysisDone ? "" : GatherLocalization.l("请先完成人脸分析"))
+                    .help(GatherLocalization.l("列出将写入的 XMP 项，不写盘"))
                 // 确认写回：分析完成后恒可用；无预览时自动补一次预览再写回
                 // （TS handleExecute，StepWriteback.tsx:53-69, 195-203）。
                 Button(GatherLocalization.l("确认写回"), systemImage: "square.and.arrow.down") {
                     Task { await requestWritebackConfirmation() }
                 }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!viewModel.canWriteback)
-                    .help(viewModel.analysisDone ? "" : GatherLocalization.l("请先完成人脸分析"))
+                .gatherPrimaryActionButton()
+                .disabled(!viewModel.canWriteback)
+                .help(GatherLocalization.l("确认后写入 XMP 侧车文件；不修改原始照片"))
             }
             if !viewModel.analysisDone {
-                Text(GatherLocalization.l("请先完成人脸分析，才能生成预览并写回。"))
-                    .font(.footnote).foregroundStyle(GatherTheme.error)
+                // 前置条件写在可见文案里：.help 在禁用按钮上不会显示。
+                Label(GatherLocalization.l("请先完成人脸分析，才能生成预览并写回。"), systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             if let result = viewModel.writebackResult {
                 resultSection(result)
@@ -1658,66 +1804,67 @@ public struct FaceKeywordingView: View {
         }
     }
 
-    /// TS stats：三统计卡（已绑定簇 accent / 受影响照片 / 未绑定跳过 warning），
-    /// 数值 24pt tabular-nums。
+    /// TS stats：**写回前的影响范围**用内联统计文本（.plain，系统文本样式），
+    /// 不再是三张与「写回结果」同权重的大数字卡；warning 不再充当数字前景色。
     private var writebackStats: some View {
-        HStack(spacing: 10) {
-            GatherStatCard(value: viewModel.boundClusters.count, label: GatherLocalization.l("已绑定簇"), color: Color.accentColor)
-            GatherStatCard(value: viewModel.totalAffected, label: GatherLocalization.l("受影响照片"))
-            GatherStatCard(value: viewModel.unboundClusters.count, label: GatherLocalization.l("未绑定并跳过"), color: GatherTheme.warning)
+        HStack(alignment: .firstTextBaseline, spacing: 24) {
+            GatherStatCard(value: viewModel.boundClusters.count, label: GatherLocalization.l("已绑定簇"), style: .plain)
+            GatherStatCard(value: viewModel.totalAffected, label: GatherLocalization.l("受影响照片"), style: .plain)
+            GatherStatCard(value: viewModel.unboundClusters.count, label: GatherLocalization.l("未绑定并跳过"), style: .plain)
+            Spacer(minLength: 0)
         }
     }
 
-    /// TS preview 面板：绑定簇预览（roleName + keywords + 前 5 文件名），
-    /// 无绑定簇时显示空提示。
+    /// TS preview 面板：绑定簇预览（roleName + keywords + 前 5 文件名）。
+    /// 用共享分组容器；不再嵌套第二个滚动区（页面本身可滚动）。
+    @ViewBuilder
     private var boundPreview: some View {
-        ScrollView {
+        if viewModel.boundClusters.isEmpty {
+            Text(GatherLocalization.l("暂无已绑定簇，请先在审核步骤绑定角色。"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 20)
+                .gatherCard()
+        } else {
             VStack(alignment: .leading, spacing: 0) {
-                if viewModel.boundClusters.isEmpty {
-                    Text(GatherLocalization.l("暂无已绑定簇，请先在审核步骤绑定角色。"))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(28)
-                } else {
-                    ForEach(viewModel.boundClusters, id: \.id) { cluster in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 7) {
-                                Text(cluster.binding?.roleName ?? "")
-                                    .font(.body.weight(.semibold))
-                                Text(String(format: GatherLocalization.l("（%lld 张）"), cluster.size))
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                if let keywords = cluster.binding?.keywords, !keywords.isEmpty {
-                                    Text(keywords.joined(separator: ", "))
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            ForEach(cluster.members.prefix(5), id: \.memberId) { member in
-                                Text(member.filename)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.leading, 10)
-                            }
-                            if cluster.members.count > 5 {
-                                Text(String(format: GatherLocalization.l("还有 %lld 名成员"), cluster.members.count - 5))
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .opacity(0.7)
-                                    .padding(.leading, 10)
-                            }
-                        }
-                        .padding(.vertical, 9)
-                        Divider().opacity(0.5)
-                    }
+                ForEach(Array(viewModel.boundClusters.enumerated()), id: \.element.id) { index, cluster in
+                    boundPreviewRow(cluster)
+                    if index < viewModel.boundClusters.count - 1 { Divider() }
                 }
             }
+            .gatherCard()
         }
-        .frame(maxHeight: 270)
-        .padding(.horizontal, 12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gatherBackgroundSecondary))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
+    }
+
+    private func boundPreviewRow(_ cluster: FaceClusterData) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                Text(cluster.binding?.roleName ?? "")
+                    .font(.body.weight(.semibold))
+                GatherBadge(String(format: GatherLocalization.l("%lld 个人脸样本"), cluster.size))
+                if let keywords = cluster.binding?.keywords, !keywords.isEmpty {
+                    Text(keywords.joined(separator: ", "))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            ForEach(cluster.members.prefix(5), id: \.memberId) { member in
+                Text(member.filename)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if cluster.members.count > 5 {
+                Text(String(format: GatherLocalization.l("还有 %lld 名成员"), cluster.members.count - 5))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
     }
 
     /// TS xmpPreview：前 50 行三行明细（文件名 / before→after / 标记行），
@@ -1732,15 +1879,16 @@ public struct FaceKeywordingView: View {
                     VStack(spacing: 0) {
                         ForEach(preview.items.prefix(50), id: \.xmpPath) { item in
                             xmpPreviewRow(item)
-                            Divider().opacity(0.5)
+                            Divider()
                         }
                     }
                 }
                 .frame(maxHeight: 240)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gatherBackgroundSecondary))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.gatherBorder.opacity(0.6), lineWidth: 0.5))
+                .gatherCard(cornerRadius: GatherTheme.Radius.panel)
                 if preview.items.count > 50 {
-                    Text(String(format: GatherLocalization.l("还有 %lld 项…"), preview.items.count - 50)).font(.footnote).foregroundStyle(.secondary)
+                    Text(String(format: GatherLocalization.l("还有 %lld 项…"), preview.items.count - 50))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -1753,15 +1901,19 @@ public struct FaceKeywordingView: View {
                 .lineLimit(1)
             Text("\(xmpKeywordsText(item.preview?.before.keywords)) → \(xmpKeywordsText(item.preview?.after.keywords ?? item.keywords))")
                 .font(.callout)
-                .lineLimit(1)
+                .lineLimit(2)
                 .foregroundStyle(.secondary)
+                // 截断的差异需要出口：完整路径留在 tooltip，文本可选中复制。
+                .textSelection(.enabled)
+                .help(item.xmpPath)
             Text(xmpMarkerText(item))
-                .font(.footnote)
+                .font(.callout)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(String(format: GatherLocalization.l("XMP 写回项 %@"), URL(fileURLWithPath: item.xmpPath).lastPathComponent))
     }
 
     private func xmpMarkerText(_ item: FaceKwWritebackItem) -> String {
@@ -1806,28 +1958,40 @@ public struct FaceKeywordingView: View {
     /// TS WritebackReport actions（StepWriteback.tsx:205-226）：预览生成后即
     /// 可见，无需等待写回结果。重试失败项仅在存在失败项时显示；清理备份
     /// 仅在确认同步后显示（旧版 onCleanup = syncConfirmed ? handleCleanup
-    /// : undefined，WritebackReport.tsx:86-95）。
+    /// : undefined，WritebackReport.tsx:86-95）。help 只描述动作本身，
+    /// 前置条件写在可见文案里（.help 在禁用按钮上不会显示）。
     private var reportActionsRow: some View {
-        HStack(spacing: 8) {
-            if let result = viewModel.writebackResult, !result.failedItems.isEmpty {
-                Button(GatherLocalization.l("重试失败项")) {
-                    pendingRetry = PendingFaceRetry(
-                        paths: result.failedItems.map { $0.xmpPath.isEmpty ? $0.photoPath : $0.xmpPath }
-                    )
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if let result = viewModel.writebackResult, !result.failedItems.isEmpty {
+                    Button(GatherLocalization.l("重试失败项")) {
+                        pendingRetry = PendingFaceRetry(
+                            paths: result.failedItems.map { $0.xmpPath.isEmpty ? $0.photoPath : $0.xmpPath }
+                        )
+                    }
+                    .disabled(viewModel.isWritingBack)
+                    .help(String(format: GatherLocalization.l("重新写入 %lld 个失败项"), result.failedItems.count))
                 }
-                .disabled(viewModel.isWritingBack)
-                .help(GatherLocalization.l("没有失败项"))
+                Button(GatherLocalization.l("Capture One 重新加载")) { Task { await viewModel.reloadCaptureOne() } }
+                    .disabled(viewModel.isWritingBack)
+                    .help(GatherLocalization.l("让 Capture One 重新读取已写入的元数据"))
+                Button(GatherLocalization.l("确认同步")) { pendingConfirmSync = PendingFaceConfirmSync() }
+                    .disabled(viewModel.isWritingBack)
+                    .help(GatherLocalization.l("结清本次写回，之后才可清理备份"))
+                if viewModel.isSyncConfirmed {
+                    Button(role: .destructive) {
+                        pendingCleanup = PendingFaceCleanup(writtenCount: viewModel.writebackResult?.written ?? 0)
+                    } label: {
+                        Text(GatherLocalization.l("清理备份"))
+                    }
+                    .disabled(viewModel.isWritingBack)
+                    .help(GatherLocalization.l("删除本次写回生成的 XMP 备份文件"))
+                }
             }
-            Button(GatherLocalization.l("Capture One 重新加载")) { Task { await viewModel.reloadCaptureOne() } }
-                .disabled(viewModel.isWritingBack)
-            Button(GatherLocalization.l("确认同步")) { pendingConfirmSync = PendingFaceConfirmSync() }
-                .disabled(viewModel.isWritingBack)
-            if viewModel.isSyncConfirmed {
-                Button(GatherLocalization.l("清理备份"), role: .destructive) {
-                    pendingCleanup = PendingFaceCleanup(writtenCount: viewModel.writebackResult?.written ?? 0)
-                }
-                .disabled(viewModel.isWritingBack)
-                .help(GatherLocalization.l("请先在 Capture One 中加载元数据并确认同步"))
+            if !viewModel.isSyncConfirmed {
+                Text(GatherLocalization.l("「清理备份」会在确认同步后开放。"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -1839,36 +2003,86 @@ private struct MemberRowView: View {
     let onRemove: () -> Void
 
     @State private var isHovered = false
+    /// 键盘焦点：F12 —— 只在 hover 时显示动作会让纯键盘用户看不到入口。
+    @FocusState private var isFocused: Bool
+
+    private var confidenceText: String {
+        String(format: "%.0f%%", member.confidence * 100)
+    }
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
+            // F05：成员行也给人脸裁切——文件名 + 百分比无法回答
+            //「这两张脸是不是同一个人」，同一张照片的两张脸尤其难分辨。
+            FaceCropThumbnailView(path: member.photoPath, bbox: member.bbox, loadSize: 256)
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .accessibilityHidden(true)
             Text("#\(index + 1)")
                 .font(.callout.monospacedDigit())
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 36, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .leading)
+                .accessibilityHidden(true)
             Text(member.filename)
                 .font(.callout)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(String(format: "%.0f%%", member.confidence * 100))
-                .font(.footnote)
+            // 置信度只朗读一次（F12）：文字本身对无障碍隐藏，由 label 提供
+            // 带单位的唯一描述，避免「85%」+「置信度 85%」被读两遍。
+            Text(confidenceText)
+                .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(String(format: GatherLocalization.l("置信度 %@"), confidenceText))
+            // 移除不可逆：悬停 **或键盘焦点** 任一状态都可见（命中区 ≥24pt）
+            // + 右键菜单第二入口；旧实现只在 hover 显现（F12）。
             Button(role: .destructive) {
                 onRemove()
             } label: {
-                Text(GatherLocalization.l("移除"))
+                Image(systemName: "minus.circle")
             }
-            .buttonStyle(.plain)
-            .font(.callout)
-            .foregroundStyle(GatherTheme.error)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .frame(minWidth: 24, minHeight: 24)
+            .opacity(isHovered || isFocused ? 1 : 0)
+            .focused($isFocused)
+            .accessibilityLabel(String(format: GatherLocalization.l("从簇中移除成员 %@"), member.filename))
             .help(String(format: GatherLocalization.l("从簇中移除成员 %@"), member.filename))
         }
-        .padding(.vertical, 6)
-        .background(isHovered ? GatherTheme.primarySoft.opacity(0.2) : Color.clear)
+        .padding(.vertical, 4)
+        .frame(minHeight: 44)
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
         }
+        .contextMenu {
+            Button(GatherLocalization.l("移除成员"), role: .destructive) { onRemove() }
+        }
+        // F12：不再 children: .combine —— 合并后整行只剩一个文本元素，
+        // 移除动作对 VoiceOver 不可达。用 .contain 暴露子元素（文件名、
+        // 置信度、移除按钮各是一个可用元素）。
+        .accessibilityElement(children: .contain)
+    }
+}
+
+// MARK: - 人脸簇计数文案（F13）
+
+extension FaceClusterData {
+    /// 精确照片数：仅当成员**未被截断**（members.count == size）时可计算，
+    /// 截断时返回 nil —— 不猜数字。
+    var distinctPhotoCount: Int? {
+        guard members.count == size else { return nil }
+        return Set(members.map(\.photoPath)).count
+    }
+
+    /// 「N 个人脸样本」/「N 个人脸样本 · M 张照片」。
+    ///
+    /// size 的真相源是 face_cluster_members 行数（人脸观测数），不是照片数：
+    /// 同一张照片里的两张脸算两个样本（F13：计数单位不能误导）。
+    func sampleCountText() -> String {
+        let samples = String(format: GatherLocalization.l("%lld 个人脸样本"), size)
+        guard let photos = distinctPhotoCount, photos != size else { return samples }
+        return String(format: GatherLocalization.l("%@ · %lld 张照片"), samples, photos)
     }
 }
 

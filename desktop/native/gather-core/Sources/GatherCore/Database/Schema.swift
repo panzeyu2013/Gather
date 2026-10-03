@@ -579,6 +579,8 @@ public enum SchemaSQL {
     CREATE INDEX IF NOT EXISTS idx_sidecar_binding_files_file ON sidecar_binding_files(file_id);
     CREATE INDEX IF NOT EXISTS idx_asset_backfill_status ON asset_backfill_state(status, updated_at);
     CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status_priority ON analysis_jobs(status, priority, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_analysis_runs_session_kind
+        ON analysis_runs(session_id, kind, status, id DESC);
     CREATE INDEX IF NOT EXISTS idx_analysis_jobs_scope ON analysis_jobs(scope_type, scope_id);
     CREATE INDEX IF NOT EXISTS idx_asset_analysis_photo_type ON asset_analysis(photo_id, analysis_type);
     CREATE INDEX IF NOT EXISTS idx_asset_analysis_file_type ON asset_analysis(asset_file_id, analysis_type);
