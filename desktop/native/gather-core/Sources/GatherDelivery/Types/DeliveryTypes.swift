@@ -31,7 +31,12 @@ public struct XMPDeliveryFilePort: DeliveryFilePort {
     }
 
     public func restore(photoPath: String, backupPath: String) async throws {
-        try await provider.restore(photoPath: photoPath, backupPath: backupPath)
+        // P2-12：宿主 restore 也必须过同一校验（LiveMetadataAPI.resolveOrphan
+        // 直接走这里）。目标侧车由 photoPath 推导，备份必须与它同目录。
+        let target = TSPath.xmpSidecarPath(photoPath)
+        let validated = try DeliveryBackupPath.validate(
+            xmpPath: target, backupPath: backupPath)
+        try await provider.restore(photoPath: photoPath, backupPath: validated)
     }
 
     public func removeFile(_ path: String) async throws {
@@ -278,14 +283,17 @@ public struct FileSystemDeliveryFilePort: DeliveryFilePort {
     }
 
     public func restore(photoPath: String, backupPath: String) async throws {
-        guard FileManager.default.fileExists(atPath: backupPath) else {
+        let target = TSPath.xmpSidecarPath(photoPath)
+        // P2-12：与 XMPDeliveryFilePort 同一校验；只使用归一化后的备份路径。
+        let validatedBackup = try DeliveryBackupPath.validate(
+            xmpPath: target, backupPath: backupPath)
+        guard FileManager.default.fileExists(atPath: validatedBackup) else {
             throw DeliveryCoordinatorError.backupMissing(xmpPath: backupPath)
         }
-        let target = TSPath.xmpSidecarPath(photoPath)
         // 先拷到同目录临时文件，再替换目标：中途失败不会把原侧车删空
         //（与 SidecarXMPProvider.install 的覆盖写语义一致）。
         let tempPath = target + ".restore-" + UUID().uuidString.lowercased()
-        try FileManager.default.copyItem(atPath: backupPath, toPath: tempPath)
+        try FileManager.default.copyItem(atPath: validatedBackup, toPath: tempPath)
         do {
             if FileManager.default.fileExists(atPath: target) {
                 _ = try FileManager.default.replaceItemAt(

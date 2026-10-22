@@ -98,7 +98,7 @@ struct DeliveryRepoTests {
         _ = try repo.markWriting(xmpPath: xmpPath, revision: revision)
         _ = try repo.markWritten(
             xmpPath: xmpPath, revision: revision,
-            baseFingerprint: "fp-1", baseValues: .object([:]), backupPath: "/backup/IMG_1.xmp")
+            baseFingerprint: "fp-1", baseValues: .object([:]), backupPath: "/v/IMG_1.xmp.gather-backup-test")
     }
 
     // MARK: create / get
@@ -176,11 +176,11 @@ struct DeliveryRepoTests {
             leaseOwner: "worker-1",
             baseFingerprint: "fp-after",
             baseValues: .object(["rating": .number(4)]),
-            backupPath: "/backup/IMG_1.xmp"
+            backupPath: "/v/IMG_1.xmp.gather-backup-test"
         ))
         #expect(written.status == "written")
         #expect(written.baseFingerprint == "fp-after")
-        #expect(written.backupPath == "/backup/IMG_1.xmp")
+        #expect(written.backupPath == "/v/IMG_1.xmp.gather-backup-test")
         #expect(written.baseValues == .object(["rating": .number(4)]))
         #expect(written.leaseOwner == "")
         #expect(written.heartbeatAt == "")
@@ -370,7 +370,7 @@ struct DeliveryRepoTests {
         _ = try repo.markWriting(xmpPath: self.xmp, revision: 4, leaseOwner: "w1")
 
         let failed = try #require(try repo.markFailed(
-            xmpPath: self.xmp, revision: 4, errorMessage: "disk full"))
+            xmpPath: self.xmp, revision: 4, errorMessage: "disk full", leaseOwner: "w1"))
         #expect(failed.status == "failed")
         #expect(failed.errorMessage == "disk full")
         #expect(failed.leaseOwner == "")
@@ -392,6 +392,40 @@ struct DeliveryRepoTests {
         #expect(throws: DeliveryRepoError.rowNotFound(xmpPath: "/v/missing.xmp")) {
             _ = try repo.markWriting(xmpPath: "/v/missing.xmp", revision: 0)
         }
+    }
+
+
+    /// P2：markFailed/markConflict 与 markWritten 同一 owner CAS。
+    @Test func failedAndConflictRejectLeaseTakenOverByAnotherWriter() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        _ = try repo.createOrGet(xmpPath: self.xmp, photoPath: self.photo, revision: 2)
+        _ = try repo.markWriting(
+            xmpPath: self.xmp, revision: 2, leaseOwner: "old",
+            heartbeatAt: "2020-01-01T00:00:00.000Z")
+        _ = try #require(try repo.claimWriting(
+            xmpPath: self.xmp, revision: 2, leaseOwner: "new"))
+
+        let lost = DeliveryRepoError.leaseLost(
+            xmpPath: self.xmp, leaseOwner: "old",
+            currentOwner: "new", status: "writing")
+        #expect(throws: lost) {
+            _ = try repo.markFailed(
+                xmpPath: self.xmp, revision: 2, errorMessage: "boom", leaseOwner: "old")
+        }
+        #expect(throws: lost) {
+            _ = try repo.markConflict(
+                xmpPath: self.xmp, revision: 2, errorMessage: "external", leaseOwner: "old")
+        }
+        // 空 owner 同样带 lease_owner='' CAS：不能覆盖新租约，只返回 nil。
+        #expect(try repo.markFailed(
+            xmpPath: self.xmp, revision: 2, errorMessage: "boom") == nil)
+
+        let failed = try #require(try repo.markFailed(
+            xmpPath: self.xmp, revision: 2, errorMessage: "boom", leaseOwner: "new"))
+        #expect(failed.status == "failed")
+        #expect(failed.leaseOwner == "")
     }
 
     @Test func cleanedIsTerminalAndLegacyCleanValueIsRemoved() throws {

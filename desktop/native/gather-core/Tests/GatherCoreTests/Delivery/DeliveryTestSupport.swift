@@ -16,7 +16,7 @@ enum DeliveryTestSupport {
     static let photoId = "p1"
     static let xmpPath = "/v/IMG_1.xmp"
     static let photoPath = "/v/IMG_1.jpg"
-    static let backupPath = "/backup/IMG_1.xmp"
+    static let backupPath = "/v/IMG_1.xmp.gather-backup-test"
 
     static func makeDB() throws -> DBConnection {
         let db = try DBConnection(path: ":memory:")

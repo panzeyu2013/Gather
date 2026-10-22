@@ -38,6 +38,33 @@ enum DeliveryTrace {
         text(id: String(deliveryId), revision: revision, phase: phase)
     }
 
+    /// P2-8：info/warn trace 只记录 basename + 短哈希，不输出用户主目录绝对路径。
+    ///
+    /// 相关性仍成立：同一归一化路径得到同一 token；不同目录的同名文件有不同后缀。
+    /// 完整路径只留在调用方返回的 errors/summary（错误仍可定位），不进日志。
+    static func pathToken(_ path: String) -> String {
+        let normalized = TSPath.normalize(path)
+        let basename = (normalized as NSString).lastPathComponent
+        let name = basename.isEmpty ? "xmp" : basename
+        return "\(name)#\(shortHash(normalized))"
+    }
+
+    /// confirm 的 trace 需要 session 关联，但不能输出完整 sessionId。
+    static func sessionToken(_ sessionId: String) -> String {
+        "session:\(shortHash(sessionId))"
+    }
+
+    /// 稳定短哈希（FNV-1a 32-bit）：跨进程/跨启动一致，不依赖 Hasher 的随机种子。
+    static func shortHash(_ value: String) -> String {
+        var hash: UInt32 = 2_166_136_261
+        for byte in value.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 16_777_619
+        }
+        let hex = String(hash, radix: 16)
+        return String(repeating: "0", count: max(0, 8 - hex.count)) + hex
+    }
+
     /// 统一字段序：trace → event → op → phase → 具体键值（供 grep / 测试断言）。
     static func log(_ trace: String, _ fields: String, level: LogLevel) {
         GatherLogger.log("trace=\(trace) \(fields)", level: level)
@@ -265,7 +292,9 @@ public struct DeliveryCoordinator: Sendable {
         guard !sessionId.isEmpty else {
             throw DeliveryCoordinatorError.invalidArgument("sessionId 不能为空")
         }
-        let trace = DeliveryTrace.text(id: "session:\(sessionId)", revision: 0, phase: "confirm")
+        // P2-8：session 只进短哈希，日志里不出现完整 sessionId。
+        let trace = DeliveryTrace.text(
+            id: DeliveryTrace.sessionToken(sessionId), revision: 0, phase: "confirm")
         do {
             // DB 阶段边界：完整性 / reload-ack 门禁与 confirm 的单事务合一。
             DeliveryTrace.log(

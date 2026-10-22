@@ -113,7 +113,8 @@ struct DeliveryMirrorWriter: Sendable {
                     guard try writer.markFailed(
                         xmpPath: path,
                         revision: revision,
-                        errorMessage: firstErrorMessage.isEmpty ? "WRITEBACK_FAILED" : firstErrorMessage
+                        errorMessage: firstErrorMessage.isEmpty ? "WRITEBACK_FAILED" : firstErrorMessage,
+                        leaseOwner: leaseOwner
                     ) != nil else {
                         errors.append("DELIVERY_MIRROR_FAIL_CAS_FAILED: \(path)")
                         continue

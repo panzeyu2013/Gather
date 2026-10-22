@@ -386,7 +386,7 @@ struct DeliveryWritebackMirrorDomainTests {
         defer { harness.db.close() }
         try seedMirrorOutbox(
             harness.db, xmpPath: "/shoot/p1.xmp", photoPath: "/shoot/p1.jpg",
-            backupPath: "/backup/p1.xmp", fingerprint: "fp-face"
+            backupPath: "/shoot/p1.xmp.gather-backup-test", fingerprint: "fp-face"
         )
         let item = faceMirrorItem(
             id: 11,
@@ -404,7 +404,7 @@ struct DeliveryWritebackMirrorDomainTests {
         // 镜像对新输入重开交付（revision + 1）后再落 written。
         #expect(row.revision == 1)
         #expect(row.baseFingerprint == "fp-face")
-        #expect(row.backupPath == "/backup/p1.xmp")
+        #expect(row.backupPath == "/shoot/p1.xmp.gather-backup-test")
         #expect(row.photoPath == "/shoot/p1.jpg")
         #expect(row.baseValues.objectValue?["rating"]?.numberValue == 3)
 
@@ -450,7 +450,7 @@ struct DeliveryWritebackMirrorDomainTests {
         defer { harness.db.close() }
         try seedMirrorOutbox(
             harness.db, xmpPath: "/shoot/p1.xmp", photoPath: "/shoot/p1.jpg",
-            backupPath: "/backup/p1.xmp", fingerprint: "fp-sim"
+            backupPath: "/shoot/p1.xmp.gather-backup-test", fingerprint: "fp-sim"
         )
         let item = similarityMirrorItem(
             id: 21,
@@ -468,7 +468,7 @@ struct DeliveryWritebackMirrorDomainTests {
         // 镜像对新输入重开交付（revision + 1）后再落 written。
         #expect(row.revision == 1)
         #expect(row.baseFingerprint == "fp-sim")
-        #expect(row.backupPath == "/backup/p1.xmp")
+        #expect(row.backupPath == "/shoot/p1.xmp.gather-backup-test")
         let items = try harness.deliveryRepo.listItems(sessionId: "s1", module: .similarity)
         #expect(items.count == 1)
         #expect(items[0].module == "similarity")
@@ -624,7 +624,7 @@ struct DeliveryCleanupDomainTests {
     func faceCleanupReportsExternalConflict() async throws {
         let harness = try MirrorHarness()
         defer { harness.db.close() }
-        try seedSyncedDelivery(harness, module: .faceKeyword, backupPath: "/backup/p1.xmp")
+        try seedSyncedDelivery(harness, module: .faceKeyword, backupPath: "/shoot/p1.xmp.gather-backup-test")
         harness.fingerprint.current = "fp-edited"
 
         let result = try await harness.faceService.cleanup(sessionId: "s1", confirmed: true)
@@ -641,7 +641,7 @@ struct DeliveryCleanupDomainTests {
     func similarityCleanupReportsExternalConflict() async throws {
         let harness = try MirrorHarness()
         defer { harness.db.close() }
-        try seedSyncedDelivery(harness, module: .similarity, backupPath: "/backup/p1.xmp")
+        try seedSyncedDelivery(harness, module: .similarity, backupPath: "/shoot/p1.xmp.gather-backup-test")
         harness.fingerprint.current = "fp-edited"
 
         let result = try await harness.similarityService.cleanup(sessionId: "s1")
@@ -656,8 +656,8 @@ struct DeliveryCleanupDomainTests {
     func faceCleanupRetriesAfterFileFailure() async throws {
         let harness = try MirrorHarness()
         defer { harness.db.close() }
-        try seedSyncedDelivery(harness, module: .faceKeyword, backupPath: "/backup/p1.xmp")
-        harness.files.setContents("/backup/p1.xmp", "original")
+        try seedSyncedDelivery(harness, module: .faceKeyword, backupPath: "/shoot/p1.xmp.gather-backup-test")
+        harness.files.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         harness.files.setRestoreFailure(MirrorFileError.injected)
 
         let failed = try await harness.faceService.cleanup(sessionId: "s1", confirmed: true)
@@ -680,8 +680,8 @@ struct DeliveryCleanupDomainTests {
     func similarityCleanupRetriesAfterFileFailure() async throws {
         let harness = try MirrorHarness()
         defer { harness.db.close() }
-        try seedSyncedDelivery(harness, module: .similarity, backupPath: "/backup/p1.xmp")
-        harness.files.setContents("/backup/p1.xmp", "original")
+        try seedSyncedDelivery(harness, module: .similarity, backupPath: "/shoot/p1.xmp.gather-backup-test")
+        harness.files.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         harness.files.setRestoreFailure(MirrorFileError.injected)
 
         let failed = try await harness.similarityService.cleanup(sessionId: "s1")

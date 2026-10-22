@@ -15,11 +15,49 @@
 import Foundation
 import GatherPersistence
 
+/// 进程内 replay 抢占（P2-4）：同一 intent 同时只允许一个回放者。
+///
+/// 与 XMPFileLock 同一边界（进程内）；跨进程并发仍不在承诺内。纯内存、无 Schema
+/// 变更：抢不到的回放者直接跳过本 intent（对方会推进/收尾），不再产生虚假失败。
+private final class DeliveryReplayClaims: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed: Set<Int64> = []
+
+    func claim(_ id: Int64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return claimed.insert(id).inserted
+    }
+
+    func release(_ id: Int64) {
+        lock.lock()
+        claimed.remove(id)
+        lock.unlock()
+    }
+}
+
 struct DeliveryReplayFlow: Sendable {
     let intents: DeliveryIntentStore
     let writer: DeliveryStateWriter
     let filePhase: DeliveryFilePhase
     let dbPhase: DeliveryDBPhase
+
+    /// 抢占状态必须按 flow/coordinator 隔离；用 static 会把不同数据库里相同的
+    /// intent.id（各库都从 1 开始）误判为同一回放，测试并行时直接互相跳过。
+    private let claims: DeliveryReplayClaims
+
+    init(
+        intents: DeliveryIntentStore,
+        writer: DeliveryStateWriter,
+        filePhase: DeliveryFilePhase,
+        dbPhase: DeliveryDBPhase
+    ) {
+        self.intents = intents
+        self.writer = writer
+        self.filePhase = filePhase
+        self.dbPhase = dbPhase
+        self.claims = DeliveryReplayClaims()
+    }
 
     /// 启动回放（幂等）：先删除 applied 终态，再按相位处理 prepared/fileDone。
     ///
@@ -36,6 +74,12 @@ struct DeliveryReplayFlow: Sendable {
         var skippedCount = 0
         var failedCount = 0
         var errors: [String] = []
+
+        // P2-15：启动回放是清理崩溃残留临时文件的自然时点；只扫有未完成 intent
+        // 的 xmpPath，只删 24h 前的 .tmp-/.restore- 常规文件（不碰备份）。
+        for path in Set(backlog.all.map(\.xmpPath)).sorted() {
+            _ = DeliveryTemporaryFiles.sweep(xmpPath: path)
+        }
 
         /// 汇总一次「DB 段 + intent 收尾」的结果（可重试失败 / 闭环 / 跳过）。
         ///
@@ -71,17 +115,23 @@ struct DeliveryReplayFlow: Sendable {
                 }
                 continue
             }
+            // P2-4：同一 intent 只允许一个回放者。抢不到说明另一回放正在进行，
+            // 直接跳过（不再产生 rowNotFound 虚假失败）。
+            guard claims.claim(intent.id) else {
+                skippedCount += 1
+                errors.append("XMP_CLEANUP_REPLAY_CLAIMED: #\(intent.id)")
+                continue
+            }
+            defer { claims.release(intent.id) }
             // P0-1 + TOCTOU：prepared 回放的 verify → 文件 → 事后 verify
             // 同样整体在 XMPFileLock 内；新输入已推进 revision 时绝不重做文件
             //（旧备份会覆盖新内容），直接放弃 intent 并上报。
             // WP7b：trace 的 id/revision 取自 intent payload（prepare 快照）。
             let traceFile = DeliveryTrace.text(
                 deliveryId: payload.deliveryId, revision: payload.revision, phase: "file")
-            let traceDB = DeliveryTrace.text(
-                deliveryId: payload.deliveryId, revision: payload.revision, phase: "db")
             DeliveryTrace.log(
                 traceFile,
-                "event=start op=replay phase=file xmp=\(intent.xmpPath) "
+                "event=start op=replay phase=file xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) "
                     + "intent=\(intent.id) action=\(payload.action.rawValue)",
                 level: .info)
             let phase = await filePhase.run(xmpPath: intent.xmpPath, payload: payload)
@@ -89,7 +139,7 @@ struct DeliveryReplayFlow: Sendable {
             case .completed:
                 DeliveryTrace.log(
                     traceFile,
-                    "event=done op=replay phase=file xmp=\(intent.xmpPath) "
+                    "event=done op=replay phase=file xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) "
                         + "intent=\(intent.id) outcome=completed",
                     level: .info)
                 break
@@ -97,7 +147,7 @@ struct DeliveryReplayFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=replay phase=file outcome=guard-failed "
-                        + "xmp=\(intent.xmpPath) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(reason)",
                     level: .warn)
                 failedCount += 1
                 errors.append("XMP_CLEANUP_GUARD_FAILED: \(intent.xmpPath) reason=\(reason)")
@@ -106,7 +156,7 @@ struct DeliveryReplayFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=replay phase=file outcome=file-failed "
-                        + "xmp=\(intent.xmpPath) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(reason)",
                     level: .warn)
                 failedCount += 1
                 errors.append("XMP_CLEANUP_FILE_FAILED: \(intent.xmpPath) reason=\(reason)")
@@ -115,7 +165,7 @@ struct DeliveryReplayFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=replay phase=file outcome=invalidated "
-                        + "xmp=\(intent.xmpPath) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(reason)",
                     level: .warn)
                 do {
                     try intents.finish(
@@ -135,7 +185,7 @@ struct DeliveryReplayFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=replay phase=file outcome=changed "
-                            + "xmp=\(intent.xmpPath) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(reason)",
                         level: .warn)
                     do {
                         try intents.finish(
@@ -152,13 +202,20 @@ struct DeliveryReplayFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=replay phase=file outcome=conflict "
-                            + "xmp=\(intent.xmpPath) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(reason)",
                         level: .warn)
                     do {
-                        _ = try writer.markConflict(
+                        // P2：markConflict 也带 owner CAS。CAS 失配（另一写者持有
+                        // 租约）时保留 intent，交给持有者/下次 replay，不假报已收尾。
+                        guard try writer.markConflict(
                             xmpPath: intent.xmpPath,
                             revision: payload.revision,
-                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT")
+                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT") != nil else {
+                            failedCount += 1
+                            errors.append(
+                                "XMP_CLEANUP_GUARD_CONFLICT_CAS_FAILED: \(intent.xmpPath)")
+                            continue
+                        }
                         try intents.finish(
                             id: intent.id,
                             error: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT: \(reason)")
@@ -170,12 +227,32 @@ struct DeliveryReplayFlow: Sendable {
                         errors.append(Self.failure("XMP_CLEANUP_CONFLICT_FAILED", intent.xmpPath, error))
                     }
                     continue
+                case .invalidBackup(let reason):
+                    // P2-12：回放同样 fail-closed；以终态 intent 收尾，避免无限重试。
+                    let code = payload.action == .finalize
+                        ? "XMP_FINALIZE_BACKUP_PATH_INVALID"
+                        : "XMP_CLEANUP_BACKUP_PATH_INVALID"
+                    DeliveryTrace.log(
+                        traceFile,
+                        "event=skipped op=replay phase=file outcome=invalid-backup "
+                            + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(reason)",
+                        level: .warn)
+                    do {
+                        try intents.finish(id: intent.id, error: "\(code): \(reason)")
+                        skippedCount += 1
+                        errors.append("\(code): \(intent.xmpPath) reason=\(reason)")
+                    } catch {
+                        failedCount += 1
+                        errors.append(
+                            Self.failure("XMP_CLEANUP_FINISH_FAILED", intent.xmpPath, error))
+                    }
+                    continue
                 case .alreadyGone:
                     // 行已被并发删除：不碰文件，DB 段按 alreadyGone 幂等收尾。
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=replay phase=file outcome=already-gone "
-                            + "xmp=\(intent.xmpPath)",
+                            + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath))",
                         level: .info)
                     record(await applyDBAndFinish(intent: intent, payload: payload))
                     continue
@@ -192,7 +269,7 @@ struct DeliveryReplayFlow: Sendable {
                         revision: payload.revision,
                         phase: "intent"),
                     "event=failed op=replay phase=intent outcome=advance-failed "
-                        + "xmp=\(intent.xmpPath) intent=\(intent.id) reason=\(error)",
+                        + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) intent=\(intent.id) reason=\(error)",
                     level: .warn)
                 failedCount += 1
                 errors.append(Self.failure("XMP_CLEANUP_ADVANCE_FAILED", intent.xmpPath, error))
@@ -217,6 +294,12 @@ struct DeliveryReplayFlow: Sendable {
                 }
                 continue
             }
+            guard claims.claim(intent.id) else {
+                skippedCount += 1
+                errors.append("XMP_CLEANUP_REPLAY_CLAIMED: #\(intent.id)")
+                continue
+            }
+            defer { claims.release(intent.id) }
             // 文件已是目标状态：这里绝不调用文件阶段（finalize 的备份清理是 DB
             // 段成功后的后置步骤，不属于文件阶段重放）。
             record(await applyDBAndFinish(intent: intent, payload: payload))
@@ -256,7 +339,7 @@ struct DeliveryReplayFlow: Sendable {
             deliveryId: payload.deliveryId, revision: payload.revision, phase: "db")
         DeliveryTrace.log(
             trace,
-            "event=start op=replay phase=db xmp=\(intent.xmpPath) "
+            "event=start op=replay phase=db xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) "
                 + "intent=\(intent.id) action=cleanup",
             level: .info)
         let outcome: CleanupDBOutcome
@@ -274,7 +357,7 @@ struct DeliveryReplayFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=failed op=replay phase=db outcome=db-failed "
-                    + "xmp=\(intent.xmpPath) reason=\(cause)",
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(cause)",
                 level: .warn)
             return .retry(message)
         } catch {
@@ -282,7 +365,7 @@ struct DeliveryReplayFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=failed op=replay phase=db outcome=db-failed "
-                    + "xmp=\(intent.xmpPath) reason=\(error)",
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(error)",
                 level: .warn)
             return .retry(message)
         }
@@ -290,7 +373,7 @@ struct DeliveryReplayFlow: Sendable {
         case .deleted, .alreadyGone:
             DeliveryTrace.log(
                 trace,
-                "event=done op=replay phase=db xmp=\(intent.xmpPath) "
+                "event=done op=replay phase=db xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) "
                     + "outcome=\(outcome.reason)",
                 level: .info)
             return .closed()
@@ -298,7 +381,7 @@ struct DeliveryReplayFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=skipped op=replay phase=db outcome=foreign-items-pending "
-                    + "xmp=\(intent.xmpPath) module=\(blockerModule) status=\(status)",
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) module=\(blockerModule) status=\(status)",
                 level: .warn)
             return .skipped(
                 "XMP_CLEANUP_INCOMPLETE_ITEMS: \(intent.xmpPath) "
@@ -307,7 +390,7 @@ struct DeliveryReplayFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=skipped op=replay phase=db outcome=foreign-items-retained "
-                    + "xmp=\(intent.xmpPath) modules=\(modules.joined(separator: ","))",
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) modules=\(modules.joined(separator: ","))",
                 level: .info)
             return .skipped(
                 "XMP_CLEANUP_RETAINED_FOREIGN_ITEMS: \(intent.xmpPath) "
@@ -316,7 +399,7 @@ struct DeliveryReplayFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=skipped op=replay phase=db outcome=\(outcome.reason) "
-                    + "xmp=\(intent.xmpPath) reason=db-guard-rejected",
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=db-guard-rejected",
                 level: .warn)
             return .skipped(
                 "XMP_CLEANUP_SKIPPED: \(intent.xmpPath) reason=\(outcome.reason)")
@@ -336,10 +419,10 @@ struct DeliveryReplayFlow: Sendable {
             deliveryId: payload.deliveryId, revision: payload.revision, phase: "db")
         DeliveryTrace.log(
             trace,
-            "event=start op=replay phase=db xmp=\(intent.xmpPath) "
+            "event=start op=replay phase=db xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) "
                 + "intent=\(intent.id) action=finalize",
             level: .info)
-        let outcome: DeliveryRepo.DeliveryDeleteOutcome
+        let outcome: FinalizeDBOutcome
         do {
             outcome = try dbPhase.applyFinalize(
                 intentId: intent.id, xmpPath: intent.xmpPath, payload: payload)
@@ -354,7 +437,7 @@ struct DeliveryReplayFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=failed op=replay phase=db outcome=db-failed "
-                    + "xmp=\(intent.xmpPath) reason=\(cause)",
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(cause)",
                 level: .warn)
             return .retry(message)
         } catch {
@@ -362,7 +445,7 @@ struct DeliveryReplayFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=failed op=replay phase=db outcome=db-failed "
-                    + "xmp=\(intent.xmpPath) reason=\(error)",
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=\(error)",
                 level: .warn)
             return .retry(message)
         }
@@ -370,8 +453,8 @@ struct DeliveryReplayFlow: Sendable {
         case .deleted, .alreadyGone:
             DeliveryTrace.log(
                 trace,
-                "event=done op=replay phase=db xmp=\(intent.xmpPath) "
-                    + "outcome=\(outcome.rawValue)",
+                "event=done op=replay phase=db xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) "
+                    + "outcome=\(outcome.reason)",
                 level: .info)
             // P1-1：DB 事务已提交，才清理备份（prepared/fileDone 两条重放路径共用）。
             let notice = await removeFinalizeBackup(
@@ -381,14 +464,24 @@ struct DeliveryReplayFlow: Sendable {
             )
             return DeliveryDBFinishOutcome(
                 applied: true, retryableError: nil, notice: notice)
+        case .incompleteItems(let module, let status):
+            DeliveryTrace.log(
+                trace,
+                "event=skipped op=replay phase=db outcome=incomplete-items "
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) "
+                    + "module=\(module) status=\(status)",
+                level: .warn)
+            return .skipped(
+                "XMP_FINALIZE_INCOMPLETE_ITEMS: \(intent.xmpPath) "
+                    + "module=\(module) status=\(status)")
         case .idChanged, .revisionChanged, .stateChanged:
             DeliveryTrace.log(
                 trace,
-                "event=skipped op=replay phase=db outcome=\(outcome.rawValue) "
-                    + "xmp=\(intent.xmpPath) reason=db-guard-rejected",
+                "event=skipped op=replay phase=db outcome=\(outcome.reason) "
+                    + "xmp=\(DeliveryTrace.pathToken(intent.xmpPath)) reason=db-guard-rejected",
                 level: .warn)
             return .skipped(
-                "XMP_FINALIZE_SKIPPED: \(intent.xmpPath) reason=\(outcome.rawValue)")
+                "XMP_FINALIZE_SKIPPED: \(intent.xmpPath) reason=\(outcome.reason)")
         }
     }
 
@@ -406,26 +499,26 @@ struct DeliveryReplayFlow: Sendable {
         case .removed:
             DeliveryTrace.log(
                 trace,
-                "event=done op=replay phase=backup xmp=\(xmpPath) outcome=removed",
+                "event=done op=replay phase=backup xmp=\(DeliveryTrace.pathToken(xmpPath)) outcome=removed",
                 level: .info)
             return nil
         case .absent:
             DeliveryTrace.log(
                 trace,
-                "event=done op=replay phase=backup xmp=\(xmpPath) outcome=absent",
+                "event=done op=replay phase=backup xmp=\(DeliveryTrace.pathToken(xmpPath)) outcome=absent",
                 level: .info)
             return nil
         case .retained(let reason):
             DeliveryTrace.log(
                 trace,
-                "event=skipped op=replay phase=backup xmp=\(xmpPath) "
+                "event=skipped op=replay phase=backup xmp=\(DeliveryTrace.pathToken(xmpPath)) "
                     + "outcome=retained reason=\(reason)",
                 level: .warn)
             return "XMP_FINALIZE_BACKUP_RETAINED: \(xmpPath) reason=\(reason)"
         case .failed(let reason):
             DeliveryTrace.log(
                 trace,
-                "event=failed op=replay phase=backup xmp=\(xmpPath) reason=\(reason)",
+                "event=failed op=replay phase=backup xmp=\(DeliveryTrace.pathToken(xmpPath)) reason=\(reason)",
                 level: .warn)
             return "XMP_FINALIZE_BACKUP_CLEANUP_FAILED: \(xmpPath) reason=\(reason)"
         }

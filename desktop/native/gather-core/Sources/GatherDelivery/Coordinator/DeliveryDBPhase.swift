@@ -12,6 +12,11 @@
 //
 // 错误分型：DeliveryDBPhaseError.database / .finish 让调用方保留迁移前的
 // XMP_CLEANUP_DB_FAILED / XMP_CLEANUP_FINISH_FAILED（finalize 同理）错误码。
+//
+// 锁序契约（P2-5）：本类型的 connection.transaction 闭包**只做 DB**，绝不取
+// XMPFileLock / 调文件端口；持有 XMP 锁时读 DB 是允许的单向边（XMP → DB）。
+// 反向边（DB → XMP）在类型层面被禁止：transaction body 是同步闭包，无法 await
+// fileLock.run；禁止用 Task/detached 绕过。详见 docs/delivery-lock-order.md。
 
 import Foundation
 import GatherPersistence
@@ -52,6 +57,33 @@ enum CleanupDBOutcome: Equatable {
             return "foreign-items-pending(\(module):\(status))"
         case .foreignItemsRetained(let modules):
             return "foreign-items-retained(\(modules.joined(separator: ",")))"
+        }
+    }
+}
+
+/// finalize 的 DB 段结果。
+///
+/// 与 DeliveryRepo.DeliveryDeleteOutcome 的区别只有 one case：删除前的
+/// item 门禁不通过（P2-2）。返回独立类型而不是复用 .stateChanged，避免调用方
+/// 把「跨模块 item 未收敛」误报成普通 CAS 拒绝。
+enum FinalizeDBOutcome: Equatable {
+    case deleted
+    case alreadyGone
+    case idChanged
+    case revisionChanged
+    case stateChanged
+    /// 仍有非 synced item（任何模块）：fail-closed，不删行、不删备份。
+    case incompleteItems(module: String, status: String)
+
+    var reason: String {
+        switch self {
+        case .deleted: return "deleted"
+        case .alreadyGone: return "already-gone"
+        case .idChanged: return "idChanged"
+        case .revisionChanged: return "revisionChanged"
+        case .stateChanged: return "stateChanged"
+        case .incompleteItems(let module, let status):
+            return "incomplete-items(\(module):\(status))"
         }
     }
 }
@@ -190,8 +222,34 @@ struct DeliveryDBPhase: Sendable {
         intentId: Int64,
         xmpPath: String,
         payload: DeliveryCleanupPayload
-    ) throws -> DeliveryRepo.DeliveryDeleteOutcome {
+    ) throws -> FinalizeDBOutcome {
         try connection.transaction {
+            // P2-2：finalize 也必须过跨模块 item 门禁。cleanup 的差异化语义
+            // （retainForeign）在这里刻意不适用：finalize 不 restore，只是按
+            // 「一个侧车文件」丢弃整条交付，其它模块已 synced 的 item 会随同一
+            // 文件生命周期一起删除；真正危险的是**非 synced** item（pending/
+            // failed/written），那意味着仍有未落盘的输入，必须 fail-closed。
+            //
+            // 当前 public 流程里「delivery synced + 其它模块 item 未 synced」
+            // 不可达（新输入会经 openDeliveryForInput/mergeInput 把 delivery
+            // 重开为 pending），但这是无断言的不变量：这里用门禁把它变成显式
+            // 失败，而不是静默删掉别人的输入。
+            let gate: CleanupItemGate
+            do {
+                gate = try finalizeItemGate(deliveryId: payload.deliveryId)
+            } catch {
+                throw DeliveryDBPhaseError.database(error)
+            }
+            if case .incomplete(let module, let status) = gate {
+                // 断言级不变量（P2-2）：fail-closed + intent 终态错误，行/备份保留。
+                // 刻意不用 assertionFailure：让错误路径在 debug 测试里可覆盖。
+                try finish(
+                    intentId,
+                    error: "XMP_FINALIZE_INCOMPLETE_ITEMS: \(module):\(status)"
+                )
+                return .incompleteItems(module: module, status: status)
+            }
+
             let outcome: DeliveryRepo.DeliveryDeleteOutcome
             do {
                 outcome = try writer.deleteSyncedDeliveryInTransaction(
@@ -203,13 +261,31 @@ struct DeliveryDBPhase: Sendable {
                 throw DeliveryDBPhaseError.database(error)
             }
             switch outcome {
-            case .deleted, .alreadyGone:
+            case .deleted:
                 try finish(intentId, error: nil)
-            case .idChanged, .revisionChanged, .stateChanged:
+                return .deleted
+            case .alreadyGone:
+                try finish(intentId, error: nil)
+                return .alreadyGone
+            case .idChanged:
                 try finish(intentId, error: "XMP_FINALIZE_SKIPPED: \(outcome.rawValue)")
+                return .idChanged
+            case .revisionChanged:
+                try finish(intentId, error: "XMP_FINALIZE_SKIPPED: \(outcome.rawValue)")
+                return .revisionChanged
+            case .stateChanged:
+                try finish(intentId, error: "XMP_FINALIZE_SKIPPED: \(outcome.rawValue)")
+                return .stateChanged
             }
-            return outcome
         }
+    }
+
+    /// finalize 的跨模块 item 门禁（P2-2）：所有模块的 item 都必须是 synced。
+    ///
+    /// 复用 cleanupItemGate 的唯一判定：module 传 nil 时它不区分归属，
+    /// 只要求「不存在非 synced item」——正是 finalize 需要的不变量。
+    func finalizeItemGate(deliveryId: Int64) throws -> CleanupItemGate {
+        try cleanupItemGate(deliveryId: deliveryId, module: nil)
     }
 
     // MARK: - intent 收尾（同事务）

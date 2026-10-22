@@ -441,7 +441,8 @@ public final class WritebackService: @unchecked Sendable {
                     }
                     if try stateWriter.markFailed(
                         xmpPath: path, revision: row.revision,
-                        errorMessage: Self.interruptedWriteMessage) != nil {
+                        errorMessage: Self.interruptedWriteMessage,
+                        leaseOwner: leaseOwner) != nil {
                         result.failed += 1
                         result.errors.append("DELIVERY_WRITE_INTERRUPTED: \(path)")
                     } else {
@@ -877,7 +878,8 @@ public final class WritebackService: @unchecked Sendable {
                 let message = firstErrorByPath[path] ?? "WRITEBACK_FAILED"
                 do {
                     let row = try stateWriter.markFailed(
-                        xmpPath: path, revision: revision, errorMessage: message)
+                        xmpPath: path, revision: revision, errorMessage: message,
+                        leaseOwner: leaseOwner)
                     if row == nil { errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)") }
                 } catch {
                     errors.append("DELIVERY_WRITE_FAILED: \(path): \(error)")

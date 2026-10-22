@@ -145,6 +145,21 @@ struct DeliveryDBPhaseTests {
         #expect(intent.errorMessage.contains("XMP_CLEANUP_INCOMPLETE_ITEMS"))
     }
 
+    /// P2-2：finalize 的跨模块 item 门禁——任何模块的非 synced item 都必须拦住。
+    @Test func finalizeItemGateRequiresAllItemsSynced() throws {
+        let fixture = try makeComponents()
+        defer { fixture.db.close() }
+        let row = try DeliveryTestSupport.makeSyncedDelivery(
+            repo: fixture.repo,
+            sessionId: nil,
+            itemModule: .metadata,
+            itemStatus: .pending
+        )
+
+        #expect(try fixture.phase.finalizeItemGate(deliveryId: row.id)
+            == .incomplete(module: "metadata", status: "pending"))
+    }
+
     /// P1-1：DB 删除语句失败时整事务回滚——交付行、intent（fileDone）都在，
     /// 备份由调用方在 DB 成功前不会删，因此不会出现悬空 backup_path。
     @Test func finalizeDeleteFailureRollsBackRowAndKeepsIntentRetryable() throws {

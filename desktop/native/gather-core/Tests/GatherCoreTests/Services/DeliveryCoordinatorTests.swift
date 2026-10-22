@@ -247,7 +247,7 @@ private final class NewInputInjector: @unchecked Sendable {
 struct DeliveryCoordinatorTests {
     private let xmp = "/v/IMG_1.xmp"
     private let photo = "/v/IMG_1.jpg"
-    private let backup = "/backup/IMG_1.xmp"
+    private let backup = "/v/IMG_1.xmp.gather-backup-test"
 
     private func createDelivery(
         _ harness: CoordinatorHarness,

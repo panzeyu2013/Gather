@@ -81,7 +81,7 @@ struct DeliveryIntentRepoTests {
             kind: .cleanup,
             xmpPath: "/v/./IMG_1.xmp",
             payload: .object([
-                "backup_path": .string("/backup/IMG_1.xmp"),
+                "backup_path": .string("/v/IMG_1.xmp.gather-backup-test"),
                 "delivery_id": .number(7),
                 "revision": .number(3),
             ])
@@ -95,7 +95,7 @@ struct DeliveryIntentRepoTests {
         #expect(row.xmpPath == self.xmp, "prepare 必须归一化 xmpPath（折叠 ./）")
         #expect(row.phase == "prepared")
         #expect(row.typedPhase == .prepared)
-        #expect(row.payload["backup_path"] == .string("/backup/IMG_1.xmp"))
+        #expect(row.payload["backup_path"] == .string("/v/IMG_1.xmp.gather-backup-test"))
         #expect(row.payload["revision"] == .number(3))
         #expect(row.errorMessage == "")
         #expect(row.createdAt != "")

@@ -13,6 +13,12 @@
 //
 // 失败不抛出：用 LockedFilePhaseOutcome 保留旧错误码语义，intent 留在 prepared；
 // 只有「文件已执行但事后发现新输入」才返回 .invalidated（调用方必须显式上报）。
+//
+// 锁序契约（单向 XMP → DB，禁止 DB → XMP）：
+// 本类型的 verify/verifyAfterMutation 在持有 XMPFileLock 时读 deliveries（Repo.get），
+// 这是允许的方向。反向（connection.transaction 内再取 XMPFileLock）被结构禁止：
+// DBConnection.transaction 的 body 是同步闭包，无法 await fileLock.run；禁止用
+// Task/detached 绕过。详见 docs/delivery-lock-order.md。
 
 import Foundation
 import GatherPersistence
@@ -22,12 +28,14 @@ import GatherPersistence
 /// 只有 .proceed 允许碰文件；其余分支都不得 restore/remove：
 /// - .changed：交付行已被新输入/重写推进（revision/status/base_fingerprint 不一致）；
 /// - .conflict：行快照一致但盘上内容已不是基线（外部修改）；
-/// - .alreadyGone：行已被并发删除，无法确认盘上内容归属。
+/// - .alreadyGone：行已被并发删除，无法确认盘上内容归属；
+/// - .invalidBackup：backup_path 未通过受控目录/前缀/常规文件校验（P2-12）。
 enum DeliveryFilePhaseVerdict: Equatable {
     case proceed
     case alreadyGone
     case changed(reason: String)
     case conflict(reason: String)
+    case invalidBackup(reason: String)
 }
 
 /// 锁内文件阶段的整体结果（P0-1 + TOCTOU 收口）。
@@ -35,7 +43,7 @@ enum DeliveryFilePhaseVerdict: Equatable {
 /// 守卫、restore/remove 与事后复核必须在**同一次** XMPFileLock.run 内完成：
 /// 分成两次取锁会重新打开“验证通过 → 另一写者落盘 → 旧备份覆盖”的窗口。
 /// - .completed：verify 放行且文件阶段（含事后复核）成功；
-/// - .skipped：verify 判定不得碰文件（changed/conflict/alreadyGone）；
+/// - .skipped：verify 判定不得碰文件（changed/conflict/alreadyGone/invalidBackup）；
 /// - .invalidated：文件已执行，但事后复核发现新输入（等价于 filePhaseInvalidated）；
 /// - .guardFailed / .fileFailed：保留旧错误码语义的失败（intent 留在 prepared）。
 enum LockedFilePhaseOutcome: Sendable, Equatable {
@@ -130,6 +138,19 @@ struct DeliveryFilePhase: Sendable {
         if let reason = Self.snapshotMismatch(before, payload: payload) {
             return .changed(reason: reason)
         }
+        // P2-12：备份路径是 DB 行，restore/remove 之前必须过统一校验；
+        // 校验失败 fail-closed，绝不能拿未校验路径碰文件。reason 只带错误码，
+        // 完整路径留在调用方的 errors（日志脱敏，错误仍可定位）。
+        if !payload.backupPath.isEmpty {
+            do {
+                _ = try DeliveryBackupPath.validate(
+                    xmpPath: xmpPath, backupPath: payload.backupPath)
+            } catch let error as DeliveryBackupPathError {
+                return .invalidBackup(reason: error.code)
+            } catch {
+                return .invalidBackup(reason: "XMP_BACKUP_PATH_INVALID")
+            }
+        }
         // finalize 不触碰 XMP：只做 revision/status 守卫，不读指纹。
         guard payload.action == .cleanup else { return .proceed }
         let expected = payload.baseFingerprint.isEmpty
@@ -191,12 +212,16 @@ struct DeliveryFilePhase: Sendable {
                 try await files.removeFile(xmpPath)
             }
         } else {
-            guard files.fileExists(payload.backupPath) else {
+            // 纵深防御：verify 已校验一次；这里再校验并只使用归一化后的路径，
+            // 避免 verify 与 restore 之间 DB 行/路径被替换。
+            let backupPath = try DeliveryBackupPath.validate(
+                xmpPath: xmpPath, backupPath: payload.backupPath)
+            guard files.fileExists(backupPath) else {
                 throw DeliveryCoordinatorError.backupMissing(xmpPath: xmpPath)
             }
             try await files.restore(
                 photoPath: payload.photoPath,
-                backupPath: payload.backupPath
+                backupPath: backupPath
             )
         }
         try verifyAfterMutation(xmpPath: xmpPath, payload: payload)
@@ -227,9 +252,20 @@ struct DeliveryFilePhase: Sendable {
                     return .retained(
                         reason: "delivery-reappeared(id=\(row.id),revision=\(row.revision))")
                 }
-                guard self.files.fileExists(backupPath) else { return .absent }
+                // P2-12：fileDone 重放不经过 verify，删除前必须在这里统一校验。
+                // 校验失败只上报，绝不 remove 未受控路径。
+                let normalizedBackup: String
                 do {
-                    try await self.files.removeFile(backupPath)
+                    normalizedBackup = try DeliveryBackupPath.validate(
+                        xmpPath: xmpPath, backupPath: backupPath)
+                } catch let error as DeliveryBackupPathError {
+                    return .failed(reason: error.code)
+                } catch {
+                    return .failed(reason: "XMP_BACKUP_PATH_INVALID")
+                }
+                guard self.files.fileExists(normalizedBackup) else { return .absent }
+                do {
+                    try await self.files.removeFile(normalizedBackup)
                     return .removed
                 } catch {
                     return .failed(reason: String(describing: error))

@@ -127,25 +127,39 @@ public struct DeliveryStateWriter: Sendable {
     }
 
     /// pending/writing/failed → failed。
+    ///
+    /// 持租约的写者必须传 `leaseOwner`（与 markWritten 同一 owner CAS）：
+    /// 租约被接管时 Repo 抛 leaseLost，旧写者不得把新基线标成 failed。
     @discardableResult
     func markFailed(
         xmpPath: String,
         revision: Int64,
-        errorMessage: String
+        errorMessage: String,
+        leaseOwner: String = ""
     ) throws -> DeliveryRow? {
         try repo.markFailed(
-            xmpPath: xmpPath, revision: revision, errorMessage: errorMessage)
+            xmpPath: xmpPath,
+            revision: revision,
+            errorMessage: errorMessage,
+            leaseOwner: leaseOwner)
     }
 
     /// 外部修改：任意活跃态 → conflict。
+    ///
+    /// 与 markWritten/markFailed 同一 owner CAS；cleanup/replay 不持租约，
+    /// 传空串时只允许租约为空的行（不会覆盖正在写盘的交付）。
     @discardableResult
     func markConflict(
         xmpPath: String,
         revision: Int64,
-        errorMessage: String
+        errorMessage: String,
+        leaseOwner: String = ""
     ) throws -> DeliveryRow? {
         try repo.markConflict(
-            xmpPath: xmpPath, revision: revision, errorMessage: errorMessage)
+            xmpPath: xmpPath,
+            revision: revision,
+            errorMessage: errorMessage,
+            leaseOwner: leaseOwner)
     }
 
     /// 会话确认（门禁读 + 单事务状态推进）。

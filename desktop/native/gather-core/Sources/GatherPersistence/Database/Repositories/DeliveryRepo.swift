@@ -333,6 +333,13 @@ public final class DeliveryRepo: Sendable {
     // MARK: - 状态迁移（CAS）
 
     /// pending/failed/conflict → writing（租约起点；attempt_count + 1）。
+    ///
+    /// P2 收口：生产代码只用 `claimWriting`（带租约）；本方法只为既有测试/
+    /// 夹具保留 "writing + 空 lease_owner" 的构造能力，已 deprecated。
+    /// 生产新增调用必须走 claimWriting（owner/TTL/抢占语义在那里）。
+    /// 说明：未直接降为 internal，是因为 gather-app 测试（跨包、非 @testable）
+    /// 仍用它构造夹具；保留 deprecated public 以避免跨包编译破坏。
+    @available(*, deprecated, message: "生产已无调用；请使用 claimWriting（租约 owner/TTL）")
     @discardableResult
     public func markWriting(
         xmpPath: String,
@@ -466,25 +473,11 @@ public final class DeliveryRepo: Sendable {
         baseValues: JSONValue,
         backupPath: String
     ) throws -> DeliveryRow? {
-        // 显式 owner 的快速失败：租约已不在本 owner 手里（被接管/重开/已收敛）时，
-        // 直接 leaseLost，而不是让状态机先报 illegalTransition。真正的并发安全
-        // 仍由下面 CAS 的 lease_owner 条件保证。
-        if !leaseOwner.isEmpty {
-            let path = try normalizedPath(xmpPath)
-            if let current = try get(path),
-               current.leaseOwner != leaseOwner
-                   || current.status != DeliveryStatus.writing.rawValue {
-                throw DeliveryRepoError.leaseLost(
-                    xmpPath: path,
-                    leaseOwner: leaseOwner,
-                    currentOwner: current.leaseOwner,
-                    status: current.status)
-            }
-        }
-        let written = try casTransition(
+        try leaseAwareTransition(
             xmpPath: xmpPath,
             revision: revision,
             to: .written,
+            leaseOwner: leaseOwner,
             assignments: [
                 "base_fingerprint = ?",
                 "base_values_json = ?",
@@ -497,13 +490,49 @@ public final class DeliveryRepo: Sendable {
                 .text(baseFingerprint),
                 .text(try JSONValue.stringify(baseValues)),
                 .text(backupPath),
-            ],
+            ]
+        )
+    }
+
+    /// markWritten / markFailed / markConflict 共用的**租约 owner CAS**（P1-2 / P2）。
+    ///
+    /// 口径与 markWritten 完全一致，避免三个写入口各写一套：
+    /// - 非空 owner：先快速失败（行已不在 writing 或 owner 已变 → leaseLost），
+    ///   再让 CAS 带 `lease_owner = ?`；CAS 失配后复核，只有 owner/状态确实漂移
+    ///   才抛 leaseLost，普通 revision/状态竞争仍返回 nil；
+    /// - 空 owner：同样带 `lease_owner = ''` CAS（不可能覆盖别人的租约），
+    ///   CAS 失配返回 nil。cleanup/replay 的 conflict 标记没有租约，正是这条路径。
+    ///
+    /// 行始终保留（只读复核，不覆盖）；调用方据 nil / leaseLost 放弃本轮收敛。
+    private func leaseAwareTransition(
+        xmpPath: String,
+        revision: Int64,
+        to target: DeliveryStatus,
+        leaseOwner: String,
+        assignments: [String],
+        values: [DBValue?]
+    ) throws -> DeliveryRow? {
+        let path = try normalizedPath(xmpPath)
+        if !leaseOwner.isEmpty {
+            if let current = try get(path),
+               current.leaseOwner != leaseOwner
+                   || current.status != DeliveryStatus.writing.rawValue {
+                throw DeliveryRepoError.leaseLost(
+                    xmpPath: path,
+                    leaseOwner: leaseOwner,
+                    currentOwner: current.leaseOwner,
+                    status: current.status)
+            }
+        }
+        let row = try casTransition(
+            xmpPath: path,
+            revision: revision,
+            to: target,
+            assignments: assignments,
+            values: values,
             requiringLeaseOwner: leaseOwner
         )
-        guard written == nil, !leaseOwner.isEmpty else { return written }
-        // CAS 失配时区分「租约丢失」与普通 revision/状态竞争：只有前者必须报错。
-        // 行保持原样（read-only 复核），调用方据此放弃本轮收敛。
-        let path = try normalizedPath(xmpPath)
+        guard row == nil, !leaseOwner.isEmpty else { return row }
         if let current = try get(path),
            current.status != DeliveryStatus.writing.rawValue || current.leaseOwner != leaseOwner {
             throw DeliveryRepoError.leaseLost(
@@ -1025,32 +1054,45 @@ public final class DeliveryRepo: Sendable {
     // MARK: - 失败 / 冲突 / 会话链接
 
     /// 写入失败：pending/writing/failed → failed（清租约、记原因；可重试回 writing）。
+    ///
+    /// P2：写入口与 markWritten 同口径——`leaseOwner` 非空时 CAS 必须匹配
+    /// `lease_owner`（租约被接管/新输入重开时抛 leaseLost，旧写者不得把新基线
+    /// 标成 failed）；缺省空串只允许 owner 为空的行，cleanup/replay 的失败路径
+    /// 因此不会覆盖正在写盘的租约。
     @discardableResult
     public func markFailed(
         xmpPath: String,
         revision: Int64,
-        errorMessage: String
+        errorMessage: String,
+        leaseOwner: String = ""
     ) throws -> DeliveryRow? {
-        try casTransition(
+        try leaseAwareTransition(
             xmpPath: xmpPath,
             revision: revision,
             to: .failed,
+            leaseOwner: leaseOwner,
             assignments: ["error_message = ?", "lease_owner = ''", "heartbeat_at = ''"],
             values: [.text(errorMessage)]
         )
     }
 
     /// 外部修改冲突：pending/writing/written/synced/failed → conflict（裁决后回 pending/writing）。
+    ///
+    /// P2：与 markWritten/markFailed 同一 owner CAS 口径。cleanup/replay 不持租约，
+    /// 传空串只允许 `lease_owner = ''` 的行；正在写盘的交付不会被清理路径抢先标
+    /// conflict（CAS 返回 nil，调用方按 skipped 处理）。
     @discardableResult
     public func markConflict(
         xmpPath: String,
         revision: Int64,
-        errorMessage: String
+        errorMessage: String,
+        leaseOwner: String = ""
     ) throws -> DeliveryRow? {
-        try casTransition(
+        try leaseAwareTransition(
             xmpPath: xmpPath,
             revision: revision,
             to: .conflict,
+            leaseOwner: leaseOwner,
             assignments: ["error_message = ?", "lease_owner = ''", "heartbeat_at = ''"],
             values: [.text(errorMessage)]
         )
