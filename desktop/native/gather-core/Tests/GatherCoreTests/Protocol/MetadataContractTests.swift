@@ -80,69 +80,7 @@ struct MetadataContractTests {
         #expect(decoded.op == .set)
         #expect(Set(try jsonKeys(of: data)) == ["op", "value"])
     }
-
-    // MARK: - MetadataGet/Set/BatchSet
-
-    @Test func metadataGetParamsRoundTrip() throws {
-        let params = MetadataGetParams(photoIds: ["p1", "p2"])
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(MetadataGetParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["photoIds"])
-    }
-
-    @Test func metadataSetParamsRoundTrip() throws {
-        let params = MetadataSetParams(
-            photoId: "p1",
-            tags: MetadataTags(keywords: ["街头"], rating: 4),
-            confirmed: false
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(MetadataSetParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["photoId", "tags", "confirmed"])
-    }
-
-    @Test func metadataBatchSetParamsRoundTrip() throws {
-        let params = MetadataBatchSetParams(
-            updates: [
-                MetadataBatchUpdate(photoId: "p1", tags: MetadataTags(rating: 4)),
-                MetadataBatchUpdate(photoId: "p2", tags: MetadataTags(label: "L")),
-            ],
-            confirmed: true
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(MetadataBatchSetParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["updates", "confirmed"])
-    }
-
-    // MARK: - MetadataMutationRequest / Result
-
-    @Test func metadataMutationRequestRoundTripAndKeys() throws {
-        let original = MetadataMutationRequest(
-            target: MetadataMutationTarget(photoId: "p1"),
-            patch: MetadataPatch(rating: MetadataRatingPatch(value: 5)),
-            source: .culling,
-            sourceRevision: 2,
-            requestedAt: "2025-01-01T00:00:00Z"
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(MetadataMutationRequest.self, from: data)
-        #expect(decoded == original)
-
-        let expected = ["target", "patch", "source", "sourceRevision", "requestedAt"]
-        #expect(Set(try jsonKeys(of: data)) == Set(expected))
-        #expect(!Set(try jsonKeys(of: data)).contains("source_revision"))
-    }
-
-    @Test func metadataMutationRequestSourceRevisionOmittedWhenNil() throws {
-        let request = MetadataMutationRequest(
-            target: MetadataMutationTarget(photoId: "p1"),
-            patch: MetadataPatch(),
-            source: .manual,
-            requestedAt: "t"
-        )
-        let keys = try jsonKeys(of: JSONEncoder().encode(request))
-        #expect(!keys.contains("sourceRevision"))
-    }
+    // MARK: - MetadataMutationResult
 
     @Test func metadataMutationResultRoundTrip() throws {
         let original = MetadataMutationResult(
@@ -183,29 +121,6 @@ struct MetadataContractTests {
         #expect(Set(try jsonKeys(of: data)) == ["xmpPath", "photoPath", "revision", "fields"])
     }
 
-    @Test func metadataConflictListParamsRoundTrip() throws {
-        let params = MetadataConflictListParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(params))) == ["sessionId"])
-    }
-
-    @Test func metadataConflictResolveParamsChoicesRoundTrip() throws {
-        // choices: Partial<Record<MetadataField, MetadataConflictChoice>> —— 枚举 key 字典
-        let original = MetadataConflictResolveParams(
-            sessionId: "s1",
-            xmpPath: "/u/a.xmp",
-            choices: [.rating: .keepLocal, .label: .useRemote],
-            confirmed: true
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(MetadataConflictResolveParams.self, from: data)
-        #expect(decoded == original)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "xmpPath", "choices", "confirmed"])
-
-        let object = try jsonObject(of: data)
-        let choices = try #require(object["choices"] as? [String: String])
-        #expect(choices == ["rating": "keep_local", "label": "use_remote"])
-    }
-
     // MARK: - MetadataOrphan
 
     @Test func metadataOrphanRoundTrip() throws {
@@ -216,13 +131,6 @@ struct MetadataContractTests {
         let data = try JSONEncoder().encode(original)
         #expect(try JSONDecoder().decode(MetadataOrphan.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)) == ["xmpPath", "photoPath", "status", "revision", "errorMessage", "updatedAt"])
-    }
-
-    @Test func metadataOrphanResolveParamsRoundTrip() throws {
-        let params = MetadataOrphanResolveParams(xmpPath: "/u/o.xmp", action: .restore, confirmed: true)
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(MetadataOrphanResolveParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["xmpPath", "action", "confirmed"])
     }
 
     // MARK: - MetadataTags
@@ -272,9 +180,6 @@ struct MetadataContractTests {
         #expect(try JSONDecoder().decode(BatchMetadataResult.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)) == ["success", "failed", "errors"])
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         Array(try jsonObject(of: data).keys)
     }

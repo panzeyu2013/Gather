@@ -5,17 +5,6 @@
 
 import Foundation
 
-// TS: QualityAnalyzeParams
-public struct QualityAnalyzeParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var photoIds: [String]? // TS: photoIds?
-
-    public init(sessionId: String, photoIds: [String]? = nil) {
-        self.sessionId = sessionId
-        self.photoIds = photoIds
-    }
-}
-
 // TS: QualityGetParams
 public struct QualityGetParams: Codable, Equatable, Sendable {
     public var sessionId: String

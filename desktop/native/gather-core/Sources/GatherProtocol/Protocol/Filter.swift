@@ -11,47 +11,6 @@
 
 import Foundation
 
-// TS: FilterPhotosParams
-public struct FilterPhotosParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var criteria: FilterGroup
-    public var sortBy: String? // TS: sortBy?
-    public var sortOrder: String? // TS: sortOrder?
-
-    public init(sessionId: String, criteria: FilterGroup, sortBy: String? = nil, sortOrder: String? = nil) {
-        self.sessionId = sessionId
-        self.criteria = criteria
-        self.sortBy = sortBy
-        self.sortOrder = sortOrder
-    }
-}
-
-// TS: FilterPhotosGlobalParams
-public struct FilterPhotosGlobalParams: Codable, Equatable, Sendable {
-    public var criteria: FilterGroup
-    public var sessionId: String? // TS: sessionId?
-    public var limit: Int? // TS: limit?
-    public var offset: Int? // TS: offset?
-
-    public init(criteria: FilterGroup, sessionId: String? = nil, limit: Int? = nil, offset: Int? = nil) {
-        self.criteria = criteria
-        self.sessionId = sessionId
-        self.limit = limit
-        self.offset = offset
-    }
-}
-
-// TS: FilterSuggestParams
-public struct FilterSuggestParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var keyword: String
-
-    public init(sessionId: String, keyword: String) {
-        self.sessionId = sessionId
-        self.keyword = keyword
-    }
-}
-
 // TS: AlbumCreateParams
 public struct AlbumCreateParams: Codable, Equatable, Sendable {
     public var name: String
@@ -68,20 +27,6 @@ public struct AlbumCreateParams: Codable, Equatable, Sendable {
         self.sortOrder = sortOrder
         self.description = description
         self.icon = icon
-    }
-}
-
-// TS: AlbumListParams
-public struct AlbumListParams: Codable, Equatable, Sendable {
-    public init() {}
-}
-
-// TS: AlbumGetParams
-public struct AlbumGetParams: Codable, Equatable, Sendable {
-    public var albumId: String
-
-    public init(albumId: String) {
-        self.albumId = albumId
     }
 }
 
@@ -103,30 +48,6 @@ public struct AlbumUpdateParams: Codable, Equatable, Sendable {
         self.sortOrder = sortOrder
         self.description = description
         self.icon = icon
-    }
-}
-
-// TS: AlbumDeleteParams
-public struct AlbumDeleteParams: Codable, Equatable, Sendable {
-    public var albumId: String
-    public var confirmed: Bool
-
-    public init(albumId: String, confirmed: Bool) {
-        self.albumId = albumId
-        self.confirmed = confirmed
-    }
-}
-
-// TS: AlbumGetPhotosParams
-public struct AlbumGetPhotosParams: Codable, Equatable, Sendable {
-    public var albumId: String
-    public var limit: Int? // TS: limit?
-    public var offset: Int? // TS: offset?
-
-    public init(albumId: String, limit: Int? = nil, offset: Int? = nil) {
-        self.albumId = albumId
-        self.limit = limit
-        self.offset = offset
     }
 }
 

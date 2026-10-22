@@ -118,51 +118,6 @@ struct ExportContractTests {
         #expect(try JSONDecoder().decode(ExportWatermark.self, from: data) == watermark)
         #expect(Set(try jsonKeys(of: data)) == ["type", "content", "position", "opacity"])
     }
-
-    // MARK: - Params
-
-    @Test func exportPreviewParamsRoundTrip() throws {
-        let params = ExportPreviewParams(
-            sessionId: "s1",
-            options: ExportOptions(
-                scope: .filtered, format: .tiff, tiffCompression: .lzw,
-                naming: ExportNaming(pattern: "{name}"), includeXmp: true, destination: "/u"
-            )
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(ExportPreviewParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "options"])
-    }
-
-    @Test func exportExecuteParamsRoundTrip() throws {
-        let params = ExportExecuteParams(
-            sessionId: "s1",
-            options: ExportOptions(
-                scope: .selected, format: .jpeg, quality: 90,
-                naming: ExportNaming(pattern: "{name}"), includeXmp: false, destination: "/u"
-            ),
-            confirmed: true
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(ExportExecuteParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "options", "confirmed"])
-    }
-
-    @Test func exportCancelParamsEncodesEmptyObject() throws {
-        let data = try JSONEncoder().encode(ExportCancelParams())
-        let keys = try jsonKeys(of: data)
-        #expect(keys.isEmpty, "ExportCancelParams 必须编码为 {}")
-        #expect(try JSONDecoder().decode(ExportCancelParams.self, from: data) == ExportCancelParams())
-    }
-
-    @Test func exportReportParamsOptionality() throws {
-        let full = ExportReportParams(sessionId: "s1", reportType: "session", format: "csv")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(full))) == ["sessionId", "reportType", "format"])
-
-        let minimal = ExportReportParams(sessionId: "s1", reportType: "session")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(minimal))) == ["sessionId", "reportType"])
-    }
-
     // MARK: - Results
 
     @Test func exportPreviewRoundTrip() throws {
@@ -219,9 +174,6 @@ struct ExportContractTests {
         #expect(try JSONDecoder().decode(ReportData.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)) == ["path", "content", "format"])
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

@@ -8,40 +8,6 @@ import Testing
 @testable import GatherProtocol
 
 struct DuplicateContractTests {
-
-    // MARK: - Params
-
-    @Test func dupScanParamsKeysAndOptionality() throws {
-        let full = DupScanParams(sessionId: "s1", visualThreshold: 0.8)
-        let fullKeys = try jsonKeys(of: JSONEncoder().encode(full))
-        #expect(Set(fullKeys) == ["sessionId", "visualThreshold"])
-
-        let minimal = DupScanParams(sessionId: "s1")
-        let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
-        #expect(Set(minimalKeys) == ["sessionId"], "未设置的 TS 可选字段必须省略")
-    }
-
-    @Test func dupGroupsParamsRoundTrip() throws {
-        let params = DupGroupsParams(sessionId: "s1")
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(DupGroupsParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId"])
-    }
-
-    @Test func dupResolveParamsRoundTrip() throws {
-        let params = DupResolveParams(groupId: 3, resolution: .keepOne, confirmed: true)
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(DupResolveParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["groupId", "resolution", "confirmed"])
-    }
-
-    @Test func dupResolveMemberParamsRoundTrip() throws {
-        let params = DupResolveMemberParams(memberId: 9, isKept: false, confirmed: true)
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(DupResolveMemberParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["memberId", "isKept", "confirmed"])
-    }
-
     // MARK: - Enums
 
     @Test func dupResolutionRawValuesMatchTS() {
@@ -129,18 +95,6 @@ struct DuplicateContractTests {
         #expect(decoded.fileMtime == nil)
         #expect(decoded.resolution == nil)
     }
-
-    // MARK: - DupScanOptions
-
-    @Test func dupScanOptionsRoundTrip() throws {
-        let options = DupScanOptions(visualThreshold: 0.85)
-        let data = try JSONEncoder().encode(options)
-        #expect(try JSONDecoder().decode(DupScanOptions.self, from: data) == options)
-        #expect(Set(try jsonKeys(of: data)) == ["visualThreshold"])
-    }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         Array(try jsonObject(of: data).keys)
     }

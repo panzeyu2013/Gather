@@ -91,39 +91,6 @@ struct FilterContractTests {
         #expect(FilterLogic.and.rawValue == "and")
         #expect(FilterLogic.or.rawValue == "or")
     }
-
-    // MARK: - Params
-
-    @Test func filterPhotosParamsRoundTrip() throws {
-        let params = FilterPhotosParams(
-            sessionId: "s1",
-            criteria: FilterGroup(logic: .and, conditions: []),
-            sortBy: "rating",
-            sortOrder: "desc"
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(FilterPhotosParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "criteria", "sortBy", "sortOrder"])
-    }
-
-    @Test func filterPhotosGlobalParamsOptionality() throws {
-        let full = FilterPhotosGlobalParams(
-            criteria: FilterGroup(logic: .or, conditions: []),
-            sessionId: "s1", limit: 50, offset: 0
-        )
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(full))) == ["criteria", "sessionId", "limit", "offset"])
-
-        let minimal = FilterPhotosGlobalParams(criteria: FilterGroup(logic: .or, conditions: []))
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(minimal))) == ["criteria"])
-    }
-
-    @Test func filterSuggestParamsRoundTrip() throws {
-        let params = FilterSuggestParams(sessionId: "s1", keyword: "街")
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(FilterSuggestParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "keyword"])
-    }
-
     // MARK: - Album params
 
     @Test func albumCreateParamsRoundTrip() throws {
@@ -138,26 +105,11 @@ struct FilterContractTests {
         #expect(Set(try jsonKeys(of: data)) == ["name", "criteria", "sortBy", "sortOrder", "description", "icon"])
     }
 
-    @Test func albumListParamsEncodesEmptyObject() throws {
-        let data = try JSONEncoder().encode(AlbumListParams())
-        #expect(try jsonKeys(of: data).isEmpty, "AlbumListParams 必须编码为 {}")
-        #expect(try JSONDecoder().decode(AlbumListParams.self, from: data) == AlbumListParams())
-    }
-
-    @Test func albumGetUpdateDeleteParamsRoundTrip() throws {
-        let get = AlbumGetParams(albumId: "a1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(get))) == ["albumId"])
-
+    @Test func albumUpdateParamsRoundTrip() throws {
         let update = AlbumUpdateParams(albumId: "a1", name: "新名字", criteria: FilterGroup(logic: .and, conditions: []))
         let updateData = try JSONEncoder().encode(update)
         #expect(try JSONDecoder().decode(AlbumUpdateParams.self, from: updateData) == update)
         #expect(Set(try jsonKeys(of: updateData)) == ["albumId", "name", "criteria"])
-
-        let delete = AlbumDeleteParams(albumId: "a1", confirmed: true)
-        #expect(try JSONDecoder().decode(AlbumDeleteParams.self, from: JSONEncoder().encode(delete)) == delete)
-
-        let photos = AlbumGetPhotosParams(albumId: "a1", limit: 20, offset: 0)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(photos))) == ["albumId", "limit", "offset"])
     }
 
     // MARK: - FilterSuggestion
@@ -237,9 +189,6 @@ struct FilterContractTests {
         #expect(try JSONDecoder().decode(SmartAlbumDetailData.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)).contains("photoCount"))
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

@@ -18,73 +18,6 @@ struct SimilarityContractTests {
             #expect(mode.rawValue == raw)
         }
     }
-
-    // MARK: - Params
-
-    @Test func simAnalyzeParamsKeysAndOptionality() throws {
-        let full = SimAnalyzeParams(sessionId: "s1", threshold: 0.82, minGroupSize: 3, groupingMode: .global)
-        let fullKeys = try jsonKeys(of: JSONEncoder().encode(full))
-        #expect(Set(fullKeys) == ["sessionId", "threshold", "minGroupSize", "groupingMode"])
-
-        let minimal = SimAnalyzeParams(sessionId: "s1")
-        let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
-        #expect(Set(minimalKeys) == ["sessionId"], "未设置的 TS 可选字段必须省略")
-    }
-
-    @Test func simCancelAndConfirmSyncParamsRoundTrip() throws {
-        let cancel = SimCancelAnalysisParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(cancel))) == ["sessionId"])
-
-        let confirm = SimConfirmSyncParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(confirm))) == ["sessionId"])
-    }
-
-    @Test func simResultParamsOptionality() throws {
-        let withThreshold = SimResultParams(sessionId: "s1", threshold: 0.75)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(withThreshold))) == ["sessionId", "threshold"])
-
-        let minimal = SimResultParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(minimal))) == ["sessionId"])
-    }
-
-    @Test func simReclusterParamsRoundTrip() throws {
-        let params = SimReclusterParams(sessionId: "s1", threshold: 0.8, minGroupSize: 4, groupingMode: .sequential)
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(SimReclusterParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "threshold", "minGroupSize", "groupingMode"])
-    }
-
-    @Test func simPreviewWritebackParamsRoundTrip() throws {
-        let params = SimPreviewWritebackParams(
-            sessionId: "s1",
-            assignments: [
-                SimilarityKeywordAssignment(groupId: 1, keywords: ["街头"]),
-                SimilarityKeywordAssignment(groupId: 2, keywords: ["夜景", "长曝"]),
-            ],
-            threshold: 0.8
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(SimPreviewWritebackParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "assignments", "threshold"])
-    }
-
-    @Test func simWritebackAndCleanupParamsRoundTrip() throws {
-        let writeback = SimWritebackParams(sessionId: "s1", itemIds: [1, 2, 3], confirmed: true, threshold: 0.8)
-        let writebackData = try JSONEncoder().encode(writeback)
-        #expect(try JSONDecoder().decode(SimWritebackParams.self, from: writebackData) == writeback)
-        #expect(Set(try jsonKeys(of: writebackData)) == ["sessionId", "itemIds", "confirmed", "threshold"])
-
-        let items = SimWritebackItemsParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(items))) == ["sessionId"])
-
-        let retry = SimRetryFailedWritebackParams(sessionId: "s1", confirmed: false)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(retry))) == ["sessionId", "confirmed"])
-
-        let cleanup = SimCleanupParams(sessionId: "s1", confirmed: true)
-        let cleanupData = try JSONEncoder().encode(cleanup)
-        #expect(try JSONDecoder().decode(SimCleanupParams.self, from: cleanupData) == cleanup)
-    }
-
     // MARK: - SimilarityGroup / SimilarityImage
 
     @Test func similarityGroupRoundTripAndKeys() throws {
@@ -141,9 +74,6 @@ struct SimilarityContractTests {
         let keys = try jsonKeys(of: JSONEncoder().encode(stats))
         #expect(!keys.contains("precomputed"))
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

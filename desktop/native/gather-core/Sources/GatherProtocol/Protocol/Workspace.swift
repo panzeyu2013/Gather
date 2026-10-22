@@ -177,12 +177,3 @@ public struct WorkspaceStatus: Codable, Equatable, Sendable {
         case sessionId, stage, softFlags, indexing, staleAnalyses, xmp, offlinePhotos, failedJobs, recommendedNext, generatedAt
     }
 }
-
-// TS: WorkspaceStatusParams
-public struct WorkspaceStatusParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}

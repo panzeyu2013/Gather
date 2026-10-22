@@ -5,29 +5,7 @@
 
 import Foundation
 
-// TS: MetadataGetParams
-public struct MetadataGetParams: Codable, Equatable, Sendable {
-    public var photoIds: [String]
-
-    public init(photoIds: [String]) {
-        self.photoIds = photoIds
-    }
-}
-
-// TS: MetadataSetParams —— tags: Partial<MetadataTags>，MetadataTags 全字段可选即等价
-public struct MetadataSetParams: Codable, Equatable, Sendable {
-    public var photoId: String
-    public var tags: MetadataTags
-    public var confirmed: Bool
-
-    public init(photoId: String, tags: MetadataTags, confirmed: Bool) {
-        self.photoId = photoId
-        self.tags = tags
-        self.confirmed = confirmed
-    }
-}
-
-// TS: MetadataBatchSetParams.updates 的元素（匿名对象 { photoId, tags }）
+// TS: batch metadata updates 的元素（匿名对象 { photoId, tags }）
 public struct MetadataBatchUpdate: Codable, Equatable, Sendable {
     public var photoId: String
     public var tags: MetadataTags
@@ -35,17 +13,6 @@ public struct MetadataBatchUpdate: Codable, Equatable, Sendable {
     public init(photoId: String, tags: MetadataTags) {
         self.photoId = photoId
         self.tags = tags
-    }
-}
-
-// TS: MetadataBatchSetParams
-public struct MetadataBatchSetParams: Codable, Equatable, Sendable {
-    public var updates: [MetadataBatchUpdate]
-    public var confirmed: Bool
-
-    public init(updates: [MetadataBatchUpdate], confirmed: Bool) {
-        self.updates = updates
-        self.confirmed = confirmed
     }
 }
 
@@ -128,32 +95,6 @@ public struct MetadataPatch: Codable, Equatable, Sendable {
     }
 }
 
-// TS: MetadataMutationRequest.target（匿名对象 { photoId: string }）
-public struct MetadataMutationTarget: Codable, Equatable, Sendable {
-    public var photoId: String
-
-    public init(photoId: String) {
-        self.photoId = photoId
-    }
-}
-
-// TS: MetadataMutationRequest
-public struct MetadataMutationRequest: Codable, Equatable, Sendable {
-    public var target: MetadataMutationTarget
-    public var patch: MetadataPatch
-    public var source: MetadataMutationSource
-    public var sourceRevision: Int? // TS: sourceRevision?
-    public var requestedAt: String
-
-    public init(target: MetadataMutationTarget, patch: MetadataPatch, source: MetadataMutationSource, sourceRevision: Int? = nil, requestedAt: String) {
-        self.target = target
-        self.patch = patch
-        self.source = source
-        self.sourceRevision = sourceRevision
-        self.requestedAt = requestedAt
-    }
-}
-
 // TS: MetadataMutationResult
 public struct MetadataMutationResult: Codable, Equatable, Sendable {
     public var photoId: String
@@ -207,64 +148,6 @@ public enum MetadataConflictChoice: String, Codable, CaseIterable, Equatable, Se
     case useRemote = "use_remote"
 }
 
-// TS: MetadataConflictListParams
-public struct MetadataConflictListParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: MetadataConflictResolveParams —— choices: Partial<Record<MetadataField, MetadataConflictChoice>>
-// 映射决策: Swift 对非 String key 字典的 Codable 合成实现会编码为交替 key/value 数组，
-// 与 TS JSON 形状（对象）不符，故自定义 Codable：encode 时以枚举 rawValue 作对象 key，
-// decode 时按 rawValue 回投 MetadataField（未知 key 抛错，不做 unknown 兜底）。
-public struct MetadataConflictResolveParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var xmpPath: String
-    public var choices: [MetadataField: MetadataConflictChoice]
-    public var confirmed: Bool
-
-    public init(sessionId: String, xmpPath: String, choices: [MetadataField: MetadataConflictChoice], confirmed: Bool) {
-        self.sessionId = sessionId
-        self.xmpPath = xmpPath
-        self.choices = choices
-        self.confirmed = confirmed
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.sessionId = try container.decode(String.self, forKey: .sessionId)
-        self.xmpPath = try container.decode(String.self, forKey: .xmpPath)
-        let rawChoices = try container.decode([String: MetadataConflictChoice].self, forKey: .choices)
-        var choices: [MetadataField: MetadataConflictChoice] = [:]
-        for (key, value) in rawChoices {
-            guard let field = MetadataField(rawValue: key) else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .choices, in: container,
-                    debugDescription: "未知 MetadataField key: \(key)")
-            }
-            choices[field] = value
-        }
-        self.choices = choices
-        self.confirmed = try container.decode(Bool.self, forKey: .confirmed)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(sessionId, forKey: .sessionId)
-        try container.encode(xmpPath, forKey: .xmpPath)
-        let rawChoices = Dictionary(uniqueKeysWithValues: choices.map { ($0.key.rawValue, $0.value) })
-        try container.encode(rawChoices, forKey: .choices)
-        try container.encode(confirmed, forKey: .confirmed)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case sessionId, xmpPath, choices, confirmed
-    }
-}
-
 // TS: MetadataOrphan
 public struct MetadataOrphan: Codable, Equatable, Sendable {
     public var xmpPath: String
@@ -284,24 +167,11 @@ public struct MetadataOrphan: Codable, Equatable, Sendable {
     }
 }
 
-// TS: MetadataOrphanResolveParams.action（内联联合 'keep' | 'restore' | 'retry'）
+// TS: MetadataOrphanAction（metadata.ts 内联联合 'keep' | 'restore' | 'retry'）
 public enum MetadataOrphanAction: String, Codable, CaseIterable, Equatable, Sendable {
     case keep
     case restore
     case retry
-}
-
-// TS: MetadataOrphanResolveParams
-public struct MetadataOrphanResolveParams: Codable, Equatable, Sendable {
-    public var xmpPath: String
-    public var action: MetadataOrphanAction
-    public var confirmed: Bool
-
-    public init(xmpPath: String, action: MetadataOrphanAction, confirmed: Bool) {
-        self.xmpPath = xmpPath
-        self.action = action
-        self.confirmed = confirmed
-    }
 }
 
 // TS: MetadataTags（全字段可选，即 Partial<MetadataTags> 的最终形状）

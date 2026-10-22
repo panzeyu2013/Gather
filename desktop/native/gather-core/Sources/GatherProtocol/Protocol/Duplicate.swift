@@ -10,65 +10,10 @@
 
 import Foundation
 
-// TS: DupScanParams
-public struct DupScanParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var visualThreshold: Double? // TS: visualThreshold?
-
-    public init(sessionId: String, visualThreshold: Double? = nil) {
-        self.sessionId = sessionId
-        self.visualThreshold = visualThreshold
-    }
-}
-
-// TS: DupGroupsParams
-public struct DupGroupsParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
 // TS: resolution（duplicate.ts 内联联合 'keep_one' | 'keep_all'）
 public enum DupResolution: String, Codable, CaseIterable, Equatable, Sendable {
     case keepOne = "keep_one"
     case keepAll = "keep_all"
-}
-
-// TS: DupResolveParams
-public struct DupResolveParams: Codable, Equatable, Sendable {
-    public var groupId: Int
-    public var resolution: DupResolution
-    public var confirmed: Bool
-
-    public init(groupId: Int, resolution: DupResolution, confirmed: Bool) {
-        self.groupId = groupId
-        self.resolution = resolution
-        self.confirmed = confirmed
-    }
-}
-
-// TS: DupResolveMemberParams
-public struct DupResolveMemberParams: Codable, Equatable, Sendable {
-    public var memberId: Int
-    public var isKept: Bool
-    public var confirmed: Bool
-
-    public init(memberId: Int, isKept: Bool, confirmed: Bool) {
-        self.memberId = memberId
-        self.isKept = isKept
-        self.confirmed = confirmed
-    }
-}
-
-// TS: DupScanOptions
-public struct DupScanOptions: Codable, Equatable, Sendable {
-    public var visualThreshold: Double
-
-    public init(visualThreshold: Double) {
-        self.visualThreshold = visualThreshold
-    }
 }
 
 // TS: DuplicateScanResult

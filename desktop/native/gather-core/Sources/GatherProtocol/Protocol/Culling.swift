@@ -252,25 +252,6 @@ public struct CullingPage: Codable, Equatable, Sendable {
     }
 }
 
-// TS: CullingListPageParams
-public struct CullingListPageParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var scope: CullingScope
-    public var filters: CullingFilters? // TS: filters?
-    public var groupId: String? // TS: groupId?
-    public var afterRowId: Int? // TS: afterRowId?
-    public var limit: Int? // TS: limit?
-
-    public init(sessionId: String, scope: CullingScope, filters: CullingFilters? = nil, groupId: String? = nil, afterRowId: Int? = nil, limit: Int? = nil) {
-        self.sessionId = sessionId
-        self.scope = scope
-        self.filters = filters
-        self.groupId = groupId
-        self.afterRowId = afterRowId
-        self.limit = limit
-    }
-}
-
 // TS: CullingUpdatePatch
 public struct CullingUpdatePatch: Codable, Equatable, Sendable {
     public var rating: Double? // TS: rating?
@@ -281,21 +262,6 @@ public struct CullingUpdatePatch: Codable, Equatable, Sendable {
         self.rating = rating
         self.pickState = pickState
         self.colorLabel = colorLabel
-    }
-}
-
-// TS: CullingUpdateParams
-public struct CullingUpdateParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var photoId: String
-    public var expectedRevision: Int
-    public var patch: CullingUpdatePatch
-
-    public init(sessionId: String, photoId: String, expectedRevision: Int, patch: CullingUpdatePatch) {
-        self.sessionId = sessionId
-        self.photoId = photoId
-        self.expectedRevision = expectedRevision
-        self.patch = patch
     }
 }
 
@@ -368,17 +334,6 @@ public struct CullingHistoryOperation: Codable, Equatable, Sendable {
     }
 }
 
-// TS: CullingHistoryParams
-public struct CullingHistoryParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var limit: Int? // TS: limit?
-
-    public init(sessionId: String, limit: Int? = nil) {
-        self.sessionId = sessionId
-        self.limit = limit
-    }
-}
-
 // TS: CullingHistoryApplyEntry
 public struct CullingHistoryApplyEntry: Codable, Equatable, Sendable {
     public var photoId: String
@@ -392,89 +347,10 @@ public struct CullingHistoryApplyEntry: Codable, Equatable, Sendable {
     }
 }
 
-// TS: CullingHistoryApplyParams.direction（culling.ts 内联联合 'undo' | 'redo'）
+// TS: CullingHistoryDirection（culling.ts 内联联合 'undo' | 'redo'）
 public enum CullingHistoryDirection: String, Codable, CaseIterable, Equatable, Sendable {
     case undo
     case redo
-}
-
-// TS: CullingHistoryApplyParams
-public struct CullingHistoryApplyParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var entries: [CullingHistoryApplyEntry]
-    public var historyOperationId: Int
-    public var direction: CullingHistoryDirection
-
-    public init(sessionId: String, entries: [CullingHistoryApplyEntry], historyOperationId: Int, direction: CullingHistoryDirection) {
-        self.sessionId = sessionId
-        self.entries = entries
-        self.historyOperationId = historyOperationId
-        self.direction = direction
-    }
-}
-
-// TS: CullingBatchUpdateParams
-public struct CullingBatchUpdateParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var photoIds: [String]
-    public var patch: CullingUpdatePatch
-
-    public init(sessionId: String, photoIds: [String], patch: CullingUpdatePatch) {
-        self.sessionId = sessionId
-        self.photoIds = photoIds
-        self.patch = patch
-    }
-}
-
-// TS: CullingDecideGroupParams
-public struct CullingDecideGroupParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var groupId: String
-    public var keepPhotoIds: [String]
-
-    public init(sessionId: String, groupId: String, keepPhotoIds: [String]) {
-        self.sessionId = sessionId
-        self.groupId = groupId
-        self.keepPhotoIds = keepPhotoIds
-    }
-}
-
-// TS: CullingSyncStatusParams
-public struct CullingSyncStatusParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: CullingFlushParams
-public struct CullingFlushParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: CullingRetrySyncParams
-public struct CullingRetrySyncParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: CullingFinalizeSyncParams
-public struct CullingFinalizeSyncParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var confirmed: Bool
-
-    public init(sessionId: String, confirmed: Bool) {
-        self.sessionId = sessionId
-        self.confirmed = confirmed
-    }
 }
 
 // TS: MetadataSyncItem
@@ -523,112 +399,11 @@ public struct MetadataSyncSummary: Codable, Equatable, Sendable {
 
 // ── 旧版 Culling renderer 兼容契约（culling.ts 保留段）──
 
-// TS: CullingGroupsParams
-public struct CullingGroupsParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: CullingDecideParams
-public struct CullingDecideParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var photoId: String
-    public var decision: CullingDecisionValue
-
-    public init(sessionId: String, photoId: String, decision: CullingDecisionValue) {
-        self.sessionId = sessionId
-        self.photoId = photoId
-        self.decision = decision
-    }
-}
-
-// TS: CullingBatchDecideParams
-public struct CullingBatchDecideParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var photoIds: [String]
-    public var decision: CullingDecisionValue
-
-    public init(sessionId: String, photoIds: [String], decision: CullingDecisionValue) {
-        self.sessionId = sessionId
-        self.photoIds = photoIds
-        self.decision = decision
-    }
-}
-
-// TS: CullingSummaryParams
-public struct CullingSummaryParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: CullingWritebackParams.target（culling.ts 内联联合 'rating' | 'color_label' | 'keyword'）
+// TS: CullingWritebackTarget（culling.ts 内联联合 'rating' | 'color_label' | 'keyword'）
 public enum CullingWritebackTarget: String, Codable, CaseIterable, Equatable, Sendable {
     case rating
     case colorLabel = "color_label"
     case keyword
-}
-
-// TS: CullingWritebackParams
-public struct CullingWritebackParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var confirmed: Bool
-    public var target: CullingWritebackTarget
-
-    public init(sessionId: String, confirmed: Bool, target: CullingWritebackTarget) {
-        self.sessionId = sessionId
-        self.confirmed = confirmed
-        self.target = target
-    }
-}
-
-// TS: CullingRetryWritebackParams
-public struct CullingRetryWritebackParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var confirmed: Bool
-
-    public init(sessionId: String, confirmed: Bool) {
-        self.sessionId = sessionId
-        self.confirmed = confirmed
-    }
-}
-
-// TS: CullingConfirmSyncParams
-public struct CullingConfirmSyncParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: CullingCleanupParams
-public struct CullingCleanupParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var confirmed: Bool
-
-    public init(sessionId: String, confirmed: Bool) {
-        self.sessionId = sessionId
-        self.confirmed = confirmed
-    }
-}
-
-// TS: CullingResetParams
-public struct CullingResetParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var groupId: String? // TS: groupId?
-    public var confirmed: Bool
-
-    public init(sessionId: String, groupId: String? = nil, confirmed: Bool) {
-        self.sessionId = sessionId
-        self.groupId = groupId
-        self.confirmed = confirmed
-    }
 }
 
 // TS: CullingGroup

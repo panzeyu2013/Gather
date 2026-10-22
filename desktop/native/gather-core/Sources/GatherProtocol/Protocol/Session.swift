@@ -5,53 +5,6 @@
 
 import Foundation
 
-// TS: SessionCreateParams
-public struct SessionCreateParams: Codable, Equatable, Sendable {
-    public var name: String
-    public var filepaths: [String]? // TS: filepaths?
-    public var source: String? // TS: source?
-    public var sourcePath: String? // TS: sourcePath?
-    public var truncatedImport: Bool? // TS: truncatedImport?
-
-    public init(
-        name: String,
-        filepaths: [String]? = nil,
-        source: String? = nil,
-        sourcePath: String? = nil,
-        truncatedImport: Bool? = nil
-    ) {
-        self.name = name
-        self.filepaths = filepaths
-        self.source = source
-        self.sourcePath = sourcePath
-        self.truncatedImport = truncatedImport
-    }
-}
-
-// TS: SessionCreateFromDirectoryParams —— 一跳本地目录导入：只携带 sourcePath，绝不携带文件路径数组
-public struct SessionCreateFromDirectoryParams: Codable, Equatable, Sendable {
-    public var name: String? // TS: name?
-    public var sourcePath: String
-
-    public init(name: String? = nil, sourcePath: String) {
-        self.name = name
-        self.sourcePath = sourcePath
-    }
-}
-
-// TS: SessionAddPhotosParams
-public struct SessionAddPhotosParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var filepaths: [String]
-    public var source: String? // TS: source?
-
-    public init(sessionId: String, filepaths: [String], source: String? = nil) {
-        self.sessionId = sessionId
-        self.filepaths = filepaths
-        self.source = source
-    }
-}
-
 // TS: SessionUpdateParams
 public struct SessionUpdateParams: Codable, Equatable, Sendable {
     public var sessionId: String

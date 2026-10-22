@@ -8,16 +8,6 @@ import Testing
 
 struct IndexerContractTests {
 
-    @Test func indexScanParamsOptionality() throws {
-        let full = IndexScanParams(sessionId: "s1", confirmed: true)
-        let fullKeys = try jsonKeys(of: JSONEncoder().encode(full))
-        #expect(Set(fullKeys) == ["sessionId", "confirmed"])
-
-        let minimal = IndexScanParams(sessionId: "s1")
-        let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
-        #expect(Set(minimalKeys) == ["sessionId"], "TS confirmed? 未设置时必须省略")
-    }
-
     @Test func indexScanResultRoundTripAndKeys() throws {
         let original = IndexScanResult(
             sessionId: "s1",

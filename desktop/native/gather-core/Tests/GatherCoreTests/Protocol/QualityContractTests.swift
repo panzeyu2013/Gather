@@ -7,20 +7,6 @@ import Testing
 @testable import GatherProtocol
 
 struct QualityContractTests {
-
-    // MARK: - Params
-
-    @Test func qualityParamsKeysAndOptionality() throws {
-        let fullAnalyze = QualityAnalyzeParams(sessionId: "s1", photoIds: ["p1", "p2"])
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(fullAnalyze))) == ["sessionId", "photoIds"])
-
-        let minimalAnalyze = QualityAnalyzeParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(minimalAnalyze))) == ["sessionId"], "TS photoIds? 未设置时必须省略")
-
-        let fullGet = QualityGetParams(sessionId: "s1", photoIds: ["p1"])
-        #expect(try JSONDecoder().decode(QualityGetParams.self, from: JSONEncoder().encode(fullGet)) == fullGet)
-    }
-
     // MARK: - QualityResult
 
     @Test func qualityResultStatusRawValuesMatchTS() {
@@ -90,9 +76,6 @@ struct QualityContractTests {
         let decoded = try JSONDecoder().decode(QualityResult.self, from: Data(json.utf8))
         #expect(decoded.status == .failed)
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

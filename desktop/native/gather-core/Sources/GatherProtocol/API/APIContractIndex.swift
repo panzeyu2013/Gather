@@ -16,6 +16,13 @@
 //   TemplateUpdateParams；
 // - 其余在 Inputs/ 重建：默认值、范围校验、确认门禁、合并分支一律显式失败（D-012）。
 //
+// WP1（2026-10-22）：Protocol 公开面 347 类型 / 1,752 声明 → 251 / 1,320。
+// 删除 89 个零引用 DTO（942 行）与 6 个 Router JSON 信封（ResponseID、ErrorDetail、
+// ResponseErrorBody、ResponseOk、ResponseErr、Response<T>；原 Core.swift:158-315），
+// 以及失去唯一消费者的 BindingData / MetadataMutationTarget。
+// 上面 13 个旧 *Params 是仅存的复用输入（均被 API 签名直接引用）；新增输入必须放
+// Inputs/，不要复活 Router 的 *Params 或 Response*。
+//
 // 破坏性入口（D-011）：一律 Confirmed<T>；public init + ConfirmationSource，
 // 是调用点标记而非密码学门禁；API 实现不得自行补确认。
 //

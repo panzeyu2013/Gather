@@ -7,30 +7,6 @@ import Testing
 @testable import GatherProtocol
 
 struct AssetsContractTests {
-
-    // MARK: - AssetCandidateListParams
-
-    @Test func assetCandidateListParamsOptionality() throws {
-        let withSession = AssetCandidateListParams(sessionId: "s1")
-        let withKeys = try jsonKeys(of: JSONEncoder().encode(withSession))
-        #expect(Set(withKeys) == ["sessionId"])
-
-        let withoutSession = AssetCandidateListParams()
-        let withoutKeys = try jsonKeys(of: JSONEncoder().encode(withoutSession))
-        #expect(withoutKeys.isEmpty, "nil 可选字段不应输出 key")
-
-        #expect(try JSONDecoder().decode(AssetCandidateListParams.self, from: JSONEncoder().encode(withSession)) == withSession)
-    }
-
-    // MARK: - AssetCandidateMutationParams
-
-    @Test func assetCandidateMutationParamsRoundTrip() throws {
-        let params = AssetCandidateMutationParams(candidateId: "c_1", confirmed: true)
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(AssetCandidateMutationParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["candidateId", "confirmed"])
-    }
-
     // MARK: - AssetLinkCandidateData
 
     @Test func assetLinkCandidateDataRoundTripAndCamelCaseKeys() throws {
@@ -92,18 +68,6 @@ struct AssetsContractTests {
         #expect(try JSONDecoder().decode(AssetVolumeData.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)) == ["volumeId", "roots", "onlineFiles", "offlineFiles"])
     }
-
-    // MARK: - AssetRelinkRootParams
-
-    @Test func assetRelinkRootParamsRoundTrip() throws {
-        let params = AssetRelinkRootParams(oldRoot: "/Volumes/A", newRoot: "/Volumes/B", confirmed: false)
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(AssetRelinkRootParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["oldRoot", "newRoot", "confirmed"])
-    }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

@@ -5,26 +5,6 @@
 
 import Foundation
 
-// TS: AssetCandidateListParams
-public struct AssetCandidateListParams: Codable, Equatable, Sendable {
-    public var sessionId: String? // TS: sessionId?
-
-    public init(sessionId: String? = nil) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: AssetCandidateMutationParams
-public struct AssetCandidateMutationParams: Codable, Equatable, Sendable {
-    public var candidateId: String
-    public var confirmed: Bool
-
-    public init(candidateId: String, confirmed: Bool) {
-        self.candidateId = candidateId
-        self.confirmed = confirmed
-    }
-}
-
 // TS: status（assets.ts 内联联合 'pending' | 'accepted' | 'rejected'）
 public enum AssetLinkCandidateStatus: String, Codable, CaseIterable, Equatable, Sendable {
     case pending
@@ -76,18 +56,5 @@ public struct AssetVolumeData: Codable, Equatable, Sendable {
         self.roots = roots
         self.onlineFiles = onlineFiles
         self.offlineFiles = offlineFiles
-    }
-}
-
-// TS: AssetRelinkRootParams
-public struct AssetRelinkRootParams: Codable, Equatable, Sendable {
-    public var oldRoot: String
-    public var newRoot: String
-    public var confirmed: Bool
-
-    public init(oldRoot: String, newRoot: String, confirmed: Bool) {
-        self.oldRoot = oldRoot
-        self.newRoot = newRoot
-        self.confirmed = confirmed
     }
 }

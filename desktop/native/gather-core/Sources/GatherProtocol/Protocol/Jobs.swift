@@ -140,42 +140,6 @@ public struct JobCreateParams: Codable, Equatable, Sendable {
     }
 }
 
-// TS: JobListParams
-public struct JobListParams: Codable, Equatable, Sendable {
-    public var status: AnalysisJobStatus? // TS: status?
-
-    public init(status: AnalysisJobStatus? = nil) {
-        self.status = status
-    }
-}
-
-// TS: JobCancelParams
-public struct JobCancelParams: Codable, Equatable, Sendable {
-    public var jobId: String
-
-    public init(jobId: String) {
-        self.jobId = jobId
-    }
-}
-
-// TS: JobRetryParams
-public struct JobRetryParams: Codable, Equatable, Sendable {
-    public var jobId: String
-
-    public init(jobId: String) {
-        self.jobId = jobId
-    }
-}
-
-// TS: JobClearCompletedParams
-public struct JobClearCompletedParams: Codable, Equatable, Sendable {
-    public var confirmed: Bool
-
-    public init(confirmed: Bool) {
-        self.confirmed = confirmed
-    }
-}
-
 // TS: JobProgressUpdate
 public struct JobProgressUpdate: Codable, Equatable, Sendable {
     public var current: Int? // TS: current?

@@ -76,17 +76,6 @@ struct TemplateContractTests {
         #expect(Set(try jsonKeys(of: data)) == ["name", "description", "config"])
     }
 
-    @Test func templateListParamsEncodesEmptyObject() throws {
-        let data = try JSONEncoder().encode(TemplateListParams())
-        #expect(try jsonKeys(of: data).isEmpty, "TemplateListParams 必须编码为 {}")
-        #expect(try JSONDecoder().decode(TemplateListParams.self, from: data) == TemplateListParams())
-    }
-
-    @Test func templateGetParamsRoundTrip() throws {
-        let params = TemplateGetParams(templateId: "tpl_1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(params))) == ["templateId"])
-    }
-
     @Test func templateUpdateParamsOptionality() throws {
         let full = TemplateUpdateParams(
             templateId: "tpl_1", name: "新名字", description: "d2", config: Self.sampleConfig
@@ -98,21 +87,6 @@ struct TemplateContractTests {
         let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
         #expect(Set(minimalKeys) == ["templateId"], "未设置的 TS 可选字段必须省略")
     }
-
-    @Test func templateDeleteAndApplyParamsRoundTrip() throws {
-        let delete = TemplateDeleteParams(templateId: "tpl_1", confirmed: true)
-        let deleteData = try JSONEncoder().encode(delete)
-        #expect(try JSONDecoder().decode(TemplateDeleteParams.self, from: deleteData) == delete)
-        #expect(Set(try jsonKeys(of: deleteData)) == ["templateId", "confirmed"])
-
-        let apply = TemplateApplyParams(templateId: "tpl_1", sessionId: "s1", confirmed: false)
-        let applyData = try JSONEncoder().encode(apply)
-        #expect(try JSONDecoder().decode(TemplateApplyParams.self, from: applyData) == apply)
-        #expect(Set(try jsonKeys(of: applyData)) == ["templateId", "sessionId", "confirmed"])
-    }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         Array(try jsonObject(of: data).keys)
     }

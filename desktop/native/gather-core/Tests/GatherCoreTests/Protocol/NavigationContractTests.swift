@@ -38,11 +38,6 @@ struct NavigationContractTests {
         #expect(Set(minimalKeys) == ["sessionId"], "未设置的 TS 可选字段必须省略")
     }
 
-    @Test func navigationListParamsRoundTrip() throws {
-        let params = NavigationListParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(params))) == ["sessionId"])
-    }
-
     @Test func navigationSplitParamsRoundTrip() throws {
         let params = NavigationSplitParams(sessionId: "s1", groupId: "g1", beforePhotoId: "p1")
         let data = try JSONEncoder().encode(params)
@@ -89,9 +84,6 @@ struct NavigationContractTests {
         let keys = try jsonKeys(of: JSONEncoder().encode(group))
         #expect(!keys.contains("leadPhotoId"))
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

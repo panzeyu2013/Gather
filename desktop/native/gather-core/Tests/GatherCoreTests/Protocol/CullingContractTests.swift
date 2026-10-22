@@ -239,33 +239,11 @@ struct CullingContractTests {
 
     // MARK: - Culling params
 
-    @Test func cullingListPageParamsKeysAndOptionality() throws {
-        let full = CullingListPageParams(
-            sessionId: "s1", scope: .filtered,
-            filters: CullingFilters(ratings: [4]), groupId: "g1",
-            afterRowId: 99, limit: 50
-        )
-        let fullKeys = try jsonKeys(of: JSONEncoder().encode(full))
-        #expect(Set(fullKeys) == ["sessionId", "scope", "filters", "groupId", "afterRowId", "limit"])
-
-        let minimal = CullingListPageParams(sessionId: "s1", scope: .all)
-        let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
-        #expect(Set(minimalKeys) == ["sessionId", "scope"])
-    }
-
-    @Test func cullingUpdatePatchAndParamsRoundTrip() throws {
+    @Test func cullingUpdatePatchRoundTrip() throws {
         let patch = CullingUpdatePatch(rating: 4, pickState: .picked, colorLabel: .yellow)
         let patchData = try JSONEncoder().encode(patch)
         #expect(try JSONDecoder().decode(CullingUpdatePatch.self, from: patchData) == patch)
         #expect(Set(try jsonKeys(of: patchData)) == ["rating", "pickState", "colorLabel"])
-
-        let params = CullingUpdateParams(
-            sessionId: "s1", photoId: "p1", expectedRevision: 3,
-            patch: CullingUpdatePatch(rating: 5)
-        )
-        let paramsData = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(CullingUpdateParams.self, from: paramsData) == params)
-        #expect(Set(try jsonKeys(of: paramsData)) == ["sessionId", "photoId", "expectedRevision", "patch"])
     }
 
     @Test func cullingUpdatePatchEmptyEncodesEmptyObject() throws {
@@ -286,34 +264,6 @@ struct CullingContractTests {
         let data = try JSONEncoder().encode(original)
         #expect(try JSONDecoder().decode(CullingUpdateResult.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)) == ["states", "xmpPath", "syncStatus", "historyOperationId"])
-    }
-
-    @Test func cullingBatchUpdateAndDecideGroupParamsRoundTrip() throws {
-        let batch = CullingBatchUpdateParams(
-            sessionId: "s1", photoIds: ["p1", "p2"], patch: CullingUpdatePatch(pickState: .rejected)
-        )
-        let batchData = try JSONEncoder().encode(batch)
-        #expect(try JSONDecoder().decode(CullingBatchUpdateParams.self, from: batchData) == batch)
-        #expect(Set(try jsonKeys(of: batchData)) == ["sessionId", "photoIds", "patch"])
-
-        let decideGroup = CullingDecideGroupParams(sessionId: "s1", groupId: "g1", keepPhotoIds: ["p1"])
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(decideGroup))) == ["sessionId", "groupId", "keepPhotoIds"])
-    }
-
-    @Test func cullingSyncControlParamsRoundTrip() throws {
-        let syncStatus = CullingSyncStatusParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(syncStatus))) == ["sessionId"])
-
-        let flush = CullingFlushParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(flush))) == ["sessionId"])
-
-        let retry = CullingRetrySyncParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(retry))) == ["sessionId"])
-
-        let finalize = CullingFinalizeSyncParams(sessionId: "s1", confirmed: true)
-        let finalizeData = try JSONEncoder().encode(finalize)
-        #expect(try JSONDecoder().decode(CullingFinalizeSyncParams.self, from: finalizeData) == finalize)
-        #expect(Set(try jsonKeys(of: finalizeData)) == ["sessionId", "confirmed"])
     }
 
     // MARK: - Culling history
@@ -350,26 +300,6 @@ struct CullingContractTests {
         #expect(Set(try jsonKeys(of: data)) == ["id", "sessionId", "entries", "undone", "createdAt"])
     }
 
-    @Test func cullingHistoryParamsAndApplyParamsRoundTrip() throws {
-        let history = CullingHistoryParams(sessionId: "s1", limit: 20)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(history))) == ["sessionId", "limit"])
-
-        let apply = CullingHistoryApplyParams(
-            sessionId: "s1",
-            entries: [
-                CullingHistoryApplyEntry(
-                    photoId: "p1", expectedRevision: 2,
-                    patch: CullingUpdatePatch(pickState: .picked)
-                ),
-            ],
-            historyOperationId: 1,
-            direction: .redo
-        )
-        let applyData = try JSONEncoder().encode(apply)
-        #expect(try JSONDecoder().decode(CullingHistoryApplyParams.self, from: applyData) == apply)
-        #expect(Set(try jsonKeys(of: applyData)) == ["sessionId", "entries", "historyOperationId", "direction"])
-    }
-
     // MARK: - MetadataSyncItem / MetadataSyncSummary
 
     @Test func metadataSyncItemRoundTrip() throws {
@@ -402,40 +332,6 @@ struct CullingContractTests {
 
     // MARK: - 旧版兼容契约
 
-    @Test func legacyCullingParamsRoundTrip() throws {
-        let decide = CullingDecideParams(sessionId: "s1", photoId: "p1", decision: .keep)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(decide))) == ["sessionId", "photoId", "decision"])
-
-        let batchDecide = CullingBatchDecideParams(sessionId: "s1", photoIds: ["p1"], decision: .reject)
-        #expect(try JSONDecoder().decode(CullingBatchDecideParams.self, from: JSONEncoder().encode(batchDecide)) == batchDecide)
-
-        let writeback = CullingWritebackParams(sessionId: "s1", confirmed: true, target: .colorLabel)
-        let writebackData = try JSONEncoder().encode(writeback)
-        #expect(try JSONDecoder().decode(CullingWritebackParams.self, from: writebackData) == writeback)
-        #expect(Set(try jsonKeys(of: writebackData)) == ["sessionId", "confirmed", "target"])
-
-        let retry = CullingRetryWritebackParams(sessionId: "s1", confirmed: true)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(retry))) == ["sessionId", "confirmed"])
-
-        let cleanup = CullingCleanupParams(sessionId: "s1", confirmed: false)
-        #expect(try JSONDecoder().decode(CullingCleanupParams.self, from: JSONEncoder().encode(cleanup)) == cleanup)
-
-        let confirm = CullingConfirmSyncParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(confirm))) == ["sessionId"])
-
-        let groups = CullingGroupsParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(groups))) == ["sessionId"])
-
-        let summaryParams = CullingSummaryParams(sessionId: "s1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(summaryParams))) == ["sessionId"])
-
-        let reset = CullingResetParams(sessionId: "s1", groupId: "g1", confirmed: true)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(reset))) == ["sessionId", "groupId", "confirmed"])
-
-        let resetMinimal = CullingResetParams(sessionId: "s1", confirmed: true)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(resetMinimal))) == ["sessionId", "confirmed"])
-    }
-
     @Test func cullingGroupRoundTripAndKeys() throws {
         let original = CullingGroup(
             groupId: "g1", groupIndex: 0,
@@ -458,9 +354,6 @@ struct CullingContractTests {
         #expect(try JSONDecoder().decode(CullingSummary.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)) == ["totalGroups", "totalPhotos", "kept", "rejected", "pending", "rated", "labeled"])
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         Array(try jsonObject(of: data).keys)
     }

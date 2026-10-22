@@ -11,56 +11,6 @@ public enum SimilarityGroupingMode: String, Codable, CaseIterable, Equatable, Se
     case global
 }
 
-// TS: SimAnalyzeParams
-public struct SimAnalyzeParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var threshold: Double? // TS: threshold?
-    public var minGroupSize: Int? // TS: minGroupSize?
-    public var groupingMode: SimilarityGroupingMode? // TS: groupingMode?
-
-    public init(sessionId: String, threshold: Double? = nil, minGroupSize: Int? = nil, groupingMode: SimilarityGroupingMode? = nil) {
-        self.sessionId = sessionId
-        self.threshold = threshold
-        self.minGroupSize = minGroupSize
-        self.groupingMode = groupingMode
-    }
-}
-
-// TS: SimCancelAnalysisParams
-public struct SimCancelAnalysisParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: SimResultParams
-public struct SimResultParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var threshold: Double? // TS: threshold?
-
-    public init(sessionId: String, threshold: Double? = nil) {
-        self.sessionId = sessionId
-        self.threshold = threshold
-    }
-}
-
-// TS: SimReclusterParams
-public struct SimReclusterParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var threshold: Double? // TS: threshold?
-    public var minGroupSize: Int? // TS: minGroupSize?
-    public var groupingMode: SimilarityGroupingMode? // TS: groupingMode?
-
-    public init(sessionId: String, threshold: Double? = nil, minGroupSize: Int? = nil, groupingMode: SimilarityGroupingMode? = nil) {
-        self.sessionId = sessionId
-        self.threshold = threshold
-        self.minGroupSize = minGroupSize
-        self.groupingMode = groupingMode
-    }
-}
-
 // TS: SimilarityKeywordAssignment
 public struct SimilarityKeywordAssignment: Codable, Equatable, Sendable {
     public var groupId: Int
@@ -69,74 +19,6 @@ public struct SimilarityKeywordAssignment: Codable, Equatable, Sendable {
     public init(groupId: Int, keywords: [String]) {
         self.groupId = groupId
         self.keywords = keywords
-    }
-}
-
-// TS: SimPreviewWritebackParams
-public struct SimPreviewWritebackParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var assignments: [SimilarityKeywordAssignment]
-    public var threshold: Double? // TS: threshold?
-
-    public init(sessionId: String, assignments: [SimilarityKeywordAssignment], threshold: Double? = nil) {
-        self.sessionId = sessionId
-        self.assignments = assignments
-        self.threshold = threshold
-    }
-}
-
-// TS: SimWritebackParams
-public struct SimWritebackParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var itemIds: [Int]
-    public var confirmed: Bool
-    public var threshold: Double? // TS: threshold?
-
-    public init(sessionId: String, itemIds: [Int], confirmed: Bool, threshold: Double? = nil) {
-        self.sessionId = sessionId
-        self.itemIds = itemIds
-        self.confirmed = confirmed
-        self.threshold = threshold
-    }
-}
-
-// TS: SimWritebackItemsParams
-public struct SimWritebackItemsParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: SimRetryFailedWritebackParams
-public struct SimRetryFailedWritebackParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var confirmed: Bool
-
-    public init(sessionId: String, confirmed: Bool) {
-        self.sessionId = sessionId
-        self.confirmed = confirmed
-    }
-}
-
-// TS: SimConfirmSyncParams
-public struct SimConfirmSyncParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
-// TS: SimCleanupParams
-public struct SimCleanupParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var confirmed: Bool
-
-    public init(sessionId: String, confirmed: Bool) {
-        self.sessionId = sessionId
-        self.confirmed = confirmed
     }
 }
 

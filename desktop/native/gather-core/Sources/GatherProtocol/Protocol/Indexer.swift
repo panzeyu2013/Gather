@@ -5,17 +5,6 @@
 
 import Foundation
 
-// TS: IndexScanParams
-public struct IndexScanParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var confirmed: Bool? // TS: confirmed?
-
-    public init(sessionId: String, confirmed: Bool? = nil) {
-        self.sessionId = sessionId
-        self.confirmed = confirmed
-    }
-}
-
 // TS: IndexScanResult
 public struct IndexScanResult: Codable, Equatable, Sendable {
     public var sessionId: String

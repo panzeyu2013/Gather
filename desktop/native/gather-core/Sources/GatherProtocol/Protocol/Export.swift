@@ -5,48 +5,6 @@
 
 import Foundation
 
-// TS: ExportPreviewParams
-public struct ExportPreviewParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var options: ExportOptions
-
-    public init(sessionId: String, options: ExportOptions) {
-        self.sessionId = sessionId
-        self.options = options
-    }
-}
-
-// TS: ExportExecuteParams
-public struct ExportExecuteParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var options: ExportOptions
-    public var confirmed: Bool
-
-    public init(sessionId: String, options: ExportOptions, confirmed: Bool) {
-        self.sessionId = sessionId
-        self.options = options
-        self.confirmed = confirmed
-    }
-}
-
-// TS: ExportCancelParams
-public struct ExportCancelParams: Codable, Equatable, Sendable {
-    public init() {}
-}
-
-// TS: ExportReportParams
-public struct ExportReportParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-    public var reportType: String
-    public var format: String? // TS: format?
-
-    public init(sessionId: String, reportType: String, format: String? = nil) {
-        self.sessionId = sessionId
-        self.reportType = reportType
-        self.format = format
-    }
-}
-
 // TS: scope（export.ts 内联联合 'selected' | 'filtered' | 'session'）
 public enum ExportScope: String, Codable, CaseIterable, Equatable, Sendable {
     case selected

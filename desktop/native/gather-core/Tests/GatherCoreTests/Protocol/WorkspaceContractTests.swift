@@ -122,18 +122,6 @@ struct WorkspaceContractTests {
         #expect(decoded.recommendedNext == nil)
         #expect(decoded.stage == .imported)
     }
-
-    // MARK: - WorkspaceStatusParams
-
-    @Test func workspaceStatusParamsRoundTrip() throws {
-        let params = WorkspaceStatusParams(sessionId: "s1")
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(WorkspaceStatusParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId"])
-    }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         Array(try jsonObject(of: data).keys)
     }

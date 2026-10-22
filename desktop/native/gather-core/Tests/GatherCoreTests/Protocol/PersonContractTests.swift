@@ -10,22 +10,6 @@ struct PersonContractTests {
 
     // MARK: - Params
 
-    @Test func personListParamsEncodesEmptyObject() throws {
-        let data = try JSONEncoder().encode(PersonListParams())
-        #expect(try jsonKeys(of: data).isEmpty, "PersonListParams 必须编码为 {}")
-        #expect(try JSONDecoder().decode(PersonListParams.self, from: data) == PersonListParams())
-    }
-
-    @Test func personGetAndDeleteParamsRoundTrip() throws {
-        let get = PersonGetParams(personId: "person_1")
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(get))) == ["personId"])
-
-        let delete = PersonDeleteParams(personId: "person_1", confirmed: true)
-        let deleteData = try JSONEncoder().encode(delete)
-        #expect(try JSONDecoder().decode(PersonDeleteParams.self, from: deleteData) == delete)
-        #expect(Set(try jsonKeys(of: deleteData)) == ["personId", "confirmed"])
-    }
-
     @Test func personCreateParamsOptionality() throws {
         let full = PersonCreateParams(name: "爸爸", keywords: ["爸爸", "家庭"])
         #expect(Set(try jsonKeys(of: JSONEncoder().encode(full))) == ["name", "keywords"])
@@ -45,15 +29,6 @@ struct PersonContractTests {
 
         let minimal = PersonUpdateParams(personId: "person_1")
         #expect(Set(try jsonKeys(of: JSONEncoder().encode(minimal))) == ["personId"])
-    }
-
-    @Test func personMergeAndRemovePhotoParamsRoundTrip() throws {
-        let merge = PersonMergeParams(sourceId: "p1", targetId: "p2", confirmed: true)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(merge))) == ["sourceId", "targetId", "confirmed"])
-
-        let remove = PersonRemovePhotoParams(personId: "p1", photoId: "ph1", confirmed: false)
-        let removeData = try JSONEncoder().encode(remove)
-        #expect(try JSONDecoder().decode(PersonRemovePhotoParams.self, from: removeData) == remove)
     }
 
     @Test func personSearchPhotosParamsOptionality() throws {
@@ -140,9 +115,6 @@ struct PersonContractTests {
         #expect(try JSONDecoder().decode(PersonPhotoItem.self, from: data) == item)
         #expect(Set(try jsonKeys(of: data)) == ["photoId", "sessionId", "sessionName", "filename", "filepath", "faceBbox", "confidence", "thumbnailBase64"])
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

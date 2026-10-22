@@ -64,15 +64,6 @@ public struct NavigationGroup: Codable, Equatable, Sendable {
     }
 }
 
-// TS: NavigationListParams
-public struct NavigationListParams: Codable, Equatable, Sendable {
-    public var sessionId: String
-
-    public init(sessionId: String) {
-        self.sessionId = sessionId
-    }
-}
-
 // TS: NavigationSplitParams
 public struct NavigationSplitParams: Codable, Equatable, Sendable {
     public var sessionId: String

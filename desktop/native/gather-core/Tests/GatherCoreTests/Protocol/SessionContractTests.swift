@@ -126,118 +126,6 @@ struct SessionContractTests {
         #expect(!keys.contains("variantCount"))
         #expect(!keys.contains("variants"))
     }
-
-    // MARK: - Session params
-
-    @Test func sessionCreateParamsKeysAndOptionality() throws {
-        let full = SessionCreateParams(
-            name: "n", filepaths: ["/u/a.jpg"], source: "local",
-            sourcePath: "/u", truncatedImport: true
-        )
-        let fullKeys = try jsonKeys(of: JSONEncoder().encode(full))
-        #expect(
-            Set(fullKeys) == Set(["name", "filepaths", "source", "sourcePath", "truncatedImport"])
-        )
-
-        let minimal = SessionCreateParams(name: "n")
-        let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
-        #expect(Set(minimalKeys) == ["name"], "未设置的 TS 可选字段必须省略")
-    }
-
-    @Test func sessionCreateFromDirectoryParams() throws {
-        let params = SessionCreateFromDirectoryParams(sourcePath: "/Users/me/Documents")
-        let keys = try jsonKeys(of: JSONEncoder().encode(params))
-        #expect(Set(keys) == ["sourcePath"])
-    }
-
-    @Test func sessionParamsRoundTrip() throws {
-        let params = SessionAddPhotosParams(
-            sessionId: "s1", filepaths: ["/u/1.jpg", "/u/2.jpg"], source: "capture-one"
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(SessionAddPhotosParams.self, from: data) == params)
-    }
-
-    // MARK: - ResponseOk / ResponseErr
-
-    @Test func responseOkRoundTripAndForcesTrue() throws {
-        let session = SessionData(
-            id: "s1", name: "n", status: .review, photoCount: 1,
-            analysisStatus: .done, writebackStatus: .done,
-            importSource: "manual", sourcePath: "/u", failedWritebackCount: 0,
-            truncatedImport: false, createdAt: "t", updatedAt: "t"
-        )
-        let original = ResponseOk(id: .string("r1"), data: session)
-
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(ResponseOk<SessionData>.self, from: data)
-        #expect(decoded == original)
-        #expect(decoded.ok)
-
-        let keys = try jsonKeys(of: data)
-        #expect(keys.contains("ok"))
-        #expect(keys.contains("data"))
-        #expect(keys.contains("id"))
-    }
-
-    @Test func responseOkRejectsOkFalse() {
-        let json = #"{"id":1,"ok":false,"data":{"x":1}}"#
-        #expect(throws: DecodingError.self) {
-            _ = try JSONDecoder().decode(ResponseOk<[String: Int]>.self, from: Data(json.utf8))
-        }
-    }
-
-    @Test func responseErrStringCode() throws {
-        let original = ResponseErr(error: .code("SESSION_NOT_FOUND"))
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(ResponseErr.self, from: data)
-        #expect(decoded == original)
-        #expect(!decoded.ok)
-        #expect(decoded.error == .code("SESSION_NOT_FOUND"))
-
-        let keys = try jsonKeys(of: data)
-        #expect(Set(keys) == ["ok", "error"])
-    }
-
-    @Test func responseErrDetailWithParams() throws {
-        let original = ResponseErr(
-            id: .number(7),
-            error: .detail(ErrorDetail(
-                type: "ValidationError",
-                message: "SESSION_NOT_FOUND",
-                params: ["revision": .number(3), "extra": .string("x")]
-            ))
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(ResponseErr.self, from: data)
-        #expect(decoded == original)
-    }
-
-    @Test func responseUnionDecodesBothVariants() throws {
-        let okJSON = #"{"ok":true,"data":{"ok":false}}"#
-        let okResponse = try JSONDecoder().decode(Response<[String: Bool]>.self, from: Data(okJSON.utf8))
-        if case .ok = okResponse {
-            // ok
-        } else {
-            Issue.record("ok:true 应解码为 .ok")
-        }
-
-        let errJSON = #"{"ok":false,"error":"SESSION_NOT_FOUND"}"#
-        let errResponse = try JSONDecoder().decode(Response<[String: Bool]>.self, from: Data(errJSON.utf8))
-        if case .err(let err) = errResponse {
-            #expect(err.error == .code("SESSION_NOT_FOUND"))
-        } else {
-            Issue.record("ok:false 应解码为 .err")
-        }
-    }
-
-    @Test func responseIDNumberAndString() throws {
-        let number = try JSONDecoder().decode(ResponseID.self, from: Data("42".utf8))
-        #expect(number == .number(42))
-        let string = try JSONDecoder().decode(ResponseID.self, from: Data(#""abc""#.utf8))
-        #expect(string == .string("abc"))
-    }
-
     // MARK: - 状态枚举
 
     @Test func sessionStatusRawValuesMatchTS() {
@@ -294,9 +182,6 @@ struct SessionContractTests {
             #expect(decoded == code)
         }
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON

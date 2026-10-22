@@ -5,20 +5,6 @@
 
 import Foundation
 
-// TS: PersonListParams
-public struct PersonListParams: Codable, Equatable, Sendable {
-    public init() {}
-}
-
-// TS: PersonGetParams
-public struct PersonGetParams: Codable, Equatable, Sendable {
-    public var personId: String
-
-    public init(personId: String) {
-        self.personId = personId
-    }
-}
-
 // TS: PersonCreateParams
 public struct PersonCreateParams: Codable, Equatable, Sendable {
     public var name: String
@@ -44,43 +30,6 @@ public struct PersonUpdateParams: Codable, Equatable, Sendable {
         self.keywords = keywords
         self.notes = notes
         self.matchThreshold = matchThreshold
-    }
-}
-
-// TS: PersonDeleteParams
-public struct PersonDeleteParams: Codable, Equatable, Sendable {
-    public var personId: String
-    public var confirmed: Bool
-
-    public init(personId: String, confirmed: Bool) {
-        self.personId = personId
-        self.confirmed = confirmed
-    }
-}
-
-// TS: PersonMergeParams
-public struct PersonMergeParams: Codable, Equatable, Sendable {
-    public var sourceId: String
-    public var targetId: String
-    public var confirmed: Bool
-
-    public init(sourceId: String, targetId: String, confirmed: Bool) {
-        self.sourceId = sourceId
-        self.targetId = targetId
-        self.confirmed = confirmed
-    }
-}
-
-// TS: PersonRemovePhotoParams
-public struct PersonRemovePhotoParams: Codable, Equatable, Sendable {
-    public var personId: String
-    public var photoId: String
-    public var confirmed: Bool
-
-    public init(personId: String, photoId: String, confirmed: Bool) {
-        self.personId = personId
-        self.photoId = photoId
-        self.confirmed = confirmed
     }
 }
 

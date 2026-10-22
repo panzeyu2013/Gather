@@ -18,20 +18,6 @@ public struct TemplateCreateParams: Codable, Equatable, Sendable {
     }
 }
 
-// TS: TemplateListParams
-public struct TemplateListParams: Codable, Equatable, Sendable {
-    public init() {}
-}
-
-// TS: TemplateGetParams
-public struct TemplateGetParams: Codable, Equatable, Sendable {
-    public var templateId: String
-
-    public init(templateId: String) {
-        self.templateId = templateId
-    }
-}
-
 // TS: TemplateUpdateParams
 public struct TemplateUpdateParams: Codable, Equatable, Sendable {
     public var templateId: String
@@ -44,30 +30,6 @@ public struct TemplateUpdateParams: Codable, Equatable, Sendable {
         self.name = name
         self.description = description
         self.config = config
-    }
-}
-
-// TS: TemplateDeleteParams
-public struct TemplateDeleteParams: Codable, Equatable, Sendable {
-    public var templateId: String
-    public var confirmed: Bool
-
-    public init(templateId: String, confirmed: Bool) {
-        self.templateId = templateId
-        self.confirmed = confirmed
-    }
-}
-
-// TS: TemplateApplyParams
-public struct TemplateApplyParams: Codable, Equatable, Sendable {
-    public var templateId: String
-    public var sessionId: String
-    public var confirmed: Bool
-
-    public init(templateId: String, sessionId: String, confirmed: Bool) {
-        self.templateId = templateId
-        self.sessionId = sessionId
-        self.confirmed = confirmed
     }
 }
 

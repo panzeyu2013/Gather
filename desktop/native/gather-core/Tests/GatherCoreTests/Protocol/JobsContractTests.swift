@@ -38,9 +38,6 @@ struct JobsContractTests {
     }
 
     @Test func analysisJobTypeDecodesFromTSStrings() throws {
-        let json = #"{"type":"metadata.scan"}"#
-        let decoded = try JSONDecoder().decode(JobListParams.self, from: Data(json.utf8))
-        #expect(decoded.status == nil)
         #expect(try JSONDecoder().decode(AnalysisJobType.self, from: Data(#""checksum.backfill""#.utf8)) == .checksumBackfill)
     }
 
@@ -110,34 +107,6 @@ struct JobsContractTests {
         let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
         #expect(Set(minimalKeys) == ["type", "scopeType", "scopeId", "dedupeKey"])
     }
-
-    // MARK: - Job params
-
-    @Test func jobListParamsOptionality() throws {
-        let withStatus = JobListParams(status: .queued)
-        #expect(Set(try jsonKeys(of: JSONEncoder().encode(withStatus))) == ["status"])
-
-        let empty = JobListParams()
-        #expect(try jsonKeys(of: JSONEncoder().encode(empty)).isEmpty)
-    }
-
-    @Test func jobCancelAndRetryParamsRoundTrip() throws {
-        let cancel = JobCancelParams(jobId: "job_1")
-        let cancelData = try JSONEncoder().encode(cancel)
-        #expect(try JSONDecoder().decode(JobCancelParams.self, from: cancelData) == cancel)
-        #expect(Set(try jsonKeys(of: cancelData)) == ["jobId"])
-
-        let retry = JobRetryParams(jobId: "job_1")
-        #expect(try JSONDecoder().decode(JobRetryParams.self, from: JSONEncoder().encode(retry)) == retry)
-    }
-
-    @Test func jobClearCompletedParamsRoundTrip() throws {
-        let params = JobClearCompletedParams(confirmed: true)
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(JobClearCompletedParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["confirmed"])
-    }
-
     // MARK: - JobProgressUpdate
 
     @Test func jobProgressUpdateRoundTripAndKeys() throws {
@@ -155,9 +124,6 @@ struct JobsContractTests {
         let keys = try jsonKeys(of: JSONEncoder().encode(empty))
         #expect(keys.isEmpty, "全可选字段未设置时编码为 {}")
     }
-
-    // MARK: - helpers
-
     private func jsonKeys(of data: Data) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ContractTestError.invalidJSON
