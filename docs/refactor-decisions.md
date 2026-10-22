@@ -1485,3 +1485,12 @@
 - 已完成：WP1 Protocol 瘦身（347→251、零引用 0、信封 0）；WP2a/b/c Delivery（GatherDelivery、Coordinator 1964→319、状态写入 8、适配器 5、单事务 finish、旧端口删除）；WP3a/b1/b2/b3 Application（重命名、8 组 Repo Ports、DBConnection 0、prepare 0）；WP4a/b/c（RootShell 迁 UI、sync 0、provider 迁 Host、Composition 107）；WP5a/b（Culling 2496→138、Face 2528→171 门面）；WP6a/b/c（迁移框架、V2 no-op + 备份、universal/release 脚本）；WP7 测试/构建。
 - 指标：core 1095/164、app 616/68；schema 43/373/69/62/user_version=2；ratchet 53/231/0/0/0；protocol 254/1338/0/0。
 - 剩余：WP7b trace id；WP4d 生命周期语义统一/Host Commands；WP6c 真实签名/公证/CI release 验证；文档历史快照。Goal 保持 active（未完成全量 objective）。
+
+## D-172 P1/P2 收口（2026-10-22）
+
+- 架构 P1：5 服务 18 个具体 Repo → any Ports；Host LiveMetadataAPI 9 处直写 → DeliveryStateWriter 5 个语义入口；状态写入口径改为“writer 交付级 8 个”；4 个 >1000 行服务按角色拆分。
+- 数据 P1：markWritten/markFailed/markConflict lease owner CAS；confirm 门禁与 confirmed_at 同事务；confirmSync 委托 Coordinator；370 列 V1 识别 + 补三列迁移；finalize 备份删除后置。
+- 测试 P1：Schema guard 失败用例、WP3b 5 服务 fake-repo 8 例、trace cancelled/lease-lost/finalize/backup 脱敏 14 例。
+- P2：死代码/重复 helper/本地化出口/测试支持/命名/文件头/锁序/backup_path 校验/临时文件/replay claim/插件 universal/警告清理/文档口径。
+- 度量：core 1144/171、app 617/68；ratchet 54/230/0/0/0（unchecked +1 为进程内 replay claim；try? 231→230）；protocol 254/1339（+1 为 CullingUpdatePatch.fields）。
+- 残余（外部）：真实 Developer ID/公证、CI release、x86 Rosetta、GUI smoke；markWriting public deprecated、replay claim 仅进程内、历史 backup_path fail-closed、MirrorWriter lease trace 无确定性测试。未 push。

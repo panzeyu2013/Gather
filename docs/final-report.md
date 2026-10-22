@@ -8,7 +8,7 @@
 
 目标是把两包单体原生应用重构为**类型化、可验证、单实现**的 7-target SwiftPM 工程：删除字符串命令与 Router、以 SchemaV1 取代迁移链、拆分模块、收敛 UI 状态与本地化、算法单趟化，最后冻结指标与门禁。
 
-结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**，随后执行 **架构整改 WP0–WP7b**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。架构整改后：core **1,114/165**、app **617/68**、schema **user_version=2**、ratchet **53/231/0/0/0**、Application SQL **0**、Delivery Coordinator **366 行**、Protocol **254 类型**；最终独立验收见 final-acceptance 系列报告；当前状态与提交见 [architecture-remediation-status.md](reviews/architecture-remediation-status.md)。人工 GUI smoke 与真实签名/公证仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
+结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**，随后执行 **架构整改 WP0–WP7b**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。架构整改后：core **1,144/171**、app **617/68**、schema **user_version=2**、ratchet **54/230/0/0/0**、Application SQL **0**、Delivery Coordinator **366 行**、Protocol **254 类型/1,339 声明**；最终独立验收见 final-acceptance 系列报告；当前状态与提交见 [architecture-remediation-status.md](reviews/architecture-remediation-status.md)。人工 GUI smoke 与真实签名/公证仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
 
 ### 1.1 评审修复轮（2026-10-22）
 
@@ -191,7 +191,7 @@ BUILD_SH_EXIT:1
 | L10n 注释 | 177→179、1,407→1,313（表最终 1,322） | 通过 |
 | 人工 GUI / 本机 bundle | 未做；已记录命令、失败点与 CI 入口 | **待人工/CI**（非代码阻塞） |
 
-**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**可发布候选**：core 1,100/165、app 617/68（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 53/231/0。GUI smoke 与 build.sh 完整 bundle 属于环境外的人工/CI 验收，按“未测不写通过”保留；建议 owner 在 CI bundle 与 GUI smoke 通过后执行发布 tag。
+**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**可发布候选**：core 1,144/171、app 617/68（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 54/230/0。GUI smoke 与 build.sh 完整 bundle 属于环境外的人工/CI 验收，按“未测不写通过”保留；建议 owner 在 CI bundle 与 GUI smoke 通过后执行发布 tag。
 
 ## 9. 后续接手（resume）
 
