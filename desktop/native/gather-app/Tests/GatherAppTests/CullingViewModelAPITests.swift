@@ -545,6 +545,8 @@ struct CullingViewModelAPITests {
             sessionId: "s1", culling: culling, navigation: navigation,
             metadata: B6bMetadataAPIStub(), jobs: jobs, quality: quality
         )
+        // WP4d：默认不可见（PageVisibility），页面挂载才启动画质轮询。
+        vm.setVisible(true)
 
         let task = Task { await vm.analyzeQuality() }
         await task.value
@@ -671,6 +673,9 @@ struct CullingViewModelAPITests {
             sessionId: "s1", culling: culling, navigation: navigation,
             metadata: metadata, jobs: jobs, quality: quality
         )
+        // WP4d：默认不可见（统一 PageVisibility 契约），页面挂载后才变为可见。
+        #expect(!vm.isActive)
+        vm.setVisible(true)
         #expect(vm.isActive)
 
         let analyze = Task { await vm.analyzeQuality() }

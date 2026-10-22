@@ -11,7 +11,7 @@ import GatherProtocol
 
 @MainActor
 @Observable
-public final class CullingViewModel {
+public final class CullingViewModel: PageVisibility {
     /// 组合筛选状态：对齐 TS CullingFilters + FilterControls（Culling.tsx:1720-1817）——
     /// 未审/状态/星级/颜色/质量/冲突 六个维度可任意叠加，全部关闭即"全部"。
     public struct FilterState: Equatable {
@@ -133,7 +133,9 @@ public final class CullingViewModel {
     ///
     /// Cut 4 / 4a-2b：唯一写入口是 `setVisible(_:)`（View 不再直接写），
     /// 字段本身保留（审计 §1.4 / 4a-2 验收）。
-    public private(set) var isActive = true
+    /// WP4d：默认不可见（false）——首次挂载的 setPageVisible(true) 才恢复
+    /// 轮询/补刷；重复 true 由 PageVisibility 契约幂等。
+    public private(set) var isActive = false
     /// 关闭终态：shutdown() 之后 setVisible(true) 明确 no-op，轮询不得复活。
     /// 4a-2c：对外只读，供 SessionWorkspace.close 的扇出测试断言。
     public private(set) var isShutdown = false
@@ -267,13 +269,13 @@ public final class CullingViewModel {
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2b）
 
-    /// 可见性唯一入口：View 的 onAppear/onDisappear 只调这里。
+    /// 可见性唯一入口（PageVisibility）：View 的 onAppear/onDisappear 只调这里。
+    /// - 幂等：与当前状态相同直接返回（重复 onAppear 不重复补刷/重启轮询）；
     /// - visible=false：置 isActive=false，画质 500ms 轮询在下一拍退出/暂停；
     /// - visible=true：置 isActive=true，补刷隐藏期登记的领域变更并恢复轮询；
     /// - shutdown 之后明确 no-op（关闭是终态）。
     public func setVisible(_ visible: Bool) {
-        guard !isShutdown else { return }
-        isActive = visible
+        guard !isShutdown, transitionVisibility(&isActive, to: visible) else { return }
         guard visible else {
             qualityPollTask?.cancel()
             qualityPollTask = nil

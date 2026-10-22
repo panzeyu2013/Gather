@@ -115,7 +115,7 @@ public enum VisualPreset: String, CaseIterable {
 
 @MainActor
 @Observable
-public final class DuplicatesViewModel {
+public final class DuplicatesViewModel: PageVisibility {
     // Cut 1 / B5b：dup.scan/groups/resolve/resolve_member 走 DuplicateAPI；
     // jobs.cancel / jobs.list 走 JobAPI（扫描进度仍订阅 JobService 事件）。
     private let duplicate: any DuplicateAPI
@@ -141,7 +141,8 @@ public final class DuplicatesViewModel {
 
     /// 可见性门控（Cut 4 / 4a-2c）：重复页没有后台轮询，钩子只落状态，
     /// 与其它 6 个 VM 同形，供 SessionWorkspace.setVisible 统一扇出。
-    private var isVisible = true
+    /// WP4d：默认不可见（PageVisibility 契约），只读给生命周期矩阵断言。
+    private(set) var isVisible = false
     /// 关闭终态（SessionWorkspace.close 扇出）。
     public private(set) var isShutdown = false
 
@@ -162,9 +163,10 @@ public final class DuplicatesViewModel {
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2c）
 
+    /// 可见性唯一入口（PageVisibility）：默认不可见，重复调用幂等；
+    /// shutdown 之后 no-op（关闭是终态）。
     public func setVisible(_ visible: Bool) {
-        guard !isShutdown else { return }
-        isVisible = visible
+        guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
     }
 
     /// 关闭：重复页无长任务；只落终态，避免关闭后被重新置可见。

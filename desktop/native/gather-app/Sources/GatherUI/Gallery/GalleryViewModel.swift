@@ -150,7 +150,7 @@ public struct GalleryIndexHeaderCopy: Equatable, Sendable {
 /// 工作区图库视图模型：photo.list_page 键集分页 + 客户端搜索/人脸过滤。
 @MainActor
 @Observable
-public final class GalleryViewModel {
+public final class GalleryViewModel: PageVisibility {
     /// TS: PAGE_SIZE = 200（非搜索态）；搜索/筛选态链式拉满用 1000。
     public static let pageSize = 200
     public static let chainFetchLimit = 1_000
@@ -192,8 +192,10 @@ public final class GalleryViewModel {
     var activateTask: Task<Void, Never>?
     /// 首载是否已激活（只发生一次：再次 onAppear / 隐藏再显示都不重复取页）。
     var hasActivated = false
-    /// 可见性真相（默认可见，兼容直接调用 startIndexStatusPolling 的旧路径）。
-    var isVisible = true
+    /// 可见性真相（WP4d：默认不可见；首次 onAppear 经 setPageVisible 置 true，
+    /// 避免构造后未挂载页就在后台轮询。不再兼容旧"默认可见"路径）。
+    /// 跨文件 extension（+Core/+Load/+Index）读写，故保持 internal var。
+    var isVisible = false
     /// 隐藏期间错过的事件刷新：setVisible(true) 时补一次（隐藏页不发命令）。
     var deferredRefreshWhileHidden = false
     /// 关闭终态：shutdown() 之后 setVisible(true) 明确 no-op。

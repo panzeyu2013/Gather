@@ -11,7 +11,7 @@ import GatherProtocol
 
 @MainActor
 @Observable
-public final class FaceKeywordingViewModel {
+public final class FaceKeywordingViewModel: PageVisibility {
     /// TS AnalysisStatus：idle/running/done/failed/cancelled。
     public enum AnalysisPhase: Equatable {
         case idle
@@ -80,7 +80,8 @@ public final class FaceKeywordingViewModel {
     private var analysisSucceeded = false
     /// 可见性门控（Cut 4 / 4a-2c）：人脸页没有自持轮询，钩子只落状态，
     /// 供 SessionWorkspace.setVisible 统一扇出。
-    private var isVisible = true
+    /// WP4d：默认不可见（PageVisibility 契约），只读给生命周期矩阵断言。
+    private(set) var isVisible = false
     /// 关闭终态（SessionWorkspace.close 扇出）。
     public private(set) var isShutdown = false
     /// TS faceKwStore step：向导当前步骤。
@@ -127,9 +128,10 @@ public final class FaceKeywordingViewModel {
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2c）
 
+    /// 可见性唯一入口（PageVisibility）：默认不可见，重复调用幂等；
+    /// shutdown 之后 no-op（关闭是终态）。
     public func setVisible(_ visible: Bool) {
-        guard !isShutdown else { return }
-        isVisible = visible
+        guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
     }
 
     /// 关闭：人脸页的加载/分析 Task 由调用点各自持有，VM 只落终态；

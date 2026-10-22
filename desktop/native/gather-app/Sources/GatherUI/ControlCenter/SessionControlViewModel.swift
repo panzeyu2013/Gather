@@ -12,7 +12,7 @@ import GatherProtocol
 
 @MainActor
 @Observable
-public final class SessionControlViewModel {
+public final class SessionControlViewModel: PageVisibility {
     // Cut 1 / B8.2a：session.get / workspace.status → SessionAPI，
     // culling.sync_status → CullingAPI（原同步字符串命令已删除；
     // C1 状态胶囊同样使用该 CullingAPI，不再经过字符串命令）。
@@ -45,8 +45,9 @@ public final class SessionControlViewModel {
     private var pollTask: Task<Void, Never>?
     /// refreshJobs 的异步任务（shutdown 时取消，避免关闭后仍写任务快照）。
     private var jobsTask: Task<Void, Never>?
-    /// 可见性真相（默认不可见；View onAppear/.task 显式置 true）。
-    private var isVisible = false
+    /// 可见性真相（默认不可见；View onAppear/.task 经 setPageVisible 显式置 true）。
+    /// WP4d：PageVisibility 契约——只读给测试断言矩阵，写仍只在 setVisible。
+    private(set) var isVisible = false
     /// 关闭终态：shutdown() 之后 setVisible(true) 明确 no-op。
     /// 4a-2c：对外只读，供 SessionWorkspace.close 的扇出测试断言。
     public private(set) var isShutdown = false
@@ -81,13 +82,14 @@ public final class SessionControlViewModel {
 
     // MARK: - 可见性 / 轮询 / 关闭（Cut 4 / 4a-2b）
 
-    /// 可见性唯一入口：把旧 SessionControlView 的 .task 里的 while 轮询迁进来。
-    /// - visible=true：启动兜底轮询（幂等，已在跑则不重复建 Task）；
+    /// 可见性唯一入口（PageVisibility）：把旧 SessionControlView 的 .task 里的
+    /// while 轮询迁进来。
+    /// - 幂等：与当前状态相同直接返回（不重复建/停轮询 Task）；
+    /// - visible=true：启动兜底轮询（startPolling 自身也幂等）；
     /// - visible=false：停轮询；
     /// - shutdown 之后明确 no-op（关闭是终态）。
     public func setVisible(_ visible: Bool) {
-        guard !isShutdown else { return }
-        isVisible = visible
+        guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
         if visible {
             startPolling()
         } else {

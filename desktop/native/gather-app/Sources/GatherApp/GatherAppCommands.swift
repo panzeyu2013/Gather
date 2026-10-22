@@ -1,5 +1,10 @@
-// desktop/native/gather-app/Sources/GatherHost/GatherAppCommands.swift
+// desktop/native/gather-app/Sources/GatherApp/GatherAppCommands.swift
 // 应用菜单命令（N08）。
+//
+// WP4d：从 GatherHost 迁入 GatherApp（唯一 @main/Scene 的 target）——SwiftUI
+// 只在 Scene 层使用，Host 不再 import SwiftUI。本文件只 import SwiftUI +
+// GatherUI（菜单文案 L10n / 通知名），不触碰 core 四层。场景引用不变：
+// GatherApp.body 的 .commands { GatherAppCommands(language:) }。
 //
 // 为什么必须走 SwiftUI Commands：SwiftUI 在场景装配时用**自己构建的主菜单**替换
 // NSApp.mainMenu，AppDelegate.installMenu 里建的「文件/编辑」菜单在运行态根本

@@ -26,7 +26,7 @@ public enum ExportRangeIntent: Equatable, Sendable {
 
 @MainActor
 @Observable
-public final class ExportViewModel {
+public final class ExportViewModel: PageVisibility {
     // Cut 1 / B6b：导出域走类型化 API（preview/execute/cancel/report）。
     let exportAPI: any ExportAPI
     /// Cut 1 / B8.2a：会话名（命名预览的 {session} 占位）走 SessionAPI.get。
@@ -58,7 +58,8 @@ public final class ExportViewModel {
 
     /// 可见性门控（Cut 4 / 4a-2c）：导出页的重算去抖 Task 由 View 持有，
     /// VM 侧只落可见性，供 SessionWorkspace.setVisible 统一扇出。
-    private var isVisible = true
+    /// WP4d：默认不可见（PageVisibility 契约），只读给生命周期矩阵断言。
+    private(set) var isVisible = false
     /// 关闭终态（SessionWorkspace.close 扇出）：不再接受可见性切换。
     public private(set) var isShutdown = false
 
@@ -88,9 +89,10 @@ public final class ExportViewModel {
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2c）
 
+    /// 可见性唯一入口（PageVisibility）：默认不可见，重复调用幂等；
+    /// shutdown 之后 no-op（关闭是终态）。
     public func setVisible(_ visible: Bool) {
-        guard !isShutdown else { return }
-        isVisible = visible
+        guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
     }
 
     /// 关闭：导出页没有 VM 持有的长任务（计划重算 Task 归 View），

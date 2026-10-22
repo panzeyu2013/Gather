@@ -8,14 +8,14 @@ extension GalleryViewModel {
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2b）
 
-    /// 可见性唯一入口：View 的 onAppear/task/onDisappear 只调这里。
+    /// 可见性唯一入口（PageVisibility）：View 的 onAppear/task/onDisappear 只调这里。
+    /// - 幂等：与当前状态相同直接返回（重复 onAppear 不重复补刷/激活）；
     /// - visible=false：停索引状态轮询；期间的事件刷新只登记不执行；
     /// - visible=true：恢复轮询、补一次隐藏期错过的事件刷新，并在首次可见时
     ///   显式激活首载（R4 P1-4：init 不再自动取页）；
     /// - shutdown 之后明确 no-op（关闭是终态）。
     public func setVisible(_ visible: Bool) {
-        guard !isShutdown else { return }
-        isVisible = visible
+        guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
         if visible {
             startIndexStatusPolling()
             // R4 P1-4：页面首次挂载（onAppear → setPageVisible）才取首屏；

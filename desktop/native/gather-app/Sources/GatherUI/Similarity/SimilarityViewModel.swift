@@ -126,7 +126,7 @@ public struct SimilarityNotice: Equatable, Sendable {
 /// （预览/写回/重试/loadMetadata→confirmSync→cleanup 状态机）。
 @MainActor
 @Observable
-public final class SimilarityViewModel {
+public final class SimilarityViewModel: PageVisibility {
     /// 页面级状态（TS 由 result/isLoading/error + isAnalyzing 组合表达）。
     ///
     /// Cut 4 / 4a-3b-2a：`error` 的关联值从码值字符串改为 `CommandError`。
@@ -173,8 +173,9 @@ public final class SimilarityViewModel {
     var tierTask: Task<Void, Never>?
     /// refreshSyncState() 调度的异步查询（shutdown 时取消）。
     var syncStateTask: Task<Void, Never>?
-    /// 可见性真相（默认可见，兼容 RootView 直接 start/stop 的旧路径）。
-    var isVisible = true
+    /// 可见性真相（WP4d：默认不可见；首次 onAppear 经 setPageVisible 置 true，
+    /// 不再兼容 RootView 直接 start/stop 的旧"默认可见"路径）。
+    private(set) var isVisible = false
     /// 关闭终态：shutdown() 之后 setVisible(true) 明确 no-op。
     /// 4a-2c：对外只读，供 SessionWorkspace.close 的扇出测试断言。
     public private(set) var isShutdown = false
@@ -290,13 +291,13 @@ public final class SimilarityViewModel {
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2b）
 
-    /// 可见性唯一入口：View 的 onAppear/onDisappear 只调这里。
+    /// 可见性唯一入口（PageVisibility）：View 的 onAppear/onDisappear 只调这里。
+    /// - 幂等：与当前状态相同直接返回（不重复启动两路轮询）；
     /// - visible=false：停两路轮询（进度/结果），隐藏期不发命令；
     /// - visible=true：按当前状态恢复——分析中恢复进度轮询，无结果恢复结果轮询；
     /// - 代次守卫（resultRequestID/tierRequestID）与轮询内的空闲上限保持原样。
     public func setVisible(_ visible: Bool) {
-        guard !isShutdown else { return }
-        isVisible = visible
+        guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
         if visible {
             if isAnalyzing { startProgressPolling() }
             if result == nil { startResultPolling() }

@@ -190,6 +190,8 @@ struct SimilarityViewModelTests {
             progressMessage: "similarity.hash"
         )]
 
+        // WP4d：默认不可见（PageVisibility）；页面挂载后才会推进进度轮询。
+        viewModel.setVisible(true)
         viewModel.startAnalyze()
         #expect(viewModel.isAnalyzing == true)
         // 轮询首帧即读到进度（poll 循环先读后睡）：条件等待首帧，满足即返回。

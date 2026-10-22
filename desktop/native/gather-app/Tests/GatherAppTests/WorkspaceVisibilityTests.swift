@@ -8,9 +8,11 @@
 // 2. 页面级 setVisible(true) 只由当前挂载页的 onAppear（经 setPageVisible）启动，
 //    切页签由旧页 false + 新页 true 交接；
 // 3. close 幂等，关闭后页面离场回调不复活 VM。
+// 4. WP4d：7 个 VM 显式 conform PageVisibility，默认不可见；setPageVisible 的
+//    7×{true,true,false,false,true} 序列只改自己的 VM 且重复调用幂等。
 //
-// 断言口径：未挂载页用 stub 调用计数 0（而不是 isVisible 默认值——VM 的
-// isVisible 默认 true 是兼容单测/预览的旧语义，不代表轮询已启动）。
+// 断言口径：未挂载页用 stub 调用计数 0（而不是 VM 可见性状态——可见性只证明
+// 状态迁移，轮询是否真的启动由各页自己的生命周期用例按调用计数断言）。
 import Foundation
 import Testing
 import GatherProtocol
@@ -270,5 +272,69 @@ struct WorkspaceVisibilityTests {
         #expect(probe.galleryProvider.statusCalls == 0, "关闭后图库轮询不得复活")
         #expect(probe.session.getCalls.isEmpty, "关闭后控制中心轮询不得复活")
         #expect(probe.similarityAPI.resultQueries.isEmpty, "关闭后相似度轮询不得复活")
+    }
+
+    // MARK: - WP4d：PageVisibility 统一契约（默认不可见 + 幂等 + 显式 conformance）
+
+    /// 7×{true,true,false,false,true} 幂等矩阵：
+    /// - 构造后 7 个 VM 一律默认不可见（统一旧版 Control=false / 其余=true 的分裂）；
+    /// - 每一步只改 `page` 自己的 VM，重复 true/false 幂等（状态不漂）；
+    /// - 序列结束后回到可见；用例收尾 close 取消矩阵期间启动的轮询/首载 Task。
+    @Test("WP4d：PageVisibility 7×{true,true,false,false,true} 幂等矩阵")
+    func pageVisibilityContractMatrix() {
+        let probe = VisibilityProbe.make()
+
+        // 显式 conformance：7 个 VM 都能以存在类型交给统一生命周期入口。
+        let pages: [any PageVisibility] = [
+            probe.workspace.control,
+            probe.workspace.face,
+            probe.workspace.duplicates,
+            probe.workspace.culling,
+            probe.workspace.export,
+            probe.workspace.gallery,
+            probe.workspace.similarity,
+        ]
+        #expect(pages.count == SessionWorkspace.Page.allCases.count)
+
+        for page in SessionWorkspace.Page.allCases {
+            #expect(!Self.pageIsVisible(page, in: probe.workspace), "page=\(page) 默认必须不可见")
+        }
+
+        let sequence = [true, true, false, false, true]
+        for page in SessionWorkspace.Page.allCases {
+            for (step, visible) in sequence.enumerated() {
+                probe.workspace.setPageVisible(page, visible)
+                #expect(
+                    Self.pageIsVisible(page, in: probe.workspace) == visible,
+                    "page=\(page) step=\(step) 期望 visible=\(visible)"
+                )
+                for other in SessionWorkspace.Page.allCases where other != page {
+                    #expect(
+                        !Self.pageIsVisible(other, in: probe.workspace),
+                        "page=\(page) 错误改写了 \(other)"
+                    )
+                }
+            }
+            // 归零，保证下一页的默认/路由断言不受上一页残留影响。
+            probe.workspace.setPageVisible(page, false)
+        }
+
+        probe.workspace.close()
+    }
+
+    /// VM 的可见性真相读取：Culling 沿用 isActive，其余 6 个是 isVisible。
+    private static func pageIsVisible(
+        _ page: SessionWorkspace.Page,
+        in workspace: SessionWorkspace
+    ) -> Bool {
+        switch page {
+        case .control: workspace.control.isVisible
+        case .faceKw: workspace.face.isVisible
+        case .duplicates: workspace.duplicates.isVisible
+        case .culling: workspace.culling.isActive
+        case .export: workspace.export.isVisible
+        case .gallery: workspace.gallery.isVisible
+        case .similarity: workspace.similarity.isVisible
+        }
     }
 }
