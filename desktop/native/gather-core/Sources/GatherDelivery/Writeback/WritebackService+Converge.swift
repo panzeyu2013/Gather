@@ -1,0 +1,89 @@
+// desktop/native/gather-core/Sources/GatherDelivery/Writeback/WritebackService+Converge.swift
+// 拆分（final-sweep-code P1-1 / 纯移动）：WritebackService 按角色拆分——Phase 2 收敛副作用（通知 / reload-ack / 本地投影）。
+// 源：HEAD ab7752e 的 Writeback/WritebackService.swift；仅调整跨文件访问级与文件头注释。
+import Foundation
+import GatherPersistence
+import GatherProtocol
+
+extension WritebackService {
+    // MARK: - Phase 2 收敛与镜像（状态落库后的副作用）
+    /// 交付状态已变化：通知宿主（sessionId 为空不通知）。
+    func emitStateChanged(_ sessionId: String) {
+        guard !sessionId.isEmpty, let eventSink else { return }
+        eventSink(sessionId)
+    }
+
+    /// 新写入让关联会话的 Capture One reload-ack 失效（§5.4-2 门禁的数据侧）。
+    ///
+    /// 旧协调器在 claim 后按 outbox 关联会话清 ack；执行器直写后由交付的
+    /// delivery_sessions 反查同一批会话，保证 confirm/finalize 必须等一次新 reload。
+    func clearReloadAck(forXmpPath xmpPath: String) {
+        do {
+            let path = TSPath.normalize(xmpPath)
+            let rows = try connection.prepare("""
+                SELECT ds.session_id
+                FROM delivery_sessions ds
+                JOIN deliveries d ON d.id = ds.delivery_id
+                WHERE d.xmp_path = ?
+                """).query([.text(path)])
+            for row in rows {
+                guard let sessionId = row[0].textValue, !sessionId.isEmpty else { continue }
+                _ = try connection.prepare("""
+                    UPDATE sessions SET reload_acked_at = NULL, updated_at = ?
+                    WHERE id = ? AND reload_acked_at IS NOT NULL
+                    """).run([.text(nowISOString()), .text(sessionId)])
+            }
+        } catch {
+            // 不改变已落盘的 written：ack 清理失败只会让门禁更严格（下次 reload 仍可过）。
+            GatherLogger.log(
+                "Failed to clear reload-ack for \(xmpPath): \(error)", level: .warn)
+        }
+    }
+
+
+    /// 写盘成功后的本地投影刷新（元数据缓存 + 人脸关键词归属）。
+    /// XMP 已经落盘，因此投影失败不改判 written，但必须逐条可见（禁止 try? 吞写失败）。
+    func updateLocalProjection(entry: PreparedEntry, attrs: [String: JSONValue], module: String) -> [String] {
+        var failures: [String] = []
+        func record(_ operation: String, _ error: Error) {
+            let failure = MetadataWritebackFailure.from(error, xmpPath: entry.delivery.xmpPath)
+            failures.append(failure.description + " operation=" + operation)
+            GatherLogger.log(
+                "Writeback projection failed (\(operation)) for \(entry.delivery.xmpPath): \(error)",
+                level: .warn)
+        }
+        if let rating = attrs["rating"]?.numberValue {
+            do {
+                try metadataCacheRepo.updateRating(photoId: entry.itemPhotoId, rating: Int64(rating))
+            } catch {
+                record("cache.updateRating", error)
+            }
+        }
+        if let label = attrs["label"]?.stringValue {
+            do {
+                try metadataCacheRepo.updateLabel(photoId: entry.itemPhotoId, label: label)
+            } catch {
+                record("cache.updateLabel", error)
+            }
+        }
+        if let keywords = attrs["keywords"]?.arrayElements?.compactMap({ $0.stringValue }) {
+            do {
+                try metadataCacheRepo.updateKeywords(photoId: entry.itemPhotoId, keywords: keywords)
+            } catch {
+                record("cache.updateKeywords", error)
+            }
+            if module == "face_kw", let keywordOrigins {
+                // keywordsBeforeWrite 是 phase 1 的写前快照：写入前不在文件上的关键词即本模块引入的。
+                let existing = Set(entry.keywordsBeforeWrite)
+                let introduced = keywords.filter { !existing.contains($0) }
+                do {
+                    try keywordOrigins.markIntroduced(
+                        xmpPath: entry.delivery.xmpPath, source: "face-keyword", keywords: introduced)
+                } catch {
+                    record("origin.markIntroduced", error)
+                }
+            }
+        }
+        return failures
+    }
+}
