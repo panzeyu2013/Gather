@@ -1,11 +1,13 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Database.swift
 // Cut 2 / B-1：Database facade（docs/refactor-decisions.md D-035）。
+// WP6a：open 状态机、Options/Outcome、迁移框架（设计 docs/reviews/wp6-schema-migration-design.md §4）。
 //
 // 定位：V1 之后**唯一**的库入口。职责只有三件事：
-//   1. 打开即保证 schema 就绪：user_version == SchemaV1.userVersion（1）**且**列形
-//      与当前 SchemaV1 一致（43 表 / 373 列 / 69 显式索引 / 62 外键 + 指纹）；
-//      0（且无表）→ 建 SchemaV1；0 但有表 / 非 1 / 同版本但列形不符 / 非 SQLite
-//      文件 → 整体重置（draft §6）；
+//   1. 打开即保证 schema 就绪：user_version == catalog.current（当前 1）**且**列形
+//      与快照一致（43 表 / 373 列 / 69 显式索引 / 62 外键 + 指纹）；
+//      0（且无表）→ 建当前 schema；0 但有表 / 版本更高 / 同版本但列形不符 / 非 SQLite
+//      文件 → **默认 fail closed**（只抛错，不改名、不删文件）；只有 Options.resetPolicy
+//      == .renameToIncompatible（开发重置）才把 db/-wal/-shm 改名 .incompatible-* 后重建；
 //   2. 提供 read / write / async 三个作用域，让 Service 不再自己管连接与事务边界；
 //   3. 把底层 `DBError.message` 收敛成类型化 `DatabaseError`（见 DatabaseError.swift）。
 //
@@ -33,6 +35,7 @@
 // ── 事务 ──
 // write 复用 `DBConnection.transaction`：嵌套调用退化为 SAVEPOINT（`gather_tx_<depth>`），
 // 内层失败只回滚到自己的 savepoint，外层可继续或整体回滚（与既有 Repo 语义一致）。
+// 迁移器不用 write，直接调 `connection.transaction(.immediate)`（见 SchemaMigrator）。
 //
 // ── 错误 ──
 // read/write/async 只把 `DBError` 映射为 `DatabaseError`；body 抛出的其它错误原样上抛，
@@ -53,6 +56,16 @@ public final class Database: @unchecked Sendable {
         case off, normal, full, extra
     }
 
+    /// 库不兼容时的处理策略（设计 §4.5）。
+    public enum ResetPolicy: Sendable, Equatable {
+        /// 默认：只抛错，绝不改名/删除用户库（fail closed）。
+        case failClosed
+        /// 仅开发/测试显式开启：改名 .incompatible-* 后重建（沿用旧行为）。
+        case renameToIncompatible
+
+        var allowsReset: Bool { self == .renameToIncompatible }
+    }
+
     /// open 选项。默认值与 D-035 / draft §6.4 一致（busy_timeout 5s、synchronous normal、64MB）。
     public struct Options: Sendable {
         /// `PRAGMA busy_timeout`（毫秒）。WAL 单写者下让短暂锁竞争排队而不是立刻 SQLITE_BUSY。
@@ -63,17 +76,29 @@ public final class Database: @unchecked Sendable {
         public var cacheSizeMB: Int
         /// 不兼容副本保留份数（按时间戳从旧到新淘汰；默认 3，与迁移备份同策略）。
         public var retainIncompatibleCopies: Int
+        /// 不兼容库处理策略：默认 fail closed；开发重置显式传 .renameToIncompatible。
+        public var resetPolicy: ResetPolicy
+        /// 迁移备份保留份数（WP6b 使用；WP6a 只保留字段，不产生备份）。
+        public var retainMigrationBackups: Int
+        /// 版本/快照/迁移计划。默认 production（current = .v1、迁移表为空）。
+        public var catalog: SchemaCatalog
 
         public init(
             busyTimeoutMilliseconds: Int = 5000,
             synchronous: SynchronousMode = .normal,
             cacheSizeMB: Int = 64,
-            retainIncompatibleCopies: Int = 3
+            retainIncompatibleCopies: Int = 3,
+            resetPolicy: ResetPolicy = .failClosed,
+            retainMigrationBackups: Int = 3,
+            catalog: SchemaCatalog = .production
         ) {
             self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
             self.synchronous = synchronous
             self.cacheSizeMB = cacheSizeMB
             self.retainIncompatibleCopies = retainIncompatibleCopies
+            self.resetPolicy = resetPolicy
+            self.retainMigrationBackups = retainMigrationBackups
+            self.catalog = catalog
         }
 
         public static let `default` = Options()
@@ -95,6 +120,8 @@ public final class Database: @unchecked Sendable {
     /// 暴露连接是过渡方案：Service 层仍以 DBConnection 为注入形状，
     /// 由 `Database` 统一承担 open/close/schema 不变量。
     public let connection: DBConnection
+    /// 本次 open 的结果（创建/打开/迁移/开发重置）。
+    public let outcome: OpenOutcome
     private let options: Options
 
     /// facade 级状态锁（见文件头「锁纪律」）：保护 `closed` + 串行化公开作用域与 close。
@@ -104,10 +131,16 @@ public final class Database: @unchecked Sendable {
     /// async 串行执行器（仅 async 之间 FIFO）。
     private let asyncQueue: DispatchQueue
 
-    private init(path: String, connection: DBConnection, options: Options) {
+    private init(
+        path: String,
+        connection: DBConnection,
+        options: Options,
+        outcome: OpenOutcome
+    ) {
         self.path = path
         self.connection = connection
         self.options = options
+        self.outcome = outcome
         self.asyncQueue = DispatchQueue(
             label: "com.gather.database.async.\(UUID().uuidString)",
             qos: .utility
@@ -121,63 +154,147 @@ public final class Database: @unchecked Sendable {
 
     // MARK: - open
 
-    /// 打开（或新建）V1 库。
+    /// 打开（或新建）当前 schema 版本的库。
     ///
-    /// - `:memory:`：单连接内存库，直接建 SchemaV1（多连接会得到多份互不相干的数据）。
-    /// - 文件：打开后读 `PRAGMA user_version`：
-    ///   * 1 → 保留现有库（只做连接 PRAGMA + 自检）；
-    ///   * 0 且无用户表 → 在同一事务内执行 SchemaV1.sql（含 `PRAGMA user_version = 1`）；
-    ///   * 0 但有表 / 非 1 / 非 SQLite 文件 → 关闭连接，把 db/-wal/-shm 改名为
-    ///     `<db>.incompatible-<yyyyMMdd-HHmmss>[-wal|-shm]`，新建空库后建 SchemaV1
-    ///     （最多重置一次，防止无限递归）。
+    /// 状态机（默认 resetPolicy = .failClosed）：
+    ///   * current  → 校验版本 + 列形 + FK 自检后返回（.opened）；
+    ///   * empty    → 单事务建当前 DDL（.created）；
+    ///   * older    → 迁移（WP6a production 不可达；框架已接 SchemaMigrator）；
+    ///   * newer    → 抛 .versionUnsupported，文件不改（开发重置才改名）；
+    ///   * corrupt  → 抛 .corrupt（非 SQLite / V0 有表 / 形态不符）；开发重置才改名；
+    ///   * unreadableVersion → 抛 .corrupt；开发重置才改名。
     ///
-    /// 重置是**预期路径**不是错误（draft §6.1）：日志 warn 一条 `schema_reset`；
-    /// 移动文件失败则显式抛 `.io`（绝不吞错，提示用户手动备份后重试）。
+    /// 开发重置是**显式选项**不是错误路径：日志 warn 一条 schema_reset_dev；
+    /// 移动文件失败则显式抛 .io（绝不吞错，提示用户手动备份后重试）。
+    /// 最多重置一次，二次不兼容直接抛错（防止无限循环）。
     public static func open(at path: String, options: Options = .default) throws -> Database {
         guard path != inMemoryPath else { return try openInMemory(options: options) }
         try ensureParentDirectory(for: path)
 
         var didReset = false
+        var resetOutcome: OpenOutcome?
         while true {
             let connection: DBConnection
             do {
                 connection = try makeConnection(at: path, options: options)
             } catch {
                 let mapped = DatabaseError.map(error)
-                // 「非 SQLite 文件」在 DBConnection.open 的 PRAGMA 阶段就会失败（还没机会读
-                // user_version），按 draft §6.1 default 分支同样走重置；其余打开失败如实上抛。
-                guard !didReset, mapped.indicatesNotDatabaseFile else { throw mapped }
-                try resetIncompatibleFiles(at: path, options: options, detectedVersion: nil)
+                guard mapped.indicatesNotDatabaseFile, !didReset, options.resetPolicy.allowsReset else {
+                    throw mapped.indicatesNotDatabaseFile
+                        ? DatabaseError.corrupt("不是 SQLite 文件：\(path)")
+                        : mapped
+                }
+                let backup = try SchemaReset.reset(
+                    at: path,
+                    options: options,
+                    reason: .notADatabase,
+                    previousVersion: nil
+                )
+                resetOutcome = .reset(reason: .notADatabase, previousVersion: nil, backup: backup)
                 didReset = true
                 continue
             }
 
             do {
-                switch try inspectSchema(connection, path: path) {
-                case .current:
-                    try assertReady(connection)
-                    return Database(path: path, connection: connection, options: options)
+                switch try SchemaInspector.inspect(connection, catalog: options.catalog, path: path) {
+                case .current(let version):
+                    try assertReady(
+                        connection,
+                        expecting: options.catalog.snapshot(version),
+                        path: path
+                    )
+                    return Database(
+                        path: path,
+                        connection: connection,
+                        options: options,
+                        outcome: resetOutcome ?? .opened(version)
+                    )
 
                 case .empty:
-                    try createSchema(connection)
-                    try assertReady(connection)
-                    return Database(path: path, connection: connection, options: options)
+                    let snapshot = options.catalog.currentSnapshot
+                    try createSchema(connection, snapshot: snapshot)
+                    try assertReady(connection, expecting: snapshot, path: path)
+                    return Database(
+                        path: path,
+                        connection: connection,
+                        options: options,
+                        outcome: resetOutcome ?? .created(snapshot.version)
+                    )
 
-                case .incompatible(let version):
+                case .older(let from):
+                    let to = try SchemaMigrator(catalog: options.catalog)
+                        .migrate(connection, from: from, path: path)
+                    try assertReady(connection, expecting: options.catalog.snapshot(to), path: path)
+                    return Database(
+                        path: path,
+                        connection: connection,
+                        options: options,
+                        outcome: resetOutcome ?? .migrated(from: from, to: to, backup: nil)
+                    )
+
+                case .newer(let version):
                     connection.close()
-                    guard !didReset else {
-                        let detected = version.map(String.init) ?? "unreadable"
-                        throw DatabaseError.schema(
-                            "重置后仍不兼容：\(path)（user_version=\(detected)，期望 \(SchemaV1.userVersion)）"
+                    guard options.resetPolicy.allowsReset, !didReset else {
+                        throw DatabaseError.versionUnsupported(
+                            "库版本 \(version) 高于本构建 \(options.catalog.current.rawValue)：\(path)"
                         )
                     }
-                    try resetIncompatibleFiles(at: path, options: options, detectedVersion: version)
+                    let backup = try SchemaReset.reset(
+                        at: path,
+                        options: options,
+                        reason: .newerVersion(version),
+                        previousVersion: version
+                    )
+                    resetOutcome = .reset(
+                        reason: .newerVersion(version),
+                        previousVersion: version,
+                        backup: backup
+                    )
+                    didReset = true
+                    continue
+
+                case .corrupt(let reason):
+                    connection.close()
+                    guard options.resetPolicy.allowsReset, !didReset else {
+                        throw DatabaseError.corrupt("库不可用（\(reason)）：\(path)")
+                    }
+                    let backup = try SchemaReset.reset(
+                        at: path,
+                        options: options,
+                        reason: reason.resetReason,
+                        previousVersion: reason.version
+                    )
+                    resetOutcome = .reset(
+                        reason: reason.resetReason,
+                        previousVersion: reason.version,
+                        backup: backup
+                    )
+                    didReset = true
+                    continue
+
+                case .unreadableVersion:
+                    connection.close()
+                    guard options.resetPolicy.allowsReset, !didReset else {
+                        throw DatabaseError.corrupt("无法读取 user_version：\(path)")
+                    }
+                    let backup = try SchemaReset.reset(
+                        at: path,
+                        options: options,
+                        reason: .unreadableVersion,
+                        previousVersion: nil
+                    )
+                    resetOutcome = .reset(
+                        reason: .unreadableVersion,
+                        previousVersion: nil,
+                        backup: backup
+                    )
                     didReset = true
                     continue
                 }
             } catch {
                 connection.close()
-                throw error
+                if let error = error as? DatabaseError { throw error }
+                throw DatabaseError.map(error)
             }
         }
     }
@@ -191,11 +308,15 @@ public final class Database: @unchecked Sendable {
             throw DatabaseError.map(error)
         }
         do {
-            if try readUserVersion(connection) == 0 {
-                try createSchema(connection)
-            }
-            try assertReady(connection)
-            return Database(path: inMemoryPath, connection: connection, options: options)
+            let snapshot = options.catalog.currentSnapshot
+            try createSchema(connection, snapshot: snapshot)
+            try assertReady(connection, expecting: snapshot, path: inMemoryPath)
+            return Database(
+                path: inMemoryPath,
+                connection: connection,
+                options: options,
+                outcome: .created(snapshot.version)
+            )
         } catch {
             connection.close()
             throw DatabaseError.map(error)
@@ -276,15 +397,6 @@ public final class Database: @unchecked Sendable {
 
     // MARK: - 内部：打开流程
 
-    private enum SchemaState {
-        /// user_version == SchemaV1.userVersion 且列形/指纹与当前 SchemaV1 一致。
-        case current
-        /// user_version == 0 且没有任何用户表。
-        case empty
-        /// 0 但有表 / 非 1 / 读不出 user_version（version == nil）。
-        case incompatible(version: Int?)
-    }
-
     private static func makeConnection(at path: String, options: Options) throws -> DBConnection {
         let connection: DBConnection
         do {
@@ -312,232 +424,23 @@ public final class Database: @unchecked Sendable {
         try connection.exec("PRAGMA temp_store = MEMORY;")
     }
 
-    private static func inspectSchema(_ connection: DBConnection, path: String) throws -> SchemaState {
-        do {
-            let version = try readUserVersion(connection)
-            switch version {
-            case SchemaV1.userVersion:
-                // user_version 相同不等于列形相同：Cut 5 在未 bump 版本时加过 3 列。
-                // 列形不符按「版本 1 但不兼容」走既有重置，避免运行期 no such column。
-                if let issue = try schemaShapeIssue(connection) {
-                    GatherLogger.log(
-                        "schema_shape_mismatch path=\(path) user_version=\(version) issue=\(issue)",
-                        level: .warn
-                    )
-                    return .incompatible(version: version)
-                }
-                return .current
-            case 0:
-                // 0 但没有表 = 全新空库；0 且有表 = V1 之前的旧库（44 表迁移链），一律重置。
-                return try userTableCount(connection) == 0 ? .empty : .incompatible(version: 0)
-            default:
-                return .incompatible(version: version)
-            }
-        } catch let error as DBError {
-            let mapped = DatabaseError(dbError: error)
-            if mapped.indicatesNotDatabaseFile { return .incompatible(version: nil) }
-            // busy / io 等「暂时性」失败绝不能触发重置：那会挪走仍然有效的用户库。
-            throw mapped
-        }
-    }
-
-    private static func readUserVersion(_ connection: DBConnection) throws -> Int {
-        guard let row = try connection.prepare("PRAGMA user_version;").get([]),
-              let raw = row[0].intValue
-        else {
-            throw DatabaseError.schema("读取 PRAGMA user_version 无结果")
-        }
-        return Int(raw)
-    }
-
-    private static func userTableCount(_ connection: DBConnection) throws -> Int {
-        guard let row = try connection.prepare("""
-            SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-            """).get([]),
-              let raw = row[0].intValue
-        else {
-            throw DatabaseError.schema("读取 sqlite_master 表数无结果")
-        }
-        return Int(raw)
-    }
-
-    // MARK: - 内部：列形校验（user_version=1 的「同版本旧库」识别）
-
-    /// 当前库的规范化列形（open 自检与旧库识别共用）。
-    private struct SchemaShape {
-        let tableCount: Int
-        let columnCount: Int
-        let explicitIndexCount: Int
-        let foreignKeyCount: Int
-        let columnsByTable: [String: Set<String>]
-        let fingerprint: String
-    }
-
-    /// 读取完整列形并计算规范化指纹。
-    ///
-    /// canonical 口径（与 SchemaV1.expectedShapeFingerprint 同源；改任何一段都必须重算期望值）：
-    ///   table\t<name>
-    ///   column\t<name>\t<type>\t<notnull>\t<dflt>\t<pk>
-    ///   fk\t<ref table>\t<seq>\t<from>\t<to>\t<on_update>\t<on_delete>\t<match>
-    ///   index\t<name>\t<sql>
-    /// 表按名字、列按 cid、外键按 (id,seq)、显式索引按名字排序；排除 sqlite_* 内部表
-    /// 与 sql 为 NULL 的自动索引。
-    private static func readSchemaShape(_ connection: DBConnection) throws -> SchemaShape {
-        let tableNames = try connection.prepare("""
-            SELECT name FROM sqlite_master
-             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-             ORDER BY name
-            """).query([]).compactMap { $0[0].textValue }
-
-        var canonical = ""
-        var columnsByTable: [String: Set<String>] = [:]
-        var columnCount = 0
-        var foreignKeyCount = 0
-
-        for table in tableNames {
-            canonical += "table\t\(table)\n"
-            let quotedTable = quoteIdentifier(table)
-
-            let columnRows = try connection
-                .prepare("PRAGMA table_info(\(quotedTable));")
-                .query([])
-                .map { row -> (cid: Int, name: String, type: String, notNull: Int, defaultValue: String, pk: Int) in
-                    (
-                        cid: Int(row[0].intValue ?? 0),
-                        name: row[1].textValue ?? "",
-                        type: row[2].textValue ?? "",
-                        notNull: Int(row[3].intValue ?? 0),
-                        defaultValue: shapeText(row[4]),
-                        pk: Int(row[5].intValue ?? 0)
-                    )
-                }
-                .sorted { $0.cid < $1.cid }
-            for column in columnRows {
-                columnCount += 1
-                columnsByTable[table, default: []].insert(column.name)
-                canonical += "column\t\(column.name)\t\(column.type)\t\(column.notNull)"
-                    + "\t\(column.defaultValue)\t\(column.pk)\n"
-            }
-
-            let foreignKeyRows = try connection
-                .prepare("PRAGMA foreign_key_list(\(quotedTable));")
-                .query([])
-                .map { row -> (id: Int, seq: Int, table: String, from: String, to: String, onUpdate: String, onDelete: String, match: String) in
-                    (
-                        id: Int(row[0].intValue ?? 0),
-                        seq: Int(row[1].intValue ?? 0),
-                        table: row[2].textValue ?? "",
-                        from: row[3].textValue ?? "",
-                        to: row[4].textValue ?? "",
-                        onUpdate: row[5].textValue ?? "",
-                        onDelete: row[6].textValue ?? "",
-                        match: row[7].textValue ?? ""
-                    )
-                }
-                .sorted { ($0.id, $0.seq) < ($1.id, $1.seq) }
-            foreignKeyCount += foreignKeyRows.count
-            for foreignKey in foreignKeyRows {
-                canonical += "fk\t\(foreignKey.table)\t\(foreignKey.seq)\t\(foreignKey.from)"
-                    + "\t\(foreignKey.to)\t\(foreignKey.onUpdate)\t\(foreignKey.onDelete)"
-                    + "\t\(foreignKey.match)\n"
-            }
-        }
-
-        let indexRows = try connection.prepare("""
-            SELECT name, sql FROM sqlite_master
-             WHERE type = 'index' AND sql IS NOT NULL
-             ORDER BY name
-            """).query([])
-        for row in indexRows {
-            canonical += "index\t\(row[0].textValue ?? "")\t\(row[1].textValue ?? "")\n"
-        }
-
-        let fingerprint = SHA256.hash(Data(canonical.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return SchemaShape(
-            tableCount: tableNames.count,
-            columnCount: columnCount,
-            explicitIndexCount: indexRows.count,
-            foreignKeyCount: foreignKeyCount,
-            columnsByTable: columnsByTable,
-            fingerprint: fingerprint
-        )
-    }
-
-    /// 返回列形不符的原因（nil = 与当前 SchemaV1 完全一致）。
-    ///
-    /// 计数用于可读报错；关键表列集合兜「少关键列」；指纹兜「列名/类型/默认值/外键/
-    /// 索引变了但计数没变」。三者任一不符都意味着旧库或损坏库。
-    private static func schemaShapeIssue(_ connection: DBConnection) throws -> String? {
-        let shape = try readSchemaShape(connection)
-        var issues: [String] = []
-
-        if shape.tableCount != SchemaV1.expectedTableCount {
-            issues.append("表数 \(shape.tableCount)，期望 \(SchemaV1.expectedTableCount)")
-        }
-        if shape.columnCount != SchemaV1.expectedColumnCount {
-            issues.append("列数 \(shape.columnCount)，期望 \(SchemaV1.expectedColumnCount)")
-        }
-        if shape.explicitIndexCount != SchemaV1.expectedExplicitIndexCount {
-            issues.append("显式索引 \(shape.explicitIndexCount)，期望 \(SchemaV1.expectedExplicitIndexCount)")
-        }
-        if shape.foreignKeyCount != SchemaV1.expectedForeignKeyCount {
-            issues.append("外键 \(shape.foreignKeyCount)，期望 \(SchemaV1.expectedForeignKeyCount)")
-        }
-        for table in SchemaV1.requiredTableColumns.keys.sorted() {
-            guard let actual = shape.columnsByTable[table] else {
-                issues.append("缺表 \(table)")
-                continue
-            }
-            let required = SchemaV1.requiredTableColumns[table] ?? []
-            let missing = required.subtracting(actual).sorted()
-            if !missing.isEmpty {
-                issues.append("表 \(table) 缺列 [\(missing.joined(separator: ","))]")
-            }
-        }
-        if shape.fingerprint != SchemaV1.expectedShapeFingerprint {
-            issues.append(
-                "列形指纹 \(shape.fingerprint)，期望 \(SchemaV1.expectedShapeFingerprint)"
-            )
-        }
-        return issues.isEmpty ? nil : issues.joined(separator: "；")
-    }
-
-    private static func quoteIdentifier(_ name: String) -> String {
-        "\"" + name.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-    }
-
-    /// 把 PRAGMA 返回值规范化为稳定文本（NULL 与各存储类都显式区分）。
-    private static func shapeText(_ value: DBValue?) -> String {
-        switch value {
-        case .none, .null:
-            return "<null>"
-        case .int(let value):
-            return String(value)
-        case .real(let value):
-            return String(value)
-        case .text(let value):
-            return value
-        case .blob(let data):
-            return "blob:\(data.count)"
-        }
-    }
-
-    /// 建 SchemaV1：DDL 与 `PRAGMA user_version = 1` 在同一事务内提交，
-    /// 杜绝「表建好但版本还是 0」的半成品（下次启动会被当成不兼容库重置）。
+    /// 建当前 schema：DDL 与 `PRAGMA user_version` 在同一事务内提交，
+    /// 杜绝「表建好但版本还是 0」的半成品（下次启动会被当成不兼容库）。
     ///
     /// 注意 SchemaV1.sql 里的 `PRAGMA foreign_keys = ON` 在事务内是 no-op（SQLite 语义）；
     /// 连接级开关已由 DBConnection.open 在事务前打开，事务后还会再自检一次。
-    private static func createSchema(_ connection: DBConnection) throws {
+    private static func createSchema(_ connection: DBConnection, snapshot: SchemaSnapshot) throws {
         do {
             _ = try connection.transaction {
-                try connection.exec(SchemaV1.sql)
+                try connection.exec(snapshot.createSQL)
             }
-            let version = try readUserVersion(connection)
-            guard version == SchemaV1.userVersion else {
-                throw DatabaseError.schema("建库后 user_version=\(version)，期望 \(SchemaV1.userVersion)")
+            guard let version = try SchemaInspector.readUserVersion(connection) else {
+                throw DatabaseError.schema("建库后读不到 user_version")
+            }
+            guard version == snapshot.version.rawValue else {
+                throw DatabaseError.schema(
+                    "建库后 user_version=\(version)，期望 \(snapshot.version.rawValue)"
+                )
             }
         } catch let error as DBError {
             throw DatabaseError(dbError: error)
@@ -546,17 +449,28 @@ public final class Database: @unchecked Sendable {
 
     /// 打开后的不变量自检（失败即抛，不降级）：版本、列形、foreign_keys、外键一致性。
     ///
-    /// 列形校验是「同版本旧库」的最后一道门：user_version=1 只证明曾经按 V1 建过库，
-    /// 不能证明它有当前的全部 373 列（Cut 5 加列未 bump）。文件库在 inspectSchema 中
-    /// 已检查并走重置；这里对新建库/内存库再断言一次，防止 DDL 与 expected* 漂移。
-    private static func assertReady(_ connection: DBConnection) throws {
+    /// 列形校验是「同版本旧库」的最后一道门：user_version 只证明曾经按该版本建过库，
+    /// 不能证明它有当前的全部列（Cut 5 加列未 bump）。文件库在 inspect 中已检查并
+    /// 按 resetPolicy 处理；这里对新建库/迁移后的库再断言一次，防止 DDL 与快照漂移。
+    private static func assertReady(
+        _ connection: DBConnection,
+        expecting snapshot: SchemaSnapshot,
+        path: String
+    ) throws {
         do {
-            let version = try readUserVersion(connection)
-            guard version == SchemaV1.userVersion else {
-                throw DatabaseError.schema("schema 版本不是 \(SchemaV1.userVersion)（实际 \(version)）")
+            guard let version = try SchemaInspector.readUserVersion(connection) else {
+                throw DatabaseError.schema("读取 PRAGMA user_version 无结果：\(path)")
             }
-            if let issue = try schemaShapeIssue(connection) {
-                throw DatabaseError.schema("SchemaV1 列形不符：\(issue)")
+            guard version == snapshot.version.rawValue else {
+                throw DatabaseError.schema(
+                    "schema 版本不是 \(snapshot.version.rawValue)（实际 \(version)）：\(path)"
+                )
+            }
+            let issues = snapshot.shape.issues(against: try SchemaShapeReader.read(connection))
+            guard issues.isEmpty else {
+                throw DatabaseError.schema(
+                    "\(snapshot.version) 列形不符：\(issues.joined(separator: "；"))"
+                )
             }
             guard let row = try connection.prepare("PRAGMA foreign_keys;").get([]),
                   row[0].intValue == 1
@@ -569,95 +483,6 @@ public final class Database: @unchecked Sendable {
             }
         } catch let error as DBError {
             throw DatabaseError(dbError: error)
-        }
-    }
-
-    // MARK: - 内部：旧库重置（draft §6.2）
-
-    /// 把 db/-wal/-shm 一起移到 `<db>.incompatible-<ts>`。
-    ///
-    /// 顺序：`-shm` → `-wal` → 主库。
-    ///   * 先移 sidecar：避免「新库 + 旧 WAL」被 SQLite 按同名前缀恢复出旧页
-    ///     （这是 draft §6.2 专门警告的错位场景）。
-    ///   * 最后移主库：中途失败时用户数据仍在原路径，可人工恢复。
-    /// 任一移动失败都抛 `.io`（不吞），并提示手动备份后重试。
-    private static func resetIncompatibleFiles(
-        at path: String,
-        options: Options,
-        detectedVersion: Int?
-    ) throws {
-        let fileManager = FileManager.default
-        let target = uniqueIncompatiblePath(for: path)
-
-        for suffix in ["-shm", "-wal"] where fileManager.fileExists(atPath: path + suffix) {
-            do {
-                try fileManager.moveItem(atPath: path + suffix, toPath: target + suffix)
-            } catch {
-                throw DatabaseError.io(
-                    "移走 \(path + suffix) 失败：\(error.localizedDescription)。请手动备份 \(path) 后重试"
-                )
-            }
-        }
-        if fileManager.fileExists(atPath: path) {
-            do {
-                try fileManager.moveItem(atPath: path, toPath: target)
-            } catch {
-                throw DatabaseError.io(
-                    "移走 \(path) 失败：\(error.localizedDescription)。请手动备份 \(path) 后重试"
-                )
-            }
-        }
-
-        pruneIncompatibleCopies(for: path, retaining: options.retainIncompatibleCopies)
-        let detected = detectedVersion.map(String.init) ?? "unreadable"
-        GatherLogger.log(
-            "schema_reset user_version=\(detected) expected=\(SchemaV1.userVersion) path=\(path) backup=\(target)",
-            level: .warn
-        )
-    }
-
-    /// `<db>.incompatible-<yyyyMMdd-HHmmss>`；同秒重复时追加 `-2`、`-3`…（不覆盖旧副本）。
-    private static func uniqueIncompatiblePath(for path: String) -> String {
-        let base = path + ".incompatible-" + incompatibleTimestamp()
-        var candidate = base
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate) {
-            candidate = base + "-\(counter)"
-            counter += 1
-        }
-        return candidate
-    }
-
-    private static func incompatibleTimestamp() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: Date())
-    }
-
-    /// 最多保留 `limit` 套（主库 + 同套 -wal/-shm），按时间戳从旧到新淘汰；失败不致命。
-    private static func pruneIncompatibleCopies(for path: String, retaining limit: Int) {
-        let fileManager = FileManager.default
-        let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-        let baseName = URL(fileURLWithPath: path).lastPathComponent
-        guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return }
-
-        let prefix = baseName + ".incompatible-"
-        var keys = Set<String>()
-        for name in names where name.hasPrefix(prefix) {
-            var key = String(name.dropFirst(prefix.count))
-            for suffix in ["-wal", "-shm"] where key.hasSuffix(suffix) {
-                key = String(key.dropLast(suffix.count))
-            }
-            keys.insert(key)
-        }
-        let keep = max(0, limit)
-        guard keys.count > keep else { return }
-        for key in keys.sorted().dropLast(keep) {
-            for name in [prefix + key, prefix + key + "-wal", prefix + key + "-shm"] {
-                try? fileManager.removeItem(atPath: directory.appendingPathComponent(name).path)
-            }
         }
     }
 

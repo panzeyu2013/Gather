@@ -4,8 +4,9 @@
 // 覆盖四件事：
 //   1. `:memory:` 打开即 SchemaV1（43 表 / user_version = 1）；
 //   2. 文件库新建 → 关闭 → 重开数据保留（V1 是「一次成型 + 不改 schema」，重开必须直接可用）；
-//   3. user_version=99 的旧库（带 -wal/-shm）被整体改名 `.incompatible-*`，新库回到 V1，
-//      旧表不会借残留 WAL 复辟；非 SQLite 文件同样走重置而不是抛错；
+//   3. user_version=99 的旧库（带 -wal/-shm）在显式 resetPolicy=.renameToIncompatible 下
+//      被整体改名 `.incompatible-*`，新库回到 V1，旧表不会借残留 WAL 复辟；非 SQLite 文件
+//      同样走改名。默认 .failClosed 下抛错、不改文件（见 SchemaMigrationTests）；
 //   4. read / write 事务回滚 / 嵌套 SAVEPOINT / close 后一律 `.closed` / async 串行执行器。
 //
 // 说明：本批不接入 Repo/Service，测试只新增本文件；已存在的 DB.swift / SchemaV1.swift
@@ -105,6 +106,7 @@ struct DatabaseFacadeTests {
 
         #expect(database.isInMemory)
         #expect(!database.isClosed)
+        #expect(database.outcome == .created(.v1))
 
         let tables = try database.read { try userTables($0) }
         #expect(tables.count == expectedV1TableCount, "V1 必须是 43 张表，实际 \(tables.count)：\(tables)")
@@ -163,7 +165,10 @@ struct DatabaseFacadeTests {
         try staleWAL.write(to: URL(fileURLWithPath: path + "-wal"))
         try staleSHM.write(to: URL(fileURLWithPath: path + "-shm"))
 
-        let database = try Database.open(at: path)
+        let database = try Database.open(
+            at: path,
+            options: Database.Options(resetPolicy: .renameToIncompatible)
+        )
         defer { database.close() }
 
         // 新库必须是干净的 V1：版本 1、43 表、旧表不存在（WAL 残留不得复辟旧页）。
@@ -206,7 +211,10 @@ struct DatabaseFacadeTests {
         try Data("this is definitely not a sqlite database".utf8)
             .write(to: URL(fileURLWithPath: path))
 
-        let database = try Database.open(at: path)
+        let database = try Database.open(
+            at: path,
+            options: Database.Options(resetPolicy: .renameToIncompatible)
+        )
         defer { database.close() }
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
         #expect(try database.read { try userTables($0).count } == expectedV1TableCount)
@@ -242,7 +250,10 @@ struct DatabaseFacadeTests {
         try staleWAL.write(to: URL(fileURLWithPath: path + "-wal"))
         try staleSHM.write(to: URL(fileURLWithPath: path + "-shm"))
 
-        let database = try Database.open(at: path)
+        let database = try Database.open(
+            at: path,
+            options: Database.Options(resetPolicy: .renameToIncompatible)
+        )
         defer { database.close() }
 
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
@@ -288,6 +299,7 @@ struct DatabaseFacadeTests {
         defer { database.close() }
 
         #expect(try database.read { try userColumnCount($0) } == 373)
+        #expect(database.outcome == .opened(.v1), "列形正确的 V1 必须走 opened，不得重置")
         #expect(try database.read {
             try $0.prepare("SELECT name FROM sessions WHERE id = ?").get([.text("keep-me")])?[0].textValue
         } == "current-v1", "列形正确的库不得被重置")
@@ -309,7 +321,10 @@ struct DatabaseFacadeTests {
             newer.close()
         }
 
-        let database = try Database.open(at: path)
+        let database = try Database.open(
+            at: path,
+            options: Database.Options(resetPolicy: .renameToIncompatible)
+        )
         defer { database.close() }
 
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)

@@ -324,6 +324,15 @@ public final class DBConnection: @unchecked Sendable {
     }
 
     // ── 事务 ──
+    /// 事务开启模式（WP6a / 设计 §4.4）。默认 deferred 保持既有 30+ 调用点行为；
+    /// 迁移器用 immediate：WAL 下先拿写锁，避免 deferred 读→写升级撞 SQLITE_BUSY_SNAPSHOT。
+    /// 嵌套事务仍退化为 SAVEPOINT，模式参数只影响最外层。
+    public enum TransactionMode: String, Sendable {
+        case deferred = "DEFERRED"
+        case immediate = "IMMEDIATE"
+        case exclusive = "EXCLUSIVE"
+    }
+
     public func begin() throws { try exec("BEGIN") }
     public func commit() throws { try exec("COMMIT") }
     public func rollback() throws { try exec("ROLLBACK") }
@@ -334,7 +343,13 @@ public final class DBConnection: @unchecked Sendable {
     /// 事务全程持连接级锁（withConnectionLock）保证同一连接上事务严格串行。
     private var transactionDepth = 0
 
+    /// 默认 deferred（TransactionRunner 端口要求的就是这个签名）。
     public func transaction<T>(_ body: () throws -> T) throws -> T {
+        try transaction(.deferred, body)
+    }
+
+    /// 显式指定最外层开启模式；嵌套调用仍退化为 SAVEPOINT。
+    public func transaction<T>(_ mode: TransactionMode, _ body: () throws -> T) throws -> T {
         try withConnectionLock {
             transactionDepth += 1
             let isNested = transactionDepth > 1
@@ -342,7 +357,7 @@ public final class DBConnection: @unchecked Sendable {
                 if isNested {
                     try exec("SAVEPOINT gather_tx_\(transactionDepth)")
                 } else {
-                    try begin()
+                    try exec("BEGIN \(mode.rawValue)")
                 }
             } catch {
                 transactionDepth -= 1

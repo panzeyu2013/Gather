@@ -32,6 +32,10 @@ public enum DatabaseError: Error, Equatable, Sendable, LocalizedError {
     case closed(String)
     /// schema 不兼容 / 缺表缺列 / 建库后版本不符（SQLITE_SCHEMA 与 SchemaV1 自检）。
     case schema(String)
+    /// 迁移失败（事务已回滚；库仍停在旧版本，文件未被重置）。WP6a 框架引入。
+    case migration(String)
+    /// 库版本高于本构建（fail closed；默认不改写文件）。WP6a 框架引入。
+    case versionUnsupported(String)
     /// SQLite API 误用（SQLITE_MISUSE，如绑定越界、语句顺序错误）。
     case misuse(String)
     /// 被 sqlite3_interrupt 中断（SQLITE_INTERRUPT）。
@@ -41,7 +45,8 @@ public enum DatabaseError: Error, Equatable, Sendable, LocalizedError {
 
     /// 分类标签（日志/测试用；避免模式匹配里逐 case 展开）。
     public enum Kind: String, Equatable, Sendable, CaseIterable {
-        case busy, constraint, io, corrupt, closed, schema, misuse, interrupted, sql
+        case busy, constraint, io, corrupt, closed, schema, migration, versionUnsupported,
+             misuse, interrupted, sql
     }
 
     /// 错误分类。
@@ -53,6 +58,8 @@ public enum DatabaseError: Error, Equatable, Sendable, LocalizedError {
         case .corrupt: return .corrupt
         case .closed: return .closed
         case .schema: return .schema
+        case .migration: return .migration
+        case .versionUnsupported: return .versionUnsupported
         case .misuse: return .misuse
         case .interrupted: return .interrupted
         case .sql: return .sql
@@ -64,6 +71,7 @@ public enum DatabaseError: Error, Equatable, Sendable, LocalizedError {
         switch self {
         case .busy(let message), .constraint(let message), .io(let message),
              .corrupt(let message), .closed(let message), .schema(let message),
+             .migration(let message), .versionUnsupported(let message),
              .misuse(let message), .interrupted(let message), .sql(let message):
             return message
         }

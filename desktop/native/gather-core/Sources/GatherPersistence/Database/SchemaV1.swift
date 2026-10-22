@@ -80,6 +80,17 @@ public enum SchemaV1 {
     public static let expectedShapeFingerprint: String =
         "7c7e0d143f93951e5c68fa07b962c65f157750f11bd638950c0931e5e0ee44c2"
 
+    /// 列形期望的类型化视图（WP6a）：open / SchemaCatalog / SchemaMigrator 共用同一份
+    /// 计数、关键列与指纹。与上面四个 expected* 常量同源，禁止另写第二份。
+    public static let shape = SchemaShapeExpectation(
+        tableCount: expectedTableCount,
+        columnCount: expectedColumnCount,
+        explicitIndexCount: expectedExplicitIndexCount,
+        foreignKeyCount: expectedForeignKeyCount,
+        requiredColumns: requiredTableColumns,
+        fingerprint: expectedShapeFingerprint
+    )
+
     /// 建库 DDL 全文（单次 exec 执行；含 PRAGMA foreign_keys / user_version）。
     public static let sql: String = """
     -- SchemaV1 · Gather 本地库最终形态（43 表 / 373 列 / 69 索引 / 62 外键）
