@@ -350,5 +350,49 @@ public final class PhotoRepo {
             }
         }
     }
+
+    /// WP3b-1（WorkspaceStatus 下沉）：按状态计数（缺省语义同旧内联 SQL）。
+    public func countByStatus(sessionId: String, status: String) throws -> Int {
+        let row = try connection.prepare("""
+            SELECT COUNT(*) AS count FROM photos
+            WHERE session_id = ? AND status = ?
+          """).get([.text(sessionId), .text(status)])
+        return Int(row?[0].intValue ?? 0)
+    }
+
+    /// WP3b-1（MetadataService 下沉）：800/块 IN 查询，列序与旧实现一致。
+    public func getLookupByIds(_ photoIds: [String]) throws -> [PhotoLookupRow] {
+        if photoIds.isEmpty { return [] }
+        var photos: [PhotoLookupRow] = []
+        for chunkStart in stride(from: 0, to: photoIds.count, by: 800) {
+            let chunk = Array(photoIds[chunkStart..<min(chunkStart + 800, photoIds.count)])
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try connection.prepare(
+                "SELECT id, session_id, filepath FROM photos WHERE id IN (\(placeholders))"
+            ).query(chunk.map { .text($0) })
+            photos.append(contentsOf: rows.map {
+                PhotoLookupRow(
+                    id: $0[0].textValue ?? "",
+                    sessionId: $0[1].textValue ?? "",
+                    filepath: $0[2].textValue ?? ""
+                )
+            })
+        }
+        return photos
+    }
+
+    /// WP3b-1（ExportService.session_summary 下沉）：旧查询列序逐字保留。
+    public func reportRows(sessionId: String) throws -> [PhotoReportRow] {
+        let rows = try connection.prepare(
+            "SELECT filename, filepath, status FROM photos WHERE session_id = ? ORDER BY rowid"
+        ).query([.text(sessionId)])
+        return rows.map {
+            PhotoReportRow(
+                filename: $0[0].textValue ?? "",
+                filepath: $0[1].textValue ?? "",
+                status: $0[2].textValue ?? ""
+            )
+        }
+    }
 }
 

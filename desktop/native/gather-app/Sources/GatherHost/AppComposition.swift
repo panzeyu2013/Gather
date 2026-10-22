@@ -202,7 +202,8 @@ public struct AppComposition {
         let metadataService = MetadataService(
             metadataCacheRepo: metadataCacheRepo,
             xmp: xmp,
-            connection: db,
+            photoRepo: photoRepo,
+            transactions: db,
             mutations: metadataMutationService,
             flushPending: { sessionId in
                 try await writebackService.executePending(
@@ -235,7 +236,11 @@ public struct AppComposition {
         )
         let personRepo = PersonRepo(connection: db)
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
-        let exportService = ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
+        let exportService = ExportService(
+            photoRepo: photoRepo,
+            sessionRepo: sessionRepo,
+            reports: ExportReportRepo(connection: db)
+        )
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoRepo: photoRepo,
@@ -275,21 +280,26 @@ public struct AppComposition {
             sessionRepo: sessionRepo,
             photoRepo: photoRepo,
             faceRepo: FaceRepo(connection: db),
-            connection: db,
+            personRepo: PersonRepo(connection: db),
+            metadataCacheRepo: metadataCacheRepo,
+            jobRepo: AnalysisJobRepo(connection: db),
+            assetRepo: assetRepo,
+            deliverySummary: DeliverySummaryQuery(connection: db),
+            transactions: db,
             dimensionsProvider: { path in
                 let dims = try RAWDecoder.getDimensions(path: path)
                 return (dims.width, dims.height)
-            },
-            assetRepo: assetRepo
+            }
         )
         // 工作区计数读交付模型（DeliverySummaryQuery），不再注入旧 outbox 仓储。
         let workspaceStatusService = WorkspaceStatusService(
-            connection: db,
             sessionRepo: sessionRepo,
-            photoRepo: photoRepo
+            photoRepo: photoRepo,
+            jobRepo: AnalysisJobRepo(connection: db),
+            deliverySummary: DeliverySummaryQuery(connection: db)
         )
-        let filterEngine = FilterEngine(connection: db)
-        let navigationService = NavigationService(connection: db)
+        let filterEngine = FilterEngine(query: PhotoFilterQuery(connection: db))
+        let navigationService = NavigationService(navigationRepo: NavigationRepo(connection: db))
         let duplicateService = DuplicateService(
             connection: db,
             thumbnailProvider: { path, size in
@@ -304,10 +314,10 @@ public struct AppComposition {
                 ).result
             }
         )
-        let templateService = TemplateService(connection: db, settings: settingsService)
+        let templateService = TemplateService(templates: TemplateRepo(connection: db), settings: settingsService)
         let qualityService = QualityService(
             photoRepo: photoRepo,
-            connection: db,
+            qualityRepo: QualityRepo(connection: db),
             imageProvider: QualityService.defaultImageProvider,
             statProvider: QualityService.defaultStat
         )

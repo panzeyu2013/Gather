@@ -37,27 +37,39 @@ public final class SessionService {
     /// TS: ImageService.getDimensions(filepath) → { width, height }，失败抛错。
     private let dimensionsProvider: (String) throws -> (width: Int, height: Int)
 
-    private let sessionRepo: SessionRepo
-    private let photoRepo: PhotoRepo
-    private let faceRepo: FaceRepo
-    private let assetRepo: AssetRepo?
-    private let connection: DBConnection
+    private let sessionRepo: any SessionRepository
+    private let photoRepo: any PhotoRepository
+    private let faceRepo: any FaceRepository
+    private let personRepo: any PersonRepository
+    private let metadataCacheRepo: any MetadataRepository
+    private let jobRepo: any JobRepository
+    private let assetRepo: (any AssetRepository)?
+    private let deliverySummary: any DeliverySummaryReading
+    private let transactions: any TransactionRunner
 
     public init(
-        sessionRepo: SessionRepo,
-        photoRepo: PhotoRepo,
-        faceRepo: FaceRepo,
-        connection: DBConnection,
+        sessionRepo: any SessionRepository,
+        photoRepo: any PhotoRepository,
+        faceRepo: any FaceRepository,
+        personRepo: any PersonRepository,
+        metadataCacheRepo: any MetadataRepository,
+        jobRepo: any JobRepository,
+        assetRepo: (any AssetRepository)? = nil,
+        deliverySummary: any DeliverySummaryReading,
+        transactions: any TransactionRunner,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         dimensionsProvider: @escaping (String) throws -> (width: Int, height: Int) = { _ in
             throw SessionServiceError.sourceNotDir
-        },
-        assetRepo: AssetRepo? = nil
+        }
     ) {
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
         self.faceRepo = faceRepo
-        self.connection = connection
+        self.personRepo = personRepo
+        self.metadataCacheRepo = metadataCacheRepo
+        self.jobRepo = jobRepo
+        self.deliverySummary = deliverySummary
+        self.transactions = transactions
         self.getNumber = getNumber
         self.dimensionsProvider = dimensionsProvider
         self.assetRepo = assetRepo
@@ -104,34 +116,22 @@ public final class SessionService {
 
     public func deleteSession(_ sessionId: String, confirmed: Bool) throws {
         if !confirmed { throw SessionServiceError.deleteNotConfirmed }
-        try connection.transaction {
+        try transactions.transaction {
             try deleteSessionDependencies(sessionId)
             let deleted = try sessionRepo.delete(id: sessionId)
             if !deleted { throw SessionServiceError.sessionNotFound }
-            _ = try connection.prepare("""
-                UPDATE assets SET status = 'orphan', updated_at = ?
-                WHERE status != 'orphan'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
-                  )
-              """).run([.text(nowISOString())])
+            try sessionRepo.markOrphanedAssets()
         }
     }
 
     public func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws -> Int {
         if !confirmed { throw SessionServiceError.deleteNotConfirmed }
-        return try connection.transaction {
+        return try transactions.transaction {
             for id in sessionIds {
                 try deleteSessionDependencies(id)
             }
             _ = try sessionRepo.deleteMany(ids: sessionIds)
-            _ = try connection.prepare("""
-                UPDATE assets SET status = 'orphan', updated_at = ?
-                WHERE status != 'orphan'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
-                  )
-              """).run([.text(nowISOString())])
+            try sessionRepo.markOrphanedAssets()
             return sessionIds.count
         }
     }
@@ -144,18 +144,15 @@ public final class SessionService {
         try faceRepo.deleteObservationsBySession(sessionId)
         // similarity_hashes 无级联引用 photos。
         try sessionRepo.deleteSimilarityDataBySession(sessionId: sessionId)
-        _ = try connection.prepare("DELETE FROM person_embeddings WHERE session_id = ?").run([.text(sessionId)])
-        _ = try connection.prepare("DELETE FROM person_photos WHERE session_id = ?").run([.text(sessionId)])
-        _ = try connection.prepare("DELETE FROM photo_metadata_cache WHERE session_id = ?").run([.text(sessionId)])
+        try personRepo.deleteSessionRows(sessionId: sessionId)
+        try metadataCacheRepo.deleteBySession(sessionId)
         // V1（D-033）：role_bindings.cluster_id 与 person_photos.photo_id/session_id 是
         // RESTRICT，必须在删 session/photos 之前显式清掉（上面删簇时已按会话删
         // role_bindings；这里再显式删一次，防止未来出现脱离簇的绑定行让删除整体
         // 失败）。writeback_items 表已随旧同步栈删除，写回行由 deliveries 级联处理。
-        _ = try connection.prepare("DELETE FROM role_bindings WHERE session_id = ?").run([.text(sessionId)])
         // 审计 P2：analysis_jobs 无 FK，会话删除后残留僵尸行（状态查询/
         // 任务中心会一直看到幽灵任务）。
-        _ = try connection.prepare("DELETE FROM analysis_jobs WHERE scope_type = 'session' AND scope_id = ?")
-            .run([.text(sessionId)])
+        try jobRepo.deleteSessionJobs(sessionId: sessionId)
         try photoRepo.deleteBySession(sessionId: sessionId)
     }
 
@@ -199,7 +196,7 @@ public final class SessionService {
         let result = try photoRepo.addPhotos(sessionId: sessionId, filepaths: entries, source)
         _ = try assetRepo?.backfillSession(sessionId)
         let totalCount = try photoRepo.countBySession(sessionId: sessionId)
-        try connection.transaction {
+        try transactions.transaction {
             try sessionRepo.updatePhotoCount(id: sessionId, count: totalCount)
             // 新照片使先前任何分析失效：同一事务内 bump index_seq，
             // 使最近一次 ok run 过期（1.4.2）。
@@ -237,8 +234,7 @@ public final class SessionService {
               let analysis = AnalysisStatus(rawValue: row.analysisStatus) else {
             throw SessionServiceError.sessionNotFound
         }
-        let delivery = try DeliverySummaryQuery(connection: connection)
-            .summary(sessionId: row.id)
+        let delivery = try deliverySummary.summary(sessionId: row.id)
         return SessionData(
             id: row.id,
             name: row.name,

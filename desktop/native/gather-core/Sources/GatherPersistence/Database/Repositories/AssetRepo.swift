@@ -1168,6 +1168,18 @@ public final class AssetRepo {
         return (migrated: 1, offline: onlineStatus == "online" ? 0 : 1)
     }
 
+    /// WP3b-1（SessionService 下沉）：删除会话后把无会话引用的资产标 orphan。
+    /// 旧 SQL 逐字保留（status != 'orphan' + NOT EXISTS session_assets）。
+    public func markOrphanedAssets() throws {
+        _ = try connection.prepare("""
+            UPDATE assets SET status = 'orphan', updated_at = ?
+            WHERE status != 'orphan'
+              AND NOT EXISTS (
+                SELECT 1 FROM session_assets sa WHERE sa.asset_id = assets.id
+              )
+          """).run([.text(nowISOString())])
+    }
+
     // ─────────────────────────── 私有：扩展名分类 ───────────────────────────
 
     // 扩展名分类的**唯一真相源**已上移到 Protocol/PhotoFileTypes（Cut 3a / E-01）：

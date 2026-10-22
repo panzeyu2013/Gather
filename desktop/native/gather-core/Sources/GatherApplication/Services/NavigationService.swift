@@ -81,10 +81,10 @@ public final class NavigationService {
     /// TS: IN chunk 800（quality 查询）。
     private static let qualityChunkSize = 800
 
-    private let connection: DBConnection
+    private let navigationRepo: any NavigationRepository
 
-    public init(connection: DBConnection) {
-        self.connection = connection
+    public init(navigationRepo: any NavigationRepository) {
+        self.navigationRepo = navigationRepo
     }
 
     // MARK: API
@@ -103,7 +103,7 @@ public final class NavigationService {
 
         if !dryRun {
             let cached = try list(sessionId: sessionId, capturedAt: capturedAt)
-            let cachedFingerprint = try Self.cachedFingerprint(connection: connection, sessionId: sessionId)
+            let cachedFingerprint = try navigationRepo.cachedFingerprint(sessionId: sessionId)
             if !cached.isEmpty && cachedFingerprint == fingerprint {
                 return cached
             }
@@ -124,11 +124,7 @@ public final class NavigationService {
 
     /// TS: list(sessionId, capturedAt?) —— 组 <2 张被过滤。
     public func list(sessionId: String, capturedAt: [String: String]? = nil) throws -> [NavigationGroup] {
-        let rows = try connection.prepare("""
-            SELECT id, group_type, photo_ids_json, lead_photo_id, explanation, source
-            FROM navigation_groups WHERE session_id = ?
-            ORDER BY group_type, created_at, id
-        """).query([.text(sessionId)])
+        let rows = try navigationRepo.listGroups(sessionId: sessionId)
 
         let capturedByPhoto: [String: String]
         if let capturedAt {
@@ -140,19 +136,18 @@ public final class NavigationService {
             )
         }
         return rows.compactMap { row -> NavigationGroup? in
-            guard let photoIdsRaw = row[2].textValue,
-                  let photoIds = parsePhotoIds(photoIdsRaw),
+            guard let photoIds = parsePhotoIds(row.photoIdsJSON),
                   photoIds.count >= 2
             else { return nil }
             return NavigationGroup(
-                id: row[0].textValue ?? "",
-                type: NavigationGroupType(rawValue: row[1].textValue ?? "") ?? .burst,
+                id: row.id,
+                type: NavigationGroupType(rawValue: row.type) ?? .burst,
                 photoIds: photoIds,
                 startAt: capturedByPhoto[photoIds[0]] ?? "",
                 endAt: capturedByPhoto[photoIds[photoIds.count - 1]] ?? "",
-                leadPhotoId: row[3].textValue,
-                explanation: row[4].textValue ?? "",
-                source: NavigationGroupSource(rawValue: row[5].textValue ?? "") ?? .automatic
+                leadPhotoId: row.leadPhotoId,
+                explanation: row.explanation,
+                source: NavigationGroupSource(rawValue: row.source) ?? .automatic
             )
         }
     }
@@ -190,13 +185,11 @@ public final class NavigationService {
             ),
         ].map { withLead(group: $0, byId: byId) }
 
-        try connection.transaction {
-            _ = try connection.prepare("DELETE FROM navigation_groups WHERE id = ? AND session_id = ?")
-                .run([.text(groupId), .text(sessionId)])
-            for candidate in replacements {
-                try insertGroup(sessionId: sessionId, group: candidate, source: .manual, fingerprint: "")
-            }
-        }
+        try navigationRepo.replaceGroup(
+            sessionId: sessionId,
+            groupId: groupId,
+            with: replacements.map { write($0, source: .manual, fingerprint: "") }
+        )
         return try list(sessionId: sessionId)
     }
 
@@ -231,14 +224,11 @@ public final class NavigationService {
             ),
             byId: byId
         )
-        try connection.transaction {
-            let placeholders = uniqueIds.map { _ in "?" }.joined(separator: ", ")
-            _ = try connection.prepare("""
-                DELETE FROM navigation_groups
-                WHERE session_id = ? AND id IN (\(placeholders))
-            """).run([.text(sessionId)] + uniqueIds.map(DBValue.text))
-            try insertGroup(sessionId: sessionId, group: merged, source: .manual, fingerprint: "")
-        }
+        try navigationRepo.mergeGroups(
+            sessionId: sessionId,
+            groupIds: uniqueIds,
+            into: write(merged, source: .manual, fingerprint: "")
+        )
         return try list(sessionId: sessionId)
     }
 
@@ -247,50 +237,16 @@ public final class NavigationService {
     /// TS: captureRows —— 主查询 + 每 800 个 asset_file 一次 IN 查询的
     /// technical_quality 结果（每文件最新一条）。
     private func captureRows(sessionId: String) throws -> [CaptureRow] {
-        let rows = try connection.prepare("""
-            SELECT p.id, p.filepath, p.filename,
-                COALESCE(NULLIF(pmc.date_taken, ''), p.created_at) AS captured_at,
-                COALESCE(pmc.camera_model, '') AS camera_model,
-                COALESCE(sh.hash_hex, '') AS hash_hex,
-                COALESCE(pmc.rating, 0) AS rating,
-                p.asset_file_id
-            FROM photos p
-            LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
-            LEFT JOIN similarity_hashes sh ON sh.photo_id = p.id AND sh.session_id = p.session_id
-            WHERE p.session_id = ? AND p.status != 'missing'
-            ORDER BY captured_at, p.rowid
-        """).query([.text(sessionId)])
-
-        let fileIds = Array(Set(rows.compactMap { $0[7].textValue }))
-        var qualityByFile: [String: String] = [:]
-        for offset in stride(from: 0, to: fileIds.count, by: Self.qualityChunkSize) {
-            let chunk = Array(fileIds[offset..<min(offset + Self.qualityChunkSize, fileIds.count)])
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let analysisRows = try connection.prepare("""
-                SELECT aa.asset_file_id, aa.result_json
-                FROM asset_analysis aa
-                WHERE aa.asset_file_id IN (\(placeholders)) AND aa.analysis_type = 'technical_quality'
-                ORDER BY aa.asset_file_id, aa.updated_at DESC
-            """).query(chunk.map(DBValue.text))
-            for row in analysisRows {
-                if let fileId = row[0].textValue, qualityByFile[fileId] == nil {
-                    qualityByFile[fileId] = row[1].textValue ?? ""
-                }
-            }
-        }
-
-        return rows.map { row in
-            let qualityJson = row[7].textValue != nil ? (qualityByFile[row[7].textValue!] ?? nil) : nil
-            let quality = safeQuality(value: qualityJson)
-            let rating = row[6].intValue.map { Double($0) } ?? row[6].doubleValue ?? 0
+        try navigationRepo.captureRows(sessionId: sessionId).map { row in
+            let quality = safeQuality(value: row.qualityJSON)
             return CaptureRow(
-                id: row[0].textValue ?? "",
-                filepath: row[1].textValue ?? "",
-                filename: row[2].textValue ?? "",
-                capturedAt: row[3].textValue ?? "",
-                cameraModel: row[4].textValue ?? "",
-                hashHex: row[5].textValue ?? "",
-                rating: rating,
+                id: row.id,
+                filepath: row.filepath,
+                filename: row.filename,
+                capturedAt: row.capturedAt,
+                cameraModel: row.cameraModel,
+                hashHex: row.hashHex,
+                rating: row.rating,
                 qualityScore: quality.qualityScore,
                 qualityWarnings: quality.warnings,
                 hasQuality: quality.hasQuality
@@ -400,14 +356,11 @@ public final class NavigationService {
 
     /// TS: persistAutomatic —— manual 成员从自动组剔除（per type）。
     private func persistAutomatic(sessionId: String, groups: [NavigationGroup], fingerprint: String) throws {
-        let manualRows = try connection.prepare("""
-            SELECT group_type, photo_ids_json FROM navigation_groups
-            WHERE session_id = ? AND source = 'manual'
-        """).query([.text(sessionId)])
+        let manualRows = try navigationRepo.manualGroups(sessionId: sessionId)
         var manuallyGrouped: [NavigationGroupType: Set<String>] = [:]
         for row in manualRows {
-            guard let type = NavigationGroupType(rawValue: row[0].textValue ?? ""),
-                  let ids = parsePhotoIds(row[1].textValue ?? "")
+            guard let type = NavigationGroupType(rawValue: row.type),
+                  let ids = parsePhotoIds(row.photoIdsJSON)
             else { continue }
             manuallyGrouped[type, default: []].formUnion(ids)
         }
@@ -428,40 +381,27 @@ public final class NavigationService {
                 ))
             }
         }
-        try connection.transaction {
-            _ = try connection.prepare(
-                "DELETE FROM navigation_groups WHERE session_id = ? AND source = 'automatic'"
-            ).run([.text(sessionId)])
-            for group in automaticGroups {
-                try insertGroup(sessionId: sessionId, group: group, source: .automatic, fingerprint: fingerprint)
-            }
-        }
+        try navigationRepo.replaceAutomaticGroups(
+            sessionId: sessionId,
+            groups: automaticGroups.map { write($0, source: .automatic, fingerprint: fingerprint) }
+        )
     }
 
-    private func insertGroup(
-        sessionId: String,
-        group: NavigationGroup,
+    /// NavigationGroup → 仓储写入载荷（JSON 编码在 Persistence）。
+    private func write(
+        _ group: NavigationGroup,
         source: NavigationGroupSource,
         fingerprint: String
-    ) throws {
-        let now = Self.nowISO()
-        _ = try connection.prepare("""
-            INSERT INTO navigation_groups (
-                id, session_id, group_type, photo_ids_json, lead_photo_id,
-                explanation, input_fingerprint, source, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """).run([
-            .text(group.id),
-            .text(sessionId),
-            .text(group.type.rawValue),
-            .text(photoIdsJSON(group.photoIds)),
-            group.leadPhotoId.map(DBValue.text) ?? .null,
-            .text(group.explanation),
-            .text(fingerprint),
-            .text(source.rawValue),
-            .text(now),
-            .text(now),
-        ])
+    ) -> NavigationGroupWrite {
+        NavigationGroupWrite(
+            id: group.id,
+            type: group.type.rawValue,
+            photoIds: group.photoIds,
+            leadPhotoId: group.leadPhotoId,
+            explanation: group.explanation,
+            source: source.rawValue,
+            fingerprint: fingerprint
+        )
     }
 
     // MARK: 指纹
@@ -486,13 +426,7 @@ public final class NavigationService {
         return SHA256.hash(Data(data)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func cachedFingerprint(connection: DBConnection, sessionId: String) throws -> String? {
-        guard let row = try connection.prepare("""
-            SELECT input_fingerprint FROM navigation_groups
-            WHERE session_id = ? AND source = 'automatic' LIMIT 1
-        """).get([.text(sessionId)]) else { return nil }
-        return row[0].textValue
-    }
+
 }
 
 // MARK: - 纯函数（对账友好，独立测试）
@@ -539,17 +473,4 @@ private func parsePhotoIds(_ json: String) -> [String]? {
           let ids = try? JSONSerialization.jsonObject(with: data) as? [String]
     else { return nil }
     return ids
-}
-
-private func photoIdsJSON(_ ids: [String]) -> String {
-    let data = try! JSONSerialization.data(withJSONObject: ids)
-    return String(data: data, encoding: .utf8) ?? "[]"
-}
-
-private extension NavigationService {
-    static func nowISO() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: Date())
-    }
 }

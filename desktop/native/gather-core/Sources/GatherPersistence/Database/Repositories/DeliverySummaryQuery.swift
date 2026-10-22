@@ -350,6 +350,18 @@ public struct DeliverySummaryQuery: Sendable {
         return counts
     }
 
+    /// WP3b-1（WorkspaceStatus 下沉）：本会话某模块是否存在已落盘 item。
+    public func hasWrittenBackItem(sessionId: String, module: DeliveryModule) throws -> Bool {
+        try connection.prepare("""
+            SELECT 1
+            FROM delivery_items di
+            JOIN delivery_sessions ds ON ds.delivery_id = di.delivery_id
+            WHERE ds.session_id = ? AND di.module = ?
+              AND di.status IN ('written', 'synced')
+            LIMIT 1
+          """).get([.text(sessionId), .text(module.rawValue)]) != nil
+    }
+
     private func itemCounts(
         sessionId: String,
         module: DeliveryModule?

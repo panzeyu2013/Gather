@@ -128,22 +128,22 @@ public final class QualityService: @unchecked Sendable {
     /// stat 提供者（TS: node:fs/promises stat）。
     public typealias StatProvider = (String) throws -> (size: Int64, mtimeMs: Double)
 
-    private let photoRepo: PhotoRepo
-    private let connection: DBConnection
+    private let photoRepo: any PhotoRepository
+    private let qualityRepo: any QualityRepository
     private let imageProvider: ImageMetricsProvider
     private let statProvider: StatProvider
     /// TS: culling?.invalidateSessionLookup（可选依赖）。
     private let invalidateCullingLookup: ((String) -> Void)?
 
     public init(
-        photoRepo: PhotoRepo,
-        connection: DBConnection,
+        photoRepo: any PhotoRepository,
+        qualityRepo: any QualityRepository,
         imageProvider: @escaping ImageMetricsProvider = QualityService.defaultImageProvider,
         statProvider: @escaping StatProvider = QualityService.defaultStat,
         invalidateCullingLookup: ((String) -> Void)? = nil
     ) {
         self.photoRepo = photoRepo
-        self.connection = connection
+        self.qualityRepo = qualityRepo
         self.imageProvider = imageProvider
         self.statProvider = statProvider
         self.invalidateCullingLookup = invalidateCullingLookup
@@ -226,7 +226,7 @@ public final class QualityService: @unchecked Sendable {
             try context?.throwIfCancelled()
             let assetFileId = photo.assetFileId
             var result: QualityResult
-            var insert: QualityInsert?
+            var insert: QualityAnalysisInsert?
             do {
                 let source = try self.statProvider(photo.filepath)
                 var inputFingerprint = "\(source.size):\(source.mtimeMs.rounded())"
@@ -326,7 +326,7 @@ public final class QualityService: @unchecked Sendable {
                     )
                     // TS: 无资产文件行的照片不落库（failed 分支 insert 为 nil）。
                     guard let assetFileId else { throw QualityServiceError.noAssetFile }
-                    insert = QualityInsert(
+                    insert = QualityAnalysisInsert(
                         photoId: photo.id,
                         assetFileId: assetFileId,
                         resultJson: try self.encodeJSON(result),
@@ -352,7 +352,7 @@ public final class QualityService: @unchecked Sendable {
                     updatedAt: failedAt
                 )
                 if let assetFileId {
-                    insert = QualityInsert(
+                    insert = QualityAnalysisInsert(
                         photoId: photo.id,
                         assetFileId: assetFileId,
                         resultJson: try self.encodeJSON(result),
@@ -372,30 +372,11 @@ public final class QualityService: @unchecked Sendable {
         if !photos.isEmpty { reportProgress(photos.count) }
 
         // 全部 INSERT 单事务串行提交（并行计算阶段不碰写）。
-        if outcomes.contains(where: { $0.insert != nil }) {
-            let insertStmt = try connection.prepare("""
-                INSERT OR REPLACE INTO asset_analysis (
-                  photo_id, asset_file_id, analysis_type, result_json, warnings_json,
-                  model_id, model_version, input_fingerprint, created_at, updated_at
-                ) VALUES (?, ?, 'technical_quality', ?, ?, ?, ?, ?, ?, ?)
-              """)
-            try connection.transaction {
-                for outcome in outcomes {
-                    guard let insert = outcome.insert else { continue }
-                    _ = try insertStmt.run([
-                        .text(insert.photoId),
-                        .text(insert.assetFileId),
-                        .text(insert.resultJson),
-                        .text(insert.warningsJson),
-                        .text(Self.modelId),
-                        .text(Self.modelVersion),
-                        .text(insert.fingerprint),
-                        .text(insert.updatedAt),
-                        .text(insert.updatedAt),
-                    ])
-                }
-            }
-        }
+        try qualityRepo.insertResults(
+            outcomes.compactMap(\.insert),
+            modelId: Self.modelId,
+            modelVersion: Self.modelVersion
+        )
         // TS: culling 查找缓存失效（新结果已提交）。
         invalidateCullingLookup?(sessionId)
 
@@ -413,30 +394,17 @@ public final class QualityService: @unchecked Sendable {
             .map { Array(Set($0)).filter { sessionIds.contains($0) } }
             ?? Array(sessionIds)
         if ids.isEmpty { return [] }
-        var rows: [(resultJson: String, requestedPhotoId: String)] = []
-        for chunk in chunkIds(ids) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let queryRows = try connection.prepare("""
-                SELECT aa.result_json, p.id AS requested_photo_id
-                FROM photos p
-                JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
-                WHERE aa.analysis_type = 'technical_quality' AND p.id IN (\(placeholders))
-                ORDER BY aa.updated_at DESC
-              """).query(chunk.map { .text($0) })
-            for row in queryRows {
-                rows.append((row[0].textValue ?? "", row[1].textValue ?? ""))
-            }
-        }
+        let rows = try qualityRepo.latestResults(photoIds: ids)
         var latest: [String: QualityResult] = [:]
         for row in rows {
-            if latest[row.requestedPhotoId] != nil { continue }
+            if latest[row.photoId] != nil { continue }
             guard let data = row.resultJson.data(using: .utf8),
                   var result = try? JSONDecoder().decode(QualityResult.self, from: data) else {
                 // 跳过无效历史分析行（TS catch 语义）。
                 continue
             }
-            result.photoId = row.requestedPhotoId
-            latest[row.requestedPhotoId] = result
+            result.photoId = row.photoId
+            latest[row.photoId] = result
         }
         var results = Array(latest.values)
         let groups = try loadSimilarityGroups(sessionId: sessionId)
@@ -450,26 +418,17 @@ public final class QualityService: @unchecked Sendable {
     /// （updated_at DESC；指纹精确匹配在 stat 后做）。
     private func getCachedBatch(_ photos: [PhotoProjectionRow]) throws -> [String: [(fingerprint: String, result: QualityResult)]] {
         var rowsByPhoto: [String: [(fingerprint: String, result: QualityResult)]] = [:]
-        let ids = photos.map(\.id)
-        for chunk in chunkIds(ids) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
-                SELECT p.id AS photo_id, aa.result_json, aa.input_fingerprint
-                FROM asset_analysis aa
-                JOIN photos p ON p.asset_file_id = aa.asset_file_id
-                WHERE p.id IN (\(placeholders)) AND aa.analysis_type = 'technical_quality'
-                  AND model_id = ? AND model_version = ?
-                ORDER BY aa.updated_at DESC
-              """).query(chunk.map { .text($0) } + [.text(Self.modelId), .text(Self.modelVersion)])
-            for row in rows {
-                let photoId = row[0].textValue ?? ""
-                guard let json = row[1].textValue,
-                      let data = json.data(using: .utf8),
-                      let result = try? JSONDecoder().decode(QualityResult.self, from: data) else {
-                    continue
-                }
-                rowsByPhoto[photoId, default: []].append((row[2].textValue ?? "", result))
+        let rows = try qualityRepo.cachedResults(
+            photoIds: photos.map(\.id),
+            modelId: Self.modelId,
+            modelVersion: Self.modelVersion
+        )
+        for row in rows {
+            guard let data = row.resultJson.data(using: .utf8),
+                  let result = try? JSONDecoder().decode(QualityResult.self, from: data) else {
+                continue
             }
+            rowsByPhoto[row.photoId, default: []].append((row.fingerprint, result))
         }
         return rowsByPhoto
     }
@@ -477,58 +436,28 @@ public final class QualityService: @unchecked Sendable {
     /// TS: getFacesBatch —— 每照片最大人脸观测（bbox 面积降序首行）。
     private func getFacesBatch(sessionId: String, photos: [PhotoProjectionRow]) throws -> [String: FaceBox] {
         var faces: [String: FaceBox] = [:]
-        let ids = photos.map(\.id)
-        for chunk in chunkIds(ids) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
-                SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
-                FROM face_observations
-                WHERE session_id = ? AND photo_id IN (\(placeholders))
-                ORDER BY bbox_w * bbox_h DESC
-              """).query([.text(sessionId)] + chunk.map { .text($0) })
-            for row in rows {
-                let photoId = row[0].textValue ?? ""
-                // 按面积降序，每照片首行即最大人脸。
-                if faces[photoId] == nil {
-                    faces[photoId] = FaceBox(
-                        x: row[1].doubleValue ?? 0,
-                        y: row[2].doubleValue ?? 0,
-                        w: row[3].doubleValue ?? 0,
-                        h: row[4].doubleValue ?? 0,
-                        analysisSignature: row[5].textValue ?? ""
-                    )
-                }
+        let records = try qualityRepo.maxFaceBoxes(
+            sessionId: sessionId,
+            photoIds: photos.map(\.id)
+        )
+        for record in records {
+            // 按面积降序，每照片首行即最大人脸。
+            if faces[record.photoId] == nil {
+                faces[record.photoId] = FaceBox(
+                    x: record.x,
+                    y: record.y,
+                    w: record.w,
+                    h: record.h,
+                    analysisSignature: record.analysisSignature
+                )
             }
         }
         return faces
     }
 
-    private func chunkIds(_ ids: [String]) -> [[String]] {
-        var chunks: [[String]] = []
-        for offset in stride(from: 0, to: ids.count, by: Self.inChunkSize) {
-            chunks.append(Array(ids[offset..<min(offset + Self.inChunkSize, ids.count)]))
-        }
-        return chunks
-    }
-
     /// TS: loadSimilarityGroups —— 最新 similarity_results 的组成员一次读完。
     private func loadSimilarityGroups(sessionId: String) throws -> [Int: [String]]? {
-        let latest = try connection.prepare(
-            "SELECT id FROM similarity_results WHERE session_id = ? ORDER BY id DESC LIMIT 1"
-        ).get([.text(sessionId)])
-        guard let latest, let resultId = latest[0].intValue else { return nil }
-        let rows = try connection.prepare("""
-            SELECT group_index, photo_id
-            FROM similarity_result_members
-            WHERE session_id = ? AND result_id = ?
-            ORDER BY group_index, photo_id
-          """).query([.text(sessionId), .int(resultId)])
-        var groups: [Int: [String]] = [:]
-        for row in rows {
-            let groupIndex = Int(row[0].intValue ?? 0)
-            groups[groupIndex, default: []].append(row[1].textValue ?? "")
-        }
-        return groups
+        try qualityRepo.latestSimilarityGroups(sessionId: sessionId)
     }
 
     /// TS: applyRelativeRanks —— 仅持久化相似组内的成功结果按 qualityScore 降序
@@ -568,17 +497,7 @@ public final class QualityService: @unchecked Sendable {
 /// 单照片分析结果 + 待落库行（TS worker 返回对）。
 private struct AnalyzeOutcome {
     let result: QualityResult
-    let insert: QualityInsert?
-}
-
-/// TS: 落库行（result_json / warnings_json 已序列化）。
-private struct QualityInsert {
-    let photoId: String
-    let assetFileId: String
-    let resultJson: String
-    let warningsJson: String
-    let fingerprint: String
-    let updatedAt: String
+    let insert: QualityAnalysisInsert?
 }
 
 /// face_observations 最大人脸（TS getFacesBatch 行）。

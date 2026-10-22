@@ -378,6 +378,14 @@ public final class PersonRepo {
 
     /// 按会话对账角色绑定与人物库投影；同时把按名归属的簇补上显式链接
     /// （rename/delete 的归属判据）。
+    /// WP3b-1（SessionService 下沉）：删除会话前清理 person 侧 RESTRICT/无 FK 行。
+    /// 旧顺序：person_embeddings → person_photos → role_bindings（逐字保留）。
+    public func deleteSessionRows(sessionId: String) throws {
+        _ = try connection.prepare("DELETE FROM person_embeddings WHERE session_id = ?").run([.text(sessionId)])
+        _ = try connection.prepare("DELETE FROM person_photos WHERE session_id = ?").run([.text(sessionId)])
+        _ = try connection.prepare("DELETE FROM role_bindings WHERE session_id = ?").run([.text(sessionId)])
+    }
+
     public func reconcileSession(sessionId: String) throws {
         try connection.transaction {
             let bindingRows = try connection.prepare(

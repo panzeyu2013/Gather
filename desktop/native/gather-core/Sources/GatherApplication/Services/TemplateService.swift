@@ -18,7 +18,7 @@ public enum TemplateServiceError: Error, Equatable {
     case templateNotFound
     /// TS: Error('SESSION_NOT_FOUND')
     case sessionNotFound
-    /// TS: Error(`Cannot apply template to session with status "${status}". Expected draft or photos_loaded.`)
+    /// TS: Error(`Cannot apply template to session with status "\(status)". Expected draft or photos_loaded.`)
     case invalidSessionStatus(String)
 }
 
@@ -60,45 +60,38 @@ public struct TemplateUpdateFields: Equatable, Sendable {
 
 /// TS: TemplateService（desktop/src/main/services/template/template.service.ts）。
 public final class TemplateService {
-    private let connection: DBConnection
+    private let templates: any TemplateRepository
     private let settings: SettingsService
 
-    public init(connection: DBConnection, settings: SettingsService) {
-        self.connection = connection
+    public init(templates: any TemplateRepository, settings: SettingsService) {
+        self.templates = templates
         self.settings = settings
     }
 
     /// TS: list —— ORDER BY updated_at DESC。
     public func list() throws -> [TemplateData] {
-        let rows = try connection.prepare(
-            "SELECT * FROM workflow_templates ORDER BY updated_at DESC"
-        ).query([])
-        return try rows.map { try rowToData(row: $0) }
+        try templates.list().map { try rowToData(row: $0) }
     }
 
     /// TS: get。
     public func get(id: String) throws -> TemplateData? {
-        guard let row = try connection.prepare(
-            "SELECT * FROM workflow_templates WHERE id = ?"
-        ).get([.text(id)]) else { return nil }
+        guard let row = try templates.get(id: id) else { return nil }
         return try rowToData(row: row)
     }
 
     /// TS: create —— id 用 UUID v4（TS crypto.randomUUID），时间戳 ISO-8601。
     public func create(name: String, description: String, config: WorkflowTemplateConfig) throws -> TemplateData {
         let id = newUUIDString()
-        let now = nowISOString()
         let configJSON = try JSONValue.stringify(JSONValue.object(Self.configToJSON(config)))
-        _ = try connection.prepare("""
-            INSERT INTO workflow_templates (id, name, description, config, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-          """).run([
-            .text(id), .text(name), .text(description), .text(configJSON), .text(now), .text(now),
-        ])
-        guard let created = try get(id: id) else {
+        guard let created = try templates.create(
+            id: id,
+            name: name,
+            description: description,
+            configJSON: configJSON
+        ) else {
             throw TemplateServiceError.templateNotFound
         }
-        return created
+        return try rowToData(row: created)
     }
 
     /// TS: update —— 动态 SET 子句；无字段更新时返回现值（不触碰 updated_at）。
@@ -106,37 +99,25 @@ public final class TemplateService {
         let existing = try get(id: id)
         guard let existing else { throw TemplateServiceError.templateNotFound }
 
-        var sets: [String] = []
-        var values: [DBValue?] = []
-        if let name = fields.name {
-            sets.append("name = ?")
-            values.append(.text(name))
-        }
-        if let description = fields.description {
-            sets.append("description = ?")
-            values.append(.text(description))
-        }
-        if let config = fields.config {
-            sets.append("config = ?")
-            values.append(.text(try JSONValue.stringify(JSONValue.object(Self.configToJSON(config)))))
-        }
-        if sets.isEmpty { return existing }
+        let payload = TemplateUpdatePayload(
+            name: fields.name,
+            description: fields.description,
+            configJSON: try fields.config.map {
+                try JSONValue.stringify(JSONValue.object(Self.configToJSON($0)))
+            }
+        )
+        if payload.isEmpty { return existing }
 
-        sets.append("updated_at = ?")
-        values.append(.text(nowISOString()))
-        values.append(.text(id))
-        _ = try connection.prepare(
-            "UPDATE workflow_templates SET \(sets.joined(separator: ", ")) WHERE id = ?"
-        ).run(values)
-        guard let updated = try get(id: id) else {
+        try templates.update(id: id, fields: payload)
+        guard let updated = try templates.get(id: id) else {
             throw TemplateServiceError.templateNotFound
         }
-        return updated
+        return try rowToData(row: updated)
     }
 
     /// TS: delete。
     public func delete(id: String) throws {
-        _ = try connection.prepare("DELETE FROM workflow_templates WHERE id = ?").run([.text(id)])
+        try templates.delete(id: id)
     }
 
     /// TS: apply —— 模板配置经 SettingsService 落库（内存缓存同步 + 白名单）。
@@ -144,11 +125,9 @@ public final class TemplateService {
         guard let template = try get(id: templateId) else {
             throw TemplateServiceError.templateNotFound
         }
-        guard let row = try connection.prepare("SELECT status FROM sessions WHERE id = ?")
-            .get([.text(sessionId)]) else {
+        guard let status = try templates.sessionStatus(id: sessionId) else {
             throw TemplateServiceError.sessionNotFound
         }
-        let status = row[0].textValue ?? ""
         let allowed = ["draft", "photos_loaded"]
         guard allowed.contains(status) else {
             throw TemplateServiceError.invalidSessionStatus(status)
@@ -167,21 +146,15 @@ public final class TemplateService {
     // MARK: - 内部
 
     /// TS: rowToData（config 为 JSON 字符串 → 对象）。
-    private func rowToData(row: DBRow) throws -> TemplateData {
-        let id = row[0].textValue ?? ""
-        let name = row[1].textValue ?? ""
-        let description = row[2].textValue ?? ""
-        let configJSON = row[3].textValue ?? "{}"
-        let createdAt = row[4].textValue ?? ""
-        let updatedAt = row[5].textValue ?? ""
-        let config = try Self.parseConfig(configJSON)
+    private func rowToData(row: TemplateRow) throws -> TemplateData {
+        let config = try Self.parseConfig(row.configJSON)
         return TemplateData(
-            id: id,
-            name: name,
-            description: description,
+            id: row.id,
+            name: row.name,
+            description: row.description,
             config: config,
-            createdAt: createdAt,
-            updatedAt: updatedAt
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt
         )
     }
 

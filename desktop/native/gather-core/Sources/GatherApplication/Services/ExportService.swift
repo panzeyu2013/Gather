@@ -138,9 +138,9 @@ public enum ExportServiceError: Error, Equatable, CustomStringConvertible, Local
 
 /// 导出服务：原图安全复制、JPEG/TIFF 转码、断点续作和报告。
 public final class ExportService {
-    private let photoRepo: PhotoRepo
-    private let sessionRepo: SessionRepo
-    private let connection: DBConnection
+    private let photoRepo: any PhotoRepository
+    private let sessionRepo: any SessionRepository
+    private let reports: any ExportReportRepository
     private let cancelLock = NSLock()
     /// 取消状态按**每次执行**（runId）而不是按会话（问题 2，第三轮审查）：
     /// 旧实现把取消位挂在 sessionId 上，同一会话并行导出两个目录时，
@@ -149,10 +149,14 @@ public final class ExportService {
     /// sessionId → 该会话当前在跑的 runId（供「取消本会话全部导出」使用）。
     private var sessionRuns: [String: Set<String>] = [:]
 
-    public init(photoRepo: PhotoRepo, sessionRepo: SessionRepo, connection: DBConnection) {
+    public init(
+        photoRepo: any PhotoRepository,
+        sessionRepo: any SessionRepository,
+        reports: any ExportReportRepository
+    ) {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
-        self.connection = connection
+        self.reports = reports
     }
 
     /// 只取消指定 run（问题 2 的验收：同会话并行导出时，取消 A 不得影响 B）。
@@ -644,13 +648,11 @@ public final class ExportService {
         let requested = format == "md" ? ReportFormat.md : ReportFormat.csv
         switch reportType {
         case "session_summary":
-            let rows = try connection.prepare(
-                "SELECT filename, filepath, status FROM photos WHERE session_id = ? ORDER BY rowid"
-            ).query([.text(sessionId)])
+            let rows = try photoRepo.reportRows(sessionId: sessionId)
             if requested == .csv {
                 var content = "filename,filepath,status\n"
-                content += rows.map {
-                    [($0[0].textValue ?? ""), ($0[1].textValue ?? ""), ($0[2].textValue ?? "")]
+                content += rows.map { row in
+                    [row.filename, row.filepath, row.status]
                         .map(Self.csvField).joined(separator: ",")
                 }.joined(separator: "\n")
                 return ReportData(path: "", content: content, format: .csv)
@@ -659,44 +661,32 @@ public final class ExportService {
             content += "Total photos: \(rows.count)\n\n"
             content += "| # | Filename | Path | Status |\n|---:|---|---|---|\n"
             for (index, row) in rows.enumerated() {
-                content += "| \(index + 1) | \(Self.mdField(row[0].textValue ?? "")) | \(Self.mdField(row[1].textValue ?? "")) | \(Self.mdField(row[2].textValue ?? "")) |\n"
+                content += "| \(index + 1) | \(Self.mdField(row.filename)) | \(Self.mdField(row.filepath)) | \(Self.mdField(row.status)) |\n"
             }
             return ReportData(path: "", content: content, format: .md)
 
         case "person":
             // 成员数唯一真相 = COUNT(face_cluster_members)（face_clusters.member_count
             // 只是派生缓存，可能与实时成员表漂移）；与 FaceRepo 同一口径。
-            let rows = try connection.prepare(
-                """
-                SELECT rb.role_name, rb.keywords, fc.label,
-                       (SELECT COUNT(*) FROM face_cluster_members m WHERE m.cluster_id = fc.id) AS member_count
-                FROM role_bindings rb
-                JOIN face_clusters fc ON rb.cluster_id = fc.id
-                WHERE rb.session_id = ? ORDER BY rb.role_name
-                """
-            ).query([.text(sessionId)])
+            let rows = try reports.personBindingRows(sessionId: sessionId)
             var content = "# Person report\n\nBindings: \(rows.count)\n\n"
             content += "| Role | Keywords | Cluster | Members |\n|---|---|---|---:|\n"
             for row in rows {
-                let keywords = (try? JSONValue.parse(row[1].textValue ?? "[]"))?.arrayValue?.joined(separator: ", ") ?? ""
-                content += "| \(Self.mdField(row[0].textValue ?? "")) | \(Self.mdField(keywords)) | \(Self.mdField(row[2].textValue ?? "")) | \(row[3].intValue ?? 0) |\n"
+                let keywords = (try? JSONValue.parse(row.keywordsJSON))?.arrayValue?.joined(separator: ", ") ?? ""
+                content += "| \(Self.mdField(row.roleName)) | \(Self.mdField(keywords)) | \(Self.mdField(row.label)) | \(row.memberCount) |\n"
             }
             return ReportData(path: "", content: content, format: .md)
 
         case "keyword":
-            let rows = try connection.prepare(
-                "SELECT DISTINCT keywords FROM role_bindings WHERE session_id = ? AND keywords != '[]'"
-            ).query([.text(sessionId)])
+            let rows = try reports.keywordRows(sessionId: sessionId)
             var keywords = Set<String>()
             for row in rows {
-                keywords.formUnion((try? JSONValue.parse(row[0].textValue ?? "[]"))?.arrayValue ?? [])
+                keywords.formUnion((try? JSONValue.parse(row))?.arrayValue ?? [])
             }
-            let culling = try connection.prepare(
-                "SELECT DISTINCT decision FROM culling_decisions WHERE session_id = ? AND decision != 'pending'"
-            ).query([.text(sessionId)])
-            for row in culling {
-                if row[0].textValue == "keep" { keywords.insert("culling:keep") }
-                if row[0].textValue == "reject" { keywords.insert("culling:reject") }
+            let culling = try reports.cullingDecisionRows(sessionId: sessionId)
+            for decision in culling {
+                if decision == "keep" { keywords.insert("culling:keep") }
+                if decision == "reject" { keywords.insert("culling:reject") }
             }
             var content = "# Keyword report\n\n"
             content += keywords.sorted().map { "- \(Self.mdField($0))" }.joined(separator: "\n")
@@ -827,12 +817,7 @@ public final class ExportService {
         case .session:
             scoped = photos.filter { $0.status != "removed" }
         case .filtered:
-            let decisions = try CullingDecisionRepo(connection: connection).getDecisions(sessionId)
-            let keptPhotoIds = Set(
-                decisions
-                    .filter { $0.decision == CullingDecisionValue.keep.rawValue }
-                    .map(\.photoId)
-            )
+            let keptPhotoIds = try reports.keptPhotoIds(sessionId: sessionId)
             scoped = photos.filter { $0.status != "removed" && keptPhotoIds.contains($0.id) }
         case .selected:
             throw ExportServiceError.scopeUnsupported

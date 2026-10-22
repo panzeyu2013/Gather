@@ -170,6 +170,30 @@ public final class SessionRepo {
             return Int(row?[0].intValue ?? 0)
         }
     }
+
+    /// WP3b-1（SessionService 下沉）：资产孤儿化委托 AssetRepo（同一连接，
+    /// 处于调用方事务内，SQL 不在 Application 重复）。
+    public func markOrphanedAssets() throws {
+        try AssetRepo(connection: connection).markOrphanedAssets()
+    }
+
+    /// WP3b-1（WorkspaceStatus 下沉）：最近一次成功分析 run。
+    /// 旧实现由 WorkspaceStatusService.latestOkRun 内联 SQL；口径逐字保留：
+    /// status='ok'，ORDER BY id DESC，LIMIT 1。
+    public func latestAnalysisRun(sessionId: String, kind: String) throws -> AnalysisRunRecord? {
+        guard let row = try connection.prepare("""
+            SELECT kind, index_seq, finished_at
+            FROM analysis_runs
+            WHERE session_id = ? AND kind = ? AND status = 'ok'
+            ORDER BY id DESC
+            LIMIT 1
+          """).get([.text(sessionId), .text(kind)]) else { return nil }
+        return AnalysisRunRecord(
+            kind: row[0].textValue ?? "",
+            indexSeq: Int(row[1].intValue ?? 0),
+            finishedAt: row[2].textValue ?? ""
+        )
+    }
 }
 
 

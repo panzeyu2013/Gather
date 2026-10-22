@@ -88,7 +88,7 @@ public final class JobRunContext: @unchecked Sendable {
     private let cancelCheckIntervalMs = JobService.cancelDbCheckIntervalMs
     private let progressWriteIntervalMs = JobService.progressWriteIntervalMs
 
-    private let repo: AnalysisJobRepo
+    private let repo: any JobRepository
     private let jobId: String
     private let leaseOwner: String
     private let updateProgress: (String, String, JobProgressUpdate) throws -> Bool
@@ -96,7 +96,7 @@ public final class JobRunContext: @unchecked Sendable {
 
     init(
         signal: JobAbortSignal,
-        repo: AnalysisJobRepo,
+        repo: any JobRepository,
         jobId: String,
         leaseOwner: String,
         updateProgress: @escaping (String, String, JobProgressUpdate) throws -> Bool,
@@ -285,7 +285,7 @@ public final class JobService: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    private let repo: AnalysisJobRepo
+    private let repo: any JobRepository
     public let leaseOwner: String
     /// 心跳间隔（默认 5000 对齐 TS；测试可注入短间隔）。
     public let heartbeatIntervalMs: Int64
@@ -308,7 +308,7 @@ public final class JobService: @unchecked Sendable {
     private var progressSink: JobProgressSink?
 
     public init(
-        repo: AnalysisJobRepo,
+        repo: any JobRepository,
         heartbeatIntervalMs: Int64 = JobService.heartbeatIntervalMs,
         weightBudget: Int = JobService.defaultWeightBudget,
         leaseTimeoutMs: Int64 = JobService.leaseTimeoutMs,

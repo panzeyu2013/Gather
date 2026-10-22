@@ -408,6 +408,59 @@ public final class AnalysisJobRepo {
         ).run(values)
     }
 
+    /// WP3b-1（WorkspaceStatus 下沉）：最近更新的 metadata.scan 行。
+    public func latestScanJob(sessionId: String) throws -> ScanJobRecord? {
+        guard let row = try connection.prepare("""
+            SELECT status, progress_current, progress_total
+            FROM analysis_jobs
+            WHERE type = 'metadata.scan' AND scope_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+          """).get([.text(sessionId)]) else { return nil }
+        return ScanJobRecord(
+            status: row[0].textValue ?? "",
+            progressCurrent: Int(row[1].intValue ?? 0),
+            progressTotal: Int(row[2].intValue ?? 0)
+        )
+    }
+
+    /// WP3b-1（WorkspaceStatus 下沉）：scope=session 的失败 job。
+    public func failedJobs(sessionId: String, limit: Int) throws -> [FailedJobRecord] {
+        let rows = try connection.prepare("""
+            SELECT id, type, error_message, error_code
+            FROM analysis_jobs
+            WHERE scope_type = 'session' AND scope_id = ? AND status = 'failed'
+            ORDER BY updated_at DESC
+            LIMIT ?
+          """).query([.text(sessionId), .int(Int64(limit))])
+        return rows.map { row in
+            FailedJobRecord(
+                id: row[0].textValue ?? "",
+                type: row[1].textValue ?? "",
+                code: row[3].textValue ?? "",
+                message: row[2].textValue ?? ""
+            )
+        }
+    }
+
+    /// WP3b-1（WorkspaceStatus 下沉）：成功 export.execute 的 checkpoint_json。
+    /// 「是否实际交付了文件」的判定仍留在 Application（解析 exported 键）。
+    public func successfulExportCheckpoints(sessionId: String, limit: Int) throws -> [String] {
+        let rows = try connection.prepare("""
+            SELECT checkpoint_json FROM analysis_jobs
+            WHERE type = 'export.execute' AND scope_id = ? AND status = 'succeeded'
+            ORDER BY updated_at DESC
+            LIMIT ?
+          """).query([.text(sessionId), .int(Int64(limit))])
+        return rows.map { $0.first?.textValue ?? "" }
+    }
+
+    /// WP3b-1（SessionService 下沉）：无 FK 的 analysis_jobs 僵尸行清理。
+    public func deleteSessionJobs(sessionId: String) throws {
+        _ = try connection.prepare("DELETE FROM analysis_jobs WHERE scope_type = 'session' AND scope_id = ?")
+            .run([.text(sessionId)])
+    }
+
     /// 行 → 契约类型；checkpoint_json 解析失败（脏数据）按空对象处理，
     /// 未知枚举值回退默认值——仅在库被外部改写时发生。
     public func toData(_ row: AnalysisJobRow, includeCheckpoint: Bool = true) -> AnalysisJobData {

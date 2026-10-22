@@ -32,9 +32,10 @@ public final class WorkspaceStatusService {
     /// TS: MAX_FAILED_JOBS。
     private static let maxFailedJobs = 10
 
-    private let connection: DBConnection
-    private let sessionRepo: SessionRepo
-    private let photoRepo: PhotoRepo
+    private let sessionRepo: any SessionRepository
+    private let photoRepo: any PhotoRepository
+    private let jobRepo: any JobRepository
+    private let deliverySummary: any DeliverySummaryReading
 
     /// TS: Date.now()（offlinePhotos TTL 判定用，测试注入时钟）。
     private let clock: () -> Int
@@ -44,14 +45,16 @@ public final class WorkspaceStatusService {
     private let cacheLock = NSLock()
 
     public init(
-        connection: DBConnection,
-        sessionRepo: SessionRepo,
-        photoRepo: PhotoRepo,
+        sessionRepo: any SessionRepository,
+        photoRepo: any PhotoRepository,
+        jobRepo: any JobRepository,
+        deliverySummary: any DeliverySummaryReading,
         clock: @escaping () -> Int = { Int(Date().timeIntervalSince1970 * 1000) }
     ) {
-        self.connection = connection
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
+        self.jobRepo = jobRepo
+        self.deliverySummary = deliverySummary
         self.clock = clock
     }
 
@@ -140,7 +143,7 @@ public final class WorkspaceStatusService {
     private func deriveStage(
         photoCount: Int,
         indexed: Bool,
-        similarityRun: AnalysisRunRow?,
+        similarityRun: AnalysisRunRecord?,
         indexSeq: Int
     ) -> WorkspaceStage {
         if let similarityRun, similarityRun.indexSeq >= indexSeq { return .analyzed }
@@ -186,15 +189,7 @@ public final class WorkspaceStatusService {
     /// 与旧 writeback_items / metadata_outbox 窗口同义：同一 (session, module)
     /// 下只要有一条落盘成功的项就为真，不看交付行状态（item 收敛已蕴含）。
     private func hasWrittenBackCulling(_ sessionId: String) throws -> Bool {
-        let row = try connection.prepare("""
-            SELECT 1
-            FROM delivery_items di
-            JOIN delivery_sessions ds ON ds.delivery_id = di.delivery_id
-            WHERE ds.session_id = ? AND di.module = 'culling'
-              AND di.status IN ('written', 'synced')
-            LIMIT 1
-          """).get([.text(sessionId)])
-        return row != nil
+        try deliverySummary.hasWrittenBackItem(sessionId: sessionId, module: .culling)
     }
 
     /// 存在**实际交付了文件**的成功导出任务（审查 D02）。
@@ -206,14 +201,8 @@ public final class WorkspaceStatusService {
     /// 兼容：本次改动之前的历史成功任务没有摘要键，无法回溯区分，按原语义视为
     /// 已导出（不因为一次审计把老用户已有的工作区状态全部清掉）。
     private func hasSuccessfulExport(_ sessionId: String) throws -> Bool {
-        let rows = try connection.prepare("""
-            SELECT checkpoint_json FROM analysis_jobs
-            WHERE type = 'export.execute' AND scope_id = ? AND status = 'succeeded'
-            ORDER BY updated_at DESC
-            LIMIT 20
-          """).query([.text(sessionId)])
-        for row in rows {
-            let raw = row.first?.textValue ?? ""
+        let rows = try jobRepo.successfulExportCheckpoints(sessionId: sessionId, limit: 20)
+        for raw in rows {
             guard !raw.isEmpty, let checkpoint = try? JSONValue.parse(raw) else {
                 return true
             }
@@ -227,53 +216,24 @@ public final class WorkspaceStatusService {
 
     /// TS: listFailedJobs —— scope_type='session' 的失败 job，按 updated_at 倒序，上限 10。
     private func listFailedJobs(_ sessionId: String) throws -> [WorkspaceFailedJob] {
-        let rows = try connection.prepare("""
-            SELECT id, type, error_message, error_code
-            FROM analysis_jobs
-            WHERE scope_type = 'session' AND scope_id = ? AND status = 'failed'
-            ORDER BY updated_at DESC
-            LIMIT \(Self.maxFailedJobs)
-          """).query([.text(sessionId)])
-        return rows.map { row in
+        try jobRepo.failedJobs(sessionId: sessionId, limit: Self.maxFailedJobs).map { row in
             WorkspaceFailedJob(
-                id: row[0].textValue ?? "",
-                type: row[1].textValue ?? "",
-                code: row[3].textValue ?? "",
-                message: row[2].textValue ?? ""
+                id: row.id,
+                type: row.type,
+                code: row.code,
+                message: row.message
             )
         }
     }
 
     /// TS: latestScanJob —— 最近更新的 metadata.scan 行（scope_id = sessionId）。
-    private func latestScanJob(_ sessionId: String) throws -> ScanJobRow? {
-        guard let row = try connection.prepare("""
-            SELECT status, progress_current, progress_total
-            FROM analysis_jobs
-            WHERE type = 'metadata.scan' AND scope_id = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-          """).get([.text(sessionId)]) else { return nil }
-        return ScanJobRow(
-            status: row[0].textValue ?? "",
-            progressCurrent: Int(row[1].intValue ?? 0),
-            progressTotal: Int(row[2].intValue ?? 0)
-        )
+    private func latestScanJob(_ sessionId: String) throws -> ScanJobRecord? {
+        try jobRepo.latestScanJob(sessionId: sessionId)
     }
 
     /// TS: latestOkRun —— 最近一次成功的分析 run（status='ok'，ORDER BY id DESC）。
-    private func latestOkRun(_ sessionId: String, kind: WorkspaceStaleAnalysisKind) throws -> AnalysisRunRow? {
-        guard let row = try connection.prepare("""
-            SELECT kind, index_seq, finished_at
-            FROM analysis_runs
-            WHERE session_id = ? AND kind = ? AND status = 'ok'
-            ORDER BY id DESC
-            LIMIT 1
-          """).get([.text(sessionId), .text(kind.rawValue)]) else { return nil }
-        return AnalysisRunRow(
-            kind: kind,
-            indexSeq: Int(row[1].intValue ?? 0),
-            finishedAt: row[2].textValue ?? ""
-        )
+    private func latestOkRun(_ sessionId: String, kind: WorkspaceStaleAnalysisKind) throws -> AnalysisRunRecord? {
+        try sessionRepo.latestAnalysisRun(sessionId: sessionId, kind: kind.rawValue)
     }
 
     /// TS: getOfflinePhotosCount —— 5 分钟 TTL 缓存 + COUNT(missing) 兜底。
@@ -285,11 +245,7 @@ public final class WorkspaceStatusService {
         if let cached, now - cached.cachedAt < Self.offlinePhotosTTLMs {
             return cached.count
         }
-        let row = try connection.prepare("""
-            SELECT COUNT(*) AS count FROM photos
-            WHERE session_id = ? AND status = 'missing'
-          """).get([.text(sessionId)])
-        let count = Int(row?[0].intValue ?? 0)
+        let count = try photoRepo.countByStatus(sessionId: sessionId, status: "missing")
         cacheLock.lock()
         offlinePhotosCache[sessionId] = (count, now)
         cacheLock.unlock()
@@ -304,10 +260,9 @@ public final class WorkspaceStatusService {
     /// 与旧 outbox 计数的差异：手动队列（MetadataMutationService）在 2b-2 之前仍写
     /// 旧表，这些尚未产生交付行的手动变更不再进入工作区 xmp 计数（过渡缺口，见文件头）。
     private func summaryCounts(_ sessionId: String) throws -> (pending: Int, failed: Int, conflict: Int) {
-        let query = DeliverySummaryQuery(connection: connection)
         var statusByPath: [String: MetadataSyncStatus] = [:]
         for module in [DeliveryModule.culling, .faceKeyword, .similarity] {
-            let summary = try query.metadataSummary(sessionId: sessionId, module: module)
+            let summary = try deliverySummary.metadataSummary(sessionId: sessionId, module: module)
             for item in summary.items {
                 statusByPath[item.xmpPath] = Self.mergedStatus(
                     statusByPath[item.xmpPath], item.status)
@@ -347,18 +302,4 @@ public final class WorkspaceStatusService {
         case .synced, .cleaned, .clean: 0
         }
     }
-}
-
-/// TS: ScanJobRow。
-private struct ScanJobRow {
-    let status: String
-    let progressCurrent: Int
-    let progressTotal: Int
-}
-
-/// TS: AnalysisRunRow（kind 收窄为相似度/人脸两值）。
-private struct AnalysisRunRow {
-    let kind: WorkspaceStaleAnalysisKind
-    let indexSeq: Int
-    let finishedAt: String
 }

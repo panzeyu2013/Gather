@@ -42,17 +42,9 @@ public typealias MetadataQueueFlush = @Sendable (String) async throws -> Writeba
 /// TS: metadata.service.ts 的 photos 轻查询行。
 /// Swift 6：batchAsync 的 worker 子任务会捕获本行（T: Sendable 约束），
 /// 全字段均为不可变值类型，补上 Sendable 是纯增量的编译期事实。
-public struct MetadataPhotoLookup: Sendable {
-    public let id: String
-    public let sessionId: String
-    public let filepath: String
-
-    public init(id: String, sessionId: String, filepath: String) {
-        self.id = id
-        self.sessionId = sessionId
-        self.filepath = filepath
-    }
-}
+/// WP3b-1：查询已下沉到 PhotoRepo.getLookupByIds；类型保留为 Persistence 投影的
+/// 公开别名，调用方（MetadataService 内部）无需改字段访问。
+public typealias MetadataPhotoLookup = PhotoLookupRow
 
 /// getMetadata 的并发收集盒子：batchAsync 的 body 由多个 worker 并发调用，
 /// 捕获的可变集合必须串行写入（Dictionary/Array 并发写会内存损坏）。
@@ -178,9 +170,10 @@ private struct MetadataSetOutcome {
 /// 标注 `@unchecked` 仅因为依赖的仓库/协议存在类型未标 `Sendable`；
 /// 并发收集状态全部收在上面两个锁盒子里。
 public final class MetadataService: @unchecked Sendable {
-    private let metadataCacheRepo: MetadataCacheRepo
+    private let metadataCacheRepo: any MetadataRepository
     private let xmp: any XMPProvider
-    private let connection: DBConnection
+    private let photoRepo: any PhotoRepository
+    private let transactions: any TransactionRunner
     private let mutations: any MetadataMutationPort
     /// 入队后的写盘执行器（P1-9；nil = 只入队，兼容旧测试/无写回宿主）。
     private let flushPending: MetadataQueueFlush?
@@ -190,9 +183,10 @@ public final class MetadataService: @unchecked Sendable {
     private let embeddedReader: (any EmbeddedXMPReader)?
 
     public init(
-        metadataCacheRepo: MetadataCacheRepo,
+        metadataCacheRepo: any MetadataRepository,
         xmp: any XMPProvider,
-        connection: DBConnection,
+        photoRepo: any PhotoRepository,
+        transactions: any TransactionRunner,
         mutations: any MetadataMutationPort,
         flushPending: MetadataQueueFlush? = nil,
         assetResolver: PhotoAssetResolver? = nil,
@@ -202,7 +196,8 @@ public final class MetadataService: @unchecked Sendable {
     ) {
         self.metadataCacheRepo = metadataCacheRepo
         self.xmp = xmp
-        self.connection = connection
+        self.photoRepo = photoRepo
+        self.transactions = transactions
         self.mutations = mutations
         self.flushPending = flushPending
         self.assetResolver = assetResolver
@@ -361,23 +356,7 @@ public final class MetadataService: @unchecked Sendable {
     /// TS: getPhotosByIds —— 800/块 IN 查询（镜像缓存仓库的分块，低于 SQLite
     /// 常见参数上限）。
     public func getPhotosByIds(_ photoIds: [String]) throws -> [MetadataPhotoLookup] {
-        if photoIds.isEmpty { return [] }
-        var photos: [MetadataPhotoLookup] = []
-        for chunkStart in stride(from: 0, to: photoIds.count, by: 800) {
-            let chunk = Array(photoIds[chunkStart..<min(chunkStart + 800, photoIds.count)])
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare(
-                "SELECT id, session_id, filepath FROM photos WHERE id IN (\(placeholders))"
-            ).query(chunk.map { .text($0) })
-            photos.append(contentsOf: rows.map {
-                MetadataPhotoLookup(
-                    id: $0[0].textValue ?? "",
-                    sessionId: $0[1].textValue ?? "",
-                    filepath: $0[2].textValue ?? ""
-                )
-            })
-        }
-        return photos
+        try photoRepo.getLookupByIds(photoIds)
     }
 
     /// TS: preserveValuesOnCorruptSidecar —— 损坏 sidecar 让 readAttributes 返回
@@ -543,7 +522,7 @@ public final class MetadataService: @unchecked Sendable {
 
             let pendingUpserts = collector.snapshotPendingUpserts()
             if !pendingUpserts.isEmpty {
-                try connection.transaction {
+                try transactions.transaction {
                     for entry in pendingUpserts {
                         try metadataCacheRepo.upsert(photoId: entry.photoId, sessionId: entry.sessionId, data: entry.input)
                     }
