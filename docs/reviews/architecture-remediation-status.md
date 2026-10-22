@@ -30,7 +30,7 @@
 
 ## 2. 当前指标（HEAD 工作区实测）
 
-- core：1,100 tests / 165 suites，exit 0（HEAD 基线 1,095/164 + WP7b 5 用例）。
+- core：**1,114 tests / 165 suites**，exit 0（最终清理 + schema guard 测试后；含 3 个真实照片 skip，有效 1,111）。
 - app：617 tests / 68 suites，串行 + 并行 3 次 exit 0（WP4d 新增 PageVisibility 矩阵 1 例）。
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
 - 门禁：9 道 strict 全绿；ratchet 53/231/0/0/0；protocol surface 254/1,338/0/0；preview 14。
@@ -52,10 +52,13 @@
 
 1. WP7b：trace 与阶段日志已落地；结构化阶段耗时（duration）未做。
 2. WP6c 发布验证：真实 Developer ID/notarytool/staple/spctl、CI release job 未实跑；x86_64 运行期未在 Rosetta 验证。
-3. 文档：final-report 的 Cut 6c 数字仍为历史快照，§1.2 已注记当前架构指标；其余历史报告保留快照口径。
-4. 未 push；34 个本地 commit 等待 owner review。
+3. 架构 P1：Application 5 服务仍持 18 个具体 Repo；Host LiveMetadataAPI 5-6 处直调 DeliveryRepo；Application 仍有 4 个 >1000 行文件；“状态写入 8”是 writer 交付级方法数，调用点口径为 24+5。
+4. 数据 P1：markWritten 未校验 lease owner；confirm 门禁在事务外/confirmSync 旁路；370 列 V1 无迁移路径；finalize 备份顺序已修。
+5. 测试 P1：Schema guard 失败用例已补；WP3b 仍缺 fake-repo 功能断言；菜单测试已恢复；trace 的 cancelled/lease-lost 分支未测。
+6. 文档：final-report 的 Cut 6c 数字仍为历史快照，§1.2 已注记当前架构指标；其余历史报告保留快照口径。
+7. 未 push；本地 commit 序列等待 owner review。
 
 ## 4. 结论
 
-计划中的 WP0–WP7b 已完成，核心指标达到或超过目标：Application SQL 0（目标 ≤15）、Delivery Coordinator 366（目标 ≤600）、状态写入 8（目标 ≤8）、adapters 5（目标 ≤5）、Protocol 254（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2；Job/Delivery 已具备可关联 trace 与阶段日志。
-剩余为阶段耗时与真实发布凭据验证，不影响当前架构整改主体结论。
+计划中的 WP0–WP7b 已完成，核心指标达到或超过目标：Application SQL 0（目标 ≤15）、Delivery Coordinator 366（目标 ≤600）、adapters 5（目标 ≤5）、Protocol 254（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2；Job/Delivery 已具备可关联 trace 与阶段日志。**但独立验收确认存在 P1 残余**（具体 Repo、Host 直写、状态写入口径、Application 文件规模、markWritten/confirm/370 列迁移），因此“全部计划指标达到”应改为“核心架构达标、P1 待收口”。
+最终验收报告：[final-acceptance-build.md](final-acceptance-build.md)、[architecture](final-acceptance-architecture.md)、[data](final-acceptance-data.md)、[tests](final-acceptance-tests.md)、[cleanup](final-cleanup-scan.md)。
