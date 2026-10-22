@@ -60,10 +60,12 @@ public final class CullingService {
         .none, .red, .orange, .yellow, .green, .blue, .pink, .purple,
     ]
 
-    /// TS: PREFERRED_RAW_EXTENSIONS —— RAW 判定只用共享表 PhotoRepo.rawExtensions
-    ///（与 preferredRowOrderSQL 里 LIKE 链的同一份数据），本文件不另立扩展名表。
+    /// TS: PREFERRED_RAW_EXTENSIONS —— RAW 判定只用共享表
+    /// PhotoFileTypes.sortedRawExtensions（与 PhotoRepo.rawExtensions、
+    /// preferredRowOrderSQL 里 LIKE 链同源；唯一真相源在 GatherProtocol），
+    /// 本文件不另立扩展名表。
     /// 内存态代表行选择为何不能直接调用 SQL 排序，见 assembleAssets 的注释。
-    static let preferredRawExtensions: Set<String> = Set(PhotoRepo.rawExtensions)
+    static let preferredRawExtensions: Set<String> = Set(PhotoFileTypes.sortedRawExtensions)
 
     /// TS: LOOKUP_TTL_MS / LOOKUP_CACHE_MAX / UPDATE_TTL_MS / UPDATE_CACHE_MAX。
     static let lookupTTLSeconds: TimeInterval = 5
@@ -77,10 +79,12 @@ public final class CullingService {
 
     // MARK: - 依赖
 
-    let photoRepo: PhotoRepo
-    let cullingDecisionRepo: CullingDecisionRepo
-    let similarityResultRepo: SimilarityResultRepo
-    let metadataCacheRepo: MetadataCacheRepo
+    /// P1-1：仓储依赖一律走 Persistence 端口（any XxxRepository），具体 SQLite
+    /// Repo 只在组合根构造；测试可用 fake 替换。
+    let photoRepo: any PhotoRepository
+    let cullingDecisionRepo: any CullingDecisionRepository
+    let similarityResultRepo: any SimilarityRepository
+    let metadataCacheRepo: any MetadataRepository
     /// WP3b-2：分页/计数/富查询 SQL 下沉到 Persistence（CullingPageQuery /
     /// CullingReadQuery）；交付行读取与事务经端口。
     let pageQuery: any CullingPageReading
@@ -91,21 +95,21 @@ public final class CullingService {
     let writeback: any CullingWritebackPort
     /// 交付适配器（WP2c：module 固定 .culling）：confirm/cleanup/finalize/镜像/读模型。
     let delivery: any DeliveryModuleAdapter
-    let cullingHistoryRepo: CullingHistoryRepo?
+    let cullingHistoryRepo: (any CullingHistoryRepository)?
     let getNumber: (String, Double) -> Double
 
     public init(
-        photoRepo: PhotoRepo,
-        cullingDecisionRepo: CullingDecisionRepo,
-        similarityResultRepo: SimilarityResultRepo,
-        metadataCacheRepo: MetadataCacheRepo,
+        photoRepo: any PhotoRepository,
+        cullingDecisionRepo: any CullingDecisionRepository,
+        similarityResultRepo: any SimilarityRepository,
+        metadataCacheRepo: any MetadataRepository,
         pageQuery: any CullingPageReading,
         richQuery: any CullingRichReading,
         deliveryItems: any DeliveryRepository,
         transactions: any TransactionRunner,
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
-        cullingHistoryRepo: CullingHistoryRepo? = nil,
+        cullingHistoryRepo: (any CullingHistoryRepository)? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         delivery: any DeliveryModuleAdapter
     ) {

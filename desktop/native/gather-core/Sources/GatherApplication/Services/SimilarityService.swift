@@ -145,10 +145,12 @@ public final class SimilarityService {
     /// TS: onProgress(current, total, message)。
     public typealias ProgressHandler = (Int, Int, String) -> Void
 
-    private let photoRepo: PhotoRepo
-    private let sessionRepo: SessionRepo
-    private let similarityResultRepo: SimilarityResultRepo
-    private let clusterStateRepo: SimilarityClusterStateRepo
+    /// P1-1：仓储依赖一律走 Persistence 端口（any XxxRepository），具体 SQLite
+    /// Repo 只在组合根构造；测试可用 fake 替换。
+    private let photoRepo: any PhotoRepository
+    private let sessionRepo: any SessionRepository
+    private let similarityResultRepo: any SimilarityRepository
+    private let clusterStateRepo: any SimilarityClusterStateRepository
     /// WP3b-2：similarity_hashes 读写与 analysis_runs 生命周期下沉到 Persistence；
     /// 事务经 TransactionRunner（嵌套退化为 SAVEPOINT，语义与旧 DBConnection 一致）。
     private let hashes: any SimilarityHashRepository
@@ -210,10 +212,10 @@ public final class SimilarityService {
     }
 
     public init(
-        photoRepo: PhotoRepo,
-        sessionRepo: SessionRepo,
-        similarityResultRepo: SimilarityResultRepo,
-        clusterStateRepo: SimilarityClusterStateRepo,
+        photoRepo: any PhotoRepository,
+        sessionRepo: any SessionRepository,
+        similarityResultRepo: any SimilarityRepository,
+        clusterStateRepo: any SimilarityClusterStateRepository,
         hashes: any SimilarityHashRepository,
         analysisRuns: any AnalysisRunRepository,
         deliveryItems: any DeliveryRepository,

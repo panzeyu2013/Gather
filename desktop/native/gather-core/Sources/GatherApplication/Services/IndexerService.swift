@@ -93,13 +93,15 @@ public final class IndexerService: @unchecked Sendable {
     /// WP3b-2：扫描写路径/派生失效 SQL 下沉到 IndexerRepo；事务经 TransactionRunner。
     private let indexer: any IndexerRepository
     private let transactions: any TransactionRunner
-    private let sessionRepo: SessionRepo
-    private let photoRepo: PhotoRepo
-    private let assetRepo: AssetRepo
-    /// 人脸派生结果失效入口（FaceRepo.invalidateDerivedResults）。可选注入：
+    /// P1-1：仓储依赖一律走 Persistence 端口（any XxxRepository），具体 SQLite
+    /// Repo 只在组合根构造；测试可用 fake 替换。
+    private let sessionRepo: any SessionRepository
+    private let photoRepo: any PhotoRepository
+    private let assetRepo: any AssetRepository
+    /// 人脸派生结果失效入口（FaceRepository.invalidateDerivedResults）。可选注入：
     /// nil 时跳过人脸段（仅有相似度/元数据需求的宿主/测试），但**生产宿主必须
     /// 注入**，否则内容变化后人脸观察与 person_embeddings 不会失效。
-    private let faceRepo: FaceRepo?
+    private let faceRepo: (any FaceRepository)?
     private let getDimensions: DimensionsProvider
     private let getSetting: SettingReader
     private let warmMetadata: MetadataWarmup
@@ -149,10 +151,10 @@ public final class IndexerService: @unchecked Sendable {
     public init(
         indexer: any IndexerRepository,
         transactions: any TransactionRunner,
-        sessionRepo: SessionRepo,
-        photoRepo: PhotoRepo,
-        assetRepo: AssetRepo,
-        faceRepo: FaceRepo? = nil,
+        sessionRepo: any SessionRepository,
+        photoRepo: any PhotoRepository,
+        assetRepo: any AssetRepository,
+        faceRepo: (any FaceRepository)? = nil,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
         getSetting: @escaping SettingReader = { _, defaultValue in defaultValue },
         warmMetadata: @escaping MetadataWarmup = { _ in }

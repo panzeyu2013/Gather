@@ -104,11 +104,13 @@ public final class SettingsService {
         Set(getDefaults().keys)
     }
 
-    private let repo: SettingsRepo
+    /// P1-1：设置仓储走 Persistence 端口（any SettingsRepository），具体 SQLite
+    /// Repo 只在组合根构造；测试可用 fake 替换。
+    private let repo: any SettingsRepository
     private var cache: [String: String] = [:]
     private let lock = NSLock()
 
-    public init(repo: SettingsRepo) {
+    public init(repo: any SettingsRepository) {
         self.repo = repo
         loadCache()
     }

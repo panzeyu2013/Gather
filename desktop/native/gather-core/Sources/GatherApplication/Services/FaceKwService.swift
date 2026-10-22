@@ -74,10 +74,12 @@ public final class FaceKwService {
     /// 不影响聚类/合并/绑定语义（按成员计数的地方都在仓库层）。
     static let maxPreviewMembers = 12
 
-    let photoRepo: PhotoRepo
-    let sessionRepo: SessionRepo
-    let faceRepo: FaceRepo
-    let personRepo: PersonRepo
+    /// P1-1：仓储依赖一律走 Persistence 端口（any XxxRepository），具体 SQLite
+    /// Repo 只在组合根构造；测试可用 fake 替换。
+    let photoRepo: any PhotoRepository
+    let sessionRepo: any SessionRepository
+    let faceRepo: any FaceRepository
+    let personRepo: any PersonRepository
     /// WP3b-2：身份反馈、簇成员写、analysis_runs、交付项读取全部下沉到 Persistence；
     /// 事务经 TransactionRunner（嵌套退化为 SAVEPOINT）。
     let feedback: any FaceFeedbackRepository
@@ -126,10 +128,10 @@ public final class FaceKwService {
     }
 
     public init(
-        photoRepo: PhotoRepo,
-        sessionRepo: SessionRepo,
-        faceRepo: FaceRepo,
-        personRepo: PersonRepo,
+        photoRepo: any PhotoRepository,
+        sessionRepo: any SessionRepository,
+        faceRepo: any FaceRepository,
+        personRepo: any PersonRepository,
         feedback: any FaceFeedbackRepository,
         analysisRuns: any AnalysisRunRepository,
         deliveryItems: any DeliveryRepository,
