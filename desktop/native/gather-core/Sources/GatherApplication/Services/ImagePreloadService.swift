@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/ImagePreloadService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/ImagePreloadService.swift
 // Phase 3.6：缩略图/预览预加载编排。
 //
 // image.* 命令不把二进制数据穿过 IPC；服务只负责受控解码和任务进度，

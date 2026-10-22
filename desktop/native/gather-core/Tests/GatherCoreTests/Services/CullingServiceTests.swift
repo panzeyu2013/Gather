@@ -2467,24 +2467,33 @@ struct CullingDeliveryCut2Tests {
         #expect(try repo.get("/shoot/p3.xmp")?.status == DeliveryStatus.written.rawValue)
     }
 
-    @Test("finalize：删备份失败保留 prepared intent，replay 重试成功且不 restore")
+    @Test("finalize：DB 删除失败保留交付行/备份/fileDone intent，replay 重试成功；备份只在 DB 成功后删")
     func finalizeFailureIsRetryable() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
         harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
         harness.deliveryFiles.setContents("/shoot/p1.xmp", "gather-written")
         _ = try seedSyncedDelivery(harness, photoId: "p1", backupPath: "/backup/p1.xmp")
-        harness.deliveryFiles.setRemoveFailure(FakeDeliveryFileError.removeFailed)
+        try harness.db.exec("""
+            CREATE TRIGGER fail_finalize_delivery_delete
+            BEFORE DELETE ON deliveries
+            BEGIN
+              SELECT RAISE(ABORT, 'injected finalize delivery delete failure');
+            END;
+            """)
 
         let failed = try await harness.deliveryCoordinator.finalize(
             sessionId: "session", module: .culling
         )
         #expect(failed.deletedCount == 0)
-        #expect(failed.errors.contains { $0.hasPrefix("XMP_FINALIZE_FILE_FAILED") })
+        #expect(failed.errors.contains { $0.hasPrefix("XMP_FINALIZE_DB_FAILED") })
+        // P1-1：DB 失败时备份绝不能先被删掉（否则 backup_path 悬空）。
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp")?.status == DeliveryStatus.synced.rawValue)
-        #expect(try harness.deliveryIntents.pending().prepared.count == 1)
+        #expect(harness.deliveryFiles.contents("/backup/p1.xmp") == "original")
+        #expect(harness.deliveryFiles.removedPaths.isEmpty)
+        #expect(try harness.deliveryIntents.pending().fileDone.count == 1)
 
-        harness.deliveryFiles.clearRemoveFailure()
+        _ = try harness.db.exec("DROP TRIGGER fail_finalize_delivery_delete")
         let replay = try await harness.deliveryCoordinator.replay()
         #expect(replay.appliedCount == 1)
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp") == nil)

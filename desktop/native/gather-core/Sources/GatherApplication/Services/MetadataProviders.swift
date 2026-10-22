@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/MetadataProviders.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/MetadataProviders.swift
 // TS 源: desktop/src/main/services/metadata/metadata-writer.interface.ts（MetadataWriter /
 // MetadataReader / MetadataWriteAttributes）+ metadata.service.ts 的 exifr/sharp 接入点
 //

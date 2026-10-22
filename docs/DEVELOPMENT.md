@@ -32,12 +32,13 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 
 ```text
 desktop/native/
-├── gather-core/                     # 4 个库 target（零第三方依赖）
+├── gather-core/                     # 5 个库 target（零第三方依赖，另有 GatherTestSupport 夹具）
 │   ├── Sources/GatherProtocol/      # 值类型、16 个域 API 协议、GatherErrorCode、路径策略
-│   ├── Sources/GatherPersistence/   # SchemaV1、Database、Repositories、Delivery
+│   ├── Sources/GatherPersistence/   # SchemaV1、Database、Repositories
+│   ├── Sources/GatherDelivery/      # DeliveryCoordinator / 写回 / XMP 文件锁
 │   ├── Sources/GatherAnalysis/      # Face/Image/Concurrent/Similarity 算法
-│   ├── Sources/GatherDomain/        # Services 编排、JobService、DeliveryCoordinator
-│   ├── Sources/GatherTestSupport/   # 测试共享夹具（makeTestDB 等）
+│   ├── Sources/GatherApplication/   # Services 编排、JobService
+│   ├── Tests/GatherTestSupport/     # 测试共享夹具（makeTestDB 等）
 │   ├── Sources/GatherSchema/        # schema 导出可执行
 │   ├── Sources/GatherCoreBenchmarks/ + GatherFaceBenchmarks/  # 基准
 │   └── Tests/GatherCoreTests/       # core 测试（数量/套件数以 swift test 汇总行为准）
@@ -193,8 +194,8 @@ SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
   ↓ AppServices（16 个域 API / 110 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
-GatherDomain 服务
-  ├── GatherPersistence：SQLite WAL + SchemaV1（43 表 / 373 列 / user_version=1）
+GatherApplication 服务（交付编排在 GatherDelivery）
+  ├── GatherPersistence：SQLite WAL + SchemaV1（43 表 / 373 列 / user_version=2）
   ├── GatherAnalysis：图片读取、Vision 人脸、RAW/ImageIO 解码
   ├── JobService（可恢复任务，executor + checkpoint + dedupeKey）
   └── DeliveryCoordinator：deliveries 写回（重试 / 冲突 / 重启恢复）
@@ -218,9 +219,10 @@ GatherDomain 服务
 ### 数据与任务
 
 - SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库单事务执行
-  `SchemaV1.sql` 并写 `PRAGMA user_version = 1`（43 表 / 373 列 / 69 索引 /
-  62 外键）。不兼容库（user_version=0 有表 / 非 1 / 非 SQLite 文件）把
-  db/-wal/-shm 整体改名为 `<db>.incompatible-<ts>` 后重建，不做就地迁移（ADR-005/006）。
+  `SchemaV1.sql` 并写 `PRAGMA user_version = 2`（43 表 / 373 列 / 69 索引 /
+  62 外键）。形态正确的 V1 库先做一致性备份，再经 V1→V2 no-op 事务迁移到 2；
+  其余不兼容库（user_version=0 有表 / 版本更高 / 形态不符 / 非 SQLite 文件）
+  默认 fail closed（开发重置策略才把 db/-wal/-shm 改名为 `<db>.incompatible-<ts>` 后重建，ADR-005/006）。
 - 导入创建 session、写入照片资产后，立即提交 `metadata.scan` 任务；任务中心负责
   进度、失败显示、重试和取消。
 - 元数据写回经 `DeliveryCoordinator` + `deliveries/delivery_sessions/delivery_items/

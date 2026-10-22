@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/QualityService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/QualityService.swift
 // TS 源: desktop/src/main/services/quality/quality.service.ts（Phase 3.6 移植，全量）
 //
 // Swift 6 并发说明：analyze 的并行 worker 通过 AnalyzeProgressCounter（同步方法内

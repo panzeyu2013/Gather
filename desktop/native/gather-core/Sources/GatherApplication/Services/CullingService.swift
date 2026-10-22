@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/CullingService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/CullingService.swift
 // TS 源: desktop/src/main/services/culling/culling.service.ts（1902 行，逐字移植）
 // + culling.ipc.ts（387 行）的命令面（writeback/sync_status/flush/retry_sync/
 // finalize_sync/retry_failed_writeback/confirm_sync/cleanup 的确认校验与委托）。
@@ -70,9 +70,6 @@ public final class CullingService {
     static let lookupCacheMax = 8
     static let updateTTLSeconds: TimeInterval = 5
     static let updateCacheMax = 8
-
-    /// TS: withChunkedIds 的分块大小（SQLite 参数上限以内，同其他批量读）。
-    private static let chunkSize = 800
 
     /// TS: culling.ipc.ts 的 limit 校验区间。
     public static let pageLimitMax = 2_000

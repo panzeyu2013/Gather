@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/ExportService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/ExportService.swift
 // Phase 3.6：原生导出管线。
 //
 // 该服务刻意保持在 GatherCore：预览、文件规划、断点续作、原图复制、

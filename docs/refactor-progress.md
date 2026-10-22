@@ -10,7 +10,7 @@
 - 基线指标（Cut 0）：257 个 Swift 文件；Services 128 处 prepare(；@unchecked Sendable
   ratchet 口径 40（grep 全量 52）；try? 348；测试基线 core 994 / app 298；.disabled 0、
   withKnownIssue 0、.enabled(if:) 4 处（默认跳过 8 条）；错误码 179（D-010）。
-- **最终指标（架构整改 WP0–WP7b，2026-10-22）**：**535** 个 Swift 文件；7 target；
+- **最终指标（架构整改 WP0–WP7b，2026-10-22）**：**535** 个 Swift 文件；8 target；
   Schema **43 表/373 列/69 索引/62 FK**、**user_version=2**（V1→V2 no-op 迁移 + 备份）；
   16 协议/110 方法、**0 字符串命令**、179 错误码；en **1,322** / zh **9**、页面/VM `l()`=0；
   #Preview **14**；core **1,100/165**、app **617/68**；ratchet **53/231/0/0/0**；
@@ -18,6 +18,13 @@
   Delivery Coordinator **366 行**、状态写入 **8**、模块适配器 **5 方法**；Composition **107 行**；
   Host SwiftUI **0**、UI sync 端口 **0**、7 VM PageVisibility 统一；Job/Delivery trace 日志已接。
   Cut 6c 时点为 core 1,092/157、app 581/66、en 1,313、ratchet 53/236/126、user_version=1。
+- **A/B 档收尾清理（2026-10-22，final-cleanup-scan）**：57 文件 **+84/−208**（净 −124 行，
+  含删 1 文件 22 行）。26 处文件头 + 4 处交付端口注释；删 `IndexerService.sha256File`、
+  `GatherProgressBar` 4 个废弃参数、`GatherLocalization.appLocale`、2 个未读私有常量、
+  `VectorIndex.Candidate`、`FaceSimMutationPort`、2 个未调用测试 helper、
+  `JobScopeCheckpoint`（测试改 `JobCreateParams.metadataScanRequestedPathsKey`）、
+  `makeGatherTestDB`（22 处 → `makeTestDB`）。core **1,100/165**、app **617/68**、
+  9 门禁 + schema verify 全绿；扫描所称 9 个 helper 中 7 个实为 @Test 参数化入口，保留。
 - 本机限制：`build.sh` 被 DSH 沙箱拒绝（`sandbox_apply: Operation not permitted`，
   exit 1），bundle 交 CI；人工 GUI smoke 未做，均不写成通过。
 - 决策记录：docs/refactor-decisions.md（D-036..D-164，D-163 最终关闭、D-164 CL-04 deferred）

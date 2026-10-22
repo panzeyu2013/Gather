@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherAnalysis/Concurrent/BatchRunner.swift
+// desktop/native/gather-core/Sources/GatherPersistence/Support/BatchRunner.swift
 // 有界并发批处理的唯一实现（内部）。
 //
 // 合并背景（R2）：MetadataSyncCoordinator / IndexerService / QualityService /

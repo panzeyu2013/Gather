@@ -30,6 +30,7 @@ import GatherApplication
 import GatherDelivery
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - 通用辅助
 
@@ -97,7 +98,7 @@ private struct ExportAPIFixture {
     let options: ExportOptions
 
     init(photoCount: Int = 2, jobGate: AsyncGate? = nil, pattern: String = "{original}") throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "B6a", source: "test")
 
@@ -605,7 +606,7 @@ private struct MetadataAPIFixture {
         xmp: MetadataTestXMPProvider = MetadataTestXMPProvider(),
         fileLock: XMPFileLock = .shared
     ) throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "B6a metadata", source: "test")
 

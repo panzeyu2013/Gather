@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/NavigationService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/NavigationService.swift
 // TS 源: desktop/src/main/services/navigation/navigation.service.ts（Phase 3.6 移植）
 //
 // 行为契约（与 TS 逐条对应，红线见 NATIVE-DEVELOPMENT-ANALYSIS.md §3.6）：
@@ -78,9 +78,6 @@ private struct CaptureRow {
 // MARK: - 服务
 
 public final class NavigationService {
-    /// TS: IN chunk 800（quality 查询）。
-    private static let qualityChunkSize = 800
-
     private let navigationRepo: any NavigationRepository
 
     public init(navigationRepo: any NavigationRepository) {

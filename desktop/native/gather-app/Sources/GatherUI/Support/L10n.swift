@@ -115,7 +115,7 @@ public struct L10n: Equatable, Sendable {
         case zhCN = "zh-CN"
         case en = "en"
 
-        /// 日期/数字格式化 locale（与 GatherLocalization.appLocale 同语义）。
+        /// 日期/数字格式化 locale（与 GatherLocalization.appLanguage 派生的 locale 同语义）。
         public var locale: Locale {
             Locale(identifier: self == .zhCN ? "zh_CN" : "en_US")
         }

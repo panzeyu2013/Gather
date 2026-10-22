@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/ImageMetadataProviders.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/ImageMetadataProviders.swift
 // 宿主职责的 ImageIO 实现：EXIF 分段读取 + 尺寸/大小/格式兜底。
 //
 // 语义（与 Protocol 注释一致）：

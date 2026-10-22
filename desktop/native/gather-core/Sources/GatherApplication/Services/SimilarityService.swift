@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/SimilarityService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/SimilarityService.swift
 // TS 源: desktop/src/main/services/similarity/similarity.service.ts（Phase 3.3 移植，
 // 算法已随 2.3 下沉 ClusterGraph / DHash）
 //

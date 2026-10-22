@@ -98,19 +98,9 @@ private extension View {
 /// 原生进度指示器。
 ///
 /// `fill` 映射为 tint；`label` 映射为 `ProgressView` 的原生标签（显示在条上方）。
-/// `track` / `border` / `height` / `cornerRadius` 为旧版 CSS 外观参数，现已忽略
-/// ——保留在签名里只为避免一次性改动大量调用点。
 public struct GatherProgressBar: View {
     public let fraction: Double
     public var fill: Color = GatherTheme.accent
-    @available(*, deprecated, message: "原生 ProgressView 系统自绘轨道")
-    public var track: Color = .clear
-    @available(*, deprecated, message: "原生 ProgressView 系统自绘边框")
-    public var border: Color? = nil
-    @available(*, deprecated, message: "原生 ProgressView 系统决定高度")
-    public var height: CGFloat = 0
-    @available(*, deprecated, message: "原生 ProgressView 系统决定圆角")
-    public var cornerRadius: CGFloat = 0
     public var width: CGFloat? = nil
     public var label: String? = nil
     public var accessibilityText: String? = nil
@@ -118,20 +108,12 @@ public struct GatherProgressBar: View {
     public init(
         fraction: Double,
         fill: Color = GatherTheme.accent,
-        track: Color = .clear,
-        border: Color? = nil,
-        height: CGFloat = 0,
-        cornerRadius: CGFloat = 0,
         width: CGFloat? = nil,
         label: String? = nil,
         accessibilityText: String? = nil
     ) {
         self.fraction = fraction
         self.fill = fill
-        self.track = track
-        self.border = border
-        self.height = height
-        self.cornerRadius = cornerRadius
         self.width = width
         self.label = label
         self.accessibilityText = accessibilityText

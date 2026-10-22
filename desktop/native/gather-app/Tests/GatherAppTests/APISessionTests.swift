@@ -13,6 +13,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 /// 三个 Live API 的共享测试装配（内存库 + 真实服务）。
 private struct APIFixture {
@@ -25,7 +26,7 @@ private struct APIFixture {
     let settingsService: SettingsService
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let faceRepo = FaceRepo(connection: db)
@@ -110,7 +111,7 @@ struct APISessionTests {
         #expect(directoryScan.dedupeKey == JobCreateParams.metadataScanDedupeKey(sessionId: created.session.id))
         #expect(directoryScan.checkpoint == JobCreateParams.metadataScanCheckpoint(requestedPaths: nil))
         #expect(
-            directoryScan.checkpoint[JobScopeCheckpoint.requestedPathsKey] == nil,
+            directoryScan.checkpoint[JobCreateParams.metadataScanRequestedPathsKey] == nil,
             "目录导入 = 目录全树作用域，checkpoint 不得携带 requestedPaths"
         )
 
@@ -173,7 +174,7 @@ struct APISessionTests {
             scan.checkpoint == JobCreateParams.metadataScanCheckpoint(
                 requestedPaths: normalizeImportFilepaths([a, b]))
         )
-        let requested = scan.checkpoint[JobScopeCheckpoint.requestedPathsKey]?
+        let requested = scan.checkpoint[JobCreateParams.metadataScanRequestedPathsKey]?
             .arrayElements?.compactMap(\.stringValue) ?? []
         #expect(requested == normalizeImportFilepaths([a, b]))
     }

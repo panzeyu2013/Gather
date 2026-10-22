@@ -1,10 +1,13 @@
 // desktop/native/gather-app/Sources/GatherApp/GatherAppCommands.swift
-// 应用菜单命令（N08）。
+// 应用菜单命令（N08）：只做 SwiftUI Commands 装配。
 //
-// WP4d：从 GatherHost 迁入 GatherApp（唯一 @main/Scene 的 target）——SwiftUI
-// 只在 Scene 层使用，Host 不再 import SwiftUI。本文件只 import SwiftUI +
-// GatherUI（菜单文案 L10n / 通知名），不触碰 core 四层。场景引用不变：
-// GatherApp.body 的 .commands { GatherAppCommands(language:) }。
+// 菜单文案 / L10n 键 / 通知名 / 快捷键数据自 P1-2 起在
+// GatherUI/Support/MenuCopy.swift（GatherAppMenuCopy / GatherAppMenuItem /
+// GatherMenuShortcut）；GatherUI 是测试 target 可 import 的库，菜单映射
+// 因此有真实断言。本文件只保留三件事：
+//   1. CommandGroup 的替换位置（文件 / 显示 / 帮助）；
+//   2. 按钮动作（通知投递 / 帮助 URL）；
+//   3. 把 item.shortcut 接到 SwiftUI .keyboardShortcut。
 //
 // 为什么必须走 SwiftUI Commands：SwiftUI 在场景装配时用**自己构建的主菜单**替换
 // NSApp.mainMenu，AppDelegate.installMenu 里建的「文件/编辑」菜单在运行态根本
@@ -22,23 +25,6 @@
 import SwiftUI
 import GatherUI
 
-/// 菜单文案：按语言值解析的纯函数，便于单测（不必渲染 SwiftUI/AppKit 菜单）。
-struct GatherAppMenuCopy: Equatable {
-    let newWorkspace: String
-    let importFolder: String
-    let captureOneImport: String
-    let toggleSidebar: String
-    let help: String
-
-    init(_ l10n: L10n) {
-        self.newWorkspace = l10n("新建工作区")
-        self.importFolder = l10n("导入文件夹")
-        self.captureOneImport = l10n("从 Capture One 导入")
-        self.toggleSidebar = l10n("显示/隐藏侧栏")
-        self.help = l10n("Gather 帮助")
-    }
-}
-
 package struct GatherAppCommands: Commands {
     /// 菜单语言（4a-3a）：GatherApp 读 LanguageStore.language 传入。
     let language: L10n.Language
@@ -47,35 +33,21 @@ package struct GatherAppCommands: Commands {
         self.language = language
     }
 
-    /// 当前语言下的菜单文案（body 只用这一份；测试直接断言本值）。
+    /// 当前语言下的菜单文案（body 只用这一份；映射本身由 GatherUI 单测覆盖）。
     var menuCopy: GatherAppMenuCopy { GatherAppMenuCopy(L10n(language: language)) }
 
     package var body: some Commands {
         let copy = menuCopy
         // 文件菜单：新建 / 导入 / C1 导入（替换 SwiftUI 默认的 New Item 组）。
         CommandGroup(replacing: .newItem) {
-            Button(copy.newWorkspace) {
-                NotificationCenter.default.post(name: GatherAppNotification.menuNewWorkspace, object: nil)
-            }
-            .keyboardShortcut("n", modifiers: .command)
-
-            Button(copy.importFolder) {
-                NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
-            }
-            .keyboardShortcut("o", modifiers: .command)
-
-            Button(copy.captureOneImport) {
-                NotificationCenter.default.post(name: GatherAppNotification.captureOneImportRequest, object: nil)
-            }
-            .keyboardShortcut("i", modifiers: [.command, .shift])
+            notificationButton(.newWorkspace, copy: copy)
+            notificationButton(.importFolder, copy: copy)
+            notificationButton(.captureOneImport, copy: copy)
         }
 
         // 显示菜单：侧栏显隐（⌘⌥S），与 NavigationSplitView 的列可见性联动。
         CommandGroup(replacing: .sidebar) {
-            Button(copy.toggleSidebar) {
-                NotificationCenter.default.post(name: GatherAppNotification.menuToggleSidebar, object: nil)
-            }
-            .keyboardShortcut("s", modifiers: [.command, .option])
+            notificationButton(.toggleSidebar, copy: copy)
         }
 
         // 帮助菜单：保留项目主页入口（AppKit 菜单被覆盖后不再有第二条路径）。
@@ -84,6 +56,28 @@ package struct GatherAppCommands: Commands {
                 if let url = URL(string: "https://github.com/panzeyu2013/Gather") {
                     NSWorkspace.shared.open(url)
                 }
+            }
+        }
+    }
+
+    /// 通知型菜单项：文案、快捷键、通知名都来自 GatherUI 的描述符。
+    @ViewBuilder
+    private func notificationButton(
+        _ item: GatherAppMenuItem,
+        copy: GatherAppMenuCopy
+    ) -> some View {
+        if let shortcut = item.shortcut {
+            button(item, copy: copy)
+                .keyboardShortcut(shortcut.keyEquivalent, modifiers: shortcut.modifiers)
+        } else {
+            button(item, copy: copy)
+        }
+    }
+
+    private func button(_ item: GatherAppMenuItem, copy: GatherAppMenuCopy) -> some View {
+        Button(copy[item]) {
+            if let name = item.notificationName {
+                NotificationCenter.default.post(name: name, object: nil)
             }
         }
     }

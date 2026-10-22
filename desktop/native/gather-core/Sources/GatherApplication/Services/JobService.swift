@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/JobService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/JobService.swift
 // 后台任务唯一执行器：入队、准入、心跳、取消宽限、恢复、终态收尾全部在这里定义。
 // 旧 JobScheduler（第二套 weight 调度）与 AnalysisWorker（未被生产引用的包装）已删除，
 // 其预算准入语义并入本文件的 weightBudget 调度。

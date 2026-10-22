@@ -12,6 +12,7 @@ import Testing
 @testable import GatherPersistence
 @testable import GatherAnalysis
 @testable import GatherApplication
+import GatherTestSupport
 
 // MARK: - Stub（错误态与调用记录）
 
@@ -226,7 +227,7 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (LibraryViewModel
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
 private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection) {
-    let db = try makeGatherTestDB()
+    let db = try makeTestDB()
     let services = AppServices.live(composition: AppComposition.make(db: db))
     return (LiveLibraryDataProvider(
         session: services.session,

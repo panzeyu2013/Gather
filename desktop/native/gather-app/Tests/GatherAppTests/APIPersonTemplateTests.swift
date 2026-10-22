@@ -11,7 +11,7 @@
 //   SESSION_NOT_FOUND；
 // - 错误路径：空白 id、超长 name、负数 limit/offset、NaN matchThreshold。
 //
-// 夹具：内存 SQLite（makeGatherTestDB）+ 真实 PersonRepo / TemplateService /
+// 夹具：内存 SQLite（makeTestDB）+ 真实 PersonRepo / TemplateService /
 // SettingsService / SessionRepo，不触碰用户数据；破坏性入口一律显式
 // Confirmed<T>（D-011，source=.test）。
 
@@ -23,6 +23,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - 夹具
 
@@ -37,7 +38,7 @@ private struct PersonTemplateFixture {
     let templateAPI: LiveTemplateAPI
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let personRepo = PersonRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let sessionRepo = SessionRepo(connection: db)

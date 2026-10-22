@@ -18,6 +18,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - 夹具
 
@@ -27,7 +28,7 @@ private struct CompositionFixture {
     let services: AppServices
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let composition = AppComposition.make(db: db)
         let services = AppServices.live(composition: composition)
         self.db = db

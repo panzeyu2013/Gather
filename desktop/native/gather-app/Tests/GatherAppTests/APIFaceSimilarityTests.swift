@@ -25,6 +25,7 @@ import GatherApplication
 import GatherDelivery
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - Fake 端口
 
@@ -121,35 +122,6 @@ private final class FaceSimXMPProvider: XMPProvider, @unchecked Sendable {
     func removeFile(_ path: String) async throws {}
 }
 
-/// MetadataMutationPort 的替身：记录入队字段（execute 的 Phase 1 会调用）。
-private final class FaceSimMutationPort: MetadataMutationPort, @unchecked Sendable {
-    private(set) var queued: [(photoId: String, values: [String: JSONValue], source: MetadataMutationSource)] = []
-
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        queued.append((photoId, values, source))
-        return MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
-
-    func queueMutation(
-        sessionId: String,
-        photoId: String,
-        patch: MetadataPatch,
-        source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
-}
-
 // MARK: - 夹具
 
 private enum FaceSimilarityFixtureError: Error {
@@ -171,7 +143,7 @@ private struct FaceSimilarityFixture {
     let xmp: FaceSimXMPProvider
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "B4a", source: "test")
         // 新 confirm 门禁读 sessions.reload_acked_at（与生产 C1 ack 同列）。

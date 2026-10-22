@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/SettingsNumber.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/SettingsNumber.swift
 // 设置表 → Int 的安全转换。
 //
 // 为什么需要：settings 表可以被用户/脚本直接改库，出现 NaN/inf/超大值是现实场景，

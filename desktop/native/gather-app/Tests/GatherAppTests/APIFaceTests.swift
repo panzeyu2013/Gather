@@ -21,6 +21,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 private struct FaceBehaviorFixture {
     let db: DBConnection
@@ -33,7 +34,7 @@ private struct FaceBehaviorFixture {
     let clusters: [Int64]
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "R1P1-2 Face", source: "test")
         let photoRepo = PhotoRepo(connection: db)

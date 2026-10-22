@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/PhotoAssetResolver.swift
+// desktop/native/gather-core/Sources/GatherPersistence/Database/Repositories/PhotoAssetResolver.swift
 // TS 源: desktop/src/main/services/assets/photo-asset-resolver.ts（Phase 3.2 移植）
 // 照片 → 资产解析：按 asset_read_mode（dual/asset/legacy）决定解析到资产文件
 // 还是遗留路径；dual 模式下资产就绪但路径与遗留不一致时输出 shadow-read 警告。

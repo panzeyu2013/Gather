@@ -21,6 +21,7 @@ import GatherApplication
 import GatherDelivery
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - Fake 端口
 
@@ -115,7 +116,7 @@ private struct CullingAPIFixture {
     let api: LiveCullingAPI
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "B3a", source: "test")
         let photoRepo = PhotoRepo(connection: db)

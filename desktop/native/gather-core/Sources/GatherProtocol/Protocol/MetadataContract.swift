@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/MetadataContract.swift
+// desktop/native/gather-core/Sources/GatherProtocol/Protocol/MetadataContract.swift
 // TS 源: desktop/src/main/services/metadata/metadata-contract.ts（逐字移植，纯逻辑）
 // 契约校验层：patch 规范化 / 关键词规范化 / dirty-fields 推导。错误消息与 TS
 // 逐字一致（CustomStringConvertible）。

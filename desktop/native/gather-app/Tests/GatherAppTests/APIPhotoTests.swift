@@ -19,6 +19,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 private struct PhotoAPIFixture {
     let db: DBConnection
@@ -32,7 +33,7 @@ private struct PhotoAPIFixture {
     let navigationAPI: LiveNavigationAPI
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let faceRepo = FaceRepo(connection: db)

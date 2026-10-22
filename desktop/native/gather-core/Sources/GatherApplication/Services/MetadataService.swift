@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/MetadataService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/MetadataService.swift
 // TS 源: desktop/src/main/services/metadata/metadata.service.ts（536 行，逐字移植）
 //
 // 注入点差异（host 职责，与 SimilarityService 同款注入模式）：

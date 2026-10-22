@@ -3,10 +3,9 @@
 //
 // 不渲染 SwiftUI/AppKit（无 UI 快照）：断言的是**驱动文案的值**——
 // 1. RootView 用的 RootShellCopy 从 store.l10n 取值，切语言即换文案；
-// 2. 菜单文案（GatherAppMenuCopy）从 store.language 取值（旧 commandsLanguageVersion
-//    计数器已删）。WP4d 起 GatherAppCommands 在 GatherApp 可执行 target，测试
-//    target 无法 import；这里改为断言菜单文案的唯一输入（L10n 键）在两语言下
-//    逐字正确，命令本身由 Scene 的 .commands 在编译期引用；
+// 2. 菜单映射（GatherAppMenuCopy / GatherAppMenuItem）在 GatherUI：断言
+//    5 个菜单项的 L10n 键、zh/en 文案、通知名与快捷键；GatherAppCommands
+//    只做 SwiftUI Commands 装配（P1-2 修复，测试 target 直接 import GatherUI）；
 // 3. 读 l10n/language 会建立 Observation 依赖（视图与 Scene body 的重渲染前提）。
 //
 // Cut 4 / 4b-2g：外壳/菜单文案都是显式 L10n（RootShellCopy / GatherAppMenuCopy
@@ -51,28 +50,69 @@ struct ShellLanguageWiringTests {
         #expect(en.workbench != zh.workbench)
     }
 
-    // WP4d：GatherAppCommands 已迁入 GatherApp 可执行 target（Host 不再
-    // import SwiftUI）。测试 target 只依赖 GatherUI/GatherHost，无法 import
-    // 可执行模块；菜单文案的唯一输入是这 5 个 L10n 键，命令结构由 Scene 的
-    // .commands 在编译期引用。语言驱动链路（store.language → L10n）不变。
-    @Test("Commands 菜单文案：显式语言值驱动，zh → en 全换")
+    // P1-2：菜单映射已下沉到 GatherUI（GatherAppMenuCopy / GatherAppMenuItem /
+    // GatherMenuShortcut），这里断言**生产类型**的键 → 文案/通知/快捷键，
+    // 不再对 L10n 字面量自证。GatherAppCommands 仅做 Commands 装配。
+    @Test("Commands 菜单映射：5 项 L10n 键/文案/通知/快捷键（GatherUI 真实类型）")
     func menuCopyFollowsStore() {
-        let zh = L10n(language: makeStore(.zhCN).language)
-        #expect(zh("新建工作区") == "新建工作区")
-        #expect(zh("导入文件夹") == "导入文件夹")
-        #expect(zh("从 Capture One 导入") == "从 Capture One 导入")
-        #expect(zh("显示/隐藏侧栏") == "显示/隐藏侧栏")
-        #expect(zh("Gather 帮助") == "Gather 帮助")
+        // 5 个菜单项：顺序、L10n 键（键错接会在下面的文案断言暴露）。
+        #expect(GatherAppMenuItem.allCases == [
+            .newWorkspace, .importFolder, .captureOneImport, .toggleSidebar, .help,
+        ])
+        #expect(GatherAppMenuItem.newWorkspace.titleKey == "新建工作区")
+        #expect(GatherAppMenuItem.importFolder.titleKey == "导入文件夹")
+        #expect(GatherAppMenuItem.captureOneImport.titleKey == "从 Capture One 导入")
+        #expect(GatherAppMenuItem.toggleSidebar.titleKey == "显示/隐藏侧栏")
+        #expect(GatherAppMenuItem.help.titleKey == "Gather 帮助")
 
-        // Cut 4 / 4b-2g：不切进程全局，直接给 en 语言值。
-        let en = L10n(language: makeStore(.en).language)
-        #expect(en("新建工作区") == "New Workspace")
-        #expect(en("导入文件夹") == "Import Folder")
-        #expect(en("从 Capture One 导入") == "Import from Capture One")
-        #expect(en("显示/隐藏侧栏") == "Show/Hide Sidebar")
-        #expect(en("Gather 帮助") == "Gather Help")
-        // 文案确实变了（不是被全局同步「碰巧」换成同一份）
-        #expect(en("新建工作区") != zh("新建工作区"))
+        // 文案映射：GatherAppCommands 用 subscript，5 个属性名也必须一一对应。
+        let zh = GatherAppMenuCopy(makeStore(.zhCN).l10n)
+        #expect(zh.newWorkspace == "新建工作区")
+        #expect(zh.importFolder == "导入文件夹")
+        #expect(zh.captureOneImport == "从 Capture One 导入")
+        #expect(zh.toggleSidebar == "显示/隐藏侧栏")
+        #expect(zh.help == "Gather 帮助")
+        #expect(zh[.newWorkspace] == "新建工作区")
+        #expect(zh[.importFolder] == "导入文件夹")
+        #expect(zh[.captureOneImport] == "从 Capture One 导入")
+        #expect(zh[.toggleSidebar] == "显示/隐藏侧栏")
+        #expect(zh[.help] == "Gather 帮助")
+
+        // 语言驱动（store.language 是唯一输入）：zh → en 全换。
+        let en = GatherAppMenuCopy(makeStore(.en).l10n)
+        #expect(en.newWorkspace == "New Workspace")
+        #expect(en.importFolder == "Import Folder")
+        #expect(en.captureOneImport == "Import from Capture One")
+        #expect(en.toggleSidebar == "Show/Hide Sidebar")
+        #expect(en.help == "Gather Help")
+        #expect(en[.newWorkspace] == "New Workspace")
+        #expect(en[.importFolder] == "Import Folder")
+        #expect(en[.captureOneImport] == "Import from Capture One")
+        #expect(en[.toggleSidebar] == "Show/Hide Sidebar")
+        #expect(en[.help] == "Gather Help")
+        #expect(en.newWorkspace != zh.newWorkspace)
+
+        // 通知名：4 个动作项 + 帮助项不投递通知（命令按此 post）。
+        #expect(GatherAppMenuItem.newWorkspace.notificationName == GatherAppNotification.menuNewWorkspace)
+        #expect(GatherAppMenuItem.importFolder.notificationName == GatherAppNotification.importFolderRequest)
+        #expect(GatherAppMenuItem.captureOneImport.notificationName == GatherAppNotification.captureOneImportRequest)
+        #expect(GatherAppMenuItem.toggleSidebar.notificationName == GatherAppNotification.menuToggleSidebar)
+        #expect(GatherAppMenuItem.help.notificationName == nil)
+        #expect(GatherAppNotification.menuNewWorkspace.rawValue == "gather.menu.new-workspace")
+        #expect(GatherAppNotification.importFolderRequest.rawValue == "gather.menu.import-folder-request")
+        #expect(GatherAppNotification.captureOneImportRequest.rawValue == "gather.menu.capture-one-import-request")
+        #expect(GatherAppNotification.menuToggleSidebar.rawValue == "gather.menu.toggle-sidebar")
+
+        // 快捷键：键位 + 修饰键（GatherAppCommands 直接把这两项交给 SwiftUI）。
+        #expect(GatherAppMenuItem.newWorkspace.shortcut == GatherMenuShortcut(key: "n", command: true))
+        #expect(GatherAppMenuItem.importFolder.shortcut == GatherMenuShortcut(key: "o", command: true))
+        #expect(GatherAppMenuItem.captureOneImport.shortcut == GatherMenuShortcut(key: "i", command: true, shift: true))
+        #expect(GatherAppMenuItem.toggleSidebar.shortcut == GatherMenuShortcut(key: "s", command: true, option: true))
+        #expect(GatherAppMenuItem.help.shortcut == nil)
+        #expect(GatherAppMenuItem.newWorkspace.shortcut?.modifiers == EventModifiers.command)
+        #expect(GatherAppMenuItem.importFolder.shortcut?.modifiers == EventModifiers.command)
+        #expect(GatherAppMenuItem.captureOneImport.shortcut?.modifiers == [.command, .shift])
+        #expect(GatherAppMenuItem.toggleSidebar.shortcut?.modifiers == [.command, .option])
     }
 
     @Test("读 l10n 会建立 Observation 依赖（视图/Scene 刷新前提）")

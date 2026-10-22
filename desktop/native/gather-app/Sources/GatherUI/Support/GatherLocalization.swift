@@ -419,13 +419,6 @@ public enum GatherLocalization {
             : Self.detectSystemLanguage()
     }
 
-    /// 格式化 locale：跟随 appLanguage（zh-CN → zh_CN，其余 en_US）。
-    /// 旧版 Dashboard formatDate 用 toLocaleDateString(undefined, ...)
-    /// 跟随应用语言；新实现不硬编码 zh_CN。
-    public static var appLocale: Locale {
-        Locale(identifier: appLanguage == "zh-CN" ? "zh_CN" : "en_US")
-    }
-
     private static func detectSystemLanguage() -> String {
         let preferred = Locale.preferredLanguages.first ?? "en"
         return preferred.lowercased().hasPrefix("zh") ? "zh-CN" : "en"

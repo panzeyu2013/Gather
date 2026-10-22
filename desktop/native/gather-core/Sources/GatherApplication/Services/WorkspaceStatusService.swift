@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/WorkspaceStatusService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/WorkspaceStatusService.swift
 // TS 源: desktop/src/main/services/workspace/workspace-status.service.ts（Phase 3.1 Dashboard 移植）
 // 工作区状态只读聚合（design_improvements.md 1.4.1–1.4.5）：
 // 不引入新的权威数据源，全部从现有 SQLite 表（photos / analysis_jobs /

@@ -25,6 +25,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 /// Cut 4 / 4a-2a-2：workspace 装配只需要一个空返回的图库 provider
 ///（本文件只测布局，不测取页行为；GalleryViewModel.init 的首屏补载会命中空页）。
@@ -287,7 +288,7 @@ struct LayoutBudgetTests {
     /// 相似度用类型化 API 替身；图库/图库库仍复用其生产 provider（本步不删）。
     @Test("其余四个非会话页在默认窗口内可放下")
     func globalPagesStayWithinBudget() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let composition = AppComposition.make(db: db)
         let services = AppServices.live(composition: composition)
 

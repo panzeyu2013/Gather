@@ -127,7 +127,7 @@
 ### CL-16 历史文档 / ADR 漂移 —— status: done（2026-10-22，6b）
 - **原位置**【已确认】：`docs/reviews/` 22 篇 + `assets/`；`docs/ADR.md` 的 schema 34/43 表等历史数字。
 - **实际处置**：18 篇 reviews → `docs/archive/reviews/`（`assets/` 随迁，图片相对链接保持可用），`docs/reviews/` 留 4 篇 + README；10 篇 Cut 文档 → `docs/archive/cuts/`；新建 `docs/archive/README.md` 索引并写明"行号为当时快照"。全仓 md 入链按新路径重写，md 链接检查 0 缺失。
-- **当前口径**：根 README / docs README / DEVELOPMENT / ROADMAP / ADR 改为 7 target、SchemaV1 43 表/373 列/69 索引/62 FK（user_version=1）、无 Router/118 命令、16 协议/110 方法、179 错误码、core 1,092/157 + app 581/66。
+- **当前口径**：根 README / docs README / DEVELOPMENT / ROADMAP / ADR 改为 8 target、SchemaV1 43 表/373 列/69 索引/62 FK（user_version=2）、无 Router/118 命令、16 协议/110 方法、179 错误码、core 1,100/165 + app 617/68。
 - **快照**：`docs/fixtures/schema.snapshot.json` → `docs/archive/schema.snapshot-v35.json`；ADR-006 注明历史、ADR-029 标题加"（schema 34，历史）"。
 - **验收**：`./scripts/check-docs.sh --strict` PASS；自建 md 链接检查 0 缺失。
 - **残余**：历史文档正文中的旧代码路径仍是快照值（不改正文结论）；无 redirect stub，旧路径靠 archive 索引映射。
@@ -414,9 +414,10 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 ## 10. 最终收尾复核（2026-10-22，docs / scripts / 构建产物）
 
 - **脚本**：`check-duplicate-symbols.sh` 删除 RequestGate 规则与“Cut 4 落地”文案（112→100 行，输出 4→3 项）；`check-docs.sh` 新增当前文档 md 链接存在性检查（165→211 行）。
-- **stale 符号**：`cut6-cleanup-audit` 的“RequestGate 1 份”更正为 0；CL-04 残余改“脚本已修 / LoadPhase 注释经复核已无 ViewState”；`JobScopeCheckpoint` 从死代码清单移除（已是单一来源键枚举，被 LiveSessionAPI/Dashboard 与测试引用）。
+- **stale 符号**：`cut6-cleanup-audit` 的“RequestGate 1 份”更正为 0；CL-04 残余改“脚本已修 / LoadPhase 注释经复核已无 ViewState”；`JobScopeCheckpoint` 生产引用为 0（旧“被 LiveSessionAPI/Dashboard 引用”结论有误），已于 2026-10-22 收尾清理删除，测试断言改用 `JobCreateParams.metadataScanRequestedPathsKey`。
 - **死链**：非 archive 当前文档 **0 缺失**（`face-clustering-benchmark.md` 13 条旧 `GatherCore` 源码链接改到 `GatherAnalysis`/`GatherDomain`）；归档 33 条旧源码链接按快照保留并在 archive 索引注明。
 - **构建产物**：删除 `release/Gather.app`（22 MB）与 4 个非活动 `.build` scratch（≈2.19 GiB）；保留并行构建正在写入的 `.build/scratch` 与两包增量缓存 `.build`。
+- **A/B 档收尾清理（2026-10-22）**：26 文件头 + 4 交付端口注释；删 `JobScopeCheckpoint`（1 文件/22 行，测试改 `JobCreateParams.metadataScanRequestedPathsKey`）、`IndexerService.sha256File`、`GatherProgressBar` 4 参数、`GatherLocalization.appLocale`、2 私有常量、`VectorIndex.Candidate`、`FaceSimMutationPort`、2 个未调用 helper、`makeGatherTestDB`（22 处→`makeTestDB`）；57 文件 +84/−208。core **1,100/165**、app **617/68**、9 门禁、schema verify（43 表/373 列/69 索引/62 FK/user_version=2）绿。
 - **实测**：en **1,322** / zh 9；测试文件 **166**；535 Swift 文件 / 138,829 行（17:00 采样；并行工作区仍在变）；ratchet **53/235/127/0/0**（baseline try? 240）；docs/test-catalog/ratchet 三门禁全 OK。详见 [final-cleanup-docs.md](final-cleanup-docs.md)。
 
 ---

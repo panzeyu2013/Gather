@@ -13,6 +13,7 @@ import Testing
 @testable import GatherPersistence
 @testable import GatherAnalysis
 @testable import GatherApplication
+import GatherTestSupport
 
 // MARK: - Stub（错误态注入）
 
@@ -167,7 +168,7 @@ private func makeStubVM() -> (DashboardViewModel, StubDashboardProvider) {
 // MARK: - 真实服务集成（临时 SQLite）
 
 private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnection) {
-    let db = try makeGatherTestDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let photoRepo = PhotoRepo(connection: db)
     let jobService = JobService(repo: AnalysisJobRepo(connection: db))
@@ -370,7 +371,7 @@ struct DashboardViewModelTests {
     // 不得再调 JobAPI.start（同 dedupeKey 会被静默去重，从而掩盖重复副作用）。
     @Test func directoryCreateScanUsesDirectoryScope() async throws {
         // 生产路径（LiveSessionAPI）：create 内部入队一次；JobAPI.start 零调用。
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
@@ -410,7 +411,7 @@ struct DashboardViewModelTests {
         #expect(scans.count == 1, "目录创建只允许一条 metadata.scan")
         #expect(scans.first?.dedupeKey == "metadata.scan:\(session.id)")
         #expect(
-            scans.first?.checkpoint[JobScopeCheckpoint.requestedPathsKey] == nil,
+            scans.first?.checkpoint[JobCreateParams.metadataScanRequestedPathsKey] == nil,
             "目录全树作用域不得携带 requestedPaths"
         )
     }
@@ -486,9 +487,9 @@ struct DashboardViewModelTests {
         let scan = try #require(jobs.first {
             $0.type == .metadataScan && $0.scopeId == outcome.session.id
         })
-        #expect(scan.checkpoint[JobScopeCheckpoint.requestedPathsKey] != nil,
+        #expect(scan.checkpoint[JobCreateParams.metadataScanRequestedPathsKey] != nil,
                 "契约键名必须与 GatherApp.importFiles 一致")
-        let requested = scan.checkpoint[JobScopeCheckpoint.requestedPathsKey]?
+        let requested = scan.checkpoint[JobCreateParams.metadataScanRequestedPathsKey]?
             .arrayElements?.compactMap(\.stringValue) ?? []
         #expect(requested == selected, "job 必须携带本次选中文件集合，而不是公共父目录")
         #expect(!requested.contains(dir), "父目录不得出现在扫描集合中")

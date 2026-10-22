@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/TemplateService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/TemplateService.swift
 // TS 源: desktop/src/main/services/template/template.service.ts（Phase 3.5 移植，
 // 全量：list / get / create / update / delete / apply）
 //

@@ -311,12 +311,6 @@ public enum VectorIndexError: Error, Equatable {
 
 // MARK: - 共享底层（文件私有）
 
-/// 堆候选（id + 余弦距离）。
-private struct Candidate {
-    var id: Int
-    var dist: Double
-}
-
 /// mulberry32 固定种子 PRNG（TS lsh-index.ts:62-71）。
 ///
 /// TS 的 `>>>`（无符号右移）、`Math.imul`（低 32 位乘积）与 `^`/`|`（按位）

@@ -20,6 +20,7 @@ import UniformTypeIdentifiers
 @testable import GatherPersistence
 @testable import GatherAnalysis
 @testable import GatherApplication
+import GatherTestSupport
 
 @Suite("GatherAppDelegate")
 @MainActor
@@ -99,7 +100,7 @@ struct GatherAppDelegateTests {
         let broken = directory.appendingPathComponent("broken.txt")
         try Data("not-an-image".utf8).write(to: broken)
 
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let composition = AppComposition.make(db: db)
 
         final class Box: @unchecked Sendable {

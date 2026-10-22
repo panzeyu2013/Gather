@@ -193,7 +193,7 @@ struct C1StatusCapsule: View {
     let service: C1StatusService
 
     /// Cut 4 / 4b-1：时间 locale / 日期格式跟随当前界面语言（渲染期解析，
-    /// 不再读进程级 GatherLocalization.appLocale/appLanguage）。
+    /// 不再读进程级 GatherLocalization.appLanguage）。
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 

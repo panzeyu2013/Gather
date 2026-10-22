@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/IndexerService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/IndexerService.swift
 // TS 源: desktop/src/main/services/indexer/index.service.ts（Phase 3.0 移植，
 // 只移植扫描/索引核心 + checksum 回填；watcher 段已由 2.4 Watch/Coordinator.swift
 // 完成，本服务经 scanHandler(sessionId, requestedPaths) 向其提供 fullScan 能力）
@@ -198,15 +198,7 @@ public final class IndexerService: @unchecked Sendable {
         #endif
     }
 
-    /// TS: sha256File —— 实现已下沉到 Persistence 的 `FileHasher`（Cut 3a / E-02：
-    /// AssetRepo 在 Persistence，不能反向调 Domain 的哈希函数，否则
-    /// Persistence↔Domain 成环、SwiftPM 报 cyclic dependency）。
-    ///
-    /// 保留一行委托仅作既有调用方的过渡别名；新代码请直接用 `FileHasher.sha256File`。
-    @available(*, deprecated, message: "改用 FileHasher.sha256File（Cut 3a：哈希实现已下沉到 Persistence）")
-    public static func sha256File(_ filePath: String) throws -> String {
-        try FileHasher.sha256File(filePath)
-    }
+    /// TS: sha256File —— 实现已下沉到 Persistence 的 `FileHasher`（Cut 3a / E-02）。
 
     /// TS: canonicalPath / textualPath / isWithin 三个纯函数已收敛到
     /// ScanPath（定义见 Database/ScanPath.swift）：扫描与导入两条链路共用同一归一化口径，

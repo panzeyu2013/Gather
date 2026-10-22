@@ -16,6 +16,7 @@ import Testing
 @testable import GatherPersistence
 @testable import GatherAnalysis
 @testable import GatherApplication
+import GatherTestSupport
 
 // MARK: - 支撑
 
@@ -45,7 +46,7 @@ private func makeStubVM(
 // MARK: - 真实服务集成（临时 SQLite + 类型化 API）
 
 private func makeLiveAPIs() throws -> (api: LiveSimilarityAPI, jobs: LiveJobAPI, db: DBConnection) {
-    let db = try makeGatherTestDB()
+    let db = try makeTestDB()
     let composition = AppComposition.make(db: db)
     // JobService 需先注册 executor 再 start() 才能运行（TS index.ts:476 主进程
     // 启动语义；否则 sim.analyze job 永不执行，waitForResult 挂满超时）。

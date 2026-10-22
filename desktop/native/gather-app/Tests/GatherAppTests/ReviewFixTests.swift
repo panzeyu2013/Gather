@@ -245,24 +245,6 @@ struct ReviewFixTests {
 
     // MARK: F05 人脸裁切换算
 
-    /// 图像在 ZStack 中是**居中**布局：左上角不在 frame 原点。N02 的错因就是把
-    /// 「左上角重合」的平移公式用在了居中布局上。这里按真实布局模型复算渲染位置
-    /// （真实像素断言见本文件后半的 ImageRenderer 测试）。
-    private func renderedCenter(
-        _ layout: (displayed: CGSize, offset: CGSize),
-        bbox: [Double],
-        frame: CGSize
-    ) -> CGPoint {
-        let topLeading = CGPoint(
-            x: (frame.width - layout.displayed.width) / 2,
-            y: (frame.height - layout.displayed.height) / 2
-        )
-        return CGPoint(
-            x: topLeading.x + (bbox[0] + bbox[2] / 2) * layout.displayed.width + layout.offset.width,
-            y: topLeading.y + (bbox[1] + bbox[3] / 2) * layout.displayed.height + layout.offset.height
-        )
-    }
-
     /// 说明（G 报告）：这里原有一条「复述居中公式」的纯换算测试，属于
     /// B 类测试——它把实现里的公式抄进断言，实现换成左上角原点它仍然通过。
     /// 已删除，覆盖工作改由下面的**位图断言**承担（布局模型的改变必然改变像素）。

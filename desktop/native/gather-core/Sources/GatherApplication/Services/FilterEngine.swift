@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/FilterEngine.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/FilterEngine.swift
 // TS 源: desktop/src/main/services/filter/filter-engine.ts（Phase 3.6 移植）
 //
 // WP3b-1：SQL 生成与执行已下沉到 GatherPersistence/PhotoFilterQuery。本文件只剩

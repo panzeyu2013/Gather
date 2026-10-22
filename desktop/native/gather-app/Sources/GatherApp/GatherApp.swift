@@ -5,7 +5,7 @@
 // 与 Sources/GatherHost/AppImport.swift。
 // Cut 3 / 3b-2+3：本文件所在的 GatherApp 是唯一可执行 target（只依赖
 // GatherHost + GatherUI）；3b-1 的迁移期转发已删除，调用点改到 Host/UI 的
-// 真实定义（AppBootstrap / AppImport / JobScopeCheckpoint）。
+// 真实定义（AppBootstrap / AppImport）。
 //
 // 当前形态：RootView 与所有页面均为 SwiftUI；宿主只经 AppComposition/AppServices
 // 的 typed API 访问 GatherDomain，不再持有字符串命令面。
@@ -107,5 +107,5 @@ struct GatherApp: App {
     }
 }
 
-// Cut 3 / 3b-2：3b-1 的「迁移期委托」已删除——DashboardViewModel ↔
-// JobScopeCheckpoint、LiveSessionAPI ↔ AppImport、测试 ↔ AppBootstrap 直接引用。
+// Cut 3 / 3b-2：3b-1 的「迁移期委托」已删除——DashboardViewModel 走 Protocol 的
+// JobCreateParams.metadataScan、LiveSessionAPI ↔ AppImport、测试 ↔ AppBootstrap 直接引用。

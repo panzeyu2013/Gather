@@ -22,6 +22,7 @@ import GatherApplication
 import GatherDelivery
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - 夹具依赖（空实现只用于不触碰文件系统的用例）
 
@@ -63,7 +64,7 @@ private struct AppRuntimeFixture {
     let runtime: AppRuntime
 
     init() throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let assetRepo = AssetRepo(connection: db)
@@ -248,7 +249,7 @@ struct AppRuntimeTests {
 
     @Test("组合根：AppServices 与 runtime 共用实例，runtime 写库/停机")
     func appServicesAndRuntimeShareComposition() async throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let composition = AppComposition.make(db: db)
         let runtime = composition.runtime
         do {

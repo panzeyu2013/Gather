@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherAnalysis/Concurrent/BatchCursor.swift
+// desktop/native/gather-core/Sources/GatherPersistence/Support/BatchCursor.swift
 // 批量并发调度的共享取号游标（内部实现，唯一真相源）。
 //
 // 合并背景：合并前 MetadataSyncCoordinator / IndexerService / QualityService /

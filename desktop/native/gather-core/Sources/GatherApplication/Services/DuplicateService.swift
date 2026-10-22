@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/DuplicateService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/DuplicateService.swift
 // TS 源: desktop/src/main/services/duplicate/duplicate.service.ts（Phase 3.6 移植）
 //
 // 移植差异说明（与 SimilarityService 相同的注入模式）：

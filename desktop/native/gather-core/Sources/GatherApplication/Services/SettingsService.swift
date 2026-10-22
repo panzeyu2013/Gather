@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/SettingsService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/SettingsService.swift
 // TS 源: desktop/src/main/services/settings/settings.service.ts（Phase 3.6 移植）
 //
 // 行为契约（与 TS 逐条对应）：

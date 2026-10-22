@@ -20,6 +20,7 @@ import GatherApplication
 import GatherDelivery
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - 装配夹具
 
@@ -64,7 +65,7 @@ private struct ExecutorRegistryFixture {
         let exportRoot = root.appendingPathComponent("export", isDirectory: true)
         try FileManager.default.createDirectory(at: exportRoot, withIntermediateDirectories: true)
 
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let photoRepo = PhotoRepo(connection: db)
         let assetRepo = AssetRepo(connection: db)

@@ -31,7 +31,7 @@ decisions back through metadata.
 - **Local-first:** photos, indexes, models, and metadata processing stay on the
   computer; the app does not run a local web service.
 - **Native workflow:** SwiftUI pages call 16 typed domain APIs (110 methods)
-  in-process across seven SwiftPM targets; there is no Electron, browser
+  in-process across eight SwiftPM targets; there is no Electron, browser
   renderer, JavaScript IPC runtime, or string-command router.
 - **Recoverable writeback:** metadata changes are persisted in the `deliveries`
   queue and processed with conflict detection and restart recovery.
@@ -92,18 +92,19 @@ SwiftUI (GatherUI)
   ↓ AppServices：16 个域协议 / 110 个类型化方法（同进程直连）
 GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
   ↓
-GatherDomain（服务编排、JobService、DeliveryCoordinator）
-  ├─ GatherPersistence：SQLite WAL + SchemaV1（43 表 / 373 列 / user_version=1）
-  ├─ GatherAnalysis：dHash/LSH 聚类、Vision 人脸、RAW/ImageIO 解码
-  └─ XMP 写回：deliveries 队列（重试 / 冲突 / 重启恢复）
+GatherApplication（服务编排、JobService）
+  ├─ GatherDelivery：DeliveryCoordinator（XMP 写回：重试 / 冲突 / 重启恢复）
+  ├─ GatherPersistence：SQLite WAL + SchemaV1（43 表 / 373 列 / user_version=2）
+  └─ GatherAnalysis：dHash/LSH 聚类、Vision 人脸、RAW/ImageIO 解码
 ```
 
-The seven targets are `GatherProtocol` (values, API, error codes),
-`GatherPersistence` (SchemaV1, Database, repositories), `GatherAnalysis`,
-`GatherDomain`, `GatherUI`, `GatherHost`, and `GatherApp`. `AppComposition` is
+The eight targets are `GatherProtocol` (values, API, error codes),
+`GatherPersistence` (SchemaV1, Database, repositories), `GatherDelivery`
+(delivery engine), `GatherAnalysis`, `GatherApplication` (services),
+`GatherUI`, `GatherHost`, and `GatherApp`. `AppComposition` is
 the single composition root; `AppRuntime` owns job lifecycle. There is no
-118-command router and no migration chain: `Database.open(at:)` creates
-SchemaV1 once and resets incompatible databases (including `-wal`/`-shm`).
+118-command router; `Database.open(at:)` opens the current schema (V2),
+migrating a well-formed V1 database with a no-op transaction.
 
 Destructive operations use the compile-time `Confirmed<T>` marker plus real UI
 confirmation, photo paths are resolved from database-owned assets, and

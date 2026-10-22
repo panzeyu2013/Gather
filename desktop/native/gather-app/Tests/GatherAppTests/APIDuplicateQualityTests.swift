@@ -23,6 +23,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+import GatherTestSupport
 
 // MARK: - 夹具
 
@@ -45,7 +46,7 @@ private struct DuplicateQualityFixture {
         duplicateScanBusy: Bool = false,
         qualityGate: AsyncGate? = nil
     ) throws {
-        let db = try makeGatherTestDB()
+        let db = try makeTestDB()
         let session = try SessionRepo(connection: db).create(name: "B5a", source: "test")
         let now = "2026-01-01T00:00:00.000Z"
         for photoId in ["p1", "p2", "p3"] {

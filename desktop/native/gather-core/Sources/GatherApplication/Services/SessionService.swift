@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/SessionService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/SessionService.swift
 // TS 源: desktop/src/main/services/session/session.service.ts（Phase 3.2 移植）
 // 会话服务：创建/列表/查询/删除/加照片。图片尺寸读取通过注入的
 // dimensionsProvider 接入原生 RAWDecoder，
