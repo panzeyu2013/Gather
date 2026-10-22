@@ -7,6 +7,8 @@
 //   2. 重复 open：outcome=.opened(.v2)、不新增备份、行数不变；
 //   3. production 目录：current=.v2、V1→V2 一步、plan(v2) 为空、migrate no-op；
 //   4. 迁移注入失败：抛 .migration、user_version 仍为 1、新列不存在、备份保留；
+//   4b. 提交前两道 guard 的失败注入：迁移后 FK 违规 / 目标形态不符（catalog 写错或
+//       注入 DDL）都整体回滚、旧库可读、备份保留、下次启动可重试；
 //   5. newer(v3)：默认 .versionUnsupported 且主库字节不变；显式 reset 才改名重建；
 //   6. V0 有表（legacyPreV1）/ V1 缺列（370）：默认 .corrupt，不迁移、不产生备份；
 //   7. 备份是有效 V1 快照（header / quick_check / user_version / 行数）且最多保留 3 套；
@@ -115,15 +117,62 @@ private struct FailingMigrationV1ToV2: SchemaMigration {
     }
 }
 
-private func catalog(with migration: any SchemaMigration) -> SchemaCatalog {
+/// 迁移后 FK 违规注入：迁移器在 BEGIN 前已把 foreign_keys 置 OFF，事务内插入孤儿
+/// 照片能成功；提交前的 `PRAGMA foreign_key_check` 是唯一拦截点。
+private struct ForeignKeyViolatingMigration: SchemaMigration {
+    let from: SchemaVersion = .v1
+    let to: SchemaVersion = .v2
+    let name = "test-fk-violating-v1-to-v2"
+
+    func apply(_ connection: DBConnection) throws {
+        try connection.exec("""
+            INSERT INTO photos (id, session_id, filepath, created_at, updated_at)
+            VALUES ('orphan-photo', 'missing-session', '/photos/orphan.NEF', 't', 't');
+            """)
+    }
+}
+
+/// 迁移后形态不符注入：真实加一列（373→374），目标快照仍按生产 V2 校验。
+private struct ExtraColumnMigration: SchemaMigration {
+    let from: SchemaVersion = .v1
+    let to: SchemaVersion = .v2
+    let name = "test-extra-column-v1-to-v2"
+
+    func apply(_ connection: DBConnection) throws {
+        try connection.exec("ALTER TABLE sessions ADD COLUMN migration_extra TEXT;")
+    }
+}
+
+/// 故意写错的目标形态（列数 +1）：证明迁移器用 catalog 的 expectation 校验，
+/// 而不是只看 user_version。
+private let mismatchedV2Shape = SchemaShapeExpectation(
+    tableCount: SchemaV1.expectedTableCount,
+    columnCount: SchemaV1.expectedColumnCount + 1,
+    explicitIndexCount: SchemaV1.expectedExplicitIndexCount,
+    foreignKeyCount: SchemaV1.expectedForeignKeyCount,
+    requiredColumns: SchemaV1.requiredTableColumns,
+    fingerprint: SchemaV1.expectedShapeFingerprint
+)
+
+private func catalog(
+    with migration: any SchemaMigration,
+    targetShape: SchemaShapeExpectation = SchemaV2.shape
+) -> SchemaCatalog {
     SchemaCatalog(
         current: .v2,
         snapshots: [
             .v1: SchemaSnapshot(version: .v1, ddl: SchemaV1.ddl, shape: SchemaV1.shape),
-            .v2: SchemaSnapshot(version: .v2, ddl: SchemaV2.ddl, shape: SchemaV2.shape),
+            .v2: SchemaSnapshot(version: .v2, ddl: SchemaV2.ddl, shape: targetShape),
         ],
         migrations: [migration]
     )
+}
+
+/// 断言文件仍是 SQLite 库（备份/改名副本的 header 校验；不打开文件，避免 sidecar）。
+private func expectSQLiteFile(_ path: String) throws {
+    #expect(FileManager.default.fileExists(atPath: path))
+    let prefix = try Data(contentsOf: URL(fileURLWithPath: path)).prefix(16)
+    #expect(prefix == Data("SQLite format 3\u{0}".utf8), "不是 SQLite 文件：\(path)")
 }
 
 @Suite("SchemaMigrationTests")
@@ -155,6 +204,14 @@ struct SchemaMigrationTests {
         #expect(try userVersion(database.connection) == 2)
         #expect(try rowCounts(database.connection) == before, "迁移必须保留全部行")
         #expect(try tableCount(database.connection) == 43)
+        // 成功路径也要从迁移后的用户库侧确认两道 guard 的前置条件成立：
+        // FK 开关已恢复、foreign_key_check 为空、目标形态无 issue。
+        #expect(try database.read { try scalarInt($0, "PRAGMA foreign_keys") } == 1,
+                "迁移后必须恢复连接级 foreign_keys=ON")
+        #expect(try database.read { try $0.prepare("PRAGMA foreign_key_check;").query([]).isEmpty },
+                "迁移成功后 foreign_key_check 必须为空")
+        #expect(try SchemaV2.shape.issues(against: SchemaShapeReader.read(database.connection)).isEmpty,
+                "迁移成功后列形必须与 V2 快照一致")
         #expect(try migrationBackups(in: directory).count == 1, "一次迁移只产生一套备份")
         #expect(try incompatibleCopies(in: directory).isEmpty, "迁移不是 reset，不得产生 incompatible 副本")
     }
@@ -263,6 +320,165 @@ struct SchemaMigrationTests {
         #expect(retryBackup != nil)
         #expect(try userVersion(retried.connection) == 2)
         #expect(try rowCounts(retried.connection)["sessions"] == 2)
+    }
+
+    @Test("迁移后 foreign_key_check 违规：抛 .migration、回滚到 V1、备份保留、可重试")
+    func foreignKeyViolationAfterMigrationRollsBack() throws {
+        let directory = try makeTemporaryDirectory("v1-fk-violation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+        try seedV1Database(at: path)
+        let expectedRows = ["sessions": 2, "photos": 1, "deliveries": 1, "delivery_items": 1]
+
+        do {
+            _ = try Database.open(
+                at: path,
+                options: Database.Options(catalog: catalog(with: ForeignKeyViolatingMigration()))
+            )
+            Issue.record("迁移后 foreign_key_check 非空必须抛 .migration")
+        } catch let error as DatabaseError {
+            #expect(error.kind == .migration)
+            #expect(error.message.contains("迁移后 foreign_key_check 发现 1 条违规"),
+                    "错误必须明确指出 FK guard，实际：\(error.message)")
+        }
+
+        #expect(try incompatibleCopies(in: directory).isEmpty, "迁移失败不得 reset 用户库")
+        let backups = try migrationBackups(in: directory)
+            .filter { !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") }
+        #expect(backups.count == 1, "FK guard 失败也必须保留迁移前备份：\(backups)")
+        try expectSQLiteFile(directory.appendingPathComponent(try #require(backups.first)).path)
+
+        do {
+            let raw = try DBConnection(path: path)
+            defer { raw.close() }
+            #expect(try userVersion(raw) == 1, "FK guard 失败后库必须仍停在 V1")
+            #expect(try rowCounts(raw) == expectedRows, "回滚不得丢数据")
+            #expect(try scalarInt(raw, "SELECT COUNT(*) FROM photos WHERE id = 'orphan-photo'") == 0,
+                    "注入的孤儿照片必须随事务回滚")
+            #expect(try raw.prepare("PRAGMA foreign_key_check;").query([]).isEmpty,
+                    "回滚后的旧库不得留下 FK 违规")
+            #expect(try SchemaV1.shape.issues(against: SchemaShapeReader.read(raw)).isEmpty)
+        }
+
+        // 失败后下次启动仍可重试：production 目录迁移成功，数据与 FK 都正确。
+        let retried = try Database.open(at: path)
+        defer { retried.close() }
+        guard case .migrated(let from, let to, let backup) = retried.outcome else {
+            Issue.record("FK guard 失败后的重试必须成功迁移，实际 \(retried.outcome)")
+            return
+        }
+        #expect(from == .v1)
+        #expect(to == .v2)
+        #expect(backup != nil)
+        #expect(try userVersion(retried.connection) == 2)
+        #expect(try rowCounts(retried.connection) == expectedRows)
+        #expect(try retried.read { try $0.prepare("PRAGMA foreign_key_check;").query([]).isEmpty })
+        #expect(try scalarInt(retried.connection, "SELECT COUNT(*) FROM photos WHERE id = 'orphan-photo'") == 0)
+    }
+
+    @Test("迁移后形态与 catalog 不符：抛 .migration、issue 可读、回滚、旧库可重试")
+    func catalogShapeMismatchRollsBack() throws {
+        let directory = try makeTemporaryDirectory("v2-wrong-shape")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+        try seedV1Database(at: path)
+        let expectedRows = ["sessions": 2, "photos": 1, "deliveries": 1, "delivery_items": 1]
+
+        do {
+            _ = try Database.open(
+                at: path,
+                options: Database.Options(
+                    catalog: catalog(with: MigrationV1ToV2(), targetShape: mismatchedV2Shape)
+                )
+            )
+            Issue.record("迁移后形态与 catalog 不符必须抛 .migration")
+        } catch let error as DatabaseError {
+            #expect(error.kind == .migration)
+            #expect(error.message.contains("迁移后列形与 v2 不符"), "实际：\(error.message)")
+            #expect(error.message.contains("列数 373，期望 374"), "issue 必须可读：\(error.message)")
+        }
+
+        #expect(try incompatibleCopies(in: directory).isEmpty, "形态 guard 失败不得 reset 用户库")
+        let backups = try migrationBackups(in: directory)
+            .filter { !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") }
+        #expect(backups.count == 1, "形态 guard 失败也必须保留迁移前备份：\(backups)")
+        try expectSQLiteFile(directory.appendingPathComponent(try #require(backups.first)).path)
+
+        do {
+            let raw = try DBConnection(path: path)
+            defer { raw.close() }
+            #expect(try userVersion(raw) == 1, "形态 guard 失败后库必须仍停在 V1")
+            #expect(try rowCounts(raw) == expectedRows, "回滚不得丢数据")
+            #expect(try SchemaV1.shape.issues(against: SchemaShapeReader.read(raw)).isEmpty)
+            #expect(try raw.prepare("PRAGMA foreign_key_check;").query([]).isEmpty)
+        }
+
+        // 旧库仍可用：换回 production 目录即可完成迁移。
+        let retried = try Database.open(at: path)
+        defer { retried.close() }
+        guard case .migrated(let from, let to, _) = retried.outcome else {
+            Issue.record("形态 guard 失败后的重试必须成功迁移，实际 \(retried.outcome)")
+            return
+        }
+        #expect(from == .v1)
+        #expect(to == .v2)
+        #expect(try userVersion(retried.connection) == 2)
+        #expect(try rowCounts(retried.connection) == expectedRows)
+        #expect(try SchemaV2.shape.issues(against: SchemaShapeReader.read(retried.connection)).isEmpty)
+    }
+
+    @Test("迁移注入额外列导致形态不符：回滚该列、user_version 仍 1、备份保留、可重试")
+    func injectedDDLShapeMismatchRollsBack() throws {
+        let directory = try makeTemporaryDirectory("v1-extra-column")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+        try seedV1Database(at: path)
+        let expectedRows = ["sessions": 2, "photos": 1, "deliveries": 1, "delivery_items": 1]
+
+        do {
+            _ = try Database.open(
+                at: path,
+                options: Database.Options(catalog: catalog(with: ExtraColumnMigration()))
+            )
+            Issue.record("迁移注入额外列必须被目标形态 guard 拦下")
+        } catch let error as DatabaseError {
+            #expect(error.kind == .migration)
+            #expect(error.message.contains("迁移后列形与 v2 不符"), "实际：\(error.message)")
+            #expect(error.message.contains("列数 374，期望 373"), "issue 必须可读：\(error.message)")
+            #expect(error.message.contains("列形指纹"), "issue 必须包含指纹差异：\(error.message)")
+        }
+
+        #expect(try incompatibleCopies(in: directory).isEmpty, "形态 guard 失败不得 reset 用户库")
+        let backups = try migrationBackups(in: directory)
+            .filter { !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") }
+        #expect(backups.count == 1, "形态 guard 失败也必须保留迁移前备份：\(backups)")
+        try expectSQLiteFile(directory.appendingPathComponent(try #require(backups.first)).path)
+
+        do {
+            let raw = try DBConnection(path: path)
+            defer { raw.close() }
+            #expect(try userVersion(raw) == 1, "形态 guard 失败后库必须仍停在 V1")
+            #expect(try tableColumnCount(raw, table: "sessions") == 10, "注入的列必须随事务回滚")
+            let columns = try raw.prepare("PRAGMA table_info('sessions');").query([])
+                .compactMap { $0[1].textValue }
+            #expect(!columns.contains("migration_extra"))
+            #expect(try rowCounts(raw) == expectedRows, "回滚不得丢数据")
+            #expect(try SchemaV1.shape.issues(against: SchemaShapeReader.read(raw)).isEmpty)
+            #expect(try raw.prepare("PRAGMA foreign_key_check;").query([]).isEmpty)
+        }
+
+        // 失败后下次启动仍可重试：production 目录迁移成功，注入列不复活。
+        let retried = try Database.open(at: path)
+        defer { retried.close() }
+        guard case .migrated(let from, let to, _) = retried.outcome else {
+            Issue.record("形态 guard 失败后的重试必须成功迁移，实际 \(retried.outcome)")
+            return
+        }
+        #expect(from == .v1)
+        #expect(to == .v2)
+        #expect(try userVersion(retried.connection) == 2)
+        #expect(try tableColumnCount(retried.connection, table: "sessions") == 10)
+        #expect(try rowCounts(retried.connection) == expectedRows)
     }
 
     @Test("user_version=3：默认 .versionUnsupported 且主库字节不变；显式 reset 才改名重建")

@@ -6,8 +6,8 @@
 //   2. 文件库新建 → 关闭 → 重开数据保留（V2 幂等）；
 //   3. 形态正确的 V1 文件库 → 备份 + 迁移为 V2（不 reset、数据保留）；user_version=3 的
 //      新库在显式 resetPolicy=.renameToIncompatible 下被整体改名 `.incompatible-*`，
-//      新库回到 V2；非 SQLite 文件同样走改名。默认 .failClosed 下抛错、不改文件
-//      （见 SchemaMigrationTests）；
+//      新库回到 V2；非 SQLite 文件/坏 header 默认 .failClosed 抛 .corrupt、字节不变、
+//      不改名，只有显式 reset 才改名重建；
 //   4. read / write 事务回滚 / 嵌套 SAVEPOINT / close 后一律 `.closed` / async 串行执行器。
 //
 // 说明：测试只经 Database.open / DBConnection，不接入 Repo/Service；DDL 仍由
@@ -71,6 +71,12 @@ private func columnNames(_ db: DBConnection, table: String) throws -> Set<String
 private func incompatibleCopies(in directory: URL, baseName: String = "gather.sqlite") throws -> [String] {
     try FileManager.default.contentsOfDirectory(atPath: directory.path)
         .filter { $0.hasPrefix(baseName + ".incompatible-") }
+}
+
+/// 目录里 `<db>.pre-v*` 迁移备份的文件名（含同套 -wal/-shm）。
+private func migrationBackups(in directory: URL, baseName: String = "gather.sqlite") throws -> [String] {
+    try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        .filter { $0.hasPrefix(baseName + ".pre-v") }
 }
 
 /// 写一行满足 V1 约束的 session（其余用例的数据载体）。
@@ -222,6 +228,85 @@ struct DatabaseFacadeTests {
 
         let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         #expect(names.contains { $0.hasPrefix("gather.sqlite.incompatible-") })
+    }
+
+    @Test("非 SQLite 文件默认 fail closed：.corrupt、字节不变、不改名；显式 reset 才重置")
+    func nonDatabaseFileFailsClosedByDefault() throws {
+        let directory = try makeTemporaryDirectory("not-a-database-default")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+        let garbage = Data("this is definitely not a sqlite database".utf8)
+        try garbage.write(to: URL(fileURLWithPath: path))
+
+        do {
+            let database = try Database.open(at: path)
+            database.close()
+            Issue.record("非 SQLite 文件默认必须 fail closed")
+        } catch let error as DatabaseError {
+            #expect(error.kind == .corrupt)
+            #expect(error.message.contains("不是 SQLite 文件"), "实际：\(error.message)")
+        }
+
+        // 默认路径只抛错：绝不改写、删除或改名用户文件。
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == garbage,
+                "默认路径不得改写/截断用户文件")
+        #expect(FileManager.default.fileExists(atPath: path))
+        #expect(try incompatibleCopies(in: directory).isEmpty, "默认路径不得改名")
+        #expect(try migrationBackups(in: directory).isEmpty, "非 SQLite 文件不得触发迁移备份")
+
+        // 只有显式 .renameToIncompatible 才改名重建，旧字节必须原样保留。
+        let database = try Database.open(
+            at: path,
+            options: Database.Options(resetPolicy: .renameToIncompatible)
+        )
+        defer { database.close() }
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
+        #expect(try database.read { try userTables($0).count } == expectedV1TableCount)
+
+        let copies = try incompatibleCopies(in: directory)
+        let mains = copies.filter { !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") }
+        #expect(mains.count == 1, "显式 reset 必须把旧文件改名保留：\(copies)")
+        let renamed = directory.appendingPathComponent(try #require(mains.first))
+        #expect(try Data(contentsOf: renamed) == garbage, "改名的副本必须是原文件字节")
+    }
+
+    @Test("坏 header（SQLite 魔数 + 非法页头）默认 fail closed：.corrupt、字节不变、不改名")
+    func badHeaderFileFailsClosedByDefault() throws {
+        let directory = try makeTemporaryDirectory("bad-header")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+        // 前 16 字节是 SQLite 魔数，后面的页头非法：仍应走 NOTADB 的 fail-closed 分支。
+        var bytes = Data("SQLite format 3\u{0}".utf8)
+        bytes.append(Data(repeating: 0xAB, count: 200))
+        try bytes.write(to: URL(fileURLWithPath: path))
+
+        do {
+            let database = try Database.open(at: path)
+            database.close()
+            Issue.record("坏 header 默认必须 fail closed")
+        } catch let error as DatabaseError {
+            #expect(error.kind == .corrupt)
+            #expect(error.message.contains("不是 SQLite 文件"), "实际：\(error.message)")
+        }
+
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == bytes,
+                "默认路径不得改写/截断坏 header 文件")
+        #expect(try incompatibleCopies(in: directory).isEmpty, "默认路径不得改名")
+        #expect(try migrationBackups(in: directory).isEmpty, "坏 header 不得触发迁移备份")
+
+        // 显式 reset 同样只改名不删除，旧字节保留。
+        let database = try Database.open(
+            at: path,
+            options: Database.Options(resetPolicy: .renameToIncompatible)
+        )
+        defer { database.close() }
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
+        #expect(try database.read { try userTables($0).count } == expectedV1TableCount)
+        let copies = try incompatibleCopies(in: directory)
+        let mains = copies.filter { !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") }
+        #expect(mains.count == 1, "显式 reset 必须改名保留坏 header 文件：\(copies)")
+        let renamed = directory.appendingPathComponent(try #require(mains.first))
+        #expect(try Data(contentsOf: renamed) == bytes, "改名的副本必须是原文件字节")
     }
 
     // MARK: 3b. user_version=1 但列形不是当前 V1（Cut 5 加列未 bump）
