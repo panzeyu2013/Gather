@@ -5,8 +5,8 @@
 #   - 只统计**实际 SQL** 中的 SELECT *（含 o.* / p.* / pp.* / dgm.* 等限定星号）；
 #   - 排除 Swift 行注释 //、块注释 /* */（可嵌套）与 SQL 行注释 --；
 #   - 一个查询命中一次（同一行多条按多条计）；
-#   - Sources 基线：6（Cut 3 / 3b-4 收口实测：DuplicateService 4 + TemplateService 2；
-#     其余 SELECT * 已在 S5 / 3a 展开；基线只减不增）；
+#   - Sources 基线：4（2026-10 实测：DuplicateGroupQuery 4 处——组 2 / 成员 1 /
+#     成员 JOIN 1；TemplateService 的 2 处已展开为显式列；基线只减不增）；
 #   - Tests 白名单：仅允许 AnalysisJobRepoTests.swift 的 1 处 EXPLAIN QUERY PLAN。
 #
 # 失败策略（D-032）：
@@ -28,7 +28,7 @@ APP_SRC="desktop/native/gather-app/Sources"
 CORE_TESTS="desktop/native/gather-core/Tests"
 APP_TESTS="desktop/native/gather-app/Tests"
 
-BASELINE=6
+BASELINE=4
 TESTS_BASELINE=1
 TESTS_WHITELIST="desktop/native/gather-core/Tests/GatherCoreTests/Database/Repositories/AnalysisJobRepoTests.swift"
 

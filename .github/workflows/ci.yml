@@ -195,6 +195,32 @@ jobs:
           rm -f "$RUNNER_TEMP/gather-cert.p12"
       - name: Build universal signed bundle
         run: ./desktop/native/build.sh
+      # GatherLink.coplugin 的架构必须与 universal app 一致（arm64 + x86_64）。
+      # build.sh 在 SDK 存在时已按 GATHER_ARCHS 逐切片编译并 lipo；这里做发布侧
+      # 独立复核，防止 runner 缓存/旧产物混入。授权 SDK 不在仓库内，runner 没有
+      # SDK 时插件不会嵌入：明确 warning（不伪造通过），发布说明必须写明。
+      - name: Verify Capture One plugin architecture
+        run: |
+          PLUGIN_BINARY="release/Gather.app/Contents/PlugIns/GatherLink.coplugin/Contents/MacOS/GatherLink"
+          if [ ! -f "$PLUGIN_BINARY" ]; then
+            if [ -d "Capture_One_Plugin_SDK_(Mac)_v1.0.1" ]; then
+              echo "::error::Capture One SDK is present but GatherLink.coplugin was not embedded; universal release must include it."
+              exit 1
+            fi
+            echo "::warning::GatherLink.coplugin is not embedded (licensed Capture One SDK unavailable on this runner); skipping plugin arch verification. Release notes must state that this build has no Capture One plugin."
+            exit 0
+          fi
+          ARCHS="$(lipo -archs "$PLUGIN_BINARY")"
+          echo "GatherLink.coplugin architectures: $ARCHS"
+          for want in arm64 x86_64; do
+            case " $ARCHS " in
+              *" $want "*) ;;
+              *)
+                echo "::error::universal release requires the $want slice in GatherLink.coplugin (lipo -archs: $ARCHS)"
+                exit 1
+                ;;
+            esac
+          done
       - name: Verify bundle
         run: |
           APP=release/Gather.app

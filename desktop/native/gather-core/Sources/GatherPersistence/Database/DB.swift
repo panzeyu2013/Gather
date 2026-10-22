@@ -6,6 +6,7 @@
 // 保持零外部依赖，API 语义对齐 better-sqlite3（TS 侧 db/database.ts 的对应物）。
 import Foundation
 import CSQLite
+import GatherProtocol
 
 /// 绑定到语句的位置参数值。
 public enum DBValue: Equatable, Sendable {
@@ -231,9 +232,19 @@ public final class DBConnection: @unchecked Sendable {
         let storedSync = settingsProvider?("db_synchronous")
         let allowedSync = ["off", "normal", "full", "extra"]
         let syncValue = (storedSync ?? "normal").lowercased()
-        try? exec("PRAGMA synchronous = \(allowedSync.contains(syncValue) ? syncValue : "normal");")
+        applyPragma("PRAGMA synchronous = \(allowedSync.contains(syncValue) ? syncValue : "normal");")
         let storedCache = Int(settingsProvider?("db_cache_size_mb") ?? "64") ?? 64
-        try? exec("PRAGMA cache_size = -\(max(1, min(1024, storedCache)) * 1024);")
+        applyPragma("PRAGMA cache_size = -\(max(1, min(1024, storedCache)) * 1024);")
+    }
+
+    /// 性能 PRAGMA 是尽力而为：失败时保留 SQLite 当前值（不影响打开/查询），
+    /// 但不能静默吞掉——典型场景是连接已关闭或只读库，需要留诊断日志。
+    private func applyPragma(_ sql: String) {
+        do {
+            try exec(sql)
+        } catch {
+            GatherLogger.log("PRAGMA 应用失败（保留 SQLite 当前值）: \(error)", level: .warn)
+        }
     }
 
     /// 设置读取钩子（由宿主注入；nil = 用默认值）。DB 层不直接依赖 SettingsService，

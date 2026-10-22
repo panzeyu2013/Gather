@@ -232,6 +232,9 @@ struct CullingWorkbenchViewer: View {
                     zoom: max(2, scale)
                 )
             }()
+            // 对比模式按格数收窄解码预算：4 格各解 8192px 会瞬时吃掉约 1GB。
+            // 细节贴片与 onUnavailable 的整图高档位兜底必须共用同一个预算。
+            let detailBudget = PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
             ZStack(alignment: .bottom) {
                 // 整图适配（对齐旧版 .viewerImage object-fit: contain）：窄容器
                 // 时整体缩放而非裁切，缩放级作用于完整画面。
@@ -262,7 +265,7 @@ struct CullingWorkbenchViewer: View {
                         normalizedRect: tile.normalizedRect,
                         targetPixel: PhotoViewerGeometry.tilePixelSize(
                             viewRect: tile.viewRect,
-                            budgetDimension: PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
+                            budgetDimension: detailBudget
                         ),
                         onUnavailable: {
                             // 区域解码不可用 → 退回整图高档位（渐进档位逻辑保留为兜底）。
@@ -273,7 +276,8 @@ struct CullingWorkbenchViewer: View {
                                 ),
                                 zoom: effectiveZoom,
                                 backingScale: Double(NSScreen.main?.backingScaleFactor ?? 2),
-                                sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height))
+                                sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
+                                budgetDimension: detailBudget
                             )
                         }
                     )
@@ -450,7 +454,6 @@ struct CullingWorkbenchViewer: View {
             width: offset.width + (faceAlign ? currentAlignOffset(imageSize: imageSize, cellSize: size).width : 0),
             height: offset.height + (faceAlign ? currentAlignOffset(imageSize: imageSize, cellSize: size).height : 0)
         )
-        let budget = PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
         detailTileTask?.cancel()
         detailTileTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))

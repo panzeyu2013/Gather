@@ -81,7 +81,8 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-p
 ```
 
 产物为 `release/Gather.app`（`OUTPUT_DIR` 可覆盖）。脚本会构建 gather-core、
-GatherApp，并在存在 Capture One 插件源码时尝试构建插件。默认产物未签名、架构
+GatherApp，并在存在 Capture One SDK 时按 `GATHER_ARCHS` 的每个切片构建
+`GatherLink.coplugin`（缺切片时发布模式直接失败）。默认产物未签名、架构
 跟随 SwiftPM 主机默认；`CODESIGN_IDENTITY` 存在时才签名（`--options runtime
 --timestamp` + `desktop/native/Gather.entitlements`），签名后会用
 `codesign -d --entitlements :-` 复核 entitlement 真的进入签名。WP6c 起版本注入、
@@ -96,6 +97,12 @@ universal 组装、公证与 staple 也由本脚本负责，契约见下节；`G
 - **`GATHER_ARCHS`**：`universal` / `arm64` / `x86_64`；不设 = SwiftPM 主机
   默认（保持旧行为）。`universal` 用 `swift build --arch arm64 --arch x86_64`
   产出 fat Mach-O，组装后 `lipo -archs` 断言两个切片都在，缺一个即失败。
+- **Capture One 插件架构**：`GatherLink.coplugin` 与 app 使用同一组切片；
+  `universal` 时分别以 `arm64` / `x86_64` 编译，再用 `lipo -create` 合成，
+  构建后用 `lipo -archs` 断言期望切片齐全。SDK 存在但缺切片时
+  `GATHER_RELEASE=1` 直接 exit 1（本地非发布构建保留已构建切片并告警）。
+  SDK 的 `CaptureOnePlugins.framework` 本身是 `x86_64 arm64`，插件源码不依赖
+  宿主架构。
 - **`GATHER_VERSION`**：未设时回退到 `git describe --tags --abbrev=0`；两者都
   没有（如无 tag 的开发树）时保留 `Info.plist` 的 `3.0.0`，不凭空造版本。
   写入产物 `CFBundleShortVersionString`（去掉前导 `v`，并做格式校验）。
@@ -128,6 +135,8 @@ GATHER_NOTARIZE=1 GATHER_NOTARY_PROFILE=gather-notary \
 ```bash
 GATHER_ARCHS=universal GATHER_VERSION=0.0.0-dev ./desktop/native/build.sh
 lipo -archs release/Gather.app/Contents/MacOS/Gather        # 期望 x86_64 arm64
+lipo -archs release/Gather.app/Contents/PlugIns/GatherLink.coplugin/Contents/MacOS/GatherLink
+                                                            # 有 SDK 时期望 x86_64 arm64
 plutil -extract CFBundleShortVersionString raw -o - \
   release/Gather.app/Contents/Info.plist                     # 期望 0.0.0-dev
 plutil -extract CFBundleVersion raw -o - \
@@ -155,7 +164,10 @@ CI：`.github/workflows/ci.yml` 的 `release` job 只在 `v*` tag 或手动
 从 secrets 读取 `CODESIGN_IDENTITY`、`MACOS_CERT_P12`、`MACOS_CERT_PASSWORD`、
 `KEYCHAIN_PASSWORD`，公证用 `GATHER_NOTARY_PROFILE` 或 `NOTARY_APPLE_ID` /
 `NOTARY_TEAM_ID` / `NOTARY_APP_PASSWORD`。secret 缺失时 job 直接失败，不会上传
-未签名包；成功时上传 `release/Gather.zip` 与 `.sha256`。
+未签名包；成功时上传 `release/Gather.zip` 与 `.sha256`。release job 还会在插件
+已嵌入时断言 `GatherLink.coplugin` 同时含 `arm64` 和 `x86_64`（缺一即失败）；
+授权 SDK 不在仓库内，runner 未安装 SDK 时插件不会嵌入，job 输出 warning 并跳过
+该断言，发布说明必须写明该构建不含 Capture One 插件。
 
 没有签名/公证环境时，可把假的 `swift` / `lipo` / `codesign` / `xcrun` 放到
 `PATH` 前面做 dry-run：断言 `--arch` 组合、`lipo` 断言、codesign 参数顺序、
@@ -251,13 +263,14 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
   重建整棵页面树。
-- 错误码翻译：`GatherLocalization.errorText(_:)` 覆盖 **179 项** `GatherErrorCode`
+- 错误码翻译：`L10n.errorText(_:)` 覆盖 **179 项** `GatherErrorCode`（B03 起旧
+  `GatherLocalization` 翻译出口已删，`errorMessages` 码表仍由它持有）
   （`errorMessages` 表与枚举逐项对齐，缺失即测试红）；未知码回退通用文案。
 - 任务侧映射：`jobStatusText` / `jobTypeText` / `progressPhaseText` 分别覆盖
   `jobs.status.*` / `jobs.type.*` / `progress.*` 相位键。
-- 通用出口：`message(for:)` 统一翻译 `APIError` / `NSError` 等错误对象
-  （`RouterCommandError` 仅作为旧错误载体保留，不是命令面）；`jobErrorMessage`
-  只翻译错误码，非错误码回退通用文案（原始细节留给 tooltip）。
+- 通用出口：`APIErrorPresentation.message(for:with:)` 统一翻译 `APIError` / `NSError`
+  等错误对象（`RouterCommandError` 仅作为旧错误载体保留，不是命令面）；
+  `L10n.jobErrorMessage` 只翻译错误码，非错误码回退通用文案（原始细节留给 tooltip）。
 - 语言持久化：设置页经 `SettingsAPI` 写 `settings.ui_language`（唯一真相源）；
   `LanguageStore.set` 更新内存并广播，`GatherAppDelegate` 重建菜单。
 
@@ -381,7 +394,7 @@ Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 
 ./scripts/check-duplicate-symbols.sh --strict
 ./scripts/check-test-catalog.sh --strict # 测试文件头注释 / skip 元数据（.enabled、@Suite(.disabled)、owner/到期/原因）
 ./scripts/check-test-catalog.sh --self-test # 负例：缺元数据应 exit 1，补齐后 exit 0
-./scripts/check-select-star.sh           # Sources 6 处 / Tests 白名单 1 处
+./scripts/check-select-star.sh           # Sources 4 处 / Tests 白名单 1 处
 ./scripts/check-preview-surface.sh --strict  # 14 个 #Preview / 5 个 PreviewSupport 文件
 ```
 
@@ -407,7 +420,7 @@ UI 经 `AppServices` 注入 `any XxxAPI`；`AppComposition` 构造唯一服务�
 - 路径授权由 `PhotoPathPolicy.requireKnown/filterKnown` 承担；未授权路径抛
   `PHOTO_NOT_FOUND`，不得退化为任意文件读取。
 - 未知/非法输入必须显式失败，不静默降级；错误码映射仍以
-  `GatherLocalization.errorText` 与 `APIErrorPresentation` 为唯一漏斗。
+  `L10n.errorText` 与 `APIErrorPresentation` 为唯一漏斗。
 
 ### 历史命令分组 → 域 API 对照
 

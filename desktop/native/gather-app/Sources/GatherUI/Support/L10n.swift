@@ -4,7 +4,7 @@
 // 与 GatherLocalization 的关系：
 // - 错误码表仍是 GatherLocalization.errorMessages（179 码唯一来源，不复制）；
 // - 双形态解析（CODE::p1::p2 / CODE: 散文）与"插值在本地化之后"的语义与
-//   GatherLocalization.resolvedTemplate 逐条一致，但语言由本值的 language
+//   旧 GatherLocalization 出口（B03 已删）逐条一致，但语言由本值的 language
 //   决定，不读进程级 appLanguage——切语言时已渲染的 View 直接换 L10n 即可；
 // - 不新增可变全局：只有两只不可变的 .lproj Bundle 缓存（与既有实现同因）。
 //
@@ -340,7 +340,7 @@ public struct L10n: Equatable, Sendable {
         return Self.interpolate(self(template), params: [tail] + params)
     }
 
-    /// {{name}} 按出现顺序替换（对空 params 也执行，与 GatherLocalization 一致：
+    /// {{name}} 按出现顺序替换（对空 params 也执行，与已删的旧出口一致：
     /// 未提供参数时占位符替换为空串）。必须在本地化之后调用。
     public static func interpolate(_ template: String, params: [String]) -> String {
         guard template.contains("{{") else { return template }
@@ -485,10 +485,11 @@ public struct L10n: Equatable, Sendable {
         if type(of: argument) is NSNumber.Type, let number = argument as? NSNumber {
             return .text(number.stringValue)
         }
+        // Substring/Character 不实现 CVarArg，无法以 any CVarArg 的形式到达这里；
+        // 保留这两个 case 会被编译器判定为永远失败的 cast（且是死分支）。调用方
+        // 需要先转成 String——format(...) 的形参本来就是 CVarArg。
         switch argument {
         case let value as String: return .text(value)
-        case let value as Substring: return .text(String(value))
-        case let value as Character: return .text(String(value))
         case let value as NSString: return .text(value as String)
         case let value as Bool: return .signed(value ? 1 : 0)
         case let value as Int: return .signed(Int64(value))

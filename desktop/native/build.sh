@@ -6,7 +6,8 @@ set -euo pipefail
 #
 # WP6c：本脚本是「可复现发布」的唯一入口，环境变量契约见
 # docs/DEVELOPMENT.md「可复现发布」：
-#   GATHER_ARCHS=universal|arm64|x86_64  产物架构；未设 = SwiftPM 主机默认
+#   GATHER_ARCHS=universal|arm64|x86_64  产物架构（app 与 GatherLink.coplugin）；
+#                                        未设 = SwiftPM 主机默认
 #   GATHER_VERSION / GATHER_BUILD_NUMBER 版本注入；未设 = git describe / Info.plist 回退
 #   CODESIGN_IDENTITY                    Developer ID 签名身份；未设 = 不签名
 #   GATHER_NOTARIZE=1                    公证 + staple（需要 GATHER_NOTARY_PROFILE
@@ -336,20 +337,102 @@ for lang in en zh-Hans; do
 done
 
 # The Capture One plugin is optional at build time because its SDK is licensed
-# and is not part of this repository. When the SDK is present, build and embed
-# the plugin; otherwise leave an explicit, non-fatal release note.
+# and is not part of this repository. When the SDK is present, build one slice
+# per requested app architecture and lipo them together: a universal app must
+# not embed a host-only plugin (Intel users would silently lose the C1 entry).
+# The SDK framework itself ships x86_64+arm64, and the plugin only uses
+# Foundation/AppKit/SDK types, so every GATHER_ARCHS slice is expected to build.
 PLUGIN_SDK="$ROOT_DIR/Capture_One_Plugin_SDK_(Mac)_v1.0.1"
-if [[ -d "$PLUGIN_SDK" && -f "$ROOT_DIR/desktop/coplugin/Makefile" ]]; then
-  if [[ "$GATHER_ARCHS" == "universal" ]]; then
-    echo "warning: GatherLink.coplugin is built for the host arch only (make TARGET_ARCH=$(uname -m)); the app binary is universal" >&2
-  fi
-  make -C "$ROOT_DIR/desktop/coplugin" TARGET_ARCH="$(uname -m)" all
-  if [[ -d "$ROOT_DIR/desktop/coplugin/GatherLink.coplugin" ]]; then
+PLUGIN_DIR="$ROOT_DIR/desktop/coplugin"
+PLUGIN_BUNDLE="$PLUGIN_DIR/GatherLink.coplugin"
+PLUGIN_BINARY="$PLUGIN_BUNDLE/Contents/MacOS/GatherLink"
+
+PLUGIN_ARCHS=()
+if [[ ${#EXPECTED_ARCHS[@]} -gt 0 ]]; then
+  PLUGIN_ARCHS=("${EXPECTED_ARCHS[@]}")
+else
+  PLUGIN_ARCHS=("$(uname -m)")
+fi
+
+plugin_has_arch() {
+  case " $2 " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
+  PLUGIN_BUILT_ARCHS=()
+  PLUGIN_SLICES_DIR="$OUTPUT_DIR/.gather-plugin-slices"
+  rm -rf "$PLUGIN_SLICES_DIR"
+  mkdir -p "$PLUGIN_SLICES_DIR"
+  # 清掉旧架构戳，强制每个切片都按当前源码重编译（Makefile 在切架构时也会清，
+  # 这里显式做一次，避免复用旧产物）。
+  rm -f "$PLUGIN_BUNDLE"/.arch-*
+  for arch in "${PLUGIN_ARCHS[@]}"; do
+    if make -C "$PLUGIN_DIR" TARGET_ARCH="$arch" all; then
+      if [[ -f "$PLUGIN_BINARY" ]]; then
+        SLICE_ARCHS="$(lipo -archs "$PLUGIN_BINARY")"
+        if plugin_has_arch "$arch" "$SLICE_ARCHS"; then
+          cp "$PLUGIN_BINARY" "$PLUGIN_SLICES_DIR/GatherLink-$arch"
+          PLUGIN_BUILT_ARCHS+=("$arch")
+        else
+          echo "warning: GatherLink.coplugin $arch build produced '$SLICE_ARCHS' instead" >&2
+        fi
+      else
+        echo "warning: GatherLink.coplugin build for $arch produced no binary" >&2
+      fi
+    else
+      echo "warning: GatherLink.coplugin $arch slice failed to build" >&2
+    fi
+  done
+  if [[ ${#PLUGIN_BUILT_ARCHS[@]} -gt 0 ]]; then
+    PLUGIN_SLICES=()
+    for arch in "${PLUGIN_BUILT_ARCHS[@]}"; do
+      PLUGIN_SLICES+=("$PLUGIN_SLICES_DIR/GatherLink-$arch")
+    done
+    lipo -create ${PLUGIN_SLICES[@]+"${PLUGIN_SLICES[@]}"} -output "$PLUGIN_BINARY"
+    chmod +x "$PLUGIN_BINARY"
+    PLUGIN_ACTUAL_ARCHS="$(lipo -archs "$PLUGIN_BINARY")"
+    PLUGIN_MISSING_ARCHS=()
+    for want in "${PLUGIN_ARCHS[@]}"; do
+      if ! plugin_has_arch "$want" "$PLUGIN_ACTUAL_ARCHS"; then
+        PLUGIN_MISSING_ARCHS+=("$want")
+      fi
+    done
+    if [[ ${#PLUGIN_MISSING_ARCHS[@]} -gt 0 ]]; then
+      echo "plugin is missing slice(s): ${PLUGIN_MISSING_ARCHS[*]} (lipo -archs: $PLUGIN_ACTUAL_ARCHS)" >&2
+      if [[ "$RELEASE_MODE" == "1" ]]; then
+        echo "release mode requires a GatherLink.coplugin matching GATHER_ARCHS (${PLUGIN_ARCHS[*]})" >&2
+        rm -rf "$PLUGIN_SLICES_DIR"
+        exit 1
+      fi
+      echo "warning: embedding a partially-architected GatherLink.coplugin; universal app + this plugin is not release-ready" >&2
+    fi
+    # 架构戳与最终产物保持一致：universal 插件同时满足任一单架构的 make 依赖。
+    rm -f "$PLUGIN_BUNDLE"/.arch-*
+    for arch in "${PLUGIN_BUILT_ARCHS[@]}"; do
+      touch "$PLUGIN_BUNDLE/.arch-$arch"
+    done
+    # 让 universal 二进制比架构戳新：下次 make 只在源码变化时重编译。
+    touch "$PLUGIN_BINARY"
+    echo "plugin architectures: $PLUGIN_ACTUAL_ARCHS (expected: ${PLUGIN_ARCHS[*]})"
+    rm -rf "$PLUGIN_SLICES_DIR"
     mkdir -p "$APP_BUNDLE/Contents/PlugIns"
-    cp -R "$ROOT_DIR/desktop/coplugin/GatherLink.coplugin" "$APP_BUNDLE/Contents/PlugIns/"
+    cp -R "$PLUGIN_BUNDLE" "$APP_BUNDLE/Contents/PlugIns/"
+  else
+    rm -rf "$PLUGIN_SLICES_DIR"
+    echo "warning: GatherLink.coplugin was not built (all slices failed)" >&2
+    if [[ "$RELEASE_MODE" == "1" ]]; then
+      echo "release mode requires a GatherLink.coplugin; refusing to ship without it" >&2
+      exit 1
+    fi
   fi
 else
-  echo "warning: Capture One SDK not found; skipping GatherLink.coplugin" >&2
+  echo "warning: Capture One plugin SDK or Makefile not found; skipping GatherLink.coplugin" >&2
+  if [[ "$RELEASE_MODE" == "1" ]]; then
+    echo "warning: release bundle will not contain GatherLink.coplugin; release notes must say Intel users do not get the Capture One plugin" >&2
+  fi
 fi
 
 # WP6c：bundle 排障元数据。固定键序、不含时间戳，同样的输入产出同样的字节。
