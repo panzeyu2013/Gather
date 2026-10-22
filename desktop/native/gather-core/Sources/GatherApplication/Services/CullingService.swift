@@ -16,9 +16,9 @@
 // - CullingWritebackPort = TS WritebackService 的 culling.ipc.ts 用到的最小面
 //   （preview/persistAttributes/execute/retryFailed/getItems/confirmSync/cleanup）。
 //   文件写入仍由它执行（execute/retryFailed）；getItems 供交付镜像读取行状态。
-// - CullingDeliveryPort = DeliveryCoordinator 的 culling 面（S5c-2a 起）：
-//   confirm/cleanup/finalize、syncStatus 读模型、flush/retry 的 replay、
-//   writeback 结果镜像全部走它；WP3b-2 起交付适配器必须由组合根注入（本服务不持 connection）。
+// - DeliveryModuleAdapter（module=.culling，WP2c 起直接注入）：
+//   confirm/cleanup/finalize、syncStatus 读模型、flush/retry 的 replay（engine）、
+//   writeback 结果镜像全部走它；交付适配器由组合根注入（本服务不持 connection）。
 // - MetadataMutationPort = TS MetadataMutationService（queuePhotoValues）。
 // - getNumber = TS SettingsService.getNumber（detect_input_size /
 //   face_preview_max_dimension 兜底，测试注入）。
@@ -92,8 +92,8 @@ public final class CullingService {
     let transactions: any TransactionRunner
     let metadataMutations: any MetadataMutationPort
     let writeback: any CullingWritebackPort
-    /// 交付模型的 culling 面（S5c-2a）：confirm/cleanup 的唯一出口。
-    let delivery: any CullingDeliveryPort
+    /// 交付适配器（WP2c：module 固定 .culling）：confirm/cleanup/finalize/镜像/读模型。
+    let delivery: any DeliveryModuleAdapter
     let cullingHistoryRepo: CullingHistoryRepo?
     let getNumber: (String, Double) -> Double
 
@@ -110,7 +110,7 @@ public final class CullingService {
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
-        delivery: any CullingDeliveryPort
+        delivery: any DeliveryModuleAdapter
     ) {
         self.photoRepo = photoRepo
         self.cullingDecisionRepo = cullingDecisionRepo

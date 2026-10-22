@@ -23,8 +23,8 @@
 // - 写回（fkw.unbind 的 removeOwnedFaceKeywords、fkw.preview / writeback）
 //   经注入的 FaceWritebackProvider 调用；宿主已注入 WritebackService 适配器。
 //   S5c-2b-2 起：writeback 执行后按 xmpPath 镜像 deliveries（module=face-keyword），
-//   confirm_sync / confirm_cleanup / cleanup 改由 FaceKwDeliveryPort
-//   （DeliveryCoordinator）执行。未注入 provider 时 writeback 仍明确抛出
+//   confirm_sync / confirm_cleanup / cleanup 改由 DeliveryModuleAdapter
+//   （module=.faceKeyword）执行。未注入 provider 时 writeback 仍明确抛出
 //   WRITEBACK_PROVIDER_NOT_INJECTED，避免误报写回成功。
 // - TS 侧 analyze/错误路径会 invalidateSessionLookup（culling 缓存）；Swift
 //   侧通过原生挑片页面重新加载 session 数据，保持同进程状态一致。
@@ -96,8 +96,8 @@ public final class FaceKwService {
     let clusterProvider: FaceClusterProvider
     /// TS: writebackService 注入（3.4 Wave 实现）。
     let writebackProvider: FaceWritebackProvider?
-    /// 交付模型的 faceKeyword 面（S5c-2b-2）：writeback 镜像 + confirm/cleanup 的唯一出口。
-    let delivery: any FaceKwDeliveryPort
+    /// 交付适配器（WP2c：module 固定 .faceKeyword）：writeback 镜像 + confirm/cleanup。
+    let delivery: any DeliveryModuleAdapter
 
     /// TS: controllers（Map<sessionId, AbortController>）。
     var controllers: [String: JobAbortSignal] = [:]
@@ -149,7 +149,7 @@ public final class FaceKwService {
                 isCancelled: isCancelled)
         },
         writebackProvider: FaceWritebackProvider? = nil,
-        delivery: any FaceKwDeliveryPort
+        delivery: any DeliveryModuleAdapter
     ) {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo

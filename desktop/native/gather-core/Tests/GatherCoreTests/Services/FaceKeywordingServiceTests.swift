@@ -83,7 +83,7 @@ private func makeFaceKwHarness(
     inference: FaceKwService.FaceInferenceProvider? = nil,
     cluster: FaceKwService.FaceClusterProvider? = nil,
     writeback: FaceWritebackProvider? = nil,
-    delivery: (any FaceKwDeliveryPort)? = nil,
+    delivery: (any DeliveryModuleAdapter)? = nil,
     settings: [String: Double] = [:],
     settingsProvider: ((String, Double) -> Double)? = nil,
     stringSettings: [String: String] = [:]
@@ -948,9 +948,52 @@ private final class FakeWritebackProvider: FaceWritebackProvider, @unchecked Sen
     }
 }
 
-/// FaceKwDeliveryPort 的替身（S5c-2b-2）：confirm/cleanup/镜像的服务层路由
+/// DeliveryEngine 替身：WP2c 起服务只经 adapter.engine.replay() 触达引擎；
+/// 其余操作不经过它，空摘要保持接口完整。
+private struct EmptyDeliveryEngine: DeliveryEngine {
+    func confirm(sessionId: String, module: DeliveryModule) throws -> DeliveryConfirmSummary {
+        DeliveryConfirmSummary(
+            scope: .module, confirmedLinks: 0, deliveriesSynced: 0, itemsSynced: 0,
+            unconfirmedSessionIds: [])
+    }
+
+    func cleanup(sessionId: String, module: DeliveryModule) async throws -> DeliveryCleanupSummary {
+        DeliveryCleanupSummary(deletedCount: 0, conflictedCount: 0, skippedCount: 0, errors: [])
+    }
+
+    func finalize(sessionId: String, module: DeliveryModule) async throws -> DeliveryFinalizeSummary {
+        DeliveryFinalizeSummary(deletedCount: 0, skippedCount: 0, errors: [])
+    }
+
+    func mirrorWriteback(
+        sessionId: String,
+        module: DeliveryModule,
+        items: [DeliveryWritebackMirrorItem]
+    ) throws -> DeliveryMirrorSummary {
+        DeliveryMirrorSummary(deliveryCount: 0, itemCount: items.count, errors: [])
+    }
+
+    func metadataSummary(
+        sessionId: String,
+        module: DeliveryModule?
+    ) throws -> MetadataSyncSummary {
+        MetadataSyncSummary(
+            sessionId: sessionId, pending: 0, writing: 0, written: 0,
+            failed: 0, conflict: 0, synced: 0, items: [])
+    }
+
+    func replay() async throws -> DeliveryReplaySummary {
+        DeliveryReplaySummary(appliedCount: 0, skippedCount: 0, failedCount: 0, errors: [])
+    }
+}
+
+/// DeliveryModuleAdapter 的替身（WP2c）：confirm/cleanup/镜像的服务层路由
 /// 由这些用例验证；真实 coordinator 的 DB/文件语义在 DeliveryCoordinatorTests 覆盖。
-private final class FakeFaceKwDelivery: FaceKwDeliveryPort, @unchecked Sendable {
+private final class FakeFaceKwDelivery: DeliveryModuleAdapter, @unchecked Sendable {
+    let module: DeliveryModule = .faceKeyword
+    let capabilities = DeliveryModuleCapability.capabilities(for: .faceKeyword)
+    let engine: any DeliveryEngine = EmptyDeliveryEngine()
+
     private let lock = NSLock()
     private var _confirmCalls: [String] = []
     private var _cleanupCalls: [String] = []
@@ -984,7 +1027,7 @@ private final class FakeFaceKwDelivery: FaceKwDeliveryPort, @unchecked Sendable 
         return _mirrorItems
     }
 
-    func confirmFaceKeyword(sessionId: String) throws -> DeliveryConfirmSummary {
+    func confirm(sessionId: String) throws -> DeliveryConfirmSummary {
         lock.lock()
         _confirmCalls.append(sessionId)
         lock.unlock()
@@ -992,7 +1035,7 @@ private final class FakeFaceKwDelivery: FaceKwDeliveryPort, @unchecked Sendable 
         return confirmResult
     }
 
-    func cleanupFaceKeyword(sessionId: String) async throws -> DeliveryCleanupSummary {
+    func cleanup(sessionId: String) async throws -> DeliveryCleanupSummary {
         appendCleanupCall(sessionId)
         return cleanupResult
     }
@@ -1003,7 +1046,7 @@ private final class FakeFaceKwDelivery: FaceKwDeliveryPort, @unchecked Sendable 
         _cleanupCalls.append(sessionId)
     }
 
-    func mirrorFaceKeywordWriteback(
+    func mirrorWriteback(
         sessionId: String,
         items: [DeliveryWritebackMirrorItem]
     ) throws -> DeliveryMirrorSummary {
@@ -1013,8 +1056,15 @@ private final class FakeFaceKwDelivery: FaceKwDeliveryPort, @unchecked Sendable 
         return DeliveryMirrorSummary(deliveryCount: 1, itemCount: items.count, errors: mirrorErrors)
     }
 
-    func replayPendingDeliveries() async throws -> DeliveryReplaySummary {
-        DeliveryReplaySummary(appliedCount: 0, skippedCount: 0, failedCount: 0, errors: [])
+    // face-keyword 不具备这两个能力：显式抛越权错误（与生产适配器同语义）。
+    func finalize(sessionId: String) async throws -> DeliveryFinalizeSummary {
+        throw DeliveryModuleAdapterError.unsupportedCapability(
+            module: module, capability: .finalize)
+    }
+
+    func metadataSummary(sessionId: String) throws -> MetadataSyncSummary {
+        throw DeliveryModuleAdapterError.unsupportedCapability(
+            module: module, capability: .metadataSummary)
     }
 }
 

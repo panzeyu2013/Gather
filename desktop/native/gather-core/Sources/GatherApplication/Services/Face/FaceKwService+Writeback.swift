@@ -73,7 +73,7 @@ extension FaceKwService {
     public func cleanup(sessionId: String, confirmed: Bool) async throws -> FaceKwCleanupResult {
         guard confirmed else { throw FaceKwServiceError.cleanupConfirmRequired }
         await replayPendingDeliveries(reason: "face_kw cleanup", sessionId: sessionId)
-        let summary = try await delivery.cleanupFaceKeyword(sessionId: sessionId)
+        let summary = try await delivery.cleanup(sessionId: sessionId)
         return Self.cleanupResult(from: summary)
     }
 
@@ -83,7 +83,7 @@ extension FaceKwService {
     private func confirmDelivery(sessionId: String) throws -> DeliveryConfirmSummary {
         let summary: DeliveryConfirmSummary
         do {
-            summary = try delivery.confirmFaceKeyword(sessionId: sessionId)
+            summary = try delivery.confirm(sessionId: sessionId)
         } catch let error as DeliveryCoordinatorError {
             switch error {
             case .confirmIncomplete(let blockers):
@@ -127,7 +127,7 @@ extension FaceKwService {
     /// 未完成的 intent 仍由 cleanup 的 INTENT_PENDING 跳过保护，不会静默丢。
     private func replayPendingDeliveries(reason: String, sessionId: String) async {
         do {
-            let replay = try await delivery.replayPendingDeliveries()
+            let replay = try await delivery.engine.replay()
             for error in replay.errors {
                 GatherLogger.log("\(reason) replay (\(sessionId)): \(error)", level: .warn)
             }
@@ -235,7 +235,7 @@ extension FaceKwService {
 
         guard !mirrorItems.isEmpty else { return [] }
         do {
-            return try delivery.mirrorFaceKeywordWriteback(
+            return try delivery.mirrorWriteback(
                 sessionId: sessionId, items: mirrorItems
             ).errors
         } catch {

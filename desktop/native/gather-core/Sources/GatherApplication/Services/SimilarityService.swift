@@ -29,7 +29,7 @@
 // - 写回 / 确认 / 清理（Cut 2 / S5c-2b-3b-1）：previewWriteback / persistKeywords /
 //   writebackItems / writeback / retryFailedWriteback 全部经注入的
 //   SimilarityWritebackProvider（宿主为 SimilarityWritebackBridge → 交付执行器）
-//   执行；confirmSync / cleanup 由 SimilarityDeliveryPort（DeliveryCoordinator）
+//   执行；confirmSync / cleanup 由 DeliveryModuleAdapter（module=.similarity）
 //   执行。Confirmed<T> 门禁与“预览是否过期”仍在 API 层（LiveSimilarityAPI）。
 import Foundation
 import GatherAnalysis
@@ -162,8 +162,8 @@ public final class SimilarityService {
     private let multiClusterProvider: MultiClusterProvider
     /// 旧写回执行器（S5c-2b-2 过渡接缝；S5c-2b-3 删除）。
     private let writebackProvider: (any SimilarityWritebackProvider)?
-    /// 交付模型的 similarity 面（S5c-2b-2）：writeback 镜像 + confirm/cleanup 的出口。
-    private let delivery: any SimilarityDeliveryPort
+    /// 交付适配器（WP2c：module 固定 .similarity）：writeback 镜像 + confirm/cleanup。
+    private let delivery: any DeliveryModuleAdapter
 
     /// 会话级占用（analyze/recluster 互斥）：同一会话任一时刻只允许一个相似度
     /// 操作在飞；占用内的取消信号由本服务持有，外部 job 信号（analyze/recluster
@@ -235,7 +235,7 @@ public final class SimilarityService {
                 minGroupSize: minGroupSize, mode: mode, onProgress: onProgress)
         },
         writebackProvider: (any SimilarityWritebackProvider)? = nil,
-        delivery: any SimilarityDeliveryPort
+        delivery: any DeliveryModuleAdapter
     ) {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
@@ -681,7 +681,7 @@ public final class SimilarityService {
     /// 本域没有 flush/retry_sync 命令，cleanup 是唯一重试入口，先回放未完成 intent。
     public func cleanup(sessionId: String) async throws -> CleanupResult {
         await replayPendingDeliveries(reason: "similarity cleanup", sessionId: sessionId)
-        let summary = try await delivery.cleanupSimilarity(sessionId: sessionId)
+        let summary = try await delivery.cleanup(sessionId: sessionId)
         return Self.cleanupResult(from: summary)
     }
 
@@ -691,7 +691,7 @@ public final class SimilarityService {
     private func confirmDelivery(sessionId: String) throws -> DeliveryConfirmSummary {
         let summary: DeliveryConfirmSummary
         do {
-            summary = try delivery.confirmSimilarity(sessionId: sessionId)
+            summary = try delivery.confirm(sessionId: sessionId)
         } catch let error as DeliveryCoordinatorError {
             switch error {
             case .confirmIncomplete(let blockers):
@@ -731,7 +731,7 @@ public final class SimilarityService {
     /// 仍由 cleanup 的 INTENT_PENDING 跳过保护，不会静默丢。
     private func replayPendingDeliveries(reason: String, sessionId: String) async {
         do {
-            let replay = try await delivery.replayPendingDeliveries()
+            let replay = try await delivery.engine.replay()
             for error in replay.errors {
                 GatherLogger.log("\(reason) replay (\(sessionId)): \(error)", level: .warn)
             }
@@ -880,7 +880,7 @@ public final class SimilarityService {
             )
         }
         do {
-            return try delivery.mirrorSimilarityWriteback(
+            return try delivery.mirrorWriteback(
                 sessionId: sessionId, items: mirrorItems
             ).errors
         } catch {

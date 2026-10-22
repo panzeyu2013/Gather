@@ -152,7 +152,7 @@ extension SimilarityService {
                 minGroupSize: minGroupSize, mode: mode, onProgress: onProgress)
         },
         writebackProvider: (any SimilarityWritebackProvider)? = nil,
-        delivery: (any SimilarityDeliveryPort)? = nil
+        delivery: (any DeliveryModuleAdapter)? = nil
     ) {
         self.init(
             photoRepo: photoRepo,
@@ -224,7 +224,7 @@ extension FaceKwService {
                 isCancelled: isCancelled)
         },
         writebackProvider: FaceWritebackProvider? = nil,
-        delivery: (any FaceKwDeliveryPort)? = nil
+        delivery: (any DeliveryModuleAdapter)? = nil
     ) {
         self.init(
             photoRepo: photoRepo,
@@ -267,7 +267,7 @@ extension CullingService {
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
-        delivery: (any CullingDeliveryPort)? = nil
+        delivery: (any DeliveryModuleAdapter)? = nil
     ) {
         self.init(
             photoRepo: photoRepo,

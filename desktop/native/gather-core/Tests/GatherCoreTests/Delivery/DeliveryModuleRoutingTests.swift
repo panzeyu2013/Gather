@@ -5,7 +5,8 @@
 // 1. 5 个适配器方法把 module 固定传给引擎（culling/face/similarity 逐一验证）；
 // 2. capability 矩阵显式表达 feature 差异（culling 多 finalize/metadataSummary）；
 // 3. 越权调用抛 unsupportedCapability（不是静默走错模块）；
-// 4. 旧端口（14 个名字）转发到同一个适配器，Coordinator 不再声明模块方法。
+// 4. 服务层直连适配器（WP2c 删除 14 个旧端口转发）：5 个方法 + engine.replay
+//    路由到同一引擎；Coordinator 不再声明任何模块方法。
 
 import Foundation
 import Testing
@@ -134,17 +135,17 @@ struct DeliveryModuleAdapterTests {
         #expect(engine.calls.isEmpty, "越权调用不得转发到引擎")
     }
 
-    @Test func legacyCullingPortForwardsThroughSingleAdapter() async throws {
+    @Test func cullingAdapterDrivesEveryOperationThroughEngine() async throws {
         let engine = RecordingDeliveryEngine()
-        let port: any CullingDeliveryPort = CoordinatorDeliveryAdapter(
+        let adapter: any DeliveryModuleAdapter = CoordinatorDeliveryAdapter(
             engine: engine, module: .culling)
 
-        _ = try port.confirmCulling(sessionId: "s1")
-        _ = try await port.cleanupCulling(sessionId: "s1")
-        _ = try await port.finalizeCulling(sessionId: "s1")
-        _ = try port.mirrorCullingWriteback(sessionId: "s1", items: [])
-        _ = try port.cullingMetadataSummary(sessionId: "s1")
-        _ = try await port.replayPendingDeliveries()
+        _ = try adapter.confirm(sessionId: "s1")
+        _ = try await adapter.cleanup(sessionId: "s1")
+        _ = try await adapter.finalize(sessionId: "s1")
+        _ = try adapter.mirrorWriteback(sessionId: "s1", items: [])
+        _ = try adapter.metadataSummary(sessionId: "s1")
+        _ = try await adapter.engine.replay()
 
         #expect(engine.operations() == [
             "confirm", "cleanup", "finalize", "mirrorWriteback",
@@ -155,21 +156,21 @@ struct DeliveryModuleAdapterTests {
         })
     }
 
-    @Test func legacyFaceAndSimilarityPortsForwardThroughSameAdapter() async throws {
+    @Test func faceAndSimilarityAdaptersDriveTheirModules() async throws {
         let engine = RecordingDeliveryEngine()
-        let face: any FaceKwDeliveryPort = CoordinatorDeliveryAdapter(
+        let face: any DeliveryModuleAdapter = CoordinatorDeliveryAdapter(
             engine: engine, module: .faceKeyword)
-        _ = try face.confirmFaceKeyword(sessionId: "s1")
-        _ = try await face.cleanupFaceKeyword(sessionId: "s1")
-        _ = try face.mirrorFaceKeywordWriteback(sessionId: "s1", items: [])
-        _ = try await face.replayPendingDeliveries()
+        _ = try face.confirm(sessionId: "s1")
+        _ = try await face.cleanup(sessionId: "s1")
+        _ = try face.mirrorWriteback(sessionId: "s1", items: [])
+        _ = try await face.engine.replay()
 
-        let similarity: any SimilarityDeliveryPort = CoordinatorDeliveryAdapter(
+        let similarity: any DeliveryModuleAdapter = CoordinatorDeliveryAdapter(
             engine: engine, module: .similarity)
-        _ = try similarity.confirmSimilarity(sessionId: "s1")
-        _ = try await similarity.cleanupSimilarity(sessionId: "s1")
-        _ = try similarity.mirrorSimilarityWriteback(sessionId: "s1", items: [])
-        _ = try await similarity.replayPendingDeliveries()
+        _ = try similarity.confirm(sessionId: "s1")
+        _ = try await similarity.cleanup(sessionId: "s1")
+        _ = try similarity.mirrorWriteback(sessionId: "s1", items: [])
+        _ = try await similarity.engine.replay()
 
         #expect(engine.calls.filter { $0.module == .faceKeyword }.map(\.operation) == [
             "confirm", "cleanup", "mirrorWriteback",

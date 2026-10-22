@@ -42,7 +42,7 @@ extension CullingService {
     /// 只读 deliveries / delivery_items：计数按交付去重，item 的 pending/failed
     /// 会升级展示态；不再读 metadata_outbox。
     public func syncStatus(sessionId: String) throws -> MetadataSyncSummary {
-        try delivery.cullingMetadataSummary(sessionId: sessionId)
+        try delivery.metadataSummary(sessionId: sessionId)
     }
     /// TS: culling.flush。
     ///
@@ -50,16 +50,16 @@ extension CullingService {
     /// 的崩溃恢复），不再触发旧 outbox 队列；写盘仍由 writeback/retryFailedWriteback
     /// 内的旧 WritebackService.execute 同步完成（S5c-2b-3 整体切换）。
     public func flush(sessionId: String) async throws -> MetadataSyncSummary {
-        _ = try await delivery.replayPendingDeliveries()
-        return try delivery.cullingMetadataSummary(sessionId: sessionId)
+        _ = try await delivery.engine.replay()
+        return try delivery.metadataSummary(sessionId: sessionId)
     }
     /// TS: culling.retry_sync。
     ///
     /// 与 flush 同一出口：按相位重放 intent（prepared 重做文件+DB，fileDone 只补 DB），
     /// 然后返回交付摘要。写回失败的逐项重试仍走 retryFailedWriteback。
     public func retrySync(sessionId: String) async throws -> MetadataSyncSummary {
-        _ = try await delivery.replayPendingDeliveries()
-        return try delivery.cullingMetadataSummary(sessionId: sessionId)
+        _ = try await delivery.engine.replay()
+        return try delivery.metadataSummary(sessionId: sessionId)
     }
     /// TS: culling.finalize_sync（confirmed 必须为 true，否则
     /// CULLING_FINALIZE_CONFIRM_REQUIRED）。
@@ -73,7 +73,7 @@ extension CullingService {
     public func finalizeSync(sessionId: String, confirmed: Bool) async throws -> MetadataSyncSummary {
         guard confirmed else { throw CullingServiceError.finalizeConfirmRequired }
         do {
-            let finalized = try await delivery.finalizeCulling(sessionId: sessionId)
+            let finalized = try await delivery.finalize(sessionId: sessionId)
             // 逐交付失败保留在 intent 里可重试；旧返回类型没有 errors 位，至少必须进日志
             //（禁止静默吞掉 XMP_FINALIZE_* —— 与 cleanup 的错误可见性同一纪律）。
             for error in finalized.errors {
@@ -85,7 +85,7 @@ extension CullingService {
             }
             throw error
         }
-        return try delivery.cullingMetadataSummary(sessionId: sessionId)
+        return try delivery.metadataSummary(sessionId: sessionId)
     }
     /// TS: culling.writeback —— 决策计划 → preview → 属性合并 → execute。
     /// 写回引擎由注入的 WritebackService 承担，本方法只组装计划与合并关键词。
@@ -265,7 +265,7 @@ extension CullingService {
         }
 
         do {
-            let summary = try delivery.mirrorCullingWriteback(
+            let summary = try delivery.mirrorWriteback(
                 sessionId: sessionId, items: mirrorItems
             )
             return summary.errors
@@ -298,7 +298,7 @@ extension CullingService {
     /// 旧表和 execute 执行器在 S5c-2b-3 删除。
     public func cleanup(sessionId: String, confirmed: Bool) async throws -> CleanupResult {
         guard confirmed else { throw CullingServiceError.writebackCleanupConfirmRequired }
-        let summary = try await delivery.cleanupCulling(sessionId: sessionId)
+        let summary = try await delivery.cleanup(sessionId: sessionId)
         return Self.cleanupResult(from: summary)
     }
 
@@ -306,7 +306,7 @@ extension CullingService {
     private func confirmDelivery(sessionId: String) throws -> DeliveryConfirmSummary {
         let summary: DeliveryConfirmSummary
         do {
-            summary = try delivery.confirmCulling(sessionId: sessionId)
+            summary = try delivery.confirm(sessionId: sessionId)
         } catch let error as DeliveryCoordinatorError {
             if case .confirmIncomplete(let blockers) = error {
                 // 旧码保持可读；阻断项进日志（UI 文案只认码值）。
