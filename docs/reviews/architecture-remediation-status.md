@@ -30,8 +30,8 @@
 
 ## 2. 当前指标（HEAD 工作区实测）
 
-- core：**1,145 tests / 171 suites**，exit 0（P1/P2 收口 + fake-repo/trace 测试后；含 3 个真实照片 skip，有效 1,141）。
-- app：617 tests / 68 suites，串行 + 并行 3 次 exit 0（WP4d 新增 PageVisibility 矩阵 1 例）。
+- core：**1,146 tests / 171 suites**，exit 0（P1/P2 收口 + fake-repo/trace/replay 并发测试后；含 3 个真实照片 skip，有效 1,143）。
+- app：**624 tests / 69 suites**，串行 + 并行 3 次 exit 0（新增 DeliveryErrorPresentation 7 例）。
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
 - 门禁：9 道 strict 全绿；ratchet 54/230/0/0/0；protocol surface 255/1,340/0/0；preview 14。
 - Application：DBConnection 0、connection.prepare 0；services_prepare ratchet 0。
@@ -52,7 +52,7 @@
 
 1. 发布验证（外部）：真实 Developer ID/notarytool/staple/spctl、CI release job 未实跑；x86_64 运行期未在 Rosetta 验证；插件 x86 构建仅静态/lipo 证据。
 2. 可观测性：trace 已覆盖 lease/backup/cancel/lease-lost；结构化阶段耗时（duration）未做。
-3. P2 残余：markWriting 仍 public deprecated（跨包测试直调）；replay claim 按 coordinator 隔离但仍仅进程内（无 DB 跨进程 claim）；历史非受控 backup_path 会 fail-closed；MirrorWriter 租约 trace 无确定性测试。Culling 内联并集已改用 orderedUnion。
+3. P2 残余：markWriting 仍 public deprecated（跨包测试直调）；replay claim 按 coordinator 隔离且跨 replay 调用共享（仍仅进程内，无 DB 跨进程 claim），并发同一 intent 由 claim 跳过并报 `XMP_CLEANUP_REPLAY_CLAIMED`，不产生 `ADVANCE_FAILED` 假失败（测试 `DeliveryCoordinatorTests.concurrentReplaySameIntentClaimsOnceAndSkipsWithoutAdvanceFailure`，本任务未运行）；临时文件 sweep 仅 replay 起点、锁外、24h 阈值，只清 `.tmp-/.restore-` 不碰备份（详见 `docs/delivery-lock-order.md` §5）；历史非受控 backup_path 会 fail-closed；MirrorWriter 租约 trace 无确定性测试。Culling 内联并集已改用 orderedUnion。
 4. 文档：final-report 的 Cut 6c 数字仍为历史快照，§1.2 已注记当前架构指标；其余历史报告保留快照口径。
 5. 未 push；本地 commit 序列等待 owner review。
 

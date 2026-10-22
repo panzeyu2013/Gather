@@ -80,14 +80,16 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-p
 ./desktop/native/build.sh
 ```
 
-产物为 `release/Gather.app`（`OUTPUT_DIR` 可覆盖）。脚本会构建 gather-core、
-GatherApp，并在存在 Capture One SDK 时按 `GATHER_ARCHS` 的每个切片构建
-`GatherLink.coplugin`（缺切片时发布模式直接失败）。默认产物未签名、架构
-跟随 SwiftPM 主机默认；`CODESIGN_IDENTITY` 存在时才签名（`--options runtime
---timestamp` + `desktop/native/Gather.entitlements`），签名后会用
+产物为 `release/Gather.app`（`OUTPUT_DIR` 可覆盖；相对路径按仓库根解析，
+脚本拒绝 `/`、`//`、结尾斜杠以及含 `.`/`..` 段的路径）。脚本会构建
+gather-core、GatherApp，并在存在 Capture One SDK 时按 `GATHER_ARCHS` 的每个
+切片构建 `GatherLink.coplugin`（缺切片时发布模式直接失败）。默认产物未签名、
+架构跟随 SwiftPM 主机默认；`CODESIGN_IDENTITY` 存在时才签名（`--options
+runtime --timestamp` + `desktop/native/Gather.entitlements`），签名后会用
 `codesign -d --entitlements :-` 复核 entitlement 真的进入签名。WP6c 起版本注入、
 universal 组装、公证与 staple 也由本脚本负责，契约见下节；`GATHER_RELEASE=1`
-是发布硬门（版本/签名/公证凭据任一缺失即 exit 1）。
+是发布硬门（版本、universal、Developer ID、公证凭据、Capture One 插件任一
+缺失即 exit 1）。
 
 ### 可复现发布（universal / 签名 / 公证 / 版本注入）
 
@@ -102,12 +104,18 @@ universal 组装、公证与 staple 也由本脚本负责，契约见下节；`G
   构建后用 `lipo -archs` 断言期望切片齐全。SDK 存在但缺切片时
   `GATHER_RELEASE=1` 直接 exit 1（本地非发布构建保留已构建切片并告警）。
   SDK 的 `CaptureOnePlugins.framework` 本身是 `x86_64 arm64`，插件源码不依赖
-  宿主架构。
+  宿主架构。插件部署目标与 app 对齐为 14.0（`build.sh` 用 make 命令行覆盖
+  `TARGET`，不改 `Makefile`）；嵌入 app 的插件副本会注入与 app 相同的
+  `CFBundleShortVersionString` / `CFBundleVersion`。`Makefile` 仍会为构建机生成
+  相对 `LC_RPATH`；`build.sh` 只从嵌入 app 的副本删除这条相对路径（保留
+  `@`/绝对路径），源目录与 `Makefile` 不动，仍需在 Capture One 实机加载验证。
 - **`GATHER_VERSION`**：未设时回退到 `git describe --tags --abbrev=0`；两者都
   没有（如无 tag 的开发树）时保留 `Info.plist` 的 `3.0.0`，不凭空造版本。
   写入产物 `CFBundleShortVersionString`（去掉前导 `v`，并做格式校验）。
 - **`GATHER_BUILD_NUMBER`**：未设时用 `git rev-list --count HEAD`，再否则由版本号
-  派生数字串；写入 `CFBundleVersion`（公证要求可递增的数字串）。
+  派生数字串；写入 `CFBundleVersion`（只允许数字与点，脚本会校验；公证不要求
+  单调递增，但 tag/提交数天然单调）。没有解析出版本时单独设置它会被警告并
+  忽略——设 `GATHER_VERSION` 或打 tag 才会生效。
 - **`CODESIGN_IDENTITY`**：Developer ID Application 身份。先签嵌套项（PlugIns /
   Frameworks / 资源 bundle），再签主 bundle（`--entitlements`），签后执行
   `codesign --verify --deep --strict` 与 entitlement 复核；`--timestamp` 是
@@ -117,18 +125,25 @@ universal 组装、公证与 staple 也由本脚本负责，契约见下节；`G
   `spctl -a -t exec`。凭据取 `GATHER_NOTARY_PROFILE`（keychain profile），或
   `APPLE_ID` + `APPLE_TEAM_ID` + `APPLE_APP_PASSWORD`；两者都没有时本地明确
   skip 并 exit 0，`GATHER_RELEASE=1` 时 exit 1。
-- **`GATHER_RELEASE=1`**：发布门。版本、签名身份、公证凭据任一缺失即失败；
-  CI release job 固定设 1，不允许产出未签名/未公证的“发布包”。
+- **`GATHER_RELEASE=1`**：发布门。版本、`GATHER_ARCHS=universal`、Developer ID
+  签名身份、公证凭据、Capture One 插件任一缺失即失败；CI release job 固定设 1，
+  不允许产出未签名/未公证/单架构/无插件的“发布包”。本机在 SDK <26 时只告警并
+  把实际 sdk 写入 `build-info.json`；CI release 在构建前硬失败（见下）。
 
 本机完整发布（有 Developer ID 与公证凭据时）：
 
 ```bash
+GATHER_RELEASE=1 \
 GATHER_ARCHS=universal \
 GATHER_VERSION=3.1.0 \
 CODESIGN_IDENTITY="Developer ID Application: <Name> (TEAMID)" \
-GATHER_NOTARIZE=1 GATHER_NOTARY_PROFILE=gather-notary \
+GATHER_NOTARIZE=1 \
+GATHER_NOTARY_PROFILE=gather-notary \
 ./desktop/native/build.sh
 ```
+
+没有 keychain profile 时把 `GATHER_NOTARY_PROFILE` 换成
+`APPLE_ID=<apple-id> APPLE_TEAM_ID=<team-id> APPLE_APP_PASSWORD=<app-specific-password>`。
 
 只验证 universal 与版本注入（不签名/不公证）：
 
@@ -141,6 +156,12 @@ plutil -extract CFBundleShortVersionString raw -o - \
   release/Gather.app/Contents/Info.plist                     # 期望 0.0.0-dev
 plutil -extract CFBundleVersion raw -o - \
   release/Gather.app/Contents/Info.plist                     # 期望 git 提交数
+# Mach-O 实际值（期望 minos 14.0，sdk 为构建时 SDK）
+vtool -arch arm64 -show-build release/Gather.app/Contents/MacOS/Gather | grep -E 'minos|sdk'
+vtool -arch x86_64 -show-build release/Gather.app/Contents/MacOS/Gather | grep -E 'minos|sdk'
+# 有 SDK 时，插件版本应已被注入为与 app 相同
+plutil -extract CFBundleShortVersionString raw -o - \
+  release/Gather.app/Contents/PlugIns/GatherLink.coplugin/Contents/Info.plist
 ```
 
 发布前检查（缺一不发布）与产物校验：
@@ -150,24 +171,40 @@ codesign -dv --verbose=4 release/Gather.app 2>&1 | grep -E 'Timestamp|Runtime Ve
 codesign -d --entitlements :- release/Gather.app   # 含 com.apple.security.automation.apple-events
 xcrun stapler validate release/Gather.app
 spctl -a -t exec -vvv release/Gather.app
+plutil -convert xml1 -o /dev/null release/Gather.app/Contents/Resources/build-info.json
 ( cd release && shasum -a 256 Gather.zip > Gather.zip.sha256 )
+# build.sh 在 staple 之后重打 zip；解压分发包再验一次，确认 ticket 随包分发
+rm -rf /tmp/gather-zip-check && ditto -x -k release/Gather.zip /tmp/gather-zip-check
+xcrun stapler validate /tmp/gather-zip-check/Gather.app
 ```
 
 产物内的 `Contents/Resources/build-info.json` 记录 version / build / commit /
-archs / sdk_version（不含时间戳，同样的输入产出同样的内容），用于排障与
-“关于”面板对照；发布版本以 `Info.plist` 与 tag 为准。
+dirty / archs / plugin / minos / sdk_version / sdk_version_declared（固定键序、
+不含时间戳，同样的输入产出同样的内容）。`dirty` 是 git 工作区状态
+（true/false，读取失败时 unknown）；`plugin` 是嵌入插件的 `lipo -archs`
+切片或 `none`；`sdk_version` 取 Mach-O `LC_BUILD_VERSION.sdk` 实际值，
+`sdk_version_declared` 是 `GATHER_SDK_VERSION`/探测结果/默认值，用于区分
+“声明了但未链进产物”的情况。发布版本以 `Info.plist` 与 tag 为准。
 
 CI：`.github/workflows/ci.yml` 的 `release` job 只在 `v*` tag 或手动
-`workflow_dispatch`（必须填 `version` 输入）时运行，`needs: [gates, gather-app]`，
+`workflow_dispatch`（`version` 输入为必填）时运行，`needs: [gates, gather-app]`，
 先跑全部门禁与测试。它显式注入 `GATHER_SDK_VERSION`、`GATHER_VERSION`（tag 名或
-输入）、`GATHER_ARCHS=universal`、`GATHER_NOTARIZE=1`、`GATHER_RELEASE=1`，并
-从 secrets 读取 `CODESIGN_IDENTITY`、`MACOS_CERT_P12`、`MACOS_CERT_PASSWORD`、
-`KEYCHAIN_PASSWORD`，公证用 `GATHER_NOTARY_PROFILE` 或 `NOTARY_APPLE_ID` /
-`NOTARY_TEAM_ID` / `NOTARY_APP_PASSWORD`。secret 缺失时 job 直接失败，不会上传
-未签名包；成功时上传 `release/Gather.zip` 与 `.sha256`。release job 还会在插件
-已嵌入时断言 `GatherLink.coplugin` 同时含 `arm64` 和 `x86_64`（缺一即失败）；
-授权 SDK 不在仓库内，runner 未安装 SDK 时插件不会嵌入，job 输出 warning 并跳过
-该断言，发布说明必须写明该构建不含 Capture One 插件。
+输入）、`GATHER_ARCHS=universal`、`GATHER_NOTARIZE=1`、`GATHER_RELEASE=1`。
+签名/公证 secrets 只在 Import Developer ID certificate 与 Build 两个 step 注入
+（不上传到 artifact 上传 step）：`CODESIGN_IDENTITY`、`MACOS_CERT_P12`、
+`MACOS_CERT_PASSWORD`、`KEYCHAIN_PASSWORD`，公证用 `GATHER_NOTARY_PROFILE`
+（仅 self-hosted runner，需预先 `store-credentials`）或 `NOTARY_APPLE_ID` /
+`NOTARY_TEAM_ID` / `NOTARY_APP_PASSWORD`；hosted runner 请留空 profile、使用
+三件套。secret 缺失时 job 直接失败，不会上传未签名包；成功时上传
+`release/Gather.zip` 与 `.sha256`。
+
+release job 在构建前执行 `Assert release SDK`：要求 macOS 26 SDK（Liquid Glass
+所需的 `LC_BUILD_VERSION.sdk >= 26`）。当前 `runs-on: macos-14` 的镜像无法提供
+Xcode 26，因此 tag release 会 fail closed；正式发版必须把该 job 移到
+`macos-26` 或装有 Xcode 26 的 self-hosted runner。构建后还会用 `vtool` 断言
+每个切片的 `minos=14.0` 且 `sdk` 与注入值一致，并校验 `build-info.json`、
+app 双切片、插件双切片/版本/minos；授权 SDK 不在仓库内，runner 未安装 SDK 时
+`build.sh` 在 `GATHER_RELEASE=1` 下直接 exit 1，不会静默产出无 C1 插件的包。
 
 没有签名/公证环境时，可把假的 `swift` / `lipo` / `codesign` / `xcrun` 放到
 `PATH` 前面做 dry-run：断言 `--arch` 组合、`lipo` 断言、codesign 参数顺序、

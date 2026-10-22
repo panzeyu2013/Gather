@@ -336,3 +336,44 @@ gh run view <run-id> --log
 - 未运行 `build.sh`/`swift build/test`/门禁/签名/公证/GUI；所有“会失败/会成功”的判断均来自代码路径或文档证据，未把静态推断写成实测。
 - 无网络：GitHub runner 生命周期、Xcode 26 最低系统要求未外部复核；P1-4 的 SDK 上限标注为疑似。
 - `security find-identity` 只能证明本机存在身份，不能证明 CI secrets、证书私钥或公证凭据可用。
+
+## P2 清理回执（2026-10-22 后续修改）
+
+本节是修复记录，不改变上面的原始审计结论。基线 `f02c715`；只改
+`desktop/native/build.sh`、`.github/workflows/ci.yml`、`docs/DEVELOPMENT.md`
+与本回执（应用 `Info.plist` 未改）。验证仅 `bash -n`、Ruby YAML 解析，以及临时副本上的
+`vtool`/`install_name_tool` 语法探针（不改仓库二进制）；**未跑
+build/test/门禁/签名/公证/GUI**。
+
+| 条目 | 状态 | 处理与残余 |
+| --- | --- | --- |
+| P2-1 `OUTPUT_DIR` | 已修 | 相对路径按仓库根解析；拒绝 `/`、`//`、结尾斜杠、含 `.`/`..` 段。残余：未用 `readlink -f` 解析符号链接（macOS BSD readlink 无 `-f`）。 |
+| P2-2 SDK 默认值注释 | 已修 | 注释改为 Package.swift 默认 14.0；release 下 xcrun 探测失败 exit 1；build-info 记录 Mach-O 实际 sdk 与声明值。非 release 仍按 14.0 回退并告警。 |
+| P2-3 build-info 缺口 | 已修 | 新增 `dirty`（true/false/unknown）、`plugin`（切片或 none）、`minos`、`sdk_version`（Mach-O 实际值）与 `sdk_version_declared`。 |
+| P2-4 `.arch-*` 入包 | 已修 | 只从嵌入副本删除构建戳；源 `GatherLink.coplugin` 保留给 make 增量。 |
+| P2-5 旧 zip 残留 | 已修 | 组装开始即无条件删除 `Gather.zip` 与 `.sha256`；公证分支仍会重打。 |
+| P2-6 插件 rpath/10.14 | 部分 | 以 make 命令行 `TARGET=...-macosx14.0` 对齐 minos，release 断言 14.0；嵌入副本删除非便携的相对 `LC_RPATH`（保留 `@`/绝对路径），源 bundle 与 `Makefile` 未改，需 Capture One 实机验证。 |
+| P2-7 插件版本硬编码 | 已修 | 嵌入副本注入 app 最终 `CFBundleShortVersionString`/`CFBundleVersion` 并回读；源 `GatherLink/Info.plist` 保持 1.0.0 回退。 |
+| P2-8 旧 entitlements | 未修 | `desktop/resources/entitlements.mac.plist` 不在白名单；仍可能被误用。 |
+| P2-9 CI 小问题 | 已修 | 去掉 gates 重复的 legacy 门禁；`user_version=2`；`version` 输入必填；concurrency 带 event_name 且发布不被普通 push 取消；actions pin 到 commit SHA。 |
+| P2-10 notary profile | 部分 | CI/文档明确 hosted runner 用 Apple ID 三件套、profile 仅 self-hosted；未在 CI 生成临时 profile。 |
+| P2-11 产物校验 | 部分 | 新增 app 双切片、每切片 `vtool` minos/sdk、build-info JSON、插件版本/双切片/minos 断言。cache key 未含 Swift/SDK；app CLT-only 探测未动（源码/Package）。 |
+| P2-12 供应链/治理 | 部分 | secrets 改为 step 级；actions pin SHA。仍无 `environment`/审批、provenance、GitHub Release；`permissions: contents: read` 未变。 |
+| P2-13 文档命令 | 部分 | DEVELOPMENT 完整命令补 `GATHER_RELEASE=1`/`GATHER_ARCHS`/`GATHER_NOTARIZE`，修正“公证要求递增”说法，补 zip staple 复验与 build-info 字段。README/docs README 不在白名单。 |
+| P2-14 状态文档过期 | 未修 | 状态/验收文档不在白名单。 |
+| P2-15/16/17 提交/LFS/gitignore | 未修 | 历史整理、LFS、`.gitignore` 均不在白名单。 |
+| P2-18 build number 静默 | 部分 | 无版本时 warning 说明如何生效，并写入 DEVELOPMENT；本地仍允许 Info.plist 3.0.0 回退，未强制 `GATHER_VERSION`。 |
+| P1-5 app icon | 未修（产品 P1） | 仓库无业务 `.icns`/Assets.car/`CFBundleIconFile`；未伪造素材，`Info.plist` 未改。 |
+| P1-4 发布 SDK | 部分 | CI 新增 `Assert release SDK`（<26 fail closed）；`runs-on: macos-14` 仍无法提供 Xcode 26，需外部升级 runner。本地 release 只告警并记录实际 sdk。 |
+
+附带改动：CI 的插件缺失分支从 `::warning:: + exit 0` 改为 `::error::`，与
+`build.sh` 在 `GATHER_RELEASE=1` 下缺 SDK 直接 exit 1 一致；授权 SDK 仍需
+release runner 自行安装（P1-3 外部项未解）。
+
+**本次修改的风险**
+
+- 未编译、未跑 release/CI；`make TARGET` 覆盖与 `vtool` 断言仅按 Makefile/Xcode 语义静态推断。
+- `dirty` 取 `git status --porcelain`，未提交/未跟踪源码会标记 true；构建机 git 不可用时为 `unknown`。
+- action SHA 于 2026-10-22 通过 GitHub API 解析（checkout v4.4.0 / cache v4.3.0 / upload-artifact v4.6.2），未在 CI 实跑。
+- release job 在当前 `macos-14` 上会在 SDK 断言处失败，这是刻意的 fail-closed，不是本次修改引入的构建错误。
+- 插件源 bundle `Makefile` 仍生成构建机相对 `LC_RPATH`（嵌入副本已删）；`install_name_tool` 只在复制的 Mach-O 上做过语法验证，未在 C1 实机加载。app icon 仍缺失。

@@ -49,3 +49,30 @@ rg -n 'transaction.*\{|fileLock\.run' desktop/native/gather-core/Sources/GatherD
   但不会反向取 XMP 锁，因此不构成死锁。
 - 若未来把某个 `DeliveryRepo` 方法改成 async 并在内部取 XMP 锁，本契约失效；
   该改动必须先拆掉本文件第 1 节的锁内读，改由调用方在锁外预读。
+
+## 5. replay claim 与临时文件 sweep（与文件阶段共享窗口，但不是锁序）
+
+### 5.1 replay claim
+
+- claim 是 **coordinator 级进程内内存状态**（`DeliveryReplayClaims`，NSLock），由
+  `DeliveryCoordinator` 持有并注入每次 `makeReplayFlow()`；不是 per-call，也不是
+  跨进程租约。claim 窗口覆盖同一条 intent 的文件阶段 + DB 阶段（`defer release`）。
+- 并发 replay 同一 intent 时，失败方 `claims.claim(id)` 返回 false，记
+  `skippedCount += 1` 并报 `XMP_CLEANUP_REPLAY_CLAIMED: #<intentId>`；它不进入
+  file/db，因此不会产生 `XMP_CLEANUP_ADVANCE_FAILED` / rowNotFound 假失败。
+- 测试：`DeliveryCoordinatorTests.concurrentReplaySameIntentClaimsOnceAndSkipsWithoutAdvanceFailure`
+  （本任务只静态写入，未运行；第一路在文件阶段用 ReplayRaceGate 挂起，第二路在
+  claim 处跳过，释放后第一路正常闭环）。
+- 跨进程：仍无 DB 租约。第二个 Gather 进程可与本进程并发回放同一 intent；当前只靠
+  `XMPFileLock`（进程内）与 SQLite 写锁/CAS 兜底，不承诺跨进程互斥。
+
+### 5.2 临时文件 sweep
+
+- 唯一调用点是 `DeliveryReplayFlow.replay()` 开头，按 backlog 的 xmpPath 逐路径扫；
+  **不在** `XMPFileLock` 内，也不读 DB（`DeliveryTemporaryFiles.sweep` 只做
+  FileManager 同目录枚举 + 删除），因此不构成「DB → XMP」反向锁序。
+- 只删同目录、`<basename>.tmp-` / `.restore-` 前缀、非 symlink、常规文件且
+  mtime ≥24h 的条目；不碰 `.gather-backup-*`。24h 阈值是它与同路径进行中写盘
+  之间的唯一保护，测试注入 0 阈值不得用于生产。
+- 文档-实现漂移：`DeliveryTemporaryFiles` 文件头曾承诺 cleanup/finalize 成功后
+  再清一次，当前实现只有 replay 一个调用点；本文件以实现为准。
