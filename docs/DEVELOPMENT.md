@@ -230,9 +230,10 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 
 ### 数据与任务
 
-- SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库单事务执行
-  `SchemaV1.sql` 并写 `PRAGMA user_version = 2`（43 表 / 373 列 / 69 索引 /
-  62 外键）。形态正确的 V1 库先做一致性备份，再经 V1→V2 no-op 事务迁移到 2；
+- SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库按当前 SchemaV2
+  DDL 单事务建库并写 `PRAGMA user_version = 2`（43 表 / 373 列 / 69 索引 /
+  62 外键；V2 与 V1 形状相同，仅版本位不同）。形态正确的 V1 库（含 370 列历史形）
+  先做一致性备份，再经 V1→V2 事务迁移/补列到 2；
   其余不兼容库（user_version=0 有表 / 版本更高 / 形态不符 / 非 SQLite 文件）
   默认 fail closed（开发重置策略才把 db/-wal/-shm 改名为 `<db>.incompatible-<ts>` 后重建，ADR-005/006）。
 - 导入创建 session、写入照片资产后，立即提交 `metadata.scan` 任务；任务中心负责
@@ -391,9 +392,10 @@ Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 
 ./scripts/check-cleanup-ratchet.sh       # 5 个清理指标不得超过 docs/cleanup-baseline.json
 ./scripts/check-docs.sh --strict         # ADR 路径、当前文档（非 archive）md 链接、docs/archive、当前 schema 版本
 ./scripts/check-layering.sh              # 17 条依赖方向（UI 不 import Persistence/Domain/Analysis）
+./scripts/check-protocol-surface.sh --strict  # Protocol public 类型/声明/零引用/Router 信封 ratchet
 ./scripts/check-duplicate-symbols.sh --strict
 ./scripts/check-test-catalog.sh --strict # 测试文件头注释 / skip 元数据（.enabled、@Suite(.disabled)、owner/到期/原因）
-./scripts/check-test-catalog.sh --self-test # 负例：缺元数据应 exit 1，补齐后 exit 0
+./scripts/check-test-catalog.sh --self-test # 负例：缺元数据应 exit 1，补齐后 exit 0（非独立门禁）
 ./scripts/check-select-star.sh           # Sources 4 处 / Tests 白名单 1 处
 ./scripts/check-preview-surface.sh --strict  # 14 个 #Preview / 5 个 PreviewSupport 文件
 ```

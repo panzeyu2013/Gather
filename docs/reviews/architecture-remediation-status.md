@@ -30,15 +30,15 @@
 
 ## 2. 当前指标（HEAD 工作区实测）
 
-- core：**1,144 tests / 171 suites**，exit 0（P1/P2 收口 + fake-repo/trace 测试后；含 3 个真实照片 skip，有效 1,141）。
+- core：**1,145 tests / 171 suites**，exit 0（P1/P2 收口 + fake-repo/trace 测试后；含 3 个真实照片 skip，有效 1,141）。
 - app：617 tests / 68 suites，串行 + 并行 3 次 exit 0（WP4d 新增 PageVisibility 矩阵 1 例）。
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
-- 门禁：9 道 strict 全绿；ratchet 54/230/0/0/0；protocol surface 254/1,339/0/0；preview 14。
+- 门禁：9 道 strict 全绿；ratchet 54/230/0/0/0；protocol surface 255/1,340/0/0；preview 14。
 - Application：DBConnection 0、connection.prepare 0；services_prepare ratchet 0。
-- Delivery：Coordinator 366 行；GatherDelivery 14 文件；状态写入按 writer 交付级入口 8 个（调用点口径见验收报告）；模块适配器 5 方法。
-- Protocol：254 个 public 类型 / 1,339 声明；零引用 0；Router 信封 0。
+- Delivery：Coordinator 543 行；GatherDelivery 16 文件；状态写入按 writer 交付级入口 8 个（调用点口径见验收报告）；模块适配器 5 方法。
+- Protocol：255 个 public 类型 / 1,340 声明；零引用 0；Router 信封 0。
 - Host：RootShell 已在 UI；UI sync 端口 0；AppComposition 107 行。
-- Release：真实 universal build + build.sh 全流程通过；签名/公证未验证（无凭据）。
+- Release：真实 universal app 构建通过（本机需给 SwiftPM 注入 `--disable-sandbox`）；GatherLink.coplugin 因 DSH 嵌套 sandbox 的 module cache 拒绝未能构建；签名/公证未验证（无凭据）。
 
 ### WP7b trace 口径（2026-10-22）
 
@@ -52,12 +52,12 @@
 
 1. 发布验证（外部）：真实 Developer ID/notarytool/staple/spctl、CI release job 未实跑；x86_64 运行期未在 Rosetta 验证；插件 x86 构建仅静态/lipo 证据。
 2. 可观测性：trace 已覆盖 lease/backup/cancel/lease-lost；结构化阶段耗时（duration）未做。
-3. P2 残余：markWriting 仍 public deprecated（app 12 处跨包测试直调）；replay claim 仅进程内；历史非受控 backup_path 会 fail-closed；MirrorWriter 租约 trace 无确定性测试；CullingService+Delivery 仍有一处内联并集未去重。
+3. P2 残余：markWriting 仍 public deprecated（跨包测试直调）；replay claim 按 coordinator 隔离但仍仅进程内（无 DB 跨进程 claim）；历史非受控 backup_path 会 fail-closed；MirrorWriter 租约 trace 无确定性测试。Culling 内联并集已改用 orderedUnion。
 4. 文档：final-report 的 Cut 6c 数字仍为历史快照，§1.2 已注记当前架构指标；其余历史报告保留快照口径。
 5. 未 push；本地 commit 序列等待 owner review。
 
 ## 4. 结论
 
-计划中的 WP0–WP7b 与独立验收 P1 已全部收口：Application 5 服务改 any 端口、Host 写交付状态收敛到 StateWriter、markWritten/markFailed/markConflict owner CAS、confirm 单事务门禁、confirmSync 委托 Coordinator、370 列 V1 迁移、4 个 >1000 行服务拆分、WP3b fake-repo 与 trace 边界测试。核心指标：Application SQL 0（目标 ≤15）、Delivery Coordinator 366（目标 ≤600）、adapters 5（目标 ≤5）、Protocol 254 类型（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2。
+计划中的 WP0–WP7b 与独立验收 P1 已全部收口：Application 5 服务改 any 端口、Host 写交付状态收敛到 StateWriter、markWritten/markFailed/markConflict owner CAS、confirm 单事务门禁、confirmSync 委托 Coordinator、370 列 V1 迁移、4 个 >1000 行服务拆分、WP3b fake-repo 与 trace 边界测试。核心指标：Application SQL 0（目标 ≤15）、Delivery Coordinator 543（目标 ≤600）、adapters 5（目标 ≤5）、Protocol 254 类型（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2。
 P2 代码项已收口（死代码/重复 helper/本地化出口/测试支持/路径校验/租约 trace/锁序/警告/插件 universal）；剩余仅为真实发布凭据、x86 运行期与少量已记录的 P2 残余。
 最终验收报告：[final-acceptance-build.md](final-acceptance-build.md)、[architecture](final-acceptance-architecture.md)、[data](final-acceptance-data.md)、[tests](final-acceptance-tests.md)、[cleanup](final-cleanup-scan.md)。

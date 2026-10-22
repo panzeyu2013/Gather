@@ -50,7 +50,7 @@
 | [cut4-ui-audit.md](cuts/cut4-ui-audit.md) | 4 | UI 状态层 / 本地化 / Preview 前置审计 |
 | [cut5-algorithm-audit.md](cuts/cut5-algorithm-audit.md) | 5 | 算法单趟化前置审计（聚类 / ANN / 人脸） |
 
-## 保留在 docs/reviews/ 的 4 篇
+## 保留在 docs/reviews/ 的核心 4 篇（其余新增报告见 reviews/README）
 
 | 文档 | 保留理由 |
 | --- | --- |

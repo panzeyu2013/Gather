@@ -1,5 +1,7 @@
 # Gather WP1–WP7b 测试覆盖与行为验收（final acceptance tests）
 
+> **快照声明**：本报告是 df73880 的验收快照；P0/P1 测试缺口已在后续 commit 补测，最终数字见 [architecture-remediation-status.md](architecture-remediation-status.md)。
+
 > 范围：HEAD `df73880`（工作区干净；本轮只读，未改源码/测试/脚本/CI）。
 > 对象：WP1–WP7b 新增/改动的测试是否真正覆盖新行为，以及回归缺口。
 > 证据口径：`file:line` 为当前 HEAD 行号；“已确认”= 本轮实测/读码可复现；“疑似”= 需要额外环境或未执行。

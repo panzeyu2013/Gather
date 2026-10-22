@@ -1,5 +1,7 @@
 # Gather 架构整改独立验收（HEAD df73880，2026-10-22）
 
+> **快照声明**：本报告是 df73880 的验收快照；P1/P2 收口后的状态见 [architecture-remediation-status.md](architecture-remediation-status.md)。
+
 > 性质：只读架构验收。未修改源码、测试、Package、脚本或 CI；唯一写入本文件。
 > 对照：docs/reviews/architecture-remediation-plan.md（下称"计划"）、docs/reviews/architecture-remediation-status.md（下称"状态"）。
 > 方法：Package.swift + 全仓 import 矩阵；wc/grep 实测；9 道门禁（其中 6 个以 --strict 运行；layering/cleanup/no-legacy 无 strict 开关）；core/app 实跑；schema 用 `gather-schema dump` 建库后以 sqlite3 逐表统计。所有数字均为 HEAD df73880 实测。

@@ -1,6 +1,6 @@
-# 当前有效评审（4 篇）
+# 当前有效评审（30 篇）
 
-`docs/reviews/` 只保留仍被当前计划/审计引用的评审；其余 18 篇已于 2026-10-22 归档到
+`docs/reviews/` 保留当前计划/验收/收尾报告（含本文、4 篇核心计划/验收、final-acceptance 5 篇、final-sweep 4 篇及其余执行报告）；18 篇历史评审已于 2026-10-22 归档到
 [../archive/reviews/](../archive/reviews/)，索引见 [../archive/README.md](../archive/README.md)。
 
 | 文档 | 用途 |

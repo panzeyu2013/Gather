@@ -1,5 +1,7 @@
 # 发布验收 · 独立重跑报告（HEAD df73880）
 
+> **快照声明**：本报告是 df73880 的验收快照；P1/P2 收口后的最终数字（core 1,144/171、app 617/68、ratchet 54/230、protocol 254/1,339）见 [architecture-remediation-status.md](architecture-remediation-status.md)。
+
 > 验收人：独立验收子代理（不采信台账，全部命令本机重跑；台账仅用于对账）
 > 时间：2026-10-22 20:35–20:48（Asia/Shanghai）
 > 仓库：`/Users/panzeyu2013/Desktop/code/develop/Gather`，HEAD `df73880`（refactor 分支，`origin/refactor..HEAD` = 34），验收开始时 `git status` 干净

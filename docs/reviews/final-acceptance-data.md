@@ -1,5 +1,7 @@
 # 数据 / 并发最终验收（只读）
 
+> **快照声明**：本报告是 df73880 的验收快照；P1-1 backup 大小写/NFD 与 replay claim 已在后续 commit 修复，最终状态见 [architecture-remediation-status.md](architecture-remediation-status.md)。
+
 > **基线**：`df73880`（`docs: finalize WP0-WP7b architecture remediation status`）。验收期间我方未改任何源码；20:47 后其他并行任务开始改 30+ 文件的注释/文件头（见下条快照说明）。
 > **范围**：Delivery 状态机/Intent、XMPFileLock、Schema V2、文件/路径/安全、trace 日志与 GatherLogger。
 > **方法**：只读源码 + 既有测试断言 + 按仓库命令实跑 core 测试与 `gather-schema verify`；未改任何源码/测试/脚本/CI。

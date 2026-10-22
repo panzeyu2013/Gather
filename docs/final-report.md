@@ -1,6 +1,6 @@
 # Gather 破坏性重构最终报告（Cut 6 / 6c）
 
-> 日期：2026-10-22 · 基线 HEAD：`82603e0` · 工作区未提交（按规则未执行 git commit / checkout / restore）
+> 日期：2026-10-22 · 当前 HEAD 见 `git log`（Cut 6c 快照基线 `82603e0`）· 工作区干净（本地 commit 已提交，未 push）
 > 权威计划：`docs/reviews/refactor-design-breaking-2026-10-21.md` · 台账：`docs/refactor-progress.md` · 决策：`docs/refactor-decisions.md`
 > 本报告是 Cut 6c 的交付索引：目标/结果、Cut 0–6、指标、删除清单、验证证据、残余项、回滚说明。
 
@@ -8,7 +8,7 @@
 
 目标是把两包单体原生应用重构为**类型化、可验证、单实现**的 7-target SwiftPM 工程：删除字符串命令与 Router、以 SchemaV1 取代迁移链、拆分模块、收敛 UI 状态与本地化、算法单趟化，最后冻结指标与门禁。
 
-结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**，随后执行 **架构整改 WP0–WP7b**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。架构整改后：core **1,144/171**、app **617/68**、schema **user_version=2**、ratchet **54/230/0/0/0**、Application SQL **0**、Delivery Coordinator **366 行**、Protocol **254 类型/1,339 声明**；最终独立验收见 final-acceptance 系列报告；当前状态与提交见 [architecture-remediation-status.md](reviews/architecture-remediation-status.md)。人工 GUI smoke 与真实签名/公证仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
+结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**，随后执行 **架构整改 WP0–WP7b**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。架构整改后：core **1,145/171**、app **617/68**、schema **user_version=2**、ratchet **54/230/0/0/0**、Application SQL **0**、Delivery Coordinator **543 行**、Protocol **255 类型/1,340 声明**；最终独立验收见 final-acceptance 系列报告；当前状态与提交见 [architecture-remediation-status.md](reviews/architecture-remediation-status.md)。人工 GUI smoke 与真实签名/公证仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
 
 ### 1.1 评审修复轮（2026-10-22）
 
@@ -55,19 +55,19 @@
 
 | 指标 | 基线/重构前 | 最终值 | 口径 |
 | --- | ---: | ---: | --- |
-| Swift 文件 | 364（Cut 2 关闭） | **535** | 533 个源/测试 + 2 个 `Package.swift`；生产 370（core 147 + app 223）/ 测试 163（core 98 + app 65）；排除 `.build` |
-| 总行数 | 122,692 | **133,740** | 上述 535 个文件逐文件 `wc -l` 相加；文件数增加主要来自大文件拆分（模块/页面），不是功能膨胀 |
-| SwiftPM target | 2 包（含伞 GatherCore） | **7** | GatherProtocol / GatherPersistence / GatherAnalysis / GatherDomain / GatherUI / GatherHost / GatherApp（另有 GatherSchema、2 个 bench、2 个 test target，不计入 7 个库/应用 target） |
-| Schema | 旧迁移链（v35 快照） | **43 表 / 373 列 / 69 索引 / 62 外键 / user_version=1** | `gather-schema verify` + SQLite `pragma_table_info`/`pragma_foreign_key_list` 独立复核 |
+| Swift 文件 | 364（Cut 2 关闭） | **641**（Cut 6c 快照 535） | 收尾实测（含拆分文件）；排除 `.build`；历史 6c 数字保留在归档 |
+| 总行数 | 122,692 | — | 收尾未重算全量行数；以当前 `wc -l` 为准，避免旧 133,740 与拆分后矛盾 |
+| SwiftPM target | 2 包（含伞 GatherCore） | **8** | GatherProtocol / GatherPersistence / GatherAnalysis / GatherDelivery / GatherApplication / GatherUI / GatherHost / GatherApp（另有 GatherSchema、2 个 bench、test target） |
+| Schema | 旧迁移链（v35 快照） | **43 表 / 373 列 / 69 索引 / 62 外键 / user_version=2** | `gather-schema verify` + SQLite `pragma_table_info`/`pragma_foreign_key_list` 独立复核；V1→V2 线性迁移 |
 | 错误码 | 179 | **179** | `GatherErrorCode` 的 `case` 计数（L10n.swift 注释旧写 177，6c 修正） |
 | 域协议/方法 | 118 条字符串命令 | **16 协议 / 110 方法** | `GatherProtocol/API/*API.swift` 的 `public protocol` 与 `func` 计数；`PhotoPathPolicy` 端口不计入 16 |
 | 字符串命令 | 118（82 sync + 36 async） | **0** | `grep -rnE 'execute(Async)?\( *"|enqueue\( *"' gather-app --include='*.swift'` = 0 |
 | 本地化 | en 1,407 / zh 10；`l()` 1,481 处 | **en 1,322 / zh 9；页面/VM `l()` = 0** | 修复轮新增 plural/#one/FaceModelPathIssue 9 键；`en` 按 `^"` 计键（1,322；简单键正则 1,321 + 1 个转义引号键） |
 | Preview | — | **14 块 / 5 个 PreviewSupport 文件 / 2,045 行** | `check-preview-surface.sh --strict` |
-| 测试 | core 994 / app 298（Cut 0） | **core 1,128/159 + app 616/68 = 1,744/227** | 评审修复轮记录；core 3 条真实照片 skip（有效 1,125）；app 串行/并行均绿。2026-10-22 最终清理未复跑测试（无源码改动） |
-| 清理 ratchet | 40 / 348 / 128 / 0 / 0（Cut 0） | **53 / 240 / 127 / 0 / 0** | 评审修复后 baseline 已更新；prepare +1 为 Indexer 显式 FK 顺序，try? 低于旧 baseline |
+| 测试 | core 994 / app 298（Cut 0） | **core 1,145/171 + app 617/68** | P1/P2 收尾实测；core 3 条真实照片 skip（有效 1,141）；app 串行 + 并行 3 次均绿 |
+| 清理 ratchet | 40 / 348 / 128 / 0 / 0（Cut 0） | **54 / 230 / 0 / 0 / 0** | services_prepare 0；unchecked +1 为进程内 replay claim，try? 231→230 |
 | 文档 | 42 篇 / 18,609 行 | **55 篇 / 21,787 行（非 archive 26 篇 / 8,765 行）** | 含本报告与 archive 索引；28 篇历史文档已归档；2026-10-22 收尾实测 |
-| 收尾复核（2026-10-22 17:00） | — | **535 Swift 文件 / 138,829 行（16:52–17:00 采样 533–535）；测试文件 166；#Preview 14；非 archive 死链 0** | 最终清理实测；文件/行数含并行工作区改动（仍在变），6c 冻结值为 535 / 133,740 |
+| 收尾复核（2026-10-22 23:00） | — | **641 Swift 文件；测试文件 174；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 16 文件 |
 
 ## 4. 删除清单（主要项）
 
@@ -165,14 +165,14 @@ BUILD_SH_EXIT:1
 5. **CL-20 已 done，但只是静态证据**：删 94 个 en 键 + 1 个 zh 键（en 1,407→1,313→**1,322**（修复轮 +9）、zh 10→9），保留 `检测模型路径` 1 个 pinned key；未做真实 en 界面逐页 A/B（GUI 不可用）。
 6. **CL-19 已 done**：保留 60 个旧回归用例；其中 4 例依赖 `/usr/bin/zip`、`/bin/sh`、`/usr/bin/awk`，非 hermetic，未重写为夹具。
 7. **ratchet baseline 未收紧**：当前 try_optional 已 236，baseline 仍 242；6c 只读验收，未改 `docs/cleanup-baseline.json`。如需冻结为 236，由 owner 跑 `check-cleanup-ratchet.sh --write-baseline` 并复核。
-8. **工作区未提交**：全部改动相对 HEAD `82603e0` 未 commit；另有被 .gitignore 忽略的 `gather-app/Sources/.build`（2 个生成 accessor）与根目录 `.build`/`release`，不计入源码统计。
+8. **工作区状态**：当前改动已提交且工作区干净（本地 commit 未 push）；`.build`/`release` 仍 gitignored，不计入源码统计。
 9. **CL-04 已 deferred，RequestGate/ViewState 已删除**（r8 P1-3，2026-10-22）：两者均零生产调用点，却曾被本报告当作 duplicate 门禁证据。已删除 `GatherUI/Support/RequestGate.swift`（34 行）、`ViewState.swift`（49 行）及测试 `RequestGateTests.swift`（4 例/58 行）、`ViewStateTests.swift`（8 例/98 行），共 **4 文件 / 239 行 / 12 例**；4 套 stale 守卫（Gallery `fetchGeneration` / Library `latestRequestID` / Similarity `tierRequestID` / Culling `pageVersion`，实测 37 行）仍未统一，解除条件见 [cleanup-backlog.md](cleanup-backlog.md) CL-04。本刀删除 12 例（606/67 → 删除后 594/65，串行与默认并行各实测）；当前树因并行工作区新增 5 例/1 套件为 **599/66**（数字随并行工作区仍在变动）。`GatherUI/Support/LoadPhase.swift:9/18` 注释经复核已无旧名（并行工作区 16:48 已修，非本轮改动）；`check-duplicate-symbols.sh` 的 RequestGate 规则与“Cut 4 落地”文案已于 2026-10-22 最终清理移除。
 10. **最终收尾（docs/scripts/构建产物，2026-10-22）**：见 [final-cleanup-docs.md](final-cleanup-docs.md)。删除 9-29 的 `release/Gather.app`（22 MB）与 4 个非活动 `.build` scratch + 1 个探针（≈2.19 GiB）；当前文档（非 archive）md 死链 13→0（`face-clustering-benchmark.md` 的旧 `GatherCore` 源码链接）；dup 脚本去掉 RequestGate 规则；en 1,322、测试文件 166、ratchet current 53/235/127（baseline 240）均实测。归档 33 条旧源码路径链接按“快照不改”保留，仅索引注明。
 
 ## 7. 回滚 / 恢复
 
-- **代码回滚**：本次未做 git commit/checkout/restore，HEAD 仍是重构前基线。owner 可按文件 `git diff HEAD -- <path>` 审查后逐文件恢复；整仓回退即回到 HEAD（会同时丢掉 Cut 0–6 的全部未提交工作，需先备份）。
-- **数据库**：**没有迁移链**。`Database.open(at:)` 读到非 SchemaV1/user_version 不等的库时，把 `gather.sqlite` 连同 `-wal`/`-shm` 改名为 `<db>.incompatible-<yyyyMMdd-HHmmss>`（同秒冲突追加 -2/-3，不覆盖旧副本），再建空 SchemaV1。旧库不会被就地改写；恢复 = 停应用、移走新库、把备份改回原名。
+- **代码回滚**：重构已分解为本地 commit（未 push）；按 `git log` 选择 revert 或 `git revert <range>`，不要 `reset --hard` 丢历史。工作区当前干净，不再存在“未提交工作需备份”的状态。
+- **数据库**：存在 **V1→V2 线性迁移**（先 `.pre-v2-*` 一致性备份，再 `BEGIN IMMEDIATE` 补版本/370 列缺列，失败回滚，未知形态默认 fail-closed）。只有显式 `resetPolicy` 才把 `gather.sqlite` 连同 `-wal`/`-shm` 改名为 `<db>.incompatible-<ts>` 后重建；恢复 = 停应用、移走新库、把备份改回原名。
 - **旧数据**：旧 outbox/writeback/metadata 表不迁移、不导入；delivery 状态从新库重新开始，启动时仅 replay 新库中未完成的 deliveries。开发期数据按可丢弃处理。
 - **文档**：28 篇历史文档已迁入 `docs/archive/`（`docs/archive/README.md` 有旧→新映射）；归档正文的行号是当时快照，不随代码回滚自动恢复。
 - **应用**：无签名 bundle 可随时用 `build.sh` 重建；本机受限时以 CI 产物为准。
@@ -181,22 +181,22 @@ BUILD_SH_EXIT:1
 
 | 关闭条件 | 证据 | 状态 |
 | --- | --- | --- |
-| 7 target 边界与严格 import | core/app build strict 均 exit 0；layering 17 条 | 通过 |
+| 8 target 边界与严格 import | core/app build strict 均 exit 0；layering 17 条 | 通过 |
 | 0 字符串命令 / 16 协议 110 方法 | grep = 0；协议/方法计数 | 通过 |
-| SchemaV1 单真相源 | verify 43/1/0；SQLite 复核 43/373/69/62 | 通过 |
+| Schema V2 单真相源 | verify 43/2/0；SQLite 复核 43/373/69/62 | 通过 |
 | 旧实现删除且无并存 | no-legacy 7 enforced；R5 四类 0；HNSW/ClusterEngine 引用 0 | 通过 |
-| 测试全绿 | core 1,128/159；app 616/68；exit 0 | 通过 |
-| 8 门禁（strict 可用）+ preview | 全部 exit 0；preview 14 | 通过 |
+| 测试全绿 | core 1,145/171；app 617/68；exit 0 | 通过 |
+| 9 门禁（strict 可用）+ preview | 全部 exit 0；preview 14 | 通过 |
 | 指标与报告冻结 | 本报告 + refactor-progress 顶部 + D-163 最终关闭 + 2026-10-22 收尾复核（535/138,829、en 1,322） | 通过 |
 | L10n 注释 | 177→179、1,407→1,313（表最终 1,322） | 通过 |
 | 人工 GUI / 本机 bundle | 未做；已记录命令、失败点与 CI 入口 | **待人工/CI**（非代码阻塞） |
 
-**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**可发布候选**：core 1,144/171、app 617/68（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 54/230/0。GUI smoke 与 build.sh 完整 bundle 属于环境外的人工/CI 验收，按“未测不写通过”保留；建议 owner 在 CI bundle 与 GUI smoke 通过后执行发布 tag。
+**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**可发布候选**：core 1,145/171、app 617/68（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 54/230/0。GUI smoke 与 build.sh 完整 bundle 属于环境外的人工/CI 验收，按“未测不写通过”保留；建议 owner 在 CI bundle 与 GUI smoke 通过后执行发布 tag。
 
 ## 9. 后续接手（resume）
 
-1. 先读本报告 + `refactor-progress.md` 顶部 + D-163 最终关闭；所有改动相对 HEAD `82603e0` 未提交，动手前先做工作区备份。
-2. 复跑机器验收：§5.1/5.2/5.3 的命令；预期 core 1,128/159、app 616/68、schema 43/373/69/62、8 门禁 53/240/127/0/0、preview 14、test-catalog 166 文件、docs 非 archive 死链 0。
+1. 先读本报告 + `refactor-progress.md` 顶部 + D-172；当前工作区已提交且干净，HEAD 见 `git log`；未 push。
+2. 复跑机器验收：§5.1/5.2/5.3 的命令；预期 core 1,145/171、app 617/68、schema 43/373/69/62/user_version=2、9 门禁 54/230/0/0/0、preview 14、test-catalog 174 文件、docs 非 archive 死链 0。
 3. CI 跑 `./desktop/native/build.sh`（`gather-app tests + bundle` job），记录 bundle 大小、两份 lproj、FaceModels、未签名状态。
 4. 人工 GUI smoke 按 §6 第 1 项逐项记录 pass/fail；重点做中英切换逐页 A/B（94 个 en 键删除后的回归风险）。
 5. 10k 人脸优化以 5s 为 stretch；19.25s 已按 D-158 接受为 ≤20s 基线，优化前先固定机器与 bench 档位。

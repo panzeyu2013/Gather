@@ -36,9 +36,10 @@ Vision/ImageIO/RAW 解码负责图像，`JobService` 承载可恢复后台任务
 Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRouter` /
 `NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
 
-> 当前基线（2026-10-22 评审修复轮）：8 target、SchemaV1 43 表 / 373 列 / 69 索引 / 62 外键（user_version=2）、
-> core 1,128 tests / 159 suites、app 616 tests / 68 suites、en 1,322 键 / zh 9 键；无 Router、无迁移链
-> （不兼容库由 `Database.open(at:)` 整体重置）。测试例数为修复轮记录；收尾轮只复跑门禁，未复跑全量测试。
+> 当前基线（2026-10-22 P1/P2 收口）：8 个功能 target、Schema **43 表 / 373 列 / 69 索引 / 62 外键（user_version=2）**、
+> core **1,144 tests / 171 suites**、app **617 tests / 68 suites**、en 1,322 键 / zh 9 键；无 Router、无字符串命令。
+> V1→V2 为线性迁移（先一致性备份，再事务补版本/列）；未知形态默认 fail-closed，仅显式重置策略才改名重建。
+> 9 道 strict 门禁全绿；ratchet **54/230/0/0/0**。
 
 ## 核心工作流
 
@@ -73,7 +74,7 @@ cd desktop/native/gather-core
 swift test
 
 cd ../gather-app
-CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
+CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-parallel
 ```
 
 ### 构建 macOS 应用
