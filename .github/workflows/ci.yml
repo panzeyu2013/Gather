@@ -56,6 +56,8 @@ jobs:
         run: ./scripts/check-preview-surface.sh --strict
       - name: SELECT * ratchet
         run: ./scripts/check-select-star.sh --strict
+      - name: Protocol surface
+        run: ./scripts/check-protocol-surface.sh --strict
 
   gather-core:
     name: gather-core tests
