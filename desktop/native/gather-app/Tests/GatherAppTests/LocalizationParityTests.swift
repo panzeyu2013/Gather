@@ -159,6 +159,9 @@ struct LocalizationParityTests {
         keys.formUnion(GatherLocalization.jobTypeKeys.values)
         keys.formUnion(GatherLocalization.progressPhaseKeys.values)
         keys.formUnion(GatherLocalization.errorMessages.values)
+        // Delivery P2 的 11 个码不在 errorMessages（避免与 GatherErrorCode 契约冲突），
+        // 但模板同样是动态 key，必须纳入 en 覆盖检查。
+        keys.formUnion(DeliveryErrorPresentation.messageKeys)
         keys.formUnion(SettingsViewModel.FaceModelPathIssue.templateKeys)
         keys.insert(L10n.unknownErrorKey)
         keys.insert(L10n.unknownPhaseKey)

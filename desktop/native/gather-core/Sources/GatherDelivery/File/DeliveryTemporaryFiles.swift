@@ -4,7 +4,7 @@
 // 仓库里会生成两类短命临时文件：
 // - WritebackService 经 XMPProvider 写盘：<xmp>.tmp-<pid>-<uuid>；
 // - cleanup restore：<xmp>.restore-<pid>-<uuid>（宿主 provider）或
-//   <xmp>.restore-<uuid>（FileSystemDeliveryFilePort）。
+//   <xmp>.restore-<uuid>（测试替身 FileSystemDeliveryFilePort，GatherTestSupport）。
 // 正常路径会 remove；进程崩溃/断电后它们会留在照片目录。启动回放时对「有未完成
 // intent 的 xmpPath」做一次对账清理，cleanup/finalize 成功后再对该 xmpPath 清一次。
 //

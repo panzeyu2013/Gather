@@ -165,6 +165,17 @@ enum LiveAPIErrorMapping {
         }
     }
 
+    /// 域臂公共收敛（P2-5）：6 个 Live API 的通用臂已统一在 translateCommon；
+    /// 这里再套一层「通用臂优先、域臂兜底、不命中则原样抛」的固定顺序，各 API
+    /// 只保留自己的域错误分支（D-030：不伪造业务码）。
+    static func translateDomain(
+        _ error: Error,
+        domain: (Error) -> Error?
+    ) -> Error {
+        if let common = translateCommon(error) { return common }
+        return domain(error) ?? error
+    }
+
     /// FilterEngine 的字段未知错误带参数（旧命令面 返回 CODE::field）；API 边界
     /// 转成 (code, params)，其余过滤错误保持原样。
     static func mapFilter<T>(_ body: () throws -> T) throws -> T {

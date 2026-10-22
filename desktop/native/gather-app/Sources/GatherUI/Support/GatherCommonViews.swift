@@ -101,20 +101,17 @@ private extension View {
 public struct GatherProgressBar: View {
     public let fraction: Double
     public var fill: Color = GatherTheme.accent
-    public var width: CGFloat? = nil
     public var label: String? = nil
     public var accessibilityText: String? = nil
 
     public init(
         fraction: Double,
         fill: Color = GatherTheme.accent,
-        width: CGFloat? = nil,
         label: String? = nil,
         accessibilityText: String? = nil
     ) {
         self.fraction = fraction
         self.fill = fill
-        self.width = width
         self.label = label
         self.accessibilityText = accessibilityText
     }
@@ -131,7 +128,6 @@ public struct GatherProgressBar: View {
         }
         .progressViewStyle(.linear)
         .tint(fill)
-        .frame(width: width)
         .labelsHidden(if: label == nil)
         .accessibilityLabel(accessibilityText ?? label ?? "")
         .accessibilityValue("\(Int((clamped * 100).rounded()))%")

@@ -51,9 +51,9 @@ extension SettingsViewModel {
 
     /// 可清空键 = core 默认值表中 value 为空串的键。
     ///
-    /// Cut 3 / 3b-3（E-19 #2）：GatherUI 不能 import GatherDomain，无法直接读
+    /// Cut 3 / 3b-3（E-19 #2）：GatherUI 不能 import GatherApplication，无法直接读
     /// SettingsService.getDefaults()；这里保留同一份键集合（值快照自
-    /// GatherDomain/Services/SettingsService.swift 的默认值表）。新增"默认空"
+    /// GatherApplication/Services/SettingsService.swift 的默认值表）。新增"默认空"
     /// 设置键时需同步本表（SettingsCatalogTests 守住键集合）。
     public static let clearableSettingKeys: Set<String> = [
         "face_embedding_model_path",

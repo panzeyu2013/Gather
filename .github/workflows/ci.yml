@@ -10,13 +10,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version for manual runs, e.g. 3.1.0 (tag pushes use the tag name)'
-        required: false
+        description: 'Release version for manual runs, e.g. 3.1.0 (required; tag pushes use the tag name)'
+        required: true
         type: string
 
 concurrency:
-  group: native-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # 发布（tag push / workflow_dispatch）不能被同 ref 的普通 push 取消；PR 与
+  # 分支 push 仍取消旧 run。group 带 event_name，手动发版与分支 CI 不共享队列。
+  group: native-ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')) }}
 
 permissions:
   contents: read
@@ -27,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: R0.3 legacy boundary scan
         run: ./scripts/check-no-legacy.sh
       # B8.4：字符串命令面（Router/check-command-surface.sh）已删除，命令面
@@ -39,13 +41,13 @@ jobs:
     needs: boundary
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Docs consistency
         run: ./scripts/check-docs.sh --strict
       - name: Cleanup ratchet
         run: ./scripts/check-cleanup-ratchet.sh
-      - name: Legacy boundary
-        run: ./scripts/check-no-legacy.sh
+      # legacy boundary 已由 boundary job 先跑（gates needs: boundary），这里
+      # 不再重复执行，避免同一门禁在同一次 run 里跑两遍。
       - name: Layering
         run: ./scripts/check-layering.sh
       - name: Duplicate symbols
@@ -64,9 +66,9 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             desktop/native/gather-core/.build
@@ -78,7 +80,7 @@ jobs:
       - name: Vector reconciliation gate
         run: GATHER_RECONCILIATION_VECTOR=1 swift test --package-path desktop/native/gather-core --filter VectorIndexReconciliationTests --explicit-target-dependency-import-check error
       # WP7：schema 工具是 DDL 真相源的独立消费方；在 core job 内验证 43 表/
-      # user_version=1/外键 0 违规，避免只靠测试间接覆盖。
+      # user_version=2（当前 Schema V2）/外键 0 违规，避免只靠测试间接覆盖。
       - name: Schema verification
         run: swift run --package-path desktop/native/gather-core gather-schema verify
 
@@ -88,7 +90,7 @@ jobs:
     needs: gather-core
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # WP7：manifest 不再自己跑 xcrun；SDK 版本由 CI 显式注入（build.sh 也会
       # 探测，但这里固定在 job 环境里，保证 test 与 bundle 两次求值同一值）。
       - name: Resolve SDK version
@@ -97,7 +99,7 @@ jobs:
           echo "GATHER_SDK_VERSION=$SDK_VERSION" >> "$GITHUB_ENV"
           echo "GATHER_SDK_VERSION=$SDK_VERSION"
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             desktop/native/gather-app/.build
@@ -121,7 +123,7 @@ jobs:
     needs: boundary
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Toolchain version
         run: swift --version && xcodebuild -version
       - name: Core build on newest toolchain
@@ -131,15 +133,21 @@ jobs:
 
   # WP6c：可复现发布。只在 v* tag 或手动 dispatch 时运行；版本/SDK/签名凭据全部
   # 显式注入，缺任何一项都在 build.sh 的 GATHER_RELEASE=1 下失败，不静默跳过。
-  # 需要的 secrets：
+  # 需要的 secrets（签名/公证 secret 只在对应 step 注入，不放在 job env，避免
+  # 上传 artifact 等无关 step 也能读取）：
   #   CODESIGN_IDENTITY       Developer ID Application: ... (TEAMID)  必填
   #   MACOS_CERT_P12          base64 的 .p12                          必填
   #   MACOS_CERT_PASSWORD     .p12 密码                               必填
   #   KEYCHAIN_PASSWORD       临时钥匙串密码                          必填
-  #   GATHER_NOTARY_PROFILE   notarytool --keychain-profile 名         与下面三选一
+  #   GATHER_NOTARY_PROFILE   仅 self-hosted runner 可用（需预先 store-credentials）；
+  #                           hosted runner 请留空，改用下面三件套
   #   NOTARY_APPLE_ID / NOTARY_TEAM_ID / NOTARY_APP_PASSWORD           App Store Connect 凭据
   release:
     name: Release bundle (universal, signed, notarized)
+    # Liquid Glass 需要 Mach-O 的 LC_BUILD_VERSION.sdk >= 26（见 gather-app/
+    # Package.swift）。macos-14 镜像最高 Xcode 16/SDK 15，无法满足；正式发版前
+    # 必须把本 job 移到 macos-26 或装有 Xcode 26 的 self-hosted runner。下面
+    # "Assert release SDK" 会 fail closed，而不是静默产出无 Liquid Glass 的包。
     runs-on: macos-14
     needs: [gates, gather-app]
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -148,16 +156,8 @@ jobs:
       GATHER_ARCHS: universal
       GATHER_NOTARIZE: '1'
       GATHER_RELEASE: '1'
-      CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
-      GATHER_NOTARY_PROFILE: ${{ secrets.GATHER_NOTARY_PROFILE }}
-      APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
-      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # git describe 需要 tag 与提交历史；版本回退依赖它。
           fetch-depth: 0
@@ -183,9 +183,34 @@ jobs:
           echo "GATHER_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "VERSION: $VERSION"
-      - name: Import Developer ID certificate
-        if: env.MACOS_CERT_P12 != ''
+      # P1-4/P2：发布包必须用 macOS 26 SDK 链接，否则 Mach-O 的
+      # LC_BUILD_VERSION.sdk 会让 AppKit 强制旧外观（无 Liquid Glass）。
+      # macos-14 镜像无法提供 Xcode 26；这里 fail closed，避免静默发布。
+      - name: Assert release SDK
         run: |
+          SDK_VERSION="$(xcrun --show-sdk-version)"
+          SDK_MAJOR="${SDK_VERSION%%.*}"
+          echo "release SDK: $SDK_VERSION"
+          case "$SDK_MAJOR" in
+            ''|*[!0-9]*)
+              echo "::error::cannot parse SDK version '$SDK_VERSION'"
+              exit 1
+              ;;
+          esac
+          if [ "$SDK_MAJOR" -lt 26 ]; then
+            echo "::error::release requires the macOS 26 SDK (Liquid Glass); this runner provides $SDK_VERSION. macos-14 cannot provide Xcode 26; move this job to macos-26 or a self-hosted Xcode 26 runner."
+            exit 1
+          fi
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "${MACOS_CERT_P12:-}" ] || [ -z "${MACOS_CERT_PASSWORD:-}" ] || [ -z "${KEYCHAIN_PASSWORD:-}" ]; then
+            echo "::error::release requires MACOS_CERT_P12, MACOS_CERT_PASSWORD and KEYCHAIN_PASSWORD secrets"
+            exit 1
+          fi
           KEYCHAIN="$RUNNER_TEMP/gather-signing.keychain-db"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
@@ -196,21 +221,25 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           rm -f "$RUNNER_TEMP/gather-cert.p12"
       - name: Build universal signed bundle
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          # self-hosted runner 若已 store-credentials，可设 profile；hosted runner
+          # 请留空，让 build.sh 走下面的 Apple ID 三件套。
+          GATHER_NOTARY_PROFILE: ${{ secrets.GATHER_NOTARY_PROFILE }}
+          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
         run: ./desktop/native/build.sh
-      # GatherLink.coplugin 的架构必须与 universal app 一致（arm64 + x86_64）。
-      # build.sh 在 SDK 存在时已按 GATHER_ARCHS 逐切片编译并 lipo；这里做发布侧
-      # 独立复核，防止 runner 缓存/旧产物混入。授权 SDK 不在仓库内，runner 没有
-      # SDK 时插件不会嵌入：明确 warning（不伪造通过），发布说明必须写明。
+      # GatherLink.coplugin 的架构/版本/minos 必须与 universal app 一致。
+      # build.sh 在 SDK 存在时按 GATHER_ARCHS 逐切片编译并 lipo，release 模式
+      # 缺 SDK 直接 exit 1；这里再做发布侧独立复核，防止 runner 缓存混入。
+      # 授权 SDK 不在仓库内，release runner 必须先安装，否则本 job 失败。
       - name: Verify Capture One plugin architecture
         run: |
           PLUGIN_BINARY="release/Gather.app/Contents/PlugIns/GatherLink.coplugin/Contents/MacOS/GatherLink"
           if [ ! -f "$PLUGIN_BINARY" ]; then
-            if [ -d "Capture_One_Plugin_SDK_(Mac)_v1.0.1" ]; then
-              echo "::error::Capture One SDK is present but GatherLink.coplugin was not embedded; universal release must include it."
-              exit 1
-            fi
-            echo "::warning::GatherLink.coplugin is not embedded (licensed Capture One SDK unavailable on this runner); skipping plugin arch verification. Release notes must state that this build has no Capture One plugin."
-            exit 0
+            echo "::error::universal release must embed GatherLink.coplugin; build.sh refuses GATHER_RELEASE=1 without the licensed Capture One SDK + Makefile. Install the SDK on the release runner."
+            exit 1
           fi
           ARCHS="$(lipo -archs "$PLUGIN_BINARY")"
           echo "GatherLink.coplugin architectures: $ARCHS"
@@ -223,11 +252,40 @@ jobs:
                 ;;
             esac
           done
+          PLUGIN_PLIST="release/Gather.app/Contents/PlugIns/GatherLink.coplugin/Contents/Info.plist"
+          APP_PLIST="release/Gather.app/Contents/Info.plist"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$PLUGIN_PLIST")" = "$(plutil -extract CFBundleShortVersionString raw -o - "$APP_PLIST")"
+          test "$(plutil -extract CFBundleVersion raw -o - "$PLUGIN_PLIST")" = "$(plutil -extract CFBundleVersion raw -o - "$APP_PLIST")"
+          PLUGIN_MINOS="$(vtool -show-build "$PLUGIN_BINARY" | awk '$1=="minos"{print $2; exit}')"
+          echo "GatherLink.coplugin minos: $PLUGIN_MINOS"
+          test "$PLUGIN_MINOS" = "14.0"
       - name: Verify bundle
         run: |
           APP=release/Gather.app
+          APP_BINARY="$APP/Contents/MacOS/Gather"
           plutil -p "$APP/Contents/Info.plist"
-          lipo -archs "$APP/Contents/MacOS/Gather"
+          ARCHS="$(lipo -archs "$APP_BINARY")"
+          echo "app architectures: $ARCHS"
+          for want in arm64 x86_64; do
+            case " $ARCHS " in
+              *" $want "*) ;;
+              *)
+                echo "::error::universal release requires the $want slice in Gather (lipo -archs: $ARCHS)"
+                exit 1
+                ;;
+            esac
+          done
+          for arch in $ARCHS; do
+            MINOS="$(vtool -arch "$arch" -show-build "$APP_BINARY" | awk '$1=="minos"{print $2; exit}')"
+            SDK="$(vtool -arch "$arch" -show-build "$APP_BINARY" | awk '$1=="sdk"{print $2; exit}')"
+            echo "Mach-O $arch: minos=$MINOS sdk=$SDK"
+            test "$MINOS" = "14.0"
+            test "$SDK" = "$GATHER_SDK_VERSION"
+          done
+          BUILD_INFO="$APP/Contents/Resources/build-info.json"
+          test -s "$BUILD_INFO"
+          plutil -convert xml1 -o /dev/null "$BUILD_INFO"
+          cat "$BUILD_INFO"
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -dv --verbose=4 "$APP" 2>&1 | tee /tmp/gather-codesign-dv.txt
           grep -q 'Runtime Version' /tmp/gather-codesign-dv.txt
@@ -240,7 +298,7 @@ jobs:
           ( cd release && shasum -a 256 Gather.zip > Gather.zip.sha256 )
           cat release/Gather.zip.sha256
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Gather-${{ steps.version.outputs.version }}
           path: |

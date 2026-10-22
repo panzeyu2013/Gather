@@ -51,6 +51,15 @@ public struct CommandError: Error, Equatable, Sendable {
         self.origin = origin
     }
 
+    /// 交付 P2 错误码的用户恢复动作；非交付码返回 nil。
+    ///
+    /// 只做「下一步该做什么」的分类，不执行任何命令。页面可据此决定显示
+    /// 「重试」「先处理未完成项」「稍后刷新」或「检查并修复备份」，避免把
+    /// fail-closed 的 invalidBackup 当成可原样重试的普通失败。
+    public var recoveryAction: DeliveryErrorRecovery? {
+        DeliveryErrorPresentation.recovery(for: code)
+    }
+
     /// VM 本地校验文案（key 是本地化表 key，中文原文即 key）。
     /// 只有经本入口构造的错误才允许 CommandErrorText 走「本地文案」分支。
     public static func localized(
@@ -64,7 +73,11 @@ public struct CommandError: Error, Equatable, Sendable {
     /// API 边界返回的原始串（码或散文）：已知码保留在 code，散文只进 diagnostic。
     public init(apiText raw: String, diagnostic: String = "") {
         if Self.isKnownErrorCode(raw) {
-            self.init(code: raw, diagnostic: diagnostic)
+            self.init(
+                code: raw,
+                diagnostic: diagnostic,
+                retryable: DeliveryErrorPresentation.isRetryableAsIs(raw)
+            )
         } else {
             self.init(code: "", diagnostic: diagnostic.isEmpty ? raw : diagnostic)
         }
@@ -110,7 +123,11 @@ public struct CommandError: Error, Equatable, Sendable {
         let native = error as NSError
         let message = native.localizedDescription
         if Self.isKnownErrorCode(message) {
-            self.init(code: message, diagnostic: "\(native.domain):\(native.code)")
+            self.init(
+                code: message,
+                diagnostic: "\(native.domain):\(native.code)",
+                retryable: DeliveryErrorPresentation.isRetryableAsIs(message)
+            )
         } else {
             // 中文/英文散文都只进 diagnostic（4a-3b-2b：API 诊断不直接上屏）。
             self.init(code: "", diagnostic: message)
@@ -127,7 +144,9 @@ public struct CommandError: Error, Equatable, Sendable {
         let head = raw.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).first
             .map(String.init) ?? raw
         let code = head.components(separatedBy: "::")[0]
-        return table[code] != nil
+        // Delivery P2 的码不在 GatherErrorCode/errorMessages，但同样是稳定码值，
+        // 必须保留在 code 字段走本地化模板，不能降级成 diagnostic 散文。
+        return table[code] != nil || DeliveryErrorPresentation.template(for: code) != nil
     }
 
     /// 「已知码 + 单冒号参数」形态判定：首冒号前段是错误表收录的码，且其后参数
@@ -143,7 +162,9 @@ public struct CommandError: Error, Equatable, Sendable {
     ) -> Bool {
         guard let colon = raw.firstIndex(of: ":") else { return false }
         let head = String(raw[raw.startIndex..<colon])
-        guard table[head] != nil else { return false }
+        guard table[head] != nil || DeliveryErrorPresentation.template(for: head) != nil else {
+            return false
+        }
         let tail = String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
         return !tail.isEmpty
     }

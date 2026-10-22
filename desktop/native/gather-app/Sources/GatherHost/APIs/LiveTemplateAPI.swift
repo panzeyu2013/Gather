@@ -143,16 +143,17 @@ public final class LiveTemplateAPI: TemplateAPI, @unchecked Sendable {
 
     /// 域臂：TemplateServiceError；无专用码的 invalidSessionStatus 折算 INVALID_PARAM。
     private static func translate(_ error: Error) -> Error {
-        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
-        guard let template = error as? TemplateServiceError else { return error }
-        if let code = template.gatherCode {
-            return GatherError(code: code, underlying: template.description)
+        LiveAPIErrorMapping.translateDomain(error) { domainError in
+            guard let template = domainError as? TemplateServiceError else { return nil }
+            if let code = template.gatherCode {
+                return GatherError(code: code, underlying: template.description)
+            }
+            // invalidSessionStatus：无专用码，按参数/状态前置条件错误显式失败。
+            return GatherError(
+                code: .INVALID_PARAM,
+                params: ["field": "sessionId", "reason": "session status must be draft or photos_loaded"],
+                underlying: template.description
+            )
         }
-        // invalidSessionStatus：无专用码，按参数/状态前置条件错误显式失败。
-        return GatherError(
-            code: .INVALID_PARAM,
-            params: ["field": "sessionId", "reason": "session status must be draft or photos_loaded"],
-            underlying: template.description
-        )
     }
 }

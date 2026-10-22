@@ -16,7 +16,7 @@
 // 6. 原子写：临时文件 + replace（目标不存在时 move）；目标不存在也能落盘。
 // 7. 未知命名空间与未知字段逐字节保留：只改本宿主拥有的四个字段。
 // 8. 读取优先级（本 provider 的契约）：侧车文件是本 provider 的唯一读取来源；
-//    内嵌 XMP 与侧车的合并由 GatherCore.MetadataService 负责（侧车覆盖内嵌）。
+//    内嵌 XMP 与侧车的合并由 GatherApplication.MetadataService 负责（侧车覆盖内嵌）。
 
 import Foundation
 import GatherProtocol

@@ -2,7 +2,7 @@
 // Cut 3 / 3b-3（E-19 相邻）：C1 会话同步状态的 UI 视图模型 + 聚合端口。
 //
 // 状态机与聚合函数（CaptureOneSessionState / aggregateSessionState）的真相源
-// 在 GatherDomain（Sources/GatherDomain/Services/CaptureOneSyncState.swift）；
+// 在 GatherApplication（Sources/GatherApplication/Services/CaptureOneSyncState.swift）；
 // GatherUI 不得 import 领域层，因此：
 //   · UI 侧声明同名 rawValue 的枚举（供视图 switch）；
 //   · 聚合仍由 Host 的适配器转发真实实现，避免复制 8 个分支的判定逻辑。
@@ -10,7 +10,7 @@
 // 3b-4 记入剩余项：CaptureOneSessionState 上移 GatherProtocol 后可删除本文件。
 import Foundation
 
-/// C1 会话同步状态（rawValue 与 GatherDomain.CaptureOneSessionState 一致）。
+/// C1 会话同步状态（rawValue 与 GatherApplication.CaptureOneSessionState 一致）。
 public enum CaptureOneSyncState: String, CaseIterable, Equatable, Sendable {
     case disconnected
     case connected

@@ -1399,11 +1399,8 @@ public final class DeliveryRepo: Sendable {
     /// - synced 翻转限定在本次 scope 命中的 delivery 集合内（draft 的 SQL 未限定）；
     /// - confirmed_at 只写空值行（重复 confirm 幂等，summary 计数 = 本次新确认数）。
     ///
-    /// TODO(Cut 2 / S3)：V1 已删除 sessions.writeback_status（draft §2.4），会话级写回态
-    /// 改为按 deliveries 聚合派生，接线时在服务层同事务外读取：
-    ///   SELECT status, COUNT(*) FROM deliveries d
-    ///   JOIN delivery_sessions ds ON ds.delivery_id = d.id
-    ///   WHERE ds.session_id = ? GROUP BY status
+    /// 会话级写回态由 DeliverySummaryQuery 按 deliveries 聚合派生（D-021）；
+    /// 本事务的门禁读与回读复用同一投影，不再有 legacy sessions 列。
     public func confirm(
         scope: DeliveryConfirmScope,
         sessionId: String,

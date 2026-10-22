@@ -129,13 +129,14 @@ public final class LiveDuplicateAPI: DuplicateAPI {
         }
     }
 
-    /// 域臂：DuplicateServiceError（有码转码，无码原样）；通用臂见 translateCommon。
+    /// 域臂：DuplicateServiceError（有码转码，无码原样）；通用臂由 translateDomain 统一处理。
     private static func translate(_ error: Error) -> Error {
-        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
-        guard let duplicate = error as? DuplicateServiceError else { return error }
-        if let code = duplicate.gatherCode {
-            return GatherError(code: code, underlying: duplicate.description)
+        LiveAPIErrorMapping.translateDomain(error) { domainError in
+            guard let duplicate = domainError as? DuplicateServiceError else { return nil }
+            if let code = duplicate.gatherCode {
+                return GatherError(code: code, underlying: duplicate.description)
+            }
+            return duplicate
         }
-        return duplicate
     }
 }

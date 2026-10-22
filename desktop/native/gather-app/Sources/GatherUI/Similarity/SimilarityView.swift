@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherUI/Similarity/SimilarityView.swift
-// Phase 3.3 Similarity（相似度分析）：SwiftUI 页面（宿主内直连 GatherCore）。
+// Phase 3.3 Similarity（相似度分析）：SwiftUI 页面（宿主内经 GatherProtocol 端口访问）。
 // TS 源: desktop/src/renderer/pages/Similarity/index.tsx（AnalysisPanel 分析控制 +
 //       KeywordWritebackPanel 写回面板 + GroupGrid 分组卡片网格 + stats）
 //       + components/WritebackReport/WritebackReport.tsx（三色统计卡 + 失败项）

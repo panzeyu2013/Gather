@@ -265,10 +265,11 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
     ///   原样抛出，避免伪装成“其他模块占用”。
     /// 域臂：FaceKwServiceError；writebackProviderMissing 原样抛（保持原语义）。
     private static func translate(_ error: Error) -> Error {
-        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
-        guard let face = error as? FaceKwServiceError else { return error }
-        if case .writebackProviderMissing = face { return face }
-        return GatherError(code: face.gatherCode, underlying: face.description)
+        LiveAPIErrorMapping.translateDomain(error) { domainError in
+            guard let face = domainError as? FaceKwServiceError else { return nil }
+            if case .writebackProviderMissing = face { return face }
+            return GatherError(code: face.gatherCode, underlying: face.description)
+        }
     }
 
     // MARK: - 接缝类型搬运（FaceKw* 与 Protocol Writeback* 互转）

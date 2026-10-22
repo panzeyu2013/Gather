@@ -8,16 +8,39 @@ set -euo pipefail
 # docs/DEVELOPMENT.md「可复现发布」：
 #   GATHER_ARCHS=universal|arm64|x86_64  产物架构（app 与 GatherLink.coplugin）；
 #                                        未设 = SwiftPM 主机默认
-#   GATHER_VERSION / GATHER_BUILD_NUMBER 版本注入；未设 = git describe / Info.plist 回退
+#   GATHER_VERSION / GATHER_BUILD_NUMBER 版本注入；未设 = git describe / Info.plist 回退；
+#                                        BUILD_NUMBER 单独设置但无版本时警告并忽略
+#   GATHER_SDK_VERSION                   LC_BUILD_VERSION.sdk；未设 = xcrun 探测，
+#                                        探测失败回退 Package.swift 的 14.0
 #   CODESIGN_IDENTITY                    Developer ID 签名身份；未设 = 不签名
 #   GATHER_NOTARIZE=1                    公证 + staple（需要 GATHER_NOTARY_PROFILE
 #                                        或 APPLE_ID + APPLE_TEAM_ID + APPLE_APP_PASSWORD）
-#   GATHER_RELEASE=1                     发布模式：版本/签名/公证任一缺失即 exit 1
+#   GATHER_RELEASE=1                     发布模式：版本/universal/签名/公证/插件
+#                                        任一缺失即 exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-release}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/release}"
+# OUTPUT_DIR 允许相对路径，但统一按仓库根解析；随后拒绝会逃逸、重复斜杠、
+# 结尾斜杠以及含 "." / ".." 段的形态。旧断言
+#   "$APP_BUNDLE" != "$OUTPUT_DIR/Gather.app"
+# 两边恒等，实际只拦住了 "/"（OUTPUT_DIR="//"、"/tmp/.." 等都能绕过）。
+if [[ "$OUTPUT_DIR" != /* ]]; then
+  OUTPUT_DIR="$ROOT_DIR/$OUTPUT_DIR"
+fi
+case "$OUTPUT_DIR" in
+  /|//*|*/|*//*)
+    echo "refusing unsafe OUTPUT_DIR: $OUTPUT_DIR" >&2
+    exit 2
+    ;;
+esac
+case "/$OUTPUT_DIR/" in
+  */../*|*/./*)
+    echo "refusing non-normalized OUTPUT_DIR (contains '.' or '..'): $OUTPUT_DIR" >&2
+    exit 2
+    ;;
+esac
 APP_BUNDLE="$OUTPUT_DIR/Gather.app"
 CORE_PACKAGE="$SCRIPT_DIR/gather-core"
 APP_PACKAGE="$SCRIPT_DIR/gather-app"
@@ -25,11 +48,6 @@ APP_PACKAGE="$SCRIPT_DIR/gather-app"
 # 没有该 entitlement 会被 TCC 拒绝（-1743）。签名身份仍只由 CODESIGN_IDENTITY
 # 决定，这里只是随签名一起提交的固定资产。
 ENTITLEMENTS="$SCRIPT_DIR/Gather.entitlements"
-
-if [[ "$OUTPUT_DIR" == "/" || "$APP_BUNDLE" != "$OUTPUT_DIR/Gather.app" ]]; then
-  echo "refusing unsafe OUTPUT_DIR: $OUTPUT_DIR" >&2
-  exit 2
-fi
 
 # 发布模式：本地默认 0（缺凭据只警告），CI release job 显式设 1（缺凭据 exit 1）。
 # RELEASE=1 是设计文档里的旧别名，保留兼容。
@@ -121,7 +139,7 @@ if [[ -n "$SHORT_VERSION" ]]; then
     exit 2
   fi
 elif [[ -n "${GATHER_BUILD_NUMBER:-}" ]]; then
-  echo "warning: GATHER_BUILD_NUMBER is set but no version was resolved; ignoring it" >&2
+  echo "warning: GATHER_BUILD_NUMBER is set but no version was resolved; ignoring it (set GATHER_VERSION or create a git tag to apply it)" >&2
 fi
 
 if [[ "$RELEASE_MODE" == "1" && -z "$SHORT_VERSION" ]]; then
@@ -140,25 +158,40 @@ else
   echo "architectures: SwiftPM host default (set GATHER_ARCHS=universal|arm64|x86_64 to pin)"
 fi
 
+# P2-5：旧 zip 不能冒充本次产物。无论是否公证，组装前先删掉 OUTPUT_DIR 里的
+# 旧包与旧校验和；构建失败时也不留下可被误传的“上一次成功包”。
+rm -f "$OUTPUT_DIR/Gather.zip" "$OUTPUT_DIR/Gather.zip.sha256"
+
 # WP7：gather-app/Package.swift 不再在 manifest 求值期执行 xcrun。真实 SDK
 # 版本（Mach-O 的 LC_BUILD_VERSION.sdk，决定 macOS 26+ 是否启用 Liquid Glass）
 # 由本脚本探测本机 SDK 后 export；显式传入的 GATHER_SDK_VERSION 优先。
-# 探测失败不阻断构建：Package.swift 有固定默认值（26.0），不会静默退回 14.0。
+# 注意：Package.swift 的默认值是部署目标 14.0（不是 26.0）；探测失败时
+# 会按 14.0 链接，Liquid Glass 不会启用，所以这里记录来源，release 模式拒绝
+# 静默走回退。
 if [[ -z "${GATHER_SDK_VERSION:-}" ]]; then
   SDK_VERSION="$(xcrun --show-sdk-version 2>/dev/null || true)"
   if [[ -n "$SDK_VERSION" ]]; then
     export GATHER_SDK_VERSION="$SDK_VERSION"
+    SDK_VERSION_SOURCE="xcrun"
   else
-    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK version applies" >&2
+    SDK_VERSION_SOURCE="Package.swift default (14.0)"
+    if [[ "$RELEASE_MODE" == "1" ]]; then
+      echo "release mode requires xcrun --show-sdk-version (macOS 26 SDK for Liquid Glass); refusing the 14.0 fallback" >&2
+      exit 1
+    fi
+    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK version 14.0 applies (Liquid Glass disabled)" >&2
   fi
+else
+  SDK_VERSION_SOURCE="GATHER_SDK_VERSION"
 fi
-echo "SDK version for -platform_version: ${GATHER_SDK_VERSION:-<Package.swift default>}"
+DECLARED_SDK_VERSION="$(printf '%s' "${GATHER_SDK_VERSION:-}" | LC_ALL=C tr -d '[:space:]')"
+echo "SDK version for -platform_version: ${DECLARED_SDK_VERSION:-<Package.swift default 14.0>} (source: $SDK_VERSION_SOURCE)"
 
 # 3b-6：两个包都开 SE-0409 严格依赖检查（target 只能 import 直接依赖）。
 DEPENDENCY_CHECK=(--explicit-target-dependency-import-check error)
 # app 的 SDK 版本在 manifest 求值期从 GATHER_SDK_VERSION 读取。SwiftPM 的
 # manifest 缓存不把该环境变量计入 key：同一 .build 下增量构建可能沿用旧的
-# -platform_version（实测 default 26.0 → env 27.0 不重链）。release 组装必须
+# -platform_version（实测 default 14.0 → env 27.0 不重链）。release 组装必须
 # 关闭 manifest 缓存，保证本脚本探测到的 SDK 真正写进 Mach-O。
 APP_BUILD_FLAGS=("${DEPENDENCY_CHECK[@]}" --manifest-cache none)
 swift build --package-path "$CORE_PACKAGE" -c "$CONFIGURATION" \
@@ -363,6 +396,12 @@ PLUGIN_SDK="$ROOT_DIR/Capture_One_Plugin_SDK_(Mac)_v1.0.1"
 PLUGIN_DIR="$ROOT_DIR/desktop/coplugin"
 PLUGIN_BUNDLE="$PLUGIN_DIR/GatherLink.coplugin"
 PLUGIN_BINARY="$PLUGIN_BUNDLE/Contents/MacOS/GatherLink"
+# P2-6：插件部署目标对齐 app（14.0）。Makefile 默认 10.14，会产生与 app
+# 不一致的 minos。make 的命令行变量优先于 Makefile 内的 ":=" 赋值，所以这里
+# 覆盖 TARGET，不改 Makefile 本身。
+PLUGIN_DEPLOYMENT_TARGET="14.0"
+# build-info 用：未嵌入时为 none，嵌入后记录实际切片。
+PLUGIN_INFO="none"
 
 PLUGIN_ARCHS=()
 if [[ ${#EXPECTED_ARCHS[@]} -gt 0 ]]; then
@@ -387,7 +426,8 @@ if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
   # 这里显式做一次，避免复用旧产物）。
   rm -f "$PLUGIN_BUNDLE"/.arch-*
   for arch in "${PLUGIN_ARCHS[@]}"; do
-    if make -C "$PLUGIN_DIR" TARGET_ARCH="$arch" all; then
+    if make -C "$PLUGIN_DIR" TARGET_ARCH="$arch" \
+        TARGET="$arch-apple-macosx$PLUGIN_DEPLOYMENT_TARGET" all; then
       if [[ -f "$PLUGIN_BINARY" ]]; then
         SLICE_ARCHS="$(lipo -archs "$PLUGIN_BINARY")"
         if plugin_has_arch "$arch" "$SLICE_ARCHS"; then
@@ -411,6 +451,28 @@ if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
     lipo -create ${PLUGIN_SLICES[@]+"${PLUGIN_SLICES[@]}"} -output "$PLUGIN_BINARY"
     chmod +x "$PLUGIN_BINARY"
     PLUGIN_ACTUAL_ARCHS="$(lipo -archs "$PLUGIN_BINARY")"
+    # P2-6 只做诊断：rpath 仍由 coplugin/Makefile 的 SWIFT_FLAGS 决定（相对
+    # 构建机 SDK 路径）。未经 Capture One 实机验证，不在本脚本里删除/改写链接
+    # 参数，避免把宿主提供的加载路径一起拿掉。
+    PLUGIN_MINOS="$(vtool -show-build "$PLUGIN_BINARY" 2>/dev/null | awk '$1=="minos"{print $2; exit}' || true)"
+    if [[ -n "$PLUGIN_MINOS" && "$PLUGIN_MINOS" != "$PLUGIN_DEPLOYMENT_TARGET" ]]; then
+      echo "warning: GatherLink.coplugin minos is $PLUGIN_MINOS (expected $PLUGIN_DEPLOYMENT_TARGET)" >&2
+      if [[ "$RELEASE_MODE" == "1" ]]; then
+        echo "release mode requires GatherLink.coplugin minos $PLUGIN_DEPLOYMENT_TARGET (got ${PLUGIN_MINOS:-unknown})" >&2
+        rm -rf "$PLUGIN_SLICES_DIR"
+        exit 1
+      fi
+    fi
+    # otool 对 universal 文件会为每个切片重复打印同一条 LC_RPATH；sort -u
+    # 去重，避免 install_name_tool -delete_rpath 第二次找不到而失败。
+    PLUGIN_RPATHS="$(otool -l "$PLUGIN_BINARY" 2>/dev/null | awk '$1=="path"{print $2}' | sort -u || true)"
+    while IFS= read -r plugin_rpath; do
+      [[ -n "$plugin_rpath" ]] || continue
+      case "$plugin_rpath" in
+        @*|/*) ;;
+        *) echo "warning: GatherLink.coplugin has a relative LC_RPATH '$plugin_rpath' (build-machine path; not portable)" >&2 ;;
+      esac
+    done <<< "$PLUGIN_RPATHS"
     PLUGIN_MISSING_ARCHS=()
     for want in "${PLUGIN_ARCHS[@]}"; do
       if ! plugin_has_arch "$want" "$PLUGIN_ACTUAL_ARCHS"; then
@@ -437,6 +499,58 @@ if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
     rm -rf "$PLUGIN_SLICES_DIR"
     mkdir -p "$APP_BUNDLE/Contents/PlugIns"
     cp -R "$PLUGIN_BUNDLE" "$APP_BUNDLE/Contents/PlugIns/"
+    EMBEDDED_PLUGIN="$APP_BUNDLE/Contents/PlugIns/GatherLink.coplugin"
+    EMBEDDED_PLUGIN_BINARY="$EMBEDDED_PLUGIN/Contents/MacOS/GatherLink"
+    # P2-4：.arch-* 是 Makefile 的增量构建戳，不是插件资产。cp -R 会连隐藏
+    # 文件一起复制；源目录保留给 make，只清产物副本。
+    rm -f "$EMBEDDED_PLUGIN"/.arch-*
+    PLUGIN_INFO="$PLUGIN_ACTUAL_ARCHS"
+    # P2-6：Makefile 的 rpath 是构建机 SDK 目录，且与 framework 的 install
+    # name（@rpath/Frameworks/...）拼起来会多一层 Frameworks，用户机器上不可
+    # 能解析。只从嵌入副本删掉这类相对 rpath（@/绝对路径保留），源 bundle 与
+    # Makefile 不动；Capture One 宿主自己的 rpath 仍负责解析。
+    while IFS= read -r plugin_rpath; do
+      [[ -n "$plugin_rpath" ]] || continue
+      case "$plugin_rpath" in
+        @*|/*) ;;
+        *)
+          echo "removing build-machine relative LC_RPATH '$plugin_rpath' from embedded plugin" >&2
+          install_name_tool -delete_rpath "$plugin_rpath" "$EMBEDDED_PLUGIN_BINARY"
+          ;;
+      esac
+    done <<< "$PLUGIN_RPATHS"
+    EMBEDDED_RPATHS="$(otool -l "$EMBEDDED_PLUGIN_BINARY" 2>/dev/null | awk '$1=="path"{print $2}' || true)"
+    while IFS= read -r plugin_rpath; do
+      [[ -n "$plugin_rpath" ]] || continue
+      case "$plugin_rpath" in
+        @*|/*) ;;
+        *) echo "embedded GatherLink.coplugin still has a relative LC_RPATH: $plugin_rpath" >&2 ; exit 1 ;;
+      esac
+    done <<< "$EMBEDDED_RPATHS"
+    # P2-7：插件版本跟随 app 的最终 Info.plist（含本地 3.0.0 回退），只改产物
+    # 副本；源 GatherLink/Info.plist 的 1.0.0 仍是独立插件包的回退值。
+    EMBEDDED_PLUGIN_INFO="$EMBEDDED_PLUGIN/Contents/Info.plist"
+    if [[ ! -f "$EMBEDDED_PLUGIN_INFO" ]]; then
+      echo "embedded GatherLink.coplugin has no Info.plist: $EMBEDDED_PLUGIN_INFO" >&2
+      exit 1
+    fi
+    APP_PLIST_SHORT="$(plutil -extract CFBundleShortVersionString raw -o - "$BUNDLE_INFO")"
+    APP_PLIST_BUILD="$(plutil -extract CFBundleVersion raw -o - "$BUNDLE_INFO")"
+    plutil -replace CFBundleShortVersionString -string "$APP_PLIST_SHORT" "$EMBEDDED_PLUGIN_INFO"
+    plutil -replace CFBundleVersion -string "$APP_PLIST_BUILD" "$EMBEDDED_PLUGIN_INFO"
+    INJECTED_PLUGIN_SHORT="$(plutil -extract CFBundleShortVersionString raw -o - "$EMBEDDED_PLUGIN_INFO")"
+    INJECTED_PLUGIN_BUILD="$(plutil -extract CFBundleVersion raw -o - "$EMBEDDED_PLUGIN_INFO")"
+    if [[ "$INJECTED_PLUGIN_SHORT" != "$APP_PLIST_SHORT" || "$INJECTED_PLUGIN_BUILD" != "$APP_PLIST_BUILD" ]]; then
+      echo "plugin version injection failed: expected $APP_PLIST_SHORT ($APP_PLIST_BUILD), got $INJECTED_PLUGIN_SHORT ($INJECTED_PLUGIN_BUILD)" >&2
+      exit 1
+    fi
+    echo "injected plugin CFBundleShortVersionString=$INJECTED_PLUGIN_SHORT CFBundleVersion=$INJECTED_PLUGIN_BUILD"
+    # install_name_tool 在 universal 二进制上可能把 linker 的 ad-hoc 签名改坏；
+    # 没有 Developer ID 时这里补回 ad-hoc，保证 arm64 本地加载不被签名校验拒绝。
+    # 有 CODESIGN_IDENTITY 时由后面的嵌套签名统一覆盖。
+    if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
+      codesign --force --sign - "$EMBEDDED_PLUGIN_BINARY"
+    fi
   else
     rm -rf "$PLUGIN_SLICES_DIR"
     echo "warning: GatherLink.coplugin was not built (all slices failed)" >&2
@@ -462,9 +576,45 @@ BUILD_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo un
 FINAL_INFO_SHORT="$(plutil -extract CFBundleShortVersionString raw -o - "$BUNDLE_INFO")"
 FINAL_INFO_BUILD="$(plutil -extract CFBundleVersion raw -o - "$BUNDLE_INFO")"
 FINAL_ARCHS="$(lipo -archs "$APP_BINARY" 2>/dev/null || uname -m)"
-SAFE_SDK_VERSION="$(printf '%s' "${GATHER_SDK_VERSION:-default}" | LC_ALL=C tr -d '\"\\\\')"
+# P2-3：dirty 标记（git 状态读取失败时写 unknown，不伪造成 false）。
+if GIT_STATUS="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null)"; then
+  if [[ -n "$GIT_STATUS" ]]; then
+    BUILD_DIRTY_JSON=true
+  else
+    BUILD_DIRTY_JSON=false
+  fi
+else
+  BUILD_DIRTY_JSON='"unknown"'
+fi
+# P2-3：sdk/minos 取 Mach-O 的 LC_BUILD_VERSION 实际值，而不是环境变量。
+# vtool 不可用时回退到声明值并保留来源区分（sdk_version_declared）。
+PRIMARY_ARCH="${FINAL_ARCHS%% *}"
+MACHO_MINOS=""
+MACHO_SDK=""
+if command -v vtool >/dev/null 2>&1; then
+  MACHO_MINOS="$(vtool -arch "$PRIMARY_ARCH" -show-build "$APP_BINARY" 2>/dev/null | awk '$1=="minos"{print $2; exit}' || true)"
+  MACHO_SDK="$(vtool -arch "$PRIMARY_ARCH" -show-build "$APP_BINARY" 2>/dev/null | awk '$1=="sdk"{print $2; exit}' || true)"
+fi
+ACTUAL_SDK_VERSION="${MACHO_SDK:-${DECLARED_SDK_VERSION:-default}}"
+SAFE_SDK_VERSION="$(printf '%s' "$ACTUAL_SDK_VERSION" | LC_ALL=C tr -d '\"\\\\')"
+SAFE_MINOS="$(printf '%s' "${MACHO_MINOS:-unknown}" | LC_ALL=C tr -d '\"\\\\')"
+SAFE_DECLARED_SDK="$(printf '%s' "${DECLARED_SDK_VERSION:-default}" | LC_ALL=C tr -d '\"\\\\')"
+SAFE_PLUGIN_INFO="$(printf '%s' "$PLUGIN_INFO" | LC_ALL=C tr -d '\"\\\\')"
+if [[ -n "$MACHO_SDK" && -n "$DECLARED_SDK_VERSION" && "$MACHO_SDK" != "$DECLARED_SDK_VERSION" ]]; then
+  echo "warning: Mach-O sdk ($MACHO_SDK) does not match GATHER_SDK_VERSION ($DECLARED_SDK_VERSION); manifest cache or linker flags are stale" >&2
+fi
+if [[ -n "$MACHO_SDK" ]]; then
+  SDK_MAJOR="${MACHO_SDK%%.*}"
+  if [[ "$SDK_MAJOR" =~ ^[0-9]+$ ]] && (( SDK_MAJOR < 26 )); then
+    if [[ "$RELEASE_MODE" == "1" ]]; then
+      echo "warning: release bundle links against SDK $MACHO_SDK (<26): Liquid Glass is disabled. The release runner must provide Xcode 26+; CI release asserts this before building." >&2
+    else
+      echo "note: Mach-O sdk $MACHO_SDK (<26); Liquid Glass disabled (expected on older toolchains)" >&2
+    fi
+  fi
+fi
 cat > "$BUILD_INFO" <<JSON
-{"version":"$FINAL_INFO_SHORT","build":"$FINAL_INFO_BUILD","commit":"$BUILD_COMMIT","archs":"$FINAL_ARCHS","sdk_version":"$SAFE_SDK_VERSION"}
+{"version":"$FINAL_INFO_SHORT","build":"$FINAL_INFO_BUILD","commit":"$BUILD_COMMIT","dirty":$BUILD_DIRTY_JSON,"archs":"$FINAL_ARCHS","plugin":"$SAFE_PLUGIN_INFO","minos":"$SAFE_MINOS","sdk_version":"$SAFE_SDK_VERSION","sdk_version_declared":"$SAFE_DECLARED_SDK"}
 JSON
 if ! plutil -convert xml1 -o /dev/null "$BUILD_INFO" 2>/dev/null; then
   echo "build-info.json is not valid JSON: $BUILD_INFO" >&2

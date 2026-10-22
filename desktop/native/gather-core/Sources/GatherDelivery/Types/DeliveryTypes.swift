@@ -263,54 +263,13 @@ public func deliveryWritebackBaseline(
             baseValues: row.baseValues
         )
     } catch {
+        // P2-5：basename#hash；完整路径仍由调用方返回的基线/错误承载。
         GatherLogger.log(
-            "delivery writeback baseline unavailable (\(xmpPath)): \(error)",
+            "delivery writeback baseline unavailable for "
+                + "\(DeliveryTrace.pathToken(xmpPath)): "
+                + DeliveryTrace.reason(error, paths: [xmpPath]),
             level: .debug
         )
         return .empty
-    }
-}
-
-/// 仅文件系统的 DeliveryFilePort（测试用替身；生产默认注入 XMPDeliveryFilePort）。
-///
-/// 恢复 = 备份覆盖写回 photo.xmp（幂等），删除 = unlink。宿主一律经 XMPProvider
-/// 注入 XMPDeliveryFilePort（原子替换 + 大小写侧车解析）。
-public struct FileSystemDeliveryFilePort: DeliveryFilePort {
-    public init() {}
-
-    public func fileExists(_ path: String) -> Bool {
-        FileManager.default.fileExists(atPath: path)
-    }
-
-    public func restore(photoPath: String, backupPath: String) async throws {
-        let target = TSPath.xmpSidecarPath(photoPath)
-        // P2-12：与 XMPDeliveryFilePort 同一校验；只使用归一化后的备份路径。
-        let validatedBackup = try DeliveryBackupPath.validate(
-            xmpPath: target, backupPath: backupPath)
-        guard FileManager.default.fileExists(atPath: validatedBackup) else {
-            throw DeliveryCoordinatorError.backupMissing(xmpPath: backupPath)
-        }
-        // 先拷到同目录临时文件，再替换目标：中途失败不会把原侧车删空
-        //（与 SidecarXMPProvider.install 的覆盖写语义一致）。
-        let tempPath = target + ".restore-" + UUID().uuidString.lowercased()
-        try FileManager.default.copyItem(atPath: validatedBackup, toPath: tempPath)
-        do {
-            if FileManager.default.fileExists(atPath: target) {
-                _ = try FileManager.default.replaceItemAt(
-                    URL(fileURLWithPath: target),
-                    withItemAt: URL(fileURLWithPath: tempPath)
-                )
-            } else {
-                try FileManager.default.moveItem(atPath: tempPath, toPath: target)
-            }
-        } catch {
-            try? FileManager.default.removeItem(atPath: tempPath)
-            throw error
-        }
-    }
-
-    public func removeFile(_ path: String) async throws {
-        guard FileManager.default.fileExists(atPath: path) else { return }
-        try FileManager.default.removeItem(atPath: path)
     }
 }

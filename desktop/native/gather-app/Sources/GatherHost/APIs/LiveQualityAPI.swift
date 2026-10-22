@@ -120,10 +120,11 @@ public final class LiveQualityAPI: QualityAPI {
         }
     }
 
-    /// 域臂：QualityServiceError；通用臂见 translateCommon。
+    /// 域臂：QualityServiceError；通用臂由 translateDomain 统一处理。
     private static func translate(_ error: Error) -> Error {
-        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
-        guard let quality = error as? QualityServiceError else { return error }
-        return GatherError(code: quality.gatherCode, underlying: quality.description)
+        LiveAPIErrorMapping.translateDomain(error) { domainError in
+            guard let quality = domainError as? QualityServiceError else { return nil }
+            return GatherError(code: quality.gatherCode, underlying: quality.description)
+        }
     }
 }

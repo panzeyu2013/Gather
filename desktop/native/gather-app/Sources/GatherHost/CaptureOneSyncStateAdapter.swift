@@ -1,8 +1,8 @@
 // desktop/native/gather-app/Sources/GatherHost/CaptureOneSyncStateAdapter.swift
-// Cut 3 / 3b-3（E-19 相邻）：GatherDomain 的聚合函数 → GatherUI 端口。
+// Cut 3 / 3b-3（E-19 相邻）：GatherApplication 的聚合函数 → GatherUI 端口。
 //
 // 只做 rawValue 映射与转发；判定逻辑（冲突 > 失败 > 写入中 > 已写入 > 终态）
-// 仍只有 GatherDomain/CaptureOneSyncState.swift 一份。
+// 仍只有 GatherApplication/Services/CaptureOneSyncState.swift 一份。
 import GatherApplication
 import GatherUI
 

@@ -35,8 +35,11 @@ extension WritebackService {
             }
         } catch {
             // 不改变已落盘的 written：ack 清理失败只会让门禁更严格（下次 reload 仍可过）。
+            // P2-5：basename#hash + 结构化 reason，完整路径只留在返回的 errors。
             GatherLogger.log(
-                "Failed to clear reload-ack for \(xmpPath): \(error)", level: .warn)
+                "Failed to clear reload-ack for \(DeliveryTrace.pathToken(xmpPath)): "
+                    + DeliveryTrace.reason(error, paths: [xmpPath]),
+                level: .warn)
         }
     }
 
@@ -48,8 +51,12 @@ extension WritebackService {
         func record(_ operation: String, _ error: Error) {
             let failure = MetadataWritebackFailure.from(error, xmpPath: entry.delivery.xmpPath)
             failures.append(failure.description + " operation=" + operation)
+            // P2-5：失败记录仍带完整路径（返回值可定位），日志只留码 + token + 脱敏原因。
             GatherLogger.log(
-                "Writeback projection failed (\(operation)) for \(entry.delivery.xmpPath): \(error)",
+                "Writeback projection failed (\(operation)) for "
+                    + "\(DeliveryTrace.pathToken(entry.delivery.xmpPath)) "
+                    + "code=\(failure.code) "
+                    + "reason=\(DeliveryTrace.sanitize(failure.reason, paths: [entry.delivery.xmpPath]))",
                 level: .warn)
         }
         if let rating = attrs["rating"]?.numberValue {

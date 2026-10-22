@@ -190,7 +190,12 @@ public final class WritebackService: @unchecked Sendable {
             } catch {
                 // 缺失侧车 = 空；读取失败必须可见（否则会把外部关键词静默当空列表）。
                 if xmp.fileExists(sidecarPath) {
-                    GatherLogger.log("Writeback preview keyword read failed for \(sidecarPath): \(error)", level: .warn)
+                    // P2-5：非 trace 日志也不能输出绝对路径；basename#hash 保留定位能力。
+                    GatherLogger.log(
+                        "Writeback preview keyword read failed for "
+                            + "\(DeliveryTrace.pathToken(sidecarPath)): "
+                            + DeliveryTrace.reason(error, paths: [sidecarPath]),
+                        level: .warn)
                 }
             }
             // 旧 outbox 的 externalChanged 信号等价物：交付处于 conflict。

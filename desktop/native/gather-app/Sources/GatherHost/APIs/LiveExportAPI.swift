@@ -177,11 +177,12 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
 
     /// 域臂：ExportServiceError（description 即错误码时转码，否则原样）。
     private static func translate(_ error: Error) -> Error {
-        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
-        guard let export = error as? ExportServiceError else { return error }
-        if let code = GatherErrorCode(rawValue: export.description) {
-            return GatherError(code: code, underlying: export.description)
+        LiveAPIErrorMapping.translateDomain(error) { domainError in
+            guard let export = domainError as? ExportServiceError else { return nil }
+            if let code = GatherErrorCode(rawValue: export.description) {
+                return GatherError(code: code, underlying: export.description)
+            }
+            return export
         }
-        return export
     }
 }

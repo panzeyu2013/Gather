@@ -44,4 +44,48 @@ public enum APIErrorPresentation {
     public static func userFacingMessage(for error: Error, with l10n: L10n) -> String {
         message(for: error, with: l10n)
     }
+
+    // MARK: - 交付 P2 的恢复动作
+
+    /// 交付错误码的恢复动作；非交付错误返回 nil。
+    ///
+    /// message(for:) 已经通过 L10n 的同一张表给出文案；本方法把「下一步」
+    /// 单独暴露给页面（重试 / 先处理未完成项 / 稍后刷新 / 检查并修复备份），
+    /// 避免 invalidBackup 被当成普通可重试失败。
+    public static func recovery(for error: Error) -> DeliveryErrorRecovery? {
+        for candidate in rawTexts(for: error) {
+            if let recovery = DeliveryErrorPresentation.recovery(for: candidate) {
+                return recovery
+            }
+        }
+        return nil
+    }
+
+    /// 恢复动作的本地化标题；非交付错误返回 nil。
+    public static func recoveryTitle(for error: Error, with l10n: L10n) -> String? {
+        recovery(for: error)?.title(with: l10n)
+    }
+
+    /// 按与 message(for:) 相同的优先级提取可能承载错误码的字符串。
+    private static func rawTexts(for error: Error) -> [String] {
+        var texts: [String] = []
+        if let gather = error as? GatherError {
+            texts.append(gather.code.rawValue)
+        }
+        if let session = error as? SessionServiceError {
+            texts.append(session.gatherCode.rawValue)
+        }
+        if let api = error as? APIError {
+            texts.append(api.description)
+        }
+        if let router = error as? RouterCommandError {
+            texts.append(router.message)
+        }
+        if let bridge = error as? BridgeError {
+            texts.append(bridge.description)
+        }
+        texts.append((error as NSError).localizedDescription)
+        texts.append(String(describing: error))
+        return texts
+    }
 }

@@ -20,120 +20,7 @@ import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
 
-// MARK: - Stub SimilarityAPI / JobAPI
-
-private final class StubSimilarityAPI: SimilarityAPI, @unchecked Sendable {
-    private struct BoxState {
-        var resultValue: SimilarityResult?
-        var previewValue = WritebackPreview(items: [], totalCount: 0, affectedPhotos: 0)
-        var writebackResultValue = WritebackResult(
-            totalAffected: 0, written: 0, failed: 0, skipped: 0,
-            errors: [], failedItems: [], report: ""
-        )
-        var writebackItemsValue: [WritebackItem] = []
-        var cleanupResultValue = CleanupResult(deletedCount: 0, errors: [])
-        var resultQueries: [SimilarityResultQuery] = []
-        var analyzeInputs: [SimilarityAnalyzeInput] = []
-        var reclusterInputs: [SimilarityAnalyzeInput] = []
-        var cancelCalls: [String] = []
-        var previewInputs: [SimilarityPreviewWritebackInput] = []
-        var writebackInputs: [Confirmed<SimilarityWritebackInput>] = []
-        var retryInputs: [Confirmed<SessionReference>] = []
-        var cleanupInputs: [Confirmed<SessionReference>] = []
-        var confirmCalls: [String] = []
-    }
-
-    private let box = LockedBox(BoxState())
-
-    var resultValue: SimilarityResult? {
-        get { box.lock.withLock { box.resultValue } }
-        set { box.lock.withLock { box.resultValue = newValue } }
-    }
-
-    var previewValue: WritebackPreview {
-        get { box.lock.withLock { box.previewValue } }
-        set { box.lock.withLock { box.previewValue = newValue } }
-    }
-
-    var writebackResultValue: WritebackResult {
-        get { box.lock.withLock { box.writebackResultValue } }
-        set { box.lock.withLock { box.writebackResultValue = newValue } }
-    }
-
-    var writebackItemsValue: [WritebackItem] {
-        get { box.lock.withLock { box.writebackItemsValue } }
-        set { box.lock.withLock { box.writebackItemsValue = newValue } }
-    }
-
-    var resultQueries: [SimilarityResultQuery] { box.lock.withLock { box.resultQueries } }
-    var analyzeInputs: [SimilarityAnalyzeInput] { box.lock.withLock { box.analyzeInputs } }
-    var cancelCalls: [String] { box.lock.withLock { box.cancelCalls } }
-    var previewInputs: [SimilarityPreviewWritebackInput] { box.lock.withLock { box.previewInputs } }
-    var writebackInputs: [Confirmed<SimilarityWritebackInput>] { box.lock.withLock { box.writebackInputs } }
-    var confirmCalls: [String] { box.lock.withLock { box.confirmCalls } }
-
-    func result(_ query: SimilarityResultQuery) async throws -> SimilarityResult? {
-        box.lock.withLock {
-            box.resultQueries.append(query)
-            return box.resultValue
-        }
-    }
-
-    func analyze(_ input: SimilarityAnalyzeInput) async throws -> Bool {
-        box.lock.withLock { box.analyzeInputs.append(input) }
-        return true
-    }
-
-    func recluster(_ input: SimilarityAnalyzeInput) async throws -> SimilarityResult? {
-        box.lock.withLock { box.reclusterInputs.append(input) }
-        return box.lock.withLock { box.resultValue }
-    }
-
-    func cancelAnalysis(_ sessionId: String) async throws -> Bool {
-        box.lock.withLock { box.cancelCalls.append(sessionId) }
-        return true
-    }
-
-    func previewWriteback(
-        _ input: SimilarityPreviewWritebackInput
-    ) async throws -> WritebackPreview {
-        box.lock.withLock {
-            box.previewInputs.append(input)
-            return box.previewValue
-        }
-    }
-
-    func writebackItems(_ sessionId: String) async throws -> [WritebackItem] {
-        _ = sessionId
-        return box.lock.withLock { box.writebackItemsValue }
-    }
-
-    func writeback(
-        _ input: Confirmed<SimilarityWritebackInput>
-    ) async throws -> WritebackResult {
-        box.lock.withLock {
-            box.writebackInputs.append(input)
-            return box.writebackResultValue
-        }
-    }
-
-    func confirmSync(_ sessionId: String) async throws -> Bool {
-        box.lock.withLock { box.confirmCalls.append(sessionId) }
-        return true
-    }
-
-    func retryFailedWriteback(
-        _ input: Confirmed<SessionReference>
-    ) async throws -> WritebackResult {
-        box.lock.withLock { box.retryInputs.append(input) }
-        return box.lock.withLock { box.writebackResultValue }
-    }
-
-    func cleanup(_ input: Confirmed<SessionReference>) async throws -> CleanupResult {
-        box.lock.withLock { box.cleanupInputs.append(input) }
-        return box.lock.withLock { box.cleanupResultValue }
-    }
-}
+// MARK: - Stub JobAPI（SimilarityAPI 复用 Support/StubSimilarityAPI.swift 的 B8SimilarityAPIStub）
 
 private final class StubSimilarityJobAPI: JobAPI, @unchecked Sendable {
     private struct BoxState {
@@ -266,7 +153,7 @@ private func similarityWritebackItem() -> WritebackItem {
 @MainActor
 struct APISimilarityUITests {
     private func makeViewModel(
-        _ api: StubSimilarityAPI,
+        _ api: B8SimilarityAPIStub,
         jobs: StubSimilarityJobAPI = StubSimilarityJobAPI()
     ) -> SimilarityViewModel {
         SimilarityViewModel(
@@ -281,7 +168,7 @@ struct APISimilarityUITests {
 
     @Test("result：load 通过 SimilarityAPI 查询并采纳结果")
     func loadUsesSimilarityAPIResult() async {
-        let api = StubSimilarityAPI()
+        let api = B8SimilarityAPIStub()
         api.resultValue = similarityResult(totalGroups: 3, threshold: 12)
         let viewModel = makeViewModel(api)
 
@@ -297,7 +184,7 @@ struct APISimilarityUITests {
 
     @Test("挂载恢复：JobAPI.list 的活跃 similarity.analyze 恢复进度")
     func loadRestoresActiveAnalysisJobFromJobAPI() async {
-        let api = StubSimilarityAPI()
+        let api = B8SimilarityAPIStub()
         api.resultValue = similarityResult()
         let jobs = StubSimilarityJobAPI()
         jobs.jobs = [similarityAnalysisJob(
@@ -317,7 +204,7 @@ struct APISimilarityUITests {
 
     @Test("analyze：参数进 SimilarityAPI，完成后刷新 result")
     func analyzeUsesSimilarityAPI() async {
-        let api = StubSimilarityAPI()
+        let api = B8SimilarityAPIStub()
         api.resultValue = similarityResult(threshold: 10)
         let viewModel = makeViewModel(api)
         await viewModel.load()
@@ -349,7 +236,7 @@ struct APISimilarityUITests {
 
     @Test("writeback：未确认不发命令；确认后 Confirmed(.userDialog) + 预览 itemIds")
     func writebackUsesConfirmedUserDialog() async {
-        let api = StubSimilarityAPI()
+        let api = B8SimilarityAPIStub()
         api.resultValue = similarityResult()
         api.previewValue = WritebackPreview(
             items: [similarityWritebackItem()], totalCount: 1, affectedPhotos: 1
@@ -377,7 +264,7 @@ struct APISimilarityUITests {
 
     @Test("cancelAnalysis：走 SimilarityAPI，不再发路由命令")
     func cancelUsesSimilarityAPI() async {
-        let api = StubSimilarityAPI()
+        let api = B8SimilarityAPIStub()
         api.resultValue = similarityResult()
         let viewModel = makeViewModel(api)
         await viewModel.load()

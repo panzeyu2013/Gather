@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherUI/Dashboard/DashboardViewModel.swift
-// Phase 3.1 Dashboard：视图模型（服务可注入，同进程直连 GatherCore）。
+// Phase 3.1 Dashboard：视图模型（服务经 API 端口可注入）。
 // TS 源: desktop/src/renderer/pages/Dashboard/index.tsx（scanJobs 种子/卡片计数文案）
 //       + pages/Jobs/index.tsx（任务面板交互）+ hooks/useWorkspaceStatus.ts（状态聚合）
 //

@@ -260,21 +260,25 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
     /// JobServiceError / DBError → GatherError：有专用码的域错误保持码值；
     /// jobFailed 的 message 本身就是错误码时还原为 GatherError；其余原样抛出
     /// （D-030：非域错误不伪造业务码）。
-    /// 域臂：Similarity / Writeback / WritebackPlanner；通用臂见 translateCommon。
+    /// 域臂：Similarity / Writeback / WritebackPlanner；通用臂由 translateDomain 统一处理。
     private static func translate(_ error: Error) -> Error {
-        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
-        if let similarity = error as? SimilarityServiceError {
-            return GatherError(code: similarity.gatherCode, underlying: similarity.description)
-        }
-        if let writeback = error as? WritebackServiceError {
-            if let code = GatherErrorCode(rawValue: writeback.description) {
-                return GatherError(code: code, underlying: writeback.description)
+        LiveAPIErrorMapping.translateDomain(error) { domainError in
+            if let similarity = domainError as? SimilarityServiceError {
+                return GatherError(code: similarity.gatherCode, underlying: similarity.description)
             }
-            return writeback
+            if let writeback = domainError as? WritebackServiceError {
+                if let code = GatherErrorCode(rawValue: writeback.description) {
+                    return GatherError(code: code, underlying: writeback.description)
+                }
+                return writeback
+            }
+            if let planner = domainError as? WritebackPlannerError {
+                return GatherError(
+                    code: .WRITEBACK_GROUP_NOT_IN_SESSION,
+                    underlying: planner.description
+                )
+            }
+            return nil
         }
-        if let planner = error as? WritebackPlannerError {
-            return GatherError(code: .WRITEBACK_GROUP_NOT_IN_SESSION, underlying: planner.description)
-        }
-        return error
     }
 }

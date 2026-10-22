@@ -859,6 +859,19 @@
 "XMP 写入后校验未通过，内容可能未完整落盘。请检查磁盘空间与文件权限后重试；若反复失败，请先备份该 .xmp 文件再排查磁盘错误。" = "Post-write verification of the XMP failed; the contents may not have been fully written to disk. Check disk space and file permissions and try again; if it keeps failing, back up the .xmp file first and check for disk errors.";
 "创建 XMP 备份失败，已停止写入以保护原文件。请检查备份目录的磁盘空间与写入权限，然后重试。" = "Failed to create the XMP backup; the write stopped to protect the original file. Check the free disk space and write permission of the backup directory, then try again.";
 "从备份恢复 XMP 失败，原文件未被改动。请确认备份文件存在且可写、磁盘空间充足，然后重试恢复。" = "Failed to restore the XMP from the backup; the original file was left unchanged. Make sure the backup file exists and is writable and that there is enough disk space, then retry the restore.";
+"备份路径包含上级目录（..），Gather 已拒绝操作。请把备份移回照片所在目录并恢复受控命名后再试。" = "The backup path contains a parent-directory component (..), so Gather refused to touch it. Move the backup back into the photo's folder with its controlled name, then retry.";
+"备份文件不在照片的 XMP 所在目录，Gather 已拒绝操作。请把备份移回该目录后再试。" = "The backup is not in the same folder as the photo's XMP, so Gather refused to touch it. Move it back into that folder and retry.";
+"备份文件名不符合 Gather 的受控命名（应为照片的 XMP 文件名加 .gather-backup- 前缀）。请把备份改回该命名后再试。" = "The backup name does not match Gather's controlled name (the photo's XMP file name plus a .gather-backup- prefix). Rename it to that form and retry.";
+"备份是符号链接，Gather 不会跟随链接操作。请把链接替换为真实的备份文件后再试。" = "The backup is a symbolic link; Gather does not follow links. Replace it with the real backup file and retry.";
+"备份不是常规文件（可能是目录或设备），Gather 已拒绝操作。请恢复为普通备份文件后再试。" = "The backup is not a regular file (it may be a folder or device), so Gather refused to touch it. Restore a normal backup file and retry.";
+"备份路径未通过安全校验，Gather 不会操作任何文件。请检查照片旁的 .xmp 与 .gather-backup-* 文件后再试。" = "The backup path failed the safety check, so Gather will not touch any file. Check the .xmp and .gather-backup-* files next to the photo, then retry.";
+"清理已停止：该交付的备份路径未通过安全校验，Gather 没有恢复或删除任何文件。仅重试不会自愈；请先把备份修复为受控命名并放回照片目录，再重试清理。若无法修复，请保留现场并联系支持。" = "Cleanup stopped: this delivery's backup path failed the safety check, so Gather did not restore or delete any file. Retrying alone will not fix it. Repair the backup to its controlled name in the photo folder, then retry cleanup. If you cannot repair it, keep the files and contact support.";
+"结束同步已停止：该交付的备份路径未通过安全校验，Gather 保留了交付记录与备份文件。仅重试不会自愈；请先把备份修复为受控命名并放回照片目录，再重试结束同步。若无法修复，请保留现场并联系支持。" = "Finishing sync stopped: this delivery's backup path failed the safety check, so Gather kept the delivery record and the backup file. Retrying alone will not fix it. Repair the backup to its controlled name in the photo folder, then retry. If you cannot repair it, keep the files and contact support.";
+"结束同步已停止：该交付仍有未完成的 XMP 项目。请先在对应模块完成写回或处理冲突，再重试结束同步；重试不会跳过这些项目。" = "Finishing sync stopped: this delivery still has unfinished XMP items. Finish the writeback or resolve conflicts in the owning module first, then retry. Retrying will not skip these items.";
+"另一路清理回放正在处理同一项目，本次已跳过且未产生失败。无需操作；稍后刷新状态，若项目仍停留再重试清理。" = "Another cleanup replay is already handling this item, so this pass skipped it without a failure. Nothing to do; refresh the status later and retry cleanup only if the item is still stuck.";
+"先处理未完成项" = "Resolve pending items first";
+"稍后刷新" = "Refresh later";
+"检查并修复备份" = "Check and repair the backup";
 "请先完成其他模块的 Capture One 同步和清理，再开始新的写回" = "Finish the Capture One sync and cleanup in the other module before starting a new writeback";
 "撤销人脸关键词失败" = "Failed to undo the face keywords";
 "仍有 XMP 写入失败项，请先重试或处理失败项" = "Some XMP writes have failed; retry or handle the failed items first";
@@ -1396,3 +1409,6 @@
 "Embedded" = "Embedded";
 "显示侧栏" = "Show Sidebar";
 "隐藏侧栏" = "Hide Sidebar";
+
+/* P2：Delivery 备份/收尾/replay 错误码与动作标题 */
+"交付记录缺少 XMP 路径，无法校验备份位置。请重新索引该照片后重试清理；若仍失败，请保留现场并联系支持。" = "The delivery has no XMP path, so its backup location cannot be validated. Re-index the photo and retry cleanup; if it still fails, keep the files and contact support.";

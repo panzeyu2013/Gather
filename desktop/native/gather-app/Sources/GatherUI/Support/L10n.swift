@@ -3,6 +3,8 @@
 //
 // 与 GatherLocalization 的关系：
 // - 错误码表仍是 GatherLocalization.errorMessages（179 码唯一来源，不复制）；
+// - Delivery P2 的 11 个码不在协议枚举内，单独在 DeliveryErrorPresentation；
+//   resolvedTemplate 同时查这两张表（查询顺序：errorMessages → delivery → 冒号尾参）；
 // - 双形态解析（CODE::p1::p2 / CODE: 散文）与"插值在本地化之后"的语义与
 //   旧 GatherLocalization 出口（B03 已删）逐条一致，但语言由本值的 language
 //   决定，不读进程级 appLanguage——切语言时已渲染的 View 直接换 L10n 即可；
@@ -333,10 +335,20 @@ public struct L10n: Equatable, Sendable {
             let inline = Array(parts.dropFirst())
             return Self.interpolate(self(template), params: inline + params)
         }
+        // Delivery P2 的 11 个码不在 GatherErrorCode（不能进 errorMessages），
+        // 由 DeliveryErrorPresentation 提供模板；解析顺序与 errorMessages 相同。
+        if let template = DeliveryErrorPresentation.template(for: parts[0]) {
+            let inline = Array(parts.dropFirst())
+            return Self.interpolate(self(template), params: inline + params)
+        }
         guard let colon = code.firstIndex(of: ":") else { return nil }
         let head = String(code[code.startIndex..<colon])
         let tail = String(code[code.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-        guard !tail.isEmpty, let template = GatherLocalization.errorMessages[head] else { return nil }
+        guard !tail.isEmpty else { return nil }
+        if let template = DeliveryErrorPresentation.template(for: head) {
+            return Self.interpolate(self(template), params: [tail] + params)
+        }
+        guard let template = GatherLocalization.errorMessages[head] else { return nil }
         return Self.interpolate(self(template), params: [tail] + params)
     }
 

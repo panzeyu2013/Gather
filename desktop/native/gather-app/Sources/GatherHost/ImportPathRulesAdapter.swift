@@ -2,8 +2,8 @@
 // Cut 3 / 3b-3（E-19 相邻）：gather-core 的导入路径纯函数 → GatherUI 端口。
 //
 // 只做模块限定转发，不复制逻辑：
-//   · GatherDomain.normalizeImportFilepaths / commonParentDirectory
-//     （Sources/GatherDomain/Services/SessionService.swift）
+//   · GatherApplication.normalizeImportFilepaths / commonParentDirectory
+//     （Sources/GatherApplication/Services/SessionService.swift）
 //   · GatherPersistence.TSPath.basename（RepositorySupport.swift）
 import GatherApplication
 import GatherPersistence

@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherUI/Library/LibraryView.swift
-// Phase 3.2 Library（全局图库）：SwiftUI 页面（宿主内直连 GatherCore）。
+// Phase 3.2 Library（全局图库）：SwiftUI 页面（宿主内经 GatherProtocol 端口访问）。
 // TS 源: desktop/src/renderer/pages/Library/index.tsx（筛选面板/工具栏/卡片网格/分页）
 //
 // 原生化改造（仅视图层）：

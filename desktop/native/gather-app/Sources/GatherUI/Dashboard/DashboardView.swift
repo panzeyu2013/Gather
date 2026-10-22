@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherUI/Dashboard/DashboardView.swift
-// Phase 3.1 Dashboard：SwiftUI 页面（宿主内直连 GatherCore）。
+// Phase 3.1 Dashboard：SwiftUI 页面（宿主内经 GatherProtocol 端口访问）。
 // TS 源: desktop/src/renderer/pages/Dashboard/index.tsx + pages/Jobs/index.tsx
 //
 // 原生化改造（仅视图层）：

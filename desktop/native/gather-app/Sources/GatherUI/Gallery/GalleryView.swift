@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherUI/Gallery/GalleryView.swift
-// Phase 3.2 Gallery（工作区浏览）：SwiftUI 页面（宿主内直连 GatherCore）。
+// Phase 3.2 Gallery（工作区浏览）：SwiftUI 页面（宿主内经 GatherProtocol 端口访问）。
 // TS 源: desktop/src/renderer/pages/SessionDetail/Gallery.tsx（工具栏/选择栏/
 //       justified 网格/哨兵分页/变体徽标）+ pages/SessionDetail/index.tsx（页签）
 //

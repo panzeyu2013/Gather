@@ -59,7 +59,7 @@ extension DashboardViewModel {
             // 「全量兜底」扫描会重新递归整个父目录树（历史 P0：选 3 张照片
             // 等于扫描整棵目录树，最坏上溯到主目录）。
             // E-19 相邻：路径规则经 ImportPathRules 端口（GatherHost 注册，
-            // 真相源在 GatherDomain/SessionService 与 GatherPersistence/TSPath）。
+            // 真相源在 GatherApplication/SessionService 与 GatherPersistence/TSPath）。
             let pathRules = try ImportPathRulesRegistry.current()
             let selectedPaths = pathRules.normalizedImportFilepaths(files)
             let parentDirectory = pathRules.importCommonParentDirectory(filepaths: selectedPaths)

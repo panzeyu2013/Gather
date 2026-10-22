@@ -153,10 +153,12 @@ private struct CoordinatorHarness {
     let intentRepo: DeliveryIntentRepo
     let summaryQuery: DeliverySummaryQuery
     let files: FakeDeliveryFilePort
+    let fileLock: XMPFileLock
     let coordinator: DeliveryCoordinator
 
     init(
-        fingerprint: @escaping DeliveryFingerprintProvider = { _ in "fp-current" }
+        fingerprint: @escaping DeliveryFingerprintProvider = { _ in "fp-current" },
+        fileLock: XMPFileLock = .shared
     ) throws {
         let db = try makeCoordinatorV1DB()
         try coordinatorInsertSession(db, "s1")
@@ -169,11 +171,13 @@ private struct CoordinatorHarness {
         self.intentRepo = intentRepo
         self.summaryQuery = DeliverySummaryQuery(connection: db)
         self.files = files
+        self.fileLock = fileLock
         self.coordinator = DeliveryCoordinator(
             connection: db,
             deliveryRepo: deliveryRepo,
             intentRepo: intentRepo,
             files: files,
+            fileLock: fileLock,
             fingerprint: fingerprint,
             resolvePhotoPath: { _, delivery in delivery.photoPath }
         )
@@ -239,6 +243,36 @@ private final class NewInputInjector: @unchecked Sendable {
             )
         }
         return "fp-current"
+    }
+}
+
+/// 并发 replay 的确定性闸门：第一路在文件阶段（已 claim）挂起，第二路走到 claim。
+private actor ReplayRaceGate {
+    private var entered = false
+    private var released = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    /// 回归路径（claim 退回 per-flow）会有两路同时进入闸门；必须全部释放，
+    /// 否则测试会挂在 first.value 上，而不是给出可读的断言失败。
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// 进入文件阶段后挂起；测试用它确认 claim 已被持有。
+    func enterAndWait() async {
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        if released { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func waitForEntry() async {
+        if entered { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+
+    func release() {
+        released = true
+        for waiter in releaseWaiters { waiter.resume() }
+        releaseWaiters.removeAll()
     }
 }
 
@@ -646,6 +680,59 @@ struct DeliveryCoordinatorTests {
         #expect(repeated.failedCount == 0)
         #expect(harness.files.restoreCallCount == 1)
         #expect(harness.files.contents(xmp) == "original")
+    }
+
+    /// P2-1 回归：同一 coordinator 的两路 replay 并发时，claim 必须让其中一路
+    /// 直接跳过；跳过的原因只能是 XMP_CLEANUP_REPLAY_CLAIMED，不得再出现
+    /// rowNotFound → XMP_CLEANUP_ADVANCE_FAILED 的假失败。
+    ///
+    /// 确定性来自两个闸门：
+    /// 1. 第一路在文件阶段（claim 之后）被 ReplayRaceGate 挂起；
+    /// 2. 测试等它进入后再启动第二路，确保第二路看到的是「已被 claim 的 intent」。
+    /// 若 claim 退回 per-flow，第二路会在 fileLock 上排队；释放第一路后它仍会
+    /// 执行，断言会明确失败（不会把测试永久挂死）。
+    @Test func concurrentReplaySameIntentClaimsOnceAndSkipsWithoutAdvanceFailure() async throws {
+        let gate = ReplayRaceGate()
+        let harness = try CoordinatorHarness(
+            fingerprint: { _ in
+                await gate.enterAndWait()
+                return "fp-current"
+            },
+            fileLock: XMPFileLock()
+        )
+        defer { harness.db.close() }
+        harness.files.setContents(backup, "original")
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+
+        let row = try #require(try harness.deliveryRepo.get(xmp))
+        let payload = DeliveryCleanupPayload(delivery: row, photoPath: photo)
+        let intentId = try harness.intentRepo.prepare(
+            kind: .cleanup, xmpPath: xmp, payload: payload.json)
+
+        let coordinator = harness.coordinator
+        let first = Task { try await coordinator.replay() }
+        await gate.waitForEntry()
+
+        let second = Task { try await coordinator.replay() }
+        // 正常路径：第二路在 150ms 内完成 claim 失败并返回。回归路径：它排在
+        // fileLock 上等待；这里先释放第一路，再统一断言，避免测试自身死锁。
+        try? await Task.sleep(for: .milliseconds(150))
+        await gate.release()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+        #expect(firstResult.appliedCount == 1)
+        #expect(firstResult.skippedCount == 0)
+        #expect(firstResult.failedCount == 0)
+        #expect(firstResult.errors.isEmpty)
+        #expect(secondResult.skippedCount == 1)
+        #expect(secondResult.failedCount == 0)
+        #expect(secondResult.errors == ["XMP_CLEANUP_REPLAY_CLAIMED: #\(intentId)"])
+        #expect(!secondResult.errors.contains { $0.contains("XMP_CLEANUP_ADVANCE_FAILED") })
+        #expect(harness.files.contents(xmp) == "original")
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(try harness.intentRepo.pending().isEmpty)
     }
 
     @Test func replayFileDoneOnlyAppliesDBWithoutReplayingFile() async throws {

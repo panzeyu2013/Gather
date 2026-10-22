@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Sources/GatherApplication/Services/ExportService.swift
 // Phase 3.6：原生导出管线。
 //
-// 该服务刻意保持在 GatherCore：预览、文件规划、断点续作、原图复制、
+// 该服务刻意保持在 GatherApplication：预览、文件规划、断点续作、原图复制、
 // ImageIO 转码与报告生成必须由同一条受控路径完成，不能让 WebView 直接
 // 访问任意文件系统路径。命令层只负责参数解码和 JobService 编排。
 
