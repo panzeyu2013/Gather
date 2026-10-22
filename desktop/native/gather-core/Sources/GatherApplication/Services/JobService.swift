@@ -466,6 +466,11 @@ public final class JobService: @unchecked Sendable {
     public func cancel(_ id: String) throws -> Bool {
         switch try repo.requestCancel(id) {
         case .cancelledQueued:
+            // WP7b：queued 取消不经过执行器，仍是终态（trace 可看到未启动就结束）。
+            Self.logJob(
+                id,
+                "event=terminal phase=terminal status=cancelled reason=queued-cancel",
+                level: .info)
             completeResult(id: id, error: JobCancelledError())
             emitTerminal(id: id)
             clearGraceTask(id: id)
@@ -704,6 +709,14 @@ public final class JobService: @unchecked Sendable {
                 continue
             }
 
+            // WP7b：claim 成功 = 本次执行真正开始；trace 可在执行器/心跳/终态间关联。
+            Self.logJob(
+                job.id,
+                "event=start phase=start type=\(job.type.rawValue) "
+                    + "scope=\(job.scopeType):\(job.scopeId) "
+                    + "weight=\(registration.weight) lease=\(leaseOwner)",
+                level: .info)
+
             let task = Task { [weak self] in
                 guard let self else { return }
                 await self.runClaimedJob(job: job, registration: registration, controller: controller)
@@ -833,6 +846,12 @@ public final class JobService: @unchecked Sendable {
             let message = String(describing: error)
             let code = Self.gatherErrorCode(from: message) ?? "worker_error"
             if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .failed, error: (code, message))) == true {
+                // WP7b：失败终态是排障入口——warn 带 phase + 错误码/原因。
+                Self.logJob(
+                    job.id,
+                    "event=terminal phase=terminal status=failed "
+                        + "type=\(job.type.rawValue) reason=\(code): \(message)",
+                    level: .warn)
                 completeResult(id: job.id, error: error)
                 emitTerminal(id: job.id)
             } else {
@@ -845,11 +864,21 @@ public final class JobService: @unchecked Sendable {
             // 应用停机导致的取消不是用户取消 → interrupted，供下次启动恢复。
             if stoppedNow,
                (try? repo.interrupt(id: job.id, leaseOwner: leaseOwner)) == true {
+                Self.logJob(
+                    job.id,
+                    "event=terminal phase=terminal status=interrupted "
+                        + "type=\(job.type.rawValue) reason=application-stopped",
+                    level: .info)
                 completeResult(id: job.id, error: JobServiceError.jobFailed(job.id, "Application stopped during execution"))
                 emitTerminal(id: job.id)
                 return
             }
             if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+                Self.logJob(
+                    job.id,
+                    "event=terminal phase=terminal status=cancelled "
+                        + "type=\(job.type.rawValue)",
+                    level: .info)
                 completeResult(id: job.id, error: JobCancelledError())
                 emitTerminal(id: job.id)
             } else {
@@ -859,6 +888,11 @@ public final class JobService: @unchecked Sendable {
         }
 
         if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded)) == true {
+            Self.logJob(
+                job.id,
+                "event=terminal phase=terminal status=succeeded "
+                    + "type=\(job.type.rawValue)",
+                level: .info)
             completeResult(id: job.id, value: value)
             emitTerminal(id: job.id)
         } else {
@@ -869,6 +903,11 @@ public final class JobService: @unchecked Sendable {
     /// 条件 UPDATE 未命中：行已不由本租约持有（对端已迁移/删除）。
     /// 只登记等待者结果（first-wins，不覆盖已有终态），不广播终态帧。
     private func finishMiss(id: String) {
+        Self.logJob(
+            id,
+            "event=terminal phase=terminal status=lease-lost "
+                + "reason=conditional-update-missed",
+            level: .warn)
         completeResult(id: id, error: JobServiceError.leaseLost(id))
     }
 
@@ -901,6 +940,10 @@ public final class JobService: @unchecked Sendable {
               row.status == .cancelling,
               row.leaseOwner == leaseOwner else { return }
         if (try? repo.finish(id: id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+            Self.logJob(
+                id,
+                "event=terminal phase=terminal status=cancelled reason=cancel-grace",
+                level: .info)
             completeResult(id: id, error: JobCancelledError())
             emitTerminal(id: id)
         }
@@ -918,11 +961,19 @@ public final class JobService: @unchecked Sendable {
                   activeAnalysisJobStatuses.contains(row.status) else { continue }
             if row.status == .cancelling {
                 if (try? repo.finish(id: id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+                    Self.logJob(
+                        id,
+                        "event=terminal phase=terminal status=cancelled reason=stop-timeout",
+                        level: .info)
                     completeResult(id: id, error: JobCancelledError())
                     emitTerminal(id: id)
                 }
             } else if row.status == .running {
                 if (try? repo.interrupt(id: id, leaseOwner: leaseOwner)) == true {
+                    Self.logJob(
+                        id,
+                        "event=terminal phase=terminal status=interrupted reason=stop-timeout",
+                        level: .info)
                     completeResult(id: id, error: JobServiceError.jobFailed(id, "Application stopped during execution"))
                     emitTerminal(id: id)
                 }
@@ -997,6 +1048,12 @@ public final class JobService: @unchecked Sendable {
             phase: latest.progressMessage.isEmpty ? nil : latest.progressMessage,
             message: message,
             checkpoint: latest.checkpoint))
+    }
+
+    /// WP7b：job 侧关联标识（日志专用，不参与业务判定）。约定 `job:<id>`。
+    /// GatherLogger.log 不抛错：日志失败不会改变返回值、错误或业务时序。
+    private static func logJob(_ jobId: String, _ fields: String, level: LogLevel) {
+        GatherLogger.log("trace=job:\(jobId) \(fields)", level: level)
     }
 
     private static func gatherErrorCode(from message: String) -> String? {

@@ -19,6 +19,30 @@ import Foundation
 import GatherPersistence
 import GatherProtocol
 
+/// WP7b：交付侧的关联标识（只在日志里使用，不参与任何业务判定）。
+///
+/// 约定：`delivery:<id>/rev:<revision>/<phase>`。
+/// - id / revision 来自交付行（cleanup/finalize）或 intent payload 的 prepare 快照（replay）；
+/// - phase ∈ confirm / file / db / intent；
+/// - confirm 是 (session, module) 级事务、没有单条交付 id：id 段用
+///   `session:<sessionId>`、revision 固定 0（唯一例外，见 WP7b 台账）。
+/// GatherLogger.log 不抛错（内部只做等级过滤 + sink 回调），因此日志不会改变
+/// 返回值、错误或业务时序；sink 自身抛错也不是本类型能观察到的语义。
+enum DeliveryTrace {
+    static func text(id: String, revision: Int64, phase: String) -> String {
+        "delivery:\(id)/rev:\(revision)/\(phase)"
+    }
+
+    static func text(deliveryId: Int64, revision: Int64, phase: String) -> String {
+        text(id: String(deliveryId), revision: revision, phase: phase)
+    }
+
+    /// 统一字段序：trace → event → op → phase → 具体键值（供 grep / 测试断言）。
+    static func log(_ trace: String, _ fields: String, level: LogLevel) {
+        GatherLogger.log("trace=\(trace) \(fields)", level: level)
+    }
+}
+
 public struct DeliveryCoordinator: Sendable {
     private let connection: DBConnection
     private let deliveryRepo: DeliveryRepo
@@ -234,15 +258,38 @@ public struct DeliveryCoordinator: Sendable {
         guard !sessionId.isEmpty else {
             throw DeliveryCoordinatorError.invalidArgument("sessionId 不能为空")
         }
-        let summary = try summaryQuery.summary(sessionId: sessionId, module: module)
-        guard summary.isConfirmable else {
-            throw DeliveryCoordinatorError.confirmIncomplete(blockers: summary.blockers)
+        let trace = DeliveryTrace.text(id: "session:\(sessionId)", revision: 0, phase: "confirm")
+        do {
+            let summary = try summaryQuery.summary(sessionId: sessionId, module: module)
+            guard summary.isConfirmable else {
+                throw DeliveryCoordinatorError.confirmIncomplete(blockers: summary.blockers)
+            }
+            try requireReloadAck(sessionId)
+            // DB 阶段边界：门禁全部通过之后才进入 confirm 的单事务。
+            DeliveryTrace.log(
+                trace,
+                "event=start op=confirm phase=confirm module=\(module.rawValue)",
+                level: .info)
+            let confirmed = try stateWriter.confirm(
+                scope: .module, sessionId: sessionId, module: module)
+            DeliveryTrace.log(
+                trace,
+                "event=done op=confirm phase=confirm module=\(module.rawValue) "
+                    + "links=\(confirmed.confirmedLinks) deliveries=\(confirmed.deliveriesSynced) "
+                    + "items=\(confirmed.itemsSynced) "
+                    + "unconfirmed=\(confirmed.unconfirmedSessionIds.count)",
+                level: .info)
+            emitStateChanged(sessionId)
+            return confirmed
+        } catch {
+            // 门禁拒绝（incomplete / reload 未确认）与事务失败都带 phase + reason。
+            DeliveryTrace.log(
+                trace,
+                "event=failed op=confirm phase=confirm module=\(module.rawValue) "
+                    + "reason=\(error)",
+                level: .warn)
+            throw error
         }
-        try requireReloadAck(sessionId)
-        let confirmed = try stateWriter.confirm(
-            scope: .module, sessionId: sessionId, module: module)
-        emitStateChanged(sessionId)
-        return confirmed
     }
 
     // MARK: - cleanup / finalize

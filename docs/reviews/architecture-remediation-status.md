@@ -1,7 +1,8 @@
-# 架构整改执行状态（WP0–WP6c，2026-10-22）
+# 架构整改执行状态（WP0–WP7b，2026-10-22）
 
 > 计划：docs/reviews/architecture-remediation-plan.md。本文件是执行状态索引；详细设计见 macro 报告与 wp6 设计。
 > 工作区：分支 refactor，HEAD f0eb94d 之后追加 WP2c/WP5/WP4c/WP6c；本地 commit，未 push。
+> WP7b（trace/阶段日志）为工作区改动，未 commit。
 
 ## 1. 已完成 WP
 
@@ -25,22 +26,31 @@
 | WP6b | Schema V2 no-op 迁移 + 备份/回滚；user_version=2 | 95f0075 |
 | WP6c | universal/arm64/x86_64、版本注入、签名/公证接口、release CI | f0eb94d |
 | WP7 | GatherTestSupport product；manifest 去 xcrun；CI schema verify；app 复用夹具 | d2527a8 |
+| WP7b | Job/Delivery trace id + 阶段日志（info/warn）；不改 Schema/API/状态机/时序 | 工作区未提交 |
 
 ## 2. 当前指标（HEAD 工作区实测）
 
-- core：1,095 tests / 164 suites，exit 0。
-- app：616 tests / 68 suites，串行 + 并行 3 次，exit 0。
+- core：1,100 tests / 165 suites，exit 0（HEAD 基线 1,095/164 + WP7b 5 用例）。
+- app：616 tests / 68 suites，exit 0（本次 HEAD 快照串行复跑；历史串行 + 并行 3 次同数；WP7b 未改 app 测试）。
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
 - 门禁：9 道 strict 全绿；ratchet 53/231/0/0/0；protocol surface 254/1,338/0/0；preview 14。
 - Application：DBConnection 0、connection.prepare 0；services_prepare ratchet 0。
-- Delivery：Coordinator 319 行；GatherDelivery 15 文件；状态写入 8；模块适配器 5 方法。
+- Delivery：Coordinator 366 行（WP7b 日志 +47）；CleanupFlow 674 / ReplayFlow 400（日志边界）；GatherDelivery 15 文件；状态写入 8；模块适配器 5 方法。
 - Protocol：254 个 public 类型 / 1,338 声明；零引用 0；Router 信封 0。
 - Host：RootShell 已在 UI；UI sync 端口 0；AppComposition 107 行。
 - Release：真实 universal build + build.sh 全流程通过；签名/公证未验证（无凭据）。
 
+### WP7b trace 口径（2026-10-22）
+
+- trace：`job:<id>`、`delivery:<id>/rev:<revision>/<phase>`（phase=confirm/file/db/intent）。
+- confirm 是 (session, module) 级事务、没有单条 delivery id：id 段用 `session:<sessionId>`、revision 固定 0（唯一例外）。
+- 日志点：JobService claim 成功的 start 与 settle/finishMiss/取消宽限/停机兜底的 terminal；DeliveryCoordinator confirm 的 DB 边界；cleanup/finalize/replay 的 file/db 边界；失败一律 warn 且带 phase + reason。
+- 测试：`Tests/GatherCoreTests/Logging/TraceLoggingTests.swift`（5 用例，`@Suite(.serialized)` + `GatherLogger.output` 捕获；按唯一 job id/xmp 过滤并行串扰）。
+- 约束：不改 Schema/公开 API/状态机/返回值与业务时序；`GatherLogger.log` 不抛错，日志失败不影响业务。
+
 ## 3. 剩余
 
-1. WP7b：Job/Delivery trace id、结构化阶段耗时；未做。
+1. WP7b：trace 与阶段日志已落地；结构化阶段耗时（duration）未做。
 2. WP4d：7 个 VM 生命周期语义统一（PageVisibility/LoadPhase 契约）仍为增量修复；Host Commands 仍 import SwiftUI。
 3. WP6c 发布验证：真实 Developer ID/notarytool/staple/spctl、CI release job 未实跑；x86_64 运行期未在 Rosetta 验证。
 4. 文档：final-report 的 Cut 6c 数字仍为历史快照，§1.2 已注记当前架构指标；其余历史报告保留快照口径。
@@ -48,5 +58,5 @@
 
 ## 4. 结论
 
-计划中的 WP0–WP6c 已完成，核心指标达到或超过目标：Application SQL 0（目标 ≤15）、Delivery Coordinator 319（目标 ≤600）、状态写入 8（目标 ≤8）、adapters 5（目标 ≤5）、Protocol 254（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2。
-剩余为可观测性、生命周期细节与真实发布凭据验证，不影响当前架构整改主体结论。
+计划中的 WP0–WP7b 已完成，核心指标达到或超过目标：Application SQL 0（目标 ≤15）、Delivery Coordinator 366（目标 ≤600）、状态写入 8（目标 ≤8）、adapters 5（目标 ≤5）、Protocol 254（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2；Job/Delivery 已具备可关联 trace 与阶段日志。
+剩余为阶段耗时、生命周期细节与真实发布凭据验证，不影响当前架构整改主体结论。
