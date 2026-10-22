@@ -517,8 +517,16 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
                 let pointer = multiArray.dataPointer.bindMemory(to: Double.self, capacity: count)
                 return UnsafeBufferPointer(start: pointer, count: count).map { Float($0) }
             case .float16:
+                #if arch(arm64)
+                // arm64 的零拷贝快路径。
                 let pointer = multiArray.dataPointer.bindMemory(to: Float16.self, capacity: count)
                 return UnsafeBufferPointer(start: pointer, count: count).map { Float($0) }
+                #else
+                // x86_64 macOS 没有 Float16（_Float16 被标记为 @available(macOS, unavailable)），
+                // 这里不取指针，落到下方的逐元素 Float(truncating:) 路径；读出的数值与
+                // arm64 快路径一致，只是多一次装箱。
+                break
+                #endif
             default:
                 break
             }

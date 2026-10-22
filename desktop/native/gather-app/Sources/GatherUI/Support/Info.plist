@@ -23,6 +23,10 @@
 	<string>Gather</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!-- WP6c 版本注入点：build.sh 组装时用 plutil -replace 写入这里的两项，
+	     取值来自 GATHER_VERSION（优先）或 git describe 的最近 tag；
+	     CFBundleVersion 另可用 GATHER_BUILD_NUMBER / git 提交数覆盖。
+	     两者都取不到时保留下面的 3.0.0（本地开发回退，不作为发布版本）。 -->
 	<key>CFBundleShortVersionString</key>
 	<string>3.0.0</string>
 	<key>CFBundleVersion</key>

@@ -296,6 +296,25 @@
 - **必要偏离（记账）**：`Tests/GatherCoreTests/Support/ServiceConstructionTestSupport.swift`、`Tests/GatherAppTests/ServiceConstructionTestSupport.swift` 各 +25 行（任务允许“测试 support”）；未改 Package/UI/其他服务。
 - **残余**：4 处 SELECT * 仍保留（按要求保列序，未展开）；`DuplicateService` 的 4 个事务仍在 Application 编排层（只换成 TransactionRunner 端口，符合“事务经 TransactionRunner”）；并行 WP6b 的未提交 schema 改动未纳入本刀；不 commit；无 GUI 验收。
 
+## WP5a CullingService 角色拆分（2026-10-22，HEAD 95f0075；工作区未提交）
+
+- **范围**：`CullingService.swift` **2,496 → 138 行**（常量 + 13 个依赖存储属性 + 2 个 TTL 缓存字典 + 公开 init 门面）；新增 `Services/Culling/` 6 文件 **2,370 行**：`+Types 305`、`+Queries 604`、`+Paging 155`、`+Commands 704`、`+Delivery 382`、`+Caches 220`（合计 2,508 行）。单文件 ≤800、门面 ≤300；按 query/paging/command/delivery/cache/types 分文件。
+- **纯移动**：方法体/错误码/事务/SQL/返回类型逐字未改（全行多行集比对：除访问级别与 2 行 MARK 注释外零差异）。跨文件访问的 **4 个内部类型、20 个方法、21 个存储/静态属性** `private → internal`；存储属性留主类型体（extension 不能加存储属性）。`CullingServiceError` / `CullingWritebackPort` / `CullingPhotoRow` / `CullingHistorySink` / `CullingUpdateContext` / `LookupMode` / `CullingRichLookup` / `SessionLookupEntry` / `SessionUpdateEntry` 移入 `+Types`。公开 API 与 init 签名零变化；core/app 测试 **0 行修改**（兼容 init 与唯一构造点原样）。
+- **测试**：core **1,095/164** exit 0（4.085s；拆前基线 1,095/164 3.699s）；app 串行 **616/68** exit 0（16.372s；基线 16.626s）。Culling 用例未改全绿。
+- **门禁**：9/9 exit 0——layering 17 条（GatherApplication 32 文件 0 SwiftUI）；ratchet **53/231/0/0/0**（拆分零净增：Culling 的 8 处 `try?` 原样分布到 3 文件）；test-catalog 173 文件 / 3 skip；duplicate 617 文件；docs 20 路径 / 143 链接 / schema 2；no-legacy 7 enforced + 6 tracked（Services 32 文件）；select-star 4/1（baseline 6）；preview 14 块 / 5 文件 / 2,031 行；schema `tables=43 columns=373 indexes=69 fks=62 user_version=2 foreign_key_violations=0`。
+- **残余 / 偏差**：任务书称 2,800 行 / 77 方法，HEAD 实测 **2,496 行 / 76 个 func**（类内 69 + 端口 7；漂移 −304 行 / −1 方法），按实测记账；`private static let chunkSize`（原 :278 → 门面 :75）仍零引用（既有死常量，未删）；`docs/reviews/architecture-remediation-plan.md:92` 的 2,800/77 为评审快照未改；并行工作区（FaceKw 拆分、GatherHost/Composition）未纳入本刀；不 commit；无 GUI 验收。
+
+## WP5b FaceKwService 角色拆分（2026-10-22，HEAD 95f0075；工作区未提交）
+
+- **范围**：`Sources/GatherApplication/Services/FaceKwService.swift` 2,528 → **171 行**门面（类型壳/存储属性/init/锁临界区）；新增 `Services/Face/` 5 文件：+Types 364、+Analyze 704、+Clusters 711、+Review 353、+Writeback 274。单文件 ≤800、门面 ≤300；六文件合计 2,577 行（+49 为 5 个新文件的头/import/extension 包裹与分隔空行）。
+- **口径**：纯移动；A/B/C 阶段、事务边界、错误码、取消/进度、public API/init 均未改。`cancel` 归 +Analyze；`getClusters/faceCounts/bind/unbind/merge/removeMember` 归 +Review；B/C 聚类与绑定迁移归 +Clusters；preview/writeback/confirmSync/cleanup/交付镜像归 +Writeback；错误/DTO/Provider/参数校验归 +Types。
+- **访问级（27 处 `private` 移除，仅扩大同模块可见性）**：15 个存储属性 + controllers/controllersLock + maxPreviewMembers；3 个锁辅助；SourceStat/sourceStat；PreparedObservations/clusterStoredObservations；captureManualIdentityFeedback/floats。`FaceRunParams` 随 analyze 保留文件级 private。
+- **API**：15 个 public 方法（14 实例含 cancel + 1 public static buildFaceKeywordAdditions）、public init、FaceKwServiceError、写回 DTO/Provider、validateFaceClusteringParameters 全部保留；测试构造点未改。
+- **测试**：core **1095/164** exit 0（4.499s；拆分前 1095/164）；app 串行 **616/68** exit 0（17.195s；拆分前 616/68）。
+- **门禁**：9/9 exit 0——layering 17 条（GatherApplication 32 文件 / 0 SwiftUI）；ratchet **53/231/0/0/0**；test-catalog 173 文件 / 3 skip；duplicate 617 文件；docs 20 路径 / 143 链接 / schema 2；no-legacy 7 enforced + 6 tracked；select-star 4/1；preview 14 块 / 5 文件 / 2,031 行；schema `tables=43 columns=373 indexes=69 fks=62 user_version=2 foreign_key_violations=0`。
+- **纯移动校验**：以 HEAD 原文件为基线的行多重集比对，除文件头路径 / 新文件头 / import / extension 大括号 / 27 处访问级 / 3 处拆分后注释外无内容差异；方法体逐字保留。
+- **残余**：文件头保留 TS 移植差异说明（行 1 已更新为本路径）；`matchClustersAgainstLibrary` 的“生产调用点”注释已改指向 +Clusters.swift；无 GUI 验收；不 commit；并行工作区（WP5a Culling、GatherHost/Composition）未纳入本刀。
+
 ## 规则
 
 - 不做 git commit / checkout / restore；不删除未确认文件。

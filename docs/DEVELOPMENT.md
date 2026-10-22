@@ -80,10 +80,93 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-p
 ```
 
 产物为 `release/Gather.app`（`OUTPUT_DIR` 可覆盖）。脚本会构建 gather-core、
-GatherApp，并在存在 Capture One 插件源码时尝试构建插件。默认产物保持未签名；
-`CODESIGN_IDENTITY` 存在时才执行签名（`--options runtime` +
-`desktop/native/Gather.entitlements`），签名后会用 `codesign -d --entitlements :-`
-复核 entitlement 真的进入签名；签名、公证和安装包是独立的发布流程。
+GatherApp，并在存在 Capture One 插件源码时尝试构建插件。默认产物未签名、架构
+跟随 SwiftPM 主机默认；`CODESIGN_IDENTITY` 存在时才签名（`--options runtime
+--timestamp` + `desktop/native/Gather.entitlements`），签名后会用
+`codesign -d --entitlements :-` 复核 entitlement 真的进入签名。WP6c 起版本注入、
+universal 组装、公证与 staple 也由本脚本负责，契约见下节；`GATHER_RELEASE=1`
+是发布硬门（版本/签名/公证凭据任一缺失即 exit 1）。
+
+### 可复现发布（universal / 签名 / 公证 / 版本注入）
+
+同一组环境变量在本地与 CI release job 语义一致；本地不设 `GATHER_RELEASE` 时，
+缺签名/公证凭据只警告并跳过，仍产出可运行的未签名 `.app`。
+
+- **`GATHER_ARCHS`**：`universal` / `arm64` / `x86_64`；不设 = SwiftPM 主机
+  默认（保持旧行为）。`universal` 用 `swift build --arch arm64 --arch x86_64`
+  产出 fat Mach-O，组装后 `lipo -archs` 断言两个切片都在，缺一个即失败。
+- **`GATHER_VERSION`**：未设时回退到 `git describe --tags --abbrev=0`；两者都
+  没有（如无 tag 的开发树）时保留 `Info.plist` 的 `3.0.0`，不凭空造版本。
+  写入产物 `CFBundleShortVersionString`（去掉前导 `v`，并做格式校验）。
+- **`GATHER_BUILD_NUMBER`**：未设时用 `git rev-list --count HEAD`，再否则由版本号
+  派生数字串；写入 `CFBundleVersion`（公证要求可递增的数字串）。
+- **`CODESIGN_IDENTITY`**：Developer ID Application 身份。先签嵌套项（PlugIns /
+  Frameworks / 资源 bundle），再签主 bundle（`--entitlements`），签后执行
+  `codesign --verify --deep --strict` 与 entitlement 复核；`--timestamp` 是
+  notarytool 的硬要求（ad-hoc 身份 `-` 除外）。
+- **`GATHER_NOTARIZE=1`**：`ditto` 打包 `release/Gather.zip` →
+  `xcrun notarytool submit --wait` → `xcrun stapler staple/validate` →
+  `spctl -a -t exec`。凭据取 `GATHER_NOTARY_PROFILE`（keychain profile），或
+  `APPLE_ID` + `APPLE_TEAM_ID` + `APPLE_APP_PASSWORD`；两者都没有时本地明确
+  skip 并 exit 0，`GATHER_RELEASE=1` 时 exit 1。
+- **`GATHER_RELEASE=1`**：发布门。版本、签名身份、公证凭据任一缺失即失败；
+  CI release job 固定设 1，不允许产出未签名/未公证的“发布包”。
+
+本机完整发布（有 Developer ID 与公证凭据时）：
+
+```bash
+GATHER_ARCHS=universal \
+GATHER_VERSION=3.1.0 \
+CODESIGN_IDENTITY="Developer ID Application: <Name> (TEAMID)" \
+GATHER_NOTARIZE=1 GATHER_NOTARY_PROFILE=gather-notary \
+./desktop/native/build.sh
+```
+
+只验证 universal 与版本注入（不签名/不公证）：
+
+```bash
+GATHER_ARCHS=universal GATHER_VERSION=0.0.0-dev ./desktop/native/build.sh
+lipo -archs release/Gather.app/Contents/MacOS/Gather        # 期望 x86_64 arm64
+plutil -extract CFBundleShortVersionString raw -o - \
+  release/Gather.app/Contents/Info.plist                     # 期望 0.0.0-dev
+plutil -extract CFBundleVersion raw -o - \
+  release/Gather.app/Contents/Info.plist                     # 期望 git 提交数
+```
+
+发布前检查（缺一不发布）与产物校验：
+
+```bash
+codesign -dv --verbose=4 release/Gather.app 2>&1 | grep -E 'Timestamp|Runtime Version'
+codesign -d --entitlements :- release/Gather.app   # 含 com.apple.security.automation.apple-events
+xcrun stapler validate release/Gather.app
+spctl -a -t exec -vvv release/Gather.app
+( cd release && shasum -a 256 Gather.zip > Gather.zip.sha256 )
+```
+
+产物内的 `Contents/Resources/build-info.json` 记录 version / build / commit /
+archs / sdk_version（不含时间戳，同样的输入产出同样的内容），用于排障与
+“关于”面板对照；发布版本以 `Info.plist` 与 tag 为准。
+
+CI：`.github/workflows/ci.yml` 的 `release` job 只在 `v*` tag 或手动
+`workflow_dispatch`（必须填 `version` 输入）时运行，`needs: [gates, gather-app]`，
+先跑全部门禁与测试。它显式注入 `GATHER_SDK_VERSION`、`GATHER_VERSION`（tag 名或
+输入）、`GATHER_ARCHS=universal`、`GATHER_NOTARIZE=1`、`GATHER_RELEASE=1`，并
+从 secrets 读取 `CODESIGN_IDENTITY`、`MACOS_CERT_P12`、`MACOS_CERT_PASSWORD`、
+`KEYCHAIN_PASSWORD`，公证用 `GATHER_NOTARY_PROFILE` 或 `NOTARY_APPLE_ID` /
+`NOTARY_TEAM_ID` / `NOTARY_APP_PASSWORD`。secret 缺失时 job 直接失败，不会上传
+未签名包；成功时上传 `release/Gather.zip` 与 `.sha256`。
+
+没有签名/公证环境时，可把假的 `swift` / `lipo` / `codesign` / `xcrun` 放到
+`PATH` 前面做 dry-run：断言 `--arch` 组合、`lipo` 断言、codesign 参数顺序、
+版本注入结果与“缺凭据时 skip/失败”分支，不触碰真实证书。真实签名、公证与
+Gatekeeper 验收只能在有 Developer ID 的机器或 tag 触发的 release job 上完成。
+
+**universal 的 float16 读回**：`GatherAnalysis/Face/EmbeddingModel.swift` 的连续
+`.float16` 快路径包在 `#if arch(arm64)` 内（`Float16` 指针 + `Float($0)`）；
+x86_64 macOS 没有 `Float16`（`@available(macOS, unavailable)`），落到同一函数
+末尾的逐元素 `Float(truncating:)`，数值一致、只多一次装箱。因此
+`GATHER_ARCHS=universal` 在两个切片上都能编译；脚本仍以 `lipo -archs` 的实际
+切片为准，不静默降级。
 
 打包门在组装前/后断言以下资产与签名输入，失败即停止并打印缺失的精确路径：
 
