@@ -8,7 +8,7 @@
 
 目标是把两包单体原生应用重构为**类型化、可验证、单实现**的 7-target SwiftPM 工程：删除字符串命令与 Router、以 SchemaV1 取代迁移链、拆分模块、收敛 UI 状态与本地化、算法单趟化，最后冻结指标与门禁。
 
-结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。评审修复后：core **1,128/159**、app **616/68**、ratchet **53/240/127**，P0-1/P0-2 与 P1 产品路径闭环；残余见 §1.1。人工 GUI smoke 与本机完整 bundle 仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
+结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**，随后执行 **架构整改 WP0–WP6c**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。架构整改后：core **1,095/164**、app **616/68**、schema **user_version=2**、ratchet **53/231/0/0/0**、Application SQL **0**、Delivery Coordinator **319 行**、Protocol **254 类型**；当前状态与提交见 [architecture-remediation-status.md](reviews/architecture-remediation-status.md)。人工 GUI smoke 与真实签名/公证仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
 
 ### 1.1 评审修复轮（2026-10-22）
 
@@ -23,6 +23,20 @@
 - **清理**：ratchet baseline 更新 53/240/127；删除 Sources/.build 379MB；新增 docs/review-remediation-report.md。
 
 残余（不冒充完成）：GUI smoke、build.sh 本机完整执行（CI 承接）、10k 19.25s 性能、剩余 76 复数模板、进程外写盘不与 XMPFileLock 串行、markWritten 未校验 owner、git 未 commit/混合态、少量 P2/CL。
+
+### 1.2 架构整改 WP0–WP6c（2026-10-22）
+
+按 [architecture-remediation-plan.md](reviews/architecture-remediation-plan.md) 完成：
+
+- Protocol 347→251 类型、零引用 89→0、Router 信封 6→0，新增 protocol surface ratchet。
+- GatherDelivery target 提取；Coordinator 1,964→319，状态写入 33→8，模块适配器 15→0（5 方法），DB 删除 + intent.finish 单事务；旧 feature 转发端口删除。
+- GatherDomain→GatherApplication；8 组 Repository/Query Ports；Application DBConnection 16→0、connection.prepare 125→0（services_prepare ratchet 0）。
+- RootShell/RootView 882 行迁 UI；27 sync 核 + 18 UI sync 端口 + Bridge 删除；AppComposition 421→107，Composition 拆为 Core/FeatureAPIs/Runtime/Root。
+- CullingService 2,496→138 门面 + 6 文件；FaceKwService 2,528→171 门面 + 5 文件。
+- Schema V2 no-op 迁移 + VACUUM INTO 备份/回滚；universal/arm64/x86_64、版本注入、签名/公证接口与 release CI。
+- GatherTestSupport 变 product；manifest 去 xcrun；CI 加 schema verify。
+
+当前指标与剩余项以 [architecture-remediation-status.md](reviews/architecture-remediation-status.md) 为准；历史 Cut 表保留快照口径。
 
 ## 2. 六个 Cut 的完成表
 

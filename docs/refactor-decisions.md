@@ -1479,3 +1479,9 @@
 - **决定 3（必要偏离记账）**：门禁脚本/基线/文档硬引用旧目录 5+1+2 文件 / 20 处字符串：scripts/{check-layering,check-cleanup-ratchet,check-no-legacy,check-docs,check-protocol-surface}.sh、`docs/cleanup-baseline.json` services_prepare scope、`docs/ADR.md` 3 行、`docs/reviews/face-clustering-benchmark.md` 2 条链接。不改则 layering skip / ratchet services_prepare 127→0 / no-legacy 21→0（三处假绿）+ docs --strict 红。
 - **证据**：core **1,084/163** exit 0 ×3、app 串行 **616/68** ×3、并行 **616/68** ×3；9 门禁全绿（ratchet **53/230/120/0/0**、schema 43/1/0）；`check-protocol-surface --strict` 254/1,338/0/0 exit 0。
 - **残余**：48 处源码注释旧名/旧路径未改（21 个 Application 文件头 + Persistence 4 + Protocol 5 + app 18）；`docs/DEVELOPMENT.md:39/113` 与 `docs/README.md:28` 的 target 列表未更新（白名单外）；不 commit；无 GUI 验收。
+
+## D-171 架构整改执行状态（WP0–WP6c）
+
+- 已完成：WP1 Protocol 瘦身（347→251、零引用 0、信封 0）；WP2a/b/c Delivery（GatherDelivery、Coordinator 1964→319、状态写入 8、适配器 5、单事务 finish、旧端口删除）；WP3a/b1/b2/b3 Application（重命名、8 组 Repo Ports、DBConnection 0、prepare 0）；WP4a/b/c（RootShell 迁 UI、sync 0、provider 迁 Host、Composition 107）；WP5a/b（Culling 2496→138、Face 2528→171 门面）；WP6a/b/c（迁移框架、V2 no-op + 备份、universal/release 脚本）；WP7 测试/构建。
+- 指标：core 1095/164、app 616/68；schema 43/373/69/62/user_version=2；ratchet 53/231/0/0/0；protocol 254/1338/0/0。
+- 剩余：WP7b trace id；WP4d 生命周期语义统一/Host Commands；WP6c 真实签名/公证/CI release 验证；文档历史快照。Goal 保持 active（未完成全量 objective）。
