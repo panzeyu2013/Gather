@@ -51,6 +51,19 @@ public protocol FaceRepository {
     func removeMemberFromCluster(clusterId: Int64, memberId: Int64) throws -> Bool
     func invalidateDerivedResults(sessionId: String, photoIds: [String]) throws
     func getThumbnailPathsBySession(_ sessionId: String) throws -> [String]
+
+    // MARK: - WP3b-2（FaceKwService）：簇成员写路径
+    /// 无脸结果清理：清空会话成员行（保留簇行）。
+    func clearClusterMembers(sessionId: String) throws
+    /// 无脸结果清理：删除未绑定的簇行。
+    func deleteUnboundClusters(sessionId: String) throws
+    /// 增量聚类：向已有簇追加成员（调用方事务内）。
+    func appendClusterMembers(
+        sessionId: String,
+        groups: [(clusterId: Int64, members: [FaceClusterMemberInput])]
+    ) throws
+    /// 幽灵成员清理：按成员行 id 删除（调用方事务内）。
+    func deleteClusterMembers(ids: [Int64]) throws
 }
 
 public extension FaceRepository {

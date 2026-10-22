@@ -1038,6 +1038,59 @@ public final class FaceRepo {
         for path in paths { deleteThumbnailFile(path) }
     }
 
+    // MARK: - WP3b-2：FaceKwService 的内联 SQL 下沉
+
+    /// 无脸结果清理的成员段（clearOnEmpty）：清空会话成员行，簇行留给
+    /// deleteUnboundClusters 只删未绑定的（绑定必须保留）。调用方事务内。
+    public func clearClusterMembers(sessionId: String) throws {
+        _ = try connection.prepare("DELETE FROM face_cluster_members WHERE session_id = ?")
+            .run([.text(sessionId)])
+    }
+
+    /// 无脸结果清理的簇段：删除会话内没有 role_bindings 引用的簇（旧语义逐字保留）。
+    public func deleteUnboundClusters(sessionId: String) throws {
+        _ = try connection.prepare(
+            "DELETE FROM face_clusters WHERE session_id = ? AND id NOT IN (SELECT cluster_id FROM role_bindings)"
+        ).run([.text(sessionId)])
+    }
+
+    /// 增量聚类 C 段：向已有簇追加成员（语句只准备一次，调用方事务内）。
+    public func appendClusterMembers(
+        sessionId: String,
+        groups: [(clusterId: Int64, members: [FaceClusterMemberInput])]
+    ) throws {
+        guard groups.contains(where: { !$0.members.isEmpty }) else { return }
+        let insertMember = try connection.prepare("""
+            INSERT INTO face_cluster_members
+             (cluster_id, session_id, photo_id, bbox, confidence, observation_id)
+             VALUES (?, ?, ?, ?, ?, ?)
+            """)
+        for group in groups {
+            for member in group.members {
+                let bboxJSON = try JSONValue.stringify(
+                    JSONValue.array(member.bbox.map { JSONValue.real($0) }))
+                _ = try insertMember.run([
+                    .int(group.clusterId),
+                    .text(sessionId),
+                    .text(member.photoId),
+                    .text(bboxJSON),
+                    .real(member.confidence),
+                    optDB(member.observationId),
+                ])
+            }
+        }
+    }
+
+    /// 按成员行 id 删除（幽灵成员清理；400 分块防参数上限，调用方事务内）。
+    public func deleteClusterMembers(ids: [Int64]) throws {
+        for chunk in ids.chunked(by: 400) where !chunk.isEmpty {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            _ = try connection.prepare(
+                "DELETE FROM face_cluster_members WHERE id IN (\(placeholders))"
+            ).run(chunk.map { .int($0) })
+        }
+    }
+
     public func getBindingsBySession(_ sessionId: String) throws -> [FaceBindingDetail] {
         let bindings = try connection.prepare("""
             SELECT rb.cluster_id, rb.role_name, rb.keywords

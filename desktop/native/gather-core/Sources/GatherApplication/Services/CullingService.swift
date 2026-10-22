@@ -18,7 +18,7 @@
 //   文件写入仍由它执行（execute/retryFailed）；getItems 供交付镜像读取行状态。
 // - CullingDeliveryPort = DeliveryCoordinator 的 culling 面（S5c-2a 起）：
 //   confirm/cleanup/finalize、syncStatus 读模型、flush/retry 的 replay、
-//   writeback 结果镜像全部走它；宿主未注入时按 connection + 文件系统端口自建。
+//   writeback 结果镜像全部走它；WP3b-2 起交付适配器必须由组合根注入（本服务不持 connection）。
 // - MetadataMutationPort = TS MetadataMutationService（queuePhotoValues）。
 // - getNumber = TS SettingsService.getNumber（detect_input_size /
 //   face_preview_max_dimension 兜底，测试注入）。
@@ -287,7 +287,12 @@ public final class CullingService {
     private let cullingDecisionRepo: CullingDecisionRepo
     private let similarityResultRepo: SimilarityResultRepo
     private let metadataCacheRepo: MetadataCacheRepo
-    private let connection: DBConnection
+    /// WP3b-2：分页/计数/富查询 SQL 下沉到 Persistence（CullingPageQuery /
+    /// CullingReadQuery）；交付行读取与事务经端口。
+    private let pageQuery: any CullingPageReading
+    private let richQuery: any CullingRichReading
+    private let deliveryItems: any DeliveryRepository
+    private let transactions: any TransactionRunner
     private let metadataMutations: any MetadataMutationPort
     private let writeback: any CullingWritebackPort
     /// 交付模型的 culling 面（S5c-2a）：confirm/cleanup 的唯一出口。
@@ -300,32 +305,31 @@ public final class CullingService {
         cullingDecisionRepo: CullingDecisionRepo,
         similarityResultRepo: SimilarityResultRepo,
         metadataCacheRepo: MetadataCacheRepo,
-        connection: DBConnection,
+        pageQuery: any CullingPageReading,
+        richQuery: any CullingRichReading,
+        deliveryItems: any DeliveryRepository,
+        transactions: any TransactionRunner,
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
-        delivery: (any CullingDeliveryPort)? = nil
+        delivery: any CullingDeliveryPort
     ) {
         self.photoRepo = photoRepo
         self.cullingDecisionRepo = cullingDecisionRepo
         self.similarityResultRepo = similarityResultRepo
         self.metadataCacheRepo = metadataCacheRepo
-        self.connection = connection
+        self.pageQuery = pageQuery
+        self.richQuery = richQuery
+        self.deliveryItems = deliveryItems
+        self.transactions = transactions
         self.metadataMutations = metadataMutations
         self.writeback = writeback
         self.cullingHistoryRepo = cullingHistoryRepo
         self.getNumber = getNumber
-        // S5c-2a 过渡默认：宿主未注入时按同一 connection 自建 coordinator。
-        // 文件阶段用文件系统端口（restore = 备份覆盖写回侧车）；宿主接线在 S5c-2b
-        // 改为显式注入共享实例 + XMPDeliveryFilePort。
-        self.delivery = delivery ?? CoordinatorDeliveryAdapter(
-            engine: DeliveryCoordinator(
-                connection: connection,
-                files: FileSystemDeliveryFilePort()
-            ),
-            module: .culling
-        )
+        // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
+        // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
+        self.delivery = delivery
     }
 
     // MARK: - 同步态读模型（S5c-2b-3b-2a）
@@ -350,8 +354,7 @@ public final class CullingService {
         xmpPath: String,
         fallback: MetadataSyncStatus
     ) throws -> MetadataSyncStatus {
-        let repo = DeliveryRepo(connection: connection)
-        if let row = try repo.get(xmpPath), let status = row.typedStatus {
+        if let row = try deliveryItems.getItem(xmpPath: xmpPath), let status = row.typedStatus {
             return Self.syncStatus(from: status)
         }
         return fallback
@@ -525,7 +528,7 @@ public final class CullingService {
             metadataPatch["label"] = .string(colorLabel == .none ? "" : colorLabel.rawValue)
         }
 
-        try connection.transaction {
+        try transactions.transaction {
             let existingRows = Dictionary(
                 uniqueKeysWithValues: try cullingDecisionRepo
                     .getByPhotoIds(sessionId: sessionId, photoIds: affectedPhotos.map(\.id))
@@ -689,7 +692,7 @@ public final class CullingService {
                 .getByPhotoIds(sessionId: sessionId, photoIds: operationIds)
                 .map { ($0.photoId, $0) }
         )
-        try connection.transaction {
+        try transactions.transaction {
             for photoId in operationIds {
                 let current = currentRows[photoId]
                 results.append(try updateState(
@@ -850,7 +853,7 @@ public final class CullingService {
         // 每会话批量读一次而非每条目两次（1 万次 undo 就是 2 万次单行查询）：
         // 同步态只读交付行；无交付（手动队列尚未落交付）时按 .clean 呈现，
         // 2b-2 手动队列迁入交付后该默认值即唯一语义。
-        let deliveryByPath = try DeliveryRepo(connection: connection).getMany(
+        let deliveryByPath = try deliveryItems.getMany(
             xmpPaths: photoById.values.map { DeliveryPath.sidecar($0.filepath) }
         )
         func deliveryStatus(_ xmpPath: String) -> MetadataSyncStatus {
@@ -863,7 +866,7 @@ public final class CullingService {
         var results: [CullingUpdateResult] = []
         var historyEntries: [CullingHistoryEntry] = []
         var xmpPatches: [String: (photoId: String, values: [String: JSONValue])] = [:]
-        try connection.transaction {
+        try transactions.transaction {
             for entry in applicableEntries {
                 // applicableEntries 已保证照片存在；仍显式处理（外部数据不强解包）。
                 guard let photo = photoById[entry.photoId] else { continue }
@@ -1171,7 +1174,7 @@ public final class CullingService {
     /// 仍报 rated/labeled）。单事务；只改 Gather 数据库，不写 XMP、不删文件：
     /// 磁盘上的外部值不变，后续导入扫描按 XMP 重建投影属预期。
     public func reset(sessionId: String, groupId: String? = nil) throws {
-        try connection.transaction {
+        try transactions.transaction {
             let photoIds: [String]
             if let groupId {
                 photoIds = try cullingDecisionRepo.deleteBySessionAndGroup(
@@ -1192,14 +1195,7 @@ public final class CullingService {
     /// 撤回挑片对唯一真相源（photo_metadata_cache 的 rating/label）的投影。
     /// 只清这两个字段，不触碰 cached_at（缓存新鲜度标记留给导入扫描判断）。
     private func clearCullingProjection(photoIds: [String]) throws {
-        for chunk in photoIds.chunked(by: 800) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            _ = try connection.prepare("""
-                UPDATE photo_metadata_cache
-                SET rating = 0, label = 'None'
-                WHERE photo_id IN (\(placeholders))
-              """).run(chunk.map { .text($0) })
-        }
+        try richQuery.clearCullingProjection(photoIds: photoIds)
     }
 
     // MARK: - IPC 命令面（culling.ipc.ts 逐命令对齐）
@@ -1413,7 +1409,7 @@ public final class CullingService {
 
             // S5c-2b-3b-2a：基线/备份以执行器刚写进 deliveries 的行为准（execute
             // 已直接落 base_fingerprint/base_values/backup_path），不再从 outbox 抄。
-            let deliveryRow = try? DeliveryRepo(connection: connection).get(candidate.xmpPath)
+            let deliveryRow = try? deliveryItems.getItem(xmpPath: candidate.xmpPath)
             let baseValues = deliveryRow?.baseValues ?? .object([:])
             var attributes: [String: JSONValue] = [:]
             if let rating = candidate.attributes?.rating {
@@ -1581,217 +1577,67 @@ public final class CullingService {
         limit: Int
     ) throws -> (photos: [CullingPhotoRow], cursor: Int64?) {
         if scope == .filtered {
-            let whereClause = buildFilteredWhere(sessionId: sessionId, filters: filters)
-            let groups = try connection.prepare("""
-                SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
-                FROM photos p
-                LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
-                LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
-                WHERE \(whereClause.sql)
-                GROUP BY COALESCE(NULLIF(p.asset_id, ''), p.id)
-                HAVING MIN(p.rowid) > ?
-                ORDER BY first_rowid
-                LIMIT ?
-              """).query(whereClause.params + [.int(afterRowId ?? 0), .int(Int64(limit))])
-            let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
-            return (
-                photos: try loadAssetRows(sessionId: sessionId, groups: gids),
-                cursor: gids.last?.firstRowid
+            let page = try pageQuery.pageFiltered(
+                sessionId: sessionId,
+                filter: Self.pageFilter(filters),
+                afterRowId: afterRowId,
+                limit: limit
             )
+            return (photos: page.rows.map { CullingPhotoRow(row: $0) }, cursor: page.cursor)
         }
-        if scope == .similarityGroup {
-            let similarity = buildSimilarityClause(sessionId: sessionId, requestedGroupId: requestedGroupId)
-            if let similarity {
-                let groups = try connection.prepare("""
-                    SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
-                    FROM photos p
-                    WHERE p.session_id = ? AND \(similarity.sql) AND \(preferredRowPredicate())
-                    GROUP BY COALESCE(NULLIF(p.asset_id, ''), p.id)
-                    HAVING MIN(p.rowid) > ?
-                    ORDER BY first_rowid
-                    LIMIT ?
-                  """).query(
-                    [.text(sessionId)] + similarity.params
-                        + [.int(afterRowId ?? 0), .int(Int64(limit))]
-                )
-                let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
-                return (
-                    photos: try loadAssetRows(sessionId: sessionId, groups: gids),
-                    cursor: gids.last?.firstRowid
-                )
-            }
+        if scope == .similarityGroup, let similarity = Self.similarityScope(requestedGroupId) {
+            let page = try pageQuery.pageSimilarity(
+                sessionId: sessionId,
+                similarity: similarity,
+                afterRowId: afterRowId,
+                limit: limit
+            )
+            return (photos: page.rows.map { CullingPhotoRow(row: $0) }, cursor: page.cursor)
         }
         let page = try photoRepo.getAssetPage(sessionId: sessionId, afterFirstRowid: afterRowId, limit: limit)
         return (photos: page.rows.map { CullingPhotoRow(row: $0) }, cursor: page.cursor)
     }
 
-    /// TS: loadAssetRows —— 取给定资产组的全部行（分块，SQLite 参数上限内）。
-    /// 这里按 rowid（导入序）返回组内全部行，与 getAssetPage 一致：变体顺序在三个
-    /// scope 下必须同一种（UI 切换器顺序不该随筛选变化），代表行由 assembleAssets
-    /// 用共享 RAW 表选出并标 primary——代表行的 SQL 规则见 preferredRowPredicate。
-    private func loadAssetRows(
-        sessionId: String,
-        groups: [(gid: String, firstRowid: Int64)]
-    ) throws -> [CullingPhotoRow] {
-        if groups.isEmpty { return [] }
-        var rows: [CullingPhotoRow] = []
-        for chunkStart in stride(from: 0, to: groups.count, by: Self.chunkSize) {
-            let chunk = groups[chunkStart..<min(chunkStart + Self.chunkSize, groups.count)].map(\.gid)
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let chunkRows = try connection.prepare("""
-                SELECT \(PhotoRepo.photoPageColumns)
-                FROM photos p
-                WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders))
-                ORDER BY p.rowid
-              """).query([.text(sessionId)] + chunk.map { .text($0) })
-            rows.append(contentsOf: try chunkRows.map { try CullingPhotoRow(row: PhotoPageRow(row: $0)) })
-        }
-        return rows
-    }
-
-    /// TS: preferredRowPredicate —— 每个资产组限定到首选行的 SQL 谓词。代表行
-    /// 规则不再本地重写：唯一真相源是 PhotoRepo.preferredRowOrderSQL（RAW 变体
-    /// 优先，其次最小 rowid），与图库/导出的代表行规则同源；各写一份会让同一资产
-    /// 在不同页面显示成不同变体。谓词对未分组照片是 no-op
-    ///（gid = id ⇒ 子查询返回自身）。
-    private func preferredRowPredicate() -> String {
-        "p.id = (" +
-            "SELECT p2.id FROM photos p2" +
-            " WHERE p2.session_id = p.session_id" +
-            " AND COALESCE(NULLIF(p2.asset_id, ''), p2.id) = COALESCE(NULLIF(p.asset_id, ''), p.id)" +
-            " ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p2"))" +
-            " LIMIT 1" +
-        ")"
-    }
-
-    /// TS: buildFilteredWhere —— matchesFilters 的精确下推。谓词作用于构建资产组的
-    /// 首选行，页面游标留在组查询的 HAVING 里；total 用同一 WHERE（countForScope），
-    /// 因此 filtered 范围的 total 与页内容永远同一口径。
-    ///
-    /// metadataConflictOnly 同样下推（旧实现只在 JS 层过滤 → total 虚高、可空页）：
-    /// 判定规则与 matchesFilters 一致，都是「首选变体的 photo_path 有 status='conflict'
-    /// 的 outbox 行」。
-    private func buildFilteredWhere(
-        sessionId: String,
-        filters: CullingFilters?
-    ) -> (sql: String, params: [DBValue?]) {
-        var clauses: [String] = ["p.session_id = ?"]
-        var params: [DBValue?] = [.text(sessionId)]
-        if let filters {
-            if filters.unreviewedOnly == true {
-                clauses.append("COALESCE(d.decision, 'pending') = 'pending'")
-            }
-            if let pickStates = filters.pickStates, !pickStates.isEmpty {
-                let decisions = pickStates.map { state -> String in
-                    switch state {
-                    case .picked: "keep"
-                    case .rejected: "reject"
-                    case .unreviewed: "pending"
-                    }
-                }
-                let placeholders = decisions.map { _ in "?" }.joined(separator: ",")
-                clauses.append("COALESCE(d.decision, 'pending') IN (\(placeholders))")
-                params.append(contentsOf: decisions.map { .text($0) })
-            }
-            // 星级/色标只读唯一真相源 c（photo_metadata_cache）；d.rating /
-            // d.color_label 是镜像列，读它们会恢复双真相源。
-            if let ratings = filters.ratings, !ratings.isEmpty {
-                let placeholders = ratings.map { _ in "?" }.joined(separator: ",")
-                clauses.append("COALESCE(c.rating, 0) IN (\(placeholders))")
-                params.append(contentsOf: ratings.map { DBValue.real($0) })
-            }
-            if let colorLabels = filters.colorLabels, !colorLabels.isEmpty {
-                let placeholders = colorLabels.map { _ in "?" }.joined(separator: ",")
-                clauses.append("""
-                    COALESCE(NULLIF(c.label, ''), 'None') IN (\(placeholders))
-                    """)
-                params.append(contentsOf: colorLabels.map { .text($0.rawValue) })
-            }
-            if filters.metadataConflictOnly == true {
-                clauses.append("""
-                    EXISTS (
-                      SELECT 1 FROM deliveries d
-                      JOIN delivery_sessions ds ON ds.delivery_id = d.id
-                      WHERE ds.session_id = ? AND d.status = 'conflict'
-                        AND d.photo_path = p.filepath
-                    )
-                    """)
-                params.append(.text(sessionId))
-            }
-            if filters.qualityStatus == .analysed || filters.qualityStatus == .failed {
-                // json_valid() 防护历史行 result_json 非法的情形：
-                // json_extract() 否则会抛 malformed-JSON 错误使整页查询失败。
-                clauses.append("""
-                    json_extract(COALESCE((
-                      SELECT a3.result_json
-                      FROM asset_analysis a3
-                      WHERE a3.asset_file_id = p.asset_file_id
-                        AND a3.analysis_type = 'technical_quality'
-                        AND json_valid(a3.result_json)
-                      ORDER BY a3.updated_at DESC
-                      LIMIT 1
-                    ), '{}'), '$.status') = ?
-                    """)
-                params.append(.text(filters.qualityStatus == .analysed ? "succeeded" : "failed"))
-            }
-            if filters.qualityStatus == .unanalysed {
-                // 只有合法 JSON 的行算作已分析；result_json 损坏视为无质量结果，
-                // NOT EXISTS 守卫必须镜像该语义（见上方 analysed/failed 分支）。
-                clauses.append("""
-                    NOT EXISTS (
-                      SELECT 1 FROM asset_analysis a3
-                      WHERE a3.asset_file_id = p.asset_file_id
-                        AND a3.analysis_type = 'technical_quality'
-                        AND json_valid(a3.result_json)
-                    )
-                    """)
+    /// CullingFilters → 存储侧过滤投影。枚举 → DB 值的映射留在应用层；
+    /// SQL 谓词与子句顺序见 CullingPageQuery.filteredWhere（逐字搬移）。
+    static func pageFilter(_ filters: CullingFilters?) -> CullingPageFilter {
+        guard let filters else { return CullingPageFilter() }
+        let decisions = filters.pickStates?.map { state -> String in
+            switch state {
+            case .picked: "keep"
+            case .rejected: "reject"
+            case .unreviewed: "pending"
             }
         }
-        clauses.append(preferredRowPredicate())
-        return (clauses.joined(separator: " AND "), params)
-    }
-
-    /// TS: buildSimilarityClause —— 相似度组成员关系的 SQL 谓词。组 id 无法解析
-    /// 时返回 nil（页面改经 JS 相似度映射过滤，仍精确、可能不满页）。
-    private func buildSimilarityClause(
-        sessionId: String,
-        requestedGroupId: String?
-    ) -> (sql: String, params: [DBValue?])? {
-        if let requestedGroupId {
-            let separator = requestedGroupId.lastIndex(of: ":")
-            guard let separator else { return nil }
-            // TS: Number(slice) —— 非整数（含 NaN）→ 无法解析 → nil 子句。
-            guard let resultId = Int(requestedGroupId[requestedGroupId.startIndex..<separator]),
-                  let groupIndex = Int(requestedGroupId[requestedGroupId.index(after: separator)...]) else {
-                return nil
-            }
-            return (
-                sql: """
-                EXISTS (
-                  SELECT 1 FROM similarity_result_members srm
-                  WHERE srm.result_id = ? AND srm.group_index = ? AND srm.session_id = ?
-                    AND srm.photo_id = p.id
-                )
-                """,
-                params: [.int(Int64(resultId)), .int(Int64(groupIndex)), .text(sessionId)]
-            )
+        let quality: CullingQualityFilter?
+        switch filters.qualityStatus {
+        case .analysed: quality = .analysed
+        case .failed: quality = .failed
+        case .unanalysed: quality = .unanalysed
+        case nil: quality = nil
         }
-        // 预计算阈值层共享同一张表（stats_json 的标记，见 similarity-result.repo）：
-        // 裸 MAX(id) 会选中最新层而非 getLatest 解析到的分析/重聚类行，故 JS 侧
-        // 相似度映射与 SQL 谓词必须一致。
-        return (
-            sql: """
-            EXISTS (
-              SELECT 1 FROM similarity_result_members srm
-              WHERE srm.session_id = ? AND srm.photo_id = p.id
-                AND srm.result_id = (
-                  SELECT MAX(id) FROM similarity_results
-                  WHERE session_id = ? AND stats_json NOT LIKE '%"precomputed":true%'
-                )
-            )
-            """,
-            params: [.text(sessionId), .text(sessionId)]
+        return CullingPageFilter(
+            decisions: decisions,
+            ratings: filters.ratings,
+            colorLabels: filters.colorLabels?.map(\.rawValue),
+            unreviewedOnly: filters.unreviewedOnly,
+            metadataConflictOnly: filters.metadataConflictOnly,
+            qualityStatus: quality
         )
+    }
+
+    /// TS: buildSimilarityClause 的解析段 —— 组 id 无法解析时返回 nil
+    ///（页面改经 JS 相似度映射过滤，仍精确、可能不满页）。
+    static func similarityScope(_ requestedGroupId: String?) -> CullingSimilarityScope? {
+        guard let requestedGroupId else { return .latest }
+        let separator = requestedGroupId.lastIndex(of: ":")
+        guard let separator else { return nil }
+        // TS: Number(slice) —— 非整数（含 NaN）→ 无法解析 → nil 子句。
+        guard let resultId = Int(requestedGroupId[requestedGroupId.startIndex..<separator]),
+              let groupIndex = Int(requestedGroupId[requestedGroupId.index(after: separator)...]) else {
+            return nil
+        }
+        return .group(resultId: Int64(resultId), groupIndex: Int64(groupIndex))
     }
 
     /// TS: countForScope —— scope/filters 的逻辑资产计数（total 匹配胶片条加载
@@ -1804,17 +1650,8 @@ public final class CullingService {
         similarityMap: [String: String]
     ) throws -> Int {
         if scope == .similarityGroup {
-            let similarity = buildSimilarityClause(sessionId: sessionId, requestedGroupId: requestedGroupId)
-            if let similarity {
-                let row = try connection.prepare("""
-                    SELECT COUNT(*) AS count
-                    FROM (SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
-                          FROM photos p
-                          WHERE p.session_id = ? AND \(similarity.sql)
-                            AND \(preferredRowPredicate())
-                          GROUP BY gid)
-                  """).get([.text(sessionId)] + similarity.params)
-                return Int(row?[0].intValue ?? 0)
+            if let similarity = Self.similarityScope(requestedGroupId) {
+                return try pageQuery.countSimilarity(sessionId: sessionId, similarity: similarity)
             }
             // 无法解析的组 id：无 SQL 谓词，按 JS 相似度映射计数（去重成员照片）。
             if let requestedGroupId {
@@ -1827,35 +1664,13 @@ public final class CullingService {
             return similarityMap.count
         }
         if scope == .filtered {
-            let whereClause = buildFilteredWhere(sessionId: sessionId, filters: filters)
-            let row = try connection.prepare("""
-                SELECT COUNT(*) AS count
-                FROM (SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
-                      FROM photos p
-                      LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
-                      LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
-                      WHERE \(whereClause.sql)
-                      GROUP BY gid)
-              """).get(whereClause.params)
-            return Int(row?[0].intValue ?? 0)
+            return try pageQuery.countFiltered(
+                sessionId: sessionId, filter: Self.pageFilter(filters))
         }
         return try photoRepo.countAssetsBySession(sessionId: sessionId)
     }
 
     // MARK: - 富查询（TS buildRichLookup 及支撑）
-
-    /// TS: withChunkedIds。
-    private func withChunkedIds<T>(
-        _ ids: [String],
-        query: ([String]) throws -> [T]
-    ) throws -> [T] {
-        var rows: [T] = []
-        for chunkStart in stride(from: 0, to: ids.count, by: Self.chunkSize) {
-            let chunk = Array(ids[chunkStart..<min(chunkStart + Self.chunkSize, ids.count)])
-            rows.append(contentsOf: try query(chunk))
-        }
-        return rows
-    }
 
     /// 交付项的 module → 旧 MetadataMutationSource 投影（每侧车取最近更新的 item）。
     ///
@@ -1865,28 +1680,11 @@ public final class CullingService {
     private func loadDeliveryMetadataSourceByPath(
         xmpPaths: [String]
     ) throws -> [String: MetadataMutationSource] {
-        struct SourceRow {
-            let xmpPath: String
-            let module: String
-        }
         let unique = Array(Set(xmpPaths))
         guard !unique.isEmpty else { return [:] }
-        let rows: [SourceRow] = try withChunkedIds(unique) { chunk in
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            return try connection.prepare("""
-                SELECT d.xmp_path, di.module
-                FROM delivery_items di
-                JOIN deliveries d ON d.id = di.delivery_id
-                WHERE d.xmp_path IN (\(placeholders))
-                ORDER BY di.updated_at DESC, di.id DESC
-              """).query(chunk.map { .text($0) }).compactMap { row in
-                guard let xmpPath = row[0].textValue, let module = row[1].textValue else {
-                    return nil
-                }
-                return SourceRow(xmpPath: xmpPath, module: module)
-            }
-        }
+        let rows = try richQuery.deliveryModuleRows(xmpPaths: unique)
         var result: [String: MetadataMutationSource] = [:]
+        // 每个侧车取最近更新的 item（SQL 已按 updated_at DESC, id DESC 排序）。
         for row in rows where result[row.xmpPath] == nil {
             result[row.xmpPath] = MetadataMutationSource(rawValue: row.module)
         }
@@ -1897,33 +1695,13 @@ public final class CullingService {
     private func loadQualityByPhoto(photos: [CullingPhotoRow]) throws -> [String: CullingQuality] {
         var qualityByPhoto: [String: CullingQuality] = [:]
         if photos.isEmpty { return qualityByPhoto }
-        struct QualityRow {
-            let requestedPhotoId: String
-            let resultJSON: String
-        }
-        let qualityRows: [QualityRow] = try withChunkedIds(photos.map(\.id)) { chunk in
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
-                SELECT p.id AS requested_photo_id, aa.result_json
-                FROM photos p
-                JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
-                WHERE aa.analysis_type = 'technical_quality'
-                  AND p.id IN (\(placeholders))
-                ORDER BY aa.updated_at DESC
-              """).query(chunk.map { .text($0) })
-            return rows.map {
-                QualityRow(
-                    requestedPhotoId: $0[0].textValue ?? "",
-                    resultJSON: $0[1].textValue ?? "{}"
-                )
-            }
-        }
+        let qualityRows = try richQuery.qualityRows(photoIds: photos.map(\.id))
         for row in qualityRows {
             // 忽略损坏的历史分析行（TS try/catch）。
             guard let parsed = try? JSONValue.parse(row.resultJSON),
                   case .object(let dict) = parsed,
-                  qualityByPhoto[row.requestedPhotoId] == nil else { continue }
-            qualityByPhoto[row.requestedPhotoId] = CullingQuality(
+                  qualityByPhoto[row.photoId] == nil else { continue }
+            qualityByPhoto[row.photoId] = CullingQuality(
                 status: CullingQualityStatus(rawValue: dict["status"]?.stringValue ?? "succeeded")
                     ?? .succeeded,
                 score: dict["qualityScore"]?.numberValue ?? 0,
@@ -1953,41 +1731,9 @@ public final class CullingService {
             let bbox: [Double]
             let analysisSignature: String
         }
-        let faceRows: [FaceRow]
-        if mode == .session {
-            let rows = try connection.prepare("""
-                SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
-                FROM face_observations
-                WHERE session_id = ?
-                ORDER BY id
-              """).query([.text(sessionId)])
-            faceRows = rows.map {
-                FaceRow(
-                    photoId: $0[0].textValue ?? "",
-                    bbox: [$0[1].doubleValue ?? 0, $0[2].doubleValue ?? 0,
-                           $0[3].doubleValue ?? 0, $0[4].doubleValue ?? 0],
-                    analysisSignature: $0[5].textValue ?? ""
-                )
-            }
-        } else {
-            faceRows = try withChunkedIds(photos.map(\.id)) { chunk in
-                let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-                let rows = try connection.prepare("""
-                    SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, analysis_signature
-                    FROM face_observations
-                    WHERE session_id = ? AND photo_id IN (\(placeholders))
-                    ORDER BY id
-                  """).query([.text(sessionId)] + chunk.map { .text($0) })
-                return rows.map {
-                    FaceRow(
-                        photoId: $0[0].textValue ?? "",
-                        bbox: [$0[1].doubleValue ?? 0, $0[2].doubleValue ?? 0,
-                               $0[3].doubleValue ?? 0, $0[4].doubleValue ?? 0],
-                        analysisSignature: $0[5].textValue ?? ""
-                    )
-                }
-            }
-        }
+        let faceRows: [CullingFaceObservationRow] = mode == .session
+            ? try richQuery.faceRows(sessionId: sessionId)
+            : try richQuery.faceRows(sessionId: sessionId, photoIds: photos.map(\.id))
         var facesByPhoto: [String: [[Double]]] = [:]
         var analysisMaxByPhoto: [String: Double] = [:]
         for face in faceRows {
@@ -2011,33 +1757,9 @@ public final class CullingService {
         sessionId: String,
         mode: LookupMode
     ) throws -> [String: [String]] {
-        struct PersonRow {
-            let photoId: String
-            let name: String
-        }
-        let personRows: [PersonRow]
-        if mode == .session {
-            let rows = try connection.prepare("""
-                SELECT pp.photo_id, p.name
-                FROM person_photos pp
-                JOIN persons p ON p.id = pp.person_id
-                WHERE pp.session_id = ?
-                ORDER BY p.name
-              """).query([.text(sessionId)])
-            personRows = rows.map { PersonRow(photoId: $0[0].textValue ?? "", name: $0[1].textValue ?? "") }
-        } else {
-            personRows = try withChunkedIds(photos.map(\.id)) { chunk in
-                let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-                let rows = try connection.prepare("""
-                    SELECT pp.photo_id, p.name
-                    FROM person_photos pp
-                    JOIN persons p ON p.id = pp.person_id
-                    WHERE pp.session_id = ? AND pp.photo_id IN (\(placeholders))
-                    ORDER BY p.name
-                  """).query([.text(sessionId)] + chunk.map { .text($0) })
-                return rows.map { PersonRow(photoId: $0[0].textValue ?? "", name: $0[1].textValue ?? "") }
-            }
-        }
+        let personRows: [CullingPersonNameRow] = mode == .session
+            ? try richQuery.personRows(sessionId: sessionId)
+            : try richQuery.personRows(sessionId: sessionId, photoIds: photos.map(\.id))
         var peopleByPhoto: [String: [String]] = [:]
         for person in personRows {
             var names = peopleByPhoto[person.photoId] ?? []
@@ -2068,7 +1790,7 @@ public final class CullingService {
         // 同步态读交付行（不再读旧 outbox）：一次 IN 查询覆盖本次页/会话的照片；
         // 交付项 module 投影成旧 MetadataMutationSource 供 UI 显示来源。
         let xmpPaths = photos.map { DeliveryPath.sidecar($0.filepath) }
-        let deliveryByPath = try DeliveryRepo(connection: connection).getMany(xmpPaths: xmpPaths)
+        let deliveryByPath = try deliveryItems.getMany(xmpPaths: xmpPaths)
         let metadataSourceByPath = try loadDeliveryMetadataSourceByPath(xmpPaths: xmpPaths)
         let similarityMap = try getLatestSimilarityMap(sessionId: sessionId)
         // 会话级分析表（质量/人脸/人物）只被后台分析重写，故会话模式复用
@@ -2284,13 +2006,7 @@ public final class CullingService {
         filters: CullingFilters?
     ) throws -> Set<String> {
         guard filters?.metadataConflictOnly == true else { return [] }
-        let rows = try connection.prepare("""
-            SELECT DISTINCT d.photo_path
-            FROM deliveries d
-            JOIN delivery_sessions ds ON ds.delivery_id = d.id
-            WHERE ds.session_id = ? AND d.status = 'conflict'
-          """).query([.text(sessionId)])
-        return Set(rows.compactMap { $0[0].textValue })
+        return try richQuery.conflictPhotoPaths(sessionId: sessionId)
     }
 
     // MARK: - 会话更新上下文缓存（TS getSessionUpdateContext /
@@ -2301,17 +2017,7 @@ public final class CullingService {
     /// 库侧存在性查询（分块 IN，避免 SQLite 变量上限）：历史重放的跳过规则与
     /// 直接调用的契约错误共用。
     private func existingSessionPhotoIds(sessionId: String, photoIds: [String]) throws -> Set<String> {
-        var found = Set<String>()
-        for chunk in photoIds.chunked(by: 800) where !chunk.isEmpty {
-            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
-            let rows = try connection.prepare(
-                "SELECT id FROM photos WHERE session_id = ? AND id IN (\(placeholders))"
-            ).query([.text(sessionId)] + chunk.map { .text($0) })
-            for row in rows {
-                if let id = row[0].textValue { found.insert(id) }
-            }
-        }
-        return found
+        try richQuery.existingPhotoIds(sessionId: sessionId, photoIds: photoIds)
     }
 
     private func getSessionUpdateContext(sessionId: String) -> SessionUpdateEntry {
@@ -2494,23 +2200,9 @@ public final class CullingService {
     ) throws -> [String: (rating: Int64, label: String?)] {
         var cacheByPhoto: [String: (rating: Int64, label: String?)] = [:]
         if photos.isEmpty { return cacheByPhoto }
-        struct CacheLiteRow {
-            let photoId: String
-            let rating: Int64
-            let label: String?
+        for row in try richQuery.summaryCacheRows(photoIds: photos.map(\.id)) {
+            cacheByPhoto[row.photoId] = (row.rating, row.label)
         }
-        let rows: [CacheLiteRow] = try withChunkedIds(photos.map(\.id)) { chunk in
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
-                SELECT photo_id, rating, label
-                FROM photo_metadata_cache
-                WHERE photo_id IN (\(placeholders))
-              """).query(chunk.map { .text($0) })
-            return rows.map {
-                CacheLiteRow(photoId: $0[0].textValue ?? "", rating: $0[1].intValue ?? 0, label: $0[2].textValue)
-            }
-        }
-        for row in rows { cacheByPhoto[row.photoId] = (row.rating, row.label) }
         return cacheByPhoto
     }
 

@@ -221,7 +221,11 @@ public struct AppComposition {
             sessionRepo: sessionRepo,
             similarityResultRepo: similarityResultRepo,
             clusterStateRepo: SimilarityClusterStateRepo(connection: db),
-            connection: db,
+            // WP3b-2：hash/run/交付项读取经 Persistence 端口，事务经 TransactionRunner。
+            hashes: SimilarityHashRepo(connection: db),
+            analysisRuns: AnalysisRunRepo(connection: db),
+            deliveryItems: deliveryRepo,
+            transactions: db,
             getNumber: { key, defaultValue in
                 settingsService.getNumber(key, defaultValue: defaultValue)
             },
@@ -247,7 +251,11 @@ public struct AppComposition {
             sessionRepo: sessionRepo,
             faceRepo: FaceRepo(connection: db),
             personRepo: personRepo,
-            connection: db,
+            // WP3b-2：身份反馈 / 簇成员写 / run 记录 / 交付项读取经 Persistence 端口。
+            feedback: FaceFeedbackRepo(connection: db),
+            analysisRuns: AnalysisRunRepo(connection: db),
+            deliveryItems: deliveryRepo,
+            transactions: db,
             getNumber: { key, defaultValue in
                 settingsService.getNumber(key, defaultValue: defaultValue)
             },
@@ -265,7 +273,11 @@ public struct AppComposition {
             cullingDecisionRepo: CullingDecisionRepo(connection: db),
             similarityResultRepo: similarityResultRepo,
             metadataCacheRepo: metadataCacheRepo,
-            connection: db,
+            // WP3b-2：分页/计数/富查询 SQL 在 Persistence，交付行与事务走端口。
+            pageQuery: CullingAssetPageQuery(connection: db),
+            richQuery: CullingReadQuery(connection: db),
+            deliveryItems: deliveryRepo,
+            transactions: db,
             metadataMutations: metadataMutationService,
             writeback: writebackService,
             cullingHistoryRepo: CullingHistoryRepo(connection: db),
@@ -322,7 +334,9 @@ public struct AppComposition {
             statProvider: QualityService.defaultStat
         )
         let indexerService = IndexerService(
-            connection: db,
+            // WP3b-2：扫描写路径/派生失效 SQL 在 IndexerRepo，事务经 TransactionRunner。
+            indexer: IndexerRepo(connection: db),
+            transactions: db,
             sessionRepo: sessionRepo,
             photoRepo: photoRepo,
             assetRepo: assetRepo,

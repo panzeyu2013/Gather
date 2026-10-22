@@ -149,7 +149,12 @@ public final class SimilarityService {
     private let sessionRepo: SessionRepo
     private let similarityResultRepo: SimilarityResultRepo
     private let clusterStateRepo: SimilarityClusterStateRepo
-    private let connection: DBConnection
+    /// WP3b-2：similarity_hashes 读写与 analysis_runs 生命周期下沉到 Persistence；
+    /// 事务经 TransactionRunner（嵌套退化为 SAVEPOINT，语义与旧 DBConnection 一致）。
+    private let hashes: any SimilarityHashRepository
+    private let analysisRuns: any AnalysisRunRepository
+    private let deliveryItems: any DeliveryRepository
+    private let transactions: any TransactionRunner
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
     private let thumbnailProvider: ThumbnailProvider
@@ -209,7 +214,10 @@ public final class SimilarityService {
         sessionRepo: SessionRepo,
         similarityResultRepo: SimilarityResultRepo,
         clusterStateRepo: SimilarityClusterStateRepo,
-        connection: DBConnection,
+        hashes: any SimilarityHashRepository,
+        analysisRuns: any AnalysisRunRepository,
+        deliveryItems: any DeliveryRepository,
+        transactions: any TransactionRunner,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
         clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
@@ -227,27 +235,24 @@ public final class SimilarityService {
                 minGroupSize: minGroupSize, mode: mode, onProgress: onProgress)
         },
         writebackProvider: (any SimilarityWritebackProvider)? = nil,
-        delivery: (any SimilarityDeliveryPort)? = nil
+        delivery: any SimilarityDeliveryPort
     ) {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
         self.similarityResultRepo = similarityResultRepo
         self.clusterStateRepo = clusterStateRepo
-        self.connection = connection
+        self.hashes = hashes
+        self.analysisRuns = analysisRuns
+        self.deliveryItems = deliveryItems
+        self.transactions = transactions
         self.getNumber = getNumber
         self.thumbnailProvider = thumbnailProvider
         self.clusterProvider = clusterProvider
         self.multiClusterProvider = multiClusterProvider
         self.writebackProvider = writebackProvider
-        // S5c-2b-2 过渡默认：宿主未注入时按同一 connection 自建 coordinator
-        //（与 CullingService/FaceKwService 同口径）。
-        self.delivery = delivery ?? CoordinatorDeliveryAdapter(
-            engine: DeliveryCoordinator(
-                connection: connection,
-                files: FileSystemDeliveryFilePort()
-            ),
-            module: .similarity
-        )
+        // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
+        // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
+        self.delivery = delivery
     }
 
     /// 全量分析：hash 复用 → 缺失 hash 解码计算 → 聚类 → 落结果 →
@@ -289,7 +294,7 @@ public final class SimilarityService {
 
             // 照片与 index_seq 快照共享一个读事务（design §8）：
             // 快照保证 run.index_seq 与本次分析的照片一致。
-            let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try connection.transaction {
+            let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try transactions.transaction {
                 (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
                  try sessionRepo.getIndexSeq(id: sessionId))
             }
@@ -304,16 +309,7 @@ public final class SimilarityService {
 
             if signal.aborted { return }
 
-            let existingHashes = try connection.prepare(
-                "SELECT photo_id, hash_hex, file_size, file_mtime_ms FROM similarity_hashes WHERE session_id = ?"
-            ).query([.text(sessionId)]).map { row in
-                SimilarityHashRow(
-                    photoId: row[0].textValue ?? "",
-                    hashHex: row[1].textValue ?? "",
-                    fileSize: Int(row[2].intValue ?? 0),
-                    fileMtimeMs: row[3].doubleValue ?? 0
-                )
-            }
+            let existingHashes = try hashes.getRecords(sessionId: sessionId)
 
             // 文件统计优先取自索引扫描（checksum_file_size / mtime），完整分析
             // 不再逐照片 stat（SSD 1-3s、网络卷数分钟）；只有未索引照片落盘。
@@ -335,7 +331,8 @@ public final class SimilarityService {
                 existingHashMap[row.photoId] = row.hashHex
             }
             _ = try Self.reuseSimilarityHashes(
-                connection: connection,
+                hashes: hashes,
+                transactions: transactions,
                 sessionId: sessionId,
                 photos: snapshot.photos,
                 sourceStats: sourceStats,
@@ -347,15 +344,6 @@ public final class SimilarityService {
                 if signal.aborted { return }
 
                 onProgress?(0, uncachedPhotos.count, "similarity.hash")
-                let insertStmt = try connection.prepare("""
-                    INSERT INTO similarity_hashes
-                      (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id, photo_id) DO UPDATE SET
-                      hash_hex = excluded.hash_hex,
-                      file_size = excluded.file_size,
-                      file_mtime_ms = excluded.file_mtime_ms
-                  """)
 
                 let decodeBatchSize = min(32, max(1, getNumber("similarity_decode_concurrency", 4).safeInt(fallback: 4)))
                 let previewMaxDimension = min(2048, max(64, getNumber("similarity_preview_max_dimension", 256).safeInt(fallback: 256)))
@@ -366,7 +354,7 @@ public final class SimilarityService {
                     let batch = Array(uncachedPhotos[offset..<min(offset + decodeBatchSize, uncachedPhotos.count)])
                     offset += decodeBatchSize
 
-                    var insertRows: [SimilarityHashInsert] = []
+                    var insertRows: [SimilarityHashWrite] = []
                     // 审计 P1-性能：批内并发解码（batch 大小即
                     // similarity_decode_concurrency 设置，4 默认）。此前
                     // for-await 顺序解码，10 万张有效并发 = 1。RAWDecoder
@@ -393,20 +381,16 @@ public final class SimilarityService {
                         guard let pixels = result.pixels, let stat = result.stat else { continue }
                         let hash = DHash.compute(pixels9x8: pixels)
                         existingHashMap[result.photoId] = hash
-                        insertRows.append(SimilarityHashInsert(
-                            sessionId: sessionId, photoId: result.photoId, hash: hash,
+                        insertRows.append(SimilarityHashWrite(
+                            sessionId: sessionId, photoId: result.photoId, hashHex: hash,
                             fileSize: stat.size, fileMtimeMs: stat.mtimeMs
                         ))
                     }
                     if signal.aborted { return }
                     if !insertRows.isEmpty {
-                        try connection.transaction {
-                            for row in insertRows {
-                                _ = try insertStmt.run([
-                                    .text(row.sessionId), .text(row.photoId), .text(row.hash),
-                                    .int(Int64(row.fileSize)), .real(row.fileMtimeMs),
-                                ])
-                            }
+                        // 每批一个事务（与旧实现同边界），语句由 Repo 准备一次。
+                        try transactions.transaction {
+                            try hashes.upsert(insertRows)
                         }
                     }
                     onProgress?(
@@ -487,64 +471,40 @@ public final class SimilarityService {
     /// TS: reuseSimilarityHashes —— 按 asset_file_id 分块批量读，消除逐照片 N+1；
     /// 目标照片与来源照片同资产文件且 size/mtime 一致时复用来源 hash。
     public static func reuseSimilarityHashes(
-        connection: DBConnection,
+        hashes: any SimilarityHashRepository,
+        transactions: any TransactionRunner,
         sessionId: String,
         photos: [PhotoProjectionRow],
         sourceStats: [String: (size: Int, mtimeMs: Double)],
         existingHashMap: inout [String: String]
     ) throws -> Int {
-        let photoRows = try connection.prepare(
-            "SELECT id, asset_file_id FROM photos WHERE session_id = ? AND asset_file_id IS NOT NULL"
-        ).query([.text(sessionId)])
         var assetFileByPhoto: [String: String] = [:]
         var assetFileIds: [String] = []
         var seenAssetFiles = Set<String>()
-        for row in photoRows {
-            guard let id = row[0].textValue, let assetFileId = row[1].textValue else { continue }
-            assetFileByPhoto[id] = assetFileId
-            if seenAssetFiles.insert(assetFileId).inserted { assetFileIds.append(assetFileId) }
+        for row in try hashes.getPhotoAssetFileIds(sessionId: sessionId) {
+            assetFileByPhoto[row.photoId] = row.assetFileId
+            if seenAssetFiles.insert(row.assetFileId).inserted { assetFileIds.append(row.assetFileId) }
         }
 
         // 每个资产文件分块一次批量读：与任何目标照片共享资产文件的全部相似 hash。
-        var rowsByAssetFile: [String: [HashCandidate]] = [:]
+        var rowsByAssetFile: [String: [SimilarityHashCandidate]] = [:]
         for chunkStart in stride(from: 0, to: assetFileIds.count, by: reuseHashChunkSize) {
             let chunk = Array(assetFileIds[chunkStart..<min(chunkStart + reuseHashChunkSize, assetFileIds.count)])
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let rows = try connection.prepare("""
-                SELECT h.id AS hash_id, h.photo_id, h.hash_hex, h.file_size, h.file_mtime_ms, p.asset_file_id
-                FROM similarity_hashes h
-                JOIN photos p ON h.photo_id = p.id
-                WHERE p.asset_file_id IN (\(placeholders))
-              """).query(chunk.map { .text($0) })
-            for row in rows {
-                guard let assetFileId = row[5].textValue else { continue }
-                rowsByAssetFile[assetFileId, default: []].append(HashCandidate(
-                    id: row[0].intValue ?? 0,
-                    photoId: row[1].textValue ?? "",
-                    hashHex: row[2].textValue ?? "",
-                    fileSize: Int(row[3].intValue ?? 0),
-                    fileMtimeMs: row[4].doubleValue ?? 0
-                ))
+            for candidate in try hashes.getReuseCandidates(assetFileIds: chunk) {
+                rowsByAssetFile[candidate.assetFileId, default: []].append(candidate)
             }
         }
 
-        let saveStmt = try connection.prepare("""
-            INSERT INTO similarity_hashes
-              (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, photo_id) DO UPDATE SET
-              hash_hex = excluded.hash_hex,
-              file_size = excluded.file_size,
-              file_mtime_ms = excluded.file_mtime_ms
-          """)
+        // 复用判定仍是应用规则；落库只交 Repo（一次 UPSERT，同一事务）。
         var reused = 0
-        try connection.transaction {
+        var writes: [SimilarityHashWrite] = []
+        try transactions.transaction {
             for photo in photos {
                 if existingHashMap[photo.id] != nil { continue }
                 guard let sourceStat = sourceStats[photo.id],
                       let assetFileId = assetFileByPhoto[photo.id],
                       let candidates = rowsByAssetFile[assetFileId] else { continue }
-                var source: HashCandidate?
+                var source: SimilarityHashCandidate?
                 for candidate in candidates {
                     if candidate.photoId == photo.id { continue }
                     if candidate.fileSize != sourceStat.size { continue }
@@ -552,13 +512,14 @@ public final class SimilarityService {
                     if source == nil || candidate.id > source!.id { source = candidate }
                 }
                 guard let source else { continue }
-                _ = try saveStmt.run([
-                    .text(sessionId), .text(photo.id), .text(source.hashHex),
-                    .int(Int64(sourceStat.size)), .real(sourceStat.mtimeMs),
-                ])
+                writes.append(SimilarityHashWrite(
+                    sessionId: sessionId, photoId: photo.id, hashHex: source.hashHex,
+                    fileSize: sourceStat.size, fileMtimeMs: sourceStat.mtimeMs
+                ))
                 existingHashMap[photo.id] = source.hashHex
                 reused += 1
             }
+            try hashes.upsert(writes)
         }
         return reused
     }
@@ -686,7 +647,7 @@ public final class SimilarityService {
         let failedIds: Set<Int64>
         do {
             // 交付项即唯一写回队列（S5c-2b-3b-2b-1）：失败集从 delivery_items 读。
-            failedIds = Set(try DeliveryRepo(connection: connection)
+            failedIds = Set(try deliveryItems
                 .listItems(sessionId: sessionId, module: .similarity, status: .failed)
                 .map(\.id))
         } catch {
@@ -802,7 +763,7 @@ public final class SimilarityService {
         result: WritebackResult
     ) -> [String] {
         guard !items.isEmpty else { return [] }
-        let deliveryRepo = DeliveryRepo(connection: connection)
+        let deliveryRepo = deliveryItems
         var persistedById: [Int64: DeliveryItemRow] = [:]
         let executedIds = Set(items.compactMap(\.id).map(Int64.init))
         if !executedIds.isEmpty {
@@ -868,7 +829,7 @@ public final class SimilarityService {
 
     /// retry 后的镜像：只读指定 id 的交付项（执行器已把它们改成 written/failed）。
     private func mirrorPersistedWriteback(sessionId: String, ids: Set<Int64>) -> [String] {
-        let repo = DeliveryRepo(connection: connection)
+        let repo = deliveryItems
         let rows: [DeliveryItemRow]
         do {
             rows = try repo
@@ -883,7 +844,7 @@ public final class SimilarityService {
         }
         let candidates = rows.compactMap { row -> MirrorCandidate? in
             guard row.status == "written" || row.status == "failed" else { return nil }
-            let photoPath = (try? repo.get(row.xmpPath))?.photoPath ?? ""
+            let photoPath = (try? repo.getItem(xmpPath: row.xmpPath))?.photoPath ?? ""
             return MirrorCandidate(
                 photoId: row.photoId,
                 photoPath: photoPath,
@@ -902,9 +863,9 @@ public final class SimilarityService {
     private func mirror(candidates: [MirrorCandidate], sessionId: String) -> [String] {
         guard !candidates.isEmpty else { return [] }
         let mirrorItems = candidates.map { candidate -> DeliveryWritebackMirrorItem in
-            let baseline = deliveryWritebackBaseline(
-                connection: connection, xmpPath: candidate.xmpPath
-            )
+            // WP3b-2：基线经 Persistence 端口回读（与 deliveryWritebackBaseline 同口径：
+            // 行缺失/读失败 → 空基线，不阻塞镜像）。
+            let baseline = deliveryItems.itemBaseline(xmpPath: candidate.xmpPath)
             return DeliveryWritebackMirrorItem(
                 photoId: candidate.photoId,
                 photoPath: candidate.photoPath,
@@ -984,14 +945,7 @@ public final class SimilarityService {
         if existing == nil { throw SimilarityServiceError.noResults }
 
         let photos = PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId))
-        let hashRows = try connection.prepare(
-            "SELECT photo_id, hash_hex FROM similarity_hashes WHERE session_id = ?"
-        ).query([.text(sessionId)])
-        var hashMap: [String: String] = [:]
-        for row in hashRows {
-            guard let photoId = row[0].textValue, let hash = row[1].textValue else { continue }
-            hashMap[photoId] = hash
-        }
+        let hashMap = try hashes.getHashMap(sessionId: sessionId)
 
         let entries: [HashEntry] = photos.compactMap { photo in
             guard let hash = hashMap[photo.id] else { return nil }
@@ -1205,7 +1159,7 @@ public final class SimilarityService {
         built: StoredResultPayload,
         stateUpdate: ClusterStateUpdate?
     ) throws -> Int64 {
-        try connection.transaction {
+        try transactions.transaction {
             let resultId = try similarityResultRepo.replace(
                 sessionId: sessionId,
                 groupsJson: built.groupsJson,
@@ -1297,25 +1251,20 @@ public final class SimilarityService {
         params: AnalysisRunParams
     ) throws -> Int64 {
         let data = try JSONEncoder().encode(params)
-        // V1：params 改名 params_json，且 created_at 是 NOT NULL —— 显式写入本次 run 的
-        // 创建时刻（与 started_at 同值：run 在开始时创建，两者语义一致）。
-        let now = nowISOString()
-        _ = try connection.prepare("""
-            INSERT INTO analysis_runs
-              (session_id, kind, photo_count, index_seq, started_at, finished_at, params_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?, '', ?, 'running', ?)
-          """).run([
-            .text(sessionId), .text(kind), .int(Int64(photoCount)), .int(Int64(indexSeq)),
-            .text(now), .text(String(data: data, encoding: .utf8) ?? "{}"), .text(now),
-        ])
-        return connection.lastInsertRowid
+        // 载荷编码留在应用层（params_json 的键序是契约）；落库交 AnalysisRunRepo。
+        return try analysisRuns.start(
+            sessionId: sessionId,
+            kind: kind,
+            photoCount: photoCount,
+            indexSeq: indexSeq,
+            paramsJson: String(data: data, encoding: .utf8) ?? "{}"
+        )
     }
 
     // 取消/失败的 run 在此以 'failed' 终态：run 记录按设计只区分 ok/failed；
     // 取消态由 analysis_jobs（type+status）表达，过期检测（1.4.2）一律忽略非 ok run。
     private func finalizeAnalysisRun(runId: Int64, status: String) throws {
-        _ = try connection.prepare("UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?")
-            .run([.text(status), .text(nowISOString()), .int(runId)])
+        try analysisRuns.finish(runId: runId, status: status)
     }
 
     /// TS: buildStoredResult。
@@ -1470,32 +1419,6 @@ private struct AnalysisRunParams: Codable {
     let threshold: Int
     let minGroupSize: Int
     let groupingMode: SimilarityGroupingMode
-}
-
-/// TS: similarity_hashes 行（reuse 候选）。
-private struct HashCandidate {
-    let id: Int64
-    let photoId: String
-    let hashHex: String
-    let fileSize: Int
-    let fileMtimeMs: Double
-}
-
-/// TS: similarity_hashes 行（analyze 解码写入）。
-private struct SimilarityHashRow {
-    let photoId: String
-    let hashHex: String
-    let fileSize: Int
-    let fileMtimeMs: Double
-}
-
-/// TS: analyze 解码写入行。
-private struct SimilarityHashInsert {
-    let sessionId: String
-    let photoId: String
-    let hash: String
-    let fileSize: Int
-    let fileMtimeMs: Double
 }
 
 /// TS: groups_json 载荷。

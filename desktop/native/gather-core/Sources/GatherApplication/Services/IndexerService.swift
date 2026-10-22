@@ -90,7 +90,9 @@ public final class IndexerService: @unchecked Sendable {
     /// 设置读取（TS: settings.get(key, defaultValue)）。
     public typealias SettingReader = (String, String) -> String
 
-    private let connection: DBConnection
+    /// WP3b-2：扫描写路径/派生失效 SQL 下沉到 IndexerRepo；事务经 TransactionRunner。
+    private let indexer: any IndexerRepository
+    private let transactions: any TransactionRunner
     private let sessionRepo: SessionRepo
     private let photoRepo: PhotoRepo
     private let assetRepo: AssetRepo
@@ -145,7 +147,8 @@ public final class IndexerService: @unchecked Sendable {
     public typealias MetadataWarmup = ([String]) async -> Void
 
     public init(
-        connection: DBConnection,
+        indexer: any IndexerRepository,
+        transactions: any TransactionRunner,
         sessionRepo: SessionRepo,
         photoRepo: PhotoRepo,
         assetRepo: AssetRepo,
@@ -154,7 +157,8 @@ public final class IndexerService: @unchecked Sendable {
         getSetting: @escaping SettingReader = { _, defaultValue in defaultValue },
         warmMetadata: @escaping MetadataWarmup = { _ in }
     ) {
-        self.connection = connection
+        self.indexer = indexer
+        self.transactions = transactions
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
         self.assetRepo = assetRepo
@@ -279,61 +283,28 @@ public final class IndexerService: @unchecked Sendable {
         if !generatedCachePhotos.isEmpty {
             let photoIds = generatedCachePhotos.map(\.id)
             let fileIds = generatedCachePhotos.compactMap(\.assetFileId)
-            try self.connection.transaction {
-                for chunk in chunked(photoIds) {
-                    let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                    // person_photos.photo_id 是 ON DELETE RESTRICT（D-025）：缓存照片若已被
-                    // 标记身份，直接 DELETE photos 会让整个清扫事务回滚（FOREIGN KEY
-                    // constraint failed）。生成缓存是派生数据，先显式解除身份桥接再删照片，
-                    // 遵循 FK 顺序 person_photos → photos。
-                    // role_bindings 不在此路径：本事务不删 session/face_clusters，用户绑定必须保留。
-                    _ = try self.connection.prepare(
-                        "DELETE FROM person_photos WHERE photo_id IN (\(placeholders))"
-                    ).run(chunk.map { .text($0) })
-                    _ = try self.connection.prepare("DELETE FROM photos WHERE id IN (\(placeholders))")
-                        .run(chunk.map { .text($0) })
-                }
-                _ = try self.connection.prepare("""
-                    DELETE FROM session_assets
-                    WHERE session_id = ? AND NOT EXISTS (
-                      SELECT 1 FROM photos p
-                      WHERE p.session_id = session_assets.session_id
-                        AND p.asset_id = session_assets.asset_id
-                    )
-                  """).run([.text(sessionId)])
-                if !fileIds.isEmpty {
-                    for chunk in chunked(fileIds) {
-                        let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                        _ = try self.connection.prepare("""
-                            DELETE FROM asset_files
-                            WHERE id IN (\(placeholders))
-                              AND NOT EXISTS (SELECT 1 FROM photos p WHERE p.asset_file_id = asset_files.id)
-                          """).run(chunk.map { .text($0) })
-                    }
-                    _ = try self.connection.prepare("""
-                        DELETE FROM assets
-                        WHERE NOT EXISTS (SELECT 1 FROM asset_members am WHERE am.asset_id = assets.id)
-                      """).run()
-                }
+            try self.transactions.transaction {
+                // person_photos.photo_id 是 ON DELETE RESTRICT（D-025）：缓存照片若已被
+                // 标记身份，直接 DELETE photos 会让整个清扫事务回滚（FOREIGN KEY
+                // constraint failed）。生成缓存是派生数据，先显式解除身份桥接再删照片，
+                // 遵循 FK 顺序 person_photos → photos（顺序封在 IndexerRepo）。
+                // role_bindings 不在此路径：本事务不删 session/face_clusters，用户绑定必须保留。
+                try self.indexer.deletePersonPhotoBindings(photoIds: photoIds)
+                try self.indexer.deletePhotos(photoIds: photoIds)
+                try self.indexer.pruneSessionAssets(sessionId: sessionId)
+                try self.indexer.pruneOrphanAssets(fileIds: fileIds)
             }
             let removedIds = Set(photoIds)
             existing = existing.filter { !removedIds.contains($0.id) }
             (existingByPath, duplicatePathKeys) = reduceByNormalizedPath(existing)
         }
-        let fileRows = try self.connection.prepare("""
-            SELECT af.id, af.file_size, af.file_mtime_ms, af.checksum
-            FROM asset_files af
-            JOIN photos p ON p.asset_file_id = af.id
-            WHERE p.session_id = ?
-          """).query([.text(sessionId)])
         var fileStats: [String: (id: String, fileSize: Int64, fileMtimeMs: Double, checksum: String)] = [:]
-        for row in fileRows {
-            let id = row[0].textValue ?? ""
-            fileStats[id] = (
-                id: id,
-                fileSize: row[1].intValue ?? 0,
-                fileMtimeMs: row[2].doubleValue ?? 0,
-                checksum: row[3].textValue ?? ""
+        for row in try self.indexer.fileStats(sessionId: sessionId) {
+            fileStats[row.id] = (
+                id: row.id,
+                fileSize: row.fileSize,
+                fileMtimeMs: row.fileMtimeMs,
+                checksum: row.checksum
             )
         }
 
@@ -437,7 +408,7 @@ public final class IndexerService: @unchecked Sendable {
             // 本批路径/内容变化的照片：会话级失效（簇删除、导航组剪枝）每批一次。
             var batchAffectedPhotoIds = Set<String>()
             // 全部写在一个事务内（曾为每文件一事务 ≈ 每批 32 次 fsync）。
-            try self.connection.transaction {
+            try self.transactions.transaction {
                 for outcome in results {
                     switch outcome.item {
                     case .missing:
@@ -502,38 +473,31 @@ public final class IndexerService: @unchecked Sendable {
                         }
                         if let assetFileId {
                             let timestamp = nowISOString()
-                            _ = try self.connection.prepare("""
-                                UPDATE asset_files
-                                SET volume_id = ?, file_identity = ?, file_size = ?, file_mtime_ms = ?,
-                                    checksum = CASE WHEN ? = 1 THEN checksum ELSE ? END,
-                                    online_status = 'online', last_seen_at = ?, updated_at = ?
-                                WHERE id = ?
-                              """).run([
-                                .text(volumeId), .text(fileIdentity), .int(fileSize), .real(fileMtimeMs),
-                                .int(preserveChecksum ? 1 : 0), .text(checksum),
-                                .text(timestamp), .text(timestamp), .text(assetFileId),
-                            ])
+                            try self.indexer.updateAssetFile(
+                                assetFileId: assetFileId,
+                                volumeId: volumeId,
+                                fileIdentity: fileIdentity,
+                                fileSize: fileSize,
+                                fileMtimeMs: fileMtimeMs,
+                                checksum: checksum,
+                                preserveChecksum: preserveChecksum,
+                                timestamp: timestamp
+                            )
                             if contentChanged {
-                                let photoIds = try self.connection.prepare(
-                                    "SELECT id FROM photos WHERE asset_file_id = ?"
-                                ).query([.text(assetFileId)]).compactMap { $0[0].textValue }
-                                for photoId in photoIds {
+                                for photoId in try self.indexer.photoIds(assetFileId: assetFileId) {
                                     batchAffectedPhotoIds.insert(photoId)
                                 }
                                 // 文件级清扫：先前照片删除留下的孤儿 analysis 行。
-                                _ = try self.connection.prepare(
-                                    "DELETE FROM asset_analysis WHERE asset_file_id = ?"
-                                ).run([.text(assetFileId)])
-                                _ = try self.connection.prepare("""
-                                    UPDATE photos
-                                    SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
-                                        width = ?, height = ?, updated_at = ?
-                                    WHERE asset_file_id = ?
-                                  """).run([
-                                    .text(checksum), .int(fileSize), .real(fileMtimeMs),
-                                    .int(Int64(width)), .int(Int64(height)),
-                                    .text(timestamp), .text(assetFileId),
-                                ])
+                                try self.indexer.deleteAssetAnalysis(assetFileId: assetFileId)
+                                try self.indexer.updatePhotos(
+                                    assetFileId: assetFileId,
+                                    checksum: checksum,
+                                    fileSize: fileSize,
+                                    fileMtimeMs: fileMtimeMs,
+                                    width: width,
+                                    height: height,
+                                    timestamp: timestamp
+                                )
                             }
                         }
                     }
@@ -712,7 +676,7 @@ public final class IndexerService: @unchecked Sendable {
                 || !relinkedPhotoIds.isEmpty
                 || !missing.isEmpty
             var finalCount = 0
-            try self.connection.transaction {
+            try self.transactions.transaction {
                 finalCount = try self.photoRepo.countBySession(sessionId: sessionId)
                 try self.sessionRepo.updatePhotoCount(id: sessionId, count: finalCount)
                 if committedChanges {
@@ -723,14 +687,10 @@ public final class IndexerService: @unchecked Sendable {
                 try self.sessionRepo.updateStatus(id: sessionId, status: "photos_loaded")
             }
             if !missing.isEmpty {
-                let fileIds = missing.compactMap(\.assetFileId)
-                for chunk in chunked(fileIds) {
-                    let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                    _ = try self.connection.prepare("""
-                        UPDATE asset_files SET online_status = 'offline', updated_at = ?
-                        WHERE id IN (\(placeholders))
-                      """).run([.text(nowISOString())] + chunk.map { .text($0) })
-                }
+                try self.indexer.markAssetFilesOffline(
+                    fileIds: missing.compactMap(\.assetFileId),
+                    timestamp: nowISOString()
+                )
             }
             context?.updateProgress(JobProgressUpdate(current: discovered, total: discovered, phase: "index.done"))
             return IndexScanResult(
@@ -749,7 +709,7 @@ public final class IndexerService: @unchecked Sendable {
                 || !relinkedPhotoIds.isEmpty
                 || !missing.isEmpty
             if committedChanges {
-                try? self.connection.transaction {
+                try? self.transactions.transaction {
                     _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)
                 }
             }
@@ -807,7 +767,7 @@ public final class IndexerService: @unchecked Sendable {
                         return nil
                     }
                 }
-                try self.connection.transaction {
+                try self.transactions.transaction {
                     for (index, result) in results.enumerated() {
                         guard let result else {
                             failedPhotoIds.insert(batch[index].id)
@@ -817,29 +777,26 @@ public final class IndexerService: @unchecked Sendable {
                         }
                         // 乐观填充：仅当照片 checksum 仍为空才写（并发扫描
                         // 刚写/清空的值不被覆盖）。
-                        let photoChanges = try self.connection.prepare("""
-                            UPDATE photos
-                            SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?,
-                                updated_at = ?
-                            WHERE id = ? AND checksum = ''
-                          """).run([
-                            .text(result.checksum), .int(result.size), .real(result.mtimeMs),
-                            .text(nowISOString()), .text(result.photo.id),
-                        ])
-                        if photoChanges == 0 {
+                        let photoChanges = try self.indexer.backfillPhotoChecksum(
+                            photoId: result.photo.id,
+                            checksum: result.checksum,
+                            fileSize: result.size,
+                            fileMtimeMs: result.mtimeMs,
+                            timestamp: nowISOString()
+                        )
+                        if !photoChanges {
                             // 另一写入者已填充（或清空）：跳过资产行写入，
                             // 保持 photos 与 asset_files 一致。
                             skipped += 1
                         } else {
                             if let assetFileId = result.photo.assetFileId {
-                                _ = try self.connection.prepare("""
-                                    UPDATE asset_files
-                                    SET checksum = ?, file_size = ?, file_mtime_ms = ?, updated_at = ?
-                                    WHERE id = ? AND checksum = ''
-                                  """).run([
-                                    .text(result.checksum), .int(result.size), .real(result.mtimeMs),
-                                    .text(nowISOString()), .text(assetFileId),
-                                ])
+                                try self.indexer.backfillAssetFileChecksum(
+                                    assetFileId: assetFileId,
+                                    checksum: result.checksum,
+                                    fileSize: result.size,
+                                    fileMtimeMs: result.mtimeMs,
+                                    timestamp: nowISOString()
+                                )
                             }
                             passBackfilled += 1
                             backfilled += 1
@@ -889,51 +846,21 @@ public final class IndexerService: @unchecked Sendable {
     /// FaceRepo.invalidateDerivedResults 走"先解除成员引用、再删观察、同事务
     /// 清 person_embeddings"的顺序（见 invalidatePathDependentAnalysis）。
     private func deletePhotoInputs(photoIds: [String]) throws {
-        if photoIds.isEmpty { return }
-        for chunk in chunked(photoIds) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            _ = try self.connection.prepare(
-                "DELETE FROM similarity_hashes WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM asset_analysis WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-            _ = try self.connection.prepare(
-                "DELETE FROM photo_metadata_cache WHERE photo_id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-        }
+        try self.indexer.deletePhotoInputs(photoIds: photoIds)
     }
 
     /// TS: pruneAutomaticNavigationGroups —— 只删实际含受影响照片的自动导航组；
     /// JSON 不可读的组保留不删。
     private func pruneAutomaticNavigationGroups(sessionId: String, photoIds: [String]) throws {
         let affected = Set(photoIds)
-        var groups: [(id: String, photoIdsJSON: String)] = []
-        if !photoIds.isEmpty && photoIds.count <= Self.pruneLikePrefilterCap {
-            let conditions = photoIds.map { _ in "photo_ids_json LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
-            let patterns = photoIds.map { id -> String in
-                let escaped = id
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "%", with: "\\%")
-                    .replacingOccurrences(of: "_", with: "\\_")
-                return "%\"\(escaped)\"%"
-            }
-            let rows = try self.connection.prepare("""
-                SELECT id, photo_ids_json FROM navigation_groups
-                WHERE session_id = ? AND source = 'automatic' AND (\(conditions))
-              """).query([.text(sessionId)] + patterns.map { .text($0) })
-            for row in rows {
-                groups.append((row[0].textValue ?? "", row[1].textValue ?? ""))
-            }
-        } else {
-            let rows = try self.connection.prepare("""
-                SELECT id, photo_ids_json FROM navigation_groups
-                WHERE session_id = ? AND source = 'automatic'
-              """).query([.text(sessionId)])
-            for row in rows {
-                groups.append((row[0].textValue ?? "", row[1].textValue ?? ""))
-            }
-        }
+        // LIKE 预过滤（含 ESCAPE 转义）与全量分支都在 IndexerRepo。
+        let groups: [(id: String, photoIdsJSON: String)] = try self.indexer
+            .automaticNavigationGroups(
+                sessionId: sessionId,
+                photoIds: photoIds,
+                prefilterCap: Self.pruneLikePrefilterCap
+            )
+            .map { (id: $0.id, photoIdsJSON: $0.photoIdsJSON) }
         var doomed: [String] = []
         for group in groups {
             guard let parsed = try? JSONValue.parse(group.photoIdsJSON),
@@ -944,46 +871,21 @@ public final class IndexerService: @unchecked Sendable {
             }
             if containsAffected { doomed.append(group.id) }
         }
-        for chunk in chunked(doomed) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            _ = try self.connection.prepare(
-                "DELETE FROM navigation_groups WHERE id IN (\(placeholders))"
-            ).run(chunk.map { .text($0) })
-        }
+        try self.indexer.deleteNavigationGroups(ids: doomed)
     }
 
     /// TS: deleteGlobalClusterResults —— 会话级相似度簇结果失效。
     private func deleteGlobalClusterResults(sessionId: String) throws {
-        _ = try self.connection.prepare("DELETE FROM similarity_results WHERE session_id = ?")
-            .run([.text(sessionId)])
+        try self.indexer.deleteSimilarityResults(sessionId: sessionId)
     }
 
     /// TS: invalidatePathDependentAnalysis —— 路径/内容变化的照片：逐照片删输入、
     /// 按成员剪自动导航组、会话级丢簇结果；每批调用一次。
     private func invalidatePathDependentAnalysis(photoIds: [String]) throws {
         if photoIds.isEmpty { return }
-        var affectedSessions = Set<String>()
-        for chunk in chunked(photoIds) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try self.connection.prepare(
-                "SELECT DISTINCT session_id FROM photos WHERE id IN (\(placeholders))"
-            ).query(chunk.map { .text($0) })
-            for row in rows {
-                if let sessionId = row[0].textValue { affectedSessions.insert(sessionId) }
-            }
-        }
-        var photoIdsBySession: [String: [String]] = [:]
-        for chunk in chunked(photoIds) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try self.connection.prepare(
-                "SELECT id, session_id FROM photos WHERE id IN (\(placeholders))"
-            ).query(chunk.map { .text($0) })
-            for row in rows {
-                guard let id = row[0].textValue, let sessionId = row[1].textValue else { continue }
-                photoIdsBySession[sessionId, default: []].append(id)
-            }
-        }
-        try self.connection.transaction {
+        let affectedSessions = try self.indexer.sessionIds(photoIds: photoIds)
+        let photoIdsBySession = try self.indexer.photoIdsBySession(photoIds: photoIds)
+        try self.transactions.transaction {
             // 人脸派生结果：只失效本批命中的照片（成员引用先解除，再删观察，
             // 同事务清 person_embeddings）。用户绑定与簇行保留 —— 旧实现整会话
             // DELETE role_bindings/face_clusters 会静默销毁用户标注。
@@ -1034,13 +936,6 @@ public final class IndexerService: @unchecked Sendable {
         }
     }
 
-    private func chunked(_ values: [String]) -> [[String]] {
-        var chunks: [[String]] = []
-        for offset in stride(from: 0, to: values.count, by: Self.inChunkSize) {
-            chunks.append(Array(values[offset..<min(offset + Self.inChunkSize, values.count)]))
-        }
-        return chunks
-    }
 }
 
 // MARK: - 扫描载荷类型

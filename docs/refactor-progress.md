@@ -261,6 +261,19 @@
 - **门禁**：9 门禁全绿——layering 17 条（GatherApplication 21 文件 0 import SwiftUI）；ratchet **53/230/120/0/0**；test-catalog 170 文件 / 3 skip；duplicate 555 文件；docs 20 路径 / 143 链接 / 0 缺失；no-legacy 7 enforced + 6 tracked（Services 21 文件、raw SQL 13 文件）；select-star 6/1；preview 14 块 / 5 文件 / 2,031 行；schema `tables=43 user_version=1 foreign_key_violations=0`。附带 `check-protocol-surface --strict` = 254/1,338/0/0 exit 0。
 - **残余**：源码注释仍 **48 处**写旧名/旧路径（21 个 Application 文件头 + Persistence 4 + Protocol 5 + app 18；纯注释，未改内容），core Package 另 1 处 WP3a 说明；`docs/DEVELOPMENT.md:39/113`、`docs/README.md:28` 的 target 列表未更新（白名单外）；历史评审/台账按快照保留；不 commit；无 GUI 验收。
 
+## WP6a Schema 迁移框架（2026-10-22，HEAD 9387fa4；工作区未提交）
+
+- **范围**：只搭迁移框架，不改 schema 版本/DDL。current=.v1、migrations=[]、user_version=1、43 表/373 列/69 显式索引/62 外键/指纹 `7c7e…44c2` 全部不变；未做 WP6b 的备份、V2 快照与 ddl 拆分。
+- **新增文件（10 / 1,116 行）**：`Database/Migration/{SchemaVersion 26, SchemaSnapshot 29, SchemaMigration 15, SchemaCatalog 108, SchemaMigrator 107, OpenState 160, OpenOutcome 41, ResetSupport 96}.swift`（582）；`Database/SchemaShape.swift` 193 行；`Tests/.../Database/SchemaMigrationTests.swift` 341 行。
+- **抽取**：`readSchemaShape`/`schemaShapeIssue`/`quoteIdentifier`/`shapeText` 从 Database.swift 原样搬到 SchemaShape.swift（canonical/SHA-256 逐字未改）；reset 文件操作搬入 Migration/ResetSupport.swift，OpenOutcome/ResetReason 以 extension 挂回 Database。`Database.swift 679→505 行`（≤520）。
+- **open 六态**：empty / current / older / newer / corrupt / unreadableVersion（§4.1 的 corrupt(.unreadableVersion) 拆为独立态）；默认 `Options.resetPolicy = .failClosed`：newer 抛 `.versionUnsupported`、corrupt 抛 `.corrupt`、不读写出错文件；仅显式 `.renameToIncompatible` 才沿用旧改名路径并写 `schema_reset_dev`。Options 增 `resetPolicy/retainMigrationBackups/catalog`；OpenOutcome = created/opened/migrated/reset；DatabaseError 增 `.migration/.versionUnsupported` 与 Kind 两项。
+- **transaction(mode)**：保留 TransactionRunner 要求的无参重载（deferred，30+ 调用点零改动），新增 `transaction(.immediate/.exclusive, body)`；SchemaMigrator 用 BEGIN IMMEDIATE，事务内写 user_version + foreign_key_check + 目标 shape 校验，失败整体回滚；foreign_keys 在 BEGIN 前关、提交后恢复。
+- **测试**：core **1,084/163 → 1,091/164** exit 0；app **616/68** exit 0；定向 DB 相关 **43/5** exit 0。新增 7 例：V1 数据保留+重复 open 幂等；production 空计划/validate/migrate no-op；v99 默认 fail closed 且主库字节不变；V0 有表默认 .corrupt；v1 缺 3 列（370）issue 可读；指纹显式钉死 43/373/69/62 + 7c7e…；transaction 三模式+嵌套 SAVEPOINT。DatabaseFacadeTests 的 4 个 reset 用例补 `Options(resetPolicy:)`，并加 2 个 outcome 断言。
+- **门禁**：9 门禁全 exit 0——ratchet **53/231/59/0/0**（services_prepare 随并行服务迁移在 59–62 波动，与本刀无关）、docs 143 链接 0 缺失、preview 14、protocol 254/1,338/0/0；test-catalog/duplicate/no-legacy/select-star/layering 均 OK。
+- **schema**：`gather-schema verify` = `tables=43 user_version=1 foreign_key_violations=0`。
+- **必要偏离（记账）**：`DatabaseError.swift` 不在任务白名单，但要求 2 明确要求新增 `.migration/.versionUnsupported` 与 Kind 两项，实际 +10 行；未改 Schema.swift/Package/UI/Delivery/DDL。
+- **残余**：备份/retainMigrationBackups 未使用（WP6b）；older 分支已接 SchemaMigrator 但 production 不可达，`.migrated.backup` 恒 nil；reset 日志键由 `schema_reset` 改 `schema_reset_dev`（设计 §4.5）；未 commit；无 GUI 验收。最终 app 复跑被并行工作区的 IndexerService/CullingPageQuery 在编辑阻塞（19:03 的 616/68 绿为 WP6a 主体代码）；FaceKwService/AppComposition 等并行改动未纳入本刀。
+
 ## 规则
 
 - 不做 git commit / checkout / restore；不删除未确认文件。

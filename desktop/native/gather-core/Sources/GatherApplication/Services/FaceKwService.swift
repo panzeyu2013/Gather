@@ -433,7 +433,12 @@ public final class FaceKwService {
     private let sessionRepo: SessionRepo
     private let faceRepo: FaceRepo
     private let personRepo: PersonRepo
-    private let connection: DBConnection
+    /// WP3b-2：身份反馈、簇成员写、analysis_runs、交付项读取全部下沉到 Persistence；
+    /// 事务经 TransactionRunner（嵌套退化为 SAVEPOINT）。
+    private let feedback: any FaceFeedbackRepository
+    private let analysisRuns: any AnalysisRunRepository
+    private let deliveryItems: any DeliveryRepository
+    private let transactions: any TransactionRunner
     /// TS: SettingsService.getNumber 注入。
     private let getNumber: (String, Double) -> Double
     /// TS: SettingsService.get 注入（onnx_provider 等字符串设置）。
@@ -480,7 +485,10 @@ public final class FaceKwService {
         sessionRepo: SessionRepo,
         faceRepo: FaceRepo,
         personRepo: PersonRepo,
-        connection: DBConnection,
+        feedback: any FaceFeedbackRepository,
+        analysisRuns: any AnalysisRunRepository,
+        deliveryItems: any DeliveryRepository,
+        transactions: any TransactionRunner,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
         getString: @escaping (String, String) -> String = { _, defaultValue in defaultValue },
         decodeProvider: DecodeProvider? = nil,
@@ -496,29 +504,25 @@ public final class FaceKwService {
                 isCancelled: isCancelled)
         },
         writebackProvider: FaceWritebackProvider? = nil,
-        delivery: (any FaceKwDeliveryPort)? = nil
+        delivery: any FaceKwDeliveryPort
     ) {
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
         self.faceRepo = faceRepo
         self.personRepo = personRepo
-        self.connection = connection
+        self.feedback = feedback
+        self.analysisRuns = analysisRuns
+        self.deliveryItems = deliveryItems
+        self.transactions = transactions
         self.getNumber = getNumber
         self.getString = getString
         self.decodeProvider = decodeProvider
         self.inferenceProvider = inferenceProvider
         self.clusterProvider = clusterProvider
         self.writebackProvider = writebackProvider
-        // S5c-2b-2 过渡默认：宿主未注入时按同一 connection 自建 coordinator。
-        // 文件阶段用文件系统端口（与 CullingService 的 S5c-2a 默认同口径）；
-        // 宿主接线后应显式注入共享实例 + XMPDeliveryFilePort（S5c-2b-3）。
-        self.delivery = delivery ?? CoordinatorDeliveryAdapter(
-            engine: DeliveryCoordinator(
-                connection: connection,
-                files: FileSystemDeliveryFilePort()
-            ),
-            module: .faceKeyword
-        )
+        // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
+        // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
+        self.delivery = delivery
     }
 
     // ─────────────────────────── analyze ───────────────────────────
@@ -572,7 +576,7 @@ public final class FaceKwService {
             let encoderInputSize = getNumber("encoder_input_size", 112).safeInt(fallback: 112)
             let embeddingDim = getNumber("embedding_dim", 512).safeInt(fallback: 512)
             // 照片与 index_seq 快照共享一个读事务（design §8）。
-            let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try connection.transaction {
+            let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try transactions.transaction {
                 (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
                  try sessionRepo.getIndexSeq(id: sessionId))
             }
@@ -656,7 +660,7 @@ public final class FaceKwService {
                 }
                 // A 阶段即清理（旧实现在 C 的分析事务里）：B 必须看不到已消失照片的
                 // 陈旧观测，否则会把它们重新聚进簇；照片级删除是幂等的。
-                try connection.transaction {
+                try transactions.transaction {
                     for photoId in missingPhotoIds {
                         try faceRepo.deleteObservationsByPhoto(
                             sessionId: sessionId, photoId: photoId)
@@ -820,7 +824,7 @@ public final class FaceKwService {
                             // A 的短事务：观测替换 + 分析状态同一提交（checkpoint =
                             // face_analysis_state）。取消发生在照片边界，已提交的照片下次
                             // 由 isCacheValid 跳过。
-                            _ = try connection.transaction {
+                            _ = try transactions.transaction {
                                 let ids = try faceRepo.replaceObservationsByPhoto(
                                     sessionId: sessionId, photoId: photo.id,
                                     observations: observations)
@@ -984,7 +988,7 @@ public final class FaceKwService {
         try claimController(signal, for: sessionId)
         defer { removeControllerIfCurrent(signal, for: sessionId) }
         // 照片 + index_seq 一个读事务（旧实现只读照片；C 的守卫需要 run 起点的序号）。
-        let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try connection.transaction {
+        let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try transactions.transaction {
             (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
              try sessionRepo.getIndexSeq(id: sessionId))
         }
@@ -1057,7 +1061,7 @@ public final class FaceKwService {
         let dedupedKeywords = keywords
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
-        try connection.transaction {
+        try transactions.transaction {
             try faceRepo.updateBinding(clusterId: clusterId, roleName: normalizedRoleName, keywords: dedupedKeywords)
         // 身份链接 + 人物库投影 + 跨会话向量入库（单一身份入口 PersonRepo.bindRole
         // 负责 adopt-or-create、照片桥接与 matched_person_id 链接；随后把该簇成员的
@@ -1074,9 +1078,8 @@ public final class FaceKwService {
                 }
             )
             if let personId = outcome.personId {
-                let feedback = FaceFeedbackRepo(connection: connection)
                 for member in members {
-                    try feedback.record(sessionId: sessionId, photoId: member.photoId,
+                    try self.feedback.record(sessionId: sessionId, photoId: member.photoId,
                         bbox: member.bbox, personId: personId, confirmed: true, keywords: dedupedKeywords)
                 }
                 let embeddings = try faceRepo.getClusterMemberEmbeddings(clusterId)
@@ -1098,9 +1101,9 @@ public final class FaceKwService {
         let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
-        try connection.transaction {
+        try transactions.transaction {
             let cluster = try faceRepo.getClusters(sessionId, includeMembers: true).first { $0.id == clusterId }
-            let repo = FaceFeedbackRepo(connection: connection)
+            let repo = feedback
             for member in cluster?.members ?? [] {
                 try repo.forgetConfirmation(sessionId: sessionId, photoId: member.photoId,
                     bbox: Self.parseBbox(member.bbox), personId: cluster?.matchedPersonId)
@@ -1160,12 +1163,11 @@ public final class FaceKwService {
         if sourceSessionId != sessionId || targetSessionId != sessionId {
             throw FaceKwServiceError.clusterNotInSession
         }
-        try connection.transaction {
+        try transactions.transaction {
             try faceRepo.mergeClusters(sourceId: sourceId, targetId: targetId)
             try personRepo.reconcileSession(sessionId: sessionId)
             if let target = try faceRepo.getClusters(sessionId, includeMembers: true).first(where: { $0.id == targetId }),
                let binding = target.binding, let personId = target.matchedPersonId {
-                let feedback = FaceFeedbackRepo(connection: connection)
                 for member in target.members ?? [] {
                     try feedback.record(sessionId: sessionId, photoId: member.photoId,
                         bbox: Self.parseBbox(member.bbox), personId: personId, confirmed: true, keywords: binding.keywords)
@@ -1179,12 +1181,12 @@ public final class FaceKwService {
         let clusterSessionId = try faceRepo.getClusterSessionId(clusterId)
         guard let clusterSessionId else { throw FaceKwServiceError.clusterNotFound }
         if clusterSessionId != sessionId { throw FaceKwServiceError.clusterNotInSession }
-        try connection.transaction {
+        try transactions.transaction {
             let cluster = try faceRepo.getClusters(sessionId, includeMembers: true).first { $0.id == clusterId }
             guard let member = cluster?.members?.first(where: { $0.id == memberId }) else {
                 throw FaceKwServiceError.clusterMemberNotFound
             }
-            try FaceFeedbackRepo(connection: connection).record(sessionId: sessionId,
+            try feedback.record(sessionId: sessionId,
                 photoId: member.photoId, bbox: Self.parseBbox(member.bbox),
                 personId: cluster?.matchedPersonId, confirmed: false)
             if !(try faceRepo.removeMemberFromCluster(clusterId: clusterId, memberId: memberId)) {
@@ -1340,7 +1342,7 @@ public final class FaceKwService {
         result: FaceKwWritebackResult
     ) -> [String] {
         guard !items.isEmpty else { return [] }
-        let deliveryRepo = DeliveryRepo(connection: connection)
+        let deliveryRepo = deliveryItems
         var persistedById: [Int64: DeliveryItemRow] = [:]
         let executedIds = Set(items.compactMap(\.id))
         if !executedIds.isEmpty {
@@ -1388,7 +1390,8 @@ public final class FaceKwService {
                     ?? "WRITEBACK_FAILED"
             }
 
-            let baseline = deliveryWritebackBaseline(connection: connection, xmpPath: item.xmpPath)
+            // WP3b-2：基线经 Persistence 端口回读（与 deliveryWritebackBaseline 同口径）。
+            let baseline = deliveryItems.itemBaseline(xmpPath: item.xmpPath)
             var attributes: [String: JSONValue] = [:]
             var parsedAttributes = false
             if let raw = row?.attributesJSON, !raw.isEmpty {
@@ -1674,9 +1677,9 @@ public final class FaceKwService {
 
     /// B 阶段读快照（唯一读事务；不包含任何写）。
     private func readClusterSnapshot(sessionId: String) throws -> ClusterReadSnapshot {
-        try connection.transaction {
+        try transactions.transaction {
             let observations = try faceRepo.getObservations(sessionId)
-            let feedback = try FaceFeedbackRepo(connection: connection).list(sessionId: sessionId)
+            let feedback = try self.feedback.list(sessionId: sessionId)
             let clusters = try faceRepo.getClusters(sessionId, includeMembers: true)
             // 人工确认簇要在 C 里写 role_name/keywords：person 行（含 keywords）在
             // 读事务内一次取齐，B/C 都不再回读。确认身份通常个位数，逐条 get 可接受。
@@ -1762,7 +1765,7 @@ public final class FaceKwService {
     ) throws {
         let pathById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.filepath) })
         var newClusterIds: [Int64] = []
-        try connection.transaction {
+        try transactions.transaction {
             guard try sessionRepo.getIndexSeq(id: sessionId) == indexSeq else {
                 throw DBError.message("工作区内容已变化，请重新运行人脸分析")
             }
@@ -1793,8 +1796,8 @@ public final class FaceKwService {
             if plan.clusterInputs.isEmpty {
                 // 分析成功但无脸时不应留下陈旧集群；全失败 run 则保留（TS 注释）。
                 if clearOnEmpty {
-                    _ = try connection.prepare("DELETE FROM face_cluster_members WHERE session_id = ?").run([.text(sessionId)])
-                    _ = try connection.prepare("DELETE FROM face_clusters WHERE session_id = ? AND id NOT IN (SELECT cluster_id FROM role_bindings)").run([.text(sessionId)])
+                    try faceRepo.clearClusterMembers(sessionId: sessionId)
+                    try faceRepo.deleteUnboundClusters(sessionId: sessionId)
                 }
                 try faceRepo.upsertClusterSignature(sessionId: sessionId, signature: signature)
                 return
@@ -1879,7 +1882,7 @@ public final class FaceKwService {
     ) throws {
         if reconcileEvenWhenEmpty || !clusters.isEmpty {
             do {
-                try connection.transaction {
+                try transactions.transaction {
                     try personRepo.reconcileSession(sessionId: sessionId)
                 }
             } catch {
@@ -1977,7 +1980,7 @@ public final class FaceKwService {
             // 没有新增观测就不需要聚类；只有确有幽灵行时才落一次清理事务。
             guard !ghostMemberIds.isEmpty else { return }
             if signal?.aborted ?? false { throw JobCancelledError() }
-            try connection.transaction {
+            try transactions.transaction {
                 guard try sessionRepo.getIndexSeq(id: sessionId) == indexSeq else {
                     throw DBError.message("工作区内容已变化，请重新运行人脸分析")
                 }
@@ -2021,7 +2024,7 @@ public final class FaceKwService {
             }
         }
         var createdClusterIds: [Int64] = []
-        try connection.transaction {
+        try transactions.transaction {
             guard try sessionRepo.getIndexSeq(id: sessionId) == indexSeq else {
                 throw DBError.message("工作区内容已变化，请重新运行人脸分析")
             }
@@ -2030,25 +2033,11 @@ public final class FaceKwService {
                 try deleteClusterMembers(ids: ghostMemberIds)
             }
             if !appendedMembers.isEmpty {
-                let insertMember = try connection.prepare("""
-                    INSERT INTO face_cluster_members
-                     (cluster_id, session_id, photo_id, bbox, confidence, observation_id)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                    """)
-                for item in appendedMembers {
-                    for member in item.members {
-                        let bboxJSON = try JSONValue.stringify(
-                            JSONValue.array(member.bbox.map { JSONValue.real($0) }))
-                        _ = try insertMember.run([
-                            .int(item.clusterId),
-                            .text(sessionId),
-                            .text(member.photoId),
-                            .text(bboxJSON),
-                            .real(member.confidence),
-                            optDB(member.observationId),
-                        ])
-                    }
-                }
+                // 语句准备与 bbox JSON 编码都在 Repo 内（与 saveClusters 同一实现）。
+                try faceRepo.appendClusterMembers(
+                    sessionId: sessionId,
+                    groups: appendedMembers.map { (clusterId: $0.clusterId, members: $0.members) }
+                )
             }
             if !newClusters.isEmpty {
                 createdClusterIds = try faceRepo.saveClusters(sessionId: sessionId, clusters: newClusters)
@@ -2084,12 +2073,7 @@ public final class FaceKwService {
 
     /// 按成员行 id 删除（幽灵成员清理；分批防 SQLite 参数上限）。
     private func deleteClusterMembers(ids: [Int64]) throws {
-        for chunk in ids.chunked(by: 400) where !chunk.isEmpty {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            _ = try connection.prepare(
-                "DELETE FROM face_cluster_members WHERE id IN (\(placeholders))"
-            ).run(chunk.map { .int($0) })
-        }
+        try faceRepo.deleteClusterMembers(ids: ids)
     }
 
     /// 人员匹配兜底阈值（与 persons.match_threshold 列默认值 0.65 一致）。
@@ -2152,7 +2136,7 @@ public final class FaceKwService {
             }
         }
         // feedback 一次读（旧实现簇循环内每簇重读整表）。
-        let feedback = try FaceFeedbackRepo(connection: connection).list(sessionId: sessionId)
+        let feedback = try self.feedback.list(sessionId: sessionId)
         let rejectedByPhoto = Dictionary(
             grouping: feedback.filter { $0.decision == "rejected" }, by: \.photoId)
 
@@ -2208,7 +2192,7 @@ public final class FaceKwService {
     }
 
     private func captureManualIdentityFeedback(sessionId: String) throws {
-        let repo = FaceFeedbackRepo(connection: connection)
+        let repo = feedback
         let recorded = try repo.list(sessionId: sessionId)
         for cluster in try faceRepo.getClusters(sessionId, includeMembers: true) {
             guard let binding = cluster.binding else { continue }
@@ -2274,25 +2258,21 @@ public final class FaceKwService {
         params: FaceRunParams
     ) throws -> Int64 {
         let data = try JSONEncoder().encode(params)
-        // V1：params 改名 params_json；created_at 为 NOT NULL，与 started_at 同值写入。
-        let now = nowISOString()
-        _ = try connection.prepare("""
-            INSERT INTO analysis_runs
-              (session_id, kind, photo_count, index_seq, started_at, finished_at, params_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?, '', ?, 'running', ?)
-          """).run([
-            .text(sessionId), .text(kind), .int(Int64(photoCount)), .int(Int64(indexSeq)),
-            .text(now), .text(String(data: data, encoding: .utf8) ?? "{}"), .text(now),
-        ])
-        return connection.lastInsertRowid
+        // 载荷编码留在应用层（params_json 键序是契约）；落库交 AnalysisRunRepo。
+        return try analysisRuns.start(
+            sessionId: sessionId,
+            kind: kind,
+            photoCount: photoCount,
+            indexSeq: indexSeq,
+            paramsJson: String(data: data, encoding: .utf8) ?? "{}"
+        )
     }
 
     // 取消的 run 在此以 'failed' 终态：run 记录按设计只区分 ok/failed，取消态由
     // analysis_jobs（JobService 的 status 机）表达（TS 注释 603-606；过期检测
     // 1.4.2 一律忽略非 ok run；sessions.analysis_status 已不再写入）。
     private func finalizeAnalysisRun(runId: Int64, status: String) throws {
-        _ = try connection.prepare("UPDATE analysis_runs SET status = ?, finished_at = ? WHERE id = ?")
-            .run([.text(status), .text(nowISOString()), .int(runId)])
+        try analysisRuns.finish(runId: runId, status: status)
     }
 
     /// TS: buildFaceKeywordAdditions（fkw.preview 的写回规划）。
