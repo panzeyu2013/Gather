@@ -13,9 +13,8 @@
 // - get_photos 的 limit/offset 由 PageRequest.album 归一化，查询/计数复用
 //   FilterEngine 的全局投影（与旧 album.get_photos 同一 SQL）。
 //
-// 同步核心（createSync/listSync/…）是 internal 的：Library 的既有
-// LibraryDataProvider 是同步协议（测试与 UI 共享），同步核心让它在不改签名的
-// 前提下调用同一套 API 实现；生产异步路径走协议方法。
+// WP4b：同步核心（createSync/listSync/…）已删除；协议方法直接实现同一套
+// repo/filter 调用，Library 的 async 端口由 GatherHost 的 provider 适配。
 
 import Foundation
 import GatherProtocol
@@ -37,28 +36,6 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
     // MARK: - AlbumAPI
 
     public func create(_ input: AlbumCreateParams) async throws -> SmartAlbumDetailData {
-        try createSync(input)
-    }
-
-    public func list() async throws -> [SmartAlbumData] {
-        try listSync()
-    }
-
-    public func update(_ input: AlbumUpdateParams) async throws {
-        try updateSync(input)
-    }
-
-    public func delete(_ input: Confirmed<AlbumDeleteInput>) async throws {
-        try deleteSync(input.value.albumId)
-    }
-
-    public func photos(_ query: AlbumPhotosQuery) async throws -> GlobalPhotoPage {
-        try photosSync(albumId: query.albumId, limit: query.page.limit, offset: query.page.offset)
-    }
-
-    // MARK: - 同步核心（LiveLibraryDataProvider 的测试接缝；生产 UI 走协议）
-
-    func createSync(_ input: AlbumCreateParams) throws -> SmartAlbumDetailData {
         let name = try requireNonBlank(input.name, field: "name")
         _ = try LiveAPIErrorMapping.mapFilter { try filterEngine.buildWhereClause(input.criteria) }
         let row = try LiveAPIErrorMapping.map {
@@ -74,7 +51,7 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
         return try albumDetailData(row: row)
     }
 
-    func listSync() throws -> [SmartAlbumData] {
+    public func list() async throws -> [SmartAlbumData] {
         let rows = try LiveAPIErrorMapping.map { try albumRepo.list() }
         return rows.map { row in
             do {
@@ -100,7 +77,7 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
         }
     }
 
-    func updateSync(_ input: AlbumUpdateParams) throws {
+    public func update(_ input: AlbumUpdateParams) async throws {
         let albumId = try requireNonBlank(input.albumId, field: "albumId")
         if let criteria = input.criteria {
             _ = try LiveAPIErrorMapping.mapFilter { try filterEngine.buildWhereClause(criteria) }
@@ -117,13 +94,13 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
         }
     }
 
-    func deleteSync(_ albumId: String) throws {
-        let id = try requireNonBlank(albumId, field: "albumId")
+    public func delete(_ input: Confirmed<AlbumDeleteInput>) async throws {
+        let id = try requireNonBlank(input.value.albumId, field: "albumId")
         try LiveAPIErrorMapping.map { try albumRepo.delete(id: id) }
     }
 
-    func photosSync(albumId: String, limit: Int, offset: Int) throws -> GlobalPhotoPage {
-        let id = try requireNonBlank(albumId, field: "albumId")
+    public func photos(_ query: AlbumPhotosQuery) async throws -> GlobalPhotoPage {
+        let id = try requireNonBlank(query.albumId, field: "albumId")
         guard let row = try LiveAPIErrorMapping.map({ try albumRepo.get(id: id) }) else {
             throw GatherError(code: .ALBUM_NOT_FOUND)
         }
@@ -133,8 +110,8 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
                 criteria: criteria,
                 sortBy: row.sortBy,
                 sortOrder: row.sortOrder,
-                limit: limit,
-                offset: offset
+                limit: query.page.limit,
+                offset: query.page.offset
             )
         }
         let total = try LiveAPIErrorMapping.mapFilter {

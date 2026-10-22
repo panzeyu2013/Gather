@@ -66,7 +66,19 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
     // MARK: - PhotoAPI
 
     public func page(_ query: PhotoPageQuery) async throws -> PhotoPage {
-        try pageSync(query)
+        let page = try photoRepo.getAssetPage(
+            sessionId: query.sessionId,
+            afterFirstRowid: query.afterFirstRowid,
+            limit: query.limit
+        )
+        return PhotoPage(
+            rows: assemblePhotoRows(
+                page.rows,
+                sessionId: query.sessionId,
+                expandVariants: query.expandVariants
+            ),
+            cursor: page.cursor
+        )
     }
 
     public func search(_ query: PhotoQuery) async throws -> PhotoSearchResult {
@@ -155,24 +167,6 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         imagePreloadService.preloadPreviews(
             paths: paths,
             maxDimension: input.maxDimension ?? 2048
-        )
-    }
-
-    // MARK: - 同步核心（LiveGalleryDataProvider 的测试接缝；生产 UI 走协议）
-
-    func pageSync(_ query: PhotoPageQuery) throws -> PhotoPage {
-        let page = try photoRepo.getAssetPage(
-            sessionId: query.sessionId,
-            afterFirstRowid: query.afterFirstRowid,
-            limit: query.limit
-        )
-        return PhotoPage(
-            rows: assemblePhotoRows(
-                page.rows,
-                sessionId: query.sessionId,
-                expandVariants: query.expandVariants
-            ),
-            cursor: page.cursor
         )
     }
 

@@ -34,7 +34,7 @@ private struct FactoryGalleryProviderStub: GalleryDataProvider {
 }
 
 private struct FactoryLibraryProviderStub: LibraryDataProvider {
-    func listSessions() throws -> [SessionData] { [] }
+    func listSessions() async throws -> [SessionData] { [] }
 
     func globalPhotos(
         criteria: FilterGroup,
@@ -47,30 +47,30 @@ private struct FactoryLibraryProviderStub: LibraryDataProvider {
 }
 
 /// 可变的 Dashboard Provider：RootView 删除接线用例要经真实 VM 删除并刷新列表。
-private final class FactoryDashboardProviderStub: DashboardDataProvider {
+private final class FactoryDashboardProviderStub: DashboardDataProvider, @unchecked Sendable {
     var sessions: [SessionData] = []
     private(set) var deletedIds: [String] = []
 
-    func listSessions() throws -> [SessionData] { sessions }
+    func listSessions() async throws -> [SessionData] { sessions }
 
-    func createSession(name: String, source: String, sourcePath: String) throws -> SessionData {
+    func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData {
         throw APIError.failed("FACTORY_TEST_UNUSED")
     }
 
-    func deleteSession(_ sessionId: String, confirmed: Bool) throws {
+    func deleteSession(_ sessionId: String, confirmed: Bool) async throws {
         deletedIds.append(sessionId)
         sessions.removeAll { $0.id == sessionId }
     }
 
-    func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? { nil }
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? { nil }
 
-    func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData] { [] }
+    func listJobs(includeCheckpoint: Bool) async throws -> [AnalysisJobData] { [] }
 
-    func cancelJob(_ jobId: String) throws -> Bool { false }
+    func cancelJob(_ jobId: String) async throws -> Bool { false }
 
-    func retryJob(_ jobId: String) throws -> Bool { false }
+    func retryJob(_ jobId: String) async throws -> Bool { false }
 
-    func clearCompletedJobs() throws -> Int { 0 }
+    func clearCompletedJobs() async throws -> Int { 0 }
 }
 
 private struct FactoryPersonAPIStub: PersonAPI {

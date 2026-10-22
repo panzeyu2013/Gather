@@ -102,11 +102,13 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
 }
 
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
-/// LiveLibraryDataProvider（临时 SQLite + typed API）。
+/// GatherHost 的 async 数据适配器（临时 SQLite + typed API）。
 /// Swift 6 迁移：协议继承 Sendable（Live 实现只持有不可变的各域 API），使
 /// @MainActor ViewModel 可在 async 调用中安全地把 provider existential 送出。
+/// WP4b：端口全面 async；同步核 / 同步端口 / SyncAPIPortBridge 已删除，
+/// 生产实现移到 GatherHost。
 public protocol LibraryDataProvider: Sendable {
-    func listSessions() throws -> [SessionData]
+    func listSessions() async throws -> [SessionData]
     /// TS: filterApi.photosGlobal → { photos, total }。
     /// async：分页大查询经 executeAsync 走后台线程（避免 @MainActor 主线程阻塞）。
     func globalPhotos(
@@ -119,25 +121,25 @@ public protocol LibraryDataProvider: Sendable {
     /// TS: albumApi.list / getPhotos / create / update / delete。
     /// 默认实现保留测试 stub 与最小第三方 provider 的兼容性；真实 provider
     /// 必须覆盖这些方法，避免 Library 页面静默丢失智能相册能力。
-    func listAlbums() throws -> [SmartAlbumData]
+    func listAlbums() async throws -> [SmartAlbumData]
     func albumPhotos(
         albumId: String,
         limit: Int,
         offset: Int
     ) async throws -> (photos: [GlobalPhotoResult], total: Int)
-    func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData
-    func updateAlbum(albumId: String, criteria: FilterGroup) throws
+    func createAlbum(name: String, criteria: FilterGroup) async throws -> SmartAlbumData
+    func updateAlbum(albumId: String, criteria: FilterGroup) async throws
     /// 破坏性：confirmed 必须由视图的确认动作注入，**不设默认值**——
     /// 编译期强制每个调用点说明它拿到的是用户确认还是取消。
-    func deleteAlbum(albumId: String, confirmed: Bool) throws
+    func deleteAlbum(albumId: String, confirmed: Bool) async throws
 
     /// TS: assetApi.candidates / acceptCandidate / rejectCandidate / volumes / relinkRoot。
-    func listAssetCandidates() throws -> [AssetLinkCandidateData]
+    func listAssetCandidates() async throws -> [AssetLinkCandidateData]
     /// 破坏性（合并/拆分会改变资产结构）：confirmed 同上。
-    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) throws
-    func listAssetVolumes() throws -> [AssetVolumeData]
+    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) async throws
+    func listAssetVolumes() async throws -> [AssetVolumeData]
     /// 破坏性（改写该根下全部路径记录）：confirmed 同上。
-    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) throws -> Int
+    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) async throws -> Int
 
     /// TS: metadataApi.orphans / resolveOrphan（B6b 起走 MetadataAPI）。
     func listMetadataOrphans() async throws -> [MetadataOrphan]
@@ -149,7 +151,7 @@ public protocol LibraryDataProvider: Sendable {
 }
 
 public extension LibraryDataProvider {
-    func listAlbums() throws -> [SmartAlbumData] { [] }
+    func listAlbums() async throws -> [SmartAlbumData] { [] }
 
     func albumPhotos(
         albumId: String,
@@ -159,27 +161,27 @@ public extension LibraryDataProvider {
         ([], 0)
     }
 
-    func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData {
+    func createAlbum(name: String, criteria: FilterGroup) async throws -> SmartAlbumData {
         throw APIError.failed("ALBUM_NOT_SUPPORTED")
     }
 
-    func updateAlbum(albumId: String, criteria: FilterGroup) throws {
+    func updateAlbum(albumId: String, criteria: FilterGroup) async throws {
         throw APIError.failed("ALBUM_NOT_SUPPORTED")
     }
 
-    func deleteAlbum(albumId: String, confirmed: Bool) throws {
+    func deleteAlbum(albumId: String, confirmed: Bool) async throws {
         throw APIError.failed("ALBUM_NOT_SUPPORTED")
     }
 
-    func listAssetCandidates() throws -> [AssetLinkCandidateData] { [] }
+    func listAssetCandidates() async throws -> [AssetLinkCandidateData] { [] }
 
-    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) throws {
+    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) async throws {
         throw APIError.failed("ASSET_LINK_NOT_SUPPORTED")
     }
 
-    func listAssetVolumes() throws -> [AssetVolumeData] { [] }
+    func listAssetVolumes() async throws -> [AssetVolumeData] { [] }
 
-    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) throws -> Int {
+    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) async throws -> Int {
         throw APIError.failed("ASSET_RELINK_NOT_SUPPORTED")
     }
 
@@ -192,166 +194,9 @@ public extension LibraryDataProvider {
     }
 }
 
-/// 真实实现：B2 已把 session.list / filter.photos_global / album.* / assets.*
-/// 迁到 SessionAPI / PhotoAPI / AlbumAPI / AssetAPI；B6b 起 metadata.orphans /
-/// resolve_orphan 走 MetadataAPI。Live 实现只做渲染形状与“bool 确认 ->
-/// Confirmed<T>”的边界适配，不再派发字符串命令。
+/// 真实实现已移到 GatherHost：UI 只保留 async 数据端口，
+/// 不再 import 任何 Live API 实现，也不再有同步核/同步端口。
 ///
-/// 同步方法保留：LibraryDataProvider 是同步协议（View 与既有测试共用），
-/// LiveAlbumAPI/LiveAssetAPI/LiveSessionAPI 的同步核心让 UI 不必在 MainActor
-/// 上阻塞等待 async API；异步分页/查询直接走协议方法。
-public final class LiveLibraryDataProvider: LibraryDataProvider {
-    private let sessionAPI: any SessionAPI
-    private let photoAPI: any PhotoAPI
-    private let assetAPI: any AssetAPI
-    private let albumAPI: any AlbumAPI
-    /// Cut 1 / B6b：元数据域（orphans / resolve_orphan）。
-    private let metadataAPI: any MetadataAPI
-
-    /// 显式装配：五个域 API 由调用方（AppServices / 测试）注入。
-    /// B8.4 起不再提供字符串命令构造器；MetadataService/Coordinator 只能有
-    /// 一份，因此 metadata 是必填依赖，不从组合根兜底构造。
-    public init(
-        session: any SessionAPI,
-        photo: any PhotoAPI,
-        asset: any AssetAPI,
-        album: any AlbumAPI,
-        metadata: any MetadataAPI
-    ) {
-        self.sessionAPI = session
-        self.photoAPI = photo
-        self.assetAPI = asset
-        self.albumAPI = album
-        self.metadataAPI = metadata
-    }
-
-    public func listSessions() throws -> [SessionData] {
-        // SessionAPI 没有同步方法；生产只注入实现 SessionSyncAPI 的 Live
-        // 适配器（B1）。非同步注入仅存在于测试夹具，显式失败而不是回退第二套
-        // SessionService。
-        guard let live = sessionAPI as? any SessionSyncAPI else {
-            throw APIError.failed("SESSION_LIST_UNSUPPORTED")
-        }
-        return try live.listSessionsSync()
-    }
-
-    public func globalPhotos(
-        criteria: FilterGroup,
-        sessionId: String?,
-        limit: Int,
-        offset: Int
-    ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let result = try await photoAPI.search(try PhotoQuery(
-            criteria: criteria,
-            sessionId: sessionId,
-            limit: limit,
-            offset: offset
-        ))
-        return (result.photos, result.total)
-    }
-
-    public func listAlbums() throws -> [SmartAlbumData] {
-        try albumSyncAPI().listAlbumsSync()
-    }
-
-    public func albumPhotos(
-        albumId: String,
-        limit: Int,
-        offset: Int
-    ) async throws -> (photos: [GlobalPhotoResult], total: Int) {
-        let page = try await albumAPI.photos(try AlbumPhotosQuery(
-            albumId: albumId,
-            limit: limit,
-            offset: offset
-        ))
-        return (page.photos, page.total)
-    }
-
-    public func createAlbum(name: String, criteria: FilterGroup) throws -> SmartAlbumData {
-        let detail = try albumSyncAPI().createAlbumSync(
-            AlbumCreateParams(name: name, criteria: criteria)
-        )
-        return SmartAlbumData(
-            id: detail.id,
-            schemaVersion: detail.schemaVersion,
-            name: detail.name,
-            description: detail.description,
-            filterCriteria: detail.filterCriteria,
-            sortBy: detail.sortBy,
-            sortOrder: detail.sortOrder,
-            icon: detail.icon,
-            createdAt: detail.createdAt,
-            updatedAt: detail.updatedAt,
-            validationError: detail.validationError
-        )
-    }
-
-    public func updateAlbum(albumId: String, criteria: FilterGroup) throws {
-        try albumSyncAPI().updateAlbumSync(AlbumUpdateParams(albumId: albumId, criteria: criteria))
-    }
-
-    public func deleteAlbum(albumId: String, confirmed: Bool) throws {
-        // 确认来自视图弹窗的 bool；API 只接收 Confirmed。false 时根本不调用 API，
-        // 保留旧命令“未确认 -> ALBUM_DELETE_CONFIRM_REQUIRED”的门禁语义。
-        guard confirmed else { throw GatherError(code: .ALBUM_DELETE_CONFIRM_REQUIRED) }
-        let input = try AlbumDeleteInput(albumId: albumId)
-        try albumSyncAPI().deleteAlbumSync(input.albumId)
-    }
-
-    public func listAssetCandidates() throws -> [AssetLinkCandidateData] {
-        try assetSyncAPI().assetCandidatesSync(nil)
-    }
-
-    public func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) throws {
-        guard confirmed else {
-            throw GatherError(code: accept ? .ASSET_LINK_ACCEPT_CONFIRM_REQUIRED
-                                           : .ASSET_LINK_REJECT_CONFIRM_REQUIRED)
-        }
-        let reference = try AssetCandidateReference(candidateId: candidateId)
-        if accept {
-            _ = try assetSyncAPI().acceptCandidateSync(reference.candidateId)
-        } else {
-            _ = try assetSyncAPI().rejectCandidateSync(reference.candidateId)
-        }
-    }
-
-    public func listAssetVolumes() throws -> [AssetVolumeData] {
-        try assetSyncAPI().assetVolumesSync()
-    }
-
-    public func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) throws -> Int {
-        guard confirmed else { throw GatherError(code: .ASSET_RELINK_CONFIRM_REQUIRED) }
-        let input = try AssetRelinkInput(oldRoot: oldRoot, newRoot: newRoot)
-        return try assetSyncAPI().assetRelinkRootSync(oldRoot: input.oldRoot, newRoot: input.newRoot)
-    }
-
-    // MARK: - Live API 同步核心（测试接缝）
-
-    private func albumSyncAPI() throws -> any AlbumSyncAPI {
-        guard let live = albumAPI as? any AlbumSyncAPI else {
-            throw APIError.failed("ALBUM_NOT_SUPPORTED")
-        }
-        return live
-    }
-
-    private func assetSyncAPI() throws -> any AssetSyncAPI {
-        guard let live = assetAPI as? any AssetSyncAPI else {
-            throw APIError.failed("ASSET_LINK_NOT_SUPPORTED")
-        }
-        return live
-    }
-
-    public func listMetadataOrphans() async throws -> [MetadataOrphan] {
-        try await metadataAPI.orphans()
-    }
-
-    public func resolveMetadataOrphan(
-        _ input: Confirmed<MetadataResolveOrphanInput>
-    ) async throws -> [MetadataOrphan] {
-        try await metadataAPI.resolveOrphan(input)
-    }
-}
-
 /// 全局图库视图模型：跨工作区照片浏览（filter.photos_global 分页 + 防抖）。
 @MainActor
 @Observable

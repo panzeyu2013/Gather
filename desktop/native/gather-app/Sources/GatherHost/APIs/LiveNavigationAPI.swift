@@ -10,8 +10,8 @@
 // - analyze 的 burstGapSeconds/sceneGapSeconds 缺省 2/1800、dryRun 缺省 false
 //   在实现内补，范围校验仍由 validateNavigationParameters 完成。
 //
-// 同步核心（listSync/splitSync/…）是 internal 的：Navigation 当前无 UI 调用方，
-// 但 LibraryDataProvider 的同步测试接缝与后续 B3 复用同一实现；生产走协议。
+// WP4b：同步核心（listSync/splitSync/…）已删除；协议方法直接调用
+// NavigationService（校验/错误映射语义不变）。
 
 import Foundation
 import GatherProtocol
@@ -31,31 +31,13 @@ public final class LiveNavigationAPI: NavigationAPI, @unchecked Sendable {
     // MARK: - NavigationAPI
 
     public func list(_ sessionId: String) async throws -> [NavigationGroup] {
-        try listSync(sessionId)
-    }
-
-    public func split(_ input: NavigationSplitParams) async throws -> [NavigationGroup] {
-        try splitSync(input)
-    }
-
-    public func merge(_ input: NavigationMergeParams) async throws -> [NavigationGroup] {
-        try mergeSync(input)
-    }
-
-    public func analyze(_ input: NavigationAnalyzeParams) async throws -> [NavigationGroup] {
-        try analyzeSync(input)
-    }
-
-    // MARK: - 同步核心（测试接缝；生产 UI 走协议）
-
-    func listSync(_ sessionId: String) throws -> [NavigationGroup] {
         let id = try requireNonBlank(sessionId, field: "sessionId")
         return try LiveAPIErrorMapping.map {
             try navigationService.list(sessionId: id)
         }
     }
 
-    func splitSync(_ input: NavigationSplitParams) throws -> [NavigationGroup] {
+    public func split(_ input: NavigationSplitParams) async throws -> [NavigationGroup] {
         let sessionId = try requireNonBlank(input.sessionId, field: "sessionId")
         let groupId = try requireNonBlank(input.groupId, field: "groupId")
         let beforePhotoId = try requireNonBlank(input.beforePhotoId, field: "beforePhotoId")
@@ -68,7 +50,7 @@ public final class LiveNavigationAPI: NavigationAPI, @unchecked Sendable {
         }
     }
 
-    func mergeSync(_ input: NavigationMergeParams) throws -> [NavigationGroup] {
+    public func merge(_ input: NavigationMergeParams) async throws -> [NavigationGroup] {
         let sessionId = try requireNonBlank(input.sessionId, field: "sessionId")
         // 组数下限/同类型由 NavigationService 校验（NAV_MERGE_MIN_TWO /
         // NAV_MERGE_TYPE_MISMATCH），API 不重复判定。
@@ -77,7 +59,7 @@ public final class LiveNavigationAPI: NavigationAPI, @unchecked Sendable {
         }
     }
 
-    func analyzeSync(_ input: NavigationAnalyzeParams) throws -> [NavigationGroup] {
+    public func analyze(_ input: NavigationAnalyzeParams) async throws -> [NavigationGroup] {
         let sessionId = try requireNonBlank(input.sessionId, field: "sessionId")
         return try LiveAPIErrorMapping.map {
             try navigationService.analyze(

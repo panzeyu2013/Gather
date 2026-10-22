@@ -18,11 +18,13 @@ import Foundation
 import GatherProtocol
 
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
-/// 真实服务（LiveDashboardDataProvider + 临时 SQLite）。
+/// 真实服务（GatherHost 的 async 适配器 + 临时 SQLite）。
 // Cut 3 / 3b-2：同包内跨 target 的接缝用 package（不扩大为公开 API）。
-package protocol DashboardDataProvider {
-    func listSessions() throws -> [SessionData]
-    func createSession(name: String, source: String, sourcePath: String) throws -> SessionData
+// WP4b：端口全面 async；同步核 / 同步端口 / SyncAPIPortBridge 已删除。
+// 生产实现移到 GatherHost，UI 只依赖 async 数据端口。
+package protocol DashboardDataProvider: Sendable {
+    func listSessions() async throws -> [SessionData]
+    func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData
     /// TS session.create：以文件列表建库（Capture One 导入），返回含
     /// failedFiles 计数的结果，供截断导入横幅提示（TS Toast L208-219）。
     /// source_path 恒为空：作用域由 metadata.scan 的 requestedPaths 承担。
@@ -30,41 +32,39 @@ package protocol DashboardDataProvider {
         name: String,
         source: String,
         filepaths: [String]
-    ) throws -> CreateSessionOutcome
+    ) async throws -> CreateSessionOutcome
     /// 删除会话。confirmed 是显式参数：只允许 UI 确认分支传 true，
     /// Provider/VM 不得自证确认（与 Library/Similarity/FaceKeywording 同一防线）。
-    func deleteSession(_ sessionId: String, confirmed: Bool) throws
-    func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws
-    func workspaceStatus(sessionId: String) throws -> WorkspaceStatus?
-    func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData]
-    func cancelJob(_ jobId: String) throws -> Bool
-    func retryJob(_ jobId: String) throws -> Bool
-    func clearCompletedJobs() throws -> Int
-    /// 入队 metadata.scan。requestedPaths 非空 = 显式集合作用域（写入
-    /// checkpoint["requestedPaths"]，与 GatherApp.importFiles 同键名）；
-    /// nil = 目录作用域（扫 session.source_path 全树，仅目录导入/目录会话）。
-    func enqueueIndexScan(sessionId: String, requestedPaths: [String]?) throws
+    func deleteSession(_ sessionId: String, confirmed: Bool) async throws
+    /// 批量删除是原子的：成功 = 全部删除；抛错 = 一个都没删（生产实现为单事务）。
+    func deleteSessions(_ sessionIds: [String], confirmed: Bool) async throws
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus?
+    func listJobs(includeCheckpoint: Bool) async throws -> [AnalysisJobData]
+    func cancelJob(_ jobId: String) async throws -> Bool
+    func retryJob(_ jobId: String) async throws -> Bool
+    func clearCompletedJobs() async throws -> Int
+    /// 重跑 metadata.scan（dedupeKey 复用终态行；作用域经 checkpoint 继承）。
+    func retryIndexScan(sessionId: String) async throws
 }
 
 extension DashboardDataProvider {
-    /// 测试 provider 不需要启动后台 worker；真实 provider 在这里接入
-    /// metadata.scan，保证“创建工作区”是创建 + 索引的一跳流程。
-    package func enqueueIndexScan(sessionId: String, requestedPaths: [String]?) throws {}
+    /// 默认实现（stub 用）：不启动后台 worker；真实实现在 Host 经 JobAPI.start 接入。
+    package func retryIndexScan(sessionId: String) async throws {}
 
     /// 默认实现（stub 用）：退化为 createSession（无目录作用域），无失败文件统计。
     package func createSessionFromFiles(
         name: String,
         source: String,
         filepaths: [String]
-    ) throws -> CreateSessionOutcome {
-        let session = try createSession(name: name, source: source, sourcePath: "")
+    ) async throws -> CreateSessionOutcome {
+        let session = try await createSession(name: name, source: source, sourcePath: "")
         return CreateSessionOutcome(session: session, failedFiles: [], added: 0)
     }
 
     /// 默认实现（stub 用）：逐个删除，confirmed 原样透传。
-    package func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws {
+    package func deleteSessions(_ sessionIds: [String], confirmed: Bool) async throws {
         for sessionId in sessionIds {
-            try deleteSession(sessionId, confirmed: confirmed)
+            try await deleteSession(sessionId, confirmed: confirmed)
         }
     }
 }
@@ -74,142 +74,12 @@ package struct CreateSessionOutcome: Equatable, Sendable {
     var session: SessionData
     var failedFiles: [String]
     var added: Int
-}
 
-/// 真实实现：SessionAPI / JobAPI 的装配（B1 生产路径）。
-///
-/// 生产实例只持有类型化 API。DashboardDataProvider 是同步协议（View 与既有
-/// 集成测试共用），其同步面在拆 target 后经 UI 侧端口 SessionSyncAPI /
-/// JobSyncAPI 注入 —— 端口由 GatherHost 的 Live 适配器实现（E-18）；生产
-/// AppServices 路径不注入端口，DashboardViewModel 优先走 async API。
-package final class LiveDashboardDataProvider: DashboardDataProvider {
-    package let sessionAPI: any SessionAPI
-    package let jobAPI: any JobAPI
-    /// 仅测试装配注入；生产实例为 nil（同步方法不应被生产调用）。
-    private let syncSessionAPI: (any SessionSyncAPI)?
-    private let syncJobAPI: (any JobSyncAPI)?
-
-    package convenience init(sessionAPI: any SessionAPI, jobAPI: any JobAPI) {
-        self.init(sessionAPI: sessionAPI, jobAPI: jobAPI, syncSession: nil, syncJob: nil)
+    package init(session: SessionData, failedFiles: [String], added: Int) {
+        self.session = session
+        self.failedFiles = failedFiles
+        self.added = added
     }
-
-    /// 显式同步端口（既有集成测试：LiveSessionAPI / LiveJobAPI 已实现端口）。
-    package init(
-        sessionAPI: any SessionAPI,
-        jobAPI: any JobAPI,
-        syncSession: (any SessionSyncAPI)?,
-        syncJob: (any JobSyncAPI)?
-    ) {
-        self.sessionAPI = sessionAPI
-        self.jobAPI = jobAPI
-        self.syncSessionAPI = syncSession
-        self.syncJobAPI = syncJob
-    }
-
-    private func syncSession() throws -> any SessionSyncAPI {
-        guard let syncSessionAPI else { throw DashboardProviderError.syncAPINotConfigured }
-        return syncSessionAPI
-    }
-
-    private func syncJob() throws -> any JobSyncAPI {
-        guard let syncJobAPI else { throw DashboardProviderError.syncAPINotConfigured }
-        return syncJobAPI
-    }
-
-    package func listSessions() throws -> [SessionData] {
-        try syncSession().listSessionsSync()
-    }
-
-    /// 注意：name 由调用方（DashboardViewModel）用显式 L10n 解析好再传入
-    /// （4b-2l 起不再在本类读进程级语言；默认名是落库值，仍只在创建时解析一次）。
-    package func createSession(name: String, source: String, sourcePath: String) throws -> SessionData {
-        let input = try SessionCreateInput(
-            name: name,
-            source: source,
-            sourcePath: sourcePath
-        )
-        return try syncSession().createSessionSync(input).session
-    }
-
-    /// TS session.create：文件列表建库 + addPhotos（source 透传，C1 为
-    /// "capture-one"），返回会话与失败文件计数；照片在创建时写入，
-    /// metadata.scan 由 LiveSessionAPI 的 filepaths 分支负责入队。
-    ///
-    /// source_path 恒为空：文件导入的作用域由 metadata.scan job 的
-    /// checkpoint["requestedPaths"] 显式携带（与 GatherApp.importFiles 同一
-    /// 契约）。公共父目录只允许用于取名——落库会让全量扫描（requestedPaths=nil）
-    /// 重新递归该目录，重新引入「导入范围失控」。
-    package func createSessionFromFiles(
-        name: String,
-        source: String,
-        filepaths: [String]
-    ) throws -> CreateSessionOutcome {
-        let input = try SessionCreateInput(name: name, source: source, filepaths: filepaths)
-        let result = try syncSession().createSessionSync(input)
-        return CreateSessionOutcome(
-            session: result.session,
-            failedFiles: result.failedFiles,
-            added: result.added
-        )
-    }
-
-    package func deleteSession(_ sessionId: String, confirmed: Bool) throws {
-        guard confirmed else { throw GatherError(code: .SESSION_DELETE_NOT_CONFIRMED) }
-        let input = try SessionDeleteInput(sessionIds: [sessionId])
-        try syncSession().deleteSessionsSync(Confirmed(input, source: .userDialog))
-    }
-
-    package func deleteSessions(_ sessionIds: [String], confirmed: Bool) throws {
-        guard confirmed else { throw GatherError(code: .SESSION_DELETE_NOT_CONFIRMED) }
-        guard !sessionIds.isEmpty else { return }
-        let input = try SessionDeleteInput(sessionIds: sessionIds)
-        try syncSession().deleteSessionsSync(Confirmed(input, source: .userDialog))
-    }
-
-    package func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? {
-        try syncSession().workspaceStatusSync(sessionId)
-    }
-
-    package func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData] {
-        try syncJob().listJobsSync(JobListFilter(includeCheckpoint: includeCheckpoint))
-    }
-
-    package func cancelJob(_ jobId: String) throws -> Bool {
-        try syncJob().cancelJobSync(jobId)
-    }
-
-    package func retryJob(_ jobId: String) throws -> Bool {
-        try syncJob().retryJobSync(jobId)
-    }
-
-    package func clearCompletedJobs() throws -> Int {
-        try syncJob().clearCompletedJobsSync()
-    }
-
-    package func enqueueIndexScan(sessionId: String, requestedPaths: [String]?) throws {
-        // R1 P1-3：建任务规则只在协议层工厂定义（此前这里是第 5 份字面量副本）。
-        _ = try syncJob().startJobSync(
-            JobCreateParams.metadataScan(
-                sessionId: sessionId, requestedPaths: requestedPaths))
-    }
-
-    /// 目录会话名规则：与 SessionService.createFromDirectory 一致（空名取目录
-    /// basename）；API 输入要求 name 非空白，故在生产/测试接缝处提前补齐。
-    ///
-    /// Cut 4 / 4b-2l：空 basename 时的 "导入照片" 是**持久化默认会话名**，会写进
-    /// sessions.name 并长期展示——它仍只在创建时解析一次（落库后再随语言变化会让
-    /// 同一工作区在不同语言下显示不同名字）；但解析语言必须由调用方在渲染期显式
-    /// 传入，不再读进程级 appLanguage（旧 4b-2e allowlist 已随本批撤销）。
-    static func directorySessionName(name: String, sourcePath: String, with l10n: L10n) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        let basename = URL(fileURLWithPath: sourcePath).standardizedFileURL.lastPathComponent
-        return basename.isEmpty ? l10n("导入照片") : basename
-    }
-}
-
-private enum DashboardProviderError: Error {
-    case syncAPINotConfigured
 }
 
 /// TS: Dashboard/index.tsx DashboardScanJob（每 session 最近 metadata.scan 快照）。
@@ -347,11 +217,9 @@ package final class DashboardViewModel {
         case finished(C1PreflightResult)
     }
 
+    /// WP4b：唯一数据入口是 async provider 端口；不再持 SessionAPI/JobAPI 双路径，
+    /// 也不再对具体 Live 实现下转（生产实现已移到 GatherHost）。
     let provider: DashboardDataProvider
-    /// B1：生产 provider 是 LiveDashboardDataProvider；非 nil 时所有动作走
-    /// SessionAPI/JobAPI。stub provider（测试）没有 API，继续走同步协议。
-    let sessionAPI: (any SessionAPI)?
-    let jobAPI: (any JobAPI)?
     var autoRefreshTask: Task<Void, Never>?
     var lastFullRefreshAt = Date.distantPast
     var lastSessionsRefreshAt = Date.distantPast
@@ -387,12 +255,19 @@ package final class DashboardViewModel {
 
     package init(provider: DashboardDataProvider) {
         self.provider = provider
-        if let live = provider as? LiveDashboardDataProvider {
-            self.sessionAPI = live.sessionAPI
-            self.jobAPI = live.jobAPI
-        } else {
-            self.sessionAPI = nil
-            self.jobAPI = nil
-        }
+    }
+
+    /// 目录会话名规则：与 SessionService.createFromDirectory 一致（空名取目录
+    /// basename）；API 输入要求 name 非空白，故在 VM 入口提前补齐。
+    ///
+    /// Cut 4 / 4b-2l：空 basename 时的 "导入照片" 是**持久化默认会话名**，会写进
+    /// sessions.name 并长期展示——它仍只在创建时解析一次（落库后再随语言变化会让
+    /// 同一工作区在不同语言下显示不同名字）；但解析语言必须由调用方在渲染期显式
+    /// 传入，不再读进程级 appLanguage（旧 4b-2e allowlist 已随本批撤销）。
+    static func directorySessionName(name: String, sourcePath: String, with l10n: L10n) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        let basename = URL(fileURLWithPath: sourcePath).standardizedFileURL.lastPathComponent
+        return basename.isEmpty ? l10n("导入照片") : basename
     }
 }

@@ -15,29 +15,14 @@ extension DashboardViewModel {
         createError = nil
         defer { isCreating = false }
         do {
-            let session: SessionData
-            // 默认名（目录 basename / "导入照片"）只在这里解析一次：两条分支
-            // （async API 与同步 Provider）共用同一个落库值。
-            let resolvedName = LiveDashboardDataProvider.directorySessionName(
+            // 默认名（目录 basename / "导入照片"）只在这里解析一次：API 与
+            // 测试端口共用同一个落库值。
+            let resolvedName = Self.directorySessionName(
                 name: name, sourcePath: sourcePath, with: l10n)
-            if let sessionAPI {
-                // LiveSessionAPI 的目录分支内部完成 create + metadata.scan
-                //（入队失败回滚会话，与 C1/filepaths 分支同一契约）；VM 不再
-                // 重复入队或自行回滚，只消费 API 的副作用。
-                let input = try SessionCreateInput(
-                    name: resolvedName, source: "local", sourcePath: sourcePath)
-                session = try await sessionAPI.create(input).session
-            } else {
-                let created = try provider.createSession(
-                    name: resolvedName, source: "local", sourcePath: sourcePath)
-                do {
-                    try provider.enqueueIndexScan(sessionId: created.id, requestedPaths: nil)
-                } catch {
-                    try? provider.deleteSession(created.id, confirmed: true)
-                    throw error
-                }
-                session = created
-            }
+            // Provider 的 createSession 契约 = 建会话 + 入队 metadata.scan
+            //（目录分支由 LiveSessionAPI 内部完成；入队失败回滚会话）。
+            let session = try await provider.createSession(
+                name: resolvedName, source: "local", sourcePath: sourcePath)
             setImportNotice(session: session, with: l10n)
             lastFullRefreshAt = .distantPast
             await refreshAll()
@@ -81,37 +66,14 @@ extension DashboardViewModel {
             let sessionName = name.isEmpty
                 ? (parentDirectory.isEmpty ? l10n("Capture One 导入") : pathRules.basename(parentDirectory))
                 : name
-            let outcome: CreateSessionOutcome
-            if let sessionAPI {
-                // LiveSessionAPI 的 filepaths 分支内部完成 create + addPhotos +
-                // metadata.scan（checkpoint.requestedPaths = 本次选中集合），
-                // job 入队失败时由 API 回滚会话行。
-                let input = try SessionCreateInput(
-                    name: sessionName,
-                    source: SessionSource.captureOne.rawValue,
-                    filepaths: selectedPaths
-                )
-                let result = try await sessionAPI.create(input)
-                outcome = CreateSessionOutcome(
-                    session: result.session,
-                    failedFiles: result.failedFiles,
-                    added: result.added
-                )
-            } else {
-                outcome = try provider.createSessionFromFiles(
-                    name: sessionName,
-                    source: SessionSource.captureOne.rawValue,
-                    filepaths: selectedPaths
-                )
-                do {
-                    try provider.enqueueIndexScan(sessionId: outcome.session.id, requestedPaths: selectedPaths)
-                } catch {
-                    // TS session.ipc.ts L52-62：入队失败回滚已建 session（含已
-                    // 写入照片），避免半成品工作区残留在列表。补偿删除同上传 true。
-                    try? provider.deleteSession(outcome.session.id, confirmed: true)
-                    throw error
-                }
-            }
+            // Provider 的 createSessionFromFiles 契约 = 建会话 + addPhotos +
+            // metadata.scan（checkpoint.requestedPaths = 本次选中集合）；job 入队
+            // 失败时由 LiveSessionAPI 回滚会话行（TS session.ipc.ts L52-62）。
+            let outcome = try await provider.createSessionFromFiles(
+                name: sessionName,
+                source: SessionSource.captureOne.rawValue,
+                filepaths: selectedPaths
+            )
             setImportNotice(
                 session: outcome.session,
                 failedFiles: outcome.failedFiles,
@@ -134,13 +96,7 @@ extension DashboardViewModel {
             // requestedPaths 传 nil：JobService 的 checkpoint 继承会保留原扫描
             // 作用域（文件/C1 导入的 requestedPaths 随重跑续用，重跑=续跑）；
             // 目录会话终态 checkpoint 无该键，仍按目录全树重扫。
-            if let jobAPI {
-                let handle = try await jobAPI.start(
-                    Self.metadataScanRequest(sessionId: sessionId, requestedPaths: nil))
-                handle.drain()
-            } else {
-                try provider.enqueueIndexScan(sessionId: sessionId, requestedPaths: nil)
-            }
+            try await provider.retryIndexScan(sessionId: sessionId)
             scanJobs[sessionId] = DashboardScanJob(status: "queued", current: 0, total: 0)
             await refreshJobs()
         } catch {
@@ -159,45 +115,27 @@ extension DashboardViewModel {
     /// 批量删除（TS deleteManyMutation → sessionApi.deleteMany 带 confirmed）。
     @discardableResult
     func deleteSessions(_ sessionIds: [String], confirmed: Bool) async -> Bool {
-        if let sessionAPI {
-            // 类型化 API 只接收 Confirmed：未确认路径在这里显式失败，语义与
-            // 旧 SessionService.deleteNotConfirmed 完全一致（UI 只在确认后传 true）。
-            guard confirmed else {
-                actionError = CommandError(GatherError(code: .SESSION_DELETE_NOT_CONFIRMED))
-                return false
-            }
-            guard !sessionIds.isEmpty else { return true }
-            do {
-                let input = try SessionDeleteInput(sessionIds: sessionIds)
-                try await sessionAPI.delete(Confirmed(input, source: .userDialog))
-                lastFullRefreshAt = .distantPast
-                await refreshAll()
-                // LiveSessionAPI 的批量删除是单事务（SessionService.deleteSessions）：
-                // 成功 = 全部落库删除，失败 = 整体回滚，故成功时逐 id 交接。
-                notifySessionsDeleted(sessionIds)
-                return true
-            } catch {
-                actionError = CommandError(error)
-                // 单事务回滚：一个都没删，不清任何 workspace 状态。
-                return false
-            }
+        // 未确认路径在 VM 显式失败，语义与旧 SessionService.deleteNotConfirmed
+        // 完全一致（UI 只在确认后传 true）；Provider 仍接收 confirmed 原样透传，
+        // VM 不替 Provider 自证确认。
+        guard confirmed else {
+            actionError = CommandError(GatherError(code: .SESSION_DELETE_NOT_CONFIRMED))
+            return false
         }
-        // stub/测试路径：confirmed 原样透传，VM 不替 Provider 自证确认。
+        guard !sessionIds.isEmpty else { return true }
         do {
-            try provider.deleteSessions(sessionIds, confirmed: confirmed)
+            try await provider.deleteSessions(sessionIds, confirmed: confirmed)
             lastFullRefreshAt = .distantPast
             await refreshAll()
+            // 生产实现（LiveSessionAPI）批量删除是单事务：成功 = 全部落库删除，
+            // 故成功时逐 id 交接。
             notifySessionsDeleted(sessionIds)
             return true
         } catch {
             actionError = CommandError(error)
-            // 同步 Provider 的 deleteSessions 默认实现逐条删除，失败前可能已删掉
-            // 一部分：以「服务端仍存在」为准，只交接真正消失的 id（失败不清）；
-            // 列表读不到时保守不清，宁可残留 workspace 也不误杀。
-            if let remaining = try? await listSessions() {
-                let remainingIds = Set(remaining.map(\.id))
-                notifySessionsDeleted(sessionIds.filter { !remainingIds.contains($0) })
-            }
+            // 端口契约：deleteSessions 是原子的（生产实现为单事务），抛错 = 一个
+            // 都没删。不得用失败后的列表反推「已删 id」——查询失败/夹具空表都会
+            // 把存活会话误判成已删，从而误清 workspace。
             return false
         }
     }
@@ -214,11 +152,7 @@ extension DashboardViewModel {
 
     func cancelJob(_ jobId: String) async {
         do {
-            if let jobAPI {
-                _ = try await jobAPI.cancel(jobId)
-            } else {
-                _ = try provider.cancelJob(jobId)
-            }
+            _ = try await provider.cancelJob(jobId)
             await refreshJobs()
         } catch {
             actionError = CommandError(error)
@@ -227,11 +161,7 @@ extension DashboardViewModel {
 
     func retryJob(_ jobId: String) async {
         do {
-            if let jobAPI {
-                _ = try await jobAPI.retry(jobId)
-            } else {
-                _ = try provider.retryJob(jobId)
-            }
+            _ = try await provider.retryJob(jobId)
             await refreshJobs()
         } catch {
             actionError = CommandError(error)
@@ -240,11 +170,7 @@ extension DashboardViewModel {
 
     func clearCompletedJobs() async {
         do {
-            if let jobAPI {
-                _ = try await jobAPI.clearCompleted(Confirmed(ClearCompletedInput()))
-            } else {
-                _ = try provider.clearCompletedJobs()
-            }
+            _ = try await provider.clearCompletedJobs()
             await refreshJobs()
         } catch {
             actionError = CommandError(error)

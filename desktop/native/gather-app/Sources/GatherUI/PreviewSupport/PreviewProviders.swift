@@ -14,31 +14,31 @@ import GatherProtocol
 // MARK: - Dashboard
 
 struct PreviewDashboardProvider: DashboardDataProvider {
-    func listSessions() throws -> [SessionData] { PreviewData.sessions }
+    func listSessions() async throws -> [SessionData] { PreviewData.sessions }
 
-    func createSession(name: String, source: String, sourcePath: String) throws -> SessionData {
+    func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData {
         throw PreviewAPIError.unavailable("dashboard.createSession")
     }
 
-    func deleteSession(_ sessionId: String, confirmed: Bool) throws {
+    func deleteSession(_ sessionId: String, confirmed: Bool) async throws {
         throw PreviewAPIError.unavailable("dashboard.deleteSession")
     }
 
-    func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? {
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? {
         PreviewData.workspaceStatus(sessionId)
     }
 
-    func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData] { PreviewData.jobs }
+    func listJobs(includeCheckpoint: Bool) async throws -> [AnalysisJobData] { PreviewData.jobs }
 
-    func cancelJob(_ jobId: String) throws -> Bool {
+    func cancelJob(_ jobId: String) async throws -> Bool {
         throw PreviewAPIError.unavailable("dashboard.cancelJob")
     }
 
-    func retryJob(_ jobId: String) throws -> Bool {
+    func retryJob(_ jobId: String) async throws -> Bool {
         throw PreviewAPIError.unavailable("dashboard.retryJob")
     }
 
-    func clearCompletedJobs() throws -> Int {
+    func clearCompletedJobs() async throws -> Int {
         throw PreviewAPIError.unavailable("dashboard.clearCompletedJobs")
     }
 }
@@ -69,7 +69,7 @@ struct PreviewGalleryProvider: GalleryDataProvider {
 // MARK: - Library
 
 struct PreviewLibraryProvider: LibraryDataProvider {
-    func listSessions() throws -> [SessionData] { PreviewData.sessions }
+    func listSessions() async throws -> [SessionData] { PreviewData.sessions }
 
     func globalPhotos(
         criteria: FilterGroup,
@@ -80,11 +80,11 @@ struct PreviewLibraryProvider: LibraryDataProvider {
         (PreviewData.globalPhotos, PreviewData.globalPhotos.count)
     }
 
-    func listAlbums() throws -> [SmartAlbumData] { PreviewData.albums }
+    func listAlbums() async throws -> [SmartAlbumData] { PreviewData.albums }
 
-    func listAssetCandidates() throws -> [AssetLinkCandidateData] { PreviewData.assetCandidates }
+    func listAssetCandidates() async throws -> [AssetLinkCandidateData] { PreviewData.assetCandidates }
 
-    func listAssetVolumes() throws -> [AssetVolumeData] { PreviewData.assetVolumes }
+    func listAssetVolumes() async throws -> [AssetVolumeData] { PreviewData.assetVolumes }
 
     func listMetadataOrphans() async throws -> [MetadataOrphan] { PreviewData.orphanXMPs }
 }

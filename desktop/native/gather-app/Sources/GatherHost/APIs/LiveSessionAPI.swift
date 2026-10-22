@@ -16,10 +16,8 @@
 // - 错误映射：SessionServiceError -> 已有域错误码；其余错误原样抛出（GatherError
 //   目前没有 unspecified 码，B0/D-010 后续补）。
 //
-// 同步核心（listSync/createSync/…）是 internal 的：B1 期间 Dashboard 的
-// LiveDashboardDataProvider 还保留旧 services 构造器供既有集成测试使用，
-// 同步方法直接调用这些核心，而不是在同步上下文里阻塞等待 async API。
-// 生产 UI 只走协议方法。
+// WP4b：同步核心（listSync/createSync/…）已删除；协议方法直接实现同一套
+// 服务调用，同步端口/SyncAPIPortBridge 不再存在。
 
 import Foundation
 import GatherProtocol
@@ -48,49 +46,15 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
     // MARK: - SessionAPI
 
     public func list() async throws -> [SessionData] {
-        try listSync()
+        try map { try sessionService.listSessions() }
     }
 
     public func get(_ sessionId: String) async throws -> SessionData {
         let id = try requireNonBlank(sessionId, field: "sessionId", maxLength: 128)
-        guard let session = try getSync(id) else {
+        guard let session = try map({ try sessionService.getSession(id) }) else {
             throw GatherError(code: .SESSION_NOT_FOUND)
         }
         return session
-    }
-
-    public func create(_ input: SessionCreateInput) async throws -> SessionCreateResult {
-        try createSync(input)
-    }
-
-    public func update(_ input: SessionUpdateParams) async throws -> SessionData {
-        try updateSync(input)
-    }
-
-    public func delete(_ input: Confirmed<SessionDeleteInput>) async throws {
-        try deleteSync(input)
-    }
-
-    public func addPhotos(_ input: SessionAddPhotosInput) async throws -> AddPhotoResult {
-        try addPhotosSync(input)
-    }
-
-    public func status(_ sessionId: String) async throws -> WorkspaceStatus {
-        let id = try requireNonBlank(sessionId, field: "sessionId", maxLength: 128)
-        guard let status = try statusSync(id) else {
-            throw GatherError(code: .SESSION_NOT_FOUND)
-        }
-        return status
-    }
-
-    // MARK: - 同步核心（B1 测试接缝；生产 UI 不调用）
-
-    func listSync() throws -> [SessionData] {
-        try map { try sessionService.listSessions() }
-    }
-
-    func getSync(_ sessionId: String) throws -> SessionData? {
-        try map { try sessionService.getSession(sessionId) }
     }
 
     /// M1：目录 / filepaths / 空会话三路统一返回 SessionCreateResult。
@@ -100,7 +64,7 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
     /// filepaths 分支建会话 + addPhotos + metadata.scan（显式文件集合作用域）。
     /// 两路都在 job 创建失败时回滚会话行（旧 create_from_directory 的补偿语义）；
     /// 空会话分支只建会话，不入队索引。
-    func createSync(_ input: SessionCreateInput) throws -> SessionCreateResult {
+    public func create(_ input: SessionCreateInput) async throws -> SessionCreateResult {
         if !input.filepaths.isEmpty {
             return try createWithFilepaths(input)
         }
@@ -140,7 +104,7 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
         return SessionCreateResult(session: session)
     }
 
-    func updateSync(_ input: SessionUpdateParams) throws -> SessionData {
+    public func update(_ input: SessionUpdateParams) async throws -> SessionData {
         let id = try requireNonBlank(input.sessionId, field: "sessionId", maxLength: 128)
         // 旧命令面 的 session.update 对 name 只做 requiredString（无长度上限）；
         // 这里保留“非空白”语义，不额外改长度上限，避免 UI 行为变化。
@@ -148,7 +112,7 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
         return try map { try sessionService.updateSession(sessionId: id, name: name) }
     }
 
-    func deleteSync(_ input: Confirmed<SessionDeleteInput>) throws {
+    public func delete(_ input: Confirmed<SessionDeleteInput>) async throws {
         let ids = input.value.sessionIds
         try map {
             if ids.count == 1 {
@@ -161,7 +125,7 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
         }
     }
 
-    func addPhotosSync(_ input: SessionAddPhotosInput) throws -> AddPhotoResult {
+    public func addPhotos(_ input: SessionAddPhotosInput) async throws -> AddPhotoResult {
         let result = try map {
             try sessionService.addPhotos(
                 sessionId: input.sessionId,
@@ -177,9 +141,12 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
         )
     }
 
-    /// 返回 nil = 会话不存在（Dashboard 的 workspace.status 兼容探活路径）。
-    func statusSync(_ sessionId: String) throws -> WorkspaceStatus? {
-        try map { try workspaceStatusService.getStatus(sessionId: sessionId) }
+    public func status(_ sessionId: String) async throws -> WorkspaceStatus {
+        let id = try requireNonBlank(sessionId, field: "sessionId", maxLength: 128)
+        guard let status = try map({ try workspaceStatusService.getStatus(sessionId: id) }) else {
+            throw GatherError(code: .SESSION_NOT_FOUND)
+        }
+        return status
     }
 
     // MARK: - 内部

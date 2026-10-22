@@ -102,20 +102,20 @@ private final class StubLibraryProvider: LibraryDataProvider {
         box.lock.withLock { box.metadataInputs }
     }
 
-    func deleteAlbum(albumId: String, confirmed: Bool) throws {
+    func deleteAlbum(albumId: String, confirmed: Bool) async throws {
         box.lock.withLock {
             box.destructiveCalls.append(("album.delete", confirmed))
             box.albums.removeAll { $0.id == albumId }
         }
     }
 
-    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) throws {
+    func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) async throws {
         box.lock.withLock {
             box.destructiveCalls.append((accept ? "assets.accept_candidate" : "assets.reject_candidate", confirmed))
         }
     }
 
-    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) throws -> Int {
+    func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) async throws -> Int {
         box.lock.withLock { box.destructiveCalls.append(("assets.relink_root", confirmed)) }
         return 0
     }
@@ -140,7 +140,7 @@ private final class StubLibraryProvider: LibraryDataProvider {
         return []
     }
 
-    func listSessions() throws -> [SessionData] {
+    func listSessions() async throws -> [SessionData] {
         let (error, sessions): (String?, [SessionData]) = box.lock.withLock { (box.listError, box.sessions) }
         if let error {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
@@ -164,7 +164,7 @@ private final class StubLibraryProvider: LibraryDataProvider {
         box.lock.withLock { (box.photos, box.total) }
     }
 
-    func listAlbums() throws -> [SmartAlbumData] {
+    func listAlbums() async throws -> [SmartAlbumData] {
         let (error, albums): (String?, [SmartAlbumData]) = box.lock.withLock { (box.listAlbumsError, box.albums) }
         if let error {
             throw NSError(domain: "stub", code: 2, userInfo: [NSLocalizedDescriptionKey: error])
@@ -725,21 +725,21 @@ struct LibraryViewModelTests {
         let criteria = FilterGroup(logic: .and, conditions: [
             .rule(FilterRule(field: "rating", operator: .gte, value: .number(4))),
         ])
-        let created = try provider.createAlbum(name: "高评分", criteria: criteria)
+        let created = try await provider.createAlbum(name: "高评分", criteria: criteria)
         #expect(created.name == "高评分")
-        #expect(try provider.listAlbums().contains(where: { $0.id == created.id }))
+        #expect(try await provider.listAlbums().contains(where: { $0.id == created.id }))
 
         let page = try await provider.albumPhotos(albumId: created.id, limit: 60, offset: 0)
         #expect(page.total == 1)
         #expect(page.photos.map(\.photoId) == ["p1"])
 
-        try provider.updateAlbum(albumId: created.id, criteria: FilterGroup(logic: .and, conditions: []))
-        try provider.deleteAlbum(albumId: created.id, confirmed: true)
-        #expect(try provider.listAlbums().contains(where: { $0.id == created.id }) == false)
+        try await provider.updateAlbum(albumId: created.id, criteria: FilterGroup(logic: .and, conditions: []))
+        try await provider.deleteAlbum(albumId: created.id, confirmed: true)
+        #expect(try await provider.listAlbums().contains(where: { $0.id == created.id }) == false)
 
-        _ = try provider.listAssetCandidates()
+        _ = try await provider.listAssetCandidates()
         _ = try await provider.listMetadataOrphans()
-        _ = try provider.listAssetVolumes()
+        _ = try await provider.listAssetVolumes()
     }
 
     // ── 破坏性命令的确认契约（审查 §4.4「假确认」的回归防线）──

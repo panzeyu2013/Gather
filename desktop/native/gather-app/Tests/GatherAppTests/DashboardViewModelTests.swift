@@ -16,7 +16,7 @@ import Testing
 
 // MARK: - Stub（错误态注入）
 
-private final class StubDashboardProvider: DashboardDataProvider {
+private final class StubDashboardProvider: DashboardDataProvider, @unchecked Sendable {
     var sessions: [SessionData] = []
     var statuses: [String: WorkspaceStatus] = [:]
     var jobs: [AnalysisJobData] = []
@@ -37,14 +37,14 @@ private final class StubDashboardProvider: DashboardDataProvider {
     /// 入队 metadata.scan 的作用域参数（nil = 目录全树；非 nil = 显式集合）。
     private(set) var indexScanCalls: [(sessionId: String, requestedPaths: [String]?)] = []
 
-    func listSessions() throws -> [SessionData] {
+    func listSessions() async throws -> [SessionData] {
         if let listError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: listError])
         }
         return sessions
     }
 
-    func createSession(name: String, source: String, sourcePath: String) throws -> SessionData {
+    func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData {
         if let createError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: createError])
         }
@@ -52,7 +52,7 @@ private final class StubDashboardProvider: DashboardDataProvider {
         return Self.session(id: "new-\(createdNames.count)", name: name, sourcePath: sourcePath)
     }
 
-    func deleteSession(_ sessionId: String, confirmed: Bool) throws {
+    func deleteSession(_ sessionId: String, confirmed: Bool) async throws {
         deletedIds.append(sessionId)
         deleteConfirmedFlags.append(confirmed)
         if let deleteFailureAfter, deleteSucceededIds.count >= deleteFailureAfter {
@@ -66,34 +66,34 @@ private final class StubDashboardProvider: DashboardDataProvider {
         sessions.removeAll { $0.id == sessionId }
     }
 
-    func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? {
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? {
         statuses[sessionId]
     }
 
-    func listJobs(includeCheckpoint: Bool) throws -> [AnalysisJobData] {
+    func listJobs(includeCheckpoint: Bool) async throws -> [AnalysisJobData] {
         if let jobListError {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: jobListError])
         }
         return jobs
     }
 
-    func cancelJob(_ jobId: String) throws -> Bool {
+    func cancelJob(_ jobId: String) async throws -> Bool {
         cancelCalls.append(jobId)
         return true
     }
 
-    func retryJob(_ jobId: String) throws -> Bool {
+    func retryJob(_ jobId: String) async throws -> Bool {
         retryCalls.append(jobId)
         return true
     }
 
-    func clearCompletedJobs() throws -> Int {
+    func clearCompletedJobs() async throws -> Int {
         clearCallCount += 1
         return 1
     }
 
-    func enqueueIndexScan(sessionId: String, requestedPaths: [String]?) throws {
-        indexScanCalls.append((sessionId, requestedPaths))
+    func retryIndexScan(sessionId: String) async throws {
+        indexScanCalls.append((sessionId, nil))
     }
 
     static func session(id: String, name: String = "会话", sourcePath: String = "") -> SessionData {
@@ -171,8 +171,8 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
     let sessionRepo = SessionRepo(connection: db)
     let photoRepo = PhotoRepo(connection: db)
     let jobService = JobService(repo: AnalysisJobRepo(connection: db))
-    // Cut 3 / 3b-3（E-19 #3）：旧 services convenience init 已删除；测试改为
-    // 显式构造类型化 Live API，并经端口注入同步核（生产路径不注入）。
+    // WP4b：Live provider 已移到 GatherHost；测试直接构造类型化 Live API，
+    // 不再经同步端口注入同步核。
     let sessionAPI = LiveSessionAPI(
         sessionService: SessionService(
             sessionRepo: sessionRepo,
@@ -190,9 +190,7 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
     let jobAPI = LiveJobAPI(jobService: jobService)
     let provider = LiveDashboardDataProvider(
         sessionAPI: sessionAPI,
-        jobAPI: jobAPI,
-        syncSession: sessionAPI,
-        syncJob: jobAPI
+        jobAPI: jobAPI
     )
     return (provider, db)
 }
@@ -371,14 +369,6 @@ struct DashboardViewModelTests {
     // P1-1：生产路径由 SessionAPI.create 内部入队一次；Dashboard 只消费结果，
     // 不得再调 JobAPI.start（同 dedupeKey 会被静默去重，从而掩盖重复副作用）。
     @Test func directoryCreateScanUsesDirectoryScope() async throws {
-        // stub 回退路径（无 SessionAPI）：VM 经 provider 入队目录作用域。
-        let (viewModel, stub) = makeStubVM()
-        let created = await viewModel.createSession(
-            name: "新", sourcePath: "/tmp/新", with: L10n(language: .zhCN))
-        #expect(created != nil)
-        #expect(stub.indexScanCalls.count == 1)
-        #expect(stub.indexScanCalls.first?.requestedPaths == nil)
-
         // 生产路径（LiveSessionAPI）：create 内部入队一次；JobAPI.start 零调用。
         let db = try makeGatherTestDB()
         let sessionRepo = SessionRepo(connection: db)
@@ -401,9 +391,7 @@ struct DashboardViewModelTests {
         let jobStub = B5bJobAPIStub()
         let provider = LiveDashboardDataProvider(
             sessionAPI: sessionAPI,
-            jobAPI: jobStub,
-            syncSession: sessionAPI,
-            syncJob: LiveJobAPI(jobService: jobService)
+            jobAPI: jobStub
         )
         let apiViewModel = DashboardViewModel(provider: provider)
         let directory = NSTemporaryDirectory() + "/gather-dir-create-" + UUID().uuidString
@@ -456,24 +444,20 @@ struct DashboardViewModelTests {
         #expect(viewModel.actionError == nil)
     }
 
-    // R1 P1-3：同步 provider 的 enqueueIndexScan（LiveDashboardDataProvider →
-    // JobSyncAPI）同样必须是工厂产出；用 spy 捕获请求，防止再长出第 5 份字面量。
-    @Test func syncProviderEnqueueIndexScanUsesMetadataScanFactory() throws {
-        let spy = JobSyncAPISpy()
+    // WP4b：Host 的 async provider 也必须是工厂产出（不得在适配层复刻
+    // dedupeKey/checkpoint）；直接调用 provider 的 retry 端口做整值比较。
+    @Test func providerRetryIndexScanUsesMetadataScanFactory() async throws {
+        let jobs = B5bJobAPIStub()
         let provider = LiveDashboardDataProvider(
             sessionAPI: B8SessionAPIStub(),
-            jobAPI: B5bJobAPIStub(),
-            syncSession: nil,
-            syncJob: spy
+            jobAPI: jobs
         )
 
-        try provider.enqueueIndexScan(
-            sessionId: "s1", requestedPaths: ["/tmp/b.jpg", "/tmp/a.jpg"])
+        try await provider.retryIndexScan(sessionId: "s1")
 
         #expect(
-            spy.startRequests == [JobCreateParams.metadataScan(
-                sessionId: "s1", requestedPaths: ["/tmp/b.jpg", "/tmp/a.jpg"])],
-            "sync provider 入队也必须走协议层 metadata.scan 工厂"
+            jobs.startRequests == [JobCreateParams.metadataScan(sessionId: "s1", requestedPaths: nil)],
+            "provider.retryIndexScan 必须走协议层 metadata.scan 工厂"
         )
     }
 
@@ -489,16 +473,16 @@ struct DashboardViewModelTests {
         try Data("a".utf8).write(to: URL(fileURLWithPath: a))
         try Data("b".utf8).write(to: URL(fileURLWithPath: b))
 
-        let outcome = try provider.createSessionFromFiles(
+        let outcome = try await provider.createSessionFromFiles(
             name: "C1", source: "capture-one", filepaths: [a, b])
         #expect(outcome.session.sourcePath == "", "文件导入不得把公共父目录落成 source_path")
-        let listed = try provider.listSessions().first { $0.id == outcome.session.id }
+        let listed = try await provider.listSessions().first { $0.id == outcome.session.id }
         #expect(listed?.sourcePath == "", "落库的 source_path 也必须为空")
 
+        // Live provider 的 createSessionFromFiles 已在 API 内入队一次；契约断言
+        // 需要完整 checkpoint（Dashboard 运行时走轻投影）。
         let selected = normalizeImportFilepaths([a, b])
-        try provider.enqueueIndexScan(sessionId: outcome.session.id, requestedPaths: selected)
-        // 契约断言需要完整 checkpoint（Dashboard 运行时走轻投影）。
-        let jobs = try provider.listJobs(includeCheckpoint: true)
+        let jobs = try await provider.listJobs(includeCheckpoint: true)
         let scan = try #require(jobs.first {
             $0.type == .metadataScan && $0.scopeId == outcome.session.id
         })
@@ -522,7 +506,7 @@ struct DashboardViewModelTests {
         #expect(viewModel.hasClearableJobs == true)
 
         await viewModel.clearCompletedJobs()
-        let remaining = try provider.listJobs(includeCheckpoint: true)
+        let remaining = try await provider.listJobs(includeCheckpoint: true)
         #expect(remaining.map(\.id) == ["scan1"])
         #expect(viewModel.hasClearableJobs == false)
     }
@@ -704,14 +688,19 @@ struct DashboardViewModelTests {
     }
 
     // 假确认防线：confirmed 由调用方显式传入，VM/Provider 不得无条件自证；
-    // 取消路径根本不会到达 delete（视图只在确认分支传 true）。
+    // 未确认路径在 VM 入口显式失败，**根本不触达 provider**（视图只在确认分支传 true）。
     @Test func deletePassesConfirmationThrough() async throws {
         let (viewModel, stub) = makeStubVM()
-        _ = await viewModel.deleteSession("s1", confirmed: false)
-        _ = await viewModel.deleteSessions(["s2", "s3"], confirmed: false)
-        #expect(stub.deleteConfirmedFlags == [false, false, false])
+        let single = await viewModel.deleteSession("s1", confirmed: false)
+        #expect(single == false)
+        let batch = await viewModel.deleteSessions(["s2", "s3"], confirmed: false)
+        #expect(batch == false)
+        #expect(stub.deleteConfirmedFlags.isEmpty, "未确认不得把 false 当成已确认去调用 provider")
+        #expect(viewModel.actionError?.code == "SESSION_DELETE_NOT_CONFIRMED")
+
+        viewModel.actionError = nil
         _ = await viewModel.deleteSession("s4", confirmed: true)
-        #expect(stub.deleteConfirmedFlags.last == true, "确认分支必须原样透传 true")
+        #expect(stub.deleteConfirmedFlags == [true], "确认分支必须原样透传 true")
     }
 
     // R4 P1-3：删除成功后逐 id 交接宿主（RootView 注入 SessionStore.endSession，
@@ -764,17 +753,17 @@ struct DashboardViewModelTests {
         let batch = await viewModel.deleteSessions(["s1", "s2"], confirmed: true)
         #expect(batch)
         #expect(deleted == ["s1", "s2"])
-        #expect(try provider.listSessions().map(\.id) == ["s3"])
+        #expect(try await provider.listSessions().map(\.id) == ["s3"])
 
         let single = await viewModel.deleteSession("s3", confirmed: true)
         #expect(single)
         #expect(deleted == ["s1", "s2", "s3"])
-        #expect(try provider.listSessions().isEmpty)
+        #expect(try await provider.listSessions().isEmpty)
     }
 
-    // 批量部分失败（同步 Provider 默认逐条删除）：只交接真正删掉的 id，
-    // 失败的第 2 条与未执行的第 3 条都不清（否则 workspace 会被误杀）。
-    @Test func batchDeleteNotifiesOnlySucceededSessions() async {
+    // 端口契约：批量删除是原子的；即便实现内部已部分执行，VM 也不得用失败后的
+    // 列表反推「已删 id」（查询失败/空表会把存活会话误判成已删，误清 workspace）。
+    @Test func failedBatchDeleteNeverNotifiesPartialDeletions() async {
         let (viewModel, stub) = makeStubVM()
         stub.sessions = [
             StubDashboardProvider.session(id: "s1"),
@@ -788,8 +777,8 @@ struct DashboardViewModelTests {
         stub.deleteFailureAfter = 1
         let ok = await viewModel.deleteSessions(["s1", "s2", "s3"], confirmed: true)
         #expect(ok == false)
-        #expect(stub.deleteSucceededIds == ["s1"])
-        #expect(deleted == ["s1"], "失败/未执行的 id 不得被当成已删")
+        #expect(stub.deleteSucceededIds == ["s1"], "夹具确实已部分执行，用来证明 VM 不据此交接")
+        #expect(deleted.isEmpty, "抛错 = 未确认成功，一个都不交接")
         #expect(viewModel.actionError != nil)
         #expect(stub.sessions.map(\.id) == ["s2", "s3"], "未删的会话仍在服务端")
     }
@@ -868,32 +857,5 @@ struct DashboardViewModelTests {
         #expect(viewModel.phase == .loaded)
         #expect(viewModel.sessions.count == 1)
         #expect(viewModel.statuses.isEmpty == false)
-    }
-}
-
-// MARK: - R1 P1-3 sync 端口 spy
-
-/// 只记录 startJobSync 请求的 JobSyncAPI 替身（sync provider 入队路径）。
-private final class JobSyncAPISpy: JobSyncAPI, @unchecked Sendable {
-    private let lock = NSLock()
-    private var requests: [JobCreateParams] = []
-
-    var startRequests: [JobCreateParams] {
-        lock.lock()
-        defer { lock.unlock() }
-        return requests
-    }
-
-    func listJobsSync(_ filter: JobListFilter) throws -> [AnalysisJobData] { [] }
-    func cancelJobSync(_ jobId: String) throws -> Bool { false }
-    func retryJobSync(_ jobId: String) throws -> Bool { false }
-    func clearCompletedJobsSync() throws -> Int { 0 }
-
-    func startJobSync(_ request: JobCreateParams) throws -> AnalysisJobData {
-        lock.lock()
-        requests.append(request)
-        let count = requests.count
-        lock.unlock()
-        return b5bJobData(id: "job-\(count)", dedupeKey: request.dedupeKey)
     }
 }

@@ -20,7 +20,7 @@ extension LibraryViewModel {
 
     func reloadSessions() async {
         do {
-            sessions = try provider.listSessions()
+            sessions = try await provider.listSessions()
         } catch {
             actionError = CommandError(error)
         }
@@ -31,13 +31,13 @@ extension LibraryViewModel {
     /// B6b：孤立 XMP 列表走 MetadataAPI.orphans（async），因此本方法改为 async；
     /// 其余三组保持同步、顺序与错误语义不变。
     public func reloadSupport() async {
-        do { albums = try provider.listAlbums() }
+        do { albums = try await provider.listAlbums() }
         catch { actionError = CommandError(error) }
-        do { assetCandidates = try provider.listAssetCandidates() }
+        do { assetCandidates = try await provider.listAssetCandidates() }
         catch { actionError = CommandError(error) }
         do { metadataOrphans = try await provider.listMetadataOrphans() }
         catch { actionError = CommandError(error) }
-        do { assetVolumes = try provider.listAssetVolumes() }
+        do { assetVolumes = try await provider.listAssetVolumes() }
         catch { actionError = CommandError(error) }
     }
 
@@ -58,11 +58,11 @@ extension LibraryViewModel {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         await performSupportMutation {
-            _ = try self.provider.createAlbum(
+            _ = try await self.provider.createAlbum(
                 name: trimmed,
                 criteria: buildLibraryCriteria(self.committed)
             )
-            self.albums = try self.provider.listAlbums()
+            self.albums = try await self.provider.listAlbums()
             Self.postLibraryChange()
         }
     }
@@ -70,11 +70,11 @@ extension LibraryViewModel {
     public func updateSelectedAlbum() async {
         guard let albumId = selectedAlbumId else { return }
         await performSupportMutation {
-            try self.provider.updateAlbum(
+            try await self.provider.updateAlbum(
                 albumId: albumId,
                 criteria: buildLibraryCriteria(self.committed)
             )
-            self.albums = try self.provider.listAlbums()
+            self.albums = try await self.provider.listAlbums()
             Self.postLibraryChange()
             await self.reload()
         }
@@ -85,9 +85,9 @@ extension LibraryViewModel {
     /// 的 pendingDeleteAlbum + gatherDestructiveConfirm）。
     public func deleteAlbum(id: String, confirmed: Bool) async {
         await performSupportMutation {
-            try self.provider.deleteAlbum(albumId: id, confirmed: confirmed)
+            try await self.provider.deleteAlbum(albumId: id, confirmed: confirmed)
             if self.selectedAlbumId == id { self.selectedAlbumId = nil }
-            self.albums = try self.provider.listAlbums()
+            self.albums = try await self.provider.listAlbums()
             Self.postLibraryChange()
             await self.reload()
         }
@@ -101,13 +101,13 @@ extension LibraryViewModel {
         confirmed: Bool
     ) async {
         await performSupportMutation {
-            try self.provider.updateAssetCandidate(
+            try await self.provider.updateAssetCandidate(
                 candidateId: candidate.id,
                 accept: accept,
                 confirmed: confirmed
             )
-            self.assetCandidates = try self.provider.listAssetCandidates()
-            self.assetVolumes = try self.provider.listAssetVolumes()
+            self.assetCandidates = try await self.provider.listAssetCandidates()
+            self.assetVolumes = try await self.provider.listAssetVolumes()
             Self.postLibraryChange()
             await self.reload()
         }
@@ -156,12 +156,12 @@ extension LibraryViewModel {
     /// 重新关联存储卷根（破坏性：改写该根下全部文件的路径记录）。
     public func relinkVolume(root oldRoot: String, newRoot: String, confirmed: Bool) async {
         await performSupportMutation {
-            _ = try self.provider.relinkAssetRoot(
+            _ = try await self.provider.relinkAssetRoot(
                 oldRoot: oldRoot,
                 newRoot: newRoot,
                 confirmed: confirmed
             )
-            self.assetVolumes = try self.provider.listAssetVolumes()
+            self.assetVolumes = try await self.provider.listAssetVolumes()
             Self.postLibraryChange()
             await self.reload()
         }

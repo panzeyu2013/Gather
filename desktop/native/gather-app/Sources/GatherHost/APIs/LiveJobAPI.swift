@@ -11,8 +11,7 @@
 // 流结束时（终态帧 / 取消 / 丢弃 handle）移除观察者；start 在注册后补一次
 // 快照，覆盖“job 在观察者注册前就已终态”的竞态。
 //
-// 同步核心（listSync/cancelSync/…）是 internal 的：B1 期间 Dashboard 的
-// LiveDashboardDataProvider 旧 services 构造器需要同步方法，生产 UI 只走协议。
+// WP4b：同步核心（listSync/cancelSync/…）已删除；协议方法直接调用 JobService。
 
 import Foundation
 import GatherProtocol
@@ -34,26 +33,27 @@ public final class LiveJobAPI: JobAPI {
     // MARK: - JobAPI
 
     public func list(_ filter: JobListFilter) async throws -> [AnalysisJobData] {
-        try listSync(filter)
+        try jobService.list(includeCheckpoint: filter.includeCheckpoint)
     }
 
     public func cancel(_ jobId: String) async throws -> Bool {
         let id = try requireNonBlank(jobId, field: "jobId", maxLength: 256)
-        return try cancelSync(id)
+        return try jobService.cancel(id)
     }
 
     public func retry(_ jobId: String) async throws -> Bool {
         let id = try requireNonBlank(jobId, field: "jobId", maxLength: 256)
-        return try retrySync(id)
+        return try jobService.retry(id)
     }
 
     public func clearCompleted(_ input: Confirmed<ClearCompletedInput>) async throws -> Int {
         _ = input.value // 载荷当前无字段；Confirmed 是调用点标记，不是布尔门禁。
-        return try clearCompletedSync()
+        return try jobService.clearCompleted()
     }
 
     public func start(_ request: JobRequest) async throws -> JobHandle {
-        let job = try createJobSync(request)
+        try validate(request)
+        let job = try jobService.create(request)
         // GatherEventCenter 是 @MainActor（@Observable）；通知名是静态常量，
         // 在非隔离的 API 实现里经 MainActor 读取，避免把整个 API 类标成
         // MainActor（那样无法满足 Sendable 协议的 nonisolated 要求）。
@@ -96,29 +96,6 @@ public final class LiveJobAPI: JobAPI {
             continuation.finish()
         }
         return JobHandle(id: job.id, events: stream)
-    }
-
-    // MARK: - 同步核心（B1 测试接缝；生产 UI 不调用）
-
-    func listSync(_ filter: JobListFilter) throws -> [AnalysisJobData] {
-        try jobService.list(includeCheckpoint: filter.includeCheckpoint)
-    }
-
-    func cancelSync(_ jobId: String) throws -> Bool {
-        try jobService.cancel(jobId)
-    }
-
-    func retrySync(_ jobId: String) throws -> Bool {
-        try jobService.retry(jobId)
-    }
-
-    func clearCompletedSync() throws -> Int {
-        try jobService.clearCompleted()
-    }
-
-    func createJobSync(_ request: JobRequest) throws -> AnalysisJobData {
-        try validate(request)
-        return try jobService.create(request)
     }
 
     // MARK: - 内部

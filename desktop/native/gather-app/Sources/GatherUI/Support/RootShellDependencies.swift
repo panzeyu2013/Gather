@@ -6,9 +6,8 @@
 // AppBootstrap.SceneState 装配注入；GatherUI 仍只依赖 GatherProtocol，
 // layering 门禁不变。
 //
-// dashboardProvider 目前是 package（LiveDashboardDataProvider 的协议尚未提升为
-// public，见 DashboardViewModel.swift:18），因此这里保留为 package 成员，且
-// 整个 init 为 package——4a-2 把它提升为 public 端口后即可放宽，不改变字段形状。
+// dashboardProvider 仍是 package 端口（协议与 VM 均未提升为 public）；生产实现
+// 已随 WP4b 移到 GatherHost，这里只保留字段形状与 package 可见性。
 import Foundation
 import GatherProtocol
 

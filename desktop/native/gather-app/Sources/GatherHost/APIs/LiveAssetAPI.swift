@@ -31,56 +31,34 @@ public final class LiveAssetAPI: AssetAPI, @unchecked Sendable {
     // MARK: - AssetAPI
 
     public func candidates(_ query: AssetCandidatesQuery) async throws -> [AssetLinkCandidateData] {
-        try candidatesSync(query.sessionId)
-    }
-
-    public func volumes() async throws -> [AssetVolumeData] {
-        try volumesSync()
-    }
-
-    public func accept(_ input: Confirmed<AssetCandidateReference>) async throws -> Bool {
-        try acceptSync(input.value.candidateId)
-    }
-
-    public func reject(_ input: Confirmed<AssetCandidateReference>) async throws -> Bool {
-        try rejectSync(input.value.candidateId)
-    }
-
-    public func relinkRoot(_ input: Confirmed<AssetRelinkInput>) async throws -> Int {
-        try relinkRootSync(oldRoot: input.value.oldRoot, newRoot: input.value.newRoot)
-    }
-
-    // MARK: - 同步核心（LiveLibraryDataProvider 的测试接缝；生产 UI 走协议）
-
-    func candidatesSync(_ sessionId: String?) throws -> [AssetLinkCandidateData] {
         try LiveAPIErrorMapping.map {
-            try assetRepo.listCandidates(sessionId: sessionId)
+            try assetRepo.listCandidates(sessionId: query.sessionId)
         }
     }
 
-    func volumesSync() throws -> [AssetVolumeData] {
+    public func volumes() async throws -> [AssetVolumeData] {
         try LiveAPIErrorMapping.map {
             try assetRepo.listVolumes()
         }
     }
 
-    func acceptSync(_ candidateId: String) throws -> Bool {
+    public func accept(_ input: Confirmed<AssetCandidateReference>) async throws -> Bool {
         try LiveAPIErrorMapping.map {
-            try assetRepo.acceptCandidate(candidateId)
+            try assetRepo.acceptCandidate(input.value.candidateId)
             return true
         }
     }
 
-    func rejectSync(_ candidateId: String) throws -> Bool {
+    public func reject(_ input: Confirmed<AssetCandidateReference>) async throws -> Bool {
         try LiveAPIErrorMapping.map {
-            try assetRepo.rejectCandidate(candidateId)
+            try assetRepo.rejectCandidate(input.value.candidateId)
             return true
         }
     }
 
-    func relinkRootSync(oldRoot: String, newRoot: String) throws -> Int {
+    public func relinkRoot(_ input: Confirmed<AssetRelinkInput>) async throws -> Int {
         try LiveAPIErrorMapping.map {
-            try assetRepo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
+            try assetRepo.relinkRoot(oldRoot: input.value.oldRoot, newRoot: input.value.newRoot)
         }
     }
 }
