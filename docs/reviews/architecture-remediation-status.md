@@ -1,7 +1,7 @@
 # 架构整改执行状态（WP0–WP7b，2026-10-22）
 
 > 计划：docs/reviews/architecture-remediation-plan.md。本文件是执行状态索引；详细设计见 macro 报告与 wp6 设计。
-> 工作区：分支 refactor，HEAD 877b2cd；本地 commit，未 push。
+> 工作区：分支 refactor，HEAD cdf3962；本地 commit，未 push。
 
 ## 1. 已完成 WP
 
