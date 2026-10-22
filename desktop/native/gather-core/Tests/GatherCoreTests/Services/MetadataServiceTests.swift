@@ -11,7 +11,7 @@ import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherDelivery
 
 /// 计数 EXIF provider：调用次数即"是否重新提取"的独立证据。

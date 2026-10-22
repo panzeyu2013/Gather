@@ -16,7 +16,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LivePhotoPathPolicy: PhotoPathPolicy, @unchecked Sendable {
     private let photoRepo: PhotoRepo

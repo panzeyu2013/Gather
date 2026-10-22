@@ -36,7 +36,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
     private let exportService: ExportService

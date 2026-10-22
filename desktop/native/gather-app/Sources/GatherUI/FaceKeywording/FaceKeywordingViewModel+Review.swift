@@ -109,7 +109,7 @@ extension FaceKeywordingViewModel {
     }
 
     /// 写路径统一广播：人脸域；绑定/解绑同时命中人物域（person_photos 变化）。
-    func publishChange(_ domains: GatherDomain...) {
+    func publishChange(_ domains: GatherChangeDomain...) {
         for domain in domains {
             GatherEventCenter.postDomainChange(domain, sessionId: sessionId)
         }

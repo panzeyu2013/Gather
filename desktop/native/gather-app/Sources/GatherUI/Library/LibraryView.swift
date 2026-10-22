@@ -47,7 +47,7 @@ package struct LibraryView: View {
     var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     /// 需要刷新本页支持数据（相册/关联候选/孤立 XMP/离线卷）的域。
-    private static let refreshDomains: Set<GatherDomain> = [
+    private static let refreshDomains: Set<GatherChangeDomain> = [
         .duplicates, .metadata, .culling, .library,
     ]
 

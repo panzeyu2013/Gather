@@ -78,9 +78,9 @@ tracked "awaitSync semaphore bridge (R5)"       'awaitSync'                     
 enforce "no SessionCommandRouter (R5)"          'SessionCommandRouter'             "$APP"    "*.swift"
 enforce "no CommandRouter/WebResponse (R5)"     'CommandRouter|WebResponse'        "$APP"    "*.swift"
 enforce "no NativeCommandClient (R5)"           'NativeCommandClient'              "$APP"    "*.swift"
-tracked "Services layer (R2)"                   '.'                                "$CORE/Sources/GatherDomain/Services" "*.swift"
+tracked "Services layer (R2)"                   '.'                                "$CORE/Sources/GatherApplication/Services" "*.swift"
 
-tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepare\(' "$CORE/Sources/GatherDomain/Services" "*.swift"
+tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepare\(' "$CORE/Sources/GatherApplication/Services" "*.swift"
 tracked "unchecked Sendable (R1/R2)"            '@unchecked Sendable'              "$NATIVE" "*.swift"
 # R6：双轨文案的判据只看"英文侧死数据"（enDesc/labelEn/titleEn）。zhDesc 是
 # 单轨实现里的正常键名（渲染走 l(zhLabel/zhDesc)），计入会把合法实现误报。

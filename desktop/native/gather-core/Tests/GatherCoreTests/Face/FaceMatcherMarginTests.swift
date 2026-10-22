@@ -3,7 +3,7 @@
 // 精确路径与 LSH 路径的判定必须一致；数值边界用可精确表示的余弦（1.0 / 0.5）。
 
 import Testing
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherProtocol
 @testable import GatherAnalysis
 

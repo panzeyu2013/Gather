@@ -21,9 +21,9 @@
 |---|---|---|
 | 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaV1.swift`（旧迁移链已删除）；fresh 校验 `Tests/GatherCoreTests/Database/MigrationTests.swift`（schema 1 / 43 表） |
 | 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherPersistence/Database/SHA256.swift`（**ImageCache 类已删除**，见 ADR-028；文件已由 ImageCache.swift 更名为 SHA256.swift，仅保留生产在用的哈希工具） |
-| 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherDomain/Services/WorkspaceStatusService.swift` |
-| 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherDomain/Services/SessionService.swift` |
-| 015 | `services/capture-one/sync-state.ts` | `gather-core/Sources/GatherDomain/Services/CaptureOneSyncState.swift`（**`CaptureOneSyncState` 类与 `C1BridgeProvider` 已删除**，见 ADR-028；保留纯函数 `aggregateSessionState`） |
+| 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherApplication/Services/WorkspaceStatusService.swift` |
+| 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherApplication/Services/SessionService.swift` |
+| 015 | `services/capture-one/sync-state.ts` | `gather-core/Sources/GatherApplication/Services/CaptureOneSyncState.swift`（**`CaptureOneSyncState` 类与 `C1BridgeProvider` 已删除**，见 ADR-028；保留纯函数 `aggregateSessionState`） |
 | 016/019/020 | `renderer/locales/`（i18next）、`main/menu.ts`、`main/locale.ts` | `gather-app/Sources/GatherUI/Support/GatherLocalization.swift` + `Resources/{en,zh-Hans}.lproj`；`gather-app/Sources/GatherHost/GatherAppDelegate.swift`（`installMenu` 两语言重建，`languageChanged` 驱动） |
 | 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `GatherLocalization.errorText`（179 项映射） |
 | 018 | `renderer/components/Dialog/Dialog.tsx` | 历史记录：自研 APG 焦点管理仅存在于 Electron 版；原生版由系统 sheet/`confirmationDialog` 天然覆盖（见 DEVELOPMENT.md HIG 约定），"拒绝 roving tabindex"的结论对原生列表仍成立 |

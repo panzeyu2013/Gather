@@ -33,7 +33,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 import GatherDelivery
 
 public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {

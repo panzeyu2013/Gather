@@ -23,7 +23,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
     private let sessionService: SessionService

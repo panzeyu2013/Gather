@@ -7,9 +7,9 @@
 // 只依赖四个分层 product；依赖方向严格单向：
 //
 //   GatherApp → GatherHost → GatherUI → GatherProtocol
-//                    ↘ GatherPersistence / GatherAnalysis / GatherDomain → GatherProtocol
+//                    ↘ GatherPersistence / GatherAnalysis / GatherApplication → GatherProtocol
 //
-// GatherUI **不得** import GatherPersistence / GatherDomain / GatherAnalysis /
+// GatherUI **不得** import GatherPersistence / GatherApplication / GatherAnalysis /
 // GatherHost：跨域能力一律经 GatherProtocol 的 API 协议或 GatherUI 内的端口
 // 协议注入（编译期由 build.sh / CI 的 --explicit-target-dependency-import-check
 // error 守住）。Info.plist 在 GatherUI/Support（由 build.sh 拷入 app bundle），
@@ -103,7 +103,7 @@ let package = Package(
                 .product(name: "GatherPersistence", package: "gather-core"),
                 .product(name: "GatherAnalysis", package: "gather-core"),
                 .product(name: "GatherDelivery", package: "gather-core"),
-                .product(name: "GatherDomain", package: "gather-core"),
+                .product(name: "GatherApplication", package: "gather-core"),
             ],
             path: "Sources/GatherHost",
             swiftSettings: swift6Settings
@@ -125,7 +125,7 @@ let package = Package(
                 .product(name: "GatherPersistence", package: "gather-core"),
                 .product(name: "GatherAnalysis", package: "gather-core"),
                 .product(name: "GatherDelivery", package: "gather-core"),
-                .product(name: "GatherDomain", package: "gather-core"),
+                .product(name: "GatherApplication", package: "gather-core"),
                 // WP7：复用 core 的测试夹具（makeTestDB / AsyncGate / LockedBox），
                 // 不再在 app 侧复制。product 只链接进测试，不进 app 运行时。
                 .product(name: "GatherTestSupport", package: "gather-core"),

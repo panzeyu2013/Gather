@@ -253,6 +253,14 @@
 - **schema**：`swift run ... gather-schema verify` = 43 表 / user_version 1 / FK 违规 0。
 - **残余**：`check-protocol-surface.sh --strict` 红——① 脚本 prod-files 未含 `GatherDelivery`，`MetadataMutationResult` 被误报零引用（1）；② 端口下移使 Protocol 类型 251→254、声明 1,320→1,338，需修脚本后 `--write-baseline`。二者均在本刀白名单外，未改。另：9 个移动文件头仍写旧路径（纯移动未改内容）；不 commit；无 GUI 验收。
 
+## WP3a Application 层纯重命名（2026-10-22，HEAD 66adef8；工作区未提交）
+
+- **范围**：`Sources/GatherDomain` → `GatherApplication`（git mv **21 文件 / 15,211 行**，内容零改动）；core product/target/测试依赖、app Host 与测试 product 依赖、全仓 import **130 行**（`import` 72 + `@testable import` 58）更新；GatherUI 同名枚举 `GatherDomain` → `GatherChangeDomain`（**1 声明 + 6 引用 / 4 文件**）；不动业务逻辑/API/其他 target 名称。Repo 协议与 Ports 拆分留给 WP3b。
+- **必要偏离（记账）**：门禁脚本/基线/文档硬引用旧目录共 **5+1+2 文件 / 20 处**——scripts/check-layering(6)、check-cleanup-ratchet(3)、check-no-legacy(2)、check-docs(1)、check-protocol-surface(2) 的路径/模块名字符串；`docs/cleanup-baseline.json` 的 services_prepare scope；`docs/ADR.md` 3 行路径；`docs/reviews/face-clustering-benchmark.md` 2 条 md 链接。不改会使 layering 静默 skip、ratchet services_prepare 127→0、no-legacy 21→0 三处假绿，且 docs --strict 因死链直接红。
+- **测试**：core **1,084/163** exit 0 ×3（3.495 / 3.566 / 3.602s）；app 串行 **616/68** exit 0 ×3（16.632 / 16.659 / 16.603s）；app 并行 **616/68** exit 0 ×3（6.993 / 7.019 / 6.931s）。例数/套件数与重命名前一致。
+- **门禁**：9 门禁全绿——layering 17 条（GatherApplication 21 文件 0 import SwiftUI）；ratchet **53/230/120/0/0**；test-catalog 170 文件 / 3 skip；duplicate 555 文件；docs 20 路径 / 143 链接 / 0 缺失；no-legacy 7 enforced + 6 tracked（Services 21 文件、raw SQL 13 文件）；select-star 6/1；preview 14 块 / 5 文件 / 2,031 行；schema `tables=43 user_version=1 foreign_key_violations=0`。附带 `check-protocol-surface --strict` = 254/1,338/0/0 exit 0。
+- **残余**：源码注释仍 **48 处**写旧名/旧路径（21 个 Application 文件头 + Persistence 4 + Protocol 5 + app 18；纯注释，未改内容），core Package 另 1 处 WP3a 说明；`docs/DEVELOPMENT.md:39/113`、`docs/README.md:28` 的 target 列表未更新（白名单外）；历史评审/台账按快照保留；不 commit；无 GUI 验收。
+
 ## 规则
 
 - 不做 git commit / checkout / restore；不删除未确认文件。

@@ -7,7 +7,7 @@ import Foundation
 import Testing
 @testable import GatherProtocol
 @testable import GatherPersistence
-@testable import GatherDomain
+@testable import GatherApplication
 
 @Suite("DB performance pragmas (F-5)")
 struct DatabasePragmaTests {

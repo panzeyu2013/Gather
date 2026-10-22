@@ -14,7 +14,7 @@ import Testing
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
 

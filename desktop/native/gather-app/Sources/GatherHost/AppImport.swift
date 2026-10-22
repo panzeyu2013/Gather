@@ -11,7 +11,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 import GatherUI
 
 enum AppImport {

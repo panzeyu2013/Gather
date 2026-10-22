@@ -41,7 +41,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
     private let faceKwService: FaceKwService

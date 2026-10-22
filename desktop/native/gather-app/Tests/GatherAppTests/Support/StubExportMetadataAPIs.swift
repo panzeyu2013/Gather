@@ -10,7 +10,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 // MARK: - ExportAPI
 

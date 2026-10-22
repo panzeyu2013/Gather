@@ -19,7 +19,7 @@ import Testing
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherDelivery
 
 // MARK: - 假件

@@ -38,7 +38,7 @@ import GatherTestSupport
 
 @testable import GatherProtocol
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherPersistence
 
 // MARK: - 生产 margin 夹具

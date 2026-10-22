@@ -17,7 +17,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LiveNavigationAPI: NavigationAPI, @unchecked Sendable {
     private let navigationService: NavigationService

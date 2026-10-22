@@ -2,7 +2,7 @@
 
 > 方法：1 个代理只读盘点本仓（证据为 `文件:行号`），2 个代理用官方文档 + 源码 + issue 调研竞品（结论附 URL）。本文把三份报告整理为**可执行的对标结论**。
 > 竞品基线：Immich v3.2.2（2026-09-15）、PhotoPrism 官方文档与 `internal/ai/face/README.md`、digiKam 官方文档。
-> 链接注（2026-10-22 最终清理）：源码链接已更新为 7-target 路径（`GatherAnalysis/Face/*`、`GatherDomain/Services/FaceKwService.swift`）并改为相对仓库根的 `../../` 形式；`ClusteringImpact.swift` 已随 CL-13 删除。
+> 链接注（2026-10-22 最终清理）：源码链接已更新为 7-target 路径（`GatherAnalysis/Face/*`、`GatherApplication/Services/FaceKwService.swift`）并改为相对仓库根的 `../../` 形式；`ClusteringImpact.swift` 已随 CL-13 删除。
 
 ## 0. 一句话结论
 
@@ -104,7 +104,7 @@
 | #1 对齐 | ✅（几何层） | `VNDetectFaceLandmarksRequest` 5 点 → 最小二乘相似变换（含尺度、不镜像）→ ArcFace 112×112 对齐图 → 取特征；关键点缺失回退 bbox 并标记 | [Alignment.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/Alignment.swift)、[Encoder.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/Encoder.swift) |
 | #1 模型层 | ✅ 接缝落地 | 默认仍是 FeaturePrint rev2（768 维）；已可插拔 CoreML 的 ArcFace/SFace（见下方第二轮表） | [EmbeddingModel.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/EmbeddingModel.swift) |
 | #2 质量 | ✅ | `FaceQuality.composite = 0.4·采集质量 + 0.4·尺寸 + 0.2·滚转`；采集质量用 `VNDetectFaceCaptureQualityRequest`（按 bbox IoU 配对） | [FaceQuality.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/FaceQuality.swift) |
-| #3 歧义不猜 | ✅ | `face_match_margin`：冠军与**人物级**亚军差距不足即不写建议（亚军按人聚合，避免同一人的多样本互相干扰） | [Matcher.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/Matcher.swift) `bestScoresPerPerson` + [FaceKwService.swift](../../desktop/native/gather-core/Sources/GatherDomain/Services/FaceKwService.swift) |
+| #3 歧义不猜 | ✅ | `face_match_margin`：冠军与**人物级**亚军差距不足即不写建议（亚军按人聚合，避免同一人的多样本互相干扰） | [Matcher.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/Matcher.swift) `bestScoresPerPerson` + [FaceKwService.swift](../../desktop/native/gather-core/Sources/GatherApplication/Services/FaceKwService.swift) |
 | 核心点 | ✅ | `coreQualityFloor`：低质量脸不能当核心点/扩展簇，但仍被吸收为边界点；`retryMinSamples` 二遍恢复小簇 | [Clusterer.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/Clusterer.swift) |
 | #6 模型版本治理 | ✅（基础） | `model_id/model_version/embedding_dim` 落库；`embeddingSpec` 进入分析签名、质量门槛进入聚类签名 ⇒ 换模型/改门槛自动重算 | schema v34 + [ADR-029](../ADR.md) |
 
@@ -113,7 +113,7 @@
 | 项 | 状态 | 落地内容 | 入口 |
 | --- | --- | --- | --- |
 | #1 模型层 | ✅ 接缝落地 / ⚠️ 真实推理未验证 | `FaceEmbeddingProvider` + `FaceEmbeddingSpec`；`CoreMLFaceEmbedder` 支持 `.mlmodel`/`.mlmodelc`；多输出歧义、维度不符、路径不存在都**报错而非回退**；递归全内容指纹进 `analysis_signature`（`.mlmodelc` 权重在包内独立文件，只哈希 `model.mlmodel` 会漏判换权重）；缓存键用递归 stat 指纹；`~`/相对/软链规范化 | [EmbeddingModel.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/EmbeddingModel.swift)、[Encoder.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/Encoder.swift) |
-| #7 增量聚类 | ✅（默认开） | 签名未变 + 有簇 + 无整体失败时，新照片挂已有簇质心（最相似 ≥ eps 且与亚军差 ≥ margin），不动簇 id/`matched_person_id`/绑定，只清幽灵成员；挂不上的新脸彼此跑同参全量 | `Clusterer.assignIncrementally` + [FaceKwService.swift](../../desktop/native/gather-core/Sources/GatherDomain/Services/FaceKwService.swift)（键 `face_incremental_clustering`） |
+| #7 增量聚类 | ✅（默认开） | 签名未变 + 有簇 + 无整体失败时，新照片挂已有簇质心（最相似 ≥ eps 且与亚军差 ≥ margin），不动簇 id/`matched_person_id`/绑定，只清幽灵成员；挂不上的新脸彼此跑同参全量 | `Clusterer.assignIncrementally` + [FaceKwService.swift](../../desktop/native/gather-core/Sources/GatherApplication/Services/FaceKwService.swift)（键 `face_incremental_clustering`） |
 | #8 参数影响预估 | ✅ 纯函数 / ⛔ 未接 UI | `FaceClusteringImpactEstimator` 输出换簇/簇数/噪声/变化簇/新增消失簇 + `parametersChanged` 与 `partitionChanged` 分开 + `normalizedParameters`（与生产同刻度）+ `isSubsetOfLibrary`；**计数只对传入观测集成立**，2k 观测 debug ≈28.5s，接 UI 前必须后台化/可取消 | `ClusteringImpact.swift`（2026-10-22 随 CL-13 删除，无替代实现） |
 | #9 准确率基线 | ✅ 合成 / ⛔ 真实标注 | 合成标注集报簇级 P/R、pairwise P/R/F1、ARI（两种等价公式交叉验证）；含"对照组必须出现误聚"、"低质量但方向正确不被误杀"、"低质量桥接点量化召回代价" | `Tests/GatherCoreTests/Face/FaceClusteringAccuracyTests.swift` |
 | 真实素材 | ✅（本机可跑） | 真实人像跑通检测 + 5 点对齐 + 768 维单位向量 + 确定性；`GATHER_FACE_FIXTURE=<jpg>` 启用（本机测试进程无法解码 NEF，用 sips 转 JPEG） | `Tests/GatherCoreTests/Face/FaceRealPhotoPipelineTests.swift` |

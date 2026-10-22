@@ -5,7 +5,7 @@
 //   · GatherDomain.normalizeImportFilepaths / commonParentDirectory
 //     （Sources/GatherDomain/Services/SessionService.swift）
 //   · GatherPersistence.TSPath.basename（RepositorySupport.swift）
-import GatherDomain
+import GatherApplication
 import GatherPersistence
 import GatherUI
 

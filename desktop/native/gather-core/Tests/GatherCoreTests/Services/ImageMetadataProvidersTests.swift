@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 @Suite("ImageMetadataProviders")
 struct ImageMetadataProvidersTests {

@@ -11,7 +11,7 @@
 import Foundation
 import Testing
 import CoreML
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherProtocol
 @testable import GatherAnalysis
 

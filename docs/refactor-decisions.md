@@ -1471,3 +1471,11 @@
 - **结果**：类型 **347→251**、声明 **1,752→1,320**、零引用 **89→0**、信封 **6→0**；Protocol 行 7,598→6,325（`+11/−1,284`，净 −1,273；96 类型块 1,184 行 + 注释/空行清理）。core **1,128/159→1,060/159** exit 0；app **616/68** exit 0；新增 `check-protocol-surface.sh --strict` + `docs/protocol-surface-baseline.json`（251/1,320/0/0）。
 - **证据**：`docs/reviews/wp1-protocol-inventory.md`（347 行逐条 file:line/prod/proto/test 计数；89 零引用测试证据；6 信封行范围；96 删除清单）；8 门禁 strict 全过；schema verify 43 表/user_version 1/FK 0。
 - **残余/限制**：13 个旧 Params 仍属历史形状（D-007 允许）；本机 bare `swift run ... gather-schema verify` 在 manifest 阶段被 DSH sandbox 拒绝，改用 `--disable-sandbox` + 共享 cache/scratch 实测通过；无 GUI 验收；不 commit。
+## D-169 WP3a：GatherDomain → GatherApplication 纯重命名（2026-10-22）
+
+- **背景**：architecture-remediation-plan WP3 3a（纯移动 1 天）；GatherDomain 实为 Application 层（architecture-macro-core §3.2 T1/T2、§6 O-2）。
+- **决定 1（纯重命名）**：`git mv Sources/GatherDomain Sources/GatherApplication`，**21 文件 / 15,211 行**内容零改动；core product/target、app Host/测试 product 依赖、全仓 import **130 行**（72 + @testable 58）更新；不改业务逻辑/API/其他 target 名称。Repo 协议与 Ports 拆分留给 WP3b。
+- **决定 2（UI 枚举改名）**：GatherUI `public enum GatherDomain`（GatherEventCenter.swift:25）与模块同名遮蔽（r3-build P2-6）；改名 **`GatherChangeDomain`**（1 声明 + 6 引用 / 4 文件），表达"写路径变更域"并与 Application 模块名解耦。
+- **决定 3（必要偏离记账）**：门禁脚本/基线/文档硬引用旧目录 5+1+2 文件 / 20 处字符串：scripts/{check-layering,check-cleanup-ratchet,check-no-legacy,check-docs,check-protocol-surface}.sh、`docs/cleanup-baseline.json` services_prepare scope、`docs/ADR.md` 3 行、`docs/reviews/face-clustering-benchmark.md` 2 条链接。不改则 layering skip / ratchet services_prepare 127→0 / no-legacy 21→0（三处假绿）+ docs --strict 红。
+- **证据**：core **1,084/163** exit 0 ×3、app 串行 **616/68** ×3、并行 **616/68** ×3；9 门禁全绿（ratchet **53/230/120/0/0**、schema 43/1/0）；`check-protocol-surface --strict` 254/1,338/0/0 exit 0。
+- **残余**：48 处源码注释旧名/旧路径未改（21 个 Application 文件头 + Persistence 4 + Protocol 5 + app 18）；`docs/DEVELOPMENT.md:39/113` 与 `docs/README.md:28` 的 target 列表未更新（白名单外）；不 commit；无 GUI 验收。

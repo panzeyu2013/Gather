@@ -4,7 +4,7 @@
 // 无文件/DB/真实 sleep 长路径（最长一次 sleep 20ms，其余用 continuation 门控）。
 import Testing
 import Foundation
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis

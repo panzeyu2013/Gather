@@ -2,14 +2,14 @@
 # 分层门禁（refactor-design-breaking-2026-10-21 §2 / §7.3）。
 #
 # Cut 3 / 3b-6 布局后强制：
-#   GatherUI        不得 import GatherPersistence / GatherDomain / GatherAnalysis /
+#   GatherUI        不得 import GatherPersistence / GatherApplication / GatherAnalysis /
 #                   GatherHost（UI 只经 GatherProtocol + 自有端口协议取能力）
 #   GatherHost      组合根：可 import 四层 core，但不得反向依赖 GatherApp；
 #                   GatherUI 也不得 import 它（上一条已覆盖）
 #   GatherApp       只有 @main/Scene，不得直接 import 四层 core（必须经 GatherHost）
 #   core 四层 / GatherUI / GatherHost 不得 import GatherCore 伞（3b-6 已删除）
 #   GatherAnalysis  不得 import GatherPersistence
-#   GatherDomain    不得 import SwiftUI
+#   GatherApplication    不得 import SwiftUI
 #
 # 当前仓库尚未拆分 target：输出 "not split yet" 并 exit 0（Cut 0 基线模式）。
 # 用法：./scripts/check-layering.sh
@@ -24,7 +24,7 @@ UI_DIR="$APP_SRC/GatherUI"
 HOST_DIR="$APP_SRC/GatherHost"
 ENTRY_DIR="$APP_SRC/GatherApp"
 ANALYSIS_DIR="$CORE_SRC/GatherAnalysis"
-DOMAIN_DIR="$CORE_SRC/GatherDomain"
+DOMAIN_DIR="$CORE_SRC/GatherApplication"
 PERSISTENCE_DIR="$CORE_SRC/GatherPersistence"
 
 split=0
@@ -63,11 +63,11 @@ check_forbidden() {
   done
 }
 
-check_forbidden "$UI_DIR" "GatherUI" GatherPersistence GatherDomain GatherAnalysis GatherHost
-check_forbidden "$ENTRY_DIR" "GatherApp" GatherProtocol GatherPersistence GatherAnalysis GatherDomain
+check_forbidden "$UI_DIR" "GatherUI" GatherPersistence GatherApplication GatherAnalysis GatherHost
+check_forbidden "$ENTRY_DIR" "GatherApp" GatherProtocol GatherPersistence GatherAnalysis GatherApplication
 check_forbidden "$HOST_DIR" "GatherHost" GatherApp
 check_forbidden "$ANALYSIS_DIR" "GatherAnalysis" GatherPersistence
-check_forbidden "$DOMAIN_DIR" "GatherDomain" SwiftUI
+check_forbidden "$DOMAIN_DIR" "GatherApplication" SwiftUI
 
 # 3b-6 已删除 GatherCore 伞：任何 target 再 import 它都视为回潮。
 for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR"; do

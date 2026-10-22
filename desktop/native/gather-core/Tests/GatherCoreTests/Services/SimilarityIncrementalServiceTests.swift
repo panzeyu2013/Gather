@@ -12,7 +12,7 @@ import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 /// 统计全量聚类调用次数（增量路径不得触发）。
 private final class ClusterCallCounter {

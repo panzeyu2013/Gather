@@ -20,7 +20,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
     private let albumRepo: SmartAlbumRepo

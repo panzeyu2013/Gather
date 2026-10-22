@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Concurrent/BatchCursorTests.swift
 // 共享取号游标的不变量测试：不重不漏、失败停发、advanceOnFailure 分支。
 import Testing
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis

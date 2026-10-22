@@ -22,7 +22,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 import GatherDelivery
 
 /// 类型化错误：code 是稳定错误码（可直接作错误载荷，对齐 ADR-016/017），

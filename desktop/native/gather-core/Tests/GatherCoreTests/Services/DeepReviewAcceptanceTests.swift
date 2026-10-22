@@ -13,7 +13,7 @@ import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 @Suite("Deep review probes") struct DeepReviewProbeTests {
  func fixture() throws -> (DBConnection,String,URL) {

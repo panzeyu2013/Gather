@@ -11,7 +11,7 @@ import Testing
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 // MARK: - Stub（错误态与调用记录）
 
@@ -589,7 +589,7 @@ struct LibraryViewModelTests {
 
     @Test func successfulMutationsPublishDomainChanges() async throws {
         let (viewModel, _) = makeStubVM()
-        let received = NotificationRecorder<(domain: GatherDomain, origin: String?)>()
+        let received = NotificationRecorder<(domain: GatherChangeDomain, origin: String?)>()
         let token = NotificationCenter.default.addObserver(
             forName: GatherEventCenter.domainChanged, object: nil, queue: nil
         ) { notification in

@@ -5,7 +5,7 @@
 // 无关的错误语义 conformance，Live API 仍是唯一实现。
 import Foundation
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 import GatherProtocol
 import GatherUI
 

@@ -9,7 +9,7 @@ import Foundation
 import Testing
 @testable import GatherProtocol
 @testable import GatherPersistence
-@testable import GatherDomain
+@testable import GatherApplication
 
 struct PhotoFileTypesTests {
     /// 搬迁前 AssetRepo.rawExtensions 的字面量（Cut 3a 对照基线，独立抄录）。

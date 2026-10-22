@@ -20,7 +20,7 @@ import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 // MARK: - SQL 计数探针（sqlite3_trace_v2；生产 DB 层零改动）
 

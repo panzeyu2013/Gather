@@ -22,7 +22,7 @@ public struct GatherJobEvent: Sendable {
 }
 
 /// 写路径影响的领域：常驻页只刷新事件命中的域，不整树重建、不全量重查。
-public enum GatherDomain: String, Sendable, CaseIterable {
+public enum GatherChangeDomain: String, Sendable, CaseIterable {
     /// 人物增删改 / 人脸绑定变化（person.*、fkw.bind/unbind）。
     case persons
     /// 重复组处置（dup.resolve / dup.resolve_member）。
@@ -54,13 +54,13 @@ public protocol JobProgressSource: AnyObject {
 
 /// 领域变更事件载荷（sessionId 为 nil 表示跨会话的全局变更）。
 public struct GatherDomainChange: Sendable {
-    public let domain: GatherDomain
+    public let domain: GatherChangeDomain
     public let sessionId: String?
     /// 发布者标识：监听方跳过自己发出的变更，避免自触发重查（如人物页
     /// 写路径广播又被自己的监听器收到）。
     public let origin: String?
 
-    public init(domain: GatherDomain, sessionId: String? = nil, origin: String? = nil) {
+    public init(domain: GatherChangeDomain, sessionId: String? = nil, origin: String? = nil) {
         self.domain = domain
         self.sessionId = sessionId
         self.origin = origin
@@ -126,7 +126,7 @@ public final class GatherEventCenter {
     /// 写路径完成后广播受影响的域（同步方法，VMs 均在 MainActor 上调用）。
     /// 页面侧只按域刷新自己的数据源，不做整树重建/全量重查。
     public static func postDomainChange(
-        _ domain: GatherDomain,
+        _ domain: GatherChangeDomain,
         sessionId: String? = nil,
         origin: String? = nil
     ) {

@@ -4,7 +4,7 @@ import Testing
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 @Suite("checksum parity (streaming vs one-shot)")
 struct IndexerChecksumParityTests {

@@ -9,7 +9,7 @@ import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 /// 进度帧收集盒（sink 在多个执行线程回调，锁保护 + 值拷贝）。
 private final class FrameBox: @unchecked Sendable {

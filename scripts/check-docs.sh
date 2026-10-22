@@ -57,7 +57,7 @@ BASES=(
   "desktop/native/gather-core/Sources/GatherProtocol"
   "desktop/native/gather-core/Sources/GatherPersistence"
   "desktop/native/gather-core/Sources/GatherAnalysis"
-  "desktop/native/gather-core/Sources/GatherDomain"
+  "desktop/native/gather-core/Sources/GatherApplication"
   "desktop/native/gather-app/Sources/GatherApp"
   "desktop/native/gather-app/Sources/GatherUI"
   "desktop/native/gather-app/Sources/GatherHost"

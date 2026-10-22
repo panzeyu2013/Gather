@@ -15,7 +15,7 @@ import Foundation
 import CoreGraphics
 import Testing
 import GatherTestSupport
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherProtocol
 @testable import GatherAnalysis
 @testable import GatherPersistence

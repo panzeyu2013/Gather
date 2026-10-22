@@ -27,7 +27,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 import GatherDelivery
 
 /// 运行时生命周期错误（调用方可见的稳定语义）。

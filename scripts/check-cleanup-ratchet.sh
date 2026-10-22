@@ -4,7 +4,7 @@
 # 指标（均为“非纯注释行”的匹配行数；整行以 // 或 * 开头不计）：
 #   unchecked_sendable  Sources/**/*.swift 中 @unchecked Sendable
 #   try_optional        Sources/**/*.swift 中 try?
-#   services_prepare    gather-core/Sources/GatherDomain/Services 中 prepare(
+#   services_prepare    gather-core/Sources/GatherApplication/Services 中 prepare(
 #   todo_fixme          Sources + Tests 中 TODO / FIXME
 #   with_known_issue    Tests 中 withKnownIssue(
 #
@@ -24,7 +24,7 @@ CORE_SRC="desktop/native/gather-core/Sources"
 APP_SRC="desktop/native/gather-app/Sources"
 # 3b-6：GatherUI / GatherHost 已全部迁入 Sources，app 侧功能页不再有
 # gather-app/<Feature>/ 旧目录；ratchet 覆盖 Sources 即可。
-SERVICES="$CORE_SRC/GatherDomain/Services"
+SERVICES="$CORE_SRC/GatherApplication/Services"
 CORE_TESTS="desktop/native/gather-core/Tests"
 APP_TESTS="desktop/native/gather-app/Tests"
 BASELINE="docs/cleanup-baseline.json"
@@ -90,7 +90,7 @@ write_baseline() {
   "scopes": {
     "unchecked_sendable": "desktop/native/*/Sources/**/*.swift",
     "try_optional": "desktop/native/*/Sources/**/*.swift",
-    "services_prepare": "desktop/native/gather-core/Sources/GatherDomain/Services/**/*.swift",
+    "services_prepare": "desktop/native/gather-core/Sources/GatherApplication/Services/**/*.swift",
     "todo_fixme": "desktop/native/*/Sources + desktop/native/*/Tests",
     "with_known_issue": "desktop/native/*/Tests/**/*.swift"
   }

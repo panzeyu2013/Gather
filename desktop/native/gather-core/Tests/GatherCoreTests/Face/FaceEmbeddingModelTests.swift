@@ -16,7 +16,7 @@ import Testing
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
-@testable import GatherDomain
+@testable import GatherApplication
 @testable import GatherProtocol
 @testable import GatherAnalysis
 

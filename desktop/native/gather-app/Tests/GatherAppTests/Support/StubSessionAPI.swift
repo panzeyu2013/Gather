@@ -13,7 +13,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 private struct StubSessionState {
     var sessions: [SessionData] = []

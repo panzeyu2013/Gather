@@ -38,13 +38,13 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
-        // Cut 3：4 个分层库（依赖方向 Protocol ← Persistence / Analysis ← Domain）。
-        // WP2a：交付引擎单列 GatherDelivery（Protocol + Persistence ← Delivery ← Domain）。
+        // Cut 3：4 个分层库（依赖方向 Protocol ← Persistence / Analysis ← Application）。
+        // WP2a：交付引擎单列 GatherDelivery（Protocol + Persistence ← Delivery ← Application）。
         .library(name: "GatherProtocol", targets: ["GatherProtocol"]),
         .library(name: "GatherPersistence", targets: ["GatherPersistence"]),
         .library(name: "GatherDelivery", targets: ["GatherDelivery"]),
         .library(name: "GatherAnalysis", targets: ["GatherAnalysis"]),
-        .library(name: "GatherDomain", targets: ["GatherDomain"]),
+        .library(name: "GatherApplication", targets: ["GatherApplication"]),
         // WP7：core 测试共享夹具作为 library product 暴露，供 gather-app 的
         // GatherAppTests 复用（只进测试链接，不改变 core 运行时；app 不链接它）。
         .library(name: "GatherTestSupport", targets: ["GatherTestSupport"]),
@@ -75,7 +75,7 @@ let package = Package(
             swiftSettings: swift6Settings
         ),
         // WP2a 交付引擎：DeliveryCoordinator / WritebackService / MetadataMutationService /
-        // XMPFileLock。只依赖 Protocol + Persistence；不得 import Domain/Analysis/UI/Host。
+        // XMPFileLock。只依赖 Protocol + Persistence；不得 import Application/Analysis/UI/Host。
         .target(
             name: "GatherDelivery",
             dependencies: ["GatherProtocol", "GatherPersistence"],
@@ -88,10 +88,11 @@ let package = Package(
             resources: [.copy("Resources/FaceModels")],
             swiftSettings: swift6Settings
         ),
-        // 领域服务层：Services/**（组合 Delivery + Persistence + Analysis）。
-        // WP2a：Domain 依赖 Delivery（Culling/FaceKw/Similarity/Metadata 的交付编排）。
+        // 应用层：Services/**（组合 Delivery + Persistence + Analysis）。
+        // WP3a：GatherDomain → GatherApplication（纯重命名，依赖边不变）。
+        // WP2a：Application 依赖 Delivery（Culling/FaceKw/Similarity/Metadata 的交付编排）。
         .target(
-            name: "GatherDomain",
+            name: "GatherApplication",
             dependencies: ["GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherAnalysis"],
             swiftSettings: swift6Settings
         ),
@@ -121,7 +122,7 @@ let package = Package(
             name: "GatherCoreTests",
             dependencies: [
                 "GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherAnalysis",
-                "GatherDomain",
+                "GatherApplication",
                 "GatherTestSupport",
                 "CSQLite",
             ],

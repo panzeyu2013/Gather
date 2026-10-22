@@ -12,7 +12,7 @@ import Testing
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
-@testable import GatherDomain
+@testable import GatherApplication
 
 // MARK: - Stub（错误态注入）
 

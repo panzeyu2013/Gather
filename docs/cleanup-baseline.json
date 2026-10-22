@@ -13,7 +13,7 @@
   "scopes": {
     "unchecked_sendable": "desktop/native/*/Sources/**/*.swift",
     "try_optional": "desktop/native/*/Sources/**/*.swift",
-    "services_prepare": "desktop/native/gather-core/Sources/GatherDomain/Services/**/*.swift",
+    "services_prepare": "desktop/native/gather-core/Sources/GatherApplication/Services/**/*.swift",
     "todo_fixme": "desktop/native/*/Sources + desktop/native/*/Tests",
     "with_known_issue": "desktop/native/*/Tests/**/*.swift"
   }

@@ -32,7 +32,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LiveTemplateAPI: TemplateAPI, @unchecked Sendable {
     private let templateService: TemplateService

@@ -13,7 +13,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 /// 8 个 executor 的依赖集合（组合根在 B8.3b 由 AppComposition 提供）。
 ///

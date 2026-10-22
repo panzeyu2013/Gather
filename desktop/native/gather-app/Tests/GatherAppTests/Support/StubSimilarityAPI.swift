@@ -9,7 +9,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 private struct B8SimilarityState {
     var resultValue: SimilarityResult?

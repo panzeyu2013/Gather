@@ -4,7 +4,7 @@
 //
 // 端口协议声明在 GatherUI（UI 不能 import Domain）；实现留在 GatherHost，
 // 这样「进度帧来源」只有一处注入，且 Host → UI 的依赖方向保持单向。
-import GatherDomain
+import GatherApplication
 import GatherProtocol
 import GatherUI
 

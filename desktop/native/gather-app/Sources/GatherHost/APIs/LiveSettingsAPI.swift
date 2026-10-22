@@ -16,7 +16,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 import GatherUI
 
 public final class LiveSettingsAPI: SettingsAPI, @unchecked Sendable {

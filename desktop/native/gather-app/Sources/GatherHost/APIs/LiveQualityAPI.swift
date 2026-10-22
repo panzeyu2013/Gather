@@ -29,7 +29,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LiveQualityAPI: QualityAPI {
     private let qualityService: QualityService

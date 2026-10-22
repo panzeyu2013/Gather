@@ -38,7 +38,7 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherDomain
+import GatherApplication
 
 public final class LivePersonAPI: PersonAPI, @unchecked Sendable {
     private let personRepo: PersonRepo

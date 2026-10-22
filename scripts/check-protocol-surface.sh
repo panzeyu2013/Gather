@@ -8,7 +8,7 @@
 #   public_declarations     以 public 开头的声明行数（含成员；等价于
 #                           grep -rhE '^[[:space:]]*public[[:space:]]' | wc -l）。
 #   zero_reference_types    生产代码与 Protocol 内均无引用的顶层 public 类型数。
-#                           生产 = GatherPersistence/GatherAnalysis/GatherDomain
+#                           生产 = GatherPersistence/GatherAnalysis/GatherApplication
 #                           + gather-app/Sources；Protocol 内按标识符计数并排除声明
 #                           本身；注释和字符串已剥离。Tests 不计入引用（只靠
 #                           ContractTests 存活的 DTO 仍算零引用，随之删除）。
@@ -58,7 +58,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 find "$PROTO" -type f -name '*.swift' | LC_ALL=C sort > "$TMP/proto-files"
 find "$CORE_SOURCES/GatherPersistence" "$CORE_SOURCES/GatherAnalysis" \
-     "$CORE_SOURCES/GatherDomain" "$CORE_SOURCES/GatherDelivery" "$APP_SOURCES" \
+     "$CORE_SOURCES/GatherApplication" "$CORE_SOURCES/GatherDelivery" "$APP_SOURCES" \
      -type f -name '*.swift' 2>/dev/null | LC_ALL=C sort > "$TMP/prod-files"
 
 proto_file_n=$(wc -l < "$TMP/proto-files" | tr -d ' ')

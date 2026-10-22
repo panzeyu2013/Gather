@@ -3,7 +3,7 @@
 //
 // 只做 rawValue 映射与转发；判定逻辑（冲突 > 失败 > 写入中 > 已写入 > 终态）
 // 仍只有 GatherDomain/CaptureOneSyncState.swift 一份。
-import GatherDomain
+import GatherApplication
 import GatherUI
 
 public struct HostCaptureOneSyncStateRules: CaptureOneSyncStateRules {
