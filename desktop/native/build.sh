@@ -21,15 +21,34 @@ if [[ "$OUTPUT_DIR" == "/" || "$APP_BUNDLE" != "$OUTPUT_DIR/Gather.app" ]]; then
   exit 2
 fi
 
+# WP7：gather-app/Package.swift 不再在 manifest 求值期执行 xcrun。真实 SDK
+# 版本（Mach-O 的 LC_BUILD_VERSION.sdk，决定 macOS 26+ 是否启用 Liquid Glass）
+# 由本脚本探测本机 SDK 后 export；显式传入的 GATHER_SDK_VERSION 优先。
+# 探测失败不阻断构建：Package.swift 有固定默认值（26.0），不会静默退回 14.0。
+if [[ -z "${GATHER_SDK_VERSION:-}" ]]; then
+  SDK_VERSION="$(xcrun --show-sdk-version 2>/dev/null || true)"
+  if [[ -n "$SDK_VERSION" ]]; then
+    export GATHER_SDK_VERSION="$SDK_VERSION"
+  else
+    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK version applies" >&2
+  fi
+fi
+echo "SDK version for -platform_version: ${GATHER_SDK_VERSION:-<Package.swift default>}"
+
 # 3b-6：两个包都开 SE-0409 严格依赖检查（target 只能 import 直接依赖）。
 DEPENDENCY_CHECK=(--explicit-target-dependency-import-check error)
+# app 的 SDK 版本在 manifest 求值期从 GATHER_SDK_VERSION 读取。SwiftPM 的
+# manifest 缓存不把该环境变量计入 key：同一 .build 下增量构建可能沿用旧的
+# -platform_version（实测 default 26.0 → env 27.0 不重链）。release 组装必须
+# 关闭 manifest 缓存，保证本脚本探测到的 SDK 真正写进 Mach-O。
+APP_BUILD_FLAGS=("${DEPENDENCY_CHECK[@]}" --manifest-cache none)
 swift build --package-path "$CORE_PACKAGE" -c "$CONFIGURATION" "${DEPENDENCY_CHECK[@]}"
-swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION" "${DEPENDENCY_CHECK[@]}"
+swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION" "${APP_BUILD_FLAGS[@]}"
 
 # Use SwiftPM's own bin path: the legacy .build/<config> layout is replaced by
 # .build/out/Products/<Config> on newer toolchains (Xcode 16+/26/27), and
 # build configuration names are capitalized there.
-BIN_DIR="$(swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION" "${DEPENDENCY_CHECK[@]}" --show-bin-path)"
+BIN_DIR="$(swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION" "${APP_BUILD_FLAGS[@]}" --show-bin-path)"
 APP_EXECUTABLE="$BIN_DIR/gather-app"
 if [[ ! -x "$APP_EXECUTABLE" ]]; then
   echo "native executable not found at $APP_EXECUTABLE" >&2

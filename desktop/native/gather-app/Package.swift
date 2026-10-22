@@ -24,6 +24,15 @@ let swift6Settings: [SwiftSetting] = [.swiftLanguageMode(.v6)]
 /// 部署目标：app 仍可在 macOS 14 上运行。
 let macOSDeploymentTarget = "14.0"
 
+/// 安全默认 SDK 版本 = 部署目标：manifest 不探测 SDK，保证在任意较旧
+/// Xcode/SDK 上直接 `swift build/test` 也能链接成功。Liquid Glass 所需的
+/// 真实 SDK 版本由 `desktop/native/build.sh` 探测后 export，CI 也显式注入；
+/// 届时 Mach-O 的 LC_BUILD_VERSION.sdk 才是真实 SDK。
+///
+/// **WP7：manifest 求值是纯声明、无外部进程**；值只来自环境变量
+/// `GATHER_SDK_VERSION` 或这个常量。
+let defaultSDKVersion = macOSDeploymentTarget
+
 /// 真实 SDK 版本，写进 Mach-O 的 LC_BUILD_VERSION.sdk。
 ///
 /// **为什么需要显式传**：SwiftPM 用 -target arm64-apple-macosx14.0 驱动编译，
@@ -35,27 +44,14 @@ let macOSDeploymentTarget = "14.0"
 /// 旧窗口圆角、Toolbar 不进玻璃），Liquid Glass 一个都拿不到 ——
 /// 哪怕链接的是 MacOSX27.0.sdk、运行在 macOS 27 上。
 ///
-/// 这里读出真实 SDK 版本并显式补上，等同于 Xcode 工程自动生成的
-/// -platform_version macos <部署目标> <SDK 版本>。
-let macOSSDKVersion: String = {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    process.arguments = ["--show-sdk-version"]
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
-    guard (try? process.run()) != nil else { return macOSDeploymentTarget }
-    process.waitUntilExit()
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let value = String(decoding: data, as: UTF8.self)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    // 取不到就退回部署目标（等价于今天的行为，不会更糟）。
-    return value.isEmpty ? macOSDeploymentTarget : value
+/// 这里显式补上，等同 Xcode 工程自动生成的
+/// -platform_version macos <部署目标> <SDK 版本>。开发时可覆盖：
+/// `GATHER_SDK_VERSION=27.0 swift build`。
+let designSDKVersion: String = {
+    let raw = ProcessInfo.processInfo.environment["GATHER_SDK_VERSION"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return raw.isEmpty ? defaultSDKVersion : raw
 }()
-
-/// 让 AppKit 认得出「这个 app 是用支持 Liquid Glass 的 SDK 构建的」。
-/// 开发时可覆盖：GATHER_SDK_VERSION=27.0 swift build。
-let designSDKVersion = ProcessInfo.processInfo.environment["GATHER_SDK_VERSION"] ?? macOSSDKVersion
 
 /// 每个参数都要 -Xlinker 前缀：SwiftPM 经 swiftc 链接，
 /// -platform_version 是 ld 的参数，swiftc 自己不认（会报
@@ -128,6 +124,9 @@ let package = Package(
                 .product(name: "GatherPersistence", package: "gather-core"),
                 .product(name: "GatherAnalysis", package: "gather-core"),
                 .product(name: "GatherDomain", package: "gather-core"),
+                // WP7：复用 core 的测试夹具（makeTestDB / AsyncGate / LockedBox），
+                // 不再在 app 侧复制。product 只链接进测试，不进 app 运行时。
+                .product(name: "GatherTestSupport", package: "gather-core"),
             ],
             swiftSettings: swift6Settings
         ),

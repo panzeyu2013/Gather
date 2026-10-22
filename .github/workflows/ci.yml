@@ -67,6 +67,10 @@ jobs:
         run: swift test --package-path desktop/native/gather-core --explicit-target-dependency-import-check error
       - name: Vector reconciliation gate
         run: GATHER_RECONCILIATION_VECTOR=1 swift test --package-path desktop/native/gather-core --filter VectorIndexReconciliationTests --explicit-target-dependency-import-check error
+      # WP7：schema 工具是 DDL 真相源的独立消费方；在 core job 内验证 43 表/
+      # user_version=1/外键 0 违规，避免只靠测试间接覆盖。
+      - name: Schema verification
+        run: swift run --package-path desktop/native/gather-core gather-schema verify
 
   gather-app:
     name: gather-app tests + bundle
@@ -75,6 +79,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      # WP7：manifest 不再自己跑 xcrun；SDK 版本由 CI 显式注入（build.sh 也会
+      # 探测，但这里固定在 job 环境里，保证 test 与 bundle 两次求值同一值）。
+      - name: Resolve SDK version
+        run: |
+          SDK_VERSION="$(xcrun --show-sdk-version)"
+          echo "GATHER_SDK_VERSION=$SDK_VERSION" >> "$GITHUB_ENV"
+          echo "GATHER_SDK_VERSION=$SDK_VERSION"
       - name: Cache SwiftPM
         uses: actions/cache@v4
         with:
@@ -87,7 +98,10 @@ jobs:
         # 串行执行的理由（P0-2）：app 用例共享 MainActor 状态层与进程级语言/通知槽，
         # 默认并行在调度满载时会拖穿等待窗口（历史 flake：ControlCenter/Gallery
         # 生命周期断言）。CI、README、DEVELOPMENT 的 app 测试命令统一 --no-parallel。
-        run: swift test --package-path desktop/native/gather-app --no-parallel --explicit-target-dependency-import-check error
+        # --manifest-cache none：GATHER_SDK_VERSION 是 manifest 求值期输入，
+        # SwiftPM 的 manifest 缓存不把它计入 key；CI 的 .build 缓存可能来自
+        # 旧 runner/SDK，必须强制重算再注入 linker flags。
+        run: swift test --package-path desktop/native/gather-app --no-parallel --manifest-cache none --explicit-target-dependency-import-check error
       - name: Native bundle build
         run: ./desktop/native/build.sh
 

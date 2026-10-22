@@ -43,6 +43,9 @@ let package = Package(
         .library(name: "GatherPersistence", targets: ["GatherPersistence"]),
         .library(name: "GatherAnalysis", targets: ["GatherAnalysis"]),
         .library(name: "GatherDomain", targets: ["GatherDomain"]),
+        // WP7：core 测试共享夹具作为 library product 暴露，供 gather-app 的
+        // GatherAppTests 复用（只进测试链接，不改变 core 运行时；app 不链接它）。
+        .library(name: "GatherTestSupport", targets: ["GatherTestSupport"]),
         // Cut 3 / 3a-5（D-015）：schema 工具可执行（dump / verify）。
         .executable(name: "gather-schema", targets: ["GatherSchema"]),
         // Similarity 基准（2.3 验收 2 万/5 万）：产出 JSON 行指标（对齐 scripts/*.mjs 风格）。
