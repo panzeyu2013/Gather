@@ -66,6 +66,23 @@ case "$GATHER_ARCHS" in
     ;;
 esac
 
+# 发布门：版本之外还必须 universal + Developer ID 签名 + 公证，任一缺失都在
+# 构建前失败，避免产出「看起来 release、实际不可分发」的 bundle。
+if [[ "$RELEASE_MODE" == "1" ]]; then
+  if [[ "$GATHER_ARCHS" != "universal" ]]; then
+    echo "release mode requires GATHER_ARCHS=universal (got '${GATHER_ARCHS:-host-default}')" >&2
+    exit 1
+  fi
+  if [[ -z "${CODESIGN_IDENTITY:-}" || "${CODESIGN_IDENTITY:-}" == "-" ]]; then
+    echo "release mode requires a Developer ID identity (CODESIGN_IDENTITY; ad-hoc '-' is not shippable)" >&2
+    exit 1
+  fi
+  case "${GATHER_NOTARIZE:-0}" in
+    1|true|TRUE|yes|YES) ;;
+    *) echo "release mode requires GATHER_NOTARIZE=1" >&2; exit 1 ;;
+  esac
+fi
+
 # WP6c：版本注入。优先显式 GATHER_VERSION，其次 git 最近 tag（git describe）。
 # 两者都没有时**保留 Info.plist 现有回退值（3.0.0）**，不凭空造版本号。
 # CFBundleVersion 用 GATHER_BUILD_NUMBER，否则 git 提交数（单调递增、可公证），
@@ -431,7 +448,8 @@ if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
 else
   echo "warning: Capture One plugin SDK or Makefile not found; skipping GatherLink.coplugin" >&2
   if [[ "$RELEASE_MODE" == "1" ]]; then
-    echo "warning: release bundle will not contain GatherLink.coplugin; release notes must say Intel users do not get the Capture One plugin" >&2
+    echo "release mode requires the Capture One SDK + GatherLink makefile; refusing to ship without the plugin" >&2
+    exit 1
   fi
 fi
 
@@ -560,6 +578,9 @@ if [[ "$NOTARIZE" == "1" ]]; then
     xcrun stapler staple "$APP_BUNDLE"
     xcrun stapler validate "$APP_BUNDLE"
     spctl -a -t exec -vvv "$APP_BUNDLE"
+    # 提交公证的 zip 不含 ticket；staple 后必须重打，CI 上传/校验的才是可离线验证的包。
+    rm -f "$ZIP_PATH"
+    ditto -c -k --keepParent "$APP_BUNDLE" "$ZIP_PATH"
     NOTARIZED=1
   fi
 fi
