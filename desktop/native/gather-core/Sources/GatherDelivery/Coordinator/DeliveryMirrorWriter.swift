@@ -19,6 +19,8 @@ import GatherPersistence
 struct DeliveryMirrorWriter: Sendable {
     let repo: DeliveryRepo
     let writer: DeliveryStateWriter
+    /// 本实例的写租约 owner（P1-2）：claim 与 markWritten 必须使用同一身份。
+    let leaseOwner: String
 
     func mirrorWriteback(
         sessionId: String,
@@ -60,7 +62,8 @@ struct DeliveryMirrorWriter: Sendable {
                     errors.append("DELIVERY_MIRROR_TERMINAL_DELIVERY: \(path)")
                     continue
                 }
-                guard try writer.markWriting(xmpPath: path, revision: revision) != nil else {
+                guard try writer.claimWriting(
+                    xmpPath: path, revision: revision, leaseOwner: leaseOwner) != nil else {
                     errors.append("DELIVERY_MIRROR_LEASE_CONFLICT: \(path)")
                     continue
                 }
@@ -98,6 +101,7 @@ struct DeliveryMirrorWriter: Sendable {
                     guard try writer.markWritten(
                         xmpPath: path,
                         revision: revision,
+                        leaseOwner: leaseOwner,
                         baseFingerprint: first.baseFingerprint,
                         baseValues: first.baseValues,
                         backupPath: first.backupPath

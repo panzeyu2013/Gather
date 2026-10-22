@@ -165,6 +165,12 @@ private struct WritebackFixture {
 
     var deliveryRepo: DeliveryRepo { DeliveryRepo(connection: db) }
 
+    /// Capture One 的 reload-ack（confirm 的 §5.4-2 门禁）：默认 NULL，测试显式确认。
+    func acknowledgeReload() throws {
+        _ = try db.prepare("UPDATE sessions SET reload_acked_at = ? WHERE id = ?")
+            .run([.text(nowISOString()), .text(sessionId)])
+    }
+
     func cleanup() {
         try? FileManager.default.removeItem(atPath: dir)
     }
@@ -568,12 +574,60 @@ struct WritebackServiceTests {
             sessionId: fixture.sessionId, module: "similarity", items: preview.items)
         #expect(executed.written == 1)
 
+        try fixture.acknowledgeReload()
         try await service.confirmSync(sessionId: fixture.sessionId, module: "similarity")
         #expect(try fixture.delivery(fixture.sidecarPaths[0])?.status == DeliveryStatus.synced.rawValue)
         #expect(try fixture.items().first?.status == DeliveryItemStatus.synced.rawValue)
         // D-021：会话写回态由交付聚合派生（不再写已删除的 sessions 列）。
         #expect(try DeliverySummaryQuery(connection: fixture.db)
             .summary(sessionId: fixture.sessionId, module: .similarity).writebackStatus == .done)
+    }
+
+    @Test("confirmSync 委托 Coordinator 门禁：pending 阻断、未 ack 不落确认、ack 后推进")
+    func confirmSyncUsesCoordinatorGate() async throws {
+        let fixture = try WritebackFixture(photoCount: 1)
+        defer { fixture.cleanup() }
+        let service = makeService(fixture: fixture, xmp: WritebackFSXMPProvider())
+        let sidecar = fixture.sidecarPaths[0]
+        let preview = try await service.preview(
+            sessionId: fixture.sessionId, module: "similarity",
+            keywordAdditions: [fixture.photoIds[0]: ["gate"]])
+
+        // 1) pending 交付：完整性门禁拒绝，confirmed_at 不落地。
+        do {
+            try await service.confirmSync(sessionId: fixture.sessionId, module: "similarity")
+            Issue.record("pending 交付必须被 confirmSync 拒绝")
+        } catch let error as DeliveryCoordinatorError {
+            guard case .confirmIncomplete(let blockers) = error else {
+                Issue.record("错误类型不符: \(error)")
+                return
+            }
+            #expect(blockers == ["delivery:pending=1", "item:pending=1"])
+        }
+        #expect(try fixture.delivery(sidecar)?.status == DeliveryStatus.pending.rawValue)
+        #expect(try fixture.scalar(
+            "SELECT confirmed_at FROM delivery_sessions WHERE session_id = ?",
+            [.text(fixture.sessionId)])?.textValue == "")
+
+        // 2) 写回成功但 Capture One 未 ack reload：同一门禁拒绝。
+        let executed = try await service.execute(
+            sessionId: fixture.sessionId, module: "similarity", items: preview.items)
+        #expect(executed.written == 1)
+        do {
+            try await service.confirmSync(sessionId: fixture.sessionId, module: "similarity")
+            Issue.record("未 ack reload 时 confirmSync 必须失败")
+        } catch let error as DeliveryCoordinatorError {
+            #expect(error == .reloadNotAcknowledged(sessionId: fixture.sessionId))
+        }
+        #expect(try fixture.delivery(sidecar)?.status == DeliveryStatus.written.rawValue)
+        #expect(try fixture.scalar(
+            "SELECT confirmed_at FROM delivery_sessions WHERE session_id = ?",
+            [.text(fixture.sessionId)])?.textValue == "")
+
+        // 3) ack 后同一入口推进：证明 confirmSync 不是被删掉，而是走完整门禁。
+        try fixture.acknowledgeReload()
+        try await service.confirmSync(sessionId: fixture.sessionId, module: "similarity")
+        #expect(try fixture.delivery(sidecar)?.status == DeliveryStatus.synced.rawValue)
     }
 
     @Test("flushSession：只回读交付摘要，不再调度/写盘（S5c-2b-3b-2a）")
@@ -622,6 +676,7 @@ struct WritebackServiceTests {
         )
         _ = try await service.execute(
             sessionId: fixture.sessionId, module: "similarity", items: preview.items)
+        try fixture.acknowledgeReload()
         try await service.confirmSync(sessionId: fixture.sessionId, module: "similarity")
 
         let result = try await service.cleanup(
@@ -743,6 +798,44 @@ struct WritebackServiceTests {
         #expect(recovered.leaseOwner == "")
         #expect(try fixture.items().first?.status == DeliveryItemStatus.written.rawValue)
     }
+    @Test("租约丢失：renew 失败不得 markWritten/markFailed，交付保持 writing/接管者 owner")
+    func leaseLossBeforeConvergenceSkipsStateWrite() async throws {
+        let fixture = try WritebackFixture(photoCount: 1)
+        defer { fixture.cleanup() }
+        let xmp = WritebackFSXMPProvider()
+        let service = makeService(fixture: fixture, xmp: xmp)
+        let sidecar = fixture.sidecarPaths[0]
+        try writeInitialSidecar(fixture, keywords: ["before"])
+        let preview = try await service.preview(
+            sessionId: fixture.sessionId, module: "similarity",
+            keywordAdditions: [fixture.photoIds[0]: ["lease-loss"]])
+
+        // 写盘瞬间把租约换给另一个 owner：模拟长批次期间本服务租约被接管。
+        let stolen = LockedFlag()
+        xmp.onWriteAttributes = { _ in
+            guard !stolen.isSet else { return }
+            stolen.set()
+            _ = try? fixture.db.prepare(
+                "UPDATE deliveries SET lease_owner = ? WHERE xmp_path = ?"
+            ).run([.text("thief"), .text(sidecar)])
+        }
+
+        let result = try await service.execute(
+            sessionId: fixture.sessionId, module: "similarity", items: preview.items)
+        #expect(result.written == 1)
+        #expect(result.errors.contains("DELIVERY_LEASE_LOST: \(sidecar)"))
+        #expect(!result.errors.contains { $0.contains("DELIVERY_WRITE_FAILED") },
+                "renew 失败后不得再尝试 markWritten/markFailed")
+
+        // 交付行必须原样保留：不翻 written/failed、不写基线/备份。
+        let row = try #require(try fixture.delivery(sidecar))
+        #expect(row.status == DeliveryStatus.writing.rawValue)
+        #expect(row.leaseOwner == "thief")
+        #expect(row.baseFingerprint == "")
+        #expect(row.backupPath == "")
+        #expect(try fixture.items().first?.status == DeliveryItemStatus.written.rawValue)
+    }
+
     @Test("租约保护：他人未过期 writing 租约 → execute 逐项失败并报 DELIVERY_LEASE_HELD")
     func executeFailsItemsInsteadOfSkippingWhenLeaseIsHeldByAnotherOwner() async throws {
         let fixture = try WritebackFixture(photoCount: 1)

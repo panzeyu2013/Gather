@@ -173,6 +173,7 @@ struct DeliveryRepoTests {
         let written = try #require(try repo.markWritten(
             xmpPath: self.xmp,
             revision: 2,
+            leaseOwner: "worker-1",
             baseFingerprint: "fp-after",
             baseValues: .object(["rating": .number(4)]),
             backupPath: "/backup/IMG_1.xmp"
@@ -257,6 +258,49 @@ struct DeliveryRepoTests {
         #expect(stolen.status == "writing")
         #expect(stolen.leaseOwner == "w2")
         #expect(stolen.attemptCount == 2)
+    }
+
+    @Test func markWrittenRejectsTheWrongLeaseOwnerAndKeepsRow() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        _ = try repo.createOrGet(xmpPath: self.xmp, photoPath: self.photo, revision: 3)
+        _ = try repo.claimWriting(xmpPath: self.xmp, revision: 3, leaseOwner: "writer-a")
+
+        do {
+            _ = try repo.markWritten(
+                xmpPath: self.xmp, revision: 3, leaseOwner: "writer-b",
+                baseFingerprint: "fp-thief",
+                baseValues: .object(["rating": .number(1)]),
+                backupPath: "/backup/thief.xmp")
+            Issue.record("owner 不匹配必须拒绝 markWritten")
+        } catch let error as DeliveryRepoError {
+            guard case .leaseLost(let path, let owner, let currentOwner, let status) = error else {
+                Issue.record("错误类型不符: \(error)")
+                return
+            }
+            #expect(path == self.xmp)
+            #expect(owner == "writer-b")
+            #expect(currentOwner == "writer-a")
+            #expect(status == "writing")
+        }
+
+        // 行必须原样保留：错 owner 不得覆盖基线或清租约。
+        let untouched = try #require(try repo.get(self.xmp))
+        #expect(untouched.status == "writing")
+        #expect(untouched.leaseOwner == "writer-a")
+        #expect(untouched.baseFingerprint == "")
+        #expect(untouched.backupPath == "")
+
+        // 真正持有租约的 writer 仍可提交（拒绝不是把行锁死）。
+        let written = try #require(try repo.markWritten(
+            xmpPath: self.xmp, revision: 3, leaseOwner: "writer-a",
+            baseFingerprint: "fp-a",
+            baseValues: .object(["rating": .number(5)]),
+            backupPath: "/backup/a.xmp"))
+        #expect(written.status == "written")
+        #expect(written.baseFingerprint == "fp-a")
+        #expect(written.leaseOwner == "")
     }
 
     @Test func claimWritingPreemptsWritingRowWithEmptyHeartbeat() throws {
@@ -597,6 +641,39 @@ struct DeliveryRepoTests {
         #expect(second.itemsSynced == 1)
         #expect(second.unconfirmedSessionIds.isEmpty)
         #expect(try repo.get(self.xmp)?.status == "synced")
+    }
+
+    @Test func confirmGateRereadsStatusInsideTheSameTransaction() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+        try v1InsertPhoto(db, id: "p1", sessionId: "s1")
+        _ = try repo.createOrGet(xmpPath: self.xmp, photoPath: self.photo)
+        _ = try repo.linkSession(xmpPath: self.xmp, sessionId: "s1")
+        _ = try repo.upsertItem(
+            xmpPath: self.xmp, photoId: "p1", module: .culling, status: .written)
+        try driveToWritten(repo, xmpPath: self.xmp, revision: 0)
+
+        // 模拟「门禁读之后、confirmed_at 更新之前」另一个写者 mergeInput：
+        // 交付被重开为 pending（所有关联会话确认同时失效）。
+        _ = try repo.mergeInput(
+            xmpPath: self.xmp, photoPath: self.photo,
+            expectedRevision: 0, newRevision: 1,
+            baseFingerprint: "fp-new", baseValues: .object([:]))
+
+        // 门禁在事务内重读：拒绝，且不落 confirmed_at（旧实现会写半套确认）。
+        #expect(throws: DeliveryConfirmGateError.incomplete(
+            blockers: ["delivery:pending=1"])) {
+            _ = try repo.confirm(scope: .session, sessionId: "s1")
+        }
+        #expect(try v1ConfirmedAt(db, xmpPath: self.xmp, sessionId: "s1") == "",
+                "被重开的交付不得落 confirmed_at")
+        #expect(try repo.get(self.xmp)?.status == "pending")
+
+        // 新 revision 重新写回后门禁放行：不是永久拒绝。
+        try driveToWritten(repo, xmpPath: self.xmp, revision: 1)
+        let confirmed = try repo.confirm(scope: .session, sessionId: "s1")
+        #expect(confirmed.confirmedLinks == 1)
+        #expect(confirmed.deliveriesSynced == 1)
     }
 
     @Test func linkSessionAddsNewSessionUnconfirmedAndBlocksConfirm() throws {

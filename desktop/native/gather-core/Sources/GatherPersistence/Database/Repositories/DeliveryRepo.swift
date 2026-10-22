@@ -37,6 +37,9 @@ public enum DeliveryRepoError: Error, Equatable, CustomStringConvertible, Locali
     case invalidArgument(String)
     /// writing 租约被另一个 owner 持有且尚未过期（抢占拒绝）。
     case leaseHeld(xmpPath: String, leaseOwner: String, heartbeatAt: String)
+    /// 提交 written 时租约已不属于本 owner（被接管 / 被新输入重开 / 已收敛）。
+    /// 行必须原样保留：调用方只能重读并放弃本轮收敛，不得覆盖新基线。
+    case leaseLost(xmpPath: String, leaseOwner: String, currentOwner: String, status: String)
 
     public var code: String {
         switch self {
@@ -46,6 +49,7 @@ public enum DeliveryRepoError: Error, Equatable, CustomStringConvertible, Locali
         case .writeNotPersisted: return "DELIVERY_NOT_PERSISTED"
         case .invalidArgument: return "DELIVERY_INVALID_ARGUMENT"
         case .leaseHeld: return "DELIVERY_LEASE_HELD"
+        case .leaseLost: return "DELIVERY_LEASE_LOST"
         }
     }
 
@@ -63,6 +67,39 @@ public enum DeliveryRepoError: Error, Equatable, CustomStringConvertible, Locali
             return "\(code): \(message)"
         case .leaseHeld(let xmpPath, let leaseOwner, let heartbeatAt):
             return "\(code): \(xmpPath) owner=\(leaseOwner) heartbeat=\(heartbeatAt)"
+        case .leaseLost(let xmpPath, let leaseOwner, let currentOwner, let status):
+            return "\(code): \(xmpPath) owner=\(leaseOwner) current=\(currentOwner) status=\(status)"
+        }
+    }
+
+    public var errorDescription: String? { description }
+}
+
+/// confirm 的事务内门禁失败（P1-3）。
+///
+/// 门禁读（完整性 + 可选的 reload-ack）与 `confirmed_at`/状态更新在**同一个**
+/// `connection.transaction` 内：抛错会回滚整个事务，不会留下「已确认链接但交付
+/// 仍 pending」的半套结果。与 `DeliveryRepoError` 分开，因为这是确认策略而非
+/// 行级 CAS；上层（DeliveryCoordinator）负责映射回旧错误码。
+public enum DeliveryConfirmGateError: Error, Equatable, Sendable, CustomStringConvertible, LocalizedError {
+    /// 目标作用域内仍有 pending/writing/failed/conflict 的交付或 item。
+    case incomplete(blockers: [String])
+    /// Capture One 尚未确认重载（requireReloadAck=true 时）。
+    case reloadNotAcknowledged(sessionId: String)
+
+    public var code: String {
+        switch self {
+        case .incomplete: return "XMP_CONFIRM_INCOMPLETE"
+        case .reloadNotAcknowledged: return "XMP_CONFIRM_REQUIRES_SYNC"
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .incomplete(let blockers):
+            return "\(code): " + blockers.joined(separator: ",")
+        case .reloadNotAcknowledged(let sessionId):
+            return "\(code): \(sessionId)"
         }
     }
 
@@ -412,15 +449,39 @@ public final class DeliveryRepo: Sendable {
     }
 
     /// writing → written：落盘成功，记录基线指纹 / 基线快照 / 备份路径。
+    ///
+    /// P1-2：写入口必须带 leaseOwner。CAS 同时匹配 revision、状态集合与
+    /// `lease_owner`；owner 不匹配（租约被接管/被新输入重开/已收敛）时抛
+    /// `DeliveryRepoError.leaseLost` 且**不触碰行**，旧写者不能覆盖新基线。
+    ///
+    /// `leaseOwner` 缺省为空串，保留给尚未持有唯一租约的短事务调用方
+    /// （Host 的 acceptExternalState / 既有测试）；空串同样做 owner CAS，
+    /// 只是 CAS 失配时返回 nil（旧语义），不抛 leaseLost。
     @discardableResult
     public func markWritten(
         xmpPath: String,
         revision: Int64,
+        leaseOwner: String = "",
         baseFingerprint: String,
         baseValues: JSONValue,
         backupPath: String
     ) throws -> DeliveryRow? {
-        try casTransition(
+        // 显式 owner 的快速失败：租约已不在本 owner 手里（被接管/重开/已收敛）时，
+        // 直接 leaseLost，而不是让状态机先报 illegalTransition。真正的并发安全
+        // 仍由下面 CAS 的 lease_owner 条件保证。
+        if !leaseOwner.isEmpty {
+            let path = try normalizedPath(xmpPath)
+            if let current = try get(path),
+               current.leaseOwner != leaseOwner
+                   || current.status != DeliveryStatus.writing.rawValue {
+                throw DeliveryRepoError.leaseLost(
+                    xmpPath: path,
+                    leaseOwner: leaseOwner,
+                    currentOwner: current.leaseOwner,
+                    status: current.status)
+            }
+        }
+        let written = try casTransition(
             xmpPath: xmpPath,
             revision: revision,
             to: .written,
@@ -436,8 +497,22 @@ public final class DeliveryRepo: Sendable {
                 .text(baseFingerprint),
                 .text(try JSONValue.stringify(baseValues)),
                 .text(backupPath),
-            ]
+            ],
+            requiringLeaseOwner: leaseOwner
         )
+        guard written == nil, !leaseOwner.isEmpty else { return written }
+        // CAS 失配时区分「租约丢失」与普通 revision/状态竞争：只有前者必须报错。
+        // 行保持原样（read-only 复核），调用方据此放弃本轮收敛。
+        let path = try normalizedPath(xmpPath)
+        if let current = try get(path),
+           current.status != DeliveryStatus.writing.rawValue || current.leaseOwner != leaseOwner {
+            throw DeliveryRepoError.leaseLost(
+                xmpPath: path,
+                leaseOwner: leaseOwner,
+                currentOwner: current.leaseOwner,
+                status: current.status)
+        }
+        return nil
     }
 
     /// written → synced（会话确认；confirm 的事务版走 confirm，不走本方法）。
@@ -459,7 +534,8 @@ public final class DeliveryRepo: Sendable {
         revision: Int64,
         to target: DeliveryStatus,
         assignments: [String],
-        values: [DBValue?]
+        values: [DBValue?],
+        requiringLeaseOwner leaseOwner: String? = nil
     ) throws -> DeliveryRow? {
         let path = try normalizedPath(xmpPath)
         guard let current = try get(path) else {
@@ -474,12 +550,18 @@ public final class DeliveryRepo: Sendable {
                 xmpPath: path, from: typed.rawValue, to: target.rawValue)
         }
         let sets = assignments + ["status = ?", "updated_at = ?"]
-        let sql = """
+        var sql = """
             UPDATE deliveries SET \(sets.joined(separator: ", "))
             WHERE xmp_path = ? AND revision = ? AND status IN (\(Self.allowedFromSQL(for: target)))
             """
-        let changed = try connection.prepare(sql).run(
-            values + [.text(target.rawValue), .text(nowISOString()), .text(path), .int(revision)])
+        var parameters = values + [
+            .text(target.rawValue), .text(nowISOString()), .text(path), .int(revision),
+        ]
+        if let leaseOwner {
+            sql += " AND lease_owner = ?"
+            parameters.append(.text(leaseOwner))
+        }
+        let changed = try connection.prepare(sql).run(parameters)
         guard changed == 1 else { return nil }
         return try get(path)
     }
@@ -1252,13 +1334,22 @@ public final class DeliveryRepo: Sendable {
 
     /// 本会话对交付的确认。**一个 connection.transaction，闭包内无 await**（draft §5.4）。
     ///
-    /// 事务内顺序：
-    /// 1. 本次 scope 命中的 delivery_sessions 行写 confirmed_at；
-    /// 2. 仅当「该 delivery 的所有关联会话都已确认」时，written → synced；
-    /// 3. 这些 delivery 下所有 written items → synced（一个侧车文件是一次原子写入，
+    /// P1-3：门禁读与状态更新在同一事务内，顺序为：
+    /// 1. 事务内重读会话聚合（完整性与阻断项）；不可确认则抛
+    ///    `DeliveryConfirmGateError.incomplete`，整个事务回滚、不写任何 confirmed_at；
+    /// 2. 可选 reload-ack 门禁（`requireReloadAck`）也在同一事务内读 sessions；
+    /// 3. 本次 scope 命中的 delivery_sessions 行写 confirmed_at——**只对
+    ///    `deliveries.status IN ('written','synced')` 的行**，避免门禁读之后被
+    ///    mergeInput 重开为 pending/writing/failed/conflict 的交付仍落确认；
+    /// 4. 仅当「该 delivery 的所有关联会话都已确认」时，written → synced；
+    /// 5. 这些 delivery 下所有 written items → synced（一个侧车文件是一次原子写入，
     ///    文件内容没有模块边界；scope=.module 只收窄「确认哪些 delivery 的链接」，
     ///    不把同一文件里其它模块的已写 items 留在 written）；
-    /// 4. 读回 summary（本次计数 + 仍未确认的会话）。
+    /// 6. 读回 summary（本次计数 + 仍未确认的会话）。
+    ///
+    /// 事务用 BEGIN IMMEDIATE 开启（与迁移器同一理由）：门禁读之前先拿写锁，
+    /// 进程内靠连接锁、跨进程靠 SQLite 写锁串行化「门禁判定 → confirmed_at
+    /// 更新」；不会出现 deferred 读→写升级的 BUSY_SNAPSHOT，也不会写半套确认。
     ///
     /// scope=.session 时 module 参数被忽略（确认范围是整个会话，宽于模块过滤）。
     ///
@@ -1274,7 +1365,8 @@ public final class DeliveryRepo: Sendable {
     public func confirm(
         scope: DeliveryConfirmScope,
         sessionId: String,
-        module: DeliveryModule? = nil
+        module: DeliveryModule? = nil,
+        requireReloadAck: Bool = false
     ) throws -> DeliveryConfirmSummary {
         guard !sessionId.isEmpty else {
             throw DeliveryRepoError.invalidArgument("sessionId 不能为空")
@@ -1283,6 +1375,7 @@ public final class DeliveryRepo: Sendable {
             throw DeliveryRepoError.invalidArgument("scope=.module 必须提供 module")
         }
 
+        let gateModule: DeliveryModule? = scope == .module ? module : nil
         let targetSQL: String
         let targetValues: [DBValue?]
         switch scope {
@@ -1305,11 +1398,35 @@ public final class DeliveryRepo: Sendable {
         }
         let now = nowISOString()
 
-        return try connection.transaction {
+        return try connection.transaction(.immediate) {
+            // P1-3：门禁读与写入同一事务。聚合查询复用 DeliverySummaryQuery，
+            // 阻断项文案/顺序与 Coordinator 的只读摘要完全一致。
+            let gate = try DeliverySummaryQuery(connection: connection)
+                .summary(sessionId: sessionId, module: gateModule)
+            guard gate.isConfirmable else {
+                throw DeliveryConfirmGateError.incomplete(blockers: gate.blockers)
+            }
+            if requireReloadAck {
+                let acked = try connection.prepare(
+                    "SELECT reload_acked_at FROM sessions WHERE id = ?"
+                ).get([.text(sessionId)])?[0].textValue ?? ""
+                guard !acked.isEmpty else {
+                    throw DeliveryConfirmGateError.reloadNotAcknowledged(sessionId: sessionId)
+                }
+            }
+
+            // confirmed_at 只写「内容仍是已写/已确认」的交付：pending/writing/
+            // failed/conflict 的交付即使命中 scope 也不落确认（P1-3 的窄窗口）。
+            // 保留 synced：linkSession 给已确认交付新增会话时，新链接仍可补确认，
+            // 不改变任何内容基线。
             let confirmedLinks = try connection.prepare("""
                 UPDATE delivery_sessions SET confirmed_at = ?
                 WHERE session_id = ? AND confirmed_at = ''
-                  AND delivery_id IN (\(targetSQL))
+                  AND delivery_id IN (
+                    SELECT d.id FROM deliveries d
+                    WHERE d.status IN ('written', 'synced')
+                      AND d.id IN (\(targetSQL))
+                  )
                 """).run([.text(now), .text(sessionId)] + targetValues)
 
             let deliveriesSynced = try connection.prepare("""

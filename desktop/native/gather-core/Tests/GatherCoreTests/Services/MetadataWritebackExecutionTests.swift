@@ -199,7 +199,10 @@ struct MetadataWritebackExecutionTests {
         let delivery = try #require(try fixture.deliveryRepo.get(fixture.xmpPath))
         #expect(delivery.typedStatus == .written)
 
-        // confirm 可推进：written → synced（无失败项阻断）。
+        // confirm 可推进：written → synced（无失败项阻断；先模拟 C1 已重载）。
+        _ = try fixture.db.prepare(
+            "UPDATE sessions SET reload_acked_at = '2026-01-01T00:00:00.000Z' WHERE id = ?"
+        ).run([.text(fixture.sessionId)])
         try await fixture.writeback.confirmSync(sessionId: fixture.sessionId, module: "metadata")
         #expect(try fixture.deliveryRepo.get(fixture.xmpPath)?.typedStatus == .synced)
         #expect(try fixture.item(fixture.photoIds[0])?.typedStatus == .synced)

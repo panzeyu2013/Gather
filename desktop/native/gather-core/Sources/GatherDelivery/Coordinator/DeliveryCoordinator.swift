@@ -8,7 +8,8 @@
 //   （prepare → 文件阶段 → 单事务 DB 删除 + finish）；
 // - DeliveryCleanupFlow / DeliveryReplayFlow / DeliveryMirrorWriter：逐交付控制流。
 //
-// 门面只做参数校验、reload-ack 门禁、只读摘要与组件装配，不再内联状态/SQL/文件逻辑。
+// 门面只做参数校验、门禁错误映射、只读摘要与组件装配，不再内联状态/SQL/文件逻辑；
+// confirm 的完整性/reload-ack 门禁与写状态已合并进同一个 Repo 事务（P1-3）。
 // 公开 API（init / confirm / cleanup / finalize / mirrorWriteback / replay /
 // sessionSummary / metadataSummary）与 WP2a 逐字一致，调用方零改动。
 //
@@ -198,7 +199,11 @@ public struct DeliveryCoordinator: Sendable {
     }
 
     private func makeMirrorWriter() -> DeliveryMirrorWriter {
-        DeliveryMirrorWriter(repo: deliveryRepo, writer: stateWriter)
+        // 镜像的租约 owner 按调用生成：镜像是一次同步短序列，不跨调用复用身份。
+        DeliveryMirrorWriter(
+            repo: deliveryRepo,
+            writer: stateWriter,
+            leaseOwner: "mirror-" + UUID().uuidString)
     }
 
     // MARK: - 派生状态
@@ -226,8 +231,9 @@ public struct DeliveryCoordinator: Sendable {
         return try summaryQuery.metadataSummary(sessionId: sessionId, module: module)
     }
 
-    /// §5.4-2 reload_acked_at 门禁：Capture One 未确认重载前，confirm/finalize
-    /// 都不得推进状态（旧 MetadataSyncCoordinator.requireReloadAck 的同一语义）。
+    /// §5.4-2 reload_acked_at 门禁：Capture One 未确认重载前，finalize 不得
+    /// 推进状态（旧 MetadataSyncCoordinator.requireReloadAck 的同一语义）。
+    /// confirm 的同一门禁已下沉到 DeliveryRepo.confirm 的事务内（P1-3）。
     ///
     /// 直接读 sessions.reload_acked_at，而不是 SessionRepo.get：后者的投影仍带
     /// S5c-3 前的 legacy 列（writeback_status/import_source/failed_writeback_count），
@@ -245,33 +251,32 @@ public struct DeliveryCoordinator: Sendable {
 
     // MARK: - confirm
 
-    /// 会话对某模块的确认：门禁读 + DeliveryRepo.confirm 单事务。
+    /// 会话对某模块的确认：门禁读与 confirmed_at/状态更新在同一个事务内（P1-3）。
     ///
     /// 门禁只拦 pending/writing/failed/conflict（交付或 item）；written 合法。
     /// 跨会话未确认不是抛错：本会话的 confirmed_at 先落地（进度可累积），
     /// 返回的 DeliveryConfirmSummary.unconfirmedSessionIds 指名阻塞会话，delivery 留在
     /// written，等对方 confirm 后才翻 synced（与 draft §5.4 的跨会话门禁一致）。
     ///
-    /// 顺序与旧 confirmSync 一致：先查完整性，再查 reload-ack，最后才写状态；
-    /// 未 ack 时 confirmed_at 不落地（避免"确认了一半"的假进度）。
+    /// 顺序不变：先查完整性，再查 reload-ack，最后才写状态；区别是这三步现在由
+    /// DeliveryRepo.confirm 在**同一个事务**内完成，门禁读与写入之间没有窄窗口。
+    /// 未 ack / 有阻断时 confirmed_at 不落地（避免"确认了一半"的假进度）。
     public func confirm(sessionId: String, module: DeliveryModule) throws -> DeliveryConfirmSummary {
         guard !sessionId.isEmpty else {
             throw DeliveryCoordinatorError.invalidArgument("sessionId 不能为空")
         }
         let trace = DeliveryTrace.text(id: "session:\(sessionId)", revision: 0, phase: "confirm")
         do {
-            let summary = try summaryQuery.summary(sessionId: sessionId, module: module)
-            guard summary.isConfirmable else {
-                throw DeliveryCoordinatorError.confirmIncomplete(blockers: summary.blockers)
-            }
-            try requireReloadAck(sessionId)
-            // DB 阶段边界：门禁全部通过之后才进入 confirm 的单事务。
+            // DB 阶段边界：完整性 / reload-ack 门禁与 confirm 的单事务合一。
             DeliveryTrace.log(
                 trace,
                 "event=start op=confirm phase=confirm module=\(module.rawValue)",
                 level: .info)
             let confirmed = try stateWriter.confirm(
-                scope: .module, sessionId: sessionId, module: module)
+                scope: .module,
+                sessionId: sessionId,
+                module: module,
+                requireReloadAck: requireReloadAckEnabled)
             DeliveryTrace.log(
                 trace,
                 "event=done op=confirm phase=confirm module=\(module.rawValue) "
@@ -281,8 +286,23 @@ public struct DeliveryCoordinator: Sendable {
                 level: .info)
             emitStateChanged(sessionId)
             return confirmed
+        } catch let gate as DeliveryConfirmGateError {
+            // Repo 的事务内门禁 → 旧 Coordinator 错误码（调用方/UI 的契约不变）。
+            let mapped: DeliveryCoordinatorError
+            switch gate {
+            case .incomplete(let blockers):
+                mapped = .confirmIncomplete(blockers: blockers)
+            case .reloadNotAcknowledged:
+                mapped = .reloadNotAcknowledged(sessionId: sessionId)
+            }
+            DeliveryTrace.log(
+                trace,
+                "event=failed op=confirm phase=confirm module=\(module.rawValue) "
+                    + "reason=\(mapped)",
+                level: .warn)
+            throw mapped
         } catch {
-            // 门禁拒绝（incomplete / reload 未确认）与事务失败都带 phase + reason。
+            // 事务失败（SQL/约束）带 phase + reason。
             DeliveryTrace.log(
                 trace,
                 "event=failed op=confirm phase=confirm module=\(module.rawValue) "

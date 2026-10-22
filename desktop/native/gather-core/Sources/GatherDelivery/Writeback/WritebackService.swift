@@ -22,8 +22,8 @@
 //   xmp.writeAttributes → 回读属性/指纹），不再「先入 outbox、后 flushSession」；
 //   因此 waitForIdle 没有等待对象，flushSession 只回读交付摘要
 //   （DeliverySummaryQuery.metadataSummary）。
-// - confirmSync 只推进交付（DeliveryRepo.confirm 单事务）；reload-ack 门禁留在
-//   DeliveryCoordinator.confirm（culling/face/sim 的生产确认路径）。
+// - confirmSync 委托 DeliveryCoordinator.confirm：完整性/reload-ack 门禁与
+//   confirmed_at 更新在同一个事务（P1-3）；本服务不再有绕过门禁的确认旁路。
 // - cleanup 委托 DeliveryCoordinator.cleanup（module 作用域 + intent 前滚）。
 //
 // 注入点：
@@ -334,7 +334,9 @@ public final class WritebackService: @unchecked Sendable {
             return try stateWriter.claimWriting(
                 xmpPath: xmpPath, revision: current.revision, leaseOwner: leaseOwner)
         case .some(.pending), .some(.failed), .some(.conflict):
-            return try stateWriter.markWriting(
+            // 必须走 claim：读与写之间若被并发写者抢成 writing，markWriting 会
+            // 无条件覆盖对方租约；claim 会按 owner/heartbeat 拒绝或续租。
+            return try stateWriter.claimWriting(
                 xmpPath: xmpPath, revision: current.revision,
                 leaseOwner: leaseOwner, heartbeatAt: nowISOString())
         case .some(.written), .some(.synced):
@@ -348,7 +350,7 @@ public final class WritebackService: @unchecked Sendable {
             ) else {
                 return nil
             }
-            return try stateWriter.markWriting(
+            return try stateWriter.claimWriting(
                 xmpPath: xmpPath, revision: reopened.revision,
                 leaseOwner: leaseOwner, heartbeatAt: nowISOString())
         case .some(.cleaned), .none:
@@ -409,8 +411,16 @@ public final class WritebackService: @unchecked Sendable {
                     result.errors.append("DELIVERY_FINGERPRINT_FAILED: \(path): \(error)")
                 }
                 do {
+                    // 归位前还有两次 await 读盘：先续租，租约被接管就停止收敛。
+                    guard try stateWriter.renewWriting(
+                        xmpPath: path, revision: row.revision, leaseOwner: leaseOwner)
+                    else {
+                        result.errors.append("DELIVERY_LEASE_LOST: \(path)")
+                        continue
+                    }
                     if try stateWriter.markWritten(
                         xmpPath: path, revision: row.revision,
+                        leaseOwner: leaseOwner,
                         baseFingerprint: fingerprint, baseValues: baseValues,
                         backupPath: stale.backupPath) != nil {
                         clearReloadAck(forXmpPath: path)
@@ -423,6 +433,12 @@ public final class WritebackService: @unchecked Sendable {
                 }
             } else {
                 do {
+                    guard try stateWriter.renewWriting(
+                        xmpPath: path, revision: row.revision, leaseOwner: leaseOwner)
+                    else {
+                        result.errors.append("DELIVERY_LEASE_LOST: \(path)")
+                        continue
+                    }
                     if try stateWriter.markFailed(
                         xmpPath: path, revision: row.revision,
                         errorMessage: Self.interruptedWriteMessage) != nil {
@@ -820,11 +836,20 @@ public final class WritebackService: @unchecked Sendable {
         // 备份路径用写前 xmp.backup 的真实返回值（重试沿用交付行上的旧备份）。
         for path in writeRevisionByPath.keys.sorted() {
             guard let revision = writeRevisionByPath[path] else { continue }
-            // 长批次写盘可能超过租约 TTL：收敛前续租一次；失败说明租约已被他人
-            // 接管/新输入推进 revision，显式上报（下面的 status+revision CAS 仍兜底）。
-            if (try? stateWriter.renewWriting(
-                xmpPath: path, revision: revision, leaseOwner: leaseOwner)) != true {
+            // 长批次写盘可能超过租约 TTL：收敛前续租一次。失败说明租约已被
+            // 他人接管/新输入推进 revision —— 本轮不得再写 written 或 failed
+            // （P1-2），行保持原样交给持有者/下一次恢复扫描。
+            let holdsLease: Bool
+            do {
+                holdsLease = try stateWriter.renewWriting(
+                    xmpPath: path, revision: revision, leaseOwner: leaseOwner)
+            } catch {
+                errors.append("DELIVERY_LEASE_LOST: \(path): \(error)")
+                continue
+            }
+            guard holdsLease else {
                 errors.append("DELIVERY_LEASE_LOST: \(path)")
+                continue
             }
             if writtenPaths.contains(path) {
                 let backupPath = backupByPath[path].flatMap { $0.isEmpty ? nil : $0 }
@@ -834,6 +859,7 @@ public final class WritebackService: @unchecked Sendable {
                     let row = try stateWriter.markWritten(
                         xmpPath: path,
                         revision: revision,
+                        leaseOwner: leaseOwner,
                         baseFingerprint: fingerprintByPath[path] ?? "",
                         baseValues: baseValuesByPath[path] ?? .object([:]),
                         backupPath: backupPath
@@ -1087,21 +1113,32 @@ public final class WritebackService: @unchecked Sendable {
         return try await execute(sessionId: sessionId, module: module, items: items)
     }
 
-    /// TS: confirmSync —— 失败项存在时拒绝；状态收敛由 DeliveryRepo.confirm 的
-    /// 单事务完成（written → synced；跨会话未确认的交付保持 written）。
+    /// TS: confirmSync —— 失败项存在时拒绝；其余门禁与状态推进**委托**
+    /// DeliveryCoordinator.confirm（P1-3）。
     ///
-    /// reload-ack 门禁与确认完整性门禁属于交付编排（DeliveryCoordinator.confirm），
-    /// 生产确认路径（culling/face/sim）走那里；本入口只做模块级交付推进。
+    /// 旧实现直接调 stateWriter.confirm，绕过了 reload-ack 与完整性门禁，是
+    /// 一条公共确认旁路。现在本入口与 culling/face/sim 的生产确认路径完全同路：
+    /// 完整性 + reload-ack + confirmed_at/状态更新都在 DeliveryRepo.confirm 的
+    /// 同一个事务里，不存在"先写确认、后补门禁"的窗口。
+    ///
+    /// 失败项的旧码 WRITEBACK_FAILURES_PENDING 保留（UI/调用方兼容）；其余阻断
+    /// 以 DeliveryCoordinatorError（XMP_CONFIRM_INCOMPLETE /
+    /// XMP_CONFIRM_REQUIRES_SYNC）原样上抛。
     public func confirmSync(sessionId: String, module: String) async throws {
         let deliveryModule = try mapModule(module)
-        let failedCount = try deliveryRepo
-            .listItems(sessionId: sessionId, module: deliveryModule, status: .failed)
-            .count
-        if failedCount > 0 {
-            throw WritebackServiceError.failuresPending
+        do {
+            _ = try delivery.confirm(sessionId: sessionId, module: deliveryModule)
+        } catch let error as DeliveryCoordinatorError {
+            // 失败项保留旧 WRITEBACK_FAILURES_PENDING 码（与旧实现的前置
+            // failedCount 检查同语义）；其余阻断按 Coordinator 错误上抛。
+            if case .confirmIncomplete(let blockers) = error,
+               blockers.contains(where: {
+                   $0.hasPrefix("delivery:failed=") || $0.hasPrefix("item:failed=")
+               }) {
+                throw WritebackServiceError.failuresPending
+            }
+            throw error
         }
-        _ = try stateWriter.confirm(
-            scope: .module, sessionId: sessionId, module: deliveryModule)
         emitStateChanged(sessionId)
     }
 

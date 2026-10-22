@@ -4,10 +4,13 @@
 // 对应命令（7 条）：metadata.get / set / batch_set / conflicts / orphans /
 // resolve_conflict / resolve_orphan。
 //
-// 依赖（2b-2 起不再持有 MetadataSyncCoordinator）：
+// 依赖（2b-2 起不再持有 MetadataSyncCoordinator；P1-2 起写路径收口）：
 // - metadataService：get/set/batchSet（缓存指纹、可写字段白名单、侧车分组串行）；
-// - deliveryRepo：conflicts / resolveConflict / orphans / resolveOrphan 的唯一
-//   持久化入口（deliveries / delivery_items / delivery_sessions）；
+// - deliveryRepo：**只读**查询（conflictDeliveries / items / orphanDeliveries /
+//   get / metadataSummary），本文件不再调用它的任何写方法；
+// - stateWriter：交付状态与交付项写入的唯一入口（acceptExternalState /
+//   reopenConflict / retryOrphan / deleteOrphanDelivery /
+//   persistAcceptedRemoteFields）；
 // - xmp：冲突的 remote 值读取与孤儿 restore/remove 的文件阶段（旧协调器的同一
 //   两个动作，收窄为只读属性 + 三文件操作）。
 //
@@ -37,6 +40,13 @@
 // - 孤儿 = 没有任何 delivery_sessions 关联的交付（旧 getOrphans 的同一判据）；
 //   keep 删行、restore 先回滚文件再删行、retry 只把 failed/pending 重新入队。
 //
+// 状态写归属（P1-2）：resolveConflict / resolveOrphan 的每一步状态迁移都经
+// DeliveryStateWriter 的语义入口，本文件不再出现 mergeInput / markWriting /
+// markWritten / markItem / resetConfirmations / deleteOrphanDelivery /
+// updateItemAttributes / updateItemKeywords；单步迁移在 GatherDelivery 内仍是
+// internal，Host 拼不出绕过 writer 的写序列。冲突裁决“绝不翻 synced”的结论仍由
+// DeliveryRepo.confirm 的跨会话门禁保证（见上一条）。
+//
 // 错误映射：领域码一律以 GatherError 直出（XMP_CONFLICT_NOT_FOUND /
 // XMP_CHOICE_MISSING / XMP_ORPHAN_NOT_FOUND / ...），不再依赖旧协调器的
 // MetadataSyncError（2b-3 删除旧链路时本文件无需再改）。MetadataServiceError
@@ -52,15 +62,19 @@ import GatherDelivery
 
 public final class LiveMetadataAPI: MetadataAPI {
     private let metadataService: MetadataService
+    /// 只读查询入口（写路径见 stateWriter，P1-2）。
     private let deliveryRepo: DeliveryRepo
+    /// 交付状态 / 交付项的写入唯一入口；与 deliveryRepo 同一连接。
+    private let stateWriter: DeliveryStateWriter
     private let xmp: any XMPProvider
     /// 与 DeliveryCoordinator / WritebackService 共用的按 xmpPath 文件锁。
     /// 生产组合根把 XMPFileLock.shared 同时注入三者（AppComposition），
     /// 缺省也是 .shared：孤儿 restore/remove 与 cleanup/replay/writeback 串行。
     private let fileLock: XMPFileLock
 
-    /// Sendable 由协议继承显式声明：类为 final，四个依赖都是构造后不再变更的
-    /// Sendable let（Repo 只持连接、XMPProvider 由宿主实现保证），故无需 @unchecked。
+    /// Sendable 由协议继承显式声明：类为 final，所有依赖都是构造后不再变更的
+    /// Sendable let（Repo 只持连接、stateWriter 由 deliveryRepo 派生、
+    /// XMPProvider 由宿主实现保证），故无需 @unchecked。
     public init(
         metadataService: MetadataService,
         deliveryRepo: DeliveryRepo,
@@ -69,6 +83,7 @@ public final class LiveMetadataAPI: MetadataAPI {
     ) {
         self.metadataService = metadataService
         self.deliveryRepo = deliveryRepo
+        self.stateWriter = DeliveryStateWriter(repo: deliveryRepo)
         self.xmp = xmp
         self.fileLock = fileLock
     }
@@ -165,20 +180,16 @@ public final class LiveMetadataAPI: MetadataAPI {
                 try await acceptExternalState(delivery: delivery, remote: remote)
             } else {
                 // 仍有保留字段：交付回到 pending（新输入 revision）并重排项，
-                // 执行器下一次写盘即覆盖为本地值。
-                guard try deliveryRepo.mergeInput(
+                // 执行器下一次写盘即覆盖为本地值。两步（merge + 逐项 pending）
+                // 是 writer 的 reopenConflict 语义，顺序/失败点与原实现一致。
+                try stateWriter.reopenConflict(
                     xmpPath: delivery.xmpPath,
                     photoPath: delivery.photoPath,
                     expectedRevision: delivery.revision,
-                    newRevision: delivery.revision + 1,
                     baseFingerprint: delivery.baseFingerprint,
-                    baseValues: delivery.baseValues
-                ) != nil else {
-                    throw DeliveryRepoError.writeNotPersisted(delivery.xmpPath)
-                }
-                for item in items {
-                    _ = try deliveryRepo.markItem(itemId: item.id, status: .pending)
-                }
+                    baseValues: delivery.baseValues,
+                    itemIds: items.map(\.id)
+                )
             }
             return try deliveryRepo.metadataSummary(sessionId: payload.sessionId)
         }
@@ -200,16 +211,14 @@ public final class LiveMetadataAPI: MetadataAPI {
                     throw GatherError(code: .XMP_CONFLICT_RESOLUTION_REQUIRED, underlying: path)
                 case .some(.pending), .some(.failed):
                     // failed → pending 是合法迁移；pending 重新入队幂等（revision 推进）。
-                    guard try deliveryRepo.mergeInput(
+                    // 孤儿没有会话关联，retry 只重排交付、不动 items（writer 语义）。
+                    try stateWriter.retryOrphan(
                         xmpPath: row.xmpPath,
                         photoPath: row.photoPath,
                         expectedRevision: row.revision,
-                        newRevision: row.revision + 1,
                         baseFingerprint: row.baseFingerprint,
                         baseValues: row.baseValues
-                    ) != nil else {
-                        throw DeliveryRepoError.writeNotPersisted(row.xmpPath)
-                    }
+                    )
                 default:
                     throw GatherError(code: .XMP_ORPHAN_NOT_RETRYABLE, underlying: path)
                 }
@@ -228,7 +237,7 @@ public final class LiveMetadataAPI: MetadataAPI {
                     try await restoreOrphanFile(row)
                 }
             }
-            guard try deliveryRepo.deleteOrphanDelivery(
+            guard try stateWriter.deleteOrphanDelivery(
                 xmpPath: row.xmpPath, revision: row.revision) else {
                 // 行已被并发改写/重新链接：不当作成功，重读列表返回真实状态。
                 return try listOrphans()
@@ -245,7 +254,7 @@ public final class LiveMetadataAPI: MetadataAPI {
     ///
     /// 保留原入口的 A 守卫：restore/remove 前后各复核一次 revision/status/backup
     /// 且仍无会话关联；备份缺失显式失败（不删行）。锁只覆盖文件阶段——行删除仍由
-    /// deleteOrphanDelivery 的 revision + 无链接 CAS 兜底，避免在锁内跨 DB 事务。
+    /// stateWriter.deleteOrphanDelivery 的 revision + 无链接 CAS 兜底，避免在锁内跨 DB 事务。
     private func restoreOrphanFile(_ row: DeliveryRow) async throws {
         if !row.backupPath.isEmpty {
             guard xmp.fileExists(row.backupPath) else {
@@ -360,8 +369,10 @@ public final class LiveMetadataAPI: MetadataAPI {
                 keywordUpdates.append((item.id, remote.keywords ?? []))
             }
         }
-        try deliveryRepo.updateItemAttributes(attributeUpdates)
-        try deliveryRepo.updateItemKeywords(keywordUpdates)
+        // 交付项投影的写也归 writer（先属性、后关键词；两次批量写的事务边界不变）。
+        try stateWriter.persistAcceptedRemoteFields(
+            attributeUpdates: attributeUpdates,
+            keywordUpdates: keywordUpdates)
     }
 
     /// 全部接受远程：以盘上内容为新基线，只推进到 written。
@@ -384,23 +395,17 @@ public final class LiveMetadataAPI: MetadataAPI {
                 code: .XMP_CONFLICT_DETAILS_UNAVAILABLE,
                 underlying: String(describing: error))
         }
-        guard try deliveryRepo.markWriting(
-                xmpPath: delivery.xmpPath, revision: delivery.revision) != nil else {
-            throw DeliveryRepoError.writeNotPersisted(delivery.xmpPath)
-        }
-        // P1-10 残余：冲突前的 confirmed_at 属于旧内容，不能作为「新基线已确认」
-        // 通过 confirm 的跨会话门禁（否则 s1/s2 的旧确认会让裁决后的首次 confirm
-        // 直接翻 synced）。在 writing → written 之间清空：writing 本身不是可确认态，
-        // 清空后到 written 之间不会有人重新确认；reset 自身单事务，失败则不写 written。
-        _ = try deliveryRepo.resetConfirmations(xmpPath: delivery.xmpPath)
-        guard try deliveryRepo.markWritten(
-                xmpPath: delivery.xmpPath,
-                revision: delivery.revision,
-                baseFingerprint: fingerprint,
-                baseValues: remote.asJSONValue,
-                backupPath: delivery.backupPath) != nil else {
-            throw DeliveryRepoError.writeNotPersisted(delivery.xmpPath)
-        }
+        // 状态写整段交给 writer 的语义入口（P1-2）：writing → 清空全部关联会话
+        // 确认 → written，顺序与失败语义见 DeliveryStateWriter.acceptExternalState。
+        // P1-10 的旧确认必须在 writing → written 之间失效；这里绝不翻 synced
+        // （synced 只能由 DeliveryRepo.confirm 的跨会话门禁翻转）。
+        try stateWriter.acceptExternalState(
+            xmpPath: delivery.xmpPath,
+            revision: delivery.revision,
+            baseFingerprint: fingerprint,
+            baseValues: remote.asJSONValue,
+            backupPath: delivery.backupPath
+        )
         // 刻意停在 written：等待所有关联会话各自 confirm（跨会话门禁）。
     }
 
