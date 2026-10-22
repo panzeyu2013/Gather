@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/RootShellOverlay.swift
+// desktop/native/gather-app/Sources/GatherUI/Shell/RootShellOverlay.swift
 // Cut 4 / 4c-2k：外壳的通知入口与 Toast 文案，从 RootView.swift 原样搬移。
 //
 // 菜单/导入/捕获通知仍由外壳统一接收后转成导航 + 意图（F02：页面按目的地
@@ -6,7 +6,6 @@
 // 语言解析（唯一语言源是 LanguageStore），不缓存文案。
 import SwiftUI
 import Foundation
-import GatherUI
 
 // MARK: - 通知入口
 

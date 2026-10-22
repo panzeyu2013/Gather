@@ -31,7 +31,6 @@
 import SwiftUI
 import AppKit
 import GatherProtocol
-import GatherUI
 
 package struct RootView: View {
     /// Cut 4 / 4a-2a-2：壳层只认 UI-owned 的依赖包（§4.6 / D-017）：

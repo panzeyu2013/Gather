@@ -10,7 +10,6 @@
 // 渲染，也不访问数据库或真实文件。
 import Testing
 @testable import GatherUI
-@testable import GatherHost
 
 @MainActor
 @Suite("RootNavigation")

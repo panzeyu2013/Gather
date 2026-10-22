@@ -1,10 +1,9 @@
-// desktop/native/gather-app/Sources/GatherHost/RootShellDetail.swift
+// desktop/native/gather-app/Sources/GatherUI/Shell/RootShellDetail.swift
 // Cut 4 / 4c-2k：详情区（按目的地条件构建）与 SessionTab 装配，从 RootView.swift 原样搬移。
 //
 // 四个 pending 容器 / 入口意图仍由 workspace 承载；SessionTabHost 的 workspace
 // 仍从 environment 注入，页签身份 .id("session-tab-…") 与页面 init 参数逐字保留。
 import SwiftUI
-import GatherUI
 
 // MARK: - 详情区（按目的地条件构建）
 

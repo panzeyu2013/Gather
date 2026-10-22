@@ -1,10 +1,9 @@
-// desktop/native/gather-app/Sources/GatherHost/RootShellNavigation.swift
+// desktop/native/gather-app/Sources/GatherUI/Shell/RootShellNavigation.swift
 // Cut 4 / 4c-2k：RootNavigation 从 RootView.swift（原 27-224 行）原样搬移。
 //
 // 行为不变：目的地状态机 / 来源记录 / B1 单步返回 / 侧栏选中判定全部逐字保留；
 // 本文件只承载类型，不构造 View。
 import Observation
-import GatherUI
 
 @MainActor
 @Observable

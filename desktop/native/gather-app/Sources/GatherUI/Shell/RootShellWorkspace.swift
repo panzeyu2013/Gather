@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/RootShellWorkspace.swift
+// desktop/native/gather-app/Sources/GatherUI/Shell/RootShellWorkspace.swift
 // Cut 4 / 4c-2k：入口动作 + 意图失效 + 工作区生命周期，从 RootView.swift 原样搬移。
 //
 // 顺序契约（4c-2k 验收）：
@@ -9,7 +9,6 @@
 //   非会话页 activate(nil) 只 suspend；同一会话内的页签切换不重复 activate。
 import SwiftUI
 import GatherProtocol
-import GatherUI
 
 // MARK: - 入口动作（意图先进 workspace，再切目的地）
 

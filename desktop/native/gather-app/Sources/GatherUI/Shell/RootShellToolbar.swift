@@ -1,11 +1,10 @@
-// desktop/native/gather-app/Sources/GatherHost/RootShellToolbar.swift
+// desktop/native/gather-app/Sources/GatherUI/Shell/RootShellToolbar.swift
 // Cut 4 / 4c-2k：外壳的工具栏 / 窗口标题 / 尺寸预算 / 文案，从 RootView.swift 原样搬移。
 //
 // 布局预算常量仍单点定义（D-2 审计 5）；窗口标题继续读 SessionWorkspace 的
 // 异步标题缓存（4a-2c），不在导航时同步查库。
 import SwiftUI
 import Foundation
-import GatherUI
 
 // MARK: - 外壳尺寸
 

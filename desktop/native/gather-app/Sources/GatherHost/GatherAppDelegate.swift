@@ -9,21 +9,6 @@ import GatherDomain
 import GatherUI
 
 
-/// importCompleted 通知的 userInfo 键名（契约：键名/类型以此为准，勿改）。
-public enum GatherAppImportUserInfoKey {
-    /// String：新创建的工作区 id。
-    public static let sessionId = "sessionId"
-    /// Int：导入失败的（无法读尺寸）文件数。
-    public static let failedCount = "failedCount"
-    /// Int：成功入库的照片数。
-    public static let addedCount = "addedCount"
-    /// String：失败提示的来源标签（"Capture One 文件"/"文件"），对齐旧版
-    /// importFailureMessage 的 source 参数。
-    public static let sourceLabel = "sourceLabel"
-    /// String：失败文件示例（前 3 个文件名，顿号连接）。
-    public static let examples = "examples"
-}
-
 public enum GatherDeepLink {
     /// 深链格式：gather://import?file=<path>，每个 file
     /// 单独校验扩展名/文件存在性，重复项去重；URLComponents 已经完成一次

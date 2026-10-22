@@ -1,11 +1,10 @@
-// desktop/native/gather-app/Sources/GatherHost/RootShellSidebar.swift
+// desktop/native/gather-app/Sources/GatherUI/Shell/RootShellSidebar.swift
 // Cut 4 / 4c-2k：侧栏（导航条目 / 选中语义 / 当前会话回退）从 RootView.swift 原样搬移。
 //
 // 侧栏仍是 NavigationSplitView + List(selection:).listStyle(.sidebar)；选中绑定
 // 的读写语义、图库/相似度/会话页签落回「当前会话」的判定、lastSessionId 回退
 // 全部逐字保留（4a-2c：lastSessionId 由 SessionStore.activate 唯一写入）。
 import SwiftUI
-import GatherUI
 
 // MARK: - 侧栏条目
 
