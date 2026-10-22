@@ -7,8 +7,9 @@
 // 3. 外部修改（指纹不符）→ .skipped(.conflict)；
 // 4. restore 的 await 窗口内出现新输入 → .invalidated（文件可能已被旧备份覆盖）；
 // 5. 备份缺失 → .fileFailed（保留 prepared intent 的旧语义）；
-// 6. finalize 只删备份、绝不 restore；
-// 7. 同一路径的两个文件阶段被 XMPFileLock 串行化（最大并发 = 1）。
+// 6. finalize 文件阶段只 verify，绝不 restore **也绝不删备份**（P1-1）；
+// 7. 备份删除只在交付行删除成功之后（removeFinalizeBackup），幂等且受新交付守卫；
+// 8. 同一路径的两个文件阶段被 XMPFileLock 串行化（最大并发 = 1）。
 
 import Foundation
 import Testing
@@ -188,7 +189,9 @@ struct DeliveryFilePhaseTests {
         #expect(try repo.get(row.xmpPath)?.typedStatus == .synced, "文件失败不改交付状态")
     }
 
-    @Test func finalizeRemovesBackupWithoutRestoringSidecar() async throws {
+    /// P1-1：finalize 的文件阶段只 verify。旧实现在这里删备份，DB CAS 一旦拒绝
+    /// 就会留下「交付行还在、backup_path 指向已删文件」的悬空引用。
+    @Test func finalizeFilePhaseLeavesBackupUntouched() async throws {
         let fixture = try makeFixture()
         defer { fixture.db.close() }
         let payload = DeliveryTestSupport.cleanupPayload(
@@ -199,8 +202,71 @@ struct DeliveryFilePhaseTests {
 
         #expect(outcome == .completed)
         #expect(fixture.port.restoreCallCount == 0, "finalize 绝不 restore")
-        #expect(fixture.port.contents(DeliveryTestSupport.backupPath) == nil)
+        #expect(fixture.port.removedPathsSnapshot.isEmpty, "文件阶段绝不删备份")
+        #expect(fixture.port.contents(DeliveryTestSupport.backupPath) == "original")
         #expect(fixture.port.contents(DeliveryTestSupport.xmpPath) == "gather-written")
+        #expect(try fixture.repo.get(fixture.row.xmpPath)?.typedStatus == .synced)
+    }
+
+    /// P1-1：备份删除是 DB 成功后的后置步骤——行未删时保留，行删后删除且幂等。
+    @Test func removeFinalizeBackupWaitsForRowDeletionAndIsIdempotent() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.db.close() }
+        let xmpPath = fixture.row.xmpPath
+        let backupPath = DeliveryTestSupport.backupPath
+
+        // 交付行仍在（DB 段尚未成功）：绝不删备份。
+        let retained = await fixture.phase.removeFinalizeBackup(
+            xmpPath: xmpPath, backupPath: backupPath)
+        guard case .retained(let reason) = retained else {
+            Issue.record("期望 .retained，实际 \(retained)")
+            return
+        }
+        #expect(reason.hasPrefix("delivery-reappeared"))
+        #expect(fixture.port.removedPathsSnapshot.isEmpty)
+        #expect(fixture.port.contents(backupPath) == "original")
+
+        // DB 删除成功之后：删备份，重复调用 .absent（重放/重试安全）。
+        // 夹具的 linkSession 默认不写 confirmed_at；删除门禁要求全部关联会话已确认。
+        _ = try fixture.db.exec(
+            "UPDATE delivery_sessions SET confirmed_at = '2026-01-01T00:00:00.000Z'")
+        let deleted = try fixture.repo.deleteSyncedDelivery(
+            xmpPath: xmpPath, deliveryId: fixture.row.id, revision: fixture.row.revision)
+        #expect(deleted == .deleted)
+        let removed = await fixture.phase.removeFinalizeBackup(
+            xmpPath: xmpPath, backupPath: backupPath)
+        #expect(removed == .removed)
+        #expect(fixture.port.contents(backupPath) == nil)
+        #expect(fixture.port.contents(DeliveryTestSupport.xmpPath) == "gather-written")
+
+        let repeated = await fixture.phase.removeFinalizeBackup(
+            xmpPath: xmpPath, backupPath: backupPath)
+        #expect(repeated == .absent)
+    }
+
+    /// P1-1：删除失败只上报（.failed），绝不抛出；行已删，不再回滚。
+    @Test func removeFinalizeBackupReportsFailureWithoutThrowing() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.db.close() }
+        let xmpPath = fixture.row.xmpPath
+        let backupPath = DeliveryTestSupport.backupPath
+        _ = try fixture.db.exec(
+            "UPDATE delivery_sessions SET confirmed_at = '2026-01-01T00:00:00.000Z'")
+        let deleted = try fixture.repo.deleteSyncedDelivery(
+            xmpPath: xmpPath, deliveryId: fixture.row.id, revision: fixture.row.revision)
+        #expect(deleted == .deleted)
+        fixture.port.setRemoveFailure(DeliveryTestFileError.missingBackup(backupPath))
+
+        let outcome = await fixture.phase.removeFinalizeBackup(
+            xmpPath: xmpPath, backupPath: backupPath)
+
+        guard case .failed(let reason) = outcome else {
+            Issue.record("期望 .failed，实际 \(outcome)")
+            return
+        }
+        #expect(reason.contains("missingBackup"))
+        #expect(fixture.port.contents(backupPath) == "original")
+        #expect(try fixture.repo.get(xmpPath) == nil)
     }
 
     @Test func concurrentPhasesOnSamePathAreSerializedByFileLock() async throws {

@@ -4,6 +4,8 @@
 // 每个交付独立三段（不可回滚的文件阶段用 intent 前滚）：
 //   prepare(prepared) → DeliveryFilePhase（verify → restore/remove → verify）
 //   → advance(fileDone) → DeliveryDBPhase（删除 + intent.finish 同一事务）
+// finalize 例外（P1-1）：文件阶段只 verify，不删备份；DB 段返回 deleted/alreadyGone
+// （事务已提交）之后才调用 DeliveryFilePhase.removeFinalizeBackup 清理备份。
 // 单交付失败不拖垮整批；文件/DB 失败保留 intent，下次 replay() 重试。
 //
 // 本文件只做控制流与结果映射：状态迁移走 DeliveryStateWriter，文件阶段走
@@ -400,6 +402,10 @@ struct DeliveryCleanupFlow: Sendable {
 
     /// 结束会话：只处理 synced 交付；**保留 XMP 原样**，删除 items/links/delivery
     /// 与备份文件（刻意不 restore）。reload-ack 门禁由 Coordinator 在进入本流程前检查。
+    ///
+    /// P1-1 顺序：verify（不碰盘）→ advance(fileDone) → DB 删除事务 → 删备份。
+    /// DB CAS/事务失败时交付行、备份、intent 都在，错误进 summary，下一次
+    /// finalize/replay 可重试；备份删除失败时行已删，只上报孤儿备份。
     func finalize(
         sessionId: String,
         module: DeliveryModule
@@ -618,6 +624,14 @@ struct DeliveryCleanupFlow: Sendable {
                         + "outcome=\(outcome.rawValue)",
                     level: .info)
                 deletedCount += 1
+                // P1-1：DB 删除事务已提交，备份删除是唯一的后置步骤（幂等）。
+                if let failure = await removeFinalizeBackup(
+                    xmpPath: current.xmpPath,
+                    backupPath: payload.backupPath,
+                    trace: traceDB
+                ) {
+                    errors.append(failure)
+                }
             case .alreadyGone:
                 DeliveryTrace.log(
                     traceDB,
@@ -625,6 +639,14 @@ struct DeliveryCleanupFlow: Sendable {
                         + "outcome=\(outcome.rawValue)",
                     level: .info)
                 skippedCount += 1
+                // 行已不在（并发删除/重放）：备份归属已确认，同样按后置步骤清理。
+                if let failure = await removeFinalizeBackup(
+                    xmpPath: current.xmpPath,
+                    backupPath: payload.backupPath,
+                    trace: traceDB
+                ) {
+                    errors.append(failure)
+                }
             case .idChanged, .revisionChanged, .stateChanged:
                 DeliveryTrace.log(
                     traceDB,
@@ -632,7 +654,8 @@ struct DeliveryCleanupFlow: Sendable {
                         + "xmp=\(current.xmpPath) reason=db-guard-rejected",
                     level: .warn)
                 skippedCount += 1
-                // 文件阶段（删备份）已执行而 DB 守卫拒绝：错误必须可见。
+                // CAS 拒绝：交付行与新输入都保留，备份**必须原样保留**
+                // （P1-1：绝不能留下指向已删文件的 backup_path）。错误必须可见。
                 errors.append(
                     "XMP_FINALIZE_SKIPPED: \(current.xmpPath) reason=\(outcome.rawValue)")
             }
@@ -644,6 +667,49 @@ struct DeliveryCleanupFlow: Sendable {
             skippedCount: skippedCount,
             errors: errors
         )
+    }
+
+    // MARK: - P1-1：DB 成功后的备份清理
+
+    /// 交付行删除成功之后才删备份（finalize 的唯一删除点，幂等）。
+    ///
+    /// 返回非 nil 表示清理没完成（新交付复用该路径 / IO 失败）：交付行已删，
+    /// 不回滚；错误并入 summary 让调用方看见，绝不把清理失败伪装成成功。
+    /// DB CAS/事务失败的分支不调用本方法（备份保留，下一次 finalize/replay 重试）。
+    private func removeFinalizeBackup(
+        xmpPath: String,
+        backupPath: String,
+        trace: String
+    ) async -> String? {
+        let removal = await filePhase.removeFinalizeBackup(
+            xmpPath: xmpPath, backupPath: backupPath)
+        switch removal {
+        case .removed:
+            DeliveryTrace.log(
+                trace,
+                "event=done op=finalize phase=backup xmp=\(xmpPath) outcome=removed",
+                level: .info)
+            return nil
+        case .absent:
+            DeliveryTrace.log(
+                trace,
+                "event=done op=finalize phase=backup xmp=\(xmpPath) outcome=absent",
+                level: .info)
+            return nil
+        case .retained(let reason):
+            DeliveryTrace.log(
+                trace,
+                "event=skipped op=finalize phase=backup xmp=\(xmpPath) "
+                    + "outcome=retained reason=\(reason)",
+                level: .warn)
+            return "XMP_FINALIZE_BACKUP_RETAINED: \(xmpPath) reason=\(reason)"
+        case .failed(let reason):
+            DeliveryTrace.log(
+                trace,
+                "event=failed op=finalize phase=backup xmp=\(xmpPath) reason=\(reason)",
+                level: .warn)
+            return "XMP_FINALIZE_BACKUP_CLEANUP_FAILED: \(xmpPath) reason=\(reason)"
+        }
     }
 
     // MARK: - 错误映射

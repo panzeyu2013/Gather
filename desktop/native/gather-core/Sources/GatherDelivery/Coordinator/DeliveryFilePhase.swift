@@ -6,6 +6,11 @@
 // 为什么必须在同一次取锁内完成：拆成两次取锁会重新打开
 // 「验证通过 → 另一写者落盘 → 旧备份覆盖」的 TOCTOU 窗口。
 //
+// P1-1：finalize 的文件阶段**不再删除备份**（旧实现先删备份、后做 DB CAS，
+// CAS 一旦拒绝，delivery 行保留却带着指向已删文件的 backup_path，后续 cleanup
+// 永久 XMP_BACKUP_MISSING）。finalize 的删除点只有一个：
+// removeFinalizeBackup(...)，由调用方在 DB 删除事务成功之后调用，幂等且失败不抛。
+//
 // 失败不抛出：用 LockedFilePhaseOutcome 保留旧错误码语义，intent 留在 prepared；
 // 只有「文件已执行但事后发现新输入」才返回 .invalidated（调用方必须显式上报）。
 
@@ -82,7 +87,10 @@ struct DeliveryFilePhase: Sendable {
                     case .cleanup:
                         try await self.performCleanup(xmpPath: xmpPath, payload: payload)
                     case .finalize:
-                        try await self.performFinalize(xmpPath: xmpPath, payload: payload)
+                        // P1-1：finalize 的文件阶段只做 verify，绝不碰盘。
+                        // 备份删除在 DB 删除事务成功之后由 removeFinalizeBackup 完成；
+                        // 这里若提前删，DB CAS 拒绝就会留下悬空 backup_path。
+                        break
                     }
                     return .completed
                 } catch let error as DeliveryCoordinatorError {
@@ -194,15 +202,54 @@ struct DeliveryFilePhase: Sendable {
         try verifyAfterMutation(xmpPath: xmpPath, payload: payload)
     }
 
-    /// finalize 的文件阶段：只删备份，绝不触碰 XMP（dropWithoutRestore）。
-    /// 删除后同样复核快照：备份路径可能已被新一轮写入复用，不能静默删掉新备份。
-    private func performFinalize(
+    // MARK: - finalize 的 DB 后置步骤（P1-1）
+
+    /// 交付行删除成功**之后**才删除备份（finalize 的唯一删除点）。
+    ///
+    /// 为什么必须在这里而不是文件阶段：旧顺序「删备份 → DB CAS」在 CAS 拒绝/
+    /// 事务回滚时会把交付行留在库里、却让 backup_path 指向已删文件；该行之后
+    /// cleanup 走 backupMissing 永久失败，原始 XMP 也再不可恢复。现在删除只在
+    /// DB 段返回 .deleted / .alreadyGone 之后发生，失败也只是一份孤儿备份。
+    ///
+    /// 幂等与归属守卫（整体持 XMPFileLock，与写盘互斥）：
+    /// - 备份已不存在 → .absent（重放/重复重试安全）；
+    /// - 同 xmpPath 上又出现新交付 → .retained（备份路径可能被新一轮写入复用，
+    ///   宁可留孤儿文件，也不删新备份）；
+    /// - 删除失败 → .failed（行已删，不回滚，由调用方并入 errors）。
+    func removeFinalizeBackup(
         xmpPath: String,
-        payload: DeliveryCleanupPayload
-    ) async throws {
-        guard !payload.backupPath.isEmpty else { return }
-        guard files.fileExists(payload.backupPath) else { return }
-        try await files.removeFile(payload.backupPath)
-        try verifyAfterMutation(xmpPath: xmpPath, payload: payload)
+        backupPath: String
+    ) async -> FinalizeBackupRemovalOutcome {
+        guard !backupPath.isEmpty else { return .absent }
+        do {
+            return try await fileLock.run(path: xmpPath) {
+                if let row = try self.deliveryRepo.get(xmpPath) {
+                    return .retained(
+                        reason: "delivery-reappeared(id=\(row.id),revision=\(row.revision))")
+                }
+                guard self.files.fileExists(backupPath) else { return .absent }
+                do {
+                    try await self.files.removeFile(backupPath)
+                    return .removed
+                } catch {
+                    return .failed(reason: String(describing: error))
+                }
+            }
+        } catch {
+            // 取锁失败/取消或行读取失败：不抛出，交调用方上报。
+            return .failed(reason: String(describing: error))
+        }
     }
+}
+
+/// finalize 的备份清理结论（P1-1：DB 成功后的后置步骤）。
+enum FinalizeBackupRemovalOutcome: Sendable, Equatable {
+    /// 备份已删除。
+    case removed
+    /// 备份本来就不存在（幂等重放/重复重试）。
+    case absent
+    /// 该 xmpPath 上已有新交付：备份可能被新一轮写入复用，保留不删。
+    case retained(reason: String)
+    /// 删除失败（权限/IO/取锁取消）：交付行已删，只上报，不回滚。
+    case failed(reason: String)
 }

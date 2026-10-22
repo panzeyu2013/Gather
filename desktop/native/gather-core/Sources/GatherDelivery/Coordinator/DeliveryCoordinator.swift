@@ -12,8 +12,8 @@
 // 公开 API（init / confirm / cleanup / finalize / mirrorWriteback / replay /
 // sessionSummary / metadataSummary）与 WP2a 逐字一致，调用方零改动。
 //
-// 模块适配器（15 个 culling/face/similarity 转发方法）已移出本类型：
-// 见 Ports/DeliveryModuleAdapter.swift（5 方法 + 旧端口默认转发）。
+// 模块适配器（5 方法 + module/capabilities/engine）已移出本类型：
+// 见 Ports/DeliveryModulePorts.swift。
 
 import Foundation
 import GatherPersistence

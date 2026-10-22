@@ -38,16 +38,21 @@ struct DeliveryReplayFlow: Sendable {
         var errors: [String] = []
 
         /// 汇总一次「DB 段 + intent 收尾」的结果（可重试失败 / 闭环 / 跳过）。
+        ///
+        /// P1-1：DB 已删行但备份清理没完成（孤儿备份/路径被新交付复用）时，
+        /// applied 仍为 true，但 notice 必须并入 errors，不能静默丢弃。
         func record(_ result: DeliveryDBFinishOutcome) {
             if let retryable = result.retryableError {
                 failedCount += 1
                 errors.append(retryable)
-            } else if result.applied {
+                return
+            }
+            if result.applied {
                 appliedCount += 1
             } else {
                 skippedCount += 1
-                if let notice = result.notice { errors.append(notice) }
             }
+            if let notice = result.notice { errors.append(notice) }
         }
 
         for intent in backlog.prepared {
@@ -172,7 +177,7 @@ struct DeliveryReplayFlow: Sendable {
                         "event=skipped op=replay phase=file outcome=already-gone "
                             + "xmp=\(intent.xmpPath)",
                         level: .info)
-                    record(applyDBAndFinish(intent: intent, payload: payload))
+                    record(await applyDBAndFinish(intent: intent, payload: payload))
                     continue
                 case .proceed:
                     continue
@@ -193,7 +198,7 @@ struct DeliveryReplayFlow: Sendable {
                 errors.append(Self.failure("XMP_CLEANUP_ADVANCE_FAILED", intent.xmpPath, error))
                 continue
             }
-            record(applyDBAndFinish(intent: intent, payload: payload))
+            record(await applyDBAndFinish(intent: intent, payload: payload))
         }
 
         for intent in backlog.fileDone {
@@ -212,8 +217,9 @@ struct DeliveryReplayFlow: Sendable {
                 }
                 continue
             }
-            // 文件已是目标状态：这里绝不调用文件阶段。
-            record(applyDBAndFinish(intent: intent, payload: payload))
+            // 文件已是目标状态：这里绝不调用文件阶段（finalize 的备份清理是 DB
+            // 段成功后的后置步骤，不属于文件阶段重放）。
+            record(await applyDBAndFinish(intent: intent, payload: payload))
         }
 
         return DeliveryReplaySummary(
@@ -227,15 +233,18 @@ struct DeliveryReplayFlow: Sendable {
     // MARK: - DB 段 + intent 收尾
 
     /// DB 段 + intent 收尾（按 payload.action 分派到 cleanup/finalize）。
+    ///
+    /// finalize 在 DB 事务提交后会 await 一次幂等的备份清理（P1-1），
+    /// 因此这里必须是 async；cleanup 分支不碰文件。
     private func applyDBAndFinish(
         intent: DeliveryIntentRow,
         payload: DeliveryCleanupPayload
-    ) -> DeliveryDBFinishOutcome {
+    ) async -> DeliveryDBFinishOutcome {
         switch payload.action {
         case .cleanup:
             return applyCleanupDBAndFinish(intent: intent, payload: payload)
         case .finalize:
-            return applyFinalizeDBAndFinish(intent: intent, payload: payload)
+            return await applyFinalizeDBAndFinish(intent: intent, payload: payload)
         }
     }
 
@@ -315,10 +324,14 @@ struct DeliveryReplayFlow: Sendable {
     }
 
     /// finalize 的 DB 段：与 cleanup 同一删除 helper，差异只在错误码。
+    ///
+    /// P1-1：只有 DB 返回 .deleted / .alreadyGone（事务已提交）后才删备份；
+    /// CAS 拒绝（idChanged/revisionChanged/stateChanged）时交付行与新输入都在，
+    /// 备份原样保留。备份清理是幂等后置步骤，重复重放安全。
     private func applyFinalizeDBAndFinish(
         intent: DeliveryIntentRow,
         payload: DeliveryCleanupPayload
-    ) -> DeliveryDBFinishOutcome {
+    ) async -> DeliveryDBFinishOutcome {
         let trace = DeliveryTrace.text(
             deliveryId: payload.deliveryId, revision: payload.revision, phase: "db")
         DeliveryTrace.log(
@@ -360,7 +373,14 @@ struct DeliveryReplayFlow: Sendable {
                 "event=done op=replay phase=db xmp=\(intent.xmpPath) "
                     + "outcome=\(outcome.rawValue)",
                 level: .info)
-            return .closed()
+            // P1-1：DB 事务已提交，才清理备份（prepared/fileDone 两条重放路径共用）。
+            let notice = await removeFinalizeBackup(
+                trace: trace,
+                xmpPath: intent.xmpPath,
+                backupPath: payload.backupPath
+            )
+            return DeliveryDBFinishOutcome(
+                applied: true, retryableError: nil, notice: notice)
         case .idChanged, .revisionChanged, .stateChanged:
             DeliveryTrace.log(
                 trace,
@@ -369,6 +389,45 @@ struct DeliveryReplayFlow: Sendable {
                 level: .warn)
             return .skipped(
                 "XMP_FINALIZE_SKIPPED: \(intent.xmpPath) reason=\(outcome.rawValue)")
+        }
+    }
+
+    /// P1-1：DB 删除成功后的备份清理（与 DeliveryCleanupFlow.finalize 同一幂等点）。
+    ///
+    /// 返回非 nil 表示清理没完成：行已删、applied 仍为 true，notice 并入 errors。
+    private func removeFinalizeBackup(
+        trace: String,
+        xmpPath: String,
+        backupPath: String
+    ) async -> String? {
+        let removal = await filePhase.removeFinalizeBackup(
+            xmpPath: xmpPath, backupPath: backupPath)
+        switch removal {
+        case .removed:
+            DeliveryTrace.log(
+                trace,
+                "event=done op=replay phase=backup xmp=\(xmpPath) outcome=removed",
+                level: .info)
+            return nil
+        case .absent:
+            DeliveryTrace.log(
+                trace,
+                "event=done op=replay phase=backup xmp=\(xmpPath) outcome=absent",
+                level: .info)
+            return nil
+        case .retained(let reason):
+            DeliveryTrace.log(
+                trace,
+                "event=skipped op=replay phase=backup xmp=\(xmpPath) "
+                    + "outcome=retained reason=\(reason)",
+                level: .warn)
+            return "XMP_FINALIZE_BACKUP_RETAINED: \(xmpPath) reason=\(reason)"
+        case .failed(let reason):
+            DeliveryTrace.log(
+                trace,
+                "event=failed op=replay phase=backup xmp=\(xmpPath) reason=\(reason)",
+                level: .warn)
+            return "XMP_FINALIZE_BACKUP_CLEANUP_FAILED: \(xmpPath) reason=\(reason)"
         }
     }
 

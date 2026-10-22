@@ -266,11 +266,10 @@ public func deliveryWritebackBaseline(
     }
 }
 
-/// 仅文件系统的 DeliveryFilePort（S5c-2a 过渡默认）。
+/// 仅文件系统的 DeliveryFilePort（测试用替身；生产默认注入 XMPDeliveryFilePort）。
 ///
-/// CullingService 在宿主未注入 CullingDeliveryPort 时用它自建 coordinator：
-/// 恢复 = 备份覆盖写回 photo.xmp（幂等），删除 = unlink。宿主已有 XMPProvider
-/// 时应注入 XMPDeliveryFilePort（原子替换 + 大小写侧车解析），S5c-2b 接线。
+/// 恢复 = 备份覆盖写回 photo.xmp（幂等），删除 = unlink。宿主一律经 XMPProvider
+/// 注入 XMPDeliveryFilePort（原子替换 + 大小写侧车解析）。
 public struct FileSystemDeliveryFilePort: DeliveryFilePort {
     public init() {}
 

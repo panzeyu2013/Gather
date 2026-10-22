@@ -178,6 +178,14 @@ struct DeliveryDBPhase: Sendable {
     // MARK: - finalize
 
     /// finalize 的 DB 段：与 cleanup 同一删除 helper + intent 同事务，差异只在错误码。
+    ///
+    /// P1-1 顺序契约：备份删除**不在本事务内**，也不在文件阶段。调用方必须：
+    ///   1. 先跑 finalize 文件阶段（只 verify，不删备份）；
+    ///   2. 本方法返回 .deleted / .alreadyGone（事务已提交）之后，
+    ///      才调用 DeliveryFilePhase.removeFinalizeBackup(...)。
+    /// 本方法返回 .idChanged / .revisionChanged / .stateChanged 时，交付行与新输入
+    /// 都保留，备份也必须保留（否则 backup_path 悬空）。因此备份删除不可能先于
+    /// CAS；CAS/事务失败时 intent 与交付行一起回滚，replay 仍可重试。
     func applyFinalize(
         intentId: Int64,
         xmpPath: String,

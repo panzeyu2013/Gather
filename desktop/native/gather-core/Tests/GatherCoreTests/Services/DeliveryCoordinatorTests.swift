@@ -67,6 +67,8 @@ private final class FakeDeliveryFilePort: DeliveryFilePort, @unchecked Sendable 
     private var removedPaths: [String] = []
     private var restoreFailure: Error?
     private var removeFailure: Error?
+    /// P1-1 顺序探针：removeFile 被调用时观察 DB 是否已删除交付行。
+    var onRemove: (@Sendable () throws -> Void)?
 
     init(storage: [String: String] = [:]) {
         self.storage = storage
@@ -120,11 +122,28 @@ private final class FakeDeliveryFilePort: DeliveryFilePort, @unchecked Sendable 
     }
 
     func removeFile(_ path: String) async throws {
+        try onRemove?()
         try locked {
             removedPaths.append(path)
             if let removeFailure { throw removeFailure }
             storage.removeValue(forKey: path)
         }
+    }
+}
+
+/// P1-1 顺序探针：删除备份的那一刻，交付行必须已删、intent 必须已闭环。
+private final class FinalizeRemovalProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observations: [(rowExists: Bool, pendingIntents: Int, path: String)] = []
+
+    func record(rowExists: Bool, pendingIntents: Int, path: String) {
+        lock.withLock {
+            observations.append((rowExists, pendingIntents, path))
+        }
+    }
+
+    var all: [(rowExists: Bool, pendingIntents: Int, path: String)] {
+        lock.withLock { observations }
     }
 }
 
@@ -258,23 +277,6 @@ struct DeliveryCoordinatorTests {
             baseValues: .object([:]),
             backupPath: backupPath
         )
-    }
-
-    /// 建一条 written 交付（不 confirm）：调用方自行 link session / upsert item。
-    private func makeWrittenDelivery(
-        _ harness: CoordinatorHarness,
-        xmpPath: String,
-        photoPath: String,
-        revision: Int64 = 1,
-        backupPath: String = "",
-        baseFingerprint: String = "fp-current"
-    ) throws -> DeliveryRow {
-        let row = try createDelivery(
-            harness, xmpPath: xmpPath, photoPath: photoPath, revision: revision)
-        try driveToWritten(
-            harness, xmpPath: xmpPath, revision: revision,
-            backupPath: backupPath, baseFingerprint: baseFingerprint)
-        return row
     }
 
     /// 单会话既确认的 synced 交付（culling item 已 synced）。
@@ -762,6 +764,195 @@ struct DeliveryCoordinatorTests {
         #expect(try harness.intentRepo.pending().isEmpty)
     }
 
+    // MARK: - P1-1：finalize 的备份删除必须在 DB 删除事务成功之后
+
+    /// 成功路径的顺序证据：删除备份时，交付行已删、intent 已闭环（DB 先提交）。
+    @Test func finalizeDeletesBackupOnlyAfterDBCommit() async throws {
+        let harness = try CoordinatorHarness()
+        defer { harness.db.close() }
+        harness.files.setContents(backup, "original")
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+
+        let repo = harness.deliveryRepo
+        let intents = harness.intentRepo
+        let probe = FinalizeRemovalProbe()
+        harness.files.onRemove = { [repo, intents] in
+            probe.record(
+                rowExists: (try? repo.get(xmp)) != nil,
+                pendingIntents: (try? intents.pending().all.count) ?? -1,
+                path: backup
+            )
+        }
+
+        let result = try await harness.coordinator.finalize(
+            sessionId: "s1", module: .culling)
+
+        #expect(result.deletedCount == 1)
+        #expect(result.errors.isEmpty)
+        let observed = try #require(probe.all.first)
+        #expect(probe.all.count == 1)
+        #expect(observed.path == backup)
+        #expect(observed.rowExists == false, "删备份时交付行必须已删除（DB 事务已提交）")
+        #expect(observed.pendingIntents == 0, "删备份时 intent 必须已闭环")
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(harness.files.contents(backup) == nil)
+        #expect(harness.files.contents(xmp) == "gather-written")
+        #expect(harness.files.restoreCallCount == 0)
+        #expect(try harness.intentRepo.pending().isEmpty)
+    }
+
+    /// DB 删除语句失败：事务回滚，交付行 + 备份 + intent 全部保留，错误可见；
+    /// 去掉故障后 replay 才删行并删备份。
+    @Test func finalizeKeepsBackupAndRowWhenDBDeleteFailsThenRetries() async throws {
+        let harness = try CoordinatorHarness()
+        defer { harness.db.close() }
+        harness.files.setContents(backup, "original")
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+        try harness.db.exec("""
+            CREATE TRIGGER fail_finalize_delivery_delete
+            BEFORE DELETE ON deliveries
+            BEGIN
+              SELECT RAISE(ABORT, 'injected finalize delivery delete failure');
+            END;
+            """)
+
+        let failed = try await harness.coordinator.finalize(
+            sessionId: "s1", module: .culling)
+        #expect(failed.deletedCount == 0)
+        #expect(failed.errors.contains { $0.hasPrefix("XMP_FINALIZE_DB_FAILED") })
+        #expect(try harness.deliveryRepo.get(xmp)?.typedStatus == .synced)
+        #expect(harness.files.contents(backup) == "original", "DB 失败时备份必须保留")
+        #expect(harness.files.removedPathsSnapshot.isEmpty, "DB 成功前不得删备份")
+        #expect(harness.files.contents(xmp) == "gather-written")
+        #expect(harness.files.restoreCallCount == 0)
+        let pending = try harness.intentRepo.pending()
+        #expect(pending.prepared.isEmpty)
+        #expect(pending.fileDone.count == 1, "文件阶段（verify）已完成，DB 段待重试")
+
+        _ = try harness.db.exec("DROP TRIGGER fail_finalize_delivery_delete")
+        let replayed = try await harness.coordinator.replay()
+        #expect(replayed.appliedCount == 1)
+        #expect(replayed.failedCount == 0)
+        #expect(replayed.errors.isEmpty)
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(harness.files.contents(backup) == nil, "DB 成功后才删备份")
+        #expect(harness.files.contents(xmp) == "gather-written")
+        #expect(try harness.intentRepo.pending().isEmpty)
+    }
+
+    /// intent.finish 失败（同事务回滚）：行、备份、intent 保留，错误可见；
+    /// 去掉故障后 replay 才删行并删备份。
+    @Test func finalizeKeepsBackupAndRowWhenIntentFinishFailsThenRetries() async throws {
+        let harness = try CoordinatorHarness()
+        defer { harness.db.close() }
+        harness.files.setContents(backup, "original")
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+        try harness.db.exec("""
+            CREATE TRIGGER fail_finalize_intent_delete
+            BEFORE DELETE ON delivery_intents
+            BEGIN
+              SELECT RAISE(ABORT, 'injected finalize finish failure');
+            END;
+            """)
+
+        let failed = try await harness.coordinator.finalize(
+            sessionId: "s1", module: .culling)
+        #expect(failed.deletedCount == 0)
+        #expect(failed.errors.contains { $0.hasPrefix("XMP_FINALIZE_FINISH_FAILED") })
+        #expect(try harness.deliveryRepo.get(xmp)?.typedStatus == .synced)
+        #expect(harness.files.contents(backup) == "original")
+        #expect(harness.files.removedPathsSnapshot.isEmpty)
+        #expect(try harness.intentRepo.pending().fileDone.count == 1)
+
+        _ = try harness.db.exec("DROP TRIGGER fail_finalize_intent_delete")
+        let replayed = try await harness.coordinator.replay()
+        #expect(replayed.appliedCount == 1)
+        #expect(replayed.failedCount == 0)
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(harness.files.contents(backup) == nil)
+        #expect(try harness.intentRepo.pending().isEmpty)
+    }
+
+    /// DB CAS 拒绝（新输入推进 revision）：交付行与新输入保留，备份绝不删；
+    /// 错误可见且 intent 闭环；新输入重新 synced 后 finalize 才删行 + 删备份。
+    @Test func finalizeStaleRevisionKeepsBackupAndRowUntilRetry() async throws {
+        let harness = try CoordinatorHarness()
+        defer { harness.db.close() }
+        harness.files.setContents(backup, "original")
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+
+        let row = try #require(try harness.deliveryRepo.get(xmp))
+        let payload = DeliveryCleanupPayload(
+            delivery: row, photoPath: photo, action: .finalize)
+        let intentId = try harness.intentRepo.prepare(
+            kind: .cleanup, xmpPath: xmp, payload: payload.json)
+        _ = try harness.intentRepo.advance(id: intentId, to: .fileDone)
+        // fileDone 之后、DB 段之前出现新输入：revision+1、status=pending。
+        _ = try harness.deliveryRepo.mergeInput(
+            xmpPath: xmp,
+            photoPath: photo,
+            expectedRevision: 1,
+            newRevision: 2,
+            baseFingerprint: "fp-new",
+            baseValues: .object([:])
+        )
+
+        let replayed = try await harness.coordinator.replay()
+        #expect(replayed.skippedCount == 1)
+        #expect(replayed.errors.contains {
+            $0.hasPrefix("XMP_FINALIZE_SKIPPED") && $0.contains("reason=revisionChanged")
+        })
+        #expect(try harness.deliveryRepo.get(xmp)?.revision == 2)
+        #expect(harness.files.contents(backup) == "original", "CAS 拒绝时备份必须保留")
+        #expect(harness.files.removedPathsSnapshot.isEmpty)
+        #expect(harness.files.contents(xmp) == "gather-written")
+        #expect(harness.files.restoreCallCount == 0)
+        #expect(try harness.intentRepo.pending().isEmpty, "CAS 拒绝也要闭环 intent")
+
+        // 重试：新输入重新写入 + 确认 → 下次 finalize 才删行（随后删备份）。
+        _ = try harness.deliveryRepo.markWriting(xmpPath: xmp, revision: 2)
+        _ = try harness.deliveryRepo.markWritten(
+            xmpPath: xmp,
+            revision: 2,
+            baseFingerprint: "fp-new",
+            baseValues: .object([:]),
+            backupPath: backup
+        )
+        _ = try harness.deliveryRepo.linkSession(xmpPath: xmp, sessionId: "s1")
+        _ = try harness.coordinator.confirm(sessionId: "s1", module: .culling)
+
+        let retried = try await harness.coordinator.finalize(
+            sessionId: "s1", module: .culling)
+        #expect(retried.deletedCount == 1)
+        #expect(retried.errors.isEmpty)
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(harness.files.contents(backup) == nil)
+        #expect(harness.files.contents(xmp) == "gather-written")
+    }
+
+    /// 备份清理失败（行已删）必须可见，不能伪装成成功。
+    @Test func finalizeReportsBackupCleanupFailureAsVisibleError() async throws {
+        let harness = try CoordinatorHarness()
+        defer { harness.db.close() }
+        harness.files.setContents(backup, "original")
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+        harness.files.setRemoveFailure(FakeFileError.injected)
+
+        let result = try await harness.coordinator.finalize(
+            sessionId: "s1", module: .culling)
+        #expect(result.deletedCount == 1, "DB 行已删：交付本身已收尾")
+        #expect(result.errors.contains { $0.hasPrefix("XMP_FINALIZE_BACKUP_CLEANUP_FAILED") })
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(harness.files.contents(backup) == "original", "失败的孤儿备份不假装删掉")
+        #expect(harness.files.contents(xmp) == "gather-written")
+        #expect(try harness.intentRepo.pending().isEmpty)
+    }
+
     @Test func finalizeRequiresReloadAck() async throws {
         let harness = try CoordinatorHarness()
         defer { harness.db.close() }
@@ -840,7 +1031,9 @@ struct DeliveryCoordinatorTests {
         #expect(try harness.intentRepo.pending().isEmpty)
     }
 
-    @Test func replayFileDoneFinalizeOnlyDeletesDB() async throws {
+    /// P1-1：fileDone 重放只补 DB，**绝不重放文件阶段**（不 restore、不碰 XMP）；
+    /// DB 成功后按后置步骤删备份，重复 replay 幂等。
+    @Test func replayFileDoneFinalizeDeletesDBThenBackupWithoutReplayingFile() async throws {
         let harness = try CoordinatorHarness()
         defer { harness.db.close() }
         harness.files.setContents(backup, "original")
@@ -856,11 +1049,42 @@ struct DeliveryCoordinatorTests {
 
         let replayed = try await harness.coordinator.replay()
         #expect(replayed.appliedCount == 1)
-        #expect(harness.files.contents(backup) == "original", "fileDone 不重放文件")
-        #expect(harness.files.removedPathsSnapshot.isEmpty)
-        #expect(harness.files.restoreCallCount == 0)
-        #expect(harness.files.contents(xmp) == "gather-written")
+        #expect(replayed.failedCount == 0)
+        #expect(replayed.errors.isEmpty)
         #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(harness.files.contents(backup) == nil, "DB 成功后删备份")
+        #expect(harness.files.contents(xmp) == "gather-written", "fileDone 不重放文件")
+        #expect(harness.files.removedPathsSnapshot == [backup], "只删备份，不碰 XMP")
+        #expect(harness.files.restoreCallCount == 0)
+
+        // 幂等：intent 已闭环，再 replay 不碰文件。
+        let repeated = try await harness.coordinator.replay()
+        #expect(repeated.appliedCount == 0)
+        #expect(repeated.errors.isEmpty)
+        #expect(harness.files.removedPathsSnapshot == [backup])
+    }
+
+    /// P1-1：fileDone 重放时备份已缺失（并发删除/上次已清理）→ .absent 幂等收尾。
+    @Test func replayFileDoneFinalizeToleratesMissingBackup() async throws {
+        let harness = try CoordinatorHarness()
+        defer { harness.db.close() }
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+
+        let row = try #require(try harness.deliveryRepo.get(xmp))
+        let payload = DeliveryCleanupPayload(
+            delivery: row, photoPath: photo, action: .finalize)
+        let intentId = try harness.intentRepo.prepare(
+            kind: .cleanup, xmpPath: xmp, payload: payload.json)
+        _ = try harness.intentRepo.advance(id: intentId, to: .fileDone)
+
+        let replayed = try await harness.coordinator.replay()
+        #expect(replayed.appliedCount == 1)
+        #expect(replayed.failedCount == 0)
+        #expect(replayed.errors.isEmpty, "备份本来就不存在是幂等成功，不是错误")
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+        #expect(harness.files.removedPathsSnapshot.isEmpty)
+        #expect(harness.files.contents(xmp) == "gather-written")
     }
 
     // MARK: - P0-1：文件阶段 revision/指纹守卫

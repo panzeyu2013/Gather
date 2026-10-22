@@ -11,8 +11,7 @@
 // - DeliveryModuleAdapter：模块适配器协议，只有 5 个方法 + module/capabilities/engine；
 //   模块差异（culling 有 finalize/metadataSummary，face/similarity 没有）由
 //   capabilities 显式表达，越权调用抛 unsupportedCapability；
-// - 旧端口协议保留为**面向 feature 的窄接口**（FaceKeywordingServiceTests 的替身
-//   仍可直接实现），由受限扩展把 14 个名字转发到 5 个适配器方法，行为不变。
+// - 旧 feature 端口协议与 14 个转发已删除；当前公开面只有上述两者。
 
 import Foundation
 import GatherPersistence

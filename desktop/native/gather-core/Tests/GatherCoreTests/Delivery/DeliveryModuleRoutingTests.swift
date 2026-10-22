@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Delivery/DeliveryModuleAdapterTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/Delivery/DeliveryModuleRoutingTests.swift
 // WP2b：模块适配器的路由与 feature 差异。
 //
 // 覆盖：
