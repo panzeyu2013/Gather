@@ -82,9 +82,9 @@ public final class FaceKwWritebackBridge: FaceWritebackProvider, @unchecked Send
         return FaceKwCleanupResult(deletedCount: result.deletedCount, errors: result.errors)
     }
 
-    // MARK: - 类型搬运（字段逐字同源，仅 Swift 类型不同）
+    // MARK: - 类型搬运（字段逐字同源，仅 Swift 类型不同；唯一实现，LiveFaceAPI 复用）
 
-    private static func toFaceKwItem(_ item: WritebackItem) -> FaceKwWritebackItem {
+    static func toFaceKwItem(_ item: WritebackItem) -> FaceKwWritebackItem {
         FaceKwWritebackItem(
             id: item.id.map(Int64.init),
             photoId: item.photoId,
@@ -119,9 +119,9 @@ public final class FaceKwWritebackBridge: FaceWritebackProvider, @unchecked Send
         )
     }
 
-    private static func toWritebackItem(_ item: FaceKwWritebackItem) -> WritebackItem {
+    static func toWritebackItem(_ item: FaceKwWritebackItem) -> WritebackItem {
         WritebackItem(
-            id: item.id.map { Int($0) },
+            id: item.id.flatMap { Int(exactly: $0) },
             photoId: item.photoId,
             photoPath: item.photoPath,
             sessionId: item.sessionId,

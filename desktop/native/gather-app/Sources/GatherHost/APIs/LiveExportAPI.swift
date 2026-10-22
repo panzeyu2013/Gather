@@ -175,29 +175,13 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         }
     }
 
+    /// 域臂：ExportServiceError（description 即错误码时转码，否则原样）。
     private static func translate(_ error: Error) -> Error {
-        switch error {
-        case let gather as GatherError:
-            return gather
-        case let export as ExportServiceError:
-            if let code = GatherErrorCode(rawValue: export.description) {
-                return GatherError(code: code, underlying: export.description)
-            }
-            return export
-        case let job as JobServiceError:
-            if case .jobFailed(_, let message) = job,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return job
-        case let db as DBError:
-            if case .message(let message) = db,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return db
-        default:
-            return error
+        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
+        guard let export = error as? ExportServiceError else { return error }
+        if let code = GatherErrorCode(rawValue: export.description) {
+            return GatherError(code: code, underlying: export.description)
         }
+        return export
     }
 }

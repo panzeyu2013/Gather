@@ -263,6 +263,15 @@ public struct CullingUpdatePatch: Codable, Equatable, Sendable {
         self.pickState = pickState
         self.colorLabel = colorLabel
     }
+
+    /// TS: `Object.keys(patch)` —— 补丁非空字段（CullingUpdatePatch 声明序）。
+    public var fields: [CullingUpdatePatchField] {
+        var result: [CullingUpdatePatchField] = []
+        if rating != nil { result.append(.rating) }
+        if pickState != nil { result.append(.pickState) }
+        if colorLabel != nil { result.append(.colorLabel) }
+        return result
+    }
 }
 
 // TS: CullingUpdateResult

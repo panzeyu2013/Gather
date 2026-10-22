@@ -141,6 +141,30 @@ enum LiveAPIErrorMapping {
         }
     }
 
+    /// Live API 的通用错误收敛（B05-5）：GatherError 直传；JobServiceError.jobFailed
+    /// 与 DBError.message 的错误码转成 GatherError。无法收敛时返回 nil，交给各 API
+    /// 的域臂继续处理（域错误类型不在本函数枚举）。
+    static func translateCommon(_ error: Error) -> Error? {
+        switch error {
+        case let gather as GatherError:
+            return gather
+        case let job as JobServiceError:
+            if case .jobFailed(_, let message) = job,
+               let code = GatherErrorCode(rawValue: message) {
+                return GatherError(code: code, underlying: message)
+            }
+            return nil
+        case let db as DBError:
+            if case .message(let message) = db,
+               let code = GatherErrorCode(rawValue: message) {
+                return GatherError(code: code, underlying: message)
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
     /// FilterEngine 的字段未知错误带参数（旧命令面 返回 CODE::field）；API 边界
     /// 转成 (code, params)，其余过滤错误保持原样。
     static func mapFilter<T>(_ body: () throws -> T) throws -> T {

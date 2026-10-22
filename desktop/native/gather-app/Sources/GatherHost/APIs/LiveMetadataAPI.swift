@@ -461,7 +461,7 @@ public final class LiveMetadataAPI: MetadataAPI {
         do {
             return try body()
         } catch {
-            throw Self.translate(error)
+            throw LiveAPIErrorMapping.translateCommon(error) ?? error
         }
     }
 
@@ -469,22 +469,7 @@ public final class LiveMetadataAPI: MetadataAPI {
         do {
             return try await body()
         } catch {
-            throw Self.translate(error)
-        }
-    }
-
-    private static func translate(_ error: Error) -> Error {
-        switch error {
-        case let gather as GatherError:
-            return gather
-        case let db as DBError:
-            if case .message(let message) = db,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return db
-        default:
-            return error
+            throw LiveAPIErrorMapping.translateCommon(error) ?? error
         }
     }
 }

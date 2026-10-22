@@ -436,7 +436,7 @@ public final class CullingViewModel: PageVisibility {
                         await self.loadPage(reset: true)
                         return
                     case .failed, .interrupted:
-                        self.errorMessage = CommandError(apiText: latest.errorMessage ?? "")
+                        self.errorMessage = CommandError(apiText: latest.errorMessage)
                         await self.loadPage(reset: true)
                         return
                     case .cancelled:

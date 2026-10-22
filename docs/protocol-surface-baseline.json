@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-10-22T09:58:55Z",
+  "generated_at": "2026-10-22T14:07:37Z",
   "note": "WP1 Protocol 公开面 ratchet；口径见 scripts/check-protocol-surface.sh 头注释。",
   "protocol_files": 70,
-  "protocol_lines": 6514,
+  "protocol_lines": 6523,
   "public_types": 254,
-  "public_declarations": 1338,
+  "public_declarations": 1339,
   "zero_reference_types": 0,
   "router_envelope_types": 0
 }

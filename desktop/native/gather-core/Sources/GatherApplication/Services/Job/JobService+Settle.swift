@@ -138,10 +138,14 @@ extension JobService {
                 return
             }
             if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+                // P2：取消终态必须带 reason（与 queued-cancel/cancel-grace/
+                // application-stopped 的既有口径一致）。本分支是执行器在宽限期
+                // 内协作退出；宽限到点由 forceCancel 收尾，两者同属取消请求，
+                // 因此共用 cancel-grace（stop 导致的取消走 application-stopped）。
                 Self.logJob(
                     job.id,
                     "event=terminal phase=terminal status=cancelled "
-                        + "type=\(job.type.rawValue)",
+                        + "type=\(job.type.rawValue) reason=cancel-grace",
                     level: .info)
                 completeResult(id: job.id, error: JobCancelledError())
                 emitTerminal(id: job.id)

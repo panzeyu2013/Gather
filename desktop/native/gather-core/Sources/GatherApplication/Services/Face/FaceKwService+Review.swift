@@ -34,7 +34,7 @@ extension FaceKwService {
                         photoId: member.photoId,
                         photoPath: member.photoPath,
                         filename: (member.photoPath as NSString).lastPathComponent,
-                        bbox: Self.parseBbox(member.bbox),
+                        bbox: parseBbox(member.bbox),
                         confidence: member.confidence
                     )
                 },
@@ -111,7 +111,7 @@ extension FaceKwService {
             let repo = feedback
             for member in cluster?.members ?? [] {
                 try repo.forgetConfirmation(sessionId: sessionId, photoId: member.photoId,
-                    bbox: Self.parseBbox(member.bbox), personId: cluster?.matchedPersonId)
+                    bbox: parseBbox(member.bbox), personId: cluster?.matchedPersonId)
             }
             try faceRepo.deleteBinding(clusterId: clusterId)
             try personRepo.reconcileSession(sessionId: sessionId)
@@ -175,7 +175,7 @@ extension FaceKwService {
                let binding = target.binding, let personId = target.matchedPersonId {
                 for member in target.members ?? [] {
                     try feedback.record(sessionId: sessionId, photoId: member.photoId,
-                        bbox: Self.parseBbox(member.bbox), personId: personId, confirmed: true, keywords: binding.keywords)
+                        bbox: parseBbox(member.bbox), personId: personId, confirmed: true, keywords: binding.keywords)
                 }
             }
         }
@@ -192,7 +192,7 @@ extension FaceKwService {
                 throw FaceKwServiceError.clusterMemberNotFound
             }
             try feedback.record(sessionId: sessionId,
-                photoId: member.photoId, bbox: Self.parseBbox(member.bbox),
+                photoId: member.photoId, bbox: parseBbox(member.bbox),
                 personId: cluster?.matchedPersonId, confirmed: false)
             if !(try faceRepo.removeMemberFromCluster(clusterId: clusterId, memberId: memberId)) {
                 throw FaceKwServiceError.clusterMemberNotFound
@@ -278,7 +278,7 @@ extension FaceKwService {
             var rejected = Set<String>()
             var rejectsWholeCluster = false
             for member in members {
-                let bbox = Self.parseBbox(member.bbox)
+                let bbox = parseBbox(member.bbox)
                 for correction in rejectedByPhoto[member.photoId] ?? []
                     where FaceIdentityPolicy.overlap(bbox, correction.bbox) >= 0.5 {
                     guard let personId = correction.personId else {
@@ -321,7 +321,7 @@ extension FaceKwService {
             let personId = try cluster.matchedPersonId ?? personRepo.upsertByName(name: binding.roleName)
             try faceRepo.setClusterMatch(clusterId: cluster.id, personId: personId, confidence: 1)
             for member in cluster.members ?? [] {
-                let bbox = Self.parseBbox(member.bbox)
+                let bbox = parseBbox(member.bbox)
                 guard !recorded.contains(where: {
                     $0.photoId == member.photoId && FaceIdentityPolicy.overlap($0.bbox, bbox) >= 0.5
                 }) else { continue }
@@ -340,14 +340,5 @@ extension FaceKwService {
             data.copyBytes(to: buffer)
         }
         return floats
-    }
-
-    /// TS: JSON.parse(m.bbox)。
-    private static func parseBbox(_ raw: String) -> [Double] {
-        guard let value = try? JSONValue.parse(raw), case .array(let items) = value else { return [] }
-        return items.compactMap {
-            if case .number(let v) = $0 { return v }
-            return nil
-        }
     }
 }

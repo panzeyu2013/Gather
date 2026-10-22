@@ -927,7 +927,7 @@ public final class FaceRepo {
                 sessionId: row[2].textValue ?? "",
                 observationId: observationId,
                 embedding: Self.floats(from: embedding),
-                bbox: Self.parseBbox(row[5].textValue ?? ""),
+                bbox: parseBbox(row[5].textValue ?? ""),
                 confidence: row[6].doubleValue ?? 0,
                 quality: row[7].doubleValue ?? 0,
                 faceSizePx: row[8].doubleValue ?? 0,
@@ -958,7 +958,7 @@ public final class FaceRepo {
         return rows.map { row in
             ClusterMemberLite(
                 photoId: row[0].textValue ?? "",
-                bbox: Self.parseBbox(row[1].textValue ?? ""),
+                bbox: parseBbox(row[1].textValue ?? ""),
                 confidence: row[2].doubleValue ?? 0
             )
         }
@@ -1168,14 +1168,6 @@ public final class FaceRepo {
         let sourceFileSize: Int64
         let sourceFileMtimeMs: Double
         let analysisSignature: String
-    }
-
-    private static func parseBbox(_ raw: String) -> [Double] {
-        guard let value = try? JSONValue.parse(raw), case .array(let items) = value else { return [] }
-        return items.compactMap {
-            if case .number(let v) = $0 { return v }
-            return nil
-        }
     }
 
     /// 存储 BLOB 的 Float32 视图（与 FaceKwService.floats 同语义）。

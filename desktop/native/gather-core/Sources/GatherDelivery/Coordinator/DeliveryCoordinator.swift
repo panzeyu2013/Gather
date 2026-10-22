@@ -65,9 +65,134 @@ enum DeliveryTrace {
         return String(repeating: "0", count: max(0, 8 - hex.count)) + hex
     }
 
+    // MARK: - 错误 reason 脱敏（P2）
+
+    /// 错误 → trace 可用的 reason：保留错误码/消息供排查，去掉绝对路径与会话原始标识。
+    ///
+    /// 已知 Delivery 错误在这里做**结构化**映射（错误码 + pathToken/sessionToken），
+    /// 其余错误走通用绝对路径扫描（见 sanitize）。任何情况下都不把
+    /// `xmpPath/backupPath/photoPath/sessionId` 原样写进 trace。
+    static func reason(_ error: Error, paths: [String] = []) -> String {
+        if let coordinator = error as? DeliveryCoordinatorError {
+            switch coordinator {
+            case .reloadNotAcknowledged(let sessionId):
+                return "\(coordinator.code) session=\(sessionToken(sessionId))"
+            case .backupMissing(let xmpPath):
+                return "\(coordinator.code) xmp=\(pathToken(xmpPath))"
+            case .filePhaseInvalidated(let xmpPath, let reason):
+                return "\(coordinator.code) xmp=\(pathToken(xmpPath)) reason="
+                    + sanitize(reason, paths: [xmpPath] + paths)
+            case .confirmIncomplete(let blockers):
+                return "\(coordinator.code) " + sanitize(blockers.joined(separator: ","), paths: paths)
+            case .invalidPayload(let intentId, let reason):
+                return "\(coordinator.code) #\(intentId) " + sanitize(reason, paths: paths)
+            case .invalidArgument(let message):
+                return "\(coordinator.code) " + sanitize(message, paths: paths)
+            }
+        }
+        if let repoError = error as? DeliveryRepoError {
+            return repoReason(repoError, paths: paths)
+        }
+        return sanitize(String(describing: error), paths: paths)
+    }
+
+    /// String reason（文件阶段的 `String(describing: error)`）同样可能带路径。
+    static func reason(_ text: String, paths: [String] = []) -> String {
+        sanitize(text, paths: paths)
+    }
+
+    /// DeliveryRepoError 的关联路径改写为 pathToken；其余诊断字段（owner/status/from/to）保留。
+    private static func repoReason(_ error: DeliveryRepoError, paths: [String]) -> String {
+        switch error {
+        case .illegalTransition(let xmpPath, let from, let to):
+            return "\(error.code) xmp=\(pathToken(xmpPath)) \(from)->\(to)"
+        case .rowNotFound(let xmpPath):
+            return "\(error.code) xmp=\(pathToken(xmpPath))"
+        case .missingColumn(let name):
+            return "\(error.code) \(name)"
+        case .writeNotPersisted(let key):
+            return "\(error.code) \(sanitize(key, paths: paths))"
+        case .invalidArgument(let message):
+            return "\(error.code) \(sanitize(message, paths: paths))"
+        case .leaseHeld(let xmpPath, let leaseOwner, let heartbeatAt):
+            return "\(error.code) xmp=\(pathToken(xmpPath)) owner=\(leaseOwner) heartbeat=\(heartbeatAt)"
+        case .leaseLost(let xmpPath, let leaseOwner, let currentOwner, let status):
+            return "\(error.code) xmp=\(pathToken(xmpPath)) owner=\(leaseOwner) "
+                + "current=\(currentOwner) status=\(status)"
+        }
+    }
+
+    /// trace 字段的最后一道脱敏：已知上下文路径精确替换，再扫描任何绝对路径。
+    static func sanitize(_ text: String, paths: [String] = []) -> String {
+        guard !text.isEmpty else { return text }
+        var output = text
+        // 长路径优先：避免短路径是长路径前缀时留下残余。
+        for path in Set(paths).filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count })
+        where output.contains(path) {
+            output = output.replacingOccurrences(of: path, with: pathToken(path))
+        }
+        // 用户主目录：即使调用点没给上下文也必须消失（用户名本身也不进日志）。
+        let home = NSHomeDirectory()
+        if !home.isEmpty, output.contains(home) {
+            output = output.replacingOccurrences(of: home, with: pathToken(home + "/home"))
+        }
+        return redactAbsolutePaths(in: output)
+    }
+
+    /// 扫描 `/...` 绝对路径片段并替换为 pathToken。
+    ///
+    /// 路径带空格是合法且常见的（`~/Pictures/My Photos`），因此扫描**不**在空格处
+    /// 截断；遇到引号/括号/逗号/分号/等号/尖括号/换行才结束（错误描述的常见边界）。
+    /// 宁可多删一段诊断尾巴，也不让主目录/文件名泄露。
+    private static func redactAbsolutePaths(in text: String) -> String {
+        guard text.contains("/") else { return text }
+        let characters = Array(text)
+        var output = ""
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            guard character == "/", isAbsolutePathStart(characters, at: index) else {
+                output.append(character)
+                index += 1
+                continue
+            }
+            var end = index + 1
+            while end < characters.count, !isPathTerminator(characters[end]) {
+                end += 1
+            }
+            let candidate = String(characters[index..<end])
+            if candidate.count > 1 {
+                output += pathToken(candidate)
+            } else {
+                output += candidate
+            }
+            index = end
+        }
+        return output
+    }
+
+    /// 只有位于空白/引号/括号/等号/冒号/逗号之后（或行首）的 `/` 才视为路径起点，
+    /// 避免把 `1/2`、URL scheme 之后的片段误判成路径。
+    private static func isAbsolutePathStart(_ characters: [Character], at index: Int) -> Bool {
+        guard index > 0 else { return true }
+        let previous = characters[index - 1]
+        return previous == " " || previous == "\t" || previous == "\n" || previous == "\r"
+            || previous == "\"" || previous == "'" || previous == "`"
+            || previous == "(" || previous == "=" || previous == ":" || previous == ","
+    }
+
+    private static func isPathTerminator(_ character: Character) -> Bool {
+        character == "\"" || character == "'" || character == "`" || character == "\n"
+            || character == "\r" || character == ")" || character == "]" || character == "}"
+            || character == ";" || character == "," || character == "="
+            || character == ">" || character == "<"
+    }
+
     /// 统一字段序：trace → event → op → phase → 具体键值（供 grep / 测试断言）。
+    ///
+    /// P2：fields 在进 sink 前统一过一遍绝对路径脱敏，防止新增日志点漏调 reason()。
     static func log(_ trace: String, _ fields: String, level: LogLevel) {
-        GatherLogger.log("trace=\(trace) \(fields)", level: level)
+        GatherLogger.log("trace=\(trace) \(redactAbsolutePaths(in: fields))", level: level)
     }
 }
 
@@ -327,15 +452,15 @@ public struct DeliveryCoordinator: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=failed op=confirm phase=confirm module=\(module.rawValue) "
-                    + "reason=\(mapped)",
+                    + "reason=\(DeliveryTrace.reason(mapped))",
                 level: .warn)
             throw mapped
         } catch {
-            // 事务失败（SQL/约束）带 phase + reason。
+            // 事务失败（SQL/约束）带 phase + reason；路径/会话在这里脱敏（P2）。
             DeliveryTrace.log(
                 trace,
                 "event=failed op=confirm phase=confirm module=\(module.rawValue) "
-                    + "reason=\(error)",
+                    + "reason=\(DeliveryTrace.reason(error))",
                 level: .warn)
             throw error
         }

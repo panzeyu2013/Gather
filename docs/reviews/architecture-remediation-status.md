@@ -42,10 +42,10 @@
 
 ### WP7b trace 口径（2026-10-22）
 
-- trace：`job:<id>`、`delivery:<id>/rev:<revision>/<phase>`（phase=confirm/file/db/intent）。
+- trace：`job:<id>`、`delivery:<id>/rev:<revision>/<phase>`（phase=confirm/file/db/intent/backup/lease）。
 - confirm 是 (session, module) 级事务、没有单条 delivery id：id 段用 `session:<sessionId>`、revision 固定 0（唯一例外）。
-- 日志点：JobService claim 成功的 start 与 settle/finishMiss/取消宽限/停机兜底的 terminal；DeliveryCoordinator confirm 的 DB 边界；cleanup/finalize/replay 的 file/db 边界；失败一律 warn 且带 phase + reason。
-- 测试：`Tests/GatherCoreTests/Logging/TraceLoggingTests.swift`（5 用例，`@Suite(.serialized)` + `GatherLogger.output` 捕获；按唯一 job id/xmp 过滤并行串扰）。
+- 日志点：JobService claim 成功的 start 与 settle/finishMiss/取消宽限/停机兜底的 terminal（cancelled 也带 reason）；DeliveryCoordinator confirm 的 DB 边界；cleanup/finalize/replay 的 file/db/backup 边界；WritebackService/MirrorWriter 的写租约冲突（lease）；失败一律 warn 且带 phase + reason。
+- 测试：`Tests/GatherCoreTests/Logging/TraceLoggingTests.swift`（14 用例，`@Suite(.serialized)` + `GatherLogger.output` 捕获；按唯一 job id/xmp 过滤并行串扰）。
 - 约束：不改 Schema/公开 API/状态机/返回值与业务时序；`GatherLogger.log` 不抛错，日志失败不影响业务。
 
 ## 3. 剩余
@@ -54,7 +54,7 @@
 2. WP6c 发布验证：真实 Developer ID/notarytool/staple/spctl、CI release job 未实跑；x86_64 运行期未在 Rosetta 验证。
 3. 架构 P1：Application 5 服务仍持 18 个具体 Repo；Host LiveMetadataAPI 5-6 处直调 DeliveryRepo；Application 仍有 4 个 >1000 行文件；“状态写入 8”是 writer 交付级方法数，调用点口径为 24+5。
 4. 数据 P1：markWritten 未校验 lease owner；confirm 门禁在事务外/confirmSync 旁路；370 列 V1 无迁移路径；finalize 备份顺序已修。
-5. 测试 P1：Schema guard 失败用例已补；WP3b 仍缺 fake-repo 功能断言；菜单测试已恢复；trace 的 cancelled/lease-lost 分支未测。
+5. 测试 P1：Schema guard 失败用例已补；WP3b 仍缺 fake-repo 功能断言；菜单测试已恢复；trace 的 cancelled/lease-lost/finalize backup 与 reason 脱敏已补用例（本轮未跑全量）。
 6. 文档：final-report 的 Cut 6c 数字仍为历史快照，§1.2 已注记当前架构指标；其余历史报告保留快照口径。
 7. 未 push；本地 commit 序列等待 owner review。
 

@@ -120,26 +120,10 @@ public final class LiveQualityAPI: QualityAPI {
         }
     }
 
+    /// 域臂：QualityServiceError；通用臂见 translateCommon。
     private static func translate(_ error: Error) -> Error {
-        switch error {
-        case let gather as GatherError:
-            return gather
-        case let quality as QualityServiceError:
-            return GatherError(code: quality.gatherCode, underlying: quality.description)
-        case let job as JobServiceError:
-            if case .jobFailed(_, let message) = job,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return job
-        case let db as DBError:
-            if case .message(let message) = db,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return db
-        default:
-            return error
-        }
+        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
+        guard let quality = error as? QualityServiceError else { return error }
+        return GatherError(code: quality.gatherCode, underlying: quality.description)
     }
 }

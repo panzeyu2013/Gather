@@ -70,14 +70,6 @@ extension CullingViewModel {
         history.filter { $0.undone }.min { $0.id < $1.id }
     }
 
-    private func patchFields(_ patch: CullingUpdatePatch) -> [CullingUpdatePatchField] {
-        var fields: [CullingUpdatePatchField] = []
-        if patch.rating != nil { fields.append(.rating) }
-        if patch.pickState != nil { fields.append(.pickState) }
-        if patch.colorLabel != nil { fields.append(.colorLabel) }
-        return fields
-    }
-
     private func snapshot(of state: AssetCullingState) -> CullingStateSnapshot {
         CullingStateSnapshot(pickState: state.pickState, rating: state.rating, colorLabel: state.colorLabel)
     }
@@ -170,7 +162,7 @@ extension CullingViewModel {
                     beforeByPhoto: [asset.photo.id: before],
                     afterByPhoto: afterByPhoto,
                     revisionsByPhoto: revisionsByPhoto,
-                    fields: patchFields(patch)
+                    fields: patch.fields
                 )
             }
             if let nextPhotoId { currentPhotoId = nextPhotoId }
@@ -217,7 +209,7 @@ extension CullingViewModel {
                     beforeByPhoto: beforeByPhoto,
                     afterByPhoto: afterByPhoto,
                     revisionsByPhoto: revisionsByPhoto,
-                    fields: patchFields(patch)
+                    fields: patch.fields
                 )
             }
             notice = CullingNotice("已更新 %lld 张照片", params: ["\(photoIds.count)"])

@@ -223,7 +223,7 @@ extension FaceKwService {
                 photoId: item.photoId,
                 photoPath: item.photoPath,
                 xmpPath: item.xmpPath,
-                keywords: Self.orderedUnion(item.keywords, item.attributes?.keywords ?? []),
+                keywords: orderedUnion(item.keywords, item.attributes?.keywords ?? []),
                 attributes: attributes,
                 status: status,
                 errorMessage: errorMessage,
@@ -241,15 +241,6 @@ extension FaceKwService {
         } catch {
             return ["DELIVERY_MIRROR_FAILED: \(error)"]
         }
-    }
-
-    /// 有序并集（现有在前、新增去重追加），镜像 keywords 用。
-    private static func orderedUnion(_ lhs: [String], _ rhs: [String]) -> [String] {
-        var merged: [String] = []
-        for value in lhs + rhs where !merged.contains(value) {
-            merged.append(value)
-        }
-        return merged
     }
 
     /// TS: buildFaceKeywordAdditions（fkw.preview 的写回规划）。

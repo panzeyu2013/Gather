@@ -5,8 +5,9 @@
 // - trace 字符串：job:<id>、delivery:<id>/rev:<revision>/<phase>；
 // - JobService：start（claim 成功）与 terminal（succeeded/failed/cancelled/
 //   interrupted/lease-lost）各一条，失败终态为 warn 且带 phase + reason；
-// - Delivery：confirm 的 DB 边界、cleanup/finalize/replay 的 file/db 边界；
-//   失败路径 warn 必须带 phase + reason；
+// - Delivery：confirm 的 DB 边界、cleanup/finalize/replay 的 file/db/backup 边界、
+//   WritebackService/MirrorWriter 的写租约冲突（lease）；
+//   失败路径 warn 必须带 phase + reason，且 reason 不泄漏绝对路径；
 // - 捕获方式：替换 GatherLogger.output（GatherLogger.log 不抛错，日志不影响业务）。
 //   过滤用本测试独有的 job id / xmp 路径，避免并行套件的日志串扰。
 
@@ -64,6 +65,37 @@ private final class LogCapture: @unchecked Sendable {
 
 private enum TraceFileError: Error, Equatable {
     case injected
+}
+
+/// 带绝对路径的错误描述（模拟 Foundation file error 的 NSFilePath）：用于验证
+/// reason=... 进 trace 前被替换成 basename#hash，但错误码仍保留。
+private struct TracePathError: Error, CustomStringConvertible {
+    let path: String
+
+    var description: String {
+        "XMP_INJECTED_PATH: \(path) (NSFilePath=\(path))"
+    }
+}
+
+/// 写回租约测试的最小 XMP 假件：租约冲突发生在碰盘之前，所有文件操作都不应被调用。
+private final class TraceWritebackXMP: XMPProvider, @unchecked Sendable {
+    func readKeywords(photoPath: String) async throws -> [String] { [] }
+
+    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
+        MetadataWriteAttributes()
+    }
+
+    func writeAttributes(
+        photoPath: String, attributes: MetadataWriteAttributes
+    ) async throws {}
+
+    func backup(photoPath: String) async throws -> String { "" }
+
+    func restore(photoPath: String, backupPath: String) async throws {}
+
+    func fileExists(_ path: String) -> Bool { false }
+
+    func removeFile(_ path: String) async throws {}
 }
 
 /// 内存 XMP 假件：restore 覆盖写（幂等），removeFile 删除内存键；可注入失败。
@@ -364,10 +396,6 @@ struct TraceLoggingTests {
 
 
     // MARK: - WP7b 边界补测（cancelled / interrupted / lease-lost / finalize 失败）
-    //
-    // 交付侧写租约丢失（WritebackService 的 DELIVERY_LEASE_LOST / claimWriting
-    // 的 leaseHeld）当前没有任何 trace= 日志（错误只进 summary.errors），
-    // 因此本套件给不出 delivery lease-lost 的 trace 断言——已列为生产缺口。
 
     /// queued 取消不经过执行器，仍必须留下终态 trace，且 reason 指向取消来源。
     @Test func jobQueuedCancelTerminalLogsTraceWithReason() async throws {
@@ -404,8 +432,8 @@ struct TraceLoggingTests {
         #expect(try repo.get(job.id)?.status == .cancelled)
     }
 
-    /// running 取消（执行器协作退出）：settle 的 cancelled 分支必须留终态 trace。
-    /// 该分支按现状只带 status/type、不带 reason（见交付报告的缺口清单）。
+    /// running 取消（执行器协作退出）：settle 的 cancelled 分支必须留终态 trace，
+    /// 并与 queued-cancel/cancel-grace/application-stopped 的 reason 口径一致。
     @Test func jobRunningCancelTerminalLogsTrace() async throws {
         let capture = LogCapture()
         capture.start()
@@ -448,6 +476,7 @@ struct TraceLoggingTests {
         #expect(terminal.contains("phase=terminal"))
         #expect(terminal.contains("status=cancelled"))
         #expect(terminal.contains("type=duplicate.scan"))
+        #expect(terminal.contains("reason=cancel-grace"))
         #expect(try repo.get(job.id)?.status == .cancelled)
     }
 
@@ -631,17 +660,110 @@ struct TraceLoggingTests {
         #expect(try fixture.repo.get(traceXmp) == nil, "DB 删除已提交，不回滚")
         #expect(fixture.files.contents(traceBackup) == "original", "删备份失败时备份必须原样保留")
 
-        // 备份清理在 DB 段之后，trace 段沿用 db（phase=backup 只出现在字段里）。
+        // 备份清理是 DB 提交后的独立段：trace 段与 phase=backup 必须一致
+        //（不能再借用 /db，否则按段 grep 会把尾段误读成 DB）。
         let dbTrace = "trace=delivery:" + String(fixture.delivery.id) + "/rev:1/db"
+        let backupTrace = "trace=delivery:" + String(fixture.delivery.id) + "/rev:1/backup"
         let failed = try #require(capture.lines.first {
-            $0.contains(dbTrace)
+            $0.contains(backupTrace)
                 && $0.contains("op=finalize")
                 && $0.contains("phase=backup")
                 && $0.contains("event=failed")
         })
         #expect(failed.contains("[warn]"))
         #expect(failed.contains("reason="))
+        #expect(!capture.lines.contains {
+            $0.contains(dbTrace) && $0.contains("phase=backup")
+        }, "备份清理段必须是 /backup，不得留在 /db")
         expectNoPathLeak([failed], [traceXmp, traceBackup, tracePhoto])
+    }
+
+    /// 交付写租约被他人持有：WritebackService 必须留 delivery:<id>/rev:<n>/lease
+    /// warn（op/phase/reason code），且 trace 不出现绝对 xmpPath。
+    @Test func writebackLeaseHeldWarnsWithDeliveryTrace() async throws {
+        let capture = LogCapture()
+        capture.start()
+        defer { capture.stop() }
+
+        let db = try makeTestDB()
+        defer { db.close() }
+        try insertSession(db, traceSession)
+        try insertPhoto(db, id: "wp7b-lease-p1", sessionId: traceSession)
+        let repo = DeliveryRepo(connection: db)
+        let delivery = try repo.createOrGet(
+            xmpPath: traceXmp, photoPath: tracePhoto, revision: 0)
+        _ = try repo.linkSession(xmpPath: traceXmp, sessionId: traceSession)
+        let item = try repo.upsertItem(
+            xmpPath: traceXmp,
+            photoId: "wp7b-lease-p1",
+            module: .culling,
+            keywords: ["leased"],
+            status: .pending)
+        // 另一个活跃写者持有未过期租约：本服务不得无条件覆盖。
+        _ = try repo.claimWriting(
+            xmpPath: traceXmp, revision: 0, leaseOwner: "peer-writer")
+
+        let service = WritebackService(
+            deliveryRepo: repo,
+            xmp: TraceWritebackXMP(),
+            photoRepo: PhotoRepo(connection: db),
+            metadataCacheRepo: MetadataCacheRepo(connection: db),
+            connection: db)
+        let writebackItem = WritebackItem(
+            id: Int(item.id),
+            photoId: "wp7b-lease-p1",
+            photoPath: tracePhoto,
+            sessionId: traceSession,
+            module: "culling",
+            keywords: ["leased"],
+            xmpPath: traceXmp,
+            backupPath: "",
+            xmpStatus: DeliveryItemStatus.pending.rawValue,
+            errorMessage: "",
+            attemptCount: 0,
+            lastAttemptAt: "")
+        let result = try await service.execute(
+            sessionId: traceSession, module: "culling", items: [writebackItem])
+        #expect(result.written == 0)
+        #expect(result.failed == 1)
+
+        let leaseTrace = "trace=delivery:\(delivery.id)/rev:0/lease"
+        let warning = try #require(capture.lines.first {
+            $0.contains(leaseTrace)
+                && $0.contains("op=writeback-execute")
+                && $0.contains("phase=lease")
+                && $0.contains("event=failed")
+        })
+        #expect(warning.contains("[warn]"))
+        #expect(warning.contains("reason=DELIVERY_LEASE_HELD"))
+        expectNoPathLeak([warning], [traceXmp, tracePhoto, traceBackup])
+    }
+
+    /// 错误文本里带绝对路径（NSFilePath 风格）也必须脱敏：trace 只保留错误码 +
+    /// basename#hash；summary.errors 仍保留完整路径供定位。
+    @Test func cleanupFailureReasonRedactsAbsolutePaths() async throws {
+        let fixture = try TraceDeliveryFixture(confirm: true)
+        defer { fixture.db.close() }
+        let capture = LogCapture()
+        capture.start()
+        defer { capture.stop() }
+
+        fixture.files.setRestoreFailure(TracePathError(path: traceXmp))
+        let result = try await fixture.coordinator.cleanup(
+            sessionId: traceSession, module: .culling)
+        #expect(result.deletedCount == 0)
+        #expect(result.errors.count == 1)
+        let reported = try #require(result.errors.first)
+        #expect(reported.contains(traceXmp), "summary.errors 仍须保留完整路径")
+
+        let warning = try #require(capture.lines.first {
+            $0.contains("trace=delivery:\(fixture.delivery.id)/rev:1/file")
+                && $0.contains("event=failed")
+        })
+        #expect(warning.contains("XMP_INJECTED_PATH"))
+        #expect(!warning.contains(traceXmp), "trace 不得泄漏绝对 xmpPath")
+        #expect(!warning.contains("/Users/"), "trace 不得泄漏用户主目录")
+        expectNoPathLeak([warning], [traceXmp, tracePhoto, traceBackup])
     }
 
     // MARK: - helpers

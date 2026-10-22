@@ -228,6 +228,47 @@ public final class WritebackService: @unchecked Sendable {
         eventSink(sessionId)
     }
 
+    // MARK: - 交付写租约 trace（P2）
+
+    /// 写租约事件：`trace=delivery:<id>/rev:<revision>/lease` + op/phase/reason。
+    ///
+    /// 只在租约冲突/丢失/条件更新未命中时 warn：这是写回最难排障、也最容易
+    /// 在多写者下静默失败的路径。reason 只用错误码或脱敏后的错误文本，
+    /// xmpPath 只以 basename#hash 出现（不泄漏绝对路径）。
+    private func logLeaseEvent(
+        xmpPath: String,
+        delivery: DeliveryRow?,
+        revision: Int64?,
+        op: String,
+        reason: String
+    ) {
+        let fallback: DeliveryRow?
+        do {
+            fallback = try deliveryRepo.get(xmpPath)
+        } catch {
+            fallback = nil
+        }
+        let identity = delivery ?? fallback
+        guard let identity else { return }
+        DeliveryTrace.log(
+            DeliveryTrace.text(
+                deliveryId: identity.id,
+                revision: revision ?? identity.revision,
+                phase: "lease"),
+            "event=failed op=\(op) phase=lease xmp=\(DeliveryTrace.pathToken(xmpPath)) "
+                + "reason=\(DeliveryTrace.reason(reason, paths: [xmpPath]))",
+            level: .warn)
+    }
+
+    /// 仅把「租约被他人持有 / 租约已丢失」的错误码抽出来；其它错误不进租约 trace。
+    private static func leaseFailureReason(_ error: Error) -> String? {
+        guard let repoError = error as? DeliveryRepoError else { return nil }
+        switch repoError {
+        case .leaseHeld, .leaseLost: return repoError.code
+        default: return nil
+        }
+    }
+
 
     // MARK: - 私有支撑
 
@@ -385,9 +426,23 @@ public final class WritebackService: @unchecked Sendable {
                     xmpPath: path, revision: stale.revision, leaseOwner: leaseOwner)
             } catch {
                 // 他人持有效租约（或行已不在 writing）：留给持有者/下一次执行。
+                if let leaseReason = Self.leaseFailureReason(error) {
+                    logLeaseEvent(
+                        xmpPath: path,
+                        delivery: stale,
+                        revision: stale.revision,
+                        op: "writeback-recover",
+                        reason: leaseReason)
+                }
                 continue
             }
             guard let row = claimed else {
+                logLeaseEvent(
+                    xmpPath: path,
+                    delivery: stale,
+                    revision: stale.revision,
+                    op: "writeback-recover",
+                    reason: "DELIVERY_WRITE_CAS_FAILED")
                 result.errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)")
                 continue
             }
@@ -415,6 +470,12 @@ public final class WritebackService: @unchecked Sendable {
                     guard try stateWriter.renewWriting(
                         xmpPath: path, revision: row.revision, leaseOwner: leaseOwner)
                     else {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: row,
+                            revision: row.revision,
+                            op: "writeback-recover",
+                            reason: "DELIVERY_LEASE_LOST")
                         result.errors.append("DELIVERY_LEASE_LOST: \(path)")
                         continue
                     }
@@ -426,9 +487,23 @@ public final class WritebackService: @unchecked Sendable {
                         clearReloadAck(forXmpPath: path)
                         result.written += 1
                     } else {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: row,
+                            revision: row.revision,
+                            op: "writeback-recover",
+                            reason: "DELIVERY_WRITE_CAS_FAILED")
                         result.errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)")
                     }
                 } catch {
+                    if let leaseReason = Self.leaseFailureReason(error) {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: row,
+                            revision: row.revision,
+                            op: "writeback-recover",
+                            reason: leaseReason)
+                    }
                     result.errors.append("DELIVERY_WRITE_FAILED: \(path): \(error)")
                 }
             } else {
@@ -436,6 +511,12 @@ public final class WritebackService: @unchecked Sendable {
                     guard try stateWriter.renewWriting(
                         xmpPath: path, revision: row.revision, leaseOwner: leaseOwner)
                     else {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: row,
+                            revision: row.revision,
+                            op: "writeback-recover",
+                            reason: "DELIVERY_LEASE_LOST")
                         result.errors.append("DELIVERY_LEASE_LOST: \(path)")
                         continue
                     }
@@ -446,9 +527,23 @@ public final class WritebackService: @unchecked Sendable {
                         result.failed += 1
                         result.errors.append("DELIVERY_WRITE_INTERRUPTED: \(path)")
                     } else {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: row,
+                            revision: row.revision,
+                            op: "writeback-recover",
+                            reason: "DELIVERY_WRITE_CAS_FAILED")
                         result.errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)")
                     }
                 } catch {
+                    if let leaseReason = Self.leaseFailureReason(error) {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: row,
+                            revision: row.revision,
+                            op: "writeback-recover",
+                            reason: leaseReason)
+                    }
                     result.errors.append("DELIVERY_WRITE_FAILED: \(path): \(error)")
                 }
             }
@@ -691,7 +786,13 @@ public final class WritebackService: @unchecked Sendable {
         written += leaseRecovery.written
         failed += leaseRecovery.failed
         var entryIndex: [Int: DeliveryWritebackEntry] = [:]
-        for entry in persistedEntries { entryIndex[Int(entry.item.id)] = entry }
+        var deliveryByPath: [String: DeliveryRow] = [:]
+        for entry in persistedEntries {
+            entryIndex[Int(entry.item.id)] = entry
+            // P2：租约 trace 的 delivery:<id>/rev 快照（claim 前最后一次读到的行）。
+            deliveryByPath[entry.delivery.xmpPath] = deliveryByPath[entry.delivery.xmpPath]
+                ?? entry.delivery
+        }
         // 并发 body 只读捕获（Sendable 值类型字典），故在进入 batchAsync 前转成 let。
         let entryById = entryIndex
         let resolvedByPhoto = try preloadResolvedTargets(sessionId: sessionId, entries: persistedEntries)
@@ -724,6 +825,14 @@ public final class WritebackService: @unchecked Sendable {
                         "DELIVERY_NOT_WRITABLE: \(path) (terminal state or revision changed)"
                 }
             } catch {
+                if let leaseReason = Self.leaseFailureReason(error) {
+                    logLeaseEvent(
+                        xmpPath: path,
+                        delivery: deliveryByPath[path],
+                        revision: deliveryByPath[path]?.revision,
+                        op: "writeback-execute",
+                        reason: leaseReason)
+                }
                 if let repoError = error as? DeliveryRepoError, case .leaseHeld = repoError {
                     unwritablePaths[path] = repoError.description
                 } else {
@@ -845,10 +954,22 @@ public final class WritebackService: @unchecked Sendable {
                 holdsLease = try stateWriter.renewWriting(
                     xmpPath: path, revision: revision, leaseOwner: leaseOwner)
             } catch {
+                logLeaseEvent(
+                    xmpPath: path,
+                    delivery: deliveryByPath[path],
+                    revision: revision,
+                    op: "writeback-converge",
+                    reason: Self.leaseFailureReason(error) ?? "DELIVERY_LEASE_LOST")
                 errors.append("DELIVERY_LEASE_LOST: \(path): \(error)")
                 continue
             }
             guard holdsLease else {
+                logLeaseEvent(
+                    xmpPath: path,
+                    delivery: deliveryByPath[path],
+                    revision: revision,
+                    op: "writeback-converge",
+                    reason: "DELIVERY_LEASE_LOST")
                 errors.append("DELIVERY_LEASE_LOST: \(path)")
                 continue
             }
@@ -866,12 +987,26 @@ public final class WritebackService: @unchecked Sendable {
                         backupPath: backupPath
                     )
                     if row == nil {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: deliveryByPath[path],
+                            revision: revision,
+                            op: "writeback-converge",
+                            reason: "DELIVERY_WRITE_CAS_FAILED")
                         errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)")
                     } else {
                         // 已落盘：关联会话必须重新 reload 才能 confirm（§5.4-2）。
                         clearReloadAck(forXmpPath: path)
                     }
                 } catch {
+                    if let leaseReason = Self.leaseFailureReason(error) {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: deliveryByPath[path],
+                            revision: revision,
+                            op: "writeback-converge",
+                            reason: leaseReason)
+                    }
                     errors.append("DELIVERY_WRITE_FAILED: \(path): \(error)")
                 }
             } else {
@@ -880,8 +1015,24 @@ public final class WritebackService: @unchecked Sendable {
                     let row = try stateWriter.markFailed(
                         xmpPath: path, revision: revision, errorMessage: message,
                         leaseOwner: leaseOwner)
-                    if row == nil { errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)") }
+                    if row == nil {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: deliveryByPath[path],
+                            revision: revision,
+                            op: "writeback-converge",
+                            reason: "DELIVERY_WRITE_CAS_FAILED")
+                        errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)")
+                    }
                 } catch {
+                    if let leaseReason = Self.leaseFailureReason(error) {
+                        logLeaseEvent(
+                            xmpPath: path,
+                            delivery: deliveryByPath[path],
+                            revision: revision,
+                            op: "writeback-converge",
+                            reason: leaseReason)
+                    }
                     errors.append("DELIVERY_WRITE_FAILED: \(path): \(error)")
                 }
             }
@@ -1278,18 +1429,6 @@ private struct PreparedEntry: Sendable {
 
     var itemPhotoId: String { persistedItem.photoId }
 }
-
-
-/// TS: `[...new Set([...a, ...b])]`（保序去重合并）。
-private func orderedUnion(_ a: [String], _ b: [String]) -> [String] {
-    var seen = Set<String>()
-    var result: [String] = []
-    for value in a + b where seen.insert(value).inserted {
-        result.append(value)
-    }
-    return result
-}
-
 
 // writeback-planners.ts（writeback-planners.ts 全量）
 // ────────────────────────────────────────────────────────────

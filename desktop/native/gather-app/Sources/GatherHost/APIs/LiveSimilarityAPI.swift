@@ -260,43 +260,21 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
     /// JobServiceError / DBError → GatherError：有专用码的域错误保持码值；
     /// jobFailed 的 message 本身就是错误码时还原为 GatherError；其余原样抛出
     /// （D-030：非域错误不伪造业务码）。
+    /// 域臂：Similarity / Writeback / WritebackPlanner；通用臂见 translateCommon。
     private static func translate(_ error: Error) -> Error {
-        switch error {
-        case let gather as GatherError:
-            return gather
-        case let similarity as SimilarityServiceError:
+        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
+        if let similarity = error as? SimilarityServiceError {
             return GatherError(code: similarity.gatherCode, underlying: similarity.description)
-        case let writeback as WritebackServiceError:
+        }
+        if let writeback = error as? WritebackServiceError {
             if let code = GatherErrorCode(rawValue: writeback.description) {
                 return GatherError(code: code, underlying: writeback.description)
             }
             return writeback
-        case let planner as WritebackPlannerError:
+        }
+        if let planner = error as? WritebackPlannerError {
             return GatherError(code: .WRITEBACK_GROUP_NOT_IN_SESSION, underlying: planner.description)
-        case let job as JobServiceError:
-            if case .jobFailed(_, let message) = job,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return job
-        case let db as DBError:
-            if case .message(let message) = db,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return db
-        default:
-            return error
         }
-    }
-
-    /// TS `[...new Set([...a, ...b])]`（sim.preview_writeback 关键词合并）。
-    private func orderedUnion(_ a: [String], _ b: [String]) -> [String] {
-        var seen = Set<String>()
-        var result: [String] = []
-        for value in a + b where seen.insert(value).inserted {
-            result.append(value)
-        }
-        return result
+        return error
     }
 }

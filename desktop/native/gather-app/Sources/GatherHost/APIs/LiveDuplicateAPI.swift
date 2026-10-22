@@ -129,29 +129,13 @@ public final class LiveDuplicateAPI: DuplicateAPI {
         }
     }
 
+    /// 域臂：DuplicateServiceError（有码转码，无码原样）；通用臂见 translateCommon。
     private static func translate(_ error: Error) -> Error {
-        switch error {
-        case let gather as GatherError:
-            return gather
-        case let duplicate as DuplicateServiceError:
-            if let code = duplicate.gatherCode {
-                return GatherError(code: code, underlying: duplicate.description)
-            }
-            return duplicate
-        case let job as JobServiceError:
-            if case .jobFailed(_, let message) = job,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return job
-        case let db as DBError:
-            if case .message(let message) = db,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return db
-        default:
-            return error
+        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
+        guard let duplicate = error as? DuplicateServiceError else { return error }
+        if let code = duplicate.gatherCode {
+            return GatherError(code: code, underlying: duplicate.description)
         }
+        return duplicate
     }
 }

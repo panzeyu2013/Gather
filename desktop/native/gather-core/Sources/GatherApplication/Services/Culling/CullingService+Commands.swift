@@ -153,7 +153,7 @@ extension CullingService {
                 ))
             }
 
-            let fields = patchFields(patch)
+            let fields = patch.fields
             let historyEntries: [CullingHistoryEntry] = resultStates.enumerated().map { index, after in
                 let before = beforeStates[index]
                 return CullingHistoryEntry(
@@ -486,7 +486,7 @@ extension CullingService {
                         pickState: after.pickState, rating: after.rating, colorLabel: after.colorLabel
                     ),
                     expectedRevision: after.revision,
-                    fields: historicalFields[entry.photoId] ?? patchFields(entry.patch)
+                    fields: historicalFields[entry.photoId] ?? entry.patch.fields
                 ))
                 results.append(CullingUpdateResult(
                     states: [after],
@@ -664,15 +664,6 @@ extension CullingService {
         case .unreviewed: .pending
         }
     }
-    /// TS: `Object.keys(patch)` —— 补丁非空字段（CullingUpdatePatch 声明序）。
-    private func patchFields(_ patch: CullingUpdatePatch) -> [CullingUpdatePatchField] {
-        var fields: [CullingUpdatePatchField] = []
-        if patch.rating != nil { fields.append(.rating) }
-        if patch.pickState != nil { fields.append(.pickState) }
-        if patch.colorLabel != nil { fields.append(.colorLabel) }
-        return fields
-    }
-
     /// TS: `Object.fromEntries(fields.map(field => [field, snapshot[field]]))`。
     private func patchFromSnapshot(
         fields: [CullingUpdatePatchField],

@@ -188,7 +188,7 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
 
     public func writeback(_ input: Confirmed<FaceWritebackInput>) async throws -> WritebackResult {
         let payload = input.value
-        let items = payload.items.map(Self.toFaceKwItem)
+        let items = payload.items.map(FaceKwWritebackBridge.toFaceKwItem)
         let result = try await mapAsync {
             try await faceKwService.writeback(
                 sessionId: payload.sessionId,
@@ -263,28 +263,12 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
     ///   还原成带码的 GatherError；否则原样抛出（D-030：非域错误不伪造业务码）；
     /// - 写回提供者未注入是装配错误（GatherError 无 unspecified 码，D-010），
     ///   原样抛出，避免伪装成“其他模块占用”。
+    /// 域臂：FaceKwServiceError；writebackProviderMissing 原样抛（保持原语义）。
     private static func translate(_ error: Error) -> Error {
-        switch error {
-        case let gather as GatherError:
-            return gather
-        case let face as FaceKwServiceError:
-            if case .writebackProviderMissing = face { return face }
-            return GatherError(code: face.gatherCode, underlying: face.description)
-        case let job as JobServiceError:
-            if case .jobFailed(_, let message) = job,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return job
-        case let db as DBError:
-            if case .message(let message) = db,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return db
-        default:
-            return error
-        }
+        if let common = LiveAPIErrorMapping.translateCommon(error) { return common }
+        guard let face = error as? FaceKwServiceError else { return error }
+        if case .writebackProviderMissing = face { return face }
+        return GatherError(code: face.gatherCode, underlying: face.description)
     }
 
     // MARK: - 接缝类型搬运（FaceKw* 与 Protocol Writeback* 互转）
@@ -298,95 +282,9 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
         )
     }
 
-    private static func toWritebackAttributes(
-        _ attributes: FaceKwWritebackAttributes
-    ) -> WritebackAttributes {
-        WritebackAttributes(
-            keywords: attributes.keywords,
-            rating: attributes.rating,
-            label: attributes.label
-        )
-    }
-
-    private static func toFaceKwAttributes(
-        _ attributes: WritebackAttributes
-    ) -> FaceKwWritebackAttributes {
-        FaceKwWritebackAttributes(
-            keywords: attributes.keywords,
-            rating: attributes.rating,
-            label: attributes.label
-        )
-    }
-
-    private static func toWritebackPreviewInfo(
-        _ info: FaceKwWritebackPreviewInfo
-    ) -> WritebackItemPreview {
-        WritebackItemPreview(
-            dirtyFields: info.dirtyFields.compactMap(WritebackDirtyField.init(rawValue:)),
-            before: toWritebackAttributes(info.before),
-            after: toWritebackAttributes(info.after),
-            source: info.source,
-            sharedPhotoCount: info.sharedPhotoCount,
-            externalChanged: info.externalChanged,
-            willCreate: info.willCreate
-        )
-    }
-
-    private static func toFaceKwPreviewInfo(
-        _ info: WritebackItemPreview
-    ) -> FaceKwWritebackPreviewInfo {
-        FaceKwWritebackPreviewInfo(
-            dirtyFields: info.dirtyFields.map(\.rawValue),
-            before: toFaceKwAttributes(info.before),
-            after: toFaceKwAttributes(info.after),
-            source: info.source,
-            sharedPhotoCount: info.sharedPhotoCount,
-            externalChanged: info.externalChanged,
-            willCreate: info.willCreate
-        )
-    }
-
-    private static func toWritebackItem(_ item: FaceKwWritebackItem) -> WritebackItem {
-        WritebackItem(
-            id: item.id.flatMap { Int(exactly: $0) },
-            photoId: item.photoId,
-            photoPath: item.photoPath,
-            sessionId: item.sessionId,
-            module: item.module,
-            keywords: item.keywords,
-            attributes: item.attributes.map(toWritebackAttributes),
-            xmpPath: item.xmpPath,
-            backupPath: item.backupPath,
-            xmpStatus: item.xmpStatus,
-            errorMessage: item.errorMessage,
-            attemptCount: item.attemptCount,
-            lastAttemptAt: item.lastAttemptAt,
-            preview: item.preview.map(toWritebackPreviewInfo)
-        )
-    }
-
-    private static func toFaceKwItem(_ item: WritebackItem) -> FaceKwWritebackItem {
-        FaceKwWritebackItem(
-            id: item.id.map(Int64.init),
-            photoId: item.photoId,
-            photoPath: item.photoPath,
-            sessionId: item.sessionId,
-            module: item.module,
-            keywords: item.keywords,
-            attributes: item.attributes.map(toFaceKwAttributes),
-            xmpPath: item.xmpPath,
-            backupPath: item.backupPath,
-            xmpStatus: item.xmpStatus,
-            errorMessage: item.errorMessage,
-            attemptCount: item.attemptCount,
-            lastAttemptAt: item.lastAttemptAt,
-            preview: item.preview.map(toFaceKwPreviewInfo)
-        )
-    }
-
     private static func toWritebackPreview(_ preview: FaceKwWritebackPreview) -> WritebackPreview {
         WritebackPreview(
-            items: preview.items.map(toWritebackItem),
+            items: preview.items.map(FaceKwWritebackBridge.toWritebackItem),
             totalCount: preview.totalCount,
             affectedPhotos: preview.affectedPhotos
         )
@@ -399,7 +297,7 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
             failed: result.failed,
             skipped: result.skipped,
             errors: result.errors,
-            failedItems: result.failedItems.map(toWritebackItem),
+            failedItems: result.failedItems.map(FaceKwWritebackBridge.toWritebackItem),
             report: result.report
         )
     }

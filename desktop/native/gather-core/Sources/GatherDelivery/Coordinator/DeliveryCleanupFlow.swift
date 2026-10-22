@@ -143,6 +143,9 @@ struct DeliveryCleanupFlow: Sendable {
 
             let payload = DeliveryCleanupPayload(
                 delivery: current, photoPath: resolvedPhotoPath, module: module)
+            // P2：错误 reason 里可能带 xmp/backup/photo 绝对路径；trace 只用
+            // pathToken（basename#hash），完整路径仍保留在 summary.errors 供定位。
+            let traceContext = [current.xmpPath, payload.photoPath, payload.backupPath]
             // WP7b：本交付本次尝试的关联标识（prepare 时的 id/revision 快照）。
             let traceFile = DeliveryTrace.text(
                 deliveryId: current.id, revision: current.revision, phase: "file")
@@ -161,7 +164,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceIntent,
                     "event=failed op=cleanup phase=intent outcome=prepare-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(error)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(error, paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure("XMP_CLEANUP_PREPARE_FAILED", current.xmpPath, error))
                 continue
@@ -191,7 +195,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=cleanup phase=file outcome=guard-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                     level: .warn)
                 errors.append("XMP_CLEANUP_GUARD_FAILED: \(current.xmpPath) reason=\(reason)")
                 continue
@@ -200,7 +205,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=cleanup phase=file outcome=file-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                     level: .warn)
                 errors.append("XMP_CLEANUP_FILE_FAILED: \(current.xmpPath) reason=\(reason)")
                 continue
@@ -208,7 +214,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=cleanup phase=file outcome=invalidated "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                     level: .warn)
                 // restore/remove 的 await 期间出现新输入：文件可能已被旧备份覆盖，
                 // 不得静默走 DB 删除；放弃 intent 并显式上报（DB 保留新输入）。
@@ -228,7 +235,8 @@ struct DeliveryCleanupFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=cleanup phase=file outcome=changed "
-                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                            + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                         level: .warn)
                     skippedCount += 1
                     errors.append("XMP_CLEANUP_ABANDONED: \(current.xmpPath) reason=\(reason)")
@@ -244,7 +252,8 @@ struct DeliveryCleanupFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=cleanup phase=file outcome=conflict "
-                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                            + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                         level: .warn)
                     do {
                         if try writer.markConflict(
@@ -279,7 +288,8 @@ struct DeliveryCleanupFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=cleanup phase=file outcome=invalid-backup "
-                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                            + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                         level: .warn)
                     skippedCount += 1
                     errors.append(
@@ -320,7 +330,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceIntent,
                     "event=failed op=cleanup phase=intent outcome=advance-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) intent=\(intentId) reason=\(error)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) intent=\(intentId) "
+                        + "reason=\(DeliveryTrace.reason(error, paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure("XMP_CLEANUP_ADVANCE_FAILED", current.xmpPath, error))
                 continue
@@ -343,7 +354,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceDB,
                     "event=failed op=cleanup phase=db outcome=db-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(cause(of: error))",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(cause(of: error), paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure(code(for: error, action: .cleanup), current.xmpPath, cause(of: error)))
                 continue
@@ -351,7 +363,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceDB,
                     "event=failed op=cleanup phase=db outcome=db-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(error)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(error, paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure("XMP_CLEANUP_DB_FAILED", current.xmpPath, error))
                 continue
@@ -467,6 +480,9 @@ struct DeliveryCleanupFlow: Sendable {
                 photoPath: resolvedPhotoPath,
                 action: .finalize
             )
+            // P2：错误 reason 里可能带 xmp/backup/photo 绝对路径；trace 只用
+            // pathToken（basename#hash），完整路径仍保留在 summary.errors 供定位。
+            let traceContext = [current.xmpPath, payload.photoPath, payload.backupPath]
             // WP7b：本交付本次尝试的关联标识（prepare 时的 id/revision 快照）。
             let traceFile = DeliveryTrace.text(
                 deliveryId: current.id, revision: current.revision, phase: "file")
@@ -474,6 +490,10 @@ struct DeliveryCleanupFlow: Sendable {
                 deliveryId: current.id, revision: current.revision, phase: "db")
             let traceIntent = DeliveryTrace.text(
                 deliveryId: current.id, revision: current.revision, phase: "intent")
+            // P2：备份清理是 finalize 的独立后置段（DB 提交之后），trace 段必须与
+            // phase=backup 一致；不能再借用 /db（否则按段 grep 会把尾段误读成 DB）。
+            let traceBackup = DeliveryTrace.text(
+                deliveryId: current.id, revision: current.revision, phase: "backup")
             let intentId: Int64
             do {
                 intentId = try intents.prepare(
@@ -485,7 +505,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceIntent,
                     "event=failed op=finalize phase=intent outcome=prepare-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(error)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(error, paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure("XMP_FINALIZE_PREPARE_FAILED", current.xmpPath, error))
                 continue
@@ -513,7 +534,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=finalize phase=file outcome=guard-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                     level: .warn)
                 errors.append("XMP_FINALIZE_GUARD_FAILED: \(current.xmpPath) reason=\(reason)")
                 continue
@@ -522,7 +544,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=finalize phase=file outcome=file-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                     level: .warn)
                 errors.append("XMP_FINALIZE_FILE_FAILED: \(current.xmpPath) reason=\(reason)")
                 continue
@@ -530,7 +553,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceFile,
                     "event=failed op=finalize phase=file outcome=invalidated "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                     level: .warn)
                 skippedCount += 1
                 errors.append("XMP_FINALIZE_FILE_RACED: \(current.xmpPath) reason=\(reason)")
@@ -548,7 +572,8 @@ struct DeliveryCleanupFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=finalize phase=file outcome=changed "
-                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                            + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                         level: .warn)
                     skippedCount += 1
                     errors.append("XMP_FINALIZE_ABANDONED: \(current.xmpPath) reason=\(reason)")
@@ -565,7 +590,8 @@ struct DeliveryCleanupFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=finalize phase=file outcome=conflict "
-                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                            + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                         level: .warn)
                     skippedCount += 1
                     errors.append("XMP_FINALIZE_ABANDONED: \(current.xmpPath) reason=\(reason)")
@@ -583,7 +609,8 @@ struct DeliveryCleanupFlow: Sendable {
                     DeliveryTrace.log(
                         traceFile,
                         "event=skipped op=finalize phase=file outcome=invalid-backup "
-                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(reason)",
+                            + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                            + "reason=\(DeliveryTrace.reason(reason, paths: traceContext))",
                         level: .warn)
                     skippedCount += 1
                     errors.append(
@@ -620,7 +647,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceIntent,
                     "event=failed op=finalize phase=intent outcome=advance-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) intent=\(intentId) reason=\(error)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) intent=\(intentId) "
+                        + "reason=\(DeliveryTrace.reason(error, paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure("XMP_FINALIZE_ADVANCE_FAILED", current.xmpPath, error))
                 continue
@@ -643,7 +671,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceDB,
                     "event=failed op=finalize phase=db outcome=db-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(cause(of: error))",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(cause(of: error), paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure(code(for: error, action: .finalize), current.xmpPath, cause(of: error)))
                 continue
@@ -651,7 +680,8 @@ struct DeliveryCleanupFlow: Sendable {
                 DeliveryTrace.log(
                     traceDB,
                     "event=failed op=finalize phase=db outcome=db-failed "
-                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) reason=\(error)",
+                        + "xmp=\(DeliveryTrace.pathToken(current.xmpPath)) "
+                        + "reason=\(DeliveryTrace.reason(error, paths: traceContext))",
                     level: .warn)
                 errors.append(Self.failure("XMP_FINALIZE_DB_FAILED", current.xmpPath, error))
                 continue
@@ -668,7 +698,7 @@ struct DeliveryCleanupFlow: Sendable {
                 if let failure = await removeFinalizeBackup(
                     xmpPath: current.xmpPath,
                     backupPath: payload.backupPath,
-                    trace: traceDB
+                    trace: traceBackup
                 ) {
                     errors.append(failure)
                 }
@@ -683,7 +713,7 @@ struct DeliveryCleanupFlow: Sendable {
                 if let failure = await removeFinalizeBackup(
                     xmpPath: current.xmpPath,
                     backupPath: payload.backupPath,
-                    trace: traceDB
+                    trace: traceBackup
                 ) {
                     errors.append(failure)
                 }
@@ -753,13 +783,15 @@ struct DeliveryCleanupFlow: Sendable {
             DeliveryTrace.log(
                 trace,
                 "event=skipped op=finalize phase=backup xmp=\(DeliveryTrace.pathToken(xmpPath)) "
-                    + "outcome=retained reason=\(reason)",
+                    + "outcome=retained "
+                    + "reason=\(DeliveryTrace.reason(reason, paths: [xmpPath, backupPath]))",
                 level: .warn)
             return "XMP_FINALIZE_BACKUP_RETAINED: \(xmpPath) reason=\(reason)"
         case .failed(let reason):
             DeliveryTrace.log(
                 trace,
-                "event=failed op=finalize phase=backup xmp=\(DeliveryTrace.pathToken(xmpPath)) reason=\(reason)",
+                "event=failed op=finalize phase=backup xmp=\(DeliveryTrace.pathToken(xmpPath)) "
+                    + "reason=\(DeliveryTrace.reason(reason, paths: [xmpPath, backupPath]))",
                 level: .warn)
             return "XMP_FINALIZE_BACKUP_CLEANUP_FAILED: \(xmpPath) reason=\(reason)"
         }

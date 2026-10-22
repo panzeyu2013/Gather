@@ -52,6 +52,8 @@ struct DeliveryMirrorWriter: Sendable {
                 errors.append("DELIVERY_MIRROR_MISSING_PHOTO_PATH: \(path)")
                 continue
             }
+            // P2：租约 trace 的 delivery:<id>/rev 快照；claim 成功前后都可用。
+            var leaseIdentity: (id: Int64, revision: Int64)?
             do {
                 guard let revision = try writer.openDeliveryForWrite(
                     xmpPath: path,
@@ -62,8 +64,21 @@ struct DeliveryMirrorWriter: Sendable {
                     errors.append("DELIVERY_MIRROR_TERMINAL_DELIVERY: \(path)")
                     continue
                 }
+                let currentRow: DeliveryRow?
+                do {
+                    currentRow = try repo.get(path)
+                } catch {
+                    currentRow = nil
+                }
+                if let currentRow {
+                    leaseIdentity = (currentRow.id, revision)
+                }
                 guard try writer.claimWriting(
                     xmpPath: path, revision: revision, leaseOwner: leaseOwner) != nil else {
+                    logLeaseEvent(
+                        identity: leaseIdentity,
+                        xmpPath: path,
+                        reason: "DELIVERY_MIRROR_LEASE_CONFLICT")
                     errors.append("DELIVERY_MIRROR_LEASE_CONFLICT: \(path)")
                     continue
                 }
@@ -106,6 +121,10 @@ struct DeliveryMirrorWriter: Sendable {
                         baseValues: first.baseValues,
                         backupPath: first.backupPath
                     ) != nil else {
+                        logLeaseEvent(
+                            identity: leaseIdentity,
+                            xmpPath: path,
+                            reason: "DELIVERY_MIRROR_WRITE_CAS_FAILED")
                         errors.append("DELIVERY_MIRROR_WRITE_CAS_FAILED: \(path)")
                         continue
                     }
@@ -116,6 +135,10 @@ struct DeliveryMirrorWriter: Sendable {
                         errorMessage: firstErrorMessage.isEmpty ? "WRITEBACK_FAILED" : firstErrorMessage,
                         leaseOwner: leaseOwner
                     ) != nil else {
+                        logLeaseEvent(
+                            identity: leaseIdentity,
+                            xmpPath: path,
+                            reason: "DELIVERY_MIRROR_FAIL_CAS_FAILED")
                         errors.append("DELIVERY_MIRROR_FAIL_CAS_FAILED: \(path)")
                         continue
                     }
@@ -123,6 +146,14 @@ struct DeliveryMirrorWriter: Sendable {
                 _ = try writer.linkSession(xmpPath: path, sessionId: sessionId)
                 deliveryCount += 1
             } catch {
+                // 租约在 claim/mark 之间被接管：显式 warn（reason 只留错误码），
+                // 失败仍进 summary.errors（镜像不抛出）。
+                if let leaseReason = Self.leaseFailureReason(error) {
+                    logLeaseEvent(
+                        identity: leaseIdentity,
+                        xmpPath: path,
+                        reason: leaseReason)
+                }
                 errors.append(Self.failure("DELIVERY_MIRROR_FAILED", path, error))
             }
         }
@@ -132,6 +163,33 @@ struct DeliveryMirrorWriter: Sendable {
             itemCount: itemCount,
             errors: errors
         )
+    }
+
+    /// P2：写租约事件 warn（`trace=delivery:<id>/rev:<revision>/lease`）。
+    ///
+    /// 镜像由 WritebackService 在写盘之后调用；claim/markWritten 的租约 CAS
+    /// 失配说明交付已被另一写者接管——这是排障最需要的关联点。reason 只用
+    /// 错误码/脱敏文本，xmpPath 只以 basename#hash 出现。
+    private func logLeaseEvent(
+        identity: (id: Int64, revision: Int64)?,
+        xmpPath: String,
+        reason: String
+    ) {
+        guard let identity else { return }
+        DeliveryTrace.log(
+            DeliveryTrace.text(
+                deliveryId: identity.id, revision: identity.revision, phase: "lease"),
+            "event=failed op=mirror phase=lease xmp=\(DeliveryTrace.pathToken(xmpPath)) "
+                + "reason=\(DeliveryTrace.reason(reason, paths: [xmpPath]))",
+            level: .warn)
+    }
+
+    private static func leaseFailureReason(_ error: Error) -> String? {
+        guard let repoError = error as? DeliveryRepoError else { return nil }
+        switch repoError {
+        case .leaseHeld, .leaseLost: return repoError.code
+        default: return nil
+        }
     }
 
     private static func failure(_ code: String, _ xmpPath: String, _ error: Error) -> String {
