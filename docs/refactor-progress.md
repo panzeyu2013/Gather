@@ -220,6 +220,28 @@
 - **构建产物**：删除 `release/Gather.app`（22 MB，9-29 旧 bundle）与 4 个非活动 `.build` scratch（≈1.63 GB）；保留并行构建正在写入的 `.build/scratch`、`.build/shared-cache` 与两包 `.build` 增量缓存。
 - **门禁**：docs --strict、test-catalog --strict、cleanup-ratchet 全 OK；**未跑全量测试**（无源码改动）。详见 [final-cleanup-docs.md](final-cleanup-docs.md)。
 
+## WP7 测试/构建基础设施（2026-10-22）
+
+- **共享夹具 product**：gather-core `Package.swift` 新增 `.library(name: "GatherTestSupport")`（target 仍在 `Tests/GatherTestSupport`）；gather-app 的 `GatherAppTests` 依赖该 product。core 侧新增 `Tests/GatherTestSupport/Support/LockedBox.swift`（34 行，public；放 Support/ 子目录以满足 `check-duplicate-symbols` 的路径约定）。
+- **删除 app 重复夹具**：`Tests/GatherAppTests/Support/{AsyncGate,LockedBox,TestDatabase}.swift` = **89 行 / 3 文件**（39+31+19）；新增 `Support/TestSupportReexports.swift`（20 行）用 typealias + 转发保持调用点零改动。建库统一入口 `makeTestDB()`；`makeGatherTestDB` 是临时转发（22 处调用点，等并行 Shell 迁移收尾后改名为 `makeTestDB` 并删除）。
+- **manifest 去外部进程**：`gather-app/Package.swift` 删除 `Process`/Pipe/xcrun 的 SDK 探测（净 -1 行，+19/-20）；固定默认 `defaultSDKVersion = "26.0"`（Liquid Glass 最低 SDK），`GATHER_SDK_VERSION` trim 后非空则覆盖。实测 `swift package dump-package`：unset/空白 → 26.0、`27.0` → 27.0、`" 15.2 "` → 15.2。
+- **链接产物实测**：`xcrun vtool -show-build` 的 `LC_BUILD_VERSION` = minos 14.0、unset → sdk **26.0**；fresh scratch + `GATHER_SDK_VERSION=27.0` → sdk **27.0**。发现 SwiftPM manifest 缓存不把该环境变量计入 key（同 scratch 下 26.0→27.0 不重链）；build.sh 的 app 构建与 CI app 测试加 `--manifest-cache none` 后同 scratch 也正确重链为 27.0。
+- **build.sh / CI**：build.sh 构建前探测 `xcrun --show-sdk-version` 并 export（显式 `GATHER_SDK_VERSION` 优先，探测失败告警回落 manifest 默认）。CI app job 新增 “Resolve SDK version”（写 `$GITHUB_ENV`）；app 测试保留 `--no-parallel`。CI gather-core job 新增 `swift run ... gather-schema verify`（本机 = `tables=43 user_version=1 foreign_key_violations=0`）。
+- **验证**：core 本刀基线 **1128/159** exit 0（17:35，改动前）→ 并行 WP1 瘦身 Protocol 后 **1060/159** exit 0（-68 例来自并行工作区，套件数不变，非本刀）；app **616/68** 串行 exit 0（16.78s），默认并行 **3/3** exit 0（7.305 / 7.240 / 7.261s）。8 门禁全过：ratchet **53/233/127/0/0**、test-catalog 165 文件、duplicate 0 越界、docs 142 链接 0 缺失、select-star 6/1、preview **14**。
+- **未做/限制**：`build.sh` 未完整执行（DSH 沙箱拒绝 SwiftPM 的 sandbox-exec；只做 `bash -n` + 探测块单测，bundle 交 CI）。`docs/DEVELOPMENT.md` 不在本刀白名单（其目录树把 GatherTestSupport 写成 `Sources/`，实际在 `Tests/`，且无 SDK/env 说明），未改。app 测试 target 未补 core 的 CLT-only `-F/-rpath` 探测（既有差异，未扩大）。人工 GUI 未执行。
+
+## WP1 Protocol 瘦身（2026-10-22，HEAD 30f51f0；工作区未提交）
+
+- **范围**：仅 `GatherProtocol/**`、`Tests/GatherCoreTests/Protocol/**`、新增 `scripts/check-protocol-surface.sh` + `docs/protocol-surface-baseline.json`、台账；未改 app 源码/Package/其他 target/其他 docs。
+- **盘点**：[`docs/reviews/wp1-protocol-inventory.md`](reviews/wp1-protocol-inventory.md)（347 类型逐条 file:line/引用证据；89 零引用；6 信封；96 删除清单）。
+- **删除**：96 个顶层 public 类型，Protocol `git diff --numstat` **+11 / −1,284（净 −1,273）**；其中类型块 1,184 行，其余为声明前注释/空行清理。构成：89 零引用（942 行，88 struct + 1 enum `Response`）+ 5 个其余 Router 信封 + 2 个二级死亡（`BindingData` / `MetadataMutationTarget`）。信封整体 158 行（Core.swift:158-315）。
+- **指标**：类型 **347→251**（≤260）、public 声明 **1,752→1,320**、零引用 **89→0**、Router 信封 **6→0**；Protocol 行 7,598→6,325。
+- **保留**：13 个旧 `*Params`（均被 API 签名直接引用）；`APIContractIndex.swift` 记录“新增输入只进 API/Inputs，不复活 *Params/Response*”。
+- **契约测试**：17 文件；删 **68** 例（纯 DTO 构造/JSON 往返），改写 **3** 例（`CullingUpdatePatch` / `AlbumUpdateParams` / `AnalysisJobType` 保留断言）；core **1,128/159 → 1,060/159** exit 0；app **616/68** exit 0（未改）。
+- **门禁**：新增 `check-protocol-surface.sh --strict`（251/1,320/0/0，exit 0）；既有 8 门禁 strict 全过——layering 17、ratchet 53/233/127/0/0、test-catalog 165 文件/3 skip、duplicate 535 文件、docs 20 路径/143 链接、no-legacy 7 enforced+6 tracked、select-star 6/1、preview 14 块/5 文件/2,031 行。
+- **schema**：`swift run --package-path ... --disable-sandbox --cache-path .build/shared-cache --scratch-path .build/scratch gather-schema verify` = 43 表 / user_version 1 / FK 违规 0（bare 命令在 DSH manifest 阶段被 sandbox 拒绝，记录为环境限制）。
+- **残余**：13 个旧 Params 是 D-007 的合法复用面；无 GUI 验收；不 commit；并行工作区的其他改动未纳入本刀。
+
 ## 规则
 
 - 不做 git commit / checkout / restore；不删除未确认文件。

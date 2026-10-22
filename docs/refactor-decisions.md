@@ -1450,3 +1450,24 @@
 - **指标（实测，17:00）**：en **1,322** / zh 9（`^"` 计键；1,313 为 6c 时点值）、测试文件 **166**、`#Preview` 14、ratchet **53/235/127/0/0**（baseline 240）、**535** Swift 文件 / **138,829** 行（17:00 采样；并行工作区仍在变；6c 时点 535 / 133,740）。
 - **构建产物**：删除 `release/Gather.app`（22 MB，2026-09-29 旧 bundle）与 `.build/{scratch-app,scratch-core-p14,scratch-p14,perf-probe}`（≈1.63 GB，均非活动）；保留并行构建正在写入的 `.build/scratch`、`.build/shared-cache` 与两包 `.build` 增量缓存。
 - **残余**：归档 33 条旧源码路径链接；`refactor-decisions.md` 存在重复的 D-162 / D-163 标题（历史编号冲突，未重排）；测试例数未复跑（沿用 1,128/159 + 616/68 最近记录）。`GatherUI/Support/LoadPhase.swift:9/18` 注释经 16:48 复核已无 `ViewState`（并行工作区已修，非本轮）。
+
+## D-167 WP7 测试/构建基础设施：共享夹具 product 与 manifest 去外部进程（2026-10-22）
+
+- **背景**：architecture-remediation-plan WP7 + architecture-macro-app §5.1/§5.3。GatherTestSupport 只是 core 内的普通 target，app 测试复制了 AsyncGate/LockedBox/TestDatabase；app manifest 在求值期启动 xcrun 取 SDK，输出随机器漂移且失败时静默回退。
+- **决定 1（共享夹具）**：GatherTestSupport 暴露为 core 的 library product（target 路径 `Tests/GatherTestSupport` 不变；app 只把它链接进 GatherAppTests，不进运行时）。app 删除 3 文件 / **89 行**（AsyncGate 39 / LockedBox 31 / TestDatabase 19），新增 `Support/TestSupportReexports.swift`（20 行）用 typealias + `makeGatherTestDB` 转发保持调用点零改动；建库唯一实现是 `makeTestDB()`。**makeGatherTestDB 是临时转发**（22 处调用点），等并行 Shell 迁移收尾后统一改名并删除。LockedBox 落在 `Tests/GatherTestSupport/Support/` 是为满足 duplicate-symbols 的路径约定。
+- **决定 2（SDK 显式化）**：manifest 不再执行 Process/Pipe/xcrun；值 = `GATHER_SDK_VERSION`（trim 后非空）或固定默认 **26.0**（Liquid Glass 起效的最低 SDK，不再退回部署目标 14.0）。`build.sh` 探测 `xcrun --show-sdk-version` 后 export（显式值优先），CI 用 “Resolve SDK version” 写 `$GITHUB_ENV`。SwiftPM 的 manifest 缓存不把该 env 计入 key：同 scratch 下默认 26.0 → env 27.0 不会重链；因此 build.sh 的 app 构建与 CI app 测试加 `--manifest-cache none`（实测加后同 scratch 也得到 sdk 27.0）。
+- **决定 3（CI）**：gather-core job 新增 `swift run ... gather-schema verify`；app 测试保留 `--no-parallel`，并加 `--manifest-cache none`。
+- **证据**：core **1128/159**（17:35 改动前，exit 0）→ 并行 WP1 瘦身 Protocol 后 **1060/159**（exit 0，-68 例、套件数不变，非本刀）；app **616/68** 串行 exit 0（16.78s）、默认并行 **3/3** exit 0（7.305/7.240/7.261s）；`vtool` LC_BUILD_VERSION：minos 14.0，unset → sdk 26.0，env 27.0（fresh/none）→ sdk 27.0；schema `tables=43 user_version=1 foreign_key_violations=0`；8 门禁全过（ratchet **53/233/127/0/0**、test-catalog 165 文件、duplicate 0 越界、docs 142 链接 0 缺失、preview 14）。
+- **未做/限制**：`build.sh` 未完整执行（DSH 沙箱拒绝 SwiftPM sandbox-exec，只做 `bash -n` + 探测块单测，bundle 交 CI）；`docs/DEVELOPMENT.md` 不在白名单（其目录树仍写 `Sources/GatherTestSupport`，实际 `Tests/`，且缺 SDK/env 说明）；app 测试 target 的 CLT-only `-F/-rpath` 探测未补（既有差异）；人工 GUI 未执行。
+
+## D-168 WP1 Protocol 瘦身：零引用口径与 Router 信封删除（2026-10-22）
+
+- **背景**：architecture-remediation-plan WP1 / architecture-macro-core §5.3。实测 347 个顶层 public 类型 / 1,752 声明 / 89 零引用 / 6 个 Router 信封；目标 ≤260 类型、零引用 0。
+- **决定 1（零引用口径）**：零引用 = 生产 Sources（Persistence/Analysis/Domain + gather-app/Sources）0 引用 **且** Protocol 内 0 引用（注释/字符串剥离、排除声明本身）。Tests 单列、不作为存活依据（延续 D-001：Router 时代 JSON 契约可删）；只被 ContractTests 构造的 DTO 仍算死面。
+- **决定 2（信封）**：删除 6 个 Router JSON 信封 `ResponseID` / `ErrorDetail` / `ResponseErrorBody` / `ResponseOk` / `ResponseErr` / `Response<T>`，同步删除 `SessionContractTests` 的 6 个 JSON 往返用例。`Response` 已含在 89 内；其余 5 个因彼此引用不在 89 初始集合，按信封整体删除。
+- **决定 3（二级死亡）**：删除失去唯一消费者的 `BindingData`（仅 `FaceCluster.binding`）与 `MetadataMutationTarget`（仅 `MetadataMutationRequest.target`）；删除上游后复算零引用为 0。
+- **决定 4（保留面）**：保留 13 个被 API 签名直接引用的旧 `*Params`（SessionUpdate/PersonCreate/PersonUpdate/PersonSearchPhotos/AlbumCreate/AlbumUpdate/NavigationSplit/NavigationMerge/NavigationAnalyze/JobCreate/QualityGet/TemplateCreate/TemplateUpdate）；新增输入只进 `API/Inputs/`，不得复活旧 `*Params` 或 `Response*`（D-007 收口）。
+- **决定 5（契约测试）**：纯 DTO 构造/JSON key 用例随类型删除（68 例）；混合用例改写保留存活类型断言（`CullingUpdatePatch` / `AlbumUpdateParams` / `AnalysisJobType`，3 例）；存活 DTO 的 Codable 往返测试保留。
+- **结果**：类型 **347→251**、声明 **1,752→1,320**、零引用 **89→0**、信封 **6→0**；Protocol 行 7,598→6,325（`+11/−1,284`，净 −1,273；96 类型块 1,184 行 + 注释/空行清理）。core **1,128/159→1,060/159** exit 0；app **616/68** exit 0；新增 `check-protocol-surface.sh --strict` + `docs/protocol-surface-baseline.json`（251/1,320/0/0）。
+- **证据**：`docs/reviews/wp1-protocol-inventory.md`（347 行逐条 file:line/prod/proto/test 计数；89 零引用测试证据；6 信封行范围；96 删除清单）；8 门禁 strict 全过；schema verify 43 表/user_version 1/FK 0。
+- **残余/限制**：13 个旧 Params 仍属历史形状（D-007 允许）；本机 bare `swift run ... gather-schema verify` 在 manifest 阶段被 DSH sandbox 拒绝，改用 `--disable-sandbox` + 共享 cache/scratch 实测通过；无 GUI 验收；不 commit。
