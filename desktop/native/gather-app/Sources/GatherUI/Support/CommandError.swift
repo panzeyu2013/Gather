@@ -5,7 +5,7 @@
 // 码值/参数/诊断。任何"发生未知错误"之类的文案都由 L10n 在渲染期决定；这样
 // 错误对象与界面语言解耦，切语言不会把旧语言字符串留在 VM 里。
 //
-// code 的三种形态（与 GatherLocalization.errorText 的双形态解析同构，§2.1）：
+// code 的三种形态（与 L10n.resolvedTemplate 的双形态解析同构，§2.1；B03）：
 //   "EXPORT_DIR_INVALID"     普通错误码
 //   "CODE::p1::p2"           路由参数形态（参数内联在 code 里）
 //   "CODE: 散文"              Core description 形态（单冒号 + 参数）

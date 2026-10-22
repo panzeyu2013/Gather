@@ -180,7 +180,7 @@ package struct GalleryView: View {
             // photo.list_page 行不含评分/色标字段，重取后随行更新的是离线态、
             // 变体徽标、人脸计数与行集合本身（照片被移除/恢复）。
             .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-                guard let change = notification.object as? GatherDomainChange,
+                guard let change = notification.object as? GatherApplicationChange,
                       change.matches(sessionId: viewModel.sessionId),
                       [.culling, .library, .metadata, .faceKeywording].contains(change.domain) else { return }
                 scheduleRefreshFromEvent()

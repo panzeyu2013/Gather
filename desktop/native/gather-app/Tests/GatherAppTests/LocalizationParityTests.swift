@@ -4,7 +4,7 @@
 // 四组断言：
 // 1. en 表无重复键（.strings 后写覆盖先写，译文不可预期）；
 // 2. 代码在用的每个 key 都在 en 表里（en 界面不回落中文）；
-// 3. error / job / progress / 取消等本地化关键路径在 zh、en 下与旧出口逐条一致；
+// 3. error / job / progress / 取消等本地化关键路径在 zh、en 下与码表/键表一致（B03 收口）；
 // 4. 反方向 parity（Cut 6 / 6a-1）：en 表里不得残留无代码引用的孤儿键（仅 allowlist）。
 //
 // key 集合来自三处：源码字面量（按 l/l10n/LocalizedText/CommandError.localized 的
@@ -399,50 +399,61 @@ struct LocalizationParityTests {
         #expect(table["有写入失败项，请先重试"] == "Some writes failed; retry them first")
     }
 
-    @Test("关键路径 zh/en 与旧出口逐条一致（error/job/progress/取消/延迟文案）")
-    func renderPathsMatchLegacyInBothLanguages() {
-        AppLanguageLock.withCopy("zh-CN") { assertParity(with: L10n(language: .zhCN)) }
-        AppLanguageLock.withCopy("en") { assertParity(with: L10n(language: .en)) }
+    @Test("关键路径 zh/en 与码表/键表一致（error/job/progress/取消/延迟文案）")
+    func renderPathsFollowTablesInBothLanguages() {
+        // B03：旧 GatherLocalization 出口已删，语言由 L10n 显式传入（不读进程级 appLanguage）。
+        assertParity(with: L10n(language: .zhCN))
+        assertParity(with: L10n(language: .en))
     }
 
     // MARK: - 一致性断言
 
     private func assertParity(with l10n: L10n) {
-        // 1. 错误码表：177 个码逐条与旧出口一致（含参数形）。
-        for code in GatherLocalization.errorMessages.keys {
-            #expect(l10n.errorText(code) == GatherLocalization.errorText(code), "\(code) 在 \(l10n.language) 下不一致")
+        // 1. 错误码表：全部码的模板在当前语言都能解析（表仍是唯一码源）。
+        //    期望值 = 模板本地化后按 `{{name}}` 出现顺序插空（与 L10n.resolvedTemplate 同义）。
+        for (code, template) in GatherLocalization.errorMessages {
+            let expected = L10n.interpolate(l10n(template), params: [])
+            #expect(l10n.errorText(code) == expected, "\(code) 在 \(l10n.language) 下不一致")
         }
-        for raw in [
-            "CULLING_REVISION_CONFLICT::3::5",
-            "CULLING_REVISION_CONFLICT: 7",
-            "XMP_CONFIRM_OTHER_SESSION_PENDING: s1",
-            "FILTER_FIELD_UNKNOWN::rating",
-            "NOT_A_REAL_CODE",
-        ] {
-            #expect(l10n.errorText(raw) == GatherLocalization.errorText(raw), "\(raw) 在 \(l10n.language) 下不一致")
+        // 双形态解析：CODE::p1::p2 与 CODE: 散文，参数顺序不得丢。
+        let parameterized: [(raw: String, code: String, params: [String])] = [
+            ("CULLING_REVISION_CONFLICT::3::5", "CULLING_REVISION_CONFLICT", ["3", "5"]),
+            ("CULLING_REVISION_CONFLICT: 7", "CULLING_REVISION_CONFLICT", ["7"]),
+            ("XMP_CONFIRM_OTHER_SESSION_PENDING: s1", "XMP_CONFIRM_OTHER_SESSION_PENDING", ["s1"]),
+            ("FILTER_FIELD_UNKNOWN::rating", "FILTER_FIELD_UNKNOWN", ["rating"]),
+            ("NOT_A_REAL_CODE", "", []),
+        ]
+        for item in parameterized {
+            let template = GatherLocalization.errorMessages[item.code] ?? ""
+            #expect(!template.isEmpty || item.code.isEmpty, "码表缺 \(item.code)")
+            let expected = item.code.isEmpty
+                ? l10n(L10n.unknownErrorKey)
+                : L10n.interpolate(l10n(template), params: item.params)
+            #expect(l10n.errorText(item.raw) == expected, "\(item.raw) 在 \(l10n.language) 下不一致")
         }
 
-        // 2. 任务状态 / 类型 / 进度相位。
-        for status in GatherLocalization.jobStatusKeys.keys {
-            #expect(l10n.jobStatusText(status) == GatherLocalization.jobStatusText(status))
+        // 2. 任务状态 / 类型 / 进度相位：显示文案 = 码表 key 的本地化结果。
+        for (status, key) in GatherLocalization.jobStatusKeys {
+            #expect(l10n.jobStatusText(status) == l10n(key))
         }
-        for type in GatherLocalization.jobTypeKeys.keys {
-            #expect(l10n.jobTypeText(type) == GatherLocalization.jobTypeText(type))
+        for (type, key) in GatherLocalization.jobTypeKeys {
+            #expect(l10n.jobTypeText(type) == l10n(key))
         }
-        for phase in GatherLocalization.progressPhaseKeys.keys {
-            #expect(l10n.progressPhaseText(phase) == GatherLocalization.progressPhaseText(phase))
+        for (phase, key) in GatherLocalization.progressPhaseKeys {
+            #expect(l10n.progressPhaseText(phase) == l10n(key))
         }
-        #expect(l10n.progressPhaseText(nil) == GatherLocalization.progressPhaseText(nil))
-        #expect(l10n.progressPhaseText("no.such.phase") == GatherLocalization.progressPhaseText("no.such.phase"))
+        #expect(l10n.progressPhaseText(nil) == l10n(L10n.unknownPhaseKey))
+        #expect(l10n.progressPhaseText("no.such.phase") == l10n(L10n.unknownPhaseKey))
 
-        // 3. 任务错误消息（码 / 参数化码 / 散文 / 空）。
+        // 3. 任务错误消息：码值 / 参数化码 / 散文 / 空 —— 与 errorText 同一解析路径。
         for message in ["XMP_WRITE_FAILED", "CULLING_REVISION_CONFLICT::3::5", "disk offline", ""] {
-            #expect(l10n.jobErrorMessage(message) == GatherLocalization.jobErrorMessage(message))
+            #expect(l10n.jobErrorMessage(message) == l10n.errorText(message))
         }
-        #expect(l10n.jobErrorMessage(nil) == GatherLocalization.jobErrorMessage(nil))
+        #expect(l10n.jobErrorMessage(nil) == l10n(L10n.unknownErrorKey))
 
         // 4. 取消文案（4b-1 收敛到 LocalizedText.cancel）+ 延迟文案渲染。
-        #expect(LocalizedText.cancel("导出").resolved(with: l10n) == GatherLocalization.cancellationNotice("导出"))
+        #expect(LocalizedText.cancel("导出").resolved(with: l10n)
+            == l10n.format("已取消“%@”，未执行任何更改", "导出"))
         #expect(LocalizedText("已保存 %@", params: ["缩略图尺寸"]).resolved(with: l10n)
             == l10n.format("已保存 %@", "缩略图尺寸"))
         #expect(LocalizedText("已写入 %lld 项", params: ["3"]).resolved(with: l10n)

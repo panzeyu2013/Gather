@@ -1425,8 +1425,8 @@ struct CullingDeliverySyncTests {
     func cleanupUsesCoordinator() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
-        _ = try seedWrittenDelivery(harness, photoId: "p1", backupPath: "/backup/p1.xmp")
+        harness.deliveryFiles.setContents("/shoot/p1.xmp.gather-backup-test", "original")
+        _ = try seedWrittenDelivery(harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test")
         try ackReload(harness.db)
         try await harness.service.confirmSync(sessionId: "session")
 
@@ -1448,9 +1448,9 @@ struct CullingDeliverySyncTests {
     func cleanupDetectsExternalEdit() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
+        harness.deliveryFiles.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         _ = try seedWrittenDelivery(
-            harness, photoId: "p1", backupPath: "/backup/p1.xmp",
+            harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test",
             baseFingerprint: "fp-baseline"
         )
         try ackReload(harness.db)
@@ -1473,9 +1473,9 @@ struct CullingDeliverySyncTests {
     func cleanupFailureIsRetryable() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
+        harness.deliveryFiles.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         harness.deliveryFiles.setRestoreFailure(FakeDeliveryFileError.restoreFailed)
-        _ = try seedWrittenDelivery(harness, photoId: "p1", backupPath: "/backup/p1.xmp")
+        _ = try seedWrittenDelivery(harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test")
         try ackReload(harness.db)
         try await harness.service.confirmSync(sessionId: "session")
 
@@ -1528,7 +1528,7 @@ struct CullingDeliverySyncTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let photo = directory.appendingPathComponent("IMG_1.jpg").path
         let sidecar = TSPath.xmpSidecarPath(photo)
-        let backup = directory.appendingPathComponent("IMG_1.xmp.backup").path
+        let backup = directory.appendingPathComponent("IMG_1.xmp.gather-backup-test").path
         try "edited".write(toFile: sidecar, atomically: true, encoding: .utf8)
         try "original".write(toFile: backup, atomically: true, encoding: .utf8)
 
@@ -2208,7 +2208,7 @@ struct CullingDeliveryCut2Tests {
         ]
         // S5c-2b-3b-2a：执行器已把备份/指纹/基线直接写进 deliveries；镜像只回读它。
         _ = try seedWrittenDelivery(
-            harness, photoId: "p1", backupPath: "/backup/p1.xmp",
+            harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test",
             baseFingerprint: "fp-written",
             baseValues: .object(["rating": .number(3)])
         )
@@ -2223,7 +2223,7 @@ struct CullingDeliveryCut2Tests {
         // 镜像对新输入重开交付（revision + 1）后再落 written。
         #expect(row.revision == 2)
         #expect(row.baseFingerprint == "fp-written")
-        #expect(row.backupPath == "/backup/p1.xmp")
+        #expect(row.backupPath == "/shoot/p1.xmp.gather-backup-test")
         #expect(row.photoPath == "/shoot/p1.jpg")
         #expect(row.baseValues.objectValue?["rating"]?.numberValue == 3)
         let items = try harness.deliveryRepo.listItems(sessionId: "session", module: .culling)
@@ -2371,10 +2371,10 @@ struct CullingDeliveryCut2Tests {
     func flushReplaysIntents() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
+        harness.deliveryFiles.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         harness.deliveryFiles.setContents("/shoot/p1.xmp", "gather-written")
         let row = try seedSyncedDelivery(
-            harness, photoId: "p1", backupPath: "/backup/p1.xmp"
+            harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test"
         )
         _ = try harness.deliveryIntents.prepare(
             kind: .cleanup,
@@ -2395,10 +2395,10 @@ struct CullingDeliveryCut2Tests {
     func retrySyncReplaysIntents() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
+        harness.deliveryFiles.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         harness.deliveryFiles.setContents("/shoot/p1.xmp", "gather-written")
         let row = try seedSyncedDelivery(
-            harness, photoId: "p1", backupPath: "/backup/p1.xmp"
+            harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test"
         )
         _ = try harness.deliveryIntents.prepare(
             kind: .cleanup,
@@ -2416,9 +2416,9 @@ struct CullingDeliveryCut2Tests {
     func finalizeDropsWithoutRestore() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
+        harness.deliveryFiles.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         harness.deliveryFiles.setContents("/shoot/p1.xmp", "gather-written")
-        _ = try seedSyncedDelivery(harness, photoId: "p1", backupPath: "/backup/p1.xmp")
+        _ = try seedSyncedDelivery(harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test")
 
         let summary = try await harness.service.finalizeSync(
             sessionId: "session", confirmed: true
@@ -2427,7 +2427,7 @@ struct CullingDeliveryCut2Tests {
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp") == nil)
         #expect(try harness.deliveryRepo.listItems(sessionId: "session").isEmpty)
         #expect(harness.deliveryFiles.contents("/shoot/p1.xmp") == "gather-written")
-        #expect(harness.deliveryFiles.contents("/backup/p1.xmp") == nil)
+        #expect(harness.deliveryFiles.contents("/shoot/p1.xmp.gather-backup-test") == nil)
         #expect(harness.deliveryFiles.restoreTargets.isEmpty, "finalize 不得 restore")
         #expect(summary.items.isEmpty)
         #expect(summary.synced == 0)
@@ -2438,7 +2438,7 @@ struct CullingDeliveryCut2Tests {
             sessionId: "session", confirmed: true
         )
         #expect(repeated.items.isEmpty)
-        #expect(harness.deliveryFiles.removedPaths == ["/backup/p1.xmp"])
+        #expect(harness.deliveryFiles.removedPaths == ["/shoot/p1.xmp.gather-backup-test"])
     }
 
     @Test("finalize：只删 synced，conflict / written 原样保留")
@@ -2471,9 +2471,9 @@ struct CullingDeliveryCut2Tests {
     func finalizeFailureIsRetryable() async throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1")
-        harness.deliveryFiles.setContents("/backup/p1.xmp", "original")
+        harness.deliveryFiles.setContents("/shoot/p1.xmp.gather-backup-test", "original")
         harness.deliveryFiles.setContents("/shoot/p1.xmp", "gather-written")
-        _ = try seedSyncedDelivery(harness, photoId: "p1", backupPath: "/backup/p1.xmp")
+        _ = try seedSyncedDelivery(harness, photoId: "p1", backupPath: "/shoot/p1.xmp.gather-backup-test")
         try harness.db.exec("""
             CREATE TRIGGER fail_finalize_delivery_delete
             BEFORE DELETE ON deliveries
@@ -2489,7 +2489,7 @@ struct CullingDeliveryCut2Tests {
         #expect(failed.errors.contains { $0.hasPrefix("XMP_FINALIZE_DB_FAILED") })
         // P1-1：DB 失败时备份绝不能先被删掉（否则 backup_path 悬空）。
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp")?.status == DeliveryStatus.synced.rawValue)
-        #expect(harness.deliveryFiles.contents("/backup/p1.xmp") == "original")
+        #expect(harness.deliveryFiles.contents("/shoot/p1.xmp.gather-backup-test") == "original")
         #expect(harness.deliveryFiles.removedPaths.isEmpty)
         #expect(try harness.deliveryIntents.pending().fileDone.count == 1)
 
@@ -2497,7 +2497,7 @@ struct CullingDeliveryCut2Tests {
         let replay = try await harness.deliveryCoordinator.replay()
         #expect(replay.appliedCount == 1)
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp") == nil)
-        #expect(harness.deliveryFiles.contents("/backup/p1.xmp") == nil)
+        #expect(harness.deliveryFiles.contents("/shoot/p1.xmp.gather-backup-test") == nil)
         #expect(harness.deliveryFiles.contents("/shoot/p1.xmp") == "gather-written")
         #expect(harness.deliveryFiles.restoreTargets.isEmpty)
         #expect(try harness.deliveryIntents.pending().isEmpty)

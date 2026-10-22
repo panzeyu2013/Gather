@@ -107,7 +107,7 @@ extension CullingView {
         // 跨页领域变更（挑片/元数据/图库）：可见时按域补刷，隐藏时只登记，
         // 回可见由 onAppear 统一补一次；自身 origin 在 VM 内跳过。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherDomainChange else { return }
+            guard let change = notification.object as? GatherApplicationChange else { return }
             viewModel.handleDomainChange(change)
         }
         .onReceive(NotificationCenter.default.publisher(for: .gatherMenuUndo)) { _ in

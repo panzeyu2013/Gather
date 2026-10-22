@@ -1,6 +1,6 @@
 // UI 对齐修复轮（§十一 11.11）：全局设施的单元测试。
-// 覆盖 GatherLocalization 回退语义、GatherEventCenter 终态判定与
-// GatherToast 自动消失/手动关闭。
+// 覆盖 L10n 关键路径（B03：7 个旧 GatherLocalization 出口已删）、GatherEventCenter
+// 终态判定与 GatherToast 自动消失/手动关闭。
 import Foundation
 import Testing
 import GatherProtocol
@@ -10,13 +10,10 @@ import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
 
-@Suite("GatherLocalization", .serialized)
-struct GatherLocalizationTests {
-    /// 中文断言前钉死语言：本机系统语言可能是 en，文案层已随 appLanguage 变化。
-    /// 切语言必须在 AppLanguageLock 内：否则并行套件会读到临时语言（既有 flake）。
-    private func withChineseCopy(_ body: () -> Void) {
-        AppLanguageLock.withCopy("zh-CN", body)
-    }
+@Suite("L10n 关键路径（B03 收口）", .serialized)
+struct L10nKeyPathTests {
+    private let zh = L10n(language: .zhCN)
+    private let en = L10n(language: .en)
 
     // 原 2 条用例（已知错误码 / 未知码回退）：同一函数仅输入不同 → 参数化。
     // exact=false 对应原 `.contains(...)` 断言，语义逐条保留。
@@ -27,78 +24,70 @@ struct GatherLocalizationTests {
         ("NOT_A_REAL_CODE", "发生未知错误，请稍后重试", true),
     ])
     private func errorTextMatrix(code: String, expected: String, exact: Bool) {
-        withChineseCopy {
-            let text = GatherLocalization.errorText(code)
-            if exact {
-                #expect(text == expected)
-            } else {
-                #expect(text.contains(expected))
-            }
+        let text = zh.errorText(code)
+        if exact {
+            #expect(text == expected)
+        } else {
+            #expect(text.contains(expected))
         }
     }
 
     @Test("参数化错误码按模板插值（CODE::p1::p2）")
     func parameterizedCodesInterpolate() {
-        withChineseCopy {
-            #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN::rating") == "未知的筛选字段：rating")
-            #expect(GatherLocalization.errorText("CULLING_REVISION_CONFLICT::3::5") == "挑片版本冲突：期望 3，当前 5")
-            #expect(GatherLocalization.errorText("FILTER_FIELD_UNKNOWN") == "未知的筛选字段：")
-            #expect(GatherLocalization.message(for: RouterCommandError(message: "FILTER_FIELD_UNKNOWN::label")) == "未知的筛选字段：label")
-        }
+        #expect(zh.errorText("FILTER_FIELD_UNKNOWN::rating") == "未知的筛选字段：rating")
+        #expect(zh.errorText("CULLING_REVISION_CONFLICT::3::5") == "挑片版本冲突：期望 3，当前 5")
+        #expect(zh.errorText("FILTER_FIELD_UNKNOWN") == "未知的筛选字段：")
+        // B03：旧 GatherLocalization.message(for:) 删除后，RouterCommandError 走生产漏斗。
+        #expect(APIErrorPresentation.message(
+            for: RouterCommandError(message: "FILTER_FIELD_UNKNOWN::label"), with: zh)
+            == "未知的筛选字段：label")
     }
 
     @Test("jobErrorMessage 仅翻译错误码，诊断原文回退")
     func jobErrorMessageSemantics() {
-        withChineseCopy {
-            #expect(GatherLocalization.jobErrorMessage("SIM_NO_PHOTOS") == "当前工作区没有照片")
-            #expect(GatherLocalization.jobErrorMessage("worker_error") == "发生未知错误，请稍后重试")
-            #expect(GatherLocalization.jobErrorMessage(nil) == "发生未知错误，请稍后重试")
-        }
+        #expect(zh.jobErrorMessage("SIM_NO_PHOTOS") == "当前工作区没有照片")
+        #expect(zh.jobErrorMessage("worker_error") == "发生未知错误，请稍后重试")
+        #expect(zh.jobErrorMessage(nil) == "发生未知错误，请稍后重试")
     }
 
     @Test("message(for:) 翻译 RouterCommandError 中的错误码")
     func messageForTranslatesCode() {
-        withChineseCopy {
-            #expect(GatherLocalization.message(for: RouterCommandError(message: "PERSON_NOT_FOUND")) == "人物不存在")
-            #expect(GatherLocalization.message(for: RouterCommandError(message: "诊断信息")) == "诊断信息")
-        }
+        #expect(APIErrorPresentation.message(
+            for: RouterCommandError(message: "PERSON_NOT_FOUND"), with: zh) == "人物不存在")
+        // B03：旧出口对散文原样返回；生产漏斗（E-16）把非码值统一收敛为通用文案。
+        #expect(APIErrorPresentation.message(
+            for: RouterCommandError(message: "诊断信息"), with: zh) == L10n.unknownErrorKey)
     }
 
     @Test("cancellationNotice：四处取消文案逐字一致，且与 Culling 变体不同")
     func cancellationNoticeCopy() {
-        withChineseCopy {
-            // 合并前 Duplicates/Settings/FaceKeywording/Similarity 的原文案。
-            #expect(GatherLocalization.cancellationNotice("写入 XMP") == "已取消“写入 XMP”，未执行任何更改")
-            #expect(GatherLocalization.cancellationNotice("") == "已取消“”，未执行任何更改")
-            // Culling 的 noteCancelledAction 是另一句，不得被并入。
-            #expect(GatherLocalization.cancellationNotice("写入 XMP")
-                != String(format: GatherLocalization.l("已取消：%@"), "写入 XMP"))
-        }
+        // 合并前 Duplicates/Settings/FaceKeywording/Similarity 的原文案（LocalizedText.cancel）。
+        #expect(LocalizedText.cancel("写入 XMP").resolved(with: zh) == "已取消“写入 XMP”，未执行任何更改")
+        #expect(LocalizedText.cancel("").resolved(with: zh) == "已取消“”，未执行任何更改")
+        // Culling 的 noteCancelledAction 是另一句，不得被并入。
+        #expect(LocalizedText.cancel("写入 XMP").resolved(with: zh)
+            != zh.format("已取消：%@", "写入 XMP"))
     }
 
     @Test("任务状态/类型/进度相位映射（zh）")
     func jobLabels() {
-        withChineseCopy {
-            #expect(GatherLocalization.jobStatusText("running") == "运行中")
-            #expect(GatherLocalization.jobStatusText("unknown") == "unknown")
-            #expect(GatherLocalization.jobTypeText("face.analyze") == "人脸分析")
-            #expect(GatherLocalization.progressPhaseText("similarity.cluster") == "正在聚类相似照片…")
-            #expect(GatherLocalization.progressPhaseText(nil) == "正在处理…")
-            #expect(GatherLocalization.progressPhaseText("no.such.phase") == "正在处理…")
-        }
+        #expect(zh.jobStatusText("running") == "运行中")
+        #expect(zh.jobStatusText("unknown") == "unknown")
+        #expect(zh.jobTypeText("face.analyze") == "人脸分析")
+        #expect(zh.progressPhaseText("similarity.cluster") == "正在聚类相似照片…")
+        #expect(zh.progressPhaseText(nil) == "正在处理…")
+        #expect(zh.progressPhaseText("no.such.phase") == "正在处理…")
     }
 
-    @Test("任务文案/通用回退跟随 appLanguage（en 表齐全，不再恒中文）")
+    @Test("任务文案/通用回退跟随语言（en 表齐全，不再恒中文）")
     func jobLabelsFollowLanguage() {
-        AppLanguageLock.withCopy("en") {
-        #expect(GatherLocalization.jobStatusText("running") == "Running")
-        #expect(GatherLocalization.jobStatusText("queued") == "Queued")
-        #expect(GatherLocalization.jobTypeText("face.analyze") == "Face Analysis")
-        #expect(GatherLocalization.progressPhaseText("similarity.cluster") == "Clustering similar photos…")
-        #expect(GatherLocalization.progressPhaseText(nil) == "Processing…")
-        #expect(GatherLocalization.jobErrorMessage(nil) == "Something went wrong. Please try again later.")
-        #expect(GatherLocalization.errorText("NOT_A_REAL_CODE") == "Something went wrong. Please try again later.")
-        }
+        #expect(en.jobStatusText("running") == "Running")
+        #expect(en.jobStatusText("queued") == "Queued")
+        #expect(en.jobTypeText("face.analyze") == "Face Analysis")
+        #expect(en.progressPhaseText("similarity.cluster") == "Clustering similar photos…")
+        #expect(en.progressPhaseText(nil) == "Processing…")
+        #expect(en.jobErrorMessage(nil) == "Something went wrong. Please try again later.")
+        #expect(en.errorText("NOT_A_REAL_CODE") == "Something went wrong. Please try again later.")
     }
 
     @Test("l() 查 Apple 本地化表：zh 回退 key、en 返回翻译、未知 key 回退")

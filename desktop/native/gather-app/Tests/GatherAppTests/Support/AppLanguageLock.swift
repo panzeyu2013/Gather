@@ -1,6 +1,6 @@
 // 测试进程内的「界面语言」互斥区。
 //
-// GatherLocalization.appLanguage 是进程级全局量（l()/errorText() 都读它），
+// GatherLocalization.appLanguage 仍是进程级全局量（l() 读它；L10n 按值解析，不读），
 // GatherLocalizationTests 会临时把它切成 zh-CN / en 再恢复。swift-testing 默认
 // 跨套件并行，于是其它套件在同一窗口内读到的是被临时切换的文案 →
 // 「断言中文文案却拿到英文」的间歇性失败（与本轮审查无关的既有 flake）。

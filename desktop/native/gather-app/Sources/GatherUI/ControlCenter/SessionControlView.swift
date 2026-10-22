@@ -185,7 +185,7 @@ public struct SessionControlView: View {
         // 写路径广播（XMP/同步队列、重复处置、人脸簇变化）：按会话命中后刷新
         // 控制中心的相应域，不再只靠轮询/任务终态。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherDomainChange,
+            guard let change = notification.object as? GatherApplicationChange,
                   change.matches(sessionId: viewModel.sessionId),
                   [.metadata, .duplicates, .faceKeywording].contains(change.domain) else { return }
             Task { await viewModel.load() }

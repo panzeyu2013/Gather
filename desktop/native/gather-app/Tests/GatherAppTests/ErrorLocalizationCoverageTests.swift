@@ -30,10 +30,10 @@ struct ErrorLocalizationCoverageTests {
     func everyErrorCodeHasLocalizedMessage() {
         // 文案表断言与切语言的套件互斥（appLanguage 是进程级全局量）。
         AppLanguageLock.withStableCopy {
-            let fallback = GatherLocalization.errorText("__NOT_A_REAL_CODE__")
+            let fallback = L10n(language: .zhCN).errorText("__NOT_A_REAL_CODE__")
             var missing: [String] = []
             for code in GatherErrorCode.allCases {
-                let text = GatherLocalization.errorText(code.rawValue)
+                let text = L10n(language: .zhCN).errorText(code.rawValue)
                 if text.isEmpty || text == fallback { missing.append(code.rawValue) }
             }
             #expect(missing.isEmpty, "以下错误码缺少文案，UI 会显示通用兜底：\(missing)")

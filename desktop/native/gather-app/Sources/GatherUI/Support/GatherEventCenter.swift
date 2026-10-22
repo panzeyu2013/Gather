@@ -53,7 +53,7 @@ public protocol JobProgressSource: AnyObject {
 }
 
 /// 领域变更事件载荷（sessionId 为 nil 表示跨会话的全局变更）。
-public struct GatherDomainChange: Sendable {
+public struct GatherApplicationChange: Sendable {
     public let domain: GatherChangeDomain
     public let sessionId: String?
     /// 发布者标识：监听方跳过自己发出的变更，避免自触发重查（如人物页
@@ -80,7 +80,7 @@ public final class GatherEventCenter {
     public static let jobProgress = Notification.Name("gather.events.job-progress")
     public static let jobTerminal = Notification.Name("gather.events.job-terminal")
     public static let c1SyncStatus = Notification.Name("gather.events.c1-sync-status")
-    /// 写路径领域变更（GatherDomainChange 载荷）：常驻页按域刷新。
+    /// 写路径领域变更（GatherApplicationChange 载荷）：常驻页按域刷新。
     public static let domainChanged = Notification.Name("gather.events.domain-changed")
 
     public private(set) var wired = false
@@ -132,7 +132,7 @@ public final class GatherEventCenter {
     ) {
         NotificationCenter.default.post(
             name: domainChanged,
-            object: GatherDomainChange(domain: domain, sessionId: sessionId, origin: origin)
+            object: GatherApplicationChange(domain: domain, sessionId: sessionId, origin: origin)
         )
     }
 

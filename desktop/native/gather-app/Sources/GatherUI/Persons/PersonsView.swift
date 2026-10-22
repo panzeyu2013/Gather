@@ -86,7 +86,7 @@ package struct PersonsView: View {
         }
         // 写路径广播（person.* 与 fkw 绑定/解绑 → 人物域）：按域刷新。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherDomainChange,
+            guard let change = notification.object as? GatherApplicationChange,
                   change.domain == .persons,
                   change.origin != PersonsViewModel.changeOrigin else { return }
             Task { await viewModel.load() }

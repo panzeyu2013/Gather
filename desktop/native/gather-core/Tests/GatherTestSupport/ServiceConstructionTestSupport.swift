@@ -1,16 +1,23 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Support/ServiceConstructionTestSupport.swift
-// WP3b-1 测试接线：Application 服务改为注入 Repo 端口后，测试仍按旧签名
+// desktop/native/gather-core/Tests/GatherTestSupport/ServiceConstructionTestSupport.swift
+// WP3b-1 测试接线（B04 合并）：Application 服务改为注入 Repo 端口后，测试仍按旧签名
 // （connection: DBConnection）构造。这里只做「DBConnection → 具体 Repo/事务端口」
 // 的显式装配，所有调用都落到生产 init，不改变服务行为，也不伪造依赖。
+//
+// 唯一实现：core（GatherCoreTests）与 app（GatherAppTests）共用本文件，经
+// GatherTestSupport product 链接；app 侧只剩 re-export 说明。跨模块调用要求这些
+// convenience init 为 public；签名、参数标签、默认值均与合并前逐字一致。
+// 依赖：本 target 因此声明 GatherDelivery / GatherAnalysis / GatherApplication
+// （见 Package.swift）；不使用 @testable —— release 构建没有 -enable-testing，
+// 且所引用的 service init / 参数类型全部是 public API。
 import Foundation
-import GatherPersistence
 import GatherProtocol
+import GatherPersistence
 import GatherDelivery
 import GatherAnalysis
-@testable import GatherApplication
+import GatherApplication
 
 extension SessionService {
-    convenience init(
+    public convenience init(
         sessionRepo: SessionRepo,
         photoRepo: PhotoRepo,
         faceRepo: FaceRepo,
@@ -38,13 +45,13 @@ extension SessionService {
 }
 
 extension TemplateService {
-    convenience init(connection: DBConnection, settings: SettingsService) {
+    public convenience init(connection: DBConnection, settings: SettingsService) {
         self.init(templates: TemplateRepo(connection: connection), settings: settings)
     }
 }
 
 extension WorkspaceStatusService {
-    convenience init(
+    public convenience init(
         connection: DBConnection,
         sessionRepo: SessionRepo,
         photoRepo: PhotoRepo,
@@ -61,7 +68,7 @@ extension WorkspaceStatusService {
 }
 
 extension MetadataService {
-    convenience init(
+    public convenience init(
         metadataCacheRepo: MetadataCacheRepo,
         xmp: any XMPProvider,
         connection: DBConnection,
@@ -88,7 +95,7 @@ extension MetadataService {
 }
 
 extension ExportService {
-    convenience init(photoRepo: PhotoRepo, sessionRepo: SessionRepo, connection: DBConnection) {
+    public convenience init(photoRepo: PhotoRepo, sessionRepo: SessionRepo, connection: DBConnection) {
         self.init(
             photoRepo: photoRepo,
             sessionRepo: sessionRepo,
@@ -98,7 +105,7 @@ extension ExportService {
 }
 
 extension QualityService {
-    convenience init(
+    public convenience init(
         photoRepo: PhotoRepo,
         connection: DBConnection,
         imageProvider: @escaping ImageMetricsProvider = QualityService.defaultImageProvider,
@@ -116,13 +123,13 @@ extension QualityService {
 }
 
 extension NavigationService {
-    convenience init(connection: DBConnection) {
+    public convenience init(connection: DBConnection) {
         self.init(navigationRepo: NavigationRepo(connection: connection))
     }
 }
 
 extension FilterEngine {
-    convenience init(connection: DBConnection) {
+    public convenience init(connection: DBConnection) {
         self.init(query: PhotoFilterQuery(connection: connection))
     }
 }
@@ -130,7 +137,7 @@ extension FilterEngine {
 // MARK: - WP3b-2：Similarity（hash/run/交付项端口）
 
 extension SimilarityService {
-    convenience init(
+    public convenience init(
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
         similarityResultRepo: SimilarityResultRepo,
@@ -180,7 +187,7 @@ extension SimilarityService {
     }
 
     /// 旧静态入口（测试直调）：hash 端口 + 事务端口由同一连接装配。
-    static func reuseSimilarityHashes(
+    public static func reuseSimilarityHashes(
         connection: DBConnection,
         sessionId: String,
         photos: [PhotoProjectionRow],
@@ -202,7 +209,7 @@ extension SimilarityService {
 // MARK: - WP3b-2：FaceKw（feedback / 簇成员写 / run / 交付项端口）
 
 extension FaceKwService {
-    convenience init(
+    public convenience init(
         photoRepo: PhotoRepo,
         sessionRepo: SessionRepo,
         faceRepo: FaceRepo,
@@ -257,7 +264,7 @@ extension FaceKwService {
 // MARK: - WP3b-2：Culling（分页/富查询/交付项/事务端口）
 
 extension CullingService {
-    convenience init(
+    public convenience init(
         photoRepo: PhotoRepo,
         cullingDecisionRepo: CullingDecisionRepo,
         similarityResultRepo: SimilarityResultRepo,
@@ -298,7 +305,7 @@ extension CullingService {
 // MARK: - WP3b-3：Duplicate（扫描/重建/组读端口）
 
 extension DuplicateService {
-    convenience init(
+    public convenience init(
         connection: DBConnection,
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
         clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
@@ -323,7 +330,7 @@ extension DuplicateService {
 // MARK: - WP3b-2：Indexer（扫描写路径 / 事务端口）
 
 extension IndexerService {
-    convenience init(
+    public convenience init(
         connection: DBConnection,
         sessionRepo: SessionRepo,
         photoRepo: PhotoRepo,

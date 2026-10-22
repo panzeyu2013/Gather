@@ -148,7 +148,7 @@ public struct SettingsView: View {
         }
         // 写路径广播（XMP/同步队列）：立即刷新 C1 写回队列，不再等 12s 轮询。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherDomainChange,
+            guard let change = notification.object as? GatherApplicationChange,
                   change.domain == .metadata else { return }
             Task { await viewModel.refreshSyncState() }
         }

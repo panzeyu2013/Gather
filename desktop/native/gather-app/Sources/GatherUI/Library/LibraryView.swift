@@ -124,7 +124,7 @@ package struct LibraryView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherDomainChange,
+            guard let change = notification.object as? GatherApplicationChange,
                   Self.refreshDomains.contains(change.domain),
                   change.origin != LibraryViewModel.changeOrigin else { return }
             // 只刷新本次变更可能影响的支持子域 + 当前页（不重置筛选/页码）。

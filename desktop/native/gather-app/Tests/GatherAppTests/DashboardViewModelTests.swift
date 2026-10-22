@@ -824,7 +824,7 @@ struct DashboardViewModelTests {
             let error = viewModel.jobsError
             #expect(error?.code.isEmpty == true)
             #expect(error?.diagnostic == "任务读取失败")
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("任务读取失败"))
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("任务读取失败"))
             #expect(viewModel.actionError == nil)
         }
 
@@ -844,7 +844,7 @@ struct DashboardViewModelTests {
         AppLanguageLock.withStableCopy {
             let error = viewModel.createError
             #expect(error?.code == "SESSION_SOURCE_ROOT_FORBIDDEN")
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("SESSION_SOURCE_ROOT_FORBIDDEN"))
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("SESSION_SOURCE_ROOT_FORBIDDEN"))
         }
         #expect(viewModel.isCreating == false)
     }

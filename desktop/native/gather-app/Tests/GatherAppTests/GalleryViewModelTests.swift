@@ -654,7 +654,7 @@ struct GalleryViewModelTests {
             let error = viewModel.actionError
             #expect(error?.code.isEmpty == true)
             #expect(error?.diagnostic == "NEXT_PAGE_FAILED")
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("NEXT_PAGE_FAILED"))
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("NEXT_PAGE_FAILED"))
         }
     }
 
@@ -782,7 +782,7 @@ struct GalleryViewModelTests {
         AppLanguageLock.withStableCopy {
             let error = viewModel.actionError
             #expect(error?.code == "SESSION_NOT_FOUND")
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("SESSION_NOT_FOUND"))
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("SESSION_NOT_FOUND"))
         }
         #expect(await waitUntilAsync { viewModel.workspaceStatus?.indexing.status == .idle })
     }

@@ -219,7 +219,7 @@ struct PersonsViewModelTests {
         let viewModel = PersonsViewModel(person: stub)
         await viewModel.select("p1")
         AppLanguageLock.withStableCopy {
-            let expected = GatherLocalization.errorText(raw)
+            let expected = L10n(language: .zhCN).errorText(raw)
             let error = viewModel.actionError
             #expect(error?.code == raw)
             #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == expected)
@@ -364,7 +364,7 @@ struct PersonsViewModelTests {
         AppLanguageLock.withStableCopy {
             let error = viewModel.actionError
             #expect(error?.code == "PERSON_MERGE_CONFIRM_REQUIRED")
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("PERSON_MERGE_CONFIRM_REQUIRED"))
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("PERSON_MERGE_CONFIRM_REQUIRED"))
         }
     }
 
@@ -398,7 +398,7 @@ struct PersonsViewModelTests {
         AppLanguageLock.withStableCopy {
             let error = viewModel.actionError
             #expect(error?.code == "PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED")
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED"))
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED"))
         }
     }
 
@@ -453,7 +453,7 @@ struct PersonsViewModelTests {
             #expect(result == nil)
             let error = viewModel.actionError
             #expect(error?.code == "PERSON_NOT_FOUND")
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("PERSON_NOT_FOUND"))
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("PERSON_NOT_FOUND"))
         }
     }
 }

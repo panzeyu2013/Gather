@@ -597,7 +597,7 @@ struct LibraryViewModelTests {
             // R7 P0-2：domainChanged 是进程级通知，并行套件（挑片/人物/相似度写回）
             // 也会发同一条通知。只收本发布者的 origin，避免把别人的事件算进
             // 「恰好四条」与「origin 必须一致」两个断言。
-            guard let change = notification.object as? GatherDomainChange,
+            guard let change = notification.object as? GatherApplicationChange,
                   change.origin == LibraryViewModel.changeOrigin else { return }
             received.append((change.domain, change.origin))
         }
@@ -628,11 +628,11 @@ struct LibraryViewModelTests {
         stub.listAlbumsError = "ALBUM_FAILED"
         // 与上一个用例同理：只统计本发布者的事件；并行套件的 domainChanged
         // 不得被误判成「失败也广播」。
-        let received = NotificationRecorder<GatherDomainChange>()
+        let received = NotificationRecorder<GatherApplicationChange>()
         let token = NotificationCenter.default.addObserver(
             forName: GatherEventCenter.domainChanged, object: nil, queue: nil
         ) { notification in
-            guard let change = notification.object as? GatherDomainChange,
+            guard let change = notification.object as? GatherApplicationChange,
                   change.origin == LibraryViewModel.changeOrigin else { return }
             received.append(change)
         }

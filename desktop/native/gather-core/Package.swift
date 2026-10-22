@@ -100,9 +100,14 @@ let package = Package(
         .target(name: "CSQLite"),
         // Cut 3 / 3a-4：core 测试共享 fixture（原 RepoTestSupport.swift + Support/AsyncGate.swift）。
         // 普通 library target + public API（不用 @testable，见 module-split-map-v2 §5.2）。
+        // B04：ServiceConstructionTestSupport（344 行，core/app 逐字重复）合并到此，
+        // 故额外依赖 Delivery / Analysis / Application；只进测试链接。
         .target(
             name: "GatherTestSupport",
-            dependencies: ["GatherPersistence", "GatherProtocol"],
+            dependencies: [
+                "GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherAnalysis",
+                "GatherApplication",
+            ],
             path: "Tests/GatherTestSupport",
             swiftSettings: swift6Settings
         ),

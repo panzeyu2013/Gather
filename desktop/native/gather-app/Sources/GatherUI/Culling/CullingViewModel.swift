@@ -233,7 +233,7 @@ public final class CullingViewModel: PageVisibility {
     // Cut 4 / 4a-3b-1：删除 VM 内的文案漏斗（`Self.message(for:)`）——
     // 错误只以 `CommandError`（码/参数/诊断）落地，文案统一在 View 渲染期
     // 经 `L10n` 解析；原始诊断只进日志。
-    /// 领域广播标识：监听端跳过自己发出的事件（GatherDomainChange.origin）。
+    /// 领域广播标识：监听端跳过自己发出的事件（GatherApplicationChange.origin）。
     static let changeOrigin = "culling"
 
     /// 挑片决策写入成功后广播（图库/画廊的星级与色标消费）。
@@ -249,7 +249,7 @@ public final class CullingViewModel: PageVisibility {
     /// 跨页领域变更：命中本会话的挑片/元数据/图库变更时刷新自己的数据源；
     /// 隐藏或正忙时只登记，回可见/空闲后由 flushDeferredDomainRefresh 补刷
     ///（隐藏页不发命令是外壳既有约定）。自身 origin 跳过，避免自触发重查。
-    public func handleDomainChange(_ change: GatherDomainChange) {
+    public func handleDomainChange(_ change: GatherApplicationChange) {
         guard change.matches(sessionId: sessionId),
               change.origin != Self.changeOrigin,
               [.culling, .metadata, .library].contains(change.domain) else { return }

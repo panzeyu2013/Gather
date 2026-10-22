@@ -719,7 +719,7 @@ struct CullingViewModelAPITests {
         let base = culling.pageQueries.count
 
         vm.setVisible(false)
-        vm.handleDomainChange(GatherDomainChange(
+        vm.handleDomainChange(GatherApplicationChange(
             domain: .culling, sessionId: "s1", origin: "gallery"
         ))
         #expect(vm.pendingDomainRefresh, "隐藏期领域变更必须只登记")

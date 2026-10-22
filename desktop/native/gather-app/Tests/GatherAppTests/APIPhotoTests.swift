@@ -347,7 +347,7 @@ struct APIPhotoTests {
     @Test("迁移调用方：GatherError 必须走 API 码值漏斗")
     @MainActor
     func gatherErrorPresentation() {
-        let expected = GatherLocalization.errorText("ALBUM_NOT_FOUND")
+        let expected = L10n(language: .zhCN).errorText("ALBUM_NOT_FOUND")
         let error = GatherError(code: .ALBUM_NOT_FOUND)
         // Cut 4 / 4a-3b-2b：VM 不再有文案漏斗，统一 CommandError + 渲染期解析。
         let l10n = L10n(language: .zhCN)

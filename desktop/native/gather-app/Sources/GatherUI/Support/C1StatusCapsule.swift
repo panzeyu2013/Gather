@@ -51,7 +51,7 @@ final class C1StatusService {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let change = notification.object as? GatherDomainChange,
+            guard let change = notification.object as? GatherApplicationChange,
                   change.domain == .metadata else { return }
             Task { @MainActor [weak self] in
                 guard let self, !self.activeSessions.isEmpty else { return }

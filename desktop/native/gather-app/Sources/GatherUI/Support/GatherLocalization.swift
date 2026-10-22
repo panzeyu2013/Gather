@@ -2,8 +2,12 @@
 // 文案来源：main 分支 renderer/locales/zh-CN.json（error.*/jobs.*/progress.* 键），
 // 对齐 utils/errors.ts 的 translateErrorCode 多键回退语义：
 // 未知错误码 → error.unspecific；任务错误消息非错误码 → error.unspecific。
+//
+// B03：7 个旧翻译出口（errorText / jobErrorMessage / message(for:) /
+// cancellationNotice / jobStatusText / jobTypeText / progressPhaseText）已删除——
+// 解析唯一实现是 L10n（渲染期按显式语言）。本类型只保留：errorMessages 码表、
+// 三张任务键表、l() 查表、界面语言（appLanguage / setAppLanguage）。
 import Foundation
-import GatherProtocol
 
 /// 进程级界面语言的存储盒子。
 /// Swift 6：`nonisolated` 全局可变状态非法（#MutableGlobalVariable），原先的
@@ -245,41 +249,6 @@ public enum GatherLocalization {
     "ASSET_RELINK_CONFIRM_REQUIRED": "重连资源根目录前需要明确确认",
     ]
 
-    /// 对齐 TS translateErrorCode：未知/非错误码回退通用文案。
-    /// 支持参数化错误码（路由返回 "CODE::p1::p2" 形式）：按模板中
-    /// {{field}}/{{expected}}/{{current}} 占位符出现顺序依次插值。
-    public static func errorText(_ code: String) -> String {
-        guard let template = resolvedTemplate(for: code) else { return l("发生未知错误，请稍后重试") }
-        return template
-    }
-
-    /// 错误码 → 模板（先本地化、再参数插值）；非错误码返回 nil（调用方回退）。
-    /// 支持两种参数形态：路由的 `CODE::p1::p2`，以及 Core 侧 description 的
-    /// `CODE: 参数`（如 XMP_CONFIRM_OTHER_SESSION_PENDING: <会话>）。
-    /// 插值必须在本地化之后：否则中文模板 + 参数拼出的字符串查不到 en 表。
-    private static func resolvedTemplate(for code: String) -> String? {
-        let parts = code.components(separatedBy: "::")
-        if let template = errorMessages[parts[0]] {
-            return interpolate(template, params: Array(parts.dropFirst()))
-        }
-        guard let colon = code.firstIndex(of: ":") else { return nil }
-        let head = String(code[code.startIndex..<colon])
-        let tail = String(code[code.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-        guard !tail.isEmpty, let template = errorMessages[head] else { return nil }
-        return interpolate(template, params: [tail])
-    }
-
-    private static func interpolate(_ template: String, params: [String]) -> String {
-        var result = l(template)
-        var paramIndex = 0
-        while let range = result.range(of: #"\{\{[a-zA-Z]+\}\}"#, options: .regularExpression) {
-            let replacement = paramIndex < params.count ? params[paramIndex] : ""
-            result.replaceSubrange(range, with: replacement)
-            paramIndex += 1
-        }
-        return result
-    }
-
     /// 查 Apple 原生本地化表（.lproj/Localizable.strings，经 SPM 打进 Bundle.module）。
     /// key 即中文文案：zh 表留空 → 未命中自动回退 key（默认中文）；
     /// en 表提供英文翻译（en 界面命中返回英文，未翻译的 key 仍回退中文）。
@@ -288,40 +257,6 @@ public enum GatherLocalization {
         guard let bundle = bundleCache.bundle(for: lang) else { return key }
         let value = bundle.localizedString(forKey: key, value: nil, table: "Localizable")
         return value == key ? key : value
-    }
-
-    /// 对齐 TS translateJobErrorMessage：任务错误消息仅错误码才展示对应文案，
-    /// 其余（原始诊断/英文不变量）一律回退通用文案，原始细节保留给 tooltip。
-    public static func jobErrorMessage(_ message: String?) -> String {
-        guard let message, !message.isEmpty else { return l("发生未知错误，请稍后重试") }
-        if let translated = resolvedTemplate(for: message) { return translated }
-        return l("发生未知错误，请稍后重试")
-    }
-
-    /// 翻译任意 Error/字符串：消息是错误码则翻译（含参数化错误码插值），
-    /// 否则原样返回。
-    public static func message(for error: Any) -> String {
-        let raw: String
-        switch error {
-        case let e as RouterCommandError: raw = e.message
-        case let e as APIError: raw = e.description
-        case let e as BridgeError: raw = e.description
-        case let e as Error: raw = (e as NSError).localizedDescription
-        case let s as String: raw = s
-        default: raw = String(describing: error)
-        }
-        return resolvedTemplate(for: raw) ?? raw
-    }
-
-    /// 破坏性动作被用户取消时的统一可见文案（「已取消“%@”，未执行任何更改」）：
-    /// Duplicates/Settings/FaceKeywording/Similarity 四处逐字同款，收敛为单一出口；
-    /// 各自的状态面（notice/writebackMessage、附带清理的字段）仍在调用点。
-    /// Culling 的取消文案是另一句（「已取消：%@」），语义不同，不并入此处。
-    ///
-    /// Cut 4 / 4b-1：四处调用点已改存 `LocalizedText.cancel(action)`（渲染期解析，
-    /// 切语言可刷新）；本函数保留为旧出口，供 parity 对照与尚未迁移的调用方使用。
-    public static func cancellationNotice(_ action: String) -> String {
-        String(format: l("已取消“%@”，未执行任何更改"), action)
     }
 
     // MARK: - 任务状态/类型/进度相位（jobs.* / progress.*）
@@ -339,11 +274,6 @@ public enum GatherLocalization {
         "interrupted": "已中断",
     ]
 
-    public static func jobStatusText(_ status: String) -> String {
-        guard let key = jobStatusKeys[status] else { return status }
-        return l(key)
-    }
-
     /// 内部可见（4b-1）：L10n.jobTypeText 复用同一张表。
     static let jobTypeKeys: [String: String] = [
         "metadata.scan": "照片索引与元数据",
@@ -355,11 +285,6 @@ public enum GatherLocalization {
         "export.execute": "照片导出",
         "thumbnail.build": "缩略图生成",
     ]
-
-    public static func jobTypeText(_ type: String) -> String {
-        guard let key = jobTypeKeys[type] else { return type }
-        return l(key)
-    }
 
     // 相位码 → 中文 key（TS 原文省略号为 "..."，全站统一为 "…"）。
     /// 内部可见（4b-1）：L10n.progressPhaseText 复用同一张表。
@@ -390,11 +315,6 @@ public enum GatherLocalization {
         "thumbnail.building": "正在生成缩略图",
         "models.installed": "人脸模型已安装",
     ]
-
-    public static func progressPhaseText(_ phase: String?) -> String {
-        guard let phase, let key = progressPhaseKeys[phase] else { return l("正在处理…") }
-        return l(key)
-    }
 
     // MARK: - 界面语言（settings.ui_language 共享访问；对齐 SettingsViewModel
     // 的 ui_language 读取与旧命令面 effectiveAppLocale 回退语义：
