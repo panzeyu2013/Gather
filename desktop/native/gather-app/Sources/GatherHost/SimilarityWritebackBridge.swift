@@ -11,6 +11,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherDomain
+import GatherDelivery
 
 public final class SimilarityWritebackBridge: SimilarityWritebackProvider {
     /// 旧写回模块名（落库/summary 的 module 维度）。

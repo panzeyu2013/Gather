@@ -3,7 +3,6 @@
 // 照片 → 资产解析：按 asset_read_mode（dual/asset/legacy）决定解析到资产文件
 // 还是遗留路径；dual 模式下资产就绪但路径与遗留不一致时输出 shadow-read 警告。
 import Foundation
-import GatherPersistence
 import GatherProtocol
 
 /// TS: ResolvedPhotoAsset。

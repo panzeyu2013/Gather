@@ -17,6 +17,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherDomain
+import GatherDelivery
 @testable import GatherUI
 @testable import GatherHost
 

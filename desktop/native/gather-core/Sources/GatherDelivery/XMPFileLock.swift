@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/XMPFileLock.swift
+// desktop/native/gather-core/Sources/GatherDelivery/XMPFileLock.swift
 // Cut 2 / P0-1 收口：cleanup/finalize 的文件阶段与 WritebackService 写盘共用的
 // 按 xmpPath 串行化锁。
 //

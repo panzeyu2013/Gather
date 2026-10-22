@@ -34,6 +34,7 @@
 import Foundation
 import GatherAnalysis
 import GatherPersistence
+import GatherDelivery
 import GatherProtocol
 
 public enum SimilarityServiceError: Error, Equatable {

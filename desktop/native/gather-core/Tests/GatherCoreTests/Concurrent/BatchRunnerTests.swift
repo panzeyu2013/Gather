@@ -6,6 +6,7 @@ import Testing
 import Foundation
 @testable import GatherDomain
 @testable import GatherProtocol
+@testable import GatherPersistence
 @testable import GatherAnalysis
 
 private enum BatchRunnerTestError: Error, Equatable {

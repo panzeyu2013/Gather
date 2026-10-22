@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/DeliveryCoordinator.swift
+// desktop/native/gather-core/Sources/GatherDelivery/DeliveryCoordinator.swift
 // Cut 2 / S4-S5c-2b-1：统一交付模型的**服务层编排**
 // （confirm + cleanup/finalize 文件阶段 + writeback 镜像 + intent 回放）。
 //
@@ -270,10 +270,10 @@ public struct DeliveryMirrorSummary: Sendable, Equatable {
 /// 写回基线（S5c-2b-3b-2a）：执行器已把真实备份/指纹/基线直接写进 deliveries，
 /// 镜像（Culling/FaceKw/Similarity 的 execute 后置步骤）只回读同一行，不再从
 /// metadata_outbox 抄（旧表随 2b 删除，本类型保留为镜像的窄输入）。
-struct DeliveryWritebackBaseline: Sendable, Equatable {
-    let backupPath: String
-    let baseFingerprint: String
-    let baseValues: JSONValue
+public struct DeliveryWritebackBaseline: Sendable, Equatable {
+    public let backupPath: String
+    public let baseFingerprint: String
+    public let baseValues: JSONValue
 
     static let empty = DeliveryWritebackBaseline(
         backupPath: "", baseFingerprint: "", baseValues: .object([:])
@@ -282,7 +282,7 @@ struct DeliveryWritebackBaseline: Sendable, Equatable {
 
 /// 按 xmpPath 读交付行上的基线；行不存在 → 空基线（不阻塞镜像）。
 /// 不抛错：镜像失败可回退为空基线，绝不让"读不到基线"伪造成写盘失败。
-func deliveryWritebackBaseline(
+public func deliveryWritebackBaseline(
     connection: DBConnection,
     xmpPath: String
 ) -> DeliveryWritebackBaseline {

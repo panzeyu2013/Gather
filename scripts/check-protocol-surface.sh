@@ -58,7 +58,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 find "$PROTO" -type f -name '*.swift' | LC_ALL=C sort > "$TMP/proto-files"
 find "$CORE_SOURCES/GatherPersistence" "$CORE_SOURCES/GatherAnalysis" \
-     "$CORE_SOURCES/GatherDomain" "$APP_SOURCES" \
+     "$CORE_SOURCES/GatherDomain" "$CORE_SOURCES/GatherDelivery" "$APP_SOURCES" \
      -type f -name '*.swift' 2>/dev/null | LC_ALL=C sort > "$TMP/prod-files"
 
 proto_file_n=$(wc -l < "$TMP/proto-files" | tr -d ' ')

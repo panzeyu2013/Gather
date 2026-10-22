@@ -34,6 +34,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherDomain
+import GatherDelivery
 import GatherUI
 
 /// 宿主组合根：一批共享服务 + 唯一运行时。

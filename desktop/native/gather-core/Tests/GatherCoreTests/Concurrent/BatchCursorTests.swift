@@ -3,6 +3,7 @@
 import Testing
 @testable import GatherDomain
 @testable import GatherProtocol
+@testable import GatherPersistence
 @testable import GatherAnalysis
 
 struct BatchCursorTests {

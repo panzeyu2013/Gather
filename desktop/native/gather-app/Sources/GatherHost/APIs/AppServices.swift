@@ -25,6 +25,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherDomain
+import GatherDelivery
 import GatherUI
 
 public struct AppServices: Sendable {

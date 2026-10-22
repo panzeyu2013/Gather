@@ -102,6 +102,7 @@ let package = Package(
                 .product(name: "GatherProtocol", package: "gather-core"),
                 .product(name: "GatherPersistence", package: "gather-core"),
                 .product(name: "GatherAnalysis", package: "gather-core"),
+                .product(name: "GatherDelivery", package: "gather-core"),
                 .product(name: "GatherDomain", package: "gather-core"),
             ],
             path: "Sources/GatherHost",
@@ -123,6 +124,7 @@ let package = Package(
                 .product(name: "GatherProtocol", package: "gather-core"),
                 .product(name: "GatherPersistence", package: "gather-core"),
                 .product(name: "GatherAnalysis", package: "gather-core"),
+                .product(name: "GatherDelivery", package: "gather-core"),
                 .product(name: "GatherDomain", package: "gather-core"),
                 // WP7：复用 core 的测试夹具（makeTestDB / AsyncGate / LockedBox），
                 // 不再在 app 侧复制。product 只链接进测试，不进 app 运行时。

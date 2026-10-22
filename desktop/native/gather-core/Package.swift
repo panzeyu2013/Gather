@@ -39,8 +39,10 @@ let package = Package(
     ],
     products: [
         // Cut 3：4 个分层库（依赖方向 Protocol ← Persistence / Analysis ← Domain）。
+        // WP2a：交付引擎单列 GatherDelivery（Protocol + Persistence ← Delivery ← Domain）。
         .library(name: "GatherProtocol", targets: ["GatherProtocol"]),
         .library(name: "GatherPersistence", targets: ["GatherPersistence"]),
+        .library(name: "GatherDelivery", targets: ["GatherDelivery"]),
         .library(name: "GatherAnalysis", targets: ["GatherAnalysis"]),
         .library(name: "GatherDomain", targets: ["GatherDomain"]),
         // WP7：core 测试共享夹具作为 library product 暴露，供 gather-app 的
@@ -72,6 +74,13 @@ let package = Package(
             dependencies: ["GatherProtocol", "CSQLite"],
             swiftSettings: swift6Settings
         ),
+        // WP2a 交付引擎：DeliveryCoordinator / WritebackService / MetadataMutationService /
+        // XMPFileLock。只依赖 Protocol + Persistence；不得 import Domain/Analysis/UI/Host。
+        .target(
+            name: "GatherDelivery",
+            dependencies: ["GatherProtocol", "GatherPersistence"],
+            swiftSettings: swift6Settings
+        ),
         // 分析层：Face / Image / Concurrent / Similarity；FaceModels 资源随 target。
         .target(
             name: "GatherAnalysis",
@@ -79,10 +88,11 @@ let package = Package(
             resources: [.copy("Resources/FaceModels")],
             swiftSettings: swift6Settings
         ),
-        // 领域服务层：Services/**（组合 Persistence + Analysis）。
+        // 领域服务层：Services/**（组合 Delivery + Persistence + Analysis）。
+        // WP2a：Domain 依赖 Delivery（Culling/FaceKw/Similarity/Metadata 的交付编排）。
         .target(
             name: "GatherDomain",
-            dependencies: ["GatherProtocol", "GatherPersistence", "GatherAnalysis"],
+            dependencies: ["GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherAnalysis"],
             swiftSettings: swift6Settings
         ),
         // 系统 SQLite3 的 C 模块 shim（module.modulemap），Linux/macOS 双平台。
@@ -110,7 +120,8 @@ let package = Package(
         .testTarget(
             name: "GatherCoreTests",
             dependencies: [
-                "GatherProtocol", "GatherPersistence", "GatherAnalysis", "GatherDomain",
+                "GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherAnalysis",
+                "GatherDomain",
                 "GatherTestSupport",
                 "CSQLite",
             ],

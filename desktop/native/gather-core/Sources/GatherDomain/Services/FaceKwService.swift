@@ -31,6 +31,7 @@
 import Foundation
 import GatherAnalysis
 import GatherPersistence
+import GatherDelivery
 import GatherProtocol
 
 public enum FaceKwServiceError: Error, Equatable {

@@ -39,6 +39,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherDomain
+import GatherDelivery
 
 public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
     private let similarityService: SimilarityService

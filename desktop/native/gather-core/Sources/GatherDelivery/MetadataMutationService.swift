@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/MetadataMutationService.swift
+// desktop/native/gather-core/Sources/GatherDelivery/MetadataMutationService.swift
 // 变更入队服务（S5c-2b-3b-2b-2：outbox → 统一交付模型）。
 //
 // 唯一写路径的入口：queuePhotoValues 只写 deliveries / delivery_items（先落库），

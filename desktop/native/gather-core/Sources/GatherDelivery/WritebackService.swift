@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDomain/Services/WritebackService.swift
+// desktop/native/gather-core/Sources/GatherDelivery/WritebackService.swift
 // TS 源: desktop/src/main/services/writeback/writeback.service.ts（630 行）+
 // writeback-planners.ts（66 行），逐字移植
 //
@@ -37,7 +37,6 @@
 //   sessions.reload_acked_at）。
 
 import Foundation
-import GatherAnalysis
 import GatherPersistence
 import GatherProtocol
 

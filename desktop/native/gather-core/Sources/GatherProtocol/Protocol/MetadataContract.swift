@@ -4,7 +4,6 @@
 // 逐字一致（CustomStringConvertible）。
 
 import Foundation
-import GatherProtocol
 
 /// TS: metadata-contract.ts 抛出的全部错误码。
 public enum MetadataContractError: Error, Equatable, CustomStringConvertible {

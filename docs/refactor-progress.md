@@ -242,6 +242,17 @@
 - **schema**：`swift run --package-path ... --disable-sandbox --cache-path .build/shared-cache --scratch-path .build/scratch gather-schema verify` = 43 表 / user_version 1 / FK 违规 0（bare 命令在 DSH manifest 阶段被 sandbox 拒绝，记录为环境限制）。
 - **残余**：13 个旧 Params 是 D-007 的合法复用面；无 GUI 验收；不 commit；并行工作区的其他改动未纳入本刀。
 
+## WP2a Delivery target 纯移动（2026-10-22，HEAD 9922762；工作区未提交）
+
+- **范围**：新增 `GatherDelivery` target/product；`Sources/GatherDelivery/{DeliveryCoordinator,WritebackService,MetadataMutationService,XMPFileLock}.swift` **4 文件 / 3,630 行**原样移入（Coordinator 1,964 行仅 3 处访问级别 `internal→public`，供 Domain 读交付基线；WritebackService 删 1 个未用的 `import GatherAnalysis`）。
+- **端口下移**：`XMPProvider` + `MetadataWriteAttributes` → `GatherProtocol/Protocol/XMPProvider.swift`（93 行）；`MetadataContract` → Protocol（96 行）；`MetadataFingerprint`（39 行）、`PhotoAssetResolver`（171 行）→ Persistence；`MetadataMutationPort` 随 `MetadataMutationService` 留在 Delivery。
+- **依赖方向**：Delivery → Protocol + Persistence（实测 import：Foundation 4 / Persistence 4 / Protocol 3；Domain/Analysis/UI/Host = 0）。Domain → Delivery、Host → Delivery、core/app 测试 target → Delivery 均已接线。
+- **必要偏离（记账）**：Swift import 文件级 → 4 个 Domain 服务、9 个 Host 文件、5 个 app 测试、9 个 core 测试各加 1 行 `import GatherDelivery`（core 测试用 `@testable`）；core/app 两个 Package 加依赖。为让 WritebackService 在 Delivery 编译，`batchAsync`/`BatchCursor`（139 行）从 Analysis 移到 Persistence/Support（Analysis 内零使用；不属端口/DTO，单列）。
+- **测试**：core **1,060/159** exit 0；app 串行 **616/68** exit 0（16.658s）；app 并行 **3/3** 次 616/68 exit 0（6.482 / 7.088 / 7.011s）。测试数不变。
+- **门禁**：原 8 门禁全绿——layering OK；ratchet **53/233/120/0/0**（services_prepare 127→120、try_optional 240→233，移出 Domain/Services 所致）；test-catalog 165 文件 / 3 skip；duplicate 536 文件 batchAsync 1；docs 20 路径 / 143 链接；no-legacy 7 enforced + 6 tracked；select-star 6/1；preview 14。
+- **schema**：`swift run ... gather-schema verify` = 43 表 / user_version 1 / FK 违规 0。
+- **残余**：`check-protocol-surface.sh --strict` 红——① 脚本 prod-files 未含 `GatherDelivery`，`MetadataMutationResult` 被误报零引用（1）；② 端口下移使 Protocol 类型 251→254、声明 1,320→1,338，需修脚本后 `--write-baseline`。二者均在本刀白名单外，未改。另：9 个移动文件头仍写旧路径（纯移动未改内容）；不 commit；无 GUI 验收。
+
 ## 规则
 
 - 不做 git commit / checkout / restore；不删除未确认文件。

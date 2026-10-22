@@ -48,6 +48,7 @@
 
 import Foundation
 import GatherPersistence
+import GatherDelivery
 import GatherProtocol
 
 /// TS: culling.service.ts / culling.ipc.ts 抛出的全部错误消息（description 与

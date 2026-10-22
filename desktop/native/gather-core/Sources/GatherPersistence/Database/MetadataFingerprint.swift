@@ -5,7 +5,6 @@
 // crypto sha256 → SHA256（FIPS 180-4 纯 Swift 实现，GatherPersistence/Database/SHA256.swift）。
 
 import Foundation
-import GatherPersistence
 import GatherProtocol
 
 public enum MetadataFingerprint {

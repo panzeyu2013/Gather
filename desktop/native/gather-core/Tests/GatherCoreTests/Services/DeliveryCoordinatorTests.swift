@@ -23,6 +23,7 @@ import Testing
 @testable import GatherPersistence
 @testable import GatherAnalysis
 @testable import GatherDomain
+@testable import GatherDelivery
 
 // MARK: - fixtures
 

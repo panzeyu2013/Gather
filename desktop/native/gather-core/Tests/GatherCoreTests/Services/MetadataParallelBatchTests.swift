@@ -10,6 +10,7 @@ import GatherTestSupport
 @testable import GatherPersistence
 @testable import GatherAnalysis
 @testable import GatherDomain
+@testable import GatherDelivery
 
 private struct ParallelExif: ExifProvider {
     func parse(filePath: String, isJpeg: Bool) async throws -> MetadataParseSegments? {

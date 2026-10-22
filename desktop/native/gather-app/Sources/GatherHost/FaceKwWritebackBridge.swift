@@ -10,6 +10,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherDomain
+import GatherDelivery
 
 public final class FaceKwWritebackBridge: FaceWritebackProvider, @unchecked Sendable {
     private let writebackService: WritebackService
