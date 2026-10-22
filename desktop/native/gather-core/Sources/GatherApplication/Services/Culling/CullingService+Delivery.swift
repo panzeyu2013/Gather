@@ -118,12 +118,8 @@ extension CullingService {
                   matchingItems[index].id != nil else { continue }
             if let keywords = attributes.keywords {
                 // TS: { keywords: [...new Set([...item.keywords, ...attributes.keywords])] }
-                var merged: [String] = []
-                for value in matchingItems[index].keywords + keywords
-                where !merged.contains(value) {
-                    merged.append(value)
-                }
-                matchingItems[index].attributes = WritebackAttributes(keywords: merged)
+                matchingItems[index].attributes = WritebackAttributes(
+                    keywords: orderedUnion(matchingItems[index].keywords, keywords))
             } else {
                 matchingItems[index].attributes = attributes
             }
