@@ -2,8 +2,12 @@
 // （四层检查门控、单格失败阻塞、guidance 优先级、超时追加格、整体失败兜底）。
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 @Suite("C1PreflightResult.build（对齐 c1-preflight.test.ts）")
 struct C1PreflightTests {
@@ -30,6 +34,12 @@ struct C1PreflightTests {
         #expect(r.checks.count == 4)
         #expect(r.checks.allSatisfy { $0.passed })
         #expect(r.guidance == nil)
+        // 4b-2e：检查项文案是 LocalizedText（VM 不读进程语言），渲染期按显式语言解析。
+        let zhText = r.checks[0].label.resolve(with: L10n(language: .zhCN))
+        let enText = r.checks[0].label.resolve(with: L10n(language: .en))
+        #expect(zhText == "可连接 Capture One（AppleScript）")
+        #expect(enText == "Can Connect to Capture One (AppleScript)")
+        #expect(zhText != enText, "VM 不得在构建时锁死语言")
     }
 
     @Test("任意单格失败均阻塞导入且报出键")
@@ -49,20 +59,19 @@ struct C1PreflightTests {
 
     @Test("guidance 优先级：timeout > reachable > automationAuthorized > appRunning > documentOpen")
     func guidancePriority() {
-        // guidance 经 l() 出当前语言：锁内钉死 zh-CN。
-        AppLanguageLock.withCopy("zh-CN") {
+        // 4b-2e：guidance 是 LocalizedText（VM 不读进程语言），渲染期用显式 L10n 解析。
+        let zh = L10n(language: .zhCN)
         // 超时优先于其他失败。
         let timeout = C1PreflightResult.build(from: status(reachable: false, timedOut: true))
-        #expect(timeout.guidance == "检测超时，请重试")
+        #expect(timeout.guidance?.resolve(with: zh) == "检测超时，请重试")
         let reachable = C1PreflightResult.build(from: status(reachable: false))
-        #expect(reachable.guidance?.contains("AppleScript") == true)
+        #expect(reachable.guidance?.resolve(with: zh).contains("AppleScript") == true)
         let automation = C1PreflightResult.build(from: status(automationAuthorized: false))
-        #expect(automation.guidance?.contains("自动化") == true)
+        #expect(automation.guidance?.resolve(with: zh).contains("自动化") == true)
         let app = C1PreflightResult.build(from: status(appRunning: false))
-        #expect(app.guidance?.contains("启动 Capture One") == true)
+        #expect(app.guidance?.resolve(with: zh).contains("启动 Capture One") == true)
         let doc = C1PreflightResult.build(from: status(documentOpen: false))
-        #expect(doc.guidance?.contains("文档") == true)
-        }
+        #expect(doc.guidance?.resolve(with: zh).contains("文档") == true)
     }
 
     @Test("超时额外追加一格（5 格）")

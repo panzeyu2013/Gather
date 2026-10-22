@@ -3,11 +3,13 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 struct AssetRepoTests {
     private func makeRepo() throws -> (DBConnection, AssetRepo) {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try insertSession(db, "s1")
         return (db, AssetRepo(connection: db))
     }
@@ -315,7 +317,7 @@ struct AssetRepoTests {
         try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: newPath, checksum: "abc")
         // 用真实 photos 行：插入新照片并直接链接
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
-        _ = try db.prepare("INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES ('a1', '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
+        _ = try db.prepare("INSERT INTO assets (id, status, created_at, updated_at) VALUES ('a1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
         _ = try db.prepare("UPDATE photos SET asset_id = 'a1', asset_file_id = 'f1' WHERE id = 'p1'").run()
         _ = try db.prepare("INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, binding_source) VALUES ('a1', 'f1', 'camera_jpeg', 1, 'import')").run()
         _ = try db.prepare("INSERT INTO session_assets (session_id, asset_id, display_file_id, import_order, added_at) VALUES ('s1', 'a1', 'f1', 1, '2026-01-01T00:00:00.000Z')").run()
@@ -344,7 +346,9 @@ struct AssetRepoTests {
         #expect(try rowCount(db, "SELECT COUNT(*) FROM navigation_groups") == 0)
     }
 
-    @Test func relinkRootRelocatesOutbox() throws {
+    /// 统一交付模型：deliveries.xmp_path/photo_path 随 relink 迁移，delivery_items
+    /// 与 delivery_sessions 按 delivery_id 保持关联（S5c-2b-3b-1）。
+    @Test func relinkRootRelocatesDeliveries() throws {
         let (db, repo) = try makeRepo()
         let oldRoot = try makeTempDir()
         let newRoot = try makeTempDir()
@@ -357,24 +361,114 @@ struct AssetRepoTests {
         let newPath = try writeTempFile(in: newRoot, name: "DSC_0001.jpg")
         try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: newPath, checksum: "abc")
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
-        _ = try db.prepare("INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES ('a1', '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
+        _ = try db.prepare("INSERT INTO assets (id, status, created_at, updated_at) VALUES ('a1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
         _ = try db.prepare("UPDATE photos SET asset_id = 'a1', asset_file_id = 'f1' WHERE id = 'p1'").run()
         _ = try db.prepare("INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, binding_source) VALUES ('a1', 'f1', 'camera_jpeg', 1, 'import')").run()
         _ = try db.prepare("INSERT INTO session_assets (session_id, asset_id, display_file_id, import_order, added_at) VALUES ('s1', 'a1', 'f1', 1, '2026-01-01T00:00:00.000Z')").run()
-        // 旧 XMP 有 pending outbox 行
+
+        let oldXmp = TSPath.xmpSidecarPath(oldPath)
+        let newXmp = TSPath.xmpSidecarPath(newPath)
+        let now = "2026-01-01T00:00:00.000Z"
         _ = try db.prepare("""
-            INSERT INTO metadata_outbox (xmp_path, owner_session_id, created_by_session_id, photo_path, patch_json, dirty_fields, source_module, revision, persisted_revision, base_fingerprint, base_values_json, backup_path, status, attempt_count, error_message, updated_at)
-            VALUES (?, 's1', 's1', ?, '{}', '[]', 'manual', 1, 0, '', '{}', '', 'pending', 1, '', '2026-01-01T00:00:00.000Z')
-        """).run([.text(oldRoot + "/DSC_0001.xmp"), .text(oldPath)])
-        _ = try db.prepare("INSERT INTO metadata_outbox_sessions (xmp_path, session_id, confirmed_at, linked_at) VALUES (?, 's1', '', '2026-01-01T00:00:00.000Z')").run([.text(oldRoot + "/DSC_0001.xmp")])
+            INSERT INTO deliveries (xmp_path, photo_path, status, revision, base_fingerprint, base_values_json, backup_path, created_at, updated_at)
+            VALUES (?, ?, 'written', 2, 'fp-old', '{}', '/backup/old.xmp', ?, ?)
+          """).run([.text(oldXmp), .text(oldPath), .text(now), .text(now)])
+        let deliveryId = db.lastInsertRowid
+        _ = try db.prepare("""
+            INSERT INTO delivery_items (delivery_id, photo_id, module, keywords, status, created_at, updated_at)
+            VALUES (?, 'p1', 'culling', '["keep"]', 'written', ?, ?)
+          """).run([.int(deliveryId), .text(now), .text(now)])
+        _ = try db.prepare("""
+            INSERT INTO delivery_sessions (delivery_id, session_id, created_at) VALUES (?, 's1', ?)
+          """).run([.int(deliveryId), .text(now)])
 
         #expect(try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot) == 1)
-        let outbox = try db.prepare("SELECT photo_path, status, attempt_count FROM metadata_outbox WHERE xmp_path = ?").get([.text(newRoot + "/DSC_0001.xmp")])
-        #expect(outbox != nil, "旧 outbox 行已迁移到新 XMP 路径")
-        #expect(outbox?[0].textValue == newPath)
-        #expect(outbox?[1].textValue == "pending")
-        #expect(outbox?[2].intValue == 0, "pending 行迁移时 attempt_count 归零")
-        #expect(try db.prepare("SELECT COUNT(*) FROM metadata_outbox WHERE xmp_path = ?").get([.text(oldRoot + "/DSC_0001.xmp")])?[0].intValue == 0, "旧 outbox 行已删除")
+
+        let delivery = try db.prepare("""
+            SELECT id, xmp_path, photo_path, status, revision, base_fingerprint, backup_path
+            FROM deliveries WHERE id = ?
+          """).get([.int(deliveryId)])
+        #expect(delivery?[1].textValue == newXmp)
+        #expect(delivery?[2].textValue == newPath)
+        #expect(delivery?[3].textValue == "written")
+        #expect(delivery?[4].intValue == 2, "迁移用同一行 UPDATE，revision/租约/基线不重置")
+        #expect(delivery?[5].textValue == "fp-old")
+        #expect(delivery?[6].textValue == "/backup/old.xmp")
+        #expect(try db.prepare("SELECT COUNT(*) FROM deliveries WHERE xmp_path = ?").get([.text(oldXmp)])?[0].intValue == 0)
+
+        // 交付项与确认链接不改 delivery_id。
+        let item = try db.prepare("""
+            SELECT delivery_id, photo_id, module, status FROM delivery_items WHERE id = ?
+          """).get([.int(deliveryId)])
+        #expect(item?[0].intValue == deliveryId)
+        #expect(item?[1].textValue == "p1")
+        #expect(item?[2].textValue == "culling")
+        #expect(item?[3].textValue == "written")
+        #expect(try rowCount(db, "SELECT COUNT(*) FROM delivery_sessions") == 1)
+    }
+
+    /// 目标 XMP 已有交付行：沿用旧 outbox 冲突码且在事务内整体回滚。
+    @Test func relinkRootRejectsDeliveryTargetConflict() throws {
+        let (db, repo) = try makeRepo()
+        let oldRoot = try makeTempDir()
+        let newRoot = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: oldRoot)
+            try? FileManager.default.removeItem(atPath: newRoot)
+        }
+        let oldPath = oldRoot + "/DSC_0001.jpg"
+        let newPath = try writeTempFile(in: newRoot, name: "DSC_0001.jpg")
+        try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: newPath, checksum: "abc")
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
+        let now = "2026-01-01T00:00:00.000Z"
+        let oldXmp = TSPath.xmpSidecarPath(oldPath)
+        let newXmp = TSPath.xmpSidecarPath(newPath)
+        for (path, photo) in [(oldXmp, oldPath), (newXmp, newPath)] {
+            _ = try db.prepare("""
+                INSERT INTO deliveries (xmp_path, photo_path, status, revision, created_at, updated_at)
+                VALUES (?, ?, 'pending', 0, ?, ?)
+              """).run([.text(path), .text(photo), .text(now), .text(now)])
+        }
+
+        var message = ""
+        do {
+            _ = try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
+        } catch let DBError.message(value) {
+            message = value
+        }
+        #expect(message == "ASSET_RELINK_OUTBOX_CONFLICT")
+        #expect(try db.prepare("SELECT COUNT(*) FROM deliveries WHERE xmp_path = ?").get([.text(oldXmp)])?[0].intValue == 1, "事务回滚后旧行仍在")
+        #expect(try db.prepare("SELECT COUNT(*) FROM deliveries WHERE xmp_path = ?").get([.text(newXmp)])?[0].intValue == 1)
+    }
+
+    /// 交付行在飞（writing）与旧 outbox 的 busy 语义一致。
+    @Test func relinkRootRejectsWritingDelivery() throws {
+        let (db, repo) = try makeRepo()
+        let oldRoot = try makeTempDir()
+        let newRoot = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: oldRoot)
+            try? FileManager.default.removeItem(atPath: newRoot)
+        }
+        let oldPath = oldRoot + "/DSC_0001.jpg"
+        let newPath = try writeTempFile(in: newRoot, name: "DSC_0001.jpg")
+        try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: newPath, checksum: "abc")
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
+        let now = "2026-01-01T00:00:00.000Z"
+        _ = try db.prepare("""
+            INSERT INTO deliveries (xmp_path, photo_path, status, revision, created_at, updated_at)
+            VALUES (?, ?, 'writing', 1, ?, ?)
+          """).run([.text(TSPath.xmpSidecarPath(oldPath)), .text(oldPath), .text(now), .text(now)])
+
+        var message = ""
+        do {
+            _ = try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
+        } catch let DBError.message(value) {
+            message = value
+        }
+        #expect(message == "ASSET_RELINK_XMP_BUSY")
     }
 
     @Test func relinkMovedFileByChecksum() throws {
@@ -389,7 +483,7 @@ struct AssetRepoTests {
         try insertAssetFile(db, id: "f1", normalizedPath: oldPath, checksum: "same-checksum", volumeId: "dev:0")
         _ = try db.prepare("UPDATE asset_files SET file_size = ?, file_mtime_ms = ? WHERE id = 'f1'").run([.int(19), .real(0)])
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
-        _ = try db.prepare("INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at) VALUES ('a1', '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
+        _ = try db.prepare("INSERT INTO assets (id, status, created_at, updated_at) VALUES ('a1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
         _ = try db.prepare("UPDATE photos SET asset_id = 'a1', asset_file_id = 'f1' WHERE id = 'p1'").run()
 
         // 旧路径文件不存在（已移动）→ checksum 匹配唯一
@@ -469,6 +563,76 @@ struct AssetRepoTests {
         let photo = try db.prepare("SELECT filepath, status FROM photos WHERE id = 'p1'").get()
         #expect(photo?[0].textValue == oldPath)
         #expect(try rowCount(db, "SELECT COUNT(*) FROM similarity_results") == 1)
+    }
+
+    // ── E-02：relinkRoot 的 checksum 证据经 Persistence 的 FileHasher（原调 Domain）──
+
+    @Test func relinkRootVerifiesMovedFileByChecksum() throws {
+        let (db, repo) = try makeRepo()
+        let oldRoot = try makeTempDir()
+        let newRoot = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: oldRoot)
+            try? FileManager.default.removeItem(atPath: newRoot)
+        }
+        let content = Data("same-bytes-0123456789".utf8)
+        let oldPath = oldRoot + "/DSC_0001.jpg"
+        try content.write(to: URL(fileURLWithPath: oldPath))
+        // 固定旧文件 mtime：保证新位置的 mtime 一定不同，只能靠 checksum 验证。
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000_000)],
+            ofItemAtPath: oldPath
+        )
+        let checksum = try FileHasher.sha256File(oldPath)
+        try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: oldPath, checksum: checksum)
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
+        _ = try db.prepare("UPDATE photos SET asset_file_id = 'f1' WHERE id = 'p1'").run()
+
+        // 移动：同内容同大小落到新根，但 inode 与 mtime 都变了 → 只有 checksum 证据成立。
+        try FileManager.default.removeItem(atPath: oldPath)
+        let newPath = newRoot + "/DSC_0001.jpg"
+        try content.write(to: URL(fileURLWithPath: newPath))
+
+        #expect(try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot) == 1)
+        let file = try db.prepare("SELECT normalized_path FROM asset_files WHERE id = 'f1'").get()
+        #expect(file?[0].textValue == newPath)
+        let photo = try db.prepare("SELECT filepath FROM photos WHERE id = 'p1'").get()
+        #expect(photo?[0].textValue == newPath)
+    }
+
+    @Test func relinkRootRejectsSameSizeDifferentChecksum() throws {
+        let (db, repo) = try makeRepo()
+        let oldRoot = try makeTempDir()
+        let newRoot = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: oldRoot)
+            try? FileManager.default.removeItem(atPath: newRoot)
+        }
+        let content = Data("same-bytes-0123456789".utf8)
+        let oldPath = oldRoot + "/DSC_0001.jpg"
+        try content.write(to: URL(fileURLWithPath: oldPath))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000_000)],
+            ofItemAtPath: oldPath
+        )
+        let checksum = try FileHasher.sha256File(oldPath)
+        try insertTrackedFile(db, id: "f1", storedPath: oldPath, statPath: oldPath, checksum: checksum)
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: oldPath)
+        _ = try db.prepare("UPDATE photos SET asset_file_id = 'f1' WHERE id = 'p1'").run()
+
+        // 同大小、不同字节（新位置 inode/mtime 都不同）→ sha256 不匹配，必须拒绝改写。
+        try FileManager.default.removeItem(atPath: oldPath)
+        try Data("same-bytes-012345678X".utf8).write(
+            to: URL(fileURLWithPath: newRoot + "/DSC_0001.jpg")
+        )
+
+        #expect(throws: (any Error).self) {
+            _ = try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
+        }
+        let file = try db.prepare("SELECT normalized_path FROM asset_files WHERE id = 'f1'").get()
+        #expect(file?[0].textValue == oldPath, "验证不过就不许改写")
     }
 
     @Test func relinkRootRejectsSameRootAndNestedRoots() throws {

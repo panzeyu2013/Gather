@@ -14,7 +14,9 @@ import CoreGraphics
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 struct FaceInferenceTests {
     // ── 测试图片生成 ──

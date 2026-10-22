@@ -14,7 +14,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - 支撑
 
@@ -41,38 +45,7 @@ private func setMtime(_ path: String, _ timeIntervalSince1970: TimeInterval) thr
     )
 }
 
-/// 线程安全说明（Swift 6 `Sendable`）：`continuations`/`released` 只在
-/// `lock`（NSLock）临界区内读写；门会被 @Sendable 的 thumbnailProvider 闭包捕获，
-/// 故标注 `@unchecked`（锁纪律无法被编译器静态验证）。
-private final class AsyncGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-
-    func wait() async {
-        let mustWait: Bool = {
-            lock.lock()
-            defer { lock.unlock() }
-            if released { return false }
-            return true
-        }()
-        guard mustWait else { return }
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            continuations.append(continuation)
-            lock.unlock()
-        }
-    }
-
-    func release() {
-        lock.lock()
-        released = true
-        let pending = continuations
-        continuations.removeAll()
-        lock.unlock()
-        pending.forEach { $0.resume() }
-    }
-}
+// AsyncGate 已抽到 Tests/GatherTestSupport/AsyncGate.swift（GatherTestSupport target 共享）。
 
 /// 线程安全计数器（provider 调用次数等断言用）。
 /// scanDuplicates 的进度回调在服务自持的 Task 里执行（ProgressHandler 为
@@ -135,12 +108,14 @@ private struct DuplicateHarness {
 private func makeDuplicateHarness(
     thumbnail: @escaping DuplicateService.ThumbnailProvider = { _, _ in uniformPixels },
     cluster: @escaping DuplicateService.ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
-        try ClusterEngine.clusterByHash(
+        // 与生产默认同一入口（ClusterGraphPipeline 模式分发）。
+        try ClusterGraphPipeline.run(
             entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-            mode: mode, onProgress: onProgress)
+            mode: mode, onProgress: onProgress
+        ).result
     }
 ) throws -> DuplicateHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     try insertSession(db, "session")
     let dir = try makeTempDir()
     let service = DuplicateService(
@@ -701,7 +676,7 @@ struct DuplicateResolveTests {
 
     @Test("keep_one 分数公式：size 分量可压过 mtime 分量")
     func resolveGroupKeepOneScoresBySizeThenMtime() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try insertSession(db, "session")
         _ = try db.prepare("""
             INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at)
@@ -735,7 +710,7 @@ struct DuplicateResolveTests {
     /// 变异验证：> 改 >= 后既有用例全绿（它们构造不出同分），本用例是唯一守卫。
     @Test("keep_one 平分时保留先出现的成员（确定性平局规则）")
     func resolveGroupKeepOneTieKeepsFirstMember() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try insertSession(db, "session")
         _ = try db.prepare("""
             INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at)
@@ -782,7 +757,7 @@ struct DuplicateResolveTests {
 
     @Test("组不存在或无成员：抛错且 UPDATE 回滚")
     func resolveGroupMissingOrEmptyThrowsAndRollsBack() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try insertSession(db, "session")
         // 有组但无成员：UPDATE resolution 必须先执行再抛错，事务回滚。
         _ = try db.prepare("""
@@ -851,7 +826,7 @@ struct DuplicateResolveTests {
 
     @Test("resolve_member：成员不存在抛错")
     func resolveMemberMissingMemberThrows() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let service = DuplicateService(connection: db)
 
         #expect(throws: DuplicateServiceError.memberNotFound(9999)) {

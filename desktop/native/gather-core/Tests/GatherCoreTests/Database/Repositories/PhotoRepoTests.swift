@@ -4,11 +4,12 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 private func makeDB() throws -> DBConnection {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
+    let db = try makeTestDB()
     return db
 }
 
@@ -24,7 +25,7 @@ private func insertAsset(_ db: DBConnection, id: String) throws {
 
 private func insertPhoto(_ db: DBConnection, id: String, sessionId: String, filepath: String, assetId: String? = nil, checksum: String = "abc123") throws {
     _ = try db.prepare(
-        "INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, width, height, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', '{}', '{}', ?, 100, 200, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        "INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_id, width, height, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, 100, 200, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
     ).run([.text(id), .text(sessionId), .text(filepath), .text((filepath as NSString).lastPathComponent), .text(checksum), assetId.map { DBValue.text($0) }])
 }
 
@@ -45,6 +46,9 @@ struct PhotoRepoTests {
         let repo = PhotoRepo(connection: db)
 
         let rows = try repo.getBySession(sessionId: "s1")
+        #expect(PhotoRow.columns.count == 14, "V1 photos 只有 14 列")
+        #expect(!PhotoRow.columns.contains("metadata"))
+        #expect(!PhotoRow.columns.contains("result"))
         #expect(rows.map(\.id) == ["p1", "p2"])
         #expect(rows[0].filepath == "/one.jpg")
         #expect(rows[0].filename == "one.jpg")
@@ -52,8 +56,8 @@ struct PhotoRepoTests {
         #expect(rows[0].checksum == "abc123")
         #expect(rows[0].width == 100)
         #expect(rows[0].height == 200)
-        #expect(rows[0].metadata == "{}")
-        #expect(rows[0].result == "{}")
+        #expect(rows[0].createdAt == "2026-01-01T00:00:00.000Z")
+        #expect(rows[0].updatedAt == "2026-01-01T00:00:00.000Z")
         #expect(rows[0].assetId == nil)
         #expect(rows[0].assetFileId == nil)
         #expect(rows[0].checksumFileSize == 0)
@@ -199,6 +203,9 @@ struct PhotoRepoTests {
         let two = rows.first { $0.filepath == "/dir/two.NEF" }
         #expect(two?.filename == "two.NEF")
         #expect(two?.width == 30)
+
+        // Cut 2 / S5c-1：V1 photos 已无 metadata/result 列，旧的「默认值补 '{}'」断言随之删除
+        // （metadata 的真相源是 photo_metadata_cache，result 由 asset_analysis 承载）。
     }
 
     @Test func deleteBySessionRemovesOnlyThatSession() throws {

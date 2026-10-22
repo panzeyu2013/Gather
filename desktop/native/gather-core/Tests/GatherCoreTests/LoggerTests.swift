@@ -3,7 +3,7 @@
 // 测试框架使用 Swift Testing（`import Testing`），语义与原 XCTest 版本一致。
 
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
 
 /// 串行化放在**套件**上：测试内直接替换 GatherLogger 的全局 output/minimumLevel，
 /// 并行会相互干扰。Test(.serialized) 对非参数化测试无效（编译告警且不生效）。

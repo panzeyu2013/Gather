@@ -4,7 +4,10 @@ import Foundation
 import ImageIO
 import Testing
 import UniformTypeIdentifiers
-@testable import GatherCore
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 @Suite("ImageMetadataProviders")
 struct ImageMetadataProvidersTests {
@@ -12,7 +15,9 @@ struct ImageMetadataProvidersTests {
         let url = URL(fileURLWithPath: path)
         guard let destination = CGImageDestinationCreateWithURL(
             url as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
-            throw MetadataOutboxError.rowNotFound(xmpPath: path)
+            throw NSError(
+                domain: "ImageMetadataProvidersTests", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "无法创建 JPEG destination: \(path)"])
         }
         let context = CGContext(
             data: nil, width: 8, height: 6, bitsPerComponent: 8, bytesPerRow: 0,

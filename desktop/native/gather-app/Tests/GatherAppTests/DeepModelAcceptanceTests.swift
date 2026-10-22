@@ -4,7 +4,8 @@
 //
 import Foundation
 import Testing
-@testable import GatherApp
+@testable import GatherUI
+@testable import GatherHost
 @Suite("Deep model install probe") struct DeepModelProbeTests {
  @Test func failedSecondReplacementMustRollBackFirst() async throws {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent("gather-model-deep-" + UUID().uuidString)

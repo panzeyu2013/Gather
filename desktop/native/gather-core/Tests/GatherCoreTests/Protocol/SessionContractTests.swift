@@ -4,7 +4,7 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
 
 struct SessionContractTests {
 
@@ -269,8 +269,9 @@ struct SessionContractTests {
         // 深度审查 D02 补 1 个交付失败码：EXPORT_ALL_FAILED（全失败不再谎报成功）
         // → 175。深度审查 D09 再补 2 个计划诊断码（EXPORT_SOURCE_MISSING /
         // EXPORT_SOURCE_UNREADABLE：逐项可执行性诊断进枚举，才能过本地化交叉契约）
-        // → 177。增删错误码时必须同步此断言与 GatherLocalization.errorMessages。
-        #expect(GatherErrorCode.allCases.count == 177)
+        // → 177。Cut 1 D-010 再补 2 个通用码（INVALID_PARAM / PHOTO_NOT_FOUND）→ 179。
+        // 增删错误码时必须同步此断言与 GatherLocalization.errorMessages。
+        #expect(GatherErrorCode.allCases.count == 179)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

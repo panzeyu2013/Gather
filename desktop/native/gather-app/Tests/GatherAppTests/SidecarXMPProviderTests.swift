@@ -5,8 +5,12 @@
 
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 // MARK: - 测试基建
 

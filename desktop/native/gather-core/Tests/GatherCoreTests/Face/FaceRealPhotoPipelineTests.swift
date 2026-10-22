@@ -19,7 +19,9 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import Testing
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 @Suite("真实照片人脸管线（需 GATHER_FACE_FIXTURE）")
 struct FaceRealPhotoPipelineTests {
@@ -33,6 +35,10 @@ struct FaceRealPhotoPipelineTests {
         return data
     }()
 
+    // skip-owner: face-pipeline
+    // 到期：2026-12-31（真实照片夹具纳入受控 fixture，或移入 scripts/manual 后删除本 gate）。
+    // 原因：真实照片夹具需手动提供 GATHER_FACE_FIXTURE；CI 不设置该变量，用例必然 skip。
+    // 手动 CI 条件：GATHER_FACE_FIXTURE=/tmp/face.jpg swift test --filter FaceRealPhotoPipelineTests。
     @Test("真实人像：检测 + 对齐 + 768 维单位向量 + 质量/框合法", .enabled(if: fixtureImageData != nil))
     func realPhotoProducesValidEmbedding() throws {
         let data = try #require(Self.fixtureImageData)
@@ -53,6 +59,10 @@ struct FaceRealPhotoPipelineTests {
         }
     }
 
+    // skip-owner: face-pipeline
+    // 到期：2026-12-31（同上，真实照片夹具受控化后删除本 gate）。
+    // 原因：同 realPhotoProducesValidEmbedding，依赖手动 GATHER_FACE_FIXTURE；CI 必然 skip。
+    // 手动 CI 条件：GATHER_FACE_FIXTURE=/tmp/face.jpg swift test --filter FaceRealPhotoPipelineTests。
     @Test("嵌入器抛错：失败被计数而不是当成没有脸", .enabled(if: fixtureImageData != nil))
     func embedderFailureIsCounted() throws {
         let data = try #require(Self.fixtureImageData)
@@ -63,6 +73,10 @@ struct FaceRealPhotoPipelineTests {
         #expect(batch.detectedFaces == batch.encodeFailures)
     }
 
+    // skip-owner: face-pipeline
+    // 到期：2026-12-31（同上，真实照片夹具受控化后删除本 gate）。
+    // 原因：同 realPhotoProducesValidEmbedding，依赖手动 GATHER_FACE_FIXTURE；CI 必然 skip。
+    // 手动 CI 条件：GATHER_FACE_FIXTURE=/tmp/face.jpg swift test --filter FaceRealPhotoPipelineTests。
     @Test("同一张真实照片两次编码一致（Vision 确定性）", .enabled(if: fixtureImageData != nil))
     func realPhotoEncodingIsDeterministic() throws {
         let data = try #require(Self.fixtureImageData)

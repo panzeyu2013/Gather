@@ -3,11 +3,13 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 struct CullingHistoryRepoTests {
     private func makeRepo() throws -> (DBConnection, CullingHistoryRepo) {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try insertSession(db, "s1")
         return (db, CullingHistoryRepo(connection: db))
     }

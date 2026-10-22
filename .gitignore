@@ -36,6 +36,12 @@ Capture*One*Plugin*SDK*/
 .build/
 .swiftpm/
 
+# 破坏性重构（2026-10）临时物：构建垃圾、本地库重置产物、临时文档。
+swbuild.tmp.*
+.gather/
+*.sqlite.incompatible-*
+docs/reviews/*.tmp.md
+
 .env*
 *.log
 .coverage

@@ -8,8 +8,27 @@ import Foundation
 import Testing
 import AppKit
 import SwiftUI
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
+
+/// Cut 4 / 4a-2a-2：`SessionControlView(workspace:)` 的生产装配需要完整
+/// SessionWorkspace；本文件只关心 control VM，其余 6 个 VM 用空桩。
+private struct ReviewGalleryProviderStub: GalleryDataProvider {
+    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
+
+    func photoPage(
+        sessionId: String,
+        afterFirstRowid: Int64?,
+        limit: Int,
+        expandVariants: Bool
+    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
+        ([], nil)
+    }
+}
 
 @MainActor
 @Suite("review fixes")
@@ -37,11 +56,69 @@ struct ReviewFixTests {
         )
     }
 
-    private func statusText(_ summary: MetadataSyncSummary) -> String {
-        AppLanguageLock.withCopy("zh-CN") {
-            SessionControlView(sessionId: "s1", router: StubCommandRouter.empty())
-                .syncStatusText(summary)
-        }
+    /// Cut 4 / 4a-2a-2：页面 VM 从 workspace 取（生产形状）；本文件只用到
+    /// control VM，其余 6 个 VM 用类型化空桩。
+    private func controlWorkspace() -> SessionWorkspace {
+        SessionWorkspace(
+            sessionId: "s1",
+            culling: CullingViewModel(
+                sessionId: "s1",
+                culling: B8CullingAPIStub(),
+                navigation: B8NavigationAPIStub(),
+                metadata: B6bMetadataAPIStub(),
+                jobs: B5bJobAPIStub(),
+                quality: B5bQualityAPIStub(),
+                captureOne: CaptureOneBridge()
+            ),
+            duplicates: DuplicatesViewModel(
+                sessionId: "s1",
+                duplicate: B5bDuplicateAPIStub(),
+                jobs: B5bJobAPIStub()
+            ),
+            export: ExportViewModel(
+                sessionId: "s1",
+                export: B6bExportAPIStub(),
+                session: B8SessionAPIStub()
+            ),
+            face: FaceKeywordingViewModel(
+                sessionId: "s1",
+                face: B8FaceAPIStub(),
+                jobs: B5bJobAPIStub(),
+                captureOne: CaptureOneBridge()
+            ),
+            control: SessionControlViewModel(
+                sessionId: "s1",
+                session: B8SessionAPIStub(),
+                culling: B8CullingAPIStub(),
+                jobAPI: B5bJobAPIStub(),
+                qualityAPI: B5bQualityAPIStub()
+            ),
+            gallery: GalleryViewModel(
+                sessionId: "s1",
+                provider: ReviewGalleryProviderStub(),
+                job: B5bJobAPIStub()
+            ),
+            similarity: SimilarityViewModel(
+                sessionId: "s1",
+                similarity: B8SimilarityAPIStub(),
+                jobs: B5bJobAPIStub(),
+                pollInterval: .seconds(3600),
+                captureOne: CaptureOneBridge()
+            )
+        )
+    }
+
+    /// Cut 4 / 4b-2f：状态句由**显式传入**的 L10n 解析（裸 View 无 languageStore
+    /// env，不读进程全局语言）；语言可参数化以便同一条阶梯在 zh/en 下都验到。
+    private func statusText(
+        _ summary: MetadataSyncSummary,
+        language: L10n.Language = .zhCN
+    ) -> String {
+        SessionControlView(
+            workspace: controlWorkspace(),
+            culling: B8CullingAPIStub()
+        )
+        .syncStatusText(summary, with: L10n(language: language))
     }
 
     @Test("F08：已写入待 C1 读取时不再宣称「全部同步」")
@@ -74,39 +151,28 @@ struct ReviewFixTests {
         #expect(!statusText(sync()).contains("全部同步"))
     }
 
-    // MARK: F07 当前任务分层
-
-    private func jobRow(_ id: String, _ status: String) -> GatherCore.JSONValue {
-        .object([
-            "id": .string(id),
-            "type": .string("metadata.scan"),
-            "scopeType": .string("session"),
-            "scopeId": .string("s1"),
-            "dedupeKey": .string("dedupe-" + id),
-            "status": .string(status),
-            "priority": .number(0),
-            "progressCurrent": .number(0),
-            "progressTotal": .number(0),
-            "progressMessage": .string(""),
-            "inputFingerprint": .string(""),
-            "modelId": .string(""),
-            "modelVersion": .string(""),
-            "checkpoint": .object([:]),
-            "attemptCount": .number(0),
-            "leaseOwner": .string(""),
-            "heartbeatAt": .string(""),
-            "errorCode": .string(""),
-            "errorMessage": .string(""),
-            "createdAt": .string("2026-01-01T00:00:00.000Z"),
-            "startedAt": .string(""),
-            "finishedAt": .string(""),
-            "updatedAt": .string("2026-01-01T00:00:00.000Z"),
-        ])
+    // 4b-2f：同一个阶梯在 en 下逐条出英文——语言来自显式 L10n，
+    // 而不是 .zhCN 兜底（否则这里会读到中文并变红）。
+    @Test("显式 L10n：en 状态阶梯")
+    func englishSyncStatusText() {
+        #expect(statusText(sync(conflict: 1), language: .en) == "XMP conflicts exist; resolve them first")
+        #expect(statusText(sync(failed: 1), language: .en) == "Some writes failed; retry them first")
+        #expect(statusText(sync(pending: 2), language: .en)
+            == "2 items pending: Gather has not written XMP yet")
+        #expect(statusText(sync(writing: 1), language: .en) == "Gather is writing XMP…")
+        #expect(statusText(sync(written: 1), language: .en)
+            == "Written, awaiting read: waiting for Capture One to read the metadata")
+        #expect(statusText(sync(synced: 1), language: .en) == "Synced: Capture One has read the metadata")
+        #expect(statusText(sync(), language: .en) == "Nothing to sync")
     }
+
+    // MARK: F07 当前任务分层
 
     /// 控制中心 load() 会先取 session.get / workspace.status（任一失败就整段跳过，
     /// 包括 jobs.list），因此桩必须三件都可用。
-    private func controlViewModel(_ jobs: [(String, String)]) throws -> SessionControlViewModel {
+    /// B8.1b：session/workspace 用类型化夹具替身；任务列表走 JobAPI 的 typed 夹具
+    ///（不再按命令名塞 JSONValue 行）。
+    private func controlViewModel(_ jobs: [(String, AnalysisJobStatus)]) async throws -> SessionControlViewModel {
         let session = SessionData(
             id: "s1",
             name: "Workspace",
@@ -133,25 +199,36 @@ struct ReviewFixTests {
             recommendedNext: nil,
             generatedAt: ""
         )
-        let router = StubCommandRouter(responses: [
-            "session.get": try GatherCore.JSONValue(from: session),
-            "workspace.status": try GatherCore.JSONValue(from: workspace),
-            "jobs.list": .array(jobs.map { jobRow($0.0, $0.1) }),
-        ])
-        let viewModel = SessionControlViewModel(sessionId: "s1", router: router)
-        viewModel.load()
+        // B8.2a：session.get / workspace.status / culling.sync_status 全部走类型化
+        // API（SessionAPI + CullingAPI）；任务列表走 JobAPI（B5b）。
+        let sessionAPI = B8SessionAPIStub(session: session, status: workspace)
+        let jobAPI = B5bJobAPIStub()
+        jobAPI.jobs = jobs.map { b5bJobData(id: $0.0, status: $0.1) }
+        let viewModel = SessionControlViewModel(
+            sessionId: "s1",
+            session: sessionAPI,
+            culling: B8CullingAPIStub(),
+            jobAPI: jobAPI,
+            qualityAPI: B5bQualityAPIStub()
+        )
+        await viewModel.load()
+        // 任务快照是异步刷新（load() 内起 Task），等它落定再断言。
+        #expect(
+            await waitUntilAsync { viewModel.jobs.count == jobs.count },
+            "任务快照未在超时内落定（期望 \(jobs.count) 条，实际 \(viewModel.jobs.count) 条）"
+        )
         return viewModel
     }
 
     @Test("F07：当前任务只列活跃与失败，历史单独折叠")
-    func jobSplitKeepsHistoryOutOfCurrentTasks() throws {
-        let viewModel = try controlViewModel([
-            ("a", "running"),
-            ("b", "failed"),
-            ("c", "succeeded"),
-            ("d", "cancelled"),
-            ("e", "interrupted"),
-            ("f", "queued"),
+    func jobSplitKeepsHistoryOutOfCurrentTasks() async throws {
+        let viewModel = try await controlViewModel([
+            ("a", .running),
+            ("b", .failed),
+            ("c", .succeeded),
+            ("d", .cancelled),
+            ("e", .interrupted),
+            ("f", .queued),
         ])
         #expect(viewModel.activeJobs.map(\.id) == ["a", "f"])
         #expect(viewModel.attentionJobs.map(\.id) == ["b", "e"])
@@ -159,8 +236,8 @@ struct ReviewFixTests {
     }
 
     @Test("F07：只有历史任务时当前任务区为空")
-    func onlyHistoryMeansNoCurrentTasks() throws {
-        let viewModel = try controlViewModel([("c", "succeeded"), ("d", "cancelled")])
+    func onlyHistoryMeansNoCurrentTasks() async throws {
+        let viewModel = try await controlViewModel([("c", .succeeded), ("d", .cancelled)])
         #expect(viewModel.activeJobs.isEmpty)
         #expect(viewModel.attentionJobs.isEmpty)
         #expect(viewModel.historyJobs.count == 2)
@@ -313,7 +390,11 @@ struct ReviewFixTests {
 
     @Test("N03：变体/格式/目录/命名变化都会让旧计划过期")
     func planSignatureCoversPlanAffectingOptions() {
-        let viewModel = ExportViewModel(sessionId: "s1", router: StubCommandRouter.empty())
+        let viewModel = ExportViewModel(
+            sessionId: "s1",
+            export: B6bExportAPIStub(),
+            session: B8SessionAPIStub()
+        )
         // 还没有任何计划 → 视为过期（不允许显示张数）。
         #expect(viewModel.isPlanStale)
         let initial = viewModel.planSignature
@@ -338,7 +419,11 @@ struct ReviewFixTests {
 
     @Test("N05：挑片成果入口把范围设为保留片")
     func picksIntentSelectsKeepOnlyScope() {
-        let viewModel = ExportViewModel(sessionId: "s1", router: StubCommandRouter.empty())
+        let viewModel = ExportViewModel(
+            sessionId: "s1",
+            export: B6bExportAPIStub(),
+            session: B8SessionAPIStub()
+        )
         #expect(viewModel.scope == .session)
         viewModel.applyRangeIntent(.picks)
         #expect(viewModel.scope == .filtered)
@@ -346,7 +431,11 @@ struct ReviewFixTests {
 
     @Test("N05/V2：通用入口（nil / allPhotos）不覆盖用户已选的范围")
     func generalEntryKeepsUserChoice() {
-        let viewModel = ExportViewModel(sessionId: "s1", router: StubCommandRouter.empty())
+        let viewModel = ExportViewModel(
+            sessionId: "s1",
+            export: B6bExportAPIStub(),
+            session: B8SessionAPIStub()
+        )
         viewModel.applyRangeIntent(.allPhotos)
         #expect(viewModel.scope == .session)
         // 用户手动选保留片后，从页签再次进入（意图 nil）不得回退成全部。
@@ -361,7 +450,21 @@ struct ReviewFixTests {
 
     @Test("B3（9-30 审查）：手动预览也进入同一套计划发布契约（记录 plannedSignature）")
     func manualPreviewPublishesSignature() async {
-        let viewModel = ExportViewModel(sessionId: "s1", router: StubCommandRouter.empty())
+        let export = B6bExportAPIStub()
+        export.previewResult = ExportPreview(
+            totalFiles: 2,
+            totalSizeBytes: 2_048,
+            freeSpaceBytes: 10_000,
+            files: [
+                ExportPreviewFile(photoId: "p1", filename: "a.jpg", fileSize: 1_024),
+                ExportPreviewFile(photoId: "p2", filename: "b.jpg", fileSize: 1_024),
+            ]
+        )
+        let viewModel = ExportViewModel(
+            sessionId: "s1",
+            export: export,
+            session: B8SessionAPIStub()
+        )
         viewModel.destination = "/tmp/gather-b3-dest"
         viewModel.includeXmp = false
         let signature = viewModel.planSignature
@@ -369,38 +472,36 @@ struct ReviewFixTests {
         await viewModel.previewExport()
         // 旧实现只写 preview/notice，不写 plannedSignature，也不做请求序号校验——
         // 慢的手动预览可以覆盖更新的自动预览而 isPlanStale 仍认为计划有效。
-        // StubCommandRouter 对 export.preview 回 null（解码失败）时不应留下半成品状态。
-        if viewModel.preview != nil {
-            #expect(viewModel.plannedSignature == signature, "手动预览必须登记它对应的参数指纹")
-        }
+        #expect(export.previewInputs.count == 1)
+        #expect(viewModel.preview?.totalFiles == 2)
+        #expect(viewModel.plannedSignature == signature, "手动预览必须登记它对应的参数指纹")
         #expect(viewModel.plannedSignature != "stale-from-other-request")
     }
 
     // MARK: N07 导航记忆与照片跳转
 
-    @Test("N07：离开工作区后侧栏仍保留当前会话入口")
+    @Test("N07：离开工作区后侧栏仍保留当前会话入口（lastSessionId 归 SessionStore）")
     func sidebarKeepsLastSession() {
-        let navigation = RootNavigation()
-        navigation.openSession("s1")
-        #expect(navigation.sidebarSessionId == "s1")
-        navigation.selectLibrary()
-        #expect(navigation.currentSessionId == nil)
-        #expect(navigation.sidebarSessionId == "s1", "最近工作区入口必须保留")
+        let store = SessionStore(capacity: 4) { makeTestSessionWorkspace(sessionId: $0) }
+        store.activate("s1")
+        #expect(store.lastSessionId == "s1")
+        // 回到全局页面：只 suspend，最近会话入口保留。
+        store.activate(nil)
+        #expect(store.activeSessionId == nil)
+        #expect(store.lastSessionId == "s1", "最近工作区入口必须保留")
+        // 再进另一个工作区才替换最近项。
+        store.activate("s2")
+        #expect(store.lastSessionId == "s2")
     }
 
-    @Test("N07：图库可携带要打开的照片，切换页面后清空")
+    @Test("N07：图库照片意图 take 取出即清（4a-2c 迁 WorkspaceIntent）")
     func galleryCarriesPendingPhoto() {
-        let navigation = RootNavigation()
-        navigation.openGallery("s1", photoId: "p9")
-        #expect(navigation.pendingGalleryPhotoId == "p9")
-        #expect(navigation.gallerySessionId == "s1")
-        navigation.clearPendingGalleryPhoto()
-        #expect(navigation.pendingGalleryPhotoId == nil)
-
-        // 其他会话页入口会把待打开照片清掉（避免下次进图库又弹同一张）。
-        navigation.openGallery("s1", photoId: "p9")
-        navigation.openSessionTab("s1", .control)
-        #expect(navigation.pendingGalleryPhotoId == nil)
+        let workspace = makeTestSessionWorkspace(sessionId: "s1")
+        workspace.enqueue(.galleryPhoto(id: "p9", path: nil))
+        #expect(workspace.take(.galleryPhoto) == .galleryPhoto(id: "p9", path: nil))
+        #expect(workspace.take(.galleryPhoto) == nil, "意图是一次性事件，取出即清")
+        // 未播种时不凭空产生意图。
+        #expect(workspace.take(.galleryPhoto) == nil)
     }
 
     // MARK: F13 人脸簇计数
@@ -432,10 +533,9 @@ struct ReviewFixTests {
 
     @Test("F13：同一张照片的两张脸是人脸样本而不是照片数")
     func sampleCountDistinguishesPhotos() {
-        let text = AppLanguageLock.withCopy("zh-CN") {
-            cluster(size: 2, members: [member(1, "/a/IMG_1.NEF"), member(2, "/a/IMG_1.NEF")])
-                .sampleCountText()
-        }
+        // Cut 4 / 4b-2b：计数文案在渲染期按显式 L10n 解析（不再依赖进程全局语言）。
+        let text = cluster(size: 2, members: [member(1, "/a/IMG_1.NEF"), member(2, "/a/IMG_1.NEF")])
+            .sampleCountText(with: L10n(language: .zhCN))
         #expect(text.contains("2 个人脸样本"))
         #expect(text.contains("1 张照片"))
     }
@@ -444,7 +544,7 @@ struct ReviewFixTests {
     func truncatedMembersDoNotGuessPhotoCount() {
         let value = cluster(size: 9, members: [member(1, "/a/1.NEF"), member(2, "/a/2.NEF")])
         #expect(value.distinctPhotoCount == nil)
-        let text = AppLanguageLock.withCopy("zh-CN") { value.sampleCountText() }
+        let text = value.sampleCountText(with: L10n(language: .zhCN))
         #expect(text.contains("9 个人脸样本"))
         #expect(!text.contains("张照片"))
     }
@@ -541,11 +641,13 @@ struct ReviewFixTests {
     @Test("C-#7：改阈值后旧扫描结果必须标记为过期")
     func duplicateScanResultGoesStale() async throws {
         let scanResult = DuplicateScanResult(exactGroups: [], visualGroups: [], totalDuplicates: 3)
-        let router = StubCommandRouter(responses: [
-            "dup.scan": try GatherCore.JSONValue(from: scanResult),
-            "dup.groups": .array([]),
-        ])
-        let viewModel = DuplicatesViewModel(sessionId: "s1", router: router)
+        let duplicateAPI = B5bDuplicateAPIStub()
+        duplicateAPI.scanResult = scanResult
+        let viewModel = DuplicatesViewModel(
+            sessionId: "s1",
+            duplicate: duplicateAPI,
+            jobs: B5bJobAPIStub()
+        )
         viewModel.threshold = 4
         await viewModel.scan()
         #expect(viewModel.scanResult != nil)
@@ -561,7 +663,14 @@ struct ReviewFixTests {
 
     @Test("C-#1：load() 重选同一簇不得冲掉未提交的角色名/关键字草稿")
     func faceDraftSurvivesReloadOfSameCluster() {
-        let viewModel = FaceKeywordingViewModel(sessionId: "s1", router: StubCommandRouter.empty())
+        // 生产装配（FaceAPI + JobAPI + CaptureOneBridge）：C-#1 只验证草稿不冲掉，
+        // 不需要任何数据加载，故用 typed 替身而非 router。
+        let viewModel = FaceKeywordingViewModel(
+            sessionId: "s1",
+            face: B8FaceAPIStub(),
+            jobs: B5bJobAPIStub(),
+            captureOne: CaptureOneBridge()
+        )
         let bound = cluster(size: 2, members: [member(1, "/a/1.NEF"), member(2, "/a/2.NEF")])
         viewModel.select(bound)
         // 用户开始编辑但还没提交。

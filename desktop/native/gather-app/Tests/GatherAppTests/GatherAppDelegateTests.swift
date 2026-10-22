@@ -1,10 +1,25 @@
+// desktop/native/gather-app/Tests/GatherAppTests/GatherAppDelegateTests.swift
+// 深链导入与导入完成通知的契约。
+//
+// 职责：
+// 1. gather://import?file=… 过滤非图片、去重、保留大小写扩展名、丢弃不存在路径；
+// 2. Finder 传入文件 URL 直接接受，目录展开为图片文件；
+// 3. AppImport.importFiles 成功后 post importCompleted，userInfo 携带
+//    sessionId / addedCount / failedCount。
+//
+// 边界：临时目录 + 真实 1×1 JPEG 驱动启动后共用的导入路径；不跑 AppKit 事件
+// 循环、不触网、不写真实 Application Support（内存 SchemaV1 库）。
 import Foundation
 import Testing
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
-@testable import GatherApp
-@testable import GatherCore
+@testable import GatherUI
+@testable import GatherHost
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 @Suite("GatherAppDelegate")
 @MainActor
@@ -84,9 +99,8 @@ struct GatherAppDelegateTests {
         let broken = directory.appendingPathComponent("broken.txt")
         try Data("not-an-image".utf8).write(to: broken)
 
-        let db = try DBConnection(path: ":memory:")
-        try MigrationRunner().migrate(db)
-        let router = SessionCommandRouter.makeDefault(db: db)
+        let db = try makeGatherTestDB()
+        let composition = AppComposition.make(db: db)
 
         final class Box: @unchecked Sendable {
             var userInfo: [AnyHashable: Any]?
@@ -101,13 +115,54 @@ struct GatherAppDelegateTests {
         }
         defer { NotificationCenter.default.removeObserver(token) }
 
-        GatherApp.importFiles([good.path, broken.path], router: router)
+        // Cut 3 / 3b-1：导入实现已迁到 AppImport（本测试仍覆盖启动后的菜单/
+        // deep-link 共用的导入路径与通知契约）。
+        AppImport.importFiles(
+            [good.path, broken.path],
+            composition: composition,
+            l10n: L10n(language: .zhCN)
+        )
 
         let userInfo = try #require(box.userInfo)
         let sessionId = try #require(userInfo[GatherAppImportUserInfoKey.sessionId] as? String)
         #expect(!sessionId.isEmpty)
         #expect(userInfo[GatherAppImportUserInfoKey.addedCount] as? Int == 1)
         #expect(userInfo[GatherAppImportUserInfoKey.failedCount] as? Int == 1)
+    }
+
+    /// Cut 4 / 4b-3：AppKit 兜底菜单的文案随注入语言（菜单文案在**构建时**按
+    /// l10n 解析；ensureStandardMenus 在语言变化/窗口成为 key 时重建）。
+    @Test func standardMenuTitlesFollowInjectedLanguage() {
+        let delegate = GatherAppDelegate()
+        // 注入 store 会触发一次标准菜单补齐：NSApp 为 nil（测试进程无
+        // NSApplication）时必须安全返回，而不是对 IUO 取成员 trap。
+        delegate.languageStore = LanguageStore(language: .en, notificationCenter: NotificationCenter())
+
+        let en = L10n(language: .en)
+        let enFile = delegate.makeStandardFileMenu(l10n: en)
+        #expect(enFile.title == "File")
+        #expect(enFile.items.filter { !$0.isSeparatorItem }.map(\.title) == [
+            "New Workspace", "Import Folder", "Import from Capture One", "Close Window",
+        ])
+        let enEdit = delegate.makeStandardEditMenu(l10n: en)
+        #expect(enEdit.title == "Edit")
+        #expect(enEdit.items.first { $0.title == "Undo" }?.keyEquivalent == "z")
+
+        let zh = L10n(language: .zhCN)
+        #expect(delegate.makeStandardFileMenu(l10n: zh).title == "文件")
+        #expect(delegate.makeStandardFileMenu(l10n: zh).items.first?.title == "新建工作区")
+        #expect(delegate.makeStandardEditMenu(l10n: zh).items.first?.title == "撤销")
+    }
+
+    /// Cut 4 / 4b-3：C1 默认建库名走 `l10n.format`（原 String(format: l(...))）；
+    /// en 界面出译文，非 C1 来源回退「导入照片」。
+    @Test func captureOneDefaultNameFollowsInjectedL10n() {
+        #expect(AppImport.defaultImportName(source: "capture-one", l10n: L10n(language: .zhCN))
+            .hasPrefix("C1 导入 "))
+        #expect(AppImport.defaultImportName(source: "capture-one", l10n: L10n(language: .en))
+            .hasPrefix("C1 Import "))
+        #expect(AppImport.defaultImportName(source: "local", l10n: L10n(language: .en)) == "Import Photos")
+        #expect(AppImport.defaultImportName(source: "local", l10n: L10n(language: .zhCN)) == "导入照片")
     }
 
     /// 生成真实可解码的 1x1 JPEG（RAWDecoder.getDimensions 依赖 ImageIO 读头）。

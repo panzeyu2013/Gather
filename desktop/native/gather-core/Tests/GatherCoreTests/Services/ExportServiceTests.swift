@@ -1,14 +1,29 @@
+// desktop/native/gather-core/Tests/GatherCoreTests/Services/ExportServiceTests.swift
+// ExportService 交付契约：复制/边车、断点续传、指纹、变体与取消隔离。
+//
+// 职责：
+// 1. original 导出复制原图与 XMP 边车，preview 与 execute 一致，resume 跳过已完成；
+// 2. deliveryFingerprint 纳入 photoId 与边车版本，区分同内容不同照片、新交付与续传；
+// 3. 拒绝导出到源目录内；JPEG 转换走 ImageIO；时间占位符固定 24 小时制；
+// 4. 变体策略（preferred/all）与导入顺序稳定；丢弃/筛选只导出保留项；
+// 5. 同一会话两次取消互不影响。
+//
+// 边界：内存 SchemaV1 库 + 临时目录中的真实文件；ImageIO 用例用
+// #if canImport(ImageIO) 门控；不触网、不写真实 Application Support。
 import Foundation
 import Testing
 #if canImport(ImageIO)
 import ImageIO
 import CoreGraphics
 #endif
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 private func makeExportDatabase() throws -> DBConnection {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
+    let db = try makeTestDB()
     return db
 }
 
@@ -19,9 +34,9 @@ private func seedExportPhoto(
     filepath: String
 ) throws {
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
-          result, asset_id, asset_file_id, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', NULL, NULL, 32, 24,
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
+          asset_id, asset_file_id, width, height, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', 'ready', NULL, NULL, 32, 24,
           '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([
         .text(photoId), .text(sessionId), .text(filepath),
@@ -846,9 +861,9 @@ private func seedExportAssetPhoto(
     filename: String
 ) throws {
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
-          result, asset_id, asset_file_id, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', ?, NULL, 32, 24,
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
+          asset_id, asset_file_id, width, height, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', 'ready', ?, NULL, 32, 24,
           '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([
         .text(photoId), .text(sessionId), .text("/shoot/" + filename),

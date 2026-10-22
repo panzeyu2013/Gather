@@ -3,11 +3,13 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 struct FaceRepoTests {
     private func makeRepo() throws -> (DBConnection, FaceRepo) {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try insertSession(db, "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1")
         try insertPhoto(db, id: "p2", sessionId: "s1")
@@ -41,10 +43,10 @@ struct FaceRepoTests {
         #expect(ids == [1, 2])
 
         let rows = try repo.getObservations("s1")
+        #expect(FaceObservationRow.columns.count == 17, "V1 face_observations 只有 17 列")
         #expect(rows.count == 2)
         #expect(rows[0].photoId == "p1")
         #expect(rows[0].bboxX == 1.5)
-        #expect(rows[0].sourceFileSize == 1234)
         #expect(rows[0].analysisSignature == "sig-1")
         #expect(rows[0].embedding.count == 12)
         #expect(floats(from: rows[0].embedding) == [0.5, -0.25, 1.0])
@@ -123,8 +125,8 @@ struct FaceRepoTests {
             """).run([.text(now), .text(now)])
         _ = try db.prepare("""
             INSERT INTO person_embeddings (person_id, embedding, photo_id, session_id, face_observation_id,
-                                           face_bbox, quality, created_at)
-            VALUES ('person-1', ?, 'p1', 's1', ?, '[1,2,3,4]', 0.9, ?)
+                                           created_at)
+            VALUES ('person-1', ?, 'p1', 's1', ?, ?)
             """).run([.blob(Data([0, 0, 128, 63])), .int(oldIDs[0]), .text(now)])
 
         _ = try repo.replaceObservationsByPhoto(sessionId: "s1", photoId: "p1", observations: [
@@ -177,6 +179,12 @@ struct FaceRepoTests {
         #expect(try repo.getClusterSignature("s1") == "cluster-v1")
         try repo.upsertClusterSignature(sessionId: "s1", signature: "cluster-v2")
         #expect(try repo.getClusterSignature("s1") == "cluster-v2")
+
+        // Cut 5 / 5c-2：失效 API（B 失败 / A-C 之间取消 / C 守卫失败时清签名）。
+        try repo.clearClusterSignature(sessionId: "s1")
+        #expect(try repo.getClusterSignature("s1") == nil)
+        try repo.clearClusterSignature(sessionId: "missing")
+        #expect(try repo.getClusterSignature("missing") == nil)
     }
 
     @Test func reuseObservationsForAssetFile() throws {
@@ -271,7 +279,7 @@ struct FaceRepoTests {
     // ─────────────────────────── 聚类 ───────────────────────────
 
     private func makeClusterRepo() throws -> (DBConnection, FaceRepo, String) {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try insertSession(db, "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: "/v/p1.jpg")
         try insertPhoto(db, id: "p2", sessionId: "s1", filepath: "/v/p2.jpg")
@@ -296,6 +304,8 @@ struct FaceRepoTests {
         #expect(ids == [1, 2])
 
         let bare = try repo.getClusters("s1")
+        #expect(FaceClusterRow.columns.count == 10, "9 个物理列 + COUNT 别名")
+        #expect(!FaceClusterRow.columns.contains("thumbnail_base64"), "V1 已删除该列")
         #expect(bare.count == 2)
         #expect(bare[0].label == "A")
         #expect(bare[0].memberCount == 2)
@@ -326,6 +336,42 @@ struct FaceRepoTests {
         #expect(try rowCount(db, "SELECT COUNT(*) FROM role_bindings") == 0)
         #expect(try repo.getClusters("s1", includeMembers: true)[0].status == "unbound")
 
+    }
+
+    /// Cut 5 / 5c-2：跨库匹配的批量输入 = 簇匹配状态 + 成员几何，一条 LEFT JOIN。
+    /// 无成员的簇也必须返回一行（否则调用方会漏掉"已绑定但空成员"的簇）。
+    @Test func batchClusterMatchRowsCarryMembersAndMatchState() throws {
+        let (db, repo, _) = try makeClusterRepo()
+        defer { db.close() }
+
+        let ids = try repo.saveClusters(sessionId: "s1", clusters: [
+            FaceClusterInput(label: "A", members: [
+                FaceClusterMemberInput(photoId: "p1", photoPath: "/v/p1.jpg", bbox: [0, 0, 10, 10], confidence: 0.9),
+                FaceClusterMemberInput(photoId: "p2", photoPath: "/v/p2.jpg", bbox: [1, 2, 3, 4], confidence: 0.8),
+            ]),
+            FaceClusterInput(label: "empty", members: []),
+            FaceClusterInput(label: "B", members: [
+                FaceClusterMemberInput(photoId: "p2", photoPath: "/v/p2.jpg", bbox: [5, 5, 6, 6], confidence: 0.7),
+            ]),
+        ])
+        #expect(ids.count == 3)
+        let personId = try PersonRepo(connection: db).create(name: "A")
+        try repo.setClusterMatch(clusterId: ids[2], personId: personId, confidence: 0.93)
+
+        let rows = try repo.getClusterMatchRows(
+            sessionId: "s1", clusterIds: [ids[0], ids[1], ids[2], 9_999])
+        // 两个成员行 + 一个空簇行 + 已绑定簇一行；不存在的 id 不出现。
+        #expect(rows.count == 4)
+        #expect(rows.filter { $0.clusterId == ids[0] }.map(\.memberPhotoId) == ["p1", "p2"])
+        #expect(rows.filter { $0.clusterId == ids[0] }.allSatisfy { $0.matchedPersonId == nil })
+        #expect(rows.filter { $0.clusterId == ids[1] }.count == 1)
+        #expect(rows.first { $0.clusterId == ids[1] }?.memberPhotoId == nil)
+        #expect(rows.first { $0.clusterId == ids[2] }?.matchedPersonId == personId)
+        #expect(rows.first { $0.clusterId == ids[2] }?.memberBbox == "[5,5,6,6]")
+        #expect(rows.contains { $0.clusterId == 9_999 } == false)
+
+        // 跨会话不可见（session_id 过滤）。
+        #expect(try repo.getClusterMatchRows(sessionId: "other", clusterIds: ids).isEmpty)
     }
 
     @Test func clusterAccessors() throws {
@@ -501,10 +547,10 @@ struct FaceRepoTests {
             try? FileManager.default.removeItem(atPath: dir)
         }
 
-        // 存档 member_count 被写脏（99）也不影响读取：计数来自成员表。
+        // 计数来自成员表（V1 已无 member_count 物理列）。
         _ = try db.prepare("""
-            INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
-            VALUES (5, 's1', 'stale', 99, 'unbound', '', '')
+            INSERT INTO face_clusters (id, session_id, label, status, thumbnail_path)
+            VALUES (5, 's1', 'stale', 'unbound', '')
             """).run()
         _ = try db.prepare("""
             INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence)
@@ -513,7 +559,7 @@ struct FaceRepoTests {
 
         var rows = try repo.getClusters("s1", includeMembers: true)
         #expect(rows.count == 1)
-        #expect(rows[0].memberCount == 1, "读取忽略存档 member_count")
+        #expect(rows[0].memberCount == 1, "计数来自成员表")
         #expect(rows[0].members?.map(\.photoId) == ["p1"])
 
         // 有绑定但成员清空 → 仍是可读的孤儿绑定（解绑/XMP 清理入口）。

@@ -3,8 +3,8 @@
 // TS 源: tests/unit/services/workspace/workspace-status.test.ts（用例逐一对应，
 // 见文件末尾对照表）。差异说明：
 // - TS 通过注入 mock 的 getSummary() 直接设置 summary 计数；Swift 侧没有
-//    coordinator，summary 来自真实 outbox 表（summaryCounts 投影），
-//   "folds failed xmp rows into pending" 用例改为种子 outbox 行断言同一投影。
+//   coordinator，summary 来自统一交付模型（DeliverySummaryQuery 投影），
+//   "folds failed xmp rows into pending" 用例改为种子 deliveries 断言同一投影。
 // - clear_completed 两用例：TS 走 JobService.clearCompleted()（排除
 //   metadata.scan / export.execute 证据行），Swift 等价于
 //   AnalysisJobRepo.clearTerminal(statuses:excludeTypes:)（状态集合必填；
@@ -12,7 +12,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - Fixtures
 
@@ -25,14 +29,13 @@ private struct ServiceHarness {
 private func makeHarness(
     clock: @escaping () -> Int = { Int(Date().timeIntervalSince1970 * 1000) }
 ) throws -> ServiceHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "Workspace", source: "folder")
     let service = WorkspaceStatusService(
         connection: db,
         sessionRepo: sessionRepo,
         photoRepo: PhotoRepo(connection: db),
-        outboxRepo: MetadataOutboxRepo(connection: db),
         clock: clock
     )
     return ServiceHarness(db: db, sessionId: session.id, service: service)
@@ -42,8 +45,8 @@ private func makeHarness(
 private func addPhoto(_ db: DBConnection, _ sessionId: String, _ id: String, status: String = "pending") throws {
     let now = nowISOString()
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', ?, '{}', '{}', 100, 80, ?, ?)
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, width, height, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', ?, 100, 80, ?, ?)
       """).run([.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg"), .text(status), .text(now), .text(now)])
 }
 
@@ -97,36 +100,67 @@ private func addAnalysisRun(
 ) throws {
     let finished = finishedAt ?? nowISOString()
     _ = try db.prepare("""
-        INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
+        INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params_json, status)
         VALUES (?, ?, 1, ?, ?, ?, '{}', ?)
       """).run([.text(sessionId), .text(kind), .int(Int64(indexSeq)), .text(finished), .text(finished), .text(status)])
 }
 
-/// 种子一条 outbox 行并挂到 session（TS 测试里 metadata_outbox + metadata_outbox_sessions 两组 INSERT）。
-private func addOutboxRow(
+/// 种子一条交付并挂到 session（统一交付模型：deliveries + delivery_items +
+/// delivery_sessions）。xmp 计数只读交付行与 item 的模块归属，旧 outbox 不参与。
+private func addDeliveryRow(
     _ db: DBConnection,
     _ sessionId: String,
     xmpPath: String,
     status: String,
-    sourceModule: String = "culling"
+    itemStatus: String = "pending",
+    module: String = "culling"
 ) throws {
     let now = nowISOString()
+    // 模块过滤经 photos.session_id 关联，item 必须挂在本会话照片上。
+    if try db.prepare("SELECT 1 FROM photos WHERE id = 'workspace-photo'").get([]) == nil {
+        try addPhoto(db, sessionId, "workspace-photo")
+    }
     _ = try db.prepare("""
-        INSERT INTO metadata_outbox (xmp_path, photo_path, patch_json, dirty_fields, source_module, revision, persisted_revision, status, updated_at)
-        VALUES (?, ?, '{}', '[]', ?, 1, 0, ?, ?)
-      """).run([.text(xmpPath), .text("/tmp/photo.jpg"), .text(sourceModule), .text(status), .text(now)])
+        INSERT INTO deliveries (xmp_path, photo_path, status, revision, created_at, updated_at)
+        VALUES (?, '/tmp/photo.jpg', ?, 1, ?, ?)
+      """).run([.text(xmpPath), .text(status), .text(now), .text(now)])
+    let deliveryId = db.lastInsertRowid
     _ = try db.prepare("""
-        INSERT INTO metadata_outbox_sessions (xmp_path, session_id, confirmed_at, linked_at)
-        VALUES (?, ?, '', ?)
-      """).run([.text(xmpPath), .text(sessionId), .text(now)])
+        INSERT INTO delivery_items (delivery_id, photo_id, module, status, created_at, updated_at)
+        VALUES (?, 'workspace-photo', ?, ?, ?, ?)
+      """).run([
+        .int(deliveryId), .text(module), .text(itemStatus), .text(now), .text(now),
+      ])
+    _ = try db.prepare("""
+        INSERT INTO delivery_sessions (delivery_id, session_id, created_at)
+        VALUES (?, ?, ?)
+      """).run([.int(deliveryId), .text(sessionId), .text(now)])
 }
 
-/// TS: writeback_items（culling 写回）INSERT。
-private func addWritebackItem(_ db: DBConnection, _ sessionId: String, xmpStatus: String = "written") throws {
+/// 统一交付模型（deliveries + delivery_items + delivery_sessions）的 culling 写回 INSERT。
+private func addCullingDelivery(
+    _ db: DBConnection,
+    _ sessionId: String,
+    itemStatus: String = "written",
+    module: String = "culling"
+) throws {
+    let now = nowISOString()
+    let xmpPath = "/tmp/culling-\(UUID().uuidString).xmp"
     _ = try db.prepare("""
-        INSERT INTO writeback_items (photo_id, photo_path, session_id, module, keywords, attributes_json, xmp_path, backup_path, xmp_status, error_message, last_attempt_at)
-        VALUES ('photo-1', '/tmp/photo-1.jpg', ?, 'culling', '[]', '{}', '/tmp/photo-1.xmp', '', ?, '', '')
-      """).run([.text(sessionId), .text(xmpStatus)])
+        INSERT INTO deliveries (xmp_path, photo_path, status, revision, created_at, updated_at)
+        VALUES (?, '/tmp/photo-1.jpg', 'written', 1, ?, ?)
+      """).run([.text(xmpPath), .text(now), .text(now)])
+    let deliveryId = db.lastInsertRowid
+    _ = try db.prepare("""
+        INSERT INTO delivery_items (delivery_id, photo_id, module, status, created_at, updated_at)
+        VALUES (?, 'photo-1', ?, ?, ?, ?)
+      """).run([
+        .int(deliveryId), .text(module), .text(itemStatus), .text(now), .text(now),
+      ])
+    _ = try db.prepare("""
+        INSERT INTO delivery_sessions (delivery_id, session_id, created_at)
+        VALUES (?, ?, ?)
+      """).run([.int(deliveryId), .text(sessionId), .text(now)])
 }
 
 // MARK: - Tests
@@ -315,9 +349,9 @@ struct WorkspaceStatusServiceTests {
     @Test func scanIncompleteWinsOverXmpConflicts() throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, harness.sessionId, "photo-1")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c1.xmp", status: "conflict")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c2.xmp", status: "conflict")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c3.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c1.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c2.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c3.xmp", status: "conflict")
         try addJob(harness.db, harness.sessionId, options: JobSeed(
             id: "scan-1", status: "queued", updatedAt: "2026-08-08T00:00:00.000Z"
         ))
@@ -328,7 +362,7 @@ struct WorkspaceStatusServiceTests {
     @Test func xmpConflictsBeatStaleAnalyses() throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, harness.sessionId, "photo-1")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c1.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c1.xmp", status: "conflict")
         try addJob(harness.db, harness.sessionId, options: JobSeed(
             id: "scan-1", status: "succeeded", updatedAt: "2026-08-08T00:00:00.000Z"
         ))
@@ -383,7 +417,7 @@ struct WorkspaceStatusServiceTests {
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
          #expect(try #require(status).recommendedNext == WorkspaceRecommendedNext(action: "start_culling", target: "culling"))
 
-        try addWritebackItem(harness.db, harness.sessionId)
+        try addCullingDelivery(harness.db, harness.sessionId)
         let afterCulling = try harness.service.getStatus(sessionId: harness.sessionId)
          #expect(try #require(afterCulling).recommendedNext == WorkspaceRecommendedNext(action: "export", target: "export"))
 
@@ -397,20 +431,30 @@ struct WorkspaceStatusServiceTests {
 
     // MARK: soft flags and counts（TS: 'WorkspaceStatusService soft flags and counts'）
 
-    @Test func culledIsTrueWhenCullingWritebackItemWasWrittenBack() throws {
+    @Test func culledIsTrueWhenCullingDeliveryItemWasWrittenBack() throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, harness.sessionId, "photo-1")
-        try addWritebackItem(harness.db, harness.sessionId, xmpStatus: "written")
+        try addCullingDelivery(harness.db, harness.sessionId, itemStatus: "written")
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
          #expect(try #require(status).softFlags.culled == true)
     }
 
-    @Test func culledIsTrueWhenCullingOutboxReachedSynced() throws {
+    @Test func culledIsTrueWhenCullingDeliveryItemReachedSynced() throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, harness.sessionId, "photo-1")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/photo-1.xmp", status: "synced")
+        try addCullingDelivery(harness.db, harness.sessionId, itemStatus: "synced")
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
          #expect(try #require(status).softFlags.culled == true)
+    }
+
+    @Test func culledIgnoresPendingItemsAndOtherModules() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, harness.sessionId, "photo-1")
+        // pending 不算写回；别的模块的 written 也不算挑片写回。
+        try addCullingDelivery(harness.db, harness.sessionId, itemStatus: "pending")
+        try addCullingDelivery(harness.db, harness.sessionId, itemStatus: "written", module: "similarity")
+        let status = try harness.service.getStatus(sessionId: harness.sessionId)
+         #expect(try #require(status).softFlags.culled == false)
     }
 
     @Test func exportedIsTrueAfterSucceededExportJob() throws {
@@ -426,13 +470,13 @@ struct WorkspaceStatusServiceTests {
 
     @Test func foldsFailedXmpRowsIntoPendingAndReportsConflicts() throws {
         let harness = try makeHarness()
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/p1.xmp", status: "pending")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/p2.xmp", status: "pending")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/f1.xmp", status: "failed")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c1.xmp", status: "conflict")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c2.xmp", status: "conflict")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c3.xmp", status: "conflict")
-        try addOutboxRow(harness.db, harness.sessionId, xmpPath: "/tmp/c4.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/p1.xmp", status: "pending")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/p2.xmp", status: "pending")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/f1.xmp", status: "failed")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c1.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c2.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c3.xmp", status: "conflict")
+        try addDeliveryRow(harness.db, harness.sessionId, xmpPath: "/tmp/c4.xmp", status: "conflict")
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
          #expect(try #require(status).xmp == WorkspaceXmpCounts(pending: 3, conflict: 4))
     }

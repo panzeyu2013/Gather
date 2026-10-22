@@ -11,7 +11,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
+@testable import GatherPersistence
 
 // MARK: - 纯聚类器支撑
 
@@ -249,7 +253,7 @@ private struct ClusterSnapshot {
 private func makeIncrementalFaceHarness(
     settings: [String: String] = [:]
 ) throws -> IncrementalFaceHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "Run", source: "folder")
     let store = VectorStore()
@@ -444,8 +448,10 @@ struct FaceKwIncrementalServiceTests {
         let fullPartition = try observationPartition(harness)
         let fullIds = try clusterSnapshots(harness).map(\.id)
         #expect(incrementalPartition == fullPartition)
-        // 全量确实重建过（ids 全换），划分仍一致 ⇒ 增量没有制造"全量永远得不到"的簇。
-        #expect(Set(incrementalIds).isDisjoint(with: Set(fullIds)))
+        // Cut 5 / 5c-2：C 在"目标簇与库中现有簇逐行一致"时走幂等重放（只推进签名、
+        // 不重插簇行），因此同参 recluster 不再制造新簇 id。全量计算仍在 B 阶段
+        // 完整执行；这里保留划分一致（核心不变量），id 稳定则是新的重放契约。
+        #expect(Set(incrementalIds) == Set(fullIds))
     }
 
     @Test("失效的幽灵成员（observation_id = NULL）在增量落库时清理，不产生重复成员")

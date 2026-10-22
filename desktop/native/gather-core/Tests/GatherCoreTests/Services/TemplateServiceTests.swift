@@ -6,7 +6,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 private struct TemplateHarness {
     let db: DBConnection
@@ -16,7 +20,7 @@ private struct TemplateHarness {
 }
 
 private func makeTemplateHarness(sessionStatus: String = "draft") throws -> TemplateHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let settings = SettingsService(repo: SettingsRepo(connection: db))
     let service = TemplateService(connection: db, settings: settings)
     let sessionRepo = SessionRepo(connection: db)
@@ -163,16 +167,16 @@ struct TemplateApplyTests {
 
     @Test("apply rejects other session statuses with the TS message")
     func applyRejectsStatus() throws {
-        let harness = try makeTemplateHarness(sessionStatus: "indexed")
+        let harness = try makeTemplateHarness(sessionStatus: "completed")
         let template = try harness.service.create(name: "T", description: "", config: makeConfig())
 
-        #expect(throws: TemplateServiceError.invalidSessionStatus("indexed")) {
+        #expect(throws: TemplateServiceError.invalidSessionStatus("completed")) {
             try harness.service.apply(templateId: template.id, sessionId: harness.sessionId)
         }
         // TS: `Cannot apply template to session with status "${status}". Expected draft or photos_loaded.`
         #expect(
-            String(describing: TemplateServiceError.invalidSessionStatus("indexed"))
-                == "Cannot apply template to session with status \"indexed\". Expected draft or photos_loaded."
+            String(describing: TemplateServiceError.invalidSessionStatus("completed"))
+                == "Cannot apply template to session with status \"completed\". Expected draft or photos_loaded."
         )
     }
 

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Capture One 桥接（CaptureOneBridge）经 NSAppleScript 发送 Apple Events。
+	     hardened runtime 分发包必须声明该 entitlement，否则 TCC 拒绝（-1743）。 -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+	<!-- 故意不声明 com.apple.security.app-sandbox：当前签名/运行模型没有沙盒容器，
+	     授权路径访问、SPM 资源 bundle 与 Capture One 插件都按非沙盒语义工作。 -->
+</dict>
+</plist>

@@ -11,7 +11,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 private struct Harness {
     let db: DBConnection
@@ -20,7 +24,7 @@ private struct Harness {
 }
 
 private func makeHarness() throws -> Harness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let repo = SettingsRepo(connection: db)
     let service = SettingsService(repo: repo)
     return Harness(db: db, repo: repo, service: service)

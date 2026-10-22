@@ -3,11 +3,13 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 struct MetadataKeywordOriginRepoTests {
     private func makeRepo() throws -> (DBConnection, MetadataKeywordOriginRepo) {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         return (db, MetadataKeywordOriginRepo(connection: db))
     }
 

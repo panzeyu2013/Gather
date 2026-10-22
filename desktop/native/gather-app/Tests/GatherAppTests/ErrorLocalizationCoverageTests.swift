@@ -1,7 +1,21 @@
+// desktop/native/gather-app/Tests/GatherAppTests/ErrorLocalizationCoverageTests.swift
+// 错误码 ↔ 本地化文案的交叉契约（core 枚举 ↔ app 文案表）。
+//
+// 职责：
+// 1. 每个 GatherErrorCode 都必须有文案，禁止落通用兜底；
+// 2. 文案表不得含枚举之外的码（防生产者自造裸字符串）；
+// 3. en.lproj 覆盖全部中文 key，且英文占位符序列与中文 key 一致。
+//
+// 边界：只读检查 GatherLocalization 与 en.lproj/Localizable.strings，不改产品
+// 文案；文案/切语言用例经 AppLanguageLock 串行，避免进程级 appLanguage 竞争。
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 /// 错误码 ↔ 本地化文案的**交叉契约**（core 枚举 ↔ app 文案表）。
 ///
@@ -42,7 +56,8 @@ struct ErrorLocalizationCoverageTests {
             .deletingLastPathComponent()          // …/Tests/GatherAppTests
             .deletingLastPathComponent()          // …/Tests
             .deletingLastPathComponent()          // …/gather-app
-            .appendingPathComponent("Resources/en.lproj/Localizable.strings")
+            // Cut 3 / 3b-2：.lproj 随 GatherUI target 移入 Sources/GatherUI/Resources。
+            .appendingPathComponent("Sources/GatherUI/Resources/en.lproj/Localizable.strings")
     }
 
     /// 极简 .strings 解析（够用即可：本仓条目都是单行 "key" = "value"; 形式）。

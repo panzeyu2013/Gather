@@ -5,7 +5,11 @@
 
 import Testing
 import Foundation
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 /// 进度帧收集盒（sink 在多个执行线程回调，锁保护 + 值拷贝）。
 private final class FrameBox: @unchecked Sendable {
@@ -44,8 +48,7 @@ private final class Env: @unchecked Sendable {
         stopMs: Int64 = 5_000,
         maxAutoResume: Int = 3
     ) throws {
-        connection = try DBConnection(path: ":memory:")
-        try MigrationRunner().migrate(connection)
+        connection = try makeTestDB()
         repo = AnalysisJobRepo(connection: connection)
         service = JobService(
             repo: repo,

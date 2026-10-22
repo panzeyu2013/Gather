@@ -1,5 +1,5 @@
 import Foundation
-import GatherCore
+import GatherAnalysis
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers

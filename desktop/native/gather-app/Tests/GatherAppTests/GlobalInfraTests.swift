@@ -3,8 +3,12 @@
 // GatherToast 自动消失/手动关闭。
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 @Suite("GatherLocalization", .serialized)
 struct GatherLocalizationTests {
@@ -262,7 +266,8 @@ struct GatherToastTests {
         center.show(type: .success, message: "测试")
         #expect(center.toasts.count == 1)
         let shownId = try #require(center.toasts.first?.id)
-        #expect(await waitUntilAsync(timeout: 2) { !center.toasts.contains { $0.id == shownId } },
+        // 不写死 2s：MainActor 满载时兜底上限由 AsyncWait（默认 10s，可配置）统一提供。
+        #expect(await waitUntilAsync { !center.toasts.contains { $0.id == shownId } },
                 "该 toast 应在注入的 50ms 后自动移除")
         #expect(!center.toasts.contains { $0.id == shownId })
         #expect(center.toasts.isEmpty)

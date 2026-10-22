@@ -3,7 +3,9 @@
 // 精确路径与 LSH 路径的判定必须一致；数值边界用可精确表示的余弦（1.0 / 0.5）。
 
 import Testing
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 struct FaceMatcherMarginTests {
     // q=[1,0,0,0] 对 A=[1,0,0,0] 余弦恰 1.0、对 B=[0.5,0.5,0.5,0.5] 恰 0.5

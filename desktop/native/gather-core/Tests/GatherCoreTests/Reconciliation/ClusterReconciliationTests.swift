@@ -6,7 +6,9 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 struct ClusterReconciliationTests {
 
@@ -60,12 +62,27 @@ struct ClusterReconciliationTests {
         values.map { HashEntry(photoId: $0.photoId, hash: $0.hash) }
     }
 
-    // 单阈值：bitset 路径（默认 maxBitsetEntries）与 fixture 期望逐位一致
-    @Test func clusterByHashMatchesFixture() throws {
+    /// Cut 5 / 5b-2a：唯一实现 = ClusterGraphPipeline（global 单趟图 / sequential 相邻段）。
+    private static func cluster(
+        _ entries: [HashEntry],
+        threshold: Int,
+        minGroupSize: Int,
+        mode: HashGroupingMode
+    ) throws -> ClusterResult {
+        try ClusterGraphPipeline.run(
+            entries: entries,
+            threshold: threshold,
+            minGroupSize: minGroupSize,
+            mode: mode
+        ).result
+    }
+
+    // 单阈值：golden fixture（cluster-fixtures.json）逐组/逐成员/组序逐位一致。
+    @Test func pipelineMatchesFixture() throws {
         let fixture = try Self.loadFixture()
         for c in fixture.cases {
-            let result = try ClusterEngine.clusterByHash(
-                entries: Self.entries(from: c.entries),
+            let result = try Self.cluster(
+                Self.entries(from: c.entries),
                 threshold: c.threshold,
                 minGroupSize: c.minGroupSize,
                 mode: Self.mode(from: c.mode))
@@ -74,11 +91,11 @@ struct ClusterReconciliationTests {
         }
     }
 
-    // 多阈值：每层结果与 fixture 期望一致
-    @Test func clusterByHashMultiMatchesFixture() throws {
+    // 多阈值：每层结果与 fixture 期望一致（global 走多档并集行）。
+    @Test func pipelineTiersMatchesFixture() throws {
         let fixture = try Self.loadFixture()
         for c in fixture.multiCases {
-            let results = try ClusterEngine.clusterByHashMulti(
+            let results = try ClusterGraphPipeline.runTiers(
                 entries: Self.entries(from: c.entries),
                 thresholds: c.thresholds,
                 minGroupSize: c.minGroupSize,
@@ -91,30 +108,24 @@ struct ClusterReconciliationTests {
         }
     }
 
-    // 重算路径（maxBitsetEntries 强制小输入走 recomputedBfs）与 bitset 路径
-    // 的分组一致：fixture 用例不含「稀疏节点索引先于簇种子」的边角差异，
-    // 两路径输出同一连通分量划分，仅组内顺序可能不同（stack BFS vs wave BFS），
-    // 故按成员排序后比对。
-    @Test func recomputedPathAgreesWithBitsetPath() throws {
+    // 超大规模回退（streaming 图，n > defaultMaxBitsetEntries 时启用）与位集图
+    // 在同一阈值下必须给出相同分量与分组：用完整度数序列构造 streaming 图，
+    // 逐组（含组序/组内序）比对。原用例比的是 recomputedBfs（已删）。
+    @Test func streamingPathAgreesWithBitsetPath() throws {
         let fixture = try Self.loadFixture()
         for c in fixture.cases where c.mode == "global" {
             let entries = Self.entries(from: c.entries)
-            let expected = try ClusterEngine.clusterByHash(
-                entries: entries,
-                threshold: c.threshold,
-                minGroupSize: c.minGroupSize,
-                mode: .global)
-            let recomputed = try ClusterEngine.clusterByHash(
-                entries: entries,
-                threshold: c.threshold,
-                minGroupSize: c.minGroupSize,
-                mode: .global,
-                maxBitsetEntries: 2)
-            #expect(recomputed.groups.count == expected.groups.count, "case \(c.name): 组数")
-            for (index, group) in expected.groups.enumerated() {
-                #expect(recomputed.groups[index].sorted() == group.sorted(), "case \(c.name): 组 \(index) 成员集合")
-            }
-            #expect(recomputed.ungrouped.sorted() == expected.ungrouped.sorted(), "case \(c.name): ungrouped 集合")
+            let table = try HashGraphTable(hashes: entries.map { $0.hash })
+            let full = HashNeighborhoodGraph(table: table, threshold: c.threshold)
+            let streaming = StreamingNeighborhoodGraph(
+                table: table, threshold: c.threshold, degrees: full.degreeSequence)
+            #expect(
+                DegreeGatedBFS.components(of: streaming) == DegreeGatedBFS.components(of: full),
+                "case \(c.name): streaming 与位集分量不一致")
+            #expect(
+                DegreeGatedBFS.groups(of: streaming, minGroupSize: c.minGroupSize)
+                    == DegreeGatedBFS.groups(of: full, minGroupSize: c.minGroupSize),
+                "case \(c.name): streaming 与位集分组不一致")
         }
     }
 }

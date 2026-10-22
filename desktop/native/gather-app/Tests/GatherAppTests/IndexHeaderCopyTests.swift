@@ -2,8 +2,12 @@
 // 全部用例（扫描中…/实时进度含百分比/取整/上限 100/失败/精确计数/≥ 前缀规则）。
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 @MainActor
 @Suite("IndexHeaderCopy 推导（对齐 index-progress.test.ts）")
@@ -42,14 +46,19 @@ struct IndexHeaderCopyTests {
 
     /// 通过 SessionControlView 实例调用（推导为实例方法，参数化后与 session 解耦）。
     private func copy(_ status: WorkspaceStatus, _ session: SessionData?) -> IndexHeaderCopy {
-        // 文案在 AppLanguageLock 内以 zh-CN 生成：否则并行套件临时切到 en
-        // （或系统语言为 en）时会与下面的中文断言不一致（既有 flake 根因）。
-        AppLanguageLock.withCopy("zh-CN") {
-            SessionControlView(
-                sessionId: "s1",
-                router: StubCommandRouter.empty()
-            ).indexHeaderCopy(status, session: session)
-        }
+        // Cut 4 / 4b-2f：文案由**显式传入**的 L10n 解析，不再读进程全局
+        //（并行套件切语言/系统语言为 en 都不影响中文断言）。
+        SessionControlView(
+            workspace: makeTestControlWorkspace(),
+            culling: B8CullingAPIStub()
+        ).indexHeaderCopy(status, session: session, with: L10n(language: .zhCN))
+    }
+
+    private func view() -> SessionControlView {
+        SessionControlView(
+            workspace: makeTestControlWorkspace(),
+            culling: B8CullingAPIStub()
+        )
     }
 
     @Test("无任务且无计数 → 暂无照片（旧版 null 的 Swift 等价）")
@@ -128,6 +137,48 @@ struct IndexHeaderCopyTests {
         #expect(c.mode == .count)
         #expect(c.text == expectedText)
     }
+
+    // 4b-2f：裸 View 上没有 languageStore env——若实现退回进程全局或 .zhCN 兜底，
+    // 下面这些 en 断言会读到中文并变红（语言可验，不靠兜底）。
+    @Test("显式 L10n：en 表逐条出英文")
+    func englishCopy() {
+        let en = L10n(language: .en)
+        let view = view()
+        #expect(view.indexHeaderCopy(
+            status(indexing: indexing(.idle)), session: session(photoCount: 0), with: en
+        ).text == "No Photos Yet")
+        #expect(view.indexHeaderCopy(
+            status(indexing: indexing(.failed)), session: session(photoCount: 0), with: en
+        ).text == "Indexing Failed")
+        #expect(view.indexHeaderCopy(
+            status(stage: .created, indexing: indexing(.idle)), session: session(photoCount: 0), with: en
+        ).text == "Scanning…")
+        #expect(view.indexHeaderCopy(
+            status(indexing: indexing(.active, total: 10, done: 3, percent: 30)),
+            session: session(photoCount: 0), with: en
+        ).text == "Indexing 3 / 10")
+        #expect(view.indexHeaderCopy(
+            status(stage: .indexed, indexing: indexing(.idle)),
+            session: session(photoCount: 12847), with: en
+        ).text == "Indexed 12847 photos")
+    }
+
+    // 4b-2f：`已索引 %lld%%` 的 `%%` 是**字面百分号**（不是第二个占位符）。
+    // 换 l10n.format 后仍必须输出单个 "%"，且 zh/en 模板同形。
+    @Test("%lld%% 字面百分号：输出单个 %，round 而非截断")
+    func percentTemplateKeepsLiteralPercent() {
+        let view = view()
+        #expect(view.indexPercentText(97.7, with: L10n(language: .zhCN)) == "已索引 98%")
+        #expect(view.indexPercentText(97.7, with: L10n(language: .en)) == "Indexed 98%")
+        #expect(!view.indexPercentText(97.7, with: L10n(language: .zhCN)).contains("%%"))
+
+        let header = view.indexHeaderCopy(
+            status(indexing: indexing(.active, total: 12847, done: 12547, percent: 97.7)),
+            session: session(photoCount: 0),
+            with: L10n(language: .zhCN))
+        #expect(header.percent.map { Int($0.rounded()) } == 98)
+        #expect(view.indexPercentText(header.percent ?? 0, with: L10n(language: .zhCN)) == "已索引 98%")
+    }
 }
 
 // MARK: - Gallery 索引头推导（对齐 indexProgress.ts deriveIndexHeaderCopy:32-63
@@ -159,18 +210,20 @@ struct GalleryIndexHeaderCopyTests {
         WorkspaceIndexingProgress(total: total, done: done, percent: 0, status: s)
     }
 
+    // Cut 4 / 4b-2i：文案由**显式传入**的 L10n 解析，不再借进程全局语言
+    //（并行套件切语言/系统语言为 en 都不影响中文断言）。
     private func copy(
         _ status: WorkspaceStatus?,
         photoCount: Int,
-        truncatedImport: Bool = false
+        truncatedImport: Bool = false,
+        with l10n: L10n = L10n(language: .zhCN)
     ) -> GalleryIndexHeaderCopy? {
-        AppLanguageLock.withCopy("zh-CN") {
-            GalleryViewModel.indexHeaderCopy(
-                status: status,
-                photoCount: photoCount,
-                truncatedImport: truncatedImport
-            )
-        }
+        GalleryViewModel.indexHeaderCopy(
+            status: status,
+            photoCount: photoCount,
+            truncatedImport: truncatedImport,
+            with: l10n
+        )
     }
 
     @Test("无任务且无计数 → 不渲染（nil，而非「暂无照片」）")
@@ -244,5 +297,41 @@ struct GalleryIndexHeaderCopyTests {
         #expect(c?.kind == .count)
         #expect(c?.text == expectedText)
         #expect(c?.percent == nil)
+    }
+
+    // 4b-2i：纯函数里没有 View 的 languageStore env——若实现退回进程全局或
+    // .zhCN 兜底，下面这些 en 断言会读到中文并变红（语言可验，不靠兜底）。
+    @Test("显式 L10n：en 表逐条出英文（%lld%% 只输出单个 %）")
+    func englishCopy() {
+        let en = L10n(language: .en)
+        #expect(copy(nil, photoCount: 0, with: en) == nil)
+        #expect(copy(status(indexing: indexing(.active)), photoCount: 0, with: en)?.text == "Scanning…")
+        #expect(copy(status(indexing: indexing(.failed)), photoCount: 0, with: en)?.text == "Indexing Failed")
+        #expect(copy(
+            status(indexing: indexing(.active, total: 12847, done: 12547)),
+            photoCount: 0, with: en
+        )?.text == "Indexing 12547 / 12847 (98%)")
+        #expect(copy(
+            status(stage: .indexed, indexing: indexing(.idle)),
+            photoCount: 12847, with: en
+        )?.text == "Indexed 12847 photos")
+        #expect(copy(
+            status(stage: .imported, indexing: indexing(.idle)),
+            photoCount: 50000, truncatedImport: true, with: en
+        )?.text == "Indexed ≥50000 photos")
+    }
+
+    // 逐字中性：l10n.format 只把 %% 折叠成字面 %，不能吞成 "98" 或留下 "98%%"。
+    @Test("%lld%% 字面百分号：渲染出单个 %")
+    func percentTemplateKeepsLiteralPercent() {
+        let zh = copy(
+            status(indexing: indexing(.active, total: 12847, done: 12547)),
+            photoCount: 0)
+        #expect(zh?.text == "正在索引 12547 / 12847（98%）")
+        #expect((zh?.text ?? "").contains("%%") == false)
+        let en = copy(
+            status(indexing: indexing(.active, total: 12847, done: 12547)),
+            photoCount: 0, with: L10n(language: .en))
+        #expect(en?.text == "Indexing 12547 / 12847 (98%)")
     }
 }

@@ -6,7 +6,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 private struct SessionHarness {
     let db: DBConnection
@@ -18,7 +22,7 @@ private struct SessionHarness {
 private func makeHarness(
     dimensions: @escaping (String) throws -> (width: Int, height: Int) = { _ in (100, 80) }
 ) throws -> SessionHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let service = SessionService(
         sessionRepo: sessionRepo,
@@ -36,7 +40,7 @@ private func addOkAnalysisRun(_ db: DBConnection, _ sessionId: String, indexSeq:
     _ = try db.prepare("""
         INSERT INTO analysis_runs (
           session_id, kind, photo_count, index_seq, started_at, finished_at,
-          params, status
+          params_json, status
         ) VALUES (?, 'similarity', 0, ?, ?, ?, '{}', 'ok')
       """).run([.text(sessionId), .int(Int64(indexSeq)), .text(timestamp), .text(timestamp)])
 }
@@ -54,7 +58,9 @@ struct SessionServiceCreateFromDirectoryTests {
         let session = try harness.service.createFromDirectory(name: "Wedding", sourcePath: dir)
 
         #expect(session.name == "Wedding")
-        #expect(session.importSource == "local")
+        // V1 已删 sessions.import_source 且无替代列（schema-v1-draft 删列表）：
+        // 协议字段保留但恒为空串。
+        #expect(session.importSource == "")
         #expect(session.sourcePath == ScanPath.canonical(dir))
         #expect(session.photoCount == 0)
         #expect(session.truncatedImport == false)
@@ -178,7 +184,7 @@ struct SessionServiceAddPhotosTests {
 struct SessionServiceDeleteAndQueryTests {
     @Test("deleteSession removes the session and orphans all unbound assets")
     func deleteSessionOrphansAssets() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
@@ -208,7 +214,7 @@ struct SessionServiceDeleteAndQueryTests {
 
     @Test("deleteSession without confirmation throws and keeps the session")
     func deleteRequiresConfirmation() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
@@ -229,7 +235,7 @@ struct SessionServiceDeleteAndQueryTests {
     /// 永久升级为对某个目录的全树扫描（历史 P0：可上溯到 home）。
     @Test("getSession never derives a source path from imported photos")
     func getSessionDoesNotDeriveSourcePath() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,
@@ -340,7 +346,7 @@ struct SessionServiceErrorCodeTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let photoA = try writeTempFile(in: dir, name: "a.jpg")
 
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let service = SessionService(
             sessionRepo: sessionRepo,

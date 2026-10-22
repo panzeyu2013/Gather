@@ -3,7 +3,9 @@
 // 全部用行为证据：簇/噪声成员集合、种子归属、进度回调，而非仅断言编译。
 
 import Testing
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 struct FaceClustererQualityRetryTests {
     private static func entry(

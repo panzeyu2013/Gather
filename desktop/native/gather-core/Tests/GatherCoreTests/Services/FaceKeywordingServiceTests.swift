@@ -17,42 +17,18 @@
 //   抛错；Swift 用 ALTER TABLE DROP COLUMN embedding 使替换插入必然失败，
 //   其余读路径不受影响。
 
+import Dispatch
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - 支撑
 
-/// 幂等等待门（swift-testing 并行下 Task 调度延迟明显，避免固定 sleep）。
-private final class AsyncGate {
-    private let lock = NSLock()
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-
-    func wait() async {
-        let mustWait: Bool = {
-            lock.lock()
-            defer { lock.unlock() }
-            if released { return false }
-            return true
-        }()
-        guard mustWait else { return }
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            continuations.append(continuation)
-            lock.unlock()
-        }
-    }
-
-    func release() {
-        lock.lock()
-        released = true
-        let pending = continuations
-        continuations.removeAll()
-        lock.unlock()
-        pending.forEach { $0.resume() }
-    }
-}
+// AsyncGate 已抽到 Tests/GatherTestSupport/AsyncGate.swift（GatherTestSupport target 共享）。
 
 /// 线程安全布尔旗标（provider 进入断言用）。
 private final class LockedFlag: @unchecked Sendable {
@@ -106,11 +82,12 @@ private func makeFaceKwHarness(
     inference: FaceKwService.FaceInferenceProvider? = nil,
     cluster: FaceKwService.FaceClusterProvider? = nil,
     writeback: FaceWritebackProvider? = nil,
+    delivery: (any FaceKwDeliveryPort)? = nil,
     settings: [String: Double] = [:],
     settingsProvider: ((String, Double) -> Double)? = nil,
     stringSettings: [String: String] = [:]
 ) throws -> FaceKwHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "Run", source: "folder")
     let dir = try makeTempDir()
@@ -137,16 +114,18 @@ private func makeFaceKwHarness(
         },
         decodeProvider: { _, _ in Data("jpeg".utf8) },
         inferenceProvider: inference ?? defaultFakeInference(),
-        clusterProvider: cluster ?? { entries, eps, minPts, options, onProgress in
+        clusterProvider: cluster ?? { entries, eps, minPts, options, onProgress, isCancelled in
             try FaceClusterer.clusterEmbeddings(
                 entries: entries,
                 eps: eps,
                 minPts: minPts,
                 coreQualityFloor: options.coreQualityFloor,
                 retryMinSamples: options.retryMinSamples,
-                onProgress: onProgress)
+                onProgress: onProgress,
+                isCancelled: isCancelled)
         },
-        writebackProvider: writeback
+        writebackProvider: writeback,
+        delivery: delivery
     )
     return FaceKwHarness(
         db: db, service: service, sessionRepo: sessionRepo,
@@ -173,15 +152,13 @@ private func seedCluster(
     id: Int64,
     sessionId: String,
     label: String = "Person 1",
-    memberCount: Int64? = nil,
     status: String = "unbound",
     members: [(photoId: String, bbox: [Double], confidence: Double)] = []
 ) throws -> Int64 {
-    let count = memberCount ?? Int64(members.count)
     _ = try db.prepare("""
-        INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
-        VALUES (?, ?, ?, ?, ?, '', '')
-      """).run([.int(id), .text(sessionId), .text(label), .int(count), .text(status)])
+        INSERT INTO face_clusters (id, session_id, label, status, thumbnail_path)
+        VALUES (?, ?, ?, ?, '')
+      """).run([.int(id), .text(sessionId), .text(label), .text(status)])
     for member in members {
         let bboxJSON = try JSONValue.stringify(JSONValue.array(member.bbox.map { JSONValue.real($0) }))
         _ = try db.prepare("""
@@ -201,7 +178,7 @@ private func bind(_ harness: FaceKwHarness, clusterId: Int64, roleName: String, 
 
 private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
     try db.prepare(
-        "SELECT kind, photo_count, index_seq, params, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?"
+        "SELECT kind, photo_count, index_seq, params_json, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?"
     ).get([.text(sessionId)])
 }
 
@@ -326,9 +303,15 @@ struct FaceKwRunRecordTests {
     @Test("finalizes the run as failed when every detection fails")
     func runRowFinalizesFailed() async throws {
         let harness = try makeFaceKwHarness()
-        // 使 replaceObservationsByPhoto 的写入必然失败（embedding 列不存在）；
+        // 使 replaceObservationsByPhoto 的写入必然失败（INSERT 触发器 ABORT）；
         // 读路径（getObservations / 状态）不受影响——等价 TS mock 抛错。
-        _ = try harness.db.prepare("ALTER TABLE face_observations DROP COLUMN embedding").run([])
+        // 注：S5a 后 getObservations 显式投影 embedding，DROP COLUMN 会先让读失败，
+        // 无法再用作“只坏写入”的替身。
+        try harness.db.exec("""
+            CREATE TRIGGER fail_face_observation_insert
+            BEFORE INSERT ON face_observations
+            BEGIN SELECT RAISE(ABORT, 'forced insert failure'); END;
+            """)
 
         let result = try await harness.service.analyze(
             sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
@@ -370,7 +353,7 @@ struct FaceKwAnalyzeFlowTests {
         try harness.faceRepo.upsertClusterSignature(
             sessionId: harness.sessionId,
             signature: FaceKwService.clusterSignature(eps: 0.65, minPts: 2, options: seededClusterOptions))
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
         var phases: [String] = []
@@ -463,7 +446,7 @@ struct FaceKwAnalyzeFlowTests {
         let harness = try makeFaceKwHarness(inference: { images, _, _ in
             images.map { _ in FaceInferenceItem(observations: []) }
         })
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
         let result = try await harness.service.analyze(
@@ -484,7 +467,7 @@ struct FaceKwAnalyzeFlowTests {
                 photoId: "photo-1", bboxX: 1, bboxY: 2, bboxW: 3, bboxH: 4,
                 embedding: [0, 0, 0], confidence: 0.9),
         ])
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try bind(harness, clusterId: 1, roleName: "Alice", keywords: ["kw"])
 
@@ -511,7 +494,7 @@ struct FaceKwAnalyzeFlowTests {
 
     @Test("throws FACE_NO_PHOTOS for an empty session")
     func throwsNoPhotos() async throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Empty", source: "folder")
         let service = FaceKwService(
@@ -552,7 +535,7 @@ struct FaceKwBindingMigrationTests {
         bindings: [(clusterId: Int64, roleName: String, keywords: [String], photoIds: [String])],
         clusterResult: [[(observationId: Int, photoId: String)]]
     ) throws -> (db: DBConnection, service: FaceKwService, faceRepo: FaceRepo, sessionId: String) {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionId = "session-1"
         try insertSession(db, sessionId)
         for id in ["p1", "p2", "p3", "p4"] {
@@ -570,7 +553,7 @@ struct FaceKwBindingMigrationTests {
         for binding in bindings {
             try seedCluster(
                 db, id: binding.clusterId, sessionId: sessionId, label: "Person \(binding.clusterId)",
-                memberCount: Int64(binding.photoIds.count), status: "bound",
+                status: "bound",
                 members: binding.photoIds.map { (photoId: $0, bbox: [1, 2, 3, 4], confidence: 0.9) })
             try faceRepo.updateBinding(clusterId: binding.clusterId, roleName: binding.roleName, keywords: binding.keywords)
         }
@@ -580,7 +563,7 @@ struct FaceKwBindingMigrationTests {
             faceRepo: faceRepo,
             personRepo: PersonRepo(connection: db),
             connection: db,
-            clusterProvider: { entries, _, _, _, _ in
+            clusterProvider: { entries, _, _, _, _, _ in
                 FaceClusterResult(
                     clusters: clusterResult.map { group in
                         group.compactMap { entry in
@@ -664,7 +647,7 @@ struct FaceKwBindingMigrationTests {
 struct FaceKwGetClustersTests {
     @Test("truncates members to the preview window and maps binding fields")
     func truncatesMembersAndMapsBinding() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionId = "session-1"
         try insertSession(db, sessionId)
         // 成员数刻意超过预览窗口上限（12），才能验证"截断但仍报全量 size"。
@@ -673,7 +656,7 @@ struct FaceKwGetClustersTests {
         }
         let faceRepo = FaceRepo(connection: db)
         try seedCluster(
-            db, id: 1, sessionId: sessionId, label: "Person 1", memberCount: 14, status: "bound",
+            db, id: 1, sessionId: sessionId, label: "Person 1", status: "bound",
             members: (1...14).map { (photoId: "photo-\($0)", bbox: [Double($0), 2, 3, 4], confidence: 0.9) })
         try faceRepo.updateBinding(clusterId: 1, roleName: "Alice", keywords: ["kw1", "kw2"])
 
@@ -712,7 +695,7 @@ struct FaceKwClusterCommandTests {
     @Test("binds a cluster with normalized role and deduped keywords, bridging the person library")
     func bindNormalizesAndBridges() throws {
         let harness = try makeFaceKwHarness()
-        try seedCluster(harness.db, id: 7, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 7, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
 
         try harness.service.bindCluster(
@@ -732,12 +715,12 @@ struct FaceKwClusterCommandTests {
 
     @Test("throws FKW_CLUSTER_NOT_FOUND and FKW_CLUSTER_NOT_IN_SESSION on bind")
     func bindClusterErrors() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let sessionA = try sessionRepo.create(name: "A", source: "folder")
         let sessionB = try sessionRepo.create(name: "B", source: "folder")
         let faceRepo = FaceRepo(connection: db)
-        try seedCluster(db, id: 1, sessionId: sessionA.id, memberCount: 0)
+        try seedCluster(db, id: 1, sessionId: sessionA.id)
         let service = FaceKwService(
             photoRepo: PhotoRepo(connection: db),
             sessionRepo: sessionRepo,
@@ -759,7 +742,7 @@ struct FaceKwClusterCommandTests {
     @Test("unbinds a cluster and reconciles the person library")
     func unbindsAndReconciles() throws {
         let harness = try makeFaceKwHarness()
-        try seedCluster(harness.db, id: 7, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 7, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try bind(harness, clusterId: 7, roleName: "Alice", keywords: ["kw"])
         try harness.service.bindCluster(sessionId: harness.sessionId, clusterId: 7, roleName: "Alice", keywords: ["kw"])
@@ -776,9 +759,9 @@ struct FaceKwClusterCommandTests {
     @Test("merges clusters moving members and dropping the source binding")
     func mergesClusters() throws {
         let harness = try makeFaceKwHarness(photoCount: 2)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
-        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId,
                         members: [(photoId: "photo-2", bbox: [5, 6, 7, 8], confidence: 0.8)])
         try bind(harness, clusterId: 1, roleName: "Alice", keywords: [])
 
@@ -793,12 +776,12 @@ struct FaceKwClusterCommandTests {
     @Test("validates merge inputs")
     func mergeErrors() throws {
         let harness = try makeFaceKwHarness()
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 0)
-        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 0)
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId)
+        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId)
         let otherSession = try harness.sessionRepo.create(name: "Other", source: "folder")
         _ = try harness.db.prepare("""
-            INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64, thumbnail_path)
-            VALUES (50, ?, 'x', 0, 'unbound', '', '')
+            INSERT INTO face_clusters (id, session_id, label, status, thumbnail_path)
+            VALUES (50, ?, 'x', 'unbound', '')
           """).run([.text(otherSession.id)])
         #expect(throws: FaceKwServiceError.selfMerge) {
             try harness.service.mergeClusters(sessionId: harness.sessionId, sourceId: 1, targetId: 1)
@@ -814,7 +797,7 @@ struct FaceKwClusterCommandTests {
     @Test("removes a member and deletes the cluster when it was the last one")
     func removesMember() throws {
         let harness = try makeFaceKwHarness(photoCount: 2)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 2,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [
                             (photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9),
                             (photoId: "photo-2", bbox: [5, 6, 7, 8], confidence: 0.8),
@@ -830,7 +813,7 @@ struct FaceKwClusterCommandTests {
     @Test("validates removeMember inputs")
     func removeMemberErrors() throws {
         let harness = try makeFaceKwHarness()
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         #expect(throws: FaceKwServiceError.clusterNotFound) {
             try harness.service.removeMember(sessionId: harness.sessionId, clusterId: 99, memberId: 1)
@@ -964,8 +947,79 @@ private final class FakeWritebackProvider: FaceWritebackProvider, @unchecked Sen
     }
 }
 
-private func makeWritebackItem(photoId: String) -> FaceKwWritebackItem {
+/// FaceKwDeliveryPort 的替身（S5c-2b-2）：confirm/cleanup/镜像的服务层路由
+/// 由这些用例验证；真实 coordinator 的 DB/文件语义在 DeliveryCoordinatorTests 覆盖。
+private final class FakeFaceKwDelivery: FaceKwDeliveryPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _confirmCalls: [String] = []
+    private var _cleanupCalls: [String] = []
+    private var _mirrorItems: [DeliveryWritebackMirrorItem] = []
+
+    var confirmResult = DeliveryConfirmSummary(
+        scope: .module, confirmedLinks: 1, deliveriesSynced: 1, itemsSynced: 1,
+        unconfirmedSessionIds: []
+    )
+    var confirmError: Error?
+    var cleanupResult = DeliveryCleanupSummary(
+        deletedCount: 0, conflictedCount: 0, skippedCount: 0, errors: []
+    )
+    var mirrorErrors: [String] = []
+
+    var confirmCalls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _confirmCalls
+    }
+
+    var cleanupCalls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _cleanupCalls
+    }
+
+    var mirroredItems: [DeliveryWritebackMirrorItem] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _mirrorItems
+    }
+
+    func confirmFaceKeyword(sessionId: String) throws -> DeliveryConfirmSummary {
+        lock.lock()
+        _confirmCalls.append(sessionId)
+        lock.unlock()
+        if let confirmError { throw confirmError }
+        return confirmResult
+    }
+
+    func cleanupFaceKeyword(sessionId: String) async throws -> DeliveryCleanupSummary {
+        appendCleanupCall(sessionId)
+        return cleanupResult
+    }
+
+    private func appendCleanupCall(_ sessionId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        _cleanupCalls.append(sessionId)
+    }
+
+    func mirrorFaceKeywordWriteback(
+        sessionId: String,
+        items: [DeliveryWritebackMirrorItem]
+    ) throws -> DeliveryMirrorSummary {
+        lock.lock()
+        _mirrorItems.append(contentsOf: items)
+        lock.unlock()
+        return DeliveryMirrorSummary(deliveryCount: 1, itemCount: items.count, errors: mirrorErrors)
+    }
+
+    func replayPendingDeliveries() async throws -> DeliveryReplaySummary {
+        DeliveryReplaySummary(appliedCount: 0, skippedCount: 0, failedCount: 0, errors: [])
+    }
+}
+
+private func makeWritebackItem(photoId: String, id: Int64? = nil) -> FaceKwWritebackItem {
     FaceKwWritebackItem(
+        id: id,
         photoId: photoId,
         photoPath: "/photos/\(photoId).jpg",
         sessionId: "session-1",
@@ -1005,7 +1059,7 @@ struct FaceKwWritebackTests {
         let writeback = FakeWritebackProvider()
         writeback.removedKeywords = ["Alice", "kw1"]
         let harness = try makeFaceKwHarness(writeback: writeback)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try bind(harness, clusterId: 1, roleName: "Alice", keywords: ["kw1"])
 
@@ -1027,9 +1081,9 @@ struct FaceKwWritebackTests {
         let harness = try makeFaceKwHarness(writeback: writeback)
         // 两个集群共享 photo-1：B（Bob）的绑定保护 "Bob"；A 的 Alice 关键词
         // 里也有 "Bob"——解除 A 时 "Bob" 必须被过滤。
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
-        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 2, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [5, 6, 7, 8], confidence: 0.8)])
         try bind(harness, clusterId: 1, roleName: "Alice", keywords: ["Bob"])
         try bind(harness, clusterId: 2, roleName: "Bob", keywords: [])
@@ -1046,7 +1100,7 @@ struct FaceKwWritebackTests {
         let writeback = FakeWritebackProvider()
         writeback.previewResult = FaceKwWritebackPreview(items: [], totalCount: 1, affectedPhotos: 1)
         let harness = try makeFaceKwHarness(writeback: writeback)
-        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId, memberCount: 1,
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try bind(harness, clusterId: 1, roleName: "Alice", keywords: ["kw1", "kw1", "kw2"])
 
@@ -1085,29 +1139,99 @@ struct FaceKwWritebackTests {
         #expect(writeback.executedItems[0].photoId == "photo-1")
     }
 
-    @Test("fkw.confirm_sync returns true after provider sync")
+    @Test("fkw.confirm_sync routes to the delivery coordinator")
     func confirmSyncReturnsTrue() async throws {
-        let writeback = FakeWritebackProvider()
-        let harness = try makeFaceKwHarness(writeback: writeback)
+        let delivery = FakeFaceKwDelivery()
+        let harness = try makeFaceKwHarness(delivery: delivery)
 
         let result = try await harness.service.confirmSync(sessionId: harness.sessionId)
 
         #expect(result == true)
-        #expect(writeback.syncedSessionIds == [harness.sessionId])
+        #expect(delivery.confirmCalls == [harness.sessionId])
+    }
+
+    @Test("fkw.confirm_sync maps coordinator gates to the legacy XMP codes")
+    func confirmSyncMapsLegacyCodes() async throws {
+        let delivery = FakeFaceKwDelivery()
+        delivery.confirmError = DeliveryCoordinatorError.confirmIncomplete(blockers: ["item:failed=1"])
+        let incomplete = try makeFaceKwHarness(delivery: delivery)
+
+        await #expect(throws: DeliveryError.confirmIncomplete) {
+            _ = try await incomplete.service.confirmSync(sessionId: incomplete.sessionId)
+        }
+
+        delivery.confirmError = DeliveryCoordinatorError.reloadNotAcknowledged(sessionId: "x")
+        await #expect(throws: DeliveryError.confirmRequiresSync) {
+            _ = try await incomplete.service.confirmSync(sessionId: incomplete.sessionId)
+        }
+
+        delivery.confirmError = nil
+        delivery.confirmResult = DeliveryConfirmSummary(
+            scope: .module, confirmedLinks: 1, deliveriesSynced: 0, itemsSynced: 0,
+            unconfirmedSessionIds: ["session-2"]
+        )
+        await #expect(throws: DeliveryError.otherSessionNotConfirmed(sessionId: "session-2")) {
+            _ = try await incomplete.service.confirmSync(sessionId: incomplete.sessionId)
+        }
     }
 
     @Test("fkw.cleanup requires confirmation and returns the cleanup result")
     func cleanupConfirmationAndResult() async throws {
-        let writeback = FakeWritebackProvider()
-        writeback.cleanupResult = FaceKwCleanupResult(deletedCount: 3, errors: [])
-        let harness = try makeFaceKwHarness(writeback: writeback)
+        let delivery = FakeFaceKwDelivery()
+        delivery.cleanupResult = DeliveryCleanupSummary(
+            deletedCount: 3, conflictedCount: 0, skippedCount: 0, errors: []
+        )
+        let harness = try makeFaceKwHarness(delivery: delivery)
 
         await #expect(throws: FaceKwServiceError.cleanupConfirmRequired) {
             _ = try await harness.service.cleanup(sessionId: harness.sessionId, confirmed: false)
         }
         let result = try await harness.service.cleanup(sessionId: harness.sessionId, confirmed: true)
-        #expect(result == writeback.cleanupResult)
-        #expect(writeback.cleanupCalls == [harness.sessionId])
+        #expect(result.deletedCount == 3)
+        #expect(result.errors.isEmpty)
+        #expect(delivery.cleanupCalls == [harness.sessionId])
+    }
+
+    @Test("fkw.cleanup：外部冲突按路径回填 XMP_EXTERNALLY_MODIFIED")
+    func cleanupMapsConflictToLegacyCode() async throws {
+        let delivery = FakeFaceKwDelivery()
+        delivery.cleanupResult = DeliveryCleanupSummary(
+            deletedCount: 0, conflictedCount: 1, skippedCount: 0, errors: [],
+            conflictedXmpPaths: ["/photos/photo-1.xmp"]
+        )
+        let harness = try makeFaceKwHarness(delivery: delivery)
+
+        let result = try await harness.service.cleanup(
+            sessionId: harness.sessionId, confirmed: true
+        )
+        #expect(result.deletedCount == 0)
+        #expect(result.errors.count == 1)
+        #expect(result.errors[0].contains("XMP_EXTERNALLY_MODIFIED"))
+        #expect(result.errors[0].contains("/photos/photo-1.xmp"))
+    }
+
+    @Test("fkw.writeback mirrors executed items into the delivery port")
+    func writebackMirrorsIntoDelivery() async throws {
+        let writeback = FakeWritebackProvider()
+        writeback.executeResult = FaceKwWritebackResult(
+            totalAffected: 1, written: 1, failed: 0, skipped: 0, errors: [], failedItems: [], report: "ok"
+        )
+        let delivery = FakeFaceKwDelivery()
+        let harness = try makeFaceKwHarness(writeback: writeback, delivery: delivery)
+
+        let result = try await harness.service.writeback(
+            sessionId: harness.sessionId,
+            confirmed: true,
+            items: [makeWritebackItem(photoId: "photo-1", id: 9)]
+        )
+
+        #expect(result.errors.isEmpty)
+        #expect(delivery.mirroredItems.count == 1)
+        let mirrored = delivery.mirroredItems[0]
+        #expect(mirrored.photoId == "photo-1")
+        #expect(mirrored.xmpPath == "/photos/photo-1.xmp")
+        #expect(mirrored.status == .written)
+        #expect(mirrored.keywords == ["Alice"])
     }
 }
 
@@ -1116,7 +1240,7 @@ struct FaceKwWritebackTests {
 @Suite("PersonRepo CRUD and bridge")
 struct PersonLibraryTests {
     private func makePersonHarness() throws -> (db: DBConnection, repo: PersonRepo, sessionId: String, photoIds: [String]) {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Run", source: "folder")
         for i in 1...3 {
@@ -1194,13 +1318,13 @@ struct PersonLibraryTests {
 
     @Test("reconcileSession mirrors role bindings into person_photos and back")
     func reconcileSessionMirrorsBindings() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Run", source: "folder")
         try insertPhoto(db, id: "photo-1", sessionId: session.id, filepath: "/photos/photo-1.jpg")
         let faceRepo = FaceRepo(connection: db)
         let personRepo = PersonRepo(connection: db)
-        try seedCluster(db, id: 1, sessionId: session.id, memberCount: 1,
+        try seedCluster(db, id: 1, sessionId: session.id,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
         try faceRepo.updateBinding(clusterId: 1, roleName: "Alice", keywords: [])
 
@@ -1234,7 +1358,7 @@ private struct CrossSessionHarness {
 private func makeCrossSessionHarness(
     embedding: [Double] = [1, 0, 0, 0]
 ) throws -> CrossSessionHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let sessionA = try sessionRepo.create(name: "A", source: "folder")
     let sessionB = try sessionRepo.create(name: "B", source: "folder")
@@ -1413,7 +1537,7 @@ struct FaceAlgorithmWiringTests {
                 })
             try harness.personRepo.saveEmbeddings(embeddings: [alice, bob].enumerated().map { index, person in
                 SaveEmbeddingInput(personId: person, embedding: vectors[index].map(Float.init), photoId: "library-face",
-                    sessionId: librarySession.id, faceObservationId: ids[index], faceBbox: [0.1, 0.1, 0.2, 0.3], quality: 1)
+                    sessionId: librarySession.id, faceObservationId: ids[index])
             })
             _ = try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
@@ -1574,5 +1698,192 @@ private final class EncodingCallCounter: @unchecked Sendable {
         lock.lock()
         count += 1
         lock.unlock()
+    }
+}
+
+// MARK: - Cut 5 / 5c-2：analyze 三阶段 A/B/C 边界
+
+/// 线程安全会话句柄（B 阶段自定义 clusterProvider 需要在闭包里 bump index_seq）。
+private final class SessionHandleBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var repo: SessionRepo?
+    private var sessionId = ""
+
+    func set(_ repo: SessionRepo, sessionId: String) {
+        lock.lock()
+        self.repo = repo
+        self.sessionId = sessionId
+        lock.unlock()
+    }
+
+    func bumpIndexSeq() throws {
+        lock.lock()
+        let repo = self.repo
+        let sessionId = self.sessionId
+        lock.unlock()
+        guard let repo else { return }
+        _ = try repo.bumpIndexSeq(id: sessionId)
+    }
+}
+
+private func observationFloats(_ data: Data) -> [Float] {
+    data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+}
+
+/// 同步等待（Swift 6 禁止在 async 上下文直接 DispatchSemaphore.wait；
+/// 自定义 clusterProvider 是同步闭包，经这个非 async 辅助函数等待）。
+private func waitForGate(_ gate: DispatchSemaphore, timeout: TimeInterval = 5) {
+    _ = gate.wait(timeout: .now() + timeout)
+}
+
+private func waitForSignal(_ semaphore: DispatchSemaphore, timeout: TimeInterval = 2) -> Bool {
+    semaphore.wait(timeout: .now() + timeout) == .success
+}
+
+/// 默认假推理的向量：每图一张脸 [0.5, 0.6]。
+private let stageBoundaryEmbedding: [Float] = [0.5, 0.6]
+
+@Suite("FaceKwService stage boundaries (A/B/C)")
+struct FaceKwStageBoundaryTests {
+    private func blockingClusterProvider(
+        gate: DispatchSemaphore, entered: LockedFlag
+    ) -> FaceKwService.FaceClusterProvider {
+        { entries, eps, minPts, options, onProgress, isCancelled in
+            entered.set()
+            waitForGate(gate)
+            try isCancelled?()
+            return try FaceClusterer.clusterEmbeddings(
+                entries: entries, eps: eps, minPts: minPts,
+                coreQualityFloor: options.coreQualityFloor,
+                retryMinSamples: options.retryMinSamples,
+                onProgress: onProgress)
+        }
+    }
+
+    @Test("A commits observations; B cancellation keeps old clusters and clears the signature")
+    func bCancellationKeepsObservationsAndOldClusters() async throws {
+        let gate = DispatchSemaphore(value: 0)
+        let entered = LockedFlag()
+        let harness = try makeFaceKwHarness(
+            cluster: blockingClusterProvider(gate: gate, entered: entered))
+        try seedCluster(
+            harness.db, id: 1, sessionId: harness.sessionId,
+            members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
+        try bind(harness, clusterId: 1, roleName: "Alice")
+
+        let task = Task {
+            try await harness.service.analyze(
+                sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        }
+        _ = try waitUntil { entered.value }
+        harness.service.cancel(sessionId: harness.sessionId)
+        gate.signal()
+        let result = try await task.value
+
+        #expect(result.status == "cancelled")
+        // A：观测与 checkpoint（face_analysis_state）已提交。
+        let observations = try harness.faceRepo.getObservations(harness.sessionId)
+        #expect(observations.count == 1)
+        #expect(observationFloats(observations[0].embedding) == stageBoundaryEmbedding)
+        #expect(try harness.faceRepo.getAnalysisStates(harness.sessionId)["photo-1"] != nil)
+        // B 未进入 C：簇 / 成员 / 绑定都还是旧的。
+        let clusters = try harness.faceRepo.getClusters(harness.sessionId, includeMembers: true)
+        #expect(clusters.count == 1)
+        #expect(clusters[0].id == 1)
+        #expect(clusters[0].binding?.roleName == "Alice")
+        #expect(clusters[0].members?.map(\.photoId) == ["photo-1"])
+        // 观测新、簇旧 → 签名必须失效，否则下一次 analyze 会走缓存快路径。
+        #expect(try harness.faceRepo.getClusterSignature(harness.sessionId) == nil)
+    }
+
+    @Test("index_seq changed before C fails with the workspace message and leaves no half clusters")
+    func indexSeqChangeBeforeCommitRollsBack() async throws {
+        let box = SessionHandleBox()
+        let harness = try makeFaceKwHarness(photoCount: 2, cluster: { entries, eps, minPts, options, onProgress, _ in
+            try box.bumpIndexSeq()
+            return try FaceClusterer.clusterEmbeddings(
+                entries: entries, eps: eps, minPts: minPts,
+                coreQualityFloor: options.coreQualityFloor,
+                retryMinSamples: options.retryMinSamples,
+                onProgress: onProgress)
+        })
+        box.set(harness.sessionRepo, sessionId: harness.sessionId)
+        try seedCluster(
+            harness.db, id: 1, sessionId: harness.sessionId,
+            members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
+
+        do {
+            _ = try await harness.service.analyze(
+                sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+            Issue.record("Expected the index_seq guard to reject the commit")
+        } catch {
+            #expect(String(describing: error).contains("工作区内容已变化"))
+        }
+
+        // C 事务整体回滚：旧簇原样保留，没有"半套"新簇。
+        let clusters = try harness.faceRepo.getClusters(harness.sessionId, includeMembers: true)
+        #expect(clusters.count == 1)
+        #expect(clusters[0].id == 1)
+        #expect(clusters[0].members?.map(\.photoId) == ["photo-1"])
+        #expect(try harness.faceRepo.getClusterSignature(harness.sessionId) == nil)
+        // A 的成果保留：两张照片的新观测与分析状态都已提交。
+        #expect(try harness.faceRepo.getObservations(harness.sessionId).count == 2)
+        #expect(try harness.faceRepo.getAnalysisStates(harness.sessionId).count == 2)
+    }
+
+    @Test("a concurrent read completes in <= 50 ms while B is clustering (no DB lock held)")
+    func concurrentReadStaysResponsiveDuringClustering() async throws {
+        let gate = DispatchSemaphore(value: 0)
+        let entered = LockedFlag()
+        let harness = try makeFaceKwHarness(
+            photoCount: 2, cluster: blockingClusterProvider(gate: gate, entered: entered))
+
+        let task = Task {
+            try await harness.service.analyze(
+                sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        }
+        _ = try waitUntil { entered.value }
+
+        // 取 3 次最小值以降低调度抖动；旧实现把聚类放在 connection.transaction 内，
+        // 这里的读会一直阻塞到 gate 释放（> 1 s），断言会硬失败。
+        var bestMs = Double.infinity
+        for _ in 0..<3 {
+            let done = DispatchSemaphore(value: 0)
+            let start = DispatchTime.now()
+            DispatchQueue.global().async {
+                _ = try? harness.sessionRepo.getIndexSeq(id: harness.sessionId)
+                done.signal()
+            }
+            #expect(waitForSignal(done))
+            let elapsedMs = Double(
+                DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+            bestMs = min(bestMs, elapsedMs)
+        }
+        gate.signal()
+        let result = try await task.value
+
+        #expect(result.status == "done")
+        print("[5c-2] B 阶段聚类期间并发读延迟（3 次取最小）= \(bestMs) ms")
+        #expect(
+            bestMs <= 50,
+            "B 阶段聚类期间并发读延迟必须 ≤ 50 ms（实测 \(bestMs) ms）")
+    }
+
+    @Test("identical recluster replays the committed clusters without churning ids")
+    func reclusterReplaysIdenticalClusterState() async throws {
+        let harness = try makeFaceKwHarness(photoCount: 2)
+        _ = try await harness.service.analyze(
+            sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
+        let before = try harness.faceRepo.getClusters(harness.sessionId, includeMembers: true)
+        #expect(before.count == 1)
+        #expect(before[0].members?.count == 2)
+
+        try await harness.service.recluster(sessionId: harness.sessionId, eps: 0.65, minPts: 2)
+        let after = try harness.faceRepo.getClusters(harness.sessionId, includeMembers: true)
+
+        #expect(after.map(\.id) == before.map(\.id), "状态逐行一致时 C 只推进签名，不重插簇行")
+        #expect(
+            after.map { $0.members?.map(\.photoId) } == before.map { $0.members?.map(\.photoId) },
+            "重放不得改变成员划分")
     }
 }

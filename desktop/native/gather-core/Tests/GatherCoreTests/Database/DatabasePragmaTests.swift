@@ -5,7 +5,9 @@
 // open() 与注入时各重放一次 PRAGMA。这里把「注入即生效」钉成回归。
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherDomain
 
 @Suite("DB performance pragmas (F-5)")
 struct DatabasePragmaTests {
@@ -85,69 +87,8 @@ struct DatabasePragmaTests {
         try service.set("detect_input_size", value: "768")
         #expect(service.getNumber("detect_input_size", defaultValue: 640) == 768)
     }
-    // MARK: 第三轮验收：迁移回滚与并发关闭
 
-    @Test("问题 3：恢复失败（备份不存在）时活动库保持可打开、数据不变")
-    func restoreFailureKeepsActiveDatabase() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-restore-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let dbPath = dir.appendingPathComponent("gather.sqlite").path
-        do {
-            let db = try DBConnection(path: dbPath)
-            try db.exec("CREATE TABLE t (v TEXT)")
-            try db.prepare("INSERT INTO t VALUES (?)").run([.text("original")])
-            db.close()
-        }
-        let connection = try DBConnection(path: dbPath)
-        let runner = MigrationRunner(databaseFilePath: dbPath)
-        // 备份不存在 → 必须抛错，且**活动库路径仍存在**（旧实现会先删活库，
-        // 期间进程退出就会留下空路径）。
-        let missing = dir.appendingPathComponent("missing.bak").path
-        #expect(throws: (any Error).self) {
-            try runner.restoreBackup(connection, dbPath: dbPath, backupPath: missing)
-        }
-        #expect(FileManager.default.fileExists(atPath: dbPath), "恢复失败不得让活动库路径消失")
-        // 同一连接应已重新打开，数据保持原样。
-        let row = try connection.prepare("SELECT v FROM t").get([])
-        #expect(row?[0].textValue == "original")
-        connection.close()
-    }
-
-    @Test("问题 3：恢复成功替换活动库并清理旧 WAL/SHM")
-    func restoreSuccessReplacesDatabaseAndCleansWAL() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-restore-ok-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let dbPath = dir.appendingPathComponent("gather.sqlite").path
-        let backupPath = dir.appendingPathComponent("gather.bak").path
-        do {
-            let db = try DBConnection(path: dbPath)
-            try db.exec("CREATE TABLE t (v TEXT)")
-            try db.prepare("INSERT INTO t VALUES (?)").run([.text("original")])
-            db.close()
-        }
-        do {
-            let backup = try DBConnection(path: backupPath)
-            try backup.exec("CREATE TABLE t (v TEXT)")
-            try backup.prepare("INSERT INTO t VALUES (?)").run([.text("restored")])
-            backup.close()
-        }
-        let connection = try DBConnection(path: dbPath)
-        let runner = MigrationRunner(databaseFilePath: dbPath)
-        try runner.restoreBackup(connection, dbPath: dbPath, backupPath: backupPath)
-        let row = try connection.prepare("SELECT v FROM t").get([])
-        #expect(row?[0].textValue == "restored", "恢复后应看到备份内容")
-        // 说明：重开连接会按 WAL 模式正常新建 -wal，因此不能断言它不存在；
-        // 真正要钉住的是「替换成功、原库替换为备份内容、临时文件不残留、备份保留」。
-        #expect(!FileManager.default.fileExists(atPath: dbPath + ".restore-tmp"))
-        #expect(FileManager.default.fileExists(atPath: backupPath), "备份文件必须保留供排障")
-        // 原库路径必须仍是可打开的完整库（重开后再查一次）。
-        #expect(try connection.prepare("SELECT COUNT(*) FROM t").get([])?[0].intValue == 1)
-        connection.close()
-    }
+    // MARK: 第三轮验收：并发关闭（迁移回滚用例随 MigrationRunner 删除）
 
     @Test("问题 4：并发查询与关闭不崩溃，关闭后必须稳定失败")
     func concurrentQueriesAndCloseStaySafe() async throws {

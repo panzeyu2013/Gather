@@ -15,17 +15,39 @@ permissions:
 
 jobs:
   boundary:
-    name: Legacy boundary scan + command surface
+    name: Legacy boundary scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: R0.3 legacy boundary scan
         run: ./scripts/check-no-legacy.sh
-      # B6（9-30 审查）：命令面门禁此前只在本地跑，CI 与开发文档不一致。
-      # 脚本自身已固定 locale（此前 LC_ALL=C.UTF-8 下会 unbound variable）。
-      - name: Command surface scan
-        run: ./scripts/check-command-surface.sh
+      # B8.4：字符串命令面（Router/check-command-surface.sh）已删除，命令面
+      # 断言并入 check-no-legacy 的 R5 enforced 规则。
+
+  gates:
+    name: Repository gates
+    runs-on: ubuntu-latest
+    needs: boundary
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docs consistency
+        run: ./scripts/check-docs.sh --strict
+      - name: Cleanup ratchet
+        run: ./scripts/check-cleanup-ratchet.sh
+      - name: Legacy boundary
+        run: ./scripts/check-no-legacy.sh
+      - name: Layering
+        run: ./scripts/check-layering.sh
+      - name: Duplicate symbols
+        run: ./scripts/check-duplicate-symbols.sh --strict
+      - name: Test catalog
+        run: ./scripts/check-test-catalog.sh --strict
+      - name: Preview surface
+        run: ./scripts/check-preview-surface.sh --strict
+      - name: SELECT * ratchet
+        run: ./scripts/check-select-star.sh --strict
 
   gather-core:
     name: gather-core tests
@@ -42,9 +64,9 @@ jobs:
           key: core-${{ runner.os }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
           restore-keys: core-${{ runner.os }}-
       - name: Core tests
-        run: swift test --package-path desktop/native/gather-core
+        run: swift test --package-path desktop/native/gather-core --explicit-target-dependency-import-check error
       - name: Vector reconciliation gate
-        run: GATHER_RECONCILIATION_VECTOR=1 swift test --package-path desktop/native/gather-core --filter VectorIndexReconciliationTests
+        run: GATHER_RECONCILIATION_VECTOR=1 swift test --package-path desktop/native/gather-core --filter VectorIndexReconciliationTests --explicit-target-dependency-import-check error
 
   gather-app:
     name: gather-app tests + bundle
@@ -62,7 +84,10 @@ jobs:
           key: app-${{ runner.os }}-${{ hashFiles('desktop/native/gather-app/Package.swift') }}
           restore-keys: app-${{ runner.os }}-
       - name: App tests
-        run: swift test --package-path desktop/native/gather-app
+        # 串行执行的理由（P0-2）：app 用例共享 MainActor 状态层与进程级语言/通知槽，
+        # 默认并行在调度满载时会拖穿等待窗口（历史 flake：ControlCenter/Gallery
+        # 生命周期断言）。CI、README、DEVELOPMENT 的 app 测试命令统一 --no-parallel。
+        run: swift test --package-path desktop/native/gather-app --no-parallel --explicit-target-dependency-import-check error
       - name: Native bundle build
         run: ./desktop/native/build.sh
 
@@ -76,6 +101,6 @@ jobs:
       - name: Toolchain version
         run: swift --version && xcodebuild -version
       - name: Core build on newest toolchain
-        run: swift build --package-path desktop/native/gather-core
+        run: swift build --package-path desktop/native/gather-core --explicit-target-dependency-import-check error
       - name: App build on newest toolchain
-        run: swift build --package-path desktop/native/gather-app
+        run: swift build --package-path desktop/native/gather-app --explicit-target-dependency-import-check error

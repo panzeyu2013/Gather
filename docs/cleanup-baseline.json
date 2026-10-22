@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "generated_at": "2026-10-22T07:55:56Z",
+  "generated_by": "scripts/check-cleanup-ratchet.sh --write-baseline",
+  "counting": "matching non-comment lines (lines whose first non-space chars are // or * are ignored)",
+  "metrics": {
+    "unchecked_sendable": 53,
+    "try_optional": 240,
+    "services_prepare": 127,
+    "todo_fixme": 0,
+    "with_known_issue": 0
+  },
+  "scopes": {
+    "unchecked_sendable": "desktop/native/*/Sources/**/*.swift",
+    "try_optional": "desktop/native/*/Sources/**/*.swift",
+    "services_prepare": "desktop/native/gather-core/Sources/GatherDomain/Services/**/*.swift",
+    "todo_fixme": "desktop/native/*/Sources + desktop/native/*/Tests",
+    "with_known_issue": "desktop/native/*/Tests/**/*.swift"
+  }
+}

@@ -4,7 +4,9 @@
 // 无文件/DB/真实 sleep 长路径（最长一次 sleep 20ms，其余用 continuation 门控）。
 import Testing
 import Foundation
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 private enum BatchRunnerTestError: Error, Equatable {
     case slow

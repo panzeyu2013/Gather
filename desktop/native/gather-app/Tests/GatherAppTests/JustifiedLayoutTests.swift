@@ -5,7 +5,8 @@
 
 import Foundation
 import Testing
-@testable import GatherApp
+@testable import GatherUI
+@testable import GatherHost
 
 @Suite("JustifiedLayout")
 struct JustifiedLayoutTests {

@@ -5,21 +5,30 @@
 // @Test(arguments:) 参数化用例（case 数不变、声明数 5 → 2）。
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 @MainActor
 @Suite("deriveStageMarks（对齐 workspace-view.test.ts）")
 struct WorkspaceStageMarksTests {
-    private func marks(_ stage: WorkspaceStage) -> [SessionControlView.StageMark] {
-        // 标签经 l() 出当前语言：锁内钉死 zh-CN，避免并行套件临时切语言
-        // （或系统语言为 en）时中文断言 flake。
-        AppLanguageLock.withCopy("zh-CN") {
-            SessionControlView(
-                sessionId: "s1",
-                router: StubCommandRouter.empty()
-            ).stageMarks(stage)
-        }
+    private func marks(_ stage: WorkspaceStage, language: L10n.Language = .zhCN) -> [SessionControlView.StageMark] {
+        // Cut 4 / 4b-2f：标签由**显式传入**的 L10n 解析，不读进程全局语言
+        //（并行套件切语言/系统语言为 en 都不影响断言）。
+        SessionControlView(
+            workspace: makeTestControlWorkspace(),
+            culling: B8CullingAPIStub()
+        ).stageMarks(stage, with: L10n(language: language))
+    }
+
+    // 裸 View 上没有 languageStore env：en 标签证明语言来自显式 L10n。
+    @Test("显式 L10n：en 阶段标签")
+    func englishLabels() {
+        #expect(marks(.analyzed, language: .en).map(\.label) == ["Imported", "Indexed", "Analyzed"])
+        #expect(marks(.created, language: .en).map(\.label) == ["Imported", "Indexed", "Analyzed"])
     }
 
     @Test("三阶段顺序与标签")

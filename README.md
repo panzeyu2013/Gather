@@ -30,10 +30,11 @@ decisions back through metadata.
 
 - **Local-first:** photos, indexes, models, and metadata processing stay on the
   computer; the app does not run a local web service.
-- **Native workflow:** SwiftUI pages call `GatherCore` services in-process;
-  there is no Electron, browser renderer, or JavaScript IPC runtime.
-- **Recoverable writeback:** metadata changes are persisted and processed by a
-  retryable queue with conflict detection and restart recovery.
+- **Native workflow:** SwiftUI pages call 16 typed domain APIs (110 methods)
+  in-process across seven SwiftPM targets; there is no Electron, browser
+  renderer, JavaScript IPC runtime, or string-command router.
+- **Recoverable writeback:** metadata changes are persisted in the `deliveries`
+  queue and processed with conflict detection and restart recovery.
 - **RAW/JPEG aware:** variants can be folded into one logical photo while
   uncertain pairs remain available for review.
 
@@ -52,7 +53,7 @@ decisions back through metadata.
 ### Requirements
 
 - macOS 14 or later
-- Xcode command-line tools or Xcode with Swift 5.9+ support
+- Xcode command-line tools or Xcode with Swift 6.0+ support
 - Capture One is optional for folder-only workflows
 - Face analysis requires the system Vision framework; real-dataset quality
   validation is an external acceptance activity
@@ -64,7 +65,9 @@ cd desktop/native/gather-core
 swift test
 
 cd ../gather-app
-CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
+# App tests share process-wide MainActor/language state; run them serially
+# (the same flag CI uses) to keep lifecycle assertions deterministic.
+CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-parallel
 ```
 
 ### Build a macOS application bundle
@@ -76,24 +79,39 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
 The bundle is assembled at `release/Gather.app`. Set
 `CONFIGURATION=release` for a release build. The script does not require a
 JavaScript toolchain and leaves signing disabled unless `CODESIGN_IDENTITY`
-is explicitly provided.
+is explicitly provided. When signing, it applies hardened runtime plus
+`desktop/native/Gather.entitlements` (Apple Events for the Capture One bridge)
+and re-reads the signed entitlements. Assembly also asserts the bundled
+`FaceModels/SFace.mlpackage` + `manifest.json` and non-empty
+`Localizable.strings` for both localizations before declaring success.
 
 ## Data and security model
 
 ```text
-SwiftUI → SessionCommandRouter → GatherCore services
-                                  ├─ SQLite (WAL + migrations)
-                                  ├─ Vision/ImageIO/RAW decoding
-                                  └─ XMP and metadata writeback queue
+SwiftUI (GatherUI)
+  ↓ AppServices：16 个域协议 / 110 个类型化方法（同进程直连）
+GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
+  ↓
+GatherDomain（服务编排、JobService、DeliveryCoordinator）
+  ├─ GatherPersistence：SQLite WAL + SchemaV1（43 表 / 373 列 / user_version=1）
+  ├─ GatherAnalysis：dHash/LSH 聚类、Vision 人脸、RAW/ImageIO 解码
+  └─ XMP 写回：deliveries 队列（重试 / 冲突 / 重启恢复）
 ```
 
-The router is the single command boundary for native pages. Destructive
-operations retain explicit confirmation checks, photo paths are resolved from
-database-owned assets, and metadata outbox rows support retries and conflict
-handling.
+The seven targets are `GatherProtocol` (values, API, error codes),
+`GatherPersistence` (SchemaV1, Database, repositories), `GatherAnalysis`,
+`GatherDomain`, `GatherUI`, `GatherHost`, and `GatherApp`. `AppComposition` is
+the single composition root; `AppRuntime` owns job lifecycle. There is no
+118-command router and no migration chain: `Database.open(at:)` creates
+SchemaV1 once and resets incompatible databases (including `-wal`/`-shm`).
+
+Destructive operations use the compile-time `Confirmed<T>` marker plus real UI
+confirmation, photo paths are resolved from database-owned assets, and
+writeback is persisted in `deliveries` with retries, conflict handling, and
+restart recovery.
 
 See [Architecture Decisions](docs/ADR.md), [Development guide](docs/DEVELOPMENT.md)
-(tests and the command-surface contract), and [Roadmap](docs/ROADMAP.md).
+(tests and gates), and [Roadmap](docs/ROADMAP.md).
 
 ## Documentation
 
@@ -101,6 +119,7 @@ See [Architecture Decisions](docs/ADR.md), [Development guide](docs/DEVELOPMENT.
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decisions](docs/ADR.md)
 - [简体中文文档](docs/README.md)
+- [Historical archive](docs/archive/README.md)
 
 ## Contributing
 

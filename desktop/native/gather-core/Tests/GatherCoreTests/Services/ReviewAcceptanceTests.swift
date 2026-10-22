@@ -5,17 +5,21 @@
 //
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 @Suite("FullScan reproduction probes")
 struct FullScanProbeTests {
  func fixture() throws -> (DBConnection, String, ExportService, URL, ExportOptions) {
-  let db = try DBConnection(path: ":memory:"); try MigrationRunner().migrate(db)
+  let db = try makeTestDB()
   let root = FileManager.default.temporaryDirectory.appendingPathComponent("gather-probe-" + UUID().uuidString)
   let source = root.appendingPathComponent("source")
   try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
   let photo = source.appendingPathComponent("sample.jpg"); try Data("photo".utf8).write(to: photo)
   let session = try SessionRepo(connection: db).create(name: "probe", source: "local", sourcePath: source.path)
-  try db.prepare("INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, width, height, created_at, updated_at) VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', 32, 24, '2026-01-01', '2026-01-01')").run([.text("p1"), .text(session.id), .text(photo.path), .text("sample.jpg")])
+  try db.prepare("INSERT INTO photos (id, session_id, filepath, filename, checksum, status, width, height, created_at, updated_at) VALUES (?, ?, ?, ?, '', 'ready', 32, 24, '2026-01-01', '2026-01-01')").run([.text("p1"), .text(session.id), .text(photo.path), .text("sample.jpg")])
   let service = ExportService(photoRepo: PhotoRepo(connection: db), sessionRepo: SessionRepo(connection: db), connection: db)
   return (db, session.id, service, root, ExportOptions(scope: .session, variantPolicy: .preferred, format: .original, naming: ExportNaming(pattern: "{original}"), includeXmp: true, destination: root.appendingPathComponent("dest").path))
  }
@@ -44,7 +48,7 @@ struct FullScanProbeTests {
  @Test func newRunMustNotClearOtherRunCancellation() throws {
   let (db,sid,service,root,options) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
   let photo2 = root.appendingPathComponent("source/second.jpg"); try Data("second".utf8).write(to: photo2)
-  try db.prepare("INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, width, height, created_at, updated_at) SELECT 'p2', session_id, ?, 'second.jpg', checksum, status, metadata, result, width, height, created_at, updated_at FROM photos WHERE id = 'p1'").run([.text(photo2.path)])
+  try db.prepare("INSERT INTO photos (id, session_id, filepath, filename, checksum, status, width, height, created_at, updated_at) SELECT 'p2', session_id, ?, 'second.jpg', checksum, status, width, height, created_at, updated_at FROM photos WHERE id = 'p1'").run([.text(photo2.path)])
   var nested = false
   var second = options; second.destination = root.appendingPathComponent("second-dest").path
   let result = try service.execute(sessionId: sid, options: options, onProgress: { _ in
@@ -56,7 +60,6 @@ struct FullScanProbeTests {
 }
 
 import Testing
-@testable import GatherCore
 @Suite("Closed connection probe") struct ClosedConnectionProbeTests {
  @Test func preparedStatementAfterCloseMustThrow() throws {
   let db = try DBConnection(path: ":memory:")
@@ -68,10 +71,9 @@ import Testing
 }
 
 import Testing
-@testable import GatherCore
 @Suite("FullScan settings numeric probe") struct SettingsNumberProbeTests {
  @Test func numericSettingsMustRemainFiniteBeforeIntConversion() throws {
-  let db = try DBConnection(path: ":memory:"); try MigrationRunner().migrate(db)
+  let db = try makeTestDB()
   let service = SettingsService(repo: SettingsRepo(connection: db))
   try service.set("detect_input_size", value: "1e999")
   let value = service.getNumber("detect_input_size", defaultValue: 640)

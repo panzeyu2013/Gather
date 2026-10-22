@@ -7,7 +7,11 @@
 // 2) 损坏侧车（readAttributes 返回空但侧车文件存在）不得用空值覆盖有效缓存。
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 /// 计数 EXIF provider：调用次数即"是否重新提取"的独立证据。
 private final class CountingExif: ExifProvider, @unchecked Sendable {
@@ -90,7 +94,7 @@ struct MetadataServiceTests {
     }
 
     private func makeFixture() throws -> Fixture {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-metadata-service-\(UUID().uuidString)", isDirectory: true).path
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

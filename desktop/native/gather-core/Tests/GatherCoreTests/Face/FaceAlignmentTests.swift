@@ -8,7 +8,9 @@
 import Foundation
 import Testing
 import CoreGraphics
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 struct FaceAlignmentTests {
     // MARK: - 相似变换

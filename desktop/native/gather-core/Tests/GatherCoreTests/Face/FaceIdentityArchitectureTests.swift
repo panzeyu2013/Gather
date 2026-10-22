@@ -1,7 +1,24 @@
+// desktop/native/gather-core/Tests/GatherCoreTests/Face/FaceIdentityArchitectureTests.swift
+// 人脸身份架构契约：阈值竞争、模型空间隔离、人工纠正与迁移原子性。
+//
+// 职责：
+// 1. FaceIdentityPolicy：低于阈值的竞争者仍可造成 ambiguity；
+// 2. 不同 embeddingSpec 的向量不得互相匹配；
+// 3. 人工纠正（拒识/确认/关键词）在观测替换后仍持久，并可显式覆盖；
+// 4. 身份迁移失败/取消不得发布半成品向量；聚类失败整体回滚并保留手工绑定；
+// 5. 同名人物在 reconcile 时不得合并；
+// 6. 内置 SFace 输出 128 维单位向量，且与独立参考向量余弦 > 0.9999。
+//
+// 边界：内存 SchemaV1 + 临时图片路径；解码/推理/聚类以闭包替身注入，只有
+// bundledModelRunsRealCoreMLInference 走真实 CoreML（依赖 target 内模型资源）。
 import Foundation
 import CoreGraphics
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
+@testable import GatherPersistence
 
 @Suite(.serialized)
 struct FaceIdentityArchitectureTests {
@@ -13,7 +30,7 @@ struct FaceIdentityArchitectureTests {
     }
 
     @Test func modelSpacesWithEqualDimensionsCannotMatch() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         defer { db.close() }
         try insertSession(db, "s")
         try insertPhoto(db, id: "p", sessionId: "s", filepath: "/tmp/p.jpg")
@@ -25,14 +42,14 @@ struct FaceIdentityArchitectureTests {
         let people = PersonRepo(connection: db)
         let personId = try people.create(name: "A")
         try people.saveEmbeddings(embeddings: [.init(personId: personId, embedding: [1, 0], photoId: "p",
-            sessionId: "s", faceObservationId: ids[0], faceBbox: [0.1, 0.1, 0.2, 0.3], quality: 0.9)])
+            sessionId: "s", faceObservationId: ids[0])])
         #expect(try people.getAllEmbeddings(modelSpace: "model-A:weights-1").count == 1)
         #expect(try people.getAllEmbeddings(modelSpace: "model-A:weights-2").isEmpty)
         #expect(try people.getAllEmbeddings(modelSpace: "model-B:weights-1").isEmpty)
     }
 
     @Test func correctionsSurviveObservationReplacementAndCanBeExplicitlyOverridden() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         defer { db.close() }
         try insertSession(db, "s")
         try insertPhoto(db, id: "p", sessionId: "s", filepath: "/tmp/p.jpg")
@@ -53,7 +70,7 @@ struct FaceIdentityArchitectureTests {
 
     @Test("Failed or cancelled migration cannot publish prepared vectors", arguments: [false, true])
     func failedMigrationDoesNotPublishPartialVectors(cancellation: Bool) async throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         defer { db.close() }
         let session = try SessionRepo(connection: db).create(name: "Migration", source: "folder")
         let dir = try makeTempDir()
@@ -92,7 +109,7 @@ struct FaceIdentityArchitectureTests {
 
     @Test("Migration preserves manual identity and rolls back if clustering fails", arguments: [false, true])
     func migrationPreservesIdentityOrRollsBack(clusterFailure: Bool) async throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         defer { db.close() }
         let sessions = SessionRepo(connection: db)
         let session = try sessions.create(name: "Migration", source: "folder")
@@ -120,7 +137,7 @@ struct FaceIdentityArchitectureTests {
                     FaceInferenceObservation(bbox: [0.1, 0.1, 0.2, 0.3], confidence: 0.9,
                         embedding: [0, 1], quality: 1)
                 ]) }
-            }, clusterProvider: { entries, eps, minPts, _, _ in
+            }, clusterProvider: { entries, eps, minPts, _, _, _ in
                 if clusterFailure { throw DBError.message("Injected clustering failure") }
                 return try FaceClusterer.clusterEmbeddings(entries: entries, eps: eps, minPts: minPts)
             })
@@ -157,7 +174,7 @@ struct FaceIdentityArchitectureTests {
     }
 
     @Test func equalDisplayNamesDoNotMergeExplicitIdentitiesDuringReconciliation() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         defer { db.close() }
         try insertSession(db, "s")
         let people = PersonRepo(connection: db)

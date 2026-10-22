@@ -53,14 +53,18 @@ CORE="desktop/native/gather-core"
 NATIVE="desktop/native"
 
 # ---------------------------------------------------------------- enforced
+# 3b-6：Adapter 在拆 target 后是合法的端口实现命名（组合根 GatherHost 里的
+# *Adapter.swift 把 Live API / 文件系统能力适配到 GatherUI 的端口协议）。
+# 因此只允许它们出现在 GatherHost，其余位置仍按 legacy shim 处理。
 enforced_rules=$((enforced_rules + 1))
-banned=$(find "$NATIVE" -type f \( -name 'Legacy*.swift' -o -name '*Compat*.swift' -o -name '*Adapter*.swift' \) 2>/dev/null || true)
+banned=$(find "$NATIVE" -type f \( -name 'Legacy*.swift' -o -name '*Compat*.swift' -o -name '*Adapter*.swift' \) 2>/dev/null \
+  | grep -vE '^desktop/native/gather-app/Sources/GatherHost/[^/]*Adapter\.swift$' || true)
 if [[ -n "$banned" ]]; then
-  echo "LEGACY[enforced] no Legacy*/Compat*/Adapter* source files" >&2
+  echo "LEGACY[enforced] no Legacy*/Compat*/Adapter* source files (Adapter* 仅限 GatherHost 端口实现)" >&2
   echo "$banned" | sed 's/^/  - /' >&2
   fail=1
 else
-  echo "ok   [enforced] no Legacy*/Compat*/Adapter* source files"
+  echo "ok   [enforced] no Legacy*/Compat*/Adapter* source files (Adapter* 仅限 GatherHost 端口实现)"
 fi
 
 enforce "no WebKit/JS runtime"           'import (WebKit|JavaScriptCore)|WKWebView' "$NATIVE" "*.swift"
@@ -69,10 +73,14 @@ enforce "no app-level JSONSerialization" 'JSONSerialization'                    
 
 # ---------------------------------------------------------------- tracked
 tracked "awaitSync semaphore bridge (R5)"       'awaitSync'                        "$APP"    "*.swift"
-tracked "SessionCommandRouter (R5)"             'SessionCommandRouter'             "$NATIVE" "*.swift"
-tracked "Services layer (R2)"                   '.'                                "$CORE/Sources/GatherCore/Services" "*.swift"
-tracked "StubCommandRouter (R5)"                'StubCommandRouter'                "$APP"    "*.swift"
-tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepare\(' "$CORE/Sources/GatherCore/Services" "*.swift"
+# B8.4 收口：Router / 命令客户端已删除，改为 enforced 0 防回潮。
+# 只看 app（GatherCore 不在本 cut 的修改范围）。
+enforce "no SessionCommandRouter (R5)"          'SessionCommandRouter'             "$APP"    "*.swift"
+enforce "no CommandRouter/WebResponse (R5)"     'CommandRouter|WebResponse'        "$APP"    "*.swift"
+enforce "no NativeCommandClient (R5)"           'NativeCommandClient'              "$APP"    "*.swift"
+tracked "Services layer (R2)"                   '.'                                "$CORE/Sources/GatherDomain/Services" "*.swift"
+
+tracked "raw SQL outside Store (R1)"            'connection\.prepare\(|db\.prepare\(' "$CORE/Sources/GatherDomain/Services" "*.swift"
 tracked "unchecked Sendable (R1/R2)"            '@unchecked Sendable'              "$NATIVE" "*.swift"
 # R6：双轨文案的判据只看"英文侧死数据"（enDesc/labelEn/titleEn）。zhDesc 是
 # 单轨实现里的正常键名（渲染走 l(zhLabel/zhDesc)），计入会把合法实现误报。

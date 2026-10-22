@@ -6,19 +6,23 @@
 
 import Foundation
 import Testing
-@testable import GatherApp
-@testable import GatherCore
+@testable import GatherUI
+@testable import GatherHost
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - Stub（错误态与调用记录）
 
 /// Swift 6 迁移：LibraryDataProvider 现经协议继承 Sendable，测试替身必须可跨隔离域。
-/// 可变状态全部收归 LockedBox（NSLock 保护的 @unchecked Sendable 锁盒）：
+/// 可变状态全部收归共享 LockedBox（Support/LockedBox.swift；NSLock 保护的锁盒）：
 /// sessions/photos/total/listError/photosError/photosThrownError/fetchCalls/
 /// destructiveCalls/albums/listAlbumsError。对外属性一律经锁内 get/set 转发
 /// （测试调用点不变），stub 方法在临界区内取快照后立即释放锁，绝不持锁 await。
 private final class StubLibraryProvider: LibraryDataProvider {
-    private final class LockedBox: @unchecked Sendable {
-        let lock = NSLock()
+    /// stub 的可变状态；只能经 `box.lock.withLock` 访问（与旧私有 LockedBox 同一纪律）。
+    private struct BoxState {
         var sessions: [SessionData] = []
         var photos: [GlobalPhotoResult] = []
         var total = 0
@@ -29,9 +33,12 @@ private final class StubLibraryProvider: LibraryDataProvider {
         var destructiveCalls: [(command: String, confirmed: Bool)] = []
         var albums: [SmartAlbumData] = []
         var listAlbumsError: String?
+        var orphans: [MetadataOrphan] = []
+        var orphanCalls = 0
+        var metadataInputs: [Confirmed<MetadataResolveOrphanInput>] = []
     }
 
-    private let box = LockedBox()
+    private let box = LockedBox(BoxState())
 
     var sessions: [SessionData] {
         get { box.lock.withLock { box.sessions } }
@@ -58,7 +65,7 @@ private final class StubLibraryProvider: LibraryDataProvider {
         set { box.lock.withLock { box.photosError = newValue } }
     }
 
-    /// 类型化错误注入（NativeCommandError/BridgeError 等）：NSError 形态覆盖不到
+    /// 类型化错误注入（APIError/BridgeError 等）：NSError 形态覆盖不到
     /// 「非 LocalizedError 枚举桥接丢码 / 单冒号参数形被门槛误判」的回归。
     var photosThrownError: Error? {
         get { box.lock.withLock { box.photosThrownError } }
@@ -84,6 +91,17 @@ private final class StubLibraryProvider: LibraryDataProvider {
         set { box.lock.withLock { box.listAlbumsError = newValue } }
     }
 
+    var orphans: [MetadataOrphan] {
+        get { box.lock.withLock { box.orphans } }
+        set { box.lock.withLock { box.orphans = newValue } }
+    }
+
+    var orphanCalls: Int { box.lock.withLock { box.orphanCalls } }
+
+    var metadataInputs: [Confirmed<MetadataResolveOrphanInput>] {
+        box.lock.withLock { box.metadataInputs }
+    }
+
     func deleteAlbum(albumId: String, confirmed: Bool) throws {
         box.lock.withLock {
             box.destructiveCalls.append(("album.delete", confirmed))
@@ -102,13 +120,22 @@ private final class StubLibraryProvider: LibraryDataProvider {
         return 0
     }
 
+    func listMetadataOrphans() async throws -> [MetadataOrphan] {
+        box.lock.withLock {
+            box.orphanCalls += 1
+            return box.orphans
+        }
+    }
+
     func resolveMetadataOrphan(
-        xmpPath: String,
-        action: MetadataOrphanAction,
-        confirmed: Bool
+        _ input: Confirmed<MetadataResolveOrphanInput>
     ) async throws -> [MetadataOrphan] {
         box.lock.withLock {
-            box.destructiveCalls.append(("metadata.resolve_orphan.\(action.rawValue)", confirmed))
+            box.metadataInputs.append(input)
+            box.destructiveCalls.append((
+                "metadata.resolve_orphan." + input.value.action.rawValue,
+                true
+            ))
         }
         return []
     }
@@ -183,10 +210,11 @@ private final class NotificationRecorder<Value>: @unchecked Sendable {
     }
 }
 
-/// 锁内以 zh-CN 取分页区间文案：中文断言不得受并行切语言/系统语言影响。
+/// 以 zh-CN 解析分页区间文案：文案已延迟到渲染期（VM 只存 key + 参数），
+/// 解析语言显式给定，不再依赖进程级 appLanguage。
 @MainActor
 private func chineseRangeText(_ viewModel: LibraryViewModel) -> String {
-    AppLanguageLock.withCopy("zh-CN") { viewModel.rangeText }
+    L10n(language: .zhCN).resolve(viewModel.rangeText)
 }
 
 @MainActor
@@ -198,15 +226,21 @@ private func makeStubVM(delay: Duration = .milliseconds(5)) -> (LibraryViewModel
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
 private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection) {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
-    return (LiveLibraryDataProvider(router: SessionCommandRouter.makeDefault(db: db)), db)
+    let db = try makeGatherTestDB()
+    let services = AppServices.live(composition: AppComposition.make(db: db))
+    return (LiveLibraryDataProvider(
+        session: services.session,
+        photo: services.photo,
+        asset: services.asset,
+        album: services.album,
+        metadata: services.metadata
+    ), db)
 }
 
 private func insertSession(_ db: DBConnection, _ id: String, name: String = "工作区") throws {
     _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, ?, 'photos_loaded', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO sessions (id, name, status, created_at, updated_at)
+        VALUES (?, ?, 'photos_loaded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([.text(id), .text(name)])
 }
 
@@ -215,15 +249,17 @@ private func insertPhoto(
     _ db: DBConnection,
     id: String,
     sessionId: String,
-    status: String = "online",
+    // V1 photos.status 只允许 pending/ready/removed/missing；Library 的
+    // "online" 是过滤器语义（status != missing），落库用 ready。
+    status: String = "ready",
     rating: Int = 0,
     label: String = "",
     keywords: String = "[]",
     createdAt: String = "2026-01-01T00:00:00.000Z"
 ) throws {
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', ?, '{}', '{}', ?, ?)
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', ?, ?, ?)
     """).run([.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg"), .text(status), .text(createdAt), .text(createdAt)])
     _ = try db.prepare("""
         INSERT INTO photo_metadata_cache (photo_id, session_id, rating, label, keywords, cached_at)
@@ -471,13 +507,17 @@ struct LibraryViewModelTests {
 
     // ── 错误态 ──
 
-    @Test func firstPageFailureSetsFailedPhase() async {
+    @Test func firstPageFailureSetsFailedPhase() async throws {
         let (viewModel, stub) = makeStubVM()
         stub.photosError = "FILTER_QUERY_FAILED"
         await viewModel.load()
-        // P3：phase 直接渲染给用户（"加载照片失败：%@"），必须是本地化文案，
-        // 不得把原始诊断/未映射码直显。
-        #expect(viewModel.phase == .failed(GatherLocalization.l("发生未知错误，请稍后重试")))
+        // Cut 4 / 4a-3b-2a：phase 只存错误载体（码/诊断）；未映射码在渲染期回退
+        // 通用文案，视图仍以"加载照片失败：%@"包装（不再把原始诊断直显）。
+        let error = try #require(viewModel.phase.error)
+        #expect(error.code.isEmpty)
+        #expect(error.diagnostic == "FILTER_QUERY_FAILED")
+        let l10n = L10n(language: .zhCN)
+        #expect(CommandErrorText.resolve(error, with: l10n) == l10n.errorText("NOT_A_CODE"))
         #expect(viewModel.photos.isEmpty)
     }
 
@@ -492,47 +532,56 @@ struct LibraryViewModelTests {
         viewModel.nextPage()
         #expect(await waitUntilAsync { viewModel.actionError != nil })
         #expect(viewModel.phase == .loaded)
-        // P3：非错误码/未映射码不得直显 —— 界面回退通用文案，原始诊断只进日志。
-        #expect(viewModel.actionError == GatherLocalization.l("发生未知错误，请稍后重试"))
-        #expect(viewModel.actionError?.contains("PAGE_FAILED") == false)
+        // P3：非错误码/未映射码不得直显 —— 界面回退通用文案，原始诊断只进诊断位。
+        let error = viewModel.actionError
+        #expect(error?.code.isEmpty == true)
+        #expect(error?.diagnostic.contains("PAGE_FAILED") == true)
+        #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("NOT_A_CODE"))
     }
 
     // 端到端（审查 B）：路由透传的「已知码: 参数」经 Library 漏斗不再被判成散文。
-    // 可达：metadata.resolve_orphan → MetadataSyncError.otherSessionNotConfirmed 的
+    // 可达：metadata.resolve_orphan → DeliveryError.otherSessionNotConfirmed 的
     // description（"XMP_CONFIRM_OTHER_SESSION_PENDING: <会话>"）→ 路由 errorMessage
-    // → NativeCommandError.failed(该串)。
-    @Test func parameterizedCodeFailureShowsParameterizedText() async {
+    // → APIError.failed(该串)。
+    @Test func parameterizedCodeFailureShowsParameterizedText() async throws {
         let (viewModel, stub) = makeStubVM()
         let raw = "XMP_CONFIRM_OTHER_SESSION_PENDING: s1"
-        stub.photosThrownError = NativeCommandError.failed(raw)
+        stub.photosThrownError = APIError.failed(raw)
         await viewModel.load()
-        let expected = GatherLocalization.errorText(raw)
-        #expect(viewModel.phase == .failed(expected))
+        // 参数化码原样进载体，渲染期插值不丢参数。
+        let error = try #require(viewModel.phase.error)
+        #expect(error.code == raw)
+        let l10n = L10n(language: .zhCN)
+        let expected = CommandErrorText.resolve(error, with: l10n)
+        #expect(expected == l10n.errorText(raw))
         #expect(expected.contains("s1"))
-        #expect(viewModel.phase != .failed(GatherLocalization.errorText("NOT_A_CODE")))
+        #expect(expected != l10n.errorText("NOT_A_CODE"))
     }
 
     // 审查 B 回归：码形门槛不得吞掉「已知码 + 单冒号参数」的参数化模板。
     // 可达输入：metadata.resolve_orphan → MetadataSyncCoordinator.confirmSync 抛
-    // MetadataSyncError.otherSessionNotConfirmed(sessionId:)（description 为
+    // DeliveryError.otherSessionNotConfirmed(sessionId:)（description 为
     // "XMP_CONFIRM_OTHER_SESSION_PENDING: <会话>"），经路由 errorMessage 透传。
     @Test func userFacingTextTranslatesParameterizedCode() {
         AppLanguageLock.withStableCopy {
+            // Cut 4 / 4b-1：文案改为渲染期按 L10n 解析；用固定 zh 语言同时做期望，
+            // 避免断言跟随进程级 appLanguage 漂移。
+            let l10n = L10n(language: .zhCN)
             let raw = "XMP_CONFIRM_OTHER_SESSION_PENDING: s1"
-            #expect(GatherLocalization.isParameterizedErrorCode(raw))
-            let text = LibraryViewModel.userFacingText(for: raw)
+            #expect(CommandError.isParameterizedErrorCode(raw))
+            let text = LibraryViewModel.userFacingText(for: raw, with: l10n)
             // 与 errorText 同一插值语义：参数不丢（旧门槛判为散文 → 通用文案）。
-            #expect(text == GatherLocalization.errorText(raw))
+            #expect(text == l10n.errorText(raw))
             #expect(text.contains("s1"))
             // 正例：双冒号参数形照旧走码形分支。
-            #expect(LibraryViewModel.userFacingText(for: "FILTER_FIELD_UNKNOWN::rating")
-                == GatherLocalization.errorText("FILTER_FIELD_UNKNOWN::rating"))
+            #expect(LibraryViewModel.userFacingText(for: "FILTER_FIELD_UNKNOWN::rating", with: l10n)
+                == l10n.errorText("FILTER_FIELD_UNKNOWN::rating"))
             // 负例：未知码 / 散文仍不猜，回退通用文案（门槛未被放宽成"有冒号就当码"）。
-            let generic = GatherLocalization.errorText("NOT_A_CODE")
-            #expect(LibraryViewModel.userFacingText(for: "INVALID_PARAM:limit") == generic)
-            #expect(LibraryViewModel.userFacingText(for: "Some prose: detail") == generic)
-            #expect(LibraryViewModel.userFacingText(for: "NOT_A_CODE") == generic)
-            #expect(LibraryViewModel.userFacingText(for: "") == generic)
+            let generic = l10n.errorText("NOT_A_CODE")
+            #expect(LibraryViewModel.userFacingText(for: "UNKNOWN_CODE:limit", with: l10n) == generic)
+            #expect(LibraryViewModel.userFacingText(for: "Some prose: detail", with: l10n) == generic)
+            #expect(LibraryViewModel.userFacingText(for: "NOT_A_CODE", with: l10n) == generic)
+            #expect(LibraryViewModel.userFacingText(for: "", with: l10n) == generic)
         }
     }
 
@@ -544,7 +593,11 @@ struct LibraryViewModelTests {
         let token = NotificationCenter.default.addObserver(
             forName: GatherEventCenter.domainChanged, object: nil, queue: nil
         ) { notification in
-            guard let change = notification.object as? GatherDomainChange else { return }
+            // R7 P0-2：domainChanged 是进程级通知，并行套件（挑片/人物/相似度写回）
+            // 也会发同一条通知。只收本发布者的 origin，避免把别人的事件算进
+            // 「恰好四条」与「origin 必须一致」两个断言。
+            guard let change = notification.object as? GatherDomainChange,
+                  change.origin == LibraryViewModel.changeOrigin else { return }
             received.append((change.domain, change.origin))
         }
         defer { NotificationCenter.default.removeObserver(token) }
@@ -572,10 +625,16 @@ struct LibraryViewModelTests {
     @Test func failedMutationsPublishNothing() async {
         let (viewModel, stub) = makeStubVM()
         stub.listAlbumsError = "ALBUM_FAILED"
-        let received = NotificationRecorder<Notification>()
+        // 与上一个用例同理：只统计本发布者的事件；并行套件的 domainChanged
+        // 不得被误判成「失败也广播」。
+        let received = NotificationRecorder<GatherDomainChange>()
         let token = NotificationCenter.default.addObserver(
             forName: GatherEventCenter.domainChanged, object: nil, queue: nil
-        ) { notification in received.append(notification) }
+        ) { notification in
+            guard let change = notification.object as? GatherDomainChange,
+                  change.origin == LibraryViewModel.changeOrigin else { return }
+            received.append(change)
+        }
         defer { NotificationCenter.default.removeObserver(token) }
 
         await viewModel.deleteAlbum(id: "album-1", confirmed: true)
@@ -679,7 +738,7 @@ struct LibraryViewModelTests {
         #expect(try provider.listAlbums().contains(where: { $0.id == created.id }) == false)
 
         _ = try provider.listAssetCandidates()
-        _ = try provider.listMetadataOrphans()
+        _ = try await provider.listMetadataOrphans()
         _ = try provider.listAssetVolumes()
     }
 
@@ -707,8 +766,19 @@ struct LibraryViewModelTests {
             xmpPath: "/x/a.xmp", photoPath: "/x/a.jpg", status: "pending",
             revision: 1, errorMessage: "", updatedAt: "2026-01-01T00:00:00.000Z"
         )
+        // B6b：MetadataAPI 只接收 Confirmed<T>。未确认时 VM 本地拒绝
+        //（METADATA_RESOLVE_ORPHAN_CONFIRM_REQUIRED），不发请求、不伪造确认。
+        let callsBeforeOrphan = stub.destructiveCalls.count
         await viewModel.resolveOrphan(orphan, action: .restore, confirmed: false)
+        #expect(stub.destructiveCalls.count == callsBeforeOrphan)
+        #expect(stub.metadataInputs.isEmpty)
+        #expect(viewModel.actionError != nil)
+
         await viewModel.resolveOrphan(orphan, action: .keep, confirmed: true)
+        #expect(stub.metadataInputs.count == 1)
+        #expect(stub.metadataInputs.first?.source == .userDialog)
+        #expect(stub.metadataInputs.first?.value.action == .keep)
+        #expect(stub.metadataInputs.first?.value.xmpPath == orphan.xmpPath)
 
         await viewModel.relinkVolume(root: "/Volumes/A", newRoot: "/Users/me/A", confirmed: false)
         await viewModel.relinkVolume(root: "/Volumes/A", newRoot: "/Users/me/A", confirmed: true)
@@ -716,12 +786,13 @@ struct LibraryViewModelTests {
         #expect(stub.destructiveCalls.map { $0.command } == [
             "album.delete", "album.delete",
             "assets.accept_candidate", "assets.reject_candidate",
-            "metadata.resolve_orphan.restore", "metadata.resolve_orphan.keep",
+            "metadata.resolve_orphan.keep",
             "assets.relink_root", "assets.relink_root",
         ])
-        // 逐条断言：false 进去必须是 false 出来（不得被提升为 true）。
+        // 逐条断言：false 进去必须是 false 出来（不得被提升为 true）；
+        // 元数据处置的 Confirmed 只从确认分支构造（source = userDialog）。
         #expect(stub.destructiveCalls.map { $0.confirmed } == [
-            false, true, false, true, false, true, false, true,
+            false, true, false, true, true, false, true,
         ])
     }
 
@@ -733,6 +804,39 @@ struct LibraryViewModelTests {
         viewModel.reportActionCancelled()
 
         #expect(stub.destructiveCalls.isEmpty)
-        #expect((viewModel.actionError ?? "").isEmpty == false)
+        let error = viewModel.actionError
+        #expect(error?.origin == .localValidation)
+        #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)).isEmpty == false)
+    }
+
+    // MARK: - B6b：metadata.orphans / resolve_orphan 迁移
+
+    @Test func reloadSupportLoadsMetadataOrphans() async throws {
+        let (viewModel, stub) = makeStubVM()
+        let orphan = b6bOrphan()
+        stub.orphans = [orphan]
+
+        await viewModel.reloadSupport()
+
+        #expect(stub.orphanCalls == 1, "孤立 XMP 刷新必须走 provider 的异步入口")
+        #expect(viewModel.metadataOrphans.map(\.xmpPath) == [orphan.xmpPath])
+        #expect(viewModel.actionError == nil)
+    }
+
+    @Test func resolveOrphanRefreshesListFromMetadataAPI() async throws {
+        let (viewModel, stub) = makeStubVM()
+        let orphan = b6bOrphan()
+        stub.orphans = [orphan]
+        await viewModel.reloadSupport()
+        #expect(viewModel.metadataOrphans.count == 1)
+
+        await viewModel.resolveOrphan(orphan, action: .keep, confirmed: true)
+
+        let input = try #require(stub.metadataInputs.first)
+        #expect(input.source == .userDialog)
+        #expect(input.value.xmpPath == orphan.xmpPath)
+        #expect(input.value.action == .keep)
+        // 返回的剩余列表直接替换本地状态（stub 返回空 = 已结清）。
+        #expect(viewModel.metadataOrphans.isEmpty)
     }
 }

@@ -4,7 +4,10 @@
 // 对抗验证 V2 实测 `Int(getNumber("face_core_retry_min_samples"))` 遇 1e999 直接崩。
 
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 @Suite("设置数值安全转换")
 struct SettingsNumberTests {

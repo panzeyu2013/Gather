@@ -9,7 +9,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - 支撑
 
@@ -25,9 +29,9 @@ private func seedPhotoWithAssetFile(
 ) throws {
     try insertAssetFile(db, id: assetFileId, normalizedPath: filepath)
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
-          result, asset_id, asset_file_id, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', NULL, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
+          asset_id, asset_file_id, width, height, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', 'ready', NULL, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
       """).run([
         .text(photoId), .text(sessionId), .text(filepath),
         .text((filepath as NSString).lastPathComponent), .text(assetFileId),
@@ -43,9 +47,9 @@ private func seedPhotoWithoutAssetFile(
     filepath: String
 ) throws {
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
-          result, asset_id, asset_file_id, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', NULL, NULL, 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
+          asset_id, asset_file_id, width, height, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', 'ready', NULL, NULL, 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
       """).run([
         .text(photoId), .text(sessionId), .text(filepath),
         .text((filepath as NSString).lastPathComponent),
@@ -98,7 +102,7 @@ private func makeHarness(
     },
     statProvider: @escaping QualityService.StatProvider = QualityService.defaultStat
 ) throws -> QualityHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
     let service = QualityService(
         photoRepo: PhotoRepo(connection: db),
@@ -432,7 +436,7 @@ struct QualityAnalyzeTests {
 struct QualityGetTests {
     @Test("returns the latest stored row per photo and dedupes requested ids")
     func latestPerPhoto() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
         try insertAssetFile(db, id: "af-1", normalizedPath: "/vault/a.jpg")
         try insertAssetFile(db, id: "af-2", normalizedPath: "/vault/b.jpg")
@@ -478,7 +482,7 @@ struct QualityGetTests {
 
     @Test("returns empty for a session without stored results")
     func emptyWhenNoResults() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
         let service = QualityService(photoRepo: PhotoRepo(connection: db), connection: db)
         #expect(try service.get(sessionId: session.id).isEmpty)
@@ -492,14 +496,14 @@ struct QualityGetTests {
 struct QualityRelativeRankTests {
     @Test("assigns relative ranks only inside persisted similarity groups")
     func ranksInsideGroupsOnly() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let session = try SessionRepo(connection: db).create(name: "Quality", source: "folder")
         let now = "2026-07-30T10:00:00.000Z"
         for (id, path) in [("p1", "/photos/p1.JPG"), ("p2", "/photos/p2.JPG"), ("p3", "/photos/p3.JPG")] {
             try insertAssetFile(db, id: "af-\(id)", normalizedPath: path)
             _ = try db.prepare("""
-                INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_file_id, width, height, created_at, updated_at)
-                VALUES (?, ?, ?, ?, '', 'ready', '{}', '{}', ?, 100, 80, ?, ?)
+                INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_file_id, width, height, created_at, updated_at)
+                VALUES (?, ?, ?, ?, '', 'ready', ?, 100, 80, ?, ?)
               """).run([
                 .text(id), .text(session.id), .text(path), .text(path.split(separator: "/").last.map(String.init) ?? id),
                 .text("af-\(id)"), .text(now), .text(now),

@@ -4,11 +4,12 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 private func makeDB() throws -> DBConnection {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
+    let db = try makeTestDB()
     return db
 }
 
@@ -171,7 +172,7 @@ struct PersonRepoTests {
             PersonPhotoInput(photoId: "p1", faceBbox: [0, 0, 1, 1], confidence: 0.9),
         ])
         try repo.saveEmbeddings(embeddings: [
-            SaveEmbeddingInput(personId: source, embedding: [1, 2, 3, 4], photoId: "p1", sessionId: "s1", faceObservationId: 7, faceBbox: [0, 0, 1, 1], quality: 0.8),
+            SaveEmbeddingInput(personId: source, embedding: [1, 2, 3, 4], photoId: "p1", sessionId: "s1", faceObservationId: 7),
         ])
 
         try repo.merge(sourceId: source, targetId: target)
@@ -235,7 +236,7 @@ struct PersonRepoTests {
             PersonPhotoInput(photoId: "p1", faceBbox: [0, 0, 1, 1], confidence: 0.9),
         ])
         try repo.saveEmbeddings(embeddings: [
-            SaveEmbeddingInput(personId: alice, embedding: [1, 2], photoId: "p1", sessionId: "s1", faceObservationId: 1, faceBbox: [0, 0, 1, 1], quality: 0.9),
+            SaveEmbeddingInput(personId: alice, embedding: [1, 2], photoId: "p1", sessionId: "s1", faceObservationId: 1),
         ])
         #expect(try repo.getAllEmbeddings().filter { $0.personId == alice }.count == 1)
 
@@ -254,8 +255,8 @@ struct PersonRepoTests {
 
         let floats: [Float] = [0.1, -0.5, 1.25, 3.5]
         try repo.saveEmbeddings(embeddings: [
-            SaveEmbeddingInput(personId: alice, embedding: floats, photoId: "p1", sessionId: "s1", faceObservationId: 10, faceBbox: [0, 0, 1, 1], quality: 0.95),
-            SaveEmbeddingInput(personId: alice, embedding: [7], photoId: "p2", sessionId: "s1", faceObservationId: nil, faceBbox: [0, 0, 1, 1], quality: 0.5),
+            SaveEmbeddingInput(personId: alice, embedding: floats, photoId: "p1", sessionId: "s1", faceObservationId: 10),
+            SaveEmbeddingInput(personId: alice, embedding: [7], photoId: "p2", sessionId: "s1", faceObservationId: nil),
         ])
 
         let rows = try repo.getAllEmbeddings().filter { $0.personId == alice }
@@ -274,20 +275,16 @@ struct PersonRepoTests {
         let hasEmbedding10 = all.contains { $0.personId == alice && $0.faceObservationId == 10 && $0.embedding.count == 16 }
         #expect(hasEmbedding10)
 
-        // quality/faceBbox 仍落库（getAllEmbeddings 投影不含这两列，走原始行校验）。
-        let cached = try db.prepare(
-            "SELECT quality, face_bbox FROM person_embeddings WHERE person_id = ? AND face_observation_id = 10"
-        ).get([.text(alice)])
-        guard case .real(let quality)? = cached?[0], case .text(let faceBbox)? = cached?[1] else {
-            Issue.record("person_embeddings 行缺失或类型不符")
-            return
-        }
-        #expect(quality == 0.95)
-        #expect(faceBbox == "[0,0,1,1]")
+        // Cut 2 / S5c-1：V1 person_embeddings 不再冗余存 face_bbox/quality ——
+        // bbox 的真相源是 person_photos.face_bbox（绑定桥接），质量分在 face_observations.quality。
+        // 因此这里不再断言这两列落库（SaveEmbeddingInput 的对应形参已随写入删除）。
+        #expect(try db.prepare(
+            "SELECT COUNT(*) FROM person_embeddings WHERE person_id = ? AND face_observation_id = 10"
+        ).get([.text(alice)])?[0].intValue == 1, "向量行必须按 observation 落库")
 
         // 相同 face_observation_id 再次保存 → INSERT OR REPLACE 覆盖（唯一索引）。
         try repo.saveEmbeddings(embeddings: [
-            SaveEmbeddingInput(personId: alice, embedding: [9, 9], photoId: "p1", sessionId: "s1", faceObservationId: 10, faceBbox: [0, 0, 1, 1], quality: 0.99),
+            SaveEmbeddingInput(personId: alice, embedding: [9, 9], photoId: "p1", sessionId: "s1", faceObservationId: 10),
         ])
         #expect(try repo.getAllEmbeddings().filter { $0.personId == alice }.count == 2)
         let replaced = try #require(

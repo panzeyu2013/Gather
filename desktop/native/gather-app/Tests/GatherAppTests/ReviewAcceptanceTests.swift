@@ -5,7 +5,8 @@
 //
 import Foundation
 import Testing
-@testable import GatherApp
+@testable import GatherUI
+@testable import GatherHost
 @MainActor @Suite("FullScan gallery navigation probe") struct FullScanNavigationProbeTests {
  @Test func galleryBackMustReturnToControl() {
   let nav = RootNavigation(); nav.openSession("s1"); nav.openGallery("s1"); nav.backFromGallery()

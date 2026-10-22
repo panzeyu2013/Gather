@@ -1,7 +1,10 @@
 // 临时对账：流式 SHA-256（CryptoKit）必须与纯 Swift 一次性实现逐字节一致。
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 @Suite("checksum parity (streaming vs one-shot)")
 struct IndexerChecksumParityTests {
@@ -19,7 +22,7 @@ struct IndexerChecksumParityTests {
         }
         try Data(bytes).write(to: url)
 
-        let streamed = try IndexerService.sha256File(url.path)
+        let streamed = try FileHasher.sha256File(url.path)
         let oneShot = SHA256.hash(Data(bytes)).map { String(format: "%02x", $0) }.joined()
         #expect(streamed == oneShot, "流式与一次性哈希必须一致")
         #expect(streamed.count == 64)

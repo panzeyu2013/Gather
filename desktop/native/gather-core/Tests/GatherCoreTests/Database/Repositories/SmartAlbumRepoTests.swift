@@ -4,11 +4,12 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 private func makeDB() throws -> DBConnection {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
+    let db = try makeTestDB()
     return db
 }
 

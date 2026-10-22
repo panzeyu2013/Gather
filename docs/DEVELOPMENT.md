@@ -4,7 +4,7 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 `desktop/native/gather-core`，界面与应用生命周期位于 `desktop/native/gather-app`；
 仓库不依赖 Node.js、Electron、浏览器渲染层或本地 HTTP 服务。
 
-本文档合并原 `TEST.md`（测试清单）与 `IPC_CONTRACT.md`（命令面契约基线）的精华；
+本文档合并原 `TEST.md`（测试清单）与 `IPC_CONTRACT.md`（历史命令面契约基线）的精华；
 测试与契约细节以本节为准，两份旧文档已删除。
 
 ## 环境要求
@@ -32,13 +32,21 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 
 ```text
 desktop/native/
-├── gather-core/       # SQLite、任务、索引、元数据、导出和 Vision 服务
-│   └── Sources/GatherCore/{Protocol,Database,Face,Image,IPC,Logging,Services,Similarity}
-├── gather-app/        # SwiftUI 页面、应用路由、菜单与原生命令路由
-│   ├── Sources/GatherApp/   # RootView、Dashboard/Library/Gallery/Similarity/Persons、Host、Support
-│   ├── Culling/ FaceKeywording/ ControlCenter/ Settings/ Export/ Duplicates/
-│   └── Resources/     # en.lproj / zh-Hans.lproj 本地化表
-docs/                  # 总览、开发指南、ADR、路线图
+├── gather-core/                     # 4 个库 target（零第三方依赖）
+│   ├── Sources/GatherProtocol/      # 值类型、16 个域 API 协议、GatherErrorCode、路径策略
+│   ├── Sources/GatherPersistence/   # SchemaV1、Database、Repositories、Delivery
+│   ├── Sources/GatherAnalysis/      # Face/Image/Concurrent/Similarity 算法
+│   ├── Sources/GatherDomain/        # Services 编排、JobService、DeliveryCoordinator
+│   ├── Sources/GatherTestSupport/   # 测试共享夹具（makeTestDB 等）
+│   ├── Sources/GatherSchema/        # schema 导出可执行
+│   ├── Sources/GatherCoreBenchmarks/ + GatherFaceBenchmarks/  # 基准
+│   └── Tests/GatherCoreTests/       # core 测试（数量/套件数以 swift test 汇总行为准）
+├── gather-app/                      # 3 个 target
+│   ├── Sources/GatherUI/            # 页面/状态层/本地化资源（en/zh-Hans lproj）
+│   ├── Sources/GatherHost/          # AppComposition、AppRuntime、Live*API、RootView、菜单/桥接
+│   ├── Sources/GatherApp/           # @main 入口
+│   └── Tests/GatherAppTests/        # app 测试（数量/套件数以 swift test 汇总行为准）
+docs/                                # 当前文档；历史快照在 docs/archive/
 ```
 
 ## 本地开发
@@ -52,13 +60,18 @@ swift test
 
 ### 应用测试
 
-应用测试包含 SwiftUI 页面模型、原生路由、命令处理和服务接线。macOS 上如遇
+应用测试包含 SwiftUI 页面模型、域 API 实现、服务接线与组合根。macOS 上如遇
 Clang 模块缓存权限问题，指定工作区可写的缓存目录：
 
 ```bash
 cd desktop/native/gather-app
-CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
+CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-parallel
 ```
+
+应用测试与其他 app 用例共享 MainActor 状态层与进程级语言/通知槽，默认并行在
+调度满载时会拖穿异步等待窗口（历史 flake 集中在 ControlCenter/Gallery 的
+生命周期断言）。因此 app 测试**始终加 `--no-parallel`**（CI 同口径）；core
+测试保持默认并行。
 
 ### 构建应用
 
@@ -68,78 +81,112 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
 
 产物为 `release/Gather.app`（`OUTPUT_DIR` 可覆盖）。脚本会构建 gather-core、
 GatherApp，并在存在 Capture One 插件源码时尝试构建插件。默认产物保持未签名；
-`CODESIGN_IDENTITY` 存在时才执行签名，签名、公证和安装包是独立的发布流程。
+`CODESIGN_IDENTITY` 存在时才执行签名（`--options runtime` +
+`desktop/native/Gather.entitlements`），签名后会用 `codesign -d --entitlements :-`
+复核 entitlement 真的进入签名；签名、公证和安装包是独立的发布流程。
+
+打包门在组装前/后断言以下资产与签名输入，失败即停止并打印缺失的精确路径：
+
+- **人脸模型**：`FaceModels/SFace.mlpackage` 必须是目录且含 CoreML 的
+  `Manifest.json`；同目录的 `manifest.json`（`model` 必须为 `SFace`）、
+  `native_ramp_reference.json`、`LICENSE.txt` 必须存在且非空。运行期经
+  `Bundle.module` 读取内置 SFace（`GatherAnalysis/Face/EmbeddingModel.swift`），
+  模型改名/换包会产生 `modelNotFound`，因此不再接受“任意 .mlpackage”。
+- **本地化**：源码 `GatherUI/Resources/{en,zh-Hans}.lproj/Localizable.strings`、
+  两个 SPM 资源 bundle 内的同名文件、以及主 bundle 的副本都必须存在且非空；
+  只有空 `.lproj` 目录不算通过。
+
+`desktop/native/Gather.entitlements` 只声明
+`com.apple.security.automation.apple-events`（Capture One 桥接用 AppleScript 发送
+Apple Events；hardened runtime 分发包缺少它会被 TCC 拒绝，-1743）。**不开启
+App Sandbox**：当前签名与运行模型没有沙盒容器，授权路径访问、SPM 资源 bundle
+和 Capture One 插件都按非沙盒语义工作；沙盒化需要单独的容器迁移与
+`files.*` entitlement，不能随发布门一并打开。
 
 ## 架构约定
 
 ```text
-SwiftUI
+SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
+  ↓ AppServices（16 个域 API / 110 个类型化方法，同进程直连）
+GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
-SessionCommandRouter / CommandRouter（118 命令，同进程直连）
-  ↓
-GatherCore 服务
-  ├── SQLite（WAL + 迁移 + 备份/回滚）
-  ├── 图片读取、Vision 和 RAW 解码
+GatherDomain 服务
+  ├── GatherPersistence：SQLite WAL + SchemaV1（43 表 / 373 列 / user_version=1）
+  ├── GatherAnalysis：图片读取、Vision 人脸、RAW/ImageIO 解码
   ├── JobService（可恢复任务，executor + checkpoint + dedupeKey）
-  └── MetadataOutbox / XMP 写回
+  └── DeliveryCoordinator：deliveries 写回（重试 / 冲突 / 重启恢复）
 ```
 
 ### 页面与路由
 
-- `RootView`（`Sources/GatherApp/RootView.swift`）负责 Dashboard、Library、
-  Gallery、Similarity、Persons 及原生功能页的导航；页面以 opacity 常驻切换，
-  隐藏页显式停止轮询并用 `.accessibilityHidden` 屏蔽。
-- 工作区功能经 `SessionCommandRouter` 访问核心服务，保持 session 范围隔离；
-  session 切换用 `.id("session-tab-\(sessionId)-\(tab)")` 守卫强制重建。
+- `RootView`（`Sources/GatherHost/RootView.swift`，148 行）只保留依赖、`@State`
+  与 modifier 接线；导航/侧栏/工具栏/详情/通知由 `RootShell*.swift` 拆分承载。
+  页面按目的地**条件构建**（不再用 `.opacity(0)` 常驻），`NavigationSplitView`
+  负责侧栏材质与选中语义。
+- 会话页由 `GatherUI/Shell/SessionTabHost.swift` 按页签分发 workspace 里的
+  ViewModel；session 切换用 `.id("session-tab-\(sessionId)-\(tab)")` 保留身份
+  （不是语言重建开关）。
+- 工作区状态由 `SessionStore`/`SessionWorkspace` 持有（每会话一套 + LRU），
+  入口意图经 `WorkspaceIntent` 取用即清；页面经 `AppServices` 的域协议访问
+  核心服务，保持 session 范围隔离。
 - Jobs、Settings、Face Keywording、Duplicates、Culling、Export 和 Control Center
   均由 SwiftUI 原生页面承载。
 
 ### 数据与任务
 
-- SQLite 使用 WAL；迁移由 `GatherCore/Database/Migrations.swift` 统一管理，
-  含磁盘空间检查、SQLite backup API 备份与失败恢复（见 ADR-005）。
+- SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库单事务执行
+  `SchemaV1.sql` 并写 `PRAGMA user_version = 1`（43 表 / 373 列 / 69 索引 /
+  62 外键）。不兼容库（user_version=0 有表 / 非 1 / 非 SQLite 文件）把
+  db/-wal/-shm 整体改名为 `<db>.incompatible-<ts>` 后重建，不做就地迁移（ADR-005/006）。
 - 导入创建 session、写入照片资产后，立即提交 `metadata.scan` 任务；任务中心负责
   进度、失败显示、重试和取消。
-- 元数据写回经过 outbox，支持失败重试、冲突处理和重启后恢复。
+- 元数据写回经 `DeliveryCoordinator` + `deliveries/delivery_sessions/delivery_items/
+  delivery_intents`，支持失败重试、冲突处理和重启后恢复。
 - 文件操作必须使用数据库中已授权的资产路径；删除、移动和覆盖类操作需要显式确认。
 - 重复资产按逻辑资产处理，避免 RAW/JPEG 配对造成重复分析或重复写回。
 
 ### 原生边界
 
 - 应用不包含 WKWebView、JavaScriptCore、React、TypeScript IPC 或 Electron 主进程。
-- 原生命令路由只接受明确的命令和参数；未知命令返回可诊断错误，不应静默成功。
+- 类型化 API 只接受明确输入；非法/未知输入返回可诊断错误，不应静默成功。
 - UI 不直接持有数据库连接或执行任意文件路径操作，服务层负责授权和事务边界。
 
 ## 本地化体系
 
-界面文案统一经 `Support/GatherLocalization.swift` 的本地化层，禁止硬编码裸码直显。
+界面文案统一经 `Support/L10n.swift` 的值类型 + `Support/GatherLocalization.swift`
+的错误码表，禁止硬编码裸码直显。
 
 ### 入口与回退语义
 
-- `GatherLocalization.l(key)`（`GatherLocalization.swift:222`）：**key 即中文
-  文案**；按 `appLanguage` 查 `Bundle.module` 中的 `.lproj` 表——`zh-Hans.lproj`
-  表为空（占位），未命中自动回退 key（即中文）；`en.lproj`（1203 行）提供英文
-  翻译，未翻译的 key 仍回退中文。所有文案调用点写中文 key，无需两处登记。
-- 错误码翻译：`errorText(_:)`（`GatherLocalization.swift:187`）覆盖 173 项
-  `GatherErrorCode` → 中文文案（`errorMessages` 表，`:10-182`）；未知码回退通用文案。
+- `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
+  `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
+  `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
+  （1,322 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
+- 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
+  切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
+  重建整棵页面树。
+- 错误码翻译：`GatherLocalization.errorText(_:)` 覆盖 **179 项** `GatherErrorCode`
+  （`errorMessages` 表与枚举逐项对齐，缺失即测试红）；未知码回退通用文案。
 - 任务侧映射：`jobStatusText` / `jobTypeText` / `progressPhaseText` 分别覆盖
   `jobs.status.*` / `jobs.type.*` / `progress.*` 相位键。
-- 通用出口：`message(for:)` 统一翻译 `RouterCommandError` / `NativeCommandError`
-  等错误对象；`jobErrorMessage` 只翻译错误码，非错误码回退通用文案（原始细节
-  留给 tooltip）。
-- 语言状态：`appLanguage`（zh-CN/en）、`setAppLanguage(_:)`、`appLocale`
-  （格式化跟随语言）；设置页 `settings.set_language` → `languageChanged` 通知 →
-  `RootView` 重建外壳文案并 `GatherAppDelegate` 重建菜单。
+- 通用出口：`message(for:)` 统一翻译 `APIError` / `NSError` 等错误对象
+  （`RouterCommandError` 仅作为旧错误载体保留，不是命令面）；`jobErrorMessage`
+  只翻译错误码，非错误码回退通用文案（原始细节留给 tooltip）。
+- 语言持久化：设置页经 `SettingsAPI` 写 `settings.ui_language`（唯一真相源）；
+  `LanguageStore.set` 更新内存并广播，`GatherAppDelegate` 重建菜单。
 
 ### 新增文案规范
 
-1. 页面文案一律调用 `GatherLocalization.l("中文文案")`，需要英文时同步补
-   `en.lproj/Localizable.strings`（key 为同一中文串）。
-2. 错误必须先以错误码形式从服务层抛出（`GatherCore` 错误枚举），UI 层经
-   `errorText`/`message(for:)` 映射，不直接展示 rawValue。
-3. 参数插值用 `String(format: GatherLocalization.l(...), ...)`，占位符语义与
-   en 表保持一致。
+1. 页面文案调用 `l10n("中文文案")`（或 `l10n.format(...)`），需要英文时同步补
+   `en.lproj/Localizable.strings`（key 为同一中文串）；**禁止新增**
+   `GatherLocalization.l(` 调用（Cut 4 已把 1,481 处 codemod 到 0）。
+2. 错误先以 `GatherErrorCode` 从服务层抛出，UI 经 `errorText` / `message(for:)` /
+   `L10n` 映射，不直接展示 rawValue。
+3. 参数插值走 `l10n.format(key, args)` / `String(format:)`，占位符语义与 en 表一致。
 4. 界面语言选项名（中文 / English）为固定品牌名，两语言文件同值，不本地化。
+5. 孤儿键：`LocalizationParityTests` 断言 en 表无代码未引用键（仅 allowlist
+   `检测模型路径` 由测试构造）；删键前必须逐个人工 A/B，防止运行时空白文案。
 
 ## HIG 规范约定
 
@@ -156,8 +203,8 @@ GatherCore 服务
 - 主操作：系统 `Button` 经根视图 `.tint(GatherTheme.primary)` 统一着色，保持
   控件原生形态。
 - 破坏性操作：`role: .destructive` + `confirmationDialog` 双确认（如重置挑片、
-  清理备份）；高频确认（写回/组决策/完成同步）由命令层 `confirmed` 门控承担，
-  不再弹窗（对齐旧版零弹窗语义）。
+  清理备份）；高频确认（写回/组决策/完成同步）由 API 层的 `Confirmed<T>` 标记
+  承担，不再弹窗（对齐旧版零弹窗语义）。
 - 弹层统一使用系统 sheet/confirmationDialog，不复刻自绘 Dialog（Electron 时代
   的 APG 焦点管理 ADR-018 由系统组件天然覆盖）。
 
@@ -185,24 +232,35 @@ GatherCore 服务
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
   swift test --package-path desktop/native/gather-core
 
+# app 测试串行：与 CI 同口径（共享 MainActor/进程级状态，并行会拖穿等待窗口）。
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
-  swift test --package-path desktop/native/gather-app
+  swift test --package-path desktop/native/gather-app --no-parallel
 
 ./desktop/native/build.sh
 ```
 
 验收记录至少包含：gather-core 测试总数/套件数/失败数、gather-app 同名指标、
 `.app` 组装结果、fixture-dependent skip 与未执行的外部验收项。
-（最近一次台账：gather-core 951 / 134 suites、gather-app 224 / 27 suites，2026-09-28
-本机 `swift test` 自报数；`desktop/**` 并行重写期间测试数会变动，以运行时输出为准。）
+（台账中的 1,092/157、581/66 是重构收口时（本轮 skip 修复前）的历史值；`desktop/**`
+并行改动期间测试数会变动，以当前树 `swift test` 汇总行为准。）
+
+**skip 不计入“通过”的有效执行数**：`swift test` 的 `N tests passed` 包含被
+`.enabled(if:)` / `.disabled` 跳过的用例。报告口径写成“声明 N / skip S / 有效执行
+N−S”；当前 3 条 `FaceRealPhotoPipelineTests` 在无 `GATHER_FACE_FIXTURE` 时 skip，
+必须单列，不能算作通过。skip 元数据与门禁见 `check-test-catalog.sh --strict`
+（识别 `.enabled(if:)`、`@Test`/`@Suite` 的 `.disabled`、`withKnownIssue`；要求
+`skip-owner` + 到期 + 原因）。
 
 验收时要区分：
 
 - 测试/编译/应用组装成功：证明代码链路可构建和可执行；
 - 真实照片、人脸推理质量、签名公证安装和商业材料性能：明确排除，不能用自动化
   绿灯替代这些外部证据；
-- 如果测试输出含 fixture-dependent skip（如 `VectorIndexReconciliationTests` 由
-  `GATHER_RECONCILIATION_VECTOR=1` 显式门控），应单独记录，不得标成失败。
+- 如果测试输出含 fixture-dependent skip（当前仅 `FaceRealPhotoPipelineTests` 的
+  3 条 `.enabled(if: GATHER_FACE_FIXTURE != nil)`；`VectorIndexReconciliationTests`
+  自 5b-2a 起默认运行），应单独记录 skip 数，不得标成失败，也不得计入“有效执行/通过”。
+  该文件 3 条已带 `skip-owner: face-pipeline`、到期 2026-12-31 与手动 CI 条件；
+  `check-test-catalog.sh --strict` 缺任一元数据即红。
 
 ### 手工检查清单（按变更面选择）
 
@@ -214,44 +272,63 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
   重复处理有确认且失败有原因；挑片写回触发元数据同步；重复提交分析不产生
   不可控任务。
 - **人脸关键词**：只验收链路与写回安全，不评价真实推理质量；分析/簇/审核状态
-  可见；写回失败可诊断可重试；重启后 outbox 可恢复；无脸/损坏图有明确状态。
+  可见；写回失败可诊断可重试；重启后 deliveries 可恢复；无脸/损坏图有明确状态。
 - **导出/任务/元数据**：进度可见、支持取消/重试；失败不静默；导出目标不覆盖
-  未授权源资产；重启后可恢复可恢复任务；XMP outbox 重试/冲突/清理。
-- **错误与安全**：未知命令返回结构化错误；缺记录不崩溃；写回/删除/覆盖均有
-  确认边界；资产路径来自授权记录；SQLite 迁移失败保留错误信息、不删用户数据。
+  未授权源资产；重启后可恢复可恢复任务；XMP deliveries 重试/冲突/清理。
+- **错误与安全**：非法输入返回结构化错误；缺记录不崩溃；写回/删除/覆盖均有
+  确认边界；资产路径来自授权记录；不兼容库整体重置为 `.incompatible-<ts>`
+  （含 -wal/-shm），不就地迁移、不留下半迁移状态。
+- **签名分发包**（发布环境）：`codesign -d --entitlements :- release/Gather.app`
+  能看到 `com.apple.security.automation.apple-events`；首次从签名包触发 Capture One
+  导入会弹出系统“自动化”授权，未签名本机构建不能替代这一步 TCC 验收。
 
-### 原生边界与命令面门禁
+### 原生边界与清理门禁
 
-两条脚本是唯一的机器判据（CI 的 boundary job 亦直接执行）：
+Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 亦直接执行）：
 
 ```bash
-./scripts/check-no-legacy.sh        # 4 条 enforced：无 Legacy/Compat/Adapter 源文件、
-                                    # 无 WebKit/JS 运行时、无 Electron 残留、app 层无 JSONSerialization
-./scripts/check-command-surface.sh  # 6 条不变量：命令单一注册、UI 调用可达、确认门控、
-                                    # 阻塞桥/第二套调度器/归一化口径不得复活
+./scripts/check-no-legacy.sh             # 7 条 enforced + 6 项 tracked：无 Legacy/Compat/Adapter、
+                                         # 无 WebKit/JS、无 Electron、app 层无 JSONSerialization；
+                                         # R5 对 Router 三类旧文件做 0 文件断言
+./scripts/check-cleanup-ratchet.sh       # 5 个清理指标不得超过 docs/cleanup-baseline.json
+./scripts/check-docs.sh --strict         # ADR 路径、当前文档（非 archive）md 链接、docs/archive、当前 schema 版本
+./scripts/check-layering.sh              # 17 条依赖方向（UI 不 import Persistence/Domain/Analysis）
+./scripts/check-duplicate-symbols.sh --strict
+./scripts/check-test-catalog.sh --strict # 测试文件头注释 / skip 元数据（.enabled、@Suite(.disabled)、owner/到期/原因）
+./scripts/check-test-catalog.sh --self-test # 负例：缺元数据应 exit 1，补齐后 exit 0
+./scripts/check-select-star.sh           # Sources 6 处 / Tests 白名单 1 处
+./scripts/check-preview-surface.sh --strict  # 14 个 #Preview / 5 个 PreviewSupport 文件
 ```
 
 门禁与扫描一律以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此
 判断文件仍然存在。
 
-## 命令面契约精华（原 IPC_CONTRACT.md）
+## 类型化 API 契约（Cut 1 收口）
 
-原契约冻结的是 renderer/main 双进程边界；原生化后 renderer 不存在，`SessionCommandRouter`
-成为唯一命令面。以下规则从旧契约继承，是路由与服务的兼容性底线。
+Cut 1 已用 **16 个域协议 / 110 个方法**替代 118 条字符串命令：
+Session、Culling、Export、Job、Duplicate、Face、Similarity、Photo、Album、Person、
+Metadata、Settings、Navigation、Asset、Quality、Template（`GatherProtocol/API/*API.swift`）。
+UI 经 `AppServices` 注入 `any XxxAPI`；`AppComposition` 构造唯一服务实例，
+`AppRuntime` 管理任务生命周期。旧 Router 的 118 条命令与
+`check-command-surface.sh` 已删除；逐条映射保留在
+[api-migration-map.md](archive/cuts/api-migration-map.md)（历史快照）。
 
-### 命令面
+### API 输入与确认
 
-- 全命令面 **118/118**：同步 `execute` 82 + 异步 `executeAsync` 36（并集 118，
-  双注册 0）；`SessionCommandRouter.swift` 为唯一实现点。以上数字以
-  `./scripts/check-command-surface.sh` 输出为准。
-- **破坏性命令**必须带 `confirmed: true` 双兜底，路由层校验失败即拒绝；确认载荷
-  硬编码处必须伴随真实确认弹窗。当前脚本输出：载荷硬编码 7 处、`confirmed: true`
-  实参 49 处（实参只统计，供人工裁决）。
-- 未知命令/参数缺失返回结构化错误（`MISSING_PARAM:*` 等），不静默成功。
+- **破坏性操作**只接收 `Confirmed<T>`：类型层面禁止裸 Bool；UI 必须在真实确认
+  弹窗分支构造，API 实现不再解析 `confirmed`。
+- 输入类型在 `init`/`decode` 完成非空、长度、枚举、范围与数量上限校验；非法输入
+  抛 `GatherError.invalidParameter`（字段名进 params），不再有 `MISSING_PARAM:*`。
+- 路径授权由 `PhotoPathPolicy.requireKnown/filterKnown` 承担；未授权路径抛
+  `PHOTO_NOT_FOUND`，不得退化为任意文件读取。
+- 未知/非法输入必须显式失败，不静默降级；错误码映射仍以
+  `GatherLocalization.errorText` 与 `APIErrorPresentation` 为唯一漏斗。
 
-### 分组与取消/状态
+### 历史命令分组 → 域 API 对照
 
-| 组 | 命令 | 取消/状态 |
+> 下表只用于理解旧行为去向；字符串命令已不存在，新增代码不得按命令名派发。
+
+| 组 | 旧命令（历史） | 取消/状态（现语义） |
 |---|---|---|
 | Session/photo | `session.*`、`photo.list_page` | session 状态持久化；导入错误按文件返回 |
 | Culling | `culling.*`（分页 `culling.list_page`） | 逐 session 同步状态；写回失败可重试 |
@@ -263,19 +340,20 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 | Quality/navigation | `quality.*`、`navigation.*` | AI 输出仅建议；组拆分/合并是导航覆盖 |
 | Duplicate/filter/album | `dup.*`、`filter.*`、`album.*` | 重复处理破坏性；全局查询库内分页 |
 | Export/template | `export.*`、`template.*` | 导出可取消；执行/应用/删除需确认 |
-| Image/settings | `image.*`、`settings.*` | 尽力而为，不得使路由崩溃 |
+| Image/settings | `image.*`、`settings.*` | 尽力而为，不得使 API 崩溃 |
 
 ### 兼容性规则
 
-1. 不重命名命令/事件/枚举而不迁移契约测试（`GatherCoreTests/Protocol/*ContractTests`）。
+1. 不重命名 API/事件/枚举而不迁移契约测试（`Tests/GatherAppTests/API*Tests.swift`、
+   `Tests/GatherCoreTests/Protocol/*ContractTests`）。
 2. 追加参数必须对既有调用方向后兼容。
 3. 长任务必须持久化足够状态，使 UI 能区分 running/failed/cancelled/completed
    （JobService lease/checkpoint/dedupeKey 语义）。
-4. AI 输出仅建议，未经用户显式命令不得改动 Pick/Reject/Rating/Label。
+4. AI 输出仅建议，未经用户显式操作不得改动 Pick/Reject/Rating/Label。
 5. 元数据变更按 patch 而非整文档处理；写入方负责路径解析、基线比较、合并、
    备份与恢复。
 
-### 分页契约（`culling.list_page`）
+### 分页契约（`CullingAPI.page`）
 
 - 页按**逻辑资产**分组（`COALESCE(asset_id, id)`）：RAW+JPEG 变体永不跨页，每
   资产跨页恰好出现一次。
@@ -309,7 +387,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 
 状态表、启用条件、不变量与复杂度分析的唯一真相源是 [ADR.md](ADR.md) 的
 ADR-027（增量聚类：状态持久化 + 引擎语义复刻 + 定期全局收敛）；对账矩阵见
-`GatherCoreTests/Similarity/IncrementalClustererTests.swift`。
+`Tests/GatherCoreTests/Similarity/IncrementalClustererTests.swift`。
 
 ## 提交与 Pull Request
 
@@ -346,11 +424,15 @@ Node/Electron 运行时和 TypeScript 前端已随原生迁移移除。开发、
 
 ### 为什么生成的 `.app` 未签名？
 
-这是源码构建的默认边界。需要发布签名时由发布环境提供 `CODESIGN_IDENTITY` 并
-执行独立的签名、公证和安装验证流程；该流程不属于代码验收。
+这是源码构建的默认边界：未设置 `CODESIGN_IDENTITY` 时 `build.sh` 只校验
+`desktop/native/Gather.entitlements` 存在、plist 合法且含 Apple Events 键，不执行
+签名。需要发布签名时由发布环境提供 `CODESIGN_IDENTITY`，脚本会带 hardened
+runtime 与该 entitlements 签名并复核；签名、公证和安装验证属独立发布活动，
+不属于代码验收。
 
 ## 相关文档
 
 - [项目总览](README.md)
 - [路线图](ROADMAP.md)
 - [架构决策记录](ADR.md)
+- [历史文档归档](archive/README.md)

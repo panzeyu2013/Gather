@@ -4,12 +4,16 @@
 // similarity-run-record / similarity-result-lazy / similarity-cancellation，
 // 用例逐一对应）。差异说明：
 // - TS 用 vi.mock 替换 worker/hash 模块；Swift 侧经 clusterProvider（默认
-//   ClusterEngine）与 thumbnailProvider（返回 9x8 灰度像素）注入。
+//   ClusterGraphPipeline）与 thumbnailProvider（返回 9x8 灰度像素）注入。
 // - 时序用例（running 行窗口）用轮询等待而非固定 sleep（工具链决议 #4）。
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - 支撑
 
@@ -19,15 +23,15 @@ private let uniformPixels = [UInt8](repeating: 128, count: 72)
 /// 幂等外键种子（photos.session_id / photos.asset_id / photos.asset_file_id）。
 private func seedSessionRow(_ db: DBConnection, _ sessionId: String) throws {
     _ = try db.prepare("""
-        INSERT OR IGNORE INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, '', 'draft', 'idle', 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at)
+        VALUES (?, '', 'draft', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
       """).run([.text(sessionId)])
 }
 
 private func seedAssetRow(_ db: DBConnection, _ id: String) throws {
     _ = try db.prepare("""
-        INSERT OR IGNORE INTO assets (id, capture_fingerprint, status, created_at, updated_at)
-        VALUES (?, '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT OR IGNORE INTO assets (id, status, created_at, updated_at)
+        VALUES (?, 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
       """).run([.text(id)])
 }
 
@@ -39,38 +43,7 @@ private func seedAssetFileRow(_ db: DBConnection, _ id: String) throws {
       """).run([.text(id), .text("/vault/\(id).NEF"), .text("\(id).NEF")])
 }
 
-/// 线程安全说明（Swift 6 `Sendable`）：`continuations`/`released` 只在
-/// `lock`（NSLock）临界区内读写；门被 @Sendable 的 thumbnailProvider 闭包捕获，
-/// 故标注 `@unchecked`（锁纪律无法被编译器静态验证）。
-private final class AsyncGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-
-    func wait() async {
-        let mustWait: Bool = {
-            lock.lock()
-            defer { lock.unlock() }
-            if released { return false }
-            return true
-        }()
-        guard mustWait else { return }
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            continuations.append(continuation)
-            lock.unlock()
-        }
-    }
-
-    func release() {
-        lock.lock()
-        released = true
-        let pending = continuations
-        continuations.removeAll()
-        lock.unlock()
-        pending.forEach { $0.resume() }
-    }
-}
+// AsyncGate 已抽到 Tests/GatherTestSupport/AsyncGate.swift（GatherTestSupport target 共享）。
 
 /// 轮询等待条件成立（swift-testing 并行下 Task 调度延迟明显，避免固定 sleep）。
 private func waitUntil(
@@ -97,17 +70,30 @@ private struct SimilarityHarness: @unchecked Sendable {
     let photoPath: String
 }
 
+/// Cut 5 / 5b-2a：测试注入的聚类 provider 与生产默认同一入口
+/// （ClusterGraphPipeline 模式分发；global 单趟图 result+state 同源，
+/// sequential 相邻段 state = nil）。
+private func graphCluster(
+    _ entries: [HashEntry],
+    _ threshold: Int,
+    _ minGroupSize: Int,
+    _ mode: HashGroupingMode,
+    _ onProgress: ((Int, Int) -> Void)?
+) throws -> ClusterGraphOutcome {
+    try ClusterGraphPipeline.run(
+        entries: entries, threshold: threshold,
+        minGroupSize: minGroupSize, mode: mode, onProgress: onProgress)
+}
+
 /// 建真实照片文件 + 已迁移库 + 服务（文件必须存在：analyze 的 stat 兜底路径）。
 private func makeHarness(
     thumbnail: @escaping SimilarityService.ThumbnailProvider = { _, _ in uniformPixels },
     cluster: @escaping SimilarityService.ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
-        try ClusterEngine.clusterByHash(
-            entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-            mode: mode, onProgress: onProgress)
+        try graphCluster(entries, threshold, minGroupSize, mode, onProgress)
     },
     settings: [String: Double] = [:]
 ) throws -> SimilarityHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "Run", source: "folder")
     let dir = try makeTempDir()
@@ -129,7 +115,7 @@ private func makeHarness(
 
 private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
     try db.prepare(
-        "SELECT kind, photo_count, index_seq, params, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?"
+        "SELECT kind, photo_count, index_seq, params_json, started_at, finished_at, status FROM analysis_runs WHERE session_id = ?"
     ).get([.text(sessionId)])
 }
 
@@ -220,7 +206,7 @@ struct ReuseSimilarityHashesTests {
 
     @Test("reuses hashes from sibling asset files in a single batch, including cross-session sources")
     func reuseAcrossSessions() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try addPhoto(db, "p1", "session", "asset-a")
         try addPhoto(db, "p2", "session", "asset-a")
         try addPhoto(db, "p3", "session", "asset-b")
@@ -251,7 +237,7 @@ struct ReuseSimilarityHashesTests {
 
     @Test("never reuses a photo own hash row and skips size/mtime mismatches")
     func skipsOwnHashAndMismatches() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try addPhoto(db, "q1", "session", "asset-c")
         try addPhoto(db, "q2", "session", "asset-c")
         try addHash(db, "session", "q2", "q2ownhash", 200, 2000)
@@ -281,7 +267,7 @@ struct ReuseSimilarityHashesTests {
 
     @Test("picks the newest candidate hash and crosses the 400-id chunk boundary")
     func newestCandidateAcrossChunkBoundary() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         for i in 0..<404 {
             try addPhoto(db, "r\(i)", "session", "asset-\(i)")
         }
@@ -312,7 +298,7 @@ struct ReuseSimilarityHashesTests {
 
     @Test("keeps targets already present in existingHashMap untouched")
     func keepsExistingTargetsUntouched() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try addPhoto(db, "s1", "session", "asset-e")
         try addPhoto(db, "s2", "session", "asset-e")
         try addHash(db, "session", "s2", "s2hash", 400, 4000)
@@ -433,9 +419,9 @@ struct SimilarityGetResultTests {
         }
         try seedAssetFileRow(db, "af-\(id)")
         _ = try db.prepare("""
-            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata,
-              result, asset_id, asset_file_id, width, height, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'checksum-\(id)', 'pending', '{"make":"Nikon"}', '{"sharpness":1}',
+            INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
+              asset_id, asset_file_id, width, height, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'checksum-\(id)', 'pending',
               ?, 'af-\(id)', 100, 100, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')
           """).run([
             .text(id), .text(sessionId), .text(filepath), .text(filepath.split(separator: "/").last.map(String.init) ?? id),
@@ -445,7 +431,7 @@ struct SimilarityGetResultTests {
 
     @Test("assembles groups from the members table without parsing groups_json")
     func assemblesGroupsFromMembers() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "a.raw", "session", "/shoot/a.RAW", "asset-a")
         try addPhoto(db, "a.jpg", "session", "/shoot/a.jpg", "asset-a")
@@ -505,7 +491,7 @@ struct SimilarityGetResultTests {
 
     @Test("stats 计数实时化：分析后新导入的照片计入 ungrouped，不用落库快照")
     func statsCountsAreLive() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "p2", "session", "/shoot/p2.jpg", nil)
         let resultRepo = SimilarityResultRepo(connection: db)
@@ -535,7 +521,7 @@ struct SimilarityGetResultTests {
 
     @Test("keeps the legacy groups_json path for rows without members")
     func legacyGroupsJsonPath() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         _ = try db.prepare("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
@@ -577,7 +563,7 @@ struct SimilarityGetResultTests {
 
     @Test("resolves threshold tiers without regressing the default row")
     func resolvesThresholdTiers() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try addPhoto(db, "p1", "session", "/shoot/p1.jpg", nil)
         try addPhoto(db, "p2", "session", "/shoot/p2.jpg", nil)
         let resultRepo = SimilarityResultRepo(connection: db)
@@ -617,7 +603,7 @@ struct SimilarityGetResultTests {
 
     @Test("hasResult stays a cheap existence check")
     func hasResultExistence() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try seedSessionRow(db, "session")
         let resultRepo = SimilarityResultRepo(connection: db)
         let service = SimilarityService(
@@ -738,7 +724,7 @@ struct SimilarityServiceRobustnessTests {
 
     @Test("getResult throws on corrupt stored stats like TS JSON.parse")
     func getResultThrowsOnCorruptStats() throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         try seedSessionRow(db, "session")
         _ = try db.prepare("""
             INSERT INTO similarity_results (session_id, groups_json, stats_json, param_threshold, param_min_group_size, created_at)
@@ -820,10 +806,8 @@ struct SimilarityReclusterJobTests {
         _ minGroupSize: Int,
         _ mode: HashGroupingMode,
         _ onProgress: ((Int, Int) -> Void)?
-    ) throws -> ClusterResult {
-        try ClusterEngine.clusterByHash(
-            entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-            mode: mode, onProgress: onProgress)
+    ) throws -> ClusterGraphOutcome {
+        try graphCluster(entries, threshold, minGroupSize, mode, onProgress)
     }
 
     /// 首轮 analyze 建结果与簇状态：photo-1（真实文件 → uniform hash 0）+
@@ -896,9 +880,7 @@ struct SimilarityReclusterJobTests {
         }
         let harness = try await makeReadyHarness(cluster: { entries, threshold, minGroupSize, mode, onProgress in
             gate.fire()
-            return try ClusterEngine.clusterByHash(
-                entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-                mode: mode, onProgress: onProgress)
+            return try graphCluster(entries, threshold, minGroupSize, mode, onProgress)
         })
         let before = try #require(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId))
         let beforeVersion = try #require(
@@ -933,9 +915,7 @@ struct SimilarityReclusterJobTests {
         }
         let harness = try await makeReadyHarness(cluster: { entries, threshold, minGroupSize, mode, onProgress in
             gate.fire()
-            return try ClusterEngine.clusterByHash(
-                entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-                mode: mode, onProgress: onProgress)
+            return try graphCluster(entries, threshold, minGroupSize, mode, onProgress)
         }, analyze: false)
 
         await #expect(throws: JobCancelledError()) {
@@ -980,9 +960,7 @@ struct SimilarityReclusterJobTests {
         }
         let harness2 = try await makeReadyHarness(cluster: { entries, threshold, minGroupSize, mode, onProgress in
             calls.fire()
-            return try ClusterEngine.clusterByHash(
-                entries: entries, threshold: threshold, minGroupSize: minGroupSize,
-                mode: mode, onProgress: onProgress)
+            return try graphCluster(entries, threshold, minGroupSize, mode, onProgress)
         })
         let reclusterTask = Task {
             try await harness2.service.recluster(sessionId: harness2.sessionId, threshold: 4, minGroupSize: 2)
@@ -1000,8 +978,13 @@ struct SimilarityReclusterJobTests {
         let harness = try await makeReadyHarness()
         let before = try #require(try SimilarityResultRepo(connection: harness.db).getLatest(sessionId: harness.sessionId))
 
-        // 阻断簇状态的全部删除路径（replace 失败后的降级 delete 也会失败）：
-        // persistClusterOutcome 的事务必须整体回滚，主结果不得被替换。
+        // 阻断簇状态的两条写路径（5b-2b：meta upsert 走 UPDATE；失败后的降级
+        // delete 走 DELETE）：persistClusterOutcome 的事务必须整体回滚，
+        // 主结果不得被替换。
+        _ = try harness.db.prepare("""
+            CREATE TRIGGER block_meta_update BEFORE UPDATE ON similarity_cluster_meta
+            BEGIN SELECT RAISE(ABORT, 'blocked'); END;
+            """).run()
         _ = try harness.db.prepare("""
             CREATE TRIGGER block_meta_delete BEFORE DELETE ON similarity_cluster_meta
             BEGIN SELECT RAISE(ABORT, 'blocked'); END;

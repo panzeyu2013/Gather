@@ -11,7 +11,9 @@
 import Foundation
 import Testing
 import CoreML
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 struct FaceEmbeddingFingerprintTests {
     // ── 测试夹具：手造一个"编译好的 .mlmodelc 包" ──
@@ -193,14 +195,23 @@ struct FaceEmbeddingFingerprintTests {
 
     @Test("波浪号路径会被展开（旧实现 fileExists 不认 ~，永远 modelNotFound）")
     func tildePathIsExpanded() throws {
-        let home = NSHomeDirectory()
-        let name = "gather-tilde-probe-\(UUID().uuidString).onnx"
-        let absolute = URL(fileURLWithPath: home).appendingPathComponent(name)
+        // 不写真实 home（沙箱/只读 home 会失败）：在临时目录建唯一目录，
+        // 输入仍以 "~/" 开头，用「从 home 走 ../ 到临时目录」的相对路径构造 ——
+        // 只有 ~ 展开生效才能命中文件；断言与回归意图保持不变。
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-tilde-probe-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let name = "probe.onnx"
+        let absolute = dir.appendingPathComponent(name)
         try Data([0x00]).write(to: absolute)
-        defer { try? FileManager.default.removeItem(at: absolute) }
+
+        let homeComponents = (NSHomeDirectory() as NSString).pathComponents
+        let relativeFromHome = String(repeating: "../", count: max(0, homeComponents.count - 1))
+            + String(absolute.path.dropFirst())
         // 若能展开，则路径存在 → 报"扩展名不支持"；不能展开则报 modelNotFound。
         #expect(throws: FaceEmbeddingError.unsupportedModelFormat("onnx")) {
-            _ = try FaceEmbeddingModelFactory.make(modelPath: "~/\(name)", modelVersion: "v1")
+            _ = try FaceEmbeddingModelFactory.make(modelPath: "~/" + relativeFromHome, modelVersion: "v1")
         }
     }
 

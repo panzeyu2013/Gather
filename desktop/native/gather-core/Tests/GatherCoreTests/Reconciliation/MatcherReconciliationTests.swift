@@ -12,7 +12,9 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 struct MatcherReconciliationTests {
 

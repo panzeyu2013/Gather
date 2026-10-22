@@ -4,6 +4,8 @@
 > （原 NATIVE-DEVELOPMENT-ANALYSIS.md 的 Phase 0-4 台账已归档，本文档不再引用）；
 > 本节按「已完成 / 待做」两态标注，删除已过时的 Electron 时代任务（如 Rust core
 > 立项、WKWebView 桥、TS 对账），保留仍未兑现的产品与规模化承诺。
+> 2026-10-22 修订：HNSW 已删除（Cut 5 / 5b-2a，CL-06），文中 HNSW 条目均为历史设计/
+> 历史基线，不再代表当前实现；现行 ANN 只有 angular LSH（`Face/VectorIndex.swift`）。
 > 配套文档：[README.md](README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[ADR.md](ADR.md)。
 
 ---
@@ -21,7 +23,7 @@
 | 7 | "翻片时一阵一阵地卡" | 缓存元数据全量序列化 | **P1** | ✅ 已完成（SQLite + 惰性淘汰，ADR-007） |
 | 8 | "大工作区打开挑片页要等很久" | 全会话加载 | **P1** | ✅ 已完成（逻辑资产分页，ADR-008） |
 | 9 | "在 Capture One 里改一张，结果就全没了" | 失效策略整 session 全删 | **P2** | ✅ 已完成（输入级失效 + 增量聚类 1.3/1.6：邻域局部更新 + 定期全局收敛） |
-| 10 | "绑定的角色换个 session 又要重新认" | 重识别无 ANN 索引 | **P2** | ✅ 已完成（HNSW/LSH 索引 + face-matcher 接线） |
+| 10 | "绑定的角色换个 session 又要重新认" | 重识别无 ANN 索引 | **P2** | ✅ 已完成（LSH 索引 + face-matcher 接线；批量匹配走精确扫描；HNSW 已于 Cut 5 删除） |
 | 11 | "只有 Mac 能用" | 平台单一 | **P2（决策）** | ✅ 已决策：macOS 独占原生；Windows 保持决策门（4.3） |
 
 > P0/P1/P2 指"修复优先级"：P0 决定大图库是否可用，P1 决定日常体验，
@@ -65,31 +67,32 @@
 
 ### 决策 D：通用向量存储与 ANN 基础设施——已完成
 
-- 组件（HNSW 增量插入 + angular LSH + 多样性启发式连接）原生实现于
-  `Face/VectorIndex.swift`，topK 逐位一致/recall ≥ TS 对账门禁；
+- 组件（历史：HNSW 增量插入 + angular LSH + 多样性启发式连接）原生实现于
+  `Face/VectorIndex.swift`；**HNSW 已于 Cut 5 删除（CL-06）**，现行实现只剩 angular
+  LSH（聚类候选生成 + matcher 实例级 LSH 路径），LSH 召回对账门禁保留；
 - 消费方已接线：`Face/Matcher.swift`（跨 session 重识别，痛点 10 闭环）；
 - 边界仍有效：SQLite 持久化 + 内存索引，不引入向量数据库选型。
 
 ---
 
-## 三、当前实现状态与基线（2026-09-28 快照）
+## 三、当前实现状态与基线（2026-10-22 快照，Cut 6 冻结）
 
 ### 3.1 已完成（原生代码在主干，有单测覆盖）
 
 | 项 | 位置 | 说明 |
 |---|---|---|
-| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（`scripts/check-no-legacy.sh` 门禁）；最近一次台账（2026-09-28 本机 `swift test` 自报数）：gather-core 795 / 112 suites，gather-app 173 / 20 suites |
-| 命令面 118/118 | `gather-app/Host/SessionCommandRouter.swift` | 同步 82 + 异步 36 case（双注册 0，并集 118）；确认门禁由 `scripts/check-command-surface.sh` 校验（载荷硬编码 7 处 / `confirmed: true` 实参 49 处） |
+| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（`scripts/check-no-legacy.sh` 门禁）；模块拆分为 7 个 target（Protocol/Persistence/Analysis/Domain/UI/Host/App）；2026-10-22 本机 `swift test`：gather-core **1,092 / 157 suites**，gather-app **581 / 66 suites**，exit 0 |
+| 类型化 API 16/110 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；16 协议 / 110 方法经 `AppServices` 注入，0 处 `execute("x.y")`；命令面脚本已删除，映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
 | Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
 | 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
 | 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 已任务化（ADR-024） |
 | 相似 hash 批量复用 | `SimilarityService` | 分块 `IN` 查询，消除 N+1 |
-| Vision 人脸管线 | `gather-core/Face/` | 检测 + 768 维特征编码 + Inference 调度；ONNX 仅质量门回退（ADR-026） |
-| 聚类/向量对账 | `Face/Clusterer` / `VectorIndex` | 8 case DBSCAN+LSH 对账；topK 逐位一致 |
-| 写回可靠性 | `MetadataSyncCoordinator` + `WritebackService` + 纯函数 `aggregateSessionState` | 冲突检测/备份/重试/确认/清理状态机（ADR-015；`CaptureOneSyncState` 类已删，见 ADR-028） |
+| Vision 人脸管线 | `gather-core/Sources/GatherAnalysis/Face/` | 检测 + 768 维特征编码 + Inference 调度；ONNX 仅质量门回退（ADR-026） |
+| 聚类/向量对账 | `Face/Clusterer` / `VectorIndex` | DBSCAN+LSH 对账；LSH 召回对账（HNSW topK 段已随 CL-06 删除） |
+| 写回可靠性 | `DeliveryCoordinator` + `DeliveryRepo` + 纯函数 `aggregateSessionState` | `deliveries/delivery_sessions/delivery_items/delivery_intents` 单事务确认；冲突检测/备份/重试/清理（ADR-015 历史；`MetadataSyncCoordinator`、`CaptureOneSyncState` 已删，见 ADR-028） |
 | 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
 | 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `GatherLocalization` + `.lproj` | 173 项错误码 + 任务/相位文案；菜单即时重建（ADR-016/019/020） |
+| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 179 项错误码 + 任务/相位文案；en 1,322 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
 | 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
 | 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 
@@ -103,10 +106,10 @@
 
 | 项 | 结果 |
 |---|---|
-| 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、HNSW、LSH） |
+| 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、LSH）；Cut 5 增 10k 合成人脸显式档 `--face-10k`（聚类 + 批量匹配） |
 | 聚类对账 | 25k 合成 8 簇 eps=0.6：ARI=1.0000 / NMI=1.0000 / 加速 3.1x（unit 级） |
-| HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008 |
-| 迁移/快照 | 空库迁移后与 @BT@docs/fixtures/schema.snapshot.json@BT@ 43 表全对（schema 34） |
+| （历史）HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008（HNSW 已删除，该指标不再维护） |
+| SchemaV1 / 历史快照 | `SchemaV1.swift`：43 表 / 373 列 / 69 索引 / 62 外键 / `user_version=1`，空库由 `Database.open(at:)` 一次建齐；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
 | 人脸算法基线（**合成标注集**，单 seed） | 门槛 0→0.5：低质量但方向正确的样本 F1 0.7273→0.6977（25% 进噪声、**跨身份误聚 0**）、低质量桥接点使同人分裂（R 1.0→0.5238）；ARI 用两种等价实现互证 |
 | margin 生产路径曲线（49 查询 / 6 人库） | 0 → 错绑 3；**0.01（出货默认）→ 错绑 2 + 歧义 2**；0.04 → 错绑 0（覆盖 0.857）；同覆盖率精度 0.9655→1.0000 |
 
@@ -122,19 +125,20 @@
 - 布局约束崩溃（F01/N01）与导入入口（F02）的**交互级**验收：单测能覆盖范围语义、任务分层、裁切换算与状态文案，
   也能用 NSHostingView 拟合尺寸守住「页面最小宽度预算」（挑片 876→440pt），
   但「连续切换标签/缩放窗口/开关检查器不触发约束循环」「一次点击只出现一个目录选择器」只能在真机交互中确认，
-  清单见 [UI 审查修复台账 §14](reviews/ui-review-2026-09-29-fixes.md) 与
-  [第二轮修复台账 §11](reviews/ui-review-2026-09-29-round2-fixes.md)。
+  清单见 [UI 审查修复台账 §14](archive/reviews/ui-review-2026-09-29-fixes.md) 与
+  [第二轮修复台账 §11](archive/reviews/ui-review-2026-09-29-round2-fixes.md)。
 - 第三轮发散审计列出的 **P0/P1 待修项**（挑片/重复页 VM 未入草稿缓存、返回来源栈、
   挑片人脸对齐公式与拖拽累积、选择集/阈值失效、E 报告的 6 处丢目标与 7 处重复主动作、
-  测试改造）见 [第三轮审计台账 §8](reviews/ui-review-2026-09-29-round3-audit.md)。
+  测试改造）见 [第三轮审计台账 §8](archive/reviews/ui-review-2026-09-29-round3-audit.md)。
 
 ### 3.5 技术债与未决项（指针）
 
 工程侧技术债清单、不可再删清单与残余风险维护在
 [reviews/functional-design-review.md](reviews/functional-design-review.md)：含 6 份重复的
 并发游标类、8 组 app 重复函数、schema 单源化、公共基础设施抽取、查询性能项，以及
-"写回内核外 ~11 处裸 sidecar 路径""`MetadataWritebackFailure` 未进 UI""无真实路由 ×
-118 命令的运行时契约测试"等已知限制。未接线资产的删除裁决见 ADR-028。
+"写回内核外 ~11 处裸 sidecar 路径""`MetadataWritebackFailure` 未进 UI""旧 118
+命令路由的运行时契约（Cut 1 已删除，由 API 行为测试替代）"等已知限制。未接线资产
+的删除裁决见 ADR-028。
 
 ---
 
@@ -167,13 +171,17 @@
 | 1.5 目录遍历并行化 + 扫描进度/暂停 | ✅ 已完成 | 10 万文件树首次扫描 ≤ 2 分钟（不含哈希） |
 | 1.6 增量 vs 全量对账测试矩阵 | ✅ 已完成 | 随机增删改/重命名 200 次 × 5 组（阈值 0-8 / 组大小 2-4），增量结果与全量逐步一致 |
 
-### 基础设施里程碑 V：通用向量存储 + ANN（决策 D）—— ✅ 已完成
+### 基础设施里程碑 V：通用向量存储 + ANN（决策 D）—— ✅ 已完成（HNSW 部分已历史化）
+
+> 2026-10-22 注记：本节的 HNSW 组件已随 Cut 5 / 5b-2a（CL-06）删除，现行只剩
+> angular LSH（`Face/VectorIndex.swift`）。下表 ✔ 描述当时的里程碑，不代表当前
+> 使用 HNSW。
 
 | 任务 | 状态 |
 |---|---|
-| V.1 向量表（SQLite 持久化 + 内存 HNSW）+ 模型版本指纹 | ✅ 已完成（VectorIndex.swift；指纹沿用 `analysis_signature`） |
-| V.2 与精确暴力的质量对账工具 | ✅ 已完成（recall@1 ≥ 0.9 门禁） |
-| V.3 增量索引更新 | ✅ 已完成（insert 只触达邻域，无全量重建） |
+| V.1 向量表（SQLite 持久化 + 内存 HNSW；后者已删除）+ 模型版本指纹 | ✅ 已完成（VectorIndex.swift；指纹沿用 `analysis_signature`） |
+| V.2 与精确暴力的质量对账工具 | ✅ 已完成（历史 HNSW recall@1 ≥ 0.9 门禁；现行 LSH 召回由 vector 对账覆盖） |
+| V.3 增量索引更新（HNSW insert，已删除） | ✅ 已完成（历史记录；现行 LSH 建索引为整批重建，聚类增量走 ClusterPipeline） |
 
 ### Phase 2：相似度 Embedding 升级（决策 A，依赖 V + 1.3）—— ⏳ 未立项
 
@@ -233,8 +241,10 @@ Phase 0（止血）✅ → Phase 1（增量索引）──┬─> 里程碑 V（
 ## 六、验收与基准体系
 
 原生迁移后基准由 `gather-core-benchmarks`（`desktop/native/gather-core/Sources/
-GatherCoreBenchmarks/`）承担：2 万/5 万两档全过（dHash、embedding、HNSW、LSH），
-合成数据驱动（原 `GATHER_TELEMETRY` 已无读取点，Telemetry 模块已删，见 ADR-028）。
+GatherCoreBenchmarks/`）承担：2 万/5 万两档全过（dHash、embedding、LSH；HNSW 档已随
+CL-06 删除），另加 Cut 5 的 10k 合成人脸显式档 `--face-10k`（FaceClusterer/DBSCAN +
+FaceMatcher 批量匹配；无模型，不测检测/嵌入）。合成数据驱动（原 `GATHER_TELEMETRY`
+已无读取点，Telemetry 模块已删，见 ADR-028）。
 
 | 基准 | 场景 | 关键指标 | 验收对象 |
 |---|---|---|---|
@@ -252,23 +262,24 @@ GatherCoreBenchmarks/`）承担：2 万/5 万两档全过（dHash、embedding、
 | 日期 | 级别 | 规模 | 项 | 数值 | 备注 |
 |---|---|---|---|---|---|
 | 2026-08-06 | unit | 20k | dHash 聚类（th=16） | ≈1.05s | `cluster-engine-perf` 预算断言 <2s |
-| 2026-08-06 | unit | 1.5k | HNSW recall@1 门禁 | recall ≥ 0.9、查询 ≈0.3ms、波动 −0.008 | 合成 8 簇 512 维 |
+| 2026-08-06 | unit | 1.5k | （历史）HNSW recall@1 门禁 | recall ≥ 0.9、查询 ≈0.3ms、波动 −0.008 | 合成 8 簇 512 维；HNSW 已于 Cut 5 删除，不再维护 |
 | 2026-08-09 | unit | 25k | LSH 聚类对账 | ARI=1.0000 / NMI=1.0000 / 3.1x | 合成 8 簇 eps=0.6 |
 | 2026-08-11 | app | 2 万/5 万 | 原生四套基准 | 两档全过 | `gather-core-benchmarks` |
 | 2026-08-12 | unit | — | 原生全量测试 | core 765 / app 92 全绿 | 迁移 + 对账收尾台账 |
 | 2026-08-13 | unit | — | 验收修复轮全量回归 | core 772 / app 172 全绿 | 深色徽标/awaitSync/键盘焦点 + 组件统一 + 写回直测 |
 | 2026-09-22 | unit | 2 万 | 增量聚类（真实分布 +100 张） | 0.21s（预算 <10s）；全量状态构建 27s | core 789 / app 172 全绿；对账矩阵 5 配置 × 200 步 |
 | 2026-09-28 | unit | — | 清理后全量回归 | core 795 / app 173 全绿 | 未接线资产删除（ADR-028）；两条门禁 exit 0 |
-| 2026-09-29 | unit | — | UI／交互审查修复轮全量回归 | core 951/952（1 项受构建沙箱限制）/ app 236 全绿 | 13 项发现见 [UI 审查修复台账](reviews/ui-review-2026-09-29-fixes.md)；崩溃根因来自 4 份系统崩溃日志 |
-| 2026-09-29 | unit | — | UI 验收（第二轮）修复回归 | core 951/952（同上）/ app 250 全绿 | 10 项发现见 [第二轮修复台账](reviews/ui-review-2026-09-29-round2-fixes.md)；挑片最小宽度 876→440pt 并加装布局预算守卫 |
-| 2026-09-29 | unit | — | 第三轮同类问题发散审计（6 路）+ P0/P1/P2 落地 | core 952/953 / app 265 全绿 | 8 类同型缺陷、40+ 条发现；12 项审计期 + 9 项 P0/P1 + 9 项 P2 续修见 [第三轮审计台账](reviews/ui-review-2026-09-29-round3-audit.md) |
-| 2026-09-29 | unit | — | 五路审计（正确性/完整性/最优性）+ 后续修复 | core 958/959 / app 273 全绿 | 5 路只读审计确认 P0×1 + P1×8 + P2×10 并已修（英文占位符崩溃、图库 reload/事件刷新代数、定位三态、推荐去重、指纹覆盖、全失败明细、入口意图与菜单探针等）；C-1/C-2/B-2/G-4/P2-12/D-2 已续修，剩 A10/A11（产品口径）与原生验收见 [审计台账 §0.5](reviews/ui-review-2026-09-29-round3-audit.md) |
-| 2026-09-30 | unit | — | 9-30 原生版审查（B1–B7）修复 | core 959/959* / app 279 全绿 | 返回语义（B1）、图库轮询生命周期（B2）、预览请求序号（B3）、人物选择收敛（B4）、缩略图过期判定（B5）、门禁 locale 与 CI（B6）、真 LRU（B7）见 [9-30 修复台账](reviews/ui-review-2026-09-30-fixes.md)；* 唯一失败为沙箱环境性用例 |
+| 2026-09-29 | unit | — | UI／交互审查修复轮全量回归 | core 951/952（1 项受构建沙箱限制）/ app 236 全绿 | 13 项发现见 [UI 审查修复台账](archive/reviews/ui-review-2026-09-29-fixes.md)；崩溃根因来自 4 份系统崩溃日志 |
+| 2026-09-29 | unit | — | UI 验收（第二轮）修复回归 | core 951/952（同上）/ app 250 全绿 | 10 项发现见 [第二轮修复台账](archive/reviews/ui-review-2026-09-29-round2-fixes.md)；挑片最小宽度 876→440pt 并加装布局预算守卫 |
+| 2026-09-29 | unit | — | 第三轮同类问题发散审计（6 路）+ P0/P1/P2 落地 | core 952/953 / app 265 全绿 | 8 类同型缺陷、40+ 条发现；12 项审计期 + 9 项 P0/P1 + 9 项 P2 续修见 [第三轮审计台账](archive/reviews/ui-review-2026-09-29-round3-audit.md) |
+| 2026-09-29 | unit | — | 五路审计（正确性/完整性/最优性）+ 后续修复 | core 958/959 / app 273 全绿 | 5 路只读审计确认 P0×1 + P1×8 + P2×10 并已修（英文占位符崩溃、图库 reload/事件刷新代数、定位三态、推荐去重、指纹覆盖、全失败明细、入口意图与菜单探针等）；C-1/C-2/B-2/G-4/P2-12/D-2 已续修，剩 A10/A11（产品口径）与原生验收见 [审计台账 §0.5](archive/reviews/ui-review-2026-09-29-round3-audit.md) |
+| 2026-09-30 | unit | — | 9-30 原生版审查（B1–B7）修复 | core 959/959* / app 279 全绿 | 返回语义（B1）、图库轮询生命周期（B2）、预览请求序号（B3）、人物选择收敛（B4）、缩略图过期判定（B5）、门禁 locale 与 CI（B6）、真 LRU（B7）见 [9-30 修复台账](archive/reviews/ui-review-2026-09-30-fixes.md)；* 唯一失败为沙箱环境性用例 |
 | 2026-09-30 | unit | — | 9-30 审查修复（B1–B7）+ 查看器可见区域细节解码 | core 961/962* / app 286 全绿 | 返回语义、图库轮询、预览序号、人物选择、缩略图过期、门禁 locale/CI、真 LRU；此后查看器改为「基准档底层 + 可见区域 tiled 细节层」（`RAWDecoder.decodeRegion` + `PhotoViewerGeometry.detailTile`）；* 唯一失败为沙箱环境性用例 |
-| 2026-09-30 | unit | — | 六路性能审计 + 全量修复第一轮（23 项） | core 962/963* / app 288 全绿 | 见 [性能审计台账](reviews/perf-audit-2026-09-30.md)：磁盘缩略图缓存、解码闸门 actor 化、派生状态记忆化、`jobs.list` 轻投影、SHA-256 流式、`db_synchronous` 接线等；`*` 唯一失败为沙箱环境性用例 |
-| 2026-09-30 | unit | — | 全仓审查（11 项：P1×4 + P2×7）全量修复 | core 970/971* / app 291 全绿 | 见 [全仓审查修复台账](reviews/full-review-2026-09-30.md)：XMP 续跑身份、run 级取消、迁移原子回滚、DB 关闭与句柄校验、指纹插值、数值设置分界、C1 管道排空、图库统一返回、模型安装暂存、插件状态/Makefile 依赖；`*` 唯一失败为沙箱环境性用例 |
-| 2026-09-30 | unit | — | 深审 D1–D8 修复 + 探针验收 | core 986/987* / app 298 全绿 | 见 [深审修复台账](reviews/deep-review-2026-09-30-fixes.md)：导出失败回滚、孤儿恢复重取、清理 revision CAS、防抖取消、waitForIdle 超时、连接代数、模型整体回滚、参数上界；审查员 8 个探针已收入仓库作验收测试；`*` 唯一失败为沙箱环境性用例 |
-| 2026-09-29 | unit | — | 深度审查（D01–D12）修复 | core 953/954 / app 268 全绿 | 交付真实性（D01–D03）、图库异步边界（D04–D07）、目标照片定位（D08）、统一输出计划（D09）、入口意图（D10）、菜单兜底与人物入口（D11–D12）见 [第三轮审计台账 §0.3](reviews/ui-review-2026-09-29-round3-audit.md)；仅剩原生人工验收 |
+| 2026-09-30 | unit | — | 六路性能审计 + 全量修复第一轮（23 项） | core 962/963* / app 288 全绿 | 见 [性能审计台账](archive/reviews/perf-audit-2026-09-30.md)：磁盘缩略图缓存、解码闸门 actor 化、派生状态记忆化、`jobs.list` 轻投影、SHA-256 流式、`db_synchronous` 接线等；`*` 唯一失败为沙箱环境性用例 |
+| 2026-09-30 | unit | — | 全仓审查（11 项：P1×4 + P2×7）全量修复 | core 970/971* / app 291 全绿 | 见 [全仓审查修复台账](archive/reviews/full-review-2026-09-30.md)：XMP 续跑身份、run 级取消、迁移原子回滚、DB 关闭与句柄校验、指纹插值、数值设置分界、C1 管道排空、图库统一返回、模型安装暂存、插件状态/Makefile 依赖；`*` 唯一失败为沙箱环境性用例 |
+| 2026-09-30 | unit | — | 深审 D1–D8 修复 + 探针验收 | core 986/987* / app 298 全绿 | 见 [深审修复台账](archive/reviews/deep-review-2026-09-30-fixes.md)：导出失败回滚、孤儿恢复重取、清理 revision CAS、防抖取消、waitForIdle 超时、连接代数、模型整体回滚、参数上界；审查员 8 个探针已收入仓库作验收测试；`*` 唯一失败为沙箱环境性用例 |
+| 2026-09-29 | unit | — | 深度审查（D01–D12）修复 | core 953/954 / app 268 全绿 | 交付真实性（D01–D03）、图库异步边界（D04–D07）、目标照片定位（D08）、统一输出计划（D09）、入口意图（D10）、菜单兜底与人物入口（D11–D12）见 [第三轮审计台账 §0.3](archive/reviews/ui-review-2026-09-29-round3-audit.md)；仅剩原生人工验收 |
+| 2026-10-22 | unit | — | Cut 0–6 收口（破坏性重构） | core **1,092/157** + app **581/66** 全绿 | 7 target、SchemaV1 43 表/373 列、Router/118 命令删除、HNSW/ClusteringImpact 删除；当前账本见 [refactor-progress.md](refactor-progress.md) |
 
 ---
 

@@ -1,0 +1,260 @@
+// desktop/native/gather-app/Sources/GatherHost/APIs/LiveSessionAPI.swift
+// Cut 1 / 阶段 B1：SessionAPI 的 Live 实现（7 个方法）。
+//
+// 对应命令（9 条）：session.list / get / create / create_from_directory（M1 合并）/
+// update / delete / delete_many（M2 合并）/ add_photos、workspace.status。
+//
+// 校验归属：
+// - 输入类型已完成 name/sessionId/filepaths 的形状校验（D-012：显式
+//   GatherError.invalidParameter，不静默）；
+// - update 复用的旧 SessionUpdateParams 没有校验，本实现补 sessionId/name 非空白；
+// - delete 只接收 Confirmed<SessionDeleteInput>，内部 confirmed 固定 true
+//   （类型已保证，D-011；API 实现不得自行“补”确认）；
+// - 目录准入复用 SessionService.createFromDirectory（真实目录 + 禁根 +
+//   主目录祖先），文件导入复用 sanitizeSessionSourcePath（≥2 张照片的公共父目录），
+//   两者都不在本文件重复实现路径规则；
+// - 错误映射：SessionServiceError -> 已有域错误码；其余错误原样抛出（GatherError
+//   目前没有 unspecified 码，B0/D-010 后续补）。
+//
+// 同步核心（listSync/createSync/…）是 internal 的：B1 期间 Dashboard 的
+// LiveDashboardDataProvider 还保留旧 services 构造器供既有集成测试使用，
+// 同步方法直接调用这些核心，而不是在同步上下文里阻塞等待 async API。
+// 生产 UI 只走协议方法。
+
+import Foundation
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+
+public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
+    private let sessionService: SessionService
+    private let workspaceStatusService: WorkspaceStatusService
+    private let jobService: JobService
+
+    /// @unchecked Sendable 依据：三个依赖都是构造后不再变更的 let；SessionService /
+    /// WorkspaceStatusService / JobService 的可变状态分别由 DBConnection 的递归锁与
+    /// 各服务自己的锁保护（与组合根 @unchecked Sendable 同一约定）。
+    public init(
+        sessionService: SessionService,
+        workspaceStatusService: WorkspaceStatusService,
+        jobService: JobService
+    ) {
+        self.sessionService = sessionService
+        self.workspaceStatusService = workspaceStatusService
+        self.jobService = jobService
+    }
+
+    // MARK: - SessionAPI
+
+    public func list() async throws -> [SessionData] {
+        try listSync()
+    }
+
+    public func get(_ sessionId: String) async throws -> SessionData {
+        let id = try requireNonBlank(sessionId, field: "sessionId", maxLength: 128)
+        guard let session = try getSync(id) else {
+            throw GatherError(code: .SESSION_NOT_FOUND)
+        }
+        return session
+    }
+
+    public func create(_ input: SessionCreateInput) async throws -> SessionCreateResult {
+        try createSync(input)
+    }
+
+    public func update(_ input: SessionUpdateParams) async throws -> SessionData {
+        try updateSync(input)
+    }
+
+    public func delete(_ input: Confirmed<SessionDeleteInput>) async throws {
+        try deleteSync(input)
+    }
+
+    public func addPhotos(_ input: SessionAddPhotosInput) async throws -> AddPhotoResult {
+        try addPhotosSync(input)
+    }
+
+    public func status(_ sessionId: String) async throws -> WorkspaceStatus {
+        let id = try requireNonBlank(sessionId, field: "sessionId", maxLength: 128)
+        guard let status = try statusSync(id) else {
+            throw GatherError(code: .SESSION_NOT_FOUND)
+        }
+        return status
+    }
+
+    // MARK: - 同步核心（B1 测试接缝；生产 UI 不调用）
+
+    func listSync() throws -> [SessionData] {
+        try map { try sessionService.listSessions() }
+    }
+
+    func getSync(_ sessionId: String) throws -> SessionData? {
+        try map { try sessionService.getSession(sessionId) }
+    }
+
+    /// M1：目录 / filepaths / 空会话三路统一返回 SessionCreateResult。
+    ///
+    /// 目录分支建会话 + metadata.scan（目录全树作用域，checkpoint 不带
+    /// requestedPaths，与旧 create_from_directory 及 Dashboard 目录导入一致）；
+    /// filepaths 分支建会话 + addPhotos + metadata.scan（显式文件集合作用域）。
+    /// 两路都在 job 创建失败时回滚会话行（旧 create_from_directory 的补偿语义）；
+    /// 空会话分支只建会话，不入队索引。
+    func createSync(_ input: SessionCreateInput) throws -> SessionCreateResult {
+        if !input.filepaths.isEmpty {
+            return try createWithFilepaths(input)
+        }
+        if let sourcePath = input.sourcePath,
+           !sourcePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let session = try map {
+                try sessionService.createFromDirectory(
+                    name: input.name,
+                    sourcePath: sourcePath,
+                    source: input.source,
+                    truncatedImport: input.truncatedImport
+                )
+            }
+            // 与 filepaths 分支同一副作用契约：任何调用方（Dashboard/菜单/CLI）
+            // 建出的目录会话都必须被索引。requestedPaths 缺省 = 目录全树作用域。
+            do {
+                // R1 P1-3：index.scan 的 dedupeKey/checkpoint 规则只在协议层
+                // 工厂定义，API 不再复刻字面量（行为：目录全树作用域）。
+                _ = try jobService.create(
+                    JobCreateParams.metadataScan(sessionId: session.id, requestedPaths: nil))
+            } catch {
+                // 索引 job 入队失败不得留下“永远不会被扫描”的半成品工作区。
+                // 补偿删除是刚创建的空会话，非用户确认路径，显式 confirmed。
+                try? sessionService.deleteSession(session.id, confirmed: true)
+                throw error
+            }
+            return SessionCreateResult(session: session)
+        }
+        let session = try map {
+            try sessionService.createSession(
+                name: input.name,
+                source: input.source,
+                sourcePath: "",
+                truncatedImport: input.truncatedImport
+            )
+        }
+        return SessionCreateResult(session: session)
+    }
+
+    func updateSync(_ input: SessionUpdateParams) throws -> SessionData {
+        let id = try requireNonBlank(input.sessionId, field: "sessionId", maxLength: 128)
+        // 旧命令面 的 session.update 对 name 只做 requiredString（无长度上限）；
+        // 这里保留“非空白”语义，不额外改长度上限，避免 UI 行为变化。
+        let name = try requireNonBlank(input.name, field: "name")
+        return try map { try sessionService.updateSession(sessionId: id, name: name) }
+    }
+
+    func deleteSync(_ input: Confirmed<SessionDeleteInput>) throws {
+        let ids = input.value.sessionIds
+        try map {
+            if ids.count == 1 {
+                // 保留旧 session.delete 的 SESSION_NOT_FOUND 语义；单条删除是
+                // M2 的语法糖，缺失 id 与批量删除的历史行为不同。
+                try sessionService.deleteSession(ids[0], confirmed: true)
+            } else {
+                _ = try sessionService.deleteSessions(ids, confirmed: true)
+            }
+        }
+    }
+
+    func addPhotosSync(_ input: SessionAddPhotosInput) throws -> AddPhotoResult {
+        let result = try map {
+            try sessionService.addPhotos(
+                sessionId: input.sessionId,
+                filepaths: input.filepaths,
+                source: input.source
+            )
+        }
+        return AddPhotoResult(
+            added: result.added,
+            skipped: result.skipped,
+            total: result.total,
+            failedFiles: result.failedFiles
+        )
+    }
+
+    /// 返回 nil = 会话不存在（Dashboard 的 workspace.status 兼容探活路径）。
+    func statusSync(_ sessionId: String) throws -> WorkspaceStatus? {
+        try map { try workspaceStatusService.getStatus(sessionId: sessionId) }
+    }
+
+    // MARK: - 内部
+
+    private func createWithFilepaths(_ input: SessionCreateInput) throws -> SessionCreateResult {
+        // 与旧命令面 的 session.create 完全同一准入：只有“≥2 张照片的真实公共
+        // 父目录”才被接受，否则落空串；文件导入的扫描范围由 job checkpoint 承担。
+        let sourcePath = sanitizeSessionSourcePath(
+            sourcePath: input.sourcePath ?? "",
+            filepaths: input.filepaths
+        )
+        let session = try map {
+            try sessionService.createSession(
+                name: input.name,
+                source: input.source,
+                sourcePath: sourcePath,
+                truncatedImport: input.truncatedImport
+            )
+        }
+        // 与旧 UI 导入路径同一口径：job checkpoint 里的 requestedPaths 必须是
+        // normalizeImportFilepaths 之后的路径（trim/去重/ScanPath.canonical），
+        // 否则索引器按原始字符串匹配不到刚入库的 photos.filepath。
+        let normalizedFilepaths = normalizeImportFilepaths(input.filepaths)
+        let added = try map {
+            try sessionService.addPhotos(
+                sessionId: session.id,
+                filepaths: normalizedFilepaths,
+                source: input.source
+            )
+        }
+        do {
+            // R1 P1-3：建任务规则（含 requestedPaths checkpoint）由协议层工厂单源。
+            _ = try jobService.create(
+                JobCreateParams.metadataScan(
+                    sessionId: session.id, requestedPaths: normalizedFilepaths))
+        } catch {
+            // 对齐旧 session.create_from_directory：索引 job 入队失败不得留下
+            // “照片永远不会被扫描”的半成品工作区。补偿删除是刚创建的空会话，
+            // 非用户确认路径，显式以 automation 来源构造 Confirmed。
+            try? sessionService.deleteSession(session.id, confirmed: true)
+            throw error
+        }
+        let refreshed = try map { try sessionService.getSession(session.id) } ?? session
+        return SessionCreateResult(
+            session: refreshed,
+            added: added.added,
+            skipped: added.skipped,
+            failedFiles: added.failedFiles
+        )
+    }
+
+    private func requireNonBlank(
+        _ value: String,
+        field: String,
+        maxLength: Int = 4096
+    ) throws -> String {
+        guard value.count <= maxLength else {
+            throw GatherError.invalidParameter(
+                field: field,
+                reason: "length must be at most \(maxLength)"
+            )
+        }
+        guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GatherError.invalidParameter(field: field, reason: "must not be blank")
+        }
+        return value
+    }
+
+    private func map<T>(_ body: () throws -> T) throws -> T {
+        do {
+            return try body()
+        } catch let error as GatherError {
+            throw error
+        } catch let error as SessionServiceError {
+            throw GatherError(code: error.gatherCode)
+        }
+    }
+}

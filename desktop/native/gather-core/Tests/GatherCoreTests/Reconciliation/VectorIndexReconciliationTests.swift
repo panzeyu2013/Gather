@@ -1,36 +1,30 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Reconciliation/VectorIndexReconciliationTests.swift
-// 向量索引对账测试（Phase 2 任务 2.3「向量移植」）。
-// fixture 由 scripts/reconciliation/generate-vector-fixtures.mjs 生成（参照
-// 实现 = hnsw-index.ts / lsh-index.ts 全类照抄，语料构造 = hnsw-recall.test.ts
-// 照抄），本测试加载同一 JSON 逐 case 比对：
-//   - HNSW：逐查询 topK 索引列表与 fixture 完全一致；各节点层级（PRNG 流）
-//     与 fixture 一致；searchByThreshold 对暴力精确点积抽查。
+// 角度 LSH 对账测试（Phase 2 任务 2.3「向量移植」）。
+// fixture 由 scripts/reconciliation/generate-vector-fixtures.mjs 生成（参照实现 =
+// lsh-index.ts 全类照抄），本测试加载同一 JSON 逐 case 比对：
 //   - LSH：Swift 侧重建索引并复算 eps 邻域召回（口径照抄
 //     face-clusterer-lsh.test.ts measureNeighborRecall），断言 >= fixture 的
 //     TS 召回（弱桶另设 > 0.4 门限，同 face-clusterer-lsh.test.ts:348-353）。
-//   - 边界：空索引、维度/配置校验错误、LSH_MIN_POINTS 常量。
+//   - 边界：空索引、配置校验错误、LSH_MIN_POINTS 常量。
 //
-// 并列说明：fixture 生成器已断言每条查询的 topK 得分严格递减（随机实数
-// 语料下并列概率为零，种子漂移时生成器即失败），故逐索引相等是良定义的口径。
+// Cut 5 / 5b-2a：HNSW（CosineHnswIndex）已删除，本文件的 HNSW 对账段、
+// 维度/配置校验的 HNSW 断言与 fixture 的 HnswSection 解码一并删除；套件从
+// “默认跳过（GATHER_RECONCILIATION_VECTOR=1）”改为默认运行——LSH 对账是
+// 毫秒级，不再需要 gate。
+// Cut 5 / 5d-1：fixture JSON 的 hnsw 段（2,418 行）与生成器里的 HNSW 参照实现
+// 已删除，生成脚本只产 LSH 段（--check 与入库 fixture 逐字节一致）；解码器
+// 不再有 HnswSection，fixture 也不再有 hnsw 键。
+//
 // LSH 召回容差 0.005：Swift 与 TS 的 libm（exp/log/cos）理论上可有 1 ulp
 // 级差异，导致个别近零超平面投影翻转哈希位——候选集只会收缩、实测差异为 0，
 // 容差仅为防御性。
 
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
-/// 向量索引对账（HNSW 1000 行 × 100 查询 + LSH 召回，~6s）默认不随
-/// `swift test` 运行（开发迭代高频跑全量时拖慢节奏）；单独执行：
-///
-///     GATHER_RECONCILIATION_VECTOR=1 swift test \
-///       --filter VectorIndexReconciliationTests
-///
-/// 门禁说明：本套件是 2.3「向量移植」的 TS↔Swift 对账门（topK 逐位一致 +
-/// LSH 召回 ≥ TS 参照），提交涉及 VectorIndex/Clusterer 移植代码时必须显式
-/// 运行；与对账框架其他套件（dHash/聚类/matcher）的运行策略不同属有意为之
-/// （后者为毫秒级）。
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["GATHER_RECONCILIATION_VECTOR"] == "1"))
 struct VectorIndexReconciliationTests {
 
     private struct Fixture: Decodable {
@@ -39,26 +33,7 @@ struct VectorIndexReconciliationTests {
         let numQueries: Int
         let rows: [Float]
         let queries: [Float]
-        let hnsw: HnswSection
         let lsh: LshSection
-
-        struct HnswSection: Decodable {
-            let config: HnswConfigValue
-            let topK: Int
-            let levels: [Int]
-            let queriesTopK: [[Int]]
-            let queriesTopKScores: [[Float]]
-            let recallTop1: Double
-        }
-
-        struct HnswConfigValue: Decodable {
-            let dim: Int
-            let m: Int
-            let mMax0: Int
-            let efConstruction: Int
-            let efSearch: Int
-            let seed: UInt32
-        }
 
         struct LshSection: Decodable {
             let config: LshConfigValue
@@ -93,51 +68,6 @@ struct VectorIndexReconciliationTests {
             .appendingPathComponent("Fixtures")
             .appendingPathComponent("vector-fixtures.json")
         return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: file))
-    }
-
-    private static func hnswConfig(from value: Fixture.HnswConfigValue) -> HnswConfig {
-        HnswConfig(
-            dim: value.dim,
-            m: value.m,
-            mMax0: value.mMax0,
-            efConstruction: value.efConstruction,
-            efSearch: value.efSearch,
-            seed: value.seed)
-    }
-
-    private static func makeHnswIndex(_ fixture: Fixture) throws -> CosineHnswIndex {
-        try CosineHnswIndex(config: hnswConfig(from: fixture.hnsw.config))
-    }
-
-    private static func insertRows(_ fixture: Fixture, into index: CosineHnswIndex) throws {
-        for i in 0..<fixture.numRows {
-            let start = i * fixture.dim
-            _ = try index.insert(Array(fixture.rows[start..<(start + fixture.dim)]))
-        }
-    }
-
-    // MARK: HNSW 对账
-
-    @Test func hnswTopKMatchesFixture() throws {
-        let fixture = try Self.loadFixture()
-        let index = try Self.makeHnswIndex(fixture)
-        try Self.insertRows(fixture, into: index)
-        #expect(index.size == fixture.numRows, "size 应等于插入行数")
-        // fixture 语料有效性门（同 hnsw-recall.test.ts:142-151 保留集召回门）
-        #expect(fixture.hnsw.recallTop1 >= 0.9, "fixture HNSW recall@1 门限")
-
-        for q in 0..<fixture.numQueries {
-            let start = q * fixture.dim
-            let query = Array(fixture.queries[start..<(start + fixture.dim)])
-            let hits = try index.searchTopK(query: query, k: fixture.hnsw.topK)
-            let expected = fixture.hnsw.queriesTopK[q]
-            #expect(hits.indices == expected, "query \(q): topK 索引与 TS 不一致")
-            #expect(hits.count == expected.count, "query \(q): 命中条数不一致")
-            for s in 0..<hits.count {
-                let deviation = abs(hits.scores[s] - fixture.hnsw.queriesTopKScores[q][s])
-                #expect(deviation < 1e-4, "query \(q) hit \(s): 得分偏差 \(deviation) >= 1e-4")
-            }
-        }
     }
 
     // MARK: LSH 对账
@@ -255,29 +185,7 @@ struct VectorIndexReconciliationTests {
 
     // MARK: 边界与校验
 
-    // 同 hnsw-recall.test.ts:208-218（维度不匹配必须显式失败而非越界/NaN）
-    @Test func rejectsDimensionMismatches() throws {
-        let index = try CosineHnswIndex(config: HnswConfig(dim: 128))
-        #expect(throws: VectorIndexError.dimensionMismatch(expected: 128, received: 127)) {
-            _ = try index.insert([Float](repeating: 0, count: 127))
-        }
-        _ = try index.insert([Float](repeating: 0, count: 128))
-        #expect(throws: VectorIndexError.queryShapeMismatch(expected: 128, received: 127)) {
-            _ = try index.searchTopK(query: [Float](repeating: 0, count: 127), k: 1)
-        }
-    }
-
     @Test func rejectsInvalidConfigurations() throws {
-        // HNSW（hnsw-index.ts:106-116 同口径）
-        #expect(throws: VectorIndexError.invalidDimension(0)) {
-            _ = try CosineHnswIndex(config: HnswConfig(dim: 0))
-        }
-        #expect(throws: VectorIndexError.invalidNeighborCounts(m: 0, mMax0: 64)) {
-            _ = try CosineHnswIndex(config: HnswConfig(m: 0))
-        }
-        #expect(throws: VectorIndexError.invalidEF(efConstruction: 8, efSearch: 32)) {
-            _ = try CosineHnswIndex(config: HnswConfig(efConstruction: 8))
-        }
         // LSH（lsh-index.ts:133-144 同口径）
         #expect(throws: VectorIndexError.invalidDimension(0)) {
             _ = try CosineLshIndex(dim: 0)
@@ -294,12 +202,6 @@ struct VectorIndexReconciliationTests {
     }
 
     @Test func emptyIndexBehaviors() throws {
-        // 空 HNSW：查询返回空结果（hnsw-index.ts:242 先判 entryPoint）
-        let index = try CosineHnswIndex(config: HnswConfig(dim: 8))
-        let hits = try index.searchTopK(query: [Float](repeating: 0, count: 8), k: 3)
-        #expect(hits.count == 0)
-        #expect(index.size == 0)
-
         // 空 LSH：build(0) 后邻居查询返回空（lsh-index.ts:230-233 先判 count）
         let lsh = try CosineLshIndex(dim: 8)
         try lsh.build(rows: [], count: 0)
@@ -310,8 +212,4 @@ struct VectorIndexReconciliationTests {
         // 常量对账（lsh-index.ts:49）
         #expect(CosineLshIndex.lshMinPoints == 20_000)
     }
-
-    // 注：原 faceVectorDotAndCosine 用例测的是 FaceVector 的公开点积/余弦工具方法，
-    // 那两个方法无生产消费者（检索热路径用连续缓冲内联计算），已随无用代码清理删除；
-    // 检索数学由本文件其余用例（neighbors / searchTopK 与 fixture 对账）覆盖。
 }

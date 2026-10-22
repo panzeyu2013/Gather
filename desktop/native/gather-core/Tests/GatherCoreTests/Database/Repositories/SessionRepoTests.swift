@@ -3,11 +3,12 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 private func makeDB() throws -> DBConnection {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
+    let db = try makeTestDB()
     return db
 }
 
@@ -40,14 +41,11 @@ struct SessionRepoTests {
         #expect(row.name == "Trip")
         #expect(row.status == "draft")
         #expect(row.analysisStatus == "idle")
-        #expect(row.writebackStatus == "idle")
-        #expect(row.importSource == "folder")
         #expect(row.sourcePath == "/tmp/photos")
         #expect(row.truncatedImport == 1)
         #expect(row.reloadAckedAt == nil)
         #expect(row.indexSeq == 0)
         #expect(row.photoCount == 0)
-        #expect(row.failedWritebackCount == 0)
         #expect(!row.createdAt.isEmpty)
         #expect(!row.updatedAt.isEmpty)
 
@@ -135,15 +133,11 @@ struct SessionRepoTests {
         #expect(try repo.updateName(id: row.id, name: "Renamed"))
         try repo.updateStatus(id: row.id, status: "review")
         try repo.updatePhotoCount(id: row.id, count: 42)
-        try repo.updateWritebackStatus(id: row.id, status: "partial")
-        try repo.updateFailedWritebackCount(id: row.id, count: 3)
 
         let updated = try repo.get(id: row.id)
         #expect(updated?.name == "Renamed")
         #expect(updated?.status == "review")
         #expect(updated?.photoCount == 42)
-        #expect(updated?.writebackStatus == "partial")
-        #expect(updated?.failedWritebackCount == 3)
 
         #expect(try repo.updateName(id: "missing", name: "X") == false)
     }

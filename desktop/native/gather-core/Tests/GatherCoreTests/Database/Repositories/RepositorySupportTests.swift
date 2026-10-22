@@ -4,7 +4,8 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
+@testable import GatherPersistence
 
 struct RepositorySupportTests {
     /// isoString/nowISOString 必须输出 UTC 毫秒 ISO8601：analysis_jobs 的
@@ -40,8 +41,5 @@ struct RepositorySupportTests {
         for raw in ["2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00Z", "bad", ""] {
             #expect(tsDateParse(raw) == tsParseISODate(raw).map { $0.timeIntervalSince1970 * 1000 })
         }
-        // MetadataOutboxRepo.parseTimestamp 委托同一实现（租约恢复的时间判定）。
-        #expect(MetadataOutboxRepo.parseTimestamp("1970-01-01T00:00:00Z") == Date(timeIntervalSince1970: 0))
-        #expect(MetadataOutboxRepo.parseTimestamp("") == nil)
     }
 }

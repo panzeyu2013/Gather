@@ -7,8 +7,12 @@
 
 import Foundation
 import Testing
-@testable import GatherApp
-@testable import GatherCore
+@testable import GatherUI
+@testable import GatherHost
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - Stub（错误态注入）
 
@@ -23,6 +27,10 @@ private final class StubDashboardProvider: DashboardDataProvider {
     private(set) var deletedIds: [String] = []
     /// 删除调用的 confirmed 取值：断言 VM/Provider 不把未确认伪造成确认。
     private(set) var deleteConfirmedFlags: [Bool] = []
+    /// 真正删掉的 id（deleteSessions 默认实现是逐条删除，失败前可能已删一部分）。
+    private(set) var deleteSucceededIds: [String] = []
+    /// 删除失败注入：成功 N 条后抛错（nil = 不注入；默认实现逐条删除）。
+    var deleteFailureAfter: Int?
     private(set) var cancelCalls: [String] = []
     private(set) var retryCalls: [String] = []
     private(set) var clearCallCount = 0
@@ -47,6 +55,15 @@ private final class StubDashboardProvider: DashboardDataProvider {
     func deleteSession(_ sessionId: String, confirmed: Bool) throws {
         deletedIds.append(sessionId)
         deleteConfirmedFlags.append(confirmed)
+        if let deleteFailureAfter, deleteSucceededIds.count >= deleteFailureAfter {
+            throw NSError(
+                domain: "stub",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "delete failed"]
+            )
+        }
+        deleteSucceededIds.append(sessionId)
+        sessions.removeAll { $0.id == sessionId }
     }
 
     func workspaceStatus(sessionId: String) throws -> WorkspaceStatus? {
@@ -134,10 +151,11 @@ private final class StubDashboardProvider: DashboardDataProvider {
     }
 }
 
-/// 锁内以 zh-CN 取卡片计数文案：中文断言不得受并行切语言/系统语言影响。
+/// 以 zh-CN 渲染卡片计数文案（4b-2e：VM 只返回 LocalizedText，渲染期显式传语言；
+/// 不再依赖进程级语言，故无需 AppLanguageLock）。
 @MainActor
 private func chinesePhotoCountLabel(_ viewModel: DashboardViewModel, _ session: SessionData) -> String {
-    AppLanguageLock.withCopy("zh-CN") { viewModel.photoCountLabel(for: session) }
+    L10n(language: .zhCN).resolve(viewModel.photoCountLabel(for: session))
 }
 
 @MainActor
@@ -149,11 +167,13 @@ private func makeStubVM() -> (DashboardViewModel, StubDashboardProvider) {
 // MARK: - 真实服务集成（临时 SQLite）
 
 private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnection) {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
+    let db = try makeGatherTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let photoRepo = PhotoRepo(connection: db)
-    let provider = LiveDashboardDataProvider(
+    let jobService = JobService(repo: AnalysisJobRepo(connection: db))
+    // Cut 3 / 3b-3（E-19 #3）：旧 services convenience init 已删除；测试改为
+    // 显式构造类型化 Live API，并经端口注入同步核（生产路径不注入）。
+    let sessionAPI = LiveSessionAPI(
         sessionService: SessionService(
             sessionRepo: sessionRepo,
             photoRepo: photoRepo,
@@ -163,10 +183,16 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
         workspaceStatusService: WorkspaceStatusService(
             connection: db,
             sessionRepo: sessionRepo,
-            photoRepo: photoRepo,
-            outboxRepo: MetadataOutboxRepo(connection: db)
+            photoRepo: photoRepo
         ),
-        jobService: JobService(repo: AnalysisJobRepo(connection: db))
+        jobService: jobService
+    )
+    let jobAPI = LiveJobAPI(jobService: jobService)
+    let provider = LiveDashboardDataProvider(
+        sessionAPI: sessionAPI,
+        jobAPI: jobAPI,
+        syncSession: sessionAPI,
+        syncJob: jobAPI
     )
     return (provider, db)
 }
@@ -180,28 +206,35 @@ private func insertSession(
     // store-index v-next：sessions 不再有 analysis_status（分析态由 analysis_jobs 派生）。
     // updated_at 可显式指定：会话列表按「最近活动」排序，夹具需确定性表达意图。
     _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, ?, 'photos_loaded', 'idle', 'folder', ?, ?)
+        INSERT INTO sessions (id, name, status, created_at, updated_at)
+        VALUES (?, ?, 'photos_loaded', ?, ?)
     """).run([.text(id), .text(name), .text(updatedAt), .text(updatedAt)])
 }
 
 private func insertPhoto(_ db: DBConnection, id: String, sessionId: String) throws {
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', 'pending', '{}', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg")])
 }
 
-/// 种子 outbox 行（待同步写回计数，对齐 WorkspaceStatusServiceTests）。
-private func insertOutboxRow(_ db: DBConnection, sessionId: String, xmpPath: String, status: String) throws {
+/// 种子一条交付行（待同步写回计数，对齐 WorkspaceStatusServiceTests）。
+/// 工作区计数只读 deliveries / delivery_items，item 挂到本会话已有照片 p1。
+private func insertDeliveryRow(_ db: DBConnection, sessionId: String, xmpPath: String, status: String) throws {
+    let now = "2026-01-01T00:00:00.000Z"
     _ = try db.prepare("""
-        INSERT INTO metadata_outbox (xmp_path, photo_path, patch_json, dirty_fields, source_module, revision, persisted_revision, status, updated_at)
-        VALUES (?, '/tmp/p.jpg', '{}', '[]', 'culling', 1, 0, ?, '2026-01-01T00:00:00.000Z')
-    """).run([.text(xmpPath), .text(status)])
+        INSERT INTO deliveries (xmp_path, photo_path, status, revision, created_at, updated_at)
+        VALUES (?, '/tmp/p.jpg', ?, 1, ?, ?)
+    """).run([.text(xmpPath), .text(status), .text(now), .text(now)])
+    let deliveryId = db.lastInsertRowid
     _ = try db.prepare("""
-        INSERT INTO metadata_outbox_sessions (xmp_path, session_id, confirmed_at, linked_at)
-        VALUES (?, ?, '', '2026-01-01T00:00:00.000Z')
-    """).run([.text(xmpPath), .text(sessionId)])
+        INSERT INTO delivery_items (delivery_id, photo_id, module, status, created_at, updated_at)
+        VALUES (?, 'p1', 'culling', 'pending', ?, ?)
+    """).run([.int(deliveryId), .text(now), .text(now)])
+    _ = try db.prepare("""
+        INSERT INTO delivery_sessions (delivery_id, session_id, created_at)
+        VALUES (?, ?, ?)
+    """).run([.int(deliveryId), .text(sessionId), .text(now)])
 }
 
 private func insertJob(_ db: DBConnection, id: String, type: String, scopeId: String, status: String, updatedAt: String) throws {
@@ -218,7 +251,7 @@ private func insertJob(_ db: DBConnection, id: String, type: String, scopeId: St
 struct DashboardViewModelTests {
     // ── 加载与状态聚合 ──
 
-    // 真实库：sessions + photos + outbox → 概览计数正确（workspace status 加载）。
+    // 真实库：sessions + photos + deliveries → 概览计数正确（workspace status 加载）。
     @Test func loadAllAggregatesWorkspaceStatus() async throws {
         let (provider, db) = try makeLiveProvider()
         // 活动时间显式区分：s2 更近 → 排序语义要求它在前（不去赌平手兜底）。
@@ -230,8 +263,8 @@ struct DashboardViewModelTests {
         // photoCount 为 sessions 表存储列（真实流程由 addPhotos → updatePhotoCount 维护）。
         _ = try db.prepare("UPDATE sessions SET photo_count = 2 WHERE id = 's1'").run([])
         _ = try db.prepare("UPDATE sessions SET photo_count = 1 WHERE id = 's2'").run([])
-        try insertOutboxRow(db, sessionId: "s1", xmpPath: "a.xmp", status: "pending")
-        try insertOutboxRow(db, sessionId: "s1", xmpPath: "b.xmp", status: "conflict")
+        try insertDeliveryRow(db, sessionId: "s1", xmpPath: "a.xmp", status: "pending")
+        try insertDeliveryRow(db, sessionId: "s1", xmpPath: "b.xmp", status: "conflict")
 
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
@@ -335,12 +368,63 @@ struct DashboardViewModelTests {
     }
 
     // 目录导入是唯一允许递归 source_path 全树的作用域：入队不得携带 requestedPaths。
+    // P1-1：生产路径由 SessionAPI.create 内部入队一次；Dashboard 只消费结果，
+    // 不得再调 JobAPI.start（同 dedupeKey 会被静默去重，从而掩盖重复副作用）。
     @Test func directoryCreateScanUsesDirectoryScope() async throws {
+        // stub 回退路径（无 SessionAPI）：VM 经 provider 入队目录作用域。
         let (viewModel, stub) = makeStubVM()
-        let created = await viewModel.createSession(name: "新", sourcePath: "/tmp/新")
+        let created = await viewModel.createSession(
+            name: "新", sourcePath: "/tmp/新", with: L10n(language: .zhCN))
         #expect(created != nil)
         #expect(stub.indexScanCalls.count == 1)
         #expect(stub.indexScanCalls.first?.requestedPaths == nil)
+
+        // 生产路径（LiveSessionAPI）：create 内部入队一次；JobAPI.start 零调用。
+        let db = try makeGatherTestDB()
+        let sessionRepo = SessionRepo(connection: db)
+        let photoRepo = PhotoRepo(connection: db)
+        let jobService = JobService(repo: AnalysisJobRepo(connection: db))
+        let sessionAPI = LiveSessionAPI(
+            sessionService: SessionService(
+                sessionRepo: sessionRepo,
+                photoRepo: photoRepo,
+                faceRepo: FaceRepo(connection: db),
+                connection: db
+            ),
+            workspaceStatusService: WorkspaceStatusService(
+                connection: db,
+                sessionRepo: sessionRepo,
+                photoRepo: photoRepo
+            ),
+            jobService: jobService
+        )
+        let jobStub = B5bJobAPIStub()
+        let provider = LiveDashboardDataProvider(
+            sessionAPI: sessionAPI,
+            jobAPI: jobStub,
+            syncSession: sessionAPI,
+            syncJob: LiveJobAPI(jobService: jobService)
+        )
+        let apiViewModel = DashboardViewModel(provider: provider)
+        let directory = NSTemporaryDirectory() + "/gather-dir-create-" + UUID().uuidString
+        try FileManager.default.createDirectory(
+            atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let apiCreated = await apiViewModel.createSession(
+            name: "API 目录", sourcePath: directory, with: L10n(language: .zhCN))
+        let session = try #require(apiCreated)
+        #expect(jobStub.startRequests.isEmpty, "Dashboard 不得在 API 路径二次入队")
+
+        let scans = try AnalysisJobRepo(connection: db).list().filter {
+            $0.type == .metadataScan && $0.scopeId == session.id
+        }
+        #expect(scans.count == 1, "目录创建只允许一条 metadata.scan")
+        #expect(scans.first?.dedupeKey == "metadata.scan:\(session.id)")
+        #expect(
+            scans.first?.checkpoint[JobScopeCheckpoint.requestedPathsKey] == nil,
+            "目录全树作用域不得携带 requestedPaths"
+        )
     }
 
     // retry 由 JobService/checkpoint 继承保留原扫描作用域（重跑=续跑），
@@ -351,6 +435,46 @@ struct DashboardViewModelTests {
         #expect(stub.indexScanCalls.count == 1)
         #expect(stub.indexScanCalls.first?.sessionId == "s1")
         #expect(stub.indexScanCalls.first?.requestedPaths == nil)
+    }
+
+    // R1 P1-3：JobAPI 路径的 retry 必须原样使用协议层工厂（dedupeKey/checkpoint
+    // 不得在 Dashboard 复刻）。捕获 start 请求与工厂产出做整值比较。
+    @Test func retryScanUsesMetadataScanFactoryThroughJobAPI() async {
+        let jobs = B5bJobAPIStub()
+        let provider = LiveDashboardDataProvider(
+            sessionAPI: B8SessionAPIStub(),
+            jobAPI: jobs
+        )
+        let viewModel = DashboardViewModel(provider: provider)
+
+        await viewModel.retryScan(sessionId: "s1")
+
+        #expect(
+            jobs.startRequests == [JobCreateParams.metadataScan(sessionId: "s1", requestedPaths: nil)],
+            "Dashboard retry 必须走协议层 metadata.scan 工厂"
+        )
+        #expect(viewModel.actionError == nil)
+    }
+
+    // R1 P1-3：同步 provider 的 enqueueIndexScan（LiveDashboardDataProvider →
+    // JobSyncAPI）同样必须是工厂产出；用 spy 捕获请求，防止再长出第 5 份字面量。
+    @Test func syncProviderEnqueueIndexScanUsesMetadataScanFactory() throws {
+        let spy = JobSyncAPISpy()
+        let provider = LiveDashboardDataProvider(
+            sessionAPI: B8SessionAPIStub(),
+            jobAPI: B5bJobAPIStub(),
+            syncSession: nil,
+            syncJob: spy
+        )
+
+        try provider.enqueueIndexScan(
+            sessionId: "s1", requestedPaths: ["/tmp/b.jpg", "/tmp/a.jpg"])
+
+        #expect(
+            spy.startRequests == [JobCreateParams.metadataScan(
+                sessionId: "s1", requestedPaths: ["/tmp/b.jpg", "/tmp/a.jpg"])],
+            "sync provider 入队也必须走协议层 metadata.scan 工厂"
+        )
     }
 
     // 文件导入（C1 同路径）：source_path 必须为空，扫描范围由 job
@@ -378,9 +502,9 @@ struct DashboardViewModelTests {
         let scan = try #require(jobs.first {
             $0.type == .metadataScan && $0.scopeId == outcome.session.id
         })
-        #expect(scan.checkpoint[GatherApp.scanRequestedPathsKey] != nil,
+        #expect(scan.checkpoint[JobScopeCheckpoint.requestedPathsKey] != nil,
                 "契约键名必须与 GatherApp.importFiles 一致")
-        let requested = scan.checkpoint[GatherApp.scanRequestedPathsKey]?
+        let requested = scan.checkpoint[JobScopeCheckpoint.requestedPathsKey]?
             .arrayElements?.compactMap(\.stringValue) ?? []
         #expect(requested == selected, "job 必须携带本次选中文件集合，而不是公共父目录")
         #expect(!requested.contains(dir), "父目录不得出现在扫描集合中")
@@ -428,6 +552,8 @@ struct DashboardViewModelTests {
 
         // count：截断导入且 scan 未成功 → ≥ 前缀。
         #expect(chinesePhotoCountLabel(viewModel, truncated) == "≥12 张照片")
+        // 渲染期语言：同一快照在 en 下输出英文（VM 不读全局语言）。
+        #expect(L10n(language: .en).resolve(viewModel.photoCountLabel(for: truncated)) == "≥12 photos")
         // count：截断导入但 scan succeeded → 精确计数（≥ 前缀去除）。
         await seedScan(status: "succeeded", current: 12, total: 12)
         #expect(chinesePhotoCountLabel(viewModel, truncated) == "12 张照片")
@@ -552,7 +678,8 @@ struct DashboardViewModelTests {
 
         // 创建 → provider 收到调用并刷新列表。
         stub.sessions = [StubDashboardProvider.session(id: "s1"), StubDashboardProvider.session(id: "s2", name: "新")]
-        let created = await viewModel.createSession(name: "新", sourcePath: "/tmp/新")
+        let created = await viewModel.createSession(
+            name: "新", sourcePath: "/tmp/新", with: L10n(language: .zhCN))
         #expect(created?.id == "new-1")
         #expect(stub.createdNames == ["新"])
         #expect(viewModel.sessions.count == 2)
@@ -587,18 +714,113 @@ struct DashboardViewModelTests {
         #expect(stub.deleteConfirmedFlags.last == true, "确认分支必须原样透传 true")
     }
 
+    // R4 P1-3：删除成功后逐 id 交接宿主（RootView 注入 SessionStore.endSession，
+    // 由 store 清 active/pinned/lastSessionId 并 close workspace）。
+    @Test func deleteNotifiesHostForEachDeletedSession() async {
+        let (viewModel, stub) = makeStubVM()
+        #expect(viewModel.onSessionDeleted == nil, "未注入时不得回调（单测/Preview 默认静默）")
+
+        var deleted: [String] = []
+        viewModel.onSessionDeleted = { deleted.append($0) }
+
+        stub.sessions = [
+            StubDashboardProvider.session(id: "s1"),
+            StubDashboardProvider.session(id: "s2"),
+        ]
+        await viewModel.loadAll()
+        // 单删：只交接被删 id。
+        let single = await viewModel.deleteSession("s1", confirmed: true)
+        #expect(single)
+        #expect(deleted == ["s1"])
+
+        // 批量成功：入参每个 id 各交接一次（顺序 = 入参顺序）。
+        stub.sessions = [
+            StubDashboardProvider.session(id: "s2"),
+            StubDashboardProvider.session(id: "s3"),
+        ]
+        await viewModel.loadAll()
+        let batch = await viewModel.deleteSessions(["s2", "s3"], confirmed: true)
+        #expect(batch)
+        #expect(deleted == ["s1", "s2", "s3"])
+
+        // 空批量：没有删除就没有交接（也不报错）。
+        let empty = await viewModel.deleteSessions([], confirmed: true)
+        #expect(empty)
+        #expect(deleted == ["s1", "s2", "s3"], "空批量不得产生交接")
+    }
+
+    // 类型化 API 路径（单事务）：成功 → 每个 id 交接；查询层确认真的删掉了。
+    @Test func apiDeleteNotifiesEveryDeletedId() async throws {
+        let (provider, db) = try makeLiveProvider()
+        try insertSession(db, "s1")
+        try insertSession(db, "s2")
+        try insertSession(db, "s3")
+        let viewModel = DashboardViewModel(provider: provider)
+        await viewModel.loadAll()
+
+        var deleted: [String] = []
+        viewModel.onSessionDeleted = { deleted.append($0) }
+
+        let batch = await viewModel.deleteSessions(["s1", "s2"], confirmed: true)
+        #expect(batch)
+        #expect(deleted == ["s1", "s2"])
+        #expect(try provider.listSessions().map(\.id) == ["s3"])
+
+        let single = await viewModel.deleteSession("s3", confirmed: true)
+        #expect(single)
+        #expect(deleted == ["s1", "s2", "s3"])
+        #expect(try provider.listSessions().isEmpty)
+    }
+
+    // 批量部分失败（同步 Provider 默认逐条删除）：只交接真正删掉的 id，
+    // 失败的第 2 条与未执行的第 3 条都不清（否则 workspace 会被误杀）。
+    @Test func batchDeleteNotifiesOnlySucceededSessions() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.sessions = [
+            StubDashboardProvider.session(id: "s1"),
+            StubDashboardProvider.session(id: "s2"),
+            StubDashboardProvider.session(id: "s3"),
+        ]
+        await viewModel.loadAll()
+        var deleted: [String] = []
+        viewModel.onSessionDeleted = { deleted.append($0) }
+
+        stub.deleteFailureAfter = 1
+        let ok = await viewModel.deleteSessions(["s1", "s2", "s3"], confirmed: true)
+        #expect(ok == false)
+        #expect(stub.deleteSucceededIds == ["s1"])
+        #expect(deleted == ["s1"], "失败/未执行的 id 不得被当成已删")
+        #expect(viewModel.actionError != nil)
+        #expect(stub.sessions.map(\.id) == ["s2", "s3"], "未删的会话仍在服务端")
+    }
+
+    // 类型化 API 的批量删除是单事务：失败即整体回滚，一个都不交接。
+    @Test func apiDeleteFailureNotifiesNothing() async {
+        let provider = LiveDashboardDataProvider(
+            sessionAPI: B8SessionAPIStub(),
+            jobAPI: B5bJobAPIStub()
+        )
+        let viewModel = DashboardViewModel(provider: provider)
+        var deleted: [String] = []
+        viewModel.onSessionDeleted = { deleted.append($0) }
+
+        let ok = await viewModel.deleteSessions(["s1", "s2"], confirmed: true)
+        #expect(ok == false)
+        #expect(deleted.isEmpty, "事务回滚 = 一个都没删，不得清任何 workspace")
+        #expect(viewModel.actionError != nil)
+    }
+
     // ── 错误态 ──
 
-    @Test func loadFailureSetsFailedPhase() async {
+    @Test func loadFailureSetsFailedPhase() async throws {
         let (viewModel, stub) = makeStubVM()
         stub.listError = "DB 不可用"
         await viewModel.loadAll()
-        // 文案断言与切语言的套件互斥（appLanguage 是进程级全局量）。
-        AppLanguageLock.withStableCopy {
-            // 非错误码诊断不得直显：经漏斗回退通用文案（原始细节只进日志）。
-            #expect(viewModel.phase == .failed(GatherLocalization.errorText("DB 不可用")))
-            #expect(viewModel.phase != .failed("DB 不可用"))
-        }
+        // Cut 4 / 4a-3b-2b：API/系统散文只进 diagnostic，不上屏（policy）。
+        let error = try #require(viewModel.phase.error)
+        #expect(error.code.isEmpty)
+        #expect(error.diagnostic == "DB 不可用")
+        #expect(CommandErrorText.resolve(error, with: L10n(language: .zhCN)) == L10n(language: .zhCN).errorText("NOT_A_CODE"))
     }
 
     @Test func jobListFailureShowsJobsErrorState() async {
@@ -609,8 +831,10 @@ struct DashboardViewModelTests {
         // sessions 已加载但 jobs 失败 → 任务中心错误态（区别于「暂无后台任务」空态）。
         #expect(viewModel.phase == .loaded)
         AppLanguageLock.withStableCopy {
-            #expect(viewModel.jobsError == GatherLocalization.errorText("任务读取失败"))
-            #expect(viewModel.jobsError != "任务读取失败", "原始诊断不得直显")
+            let error = viewModel.jobsError
+            #expect(error?.code.isEmpty == true)
+            #expect(error?.diagnostic == "任务读取失败")
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("任务读取失败"))
             #expect(viewModel.actionError == nil)
         }
 
@@ -623,12 +847,14 @@ struct DashboardViewModelTests {
     @Test func createFailureSetsCreateError() async {
         let (viewModel, stub) = makeStubVM()
         stub.createError = "SESSION_SOURCE_ROOT_FORBIDDEN"
-        let created = await viewModel.createSession(name: "x", sourcePath: "/")
+        let created = await viewModel.createSession(
+            name: "x", sourcePath: "/", with: L10n(language: .zhCN))
         #expect(created == nil)
         // 错误码必须经漏斗翻译成可本地化文案，不得显示裸码。
         AppLanguageLock.withStableCopy {
-            #expect(viewModel.createError == GatherLocalization.errorText("SESSION_SOURCE_ROOT_FORBIDDEN"))
-            #expect(viewModel.createError != "SESSION_SOURCE_ROOT_FORBIDDEN")
+            let error = viewModel.createError
+            #expect(error?.code == "SESSION_SOURCE_ROOT_FORBIDDEN")
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("SESSION_SOURCE_ROOT_FORBIDDEN"))
         }
         #expect(viewModel.isCreating == false)
     }
@@ -642,5 +868,32 @@ struct DashboardViewModelTests {
         #expect(viewModel.phase == .loaded)
         #expect(viewModel.sessions.count == 1)
         #expect(viewModel.statuses.isEmpty == false)
+    }
+}
+
+// MARK: - R1 P1-3 sync 端口 spy
+
+/// 只记录 startJobSync 请求的 JobSyncAPI 替身（sync provider 入队路径）。
+private final class JobSyncAPISpy: JobSyncAPI, @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [JobCreateParams] = []
+
+    var startRequests: [JobCreateParams] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    func listJobsSync(_ filter: JobListFilter) throws -> [AnalysisJobData] { [] }
+    func cancelJobSync(_ jobId: String) throws -> Bool { false }
+    func retryJobSync(_ jobId: String) throws -> Bool { false }
+    func clearCompletedJobsSync() throws -> Int { 0 }
+
+    func startJobSync(_ request: JobCreateParams) throws -> AnalysisJobData {
+        lock.lock()
+        requests.append(request)
+        let count = requests.count
+        lock.unlock()
+        return b5bJobData(id: "job-\(count)", dedupeKey: request.dedupeKey)
     }
 }

@@ -6,7 +6,7 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
 
 struct CullingContractTests {
 

@@ -34,8 +34,12 @@
 
 import Foundation
 import Testing
+import GatherTestSupport
 
-@testable import GatherCore
+@testable import GatherProtocol
+@testable import GatherAnalysis
+@testable import GatherDomain
+@testable import GatherPersistence
 
 // MARK: - 生产 margin 夹具
 
@@ -152,7 +156,7 @@ private func runProductionMargin(
     threshold: Double,
     margin: Double
 ) async throws -> ProductionMarginRun {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "MarginRun-\(libraryConfigSeed)", source: "folder")
     let dir = try makeTempDir()
@@ -193,8 +197,7 @@ private func runProductionMargin(
         })
     try personRepo.saveEmbeddings(embeddings: library.enumerated().map { index, item in
         SaveEmbeddingInput(personId: personIds[item.identityIndex], embedding: item.embedding,
-            photoId: "library-photo", sessionId: librarySession.id, faceObservationId: observationIds[index],
-            faceBbox: [0.1, 0.1, 0.2, 0.3], quality: 1)
+            photoId: "library-photo", sessionId: librarySession.id, faceObservationId: observationIds[index])
     })
 
     let faceRepo = FaceRepo(connection: db)

@@ -2,13 +2,17 @@
 // 的 8 组门控用例（deriveSyncControls 矩阵）+ syncFlowState 从
 // MetadataSyncSummary 推导的优先级（冲突 > 失败 > 写入中 > 已写入 > 终态 > 空）。
 //
-// 合并说明：两组用例都是「同一函数、仅输入不同」，原先 8 + 7 条声明里逐条重复了
-// 同样的调用与断言形状；现各自合并为一条 @Test(arguments:) 参数化用例，
-// 每条输入与断言逐字保留在对应的 argument case 上（case 数不变、声明数 15 → 2）。
+// Cut 1 / B8.1a：VM 用 CullingAPI / NavigationAPI / MetadataAPI 的类型化替身
+// 构造，不再经过旧命令面 适配器；耐久 reload-ack 的
+// JSON 解码用例改为类型化 syncStatus 刷新语义（摘要 + ack / 错误可见）。
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 /// 参数化用的状态名。
 /// SyncFlowState 是 public 枚举（无隐式 Sendable 派生），不能直接进
@@ -34,12 +38,33 @@ private func syncSummary(
     pending: Int = 0, writing: Int = 0, written: Int = 0,
     failed: Int = 0, conflict: Int = 0, synced: Int = 0
 ) -> MetadataSyncSummary {
-    MetadataSyncSummary(
+    b8SyncSummary(
         sessionId: "s1", pending: pending, writing: writing, written: written,
-        failed: failed, conflict: conflict, synced: synced, items: [])
+        failed: failed, conflict: conflict, synced: synced
+    )
 }
 
-@Suite("CullingSyncFlow deriveControls（对齐 c1-sync-controls.test.ts）")
+/// 类型化五 API 装配（culling/navigation/metadata/jobs/quality 全部替身；
+/// 本文件不断言任何命令名）。
+@MainActor
+private func makeCullingStack(
+    sessionId: String = "s1"
+) -> (CullingViewModel, B8CullingAPIStub, B8NavigationAPIStub) {
+    let culling = B8CullingAPIStub()
+    let navigation = B8NavigationAPIStub()
+    let viewModel = CullingViewModel(
+        sessionId: sessionId,
+        culling: culling,
+        navigation: navigation,
+        metadata: B6bMetadataAPIStub(),
+        jobs: B5bJobAPIStub(),
+        quality: B5bQualityAPIStub(),
+        captureOne: CaptureOneBridge()
+    )
+    return (viewModel, culling, navigation)
+}
+
+@Suite("CullingSyncFlow deriveControls（对齐 c1-sync-controls.test.ts）", .serialized)
 struct CullingSyncFlowTests {
     private typealias Controls = CullingViewModel.SyncFlowControls
 
@@ -88,7 +113,7 @@ struct CullingSyncFlowTests {
     }
 }
 
-@Suite("CullingViewModel syncFlowState 推导")
+@Suite("CullingViewModel syncFlowState 推导", .serialized)
 @MainActor
 struct CullingSyncFlowStateTests {
     // 原 7 条用例：无状态 / 冲突优先 / 失败优先 / 写入中 / 已写入 / 全部终态 / 空行。
@@ -102,61 +127,200 @@ struct CullingSyncFlowStateTests {
         (syncSummary(), FlowStateName.synced, "空行 → synced"),
     ])
     private func syncFlowStateMatrix(summary: MetadataSyncSummary?, expected: FlowStateName, label: String) {
-        let vm = CullingViewModel(sessionId: "s1", router: StubCommandRouter.empty())
+        let (vm, _, _) = makeCullingStack()
         if let summary { vm.applySyncSummaryForTesting(summary) }
         #expect(vm.syncFlowState() == expected.state, Comment(rawValue: label))
     }
 }
 
+@Suite("CullingViewModel 类型化 API 流程", .serialized)
+@MainActor
+struct CullingTypedAPIFlowTests {
+    @Test("page/history/syncStatus：查询参数与摘要/ack 投影正确")
+    func pageHistoryAndSyncStatusThroughTypedAPI() async {
+        let (vm, culling, navigation) = makeCullingStack()
+        culling.pageResult = b8CullingPage([b8CullingAsset("p1"), b8CullingAsset("p2", revision: 2)])
+        culling.summaryResult = CullingSummary(
+            totalGroups: 1, totalPhotos: 2, kept: 1, rejected: 0, pending: 1, rated: 1, labeled: 0
+        )
+        culling.groupsResult = [b8CullingGroup()]
+        culling.syncStatusResult = CullingSyncStatus(
+            summary: syncSummary(written: 3),
+            reloadAckedAt: "2026-09-01T10:00:00.000Z"
+        )
 
-/// culling.sync_status 的唯一解码入口（CullingViewModel.decodeSyncStatus）：
-/// 路由器在摘要对象上附耐久 `reloadAckedAt`（sessions.reload_acked_at）。旧实现
-/// 只解 MetadataSyncSummary（未知键被忽略）→ 内存 reloadAcked 冷启动即丢、确认
-/// 同步按钮永久禁用；本套件用手写 JSON 响应独立钉住「摘要 + ack」的解码契约。
-/// （变异验证：把 ack 解出改回 nil / 去掉空串守卫，本套件即变红。）
-@Suite("CullingViewModel.decodeSyncStatus（耐久 reload-ack 解码）")
-struct CullingDecodeSyncStatusTests {
-    /// 对齐 SessionCommandRouter 的 culling.sync_status 响应形状（摘要 + reloadAckedAt）。
-    private func payload(ack: JSONValue) -> JSONValue {
-        .object([
-            "sessionId": .string("s1"),
-            "pending": .number(1), "writing": .number(0), "written": .number(2),
-            "failed": .number(0), "conflict": .number(1), "synced": .number(3),
-            "items": .array([]),
-            "reloadAckedAt": ack,
+        await vm.load()
+
+        #expect(culling.pageQueries.count == 1)
+        #expect(culling.pageQueries.first?.sessionId == "s1")
+        #expect(culling.pageQueries.first?.scope == .all)
+        #expect(culling.pageQueries.first?.limit == 500)
+        #expect(culling.historyQueries.first?.limit == 500)
+        #expect(navigation.listCalls == ["s1"])
+        #expect(vm.page?.assets.map(\.photo.id) == ["p1", "p2"])
+        #expect(vm.summary?.totalPhotos == 2)
+        #expect(vm.syncStatus?.written == 3)
+        #expect(vm.reloadAcked)
+        #expect(vm.canLoadMetadata)
+        #expect(vm.canConfirmSync)
+        #expect(!vm.canCleanup)
+    }
+
+    @Test("update：expectedRevision/patch 进类型化输入并 prepend 历史")
+    func updateThroughTypedAPI() async throws {
+        let (vm, culling, _) = makeCullingStack()
+        let asset = b8CullingAsset("p1", revision: 3)
+        culling.pageResult = b8CullingPage([asset, b8CullingAsset("p2")])
+        // 后台 refresh 快照与写入结果一致，避免 refreshSilently 把刚应用的决策冲掉。
+        culling.updateResult = CullingUpdateResult(
+            states: [b8CullingState("p1", revision: 4, pickState: .picked)],
+            xmpPath: "/shoot/p1.xmp",
+            syncStatus: .pending,
+            historyOperationId: 9
+        )
+        await vm.load()
+        culling.pageResult = b8CullingPage([
+            b8CullingAsset("p1", revision: 4, pickState: .picked),
+            b8CullingAsset("p2")
         ])
+
+        await vm.update(asset, patch: CullingUpdatePatch(pickState: .picked))
+
+        #expect(culling.updateInputs.count == 1)
+        #expect(culling.updateInputs.first?.photoId == "p1")
+        #expect(culling.updateInputs.first?.expectedRevision == 3)
+        #expect(culling.updateInputs.first?.patch.pickState == .picked)
+        #expect(vm.undoOperation?.id == 9)
+        #expect(vm.undoOperation?.entries.first?.before.pickState == .unreviewed)
+        #expect(vm.undoOperation?.entries.first?.after.pickState == .picked)
     }
 
-    @Test("摘要字段与 reloadAckedAt 一并解出")
-    func decodesSummaryAndAck() throws {
-        let decoded = try CullingViewModel.decodeSyncStatus(payload(ack: .string("2026-09-01T10:00:00.000Z")))
-        #expect(decoded.summary == MetadataSyncSummary(
-            sessionId: "s1", pending: 1, writing: 0, written: 2,
-            failed: 0, conflict: 1, synced: 3, items: []))
-        #expect(decoded.reloadAckedAt == "2026-09-01T10:00:00.000Z")
+    @Test("undo：applyHistory 带 direction=undo 与 historyOperationId")
+    func undoThroughTypedAPI() async throws {
+        let (vm, culling, _) = makeCullingStack()
+        let entry = CullingHistoryEntry(
+            photoId: "p1",
+            before: CullingStateSnapshot(pickState: .unreviewed, rating: 0, colorLabel: .none),
+            after: CullingStateSnapshot(pickState: .picked, rating: 0, colorLabel: .none),
+            expectedRevision: 1,
+            fields: [.pickState]
+        )
+        culling.pageResult = b8CullingPage([b8CullingAsset("p1", revision: 2, pickState: .picked)])
+        culling.historyResult = [
+            CullingHistoryOperation(
+                id: 7, sessionId: "s1", entries: [entry], undone: false,
+                createdAt: "2026-01-01T00:00:00.000Z"
+            )
+        ]
+        culling.applyHistoryResults = [
+            CullingUpdateResult(
+                states: [b8CullingState("p1", revision: 3)],
+                xmpPath: "/shoot/p1.xmp",
+                syncStatus: .pending,
+                historyOperationId: 7
+            )
+        ]
+        await vm.load()
+
+        await vm.undo()
+
+        #expect(culling.applyHistoryInputs.count == 1)
+        #expect(culling.applyHistoryInputs.first?.direction == .undo)
+        #expect(culling.applyHistoryInputs.first?.historyOperationId == 7)
+        #expect(culling.applyHistoryInputs.first?.entries.first?.photoId == "p1")
+        #expect(culling.applyHistoryInputs.first?.entries.first?.patch.pickState == .unreviewed)
+        #expect(vm.history.first?.undone == true)
+        #expect(vm.undoOperation == nil)
+        #expect(vm.redoOperation?.id == 7)
     }
 
-    @Test("ack 为 null / 空串 / 键缺失 → nil（空串不得当作已确认）")
-    func missingAckIsNil() throws {
-        #expect(try CullingViewModel.decodeSyncStatus(payload(ack: .null)).reloadAckedAt == nil)
-        #expect(try CullingViewModel.decodeSyncStatus(payload(ack: .string(""))).reloadAckedAt == nil)
-        let withoutAckKey: JSONValue = .object([
-            "sessionId": .string("s1"), "pending": .number(0), "writing": .number(0),
-            "written": .number(0), "failed": .number(0), "conflict": .number(0),
-            "synced": .number(0), "items": .array([]),
+    @Test("batchUpdate/decideGroup：选中集与保留集进类型化输入")
+    func batchAndDecideThroughTypedAPI() async throws {
+        let (vm, culling, _) = makeCullingStack()
+        culling.pageResult = b8CullingPage([
+            b8CullingAsset("p1"), b8CullingAsset("p2"), b8CullingAsset("p3")
         ])
-        #expect(try CullingViewModel.decodeSyncStatus(withoutAckKey).reloadAckedAt == nil)
+        culling.batchUpdateResults = [
+            CullingUpdateResult(
+                states: [b8CullingState("p1", revision: 2, pickState: .rejected),
+                         b8CullingState("p2", revision: 2, pickState: .rejected)],
+                xmpPath: "/shoot/p1.xmp",
+                syncStatus: .pending,
+                historyOperationId: 11
+            )
+        ]
+        await vm.load()
+        vm.toggleSelection("p1")
+        vm.toggleSelection("p2")
+        culling.pageResult = b8CullingPage([
+            b8CullingAsset("p1", revision: 2, pickState: .rejected),
+            b8CullingAsset("p2", revision: 2, pickState: .rejected),
+            b8CullingAsset("p3")
+        ])
+
+        await vm.batchUpdate(patch: CullingUpdatePatch(pickState: .rejected))
+
+        #expect(culling.batchUpdateInputs.count == 1)
+        #expect(culling.batchUpdateInputs.first?.photoIds == ["p1", "p2"])
+        #expect(culling.batchUpdateInputs.first?.patch.pickState == .rejected)
+        #expect(vm.undoOperation?.id == 11)
+
+        let group = b8CullingGroup(groupId: "g1", photoIds: ["p1", "p2"])
+        await vm.decideSimilarityGroup(group, keepPhotoIds: ["p1"], shouldAdvance: false)
+        #expect(culling.decideGroupInputs.count == 1)
+        #expect(culling.decideGroupInputs.first?.groupId == "g1")
+        #expect(culling.decideGroupInputs.first?.keepPhotoIds == ["p1"])
+    }
+}
+
+/// 耐久 reload-ack 的类型化契约：syncStatus 直接携带摘要 + ack，不再经过
+/// JSONValue 解码；失败必须可见（不得静默保持旧状态）。
+@Suite("CullingViewModel syncStatus 刷新（类型化 ack）", .serialized)
+@MainActor
+struct CullingSyncStatusRefreshTests {
+    @Test("摘要字段与 reloadAckedAt 一并应用")
+    func refreshAppliesSummaryAndAck() async {
+        let (vm, culling, _) = makeCullingStack()
+        culling.syncStatusResult = CullingSyncStatus(
+            summary: syncSummary(pending: 1, written: 2, conflict: 1, synced: 3),
+            reloadAckedAt: "2026-09-01T10:00:00.000Z"
+        )
+
+        await vm.refreshSyncStatus()
+
+        #expect(vm.syncStatus == syncSummary(pending: 1, written: 2, conflict: 1, synced: 3))
+        #expect(vm.reloadAcked)
+        #expect(culling.syncStatusCalls == ["s1"])
+        #expect(culling.summaryCalls == ["s1"])
     }
 
-    @Test("非摘要载荷 → 抛解码错误（不得静默返回空摘要）")
-    func malformedPayloadThrows() {
-        do {
-            _ = try CullingViewModel.decodeSyncStatus(.object(["nope": .number(1)]))
-            Issue.record("非摘要载荷应抛错")
-        } catch is DecodingError {
-            // 预期：JSONDecoder 往返失败。
-        } catch {
-            Issue.record("错误类型不符：\(error)")
-        }
+    @Test("ack 缺失 → reloadAcked 保持 false，确认同步保持禁用")
+    func refreshWithoutAckKeepsConfirmDisabled() async {
+        let (vm, culling, _) = makeCullingStack()
+        culling.syncStatusResult = CullingSyncStatus(
+            summary: syncSummary(written: 2),
+            reloadAckedAt: nil
+        )
+
+        await vm.refreshSyncStatus()
+
+        #expect(!vm.reloadAcked)
+        #expect(vm.syncStatus?.written == 2)
+        #expect(vm.canLoadMetadata)
+        #expect(!vm.canConfirmSync)
+    }
+
+    @Test("syncStatus 失败 → 可见 lastSyncError，不伪造已确认")
+    func refreshErrorSurfaces() async {
+        let (vm, culling, _) = makeCullingStack()
+        culling.syncStatusError = GatherError(code: .CULLING_REVISION_CONFLICT)
+
+        await vm.refreshSyncStatus()
+
+        #expect(vm.syncStatus == nil)
+        #expect(!vm.reloadAcked)
+        // Cut 4 / 4a-3b-1：只存错误载体（码），文案在渲染期本地化。
+        #expect(vm.lastSyncError?.code == "CULLING_REVISION_CONFLICT")
+        #expect(!vm.canLoadMetadata)
     }
 }

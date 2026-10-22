@@ -23,10 +23,21 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 架构一句话
 
-**SwiftUI 页面 → `SessionCommandRouter` / `CommandRouter`（118 个命令、同进程直连）
-→ `GatherCore` 领域服务**：SQLite（WAL + 迁移）为唯一持久层，Vision/ImageIO/RAW
-解码负责图像，`JobService` 承载可恢复后台任务，Metadata outbox 负责可靠写回。
-无 Node.js、无 Electron、无浏览器渲染层、无本地 HTTP 服务。
+**SwiftUI 页面 → 16 个域 API（110 个类型化方法，`AppServices` 注入）→ 7 个
+SwiftPM target**：`GatherProtocol`（值类型/协议/错误码）、`GatherPersistence`
+（SchemaV1/Database/仓储）、`GatherAnalysis`（聚类/人脸/图像）、`GatherDomain`
+（服务与任务）、`GatherUI`（页面/状态层）、`GatherHost`（组合根/Live API）、
+`GatherApp`（入口）。SQLite（WAL，SchemaV1 43 表 / 373 列 / user_version=1）为唯一持久层，
+Vision/ImageIO/RAW 解码负责图像，`JobService` 承载可恢复后台任务，
+`DeliveryCoordinator` 负责可靠写回。无 Node.js、无 Electron、无浏览器渲染层、
+无本地 HTTP 服务。
+
+Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRouter` /
+`NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
+
+> 当前基线（2026-10-22 评审修复轮）：7 target、SchemaV1 43 表 / 373 列 / 69 索引 / 62 外键、
+> core 1,128 tests / 159 suites、app 616 tests / 68 suites、en 1,322 键 / zh 9 键；无 Router、无迁移链
+> （不兼容库由 `Database.open(at:)` 整体重置）。测试例数为修复轮记录；收尾轮只复跑门禁，未复跑全量测试。
 
 ## 核心工作流
 
@@ -48,9 +59,11 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 ### 环境要求
 
 - macOS 14 或更高版本
-- Xcode 或 Xcode Command Line Tools，支持 Swift 5.9+
+- Xcode 或 Xcode Command Line Tools，支持 Swift 6.0+
 - 仅使用本地文件夹时不要求 Capture One
-- 人脸分析使用系统 Vision，无需模型资产；真实数据集推理质量属于明确跳过的外部验收
+- 人脸分析用系统 Vision 做检测/对齐，身份特征来自随包分发的 SFace CoreML 模型
+  （`FaceModels/SFace.mlpackage`，随 `build.sh` 一起校验与打包）；真实数据集推理
+  质量属于明确跳过的外部验收
 
 ### 运行原生测试
 
@@ -70,22 +83,29 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test
 
 产物位于 `release/Gather.app`（可用 `OUTPUT_DIR` 覆盖）。脚本只构建 Swift 核心和
 SwiftUI 应用，不需要 JavaScript 工具链；设置 `CODESIGN_IDENTITY` 后才会执行可选
-签名，公证与安装升级属于独立发布活动。
+签名（带 hardened runtime 与 `desktop/native/Gather.entitlements` 的 Apple Events
+权限，并复核签名结果），公证与安装升级属于独立发布活动。组装门会断言内置
+`SFace.mlpackage` + `manifest.json` 以及两套非空 `Localizable.strings`，模型或
+本地化缺失会在打包时直接失败。
 
 ## 数据与安全模型
 
-数据流与命令面契约的唯一真相源是 [DEVELOPMENT.md](DEVELOPMENT.md)。不变量：破坏性
-操作必须显式确认（路由层 `confirmed` 门控 + UI 真实弹窗，由
-`scripts/check-command-surface.sh` 校验）；图片路径必须来自数据库资产授权；元数据
-outbox 支持重试、冲突处理和重启恢复。应用不启动本地 HTTP 服务，也不依赖浏览器渲染
-运行时。
+数据流与 API 契约的唯一真相源是 [DEVELOPMENT.md](DEVELOPMENT.md)。不变量：破坏性
+操作必须显式确认（`Confirmed<T>` 编译期标记 + UI 真实弹窗；API 层仍校验输入与路径
+授权）；图片路径必须来自数据库资产授权；写回经 `deliveries` 持久化，支持重试、
+冲突处理和重启恢复。应用不启动本地 HTTP 服务，也不依赖浏览器渲染运行时。
 
 ## 文档
 
-- [开发与贡献指南](DEVELOPMENT.md)：构建/测试、命令面契约、本地化体系、HIG 约定
-- [架构决策记录](ADR.md)：ADR-001~020 既有决策 + 性能决议与遗留方案（ADR-021~028，
-  含未接线资产删除裁决 ADR-028）
+- [开发与贡献指南](DEVELOPMENT.md)：构建/测试、类型化 API 契约、本地化体系、HIG 约定
+- [架构决策记录](ADR.md)：ADR-001~020 既有决策 + 性能决议与遗留方案（ADR-021~029，
+  含未接线资产删除裁决 ADR-028 与人脸管线 ADR-029）
+- [Cut 1 完成报告](archive/cuts/cut1-completion-report.md)：118→16 协议/110 方法、Router 删除、
+  门禁与 ratchet 收口（历史）
 - [路线图](ROADMAP.md)：已完成勾除、未完成保留的更新路线图
+- [最终报告](final-report.md)：Cut 0–6 指标、删除清单、验证证据、残余项与回滚说明
+- [重构进度台账](refactor-progress.md) / [决策记录](refactor-decisions.md)：Cut 状态与 D-xxx（D-163 最终关闭）
+- [历史文档归档](archive/README.md)：18 篇评审 + 10 篇 Cut 文档（行号为当时快照）
 
 ## 许可证
 

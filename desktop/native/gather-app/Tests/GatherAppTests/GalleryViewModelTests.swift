@@ -3,24 +3,29 @@
 // 覆盖：photo.list_page 首屏加载、变体折叠/展开（RAW/JPEG 资产分组）、键集
 // 分页（滚动加载）、搜索/筛选链式拉满与退出截断（TS chain-fetch 语义）、
 // 人脸过滤、错误态（stub 注入）；集成用例用真实临时 SQLite + 路由直连。
+// B8.2b：索引重试 -> JobAPI.start(metadata.scan) 的 dedupeKey/参数形状与错误漏斗。
 
 import Foundation
 import Testing
-@testable import GatherApp
-@testable import GatherCore
+@testable import GatherUI
+@testable import GatherHost
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - Stub（错误态与调用记录）
 
 // 条件等待 waitUntilAsync 已抽到 Support/AsyncWait.swift（本 target 共享）。
 
 /// Swift 6 迁移：GalleryDataProvider 现经协议继承 Sendable，测试替身必须可跨隔离域。
-/// 可变状态全部收归 LockedBox（NSLock 保护的 @unchecked Sendable 锁盒）：
+/// 可变状态全部收归共享 LockedBox（Support/LockedBox.swift；NSLock 保护的锁盒）：
 /// session/rows/pageError/sessionError/thrownError/workspaceStatusValue/
 /// workspaceStatusError/pageCalls。对外属性一律经锁内 get/set 转发（测试调用点不变），
 /// stub 方法在临界区内取快照后立即释放锁，绝不持锁 await（无锁内 await）。
 private final class StubGalleryProvider: GalleryDataProvider {
-    private final class LockedBox: @unchecked Sendable {
-        let lock = NSLock()
+    /// stub 的可变状态；只能经 `box.lock.withLock` 访问（与旧私有 LockedBox 同一纪律）。
+    private struct BoxState {
         var session: SessionData?
         var rows: [GalleryPhotoData] = []
         var pageError: String?
@@ -28,6 +33,7 @@ private final class StubGalleryProvider: GalleryDataProvider {
         var thrownError: Error?
         var workspaceStatusValue: WorkspaceStatus?
         var workspaceStatusError: String?
+        var workspaceStatusCalls = 0
         var pageCalls: [(afterFirstRowid: Int64?, limit: Int, expandVariants: Bool)] = []
         /// D05：把**失败**也算进去的请求尝试数（pageCalls 只在成功时记录）。
         var pageAttempts = 0
@@ -35,7 +41,7 @@ private final class StubGalleryProvider: GalleryDataProvider {
         var pageDelay: Duration = .zero
     }
 
-    private let box = LockedBox()
+    private let box = LockedBox(BoxState())
 
     var session: SessionData? {
         get { box.lock.withLock { box.session } }
@@ -58,7 +64,7 @@ private final class StubGalleryProvider: GalleryDataProvider {
         set { box.lock.withLock { box.sessionError = newValue } }
     }
 
-    /// 类型化错误注入（NativeCommandError/BridgeError/SessionServiceError 等）：
+    /// 类型化错误注入（APIError/BridgeError/SessionServiceError 等）：
     /// NSError 形态覆盖不到「非 LocalizedError 枚举经 NSError 桥接丢码」的回归。
     var thrownError: Error? {
         get { box.lock.withLock { box.thrownError } }
@@ -74,6 +80,10 @@ private final class StubGalleryProvider: GalleryDataProvider {
     var workspaceStatusError: String? {
         get { box.lock.withLock { box.workspaceStatusError } }
         set { box.lock.withLock { box.workspaceStatusError = newValue } }
+    }
+
+    var workspaceStatusCalls: Int {
+        box.lock.withLock { box.workspaceStatusCalls }
     }
 
     /// 调用记录：只读（写入只在下方 stub 方法的锁内完成）。
@@ -92,7 +102,8 @@ private final class StubGalleryProvider: GalleryDataProvider {
         set { box.lock.withLock { box.pageDelay = newValue } }
     }
 
-    func getSession(_ sessionId: String) throws -> SessionData? {
+    /// B8.2a：provider 协议已 async（SessionAPI.get 只有 async 形态）。
+    func getSession(_ sessionId: String) async throws -> SessionData? {
         let (thrown, sessionError, session): (Error?, String?, SessionData?) = box.lock.withLock {
             (box.thrownError, box.sessionError, box.session)
         }
@@ -125,19 +136,13 @@ private final class StubGalleryProvider: GalleryDataProvider {
 
     func workspaceStatus(_ sessionId: String) async throws -> WorkspaceStatus? {
         let (error, value): (String?, WorkspaceStatus?) = box.lock.withLock {
-            (box.workspaceStatusError, box.workspaceStatusValue)
+            box.workspaceStatusCalls += 1
+            return (box.workspaceStatusError, box.workspaceStatusValue)
         }
         if let error {
             throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
         }
         return value
-    }
-
-    func retryIndex(sessionId: String) async throws {
-        let error = box.lock.withLock { box.workspaceStatusError }
-        if let error {
-            throw NSError(domain: "stub", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
-        }
     }
 
     static func session(_ id: String) -> SessionData {
@@ -161,23 +166,42 @@ private final class StubGalleryProvider: GalleryDataProvider {
 }
 
 @MainActor
-private func makeStubVM(delay: Duration = .milliseconds(5)) -> (GalleryViewModel, StubGalleryProvider) {
+private func makeStubVM(
+    delay: Duration = .milliseconds(5),
+    job: B5bJobAPIStub = B5bJobAPIStub(),
+    activePoll: Duration = GalleryViewModel.defaultActiveStatusPollInterval,
+    idlePoll: Duration = GalleryViewModel.defaultIdleStatusPollInterval
+) -> (GalleryViewModel, StubGalleryProvider) {
     let stub = StubGalleryProvider()
-    return (GalleryViewModel(sessionId: "s1", provider: stub, debounceDelay: delay), stub)
+    return (
+        GalleryViewModel(
+            sessionId: "s1",
+            provider: stub,
+            job: job,
+            debounceDelay: delay,
+            activeStatusPollInterval: activePoll,
+            idleStatusPollInterval: idlePoll
+        ),
+        stub
+    )
 }
 
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
 private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection) {
-    let db = try DBConnection(path: ":memory:")
-    try MigrationRunner().migrate(db)
-    return (LiveGalleryDataProvider(router: SessionCommandRouter.makeDefault(db: db)), db)
+    let db = try makeGatherTestDB()
+    let services = AppServices.live(composition: AppComposition.make(db: db))
+    return (LiveGalleryDataProvider(
+        photo: services.photo,
+        session: services.session,
+        settings: services.settings
+    ), db)
 }
 
 private func insertSession(_ db: DBConnection, _ id: String) throws {
     _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, writeback_status, import_source, created_at, updated_at)
-        VALUES (?, '工作区', 'photos_loaded', 'idle', 'folder', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO sessions (id, name, status, created_at, updated_at)
+        VALUES (?, '工作区', 'photos_loaded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([.text(id)])
 }
 
@@ -189,12 +213,14 @@ private func insertPhoto(
     filename: String? = nil,
     assetId: String? = nil,
     assetFileId: String? = nil,
-    status: String = "online"
+    // V1 photos.status 只允许 pending/ready/removed/missing；旧 "online" 语义
+    // 由 ViewModel 的 offline 过滤（status == "missing"）等价表达。
+    status: String = "ready"
 ) throws {
     let filepath = "/vault/\(id)"
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', ?, '{}', '{}', ?, ?, 100, 100, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_id, asset_file_id, width, height, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', ?, ?, ?, 100, 100, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([
         .text(id), .text(sessionId), .text(filepath), .text(filename ?? id),
         .text(status),
@@ -214,8 +240,8 @@ private func insertLinkedAsset(
     roleJpeg: String = "camera_jpeg"
 ) throws {
     _ = try db.prepare("""
-        INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
-        VALUES ('asset-\(rawId)', '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO assets (id, status, created_at, updated_at)
+        VALUES ('asset-\(rawId)', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     """).run([])
     for (fileId, filepath) in [("file-\(rawId)", "/vault/\(rawId).NEF"), ("file-\(jpegId)", "/vault/\(jpegId).JPG")] {
         _ = try db.prepare("""
@@ -260,6 +286,97 @@ struct GalleryViewModelTests {
         #expect(stub.pageCalls[0].afterFirstRowid == nil)
         // 非搜索态 limit 200（TS PAGE_SIZE）。
         #expect(stub.pageCalls[0].limit == GalleryViewModel.pageSize)
+    }
+
+    // ── R4 P1-4：首载时机（构造零副作用；首次可见才取页） ──
+
+    // 旧实现 init 内起 initTask → loadIfNeeded：workspace 一构造就查 session +
+    // workspace.status + photo.list_page，与打开哪一页无关。
+    @Test("R4 P1-4：构造 VM 不取页（provider 0 调用）")
+    func constructingViewModelDoesNotFetch() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = [StubGalleryProvider.photo("p1")]
+
+        // 负向窗口覆盖旧 initTask 的调度延迟：任何 session/取页/索引状态
+        // 调用都算「构造即取页」回归。
+        await awaitNegativeWindow(.milliseconds(80))
+        #expect(stub.pageAttempts == 0, "构造 VM 不得取页")
+        #expect(stub.pageCalls.isEmpty)
+        #expect(stub.workspaceStatusCalls == 0, "构造 VM 不得查 workspace.status")
+        #expect(viewModel.session == nil)
+        #expect(viewModel.phase == .loading)
+    }
+
+    // 页面首次挂载：GalleryView.onAppear → workspace.setPageVisible(.gallery, true)
+    // → setVisible(true) → activateIfNeeded()，只取一次首屏。
+    @Test("R4 P1-4：首次可见（setVisible/onAppear）只加载一次，再次可见不重复")
+    func firstVisibilityLoadsExactlyOnce() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = [StubGalleryProvider.photo("p1"), StubGalleryProvider.photo("p2")]
+
+        viewModel.setVisible(true)
+        #expect(await waitUntilAsync { viewModel.phase == .loaded })
+        #expect(stub.pageCalls.count == 1, "首次可见应恰好取一页，实际 \(stub.pageCalls.count)")
+        #expect(viewModel.loadedPhotos.count == 2)
+
+        // 再次 onAppear（setVisible(true) 重入）：hasActivated 去重，不重复取页。
+        viewModel.setVisible(true)
+        await awaitNegativeWindow(.milliseconds(50))
+        #expect(stub.pageCalls.count == 1)
+        #expect(viewModel.loadedPhotos.count == 2)
+    }
+
+    @Test("R4 P1-4：隐藏再显示不重复取页（首载只一次）")
+    func hideThenShowDoesNotReload() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = [StubGalleryProvider.photo("p1")]
+
+        viewModel.setVisible(true)
+        #expect(await waitUntilAsync { viewModel.phase == .loaded })
+        #expect(stub.pageCalls.count == 1)
+
+        // 切页签：onDisappear(false) → 再回来 onAppear(true)。
+        viewModel.setVisible(false)
+        await awaitNegativeWindow(.milliseconds(30))
+        viewModel.setVisible(true)
+        await awaitNegativeWindow(.milliseconds(120))
+        #expect(stub.pageCalls.count == 1, "隐藏再显示不得重新取页")
+        #expect(viewModel.phase == .loaded)
+    }
+
+    @Test("R4 P1-4：shutdown 后 setVisible(true)/activateIfNeeded 不再加载")
+    func shutdownDoesNotLoadOnActivation() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = [StubGalleryProvider.photo("p1")]
+
+        viewModel.shutdown()
+        viewModel.setVisible(true)
+        viewModel.activateIfNeeded()
+        await awaitNegativeWindow(.milliseconds(80))
+        #expect(stub.pageAttempts == 0, "关闭后激活不得复活取页")
+        #expect(stub.workspaceStatusCalls == 0)
+        #expect(viewModel.isShutdown)
+    }
+
+    // 生产路径回归：进入 control/face/export 或只 enqueue 意图时也会先构造
+    // workspace（SessionWorkspaceFactory → GalleryViewModel），不得因此打
+    // photo.list_page（R4 P1-4 的原始症状）。
+    @Test("R4 P1-4：workspace 构造 + enqueue 意图不触发图库取页")
+    func workspaceConstructionAndEnqueueDoNotFetch() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.session = StubGalleryProvider.session("s1")
+        stub.rows = [StubGalleryProvider.photo("p1")]
+
+        let workspace = makeTestSessionWorkspace(sessionId: "s1", gallery: viewModel)
+        workspace.enqueue(.faceAnalyze)
+        await awaitNegativeWindow(.milliseconds(80))
+        #expect(stub.pageAttempts == 0, "仅构造 workspace / enqueue 意图不得取页")
+        #expect(stub.workspaceStatusCalls == 0)
+        #expect(workspace.take(.faceAnalyze) != nil, "意图登记本身不受影响")
     }
 
     // ── 键集分页（滚动加载）──
@@ -508,15 +625,17 @@ struct GalleryViewModelTests {
 
     // ── 错误态 ──
 
-    @Test func firstPageFailureSetsFailedPhase() async {
+    @Test func firstPageFailureSetsFailedPhase() async throws {
         let (viewModel, stub) = makeStubVM()
         stub.pageError = "PAGE_FAILED"
         await viewModel.load()
-        // 统一漏斗：非错误码诊断不再原样透出，经 errorText 回退通用文案。
-        // 文案断言与切语言的套件互斥（appLanguage 是进程级全局量）。
-        AppLanguageLock.withStableCopy {
-            #expect(viewModel.phase == .failed(GatherLocalization.errorText("PAGE_FAILED")))
-        }
+        // Cut 4 / 4a-3b-2a：phase 只存错误载体（码/诊断）；未映射码在渲染期回退
+        // 通用文案（语言由显式 L10n 决定，不再依赖进程级 appLanguage）。
+        let error = try #require(viewModel.phase.error)
+        #expect(error.code.isEmpty)
+        #expect(error.diagnostic == "PAGE_FAILED")
+        let l10n = L10n(language: .zhCN)
+        #expect(CommandErrorText.resolve(error, with: l10n) == l10n.errorText("NOT_A_CODE"))
     }
 
     @Test func paginationFailureShowsActionError() async {
@@ -531,35 +650,36 @@ struct GalleryViewModelTests {
         await viewModel.loadMoreIfNeeded()
         #expect(viewModel.phase == .loaded)
         AppLanguageLock.withStableCopy {
-            #expect(viewModel.actionError == GatherLocalization.errorText("NEXT_PAGE_FAILED"))
+            let error = viewModel.actionError
+            #expect(error?.code.isEmpty == true)
+            #expect(error?.diagnostic == "NEXT_PAGE_FAILED")
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("NEXT_PAGE_FAILED"))
         }
     }
 
     // 回归（审查 A）：码型错误必须被翻译，不得退化成通用文案。
-    // 旧漏斗走 NSError.localizedDescription，NativeCommandError/BridgeError 不满足
+    // 旧漏斗走 NSError.localizedDescription，APIError/BridgeError 不满足
     // LocalizedError → 桥接后退化为 "The operation couldn't be completed…" → 已知码
     // 也被显示成通用文案。断言逐条钉住「码被正确翻译」。
     @Test func typedCodeErrorsAreTranslated() async {
         let cases: [(label: String, error: Error, code: String)] = [
-            ("NativeCommandError 已知码", NativeCommandError.failed("SESSION_NOT_FOUND"), "SESSION_NOT_FOUND"),
+            ("APIError 已知码", APIError.failed("SESSION_NOT_FOUND"), "SESSION_NOT_FOUND"),
             ("BridgeError 已知码（router person.get 同款构造）", BridgeError.notFound("PERSON_NOT_FOUND"), "PERSON_NOT_FOUND"),
         ]
+        let l10n = L10n(language: .zhCN)
         for item in cases {
             let (viewModel, stub) = makeStubVM()
             stub.thrownError = item.error
             await viewModel.load()
-            AppLanguageLock.withStableCopy {
-                let generic = GatherLocalization.errorText("NOT_A_CODE")
-                #expect(
-                    viewModel.phase == .failed(GatherLocalization.errorText(item.code)),
-                    Comment(rawValue: item.label)
-                )
-                if case .failed(let text) = viewModel.phase {
-                    #expect(text != generic, Comment(rawValue: item.label + " 不得回退通用文案"))
-                } else {
-                    Issue.record("应进入 failed 相位：\(item.label)")
-                }
+            guard case .failed(let error) = viewModel.phase else {
+                Issue.record("应进入 failed 相位：\(item.label)")
+                continue
             }
+            // 码值原样进载体，渲染期走码表（不得退化成通用文案）。
+            #expect(error.code == item.code, Comment(rawValue: item.label))
+            let text = CommandErrorText.resolve(error, with: l10n)
+            #expect(text == l10n.errorText(item.code), Comment(rawValue: item.label))
+            #expect(text != l10n.errorText("NOT_A_CODE"), Comment(rawValue: item.label + " 不得回退通用文案"))
         }
     }
 
@@ -567,16 +687,21 @@ struct GalleryViewModelTests {
     @Test func parameterizedCodeErrorsKeepParameters() async {
         let raws = ["XMP_CONFIRM_OTHER_SESSION_PENDING: s1", "FILTER_FIELD_UNKNOWN::rating"]
         let params = ["s1", "rating"]
+        let l10n = L10n(language: .zhCN)
         for index in raws.indices {
             let (viewModel, stub) = makeStubVM()
-            stub.thrownError = NativeCommandError.failed(raws[index])
+            stub.thrownError = APIError.failed(raws[index])
             await viewModel.load()
-            AppLanguageLock.withStableCopy {
-                let expected = GatherLocalization.errorText(raws[index])
-                #expect(viewModel.phase == .failed(expected))
-                #expect(expected.contains(params[index]), Comment(rawValue: raws[index]))
-                #expect(viewModel.phase != .failed(GatherLocalization.errorText("NOT_A_CODE")))
+            guard case .failed(let error) = viewModel.phase else {
+                Issue.record("应进入 failed 相位：\(raws[index])")
+                continue
             }
+            // 参数化码（CODE::p1 / CODE: 参数）原样进载体，渲染期插值不丢参数。
+            #expect(error.code == raws[index])
+            let text = CommandErrorText.resolve(error, with: l10n)
+            #expect(text == l10n.errorText(raws[index]))
+            #expect(text.contains(params[index]), Comment(rawValue: raws[index]))
+            #expect(text != l10n.errorText("NOT_A_CODE"))
         }
     }
 
@@ -591,6 +716,76 @@ struct GalleryViewModelTests {
         #expect(LiveGalleryDataProvider.thumbnailBucket(4096) == 2048)
     }
 
+    // ── B8.2b：index.scan -> JobAPI.start ──
+
+    // 旧 index.scan 分支的建任务形状必须逐字保留：metadata.scan / session /
+    // 会话 id / dedupeKey=「metadata.scan:<id>」/ 空 checkpoint（目录全树；
+    // 漏 dedupe 会重复扫描）。R1 P1-3：形状由协议层工厂单源，下面的
+    // 「捕获请求 == 工厂产出」断言钉住本调用点确实走工厂。
+    @Test func retryIndexEnqueuesMetadataScanThroughJobAPI() async {
+        let jobs = B5bJobAPIStub()
+        let (viewModel, stub) = makeStubVM(job: jobs)
+        stub.workspaceStatusValue = WorkspaceStatus(
+            sessionId: "s1",
+            stage: .created,
+            softFlags: WorkspaceSoftFlags(culled: false, exported: false),
+            indexing: WorkspaceIndexingProgress(total: 0, done: 0, percent: 0, status: .active),
+            staleAnalyses: [],
+            xmp: WorkspaceXmpCounts(pending: 0, conflict: 0),
+            offlinePhotos: 0,
+            failedJobs: [],
+            recommendedNext: nil,
+            generatedAt: ""
+        )
+
+        await viewModel.retryIndex()
+
+        #expect(jobs.startRequests.count == 1)
+        let request = jobs.startRequests.first
+        #expect(request?.type == .metadataScan)
+        #expect(request?.scopeType == "session")
+        #expect(request?.scopeId == "s1")
+        #expect(request?.dedupeKey == "metadata.scan:s1")
+        #expect(request?.checkpoint == [:])
+        #expect(
+            request == JobCreateParams.metadataScan(sessionId: "s1", requestedPaths: nil),
+            "Gallery 必须走协议层 metadata.scan 工厂（dedupeKey/checkpoint 不得在 UI 复刻）"
+        )
+        // 入队后立即刷新索引状态（头显「扫描中…」）。VM init 的首次加载也会
+        // 并发刷新（latest-wins），这里等最新一次落地，避免与自动补载赛跑。
+        #expect(await waitUntilAsync { viewModel.workspaceStatus?.indexing.status == .active })
+        #expect(viewModel.actionError == nil)
+    }
+
+    // 建任务失败：错误走统一漏斗落到 actionError，索引头仍尝试刷新（不吞状态）。
+    @Test func retryIndexSurfacesJobAPIError() async {
+        let jobs = B5bJobAPIStub()
+        jobs.startError = APIError.failed("SESSION_NOT_FOUND")
+        let (viewModel, stub) = makeStubVM(job: jobs)
+        stub.workspaceStatusValue = WorkspaceStatus(
+            sessionId: "s1",
+            stage: .created,
+            softFlags: WorkspaceSoftFlags(culled: false, exported: false),
+            indexing: WorkspaceIndexingProgress(total: 0, done: 0, percent: 0, status: .idle),
+            staleAnalyses: [],
+            xmp: WorkspaceXmpCounts(pending: 0, conflict: 0),
+            offlinePhotos: 0,
+            failedJobs: [],
+            recommendedNext: nil,
+            generatedAt: ""
+        )
+
+        await viewModel.retryIndex()
+
+        #expect(jobs.startRequests.count == 1)
+        AppLanguageLock.withStableCopy {
+            let error = viewModel.actionError
+            #expect(error?.code == "SESSION_NOT_FOUND")
+            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.errorText("SESSION_NOT_FOUND"))
+        }
+        #expect(await waitUntilAsync { viewModel.workspaceStatus?.indexing.status == .idle })
+    }
+
     // ── 真实服务集成 ──
 
     // 真实库：变体折叠（expandVariants=false 每资产一行，首选 raw）+ 展开。
@@ -600,7 +795,7 @@ struct GalleryViewModelTests {
         try insertLinkedAsset(db, sessionId: "s1", rawId: "raw1", jpegId: "jpeg1")
         try insertPhoto(db, id: "solo", sessionId: "s1")
 
-        let collapsed = GalleryViewModel(sessionId: "s1", provider: provider, debounceDelay: .milliseconds(5))
+        let collapsed = GalleryViewModel(sessionId: "s1", provider: provider, job: B5bJobAPIStub(), debounceDelay: .milliseconds(5))
         await collapsed.load()
         // 2 个逻辑资产 → 2 行；raw1 为代表（raw 首选），variantCount 2。
         #expect(collapsed.loadedPhotos.count == 2)
@@ -631,7 +826,7 @@ struct GalleryViewModelTests {
             try insertPhoto(db, id: "p\(String(format: "%03d", index))", sessionId: "s1")
         }
 
-        let viewModel = GalleryViewModel(sessionId: "s1", provider: provider, debounceDelay: .milliseconds(5))
+        let viewModel = GalleryViewModel(sessionId: "s1", provider: provider, job: B5bJobAPIStub(), debounceDelay: .milliseconds(5))
         await viewModel.load()
         #expect(viewModel.loadedPhotos.count == 200)
         #expect(viewModel.hasNextPage == true)
@@ -659,7 +854,7 @@ struct GalleryViewModelTests {
         try insertPhoto(db, id: "plain", sessionId: "s1")
         try insertFace(db, photoId: "faced", sessionId: "s1")
 
-        let viewModel = GalleryViewModel(sessionId: "s1", provider: provider, debounceDelay: .milliseconds(5))
+        let viewModel = GalleryViewModel(sessionId: "s1", provider: provider, job: B5bJobAPIStub(), debounceDelay: .milliseconds(5))
         await viewModel.load()
         let faced = viewModel.loadedPhotos.first { $0.id == "faced" }
         #expect(faced?.faceCount == 1)
@@ -756,5 +951,51 @@ struct GalleryViewModelTests {
         await viewModel.refreshOnEvent()
         #expect(viewModel.loadedPhotos.count == 450)
         #expect(viewModel.phase == .loaded)
+    }
+
+    // MARK: - Cut 4 / 4a-2b：可见性钩子
+
+    // setVisible(false) 停索引轮询且事件只登记；setVisible(true) 恢复轮询并补刷
+    // 隐藏期事件；shutdown 后 setVisible(true) 明确 no-op。
+    @Test func setVisibleStopsPollingDefersEventsAndShutdownSticks() async {
+        // 轮询间隔压到 10ms：隐藏后的负向窗口（100ms）能覆盖 10 个周期，
+        // 轮询没停会立即被发现（默认 15s 间隔下这个窗口什么都证明不了）。
+        let (viewModel, stub) = makeStubVM(
+            activePoll: .milliseconds(10), idlePoll: .milliseconds(10)
+        )
+        await viewModel.load()
+
+        let baseStatus = stub.workspaceStatusCalls
+        viewModel.setVisible(true)
+        #expect(await waitUntilAsync { stub.workspaceStatusCalls > baseStatus })
+
+        viewModel.setVisible(false)
+        // 隐藏只取消轮询：隐藏前已交给 provider 的一次调用可能仍在途（非隔离
+        // async 调用进入 stub 前有调度窗口）。先等它落定再取基线，窗口内再出现
+        // 新调用才说明轮询没停。
+        await awaitNegativeWindow(.milliseconds(50))
+        let running = stub.workspaceStatusCalls
+        await awaitNegativeWindow(.milliseconds(100))
+        #expect(stub.workspaceStatusCalls == running, "隐藏后不得继续轮询 workspace.status")
+
+        // 隐藏期事件只登记，不发取页命令。
+        let basePages = stub.pageCalls.count
+        viewModel.scheduleEventRefresh()
+        await awaitNegativeWindow(.milliseconds(650))
+        #expect(stub.pageCalls.count == basePages, "隐藏期事件刷新不得发命令")
+
+        // 恢复可见：轮询重启 + 补刷隐藏期登记的事件。
+        viewModel.setVisible(true)
+        #expect(await waitUntilAsync { stub.workspaceStatusCalls > running })
+        #expect(await waitUntilAsync { stub.pageCalls.count > basePages }, "恢复可见后必须补刷隐藏期事件")
+
+        // 关闭终态：setVisible(true) 不得重启轮询。
+        viewModel.shutdown()
+        // 同隐藏窗口：关闭前已在途的调用先落定，避免把旧请求记成关闭后的新轮询。
+        await awaitNegativeWindow(.milliseconds(50))
+        let shutDown = stub.workspaceStatusCalls
+        viewModel.setVisible(true)
+        await awaitNegativeWindow(.milliseconds(100))
+        #expect(stub.workspaceStatusCalls == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
     }
 }

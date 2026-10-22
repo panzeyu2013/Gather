@@ -4,7 +4,10 @@
 // 的 Codable 形状，本套件覆盖取值规则本身。
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 @Suite("MetadataContractRules")
 struct MetadataContractRulesTests {

@@ -4,7 +4,9 @@
 
 import Testing
 import Foundation
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 private struct ClustererFixture: Decodable {
     struct Entry: Decodable {

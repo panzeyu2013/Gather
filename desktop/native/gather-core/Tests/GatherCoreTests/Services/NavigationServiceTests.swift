@@ -5,7 +5,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 private struct Harness {
     let db: DBConnection
@@ -14,20 +18,19 @@ private struct Harness {
 
 /// TS: navigation-service.test.ts fixture —— 3 照片 + 元数据 + 哈希。
 private func makeHarness() throws -> Harness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let now = "2026-07-30T10:00:00.000Z"
     _ = try db.prepare("""
         INSERT INTO sessions (
-          id, name, status, writeback_status, import_source,
-          source_path, photo_count, failed_writeback_count, created_at, updated_at
-        ) VALUES ('session', 'Navigation', 'photos_loaded', 'idle',
-          'folder', '/photos', 3, 0, ?, ?)
+          id, name, status, source_path, photo_count, created_at, updated_at
+        ) VALUES ('session', 'Navigation', 'photos_loaded',
+          '/photos', 3, ?, ?)
       """).run([.text(now), .text(now)])
     let insertPhoto = try db.prepare("""
         INSERT INTO photos (
-          id, session_id, filepath, filename, checksum, status, metadata, result,
+          id, session_id, filepath, filename, checksum, status,
           width, height, created_at, updated_at
-        ) VALUES (?, 'session', ?, ?, '', 'pending', '{}', '{}', 100, 80, ?, ?)
+        ) VALUES (?, 'session', ?, ?, '', 'pending', 100, 80, ?, ?)
       """)
     let insertMetadata = try db.prepare("""
         INSERT INTO photo_metadata_cache (
@@ -146,14 +149,14 @@ struct NavigationServiceTests {
         let db = harness.db
         let now = "2026-07-30T10:00:00.000Z"
         _ = try db.prepare("""
-            INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
-            VALUES ('asset-1', '', 'active', ?, ?), ('asset-2', '', 'active', ?, ?)
+            INSERT INTO assets (id, status, created_at, updated_at)
+            VALUES ('asset-1', 'active', ?, ?), ('asset-2', 'active', ?, ?)
           """).run([.text(now), .text(now), .text(now), .text(now)])
         let insertFile = try db.prepare("""
             INSERT INTO asset_files (
               id, normalized_path, filename, extension, media_type,
               created_at, updated_at
-            ) VALUES (?, ?, ?, '.JPG', 'image/jpeg', ?, ?)
+            ) VALUES (?, ?, ?, '.JPG', 'image', ?, ?)
           """)
         _ = try insertFile.run([.text("file-1"), .text("/photos/IMG_0001.JPG"), .text("IMG_0001.JPG"), .text(now), .text(now)])
         _ = try insertFile.run([.text("file-2"), .text("/photos/IMG_0002.JPG"), .text("IMG_0002.JPG"), .text(now), .text(now)])

@@ -13,7 +13,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 private struct Harness {
     let db: DBConnection
@@ -23,18 +27,16 @@ private struct Harness {
 
 /// TS: 种子 session + 3 照片 + 元数据。
 private func makeHarness() throws -> Harness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let now = "2026-07-30T10:00:00.000Z"
     _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, writeback_status,
-          import_source, source_path, photo_count, failed_writeback_count, created_at, updated_at)
-        VALUES ('session', 'Filter', 'photos_loaded', 'idle',
-          'folder', '/photos', 3, 0, ?, ?)
+        INSERT INTO sessions (id, name, status, source_path, photo_count, created_at, updated_at)
+        VALUES ('session', 'Filter', 'photos_loaded', '/photos', 3, ?, ?)
       """).run([.text(now), .text(now)])
     let insertPhoto = try db.prepare("""
         INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
-          metadata, result, width, height, created_at, updated_at)
-        VALUES (?, 'session', ?, ?, ?, ?, '{}', '{}', ?, ?, ?, ?)
+          width, height, created_at, updated_at)
+        VALUES (?, 'session', ?, ?, ?, ?, ?, ?, ?, ?)
       """)
     let insertMetadata = try db.prepare("""
         INSERT INTO photo_metadata_cache (photo_id, session_id, date_taken,
@@ -239,14 +241,14 @@ struct FilterEngineTests {
         let db = harness.db
         let now = "2026-07-30T10:00:00.000Z"
         _ = try db.prepare("""
-            INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
-            VALUES ('asset-1', '', 'active', ?, ?)
+            INSERT INTO assets (id, status, created_at, updated_at)
+            VALUES ('asset-1', 'active', ?, ?)
           """).run([.text(now), .text(now)])
         // 同一资产两个变体：JPEG 先导入（rowid 小），RAW 后导入（rowid 大）。
         let insertVariant = try db.prepare("""
             INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
-              metadata, result, width, height, asset_id, created_at, updated_at)
-            VALUES (?, 'session', ?, ?, '', 'ready', '{}', '{}', 100, 80, 'asset-1', ?, ?)
+              width, height, asset_id, created_at, updated_at)
+            VALUES (?, 'session', ?, ?, '', 'ready', 100, 80, 'asset-1', ?, ?)
           """)
         // 文件名与夹具 p1..p3 不重名（photos 有 (session_id, filepath) 唯一索引，
         // 且筛选按 filename 命中）。
@@ -308,13 +310,13 @@ struct FilterEngineTests {
         let db = harness.db
         let now = "2026-07-30T10:00:00.000Z"
         _ = try db.prepare("""
-            INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
-            VALUES ('asset-x3f', '', 'active', ?, ?)
+            INSERT INTO assets (id, status, created_at, updated_at)
+            VALUES ('asset-x3f', 'active', ?, ?)
           """).run([.text(now), .text(now)])
         let insertVariant = try db.prepare("""
             INSERT INTO photos (id, session_id, filepath, filename, checksum, status,
-              metadata, result, width, height, asset_id, created_at, updated_at)
-            VALUES (?, 'session', ?, ?, '', 'ready', '{}', '{}', 100, 80, 'asset-x3f', ?, ?)
+              width, height, asset_id, created_at, updated_at)
+            VALUES (?, 'session', ?, ?, '', 'ready', 100, 80, 'asset-x3f', ?, ?)
           """)
         // JPEG 先导入（rowid 小）、X3F 后导入（rowid 大）。
         _ = try insertVariant.run([

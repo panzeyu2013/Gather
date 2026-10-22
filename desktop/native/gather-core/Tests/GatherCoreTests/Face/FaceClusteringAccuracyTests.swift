@@ -39,7 +39,9 @@
 import Foundation
 import Testing
 
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 // MARK: - 确定性伪随机数（自写，禁止系统随机）
 

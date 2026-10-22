@@ -1,12 +1,17 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Similarity/IncrementalClustererTests.swift
-// 增量聚类（ROADMAP 1.3/1.6）：与 ClusterEngine 全量重聚类的等价性对账。
+// 增量聚类（ROADMAP 1.3/1.6）：与 ClusterGraphPipeline 全量单趟重聚类的等价性对账。
+// Cut 5 / 5b-2a：原 oracle = ClusterEngine.clusterByHash + IncrementalClusterer.buildState
+// （均删除）；现在全量参照是唯一实现的 ClusterGraphPipeline.run（fixture golden 见
+// ClusterReconciliationTests / ClusterGraphTests）。
 // 对账口径（不变量）：划分、组顺序（种子升序）、代表图（组内首元素 = 种子）、
 // 未成组集合逐位一致；组内其余成员顺序为规范序（增量）与 BFS 发现序（全量），
 // 不在对账口径内。
 
 import Foundation
 import Testing
-@testable import GatherCore
+@testable import GatherDomain
+@testable import GatherProtocol
+@testable import GatherAnalysis
 
 // MARK: - 确定性随机（SplitMix64，测试可复现）
 
@@ -65,9 +70,20 @@ private func fullResult(
     threshold: Int,
     minGroupSize: Int
 ) throws -> ClusterResult {
-    try ClusterEngine.clusterByHash(
-        entries: list, threshold: threshold, minGroupSize: minGroupSize, mode: .global
-    )
+    try ClusterGraphPipeline.run(
+        entries: list, threshold: threshold, minGroupSize: minGroupSize
+    ).result
+}
+
+/// 全量状态（增量装配的初始状态）：唯一实现单趟产出的同源 state。
+private func fullState(
+    entries: [HashEntry],
+    minGroupSize: Int,
+    threshold: Int
+) throws -> ClusterState {
+    let outcome = try ClusterGraphPipeline.run(
+        entries: entries, threshold: threshold, minGroupSize: minGroupSize)
+    return try #require(outcome.state, "global 全量必须产出 state")
 }
 
 // MARK: - 基本增量行为
@@ -87,7 +103,7 @@ struct IncrementalClustererUpdateTests {
             ("b2", far ^ 0b1),
             ("b3", far ^ 0b11),
         ])
-        let initial = try IncrementalClusterer.buildState(entries: list, minGroupSize: 2, threshold: 4)
+        let initial = try fullState(entries: list, minGroupSize: 2, threshold: 4)
         var result = IncrementalClusterer.result(state: initial, entries: list, minGroupSize: 2)
         #expect(result.groups.count == 2)
         #expect(result.ungrouped.isEmpty)
@@ -114,7 +130,7 @@ struct IncrementalClustererUpdateTests {
             ("b1", far), ("b2", far ^ 0b1), ("b3", far ^ 0b11),
             ("bridge", base ^ 0b1111),
         ])
-        let initial = try IncrementalClusterer.buildState(entries: list, minGroupSize: 2, threshold: 4)
+        let initial = try fullState(entries: list, minGroupSize: 2, threshold: 4)
         #expect(IncrementalClusterer.result(state: initial, entries: list, minGroupSize: 2).groups.count == 1)
 
         list.removeAll { $0.photoId == "bridge" }
@@ -135,7 +151,7 @@ struct IncrementalClustererUpdateTests {
             ("a1", base), ("a2", base ^ 0b1), ("a3", base ^ 0b11),
             ("b1", base ^ 0b111111), ("b2", base ^ 0b111111 ^ 0b1),
         ])
-        let initial = try IncrementalClusterer.buildState(entries: list, minGroupSize: 2, threshold: 4)
+        let initial = try fullState(entries: list, minGroupSize: 2, threshold: 4)
 
         // a3 换成完全不同的哈希 → 原簇只剩 2 张，新哈希与 b 组相连。
         list[2] = HashEntry(photoId: "a3", hash: hex(base ^ 0b111111 ^ 0b11))
@@ -152,7 +168,7 @@ struct IncrementalClustererUpdateTests {
     func subThresholdPairBecomesGroup() throws {
         let base: UInt64 = 0x00FF_00FF_00FF_00FF
         var list = entries([("p1", base), ("p2", base ^ 0b1)])
-        let initial = try IncrementalClusterer.buildState(entries: list, minGroupSize: 3, threshold: 4)
+        let initial = try fullState(entries: list, minGroupSize: 3, threshold: 4)
         #expect(IncrementalClusterer.result(state: initial, entries: list, minGroupSize: 3).groups.isEmpty)
         #expect(initial.components.count == 1)
 
@@ -166,16 +182,16 @@ struct IncrementalClustererUpdateTests {
         expectEquivalent(result, try fullResult(list, threshold: 4, minGroupSize: 3), "次阈值增长")
     }
 
-    @Test("度门控语义与引擎一致（minGroupSize >= 4 的链与星形）")
+    @Test("度门控语义与全量一致（minGroupSize >= 4 的链与星形）")
     func degreeGateMatchesEngine() throws {
-        // 4 张链：max degree = 2，degree + 1 < 4 → 全量引擎不成组，增量也不得成组。
+        // 4 张链：max degree = 2，degree + 1 < 4 → 全量不成组，增量也不得成组。
         let chainBase: UInt64 = 0xFFFF_0000_FFFF_0000
         var list = entries([
             ("c0", chainBase), ("c1", chainBase ^ 0b1),
             ("c2", chainBase ^ 0b11), ("c3", chainBase ^ 0b111),
         ])
         for minGroupSize in [2, 3, 4, 5] {
-            let state = try IncrementalClusterer.buildState(entries: list, minGroupSize: minGroupSize, threshold: 4)
+            let state = try fullState(entries: list, minGroupSize: minGroupSize, threshold: 4)
             let result = IncrementalClusterer.result(state: state, entries: list, minGroupSize: minGroupSize)
             expectEquivalent(result, try fullResult(list, threshold: 4, minGroupSize: minGroupSize), "链 min=\(minGroupSize)")
         }
@@ -187,7 +203,7 @@ struct IncrementalClustererUpdateTests {
             ("s1", center ^ 0b1), ("s2", center ^ 0b10),
             ("s3", center ^ 0b100), ("s4", center ^ 0b1000),
         ])
-        let starState = try IncrementalClusterer.buildState(entries: list, minGroupSize: 5, threshold: 4)
+        let starState = try fullState(entries: list, minGroupSize: 5, threshold: 4)
         let starResult = IncrementalClusterer.result(state: starState, entries: list, minGroupSize: 5)
         #expect(starResult.groups.count == 1)
         expectEquivalent(starResult, try fullResult(list, threshold: 4, minGroupSize: 5), "星形")
@@ -196,7 +212,7 @@ struct IncrementalClustererUpdateTests {
     @Test("无变化更新为幂等，且不重算任何分量")
     func noChangeUpdateIsIdentity() throws {
         let list = entries([("p1", 0x1), ("p2", 0x3), ("p3", 0x30), ("p4", 0x33)])
-        let state = try IncrementalClusterer.buildState(entries: list, minGroupSize: 2, threshold: 2)
+        let state = try fullState(entries: list, minGroupSize: 2, threshold: 2)
         let outcome = try IncrementalClusterer.update(state: state, entries: list, minGroupSize: 2, threshold: 2)
         #expect(outcome.summary.addedCount == 0)
         #expect(outcome.summary.removedCount == 0)
@@ -206,21 +222,21 @@ struct IncrementalClustererUpdateTests {
         #expect(outcome.state == state)
     }
 
-    @Test("非法哈希与引擎同样抛错")
+    @Test("非法哈希抛 ClusterGraphError")
     func invalidHashThrows() throws {
-        #expect(throws: ClusterEngineError.self) {
-            _ = try IncrementalClusterer.buildState(
+        #expect(throws: ClusterGraphError.self) {
+            _ = try fullState(
                 entries: [HashEntry(photoId: "x", hash: "")], minGroupSize: 2, threshold: 4
             )
         }
-        #expect(throws: ClusterEngineError.self) {
-            _ = try IncrementalClusterer.buildState(
+        #expect(throws: ClusterGraphError.self) {
+            _ = try fullState(
                 entries: [HashEntry(photoId: "x", hash: "zz")], minGroupSize: 2, threshold: 4
             )
         }
     }
 
-    @Test("非 8 字节哈希（长哈希）同样与引擎一致")
+    @Test("非 8 字节哈希（长哈希）同样与全量一致")
     func nonEightByteHashes() throws {
         // 20 个 hex 字符（10 字节）→ 走逐字节距离路径。
         let list = [
@@ -229,7 +245,7 @@ struct IncrementalClustererUpdateTests {
             HashEntry(photoId: "l3", hash: "0000000000000000000f"),
             HashEntry(photoId: "l4", hash: "ffffffffffffffffffff"),
         ]
-        let state = try IncrementalClusterer.buildState(entries: list, minGroupSize: 2, threshold: 4)
+        let state = try fullState(entries: list, minGroupSize: 2, threshold: 4)
         let result = IncrementalClusterer.result(state: state, entries: list, minGroupSize: 2)
         expectEquivalent(result, try fullResult(list, threshold: 4, minGroupSize: 2), "长哈希")
     }
@@ -276,7 +292,7 @@ struct IncrementalClustererReconciliationTests {
             list.append(HashEntry(photoId: newId(), hash: hex(random.randomHash())))
         }
 
-        var state = try IncrementalClusterer.buildState(
+        var state = try fullState(
             entries: list, minGroupSize: minGroupSize, threshold: threshold
         )
         expectEquivalent(
@@ -336,7 +352,7 @@ struct IncrementalClustererReconciliationTests {
                 "seed=\(config.seed) step=\(step) n=\(list.count)"
             )
             // 状态自身也要与全量构建一致（供下次增量复用）。
-            let rebuilt = try IncrementalClusterer.buildState(
+            let rebuilt = try fullState(
                 entries: list, minGroupSize: minGroupSize, threshold: threshold
             )
             #expect(state.components == rebuilt.components, "分量不一致 seed=\(config.seed) step=\(step)")
@@ -354,10 +370,10 @@ struct IncrementalClustererPerformanceTests {
     /// 下增量更新必须在 10s 内完成。
     ///
     /// 极端情形说明：若整库同属一个巨型分量（2 万张两两在阈值内），受影响分量
-    /// 需要 O(k²) 局部重算，增量不会优于全量重聚类（与 ClusterEngine 同阶）；
+    /// 需要 O(k²) 局部重算，增量不会优于全量重聚类（与全量同阶）；
     /// 该情形在真实 dHash 分布下不出现，后续可用 LSH 候选桶把邻域探测降到亚二次。
     /// 规模说明（2026-09 测试提速）：原语料为 2000 簇 × 10 张 = 2 万张，
-    /// 但 buildState 走 ClusterEngine 的 bitset 路径（count ≤ 32768），
+    /// 但全量 run 走位集图路径（count ≤ 32768），
     /// 在 Debug 构建下是 O(n²) 全对遍历（2 万²/2 ≈ 2 亿次汉明距离），单测耗时
     /// 24.6s（占全量 swift test 墙钟的 95%）。现按 1/10 规模下采样为
     /// 200 簇 × 10 张 = 2 千张 + 新增 100 张：断言的不变量（划分/组数、
@@ -376,7 +392,7 @@ struct IncrementalClustererPerformanceTests {
                 list.append(HashEntry(photoId: "c\(clusterIndex)-\(member)", hash: hex(clusterBase ^ UInt64(member % 4))))
             }
         }
-        let state = try IncrementalClusterer.buildState(entries: list, minGroupSize: 2, threshold: 8)
+        let state = try fullState(entries: list, minGroupSize: 2, threshold: 8)
         #expect(state.components.count == 200)
 
         for index in 0..<100 {

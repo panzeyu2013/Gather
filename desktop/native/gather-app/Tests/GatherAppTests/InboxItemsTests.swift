@@ -3,8 +3,12 @@
 // 失败任务 ≤3 行截断、export_pending 条件）。
 import Foundation
 import Testing
-import GatherCore
-@testable import GatherApp
+import GatherProtocol
+import GatherPersistence
+import GatherAnalysis
+import GatherDomain
+@testable import GatherUI
+@testable import GatherHost
 
 @MainActor
 @Suite("deriveInboxItems（对齐 workspace-view.test.ts）")
@@ -41,11 +45,20 @@ struct InboxItemsTests {
     }
 
     private func items(_ status: WorkspaceStatus, truncated: Bool = false) -> [InboxItem] {
-        // 文案经 l() 出当前语言：锁内钉死 zh-CN（含「人脸」等断言）。
-        AppLanguageLock.withCopy("zh-CN") {
-            SessionControlView(sessionId: "s1", router: StubCommandRouter.empty())
-                .inboxItems(status, truncatedImport: truncated)
-        }
+        // Cut 4 / 4b-2f：文案由**显式传入**的 L10n 解析（含「人脸」等断言），
+        // 不读进程全局语言。
+        SessionControlView(
+            workspace: makeTestControlWorkspace(),
+            culling: B8CullingAPIStub()
+        )
+        .inboxItems(status, truncatedImport: truncated, with: L10n(language: .zhCN))
+    }
+
+    private func view() -> SessionControlView {
+        SessionControlView(
+            workspace: makeTestControlWorkspace(),
+            culling: B8CullingAPIStub()
+        )
     }
 
     @Test("全部健康 → 空")
@@ -133,5 +146,22 @@ struct InboxItemsTests {
         // 离线照片：进入图库并只看离线（旧实现只是普通进图库，用户看不到离线照片）。
         let offline = items(status(offlinePhotos: 2)).first { $0.kind == .offlinePhotos }
         #expect(offline?.action == .reviewOfflinePhotos)
+    }
+
+    // 4b-2f：裸 View 上没有 languageStore env——en 断言证明语言由显式 L10n 决定，
+    // 而不是进程全局 / .zhCN 兜底。jobTypeLabel 的类型名同样经 l10n 解析。
+    @Test("显式 L10n：en 文案（含 jobTypeLabel 类型名）")
+    func englishLabels() {
+        let en = L10n(language: .en)
+        let s = status(
+            pending: 2,
+            conflict: 3,
+            failedJobs: [failedJob("j1", type: "similarity.analyze")]
+        )
+        let items = view().inboxItems(s, truncatedImport: false, with: en)
+        #expect(items.first { $0.kind == .xmpConflict }?.label == "3 XMP conflicts awaiting resolution")
+        #expect(items.first { $0.kind == .xmpPending }?.label == "2 XMP files pending write")
+        #expect(items.first { $0.kind == .jobFailed }?.label == "Similarity Analysis task failed")
+        #expect(items.first { $0.kind == .xmpConflict }?.actionLabel == "Resolve One by One")
     }
 }

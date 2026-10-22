@@ -11,7 +11,11 @@
 
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 // MARK: - 支撑
 
@@ -29,9 +33,10 @@ private struct IndexerHarness {
 private func makeHarness(
     root: String,
     lazyChecksum: String = "true",
+    diskCacheDir: String? = nil,
     getDimensions: @escaping IndexerService.DimensionsProvider = { _ in (100, 80) }
 ) throws -> IndexerHarness {
-    let db = try makeMigratedDB()
+    let db = try makeTestDB()
     let sessionRepo = SessionRepo(connection: db)
     let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
     let indexer = IndexerService(
@@ -42,7 +47,9 @@ private func makeHarness(
         faceRepo: FaceRepo(connection: db),
         getDimensions: getDimensions,
         getSetting: { key, defaultValue in
-            key == "lazy_checksum" ? lazyChecksum : defaultValue
+            if key == "lazy_checksum" { return lazyChecksum }
+            if key == "disk_cache_dir", let diskCacheDir { return diskCacheDir }
+            return defaultValue
         }
     )
     return IndexerHarness(db: db, indexer: indexer, sessionRepo: sessionRepo, sessionId: session.id)
@@ -85,8 +92,8 @@ private func insertPhotoRow(
     checksumFileMtimeMs: Double = 0
 ) throws {
     _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', NULL, ?, 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO photos (id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, asset_id, asset_file_id, width, height, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
       """).run([
         .text(id), .text(sessionId), .text(filepath),
         .text((filepath as NSString).lastPathComponent),
@@ -107,8 +114,8 @@ private func insertFullAssetChain(
     checksum: String
 ) throws {
     _ = try db.prepare("""
-        INSERT INTO assets (id, capture_fingerprint, status, created_at, updated_at)
-        VALUES (?, '', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        INSERT INTO assets (id, status, created_at, updated_at)
+        VALUES (?, 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
       """).run([.text(assetId)])
     try insertAssetFileRow(db, id: assetFileId, filepath: filepath, fileSize: fileSize, fileMtimeMs: fileMtimeMs, checksum: checksum)
     _ = try db.prepare("""
@@ -301,18 +308,18 @@ struct CancelledScanIndexSeqTests {
         for i in 0..<33 {
             try Data("content-\(i)".utf8).write(to: URL(fileURLWithPath: root + "/p\(i).jpg"))
         }
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Index", source: "folder", sourcePath: root)
         // 预置已完成的 sim/fkw 分析（快照 index_seq=0）：扫描必须推进会话
         // index_seq，否则这两条已完成分析永远看不到新照片。
         _ = try db.prepare("""
-            INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
+            INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params_json, status)
             VALUES (?, 'similarity', 0, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{}', 'ok')
           """).run([.text(session.id)])
         _ = try db.prepare("""
-            INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params, status)
-            VALUES (?, 'face_keywording', 0, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{}', 'ok')
+            INSERT INTO analysis_runs (session_id, kind, photo_count, index_seq, started_at, finished_at, params_json, status)
+            VALUES (?, 'face', 0, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{}', 'ok')
           """).run([.text(session.id)])
 
         // 首批 32 张的末位（p8.jpg）解码时 abort：批仍提交；扫描在 pull 循环
@@ -535,8 +542,8 @@ struct ChecksumBackfillTests {
             filepath: filePath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: ""
         )
         _ = try harness.db.prepare("""
-            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
-            VALUES ('photo-1', ?, ?, 'photo.jpg', '', 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_id, asset_file_id, width, height, created_at, updated_at)
+            VALUES ('photo-1', ?, ?, 'photo.jpg', '', 'pending', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
           """).run([.text(harness.sessionId), .text(filePath)])
 
         let backfill = try await harness.indexer.backfillChecksums(sessionId: harness.sessionId)
@@ -613,8 +620,8 @@ struct ChecksumBackfillTests {
             filepath: filePath, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs, checksum: ""
         )
         _ = try harness.db.prepare("""
-            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
-            VALUES ('photo-1', ?, ?, 'photo.jpg', ?, 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_id, asset_file_id, width, height, created_at, updated_at)
+            VALUES ('photo-1', ?, ?, 'photo.jpg', ?, 'pending', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
           """).run([.text(harness.sessionId), .text(filePath), .text(checksum)])
 
         let scan = try await harness.indexer.scanSession(sessionId: harness.sessionId)
@@ -641,8 +648,8 @@ struct ChecksumBackfillTests {
         )
         // photos.checksum 已被回填，asset_files.checksum 仍为空。
         _ = try harness.db.prepare("""
-            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
-            VALUES ('photo-1', ?, ?, 'photo.jpg', 'H', 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_id, asset_file_id, width, height, created_at, updated_at)
+            VALUES ('photo-1', ?, ?, 'photo.jpg', 'H', 'pending', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
           """).run([.text(harness.sessionId), .text(filePath)])
 
         let scan = try await harness.indexer.scanSession(sessionId: harness.sessionId)
@@ -668,8 +675,8 @@ struct ChecksumBackfillTests {
             filepath: pendingPath, fileSize: 0, fileMtimeMs: 0, checksum: ""
         )
         _ = try harness.db.prepare("""
-            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, metadata, result, asset_id, asset_file_id, width, height, created_at, updated_at)
-            VALUES ('pending', ?, ?, 'pending.jpg', '', 'pending', '{}', '{}', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_id, asset_file_id, width, height, created_at, updated_at)
+            VALUES ('pending', ?, ?, 'pending.jpg', '', 'pending', 'asset-1', 'af-1', 100, 80, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
           """).run([.text(harness.sessionId), .text(pendingPath)])
         // 并发写入者接缝：读取阶段（pending 已加载）之后、守卫 UPDATE 之前，
         // 另一写入者先填了 checksum —— 守卫（AND checksum = ''）必须拒绝覆盖。
@@ -677,7 +684,7 @@ struct ChecksumBackfillTests {
             _ = try harness.db.prepare(
                 "UPDATE photos SET checksum = 'concurrent-hash' WHERE id = 'pending'"
             ).run()
-            return try IndexerService.sha256File(path)
+            return try FileHasher.sha256File(path)
         }
 
         let result = try await harness.indexer.backfillChecksums(sessionId: harness.sessionId)
@@ -717,7 +724,7 @@ struct ChecksumBackfillTests {
         // 首批哈希期间到达取消（signal.abort）：批仍提交，次趟循环检查抛出。
         harness.indexer.fileHasher = { path in
             signal.abort()
-            return try IndexerService.sha256File(path)
+            return try FileHasher.sha256File(path)
         }
 
         await #expect(throws: JobCancelledError.self) {
@@ -766,7 +773,7 @@ struct IndexScanScopeTests {
         _ = try writeTempFile(in: root, name: "a.jpg")
         _ = try writeTempFile(in: root, name: "b.jpg")
 
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Warmup", source: "folder", sourcePath: root)
         let recorder = WarmupRecorder()
@@ -910,7 +917,7 @@ struct IndexScanScopeTests {
     /// 文件系统根 / 主目录不得作为递归扫描根：显式失败，而不是照扫不误。
     @Test("a forbidden directory root fails explicitly instead of scanning it")
     func forbiddenRootFailsExplicitly() async throws {
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(
             name: "Forbidden", source: "local", sourcePath: NSHomeDirectory()
@@ -1028,7 +1035,7 @@ struct IndexScanScopeTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         _ = try writeTempFile(in: root, name: "a.jpg")
 
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "WarmIds", source: "folder", sourcePath: root)
         let recorder = WarmupRecorder()
@@ -1099,7 +1106,7 @@ struct IndexScanScopeTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         _ = try writeTempFile(in: root, name: "a.jpg")
 
-        let db = try makeMigratedDB()
+        let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
         let session = try sessionRepo.create(name: "Settings", source: "folder", sourcePath: root)
         let recorder = SettingsReadRecorder()
@@ -1152,9 +1159,9 @@ private func seedBoundFace(
     let embedding = faceEmbeddingBlob([1, 0, 0, 0])
     _ = try db.prepare("""
         INSERT INTO face_observations (id, photo_id, session_id, bbox_x, bbox_y, bbox_w, bbox_h,
-                                       embedding, confidence, source_file_size, source_file_mtime_ms,
+                                       embedding, confidence,
                                        analysis_signature, created_at)
-        VALUES (?, ?, ?, 1, 2, 3, 4, ?, 0.9, 10, 20, 'sig', ?)
+        VALUES (?, ?, ?, 1, 2, 3, 4, ?, 0.9, 'sig', ?)
         """).run([.int(observationId), .text(photoId), .text(sessionId), .blob(embedding), .text(now)])
     _ = try db.prepare("""
         INSERT INTO face_analysis_state (photo_id, session_id, source_file_size, source_file_mtime_ms,
@@ -1162,9 +1169,9 @@ private func seedBoundFace(
         VALUES (?, ?, 10, 20, 'sig', ?)
         """).run([.text(photoId), .text(sessionId), .text(now)])
     _ = try db.prepare("""
-        INSERT INTO face_clusters (id, session_id, label, member_count, status, thumbnail_base64,
+        INSERT INTO face_clusters (id, session_id, label, status,
                                    thumbnail_path, created_at, updated_at)
-        VALUES (?, ?, ?, 1, 'bound', '', '', ?, ?)
+        VALUES (?, ?, ?, 'bound', '', ?, ?)
         """).run([.int(clusterId), .text(sessionId), .text(roleName), .text(now), .text(now)])
     _ = try db.prepare("""
         INSERT INTO face_cluster_members (cluster_id, session_id, photo_id, bbox, confidence, observation_id)
@@ -1180,8 +1187,8 @@ private func seedBoundFace(
         """).run([.text(personId), .text(roleName), .text(now), .text(now)])
     _ = try db.prepare("""
         INSERT INTO person_embeddings (person_id, embedding, photo_id, session_id, face_observation_id,
-                                       face_bbox, quality, created_at)
-        VALUES (?, ?, ?, ?, ?, '[1,2,3,4]', 0.9, ?)
+                                       created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """).run([
             .text(personId), .blob(embedding), .text(photoId), .text(sessionId), .int(observationId), .text(now),
         ])
@@ -1288,6 +1295,66 @@ struct IndexerFaceInvalidationTests {
         #expect(untouched.memberCount == 1, "未命中照片的成员与计数不得被动")
         let untouchedMember = try #require(untouched.members?.first)
         #expect(untouchedMember.observationId == 12)
+    }
+}
+
+// MARK: - 生成缓存清扫（person_photos RESTRICT）
+
+@Suite("Indexer generated cache cleanup")
+struct IndexerGeneratedCacheCleanupTests {
+    /// 缓存目录里的照片若已被标记身份，photos 上的 person_photos.photo_id RESTRICT 会让
+    /// 整个清扫事务失败。删除顺序必须是 person_photos → photos；并在同事务里清掉缓存
+    /// 照片与 asset_files，同时保留不在此路径上的 persons / face_clusters / role_bindings。
+    @Test("generated-cache photo with a person binding is deleted in FK order (no FOREIGN KEY failure)")
+    func generatedCachePhotoWithPersonBindingIsDeleted() async throws {
+        let root = try makeTempDir()
+        let cacheRoot = try makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: cacheRoot)
+        }
+        let harness = try makeHarness(root: root, diskCacheDir: cacheRoot)
+
+        let cachePhotoPath = try writeTempFile(in: cacheRoot, name: "generated.jpg")
+        let stat = try IndexerService.defaultStat(cachePhotoPath)
+        try insertAssetFileRow(
+            harness.db, id: "file-cache", filepath: cachePhotoPath,
+            fileSize: stat.size, fileMtimeMs: stat.mtimeMs,
+            checksum: sha256Hex("fake-image-bytes")
+        )
+        try insertPhotoRow(
+            harness.db, id: "photo-cache", sessionId: harness.sessionId,
+            filepath: cachePhotoPath, assetFileId: "file-cache"
+        )
+        try seedBoundFace(
+            harness.db, sessionId: harness.sessionId, clusterId: 1, observationId: 11,
+            photoId: "photo-cache", roleName: "Alice", personId: "person-alice"
+        )
+        _ = try harness.db.prepare("""
+            INSERT INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at)
+            VALUES ('person-alice', 'photo-cache', ?, '[1,2,3,4]', 0.9, '2026-01-01T00:00:00.000Z')
+            """).run([.text(harness.sessionId)])
+
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM person_photos") == 1)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos") == 1)
+
+        let result = try await harness.indexer.scanSession(sessionId: harness.sessionId)
+
+        #expect(result.discovered == 0)
+        #expect(result.failed.isEmpty)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM person_photos") == 0,
+                "person_photos 必须先于 photos 删除并清空")
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM photos") == 0)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM asset_files") == 0)
+        // 派生的脸数据随照片 CASCADE；用户身份/绑定不在此路径，必须保留。
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM face_observations") == 0)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM face_cluster_members") == 0)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM person_embeddings") == 0)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM persons") == 1)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM face_clusters") == 1)
+        #expect(try rowCount(harness.db, "SELECT COUNT(*) FROM role_bindings") == 1,
+                "索引器只删照片，不得销毁会话级用户绑定")
+        #expect(try harness.db.prepare("PRAGMA foreign_key_check;").query([]).isEmpty)
     }
 }
 

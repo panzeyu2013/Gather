@@ -5,7 +5,11 @@
 // 「每个输入都必须出现在结果里」这一可观测不变量。
 import Foundation
 import Testing
-@testable import GatherCore
+import GatherTestSupport
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherAnalysis
+@testable import GatherDomain
 
 private struct ParallelExif: ExifProvider {
     func parse(filePath: String, isJpeg: Bool) async throws -> MetadataParseSegments? {
@@ -36,24 +40,10 @@ private struct ParallelMutations: MetadataMutationPort {
     }
 }
 
-private struct ParallelSync: MetadataSyncPort {
-    func waitForIdle(xmpPath: String, timeoutMs: Int) async throws {}
-    func flushSession(sessionId: String) async throws -> MetadataSyncSummary {
-        MetadataSyncSummary(sessionId: sessionId, pending: 0, writing: 0, written: 0, failed: 0, conflict: 0, synced: 0, items: [])
-    }
-    func confirmSync(sessionId: String, sourceModule: String) throws -> MetadataSyncSummary {
-        MetadataSyncSummary(sessionId: sessionId, pending: 0, writing: 0, written: 0, failed: 0, conflict: 0, synced: 0, items: [])
-    }
-    func cleanup(sessionId: String, sourceModule: String) async throws -> CleanupResult {
-        CleanupResult(deletedCount: 0, errors: [])
-    }
-}
-
 @Suite("MetadataParallelBatch")
 struct MetadataParallelBatchTests {
     private func makeDB(photos: Int) throws -> (DBConnection, String, [String]) {
-        let db = try DBConnection(path: ":memory:")
-        try MigrationRunner().migrate(db)
+        let db = try makeTestDB()
         let sessionId = "s-" + UUID().uuidString
         _ = try db.prepare("INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
             .run([.text(sessionId), .text("t"), .text(nowISOString()), .text(nowISOString())])
@@ -103,14 +93,11 @@ struct MetadataParallelBatchTests {
     func writebackExecutePreparesEveryItem() async throws {
         let (db, sessionId, ids) = try makeDB(photos: 64)
         let service = WritebackService(
-            writebackRepo: WritebackRepo(connection: db),
+            deliveryRepo: DeliveryRepo(connection: db),
             xmp: ParallelXMP(),
             photoRepo: PhotoRepo(connection: db),
-            sessionRepo: SessionRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
-            metadataSync: ParallelSync(),
-            metadataMutations: ParallelMutations(),
-            outboxRepo: nil,
+            connection: db,
             keywordOrigins: nil,
             assetResolver: nil
         )
@@ -119,7 +106,8 @@ struct MetadataParallelBatchTests {
         let preview = try await service.preview(sessionId: sessionId, module: "similarity", keywordAdditions: additions)
         #expect(preview.totalCount == ids.count)
         let result = try await service.execute(sessionId: sessionId, module: "similarity", items: preview.items)
-        // Phase 1 全部入队；ParallelSync 的空 summary 使 Phase 2 逐项判失败 → 计数守恒。
+        // Phase 1 全部写盘（S5c-2b-3b-2a 起 execute 直写，不再经 flush summary）；
+        // 计数仍须逐项守恒。
         #expect(result.totalAffected == ids.count)
         #expect(result.written + result.failed + result.skipped == ids.count)
     }

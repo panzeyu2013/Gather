@@ -8,7 +8,8 @@
 // 约定：任何断言本地化文案的用例都经此锁运行；切语言的用例用 withCopy（锁内
 // 切换并在解锁前恢复），只读用例用 withStableCopy。
 import Foundation
-import GatherApp
+import GatherUI
+import GatherHost
 
 enum AppLanguageLock {
     private static let mutex = NSLock()
