@@ -319,9 +319,12 @@ public final class CullingService {
         // S5c-2a 过渡默认：宿主未注入时按同一 connection 自建 coordinator。
         // 文件阶段用文件系统端口（restore = 备份覆盖写回侧车）；宿主接线在 S5c-2b
         // 改为显式注入共享实例 + XMPDeliveryFilePort。
-        self.delivery = delivery ?? DeliveryCoordinator(
-            connection: connection,
-            files: FileSystemDeliveryFilePort()
+        self.delivery = delivery ?? CoordinatorDeliveryAdapter(
+            engine: DeliveryCoordinator(
+                connection: connection,
+                files: FileSystemDeliveryFilePort()
+            ),
+            module: .culling
         )
     }
 

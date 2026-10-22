@@ -512,9 +512,12 @@ public final class FaceKwService {
         // S5c-2b-2 过渡默认：宿主未注入时按同一 connection 自建 coordinator。
         // 文件阶段用文件系统端口（与 CullingService 的 S5c-2a 默认同口径）；
         // 宿主接线后应显式注入共享实例 + XMPDeliveryFilePort（S5c-2b-3）。
-        self.delivery = delivery ?? DeliveryCoordinator(
-            connection: connection,
-            files: FileSystemDeliveryFilePort()
+        self.delivery = delivery ?? CoordinatorDeliveryAdapter(
+            engine: DeliveryCoordinator(
+                connection: connection,
+                files: FileSystemDeliveryFilePort()
+            ),
+            module: .faceKeyword
         )
     }
 

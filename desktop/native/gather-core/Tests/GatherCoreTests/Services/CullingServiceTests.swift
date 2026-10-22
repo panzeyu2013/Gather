@@ -252,7 +252,7 @@ private func makeHarness(history: Bool = true) throws -> CullingHarness {
         writeback: writeback,
         cullingHistoryRepo: history ? historyRepo : nil,
         getNumber: { _, defaultValue in defaultValue },
-        delivery: deliveryCoordinator
+        delivery: deliveryCoordinator.adapter(for: .culling)
     )
     return CullingHarness(
         db: db, sessionId: "session", service: service,

@@ -203,7 +203,7 @@ private struct MirrorHarness {
             personRepo: PersonRepo(connection: db),
             connection: db,
             writebackProvider: faceWriteback,
-            delivery: coordinator
+            delivery: coordinator.adapter(for: .faceKeyword)
         )
         let similarityService = SimilarityService(
             photoRepo: PhotoRepo(connection: db),
@@ -212,7 +212,7 @@ private struct MirrorHarness {
             clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db,
             writebackProvider: similarityWriteback,
-            delivery: coordinator
+            delivery: coordinator.adapter(for: .similarity)
         )
         self.db = db
         self.sessionId = "s1"

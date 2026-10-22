@@ -1091,28 +1091,44 @@ public final class DeliveryRepo: Sendable {
         module: DeliveryModule? = nil,
         statuses: Set<DeliveryItemStatus> = [.pending, .failed]
     ) throws -> Int {
-        let path = try normalizedPath(xmpPath)
+        _ = try normalizedPath(xmpPath)
         guard !statuses.isEmpty else { return 0 }
         return try connection.transaction {
-            guard let delivery = try get(path) else {
-                throw DeliveryRepoError.rowNotFound(xmpPath: path)
-            }
-            var sql = "DELETE FROM delivery_items WHERE delivery_id = ?"
-            var values: [DBValue?] = [.int(delivery.id)]
-            if let module {
-                sql += " AND module = ?"
-                values.append(.text(module.rawValue))
-            }
-            let placeholders = statuses
-                .sorted { $0.rawValue < $1.rawValue }
-                .map { _ in "?" }
-                .joined(separator: ", ")
-            sql += " AND status IN (\(placeholders))"
-            values.append(contentsOf: statuses
-                .sorted { $0.rawValue < $1.rawValue }
-                .map { DBValue.text($0.rawValue) })
-            return try connection.prepare(sql).run(values)
+            try deleteItemsInTransaction(
+                xmpPath: xmpPath, module: module, statuses: statuses)
         }
+    }
+
+    /// 事务内变体（WP2b）：调用方已持有 connection.transaction 时使用，不另开 savepoint。
+    ///
+    /// 目前唯一调用方是 DeliveryDBPhase 的 retainForeign 分支：只清本模块 item
+    /// 与 intent.finish 必须同事务，避免「item 已删、intent 未收尾」。
+    @discardableResult
+    public func deleteItemsInTransaction(
+        xmpPath: String,
+        module: DeliveryModule? = nil,
+        statuses: Set<DeliveryItemStatus> = [.pending, .failed]
+    ) throws -> Int {
+        let path = try normalizedPath(xmpPath)
+        guard !statuses.isEmpty else { return 0 }
+        guard let delivery = try get(path) else {
+            throw DeliveryRepoError.rowNotFound(xmpPath: path)
+        }
+        var sql = "DELETE FROM delivery_items WHERE delivery_id = ?"
+        var values: [DBValue?] = [.int(delivery.id)]
+        if let module {
+            sql += " AND module = ?"
+            values.append(.text(module.rawValue))
+        }
+        let placeholders = statuses
+            .sorted { $0.rawValue < $1.rawValue }
+            .map { _ in "?" }
+            .joined(separator: ", ")
+        sql += " AND status IN (\(placeholders))"
+        values.append(contentsOf: statuses
+            .sorted { $0.rawValue < $1.rawValue }
+            .map { DBValue.text($0.rawValue) })
+        return try connection.prepare(sql).run(values)
     }
 
     // MARK: - 终态删除（cleanup / finalize 共用）
@@ -1157,33 +1173,79 @@ public final class DeliveryRepo: Sendable {
             throw DeliveryRepoError.invalidArgument("revision 不能为负: \(revision)")
         }
         return try connection.transaction {
-            guard let current = try get(path) else { return .alreadyGone }
-            guard current.id == deliveryId else { return .idChanged }
-            guard current.revision == revision else { return .revisionChanged }
-            guard current.typedStatus == .synced else { return .stateChanged }
-            let unconfirmedLinks = try connection.prepare("""
-                SELECT COUNT(*) FROM delivery_sessions
-                WHERE delivery_id = ? AND confirmed_at = ''
-                """).get([.int(deliveryId)])?[0].intValue ?? 0
-            guard unconfirmedLinks == 0 else { return .stateChanged }
-            _ = try connection.prepare("DELETE FROM delivery_items WHERE delivery_id = ?")
-                .run([.int(deliveryId)])
-            _ = try connection.prepare("DELETE FROM delivery_sessions WHERE delivery_id = ?")
-                .run([.int(deliveryId)])
-            let removed = try connection.prepare("""
-                DELETE FROM deliveries
-                WHERE id = ? AND revision = ? AND status = ?
-                """).run([
-                    .int(deliveryId),
-                    .int(revision),
-                    .text(DeliveryStatus.synced.rawValue),
-                ])
-            guard removed == 1 else {
-                // 事务内已校验仍删不掉：宁可抛错回滚子行删除，也不留半删状态。
-                throw DeliveryRepoError.writeNotPersisted("delivery#\(deliveryId)")
-            }
-            return .deleted
+            try deleteSyncedDeliveryInTransaction(
+                path: path, deliveryId: deliveryId, revision: revision)
         }
+    }
+
+    /// 事务内变体（WP2b）：调用方已持有 connection.transaction 时使用。
+    ///
+    /// DeliveryDBPhase 用它把「删除 deliveries/items/links」与
+    /// DeliveryIntentRepo.finishInTransaction 放进同一事务：任一步失败整体回滚，
+    /// 不再出现「行已删、intent 未收尾」的崩溃窗口。
+    @discardableResult
+    public func deleteSyncedDeliveryInTransaction(
+        xmpPath: String,
+        deliveryId: Int64,
+        revision: Int64
+    ) throws -> DeliveryDeleteOutcome {
+        let path = try normalizedPath(xmpPath)
+        try Self.validateDeleteArguments(deliveryId: deliveryId, revision: revision)
+        return try deleteSyncedDeliveryBody(
+            path: path, deliveryId: deliveryId, revision: revision)
+    }
+
+    /// 事务内变体（已归一化 path 的内部实现；供公开包装复用）。
+    @discardableResult
+    private func deleteSyncedDeliveryInTransaction(
+        path: String,
+        deliveryId: Int64,
+        revision: Int64
+    ) throws -> DeliveryDeleteOutcome {
+        try deleteSyncedDeliveryBody(
+            path: path, deliveryId: deliveryId, revision: revision)
+    }
+
+    private static func validateDeleteArguments(deliveryId: Int64, revision: Int64) throws {
+        guard deliveryId > 0 else {
+            throw DeliveryRepoError.invalidArgument("deliveryId 必须为正: \(deliveryId)")
+        }
+        guard revision >= 0 else {
+            throw DeliveryRepoError.invalidArgument("revision 不能为负: \(revision)")
+        }
+    }
+
+    private func deleteSyncedDeliveryBody(
+        path: String,
+        deliveryId: Int64,
+        revision: Int64
+    ) throws -> DeliveryDeleteOutcome {
+        guard let current = try get(path) else { return .alreadyGone }
+        guard current.id == deliveryId else { return .idChanged }
+        guard current.revision == revision else { return .revisionChanged }
+        guard current.typedStatus == .synced else { return .stateChanged }
+        let unconfirmedLinks = try connection.prepare("""
+            SELECT COUNT(*) FROM delivery_sessions
+            WHERE delivery_id = ? AND confirmed_at = ''
+            """).get([.int(deliveryId)])?[0].intValue ?? 0
+        guard unconfirmedLinks == 0 else { return .stateChanged }
+        _ = try connection.prepare("DELETE FROM delivery_items WHERE delivery_id = ?")
+            .run([.int(deliveryId)])
+        _ = try connection.prepare("DELETE FROM delivery_sessions WHERE delivery_id = ?")
+            .run([.int(deliveryId)])
+        let removed = try connection.prepare("""
+            DELETE FROM deliveries
+            WHERE id = ? AND revision = ? AND status = ?
+            """).run([
+                .int(deliveryId),
+                .int(revision),
+                .text(DeliveryStatus.synced.rawValue),
+            ])
+        guard removed == 1 else {
+            // 事务内已校验仍删不掉：宁可抛错回滚子行删除，也不留半删状态。
+            throw DeliveryRepoError.writeNotPersisted("delivery#\(deliveryId)")
+        }
+        return .deleted
     }
 
     // MARK: - 确认（单事务）

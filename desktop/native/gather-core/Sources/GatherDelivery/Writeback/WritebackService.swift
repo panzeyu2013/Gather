@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDelivery/WritebackService.swift
+// desktop/native/gather-core/Sources/GatherDelivery/Writeback/WritebackService.swift
 // TS 源: desktop/src/main/services/writeback/writeback.service.ts（630 行）+
 // writeback-planners.ts（66 行），逐字移植
 //
@@ -171,6 +171,8 @@ private struct LeaseRecoveryResult {
 /// execute 的并发收集状态全部收在 PhaseOneCollector 的锁内。
 public final class WritebackService: @unchecked Sendable {
     private let deliveryRepo: DeliveryRepo
+    /// 交付状态写入的唯一入口（WP2b）；读路径仍直接用 deliveryRepo。
+    private let stateWriter: DeliveryStateWriter
     private let xmp: any XMPProvider
     private let photoRepo: PhotoRepo
     private let metadataCacheRepo: MetadataCacheRepo
@@ -205,6 +207,7 @@ public final class WritebackService: @unchecked Sendable {
         eventSink: (@Sendable (String) -> Void)? = nil
     ) {
         self.deliveryRepo = deliveryRepo
+        self.stateWriter = DeliveryStateWriter(repo: deliveryRepo)
         self.xmp = xmp
         self.photoRepo = photoRepo
         self.metadataCacheRepo = metadataCacheRepo
@@ -308,7 +311,7 @@ public final class WritebackService: @unchecked Sendable {
         case .some(.pending), .some(.writing), .some(.cleaned), .none:
             return
         case .some(.written), .some(.synced), .some(.failed), .some(.conflict):
-            _ = try deliveryRepo.mergeInput(
+            _ = try stateWriter.mergeInput(
                 xmpPath: xmpPath,
                 photoPath: photoPath.isEmpty ? current.photoPath : photoPath,
                 expectedRevision: current.revision,
@@ -328,14 +331,14 @@ public final class WritebackService: @unchecked Sendable {
         switch current.typedStatus {
         case .some(.writing):
             // 崩溃遗留或并发写者：只有本 owner 续租、或旧 heartbeat 过期才能接管。
-            return try deliveryRepo.claimWriting(
+            return try stateWriter.claimWriting(
                 xmpPath: xmpPath, revision: current.revision, leaseOwner: leaseOwner)
         case .some(.pending), .some(.failed), .some(.conflict):
-            return try deliveryRepo.markWriting(
+            return try stateWriter.markWriting(
                 xmpPath: xmpPath, revision: current.revision,
                 leaseOwner: leaseOwner, heartbeatAt: nowISOString())
         case .some(.written), .some(.synced):
-            guard let reopened = try deliveryRepo.mergeInput(
+            guard let reopened = try stateWriter.mergeInput(
                 xmpPath: xmpPath,
                 photoPath: current.photoPath,
                 expectedRevision: current.revision,
@@ -345,7 +348,7 @@ public final class WritebackService: @unchecked Sendable {
             ) else {
                 return nil
             }
-            return try deliveryRepo.markWriting(
+            return try stateWriter.markWriting(
                 xmpPath: xmpPath, revision: reopened.revision,
                 leaseOwner: leaseOwner, heartbeatAt: nowISOString())
         case .some(.cleaned), .none:
@@ -376,7 +379,7 @@ public final class WritebackService: @unchecked Sendable {
             guard let group = byPath[path], let stale = group.first?.delivery else { continue }
             let claimed: DeliveryRow?
             do {
-                claimed = try deliveryRepo.claimWriting(
+                claimed = try stateWriter.claimWriting(
                     xmpPath: path, revision: stale.revision, leaseOwner: leaseOwner)
             } catch {
                 // 他人持有效租约（或行已不在 writing）：留给持有者/下一次执行。
@@ -406,7 +409,7 @@ public final class WritebackService: @unchecked Sendable {
                     result.errors.append("DELIVERY_FINGERPRINT_FAILED: \(path): \(error)")
                 }
                 do {
-                    if try deliveryRepo.markWritten(
+                    if try stateWriter.markWritten(
                         xmpPath: path, revision: row.revision,
                         baseFingerprint: fingerprint, baseValues: baseValues,
                         backupPath: stale.backupPath) != nil {
@@ -420,7 +423,7 @@ public final class WritebackService: @unchecked Sendable {
                 }
             } else {
                 do {
-                    if try deliveryRepo.markFailed(
+                    if try stateWriter.markFailed(
                         xmpPath: path, revision: row.revision,
                         errorMessage: Self.interruptedWriteMessage) != nil {
                         result.failed += 1
@@ -485,7 +488,7 @@ public final class WritebackService: @unchecked Sendable {
     /// 但绝不静默——execute 的计数/errors 仍会反映本项失败。
     private func persistItemFailure(itemId: Int64, message: String) {
         do {
-            try deliveryRepo.markItem(itemId: itemId, status: .failed, errorMessage: message)
+            try stateWriter.markItem(itemId: itemId, status: .failed, errorMessage: message)
         } catch {
             GatherLogger.log("Failed to record writeback item failure: \(error)", level: .error)
         }
@@ -591,7 +594,7 @@ public final class WritebackService: @unchecked Sendable {
         for row in try deliveryRepo.listItems(sessionId: sessionId, module: deliveryModule) {
             guard row.typedStatus == .pending || row.typedStatus == .failed else { continue }
             guard !targetSet.contains(row.xmpPath) else { continue }
-            _ = try deliveryRepo.deleteItems(
+            _ = try stateWriter.deleteItems(
                 xmpPath: row.xmpPath, module: deliveryModule, statuses: [.pending, .failed])
         }
 
@@ -609,19 +612,19 @@ public final class WritebackService: @unchecked Sendable {
             }
             // 旧 outbox 的 externalChanged 信号等价物：交付处于 conflict。
             let externalChanged = (try deliveryRepo.get(sidecarPath))?.typedStatus == .conflict
-            _ = try deliveryRepo.createOrGet(xmpPath: sidecarPath, photoPath: photo.filepath)
+            _ = try stateWriter.createOrGet(xmpPath: sidecarPath, photoPath: photo.filepath)
             try reopenDeliveryForInput(xmpPath: sidecarPath, photoPath: photo.filepath)
-            _ = try deliveryRepo.deleteItems(
+            _ = try stateWriter.deleteItems(
                 xmpPath: sidecarPath, module: deliveryModule, statuses: [.pending, .failed])
             let merged = orderedUnion(existingKeywords, additionsBySidecar[sidecarPath] ?? [])
-            _ = try deliveryRepo.upsertItem(
+            _ = try stateWriter.upsertItem(
                 xmpPath: sidecarPath,
                 photoId: photo.id,
                 module: deliveryModule,
                 keywords: merged,
                 status: .pending
             )
-            _ = try deliveryRepo.linkSession(xmpPath: sidecarPath, sessionId: sessionId)
+            _ = try stateWriter.linkSession(xmpPath: sidecarPath, sessionId: sessionId)
             previewsBySidecar[sidecarPath] = WritebackItemPreview(
                 dirtyFields: [.keywords],
                 before: WritebackAttributes(keywords: existingKeywords),
@@ -774,7 +777,7 @@ public final class WritebackService: @unchecked Sendable {
         var baseValuesByPath: [String: JSONValue] = [:]
         for entry in prepared {
             do {
-                try deliveryRepo.markItem(itemId: entry.itemId, status: .written)
+                try stateWriter.markItem(itemId: entry.itemId, status: .written)
             } catch {
                 let message = "DELIVERY_ITEM_WRITE_FAILED: \(error)"
                 persistItemFailure(itemId: entry.itemId, message: message)
@@ -819,7 +822,7 @@ public final class WritebackService: @unchecked Sendable {
             guard let revision = writeRevisionByPath[path] else { continue }
             // 长批次写盘可能超过租约 TTL：收敛前续租一次；失败说明租约已被他人
             // 接管/新输入推进 revision，显式上报（下面的 status+revision CAS 仍兜底）。
-            if (try? deliveryRepo.renewWriting(
+            if (try? stateWriter.renewWriting(
                 xmpPath: path, revision: revision, leaseOwner: leaseOwner)) != true {
                 errors.append("DELIVERY_LEASE_LOST: \(path)")
             }
@@ -828,7 +831,7 @@ public final class WritebackService: @unchecked Sendable {
                     ?? existingBackupByPath[path]
                     ?? ""
                 do {
-                    let row = try deliveryRepo.markWritten(
+                    let row = try stateWriter.markWritten(
                         xmpPath: path,
                         revision: revision,
                         baseFingerprint: fingerprintByPath[path] ?? "",
@@ -847,7 +850,7 @@ public final class WritebackService: @unchecked Sendable {
             } else {
                 let message = firstErrorByPath[path] ?? "WRITEBACK_FAILED"
                 do {
-                    let row = try deliveryRepo.markFailed(
+                    let row = try stateWriter.markFailed(
                         xmpPath: path, revision: revision, errorMessage: message)
                     if row == nil { errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)") }
                 } catch {
@@ -1097,7 +1100,7 @@ public final class WritebackService: @unchecked Sendable {
         if failedCount > 0 {
             throw WritebackServiceError.failuresPending
         }
-        _ = try deliveryRepo.confirm(
+        _ = try stateWriter.confirm(
             scope: .module, sessionId: sessionId, module: deliveryModule)
         emitStateChanged(sessionId)
     }
@@ -1114,7 +1117,7 @@ public final class WritebackService: @unchecked Sendable {
             if let label = attributes.label { dict["label"] = .string(label) }
             updates.append((Int64(id), dict))
         }
-        try deliveryRepo.updateItemAttributes(updates)
+        try stateWriter.updateItemAttributes(updates)
     }
 
     public func persistKeywords(items: [WritebackItem]) throws {
@@ -1123,7 +1126,7 @@ public final class WritebackService: @unchecked Sendable {
             guard let id = item.id else { continue }
             updates.append((Int64(id), item.keywords))
         }
-        try deliveryRepo.updateItemKeywords(updates)
+        try stateWriter.updateItemKeywords(updates)
     }
 
     public func getItems(sessionId: String, module: String, status: String? = nil) throws -> [WritebackItem] {

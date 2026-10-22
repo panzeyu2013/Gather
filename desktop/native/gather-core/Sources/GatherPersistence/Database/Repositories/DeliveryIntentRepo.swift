@@ -280,22 +280,34 @@ public final class DeliveryIntentRepo: Sendable {
             throw DeliveryIntentRepoError.invalidArgument("id 必须为正: \(id)")
         }
         try connection.transaction {
-            guard try intent(id) != nil else {
-                throw DeliveryIntentRepoError.rowNotFound(id: id)
-            }
-            let now = nowISOString()
-            if let error, !error.isEmpty {
-                _ = try connection.prepare("""
-                    UPDATE delivery_intents SET phase = ?, error_message = ?, updated_at = ?
-                    WHERE id = ?
-                    """).run([
-                        .text(DeliveryIntentPhase.applied.rawValue),
-                        .text(error), .text(now), .int(id),
-                    ])
-            } else {
-                _ = try connection.prepare("DELETE FROM delivery_intents WHERE id = ?")
-                    .run([.int(id)])
-            }
+            try finishInTransaction(id: id, error: error)
+        }
+    }
+
+    /// 事务内收尾（WP2b）：调用方必须已持有 connection.transaction。
+    ///
+    /// DeliveryDBPhase 用它把「DB 删除 deliveries」与 intent 收尾放进同一事务：
+    /// 删除成功但收尾失败时，外层事务把删除一并回滚；不会留下「文件已恢复、
+    /// DB 已删、intent 还在」的三种事实并存窗口。
+    public func finishInTransaction(id: Int64, error: String? = nil) throws {
+        guard id > 0 else {
+            throw DeliveryIntentRepoError.invalidArgument("id 必须为正: \(id)")
+        }
+        guard try intent(id) != nil else {
+            throw DeliveryIntentRepoError.rowNotFound(id: id)
+        }
+        let now = nowISOString()
+        if let error, !error.isEmpty {
+            _ = try connection.prepare("""
+                UPDATE delivery_intents SET phase = ?, error_message = ?, updated_at = ?
+                WHERE id = ?
+                """).run([
+                    .text(DeliveryIntentPhase.applied.rawValue),
+                    .text(error), .text(now), .int(id),
+                ])
+        } else {
+            _ = try connection.prepare("DELETE FROM delivery_intents WHERE id = ?")
+                .run([.int(id)])
         }
     }
 

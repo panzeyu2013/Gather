@@ -241,9 +241,12 @@ public final class SimilarityService {
         self.writebackProvider = writebackProvider
         // S5c-2b-2 过渡默认：宿主未注入时按同一 connection 自建 coordinator
         //（与 CullingService/FaceKwService 同口径）。
-        self.delivery = delivery ?? DeliveryCoordinator(
-            connection: connection,
-            files: FileSystemDeliveryFilePort()
+        self.delivery = delivery ?? CoordinatorDeliveryAdapter(
+            engine: DeliveryCoordinator(
+                connection: connection,
+                files: FileSystemDeliveryFilePort()
+            ),
+            module: .similarity
         )
     }
 

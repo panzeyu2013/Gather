@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherDelivery/MetadataMutationService.swift
+// desktop/native/gather-core/Sources/GatherDelivery/Writeback/MetadataMutationService.swift
 // 变更入队服务（S5c-2b-3b-2b-2：outbox → 统一交付模型）。
 //
 // 唯一写路径的入口：queuePhotoValues 只写 deliveries / delivery_items（先落库），
@@ -92,6 +92,8 @@ public final class MetadataMutationService: MetadataMutationPort {
     public static let keywordsModeKey = "keywords_mode"
 
     private let deliveryRepo: DeliveryRepo
+    /// 交付状态写入的唯一入口（WP2b）：applyMetadataMutation 的复合事务仍由 Repo 执行。
+    private let stateWriter: DeliveryStateWriter
     private let xmp: any XMPProvider
     private let assetResolver: PhotoAssetResolver
     private let chain = PathSerialChain()
@@ -102,6 +104,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         assetResolver: PhotoAssetResolver
     ) {
         self.deliveryRepo = deliveryRepo
+        self.stateWriter = DeliveryStateWriter(repo: deliveryRepo)
         self.xmp = xmp
         self.assetResolver = assetResolver
     }
@@ -161,7 +164,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         // 幽灵 pending（永久阻断该侧车其它模块 confirm），或 linkSession 的 FK
         // 拒绝后留下孤儿 pending item。原子入口在 DeliveryRepo 内完成，
         // 失败整体回滚（revision 不推进、无 item / delivery_sessions 行）。
-        let delivery = try deliveryRepo.applyMetadataMutation(
+        let delivery = try stateWriter.enqueueMetadataMutation(
             xmpPath: xmpPath,
             photoPath: resolved.filepath,
             photoId: photoId,

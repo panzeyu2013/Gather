@@ -231,7 +231,7 @@ public struct AppComposition {
                 RAWDecoder.pixels9x8(path: path, maxPixel: size)
             },
             writebackProvider: SimilarityWritebackBridge(writebackService: writebackService),
-            delivery: deliveryCoordinator
+            delivery: deliveryCoordinator.adapter(for: .similarity)
         )
         let personRepo = PersonRepo(connection: db)
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
@@ -250,7 +250,7 @@ public struct AppComposition {
                 settingsService.get(key, defaultValue: defaultValue)
             },
             writebackProvider: FaceKwWritebackBridge(writebackService: writebackService),
-            delivery: deliveryCoordinator
+            delivery: deliveryCoordinator.adapter(for: .faceKeyword)
         )
         // 3.4 CullingService：写回执行器走 WritebackService（CullingWritebackPort），
         // confirm/cleanup/syncStatus 走交付模型。S5c-2b-3b-2b-1 起不再注入旧
@@ -267,7 +267,7 @@ public struct AppComposition {
             getNumber: { key, defaultValue in
                 settingsService.getNumber(key, defaultValue: defaultValue)
             },
-            delivery: deliveryCoordinator
+            delivery: deliveryCoordinator.adapter(for: .culling)
         )
         // 以下 9 个服务原先在旧组合根 init 的实参位置就地构造；
         // 这里按原实参求值顺序（从左到右）提升为局部变量，构造顺序与行为不变。
