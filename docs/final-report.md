@@ -46,7 +46,7 @@
 | 0 盘点/审计/门禁 | 完成 | test-audit、cleanup-backlog、api-migration-map（118→16/110）、cleanup-baseline + 8 个门禁脚本；安全清理 | app 298 tests、core 受影响 121 tests 绿 |
 | 1 类型化 API，删 Router | 完成（B8.5） | 118 条字符串命令→0；16 协议/110 方法；删 Router/CommandRouter/NativeCommandClient 等 7 文件 4,052 行；AppComposition/AppRuntime | 0 字符串命令；app 455/55、core 1080/149 绿 |
 | 2 SchemaV1 + Database + Delivery | 完成（S5c-2b-3b-2b-3） | `Database.open`→SchemaV1（不兼容库整体重置，含 -wal/-shm）；启动 replay；删旧同步/迁移栈 5 文件 4,081 + 4 测试 1,983 行 | 10 条 P0 门禁 + fresh DB 全功能；core 1080/151、app 461/55 |
-| 3 模块拆分 | 完成（D-105） | 7 target：Protocol/Persistence/Analysis/Domain/UI/Host/App；删伞 `GatherCore`；UI 只 import Protocol | UI 不 import Persistence；core 1057/149、app 461/55 |
+| 3 模块拆分 | 完成（D-105） | 当时 7 target：Protocol/Persistence/Analysis/Domain/UI/Host/App；删伞 `GatherCore`；UI 只 import Protocol（后续拆出 GatherDelivery，当前 8 target） | UI 不 import Persistence；core 1057/149、app 461/55 |
 | 4 UI 状态层 + 本地化 | 完成（4a/4b/4c） | SessionStore/Workspace/ViewState（2026-10-22 删除，CL-04 deferred）/CommandError/LanguageStore；`l()` 1,481→0；11 个巨型 View 拆分；14 个 `#Preview` | RootView 壳 148 行；app 580/66、core 1057/149 绿 |
 | 5 算法单趟化 | 完成（5a–5d） | ClusterGraph 单实现；删 ClusterEngine/ClusteringImpact/HNSW/6 份 BFS；批量 FaceMatcher；聚类移出锁；10k bench | core 1,092/157 绿；HNSW 代码引用 0（仅历史注释）；10k release 19.25s（5s 目标未达） |
 | 6 清扫与防腐 | **完成（6a/6b/6c）** | 删 94 en（含 31 孤儿）+ 1 zh key、12 死符号；28 篇文档归档；注释/改名；L10n 注释 177→179、1,407→1,313（评审修复轮 +9 键 → 1,322）；本报告 | core 1,092/157、app 581/66；8 门禁 strict + schema verify + preview strict 全过；build.sh 本机受限、GUI 待人工 |
@@ -116,7 +116,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 swift run --package-path gather-core --disable-sandbox --cache-path .build/shared-cache --scratch-path .build/scratch gather-schema verify
 ```
 
-结果：`schema ok: tables=43 user_version=1 foreign_key_violations=0`（exit 0）。另把 `gather-schema dump` 的 DDL 灌入内存 SQLite，用 `pragma_table_info` / `pragma_foreign_key_list` 独立复核：**tables=43，columns=373，indexes=69，foreign_keys=62**。
+结果：`schema ok: tables=43 user_version=2 foreign_key_violations=0`（exit 0；Cut 6c 当时为 1，WP6b 后为 2）。另把 `gather-schema dump` 的 DDL 灌入内存 SQLite，用 `pragma_table_info` / `pragma_foreign_key_list` 独立复核：**tables=43，columns=373，indexes=69，foreign_keys=62**。
 
 ### 5.3 八道门禁（strict 可用的均带 --strict）+ preview
 
