@@ -5,25 +5,27 @@
 // docs/schema-v1-draft.md §7.1 的 DDL。`ddl` 是不含版本号的 DDL 主体；
 // `createSQL`/`sql` 追加 PRAGMA user_version = 1（复现真实 V1 旧库）。
 // Cut 5 / 5b-2b：similarity_cluster_meta +3 列（algorithm_version / input_signature /
-// state_digest），370 → 373；当时未 bump userVersion，因此旧 V1 库（370 列）只能
-// 靠列形识别：Database.open 对比 expectedColumnCount / requiredTableColumns /
-// expectedShapeFingerprint，不匹配默认 fail closed（显式开发重置才改名），不会把
-// 缺列旧库当 current 留到运行期报错。
+// state_digest），370 → 373；当时未 bump userVersion，因此「373 列」与「370 列」
+// 都可能带 user_version=1。旧 V1（370 列）的形态由 Migration/HistoricalV1Shape 单独
+// 识别：OpenState 判为 .older(.v1)，MigrationV1ToV2 在事务内 ALTER 补三列后再写
+// user_version=2；只有未记录过的列形才 fail closed（显式开发重置才改名）。
 //
 // 当前版本（WP6b）：V2 是纯版本位，DDL 与 V1 逐字相同（SchemaV2.ddl = 本文件.ddl）；
-// SchemaCatalog.production.current = .v2，V1 文件库经「备份 → V1→V2 no-op 事务迁移 →
-// 形态校验 → user_version=2」就地升级。V1 快照保留，供迁移起点与测试夹具使用。
+// SchemaCatalog.production.current = .v2，V1 文件库经「备份 → V1→V2 事务迁移
+// （373 列 no-op / 370 列补三列）→ 形态校验 → user_version=2」就地升级。
+// V1 快照保留，供迁移起点与测试夹具使用。
 //
-// 唯一真相源：DDL 只在本文件定义一次，V1/V2 共享；不做 ALTER、不做数据搬运、不做
-// down migration。任何真实 schema 变更都必须新增 SchemaVn.ddl + 迁移，并同步更新
-// expected* 计数与 expectedShapeFingerprint（否则正确新库也会被判定不兼容）；
-// 不允许再出现「DDL 在 A 处、补列在 B 处」的第二份定义。
+// 唯一真相源：DDL 只在本文件定义一次，V1/V2 共享；不做数据搬运、不做 down migration。
+// 唯一例外是 MigrationV1ToV2 对已知 370 列旧 V1（Cut 5 漏 bump 版本）补三列：
+// 补列文本必须逐字复刻本文件 DDL 的列定义（见 HistoricalV1Shape），仅此一处历史欠账。
+// 任何新的真实 schema 变更都必须新增 SchemaVn.ddl + 迁移，并同步更新 expected*
+// 计数与 expectedShapeFingerprint（否则正确新库也会被判定不兼容）。
 //
 // 与 Schema.swift 的关系：Schema.swift 只剩 AnalysisJobRepo 的活跃状态 SQL 字面量与
 // check-docs 的版本镜像，不再定义任何 DDL；版本镜像 WP6b 起对齐 2。
 //
-// 旧库策略（详见 draft §6.1/§6.2，WP6b 起）：形态正确的 V1 库就地迁移；
-// user_version=0 但有表 / 版本高于 current / 形态不符 / 非 SQLite 文件默认 fail closed
+// 旧库策略（详见 draft §6.1/§6.2，WP6b 起）：形态正确的 V1 库与已知 370 列旧 V1
+// 就地迁移；user_version=0 但有表 / 版本高于 current / 未知列形 / 非 SQLite 文件默认 fail closed
 // （只抛错，不改文件）。只有显式 Options.resetPolicy=.renameToIncompatible 才把
 //   gather.sqlite → gather.sqlite.incompatible-<yyyyMMdd-HHmmss>
 // 且 **必须同时移走 gather.sqlite-wal / gather.sqlite-shm** —— 只移主库时，
@@ -54,8 +56,9 @@ public enum SchemaV1 {
     /// 为什么 user_version 之外还要列形：Cut 5 给 similarity_cluster_meta 加 3 列时没有
     /// bump userVersion（370 → 373），旧 V1 库的 user_version 仍是 1。只看版本号会把
     /// 「缺列的旧库」当成 current，直到运行期第一次访问新列才抛 no such column。
-    /// Database.open 用计数 + 关键列 + 指纹判断「版本号对，但列形不是当前 V1」，
-    /// 不匹配按不兼容库整体重置（含 -wal/-shm）。
+    /// Database.open 用计数 + 关键列 + 指纹判断「版本号对，但列形不是当前 V1」：
+    /// 370 列的已知旧形走 Migration/HistoricalV1Shape + 补列迁移；其余未知列形默认
+    /// fail closed，只有显式 reset 才整体改名（含 -wal/-shm）。
     public static let expectedTableCount: Int = 43
     public static let expectedColumnCount: Int = 373
     public static let expectedExplicitIndexCount: Int = 69

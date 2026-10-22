@@ -10,7 +10,8 @@
 //   4b. 提交前两道 guard 的失败注入：迁移后 FK 违规 / 目标形态不符（catalog 写错或
 //       注入 DDL）都整体回滚、旧库可读、备份保留、下次启动可重试；
 //   5. newer(v3)：默认 .versionUnsupported 且主库字节不变；显式 reset 才改名重建；
-//   6. V0 有表（legacyPreV1）/ V1 缺列（370）：默认 .corrupt，不迁移、不产生备份；
+//   6. 已知 370 列旧 V1：走 .migrated，ALTER 补三列且保留数据/备份；V0 有表与
+//      未知 V1 列形仍默认 .corrupt，不迁移、不产生备份；
 //   7. 备份是有效 V1 快照（header / quick_check / user_version / 行数）且最多保留 3 套；
 //   8. shape 指纹显式钉死 43/373/69/62 与 7c7e…（V1/V2 同形）；
 //   9. transaction(.immediate/.exclusive) 与默认 deferred 语义一致，嵌套仍 SAVEPOINT。
@@ -23,6 +24,10 @@ private struct MigrationTestError: Error {}
 
 private let expectedV1Fingerprint =
     "7c7e0d143f93951e5c68fa07b962c65f157750f11bd638950c0931e5e0ee44c2"
+
+/// Cut 5 之前的 370 列旧 V1 指纹（373 canonical 去掉三行列）。
+private let expectedLegacyV1Fingerprint =
+    "7fb85cbfe010055f23e6dc37f385a1910f446c19e8b3c7bb8a81d9c42be68e91"
 
 private let seededTables = ["sessions", "photos", "deliveries", "delivery_items"]
 
@@ -91,6 +96,25 @@ private func seedV1Database(at path: String) throws {
         """)
 }
 
+/// 造一份 Cut 5 之前的 370 列旧 V1（user_version=1，similarity_cluster_meta 缺
+/// 状态版本化三列），并写入一个 session + 一行 8 列 meta。
+private func seedLegacyV1Database(at path: String) throws {
+    let db = try DBConnection(path: path)
+    defer { db.close() }
+    try db.exec(SchemaV1.sql)
+    try db.exec("""
+        ALTER TABLE similarity_cluster_meta DROP COLUMN algorithm_version;
+        ALTER TABLE similarity_cluster_meta DROP COLUMN input_signature;
+        ALTER TABLE similarity_cluster_meta DROP COLUMN state_digest;
+        """)
+    try insertSession(db, id: "legacy-session")
+    try db.exec("""
+        INSERT INTO similarity_cluster_meta
+            (session_id, param_threshold, grouping_mode, updated_at)
+        VALUES ('legacy-session', 32, 'sequential', 't');
+        """)
+}
+
 private func incompatibleCopies(in directory: URL) throws -> [String] {
     try FileManager.default.contentsOfDirectory(atPath: directory.path)
         .filter { $0.hasPrefix("gather.sqlite.incompatible-") }
@@ -113,6 +137,22 @@ private struct FailingMigrationV1ToV2: SchemaMigration {
 
     func apply(_ connection: DBConnection) throws {
         try connection.exec("ALTER TABLE sessions ADD COLUMN migration_probe TEXT;")
+        throw MigrationTestError()
+    }
+}
+
+/// 370 列旧 V1 的补列失败注入：先补第一列再抛错，证明 ALTER 与 user_version
+/// 一起回滚，库仍停在 8 列的旧 V1。
+private struct PartialLegacyMigrationV1ToV2: SchemaMigration {
+    let from: SchemaVersion = .v1
+    let to: SchemaVersion = .v2
+    let name = "test-partial-legacy-v1-to-v2"
+
+    func apply(_ connection: DBConnection) throws {
+        try connection.exec("""
+            ALTER TABLE similarity_cluster_meta
+            ADD COLUMN algorithm_version INTEGER NOT NULL DEFAULT 1 CHECK (algorithm_version >= 1);
+            """)
         throw MigrationTestError()
     }
 }
@@ -216,6 +256,116 @@ struct SchemaMigrationTests {
         #expect(try incompatibleCopies(in: directory).isEmpty, "迁移不是 reset，不得产生 incompatible 副本")
     }
 
+    @Test("370 列旧 V1（Cut 5 之前）→ 备份 + ALTER 三列 → V2，session 与默认值保留")
+    func legacyV1With370ColumnsMigratesAndRetainsData() throws {
+        let directory = try makeTemporaryDirectory("legacy-v1-migrate")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+        try seedLegacyV1Database(at: path)
+
+        do {
+            let raw = try DBConnection(path: path)
+            defer { raw.close() }
+            #expect(try userVersion(raw) == 1)
+            #expect(try tableColumnCount(raw, table: "similarity_cluster_meta") == 8)
+            let shape = try SchemaShapeReader.read(raw)
+            #expect(shape.columnCount == 370)
+            #expect(shape.fingerprint == expectedLegacyV1Fingerprint)
+            #expect(HistoricalV1Shape.shape.issues(against: shape).isEmpty,
+                    "370 列旧 V1 必须被识别为已知旧形")
+            #expect(try SchemaInspector.inspect(raw, catalog: .production, path: path) == .older(.v1),
+                    "370 列旧 V1 必须判 .older(.v1)，而不是 corrupt")
+            #expect(SchemaV1.shape.issues(against: shape).contains { $0.contains("列数 370") })
+        }
+
+        let database = try Database.open(at: path)
+        defer { database.close() }
+
+        guard case .migrated(let from, let to, let backup) = database.outcome else {
+            Issue.record("370 列旧 V1 必须走 .migrated，实际 \(database.outcome)")
+            return
+        }
+        #expect(from == .v1)
+        #expect(to == .v2)
+        #expect(backup != nil, "迁移前必须有备份")
+        #expect(try userVersion(database.connection) == 2)
+        #expect(try tableColumnCount(database.connection, table: "similarity_cluster_meta") == 11)
+        #expect(try SchemaV1.shape.issues(against: SchemaShapeReader.read(database.connection)).isEmpty,
+                "补列后必须回到 373 列 V2 形态")
+        #expect(try scalarInt(database.connection, "SELECT COUNT(*) FROM sessions") == 1,
+                "迁移必须保留 session 数据")
+        #expect(try scalarInt(database.connection, "SELECT COUNT(*) FROM similarity_cluster_meta") == 1)
+
+        let meta = try database.connection.prepare("""
+            SELECT algorithm_version, input_signature, state_digest
+              FROM similarity_cluster_meta WHERE session_id = 'legacy-session'
+            """).get([])
+        #expect(meta?[0].intValue == 1, "algorithm_version 默认值必须为 1")
+        #expect(meta?[1].textValue == "", "input_signature 默认值必须为空串")
+        #expect(meta?[2].textValue == "", "state_digest 默认值必须为空串")
+
+        // CHECK 随 ALTER 一起生效（默认值/约束与 SchemaV1 一致）。
+        do {
+            try database.write { db in
+                _ = try db.prepare("""
+                    UPDATE similarity_cluster_meta SET algorithm_version = 0
+                     WHERE session_id = 'legacy-session'
+                    """).run([])
+            }
+            Issue.record("algorithm_version >= 1 CHECK 必须在 ALTER 后生效")
+        } catch {
+            // 期望的约束失败（具体错误码由 Database.write 映射，这里只钉行为）。
+        }
+
+        #expect(try migrationBackups(in: directory).count == 1, "370 列旧 V1 也必须留迁移备份")
+        #expect(try incompatibleCopies(in: directory).isEmpty, "迁移不是 reset")
+    }
+
+    @Test("370 列旧 V1 迁移失败：回滚保持 370/user_version=1、备份保留、可重试")
+    func legacyV1FailedMigrationRollsBackAndKeepsBackup() throws {
+        let directory = try makeTemporaryDirectory("legacy-v1-fail")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+        try seedLegacyV1Database(at: path)
+
+        do {
+            _ = try Database.open(
+                at: path,
+                options: Database.Options(catalog: catalog(with: PartialLegacyMigrationV1ToV2()))
+            )
+            Issue.record("失败迁移必须抛错")
+        } catch let error as DatabaseError {
+            #expect(error.kind == .migration)
+        }
+
+        #expect(try migrationBackups(in: directory).count == 1, "失败迁移也必须保留备份")
+        #expect(try incompatibleCopies(in: directory).isEmpty, "迁移失败不得 reset 用户库")
+
+        do {
+            let raw = try DBConnection(path: path)
+            defer { raw.close() }
+            #expect(try userVersion(raw) == 1, "事务回滚后库必须仍停在 V1")
+            #expect(try tableColumnCount(raw, table: "similarity_cluster_meta") == 8,
+                    "补列 ALTER 必须随事务回滚")
+            #expect(try scalarInt(raw, "SELECT COUNT(*) FROM sessions") == 1)
+            #expect(try scalarInt(raw, "SELECT COUNT(*) FROM similarity_cluster_meta") == 1)
+        }
+
+        // 失败后下次启动仍可重试：production 目录补列成功并保留数据。
+        let retried = try Database.open(at: path)
+        defer { retried.close() }
+        guard case .migrated(let retryFrom, let retryTo, let retryBackup) = retried.outcome else {
+            Issue.record("失败后的重试必须成功迁移，实际 \(retried.outcome)")
+            return
+        }
+        #expect(retryFrom == .v1)
+        #expect(retryTo == .v2)
+        #expect(retryBackup != nil)
+        #expect(try userVersion(retried.connection) == 2)
+        #expect(try tableColumnCount(retried.connection, table: "similarity_cluster_meta") == 11)
+        #expect(try scalarInt(retried.connection, "SELECT COUNT(*) FROM sessions") == 1)
+    }
+
     @Test("V1→V2 幂等：重复 open 为 opened(.v2)，不新增备份，行数不变")
     func repeatedOpenAfterMigrationIsIdempotent() throws {
         let directory = try makeTemporaryDirectory("v2-reopen")
@@ -255,7 +405,7 @@ struct SchemaMigrationTests {
         let migration = try #require(catalog.migrations.first)
         #expect(migration.from == .v1)
         #expect(migration.to == .v2)
-        #expect(migration.name == "v2-version-only")
+        #expect(migration.name == "v2-version-and-legacy-v1")
         #expect(catalog.currentSnapshot.version == .v2)
         #expect(catalog.currentSnapshot.shape == SchemaV1.shape)
         try catalog.validate()
@@ -573,8 +723,8 @@ struct SchemaMigrationTests {
         #expect(FileManager.default.fileExists(atPath: backup))
     }
 
-    @Test("v1 缺 3 列（370）：默认 .corrupt 且不迁移；显式 reset 保留旧副本")
-    func v1ShapeMismatchFailsClosedAndReportsIssue() throws {
+    @Test("未知 V1 列形（370 旧形 + 额外列）：默认 .corrupt 且不迁移；显式 reset 保留旧副本")
+    func unknownV1ShapeFailsClosedAndReportsIssue() throws {
         let directory = try makeTemporaryDirectory("shape")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = databasePath(in: directory)
@@ -584,6 +734,8 @@ struct SchemaMigrationTests {
             try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN algorithm_version;")
             try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN input_signature;")
             try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN state_digest;")
+            // 370 的已知旧形之外再加一列未知列：既不是 373，也不是可迁移的 370。
+            try legacy.exec("ALTER TABLE sessions ADD COLUMN legacy_unknown_column TEXT;")
             try insertSession(legacy, id: "legacy-session")
             legacy.close()
         }
@@ -593,23 +745,24 @@ struct SchemaMigrationTests {
             defer { raw.close() }
             #expect(try tableColumnCount(raw, table: "similarity_cluster_meta") == 8)
             let snapshot = try SchemaShapeReader.read(raw)
-            #expect(snapshot.columnCount == 370)
-            #expect(snapshot.fingerprint != expectedV1Fingerprint)
+            #expect(snapshot.columnCount == 371)
+            #expect(!HistoricalV1Shape.shape.issues(against: snapshot).isEmpty,
+                    "额外列必须让 370 旧形识别失败")
             let issues = SchemaV1.shape.issues(against: snapshot)
-            #expect(issues.contains { $0.contains("列数 370，期望 373") })
+            #expect(issues.contains { $0.contains("列数 371，期望 373") })
             #expect(issues.contains { $0.contains("similarity_cluster_meta") && $0.contains("缺列") })
             #expect(issues.contains { $0.contains("列形指纹") && $0.contains(expectedV1Fingerprint) })
         }
 
         do {
             _ = try Database.open(at: path)
-            Issue.record("形态不符默认必须抛 .corrupt")
+            Issue.record("未知形态默认必须抛 .corrupt")
         } catch let error as DatabaseError {
             #expect(error.kind == .corrupt)
             #expect(error.message.contains("列形") || error.message.contains("列数"))
         }
         #expect(try incompatibleCopies(in: directory).isEmpty)
-        #expect(try migrationBackups(in: directory).isEmpty, "形态不符不得迁移/备份")
+        #expect(try migrationBackups(in: directory).isEmpty, "未知形态不得迁移/备份")
         #expect(try dataOfFile(path).count > 0)
 
         let database = try Database.open(
@@ -695,6 +848,10 @@ struct SchemaMigrationTests {
         #expect(snapshot.foreignKeyCount == 62)
         #expect(snapshot.fingerprint == expectedV1Fingerprint)
         #expect(SchemaV1.shape.fingerprint == expectedV1Fingerprint)
+        #expect(HistoricalV1Shape.fingerprint == expectedLegacyV1Fingerprint)
+        #expect(HistoricalV1Shape.shape.columnCount == 370)
+        #expect(HistoricalV1Shape.shape.tableCount == 43)
+        #expect(HistoricalV1Shape.shape.fingerprint == expectedLegacyV1Fingerprint)
         #expect(SchemaV2.shape.fingerprint == expectedV1Fingerprint)
         #expect(SchemaCatalog.production.currentSnapshot.shape.fingerprint == expectedV1Fingerprint)
         #expect(SchemaV1.shape.issues(against: snapshot).isEmpty)

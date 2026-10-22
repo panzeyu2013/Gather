@@ -3,7 +3,8 @@
 // 保持 `Database.OpenOutcome` / `Database.ResetReason` 的调用面，同时让 Database.swift
 // 只保留 open 状态机本身（行数目标 ≤520）。
 //
-// .migrated 从 WP6b 起可达：backup 为迁移前 <db>.pre-v2-* 备份路径（V1→V2 no-op 也备份）。
+// .migrated 从 WP6b 起可达：backup 为迁移前 <db>.pre-v2-* 备份路径（373 列 no-op、
+// 370 列补列都先备份）。
 public extension Database {
     /// 开发重置的原因（OpenOutcome.reset 的可读标签）。
     enum ResetReason: Sendable, Equatable, CustomStringConvertible {

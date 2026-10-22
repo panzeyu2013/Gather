@@ -1,7 +1,8 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Migration/SchemaCatalog.swift
 // WP6a：版本快照 + 线性迁移注册表（设计 §5.1 / §7.1 a1）。
-// WP6b：current = .v2；V1→V2 是 no-op 版本位（MigrationV1ToV2），本文件的计划算法
-// 不变。缺步/跳号/重复 (from,to) 在 plan/validate 中显式抛 .migration，绝不静默跳过。
+// WP6b：current = .v2；V1→V2 对 373 列 V1 是 no-op 版本位，对已知 370 列旧 V1
+// 补三列（MigrationV1ToV2），本文件的计划算法不变。缺步/跳号/重复 (from,to) 在
+// plan/validate 中显式抛 .migration，绝不静默跳过。
 import Foundation
 
 public struct SchemaCatalog: Sendable {
@@ -20,7 +21,8 @@ public struct SchemaCatalog: Sendable {
     }
 
     /// 生产目录：current = v2，snapshots = [v1, v2]，migrations = [V1→V2]。
-    /// V2 与 V1 的 DDL 逐字相同，迁移是 no-op；版本号由 SchemaMigrator 事务内写。
+    /// V2 与 V1 的 DDL 逐字相同；373 列 V1 的迁移是 no-op，370 列旧 V1 由同一
+    /// 迁移 ALTER 补三列。版本号由 SchemaMigrator 事务内写。
     public static let production = SchemaCatalog(
         current: .v2,
         snapshots: [

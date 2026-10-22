@@ -8,7 +8,9 @@
 // 判定顺序（与旧 inspectSchema 等价）：
 //   v == current → 比对 shape(v)，不符即 corrupt(.shapeMismatch)
 //   v == 0       → 0 用户表 = empty；有表 = corrupt(.legacyPreV1)
-//   0 < v < current → 必须有快照且 shape 匹配，否则 corrupt(.shapeMismatch)（不迁移残缺库）
+//   0 < v < current → 必须有快照且 shape 匹配；v1 的 370 列已知旧形
+//                     （HistoricalV1Shape）也判 .older(.v1)（补列迁移），
+//                     其余未知列形仍 corrupt(.shapeMismatch)（不迁移残缺库）
 //   v > current  → newer（不读 shape：旧构建无权解释新库）
 //   busy/io 等暂时性错误 → 原样上抛，绝不触发 reset。
 import Foundation
@@ -19,7 +21,8 @@ enum OpenState: Sendable, Equatable {
     case empty
     /// user_version == current 且列形/指纹一致。
     case current(SchemaVersion)
-    /// 0 < user_version < current 且列形与该版本快照一致（可迁移）。
+    /// 0 < user_version < current 且列形可迁移：或与该版本快照一致，或是 v1 的
+    /// 370 列已知旧形（HistoricalV1Shape；同样返回 .v1，由迁移器补列）。
     case older(SchemaVersion)
     /// user_version > current：本构建不认识，fail closed。
     case newer(Int)
@@ -112,14 +115,30 @@ enum SchemaInspector {
             // 0 < version < current：先确认 catalog 认识这个版本，再要求形态匹配。
             let from = SchemaVersion(version)
             let expected = try catalog.snapshot(from).shape
-            if let issue = try shapeIssue(connection, expecting: expected) {
-                GatherLogger.log(
-                    "schema_shape_mismatch path=\(path) user_version=\(version) issue=\(issue)",
-                    level: .warn
-                )
-                return .corrupt(.shapeMismatch(version: version, issue: issue))
+            let actual = try SchemaShapeReader.read(connection)
+            let issues = expected.issues(against: actual)
+            if issues.isEmpty {
+                return .older(from)
             }
-            return .older(from)
+
+            // 例外：Cut 5 之前的 370 列 V1 是**已知**旧形（similarity_cluster_meta
+            // 缺状态版本化三列）。它同样可迁移：MigrationV1ToV2 在事务内 ALTER 补列，
+            // 失败由 SchemaMigrator 回滚、SchemaBackup 兜底。未记录过的列形仍判 corrupt。
+            if from == .v1, HistoricalV1Shape.shape.issues(against: actual).isEmpty {
+                GatherLogger.log(
+                    "schema_legacy_v1_shape path=\(path) user_version=\(version) "
+                        + "columns=\(HistoricalV1Shape.columnCount) action=alter-to-\(current)",
+                    level: .info
+                )
+                return .older(from)
+            }
+
+            let issue = issues.joined(separator: "；")
+            GatherLogger.log(
+                "schema_shape_mismatch path=\(path) user_version=\(version) issue=\(issue)",
+                level: .warn
+            )
+            return .corrupt(.shapeMismatch(version: version, issue: issue))
         } catch let error as DatabaseError {
             throw error
         } catch let error as DBError {

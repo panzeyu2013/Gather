@@ -8,7 +8,7 @@
 public protocol SchemaMigration: Sendable {
     var from: SchemaVersion { get }
     var to: SchemaVersion { get }
-    /// 日志/测试标识，如 "v2-version-only"。
+    /// 日志/测试标识，如 "v2-version-and-legacy-v1"。
     var name: String { get }
 
     func apply(_ connection: DBConnection) throws

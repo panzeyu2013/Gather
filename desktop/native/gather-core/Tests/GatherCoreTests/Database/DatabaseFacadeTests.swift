@@ -4,7 +4,7 @@
 // 覆盖四件事（WP6b）：
 //   1. `:memory:` 打开即当前 SchemaV2（43 表 / user_version = 2；DDL 与 V1 相同）；
 //   2. 文件库新建 → 关闭 → 重开数据保留（V2 幂等）；
-//   3. 形态正确的 V1 文件库 → 备份 + 迁移为 V2（不 reset、数据保留）；user_version=3 的
+//   3. 形态正确的 V1 与 370 列旧 V1 → 备份 + 迁移为 V2（不 reset、数据保留）；user_version=3 的
 //      新库在显式 resetPolicy=.renameToIncompatible 下被整体改名 `.incompatible-*`，
 //      新库回到 V2；非 SQLite 文件/坏 header 默认 .failClosed 抛 .corrupt、字节不变、
 //      不改名，只有显式 reset 才改名重建；
@@ -309,10 +309,53 @@ struct DatabaseFacadeTests {
         #expect(try Data(contentsOf: renamed) == bytes, "改名的副本必须是原文件字节")
     }
 
-    // MARK: 3b. user_version=1 但列形不是当前 V1（Cut 5 加列未 bump）
+    // MARK: 3b. user_version=1 的两种形态：370 列已知旧形（迁移）/ 未知列形（reset）
 
-    @Test("同版本旧库缺列（370 列）：重开重置为当前 V2，旧文件保留 .incompatible-*（含 -wal/-shm）")
-    func outdatedV1ShapeIsResetWithSidecars() throws {
+    @Test("370 列旧 V1（Cut 5 之前）：默认补三列迁移为 V2，不 reset、session 保留")
+    func legacyV1ShapeIsMigratedNotReset() throws {
+        let directory = try makeTemporaryDirectory("legacy-v1")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = databasePath(in: directory)
+
+        do {
+            let legacy = try DBConnection(path: path)
+            try legacy.exec(SchemaV1.sql)
+            // 模拟 Cut 5 之前的 V1：similarity_cluster_meta 仍是 8 列，user_version 仍为 1。
+            try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN algorithm_version;")
+            try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN input_signature;")
+            try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN state_digest;")
+            try insertSession(legacy, id: "legacy-keep", name: "legacy-v1")
+            #expect(try userColumnCount(legacy) == 370, "模拟旧库应为 370 列")
+            legacy.close()
+        }
+
+        let database = try Database.open(at: path)
+        defer { database.close() }
+
+        #expect(try database.read { try userColumnCount($0) } == 373, "迁移后必须是当前 373 列")
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
+        let columns = try database.read { try columnNames($0, table: "similarity_cluster_meta") }
+        #expect(columns.isSuperset(of: ["algorithm_version", "input_signature", "state_digest"]),
+                "迁移必须补 Cut 5 三列，实际 \(columns.sorted())")
+
+        guard case .migrated(let from, let to, let backup) = database.outcome else {
+            Issue.record("370 列旧 V1 必须走 .migrated，实际 \(database.outcome)")
+            return
+        }
+        #expect(from == .v1)
+        #expect(to == .v2)
+        #expect(backup != nil)
+        #expect(try database.read {
+            try $0.prepare("SELECT name FROM sessions WHERE id = ?").get([.text("legacy-keep")])?[0].textValue
+        } == "legacy-v1", "迁移必须保留旧数据")
+        let backups = try migrationBackups(in: directory)
+            .filter { !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") }
+        #expect(backups.count == 1, "迁移必须留一套备份：\(backups)")
+        #expect(try incompatibleCopies(in: directory).isEmpty, "已知 370 旧形不得 reset")
+    }
+
+    @Test("未知 V1 列形（370 旧形 + 额外列）：重开重置为当前 V2，旧文件保留 .incompatible-*（含 -wal/-shm）")
+    func unknownV1ShapeIsResetWithSidecars() throws {
         let directory = try makeTemporaryDirectory("outdated-v1")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = databasePath(in: directory)
@@ -324,8 +367,10 @@ struct DatabaseFacadeTests {
             try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN algorithm_version;")
             try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN input_signature;")
             try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN state_digest;")
+            // 额外未知列：既不是 373，也不是可迁移的 370 已知旧形。
+            try legacy.exec("ALTER TABLE sessions ADD COLUMN legacy_unknown_column TEXT;")
             try insertSession(legacy, id: "legacy-session")
-            #expect(try userColumnCount(legacy) == 370, "模拟旧库应为 370 列")
+            #expect(try userColumnCount(legacy) == 371, "模拟未知旧库应为 371 列")
             #expect(try scalarInt(legacy, "PRAGMA user_version") == 1,
                     "旧库版本号仍是 1：这正是只校验 user_version 不够的原因")
             legacy.close()
