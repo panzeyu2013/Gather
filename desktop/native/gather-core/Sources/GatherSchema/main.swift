@@ -1,28 +1,36 @@
 // desktop/native/gather-core/Sources/GatherSchema/main.swift
 // Cut 3 / 3a-5（D-015）：GatherSchema —— schema 工具可执行（dump / verify）。
+// WP6b：verify 对齐 user_version=2 与完整的 43/373/69/62 数字；dump 打印当前 V2 快照。
 //
 // DDL 的唯一真相源仍在 GatherPersistence（Sources/GatherPersistence/Database/SchemaV1.swift）；
 // 本 target 依赖 GatherPersistence 而**不导出库**，也不复制任何 DDL 文本。
 //
 // 用法：
-//   swift run gather-schema dump      # 打印 SchemaV1.sql（建库 DDL 全文）
+//   swift run gather-schema dump      # 打印当前 schema（V2）建库 DDL
 //   swift run gather-schema verify    # 在内存库上重建 schema 并校验不变量
 //   swift run gather-schema --help    # 打印帮助
 //
 // 退出码：0 成功；1 校验失败（不变量不满足 / 建库抛错）；2 参数用法错误。
 //
-// 为什么 verify 不打开磁盘上的库：Database.open(at:) 对 user_version 不兼容的库会
-// **重置**（改名备份 + 重建），这对一个「只读校验」工具是破坏性的。文件级校验需要
-// 单独的只读连接实现，不在本步范围内；这里只验证 DDL 能否一次成型且不变量成立。
+// 为什么 verify 不打开磁盘上的库：Database.open(at:) 对 V1 库会备份并迁移、对不兼容库
+// 默认 fail closed、显式 reset 时还会改名。这都不是一个「只读校验」工具该做的事；
+// 文件级只读校验需要独立连接实现，不在本步范围内。这里只验证当前 DDL 能否一次成型
+// 且不变量成立。
 import Foundation
 import GatherPersistence
 
 /// verify 钉死的不变量（与 Tests/GatherCoreTests/Database/SchemaV1Tests.swift 同源）。
 private enum SchemaInvariant {
-    /// SchemaV1 的表数（不含 SQLite 内部表 sqlite_*）。
+    /// SchemaV1/V2 的表数（不含 SQLite 内部表 sqlite_*）。
     static let tableCount = 43
-    /// 期望的库版本号（PRAGMA user_version）。
-    static let userVersion = SchemaV1.userVersion
+    /// 全部用户列之和（43 表逐表 pragma 累加）。
+    static let columnCount = 373
+    /// 显式索引数（sql IS NOT NULL；排除 sqlite_autoindex_*）。
+    static let explicitIndexCount = 69
+    /// 外键数（逐表 PRAGMA foreign_key_list 累加）。
+    static let foreignKeyCount = 62
+    /// 当前库版本号（PRAGMA user_version）；WP6b 起为 2。
+    static let userVersion = SchemaCatalog.production.current.rawValue
 }
 
 /// 校验失败（携带人类可读原因；由顶层统一转成 exit 1）。
@@ -35,9 +43,11 @@ private let usage = """
 gather-schema — Gather 本地库 schema 工具（Cut 3 / 3a-5，D-015）
 
 用法：
-  gather-schema dump      打印 SchemaV1.sql（建库 DDL 的唯一真相源）
+  gather-schema dump      打印当前 schema（V2）建库 DDL（含 PRAGMA user_version = 2）
   gather-schema verify    在内存库上重建 schema 并校验不变量：
-                            \(SchemaInvariant.tableCount) 张表 / PRAGMA user_version = \(SchemaInvariant.userVersion) /
+                            \(SchemaInvariant.tableCount) 张表 / \(SchemaInvariant.columnCount) 列 /
+                            \(SchemaInvariant.explicitIndexCount) 显式索引 / \(SchemaInvariant.foreignKeyCount) 外键 /
+                            PRAGMA user_version = \(SchemaInvariant.userVersion) /
                             PRAGMA foreign_key_check 无违规
   gather-schema --help    打印本帮助
 
@@ -57,8 +67,21 @@ private func fail(_ message: String) -> Never {
     exit(1)
 }
 
-/// 在内存库上按 SchemaV1 一次成型，并校验 43 表 / user_version / 外键一致性。
-private func verifySchema() throws -> (tables: Int, version: Int, violations: Int) {
+private func quoteIdentifier(_ name: String) -> String {
+    "\"" + name.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+}
+
+private struct SchemaCounts {
+    let tables: Int
+    let columns: Int
+    let indexes: Int
+    let foreignKeys: Int
+    let version: Int
+    let violations: Int
+}
+
+/// 在内存库上按当前快照一次成型，并校验表/列/索引/外键/版本/外键一致性。
+private func verifySchema() throws -> SchemaCounts {
     let database = try Database.openInMemory()
     defer { database.close() }
 
@@ -69,12 +92,28 @@ private func verifySchema() throws -> (tables: Int, version: Int, violations: In
             throw VerifyFailure("读取 PRAGMA user_version 无结果")
         }
 
-        guard let countRow = try connection
-            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';")
-            .get([]),
-            let tables = countRow[0].intValue
+        let tables = try connection.prepare("""
+            SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+             ORDER BY name
+            """).query([]).compactMap { $0[0].textValue }
+
+        var columns = 0
+        var foreignKeys = 0
+        for table in tables {
+            columns += try connection.prepare("PRAGMA table_info(\(quoteIdentifier(table)));")
+                .query([]).count
+            foreignKeys += try connection.prepare("PRAGMA foreign_key_list(\(quoteIdentifier(table)));")
+                .query([]).count
+        }
+
+        guard let indexRow = try connection.prepare("""
+            SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND sql IS NOT NULL
+            """).get([]),
+            let indexes = indexRow[0].intValue
         else {
-            throw VerifyFailure("统计 sqlite_master 用户表失败")
+            throw VerifyFailure("统计显式索引失败")
         }
 
         let violations = try connection.prepare("PRAGMA foreign_key_check;").query([]).count
@@ -84,15 +123,37 @@ private func verifySchema() throws -> (tables: Int, version: Int, violations: In
                 "user_version=\(version)，期望 \(SchemaInvariant.userVersion)"
             )
         }
-        guard tables == Int64(SchemaInvariant.tableCount) else {
+        guard tables.count == SchemaInvariant.tableCount else {
             throw VerifyFailure(
-                "表数=\(tables)，期望 \(SchemaInvariant.tableCount)"
+                "表数=\(tables.count)，期望 \(SchemaInvariant.tableCount)"
+            )
+        }
+        guard columns == SchemaInvariant.columnCount else {
+            throw VerifyFailure(
+                "列数=\(columns)，期望 \(SchemaInvariant.columnCount)"
+            )
+        }
+        guard indexes == Int64(SchemaInvariant.explicitIndexCount) else {
+            throw VerifyFailure(
+                "显式索引=\(indexes)，期望 \(SchemaInvariant.explicitIndexCount)"
+            )
+        }
+        guard foreignKeys == SchemaInvariant.foreignKeyCount else {
+            throw VerifyFailure(
+                "外键=\(foreignKeys)，期望 \(SchemaInvariant.foreignKeyCount)"
             )
         }
         guard violations == 0 else {
             throw VerifyFailure("foreign_key_check 发现 \(violations) 条违规")
         }
-        return (Int(tables), Int(version), violations)
+        return SchemaCounts(
+            tables: tables.count,
+            columns: columns,
+            indexes: Int(indexes),
+            foreignKeys: foreignKeys,
+            version: Int(version),
+            violations: violations
+        )
     }
 }
 
@@ -110,8 +171,9 @@ case "dump":
         writeStderr("gather-schema: dump 不接受额外参数\n\n\(usage)")
         exit(2)
     }
-    // 原样输出 DDL 全文：末尾补一个换行，便于终端拼接。
-    writeStdout(SchemaV1.sql.hasSuffix("\n") ? SchemaV1.sql : SchemaV1.sql + "\n")
+    // 打印当前版本快照（V2）；末尾补一个换行，便于终端拼接。
+    let sql = SchemaCatalog.production.currentSnapshot.createSQL
+    writeStdout(sql.hasSuffix("\n") ? sql : sql + "\n")
     exit(0)
 
 case "verify":
@@ -122,7 +184,8 @@ case "verify":
     do {
         let result = try verifySchema()
         writeStdout(
-            "schema ok: tables=\(result.tables) user_version=\(result.version) "
+            "schema ok: tables=\(result.tables) columns=\(result.columns) indexes=\(result.indexes) "
+                + "fks=\(result.foreignKeys) user_version=\(result.version) "
                 + "foreign_key_violations=\(result.violations)\n"
         )
         exit(0)

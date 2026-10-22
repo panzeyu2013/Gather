@@ -2,9 +2,8 @@
 // WP6a：某个 schema 版本的冻结快照（设计 §5.1）。版本、DDL、期望列形三者必须同源，
 // 迁移器用 shape 校验「版本对了但形态不对」。
 //
-// WP6a 的 v1 快照直接复用 SchemaV1.sql（它末尾仍带 PRAGMA user_version = 1，属于
-// 当前唯一 DDL 真相源）；createSQL 检测到已有版本声明时不再追加，保证新库建库
-// 路径与现状逐字节相同。WP6b 拆出「不含版本号的 ddl」后走追加分支。
+// WP6b 起快照的 ddl 不含 PRAGMA user_version（V1/V2 共享 SchemaV1.ddl），createSQL
+// 统一追加版本号；检测到 ddl 已带同版本声明时不再追加，兼容旧快照形态。
 public struct SchemaSnapshot: Sendable {
     public let version: SchemaVersion
     /// 建库 DDL。WP6b 起不含 PRAGMA user_version；WP6a 的 v1 仍含（见文件头）。

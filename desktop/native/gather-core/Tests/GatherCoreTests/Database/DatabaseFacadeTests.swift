@@ -1,16 +1,17 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Database/DatabaseFacadeTests.swift
 // Cut 2 / B-1：Database facade 的行为门禁（D-035）。
 //
-// 覆盖四件事：
-//   1. `:memory:` 打开即 SchemaV1（43 表 / user_version = 1）；
-//   2. 文件库新建 → 关闭 → 重开数据保留（V1 是「一次成型 + 不改 schema」，重开必须直接可用）；
-//   3. user_version=99 的旧库（带 -wal/-shm）在显式 resetPolicy=.renameToIncompatible 下
-//      被整体改名 `.incompatible-*`，新库回到 V1，旧表不会借残留 WAL 复辟；非 SQLite 文件
-//      同样走改名。默认 .failClosed 下抛错、不改文件（见 SchemaMigrationTests）；
+// 覆盖四件事（WP6b）：
+//   1. `:memory:` 打开即当前 SchemaV2（43 表 / user_version = 2；DDL 与 V1 相同）；
+//   2. 文件库新建 → 关闭 → 重开数据保留（V2 幂等）；
+//   3. 形态正确的 V1 文件库 → 备份 + 迁移为 V2（不 reset、数据保留）；user_version=3 的
+//      新库在显式 resetPolicy=.renameToIncompatible 下被整体改名 `.incompatible-*`，
+//      新库回到 V2；非 SQLite 文件同样走改名。默认 .failClosed 下抛错、不改文件
+//      （见 SchemaMigrationTests）；
 //   4. read / write 事务回滚 / 嵌套 SAVEPOINT / close 后一律 `.closed` / async 串行执行器。
 //
-// 说明：本批不接入 Repo/Service，测试只新增本文件；已存在的 DB.swift / SchemaV1.swift
-// 一行未改。
+// 说明：测试只经 Database.open / DBConnection，不接入 Repo/Service；DDL 仍由
+// SchemaV1.swift 唯一定义（V2 复用同一份 DDL，只差 user_version）。
 import Foundation
 import Testing
 @testable import GatherProtocol
@@ -18,7 +19,7 @@ import Testing
 
 // MARK: - 期望值 / 公共辅助
 
-/// SchemaV1 的用户表数量（draft §1/§9.1；与 SchemaV1Tests 的 43 表清单同源）。
+/// 当前 schema（V1/V2 同形）的用户表数量（draft §1/§9.1；与 SchemaV1Tests 的 43 表清单同源）。
 private let expectedV1TableCount = 43
 
 private struct TestError: Error {}
@@ -99,20 +100,20 @@ struct DatabaseFacadeTests {
 
     // MARK: 1. 内存库
 
-    @Test(":memory:：open 直接建 SchemaV1（43 表 / user_version = 1）")
-    func memoryOpenBuildsSchemaV1() throws {
+    @Test(":memory:：open 直接建 SchemaV2（43 表 / user_version = 2）")
+    func memoryOpenBuildsSchemaV2() throws {
         let database = try Database.open(at: Database.inMemoryPath)
         defer { database.close() }
 
         #expect(database.isInMemory)
         #expect(!database.isClosed)
-        #expect(database.outcome == .created(.v1))
+        #expect(database.outcome == .created(.v2))
 
         let tables = try database.read { try userTables($0) }
         #expect(tables.count == expectedV1TableCount, "V1 必须是 43 张表，实际 \(tables.count)：\(tables)")
         #expect(tables.contains("sessions"))
         #expect(tables.contains("delivery_intents"))
-        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
         // 内存库不落盘：journal_mode 回落 memory 不是错误；checkpoint 也不得抛错。
         #expect(try database.checkpoint() == true)
     }
@@ -134,17 +135,17 @@ struct DatabaseFacadeTests {
 
         let second = try Database.open(at: path)
         defer { second.close() }
-        #expect(try second.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
+        #expect(try second.read { try scalarInt($0, "PRAGMA user_version") } == 2)
         #expect(try second.read { try userTables($0).count } == expectedV1TableCount)
         let name = try second.read { db in
             try db.prepare("SELECT name FROM sessions WHERE id = ?").get([.text("s-1")])?[0].textValue
         }
-        #expect(name == "keep-me", "重开必须保留已提交数据（V1 不做迁移）")
+        #expect(name == "keep-me", "重开必须保留已提交数据（V2 幂等）")
     }
 
     // MARK: 3. 旧库/非 SQLite 重置
 
-    @Test("user_version=99 旧库（含 -wal/-shm）：整体改名 .incompatible-*，新库为 V1")
+    @Test("user_version=99 旧库（含 -wal/-shm）：整体改名 .incompatible-*，新库为 V2")
     func incompatibleDatabaseIsResetWithSidecars() throws {
         let directory = try makeTemporaryDirectory("reset")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -171,8 +172,8 @@ struct DatabaseFacadeTests {
         )
         defer { database.close() }
 
-        // 新库必须是干净的 V1：版本 1、43 表、旧表不存在（WAL 残留不得复辟旧页）。
-        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
+        // 新库必须是干净的 V2：版本 2、43 表、旧表不存在（WAL 残留不得复辟旧页）。
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
         let tables = try database.read { try userTables($0) }
         #expect(tables.count == expectedV1TableCount)
         #expect(!tables.contains("legacy_marker"), "旧库的表不得出现在新库里")
@@ -216,7 +217,7 @@ struct DatabaseFacadeTests {
             options: Database.Options(resetPolicy: .renameToIncompatible)
         )
         defer { database.close() }
-        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
         #expect(try database.read { try userTables($0).count } == expectedV1TableCount)
 
         let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
@@ -225,7 +226,7 @@ struct DatabaseFacadeTests {
 
     // MARK: 3b. user_version=1 但列形不是当前 V1（Cut 5 加列未 bump）
 
-    @Test("同版本旧库缺列（370 列）：重开重置为当前 V1，旧文件保留 .incompatible-*（含 -wal/-shm）")
+    @Test("同版本旧库缺列（370 列）：重开重置为当前 V2，旧文件保留 .incompatible-*（含 -wal/-shm）")
     func outdatedV1ShapeIsResetWithSidecars() throws {
         let directory = try makeTemporaryDirectory("outdated-v1")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -240,7 +241,7 @@ struct DatabaseFacadeTests {
             try legacy.exec("ALTER TABLE similarity_cluster_meta DROP COLUMN state_digest;")
             try insertSession(legacy, id: "legacy-session")
             #expect(try userColumnCount(legacy) == 370, "模拟旧库应为 370 列")
-            #expect(try scalarInt(legacy, "PRAGMA user_version") == SchemaV1.userVersion,
+            #expect(try scalarInt(legacy, "PRAGMA user_version") == 1,
                     "旧库版本号仍是 1：这正是只校验 user_version 不够的原因")
             legacy.close()
         }
@@ -256,7 +257,7 @@ struct DatabaseFacadeTests {
         )
         defer { database.close() }
 
-        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
         #expect(try database.read { try userTables($0).count } == expectedV1TableCount)
         #expect(try database.read { try userColumnCount($0) } == 373, "重置后必须是当前 373 列")
         let columns = try database.read { try columnNames($0, table: "similarity_cluster_meta") }
@@ -281,8 +282,8 @@ struct DatabaseFacadeTests {
         }
     }
 
-    @Test("列形正确的 V1 文件库重开不重置：无 .incompatible-*、数据保留")
-    func currentV1ShapeIsNotReset() throws {
+    @Test("列形正确的 V1 文件库：默认迁移为 V2，不 reset、数据保留、留迁移备份")
+    func currentV1ShapeIsMigratedNotReset() throws {
         let directory = try makeTemporaryDirectory("current-v1")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = databasePath(in: directory)
@@ -299,10 +300,17 @@ struct DatabaseFacadeTests {
         defer { database.close() }
 
         #expect(try database.read { try userColumnCount($0) } == 373)
-        #expect(database.outcome == .opened(.v1), "列形正确的 V1 必须走 opened，不得重置")
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
+        guard case .migrated(let from, let to, let backup) = database.outcome else {
+            Issue.record("列形正确的 V1 必须走 .migrated，实际 \(database.outcome)")
+            return
+        }
+        #expect(from == .v1)
+        #expect(to == .v2)
+        #expect(backup != nil)
         #expect(try database.read {
             try $0.prepare("SELECT name FROM sessions WHERE id = ?").get([.text("keep-me")])?[0].textValue
-        } == "current-v1", "列形正确的库不得被重置")
+        } == "current-v1", "迁移必须保留旧数据")
         #expect(try incompatibleCopies(in: directory).isEmpty,
                 "正确 V1 库不得产生 .incompatible 副本")
     }
@@ -327,7 +335,7 @@ struct DatabaseFacadeTests {
         )
         defer { database.close() }
 
-        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaV1.userVersion)
+        #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 2)
         #expect(try database.read { try userColumnCount($0) } == 373)
         #expect(try database.read { try scalarInt($0, "SELECT COUNT(*) FROM sessions") } == 0)
         let copies = try incompatibleCopies(in: directory)

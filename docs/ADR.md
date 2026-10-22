@@ -10,10 +10,10 @@
 > 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
 > `desktop/native/gather-core` / `gather-app` 代码为准）。
 >
-> 当前 schema：1（`SchemaV1.swift` 的 `userVersion`；`Schema.swift` 只保留
-> check-docs 的版本镜像与活跃 job 状态字面量）。旧迁移链（v1…v35）与
-> `MigrationRunner` 已删除，不兼容库由 `Database.open` 整体重置。下文历史 ADR
-> 中的 schema 33/34/35 是当时版本，不是当前代码版本。
+> 当前 schema：2（`SchemaCatalog.production.current`；DDL 由 `SchemaV1.swift` 唯一定义，
+> V2 与 V1 逐字相同，只 bump `user_version`）。旧迁移链（v1…v35）与 `MigrationRunner`
+> 已删除；形态正确的 V1 库经备份 + no-op 事务迁移到 V2，不兼容库默认 fail closed。
+> 下文历史 ADR 中的 schema 33/34/35 是当时版本，不是当前代码版本。
 
 **原实现路径 → 原生实现位置对照**
 
@@ -64,26 +64,31 @@
 
 ## ADR-005 数据库建库不变量与不兼容库重置（Cut 2 / S5c-2b-3b-2b-3 修订）
 
-- 唯一建库入口是 `Database.open(at:)`：新库在单事务内执行 `SchemaV1.sql` 并写
-  `PRAGMA user_version = 1`；打开后自检版本、`foreign_keys` 与 `foreign_key_check`。
-- 不兼容库（user_version=0 但有表 / 非 1 / 非 SQLite 文件）**整体重置**：把
-  db/-wal/-shm 一起改名为 `<db>.incompatible-<ts>`（最多保留 3 套），再建新库。
-  不存在 down-migration / 就地升级；移动失败显式抛错，绝不吞错。
+- 唯一建库入口是 `Database.open(at:)`：新库在单事务内执行当前快照 DDL 并写
+  `PRAGMA user_version = 2`；打开后自检版本、`foreign_keys` 与 `foreign_key_check`。
+- 形态正确的 V1 库（user_version=1 且列形匹配 V1 快照）**就地升级**：先 `VACUUM INTO`
+  `<db>.pre-v2-<ts>`，再在 BEGIN IMMEDIATE 事务内执行 V1→V2（no-op）并写
+  `user_version=2`；失败整体回滚，库仍为 V1，备份保留。不存在 down-migration。
+- 不兼容库（user_version=0 但有表 / 高于 current / 形态不符 / 非 SQLite 文件）默认
+  **fail closed**（只抛错、不改文件）；只有显式 `Options.resetPolicy=.renameToIncompatible`
+  才把 db/-wal/-shm 一起改名为 `<db>.incompatible-<ts>`（最多保留 3 套），再建新库。
+  移动/备份失败显式抛错，绝不吞错。
 - 旧迁移链（`MigrationRunner`、`Schema.swift` 的 44 表 DDL）已删除；不得恢复
   「DDL 在 A 处、补列在 B 处」的第二份 schema 定义。
 
 ## ADR-006 Schema 唯一真相源
 
-- 唯一 schema 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaV1.swift`
-  （43 表 / 373 列 / 69 索引，一次成型）。Cut 5 / 5b-2b 给
-  similarity_cluster_meta +3 列（algorithm_version / input_signature / state_digest）；
-  开发期本地库可直接丢弃，故仍为 userVersion = 1、不写迁移。
+- 唯一 DDL 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaV1.swift`
+  （43 表 / 373 列 / 69 索引 / 62 外键，一次成型）。Cut 5 / 5b-2b 给
+  similarity_cluster_meta +3 列（algorithm_version / input_signature / state_digest）。
+  WP6b 起当前版本是 V2（`SchemaV2`，DDL 与 V1 逐字相同，只 bump user_version=2）；
+  `SchemaV1` 是冻结的迁移起点。
 - `Tests/GatherCoreTests/Database/MigrationTests.swift` 校验 fresh 库（直接 exec
-  `SchemaV1.sql` 与经 `Database.open` 两种路径）同形：43 表、user_version=1、
-  无 legacy 表/列、无悬空外键。任何表级 schema 变更必须改 `SchemaV1.swift` 并升
-  `userVersion`（旧库按 ADR-005 重置）。
+  `SchemaV1.sql` 与经 `Database.open` 两种路径）同形：43 表、无 legacy 表/列、
+  无悬空外键；V1 夹具 user_version=1，`Database.open` 当前路径 user_version=2。
+  任何真实表级变更必须新增 SchemaVn 快照 + 迁移（旧库按 ADR-005 迁移/失败回滚）。
 - `docs/archive/schema.snapshot-v35.json` 是旧迁移链时代（schema 35）的**历史快照**，
-  只作归档，不参与门禁；当前 schema 以 `SchemaV1.swift`（43 表 / user_version=1）为准。
+  只作归档，不参与门禁；当前 schema 以 `SchemaV2`（43 表 / user_version=2）为准。
 
 ---
 
@@ -623,7 +628,7 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
 6. **schema 34（历史）**：`face_observations` 追加 6 列（quality / face_size_px /
    roll_degrees / model_id / model_version / embedding_dim）。当时快照
    `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；**当前 schema 为
-   1（SchemaV1 一次成型）**，旧迁移链已删除，见 ADR-005/006。
+   2（SchemaV2；DDL 与 V1 相同，V1 是冻结迁移起点）**，旧迁移链已删除，见 ADR-005/006。
 
 **决策（第二轮：把"接口留缝"改成"缝里真的有实现"，2026-09-28）**
 

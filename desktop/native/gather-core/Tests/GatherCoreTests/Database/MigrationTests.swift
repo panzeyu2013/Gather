@@ -2,7 +2,7 @@
 // SchemaV1 fresh 建库门禁（Cut 2 / S5c-2b-3b-2b-3）：
 //   ① SchemaV1.sql 空库一次成型 —— 43 表、user_version = 1、无任何 legacy 表/列；
 //   ② 生产入口 Database.open(at:) 建出的库与 ① 同形；
-//   ③ Schema.swift 的版本镜像与 SchemaV1.userVersion 一致（check-docs 入口不漂移）。
+//   ③ Schema.swift 的版本镜像与 SchemaCatalog.production.current 一致（check-docs 入口不漂移）。
 //
 // 已删除的用例（随 MigrationRunner / SchemaV1Transition 一起，S5c-2b-3b-2b-3）：
 //   hybridDatabaseAddsLegacyTablesAndSessionColumns / hybridLegacyForeignKeysCascade
@@ -69,13 +69,14 @@ struct MigrationTests {
         #expect(try foreignKeyViolations(db).isEmpty, "V1 建库后不得有悬空外键")
     }
 
-    /// 生产入口（Database.open）建出的内存库与 fresh DDL 同形。
-    @Test func databaseOpenCreatesSchemaV1() throws {
+    /// 生产入口（Database.open）建出的内存库与 fresh DDL 同形，版本为当前 V2。
+    @Test func databaseOpenCreatesCurrentSchema() throws {
         let database = try Database.open(at: Database.inMemoryPath)
         defer { database.close() }
         let db = database.connection
 
-        #expect(try userVersion(db) == SchemaV1.userVersion)
+        #expect(try userVersion(db) == 2)
+        #expect(database.outcome == .created(.v2))
         let tables = try tableNames(db)
         #expect(tables.count == 43)
         for legacy in legacyTables {
@@ -84,8 +85,10 @@ struct MigrationTests {
         #expect(try tableColumnNames(db, "sessions").count == 10)
     }
 
-    /// check-docs.sh 读取的版本镜像必须与唯一真相源一致。
-    @Test func schemaVersionMirrorMatchesV1() {
-        #expect(SchemaSQL.currentSchemaVersion == SchemaV1.userVersion)
+    /// check-docs.sh 读取的版本镜像必须与唯一真相源（catalog.current）一致。
+    @Test func schemaVersionMirrorMatchesCurrent() {
+        #expect(SchemaSQL.currentSchemaVersion == SchemaCatalog.production.current.rawValue)
+        #expect(SchemaSQL.currentSchemaVersion == 2)
+        #expect(SchemaV1.userVersion == 1, "V1 快照冻结在 1")
     }
 }

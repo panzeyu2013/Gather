@@ -3,9 +3,10 @@
 // WP6a：open 状态机、Options/Outcome、迁移框架（设计 docs/reviews/wp6-schema-migration-design.md §4）。
 //
 // 定位：V1 之后**唯一**的库入口。职责只有三件事：
-//   1. 打开即保证 schema 就绪：user_version == catalog.current（当前 1）**且**列形
+//   1. 打开即保证 schema 就绪：user_version == catalog.current（当前 2）**且**列形
 //      与快照一致（43 表 / 373 列 / 69 显式索引 / 62 外键 + 指纹）；
-//      0（且无表）→ 建当前 schema；0 但有表 / 版本更高 / 同版本但列形不符 / 非 SQLite
+//      0（且无表）→ 建当前 schema；形态正确的 V1 库 → 备份 + V1→V2 no-op 事务迁移
+//      + user_version=2；0 但有表 / 版本更高 / 同版本但列形不符 / 非 SQLite
 //      文件 → **默认 fail closed**（只抛错，不改名、不删文件）；只有 Options.resetPolicy
 //      == .renameToIncompatible（开发重置）才把 db/-wal/-shm 改名 .incompatible-* 后重建；
 //   2. 提供 read / write / async 三个作用域，让 Service 不再自己管连接与事务边界；
@@ -78,9 +79,9 @@ public final class Database: @unchecked Sendable {
         public var retainIncompatibleCopies: Int
         /// 不兼容库处理策略：默认 fail closed；开发重置显式传 .renameToIncompatible。
         public var resetPolicy: ResetPolicy
-        /// 迁移备份保留份数（WP6b 使用；WP6a 只保留字段，不产生备份）。
+        /// 迁移备份保留份数（默认 3；`.pre-v<target>-*` 按时间戳从旧到新淘汰）。
         public var retainMigrationBackups: Int
-        /// 版本/快照/迁移计划。默认 production（current = .v1、迁移表为空）。
+        /// 版本/快照/迁移计划。默认 production（current = .v2、V1→V2 no-op）。
         public var catalog: SchemaCatalog
 
         public init(
@@ -159,7 +160,8 @@ public final class Database: @unchecked Sendable {
     /// 状态机（默认 resetPolicy = .failClosed）：
     ///   * current  → 校验版本 + 列形 + FK 自检后返回（.opened）；
     ///   * empty    → 单事务建当前 DDL（.created）；
-    ///   * older    → 迁移（WP6a production 不可达；框架已接 SchemaMigrator）；
+    ///   * older    → 一致性备份 + BEGIN IMMEDIATE no-op 迁移 + user_version=2
+    ///                + 形态校验（.migrated；失败回滚，库仍为旧版本，备份保留）；
     ///   * newer    → 抛 .versionUnsupported，文件不改（开发重置才改名）；
     ///   * corrupt  → 抛 .corrupt（非 SQLite / V0 有表 / 形态不符）；开发重置才改名；
     ///   * unreadableVersion → 抛 .corrupt；开发重置才改名。
@@ -222,6 +224,14 @@ public final class Database: @unchecked Sendable {
                     )
 
                 case .older(let from):
+                    // 备份是迁移的前置条件：失败即抛 .io，绝不带着「无备份」冒险迁移。
+                    let backup = try SchemaBackup.create(
+                        connection: connection,
+                        at: path,
+                        from: from,
+                        to: options.catalog.current,
+                        retaining: options.retainMigrationBackups
+                    )
                     let to = try SchemaMigrator(catalog: options.catalog)
                         .migrate(connection, from: from, path: path)
                     try assertReady(connection, expecting: options.catalog.snapshot(to), path: path)
@@ -229,7 +239,7 @@ public final class Database: @unchecked Sendable {
                         path: path,
                         connection: connection,
                         options: options,
-                        outcome: resetOutcome ?? .migrated(from: from, to: to, backup: nil)
+                        outcome: resetOutcome ?? .migrated(from: from, to: to, backup: backup)
                     )
 
                 case .newer(let version):
@@ -427,7 +437,7 @@ public final class Database: @unchecked Sendable {
     /// 建当前 schema：DDL 与 `PRAGMA user_version` 在同一事务内提交，
     /// 杜绝「表建好但版本还是 0」的半成品（下次启动会被当成不兼容库）。
     ///
-    /// 注意 SchemaV1.sql 里的 `PRAGMA foreign_keys = ON` 在事务内是 no-op（SQLite 语义）；
+    /// 注意 DDL 里的 `PRAGMA foreign_keys = ON` 在事务内是 no-op（SQLite 语义）；
     /// 连接级开关已由 DBConnection.open 在事务前打开，事务后还会再自检一次。
     private static func createSchema(_ connection: DBConnection, snapshot: SchemaSnapshot) throws {
         do {

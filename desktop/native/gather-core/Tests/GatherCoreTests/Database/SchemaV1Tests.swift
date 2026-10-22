@@ -442,13 +442,20 @@ struct SchemaV1Tests {
         #expect(dirty == 0, "空库的 foreign_key_check 必须干净（否则 FK 的父键不是 PK/UNIQUE）")
     }
 
-    @Test("PRAGMA user_version = 1（与 SchemaV1.userVersion 一致）")
+    @Test("V1 快照 user_version = 1（冻结基线）；当前 SchemaV2 = 2")
     func userVersion() throws {
         let db = try makeSchemaV1Database()
         defer { db.close() }
 
+        // SchemaV1.sql 是 V1 历史快照：它必须停在 1，作为 V1→V2 迁移的真实起点。
         #expect(SchemaV1.userVersion == 1)
         #expect(try scalarInt(db, "PRAGMA user_version") == SchemaV1.userVersion)
+
+        // 当前生产入口建的是 V2（DDL 同形，只差版本位）。
+        let current = try Database.openInMemory()
+        defer { current.close() }
+        #expect(SchemaV2.version.rawValue == 2)
+        #expect(try scalarInt(current.connection, "PRAGMA user_version") == 2)
     }
 
     // MARK: 逐表列数（删列漂移门禁）

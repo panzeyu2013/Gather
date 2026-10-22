@@ -1,10 +1,7 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Migration/SchemaCatalog.swift
 // WP6a：版本快照 + 线性迁移注册表（设计 §5.1 / §7.1 a1）。
-//
-// WP6a 的生产目录只有 v1、迁移表为空——open 的「就地升级」路径尚不可达，行为与
-// 现状一致。WP6b 把 current 改成 .v2、加一份 MigrationV1ToV2 即可，不改本文件的
-// 计划算法。缺步/跳号/重复 (from,to) 在 plan/validate 中显式抛 .migration，
-// 绝不静默跳过。
+// WP6b：current = .v2；V1→V2 是 no-op 版本位（MigrationV1ToV2），本文件的计划算法
+// 不变。缺步/跳号/重复 (from,to) 在 plan/validate 中显式抛 .migration，绝不静默跳过。
 import Foundation
 
 public struct SchemaCatalog: Sendable {
@@ -22,13 +19,15 @@ public struct SchemaCatalog: Sendable {
         self.migrations = migrations
     }
 
-    /// 生产目录：current = v1，snapshots = [v1]，migrations = []。WP6a 不 bump 版本。
+    /// 生产目录：current = v2，snapshots = [v1, v2]，migrations = [V1→V2]。
+    /// V2 与 V1 的 DDL 逐字相同，迁移是 no-op；版本号由 SchemaMigrator 事务内写。
     public static let production = SchemaCatalog(
-        current: .v1,
+        current: .v2,
         snapshots: [
-            .v1: SchemaSnapshot(version: .v1, ddl: SchemaV1.sql, shape: SchemaV1.shape),
+            .v1: SchemaSnapshot(version: .v1, ddl: SchemaV1.ddl, shape: SchemaV1.shape),
+            .v2: SchemaSnapshot(version: .v2, ddl: SchemaV2.ddl, shape: SchemaV2.shape),
         ],
-        migrations: []
+        migrations: [MigrationV1ToV2()]
     )
 
     public func snapshot(_ version: SchemaVersion) throws -> SchemaSnapshot {

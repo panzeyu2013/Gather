@@ -2,8 +2,8 @@
 // WP6a：schema 版本号（设计 §5.1）。PRAGMA user_version 是唯一权威，本类型只是它的
 // 强类型包装，避免 Int 与字符串在日志/计划里互相漂移。
 //
-// 纪律：版本号必须线性递增（to == from + 1）。WP6a 只声明 v1/v2 两个常量，
-// 不注册任何迁移、不改 SchemaSQL.currentSchemaVersion。
+// 纪律：版本号必须线性递增（to == from + 1）。WP6b 起 current = .v2；
+// 真实载荷迁移（V3+）必须同时注册迁移与目标快照。
 public struct SchemaVersion: RawRepresentable, Hashable, Comparable, Sendable, CustomStringConvertible {
     public let rawValue: Int
 

@@ -1,26 +1,30 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/SchemaV1.swift
-// SchemaV1（Cut 2 / S1）：V1 本地库的**唯一 schema 真相源**。
+// SchemaV1（Cut 2 / S1；WP6b 起为**冻结快照**）：V1 本地库的 DDL 与结构基线。
 //
 // 内容：43 表 / 373 列 / 69 索引（61 普通 + 8 UNIQUE）/ 62 外键，逐字来自
-// docs/schema-v1-draft.md §7.1 的 DDL；末尾 PRAGMA user_version = 1。
+// docs/schema-v1-draft.md §7.1 的 DDL。`ddl` 是不含版本号的 DDL 主体；
+// `createSQL`/`sql` 追加 PRAGMA user_version = 1（复现真实 V1 旧库）。
 // Cut 5 / 5b-2b：similarity_cluster_meta +3 列（algorithm_version / input_signature /
-// state_digest），370 → 373；开发期直接改 V1，不 bump userVersion、不写迁移。
-// 因为 userVersion 仍是 1，旧 V1 库（370 列）只能靠列形识别：Database.open 会对比
-// expectedColumnCount / requiredTableColumns / expectedShapeFingerprint，不匹配按
-// 不兼容库整体重置（含 -wal/-shm），不会把缺列旧库当 current 留到运行期报错。
+// state_digest），370 → 373；当时未 bump userVersion，因此旧 V1 库（370 列）只能
+// 靠列形识别：Database.open 对比 expectedColumnCount / requiredTableColumns /
+// expectedShapeFingerprint，不匹配默认 fail closed（显式开发重置才改名），不会把
+// 缺列旧库当 current 留到运行期报错。
 //
-// 唯一真相源：新库只由本文件的 SQL 一次成型，不做 ALTER、不做数据搬运、不做
-// down migration。任何 schema 变更都必须改本文件，并同步更新下面的 expected* 计数与
-// expectedShapeFingerprint（否则正确新库也会被判定不兼容）；不允许再出现
-// 「DDL 在 A 处、补列在 B 处」的第二份定义。
+// 当前版本（WP6b）：V2 是纯版本位，DDL 与 V1 逐字相同（SchemaV2.ddl = 本文件.ddl）；
+// SchemaCatalog.production.current = .v2，V1 文件库经「备份 → V1→V2 no-op 事务迁移 →
+// 形态校验 → user_version=2」就地升级。V1 快照保留，供迁移起点与测试夹具使用。
 //
-// 与 Schema.swift 的关系：S5c-2b-3b-2b-3 起旧 44 表迁移链素材已删除；Schema.swift
-// 只剩 AnalysisJobRepo 的活跃状态 SQL 字面量与 check-docs 的版本镜像，不再定义任何
-// DDL。本文件是 V1 唯一 DDL 真相源，不写 IF NOT EXISTS（新库一次建全），
-// 旧库不会被就地升级——见下一条。
+// 唯一真相源：DDL 只在本文件定义一次，V1/V2 共享；不做 ALTER、不做数据搬运、不做
+// down migration。任何真实 schema 变更都必须新增 SchemaVn.ddl + 迁移，并同步更新
+// expected* 计数与 expectedShapeFingerprint（否则正确新库也会被判定不兼容）；
+// 不允许再出现「DDL 在 A 处、补列在 B 处」的第二份定义。
 //
-// 旧库重置策略（详见 draft §6.1/§6.2）：Database.open 读到 user_version != 1
-// （0 但已有表、未来版本、非 SQLite 文件）时直接重置：把
+// 与 Schema.swift 的关系：Schema.swift 只剩 AnalysisJobRepo 的活跃状态 SQL 字面量与
+// check-docs 的版本镜像，不再定义任何 DDL；版本镜像 WP6b 起对齐 2。
+//
+// 旧库策略（详见 draft §6.1/§6.2，WP6b 起）：形态正确的 V1 库就地迁移；
+// user_version=0 但有表 / 版本高于 current / 形态不符 / 非 SQLite 文件默认 fail closed
+// （只抛错，不改文件）。只有显式 Options.resetPolicy=.renameToIncompatible 才把
 //   gather.sqlite → gather.sqlite.incompatible-<yyyyMMdd-HHmmss>
 // 且 **必须同时移走 gather.sqlite-wal / gather.sqlite-shm** —— 只移主库时，
 // 残留 WAL 会被新库按同名前缀恢复出旧页，出现「新 schema + 旧数据」的错位。
@@ -91,8 +95,11 @@ public enum SchemaV1 {
         fingerprint: expectedShapeFingerprint
     )
 
-    /// 建库 DDL 全文（单次 exec 执行；含 PRAGMA foreign_keys / user_version）。
-    public static let sql: String = """
+    /// 建库 DDL 主体（单次 exec 执行；含 PRAGMA foreign_keys，不含 user_version）。
+    ///
+    /// createSQL = ddl + PRAGMA user_version = 1；SchemaSnapshot 依赖这个拆分，
+    /// 让 V1/V2 共享同一份 DDL 而版本号由快照决定。
+    public static let ddl: String = """
     -- SchemaV1 · Gather 本地库最终形态（43 表 / 373 列 / 69 索引 / 62 外键）
     -- 约定：时间戳为 ISO-8601 TEXT（与 nowISOString 同格式）；布尔为 INTEGER 0/1；mtime 为 REAL 毫秒。
     -- 约束分层：CHECK 只兜「非法值」，状态转移合法性由 Swift 状态机负责。
@@ -822,7 +829,15 @@ public enum SchemaV1 {
     CREATE INDEX idx_delivery_items_module_status ON delivery_items(module, status);
     CREATE INDEX idx_delivery_intents_phase ON delivery_intents(phase, id);
 
-    -- 库版本（与建表在同一事务内写入；0/非 1 即视为不兼容库，见 Database.open 重置策略）
-    PRAGMA user_version = 1;
     """
+
+    /// V1 建库 SQL：DDL + 版本号 1（历史基线）。
+    ///
+    /// WP6b 起当前版本是 V2（DDL 与 V1 逐字相同，见 Migration/SchemaV2.swift）；
+    /// 本常量仍保留 V1 语义，供测试夹具/`gather-schema dump` 复现真实旧库，
+    /// 也是 V1→V2 迁移的唯一入口形态。新库由 SchemaCatalog.currentSnapshot 建。
+    public static let createSQL: String = ddl + "\nPRAGMA user_version = 1;\n"
+
+    /// Cut 2 起的兼容别名（语义 = createSQL；现有测试与工具继续可用）。
+    public static let sql: String = createSQL
 }

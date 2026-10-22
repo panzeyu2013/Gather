@@ -274,6 +274,28 @@
 - **必要偏离（记账）**：`DatabaseError.swift` 不在任务白名单，但要求 2 明确要求新增 `.migration/.versionUnsupported` 与 Kind 两项，实际 +10 行；未改 Schema.swift/Package/UI/Delivery/DDL。
 - **残余**：备份/retainMigrationBackups 未使用（WP6b）；older 分支已接 SchemaMigrator 但 production 不可达，`.migrated.backup` 恒 nil；reset 日志键由 `schema_reset` 改 `schema_reset_dev`（设计 §4.5）；未 commit；无 GUI 验收。最终 app 复跑被并行工作区的 IndexerService/CullingPageQuery 在编辑阻塞（19:03 的 616/68 绿为 WP6a 主体代码）；FaceKwService/AppComposition 等并行改动未纳入本刀。
 
+## WP6b V2 版本位 + V1→V2 线性迁移（2026-10-22，HEAD 93304b5；工作区未提交）
+
+- **范围**：V2 是纯版本位（`SchemaV2.ddl = SchemaV1.ddl`、`shape` 同源），`SchemaCatalog.production.current=.v2`、migrations=[`MigrationV1ToV2`]；新增 `Migration/{SchemaV2 19, MigrationV1ToV2 19, SchemaBackup 162}.swift`。`SchemaV1` 拆出不含版本号的 `ddl`，`createSQL`/`sql` 保留 user_version=1（冻结 V1 快照），`SchemaCatalog` 的 v1 快照改用 `ddl`、v2 快照同 DDL + 版本位。DDL 结构/表/列/索引/FK 零改动：43 表 / 373 列 / 69 显式索引 / 62 外键 / 指纹 `7c7e…44c2`。
+- **open 接线**：`older` → `VACUUM INTO <db>.pre-v2-<ts>`（只读 quick_check + user_version=1 校验，默认保留 3 套）→ `SchemaMigrator` BEGIN IMMEDIATE no-op 迁移 + 事务内 user_version=2 + `foreign_key_check` + 目标 shape 校验 → `assertReady` → `.migrated(v1→v2, backup)`；失败整体回滚，库仍为 v1、备份保留，下次启动重试。`current` → `.opened(.v2)`；`newer(v3+)` → `.versionUnsupported` 且不改文件；0 有表 / 370 列缺列 / 非 SQLite → 默认 `.corrupt`。
+- **版本镜像**：`SchemaSQL.currentSchemaVersion=2`（经 parent 批准的唯一白名单外改动；`check-docs --strict` 代码 2 = ADR 当前 schema 2）；`SchemaV1.userVersion` 仍为 1。`gather-schema dump` 改打印当前 V2 快照；`verify` 增加 373 列/69 索引/62 外键校验。
+- **测试**：core **1,091/164 → 1,095/164** exit 0（4.052s）；app 串行 **616/68** exit 0（16.566s）。定向：`SchemaMigrationTests` **11/1**、`DatabaseFacadeTests` **12/1**、`SchemaV1 + MigrationTests + SchemaV1RowMappingTests` **25/3** 全绿。新增/改写覆盖：V1→V2 迁移与逐表行数保留、重复 open 幂等无新备份、迁移失败回滚（user_version 仍 1 / 注入列不存在 / 备份可打开）、v3 fail-closed 字节不变、370 列默认 corrupt、备份有效 + 保留 3 套、shape 43/373/69/62 + 指纹。
+- **门禁**：8/8 exit 0——ratchet **53/231/0/0/0**；test-catalog 173 文件 / 3 skip；duplicate 602 文件；docs 20 路径 / 143 链接 / schema 2；no-legacy 7 enforced + 6 tracked；select-star 4/1（baseline 6）；preview 14 块 / 5 文件 / 2,031 行；layering OK。
+- **schema**：`gather-schema verify` = `tables=43 columns=373 indexes=69 fks=62 user_version=2 foreign_key_violations=0`（exit 0）。
+- **必要偏离（记账）**：`Schema.swift` 的 `currentSchemaVersion` 1→2（任务白名单外，属版本接线，已报 parent 批准）；`gather-schema` 的 dump 输出与 verify 计数扩展属设计 §7.2 b6。
+- **残余**：370 列旧 V1 库不就地补列，默认 `.corrupt`（显式 `resetPolicy` 才改名重建），无数据迁移；`AppBootstrap.swift`/`AppComposition.swift` 仍有 “SchemaV1 / user_version=1” 注释（白名单外，行为已走默认迁移）；未 commit；无 GUI 验收。
+
+## WP3b-3 Duplicate SQL 下沉（2026-10-22，HEAD 93304b5；工作区未提交）
+
+- **范围**：`DuplicateService` 25 条 prepare / 4 个事务全部下沉；新增 `Ports/DuplicateRepository.swift`（275 行：扫描/重建/决策/photos.status 端口 + 读模型 DTO）、`Database/Repositories/DuplicateRepo.swift`（275 行）、`Database/Queries/DuplicateGroupQuery.swift`（76 行）；`DuplicateService.swift` 830→668 行（+160/−322）。组/成员读取走 `DuplicateGroupReading`，similarity_hashes 读写复用 `SimilarityHashRepository`，4 个事务改经 `TransactionRunner`。
+- **契约保留**：4 处 `SELECT *`（组 ×2、成员 `SELECT *` ×1、成员 JOIN photos `dgm.*` ×1）SQL 文本与位置解码原样搬入 Query（列序 0-7/8-9 未改）；select-star Sources 实测 4 处 / 1 文件，baseline 仍 6（未展开列，故不收紧）。
+- **指标**：Application/Services `prepare(` **25→0**；持 `DBConnection` 的服务文件 **1→0**（声明计数 0；其余 4 处为 Similarity/Culling/FaceKw 既有注释）；ratchet **services_prepare 25→0**（`docs/cleanup-baseline.json` 收紧）。
+- **测试**：core **1,091/164 → 1,095/164** exit 0（+4 例来自并行 WP6b 的 schema/migration 测试，非本刀）；app 串行 **616/68** exit 0（16.675s）；Duplicate 全量用例（scan/exact/visual/resolve/决策持久/残影复位）未改仍绿。测试 support 两侧补旧 `connection:` 便利 init（core+app 各 25 行），生产 init 只收端口。
+- **门禁**：8/8 exit 0——layering OK（GatherApplication 21 文件 0 SwiftUI）；ratchet **53/231/0/0/0**（services_prepare 25→0，其余三项不动）；test-catalog 173 文件 / 3 skip；duplicate 602 文件；docs 20 路径 / 143 链接 / schema 2；no-legacy 7 enforced + 6 tracked（raw SQL outside Store **13→0** files）；select-star 4/1；preview 14 块 / 5 文件 / 2,031 行。中途 try_optional 曾因并行 WP6b 的 `SchemaBackup.swift` 短暂 +4，收尾前该工作区已回到 231，未上调 baseline。
+- **schema**：`gather-schema verify` = `tables=43 columns=373 indexes=69 fks=62 user_version=2 foreign_key_violations=0`（并行 WP6b 已把版本推到 2；本刀未改 Schema/DDL）。
+- **必要偏离（记账）**：`Tests/GatherCoreTests/Support/ServiceConstructionTestSupport.swift`、`Tests/GatherAppTests/ServiceConstructionTestSupport.swift` 各 +25 行（任务允许“测试 support”）；未改 Package/UI/其他服务。
+- **残余**：4 处 SELECT * 仍保留（按要求保列序，未展开）；`DuplicateService` 的 4 个事务仍在 Application 编排层（只换成 TransactionRunner 端口，符合“事务经 TransactionRunner”）；并行 WP6b 的未提交 schema 改动未纳入本刀；不 commit；无 GUI 验收。
+
 ## 规则
 
 - 不做 git commit / checkout / restore；不删除未确认文件。
