@@ -1111,8 +1111,9 @@ struct APIMetadataTests {
         let fixture = try MetadataAPIFixture()
         defer { fixture.cleanup() }
         let photoId = try #require(fixture.photoIds.first)
-        let backup = "/tmp/gather-b6a-backup.xmp"
-        let xmpPath = try fixture.seedOrphan(photoId: photoId, status: .synced, backupPath: backup)
+        let xmpPath = try fixture.deliveryPath(for: photoId)
+        let backup = xmpPath + ".gather-backup-restore"
+        _ = try fixture.seedOrphan(photoId: photoId, status: .synced, backupPath: backup)
 
         // 备份不存在：XMP_BACKUP_MISSING，且行保留（可重试）。
         let missing = await asyncGatherError {
@@ -1140,8 +1141,9 @@ struct APIMetadataTests {
         defer { fixture.cleanup() }
         let photoId = try #require(fixture.photoIds.first)
         let photoPath = try fixture.path(for: photoId)
-        let backup = "/tmp/gather-b6a-backup-race.xmp"
-        let xmpPath = try fixture.seedOrphan(
+        let xmpPath = try fixture.deliveryPath(for: photoId)
+        let backup = xmpPath + ".gather-backup-race"
+        _ = try fixture.seedOrphan(
             photoId: photoId, status: .synced, backupPath: backup)
         fixture.xmp.existingFiles = [backup]
 
@@ -1185,8 +1187,9 @@ struct APIMetadataTests {
             fixture.cleanup()
         }
         let photoId = try #require(fixture.photoIds.first)
-        let backup = "/tmp/gather-b6a-backup-lock-\(UUID().uuidString).xmp"
-        let xmpPath = try fixture.seedOrphan(photoId: photoId, status: .synced, backupPath: backup)
+        let xmpPath = try fixture.deliveryPath(for: photoId)
+        let backup = xmpPath + ".gather-backup-lock-\(UUID().uuidString)"
+        _ = try fixture.seedOrphan(photoId: photoId, status: .synced, backupPath: backup)
         xmp.existingFiles = [backup]
 
         let entered = LockedFlag()
@@ -1243,8 +1246,9 @@ struct APIMetadataTests {
         let api = fixture.api
         let photoId = try #require(fixture.photoIds.first)
         let photoPath = try fixture.path(for: photoId)
-        let backup = "/tmp/gather-b6a-backup-race-lock-\(UUID().uuidString).xmp"
-        let xmpPath = try fixture.seedOrphan(photoId: photoId, status: .synced, backupPath: backup)
+        let xmpPath = try fixture.deliveryPath(for: photoId)
+        let backup = xmpPath + ".gather-backup-race-lock-\(UUID().uuidString)"
+        _ = try fixture.seedOrphan(photoId: photoId, status: .synced, backupPath: backup)
         xmp.existingFiles = [backup]
         xmp.content = [photoPath: MetadataWriteAttributes(keywords: ["before"])]
         xmp.backupContent = [backup: MetadataWriteAttributes(keywords: ["before"])]

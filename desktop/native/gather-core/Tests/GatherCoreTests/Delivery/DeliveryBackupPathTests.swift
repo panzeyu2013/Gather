@@ -24,6 +24,17 @@ struct DeliveryBackupPathTests {
         #expect(try DeliveryBackupPath.validate(xmpPath: xmp, backupPath: backup) == backup)
     }
 
+    @Test func acceptsUppercaseDiskXMPWithLowercaseDatabasePath() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // DB 侧 TSPath 归一化为小写，盘上真实文件是 IMG_1.XMP。
+        let xmp = directory.appendingPathComponent("IMG_1.xmp").path
+        let backup = directory.appendingPathComponent("IMG_1.XMP.gather-backup-abc").path
+        try "original".write(toFile: backup, atomically: true, encoding: .utf8)
+
+        #expect(try DeliveryBackupPath.validate(xmpPath: xmp, backupPath: backup) == backup)
+    }
+
     @Test func rejectsTraversalBeforeNormalization() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

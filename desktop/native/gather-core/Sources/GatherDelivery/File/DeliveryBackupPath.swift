@@ -64,9 +64,9 @@ enum DeliveryBackupPathError: Error, Equatable, CustomStringConvertible, Localiz
 }
 
 /// backup_path 的唯一校验入口（DeliveryFilePhase / 文件端口共用）。
-enum DeliveryBackupPath {
+public enum DeliveryBackupPath {
     /// 校验并返回**归一化后**的 backup_path；调用方必须用返回值做文件操作。
-    static func validate(xmpPath: String, backupPath: String) throws -> String {
+    public static func validate(xmpPath: String, backupPath: String) throws -> String {
         let normalizedXMP = TSPath.normalize(xmpPath)
         guard !normalizedXMP.isEmpty else { throw DeliveryBackupPathError.emptyXMPPath }
         guard !backupPath.isEmpty else {
@@ -85,13 +85,23 @@ enum DeliveryBackupPath {
         let normalizedBackup = TSPath.normalize(backupPath)
         let xmpDirectory = (normalizedXMP as NSString).deletingLastPathComponent
         let backupDirectory = (normalizedBackup as NSString).deletingLastPathComponent
-        guard !xmpDirectory.isEmpty, backupDirectory == xmpDirectory else {
+        // 大小写 + Unicode 规范化不敏感比较：DB 的 xmp_path 可能来自 TSPath 归一化
+        // （小写 .xmp），而 backup_path 由 SidecarXMPProvider 按盘上真实大小写
+        // （IMG_1.XMP）生成；macOS 文件系统还允许 NFD 目录名。两者是同一文件，
+        // 不能因大小写/组合形式让 cleanup/finalize 永久 fail-closed。
+        let canonicalXMPDirectory = xmpDirectory.precomposedStringWithCanonicalMapping
+        let canonicalBackupDirectory = backupDirectory.precomposedStringWithCanonicalMapping
+        guard !canonicalXMPDirectory.isEmpty,
+              canonicalBackupDirectory.caseInsensitiveCompare(canonicalXMPDirectory) == .orderedSame else {
             throw DeliveryBackupPathError.notSibling(normalizedBackup)
         }
 
-        let expectedPrefix = (normalizedXMP as NSString).lastPathComponent + ".gather-backup-"
+        let expectedPrefix = ((normalizedXMP as NSString).lastPathComponent + ".gather-backup-")
+            .precomposedStringWithCanonicalMapping
         let backupName = (normalizedBackup as NSString).lastPathComponent
-        guard backupName.hasPrefix(expectedPrefix), backupName.count > expectedPrefix.count else {
+            .precomposedStringWithCanonicalMapping
+        guard backupName.range(of: expectedPrefix, options: [.caseInsensitive, .anchored]) != nil,
+              backupName.count > expectedPrefix.count else {
             throw DeliveryBackupPathError.unexpectedName(normalizedBackup)
         }
 

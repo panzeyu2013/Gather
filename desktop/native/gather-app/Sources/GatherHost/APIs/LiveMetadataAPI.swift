@@ -205,6 +205,10 @@ public final class LiveMetadataAPI: MetadataAPI {
                 .first(where: { $0.xmpPath == path }) else {
                 throw GatherError(code: .XMP_ORPHAN_NOT_FOUND, underlying: path)
             }
+            // 孤儿行来自 DB，不能把 xmp/photo/backup_path 当可信路径直接传给文件端口：
+            // 伪造一条无 link 的 deliveries 行即可删/覆盖任意文件。restore/remove 前
+            // 统一做绝对路径、无 ..、无 NUL、非常规 symlink、backup 同目录/前缀校验。
+            try validateOrphanPaths(row)
             if payload.action == .retry {
                 switch row.typedStatus {
                 case .some(.conflict):
@@ -255,6 +259,44 @@ public final class LiveMetadataAPI: MetadataAPI {
     /// 保留原入口的 A 守卫：restore/remove 前后各复核一次 revision/status/backup
     /// 且仍无会话关联；备份缺失显式失败（不删行）。锁只覆盖文件阶段——行删除仍由
     /// stateWriter.deleteOrphanDelivery 的 revision + 无链接 CAS 兜底，避免在锁内跨 DB 事务。
+    /// 孤儿入口的统一路径校验。只允许绝对、无 `..`/NUL、非符号链接的路径；
+    /// backup_path 还必须通过 DeliveryBackupPath 的同目录/前缀/常规文件校验。
+    private func validateOrphanPaths(_ row: DeliveryRow) throws {
+        try requireSafeAbsolutePath(row.xmpPath, field: "xmpPath")
+        if !row.photoPath.isEmpty {
+            try requireSafeAbsolutePath(row.photoPath, field: "photoPath")
+        }
+        if !row.backupPath.isEmpty {
+            do {
+                _ = try DeliveryBackupPath.validate(
+                    xmpPath: row.xmpPath, backupPath: row.backupPath)
+            } catch {
+                throw GatherError(
+                    code: .XMP_BACKUP_FAILED,
+                    underlying: String(describing: error))
+            }
+        }
+    }
+
+    private func requireSafeAbsolutePath(_ path: String, field: String) throws {
+        guard path.hasPrefix("/"), !path.contains("\0") else {
+            throw GatherError(code: .XMP_BACKUP_FAILED, underlying: "invalid \(field): \(path)")
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.contains("..") else {
+            throw GatherError(code: .XMP_BACKUP_FAILED, underlying: "traversal \(field): \(path)")
+        }
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: path)
+        } catch {
+            return // 不存在交给文件端口报 backupMissing/restore 失败，保持原语义。
+        }
+        guard attributes[.type] as? FileAttributeType != .typeSymbolicLink else {
+            throw GatherError(code: .XMP_BACKUP_FAILED, underlying: "symlink \(field): \(path)")
+        }
+    }
+
     private func restoreOrphanFile(_ row: DeliveryRow) async throws {
         if !row.backupPath.isEmpty {
             guard xmp.fileExists(row.backupPath) else {

@@ -218,6 +218,8 @@ public struct DeliveryCoordinator: Sendable {
     /// 镜像这些会推进交付状态的动作必须仍能驱动 UI 刷新（SimilarityView /
     /// C1StatusCapsule 监听 c1-sync-status）。闭包只拿到 sessionId，不暴露内部行。
     private let eventSink: (@Sendable (String) -> Void)?
+    /// 跨 replay 调用保持抢占状态；每次 makeReplayFlow 新建 claim 会让并发回放失效。
+    private let replayClaims = DeliveryReplayClaims()
 
     public init(
         connection: DBConnection,
@@ -346,7 +348,8 @@ public struct DeliveryCoordinator: Sendable {
             intents: intentStore,
             writer: stateWriter,
             filePhase: makeFilePhase(),
-            dbPhase: makeDBPhase()
+            dbPhase: makeDBPhase(),
+            claims: replayClaims
         )
     }
 

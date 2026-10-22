@@ -19,7 +19,7 @@ import GatherPersistence
 ///
 /// 与 XMPFileLock 同一边界（进程内）；跨进程并发仍不在承诺内。纯内存、无 Schema
 /// 变更：抢不到的回放者直接跳过本 intent（对方会推进/收尾），不再产生虚假失败。
-private final class DeliveryReplayClaims: @unchecked Sendable {
+final class DeliveryReplayClaims: @unchecked Sendable {
     private let lock = NSLock()
     private var claimed: Set<Int64> = []
 
@@ -50,13 +50,14 @@ struct DeliveryReplayFlow: Sendable {
         intents: DeliveryIntentStore,
         writer: DeliveryStateWriter,
         filePhase: DeliveryFilePhase,
-        dbPhase: DeliveryDBPhase
+        dbPhase: DeliveryDBPhase,
+        claims: DeliveryReplayClaims
     ) {
         self.intents = intents
         self.writer = writer
         self.filePhase = filePhase
         self.dbPhase = dbPhase
-        self.claims = DeliveryReplayClaims()
+        self.claims = claims
     }
 
     /// 启动回放（幂等）：先删除 applied 终态，再按相位处理 prepared/fileDone。
