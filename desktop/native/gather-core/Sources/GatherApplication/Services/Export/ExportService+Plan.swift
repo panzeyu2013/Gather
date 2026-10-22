@@ -399,7 +399,7 @@ extension ExportService {
         // 字面量已漂移：.eip/.mef/.kdc/.mrw/.erf 被判成非 RAW（.preferred 误选
         // JPEG），.gpr/.raw/.rwl/.sr2 被判成 RAW（选出全仓其余规则都不承认的
         // "RAW"，且 RAWDecoder 也不支持这些扩展名 → jpeg/tiff 转换直接失败）。
-        let rawExtensions = AssetRepo.rawExtensions
+        let rawExtensions = PhotoFileTypes.rawExtensions
         let jpegExtensions: Set<String> = [".jpg", ".jpeg"]
         // 组顺序 = 导入序（资产首次出现），与 TS 的 Map 插入序一致。Swift
         // Dictionary 的遍历顺序随进程哈希种子变化，直接遍历 .values 会让

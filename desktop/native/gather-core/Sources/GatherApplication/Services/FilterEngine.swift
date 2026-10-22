@@ -14,9 +14,9 @@ import GatherProtocol
 /// TS: WhereClauseResult。
 public struct WhereClauseResult: Equatable, Sendable {
     public let sql: String
-    public let params: [DBValue]
+    public let params: [FilterValue]
 
-    public init(sql: String, params: [DBValue]) {
+    public init(sql: String, params: [FilterValue]) {
         self.sql = sql
         self.params = params
     }
@@ -43,11 +43,6 @@ public struct FilteredPhotoData: Equatable, Sendable {
 }
 
 public final class FilterEngine {
-    /// TS: SIMPLE_FIELDS（单一真相源在 PhotoFilterQuery）。
-    public static let simpleFields = PhotoFilterQuery.simpleFields
-    /// TS: METADATA_FIELDS。
-    public static let metadataFields = PhotoFilterQuery.metadataFields
-
     private let query: any PhotoFilterQuerying
 
     public init(query: any PhotoFilterQuerying) {
@@ -135,7 +130,7 @@ public final class FilterEngine {
     /// TS: buildWhereClause —— 递归组合；空组 → sql:''（调用方视为 1=1）。
     public func buildWhereClause(_ group: FilterGroup) throws -> WhereClauseResult {
         let clause = try translated { try query.whereClause(group) }
-        return WhereClauseResult(sql: clause.sql, params: clause.params)
+        return WhereClauseResult(sql: clause.sql, params: clause.params.map(FilterValue.init))
     }
 
     /// Persistence 的查询错误 → 既有公开错误类型（码/文案不变）。
@@ -149,6 +144,18 @@ public final class FilterEngine {
             case .unsupportedOperatorForField(let field, let op):
                 throw FilterEngineError.unsupportedOperatorForField(field: field, op: op)
             }
+        }
+    }
+}
+
+private extension FilterValue {
+    init(_ value: DBValue) {
+        switch value {
+        case .null: self = .null
+        case .int(let value): self = .int(value)
+        case .real(let value): self = .real(value)
+        case .text(let value): self = .text(value)
+        case .blob(let value): self = .blob(value)
         }
     }
 }
