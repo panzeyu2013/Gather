@@ -109,9 +109,13 @@ public func computeVisualHashes(
 
 /// 线程安全说明（Swift 6 `Sendable`）：单飞登记的全部可变状态
 /// （`scanPromise`/`scanSessionId`/`scanThreshold`）只在 `lock`（NSLock）临界区内
-/// 读写；其余存储属性（connection 与注入的两个 provider）构造后不可变。
+/// 读写；其余存储属性（注入的 Repo/事务端口与两个 provider）构造后不可变。
 /// 锁纪律无法被编译器静态验证，故标注 `@unchecked`（与同仓 BatchCursor/
 /// MetadataSyncCoordinator 的既有约定一致）。
+///
+/// WP3b-3：本类型不再持裸连接——25 条 prepare 下沉到 DuplicateRepo /
+/// DuplicateGroupQuery / SimilarityHashRepo，4 个事务经 TransactionRunner。
+/// 这里只保留扫描阶段编排与决策/打分规则。
 public final class DuplicateService: @unchecked Sendable {
     /// TS: ImageService.getThumbnail(filepath, 256) → 9x8 灰度像素网格。
     /// Swift 6：provider 会被 batchAsync 的 worker 子任务捕获并发调用，
@@ -124,7 +128,11 @@ public final class DuplicateService: @unchecked Sendable {
     /// 注册/复用语义要求），回调在后台任务里执行，故类型必须可跨并发域。
     public typealias ProgressHandler = @Sendable (Int, Int, String) -> Void
 
-    private let connection: DBConnection
+    /// WP3b-3：SQL 全部在 Persistence；事务经 TransactionRunner（嵌套退化为 SAVEPOINT）。
+    private let duplicateRepo: any DuplicateRepository
+    private let groupQuery: any DuplicateGroupReading
+    private let hashes: any SimilarityHashRepository
+    private let transactions: any TransactionRunner
     private let thumbnailProvider: ThumbnailProvider
     private let clusterProvider: ClusterProvider
 
@@ -141,7 +149,10 @@ public final class DuplicateService: @unchecked Sendable {
     private var scanThreshold: Int?
 
     public init(
-        connection: DBConnection,
+        duplicateRepo: any DuplicateRepository,
+        groupQuery: any DuplicateGroupReading,
+        hashes: any SimilarityHashRepository,
+        transactions: any TransactionRunner,
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
         clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
             // global -> 单趟图（run）；sequential -> 相邻段（runSequential）。
@@ -152,7 +163,10 @@ public final class DuplicateService: @unchecked Sendable {
             ).result
         }
     ) {
-        self.connection = connection
+        self.duplicateRepo = duplicateRepo
+        self.groupQuery = groupQuery
+        self.hashes = hashes
+        self.transactions = transactions
         self.thumbnailProvider = thumbnailProvider
         self.clusterProvider = clusterProvider
     }
@@ -255,18 +269,7 @@ public final class DuplicateService: @unchecked Sendable {
         let threshold = visualThreshold ?? 4
         let now = nowISOString()
 
-        let allPhotos = try connection.prepare("""
-            SELECT id, filepath, checksum, checksum_file_size, checksum_file_mtime_ms
-            FROM photos WHERE session_id IN (?)
-            """).query([.text(sessionId)]).map { row in
-                DuplicatePhotoRow(
-                    id: row[0].textValue ?? "",
-                    filepath: row[1].textValue ?? "",
-                    checksum: row[2].textValue ?? "",
-                    checksumFileSize: row[3].intValue ?? 0,
-                    checksumFileMtimeMs: row[4].doubleValue ?? 0
-                )
-            }
+        let allPhotos = try duplicateRepo.getScanPhotos(sessionId: sessionId)
         let photoById = Dictionary(uniqueKeysWithValues: allPhotos.map { ($0.id, $0) })
 
         // TS:114-130 —— stat 阶段，不可读文件跳过。
@@ -321,19 +324,16 @@ public final class DuplicateService: @unchecked Sendable {
         onProgress?(allPhotos.count + candidatePhotos.count, allPhotos.count * 3, "duplicate.hash")
 
         // TS:170-190 —— 视觉 hash 复用：similarity_hashes 行在 size/mtime 一致
-        // 时直接采用，否则重新计算。
-        let existingVisualRows = try connection.prepare("""
-            SELECT photo_id, hash_hex, file_size, file_mtime_ms
-            FROM similarity_hashes WHERE session_id IN (?)
-            """).query([.text(sessionId)])
+        // 时直接采用，否则重新计算。hash 表由 Similarity/Duplicate/Indexer 共用，
+        // 读写统一走 SimilarityHashRepository。
+        let existingVisualRows = try hashes.getRecords(sessionId: sessionId)
 
         var resolvedVisualHashes: [String: String] = [:]
         for row in existingVisualRows {
-            let photoId = row[0].textValue ?? ""
-            guard let meta = photoMeta[photoId],
-                  meta.size == (row[2].intValue ?? 0),
-                  abs(meta.mtimeMs - (row[3].doubleValue ?? 0)) < 1 else { continue }
-            resolvedVisualHashes[photoId] = row[1].textValue ?? ""
+            guard let meta = photoMeta[row.photoId],
+                  meta.size == Int64(row.fileSize),
+                  abs(meta.mtimeMs - row.fileMtimeMs) < 1 else { continue }
+            resolvedVisualHashes[row.photoId] = row.hashHex
         }
         let visualMisses = allPhotos.filter { resolvedVisualHashes[$0.id] == nil }
         // TS:191 —— 计算前复查。
@@ -351,71 +351,46 @@ public final class DuplicateService: @unchecked Sendable {
         onProgress?(allPhotos.count * 3, allPhotos.count * 3, "duplicate.done")
 
         // TS:202-231 —— 分析数据落库（checksum 回写 + similarity_hashes UPSERT）。
-        try connection.transaction {
-            let updateChecksum = try connection.prepare("""
-                UPDATE photos
-                SET checksum = ?, checksum_file_size = ?, checksum_file_mtime_ms = ?
-                WHERE id = ?
-                """)
-            for photo in allPhotos {
+        try transactions.transaction {
+            try duplicateRepo.updateChecksums(allPhotos.map { photo in
                 let meta = photoMeta[photo.id]
-                _ = try updateChecksum.run([
-                    .text(resolvedChecksums[photo.id] ?? ""),
-                    .int(meta?.size ?? 0),
-                    .real(meta?.mtimeMs ?? 0),
-                    .text(photo.id),
-                ])
-            }
+                return DuplicateChecksumWrite(
+                    photoId: photo.id,
+                    checksum: resolvedChecksums[photo.id] ?? "",
+                    fileSize: meta?.size ?? 0,
+                    fileMtimeMs: meta?.mtimeMs ?? 0
+                )
+            })
             // 与 SimilarityService 相同的 UPSERT 写路径：唯一索引
             // idx_similarity_hashes_session_photo 是冲突目标。
-            let upsertHash = try connection.prepare("""
-                INSERT INTO similarity_hashes
-                  (session_id, photo_id, hash_hex, file_size, file_mtime_ms)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(session_id, photo_id) DO UPDATE SET
-                  hash_hex = excluded.hash_hex,
-                  file_size = excluded.file_size,
-                  file_mtime_ms = excluded.file_mtime_ms
-                """)
-            for (photoId, hash) in resolvedVisualHashes {
+            try hashes.upsert(resolvedVisualHashes.map { photoId, hash in
                 let meta = photoMeta[photoId]
-                _ = try upsertHash.run([
-                    .text(sessionId), .text(photoId), .text(hash),
-                    .int(meta?.size ?? 0), .real(meta?.mtimeMs ?? 0),
-                ])
-            }
+                return SimilarityHashWrite(
+                    sessionId: sessionId,
+                    photoId: photoId,
+                    hashHex: hash,
+                    fileSize: Int(meta?.size ?? 0),
+                    fileMtimeMs: meta?.mtimeMs ?? 0
+                )
+            })
         }
 
         // TS:241 —— 视觉聚类 O(n²)（大库达秒级），读取已提升到事务外。
-        try connection.exec("PRAGMA group_concat_limit = 0")
+        try duplicateRepo.enableUnlimitedGroupConcat()
 
         // TS:243-258 —— 精确分组：按 checksum 聚合。
-        let exactRows = try connection.prepare("""
-            SELECT checksum, COUNT(*) as cnt, GROUP_CONCAT(id) as photo_ids
-            FROM photos
-            WHERE session_id IN (?) AND checksum != ''
-            GROUP BY checksum
-            HAVING COUNT(*) > 1
-            """).query([.text(sessionId)])
+        let exactRows = try duplicateRepo.getExactGroups(sessionId: sessionId)
 
         var exactPhotoIds = Set<String>()
         for row in exactRows {
-            for photoId in (row[2].textValue ?? "").split(separator: ",") {
-                exactPhotoIds.insert(String(photoId))
-            }
+            exactPhotoIds.formUnion(row.photoIds)
         }
 
         // TS:260-274 —— 视觉聚类输入：排除精确重复照片。
         let hashRows = excludeExactDuplicateHashes(
-            rows: try connection.prepare("""
-                SELECT sh.photo_id, sh.hash_hex
-                FROM similarity_hashes sh
-                JOIN photos p ON p.id = sh.photo_id
-                WHERE p.session_id IN (?)
-                ORDER BY sh.photo_id
-                """).query([.text(sessionId)]).map { row in
-                    (photoId: row[0].textValue ?? "", hashHex: row[1].textValue ?? "")
-                },
+            rows: try duplicateRepo.getOrderedVisualHashes(sessionId: sessionId).map { row in
+                (photoId: row.photoId, hashHex: row.hashHex)
+            },
             exactPhotoIds: exactPhotoIds
         )
         var hashByPhotoId: [String: String] = [:]
@@ -447,76 +422,68 @@ public final class DuplicateService: @unchecked Sendable {
         // 重建组/成员 → 按 photo_id 回填 is_kept/resolution → 重算 photos.status。
         // 读-改-写单事务保证并发扫描不会互相清空：后写者读到的是先写者已提交
         // 的决策并原样继承。
-        let groupIds = try connection.transaction { () -> (exact: [Int], visual: [Int]) in
-            let carriedDecisions = try fetchMemberDecisions(sessionId: sessionId)
+        let groupIds = try transactions.transaction { () -> (exact: [Int], visual: [Int]) in
+            let carriedDecisions = try duplicateRepo.getMemberDecisions(sessionId: sessionId)
             let previousMemberIds = Set(carriedDecisions.keys)
 
-            _ = try connection.prepare(
-                "DELETE FROM duplicate_group_members WHERE session_id IN (?)"
-            ).run([.text(sessionId)])
-            _ = try connection.prepare(
-                "DELETE FROM duplicate_groups WHERE session_id IN (?)"
-            ).run([.text(sessionId)])
+            try duplicateRepo.deleteGroupsAndMembers(sessionId: sessionId)
 
-            let insertGroup = try connection.prepare(
-                "INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)"
-            )
-            let insertMember = try connection.prepare(
-                "INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime, resolution) VALUES (?, ?, ?, ?, ?, ?, ?)"
-            )
-            var currentMemberIds = Set<String>()
-            var exactGroupIds: [Int] = []
+            // 与旧实现同一插入序：先 exact 组（按聚合行序）再 visual 组
+            // （按聚类分量序）；成员行按（组序, 组内成员序）展开。组/成员 id
+            // 序列因此逐位不变，只是 SQL 提前到 Repo（语句各只准备一次）。
+            var groupInserts: [DuplicateGroupInsert] = []
+            var pendingMembers: [(photoIds: [String], isExact: Bool)] = []
             for row in exactRows {
-                let photoIds = (row[2].textValue ?? "").split(separator: ",").map(String.init)
-                _ = try insertGroup.run([
-                    .text(sessionId), .text("exact"), .text(row[0].textValue ?? ""), .null,
-                    .int(Int64(photoIds.count)), .text(now),
-                ])
-                let groupId = Int(connection.lastInsertRowid)
-                exactGroupIds.append(groupId)
-                for photoId in photoIds {
-                    let meta = photoMeta[photoId]
-                    let decision = carriedDecisions[photoId]
-                    currentMemberIds.insert(photoId)
-                    _ = try insertMember.run([
-                        .int(Int64(groupId)), .text(photoId), .text(sessionId),
-                        .int(decision?.isKept == false ? 0 : 1),
-                        meta.map { .int($0.size) } ?? .null,
-                        meta.map { .text($0.mtimeISO) } ?? .null,
-                        decision?.resolution.map { DBValue.text($0) } ?? .null,
-                    ])
-                }
+                groupInserts.append(DuplicateGroupInsert(
+                    sessionId: sessionId, groupType: "exact", checksum: row.checksum,
+                    hashHex: nil, memberCount: row.photoIds.count, createdAt: now
+                ))
+                pendingMembers.append((row.photoIds, true))
             }
-            var visualGroupIds: [Int] = []
             for memberIds in components {
                 // TS:318 —— 组内首成员（hashRows 按 photo_id 排序）的 hash 为代表。
                 let firstHash = hashByPhotoId[memberIds[0]]!
-                _ = try insertGroup.run([
-                    .text(sessionId), .text("visual"), .null, .text(firstHash),
-                    .int(Int64(memberIds.count)), .text(now),
-                ])
-                let groupId = Int(connection.lastInsertRowid)
-                visualGroupIds.append(groupId)
-                for photoId in memberIds {
+                groupInserts.append(DuplicateGroupInsert(
+                    sessionId: sessionId, groupType: "visual", checksum: nil,
+                    hashHex: firstHash, memberCount: memberIds.count, createdAt: now
+                ))
+                pendingMembers.append((memberIds, false))
+            }
+            let insertedGroupIds = try duplicateRepo.insertGroups(groupInserts)
+            var exactGroupIds: [Int] = []
+            var visualGroupIds: [Int] = []
+            var currentMemberIds = Set<String>()
+            var memberInserts: [DuplicateMemberInsert] = []
+            for (index, pending) in pendingMembers.enumerated() {
+                let groupId = insertedGroupIds[index]
+                if pending.isExact {
+                    exactGroupIds.append(groupId)
+                } else {
+                    visualGroupIds.append(groupId)
+                }
+                for photoId in pending.photoIds {
                     let meta = photoMeta[photoId]
                     let decision = carriedDecisions[photoId]
                     currentMemberIds.insert(photoId)
-                    _ = try insertMember.run([
-                        .int(Int64(groupId)), .text(photoId), .text(sessionId),
-                        .int(decision?.isKept == false ? 0 : 1),
-                        meta.map { .int($0.size) } ?? .null,
-                        meta.map { .text($0.mtimeISO) } ?? .null,
-                        decision?.resolution.map { DBValue.text($0) } ?? .null,
-                    ])
+                    memberInserts.append(DuplicateMemberInsert(
+                        groupId: groupId,
+                        photoId: photoId,
+                        sessionId: sessionId,
+                        isKept: decision?.isKept == false ? false : true,
+                        fileSize: meta?.size,
+                        fileMtime: meta?.mtimeISO,
+                        resolution: decision?.resolution
+                    ))
                 }
             }
+            try duplicateRepo.insertMembers(memberInserts)
             // 组级 resolution 从成员决策派生（全部成员已决才落值）。
             try syncGroupResolutions(groupIds: exactGroupIds + visualGroupIds)
             // 决策落库：携带 is_kept=0 的成员置 'removed'（导出排除的唯一载体）；
             // 旧成员中已无丢弃决策的（组消失/照片脱组）复位 'ready'。未决成员
             // 保持原 status（pending/missing 不被本模块改写）。
-            try markDiscarded(Array(currentMemberIds))
-            try restoreOrphanedRemoved(ids: Array(previousMemberIds))
+            try duplicateRepo.markDiscarded(Array(currentMemberIds))
+            try duplicateRepo.restoreOrphanedRemoved(Array(previousMemberIds))
             return (exactGroupIds, visualGroupIds)
         }
 
@@ -525,13 +492,9 @@ public final class DuplicateService: @unchecked Sendable {
 
     /// TS: getGroups —— duplicate.groups 命令；按 group_type, id 排序。
     public func getGroups(sessionId: String) throws -> [DuplicateGroup] {
-        let groupRows = try connection.prepare("""
-            SELECT * FROM duplicate_groups
-            WHERE session_id = ?
-            ORDER BY group_type, id
-            """).query([.text(sessionId)])
+        let groupRows = try groupQuery.getGroups(sessionId: sessionId)
         if groupRows.isEmpty { return [] }
-        let memberMap = try fetchMembers(ids: groupRows.map { Int($0[0].intValue ?? 0) })
+        let memberMap = makeMembers(try groupQuery.getMembers(groupIds: groupRows.map(\.id)))
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
@@ -540,124 +503,76 @@ public final class DuplicateService: @unchecked Sendable {
     /// TS: resolveGroup —— keep_one 按分数（size*1000 + mtimeMs）取最优保留，
     /// keep_all 全部保留；随后重算照片状态。
     public func resolveGroup(groupId: Int, resolution: DupResolution) throws {
-        try connection.transaction {
-            _ = try connection.prepare(
-                "UPDATE duplicate_groups SET resolution = ? WHERE id = ?"
-            ).run([.text(resolution.rawValue), .int(Int64(groupId))])
+        try transactions.transaction {
+            try duplicateRepo.setGroupResolutions([
+                DuplicateGroupResolutionWrite(groupId: groupId, resolution: resolution.rawValue)
+            ])
 
-            let members = try connection.prepare(
-                "SELECT * FROM duplicate_group_members WHERE group_id = ?"
-            ).query([.int(Int64(groupId))])
+            let members = try groupQuery.getMembers(groupId: groupId)
             if members.isEmpty {
                 throw DuplicateServiceError.groupNotFound(groupId)
             }
 
             if resolution == .keepAll {
-                let updateMember = try connection.prepare(
-                    "UPDATE duplicate_group_members SET is_kept = 1, resolution = ? WHERE id = ?"
+                try duplicateRepo.setMembersKeptAll(
+                    members.map(\.id), resolution: resolution.rawValue
                 )
-                for member in members {
-                    _ = try updateMember.run([
-                        .text(resolution.rawValue), .int(member[0].intValue ?? 0),
-                    ])
-                }
             } else {
-                var bestId = members[0][0].intValue ?? 0
+                var bestId = members[0].id
                 var bestScore: Double = -1
                 for member in members {
                     // TS: new Date(m.file_mtime || 0).getTime() —— null/空串 → 0，
                     // 非空非法串 → NaN（永不中选）。
                     let mtimeMs: Double
-                    if let fileMtime = member[6].textValue, !fileMtime.isEmpty {
+                    if let fileMtime = member.fileMtime, !fileMtime.isEmpty {
                         mtimeMs = tsDateParse(fileMtime) ?? .nan
                     } else {
                         mtimeMs = 0
                     }
-                    let score = Double(member[5].intValue ?? 0) * 1000 + mtimeMs
+                    let score = Double(member.fileSize ?? 0) * 1000 + mtimeMs
                     if score > bestScore {
                         bestScore = score
-                        bestId = member[0].intValue ?? 0
+                        bestId = member.id
                     }
                 }
-                let updateMember = try connection.prepare(
-                    "UPDATE duplicate_group_members SET is_kept = ?, resolution = ? WHERE id = ?"
+                try duplicateRepo.setMemberKept(
+                    members.map { DuplicateMemberKeptWrite(memberId: $0.id, isKept: $0.id == bestId) },
+                    resolution: resolution.rawValue
                 )
-                for member in members {
-                    let id = member[0].intValue ?? 0
-                    _ = try updateMember.run([
-                        .int(id == bestId ? 1 : 0), .text(resolution.rawValue), .int(id),
-                    ])
-                }
             }
-            try recomputePhotoStatuses(members.compactMap { $0[2].textValue })
+            try duplicateRepo.recomputePhotoStatuses(members.map(\.photoId))
         }
     }
 
     /// TS: resolveMember —— 单成员保留/移除；resolution 只在未定（NULL）时写。
     public func resolveMember(memberId: Int, isKept: Bool) throws {
-        try connection.transaction {
-            _ = try connection.prepare("""
-                UPDATE duplicate_group_members
-                SET is_kept = ?, resolution = COALESCE(resolution, ?)
-                WHERE id = ?
-                """).run([
-                    .int(isKept ? 1 : 0),
-                    .text(isKept ? "keep_all" : "keep_one"),
-                    .int(Int64(memberId)),
-                ])
-            let member = try connection.prepare(
-                "SELECT photo_id FROM duplicate_group_members WHERE id = ?"
-            ).get([.int(Int64(memberId))])
-            guard let member else {
+        try transactions.transaction {
+            try duplicateRepo.setMemberResolutionIfUnset(
+                memberId: memberId,
+                isKept: isKept,
+                resolution: isKept ? "keep_all" : "keep_one"
+            )
+            guard let photoId = try duplicateRepo.getMemberPhotoId(memberId: memberId) else {
                 throw DuplicateServiceError.memberNotFound(memberId)
             }
-            try recomputePhotoStatuses([member[0].textValue ?? ""])
+            try duplicateRepo.recomputePhotoStatuses([photoId])
         }
     }
 
     // MARK: - 内部
 
-    /// 决策载体（稳定身份 = photo_id）。
-    private struct MemberDecision {
-        let isKept: Bool
-        let resolution: String?
-    }
-
-    /// 读取该会话既有决策：photo_id → (is_kept, resolution)。会话隔离。
-    private func fetchMemberDecisions(sessionId: String) throws -> [String: MemberDecision] {
-        let rows = try connection.prepare("""
-            SELECT photo_id, is_kept, resolution
-            FROM duplicate_group_members
-            WHERE session_id IN (?)
-            ORDER BY id
-            """).query([.text(sessionId)])
-        var decisions: [String: MemberDecision] = [:]
-        for row in rows {
-            guard let photoId = row[0].textValue else { continue }
-            decisions[photoId] = MemberDecision(
-                isKept: (row[1].intValue ?? 1) != 0,
-                resolution: row[2].textValue
-            )
-        }
-        return decisions
-    }
-
     /// 组级 resolution 派生：全部成员已决 → keep_all（全保留）/ keep_one（仅留 1）；
     /// 有未决成员 → 保持 NULL（未处理）。成员各自的 resolution 才是决策真相。
     private func syncGroupResolutions(groupIds: [Int]) throws {
-        let update = try connection.prepare(
-            "UPDATE duplicate_groups SET resolution = ? WHERE id = ?"
-        )
+        var writes: [DuplicateGroupResolutionWrite] = []
         for groupId in groupIds {
-            let rows = try connection.prepare(
-                "SELECT is_kept, resolution FROM duplicate_group_members WHERE group_id = ? ORDER BY id"
-            ).query([.int(Int64(groupId))])
+            let rows = try groupQuery.getMemberStates(groupId: groupId)
             guard !rows.isEmpty else { continue }
             var allResolved = true
             var keptCount = 0
             for row in rows {
-                if row[1].textValue == nil { allResolved = false }
-                if (row[0].intValue ?? 1) != 0 { keptCount += 1 }
+                if row.resolution == nil { allResolved = false }
+                if row.isKept { keptCount += 1 }
             }
             guard allResolved else { continue }
             let resolution: String?
@@ -665,66 +580,14 @@ public final class DuplicateService: @unchecked Sendable {
             else if keptCount == 1 { resolution = "keep_one" }
             else { resolution = nil }
             guard let resolution else { continue }
-            _ = try update.run([.text(resolution), .int(Int64(groupId))])
+            writes.append(DuplicateGroupResolutionWrite(groupId: groupId, resolution: resolution))
         }
+        try duplicateRepo.setGroupResolutions(writes)
     }
 
-    /// 决策落库（'removed' 的唯一写入点之一）：携带 is_kept=0 决策的成员照片
-    /// 置为 'removed' = 排除出导出；未决/保留成员不触碰。
-    private func markDiscarded(_ photoIds: [String]) throws {
-        if photoIds.isEmpty { return }
-        let seen = Set(photoIds)
-        let placeholders = seen.map { _ in "?" }.joined(separator: ",")
-        _ = try connection.prepare("""
-            UPDATE photos
-            SET status = 'removed'
-            WHERE id IN (\(placeholders))
-              AND EXISTS (
-                SELECT 1 FROM duplicate_group_members dgm
-                WHERE dgm.photo_id = photos.id AND dgm.is_kept = 0
-              )
-            """).run(seen.map { .text($0) })
-    }
-
-    /// 组消失后的丢弃残影复位：仅当照片已无任何 is_kept=0 成员时，把本模块
-    /// 写入的 'removed' 复位 'ready'；其他模块的 status（pending/missing）不动。
-    private func restoreOrphanedRemoved(ids: [String]) throws {
-        if ids.isEmpty { return }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        _ = try connection.prepare("""
-            UPDATE photos
-            SET status = 'ready'
-            WHERE id IN (\(placeholders))
-              AND status = 'removed'
-              AND NOT EXISTS (
-                SELECT 1 FROM duplicate_group_members dgm
-                WHERE dgm.photo_id = photos.id AND dgm.is_kept = 0
-              )
-            """).run(ids.map { .text($0) })
-    }
-
-    /// recomputePhotoStatuses（TS 语义保留）—— 任一 is_kept=0 成员 → 'removed'
-    /// （导出排除的唯一落库载体），否则 'ready'。本方法是 photos.status
-    /// 'removed' 的唯一写者。
-    private func recomputePhotoStatuses(_ photoIds: [String]) throws {
-        if photoIds.isEmpty { return }
-        var seen = Set<String>()
-        let uniqueIds = photoIds.filter { seen.insert($0).inserted }
-        let placeholders = uniqueIds.map { _ in "?" }.joined(separator: ",")
-        _ = try connection.prepare("""
-            UPDATE photos
-            SET status = CASE
-              WHEN EXISTS (
-                SELECT 1
-                FROM duplicate_group_members dgm
-                WHERE dgm.photo_id = photos.id
-                  AND dgm.is_kept = 0
-              ) THEN 'removed'
-              ELSE 'ready'
-            END
-            WHERE id IN (\(placeholders))
-            """).run(uniqueIds.map { .text($0) })
-    }
+    /// photos.status 的三个写者（markDiscarded / restoreOrphanedRemoved /
+    /// recomputePhotoStatuses）已随 SQL 下沉到 DuplicateRepo；语义不变：
+    /// 任一 is_kept=0 成员 → 'removed'（导出排除的唯一落库载体），否则 'ready'。
 
     /// TS: buildResult —— 按组 id 读取分组与成员，汇总 totalDuplicates。
     private func buildResult(exactGroupIds: [Int], visualGroupIds: [Int]) throws -> DuplicateScanResult {
@@ -750,77 +613,52 @@ public final class DuplicateService: @unchecked Sendable {
         )
     }
 
-    /// TS: buildResult/getGroups 的组读取（按 id 排序，成员 JOIN photos）。
+    /// TS: buildResult 的组读取（按 id 排序，成员 JOIN photos）。
     private func fetchGroups(ids: [Int]) throws -> [DuplicateGroup] {
         guard !ids.isEmpty else { return [] }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        let groupRows = try connection.prepare(
-            "SELECT * FROM duplicate_groups WHERE id IN (\(placeholders)) ORDER BY id"
-        ).query(ids.map { .int(Int64($0)) })
-        let memberMap = try fetchMembers(ids: ids)
+        let groupRows = try groupQuery.getGroups(ids: ids)
+        let memberMap = makeMembers(try groupQuery.getMembers(groupIds: ids))
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
     }
 
-    /// TS: duplicate_group_members JOIN photos（filepath/filename）按 dgm.id 排序。
-    private func fetchMembers(ids: [Int]) throws -> [Int: [DuplicateGroupMember]] {
-        guard !ids.isEmpty else { return [:] }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        let rows = try connection.prepare("""
-            SELECT dgm.*, p.filepath, p.filename
-            FROM duplicate_group_members dgm
-            JOIN photos p ON p.id = dgm.photo_id
-            WHERE dgm.group_id IN (\(placeholders))
-            ORDER BY dgm.id
-            """).query(ids.map { .int(Int64($0)) })
-        var memberMap: [Int: [DuplicateGroupMember]] = [:]
-        for row in rows {
-            let groupId = Int(row[1].intValue ?? 0)
-            memberMap[groupId, default: []].append(DuplicateGroupMember(
-                id: Int(row[0].intValue ?? 0),
-                photoId: row[2].textValue ?? "",
-                isKept: (row[4].intValue ?? 0) != 0,
-                fileSize: row[5].intValue.map(Int.init),
-                fileMtime: row[6].textValue,
-                resolution: row[7].textValue,
-                filepath: row[8].textValue ?? "",
-                filename: row[9].textValue ?? ""
-            ))
+    /// 读模型 → 协议成员（列序解码在 Persistence，这里只做字段映射）。
+    private func makeMembers(
+        _ detailsByGroup: [Int: [DuplicateGroupMemberDetail]]
+    ) -> [Int: [DuplicateGroupMember]] {
+        detailsByGroup.mapValues { details in
+            details.map { detail in
+                DuplicateGroupMember(
+                    id: detail.member.id,
+                    photoId: detail.member.photoId,
+                    isKept: detail.member.isKept,
+                    fileSize: detail.member.fileSize.map(Int.init),
+                    fileMtime: detail.member.fileMtime,
+                    resolution: detail.member.resolution,
+                    filepath: detail.filepath,
+                    filename: detail.filename
+                )
+            }
         }
-        return memberMap
     }
 
-    private func makeGroup(row: DBRow, memberMap: [Int: [DuplicateGroupMember]]) -> DuplicateGroup {
-        let id = Int(row[0].intValue ?? 0)
-        return DuplicateGroup(
-            id: id,
-            groupType: (row[2].textValue ?? "") == "exact" ? .exact : .visual,
-            checksum: row[3].textValue,
-            hashHex: row[4].textValue,
-            memberCount: Int(row[5].intValue ?? 0),
-            members: memberMap[id] ?? [],
-            resolution: row[6].textValue,
-            createdAt: row[7].textValue ?? ""
+    /// SELECT * 列序契约在 DuplicateGroupRow（列 0-7），这里只做读模型映射。
+    private func makeGroup(row: DuplicateGroupRow, memberMap: [Int: [DuplicateGroupMember]]) -> DuplicateGroup {
+        DuplicateGroup(
+            id: row.id,
+            groupType: row.groupType == "exact" ? .exact : .visual,
+            checksum: row.checksum,
+            hashHex: row.hashHex,
+            memberCount: row.memberCount,
+            members: memberMap[row.id] ?? [],
+            resolution: row.resolution,
+            createdAt: row.createdAt
         )
-    }
-
-    /// TS: sha256File —— crypto.createHash('sha256') 的 hex（小写）。
-    private static func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data).map { String(format: "%02x", $0) }.joined()
     }
 }
 
 // MARK: - 私有行类型
-
-/// TS: photos 行的字段子集（_scanDuplicates 读取）。
-private struct DuplicatePhotoRow {
-    let id: String
-    let filepath: String
-    let checksum: String
-    let checksumFileSize: Int64
-    let checksumFileMtimeMs: Double
-}
 
 /// TS: fs.stat 结果（_scanDuplicates stat 阶段）。
 private struct PhotoStat {

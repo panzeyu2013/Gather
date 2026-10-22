@@ -293,6 +293,31 @@ extension CullingService {
 }
 
 
+// MARK: - WP3b-3：Duplicate（扫描/重建/组读端口）
+
+extension DuplicateService {
+    convenience init(
+        connection: DBConnection,
+        thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
+        clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
+            // 与生产 init 的默认值逐字一致（Cut 5 / 5b-2a 唯一实现）。
+            try ClusterGraphPipeline.run(
+                entries: entries, threshold: threshold,
+                minGroupSize: minGroupSize, mode: mode, onProgress: onProgress
+            ).result
+        }
+    ) {
+        self.init(
+            duplicateRepo: DuplicateRepo(connection: connection),
+            groupQuery: DuplicateGroupQuery(connection: connection),
+            hashes: SimilarityHashRepo(connection: connection),
+            transactions: connection,
+            thumbnailProvider: thumbnailProvider,
+            clusterProvider: clusterProvider
+        )
+    }
+}
+
 // MARK: - WP3b-2：Indexer（扫描写路径 / 事务端口）
 
 extension IndexerService {

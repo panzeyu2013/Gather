@@ -313,7 +313,13 @@ public struct AppComposition {
         let filterEngine = FilterEngine(query: PhotoFilterQuery(connection: db))
         let navigationService = NavigationService(navigationRepo: NavigationRepo(connection: db))
         let duplicateService = DuplicateService(
-            connection: db,
+            // WP3b-3：扫描/分组重建/photos.status 与组/成员读取下沉到
+            // DuplicateRepo / DuplicateGroupQuery，hash 表共用 SimilarityHashRepo，
+            // 事务经 TransactionRunner（Application 已无 prepare/裸连接）。
+            duplicateRepo: DuplicateRepo(connection: db),
+            groupQuery: DuplicateGroupQuery(connection: db),
+            hashes: SimilarityHashRepo(connection: db),
+            transactions: db,
             thumbnailProvider: { path, size in
                 RAWDecoder.pixels9x8(path: path, maxPixel: size)
             },

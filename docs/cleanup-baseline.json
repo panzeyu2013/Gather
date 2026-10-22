@@ -6,7 +6,7 @@
   "metrics": {
     "unchecked_sendable": 53,
     "try_optional": 231,
-    "services_prepare": 25,
+    "services_prepare": 0,
     "todo_fixme": 0,
     "with_known_issue": 0
   },
