@@ -267,6 +267,8 @@ jobs:
           APP=release/Gather.app
           APP_BINARY="$APP/Contents/MacOS/Gather"
           plutil -p "$APP/Contents/Info.plist"
+          test "$(plutil -extract CFBundleIconFile raw -o - "$APP/Contents/Info.plist")" = "AppIcon"
+          test -s "$APP/Contents/Resources/AppIcon.icns"
           ARCHS="$(lipo -archs "$APP_BINARY")"
           echo "app architectures: $ARCHS"
           for want in arm64 x86_64; do
