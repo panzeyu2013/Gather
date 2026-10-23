@@ -91,9 +91,16 @@ package final class AppBootstrap {
             self.scene = state
         } catch {
             GatherLogger.log("bootstrap failed: \(error)", level: .error)
-            // Cut 4 / 4b-1：启动失败文案按装配层已播种的界面语言解析（场景尚未
-            // 发布，没有 View 的 environment 可用，语言源仍是同一个 store）。
-            self.errorMessage = APIErrorPresentation.userFacingMessage(for: error, with: languageStore.l10n)
+            // 旧库/损坏库给可执行的归档指引；其余错误仍走统一漏斗。
+            if let dbError = error as? DatabaseError, case .corrupt = dbError {
+                self.errorMessage = languageStore.l10n(
+                    "数据库版本不受支持或已损坏。请将 ~/Library/Application Support/Gather/gather.sqlite 及 -wal/-shm 移走备份后重试。")
+            } else {
+                // Cut 4 / 4b-1：启动失败文案按装配层已播种的界面语言解析（场景尚未
+                // 发布，没有 View 的 environment 可用，语言源仍是同一个 store）。
+                self.errorMessage = APIErrorPresentation.userFacingMessage(
+                    for: error, with: languageStore.l10n)
+            }
         }
     }
 

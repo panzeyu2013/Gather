@@ -1374,6 +1374,7 @@
    （errorText 的查表路径是 errorMessages[code] → l(中文值)；
      按错误码作 key 的条目永远查不到 —— 见 ErrorLocalizationCoverageTests） ── */
 "应用正在初始化，请稍候再试。" = "The app is still starting up. Please try again in a moment.";
+"数据库版本不受支持或已损坏。请将 ~/Library/Application Support/Gather/gather.sqlite 及 -wal/-shm 移走备份后重试。" = "The database is unsupported or damaged. Move ~/Library/Application Support/Gather/gather.sqlite and its -wal/-shm files aside as a backup, then try again.";
 "本次导出没有产生任何文件，请在导出结果中查看失败原因。" = "This export produced no files at all. See the export result for the failure details.";
 "源文件不存在" = "Source file is missing";
 "源文件不可读（权限或所在卷离线）" = "Source file is unreadable (permissions or the volume is offline)";
