@@ -30,7 +30,7 @@
 
 ## 2. 当前指标（HEAD 工作区实测）
 
-- core：**1,168 tests / 176 suites**，exit 0（P1/P2 收口 + fake-repo/trace/replay 并发测试后；含 3 个真实照片 skip，有效 1,165）。
+- core：**1,171 tests / 176 suites**，exit 0（P1/P2 收口 + fake-repo/trace/replay 并发测试后；含 3 个真实照片 skip，有效 1,168）。
 - app：**624 tests / 69 suites**，串行 + 并行 3 次 exit 0（新增 DeliveryErrorPresentation 7 例）。
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
 - 门禁：9 道 strict 全绿；ratchet 54/230/0/0/0；protocol surface 255/1,340/0/0；preview 14。
@@ -62,6 +62,7 @@
 本轮架构 P1 进一步收口：DeliveryRepo/AssetRepo/FaceRepo/ClusterGraph 四个 >1000 行文件已拆到 ≤800；SidecarXMPProvider/PersonRepo/DeliveryCleanupFlow 也已拆到 ≤800（仅 SchemaV1 DDL 846、DEBUG PreviewFixtures 964 保留）；AssetRepo 不再直接 UPDATE deliveries，路径迁移/Intent payload 归 DeliveryRepo.relocatePaths；2 处内联 sessions SQL 下沉 SessionReloadAckRepo；reload-ack 与 markWritten 改为同事务；StateWriter 的 markFailed/markConflict 强制显式 leaseOwner。
 **已进一步收口**：`DeliveryWriting` 窄协议 + `DeliveryStateWriter` 依赖 `any DeliveryWriting`；`markWriting` 从 public deprecated 降为 `package`，跨包测试经 `GatherTestSupport.markWritingForTesting`；item 级 `markItem` 支持 leaseOwner 并加 `EXISTS(deliveries.lease_owner)` CAS，Writeback 传 owner。
 **已补**：4 个 Query 的 SQL 边界 20 例（真实 SQLite）；Job/Delivery trace `duration_ms`。
+**本轮修复已知缺陷**：`filterGlobally` 的 INTEGER rating 被当 REAL 丢弃（恒 0）；`filterPhotos` 只传 offset 时生成非法 OFFSET；内存库共用 `":memory:"` 作为 replay scope 导致并行/多实例互跳；旧库启动失败只显示“未知错误”。
 **已补**：replay claim 以 DB storagePath + xmpPath + intent id 为作用域，并用 `flock` 跨进程排他；`markFailed/markConflict` 已移除空串默认，生产 StateWriter 显式传 owner，测试经 package/GatherTestSupport seam。
 **已清零**：全部 Swift 文件 ≤768 行（SchemaV1 121 + DDL 片段，PreviewFixtures 244 + 7 个页面片段）；replay claim 增加双实例互斥测试。
 **剩余（发布外部）**：app icon、真实签名/公证/staple、macos-26 release job、x86 Rosetta、GUI smoke 仍未闭环。
