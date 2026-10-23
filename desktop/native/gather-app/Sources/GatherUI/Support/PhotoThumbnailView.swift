@@ -158,6 +158,10 @@ public struct PhotoThumbnailView: View {
     /// 图片适配模式：默认 .fill（封面裁切，用于缩略图网格）；查看器传 .fit
     /// （整图可见，对齐旧版 object-fit: contain 的查看器交互语义）。
     var contentMode: ContentMode
+    /// 占位 / 失败态表面：默认使用语义次级表面；查看器传入 viewerSurface。
+    var placeholderSurface: Color?
+    /// 占位 / 失败态文字色。
+    var placeholderTextColor: Color
 
     /// 当前应显示的 cache key（B5）：由 .task(id:) 在任务启动时写入，
     /// 异步解码返回后与它比较，避免值类型 self 快照导致的错图覆盖。
@@ -168,12 +172,22 @@ public struct PhotoThumbnailView: View {
     @State private var failed = false
     @State private var loading = false
 
-    public init(path: String, size: Int = 512, placeholderSize: CGSize? = nil, preview: Bool = false, contentMode: ContentMode = .fill) {
+    public init(
+        path: String,
+        size: Int = 512,
+        placeholderSize: CGSize? = nil,
+        preview: Bool = false,
+        contentMode: ContentMode = .fill,
+        placeholderSurface: Color? = nil,
+        placeholderTextColor: Color = .secondary
+    ) {
         self.path = path
         self.size = size
         self.placeholderSize = placeholderSize
         self.preview = preview
         self.contentMode = contentMode
+        self.placeholderSurface = placeholderSurface
+        self.placeholderTextColor = placeholderTextColor
     }
 
     public var body: some View {
@@ -186,20 +200,20 @@ public struct PhotoThumbnailView: View {
             } else if failed {
                 // TS: thumbError —— 感叹号 + 文件名。
                 ZStack {
-                    Rectangle().fill(GatherTheme.backgroundSecondary)
+                    Rectangle().fill(placeholderSurface ?? GatherTheme.surfaceMuted)
                     VStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(placeholderTextColor)
                         Text((path as NSString).lastPathComponent)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(GatherFont.labelRegular)
+                            .foregroundStyle(placeholderTextColor)
                             .lineLimit(1)
                             .padding(.horizontal, 4)
                     }
                 }
             } else {
                 Rectangle()
-                    .fill(GatherTheme.backgroundSecondary)
+                    .fill(placeholderSurface ?? GatherTheme.surfaceMuted)
                     .overlay {
                         if loading {
                             ProgressView().controlSize(.small)

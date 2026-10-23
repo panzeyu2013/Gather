@@ -97,7 +97,7 @@ public struct NativeBanner: View {
                 .foregroundStyle(color)
                 .accessibilityHidden(true)
             Text(text)
-                .font(.callout)
+                .font(GatherFont.body)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -113,8 +113,8 @@ public struct NativeBanner: View {
                 .help(l10n("关闭"))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)

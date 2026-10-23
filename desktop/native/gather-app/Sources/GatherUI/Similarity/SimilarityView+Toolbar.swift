@@ -7,17 +7,11 @@ import GatherProtocol
 
 extension SimilarityView {
 
-    // MARK: - 工具栏（返回 / C1 胶囊 / 刷新）
+    // MARK: - 工具栏（C1 胶囊 / 刷新）
 
     @ToolbarContentBuilder
     var toolbarItems: some ToolbarContent {
         // 内容区返回按钮 → 工具栏导航位。
-        ToolbarItem(placement: .navigation) {
-            Button(action: onBack) {
-                Label(l10n("返回"), systemImage: "chevron.backward")
-            }
-            .help(l10n("返回到上一页"))
-        }
         ToolbarItemGroup(placement: .primaryAction) {
             // C1 状态胶囊（旧版画在页头行里）。
             C1StatusCapsuleHost(

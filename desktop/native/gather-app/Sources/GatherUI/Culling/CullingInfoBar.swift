@@ -44,54 +44,56 @@ struct CullingInfoBar: View {
             }
             if let page = viewModel.page {
                 Text("\(currentIndex + 1) / \(viewModel.page?.total ?? page.assets.count)")
-                    .font(.callout.weight(.semibold))
+                    .font(GatherFont.bodyStrong)
                     .monospacedDigit()
-                    .foregroundStyle(GatherTheme.primaryText)
+                    .foregroundStyle(.primary)
                     .accessibilityLabel(l10n.format("第 %lld 张，共 %lld 张", currentIndex + 1, viewModel.page?.total ?? page.assets.count))
             }
             if let summary = viewModel.summary {
-                Text(l10n.format("保留 %lld", summary.kept))
-                    .font(.callout)
-                    .monospacedDigit()
-                    .foregroundStyle(GatherTheme.success)
-                Text(l10n.format("淘汰 %lld", summary.rejected))
-                    .font(.callout)
-                    .monospacedDigit()
-                    .foregroundStyle(GatherTheme.error)
-                Text(l10n.format("未处理 %lld", summary.pending))
-                    .font(.callout)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                countItem(l10n.format("保留 %lld", summary.kept), color: GatherTheme.success)
+                countItem(l10n.format("淘汰 %lld", summary.rejected), color: GatherTheme.error)
+                countItem(l10n.format("未处理 %lld", summary.pending), color: .secondary)
             }
             // linkedNotice：同名 RAW/JPEG 共享 XMP 提示（对齐旧版 Culling.tsx:1393-1397）。
             if let current = viewModel.currentAsset, current.linkedVariantCount > 1 {
-                Text(l10n.format("同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 %lld 个条目", current.linkedVariantCount))
-                    .font(.callout)
-                    .monospacedDigit()
-                    .foregroundStyle(GatherTheme.error)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(GatherTheme.warning)
+                        .accessibilityHidden(true)
+                    Text(l10n.format("同名 RAW/JPEG 共用 XMP，星级和颜色将同步到 %lld 个条目", current.linkedVariantCount))
+                        .font(GatherFont.secondary)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
             }
             // 原为 Spacer()（把同步区推到最右）。横向滚动容器里 Spacer 没有
             // 可分配空间，改为固定分隔线：语义上把「照片信息」与「同步动作」分开。
             Divider().frame(height: 16)
             if let sync = viewModel.syncStatus {
-                Text(syncStatusText(sync))
-                    .font(.callout.weight(.medium))
-                    .monospacedDigit()
-                    .foregroundStyle(sync.failed + sync.conflict > 0 ? GatherTheme.error : GatherTheme.success)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(sync.failed + sync.conflict > 0 ? GatherTheme.error : GatherTheme.success)
+                        .frame(width: 5, height: 5)
+                        .accessibilityHidden(true)
+                    Text(syncStatusText(sync))
+                        .font(GatherFont.secondaryStrong)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
             }
             if let syncError = viewModel.lastSyncError {
                 // Cut 4 / 4a-3b-1：同步类错误同样是渲染期本地化（VM 只存码/参数）。
                 let syncErrorText = CommandErrorText.resolve(syncError, with: l10n)
                 Text(syncErrorText)
-                    .font(.callout)
-                    .foregroundStyle(GatherTheme.error)
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
                     .lineLimit(1)
                     .help(syncErrorText)
                 Button(l10n("重试")) { Task { await viewModel.load() } }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .tint(GatherTheme.error)
+                    .tint(GatherTheme.errorText)
 
             }
             Menu {
@@ -134,14 +136,14 @@ struct CullingInfoBar: View {
             Button(l10n("重置挑片"), role: .destructive) { pendingAction = .reset }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .tint(GatherTheme.error)
+                .tint(GatherTheme.errorText)
 
             }
-            .font(.callout)
-            .padding(.horizontal, 24)
-            .frame(minHeight: 36)
+            .font(GatherFont.secondary)
+            .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+            .frame(minHeight: GatherMetrics.Chrome.infoBar)
         }
-        .background(GatherTheme.contentBackground)
+        .background(GatherTheme.surface)
         .overlay(alignment: .top) { Divider() }
     }
 
@@ -193,6 +195,21 @@ struct CullingInfoBar: View {
         if sync.written > 0 { return l10n.format("%lld 个 XMP 已写入，等待 Capture One 加载", sync.written) }
         if sync.synced > 0 { return l10n.format("%lld 个 XMP 已确认加载", sync.synced) }
         return l10n("XMP 已同步")
+    }
+
+    /// 行内计数：语义色只做圆点，数字保持主文字色。
+    private func countItem(_ text: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(GatherFont.secondary)
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var currentIndex: Int {

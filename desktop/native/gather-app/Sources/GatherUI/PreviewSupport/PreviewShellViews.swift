@@ -120,6 +120,7 @@ struct PreviewShellChrome: View {
     var body: some View {
         VStack(spacing: 0) {
             SessionPageTabStrip(
+                onBack: nil,
                 selection: .browse,
                 onBrowse: {},
                 onSimilarity: {},

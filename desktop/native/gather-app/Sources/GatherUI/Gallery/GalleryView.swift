@@ -93,11 +93,11 @@ package struct GalleryView: View {
         page
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(GatherTheme.windowBackground)
-            // 会话名走窗口标题；页面身份走副标题（不再在内容区画 26pt 大标题、
-            // 也不再显示任何会话 UUID）。
-            .navigationTitle(viewModel.session?.name ?? l10n("图库"))
+            // 会话名由外壳的窗口标题承载（RootView.windowTitle）；页面只给副标题，
+            // 避免 macOS 26/27 在标题栏与工具栏导航位重复显示同一个会话名。
             .sessionPageChrome(
                 subtitle: l10n("图库"),
+                onBack: onBack,
                 selection: .browse,
                 onBrowse: {},
                 onSimilarity: { onOpenSimilarity(viewModel.sessionId) },

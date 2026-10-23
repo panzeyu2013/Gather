@@ -81,6 +81,7 @@ extension View {
     /// 保留旧版没有的东西：工作区名（窗口标题）+ 功能名（窗口副标题）始终可见。
     func sessionPageChrome(
         subtitle: String?,
+        onBack: (() -> Void)? = nil,
         selection: SessionTabSelection,
         onBrowse: @escaping () -> Void,
         onSimilarity: @escaping () -> Void,
@@ -88,6 +89,7 @@ extension View {
     ) -> some View {
         VStack(spacing: 0) {
             SessionPageTabStrip(
+                onBack: onBack,
                 selection: selection,
                 onBrowse: onBrowse,
                 onSimilarity: onSimilarity,
@@ -112,13 +114,29 @@ extension View {
 /// 因此这里用 ViewThatFits 做两档：宽窗口保留一眼看全的分段控件；
 /// 窄窗口退化成菜单（固有宽度约 100pt），会话页的最小宽度不再被页签行顶住。
 struct SessionPageTabStrip: View {
+    let onBack: (() -> Void)?
     let selection: SessionTabSelection
     let onBrowse: () -> Void
     let onSimilarity: () -> Void
     let onSelectTab: (SessionTab) -> Void
 
+    @Environment(\.languageStore) private var languageStore
+    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
+            // 返回按钮放在内容页签行，避免工具栏 navigation 位再产生一行
+            // 窗口 chrome（macOS 26/27 会留下一条空的 titlebar 行）。
+            if let onBack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.backward")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help(l10n("返回到上一页"))
+                .accessibilityLabel(l10n("返回"))
+                .keyboardShortcut("[", modifiers: .command)
+            }
             ViewThatFits(in: .horizontal) {
                 SessionTabBar(
                     selection: selection,

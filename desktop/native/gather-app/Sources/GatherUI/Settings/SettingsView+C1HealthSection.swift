@@ -22,7 +22,7 @@ extension SettingsView {
             if viewModel.c1HealthError {
                 checkLine(
                     l10n("预检失败：无法连接 Capture One 自动化通道"),
-                    tone: GatherTheme.error,
+                    tone: GatherTheme.errorText,
                     symbol: "xmark.circle.fill"
                 )
             } else if let health = viewModel.c1Health {
@@ -52,7 +52,7 @@ extension SettingsView {
     private func checkRow(zh: String, passed: Bool) -> some View {
         checkLine(
             zh,
-            tone: passed ? GatherTheme.success : GatherTheme.error,
+            tone: passed ? GatherTheme.successText : GatherTheme.errorText,
             symbol: passed ? "checkmark.circle.fill" : "xmark.circle.fill",
             value: passed ? l10n("通过") : l10n("未通过")
         )
@@ -69,7 +69,7 @@ extension SettingsView {
     @ViewBuilder
     private var queueGrid: some View {
         if let sync = viewModel.syncStatus {
-            Grid(horizontalSpacing: 20, verticalSpacing: 10) {
+            Grid(horizontalSpacing: 20, verticalSpacing: 6) {
                 GridRow {
                     queueCell(l10n("待写入"), sync.pending)
                     queueCell(l10n("写入中"), sync.writing)
@@ -99,7 +99,7 @@ extension SettingsView {
         VStack(alignment: .leading, spacing: 0) {
             Text(value, format: .number)
                 .font(.title3.monospacedDigit())
-                .foregroundStyle(alert && value > 0 ? GatherTheme.warning : Color.primary)
+                .foregroundStyle(alert && value > 0 ? GatherTheme.warningText : Color.primary)
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)

@@ -26,17 +26,17 @@ struct LibraryCardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 thumbnail
                 Text(photo.filename)
-                    .font(.callout.weight(.medium))
+                    .font(GatherFont.bodyStrong)
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                 ratingRow
                 Text(metadataText)
-                    .font(.footnote)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 if !photo.keywords.isEmpty {
                     Text(photo.keywords.prefix(4).joined(separator: " · "))
-                        .font(.footnote)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -83,17 +83,16 @@ struct LibraryCardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .frame(height: 110)
                 .background(GatherTheme.contentBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous))
             if photo.status == "missing" {
                 // 角标压在缩略图上：材质底 + 主文字色（不再用红底白字，深色模式对比不足）。
-                Label(l10n("离线"), systemImage: "externaldrive.badge.xmark")
-                    .font(.caption)
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(6)
-                    .help(l10n("离线"))
+                PhotoOverlayChip(
+                    text: l10n("离线"),
+                    systemImage: "externaldrive.badge.xmark",
+                    iconColor: GatherTheme.error
+                )
+                .padding(6)
+                .help(l10n("离线"))
             }
         }
     }
@@ -106,7 +105,7 @@ struct LibraryCardView: View {
                 .foregroundStyle(GatherTheme.accent)
                 .accessibilityHidden(true)
             Text(Self.starText(photo.rating, with: l10n))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)

@@ -71,17 +71,24 @@ public struct DuplicatesView: View {
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                     color: GatherTheme.error
                 )
+                .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+                .padding(.top, 12)
             }
-            if let notice = viewModel.notice { NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success) }
+            if let notice = viewModel.notice {
+                NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
+                    .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+                    .padding(.top, 12)
+            }
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                     DuplicatesScanControls(viewModel: viewModel, showAdvancedScan: $showAdvancedScan)
                     if viewModel.isLoading || viewModel.isScanning {
                         DuplicatesLoadingIndicator(viewModel: viewModel)
                     }
                     if let result = viewModel.scanResult {
                         Text(l10n.format("完全重复：%lld 组 · 视觉相似：%lld 组 · 总计重复：%lld 张", result.exactGroups.count, result.visualGroups.count, result.totalDuplicates))
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(.secondary)
                         // C-#7：阈值改过之后旧数字必须显式标为过期，不能让上一个档位
                         // 的结论冒充当前设置的结果。
                         if viewModel.isScanResultStale {
@@ -89,12 +96,13 @@ public struct DuplicatesView: View {
                                 l10n.format("当前匹配强度为 %lld，上面的结果来自 %lld；请重新扫描。", viewModel.threshold, viewModel.scannedThreshold ?? viewModel.threshold),
                                 systemImage: "exclamationmark.triangle"
                             )
-                            .font(.callout)
-                            .foregroundStyle(GatherTheme.warning)
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(GatherTheme.warningText)
                         }
                     }
                     Text(l10n("扫描会先识别内容完全一致的文件，再查找视觉近似候选；不会删除照片。"))
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(GatherFont.labelRegular)
+                        .foregroundStyle(.secondary)
                     DuplicatesTabSelector(viewModel: viewModel)
                     if viewModel.filteredGroups.isEmpty {
                         DuplicatesEmptyState(viewModel: viewModel)
@@ -121,7 +129,8 @@ public struct DuplicatesView: View {
                         }
                     }
                 }
-                .padding(24)
+                .padding(GatherMetrics.Layout.pageGutter)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             // 成员保留状态确认挂在 ScrollView 节点：与组处置确认（外层 VStack）
             // 分属不同视图节点，避免两个 confirmationDialog 抢同一呈现宿主。
@@ -177,20 +186,13 @@ public struct DuplicatesView: View {
         )
         .sessionPageChrome(
             subtitle: l10n("重复照片检测"),
+            onBack: onBack,
             selection: .tab(.duplicates),
             onBrowse: { onOpenGallery(viewModel.sessionId) },
             onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
             onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
         )
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    onBack()
-                } label: {
-                    Label(l10n("返回"), systemImage: "chevron.backward")
-                }
-                .help(l10n("返回到上一页"))
-            }
             ToolbarItemGroup(placement: .primaryAction) {
                 C1StatusCapsuleHost(sessionId: viewModel.sessionId, culling: culling, onOpenSettings: onOpenSettings)
                 Button(l10n("刷新"), systemImage: "arrow.clockwise") {

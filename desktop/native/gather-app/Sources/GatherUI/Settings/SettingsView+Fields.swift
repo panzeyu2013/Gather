@@ -86,6 +86,16 @@ extension SettingsView {
                         }
                     }
                     .frame(width: 110)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(GatherTheme.surfaceMuted)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(GatherTheme.hairline, lineWidth: 1)
+                    )
             case .select(let options):
                 // 对齐旧版 Settings/index.tsx:623：select 带 disabled 的
                 // 「请选择」占位 option（value=""，映射 nil）。当前值缺失/未知

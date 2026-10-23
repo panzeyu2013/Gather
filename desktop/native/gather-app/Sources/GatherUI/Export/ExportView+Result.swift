@@ -14,12 +14,12 @@ struct ExportResultSection: View {
             Section(l10n("结果")) {
                 Text(l10n.format("导出完成：成功 %lld，失败 %lld，跳过 %lld", result.exported, result.failed, result.skipped))
                     .font(.callout)
-                    .foregroundStyle(result.failed > 0 ? GatherTheme.error : GatherTheme.success)
+                    .foregroundStyle(result.failed > 0 ? GatherTheme.errorText : GatherTheme.successText)
                 // 对齐 TS export.tsx:91：错误明细最多 3 条。
                 ForEach(result.errors.prefix(3), id: \.self) { error in
                     Text(ExportViewModel.translateErrorLine(error, with: l10n))
                         .font(.callout)
-                        .foregroundStyle(GatherTheme.error)
+                        .foregroundStyle(GatherTheme.errorText)
                 }
                 HStack(spacing: 8) {
                     Button(l10n("生成 CSV 报告")) {

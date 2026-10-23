@@ -280,6 +280,31 @@ struct DashboardViewModelTests {
         #expect(viewModel.statuses["s1"]?.sessionId == "s1")
         #expect(viewModel.statuses["s1"]?.stage == .imported)
     }
+    // 侧栏轻量加载：只更新 sessions，不加载 workspace status / jobs。
+    @Test func refreshSidebarSessionsLoadsListWithoutStatuses() async {
+        let stub = StubDashboardProvider()
+        stub.sessions = [
+            StubDashboardProvider.session(id: "s1", name: "甲", sourcePath: "/tmp/a"),
+            StubDashboardProvider.session(id: "s2", name: "乙", sourcePath: "/tmp/b"),
+        ]
+        let viewModel = DashboardViewModel(provider: stub)
+        await viewModel.refreshSidebarSessions()
+        #expect(viewModel.sessions.map(\.id) == ["s1", "s2"])
+        #expect(viewModel.statuses.isEmpty)
+        #expect(viewModel.jobs.isEmpty)
+    }
+
+    // 侧栏是辅助导航：查询失败时保留上一份列表，不闪空、不覆盖页面错误。
+    @Test func refreshSidebarSessionsKeepsPreviousListOnFailure() async {
+        let stub = StubDashboardProvider()
+        stub.sessions = [StubDashboardProvider.session(id: "s1", name: "甲")]
+        let viewModel = DashboardViewModel(provider: stub)
+        await viewModel.refreshSidebarSessions()
+        stub.listError = "boom"
+        stub.sessions = [StubDashboardProvider.session(id: "s2", name: "乙")]
+        await viewModel.refreshSidebarSessions()
+        #expect(viewModel.sessions.map(\.id) == ["s1"])
+    }
 
     // 排序语义：会话活动取「最近一次分析 job 活动 vs 会话自身 updated_at」的较大者，
     // 分析更近的会话必须排到最前（analysis_status 删列后不能再靠写 updated_at 副作用）。

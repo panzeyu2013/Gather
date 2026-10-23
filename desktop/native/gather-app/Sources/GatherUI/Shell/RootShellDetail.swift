@@ -12,9 +12,12 @@ extension RootView {
     var detail: some View {
         switch navigation.destination {
         case .dashboard:
-            DashboardView(viewModel: viewModel, newWorkspaceRequest: $newWorkspaceRequest) { sessionId in
-                navigation.openSession(sessionId)
-            }
+            DashboardView(
+                viewModel: viewModel,
+                newWorkspaceRequest: $newWorkspaceRequest,
+                onOpenSession: { navigation.openSession($0) },
+                onOpenSettings: { openSettings() }
+            )
         case .library:
             LibraryView(
                 viewModel: libraryViewModel,

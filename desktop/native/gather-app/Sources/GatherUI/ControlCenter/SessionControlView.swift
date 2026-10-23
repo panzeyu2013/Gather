@@ -87,12 +87,12 @@ public struct SessionControlView: View {
                         text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                         color: GatherTheme.error
                     )
-                        .padding(.horizontal, 24)
+                        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                         .padding(.top, 12)
                 }
                 if let notice = viewModel.notice {
                     NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
-                        .padding(.horizontal, 24)
+                        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                         .padding(.top, 12)
                 }
                 ScrollView {
@@ -100,9 +100,9 @@ public struct SessionControlView: View {
                         ProgressView(l10n("加载中…"))
                             .controlSize(.small)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(24)
+                            .padding(GatherMetrics.Layout.pageGutter)
                     } else if viewModel.workspaceStatus != nil {
-                        VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: GatherMetrics.Space.l) {
                             // 分块顺序按「现在该做什么」（F07）：
                             // 索引状态（内容，不是假标题栏）→ 阶段条 → 当前任务
                             // →（与任务不重复的）待办与推荐 → 分析工具箱 → 同步详情。
@@ -142,6 +142,7 @@ public struct SessionControlView: View {
             // 窗口 chrome：副标题 + 工具栏 principal 位置的分段子导航。
             .sessionPageChrome(
                 subtitle: l10n("工作区控制中心"),
+                onBack: onBack,
                 selection: .tab(.control),
                 onBrowse: { onOpenGallery(viewModel.sessionId) },
                 onSimilarity: { onOpenSimilarity(viewModel.sessionId) },

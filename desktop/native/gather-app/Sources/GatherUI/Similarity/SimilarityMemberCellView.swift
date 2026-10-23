@@ -24,31 +24,33 @@ struct SimilarityMemberCellView: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
-        VStack(spacing: 2) {
-            PhotoThumbnailView(
-                path: path,
-                size: 256,
-                placeholderSize: CGSize(width: Self.thumbSize, height: Self.thumbSize)
-            )
-            .frame(width: Self.thumbSize, height: Self.thumbSize)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            // 文件名是内容语义 → .callout（旧版 10pt footnote）。
-            Text((path as NSString).lastPathComponent)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isHovered ? Color.primary.opacity(0.06) : Color.clear)
-        )
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             // 单击即打开（与「关联照片」网格、全局图库卡片一致）。
             onOpenPhoto?(path)
+        } label: {
+            VStack(spacing: 2) {
+                PhotoThumbnailView(
+                    path: path,
+                    size: 256,
+                    placeholderSize: CGSize(width: Self.thumbSize, height: Self.thumbSize)
+                )
+                .frame(width: Self.thumbSize, height: Self.thumbSize)
+                .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous))
+                // 文件名是内容语义，用次级正文。
+                Text((path as NSString).lastPathComponent)
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(4)
+            .background(
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous)
+                    .fill(isHovered ? Color.primary.opacity(GatherMetrics.Opacity.hover) : Color.clear)
+            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .animation(reduceMotion ? nil : .easeOut(duration: GatherMetrics.Motion.hover), value: isHovered)
         .contextMenu {
             if onOpenPhoto != nil {
                 Button(l10n("查看照片")) { onOpenPhoto?(path) }
@@ -61,9 +63,11 @@ struct SimilarityMemberCellView: View {
             }
         }
         .help((path as NSString).lastPathComponent)
-        .accessibilityElement(children: .combine)
         .onHover { hovering in
             isHovered = hovering
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel((path as NSString).lastPathComponent)
+        .accessibilityAddTraits(.isButton)
     }
 }

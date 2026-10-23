@@ -13,6 +13,18 @@ extension DashboardViewModel {
         await refreshAll()
     }
 
+    /// 侧栏“最近工作区”：只拉会话列表，不加载 workspace status / jobs。
+    ///
+    /// 失败时保留上一份列表——侧栏是辅助导航，不能在临时查询失败时闪成空；
+    /// 页面级错误仍由工作台的 refreshAll 负责展示。
+    func refreshSidebarSessions() async {
+        do {
+            sessions = try await listSessions()
+        } catch {
+            // 保留旧列表；不设置 phase / actionError，避免侧栏吞掉页面级错误语义。
+        }
+    }
+
     func refreshSessions() async {
         lastSessionsRefreshAt = Date()
         do {

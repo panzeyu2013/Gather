@@ -35,7 +35,7 @@ extension FaceKeywordingView {
                     ScrollView {
                         clusterPane
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(20)
+                            .padding(GatherMetrics.Space.l)
                     }
                     // A2（第三轮审计）：HSplitView 的最小宽度 = 两栏最小宽度**相加**，
                     // 320+280+分隔线已逼近最小窗口能给内容区的 680pt，detailPane 的内容
@@ -43,7 +43,7 @@ extension FaceKeywordingView {
                     // 收紧到 280/240：分栏仍可拖拽，最小窗口下不再与 split view 抢宽度。
                     .frame(minWidth: 280)
                     detailPane
-                        .padding(20)
+                        .padding(GatherMetrics.Space.l)
                         .frame(minWidth: 240, idealWidth: 320, maxWidth: 460)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -55,9 +55,9 @@ extension FaceKeywordingView {
     private var clusterPane: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text(l10n("人脸聚类")).font(.title3.weight(.semibold))
+                Text(l10n("人脸聚类")).font(GatherFont.sectionTitle)
                 Text(l10n.format("%lld 组", visibleClusters.count))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
                 roleFilterPicker
@@ -128,10 +128,10 @@ extension FaceKeywordingView {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(cluster.label)
-                                .font(.title3.weight(.semibold))
+                                .font(GatherFont.sectionTitle)
                             Spacer()
                             Text(cluster.sampleCountText(with: l10n))
-                                .font(.callout)
+                                .font(GatherFont.secondary)
                                 .foregroundStyle(.secondary)
                         }
                         memberList(cluster)
@@ -180,7 +180,7 @@ extension FaceKeywordingView {
     /// 已写入关键词，经确认弹窗后才执行）。表单行改用 LabeledContent。
     private func editor(_ cluster: FaceClusterData) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(l10n("绑定角色")).font(.headline)
+            Text(l10n("绑定角色")).font(GatherFont.cardTitle)
             LabeledContent(l10n("角色名称")) {
                 TextField(l10n("输入角色名称"), text: bindable.roleName)
                     .textFieldStyle(.roundedBorder)
@@ -215,10 +215,10 @@ extension FaceKeywordingView {
     private func mergePanel(_ cluster: FaceClusterData) -> some View {
         let candidates = viewModel.clusters.filter { $0.id != cluster.id }
         return VStack(alignment: .leading, spacing: 8) {
-            Text(l10n("合并")).font(.headline)
+            Text(l10n("合并")).font(GatherFont.cardTitle)
             if candidates.isEmpty {
                 Text(l10n("没有其他簇可合并。"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else {
                 LabeledContent(l10n("合并到")) {

@@ -30,7 +30,7 @@ struct DuplicatesGroupCardView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(groupTitle(with: l10n))
-                    .font(.headline)
+                    .font(GatherFont.cardTitle)
                 if let resolution = group.resolution {
                     GatherBadge(
                         resolution == DupResolution.keepOne.rawValue
@@ -97,11 +97,11 @@ struct DuplicatesGroupCardView: View {
                     )
                     .padding(4)
                 }
-            Text(member.filename).font(.callout).lineLimit(1)
+            Text(member.filename).font(GatherFont.secondary).lineLimit(1)
             if let fileSize = member.fileSize {
                 // %.1f 是本地化的单位模板；l10n.format 不传 locale（与全仓既有输出一致）。
                 Text(l10n.format("%.1f MB", Double(fileSize) / 1024 / 1024))
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(GatherFont.secondary).foregroundStyle(.secondary)
             }
             // 按钮文案 = 点击后执行的动作（不再显示当前状态，避免标签与动作相反）。
             HStack(spacing: 6) {

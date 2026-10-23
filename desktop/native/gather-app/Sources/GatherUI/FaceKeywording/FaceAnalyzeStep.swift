@@ -11,24 +11,24 @@ extension FaceKeywordingView {
             modelsGuidanceStrip
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text(l10n("匹配强度")).font(.headline)
+                    Text(l10n("匹配强度")).font(GatherFont.cardTitle)
                     Spacer()
                     phaseBadge
                 }
                 presetSelector
                 Text(l10n("建议从「均衡」开始，之后可在审核阶段拆分或合并人物。"))
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(GatherFont.secondary).foregroundStyle(.secondary)
                 DisclosureGroup(l10n("高级参数")) {
                     VStack(alignment: .leading, spacing: 14) {
                         // TS range slider（渐变轨道）+ 数字输入（SliderInput）。
                         SliderInputView(title: l10n("人脸相似度"), value: bindable.eps, range: 0.3...0.95, step: 0.01)
                             .disabled(viewModel.analysisPhase == .running)
                         Text(l10n("人脸相似度下限 0.30–0.95：只有相似度不低于该值才归为同一人，数值越大分组越严格。"))
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(GatherFont.secondary).foregroundStyle(.secondary)
                         SliderInputIntView(title: l10n("最少出现次数"), value: bindable.minSamples, range: 2...20)
                             .disabled(viewModel.analysisPhase == .running)
                         Text(l10n("每个簇最少包含的人脸数量（2–20）。"))
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(GatherFont.secondary).foregroundStyle(.secondary)
                     }
                     .padding(.top, 4)
                 }
@@ -74,8 +74,8 @@ extension FaceKeywordingView {
                 // 旧版「分析结果：<core 枚举>…」行已删除：状态由 phaseBadge 与页面
                 // 横幅承载，不再把 done/failed/cancelled 原文插进中文界面。
             }
-            .padding(18)
             .gatherCard()
+            .frame(maxWidth: 760, alignment: .leading)
         }
     }
 

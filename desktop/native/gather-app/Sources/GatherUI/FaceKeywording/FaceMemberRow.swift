@@ -27,22 +27,22 @@ struct MemberRowView: View {
             //「这两张脸是不是同一个人」，同一张照片的两张脸尤其难分辨。
             FaceCropThumbnailView(path: member.photoPath, bbox: member.bbox, loadSize: 256)
                 .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous))
                 .accessibilityHidden(true)
             Text("#\(index + 1)")
-                .font(.callout.monospacedDigit())
+                .font(GatherFont.mono)
                 .foregroundStyle(.secondary)
                 .frame(width: 28, alignment: .leading)
                 .accessibilityHidden(true)
             Text(member.filename)
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
             // 置信度只朗读一次（F12）：文字本身对无障碍隐藏，由 label 提供
             // 带单位的唯一描述，避免「85%」+「置信度 85%」被读两遍。
             Text(confidenceText)
-                .font(.callout.monospacedDigit())
+                .font(GatherFont.mono)
                 .foregroundStyle(.secondary)
                 .accessibilityLabel(l10n.format("置信度 %@", confidenceText))
             // 移除不可逆：悬停 **或键盘焦点** 任一状态都可见（命中区 ≥24pt）
@@ -55,7 +55,8 @@ struct MemberRowView: View {
             .buttonStyle(.borderless)
             .controlSize(.small)
             .frame(minWidth: 24, minHeight: 24)
-            .opacity(isHovered || isFocused ? 1 : 0)
+            // 常驻 35% 透明度：不再制造“看不见但可点”的危险命中区。
+            .opacity(isHovered || isFocused ? 1 : 0.35)
             .focused($isFocused)
             .accessibilityLabel(l10n.format("从簇中移除成员 %@", member.filename))
             .help(l10n.format("从簇中移除成员 %@", member.filename))

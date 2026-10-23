@@ -8,15 +8,6 @@ extension FaceKeywordingView {
 
     @ToolbarContentBuilder
     var toolbarItems: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button {
-                onBack()
-            } label: {
-                Label(l10n("返回"), systemImage: "chevron.backward")
-            }
-            .help(l10n("返回到上一页"))
-            .keyboardShortcut("[", modifiers: .command)
-        }
         // onOpenSettings 为 nil 时不渲染状态胶囊（旧版胶囊仍可悬停/按下但无去处）。
         if onOpenSettings != nil {
             ToolbarItem(placement: .primaryAction) {

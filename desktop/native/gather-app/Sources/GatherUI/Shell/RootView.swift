@@ -96,7 +96,7 @@ package struct RootView: View {
     package var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
-                .navigationSplitViewColumnWidth(min: RootShellMetrics.sidebarMinWidth, ideal: 200, max: 300)
+                .navigationSplitViewColumnWidth(min: RootShellMetrics.sidebarMinWidth, ideal: 220, max: 260)
         } detail: {
             detail
                 // 4a-3b-2b：会话页/全局页从 environment 取语言源（不再读
@@ -108,9 +108,10 @@ package struct RootView: View {
                 // 页面型目的地（工作台/图库/人脸库/设置）由页面自己的
                 // navigationTitle 覆盖（内层优先）。
                 .navigationTitle(windowTitle)
+                // 品牌 tint 只作用于内容区：侧栏保持系统中性色。
+                .tint(GatherTheme.accent)
         }
         .frame(minWidth: RootShellMetrics.windowMinWidth, minHeight: 560)
-        .tint(GatherTheme.accent)
         // 4a-3a：删除 languageChanged 的本地自增写入点——语言状态由
         // LanguageStore 唯一持有/广播，外壳只读 languageStore.l10n。
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuToggleSidebar)) { _ in
@@ -130,6 +131,8 @@ package struct RootView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.importCompleted)) { notification in
             handleImportCompleted(notification)
+            // 菜单/C1/文件拖入都会在这里完成建库；侧栏立即补一条。
+            Task { await viewModel.refreshSidebarSessions() }
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.captureOneError)) { notification in
             handleCaptureOneError(notification)
@@ -148,6 +151,12 @@ package struct RootView: View {
         // 但 7 个 VM 由 SessionStore 按下 sessionId 持有，跨导航保留（LRU 淘汰）。
         .task(id: navigation.destination) {
             switchWorkspace(for: navigation.destination)
+        }
+        // 侧栏最近工作区：工作台自己会 loadAll；从深链/图库/会话页启动时，
+        // 由外壳补一次轻量会话列表，避免侧栏首帧为空。
+        .task {
+            guard !navigation.isDashboard, viewModel.sessions.isEmpty else { return }
+            await viewModel.refreshSidebarSessions()
         }
     }
 }

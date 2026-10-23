@@ -62,14 +62,24 @@ public struct ExportView: View {
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                     color: GatherTheme.error
                 )
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                     .padding(.top, 12)
             }
             if let notice = viewModel.notice {
                 NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                     .padding(.top, 12)
             }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(l10n("导出设置"))
+                    .font(GatherFont.pageTitle)
+                Text(l10n("先选择范围，再设置格式、命名与导出目录。"))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+            .padding(.top, 16)
+            .padding(.bottom, 4)
             // 导出选项/预览/结果全部走系统分组表单（行标签由系统对齐）。
             Form {
                 ExportProgressSection(viewModel: viewModel)
@@ -146,20 +156,13 @@ public struct ExportView: View {
         )
         .sessionPageChrome(
             subtitle: l10n("按统一格式、命名规则导出照片及元数据"),
+            onBack: onBack,
             selection: .tab(.export),
             onBrowse: { onOpenGallery(viewModel.sessionId) },
             onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
             onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
         )
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    onBack()
-                } label: {
-                    Label(l10n("返回"), systemImage: "chevron.backward")
-                }
-                .help(l10n("返回到上一页"))
-            }
             // 页面级动作（预览 / 开始导出 / 取消导出）上移到工具栏，
             // 取代旧版自绘 sticky actionBar 卡片。
             ToolbarItemGroup(placement: .primaryAction) {

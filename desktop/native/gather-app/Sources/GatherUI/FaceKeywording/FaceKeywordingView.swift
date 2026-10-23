@@ -89,6 +89,7 @@ public struct FaceKeywordingView: View {
         // 窗口 chrome：副标题 + 工具栏 principal 位置的分段子导航。
         .sessionPageChrome(
             subtitle: l10n("人脸检测与聚类"),
+            onBack: onBack,
             selection: .tab(.faceKw),
             onBrowse: { onOpenGallery(viewModel.sessionId) },
             onSimilarity: { onOpenSimilarity(viewModel.sessionId) },

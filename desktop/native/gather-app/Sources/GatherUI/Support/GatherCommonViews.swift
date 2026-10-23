@@ -50,7 +50,7 @@ public struct GatherStatCard: View {
                     .foregroundStyle(style == .plain ? color : Color.primary)
             }
             Text(label)
-                .font(.caption)
+                .font(GatherFont.labelRegular)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -80,13 +80,14 @@ private extension View {
                 .padding(.vertical, 10)
                 .padding(.horizontal, 8)
                 .background(
-                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
-                        .fill(GatherTheme.contentBackground)
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+                        .fill(GatherTheme.surface)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
-                        .strokeBorder(GatherTheme.separator, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+                        .strokeBorder(GatherTheme.hairline, lineWidth: 1)
                 )
+
         case .compact, .plain:
             self
         }
@@ -122,7 +123,7 @@ public struct GatherProgressBar: View {
         ProgressView(value: clamped) {
             if let label {
                 Text(label)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }
@@ -201,11 +202,11 @@ public struct GatherEmptyState: View {
                 .accessibilityHidden(true)
             if let title {
                 Text(title)
-                    .font(.headline)
+                    .font(GatherFont.cardTitle)
             }
             if let message {
                 Text(message)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)

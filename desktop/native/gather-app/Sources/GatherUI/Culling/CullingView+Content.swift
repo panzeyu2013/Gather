@@ -30,8 +30,7 @@ extension CullingView {
                         CullingToolbar(
                             viewModel: viewModel,
                             isBusy: isBusy,
-                            compareCount: $compareCount,
-                            faceAlign: $faceAlign
+                            compareCount: $compareCount
                         )
                         emptyGuide(
                             title: l10n("当前范围没有照片"),

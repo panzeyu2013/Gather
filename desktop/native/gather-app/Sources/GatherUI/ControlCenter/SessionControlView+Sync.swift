@@ -9,7 +9,7 @@ extension SessionControlView {
 
     var syncCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(l10n("元数据同步")).font(.title3.weight(.semibold))
+            Text(l10n("元数据同步")).font(GatherFont.sectionTitle)
             if let sync = viewModel.syncStatus {
                 HStack(spacing: 16) {
                     syncCount(l10n("待处理"), sync.pending)
@@ -36,10 +36,10 @@ extension SessionControlView {
                             .foregroundStyle(GatherTheme.success)
                             .accessibilityHidden(true)
                     }
-                    Text(syncStatusText(sync, with: l10n)).font(.callout)
+                    Text(syncStatusText(sync, with: l10n)).font(GatherFont.secondary)
                 }
             } else {
-                Text(l10n("暂无同步状态")).font(.callout).foregroundStyle(.secondary)
+                Text(l10n("暂无同步状态")).font(GatherFont.secondary).foregroundStyle(.secondary)
             }
         }
         .gatherCard()
@@ -47,11 +47,11 @@ extension SessionControlView {
 
     private func syncCount(_ title: String, _ value: Int, emphasized: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.footnote).foregroundStyle(.secondary)
+            Text(title).font(GatherFont.labelRegular).foregroundStyle(.secondary)
             Text("\(value)")
-                .font(.callout.weight(.semibold))
+                .font(GatherFont.bodyStrong.monospacedDigit())
                 .monospacedDigit()
-                .foregroundStyle(emphasized ? GatherTheme.error : GatherTheme.primaryText)
+                .foregroundStyle(emphasized ? GatherTheme.errorText : GatherTheme.primaryText)
         }
         .accessibilityElement(children: .combine)
     }

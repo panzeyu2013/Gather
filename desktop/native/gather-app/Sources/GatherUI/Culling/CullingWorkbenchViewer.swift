@@ -101,13 +101,14 @@ struct CullingWorkbenchViewer: View {
         .clipped()
         .overlay(alignment: .top) {
             // 缩放提示（对齐旧版 zoomHint：居中胶囊，百分比 + 操作提示）。
-            Text(l10n.format("%lld%% 滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放", Int(effectiveScale * 100)))
-                .font(.callout)
+            Text("\(Int(effectiveScale * 100))%")
+                .font(GatherFont.label)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.9))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
                 .background(Capsule().fill(GatherTheme.viewerSurface.opacity(0.85)))
                 .padding(.top, 8)
+                .help(l10n("滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放"))
         }
         .overlay(alignment: .bottomLeading) {
             // 可见缩放控件承载 ⌘−/⌘0/⌘= 快捷键（取代零尺寸全透明的隐藏按钮）。
@@ -248,7 +249,9 @@ struct CullingWorkbenchViewer: View {
                     path: asset.photo.filepath,
                     size: detailBaseSize,
                     preview: true,
-                    contentMode: .fit
+                    contentMode: .fit,
+                    placeholderSurface: GatherTheme.viewerSurface,
+                    placeholderTextColor: GatherTheme.viewerTextSecondary
                 )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .scaleEffect(effectiveZoom)
@@ -295,7 +298,7 @@ struct CullingWorkbenchViewer: View {
                     Spacer()
                     Text(asset.state.rating > 0 ? "\(Int(asset.state.rating))★" : l10n("未评级"))
                 }
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.92))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 6)

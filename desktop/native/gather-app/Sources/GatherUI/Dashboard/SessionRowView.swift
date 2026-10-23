@@ -29,6 +29,7 @@ struct SessionRowView: View {
             Spacer(minLength: 12)
             actions
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .contextMenu {
             Button(l10n("打开"), action: onOpen)
@@ -147,6 +148,8 @@ struct SessionRowView: View {
                 Label(l10n("操作"), systemImage: "ellipsis.circle")
             }
             .menuStyle(.borderlessButton)
+            // 只保留 ellipsis 图标，避免系统在行尾再画一个脱节的下拉箭头。
+            .menuIndicator(.hidden)
             .help(l10n("操作"))
         }
     }

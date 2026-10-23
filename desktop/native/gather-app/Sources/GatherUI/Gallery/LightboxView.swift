@@ -107,12 +107,12 @@ struct LightboxView: View {
     private func headerRow(_ photo: GalleryPhotoData) -> some View {
         HStack(spacing: 12) {
             Text(photo.filename)
-                .font(.headline)
+                .font(GatherFont.sectionTitle)
                 .lineLimit(1)
                 .foregroundStyle(GatherTheme.viewerTextPrimary)
             Spacer(minLength: 0)
             Text("\(currentIndex + 1) / \(photos.count)")
-                .font(.callout.monospacedDigit())
+                .font(GatherFont.mono)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.75))
             Button(l10n("关闭"), action: onClose)
                 .keyboardShortcut(.cancelAction)
@@ -133,7 +133,9 @@ struct LightboxView: View {
                     path: photo.filepath,
                     size: PhotoDetailTier.baseDimension,
                     preview: true,
-                    contentMode: .fit
+                    contentMode: .fit,
+                    placeholderSurface: GatherTheme.viewerSurface,
+                    placeholderTextColor: GatherTheme.viewerTextSecondary
                 )
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .scaleEffect(scale)
@@ -225,7 +227,7 @@ struct LightboxView: View {
             .help(l10n("缩小"))
             .accessibilityLabel(l10n("缩小"))
             Text("\(Int(scale * 100))%")
-                .font(.callout.monospacedDigit())
+                .font(GatherFont.mono)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.8))
                 .frame(width: 52)
             Button {
@@ -270,7 +272,7 @@ struct LightboxView: View {
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.75))
                 .accessibilityHidden(true)
             Text(l10n("照片已不可用"))
-                .font(.headline)
+                .font(GatherFont.cardTitle)
                 .foregroundStyle(GatherTheme.viewerTextPrimary)
             Button(l10n("关闭"), action: onClose)
                 .keyboardShortcut(.cancelAction)
@@ -369,10 +371,10 @@ struct LightboxView: View {
     private func metadataItem(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.subheadline)
+                .font(GatherFont.labelRegular)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.7))
             Text(value)
-                .font(.callout)
+                .font(GatherFont.body)
                 .foregroundStyle(GatherTheme.viewerTextPrimary)
         }
         .accessibilityElement(children: .combine)

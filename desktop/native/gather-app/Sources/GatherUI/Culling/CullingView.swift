@@ -87,20 +87,13 @@ public struct CullingView: View {
         // 会话页窗口 chrome：标题副标题走系统，子导航分段控件在工具栏 principal 位置。
         .sessionPageChrome(
             subtitle: l10n("挑片与写回"),
+            onBack: onBack,
             selection: .tab(.culling),
             onBrowse: { onOpenGallery(viewModel.sessionId) },
             onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
             onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
         )
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    onBack()
-                } label: {
-                    Label(l10n("返回"), systemImage: "chevron.backward")
-                }
-                .help(l10n("返回到上一页"))
-            }
             ToolbarItemGroup(placement: .primaryAction) {
                 C1StatusCapsuleHost(sessionId: viewModel.sessionId, culling: culling, onOpenSettings: onOpenSettings)
                 Button(l10n("刷新"), systemImage: "arrow.clockwise") {
@@ -113,7 +106,7 @@ public struct CullingView: View {
         // Bridge / Capture One 式：图片保持居中，选项面板交给系统 .inspector
         // （工具栏开关由系统自动提供，不自绘按钮）。
         .inspector(isPresented: $showInspector) {
-            CullingInspector(viewModel: viewModel, isBusy: isBusy)
+            CullingInspector(viewModel: viewModel, isBusy: isBusy, faceAlign: $faceAlign)
                 // 约束循环修复（N01）：SwiftUI 把**理想列宽**计入承载视图的最小宽度
                 //（实测 min 260 / ideal 300 时贡献 300pt）。收窄到 ideal 260，
                 // 让最小窗口下「页签行 + 内容 + 检查器」仍能装进内容区。

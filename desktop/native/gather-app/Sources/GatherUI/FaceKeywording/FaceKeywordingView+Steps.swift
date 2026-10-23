@@ -57,8 +57,8 @@ extension FaceKeywordingView {
             ScrollView {
                 stepAnalyze
                     .frame(maxWidth: Self.contentMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(GatherMetrics.Layout.pageGutter)
             }
         case .review:
             stepReview
@@ -66,8 +66,8 @@ extension FaceKeywordingView {
             ScrollView {
                 stepWriteback
                     .frame(maxWidth: Self.contentMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(GatherMetrics.Layout.pageGutter)
             }
         }
     }
@@ -86,16 +86,19 @@ extension FaceKeywordingView {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(maxWidth: 420)
+            .controlSize(.small)
             .accessibilityLabel(l10n("人脸关键词步骤"))
             .help(l10n("在分析、审核、写回之间切换"))
             if let stepGateHint {
                 Label(l10n.resolve(stepGateHint), systemImage: "info.circle")
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.top, 12)
+        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
     }
 
     /// 分段控件无法逐段禁用：非法选择被拒绝并给出可见说明，而不是静默忽略

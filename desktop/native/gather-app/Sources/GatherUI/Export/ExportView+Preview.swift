@@ -45,7 +45,7 @@ struct ExportPreviewSection: View {
                         systemImage: "exclamationmark.triangle"
                     )
                     .font(.callout)
-                    .foregroundStyle(GatherTheme.warning)
+                    .foregroundStyle(GatherTheme.warningText)
                 }
                 ForEach(preview.files.prefix(8), id: \.photoId) { file in
                     HStack(spacing: 6) {
@@ -60,7 +60,7 @@ struct ExportPreviewSection: View {
                         if let issue = file.issue {
                             Text(l10n.errorText(issue))
                                 .font(.caption)
-                                .foregroundStyle(GatherTheme.warning)
+                                .foregroundStyle(GatherTheme.warningText)
                         }
                         Spacer(minLength: 0)
                         Text("\(file.isSizeEstimate ? "≈" : "")" + ByteCountFormatter.string(fromByteCount: Int64(file.fileSize), countStyle: .file))

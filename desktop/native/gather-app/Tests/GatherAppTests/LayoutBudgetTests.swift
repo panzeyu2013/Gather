@@ -148,6 +148,7 @@ struct LayoutBudgetTests {
     @Test("会话页签行不向 split view 索要超预算的最小宽度")
     func tabStripStaysWithinBudget() {
         let strip = SessionPageTabStrip(
+            onBack: nil,
             selection: .tab(.culling),
             onBrowse: {},
             onSimilarity: {},

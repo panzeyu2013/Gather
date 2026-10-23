@@ -87,6 +87,8 @@ public struct SettingsView: View {
             advancedSection
         }
         .formStyle(.grouped)
+        .tint(GatherTheme.accent)
+        .modifier(SettingsWindowSurface())
         .frame(minWidth: 580, minHeight: 480)
         .navigationTitle(l10n("设置"))
         .toolbar {
@@ -179,3 +181,18 @@ public struct SettingsView: View {
     PreviewFactory.settingsPage()
 }
 #endif
+
+
+/// 设置窗口是独立的 Settings scene；inactive 时玻璃 titlebar 会把后方主窗口
+/// 的内容透出来。macOS 15+ 用容器背景给窗口一个不透明 canvas，旧系统退回
+/// 普通背景，避免工具栏文字像鬼影。
+private struct SettingsWindowSurface: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.containerBackground(GatherTheme.canvas, for: .window)
+        } else {
+            content.background(GatherTheme.windowBackground)
+        }
+    }
+}

@@ -39,15 +39,25 @@ public struct GatherBadge: View {
     }
 
     public var body: some View {
-        Text(text)
-            .font(.caption.weight(.medium))
-            .lineLimit(1)
-            .foregroundStyle(tone.color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(tone.color.opacity(0.15)))
-            .overlay(Capsule().strokeBorder(tone.color.opacity(0.22), lineWidth: 1))
-            .accessibilityLabel(text)
+        HStack(spacing: 5) {
+            // 语义色只做圆点；文字保持系统主色，保证 4.5:1 对比度。
+            Circle()
+                .fill(tone.color)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(GatherFont.label)
+                .lineLimit(1)
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        // 实心 surface：徽标既可能落在白卡上，也可能压在照片上；
+        // 半透明语义底色在照片上不可控，改用中性胶囊 + 语义圆点。
+        .background(Capsule().fill(GatherTheme.surface))
+        .overlay(Capsule().strokeBorder(tone.color.opacity(0.24), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(text)
     }
 }
 

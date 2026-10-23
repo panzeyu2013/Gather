@@ -15,7 +15,7 @@ extension GalleryView {
     }
 
     /// TS: FILTER_OPTIONS —— 原生下拉（可访问名是真标签，不再是当前值）。
-    /// 检查器分区「筛选」的行：走出工具栏后标签恢复可见（移除 .labelsHidden），
+    /// 检查器分区「筛选」的行：分区标题已承担语义，行内隐藏重复标签；
     /// 可访问名与提示原样保留。
     private var filterPicker: some View {
         Picker(l10n("筛选"), selection: $viewModel.filter) {
@@ -26,6 +26,7 @@ extension GalleryView {
             Text(l10n("离线")).tag(GalleryFilter.offline)
         }
         .pickerStyle(.menu)
+        .labelsHidden()
         .help(l10n("筛选"))
         .accessibilityLabel(l10n("筛选"))
         .onChange(of: viewModel.filter) { _, _ in viewModel.filterOrVariantChanged() }
@@ -82,7 +83,7 @@ extension GalleryView {
         // 同一崩溃栈并改为此形态，本页原先漏改。检查器只放「选项/管理」，
         // ScrollView + 卡片分组同样贴切。
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                 inspectorSection(l10n("筛选")) {
                     filterPicker
                 }
@@ -94,7 +95,7 @@ extension GalleryView {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
+            .padding(GatherMetrics.Space.l)
         }
         // 同 CullingView：理想列宽会计入最小宽度，收窄以避免窄窗口下的约束循环。
         .inspectorColumnWidth(min: 220, ideal: 260, max: 360)
@@ -107,11 +108,11 @@ extension GalleryView {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.headline)
+                .font(GatherFont.cardTitle)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .gatherCard(cornerRadius: GatherTheme.Radius.panel)
+        .gatherCard(cornerRadius: GatherTheme.Radius.card, elevated: false)
     }
 }

@@ -9,7 +9,7 @@ extension SessionControlView {
 
     var stagesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(l10n("阶段进度")).font(.title3.weight(.semibold))
+            Text(l10n("阶段进度")).font(GatherFont.sectionTitle)
             if let status = viewModel.workspaceStatus {
                 stageTrack(stageMarks(status.stage, with: l10n))
                 if status.softFlags.culled || status.softFlags.exported {
@@ -72,7 +72,7 @@ extension SessionControlView {
                         stageDot(mark)
                     }
                     Text(mark.label)
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .fontWeight(mark.current ? .semibold : .regular)
                         .foregroundStyle(mark.reached || mark.current ? GatherTheme.primaryText : GatherTheme.secondaryText)
                         .lineLimit(1)

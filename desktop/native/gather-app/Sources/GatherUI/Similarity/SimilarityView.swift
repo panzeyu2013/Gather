@@ -89,6 +89,7 @@ package struct SimilarityView: View {
             // 功能名由 sessionPageChrome 的副标题 + 页签行共同承载。
             .sessionPageChrome(
                 subtitle: l10n("相似度分析"),
+                onBack: onBack,
                 selection: .similarity,
                 onBrowse: { onOpenGallery(viewModel.sessionId) },
                 onSimilarity: {},

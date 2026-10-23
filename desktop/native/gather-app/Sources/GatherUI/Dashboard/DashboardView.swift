@@ -42,6 +42,8 @@ package struct DashboardView: View {
     /// 打开工作区回调（RootView 注入；默认 no-op 便于独立预览/测试）。
     /// 创建成功导航（TS navigate /sessions/:id）与行内「进入」共用。
     var onOpenSession: (String) -> Void = { _ in }
+    /// 打开系统设置（首屏 Capture One 卡片 / 后续工具入口）。
+    var onOpenSettings: () -> Void = {}
 
     @State private var showNewSheet = false
     @State private var deleteTarget: SessionData?
@@ -52,11 +54,13 @@ package struct DashboardView: View {
     package init(
         viewModel: DashboardViewModel,
         newWorkspaceRequest: Binding<NewWorkspaceRequest?>,
-        onOpenSession: @escaping (String) -> Void = { _ in }
+        onOpenSession: @escaping (String) -> Void = { _ in },
+        onOpenSettings: @escaping () -> Void = {}
     ) {
         self._viewModel = Bindable(viewModel)
         self._newWorkspaceRequest = newWorkspaceRequest
         self.onOpenSession = onOpenSession
+        self.onOpenSettings = onOpenSettings
     }
 
     /// Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView）。
@@ -80,9 +84,10 @@ package struct DashboardView: View {
             phaseContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(GatherTheme.canvas)
         // 页面 chrome：标题 / 副标题交给系统窗口，内容区不再自绘大标题。
-        .navigationTitle("Gather")
-        .navigationSubtitle(l10n("整理、挑选并同步你的摄影工作区"))
+        .navigationTitle(l10n("工作台"))
+        .navigationSubtitle(dashboardSubtitle)
         .toolbar { toolbarItems }
         .onChange(of: viewModel.sessions.map(\.id)) { _, ids in
             // 行被别处删除时收敛选中集合，避免「删除 N 个」计数虚高。
@@ -218,7 +223,11 @@ package struct DashboardView: View {
         case .failed(let error):
             loadFailureState(error)
         case .loaded:
-            workspaceList
+            if viewModel.sessions.isEmpty {
+                firstRunState
+            } else {
+                workspaceList
+            }
         }
     }
 
@@ -238,6 +247,17 @@ package struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// 首次启动：产品预览 hero + 单一主 CTA + 三张快捷卡。
+    private var firstRunState: some View {
+        DashboardFirstRunView(
+            onImportFolder: {
+                NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
+            },
+            onCreateWorkspace: { showNewSheet = true },
+            onOpenSettings: onOpenSettings
+        )
+    }
+
     // MARK: 内容（原生列表：概览 / 工作区 / 任务中心）
 
     private var workspaceList: some View {
@@ -247,6 +267,8 @@ package struct DashboardView: View {
             jobsSection
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(GatherTheme.canvas)
         .onDeleteCommand {
             // 原生 Delete 键：只在有选中项时走同一确认门控（取消不发命令）。
             if !selectedIds.isEmpty {
@@ -306,7 +328,8 @@ package struct DashboardView: View {
             }
         } header: {
             Text(l10n("工作区"))
-                .font(.headline)
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -327,26 +350,30 @@ package struct DashboardView: View {
     private var jobsSection: some View {
         Section {
             jobsBody
+            if viewModel.hasClearableJobs {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button(l10n("清理已完成")) {
+                        Task { await viewModel.clearCompletedJobs() }
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help(l10n("清理已完成"))
+                }
+                .padding(.top, 2)
+            }
         } header: {
             jobsSectionHeader
         }
     }
 
     private var jobsSectionHeader: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(l10n("任务中心"))
-                    .font(.headline)
-                Text(l10n("后台任务 · 持久化分析任务、进度和失败恢复"))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            Button(l10n("清理已完成")) {
-                Task { await viewModel.clearCompletedJobs() }
-            }
-            .disabled(!viewModel.hasClearableJobs)
-            .help(l10n("清理已完成"))
+        VStack(alignment: .leading, spacing: 2) {
+            Text(l10n("任务中心"))
+                .font(GatherFont.cardTitle)
+            Text(l10n("后台任务 · 持久化分析任务、进度和失败恢复"))
+                .font(GatherFont.labelRegular)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -355,9 +382,16 @@ package struct DashboardView: View {
         if let error = viewModel.jobsError {
             jobsFailureState(error)
         } else if viewModel.jobs.isEmpty {
-            ContentUnavailableView {
-                Label(l10n("暂无后台任务"), systemImage: "clock")
+            HStack(spacing: 8) {
+                Image(systemName: "clock")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+                Text(l10n("暂无后台任务"))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
+            .padding(.vertical, 4)
         } else {
             if viewModel.attentionJobs.isEmpty {
                 // quietState：成功语义用系统提示条（图标 + 低透明度底色），不是绿色正文。
@@ -417,6 +451,19 @@ package struct DashboardView: View {
             }
             .font(.callout)
         }
+    }
+
+    /// 窗口副标题：有数据时给库存摘要；空库时给行动指引，不再使用固定营销句。
+    private var dashboardSubtitle: String {
+        let summary = viewModel.summary()
+        guard summary.sessionCount > 0 else {
+            return l10n("从文件夹或 Capture One 开始整理照片")
+        }
+        return l10n.format(
+            "%lld 个工作区 · %lld 张照片",
+            summary.sessionCount,
+            summary.photoCount
+        )
     }
 
     /// 任务行的工作区显示名（旧实现显示 scopeId 前 8 位 UUID，已删除）。

@@ -110,7 +110,7 @@ public struct ToastView: View {
                     ToastRow(toast: toast) {
                         center.dismiss(id: toast.id)
                     }
-                    .contentShape(RoundedRectangle(cornerRadius: 10))
+                    .contentShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.floating))
                     // 对齐旧版 Toast.module.css slideIn 0.2s ease-out：
                     // 出现时 -8pt 上滑 + 淡入，消失时 -8pt 下滑 + 淡出。
                     .transition(reduceMotion
@@ -143,7 +143,7 @@ private struct ToastRow: View {
                 .foregroundStyle(toast.type.color)
                 .accessibilityHidden(true)
             Text(toast.message)
-                .font(.callout)
+                .font(GatherFont.body)
                 .lineLimit(3)
                 .frame(maxWidth: 360, alignment: .leading)
             if let actionTitle = toast.actionTitle, let action = toast.action {
@@ -169,7 +169,7 @@ private struct ToastRow: View {
         // 功能层浮面：macOS 26+ 用 Liquid Glass，更早版本用 .regularMaterial。
         // toast 是典型的「浮在内容之上的瞬时控件」，正是 Apple 允许用玻璃的场景；
         // 卡片等**内容层**表面则一律保持标准材质（见 GatherGlass 的说明）。
-        .gatherFunctionalSurface(cornerRadius: GatherTheme.Radius.group, bordered: false)
-        .shadow(color: GatherTheme.shadowMd, radius: 12, y: 4)
+        .gatherFunctionalSurface(cornerRadius: GatherTheme.Radius.floating, bordered: false)
+        .shadow(color: GatherTheme.shadowFloating, radius: 16, y: 6)
     }
 }

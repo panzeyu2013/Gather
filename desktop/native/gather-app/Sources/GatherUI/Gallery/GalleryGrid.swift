@@ -62,11 +62,33 @@ extension GalleryView {
             return layoutCache.rows
         }
         let source = filtered.map { GalleryAspectItem(width: Double(max(1, $0.width)), height: Double(max(1, $0.height))) }
-        let rows = layoutJustifiedRows(source: source, containerWidth: width, targetRowHeight: density, gap: 8)
+        let rawRows = layoutJustifiedRows(source: source, containerWidth: width, targetRowHeight: density, gap: 8)
+        // 单张照片不再被 justified 铺满整行：大图网格里一张 16:10 照片会被拉到
+        // 650pt 宽，像 Lightbox 卡片。单行单张统一压到 480×360 内，保持图库密度。
+        let rows = rawRows.map { row -> JustifiedLayoutRow in
+            guard row.items.count == 1,
+                  let item = row.items.first,
+                  let photo = filtered[safe: item.index] else { return row }
+            let ratio = Double(max(1, photo.width)) / Double(max(1, photo.height))
+            var itemWidth = min(Self.singleItemMaxWidth, Self.singleItemMaxHeight * ratio)
+            var itemHeight = itemWidth / ratio
+            if itemHeight > Self.singleItemMaxHeight {
+                itemHeight = Self.singleItemMaxHeight
+                itemWidth = itemHeight * ratio
+            }
+            return JustifiedLayoutRow(
+                height: itemHeight,
+                items: [JustifiedLayoutItem(index: item.index, width: itemWidth)],
+                justified: false
+            )
+        }
         layoutCache.key = key
         layoutCache.rows = rows
         return rows
     }
+
+    private static let singleItemMaxWidth = 480.0
+    private static let singleItemMaxHeight = 360.0
 
     /// 距行末的预取窗口（项数）：旧版 IntersectionObserver rootMargin
     /// 1600px ≈ 数屏；LazyVStack 行进入视口即触发，此窗口约 1-2 屏。

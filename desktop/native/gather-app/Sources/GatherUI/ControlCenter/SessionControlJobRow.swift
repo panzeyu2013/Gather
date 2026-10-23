@@ -31,7 +31,7 @@ struct SessionControlJobRow: View {
                             .font(.callout.monospacedDigit())
                             .foregroundStyle(.secondary)
                         Text(l10n.progressPhaseText(job.progressMessage))
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
