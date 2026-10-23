@@ -14,6 +14,7 @@
 
 import Foundation
 import Testing
+import GatherPersistence
 @testable import GatherDelivery
 
 struct DeliveryReplayClaimsTests {
@@ -107,6 +108,14 @@ struct DeliveryReplayClaimsTests {
 
     private static func uniqueScope() -> String {
         "DeliveryReplayClaimsTests.\(UUID().uuidString)"
+    }
+
+    @Test func inMemoryConnectionHasNoFileScope() throws {
+        // 内存库不能共享 ":memory:" 作为跨进程 claim scope；否则并行测试/多实例
+        // 会互相跳过 replay。
+        let db = try DBConnection(path: ":memory:")
+        defer { db.close() }
+        #expect(db.storagePath == nil)
     }
 
     private static func uniqueXMPPath() -> String {

@@ -186,7 +186,9 @@ public final class DBConnection: @unchecked Sendable {
     private let reopenPath: String?
 
     /// 文件库的真实路径；内存库为 nil。跨进程 replay claim 用它做作用域。
-    public var storagePath: String? { reopenPath }
+    public var storagePath: String? {
+        reopenPath == ":memory:" ? nil : reopenPath
+    }
 
     /// path 为 ":memory:" 时使用内存库（测试用）。
     public init(path: String) throws {
