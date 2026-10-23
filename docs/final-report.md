@@ -8,7 +8,7 @@
 
 目标是把两包单体原生应用重构为**类型化、可验证、单实现**的 7-target SwiftPM 工程：删除字符串命令与 Router、以 SchemaV1 取代迁移链、拆分模块、收敛 UI 状态与本地化、算法单趟化，最后冻结指标与门禁。
 
-结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**，随后执行 **架构整改 WP0–WP7b**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。架构整改后：core **1,166/175**、app **624/69**、schema **user_version=2**、ratchet **54/230/0/0/0**、Application SQL **0**、Delivery Coordinator **543 行**、Protocol **255 类型/1,340 声明**；最终独立验收见 final-acceptance 系列报告；当前状态与提交见 [architecture-remediation-status.md](reviews/architecture-remediation-status.md)。人工 GUI smoke 与真实签名/公证仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
+结果：**Cut 0–6 全部完成**（2026-10-22），并在 8 路独立评审后完成 **P0/P1 修复轮**，随后执行 **架构整改 WP0–WP7b**。Cut 6c 时点：0 条字符串命令、16 个域协议/110 个方法、SchemaV1（43 表/373 列/69 索引/62 外键）、179 个错误码、页面/VM 中 `l()` 为 0、14 个 `#Preview`、core 1,092/157 + app 581/66 全绿。架构整改后：core **1,168/176**、app **624/69**、schema **user_version=2**、ratchet **54/230/0/0/0**、Application SQL **0**、Delivery Coordinator **543 行**、Protocol **255 类型/1,340 声明**；最终独立验收见 final-acceptance 系列报告；当前状态与提交见 [architecture-remediation-status.md](reviews/architecture-remediation-status.md)。人工 GUI smoke 与真实签名/公证仍未执行；10k 人脸精确聚类 19.25s，按 D-158 接受 ≤20s 基线。
 
 ### 1.1 评审修复轮（2026-10-22）
 
@@ -55,7 +55,7 @@
 
 | 指标 | 基线/重构前 | 最终值 | 口径 |
 | --- | ---: | ---: | --- |
-| Swift 文件 | 364（Cut 2 关闭） | **681**（Cut 6c 快照 535） | 收尾实测（含拆分文件）；排除 `.build`；历史 6c 数字保留在归档 |
+| Swift 文件 | 364（Cut 2 关闭） | **692**（Cut 6c 快照 535） | 收尾实测（含拆分文件）；排除 `.build`；历史 6c 数字保留在归档 |
 | 总行数 | 122,692 | — | 收尾未重算全量行数；以当前 `wc -l` 为准，避免旧 133,740 与拆分后矛盾 |
 | SwiftPM target | 2 包（含伞 GatherCore） | **8** | GatherProtocol / GatherPersistence / GatherAnalysis / GatherDelivery / GatherApplication / GatherUI / GatherHost / GatherApp（另有 GatherSchema、2 个 bench、test target） |
 | Schema | 旧迁移链（v35 快照） | **43 表 / 373 列 / 69 索引 / 62 外键 / user_version=2** | `gather-schema verify` + SQLite `pragma_table_info`/`pragma_foreign_key_list` 独立复核；V1→V2 线性迁移 |
@@ -64,10 +64,10 @@
 | 字符串命令 | 118（82 sync + 36 async） | **0** | `grep -rnE 'execute(Async)?\( *"|enqueue\( *"' gather-app --include='*.swift'` = 0 |
 | 本地化 | en 1,407 / zh 10；`l()` 1,481 处 | **en 1,332 / zh 9；页面/VM `l()` = 0** | 修复轮新增 plural/#one/FaceModelPathIssue 9 键；`en` 按 `^"` 计键（1,332；P2 错误码文案新增 10 键） |
 | Preview | — | **14 块 / 5 个 PreviewSupport 文件 / 2,031 行** | `check-preview-surface.sh --strict` |
-| 测试 | core 994 / app 298（Cut 0） | **core 1,166/175 + app 624/69** | P1/P2 收尾实测；core 3 条真实照片 skip（有效 1,163）；app 串行 + 并行 3 次均绿 |
+| 测试 | core 994 / app 298（Cut 0） | **core 1,168/176 + app 624/69** | P1/P2 收尾实测；core 3 条真实照片 skip（有效 1,165）；app 串行 + 并行 3 次均绿 |
 | 清理 ratchet | 40 / 348 / 128 / 0 / 0（Cut 0） | **54 / 230 / 0 / 0 / 0** | services_prepare 0；unchecked +1 为进程内 replay claim，try? 231→230 |
 | 文档 | 42 篇 / 18,609 行 | **55 篇 / 21,787 行（非 archive 26 篇 / 8,765 行）** | 含本报告与 archive 索引；28 篇历史文档已归档；2026-10-22 收尾实测 |
-| 收尾复核（2026-10-22 23:00） | — | **681 Swift 文件；测试文件 184；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 20 文件 |
+| 收尾复核（2026-10-22 23:00） | — | **692 Swift 文件；测试文件 185；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 20 文件 |
 
 ## 4. 删除清单（主要项）
 
@@ -129,7 +129,7 @@ swift run --package-path gather-core --disable-sandbox --cache-path .build/share
 | `check-docs.sh --strict` | OK；ADR 20（缺失 0）、reviews 当前 30 篇、md 链接 0 缺失、schema 声明一致 |
 | `check-no-legacy.sh` | OK；7 条 enforced 全过，6 个 tracked 指标 |
 | `check-layering.sh` | OK；17 条规则全过（含 UI/App 禁 import GatherDelivery） |
-| `check-duplicate-symbols.sh --strict` | OK；扫描 681 文件、batchAsync 1 份、Tests/Support 外 0 |
+| `check-duplicate-symbols.sh --strict` | OK；扫描 692 文件、batchAsync 1 份、Tests/Support 外 0 |
 | `check-select-star.sh --strict` | OK；Sources 4 处 / 1 文件（baseline 4）、Tests 1 处（白名单） |
 | `check-preview-surface.sh --strict` | PASS；**14 个 #Preview / 5 个 PreviewSupport 文件 / 2,031 行** |
 | `check-protocol-surface.sh --strict` | OK；255 类型 / 1,340 声明 / 0 零引用 / 0 信封 |
@@ -186,18 +186,18 @@ BUILD_SH_EXIT:1
 | 0 字符串命令 / 16 协议 110 方法 | grep = 0；协议/方法计数 | 通过 |
 | Schema V2 单真相源 | verify 43/2/0；SQLite 复核 43/373/69/62 | 通过 |
 | 旧实现删除且无并存 | no-legacy 7 enforced；R5 四类 0；HNSW/ClusterEngine 引用 0 | 通过 |
-| 测试全绿 | core 1,166/175；app 624/69；exit 0 | 通过 |
+| 测试全绿 | core 1,168/176；app 624/69；exit 0 | 通过 |
 | 9 门禁（strict 可用）+ preview | 全部 exit 0；preview 14 | 通过 |
 | 指标与报告冻结 | 本报告 + refactor-progress 顶部 + D-163 最终关闭 + 2026-10-22 收尾复核（535/138,829、en 1,322） | 通过 |
 | L10n 注释 | 177→179、1,407→1,313（表最终 1,322） | 通过 |
 | 人工 GUI / 本机 bundle | 未做；已记录命令、失败点与 CI 入口 | **待人工/CI**（非代码阻塞） |
 
-**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**架构可提交候选**：core 1,166/175、app 624/69（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 54/230/0。**发布门仍未闭环**（app icon 缺失、release runner 需 macos-26/Xcode 26、签名/公证/CI release 未实跑、x86 Rosetta 未验），不能称为“可发布包”；建议 owner 先补资产/凭据并在 macos-26 跑一次 release，再打 tag。
+**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**架构可提交候选**：core 1,168/176、app 624/69（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 54/230/0。**发布门仍未闭环**（app icon 缺失、release runner 需 macos-26/Xcode 26、签名/公证/CI release 未实跑、x86 Rosetta 未验），不能称为“可发布包”；建议 owner 先补资产/凭据并在 macos-26 跑一次 release，再打 tag。
 
 ## 9. 后续接手（resume）
 
 1. 先读本报告 + `refactor-progress.md` 顶部 + D-172；当前工作区已提交且干净，HEAD 见 `git log`；未 push。
-2. 复跑机器验收：§5.1/5.2/5.3 的命令；预期 core 1,166/175、app 624/69、schema 43/373/69/62/user_version=2、9 门禁 54/230/0/0/0、preview 14、test-catalog 179 文件、docs 非 archive 死链 0。
+2. 复跑机器验收：§5.1/5.2/5.3 的命令；预期 core 1,168/176、app 624/69、schema 43/373/69/62/user_version=2、9 门禁 54/230/0/0/0、preview 14、test-catalog 179 文件、docs 非 archive 死链 0。
 3. CI 跑 `./desktop/native/build.sh`（`gather-app tests + bundle` job），记录 bundle 大小、两份 lproj、FaceModels、未签名状态。
 4. 人工 GUI smoke 按 §6 第 1 项逐项记录 pass/fail；重点做中英切换逐页 A/B（94 个 en 键删除后的回归风险）。
 5. 10k 人脸优化以 5s 为 stretch；19.25s 已按 D-158 接受为 ≤20s 基线，优化前先固定机器与 bench 档位。

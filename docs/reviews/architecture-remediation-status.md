@@ -30,7 +30,7 @@
 
 ## 2. 当前指标（HEAD 工作区实测）
 
-- core：**1,166 tests / 175 suites**，exit 0（P1/P2 收口 + fake-repo/trace/replay 并发测试后；含 3 个真实照片 skip，有效 1,163）。
+- core：**1,168 tests / 176 suites**，exit 0（P1/P2 收口 + fake-repo/trace/replay 并发测试后；含 3 个真实照片 skip，有效 1,165）。
 - app：**624 tests / 69 suites**，串行 + 并行 3 次 exit 0（新增 DeliveryErrorPresentation 7 例）。
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
 - 门禁：9 道 strict 全绿；ratchet 54/230/0/0/0；protocol surface 255/1,340/0/0；preview 14。
@@ -63,5 +63,6 @@
 **已进一步收口**：`DeliveryWriting` 窄协议 + `DeliveryStateWriter` 依赖 `any DeliveryWriting`；`markWriting` 从 public deprecated 降为 `package`，跨包测试经 `GatherTestSupport.markWritingForTesting`；item 级 `markItem` 支持 leaseOwner 并加 `EXISTS(deliveries.lease_owner)` CAS，Writeback 传 owner。
 **已补**：4 个 Query 的 SQL 边界 20 例（真实 SQLite）；Job/Delivery trace `duration_ms`。
 **已补**：replay claim 以 DB storagePath + xmpPath + intent id 为作用域，并用 `flock` 跨进程排他；`markFailed/markConflict` 已移除空串默认，生产 StateWriter 显式传 owner，测试经 package/GatherTestSupport seam。
-**仍未清零**：SchemaV1（846 DDL）/PreviewFixtures（964 DEBUG）仍 >800；跨进程 claim 无专门并发测试；发布侧 app icon/签名/公证/macos-26 release job 仍未闭环。
+**已清零**：全部 Swift 文件 ≤768 行（SchemaV1 121 + DDL 片段，PreviewFixtures 244 + 7 个页面片段）；replay claim 增加双实例互斥测试。
+**剩余（发布外部）**：app icon、真实签名/公证/staple、macos-26 release job、x86 Rosetta、GUI smoke 仍未闭环。
 最终验收报告：[final-acceptance-build.md](final-acceptance-build.md)、[architecture](final-acceptance-architecture.md)、[data](final-acceptance-data.md)、[tests](final-acceptance-tests.md)、[cleanup](final-cleanup-scan.md)。
