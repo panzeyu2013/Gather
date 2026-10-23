@@ -30,7 +30,7 @@
 
 ## 2. 当前指标（HEAD 工作区实测）
 
-- core：**1,146 tests / 171 suites**，exit 0（P1/P2 收口 + fake-repo/trace/replay 并发测试后；含 3 个真实照片 skip，有效 1,143）。
+- core：**1,166 tests / 175 suites**，exit 0（P1/P2 收口 + fake-repo/trace/replay 并发测试后；含 3 个真实照片 skip，有效 1,163）。
 - app：**624 tests / 69 suites**，串行 + 并行 3 次 exit 0（新增 DeliveryErrorPresentation 7 例）。
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
 - 门禁：9 道 strict 全绿；ratchet 54/230/0/0/0；protocol surface 255/1,340/0/0；preview 14。
@@ -61,5 +61,6 @@
 计划中的 WP0–WP7b 与独立验收 P1 已全部收口：Application 5 服务改 any 端口、Host 写交付状态收敛到 StateWriter、markWritten/markFailed/markConflict owner CAS、confirm 单事务门禁、confirmSync 委托 Coordinator、370 列 V1 迁移、4 个 >1000 行服务拆分、WP3b fake-repo 与 trace 边界测试。核心指标：Application SQL 0（目标 ≤15）、Delivery Coordinator 543（目标 ≤600）、adapters 5（目标 ≤5）、Protocol 255 类型（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2。
 本轮架构 P1 进一步收口：DeliveryRepo/AssetRepo/FaceRepo/ClusterGraph 四个 >1000 行文件已拆到 ≤800；SidecarXMPProvider/PersonRepo/DeliveryCleanupFlow 也已拆到 ≤800（仅 SchemaV1 DDL 846、DEBUG PreviewFixtures 964 保留）；AssetRepo 不再直接 UPDATE deliveries，路径迁移/Intent payload 归 DeliveryRepo.relocatePaths；2 处内联 sessions SQL 下沉 SessionReloadAckRepo；reload-ack 与 markWritten 改为同事务；StateWriter 的 markFailed/markConflict 强制显式 leaseOwner。
 **已进一步收口**：`DeliveryWriting` 窄协议 + `DeliveryStateWriter` 依赖 `any DeliveryWriting`；`markWriting` 从 public deprecated 降为 `package`，跨包测试经 `GatherTestSupport.markWritingForTesting`；item 级 `markItem` 支持 leaseOwner 并加 `EXISTS(deliveries.lease_owner)` CAS，Writeback 传 owner。
-**仍未清零**：replay claim 仅同 coordinator 进程内（无 DB 跨进程 claim）、repo 的 markFailed/markConflict 仍保留空串默认供测试、PortFake 未覆盖 Query SQL、trace duration 未做；SchemaV1/PreviewFixtures 仍 >800；发布侧 app icon/签名/公证/macos-26 release job 仍未闭环。
+**已补**：4 个 Query 的 SQL 边界 20 例（真实 SQLite）；Job/Delivery trace `duration_ms`。
+**仍未清零**：replay claim 仅同 coordinator 进程内（无 DB 跨进程 claim）、repo 的 markFailed/markConflict 仍保留空串默认供测试；SchemaV1/PreviewFixtures 仍 >800；发布侧 app icon/签名/公证/macos-26 release job 仍未闭环。
 最终验收报告：[final-acceptance-build.md](final-acceptance-build.md)、[architecture](final-acceptance-architecture.md)、[data](final-acceptance-data.md)、[tests](final-acceptance-tests.md)、[cleanup](final-cleanup-scan.md)。
